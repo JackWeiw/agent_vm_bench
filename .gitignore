@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# C/C++ compiled binaries
+stress_tool
+*.o
+*.out
+*.exe
+
+# Generated data files
+*.csv
+qemu_baseline_*.json
+qemu_monitor_*.json
+summary_*.csv
+
+# Downloaded web content
+web_content/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.pid
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Claude Code
+.claude/
