@@ -1,5 +1,7 @@
 # Agent VM Bench - OpenStack VM Memory Overcommit Performance Testing
 
+[中文说明](README_zh.md)
+
 This directory contains tools for testing performance under OpenStack VM memory overcommit scenarios.
 
 ## Files
