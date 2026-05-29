@@ -648,10 +648,14 @@ class BrowserTaskManager:
         return success, duration
 
     def _execute_direct_browser(self, vm: VMConnection, timeout: int) -> Tuple[bool, float]:
-        """Execute browser task directly (without LLM)"""
+        """Execute browser task directly (without LLM)
+
+        Adds 10s to latency to simulate LLM response delay for realistic benchmarking.
+        """
         cmd = f'openclaw browser --browser-profile openclaw open "{self.config.browser_url}"'
         success, _, _, duration, _ = vm.execute(cmd, timeout=timeout + 30, get_exit_code=True)
-        return success, duration
+        latency = duration + 10.0  # Simulate LLM delay
+        return success, latency
 
     def run_browser_task(self, vm: VMConnection, state: VMState) -> Tuple[bool, float, str]:
         """Execute single browser task, return (success, latency, task_type)"""

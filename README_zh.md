@@ -1,18 +1,18 @@
-# Agent VM Bench - OpenStack VM Memory Overcommit Performance Testing
+# Agent VM Bench - OpenStack VM 内存超分配性能测试
 
-This directory contains tools for testing performance under OpenStack VM memory overcommit scenarios.
+本目录包含用于测试 OpenStack VM 内存超分配场景下性能的工具。
 
-## Files
+## 文件说明
 
-- `create_server.py` - Create OpenStack VMs
-- `qemu_monitor.py` - Monitor QEMU process resources
-- `stress_tool.cpp` - Stress tool for VM memory/CPU consumption
-- `vm_bench_lite.py` - Benchmark script with browser and QA modes
-- `download_page.sh` - Download Wikipedia warmup pages
+- `create_server.py` - 通过 OpenStack 创建 VM，用于运行 openclaw agent 负载
+- `qemu_monitor.py` - 监控 QEMU 进程资源使用
+- `stress_tool.cpp` - VM 内存/CPU 消耗压测工具
+- `vm_bench_lite.py` - 基准测试脚本（支持浏览器和 QA 模式，测试 openclaw agent 性能）
+- `download_page.sh` - 下载 Wikipedia 预热页面
 
-## Quick Start
+## 快速开始
 
-### 1. Terminal Setup (Execute First)
+### 1. 终端环境设置（首先执行）
 
 ```bash
 source ~/.admin-openrc
@@ -20,16 +20,16 @@ unset http_proxy
 unset https_proxy
 ```
 
-### 2. Configure Host Network Bridge
+### 2. 配置宿主机网桥
 
-To allow VMs to access web pages on the host machine, add an IP address to the OpenStack bridge interface:
+为了让 VM 能够访问宿主机上的网页，需要在 OpenStack 网桥接口上添加 IP 地址：
 
 ```bash
-# Find the bridge interface name
+# 查找网桥接口名称
 ip a | grep brq
 ```
 
-Example output:
+示例输出：
 
 ```text
 10: brqb3fa561d-67: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 qdisc noqueue state UP group default qlen 1000
@@ -39,39 +39,39 @@ Example output:
 14: tapafbc3810-87: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 qdisc noqueue master brqb3fa561d-67 state UNKNOWN group default qlen 1000
 ```
 
-Add an IP address to the bridge interface (use the bridge name from above):
+为网桥接口添加 IP 地址（使用上面输出的网桥名称）：
 
 ```bash
 ip addr add 192.168.110.10/24 dev brqb3fa561d-67
 ```
 
-After this configuration, VMs can access static web pages on the host at `http://192.168.110.10:8080/Weibo.html`.
+配置完成后，VM 可以通过 `http://192.168.110.10:8080/Weibo.html` 访问宿主机上的静态网页。
 
-### 3. Download Warmup Pages
+### 3. 下载预热页面
 
-Run this script to download Wikipedia pages and images for browser warmup:
+运行此脚本下载 Wikipedia 页面和图片用于浏览器预热：
 
 ```bash
 bash download_page.sh
 ```
 
-This creates a `web_content` directory with:
+这将创建 `web_content` 目录，包含：
 
-- `web_content/en.wikipedia.org/wiki/` - HTML pages
-- `web_content/upload.wikimedia.org/` - Images
+- `web_content/en.wikipedia.org/wiki/` - HTML 页面
+- `web_content/upload.wikimedia.org/` - 图片
 
-### 4. Start Warmup Web Server
+### 4. 启动预热 Web 服务器
 
-Start a local HTTP server to serve the warmup pages:
+启动本地 HTTP 服务器来提供预热页面：
 
 ```bash
 cd web_content/en.wikipedia.org/wiki
 numactl --cpunodebind=2,3 --membind=2,3 python3 -m http.server 8080
 ```
 
-The server runs on port 8080. Access pages at `http://<host_ip>:8080/<page>.html`
+服务器运行在端口 8080，访问地址为 `http://<host_ip>:8080/<page>.html`
 
-Available warmup pages:
+可用的预热页面：
 
 - China.html
 - World_War_II.html
@@ -84,7 +84,9 @@ Available warmup pages:
 - Galaxy.html
 - Weibo.html
 
-### 5. Create VMs
+### 5. 创建 VM（运行 openclaw agent）
+
+通过 OpenStack 创建用于运行 openclaw agent 负载的 VM：
 
 ```bash
 python3 create_server.py \
@@ -97,15 +99,15 @@ python3 create_server.py \
   --image ubuntu-24.04
 ```
 
-### 6. Resource Monitoring
+### 6. 资源监控
 
-After VM creation, wait for QEMU process CPU usage to stabilize around 1% before starting benchmark:
+创建 VM 后，等待 QEMU 进程 CPU 使用率稳定在约 1% 后再开始基准测试：
 
 ```bash
 python3 qemu_monitor.py -t 300 -i 2
 ```
 
-### 7. Run Benchmark
+### 7. 运行基准测试
 
 ```bash
 python vm_bench_lite.py -n 10 --start-ip 192.168.110.11 --stress-percent 0 --batch-size 10 --batch-interval 5 -t 160 --browser-mode --browser-url https://192.168.110.10:8080 --browser-interval-min 5 --browser-interval-max 15 \
@@ -124,11 +126,11 @@ python vm_bench_lite.py -n 10 --start-ip 192.168.110.11 --stress-percent 0 --bat
     --browser-url "http://192.168.110.10:8080/Weibo.html"
 ```
 
-**Note:** In browser mode without LLM (`--browser-mode` without `--browser-use-llm`), the benchmark adds 10 seconds to each request latency to simulate LLM response delay. This provides realistic timing comparable to actual agent workflows.
+**注意：** 在不使用 LLM 的浏览器模式下（`--browser-mode` 但未指定 `--browser-use-llm`），基准测试会在每次请求的延迟上额外增加 10 秒，以模拟 LLM 响应延迟。这样可以获得与真实 Agent 工作流相当的 realistic 延时数据。
 
-### 8. Delete VMs
+### 8. 删除 VM
 
 ```bash
 openstack server list -c ID -f value | xargs openstack server delete --force
-virsh list --all  # Check if deletion is complete
+virsh list --all  # 检查删除是否完成
 ```
