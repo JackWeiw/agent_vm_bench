@@ -351,9 +351,14 @@ class QEMUMonitor:
         current_total_mem = 0.0
         current_total_cpu = 0.0
 
+        # Support both qemu-kvm and qemu-system process names
+        qemu_process_names = ('qemu-kvm', 'qemu-system')
+
         for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'status']):
             try:
-                if 'qemu-kvm' not in (proc.info['name'] or ''):
+                proc_name = proc.info['name'] or ''
+                # Check if process name matches any QEMU variant
+                if not any(qemu_name in proc_name for qemu_name in qemu_process_names):
                     continue
 
                 pid = proc.info['pid']
@@ -633,7 +638,8 @@ class QEMUMonitor:
         if not filename:
             filename = f"qemu_monitor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
-            w = csv.DictWriter(f, ['timestamp','vm_name','pid','cpu_percent','memory_mb','memory_huge_mb','memory_private_mb','memory_heap_mb','status'])
+            fieldnames = ['timestamp','vm_name','pid','cpu_percent','memory_mb','memory_huge_mb','memory_private_mb','memory_heap_mb','status']
+            w = csv.DictWriter(f, fieldnames, extrasaction='ignore')
             w.writeheader()
             if self.data:
                 w.writerows(self.data)
