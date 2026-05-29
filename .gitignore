@@ -20,6 +20,7 @@ stress_tool
 qemu_baseline_*.json
 qemu_monitor_*.json
 summary_*.csv
+results/
 
 # Downloaded web content
 web_content/
