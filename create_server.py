@@ -39,6 +39,7 @@ from dataclasses import dataclass
 class VMResult:
     name: str
     fixed_ip: str
+    vm_id: str = ""  # OpenStack VM UUID, used for unambiguous status check
     submit_time: float = 0.0
     done_time: float = 0.0
     status: str = "pending"  # pending / active / error / timeout / submit_failed
@@ -89,6 +90,8 @@ def create_and_wait_vm(
             "--nic", f"net-id={network_id},v4-fixed-ip={fixed_ip}",
             "--availability-zone", az,
             "--wait",
+            "-f", "value",
+            "-c", "id",
             vm_name,
         ],
         stdout=subprocess.PIPE,
@@ -115,8 +118,12 @@ def create_and_wait_vm(
         result.detail = stderr.strip()[:200]
         return result
 
+    # Capture VM ID from create output (use ID for unambiguous status check)
+    result.vm_id = stdout.strip()
+
+    # Use VM ID (not name) to avoid ambiguity when duplicate names exist
     confirm = subprocess.run(
-        ["openstack", "server", "show", vm_name, "-f", "value", "-c", "status"],
+        ["openstack", "server", "show", result.vm_id, "-f", "value", "-c", "status"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, timeout=30,
     )
     state = confirm.stdout.strip()
