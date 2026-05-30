@@ -107,11 +107,17 @@ After VM creation, wait for QEMU process CPU usage to stabilize around 1% before
 python3 qemu_monitor.py -t 300 -i 2
 ```
 
-### 7. Run Benchmark
+### 7. Run Benchmark (Two-Phase Execution)
+
+Browser mode uses a two-phase execution: **warmup phase** (all VMs) then **benchmark phase** (partial VMs).
+
+#### Phase 1: Warmup Phase (`-wp`)
+
+Warmup phase connects all VMs to execute warmup tasks (visiting warmup pages to load browser memory), then exits:
 
 ```bash
-python vm_bench_lite.py -n 10 --start-ip 192.168.110.11 --stress-percent 0 --batch-size 10 --batch-interval 5 -t 160 --browser-mode --browser-url https://192.168.110.10:8080 --browser-interval-min 5 --browser-interval-max 15 \
---warmup \
+python vm_bench_lite.py -n 100 --start-ip 192.168.110.11 --browser-mode \
+    -wp \
     --warmup-url "http://192.168.110.10:8080/China.html" \
     --warmup-url "http://192.168.110.10:8080/Earth.html" \
     --warmup-url "http://192.168.110.10:8080/Galaxy.html" \
@@ -121,10 +127,33 @@ python vm_bench_lite.py -n 10 --start-ip 192.168.110.11 --stress-percent 0 --bat
     --warmup-url "http://192.168.110.10:8080/Solar_System.html" \
     --warmup-url "http://192.168.110.10:8080/United_States.html" \
     --warmup-url "http://192.168.110.10:8080/World_War_II.html" \
-    --warmup-loops 2 \
-    --warmup-delay 2 \
-    --browser-url "http://192.168.110.10:8080/Weibo.html"
+    --warmup-loops 1 \
+    --warmup-delay 2
 ```
+
+#### Phase 2: Benchmark Phase (`-bsp`)
+
+Benchmark phase connects only a portion of VMs (controlled by `-bsp` parameter) to run browser tests:
+
+```bash
+# Connect 50% of VMs (50 VMs out of 100) for benchmark
+python vm_bench_lite.py -n 100 --start-ip 192.168.110.11 --browser-mode \
+    -bsp 0.5 \
+    --batch-size 10 --batch-interval 5 \
+    --browser-url "http://192.168.110.10:8080/Weibo.html" \
+    --browser-interval-min 5 --browser-interval-max 15 \
+    -t 160
+```
+
+#### Parameter Reference
+
+| Parameter | Description |
+| --------- | ----------- |
+| `-wp` / `--warmup-phase` | Run warmup phase only (all VMs execute warmup tasks then exit) |
+| `-bsp` / `--browser-stress-percent` | Percentage of VMs to connect in benchmark phase (default 100%) |
+| `--warmup-url` | Warmup page URL (can be specified multiple times) |
+| `--warmup-loops` | Warmup loop count (default 1) |
+| `--warmup-delay` | Delay between warmup pages in seconds (default 2) |
 
 **Note:** In browser mode without LLM (`--browser-mode` without `--browser-use-llm`), the benchmark adds 10 seconds to each request latency to simulate LLM response delay. This provides realistic timing comparable to actual agent workflows.
 

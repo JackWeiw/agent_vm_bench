@@ -109,11 +109,17 @@ python3 create_server.py \
 python3 qemu_monitor.py -t 300 -i 2
 ```
 
-### 7. 运行基准测试
+### 7. 运行基准测试（两阶段执行）
+
+浏览器模式采用两阶段执行：**预热阶段**（所有 VM）然后 **压测阶段**（部分 VM）。
+
+#### 阶段 1：预热阶段 (`-wp`)
+
+预热阶段连接所有 VM 执行预热任务（访问预热页面以加载浏览器内存），完成后退出：
 
 ```bash
-python vm_bench_lite.py -n 10 --start-ip 192.168.110.11 --stress-percent 0 --batch-size 10 --batch-interval 5 -t 160 --browser-mode --browser-url https://192.168.110.10:8080 --browser-interval-min 5 --browser-interval-max 15 \
---warmup \
+python vm_bench_lite.py -n 100 --start-ip 192.168.110.11 --browser-mode \
+    -wp \
     --warmup-url "http://192.168.110.10:8080/China.html" \
     --warmup-url "http://192.168.110.10:8080/Earth.html" \
     --warmup-url "http://192.168.110.10:8080/Galaxy.html" \
@@ -123,10 +129,33 @@ python vm_bench_lite.py -n 10 --start-ip 192.168.110.11 --stress-percent 0 --bat
     --warmup-url "http://192.168.110.10:8080/Solar_System.html" \
     --warmup-url "http://192.168.110.10:8080/United_States.html" \
     --warmup-url "http://192.168.110.10:8080/World_War_II.html" \
-    --warmup-loops 2 \
-    --warmup-delay 2 \
-    --browser-url "http://192.168.110.10:8080/Weibo.html"
+    --warmup-loops 1 \
+    --warmup-delay 2
 ```
+
+#### 阶段 2：压测阶段 (`-bsp`)
+
+压测阶段只连接部分 VM（由 `-bsp` 参数控制）执行浏览器测试：
+
+```bash
+# 连接 50% 的 VM（100 个 VM 中连接 50 个）进行压测
+python vm_bench_lite.py -n 100 --start-ip 192.168.110.11 --browser-mode \
+    -bsp 0.5 \
+    --batch-size 10 --batch-interval 5 \
+    --browser-url "http://192.168.110.10:8080/Weibo.html" \
+    --browser-interval-min 5 --browser-interval-max 15 \
+    -t 160
+```
+
+#### 参数说明
+
+| 参数 | 说明 |
+| ---- | ---- |
+| `-wp` / `--warmup-phase` | 仅运行预热阶段（所有 VM 执行预热任务后退出） |
+| `-bsp` / `--browser-stress-percent` | 压测阶段连接的 VM 百分比（默认 100%） |
+| `--warmup-url` | 预热页面 URL（可多次指定） |
+| `--warmup-loops` | 预热循环次数（默认 1） |
+| `--warmup-delay` | 预热页面间隔秒数（默认 2） |
 
 **注意：** 在不使用 LLM 的浏览器模式下（`--browser-mode` 但未指定 `--browser-use-llm`），基准测试会在每次请求的延迟上额外增加 10 秒，以模拟 LLM 响应延迟。这样可以获得与真实 Agent 工作流相当的 realistic 延时数据。
 

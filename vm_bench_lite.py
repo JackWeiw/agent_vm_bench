@@ -8,6 +8,7 @@ Features:
 - Optionally start stress_tool on some VMs to consume memory and more CPU
 - OpenStack status detection, identify VM shutdown caused by memory overcommit
 - Real-time statistics + final report
+- Two-phase browser testing: warmup phase (all VMs) then benchmark phase (partial VMs)
 
 Interaction Mode (--mode):
 - http: curl call to openclaw gateway, low overhead, suitable for large-scale stress testing
@@ -17,14 +18,24 @@ Pressure Control Parameters:
 - --batch-size N:       Start N VMs per batch, avoid starting all at once
 - --batch-interval S:   Batch interval S seconds, stagger startup time
 - --browser-interval-min/max: Browser task random interval, avoid VMs making requests simultaneously
-- --stress-percent: Percentage of VMs to start stress_tool process
+- --stress-percent: Percentage of VMs to start stress_tool process (QA+Stress mode)
+
+Browser Two-Phase Testing:
+- -wp/--warmup-phase:   Run warmup phase only, all VMs execute warmup tasks then exit
+- -bsp/--browser-stress-percent: Percentage of VMs to connect in benchmark phase (default 100%)
 
 Usage:
-    # Pure browser mode (no LLM, direct openclaw browser)
-    python vm_bench_lite.py -n 80 --start-ip 192.168.110.11 --browser-mode --stress-percent 0 -t 180
+    # Browser mode - Two-phase testing (warmup then benchmark)
+    # Step 1: Warmup phase (all 100 VMs)
+    python vm_bench_lite.py -n 100 --start-ip 192.168.110.11 --browser-mode \
+        -wp --warmup-url http://192.168.110.10:8080/page1.html --warmup-url http://192.168.110.10:8080/page2.html
+
+    # Step 2: Benchmark phase (50% VMs, 50 VMs)
+    python vm_bench_lite.py -n 100 --start-ip 192.168.110.11 --browser-mode \
+        -bsp 0.5 --browser-url http://192.168.110.10:8080/Weibo.html -t 180
 
     # Browser mode + use LLM (http curl openclaw gateway call prompt)
-    python vm_bench_lite.py -n 80 --start-ip 192.168.110.11 --browser-mode --stress-percent 0 --browser-use-llm --mode http -t 180
+    python vm_bench_lite.py -n 80 --start-ip 192.168.110.11 --browser-mode --browser-use-llm --mode http -t 180
 
     # Browser mode + use LLM + pressure control (20 per batch, 5 second interval)
     python vm_bench_lite.py -n 80 --start-ip 192.168.110.11 --browser-mode --browser-use-llm --mode http \
@@ -82,8 +93,11 @@ class Config:
     browser_url: str = ""             # Browser test target URL
     browser_use_llm: bool = False     # Browser task use LLM (True: HTTP/CLI call prompt, False: direct openclaw browser)
 
+    # Browser phase control (two-phase execution: warmup then benchmark)
+    is_warmup_phase: bool = False     # True: warmup phase (all VMs), False: benchmark phase (partial VMs)
+    browser_stress_percent: float = 1.0  # Percentage of VMs to run browser benchmark (in benchmark phase)
+
     # Browser warmup configuration
-    warmup_enabled: bool = False      # Enable browser warmup
     warmup_urls: List[str] = field(default_factory=list)  # Warmup page URL list
     warmup_loops: int = 2             # Warmup loop count
     warmup_delay: int = 10            # Delay between warmup pages (seconds)
@@ -106,8 +120,19 @@ class Config:
         return int(self.total_vms * self.stress_percent)
 
     @property
+    def browser_benchmark_vm_count(self) -> int:
+        """Actual VM count for browser benchmark phase"""
+        if self.browser_mode and not self.is_warmup_phase:
+            return max(1, int(self.total_vms * self.browser_stress_percent))
+        return self.total_vms
+
+    @property
     def batch_count(self) -> int:
-        count = self.total_vms if self.browser_mode else self.stress_vm_count
+        if self.browser_mode:
+            # Browser mode: use actual connected VM count
+            count = self.browser_benchmark_vm_count
+        else:
+            count = self.stress_vm_count
         return (count + self.batch_size - 1) // self.batch_size
 
 
@@ -1076,7 +1101,7 @@ class StatsCollector:
         lines = []
         lines.append("=" * 80)
         if self.config.browser_mode:
-            lines.append("VM Bench Lite v2 - Browser Test Report")
+            lines.append("VM Bench Lite v2 - Browser Benchmark Report")
         else:
             lines.append("VM Bench Lite v2 - Mixed QA+Stress Test Report")
         lines.append("=" * 80)
@@ -1084,12 +1109,17 @@ class StatsCollector:
         # Configuration info
         lines.append(f"\n[Test Configuration]")
         lines.append(f"  Total VMs:       {self.config.total_vms}")
+        if self.config.browser_mode:
+            # Browser benchmark phase shows actual connected VMs
+            actual_vm_count = int(self.config.total_vms * self.config.browser_stress_percent)
+            lines.append(f"  Connected VMs:   {actual_vm_count} ({self.config.browser_stress_percent*100:.0f}%)")
         lines.append(f"  Batches:         {self.config.batch_count} batches x {self.config.batch_size} VMs/batch")
         lines.append(f"  Batch Interval:  {self.config.batch_interval}s")
         if self.config.browser_mode:
             lines.append(f"  Browser Task:    Page Access")
             lines.append(f"  Target URL:      {self.config.browser_url}")
             lines.append(f"  Task Interval:   {self.config.browser_task_interval_min}~{self.config.browser_task_interval_max}s (random)")
+            lines.append(f"  Test Duration:   {self.config.test_duration}s")
         else:
             lines.append(f"  Stress VM:       {self.config.stress_vm_count}")
             lines.append(f"  Stress Memory:   {self.config.stress_memory_mb}MB/VM")
@@ -1228,10 +1258,13 @@ class VMTaskRunner(threading.Thread):
                 while not self.stop_event.is_set() and not self.batch_controller.is_batch_ready(batch_id):
                     time.sleep(0.5)
 
-        # Browser warmup phase (only in browser_mode with warmup_enabled)
-        if self.config.browser_mode and self.config.warmup_enabled and self.browser_manager:
+        # Warmup phase: execute warmup tasks then exit
+        if self.config.browser_mode and self.config.is_warmup_phase and self.browser_manager:
             self.browser_manager.warmup_phase(self.vm, self.state)
+            print(f"[VM{self.vm.vm_id}] Warmup phase completed")
+            return
 
+        # Benchmark phase: execute browser benchmark tasks
         while not self.stop_event.is_set():
             try:
                 if not self.state.health.is_connected:
@@ -1332,20 +1365,35 @@ def run_benchmark(config: Config) -> dict:
     """Run benchmark"""
 
     print("=" * 80)
-    print("VM Bench Lite")
+    if config.browser_mode and config.is_warmup_phase:
+        print("VM Bench Lite - Browser Warmup Phase")
+    elif config.browser_mode:
+        print("VM Bench Lite - Browser Benchmark Phase")
+    else:
+        print("VM Bench Lite - QA+Stress Test")
     print("=" * 80)
 
     def ip_range(start_ip, count):
         start = ipaddress.IPv4Address(start_ip)
         return [str(start + i) for i in range(count)]
 
-    vm_ips = ip_range(config.start_ip, config.total_vms)
+    # Calculate actual VM count to connect
+    if config.browser_mode and not config.is_warmup_phase:
+        # Benchmark phase: only connect browser_stress_percent of VMs
+        actual_vm_count = int(config.total_vms * config.browser_stress_percent)
+        actual_vm_count = max(1, actual_vm_count)  # At least 1 VM
+        print(f"  Browser benchmark phase: connecting {actual_vm_count}/{config.total_vms} VMs ({config.browser_stress_percent*100:.0f}%)")
+    else:
+        # Warmup phase or QA/Stress mode: connect all VMs
+        actual_vm_count = config.total_vms
+
+    vm_ips = ip_range(config.start_ip, actual_vm_count)
     stress_vm_ids = list(range(1, config.stress_vm_count + 1))
     stress_vm_set = set(stress_vm_ids)
 
     # Establish SSH connections
     vm_connections = {}
-    for vm_id in range(1, config.total_vms + 1):
+    for vm_id in range(1, actual_vm_count + 1):
         ip = vm_ips[vm_id - 1]
         vm = VMConnection(ip, config.port, config.username, config.password, vm_id)
         if vm.connect():
@@ -1355,7 +1403,7 @@ def run_benchmark(config: Config) -> dict:
         print("No connectable VMs")
         return {}
 
-    print(f"Successfully connected: {len(vm_connections)}/{config.total_vms} VMs")
+    print(f"Successfully connected: {len(vm_connections)}/{actual_vm_count} VMs")
 
     # Create OpenStack VM status checker (for detecting shutdowns due to memory overcommit)
     os_vm_ips = {vm_id: vm.host for vm_id, vm in vm_connections.items()}
@@ -1376,17 +1424,17 @@ def run_benchmark(config: Config) -> dict:
     # Start components
     health_checker = HealthChecker(config, vm_states, vm_connections, os_checker)
     health_checker.start()
-    batch_vm_ids = list(range(1, config.total_vms + 1)) if config.browser_mode else stress_vm_ids
+    batch_vm_ids = list(range(1, actual_vm_count + 1)) if config.browser_mode else stress_vm_ids
     batch_controller = BatchController(config, batch_vm_ids)
     batch_controller.start()
 
-    # Delay stats collector startup (no snapshots during warmup)
-    if not (config.browser_mode and config.warmup_enabled):
-        stats_collector = StatsCollector(config, vm_states)
-        stats_collector.start()
+    # Stats collector
+    stats_collector = StatsCollector(config, vm_states)
+    if config.browser_mode and config.is_warmup_phase:
+        # Warmup phase: don't start stats collector, no benchmark statistics needed
+        pass
     else:
-        stats_collector = StatsCollector(config, vm_states)
-        # Warmup mode: don't start yet, start after warmup completes
+        stats_collector.start()
 
     # Start task threads
     stop_event = threading.Event()
@@ -1396,9 +1444,10 @@ def run_benchmark(config: Config) -> dict:
         runners.append(runner)
         runner.start()
 
-    # Wait for warmup completion (warmup not counted in benchmark time)
-    if config.browser_mode and config.warmup_enabled:
-        print(f"\nWarmup phase starting (not counted in benchmark time)")
+    # Warmup phase: wait for all VMs to complete warmup then exit
+    if config.browser_mode and config.is_warmup_phase:
+        print(f"\nWarmup phase starting...")
+        print(f"   Total VMs: {actual_vm_count}")
         print(f"   Warmup pages: {len(config.warmup_urls)}")
         print(f"   Loop count: {config.warmup_loops}")
         print(f"   Page delay: {config.warmup_delay} seconds")
@@ -1423,10 +1472,26 @@ def run_benchmark(config: Config) -> dict:
                 break
             time.sleep(1)
 
-        # Start stats collector after warmup completes (warmup not counted in benchmark time)
-        stats_collector.start_time = time.time()
-        stats_collector.start()
+        # Warmup phase complete, exit directly
+        print("\nWarmup phase finished, exiting...")
+        stop_event.set()
+        health_checker.stop()
+        for runner in runners:
+            runner.join(timeout=2)
+        for vm in vm_connections.values():
+            vm.close()
 
+        # Save warmup summary
+        warmup_summary = f"Warmup Phase Summary\n{'='*40}\nTotal VMs: {actual_vm_count}\nCompleted: {done_count}\nFailed: {fail_count}\nDuration: {warmup_duration:.1f}s\n"
+        os.makedirs("results", exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        with open(f"results/warmup_summary_{timestamp}.txt", 'w') as f:
+            f.write(warmup_summary)
+        print(f"\nWarmup summary saved")
+
+        return {'warmup_summary': warmup_summary}
+
+    # Benchmark phase: run for specified duration
     print(f"\nBenchmark running... ({config.test_duration} seconds)")
     try:
         time.sleep(config.test_duration)
@@ -1472,12 +1537,14 @@ def main():
     parser.add_argument('--browser-mode', action='store_true', help='Enable browser testing')
     parser.add_argument('--browser-url', type=str, default='http://192.168.110.10:8080/Weibo.html', help='Browser test URL')
     parser.add_argument('--browser-use-llm', action='store_true', help='Browser task uses LLM (HTTP/CLI call prompt), otherwise direct openclaw browser')
-    # Warmup related parameters
-    parser.add_argument('--warmup', action='store_true', help='Enable browser warmup phase')
+    # Browser phase control (two-phase execution: warmup then benchmark)
+    parser.add_argument('-wp', '--warmup-phase', action='store_true', help='Run warmup phase only (all VMs execute warmup tasks then exit)')
+    parser.add_argument('-bsp', '--browser-stress-percent', type=float, default=1.0, help='Percentage of VMs to run browser benchmark (default 100%%, only for benchmark phase)')
+    # Warmup parameters
     parser.add_argument('--warmup-url', type=str, action='append', help='Warmup page URL (can be specified multiple times)')
-    parser.add_argument('--warmup-loops', type=int, default=2, help='Warmup loop count')
-    parser.add_argument('--warmup-delay', type=int, default=10, help='Warmup page delay (seconds)')
-    parser.add_argument('-t', '--duration', type=int, default=600, help='Total test duration')
+    parser.add_argument('--warmup-loops', type=int, default=1, help='Warmup loop count')
+    parser.add_argument('--warmup-delay', type=int, default=2, help='Warmup page delay (seconds)')
+    parser.add_argument('-t', '--duration', type=int, default=600, help='Total test duration (only for benchmark phase)')
     parser.add_argument('--start-ip', default='192.168.110.11', help='Starting IP')
     parser.add_argument('-u', '--username', default='root', help='SSH username')
     parser.add_argument('-p', '--password', default='openEuler12#$', help='SSH password')
@@ -1490,7 +1557,8 @@ def main():
         stress_memory_mb=args.stress_memory, stress_keepalive=not args.no_keepalive,
         mode=args.mode, browser_mode=args.browser_mode,
         browser_url=args.browser_url, browser_use_llm=args.browser_use_llm,
-        warmup_enabled=args.warmup,
+        is_warmup_phase=args.warmup_phase,
+        browser_stress_percent=args.browser_stress_percent,
         warmup_urls=args.warmup_url or [],
         warmup_loops=args.warmup_loops,
         warmup_delay=args.warmup_delay,
