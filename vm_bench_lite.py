@@ -1412,7 +1412,9 @@ def run_benchmark(config: Config) -> dict:
     # Create VM states
     vm_states = {}
     for vm_id, vm in vm_connections.items():
-        is_stress = vm_id in stress_vm_set
+        # Browser mode: no stress VMs, all VMs only run browser tasks
+        # QA/Stress mode: mark VMs based on stress_vm_set
+        is_stress = False if config.browser_mode else (vm_id in stress_vm_set)
         batch_id = (vm_id - 1) // config.batch_size if (config.browser_mode or is_stress) else -1
         vm_states[vm_id] = VMState(vm_id=vm_id, host=vm.host, is_stress_vm=is_stress, batch_id=batch_id)
 
@@ -1478,8 +1480,12 @@ def run_benchmark(config: Config) -> dict:
         health_checker.stop()
         for runner in runners:
             runner.join(timeout=2)
+        stats_collector.stop()  # Stop stats collector (even though not started in warmup)
         for vm in vm_connections.values():
             vm.close()
+
+        # Small delay to let daemon threads finish their last output
+        time.sleep(0.5)
 
         # Save warmup summary
         warmup_summary = f"Warmup Phase Summary\n{'='*40}\nTotal VMs: {actual_vm_count}\nCompleted: {done_count}\nFailed: {fail_count}\nDuration: {warmup_duration:.1f}s\n"
@@ -1507,6 +1513,9 @@ def run_benchmark(config: Config) -> dict:
     stats_collector.stop()
     for vm in vm_connections.values():
         vm.close()
+
+    # Small delay to let daemon threads finish their last output
+    time.sleep(0.5)
 
     # Generate report
     report = stats_collector.generate_report()
