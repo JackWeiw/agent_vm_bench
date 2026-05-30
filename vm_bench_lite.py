@@ -713,7 +713,7 @@ class BrowserTaskManager:
         Returns:
             bool: Whether warmup succeeded
         """
-        if not self.config.warmup_enabled or not self.config.warmup_urls:
+        if not self.config.warmup_urls:
             state.warmup_done = True
             return True
 
