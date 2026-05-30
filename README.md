@@ -118,6 +118,7 @@ Warmup phase connects all VMs to execute warmup tasks (visiting warmup pages to 
 ```bash
 python vm_bench_lite.py -n 100 --start-ip 192.168.110.11 --browser-mode \
     -wp \
+    --batch-size 20 --batch-interval 5 \
     --warmup-url "http://192.168.110.10:8080/China.html" \
     --warmup-url "http://192.168.110.10:8080/Earth.html" \
     --warmup-url "http://192.168.110.10:8080/Galaxy.html" \
