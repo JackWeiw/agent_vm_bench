@@ -99,31 +99,40 @@ class QEMUMonitor:
         return numa_nodes
 
     def collect_hugepage_stats(self):
-        """Collect hugepage memory statistics (total and per-NUMA node)"""
-        try:
-            with open("/proc/meminfo", "r") as f:
-                lines = f.read()
+        """Collect hugepage memory statistics (total and per-NUMA node)
 
-            huge_total = int(re.search(r"HugePages_Total:\s+(\d+)", lines).group(1))
-            huge_free = int(re.search(r"HugePages_Free:\s+(\d+)", lines).group(1))
-            huge_size = int(re.search(r"Hugepagesize:\s+(\d+)", lines).group(1))  # kB
+        Note: /proc/meminfo only reports default hugepage size statistics.
+        To get accurate totals across all hugepage sizes, we calculate from per-NUMA stats.
+        """
+        # First collect per-NUMA stats (this correctly handles multiple hugepage sizes)
+        self.collect_hugepage_per_numa_stats()
 
-            self.hugepage_total_mb = (huge_total * huge_size) / 1024
-            self.hugepage_free_mb = (huge_free * huge_size) / 1024
-            self.hugepage_used_mb = self.hugepage_total_mb - self.hugepage_free_mb
-            self.hugepage_used_history.append(self.hugepage_used_mb)
+        # Sum from per-NUMA stats for accurate total (handles 2MB + 1GB etc.)
+        self.hugepage_total_mb = 0.0
+        self.hugepage_free_mb = 0.0
+        for node_id, stats in self.hugepage_per_numa.items():
+            self.hugepage_total_mb += stats['total_mb']
+            self.hugepage_free_mb += stats['free_mb']
 
-            if self.hugepage_used_mb > self.peak_hugepage_used_mb:
-                self.peak_hugepage_used_mb = self.hugepage_used_mb
+        self.hugepage_used_mb = self.hugepage_total_mb - self.hugepage_free_mb
+        self.hugepage_used_history.append(self.hugepage_used_mb)
 
-            # ===================== Per-NUMA Node Hugepage Statistics =====================
-            self.collect_hugepage_per_numa_stats()
-            # =====================================================================
-        except:
-            self.hugepage_total_mb = 0
-            self.hugepage_free_mb = 0
-            self.hugepage_used_mb = 0
-            self.hugepage_per_numa = {}
+        if self.hugepage_used_mb > self.peak_hugepage_used_mb:
+            self.peak_hugepage_used_mb = self.hugepage_used_mb
+
+        # Fallback to /proc/meminfo if per-NUMA collection failed
+        if self.hugepage_total_mb == 0 and self.hugepage_per_numa == {}:
+            try:
+                with open("/proc/meminfo", "r") as f:
+                    lines = f.read()
+                huge_total = int(re.search(r"HugePages_Total:\s+(\d+)", lines).group(1))
+                huge_free = int(re.search(r"HugePages_Free:\s+(\d+)", lines).group(1))
+                huge_size = int(re.search(r"Hugepagesize:\s+(\d+)", lines).group(1))  # kB
+                self.hugepage_total_mb = (huge_total * huge_size) / 1024
+                self.hugepage_free_mb = (huge_free * huge_size) / 1024
+                self.hugepage_used_mb = self.hugepage_total_mb - self.hugepage_free_mb
+            except:
+                pass
 
     def collect_hugepage_per_numa_stats(self):
         """Collect hugepage memory usage for each NUMA node"""
@@ -140,10 +149,9 @@ class QEMUMonitor:
                     }
                     continue
 
-                # Find hugepage size directory (e.g., hugepages-2048kB)
-                total_pages = 0
-                free_pages = 0
-                huge_size_kb = 0
+                # Calculate MB for each hugepage size independently, then sum
+                total_mb = 0.0
+                free_mb = 0.0
 
                 for subdir in os.listdir(hugepages_dir):
                     if subdir.startswith('hugepages-') and subdir.endswith('kB'):
@@ -152,16 +160,18 @@ class QEMUMonitor:
                             huge_size_kb = int(size_match.group(1))
                             nr_path = os.path.join(hugepages_dir, subdir, 'nr_hugepages')
                             free_path = os.path.join(hugepages_dir, subdir, 'free_hugepages')
+                            pages = 0
+                            free_pages = 0
                             if os.path.exists(nr_path):
                                 with open(nr_path) as f:
-                                    total_pages += int(f.read().strip())
+                                    pages = int(f.read().strip())
                             if os.path.exists(free_path):
                                 with open(free_path) as f:
-                                    free_pages += int(f.read().strip())
+                                    free_pages = int(f.read().strip())
+                            # Convert pages × size_kb to MB for this hugepage size
+                            total_mb += (pages * huge_size_kb) / 1024
+                            free_mb += (free_pages * huge_size_kb) / 1024
 
-                # Record even if there are no hugepages
-                total_mb = (total_pages * huge_size_kb) / 1024 if huge_size_kb > 0 else 0
-                free_mb = (free_pages * huge_size_kb) / 1024 if huge_size_kb > 0 else 0
                 used_mb = total_mb - free_mb
                 self.hugepage_per_numa[node_id] = {
                     'total_mb': round(total_mb, 2),
