@@ -16,7 +16,6 @@ import re
 import subprocess
 import os
 import sys
-import json
 from datetime import datetime, timedelta
 from collections import defaultdict
 import threading
@@ -58,12 +57,6 @@ class QEMUMonitor:
         self.numa_cpu_history = defaultdict(list)  # key: node id, value: cpu% list
         self.numa_cpu_peak = defaultdict(float)
         self.available_numa_nodes = self.get_available_numa_nodes()
-        # =====================================================================
-
-        # ===================== Baseline Noise =====================
-        self.baseline_data = None          # Loaded baseline noise data
-        self.baseline_file = None          # Baseline noise file path
-        self.baseline_samples = 0          # Baseline noise sample count
         # =====================================================================
 
     # ==================== NUMA Memory Statistics ====================
@@ -524,11 +517,6 @@ class QEMUMonitor:
             print("No running QEMU virtual machines detected")
             return
 
-        # Additional display for baseline mode
-        mode_tag = ""
-        if self.baseline_data:
-            mode_tag = " | 📊 Baseline Comparison Mode"
-
         # Table header: Add hugepage memory column
         header = f"{'VM Name':<28} {'PID':<10} {'CPU%':<10} {'Memory(MB)':<12} {'Hugepage(MB)':<12} {'Status':<10}"
         print(header)
@@ -546,10 +534,7 @@ class QEMUMonitor:
             print(f"... {len(sorted_vms) - 15} more virtual machines ...")
 
         print("-" * 120)
-        total_tag = f"Total: {len(sample_data)} virtual machines | Data points: {len(self.data)}"
-        if mode_tag:
-            total_tag += mode_tag
-        print(total_tag)
+        print(f"Total: {len(sample_data)} virtual machines | Data points: {len(self.data)}")
         print("Press Ctrl+C to stop monitoring")
 
     def check_stress_process(self, stress_pattern):
@@ -691,330 +676,6 @@ class QEMUMonitor:
             'total_avg_memory_gb': round(sum(am)/1024,2)
         }
 
-    # ===================== Baseline Noise Collection =====================
-    def run_baseline_capture(self, duration_seconds, interval_seconds=3):
-        """Baseline collection mode: Monitor VM idle state, save as baseline file"""
-        print(f"\n{'='*80}")
-        print("Baseline Collection Mode - Monitoring VM Idle State")
-        print(f"{'='*80}")
-        print(f"Collection duration: {duration_seconds}s | Sampling interval: {interval_seconds}s")
-        print(f"⚠️ Please ensure no stress test tasks are running on VMs during this period!")
-        print(f"{'='*80}\n")
-
-        self.running = True
-        start_time = time.time()
-        warmup_samples = 3  # Skip first 3 samples (first CPU sample is 0)
-        sample_count = 0
-
-        def handler(sig, frame):
-            print("\nStop signal received...")
-            self.running = False
-
-        signal.signal(signal.SIGINT, handler)
-
-        try:
-            while self.running:
-                loop_start = time.time()
-                elapsed = time.time() - start_time
-
-                sample = self.collect_sample()
-                sample_count += 1
-
-                if sample_count > warmup_samples:
-                    elapsed_str = str(timedelta(seconds=int(elapsed)))
-                    dur_str = str(timedelta(seconds=int(duration_seconds)))
-                    self.display_realtime_table(sample, elapsed_str, dur_str, f"Baseline Collection ({sample_count} samples)")
-
-                if duration_seconds and elapsed >= duration_seconds:
-                    print(f"\n✓ Baseline collection complete, {sample_count} samples total")
-                    self.running = False
-                    break
-
-                sl = max(0, interval_seconds - (time.time() - loop_start))
-                if sl > 0 and self.running:
-                    time.sleep(sl)
-        except KeyboardInterrupt:
-            pass
-
-        # Save baseline
-        self.save_baseline()
-        # Print readable baseline report
-        self.print_baseline_report()
-        return self.data
-
-    def save_baseline(self, filename=None):
-        """Save baseline to JSON file"""
-        if not filename:
-            filename = f"qemu_baseline_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-
-        vm_stats = self.calculate_vm_stats()
-        overall = self.calculate_overall_stats(vm_stats)
-
-        baseline = {
-            'metadata': {
-                'created_at': datetime.now().isoformat(),
-                'sample_count': len(self.data) // max(len(vm_stats), 1),
-                'numa_nodes': self.target_numa_nodes,
-            },
-            'overall': {
-                'total_vms': overall['total_vms'],
-                'avg_cpu': overall['overall_avg_cpu'],
-                'max_cpu': overall['overall_max_cpu'],
-                'peak_total_cpu': round(self.peak_total_cpu, 1),
-                'avg_total_pss_mb': overall['total_avg_memory_mb'],
-                'avg_total_pss_gb': overall['total_avg_memory_gb'],
-                'peak_total_pss_mb': round(self.peak_total_memory_mb, 2),
-                'host_avg_cpu': round(sum(self.host_cpu_history)/len(self.host_cpu_history), 1) if self.host_cpu_history else 0,
-                'host_peak_cpu': round(self.peak_host_cpu, 1),
-                'host_avg_mem_mb': round(sum(h['used_mb'] for h in self.host_mem_history)/len(self.host_mem_history), 2) if self.host_mem_history else 0,
-                'host_peak_mem_mb': round(self.peak_host_mem_mb, 2),
-                'swap_avg_mb': round(sum(s['used_mb'] for s in self.swap_history)/len(self.swap_history), 2) if self.swap_history else 0,
-                'swap_peak_mb': round(self.peak_swap_used_mb, 2),
-                'swap_total_mb': self.swap_history[0]['total_mb'] if self.swap_history else 0,
-                'hugepage_avg_mb': round(sum(self.hugepage_used_history)/len(self.hugepage_used_history), 2) if self.hugepage_used_history else 0,
-                'hugepage_peak_mb': round(self.peak_hugepage_used_mb, 2),
-                'hugepage_total_mb': round(self.hugepage_total_mb, 2),
-            },
-            'per_vm': {}
-        }
-
-        # Calculate hugepage estimate
-        huge_avg = round(sum(self.hugepage_used_history)/len(self.hugepage_used_history), 2) if self.hugepage_used_history else 0
-        huge_per_vm = round(huge_avg / max(len(vm_stats), 1), 2)
-
-        for v in vm_stats:
-            baseline['per_vm'][v['vm_name']] = {
-                'pid': v['pid'],
-                'avg_cpu': v['avg_cpu'],
-                'max_cpu': v['max_cpu'],
-                'avg_pss_mb': v['avg_memory_mb'],
-                'max_pss_mb': v['max_memory_mb'],
-                'min_pss_mb': v['min_memory_mb'],
-                'avg_rss_mb': v['avg_rss_mb'],
-                'max_rss_mb': v['max_rss_mb'],
-                'avg_uss_mb': v['avg_uss_mb'],
-                'max_uss_mb': v['max_uss_mb'],
-                'hugepage_est_mb': huge_per_vm,
-                'avg_pss_plus_huge_mb': round(v['avg_memory_mb'] + huge_per_vm, 2),
-                'max_pss_plus_huge_mb': round(v['max_memory_mb'] + huge_per_vm, 2),
-            }
-
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(baseline, f, indent=2, ensure_ascii=False)
-
-        self.baseline_file = filename
-        self.baseline_data = baseline
-        self.baseline_samples = baseline['metadata']['sample_count']
-
-        print(f"\n✓ Baseline saved: {filename}")
-        print(f"  Samples: {self.baseline_samples}")
-        print(f"  VM count: {overall['total_vms']}")
-        print(f"  Avg total PSS: {overall['total_avg_memory_mb']:.0f} MB ({overall['total_avg_memory_gb']:.2f} GB)")
-        return filename
-
-    def print_baseline_report(self):
-        """Print readable baseline report"""
-        vm_stats = self.calculate_vm_stats()
-        overall = self.calculate_overall_stats(vm_stats)
-
-        print(f"\n{'='*100}")
-        print("Baseline Collection Report - VM Idle State Resource Usage")
-        print(f"{'='*100}")
-        print(f"Collection time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        if self.data:
-            print(f"Data period: {self.data[0]['timestamp']} ~ {self.data[-1]['timestamp']}")
-
-        # Host machine level
-        host_cpu_avg = round(sum(self.host_cpu_history)/len(self.host_cpu_history), 1) if self.host_cpu_history else 0
-        host_mem_avg_mb = round(sum(h['used_mb'] for h in self.host_mem_history)/len(self.host_mem_history), 2) if self.host_mem_history else 0
-        host_mem_total_mb = round(self.host_mem_history[0]['total_mb'], 0) if self.host_mem_history else 0
-
-        print(f"\n[Host Machine Resources]")
-        print(f"  CPU average:    {host_cpu_avg:.1f}% (Peak {self.peak_host_cpu:.1f}%)")
-        print(f"  Memory:       {host_mem_avg_mb:.0f}/{host_mem_total_mb:.0f} MB (Peak {self.peak_host_mem_mb:.0f} MB)")
-
-        # QEMU total resources
-        print(f"\n[QEMU Process Total Resources]")
-        print(f"  VM count:     {overall['total_vms']}")
-        print(f"  Avg total CPU:  {overall['overall_avg_cpu']:.2f}% (Average of all VMs)")
-        print(f"  Peak total CPU:  {self.peak_total_cpu:.1f}% (Sum of all VMs at same time)")
-        print(f"  Avg total PSS:  {overall['total_avg_memory_mb']:.0f} MB ({overall['total_avg_memory_gb']:.2f} GB)")
-        print(f"  Peak total PSS:  {self.peak_total_memory_mb:.0f} MB ({self.peak_total_memory_mb/1024:.2f} GB)")
-
-        # Hugepage memory (relation with PSS explained)
-        if self.hugepage_used_history:
-            avg_huge = round(sum(self.hugepage_used_history)/len(self.hugepage_used_history), 0)
-            peak_huge = round(self.peak_hugepage_used_mb, 0)
-            huge_total = round(self.hugepage_total_mb, 0)
-            huge_per_vm = round(avg_huge / max(overall['total_vms'], 1), 1) if overall['total_vms'] > 0 else 0
-            pss_total = overall['total_avg_memory_mb']
-            # Hugepages may be included in PSS, or may be separately counted (depends on mapping method)
-            print(f"\n[Hugepage Memory (/dev/hugepages)]")
-            print(f"  Total capacity:     {huge_total:.0f} MB")
-            print(f"  Avg usage:   {avg_huge:.0f} MB ({avg_huge/max(huge_total,1)*100:.1f}%) | Peak {peak_huge:.0f} MB")
-            print(f"  Per-VM average:   {huge_per_vm:.1f} MB (Assuming equal distribution)")
-            print(f"  PSS+Hugepage:   ~{round(pss_total + avg_huge):.0f} MB (If PSS doesn't include hugepages, this is real total physical memory)")
-
-        # Swap
-        if self.swap_history:
-            swap_avg_mb = round(sum(s['used_mb'] for s in self.swap_history)/len(self.swap_history), 0) if self.swap_history else 0
-            swap_total_mb = self.swap_history[0]['total_mb'] if self.swap_history else 0
-            swap_peak_pct = round(self.peak_swap_used_mb / swap_total_mb * 100, 1) if swap_total_mb > 0 else 0
-            print(f"\n[Swap Partition]")
-            print(f"  Total capacity:   {swap_total_mb:.0f} MB")
-            print(f"  Avg usage: {swap_avg_mb:.0f} MB")
-            print(f"  Peak usage: {self.peak_swap_used_mb:.0f} MB ({swap_peak_pct:.1f}%)")
-
-        # NUMA CPU summary
-        if self.numa_cpu_history:
-            print(f"\n[NUMA Node CPU Idle Baseline]")
-            for node in sorted(self.numa_cpu_history.keys()):
-                hist = self.numa_cpu_history[node]
-                avg = round(sum(hist)/len(hist),1) if hist else 0
-                peak = self.numa_cpu_peak[node]
-                print(f"  NUMA {node:>2d} | Avg CPU: {avg:>5.1f}% | Peak CPU: {peak:>5.1f}%")
-
-        # Single VM details
-        if vm_stats:
-            huge_avg = round(sum(self.hugepage_used_history)/len(self.hugepage_used_history), 1) if self.hugepage_used_history else 0
-            huge_per_vm = round(huge_avg / max(overall['total_vms'], 1), 1) if overall['total_vms'] > 0 else 0
-            has_huge = huge_per_vm > 0
-
-            print(f"\n[Single VM Baseline Details]")
-            hdr = f"  {'VM Name':<25} {'avgCPU':>8} {'maxCPU':>8} " \
-                   f"{'avgPSS':>10} {'maxPSS':>10} {'minPSS':>10}"
-            if has_huge:
-                hdr += f" | {'PSS+Huge(est)':>14}"
-            hdr += f" {'avgRSS':>10} {'maxRSS':>10} " \
-                   f"{'avgUSS':>10} {'maxUSS':>10}"
-            print(hdr)
-            sep = '-' * (115 + 15 if has_huge else 115)
-            print(f"  {sep}")
-
-            for v in sorted(vm_stats, key=lambda x: x['avg_memory_mb'], reverse=True):
-                n = v['vm_name'][:24]
-                row = (f"  {n:<25} {v['avg_cpu']:>7.2f}% {v['max_cpu']:>7.2f}% "
-                       f"{v['avg_memory_mb']:>9.2f} {v['max_memory_mb']:>9.2f} {v['min_memory_mb']:>9.2f}")
-                if has_huge:
-                    pss_plus_hp = round(v['avg_memory_mb'] + huge_per_vm, 1)
-                    max_pss_plus_hp = round(v['max_memory_mb'] + huge_per_vm, 1)
-                    row += f" | {pss_plus_hp:>13.1f} {max_pss_plus_hp:>9.1f}"
-                row += (f" {v['avg_rss_mb']:>9.2f} {v['max_rss_mb']:>9.2f} "
-                        f"{v['avg_uss_mb']:>9.2f} {v['max_uss_mb']:>9.2f}")
-                print(row)
-
-        print(f"{'='*100}")
-
-    def load_baseline(self, filename):
-        """Load baseline file"""
-        try:
-            with open(filename, 'r', encoding='utf-8') as f:
-                self.baseline_data = json.load(f)
-            self.baseline_file = filename
-            meta = self.baseline_data['metadata']
-            print(f"✓ Baseline loaded: {filename}")
-            print(f"  Collection time: {meta['created_at']}")
-            print(f"  Samples: {meta['sample_count']}")
-            print(f"  VM count: {self.baseline_data['overall']['total_vms']}")
-            return True
-        except Exception as e:
-            print(f"✗ Failed to load baseline: {e}")
-            return False
-
-    def print_baseline_comparison(self, vm_stats, overall_stats):
-        """Print baseline vs stress test comparison report"""
-        if not self.baseline_data:
-            return
-
-        baseline = self.baseline_data
-        bl_overall = baseline['overall']
-
-        print("\n" + "=" * 85)
-        print("Baseline vs Stress Test Comparison Report")
-        print("=" * 85)
-        print(f"Baseline file: {self.baseline_file}")
-        print(f"Stress test period: {self.data[0]['timestamp']} ~ {self.data[-1]['timestamp']}")
-        print("-" * 85)
-
-        # Host machine level comparison
-        print("\n[Host Machine Level Comparison]")
-        print(f"  {'Metric':<25} {'Baseline':>15} {'Stress':>15} {'Delta':>15}")
-        print(f"  {'-'*70}")
-
-        # CPU
-        bl_cpu = bl_overall['host_avg_cpu']
-        st_cpu = round(sum(self.host_cpu_history)/len(self.host_cpu_history), 1) if self.host_cpu_history else 0
-        print(f"  {'Host Avg CPU%':<25} {bl_cpu:>14.1f}% {st_cpu:>14.1f}% {st_cpu-bl_cpu:>+14.1f}%")
-
-        # Memory
-        bl_mem = bl_overall['host_avg_mem_mb']
-        st_mem = round(sum(h['used_mb'] for h in self.host_mem_history)/len(self.host_mem_history), 2) if self.host_mem_history else 0
-        print(f"  {'Host Avg Memory MB':<25} {bl_mem:>14.0f} MB {st_mem:>14.0f} MB {st_mem-bl_mem:>+14.0f} MB")
-
-        # Total PSS
-        bl_pss = bl_overall['avg_total_pss_mb']
-        st_pss = overall_stats['total_avg_memory_mb']
-        print(f"  {'VM Total PSS':<25} {bl_pss:>14.0f} MB {st_pss:>14.0f} MB {st_pss-bl_pss:>+14.0f} MB ({(st_pss-bl_pss)/bl_pss*100 if bl_pss>0 else 0:+.1f}%)")
-
-        # Peak CPU
-        bl_peak_cpu = bl_overall['host_peak_cpu']
-        st_peak_cpu = round(self.peak_host_cpu, 1)
-        print(f"  {'Host Peak CPU%':<25} {bl_peak_cpu:>14.1f}% {st_peak_cpu:>14.1f}% {st_peak_cpu-bl_peak_cpu:>+14.1f}%")
-
-        # Swap
-        bl_swap = bl_overall.get('swap_avg_mb', 0)
-        bl_swap_total = bl_overall.get('swap_total_mb', 0)
-        st_swap = round(sum(s['used_mb'] for s in self.swap_history)/len(self.swap_history), 2) if self.swap_history else 0
-        st_swap_total = self.swap_history[0]['total_mb'] if self.swap_history else 0
-        if bl_swap_total > 0 or st_swap_total > 0:
-            print(f"  {'Swap Usage MB':<25} {bl_swap:>14.0f} {st_swap:>14.0f} {st_swap-bl_swap:>+14.0f} MB")
-            print(f"  {'Swap Peak MB':<25} {bl_overall.get('swap_peak_mb', 0):>14.0f} {self.peak_swap_used_mb:>14.0f} {self.peak_swap_used_mb - bl_overall.get('swap_peak_mb', 0):>+14.0f} MB")
-
-        # Hugepage
-        bl_huge = bl_overall.get('hugepage_avg_mb', 0)
-        bl_huge_total = bl_overall.get('hugepage_total_mb', 0)
-        st_huge = round(sum(self.hugepage_used_history)/len(self.hugepage_used_history), 2) if self.hugepage_used_history else 0
-        st_huge_total = round(self.hugepage_total_mb, 2)
-        if bl_huge_total > 0 or st_huge_total > 0:
-            print(f"  {'Hugepage Usage MB':<25} {bl_huge:>14.0f} {st_huge:>14.0f} {st_huge-bl_huge:>+14.0f} MB")
-            print(f"  {'Hugepage Peak MB':<25} {bl_overall.get('hugepage_peak_mb', 0):>14.0f} {self.peak_hugepage_used_mb:>14.0f} {self.peak_hugepage_used_mb - bl_overall.get('hugepage_peak_mb', 0):>+14.0f} MB")
-
-        # Single VM comparison
-        bl_huge_per_vm = bl_overall.get('hugepage_avg_mb', 0) / max(bl_overall.get('total_vms', 1), 1) if bl_overall.get('total_vms', 1) > 0 else 0
-        has_huge = bl_huge_per_vm > 0 or bl_overall.get('hugepage_total_mb', 0) > 0
-
-        print(f"\n[Single VM Baseline vs Stress Comparison]")
-        hdr = f"  {'VM Name':<25} {'BasePSS':>10} {'StressPSS':>10} {'Delta':>10}"
-        if has_huge:
-            hdr += f" | {'BasePSS+HP':>12}"
-        hdr += f" {'BaseCPU':>8} {'StressCPU':>8} {'Delta':>8}"
-        print(hdr)
-        print(f"  {'-'*85}")
-
-        bl_per_vm = baseline.get('per_vm', {})
-        for v in sorted(vm_stats, key=lambda x: x['avg_memory_mb'], reverse=True):
-            name = v['vm_name']
-            bl_vm = bl_per_vm.get(name, {})
-            bl_pss_vm = bl_vm.get('avg_pss_mb', 0)
-            st_pss_vm = v['avg_memory_mb']
-            delta_pss = st_pss_vm - bl_pss_vm
-            bl_cpu_vm = bl_vm.get('avg_cpu', 0)
-            st_cpu_vm = v['avg_cpu']
-            delta_cpu = st_cpu_vm - bl_cpu_vm
-
-            marker = ""
-            if delta_pss > bl_pss_vm * 0.5 and bl_pss_vm > 0:
-                marker = " ⚠️ Delta>50%"
-            name_display = name[:24]
-            row = f"  {name_display:<25} {bl_pss_vm:>9.1f} MB {st_pss_vm:>9.1f} MB {delta_pss:>+9.1f} MB"
-            if has_huge:
-                bl_pss_huge = bl_vm.get('avg_pss_plus_huge_mb', round(bl_pss_vm + bl_huge_per_vm, 1))
-                row += f" | {bl_pss_huge:>11.1f} MB"
-            row += f" {bl_cpu_vm:>7.1f}% {st_cpu_vm:>7.1f}% {delta_cpu:>+7.1f}%{marker}"
-            print(row)
-
-        print("=" * 85)
-
     def export_summary_csv(self, vm_stats, overall_stats, filename=None):
         if not filename:
             filename = f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
@@ -1086,27 +747,6 @@ class QEMUMonitor:
             swap_peak_pct = round(self.peak_swap_used_mb / swap_total * 100, 1) if swap_total > 0 else 0
             w.writerow(['Swap Peak Usage %', swap_peak_pct])
 
-            # Baseline comparison
-            if self.baseline_data:
-                bl = self.baseline_data['overall']
-                w.writerow([])
-                w.writerow(['=== Baseline vs Stress Comparison ==='])
-                w.writerow(['Metric', 'Baseline', 'Stress', 'Delta'])
-                bl_pss = bl['avg_total_pss_mb']
-                st_pss = overall_stats['total_avg_memory_mb']
-                w.writerow(['VM Total PSS(MB)', bl_pss, st_pss, round(st_pss - bl_pss, 2)])
-                bl_cpu = bl['host_avg_cpu']
-                st_cpu = round(sum(self.host_cpu_history)/len(self.host_cpu_history), 1) if self.host_cpu_history else 0
-                w.writerow(['Host CPU%', bl_cpu, st_cpu, round(st_cpu - bl_cpu, 1)])
-                bl_mem = bl['host_avg_mem_mb']
-                st_mem = round(sum(h['used_mb'] for h in self.host_mem_history)/len(self.host_mem_history), 2) if self.host_mem_history else 0
-                w.writerow(['Host Memory MB', bl_mem, st_mem, round(st_mem - bl_mem, 2)])
-                bl_swap = bl.get('swap_avg_mb', 0)
-                st_swap = round(sum(s['used_mb'] for s in self.swap_history)/len(self.swap_history), 2) if self.swap_history else 0
-                w.writerow(['Swap Usage MB', bl_swap, st_swap, round(st_swap - bl_swap, 2)])
-                bl_huge = bl.get('hugepage_avg_mb', 0)
-                st_huge = round(sum(self.hugepage_used_history)/len(self.hugepage_used_history), 2) if self.hugepage_used_history else 0
-                w.writerow(['Hugepage Usage MB', bl_huge, st_huge, round(st_huge - bl_huge, 2)])
             w.writerow([])
             w.writerow(['=== Single VM Statistics ==='])
             w.writerow(['VM','PID','Samples','avgCPU','maxCPU','avgMem','maxMem','minMem','lastMem','avgHuge','maxHuge','avgPrivate','maxPrivate','avgHeap','maxHeap'])
@@ -1205,36 +845,25 @@ class QEMUMonitor:
         rf = self.export_raw_csv(raw)
         sf = self.export_summary_csv(vs, os, summary)
         self.print_summary_report(vs, os)
-        if self.baseline_data:
-            self.print_baseline_comparison(vs, os)
         return rf, sf
 
 def main():
     parser = argparse.ArgumentParser(
-        description='QEMU Monitoring Tool (Supports baseline collection + stress test comparison)',
+        description='QEMU Monitoring Tool',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-[Mode 1: Baseline Collection]
-  sudo python3 qemu_monitor.py --baseline 60 -i 3
-    → Collect VM idle state for 60 seconds, save as qemu_baseline_*.json
+[Mode 1: Stress Sync Monitoring]
+  sudo python3 qemu_monitor.py --stress-file /tmp/bench_running.lock
+    → Wait for lock file to appear then start monitoring
 
-[Mode 2: Stress Sync + Baseline Comparison]
-  sudo python3 qemu_monitor.py --stress-file /tmp/bench_running.lock --baseline-file qemu_baseline_20260414.json
-    → Wait for lock file to appear then start monitoring, compare baseline after completion
-
-[Mode 3: Timer Stress + Baseline Comparison]
-  sudo python3 qemu_monitor.py -t 300 --baseline-file qemu_baseline_20260414.json
-    → Monitor for 300 seconds, compare baseline after completion
-
-[Mode 4: Pure Timer Monitoring]
+[Mode 2: Timer Monitoring]
   sudo python3 qemu_monitor.py -t 60 -i 2
+    → Monitor for 60 seconds
         """
     )
     sync = parser.add_mutually_exclusive_group()
     sync.add_argument('--stress-process', type=str, help='Stress process name')
     sync.add_argument('--stress-file', type=str, help='Stress marker file (e.g., /tmp/bench_running.lock)')
-    parser.add_argument('--baseline', type=int, metavar='SEC', help='Baseline collection mode: collect for N seconds')
-    parser.add_argument('--baseline-file', type=str, help='Baseline file path (for comparison)')
     parser.add_argument('-t','--time', type=int, help='Timer duration seconds')
     parser.add_argument('-i','--interval', type=int, default=3, help='Sampling interval (default 3 seconds)')
     parser.add_argument('-o','--output', type=str, help='Output prefix')
@@ -1250,16 +879,6 @@ def main():
         m.target_numa_nodes = list(map(int, args.numa.split(',')))
     except:
         m.target_numa_nodes = [0]
-
-    # Baseline collection mode
-    if args.baseline:
-        m.run_baseline_capture(args.baseline, args.interval)
-        print("\n✅ Baseline collection complete!")
-        return
-
-    # Load baseline file (for comparison)
-    if args.baseline_file:
-        m.load_baseline(args.baseline_file)
 
     # Stress test monitoring
     if args.stress_process:
