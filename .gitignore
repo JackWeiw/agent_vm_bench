@@ -21,12 +21,19 @@ qemu_baseline_*.json
 qemu_monitor_*.json
 summary_*.csv
 results/
+*report.json
+
+# Log collection outputs
+logs_*/
+devkit_mem.log
+devkit_top_down.log
+ksys.log
+ub_watch.log
 
 # Downloaded web content
 web_content/
 
 # Logs and temporary files
-*.log
 *.tmp
 *.pid
 
@@ -40,7 +47,7 @@ web_content/
 .DS_Store
 Thumbs.db
 
-# Environment
+# Environment and config files
 .env
 .env.local
 
