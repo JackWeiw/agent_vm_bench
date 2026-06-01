@@ -1336,9 +1336,11 @@ def main():
     # Start log capture (parallel with monitor)
     if args.enable_capture:
         print("\n🚀 Starting log collection tools...")
-        capture = LogCapture(config, args.time or 0, log_dir, m.target_numa_nodes)
+        # Default duration: 60s if not specified
+        capture_duration = args.time if args.time else 60
+        capture = LogCapture(config, capture_duration, log_dir, m.target_numa_nodes)
         capture.start()
-        print("✓ Log collection tools started in background\n")
+        print(f"✓ Log collection tools started in background (duration={capture_duration}s)\n")
 
     # Start QEMU monitoring
     if args.stress_process:
