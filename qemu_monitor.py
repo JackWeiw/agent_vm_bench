@@ -424,16 +424,9 @@ def parse_devkit_top_down(log_path: str) -> dict:
     Returns:
         {
             'cycles_avg': average cycles across all reports,
-            'instructions_avg': average instructions,
             'ipc_avg': average IPC,
-            'bad_speculation': average Bad Speculation %,
-            'frontend_bound': average Frontend Bound %,
-            'retiring': average Retiring %,
-            'backend_bound': average Backend Bound %,
-            'l3_bound': average L3 Bound %,
-            'mem_bound': average Mem Bound %,
-            'mem_latency_bound': average Latency bound %,
-            'mem_bandwidth_bound': average Bandwidth bound %,
+            ... (other averages),
+            'timeline': [list of per-report data with timestamps],
             'report_count': number of reports parsed
         }
     """
@@ -442,6 +435,7 @@ def parse_devkit_top_down(log_path: str) -> dict:
         'bad_speculation': [], 'frontend_bound': [], 'retiring': [],
         'backend_bound': [], 'l3_bound': [], 'mem_bound': [],
         'mem_latency_bound': [], 'mem_bandwidth_bound': [],
+        'timestamps': [],
         'report_count': 0
     }
 
@@ -452,65 +446,55 @@ def parse_devkit_top_down(log_path: str) -> dict:
         with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
 
-        # Split by report sections
-        reports = re.split(r'TOP-DOWN Summary Report-\d+', content)
+        # Split by report sections and keep the header with time
+        report_headers = re.findall(r'TOP-DOWN Summary Report-\d+\s+Time:(\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2})', content)
+        reports = re.split(r'TOP-DOWN Summary Report-\d+\s+Time:\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}', content)
 
-        for report in reports:
+        # Process each report (skip first empty split)
+        for i, report in enumerate(reports[1:], 0):
             if not report.strip():
                 continue
+
+            # Get timestamp from header
+            if i < len(report_headers):
+                result['timestamps'].append(report_headers[i])
+            else:
+                result['timestamps'].append(f'Report-{i+1}')
 
             # Parse Cycles, Instructions, IPC
             cycles_match = re.search(r'Cycles\s+([\d,]+)', report)
             inst_match = re.search(r'Instructions\s+([\d,]+)', report)
             ipc_match = re.search(r'IPC\s+([\d.]+)', report)
 
-            if cycles_match:
-                result['cycles'].append(float(cycles_match.group(1).replace(',', '')))
-            if inst_match:
-                result['instructions'].append(float(inst_match.group(1).replace(',', '')))
-            if ipc_match:
-                result['ipc'].append(float(ipc_match.group(1)))
+            cycles_val = float(cycles_match.group(1).replace(',', '')) if cycles_match else 0
+            inst_val = float(inst_match.group(1).replace(',', '')) if inst_match else 0
+            ipc_val = float(ipc_match.group(1)) if ipc_match else 0
 
-            # Parse top-down metrics (need to match the main categories)
-            # Bad Speculation
+            result['cycles'].append(cycles_val)
+            result['instructions'].append(inst_val)
+            result['ipc'].append(ipc_val)
+
+            # Parse top-down metrics
             bad_spec_match = re.search(r'Bad Speculation\s+([\d.]+)', report)
-            if bad_spec_match:
-                result['bad_speculation'].append(float(bad_spec_match.group(1)))
-
-            # Frontend Bound
             frontend_match = re.search(r'Frontend Bound\s+([\d.]+)', report)
-            if frontend_match:
-                result['frontend_bound'].append(float(frontend_match.group(1)))
-
-            # Retiring
             retiring_match = re.search(r'Retiring\s+([\d.]+)', report)
-            if retiring_match:
-                result['retiring'].append(float(retiring_match.group(1)))
-
-            # Backend Bound
             backend_match = re.search(r'Backend Bound\s+([\d.]+)', report)
-            if backend_match:
-                result['backend_bound'].append(float(backend_match.group(1)))
 
-            # L3 Bound (under Memory Bound)
+            result['bad_speculation'].append(float(bad_spec_match.group(1)) if bad_spec_match else 0)
+            result['frontend_bound'].append(float(frontend_match.group(1)) if frontend_match else 0)
+            result['retiring'].append(float(retiring_match.group(1)) if retiring_match else 0)
+            result['backend_bound'].append(float(backend_match.group(1)) if backend_match else 0)
+
+            # L3 Bound, Mem Bound
             l3_match = re.search(r'L3 Bound\s+([\d.]+)', report)
-            if l3_match:
-                result['l3_bound'].append(float(l3_match.group(1)))
-
-            # Mem Bound (under Memory Bound)
             mem_match = re.search(r'Mem Bound\s+([\d.]+)', report)
-            if mem_match:
-                result['mem_bound'].append(float(mem_match.group(1)))
-
-            # Latency bound (under Mem Bound)
             latency_match = re.search(r'Latency bound\s+([\d.]+)', report)
-            if latency_match:
-                result['mem_latency_bound'].append(float(latency_match.group(1)))
-
-            # Bandwidth bound (under Mem Bound)
             bw_match = re.search(r'Bandwidth bound\s+([\d.]+)', report)
-            if bw_match:
-                result['mem_bandwidth_bound'].append(float(bw_match.group(1)))
+
+            result['l3_bound'].append(float(l3_match.group(1)) if l3_match else 0)
+            result['mem_bound'].append(float(mem_match.group(1)) if mem_match else 0)
+            result['mem_latency_bound'].append(float(latency_match.group(1)) if latency_match else 0)
+            result['mem_bandwidth_bound'].append(float(bw_match.group(1)) if bw_match else 0)
 
             result['report_count'] += 1
 
@@ -521,8 +505,27 @@ def parse_devkit_top_down(log_path: str) -> dict:
                     'mem_latency_bound', 'mem_bandwidth_bound']:
             if result[key]:
                 avg_result[f'{key}_avg'] = sum(result[key]) / len(result[key])
+                avg_result[f'{key}_max'] = max(result[key])
+                avg_result[f'{key}_min'] = min(result[key])
             else:
                 avg_result[f'{key}_avg'] = 0.0
+                avg_result[f'{key}_max'] = 0.0
+                avg_result[f'{key}_min'] = 0.0
+
+        # Add timeline data
+        avg_result['timestamps'] = result['timestamps']
+        avg_result['timeline'] = {
+            'timestamp': result['timestamps'],
+            'ipc': result['ipc'],
+            'bad_speculation': result['bad_speculation'],
+            'frontend_bound': result['frontend_bound'],
+            'retiring': result['retiring'],
+            'backend_bound': result['backend_bound'],
+            'l3_bound': result['l3_bound'],
+            'mem_bound': result['mem_bound'],
+            'mem_latency_bound': result['mem_latency_bound'],
+            'mem_bandwidth_bound': result['mem_bandwidth_bound'],
+        }
 
         return avg_result
 
@@ -627,9 +630,10 @@ def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
 
     Returns:
         {
-            'cache_miss': {'L1D': x%, 'L1I': y%, 'L2D': z%, 'L2I': w%},
-            'ddr_bandwidth_system': {'write': MB/s, 'read': MB/s},
-            'numa_bandwidth': {node_id: {'read': MB/s, 'write': MB/s}},
+            'cache_miss': {'L1D': avg, 'L1I': avg, 'L2D': avg, 'L2I': avg},
+            'ddr_bandwidth_system': {'write': avg, 'read': avg},
+            'numa_bandwidth': {node_id: {'read': avg, 'write': avg}},
+            'timeline': {per-report data with timestamps},
             'report_count': number of reports
         }
     """
@@ -637,6 +641,7 @@ def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
         'cache_miss': {'L1D': [], 'L1I': [], 'L2D': [], 'L2I': []},
         'ddr_bandwidth_system': {'write': [], 'read': []},
         'numa_bandwidth': {},
+        'timestamps': [],
         'report_count': 0
     }
 
@@ -647,46 +652,45 @@ def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
         with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
 
-        # Split by report sections
-        reports = re.split(r'Memory Summary Report-\d+', content)
+        # Extract timestamps from report headers
+        report_headers = re.findall(r'Memory Summary Report-\d+\s+Time:(\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2})', content)
+        reports = re.split(r'Memory Summary Report-\d+\s+Time:\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}', content)
 
-        for report in reports:
+        # Process each report (skip first empty split)
+        for i, report in enumerate(reports[1:], 0):
             if not report.strip():
                 continue
 
-            # Parse Percentage of core Cache miss
+            # Get timestamp
+            if i < len(report_headers):
+                result['timestamps'].append(report_headers[i])
+            else:
+                result['timestamps'].append(f'Report-{i+1}')
+
+            # Parse Cache miss
             l1d_match = re.search(r'L1D\s+([\d.]+)%', report)
             l1i_match = re.search(r'L1I\s+([\d.]+)%', report)
             l2d_match = re.search(r'L2D\s+([\d.]+)%', report)
             l2i_match = re.search(r'L2I\s+([\d.]+)%', report)
 
-            if l1d_match:
-                result['cache_miss']['L1D'].append(float(l1d_match.group(1)))
-            if l1i_match:
-                result['cache_miss']['L1I'].append(float(l1i_match.group(1)))
-            if l2d_match:
-                result['cache_miss']['L2D'].append(float(l2d_match.group(1)))
-            if l2i_match:
-                result['cache_miss']['L2I'].append(float(l2i_match.group(1)))
+            result['cache_miss']['L1D'].append(float(l1d_match.group(1)) if l1d_match else 0)
+            result['cache_miss']['L1I'].append(float(l1i_match.group(1)) if l1i_match else 0)
+            result['cache_miss']['L2D'].append(float(l2d_match.group(1)) if l2d_match else 0)
+            result['cache_miss']['L2I'].append(float(l2i_match.group(1)) if l2i_match else 0)
 
             # Parse DDR Bandwidth (system wide)
             write_match = re.search(r'ddrc_write\s+([\d.]+)MB/s', report)
             read_match = re.search(r'ddrc_read\s+([\d.]+)MB/s', report)
 
-            if write_match:
-                result['ddr_bandwidth_system']['write'].append(float(write_match.group(1)))
-            if read_match:
-                result['ddr_bandwidth_system']['read'].append(float(read_match.group(1)))
+            result['ddr_bandwidth_system']['write'].append(float(write_match.group(1)) if write_match else 0)
+            result['ddr_bandwidth_system']['read'].append(float(read_match.group(1)) if read_match else 0)
 
-            # Parse DDRC_ACCESS_BANDWIDTH per NUMA node
-            # Simpler approach: find lines starting with NUMA node number
+            # Parse NUMA bandwidth per node
             for line in report.split('\n'):
-                # Match lines like: '  0         239.55MB/s|   39.41MB/s ... 1377.94MB/s|  231.91MB/s'
                 if re.match(r'\s+[0-3]\s+[\d.]+MB/s', line):
                     node_match = re.match(r'\s+([0-3])\s+', line)
                     if node_match:
                         node_id = int(node_match.group(1))
-                        # Find last two MB/s values (Total column: read|write)
                         matches = re.findall(r'([\d.]+)MB/s', line)
                         if len(matches) >= 2:
                             read_val = float(matches[-2])
@@ -709,7 +713,7 @@ def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
             else:
                 avg_result['cache_miss'][key] = 0.0
 
-        # DDR bandwidth system averages
+        # DDR bandwidth averages
         avg_result['ddr_bandwidth_system'] = {}
         for key in ['write', 'read']:
             if result['ddr_bandwidth_system'][key]:
@@ -717,7 +721,7 @@ def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
             else:
                 avg_result['ddr_bandwidth_system'][key] = 0.0
 
-        # NUMA bandwidth averages (filter by numa_nodes if specified)
+        # NUMA bandwidth averages
         avg_result['numa_bandwidth'] = {}
         for node_id, data in result['numa_bandwidth'].items():
             if numa_nodes and node_id not in numa_nodes:
@@ -726,6 +730,22 @@ def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
                 'read': sum(data['read']) / len(data['read']) if data['read'] else 0.0,
                 'write': sum(data['write']) / len(data['write']) if data['write'] else 0.0
             }
+
+        # Add timeline data
+        avg_result['timestamps'] = result['timestamps']
+        avg_result['timeline'] = {
+            'timestamp': result['timestamps'],
+            'L1D_miss': result['cache_miss']['L1D'],
+            'L1I_miss': result['cache_miss']['L1I'],
+            'L2D_miss': result['cache_miss']['L2D'],
+            'L2I_miss': result['cache_miss']['L2I'],
+            'ddr_write': result['ddr_bandwidth_system']['write'],
+            'ddr_read': result['ddr_bandwidth_system']['read'],
+        }
+        # Add NUMA bandwidth timeline
+        for node_id, data in result['numa_bandwidth'].items():
+            avg_result['timeline'][f'NUMA{node_id}_read'] = data['read']
+            avg_result['timeline'][f'NUMA{node_id}_write'] = data['write']
 
         return avg_result
 
@@ -1015,17 +1035,24 @@ def export_to_excel(monitor: 'QEMUMonitor', log_dir: str, numa_nodes: list = Non
                 td_data = {
                     'Metric': ['Cycles Avg', 'Instructions Avg', 'IPC Avg',
                               'Bad Speculation (%)', 'Frontend Bound (%)', 'Retiring (%)', 'Backend Bound (%)',
-                              'L3 Bound (%)', 'Mem Bound (%)', 'Latency Bound (%)', 'Bandwidth Bound (%)'],
+                              'L3 Bound (%)', 'Mem Bound (%)', 'Latency Bound (%)', 'Bandwidth Bound (%)',
+                              'IPC Max', 'IPC Min'],
                     'Value': [
                         td.get('cycles_avg', 0), td.get('instructions_avg', 0), td.get('ipc_avg', 0),
                         td.get('bad_speculation_avg', 0), td.get('frontend_bound_avg', 0),
                         td.get('retiring_avg', 0), td.get('backend_bound_avg', 0),
                         td.get('l3_bound_avg', 0), td.get('mem_bound_avg', 0),
-                        td.get('mem_latency_bound_avg', 0), td.get('mem_bandwidth_bound_avg', 0)
+                        td.get('mem_latency_bound_avg', 0), td.get('mem_bandwidth_bound_avg', 0),
+                        td.get('ipc_max', 0), td.get('ipc_min', 0)
                     ],
-                    'Report Count': [td.get('report_count', 0)] * 11
+                    'Report Count': [td.get('report_count', 0)] * 13
                 }
                 pd.DataFrame(td_data).to_excel(writer, sheet_name='DevKit_TopDown', index=False)
+
+                # Timeline sheet
+                if td.get('timeline') and td['timeline'].get('timestamp'):
+                    timeline_df = pd.DataFrame(td['timeline'])
+                    timeline_df.to_excel(writer, sheet_name='TopDown_Timeline', index=False)
 
             # ========== Sheet 7: DevKit Memory ==========
             if 'devkit_mem' in parsed_logs and 'error' not in parsed_logs['devkit_mem']:
@@ -1054,6 +1081,11 @@ def export_to_excel(monitor: 'QEMUMonitor', log_dir: str, numa_nodes: list = Non
                         bw_data['Read (MB/s)'].append(numa_bw[node_id].get('read', 0))
                         bw_data['Write (MB/s)'].append(numa_bw[node_id].get('write', 0))
                     pd.DataFrame(bw_data).to_excel(writer, sheet_name='NUMA_Bandwidth', index=False)
+
+                # Memory Timeline sheet
+                if mem.get('timeline') and mem['timeline'].get('timestamp'):
+                    mem_timeline_df = pd.DataFrame(mem['timeline'])
+                    mem_timeline_df.to_excel(writer, sheet_name='Memory_Timeline', index=False)
 
             # ========== Sheet 8: KSys ==========
             if 'ksys' in parsed_logs and 'error' not in parsed_logs['ksys']:
@@ -1132,6 +1164,107 @@ def export_to_excel(monitor: 'QEMUMonitor', log_dir: str, numa_nodes: list = Non
                     'Hugepage (MB)': [d.get('memory_huge_mb', 0) for d in monitor.data]
                 }
                 pd.DataFrame(raw_data).to_excel(writer, sheet_name='Raw_VM_Data', index=False)
+
+        # ========== Add Charts (using openpyxl directly) ==========
+        try:
+            from openpyxl.chart import PieChart, LineChart, BarChart, Reference
+            from openpyxl.chart.label import DataLabelList
+            from openpyxl import load_workbook
+
+            wb = load_workbook(output_file)
+
+            # Chart 1: Top-down Pie Chart (四大分类)
+            if 'DevKit_TopDown' in wb.sheetnames:
+                ws = wb['DevKit_TopDown']
+                # Find the rows for the four categories (rows 4-7: Bad Speculation, Frontend Bound, Retiring, Backend Bound)
+                pie = PieChart()
+                pie.title = "CPU Top-down Analysis"
+                labels = Reference(ws, min_col=1, min_row=4, max_row=7)  # Metric names
+                data = Reference(ws, min_col=2, min_row=3, max_row=7)   # Values (include header)
+                pie.add_data(data, titles_from_data=True)
+                pie.set_categories(labels)
+                pie.width = 15
+                pie.height = 10
+                ws.add_chart(pie, "D2")
+
+            # Chart 2: IPC Timeline Line Chart
+            if 'TopDown_Timeline' in wb.sheetnames:
+                ws = wb['TopDown_Timeline']
+                if ws.max_row > 1:  # Has data
+                    line = LineChart()
+                    line.title = "IPC Over Time"
+                    line.style = 10
+                    line.y_axis.title = "IPC"
+                    line.x_axis.title = "Time"
+                    line.width = 18
+                    line.height = 8
+
+                    # Data: IPC column (column 2)
+                    data = Reference(ws, min_col=2, min_row=1, max_row=ws.max_row)
+                    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)  # Timestamps
+                    line.add_data(data, titles_from_data=True)
+                    line.set_categories(cats)
+                    ws.add_chart(line, "E2")
+
+            # Chart 3: Memory Bound Breakdown Bar Chart
+            if 'DevKit_TopDown' in wb.sheetnames:
+                ws = wb['DevKit_TopDown']
+                bar = BarChart()
+                bar.title = "Memory Bound Breakdown"
+                bar.style = 10
+                bar.y_axis.title = "Percentage (%)"
+                bar.width = 12
+                bar.height = 8
+
+                # Rows 8-11: L3 Bound, Mem Bound, Latency bound, Bandwidth bound
+                data = Reference(ws, min_col=2, min_row=8, max_row=11)
+                cats = Reference(ws, min_col=1, min_row=8, max_row=11)
+                bar.add_data(data)
+                bar.set_categories(cats)
+                bar.shape = 4
+                ws.add_chart(bar, "D14")
+
+            # Chart 4: DDR Bandwidth Timeline
+            if 'Memory_Timeline' in wb.sheetnames:
+                ws = wb['Memory_Timeline']
+                if ws.max_row > 1:
+                    line2 = LineChart()
+                    line2.title = "DDR Bandwidth Over Time"
+                    line2.style = 13
+                    line2.y_axis.title = "MB/s"
+                    line2.x_axis.title = "Time"
+                    line2.width = 18
+                    line2.height = 8
+
+                    # DDR Write and Read columns (columns 6 and 7)
+                    data = Reference(ws, min_col=6, min_row=1, max_col=7, max_row=ws.max_row)
+                    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+                    line2.add_data(data, titles_from_data=True)
+                    line2.set_categories(cats)
+                    ws.add_chart(line2, "I2")
+
+            # Chart 5: Cache Miss Comparison Bar Chart
+            if 'DevKit_Memory' in wb.sheetnames:
+                ws = wb['DevKit_Memory']
+                bar2 = BarChart()
+                bar2.title = "Cache Miss Rate Comparison"
+                bar2.style = 10
+                bar2.y_axis.title = "Miss Rate (%)"
+                bar2.width = 12
+                bar2.height = 8
+
+                # Rows 2-5: L1D, L1I, L2D, L2I miss
+                data = Reference(ws, min_col=2, min_row=2, max_row=5)
+                cats = Reference(ws, min_col=1, min_row=2, max_row=5)
+                bar2.add_data(data)
+                bar2.set_categories(cats)
+                ws.add_chart(bar2, "D2")
+
+            wb.save(output_file)
+            print(f"✓ Charts added to Excel report")
+
+        except Exception as e:
+            print(f"⚠ Chart generation failed (non-critical): {e}")
 
         print(f"✓ Excel report exported: {output_file}")
         return output_file
