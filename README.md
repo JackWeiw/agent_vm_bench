@@ -7,10 +7,29 @@ This directory contains tools for testing performance under OpenStack VM memory 
 ## Files
 
 - `create_server.py` - Create OpenStack VMs
-- `qemu_monitor.py` - Monitor QEMU process resources
+- `qemu_monitor.py` - Monitor QEMU process resources with optional log collection
 - `stress_tool.cpp` - Stress tool for VM memory/CPU consumption
 - `vm_bench_lite.py` - Benchmark script with browser and QA modes
 - `download_page.sh` - Download Wikipedia warmup pages
+- `requirements.txt` - Python dependencies
+
+## Dependencies
+
+Install required packages:
+
+```bash
+pip install -r requirements.txt
+```
+
+Core dependencies:
+- `psutil` - System monitoring
+- `paramiko` - SSH client
+- `flask` - Web framework
+
+Optional (for Excel export and charts):
+- `pandas` - Data analysis
+- `openpyxl` - Excel file generation
+- `python-dotenv` - .env file support
 
 ## Quick Start
 
@@ -104,8 +123,73 @@ python3 create_server.py \
 After VM creation, wait for QEMU process CPU usage to stabilize around 1% before starting benchmark:
 
 ```bash
+# Basic monitoring (60s default)
 python3 qemu_monitor.py -t 300 -i 2
+
+# With log collection (collects devkit, ksys, ub_watch logs)
+python3 qemu_monitor.py -t 300 -i 2 --enable-capture
+
+# Specify log output directory
+python3 qemu_monitor.py -t 300 --enable-capture --log-dir /data/test_run_1
+
+# Specify NUMA nodes to monitor
+python3 qemu_monitor.py -t 300 --enable-capture --numa 0,1
 ```
+
+#### Log Collection Configuration
+
+Before using `--enable-capture`, configure tool paths in `.env` file:
+
+```env
+# DevKit collection tool path
+DEVKIT_PATH=/path/to/devkit
+
+# ksys collection tool path and config
+KSYS_PATH=/path/to/ksys
+KSYS_CONFIG_PATH=/path/to/config.yaml
+
+# ub_watch collection tool path
+UB_WATCH_PATH=/path/to/ub_watch
+
+# DevKit top-down CPU core range (optional, auto-calculated from -numa if not set)
+DEVKIT_CPU_RANGE=96-191
+```
+
+If `.env` is missing or paths are invalid, the tool will prompt for interactive input.
+
+#### Output Files
+
+After monitoring with `--enable-capture`, the output directory contains:
+
+```text
+logs_20240601_143052/
+├── qemu_monitor.csv          # VM raw data
+├── summary.csv               # Summary statistics
+├── analysis_report.xlsx      # Comprehensive Excel report with charts
+├── devkit_mem.log            # DevKit memory tuner output
+├── devkit_top_down.log       # DevKit top-down tuner output
+├── ksys.log                  # ksys collection output
+├── ub_watch.log              # ub_watch output
+└── *_report.json             # ksys generated report
+```
+
+#### Excel Report Sheets
+
+The `analysis_report.xlsx` contains multiple sheets:
+
+- **Summary** - Test overview (host CPU/memory, hugepage, swap, VM stats)
+- **NUMA_CPU** - Per-NUMA node CPU statistics
+- **NUMA_Memory** - Per-NUMA node memory statistics
+- **Hugepage_Per_NUMA** - Per-NUMA hugepage statistics
+- **VM_Stats** - Per-VM statistics
+- **DevKit_TopDown** - CPU top-down analysis (with pie chart)
+- **TopDown_Timeline** - Top-down metrics over time (with line chart)
+- **DevKit_Memory** - Cache miss and DDR bandwidth (with bar chart)
+- **Memory_Timeline** - Memory metrics over time (with line chart)
+- **NUMA_Bandwidth** - Per-NUMA bandwidth statistics
+- **KSys** - Miss latency and IPC data
+- **UBWatch_Latency/Bandwidth** - NUMA interconnect metrics
+- **Raw_VM_Data** - VM time series data
 
 ### 7. Run Benchmark (Two-Phase Execution)
 

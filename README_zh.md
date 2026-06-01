@@ -7,10 +7,31 @@
 ## 文件说明
 
 - `create_server.py` - 通过 OpenStack 创建 VM，用于运行 openclaw agent 负载
-- `qemu_monitor.py` - 监控 QEMU 进程资源使用
+- `qemu_monitor.py` - 监控 QEMU 进程资源使用，支持日志采集和 Excel 报告导出
 - `stress_tool.cpp` - VM 内存/CPU 消耗压测工具
 - `vm_bench_lite.py` - 基准测试脚本（支持浏览器和 QA 模式，测试 openclaw agent 性能）
 - `download_page.sh` - 下载 Wikipedia 预热页面
+- `requirements.txt` - Python 依赖
+
+## 依赖安装
+
+安装必要的 Python 包：
+
+```bash
+pip install -r requirements.txt
+```
+
+核心依赖：
+
+- `psutil` - 系统监控
+- `paramiko` - SSH 客户端
+- `flask` - Web 框架
+
+可选依赖（用于 Excel 导出和图表）：
+
+- `pandas` - 数据分析
+- `openpyxl` - Excel 文件生成
+- `python-dotenv` - .env 文件支持
 
 ## 快速开始
 
@@ -106,8 +127,73 @@ python3 create_server.py \
 创建 VM 后，等待 QEMU 进程 CPU 使用率稳定在约 1% 后再开始基准测试：
 
 ```bash
+# 基本监控（默认 60 秒）
 python3 qemu_monitor.py -t 300 -i 2
+
+# 启用日志采集（采集 devkit、ksys、ub_watch 日志）
+python3 qemu_monitor.py -t 300 -i 2 --enable-capture
+
+# 指定日志输出目录
+python3 qemu_monitor.py -t 300 --enable-capture --log-dir /data/test_run_1
+
+# 指定监控的 NUMA 节点
+python3 qemu_monitor.py -t 300 --enable-capture --numa 0,1
 ```
+
+#### 日志采集配置
+
+首次使用 `--enable-capture` 前，需要在 `.env` 文件中配置采集工具路径：
+
+```env
+# DevKit 采集工具路径
+DEVKIT_PATH=/path/to/devkit
+
+# ksys 采集工具路径和配置文件
+KSYS_PATH=/path/to/ksys
+KSYS_CONFIG_PATH=/path/to/config.yaml
+
+# ub_watch 采集工具路径
+UB_WATCH_PATH=/path/to/ub_watch
+
+# DevKit top-down CPU 核心范围（可选，未配置时根据 -numa 自动计算）
+DEVKIT_CPU_RANGE=96-191
+```
+
+如果 `.env` 文件不存在或路径无效，工具会交互式提示用户输入路径。
+
+#### 输出文件
+
+启用日志采集后，输出目录包含以下文件：
+
+```text
+logs_20240601_143052/
+├── qemu_monitor.csv          # VM 原始数据
+├── summary.csv               # 统计摘要
+├── analysis_report.xlsx      # 综合分析报告（含图表）
+├── devkit_mem.log            # DevKit 内存调优输出
+├── devkit_top_down.log       # DevKit top-down 分析输出
+├── ksys.log                  # ksys 采集输出
+├── ub_watch.log              # ub_watch 输出
+└── *_report.json             # ksys 生成的报告
+```
+
+#### Excel 报告内容
+
+`analysis_report.xlsx` 包含多个工作表：
+
+- **Summary** - 测试概览（主机 CPU/内存、大页、Swap、VM 统计）
+- **NUMA_CPU** - 各 NUMA 节点 CPU 统计
+- **NUMA_Memory** - 各 NUMA 节点内存统计
+- **Hugepage_Per_NUMA** - 各 NUMA 节点大页统计
+- **VM_Stats** - 各 VM 统计信息
+- **DevKit_TopDown** - CPU top-down 分析（含饼图）
+- **TopDown_Timeline** - Top-down 指标时间序列（含折线图）
+- **DevKit_Memory** - Cache Miss 和 DDR 带宽（含柱状图）
+- **Memory_Timeline** - 内存指标时间序列（含折线图）
+- **NUMA_Bandwidth** - 各 NUMA 节点带宽统计
+- **KSys** - Miss Latency 和 IPC 数据
+- **UBWatch_Latency/Bandwidth** - NUMA 互联延迟和带宽
+- **Raw_VM_Data** - VM 时间序列原始数据
 
 ### 7. 运行基准测试（两阶段执行）
 
