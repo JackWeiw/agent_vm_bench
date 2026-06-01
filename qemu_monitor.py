@@ -409,8 +409,460 @@ class LogCapture:
         }
 
 
-def print_capture_summary(results: dict, log_dir: str):
-    """Print log collection summary at the end of monitoring"""
+# ==================== Log File Parsers ====================
+
+def parse_devkit_top_down(log_path: str) -> dict:
+    """Parse devkit_top_down.log to extract key metrics
+
+    Returns:
+        {
+            'cycles_avg': average cycles across all reports,
+            'instructions_avg': average instructions,
+            'ipc_avg': average IPC,
+            'bad_speculation': average Bad Speculation %,
+            'frontend_bound': average Frontend Bound %,
+            'retiring': average Retiring %,
+            'backend_bound': average Backend Bound %,
+            'l3_bound': average L3 Bound %,
+            'mem_bound': average Mem Bound %,
+            'mem_latency_bound': average Latency bound %,
+            'mem_bandwidth_bound': average Bandwidth bound %,
+            'report_count': number of reports parsed
+        }
+    """
+    result = {
+        'cycles': [], 'instructions': [], 'ipc': [],
+        'bad_speculation': [], 'frontend_bound': [], 'retiring': [],
+        'backend_bound': [], 'l3_bound': [], 'mem_bound': [],
+        'mem_latency_bound': [], 'mem_bandwidth_bound': [],
+        'report_count': 0
+    }
+
+    if not os.path.exists(log_path):
+        return {'error': 'File not found', 'report_count': 0}
+
+    try:
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+
+        # Split by report sections
+        reports = re.split(r'TOP-DOWN Summary Report-\d+', content)
+
+        for report in reports:
+            if not report.strip():
+                continue
+
+            # Parse Cycles, Instructions, IPC
+            cycles_match = re.search(r'Cycles\s+([\d,]+)', report)
+            inst_match = re.search(r'Instructions\s+([\d,]+)', report)
+            ipc_match = re.search(r'IPC\s+([\d.]+)', report)
+
+            if cycles_match:
+                result['cycles'].append(float(cycles_match.group(1).replace(',', '')))
+            if inst_match:
+                result['instructions'].append(float(inst_match.group(1).replace(',', '')))
+            if ipc_match:
+                result['ipc'].append(float(ipc_match.group(1)))
+
+            # Parse top-down metrics (need to match the main categories)
+            # Bad Speculation
+            bad_spec_match = re.search(r'Bad Speculation\s+([\d.]+)', report)
+            if bad_spec_match:
+                result['bad_speculation'].append(float(bad_spec_match.group(1)))
+
+            # Frontend Bound
+            frontend_match = re.search(r'Frontend Bound\s+([\d.]+)', report)
+            if frontend_match:
+                result['frontend_bound'].append(float(frontend_match.group(1)))
+
+            # Retiring
+            retiring_match = re.search(r'Retiring\s+([\d.]+)', report)
+            if retiring_match:
+                result['retiring'].append(float(retiring_match.group(1)))
+
+            # Backend Bound
+            backend_match = re.search(r'Backend Bound\s+([\d.]+)', report)
+            if backend_match:
+                result['backend_bound'].append(float(backend_match.group(1)))
+
+            # L3 Bound (under Memory Bound)
+            l3_match = re.search(r'L3 Bound\s+([\d.]+)', report)
+            if l3_match:
+                result['l3_bound'].append(float(l3_match.group(1)))
+
+            # Mem Bound (under Memory Bound)
+            mem_match = re.search(r'Mem Bound\s+([\d.]+)', report)
+            if mem_match:
+                result['mem_bound'].append(float(mem_match.group(1)))
+
+            # Latency bound (under Mem Bound)
+            latency_match = re.search(r'Latency bound\s+([\d.]+)', report)
+            if latency_match:
+                result['mem_latency_bound'].append(float(latency_match.group(1)))
+
+            # Bandwidth bound (under Mem Bound)
+            bw_match = re.search(r'Bandwidth bound\s+([\d.]+)', report)
+            if bw_match:
+                result['mem_bandwidth_bound'].append(float(bw_match.group(1)))
+
+            result['report_count'] += 1
+
+        # Calculate averages
+        avg_result = {'report_count': result['report_count']}
+        for key in ['cycles', 'instructions', 'ipc', 'bad_speculation', 'frontend_bound',
+                    'retiring', 'backend_bound', 'l3_bound', 'mem_bound',
+                    'mem_latency_bound', 'mem_bandwidth_bound']:
+            if result[key]:
+                avg_result[f'{key}_avg'] = sum(result[key]) / len(result[key])
+            else:
+                avg_result[f'{key}_avg'] = 0.0
+
+        return avg_result
+
+    except Exception as e:
+        return {'error': str(e), 'report_count': 0}
+
+
+def parse_ksys(log_path: str) -> dict:
+    """Parse ksys.log to extract Miss Latency metrics
+
+    Returns:
+        {
+            'l2_miss_latency': {'cycles_max': x, 'cycles_min': y, 'cycles_avg': z},
+            'l3_miss_latency': {'cycles_max': x, 'cycles_min': y, 'cycles_avg': z},
+            'ipc': IPC value,
+            'topdown': top-down summary data
+        }
+    """
+    result = {
+        'l2_miss_latency': {},
+        'l3_miss_latency': {},
+        'ipc': None,
+        'topdown': {}
+    }
+
+    if not os.path.exists(log_path):
+        return {'error': 'File not found'}
+
+    try:
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+
+        # Parse Miss Latency Summary Data
+        miss_latency_section = re.search(
+            r'Miss Latency Summary Data.*?\n.*?\n'
+            r'\|.*?latency.*?cycles_max.*?cycles_min.*?cycles_avg.*?\n'
+            r'\|.*?L2 Miss Latency.*?\|.*?(\d+).*?\|.*?(\d+).*?\|.*?(\d+).*?\n'
+            r'\|.*?L3 Miss Latency.*?\|.*?(\d+).*?\|.*?(\d+).*?\|.*?(\d+).*?\n',
+            content, re.DOTALL
+        )
+
+        if miss_latency_section:
+            result['l2_miss_latency'] = {
+                'cycles_max': int(miss_latency_section.group(1)),
+                'cycles_min': int(miss_latency_section.group(2)),
+                'cycles_avg': int(miss_latency_section.group(3))
+            }
+            result['l3_miss_latency'] = {
+                'cycles_max': int(miss_latency_section.group(4)),
+                'cycles_min': int(miss_latency_section.group(5)),
+                'cycles_avg': int(miss_latency_section.group(6))
+            }
+
+        # Alternative simpler parsing if above fails
+        if not result['l2_miss_latency']:
+            l2_match = re.search(r'L2 Miss Latency.*?\|.*?(\d+).*?\|.*?(\d+).*?\|.*?(\d+)', content)
+            if l2_match:
+                result['l2_miss_latency'] = {
+                    'cycles_max': int(l2_match.group(1)),
+                    'cycles_min': int(l2_match.group(2)),
+                    'cycles_avg': int(l2_match.group(3))
+                }
+
+            l3_match = re.search(r'L3 Miss Latency.*?\|.*?(\d+).*?\|.*?(\d+).*?\|.*?(\d+)', content)
+            if l3_match:
+                result['l3_miss_latency'] = {
+                    'cycles_max': int(l3_match.group(1)),
+                    'cycles_min': int(l3_match.group(2)),
+                    'cycles_avg': int(l3_match.group(3))
+                }
+
+        # Parse IPC
+        ipc_match = re.search(r'IPC\s*\|\s*([\d.]+)', content)
+        if ipc_match:
+            result['ipc'] = float(ipc_match.group(1))
+
+        # Parse Topdown Summary
+        retiring_match = re.search(r'Retiring\(%?\)\s*\|\s*([\d.]+)', content)
+        frontend_match = re.search(r'Frontend Bound\(%?\)\s*\|\s*([\d.]+)', content)
+        bad_spec_match = re.search(r'Bad Speculation\(%?\)\s*\|\s*([\d.]+)', content)
+        backend_match = re.search(r'Backend Bound\(%?\)\s*\|\s*([\d.]+)', content)
+
+        result['topdown'] = {
+            'retiring': float(retiring_match.group(1)) if retiring_match else None,
+            'frontend_bound': float(frontend_match.group(1)) if frontend_match else None,
+            'bad_speculation': float(bad_spec_match.group(1)) if bad_spec_match else None,
+            'backend_bound': float(backend_match.group(1)) if backend_match else None,
+        }
+
+        return result
+
+    except Exception as e:
+        return {'error': str(e)}
+
+
+def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
+    """Parse devkit_mem.log to extract cache miss and bandwidth metrics
+
+    Args:
+        log_path: path to devkit_mem.log
+        numa_nodes: list of NUMA nodes to filter bandwidth (e.g., [0, 1])
+
+    Returns:
+        {
+            'cache_miss': {'L1D': x%, 'L1I': y%, 'L2D': z%, 'L2I': w%},
+            'ddr_bandwidth_system': {'write': MB/s, 'read': MB/s},
+            'numa_bandwidth': {node_id: {'read': MB/s, 'write': MB/s}},
+            'report_count': number of reports
+        }
+    """
+    result = {
+        'cache_miss': {'L1D': [], 'L1I': [], 'L2D': [], 'L2I': []},
+        'ddr_bandwidth_system': {'write': [], 'read': []},
+        'numa_bandwidth': {},
+        'report_count': 0
+    }
+
+    if not os.path.exists(log_path):
+        return {'error': 'File not found', 'report_count': 0}
+
+    try:
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+
+        # Split by report sections
+        reports = re.split(r'Memory Summary Report-\d+', content)
+
+        for report in reports:
+            if not report.strip():
+                continue
+
+            # Parse Percentage of core Cache miss
+            l1d_match = re.search(r'L1D\s+([\d.]+)%', report)
+            l1i_match = re.search(r'L1I\s+([\d.]+)%', report)
+            l2d_match = re.search(r'L2D\s+([\d.]+)%', report)
+            l2i_match = re.search(r'L2I\s+([\d.]+)%', report)
+
+            if l1d_match:
+                result['cache_miss']['L1D'].append(float(l1d_match.group(1)))
+            if l1i_match:
+                result['cache_miss']['L1I'].append(float(l1i_match.group(1)))
+            if l2d_match:
+                result['cache_miss']['L2D'].append(float(l2d_match.group(1)))
+            if l2i_match:
+                result['cache_miss']['L2I'].append(float(l2i_match.group(1)))
+
+            # Parse DDR Bandwidth (system wide)
+            write_match = re.search(r'ddrc_write\s+([\d.]+)MB/s', report)
+            read_match = re.search(r'ddrc_read\s+([\d.]+)MB/s', report)
+
+            if write_match:
+                result['ddr_bandwidth_system']['write'].append(float(write_match.group(1)))
+            if read_match:
+                result['ddr_bandwidth_system']['read'].append(float(read_match.group(1)))
+
+            # Parse DDRC_ACCESS_BANDWIDTH per NUMA node
+            # Simpler approach: find lines starting with NUMA node number
+            for line in report.split('\n'):
+                # Match lines like: '  0         239.55MB/s|   39.41MB/s ... 1377.94MB/s|  231.91MB/s'
+                if re.match(r'\s+[0-3]\s+[\d.]+MB/s', line):
+                    node_match = re.match(r'\s+([0-3])\s+', line)
+                    if node_match:
+                        node_id = int(node_match.group(1))
+                        # Find last two MB/s values (Total column: read|write)
+                        matches = re.findall(r'([\d.]+)MB/s', line)
+                        if len(matches) >= 2:
+                            read_val = float(matches[-2])
+                            write_val = float(matches[-1])
+                            if node_id not in result['numa_bandwidth']:
+                                result['numa_bandwidth'][node_id] = {'read': [], 'write': []}
+                            result['numa_bandwidth'][node_id]['read'].append(read_val)
+                            result['numa_bandwidth'][node_id]['write'].append(write_val)
+
+            result['report_count'] += 1
+
+        # Calculate averages
+        avg_result = {'report_count': result['report_count']}
+
+        # Cache miss averages
+        avg_result['cache_miss'] = {}
+        for key in ['L1D', 'L1I', 'L2D', 'L2I']:
+            if result['cache_miss'][key]:
+                avg_result['cache_miss'][key] = sum(result['cache_miss'][key]) / len(result['cache_miss'][key])
+            else:
+                avg_result['cache_miss'][key] = 0.0
+
+        # DDR bandwidth system averages
+        avg_result['ddr_bandwidth_system'] = {}
+        for key in ['write', 'read']:
+            if result['ddr_bandwidth_system'][key]:
+                avg_result['ddr_bandwidth_system'][key] = sum(result['ddr_bandwidth_system'][key]) / len(result['ddr_bandwidth_system'][key])
+            else:
+                avg_result['ddr_bandwidth_system'][key] = 0.0
+
+        # NUMA bandwidth averages (filter by numa_nodes if specified)
+        avg_result['numa_bandwidth'] = {}
+        for node_id, data in result['numa_bandwidth'].items():
+            if numa_nodes and node_id not in numa_nodes:
+                continue
+            avg_result['numa_bandwidth'][node_id] = {
+                'read': sum(data['read']) / len(data['read']) if data['read'] else 0.0,
+                'write': sum(data['write']) / len(data['write']) if data['write'] else 0.0
+            }
+
+        return avg_result
+
+    except Exception as e:
+        return {'error': str(e), 'report_count': 0}
+
+
+def parse_ub_watch(log_path: str) -> dict:
+    """Parse ub_watch.log to extract FINAL PERFORMANCE REPORT
+
+    Returns:
+        {
+            'latency': {'path': 'N0->N2', 'avg_r': ns, 'avg_w': ns, 'min_r': ns, 'min_w': ns, 'max_r': ns, 'max_w': ns},
+            'bandwidth': [{chip, ports, avg_wr, avg_rd, avg_sum, max_wr, max_rd, max_sum}]
+        }
+    """
+    result = {
+        'latency': {},
+        'bandwidth': []
+    }
+
+    if not os.path.exists(log_path):
+        return {'error': 'File not found'}
+
+    try:
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+
+        # Find FINAL PERFORMANCE REPORT section
+        final_section = re.search(
+            r'FINAL PERFORMANCE REPORT.*?Duration:.*?\n'
+            r'(.*?)'
+            r'\[System\] Cleanup done',
+            content, re.DOTALL
+        )
+
+        if not final_section:
+            return {'error': 'Final report section not found'}
+
+        final_content = final_section.group(1)
+
+        # Parse Latency Statistics
+        latency_match = re.search(
+            r'\[Latency Statistics.*?\n'
+            r'Path.*?Samples.*?Avg\(R/W\).*?Min\(R/W\).*?Max\(R/W\).*?\n'
+            r'(-+).*?\n'
+            r'(N\d+->N\d+)\s+(\d+)\s+([\d]+)/([\d]+)\s+([\d]+)/([\d]+)\s+([\d]+)/([\d]+)',
+            final_content, re.DOTALL
+        )
+
+        if latency_match:
+            result['latency'] = {
+                'path': latency_match.group(2),
+                'samples': int(latency_match.group(3)),
+                'avg_r': int(latency_match.group(4)),
+                'avg_w': int(latency_match.group(5)),
+                'min_r': int(latency_match.group(6)),
+                'min_w': int(latency_match.group(7)),
+                'max_r': int(latency_match.group(8)),
+                'max_w': int(latency_match.group(9))
+            }
+
+        # Parse Bandwidth Statistics
+        bw_section = re.search(
+            r'\[Bandwidth Statistics.*?\n'
+            r'Chip.*?Ports.*?Avg Wr.*?Avg Rd.*?Avg Sum.*?Max Wr.*?Max Rd.*?Max Sum.*?\n'
+            r'(-+).*?\n(.*?)(?=\n-+|$)',
+            final_content, re.DOTALL
+        )
+
+        if bw_section:
+            bw_lines = bw_section.group(2).strip().split('\n')
+            for line in bw_lines:
+                # Parse: Chip   Ports   Avg Wr   Avg Rd   Avg Sum   Max Wr   Max Rd   Max Sum
+                parts = line.strip().split()
+                if len(parts) >= 8:
+                    try:
+                        result['bandwidth'].append({
+                            'chip': int(parts[0]),
+                            'ports': parts[1],
+                            'avg_wr': float(parts[2]),
+                            'avg_rd': float(parts[3]),
+                            'avg_sum': float(parts[4]),
+                            'max_wr': float(parts[5]),
+                            'max_rd': float(parts[6]),
+                            'max_sum': float(parts[7])
+                        })
+                    except ValueError:
+                        continue
+
+        return result
+
+    except Exception as e:
+        return {'error': str(e)}
+
+
+def parse_all_logs(log_dir: str, numa_nodes: list = None) -> dict:
+    """Parse all log files in the directory
+
+    Args:
+        log_dir: directory containing log files
+        numa_nodes: list of NUMA nodes for filtering devkit_mem bandwidth
+
+    Returns:
+        {
+            'devkit_top_down': parsed result,
+            'devkit_mem': parsed result,
+            'ksys': parsed result,
+            'ub_watch': parsed result
+        }
+    """
+    results = {}
+
+    # Parse devkit_top_down
+    top_down_path = os.path.join(log_dir, 'devkit_top_down.log')
+    if os.path.exists(top_down_path):
+        results['devkit_top_down'] = parse_devkit_top_down(top_down_path)
+
+    # Parse devkit_mem
+    mem_path = os.path.join(log_dir, 'devkit_mem.log')
+    if os.path.exists(mem_path):
+        results['devkit_mem'] = parse_devkit_mem(mem_path, numa_nodes)
+
+    # Parse ksys
+    ksys_path = os.path.join(log_dir, 'ksys.log')
+    if os.path.exists(ksys_path):
+        results['ksys'] = parse_ksys(ksys_path)
+
+    # Parse ub_watch
+    ub_path = os.path.join(log_dir, 'ub_watch.log')
+    if os.path.exists(ub_path):
+        results['ub_watch'] = parse_ub_watch(ub_path)
+
+    return results
+
+
+def print_capture_summary(results: dict, log_dir: str, numa_nodes: list = None):
+    """Print log collection summary at the end of monitoring
+
+    Args:
+        results: capture results from LogCapture.get_results()
+        log_dir: log directory path
+        numa_nodes: list of NUMA nodes for filtering devkit_mem bandwidth
+    """
     print("\n" + "=" * 70)
     print("Log Collection Summary")
     print("=" * 70)
@@ -450,6 +902,94 @@ def print_capture_summary(results: dict, log_dir: str):
             print(f"   {os.path.basename(path)} ({size} bytes)")
         else:
             print(f"   {os.path.basename(path)} (not created)")
+
+    # Parse and display log contents
+    print("\n" + "=" * 70)
+    print("Parsed Metrics Summary")
+    print("=" * 70)
+
+    parsed = parse_all_logs(log_dir, numa_nodes)
+
+    # devkit_top_down results
+    if 'devkit_top_down' in parsed and 'error' not in parsed['devkit_top_down']:
+        td = parsed['devkit_top_down']
+        print(f"\n[DevKit Top-Down] ({td.get('report_count', 0)} reports)")
+        print(f"  Cycles Avg:       {td.get('cycles_avg', 0):,.0f}")
+        print(f"  Instructions Avg: {td.get('instructions_avg', 0):,.0f}")
+        print(f"  IPC Avg:          {td.get('ipc_avg', 0):.2f}")
+        print(f"  Top-down Metrics:")
+        print(f"    Bad Speculation:  {td.get('bad_speculation_avg', 0):.2f}%")
+        print(f"    Frontend Bound:   {td.get('frontend_bound_avg', 0):.2f}%")
+        print(f"    Retiring:         {td.get('retiring_avg', 0):.2f}%")
+        print(f"    Backend Bound:    {td.get('backend_bound_avg', 0):.2f}%")
+        print(f"  Memory Bound Details:")
+        print(f"    L3 Bound:         {td.get('l3_bound_avg', 0):.2f}%")
+        print(f"    Mem Bound:        {td.get('mem_bound_avg', 0):.2f}%")
+        print(f"      Latency bound:    {td.get('mem_latency_bound_avg', 0):.2f}%")
+        print(f"      Bandwidth bound:  {td.get('mem_bandwidth_bound_avg', 0):.2f}%")
+
+    # devkit_mem results
+    if 'devkit_mem' in parsed and 'error' not in parsed['devkit_mem']:
+        mem = parsed['devkit_mem']
+        print(f"\n[DevKit Memory] ({mem.get('report_count', 0)} reports)")
+        cm = mem.get('cache_miss', {})
+        print(f"  Cache Miss %:")
+        print(f"    L1D: {cm.get('L1D', 0):.2f}%")
+        print(f"    L1I: {cm.get('L1I', 0):.2f}%")
+        print(f"    L2D: {cm.get('L2D', 0):.2f}%")
+        print(f"    L2I: {cm.get('L2I', 0):.2f}%")
+        ddr = mem.get('ddr_bandwidth_system', {})
+        print(f"  DDR Bandwidth (system):")
+        print(f"    Write: {ddr.get('write', 0):.2f} MB/s")
+        print(f"    Read:  {ddr.get('read', 0):.2f} MB/s")
+        numa_bw = mem.get('numa_bandwidth', {})
+        if numa_bw:
+            print(f"  NUMA Bandwidth (filtered):")
+            for node_id in sorted(numa_bw.keys()):
+                bw = numa_bw[node_id]
+                print(f"    NUMA {node_id}: Read {bw.get('read', 0):.2f} MB/s | Write {bw.get('write', 0):.2f} MB/s")
+
+    # ksys results
+    if 'ksys' in parsed and 'error' not in parsed['ksys']:
+        ksys = parsed['ksys']
+        print(f"\n[KSys]")
+        l2 = ksys.get('l2_miss_latency', {})
+        l3 = ksys.get('l3_miss_latency', {})
+        if l2:
+            print(f"  L2 Miss Latency: max={l2.get('cycles_max', 0)} min={l2.get('cycles_min', 0)} avg={l2.get('cycles_avg', 0)} cycles")
+        if l3:
+            print(f"  L3 Miss Latency: max={l3.get('cycles_max', 0)} min={l3.get('cycles_min', 0)} avg={l3.get('cycles_avg', 0)} cycles")
+        if ksys.get('ipc'):
+            print(f"  IPC: {ksys.get('ipc', 0):.2f}")
+        td = ksys.get('topdown', {})
+        if td:
+            print(f"  Topdown:")
+            if td.get('retiring'):
+                print(f"    Retiring:        {td['retiring']:.2f}%")
+            if td.get('frontend_bound'):
+                print(f"    Frontend Bound:  {td['frontend_bound']:.2f}%")
+            if td.get('bad_speculation'):
+                print(f"    Bad Speculation: {td['bad_speculation']:.2f}%")
+            if td.get('backend_bound'):
+                print(f"    Backend Bound:   {td['backend_bound']:.2f}%")
+
+    # ub_watch results
+    if 'ub_watch' in parsed and 'error' not in parsed['ub_watch']:
+        ub = parsed['ub_watch']
+        print(f"\n[UB Watch]")
+        lat = ub.get('latency', {})
+        if lat:
+            print(f"  Latency ({lat.get('path', 'N/A')}):")
+            print(f"    Avg: R={lat.get('avg_r', 0)}ns W={lat.get('avg_w', 0)}ns")
+            print(f"    Min: R={lat.get('min_r', 0)}ns W={lat.get('min_w', 0)}ns")
+            print(f"    Max: R={lat.get('max_r', 0)}ns W={lat.get('max_w', 0)}ns")
+        bw_list = ub.get('bandwidth', [])
+        if bw_list:
+            print(f"  Bandwidth (non-zero only):")
+            for bw in bw_list:
+                if bw.get('avg_sum', 0) > 0:
+                    print(f"    Chip {bw.get('chip', 0)} Ports {bw.get('ports', 'N/A')}: "
+                          f"Wr={bw.get('avg_wr', 0):.2f} Rd={bw.get('avg_rd', 0):.2f} Sum={bw.get('avg_sum', 0):.2f} MB/s")
 
     print("=" * 70)
 
@@ -1366,7 +1906,7 @@ def main():
     # Print capture summary
     if capture:
         results = capture.get_results()
-        print_capture_summary(results, log_dir)
+        print_capture_summary(results, log_dir, m.target_numa_nodes)
 
     print(f"\n✅ Complete! All outputs saved to: {log_dir}/")
 
