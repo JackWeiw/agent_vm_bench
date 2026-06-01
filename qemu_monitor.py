@@ -21,6 +21,13 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 import threading
 
+# Try to import pandas for Excel export
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
+
 # Try to import python-dotenv for .env support
 try:
     from dotenv import load_dotenv, set_key
@@ -853,6 +860,289 @@ def parse_all_logs(log_dir: str, numa_nodes: list = None) -> dict:
         results['ub_watch'] = parse_ub_watch(ub_path)
 
     return results
+
+
+def export_to_excel(monitor: 'QEMUMonitor', log_dir: str, numa_nodes: list = None,
+                    output_file: str = None, capture_results: dict = None) -> str:
+    """Export all monitoring and parsed log data to Excel
+
+    Args:
+        monitor: QEMUMonitor instance with collected data
+        log_dir: directory containing log files
+        numa_nodes: list of NUMA nodes monitored
+        output_file: Excel output filename (default: analysis_report.xlsx in log_dir)
+        capture_results: LogCapture results (optional)
+
+    Returns:
+        Path to generated Excel file
+    """
+    if not PANDAS_AVAILABLE:
+        print("⚠ pandas not available, skipping Excel export")
+        print("  Install with: pip install pandas openpyxl")
+        return None
+
+    if output_file is None:
+        output_file = os.path.join(log_dir, 'analysis_report.xlsx')
+
+    # Parse log files
+    parsed_logs = parse_all_logs(log_dir, numa_nodes)
+
+    # Create writer for multi-sheet Excel (openpyxl required)
+    try:
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            # ========== Sheet 1: Summary Overview ==========
+            summary_data = {
+                'Metric': [],
+                'Value': [],
+                'Unit': []
+            }
+
+            # Test metadata
+            summary_data['Metric'].extend(['Test Date', 'Duration', 'Sampling Interval', 'NUMA Nodes'])
+        summary_data['Value'].extend([
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            f"{monitor.data[0]['timestamp'] if monitor.data else 'N/A'} ~ {monitor.data[-1]['timestamp'] if monitor.data else 'N/A'}",
+            'N/A',  # Interval not stored in monitor
+            ','.join(map(str, numa_nodes)) if numa_nodes else 'N/A'
+        ])
+        summary_data['Unit'].extend(['', '', 'seconds', ''])
+
+        # Host machine stats
+        if monitor.host_cpu_history:
+            host_cpu_avg = round(sum(monitor.host_cpu_history)/len(monitor.host_cpu_history), 1)
+            summary_data['Metric'].extend(['Host Avg CPU', 'Host Peak CPU', 'Host Avg Memory', 'Host Peak Memory'])
+            summary_data['Value'].extend([
+                host_cpu_avg, round(monitor.peak_host_cpu, 1),
+                round(sum(h['used_mb'] for h in monitor.host_mem_history)/len(monitor.host_mem_history), 0),
+                round(monitor.peak_host_mem_mb, 0)
+            ])
+            summary_data['Unit'].extend(['%', '%', 'MB', 'MB'])
+
+        # Hugepage stats
+        summary_data['Metric'].extend(['Hugepage Total', 'Hugepage Avg Used', 'Hugepage Peak Used', 'Hugepage Peak Usage %'])
+        summary_data['Value'].extend([
+            round(monitor.hugepage_total_mb, 0),
+            round(sum(monitor.hugepage_used_history)/len(monitor.hugepage_used_history), 0) if monitor.hugepage_used_history else 0,
+            round(monitor.peak_hugepage_used_mb, 0),
+            round((monitor.peak_hugepage_used_mb / monitor.hugepage_total_mb * 100), 1) if monitor.hugepage_total_mb > 0 else 0
+        ])
+        summary_data['Unit'].extend(['MB', 'MB', 'MB', '%'])
+
+        # Swap stats
+        if monitor.swap_history:
+            swap_avg = round(sum(s['used_mb'] for s in monitor.swap_history)/len(monitor.swap_history), 0)
+            swap_total = monitor.swap_history[0]['total_mb'] if monitor.swap_history else 0
+            swap_peak_pct = round(monitor.peak_swap_used_mb / swap_total * 100, 1) if swap_total > 0 else 0
+            summary_data['Metric'].extend(['Swap Total', 'Swap Avg Used', 'Swap Peak Used', 'Swap Peak Usage %'])
+            summary_data['Value'].extend([round(swap_total, 0), swap_avg, round(monitor.peak_swap_used_mb, 0), swap_peak_pct])
+            summary_data['Unit'].extend(['MB', 'MB', 'MB', '%'])
+
+        # VM stats
+        vm_stats = monitor.calculate_vm_stats()
+        overall_stats = monitor.calculate_overall_stats(vm_stats)
+        summary_data['Metric'].extend(['Total VMs', 'Alive VMs at End', 'VM Avg CPU', 'VM Peak Total CPU', 'Total Avg Memory'])
+        summary_data['Value'].extend([
+            overall_stats['total_vms'], monitor.last_vm_count,
+            overall_stats['overall_avg_cpu'], round(monitor.peak_total_cpu, 1),
+            overall_stats['total_avg_memory_mb']
+        ])
+        summary_data['Unit'].extend(['', '', '%', '%', 'MB'])
+
+        df_summary = pd.DataFrame(summary_data)
+        df_summary.to_excel(writer, sheet_name='Summary', index=False)
+
+        # ========== Sheet 2: NUMA CPU Stats ==========
+        numa_cpu_data = {'NUMA Node': [], 'Avg CPU (%)': [], 'Peak CPU (%)': []}
+        for node in sorted(monitor.numa_cpu_history.keys()):
+            hist = monitor.numa_cpu_history[node]
+            if hist:
+                numa_cpu_data['NUMA Node'].append(node)
+                numa_cpu_data['Avg CPU (%)'].append(round(sum(hist)/len(hist), 1))
+                numa_cpu_data['Peak CPU (%)'].append(round(monitor.numa_cpu_peak[node], 1))
+        if numa_cpu_data['NUMA Node']:
+            pd.DataFrame(numa_cpu_data).to_excel(writer, sheet_name='NUMA_CPU', index=False)
+
+        # ========== Sheet 3: NUMA Memory Stats ==========
+        numa_mem_data = {'NUMA Node': [], 'Avg Used (MB)': [], 'Peak Used (MB)': [], 'Avg Usage (%)': []}
+        numa_summary = defaultdict(lambda: {'used': [], 'usage': []})
+        for entry in monitor.numa_memory_history:
+            for n in entry['nodes']:
+                numa_summary[n['node']]['used'].append(n['used'])
+                numa_summary[n['node']]['usage'].append(n['usage'])
+        for node_id in sorted(numa_summary.keys()):
+            data = numa_summary[node_id]
+            numa_mem_data['NUMA Node'].append(node_id)
+            numa_mem_data['Avg Used (MB)'].append(round(sum(data['used'])/len(data['used']), 0) if data['used'] else 0)
+            numa_mem_data['Peak Used (MB)'].append(round(max(data['used']), 0) if data['used'] else 0)
+            numa_mem_data['Avg Usage (%)'].append(round(sum(data['usage'])/len(data['usage']), 1) if data['usage'] else 0)
+        if numa_mem_data['NUMA Node']:
+            pd.DataFrame(numa_mem_data).to_excel(writer, sheet_name='NUMA_Memory', index=False)
+
+        # ========== Sheet 4: Hugepage Per NUMA ==========
+        if monitor.hugepage_per_numa_history:
+            hp_data = {'NUMA Node': [], 'Avg Total (MB)': [], 'Avg Used (MB)': [], 'Avg Usage (%)': []}
+            hp_summary = defaultdict(lambda: {'total': [], 'used': [], 'usage': []})
+            for entry in monitor.hugepage_per_numa_history:
+                for node_id, data in entry['nodes'].items():
+                    hp_summary[node_id]['total'].append(data['total_mb'])
+                    hp_summary[node_id]['used'].append(data['used_mb'])
+                    hp_summary[node_id]['usage'].append(data['usage_pct'])
+            for node_id in sorted(hp_summary.keys()):
+                data = hp_summary[node_id]
+                hp_data['NUMA Node'].append(node_id)
+                hp_data['Avg Total (MB)'].append(round(sum(data['total'])/len(data['total']), 0) if data['total'] else 0)
+                hp_data['Avg Used (MB)'].append(round(sum(data['used'])/len(data['used']), 0) if data['used'] else 0)
+                hp_data['Avg Usage (%)'].append(round(sum(data['usage'])/len(data['usage']), 1) if data['usage'] else 0)
+            pd.DataFrame(hp_data).to_excel(writer, sheet_name='Hugepage_Per_NUMA', index=False)
+
+        # ========== Sheet 5: VM Statistics ==========
+        if vm_stats:
+            vm_data = {
+                'VM Name': [v['vm_name'] for v in vm_stats],
+                'PID': [v['pid'] for v in vm_stats],
+                'Samples': [v['sample_count'] for v in vm_stats],
+                'Avg CPU (%)': [v['avg_cpu'] for v in vm_stats],
+                'Max CPU (%)': [v['max_cpu'] for v in vm_stats],
+                'Avg Memory (MB)': [v['avg_memory_mb'] for v in vm_stats],
+                'Max Memory (MB)': [v['max_memory_mb'] for v in vm_stats],
+                'Avg Hugepage (MB)': [v.get('avg_huge_mb', 0) for v in vm_stats],
+            }
+            pd.DataFrame(vm_data).to_excel(writer, sheet_name='VM_Stats', index=False)
+
+        # ========== Sheet 6: DevKit Top-Down ==========
+        if 'devkit_top_down' in parsed_logs and 'error' not in parsed_logs['devkit_top_down']:
+            td = parsed_logs['devkit_top_down']
+            td_data = {
+                'Metric': ['Cycles Avg', 'Instructions Avg', 'IPC Avg',
+                          'Bad Speculation (%)', 'Frontend Bound (%)', 'Retiring (%)', 'Backend Bound (%)',
+                          'L3 Bound (%)', 'Mem Bound (%)', 'Latency Bound (%)', 'Bandwidth Bound (%)'],
+                'Value': [
+                    td.get('cycles_avg', 0), td.get('instructions_avg', 0), td.get('ipc_avg', 0),
+                    td.get('bad_speculation_avg', 0), td.get('frontend_bound_avg', 0),
+                    td.get('retiring_avg', 0), td.get('backend_bound_avg', 0),
+                    td.get('l3_bound_avg', 0), td.get('mem_bound_avg', 0),
+                    td.get('mem_latency_bound_avg', 0), td.get('mem_bandwidth_bound_avg', 0)
+                ],
+                'Report Count': [td.get('report_count', 0)] * 11
+            }
+            pd.DataFrame(td_data).to_excel(writer, sheet_name='DevKit_TopDown', index=False)
+
+        # ========== Sheet 7: DevKit Memory ==========
+        if 'devkit_mem' in parsed_logs and 'error' not in parsed_logs['devkit_mem']:
+            mem = parsed_logs['devkit_mem']
+            mem_data = {
+                'Metric': ['L1D Miss (%)', 'L1I Miss (%)', 'L2D Miss (%)', 'L2I Miss (%)',
+                          'DDR Write (MB/s)', 'DDR Read (MB/s)'],
+                'Value': [
+                    mem.get('cache_miss', {}).get('L1D', 0),
+                    mem.get('cache_miss', {}).get('L1I', 0),
+                    mem.get('cache_miss', {}).get('L2D', 0),
+                    mem.get('cache_miss', {}).get('L2I', 0),
+                    mem.get('ddr_bandwidth_system', {}).get('write', 0),
+                    mem.get('ddr_bandwidth_system', {}).get('read', 0)
+                ],
+                'Report Count': [mem.get('report_count', 0)] * 6
+            }
+            pd.DataFrame(mem_data).to_excel(writer, sheet_name='DevKit_Memory', index=False)
+
+            # NUMA Bandwidth as separate table
+            numa_bw = mem.get('numa_bandwidth', {})
+            if numa_bw:
+                bw_data = {'NUMA Node': [], 'Read (MB/s)': [], 'Write (MB/s)': []}
+                for node_id in sorted(numa_bw.keys()):
+                    bw_data['NUMA Node'].append(node_id)
+                    bw_data['Read (MB/s)'].append(numa_bw[node_id].get('read', 0))
+                    bw_data['Write (MB/s)'].append(numa_bw[node_id].get('write', 0))
+                pd.DataFrame(bw_data).to_excel(writer, sheet_name='NUMA_Bandwidth', index=False)
+
+        # ========== Sheet 8: KSys ==========
+        if 'ksys' in parsed_logs and 'error' not in parsed_logs['ksys']:
+            ksys = parsed_logs['ksys']
+            ksys_data = {'Metric': [], 'Value': []}
+
+            # Latency
+            l2 = ksys.get('l2_miss_latency', {})
+            l3 = ksys.get('l3_miss_latency', {})
+            if l2:
+                ksys_data['Metric'].extend(['L2 Miss Latency Max', 'L2 Miss Latency Min', 'L2 Miss Latency Avg'])
+                ksys_data['Value'].extend([l2.get('cycles_max', 0), l2.get('cycles_min', 0), l2.get('cycles_avg', 0)])
+            if l3:
+                ksys_data['Metric'].extend(['L3 Miss Latency Max', 'L3 Miss Latency Min', 'L3 Miss Latency Avg'])
+                ksys_data['Value'].extend([l3.get('cycles_max', 0), l3.get('cycles_min', 0), l3.get('cycles_avg', 0)])
+
+            # IPC
+            if ksys.get('ipc'):
+                ksys_data['Metric'].append('IPC')
+                ksys_data['Value'].append(ksys.get('ipc', 0))
+
+            # Topdown
+            td = ksys.get('topdown', {})
+            if td:
+                for key, label in [('retiring', 'Retiring (%)'), ('frontend_bound', 'Frontend Bound (%)'),
+                                   ('bad_speculation', 'Bad Speculation (%)'), ('backend_bound', 'Backend Bound (%)')]:
+                    if td.get(key):
+                        ksys_data['Metric'].append(label)
+                        ksys_data['Value'].append(td[key])
+
+            if ksys_data['Metric']:
+                pd.DataFrame(ksys_data).to_excel(writer, sheet_name='KSys', index=False)
+
+        # ========== Sheet 9: UB Watch ==========
+        if 'ub_watch' in parsed_logs and 'error' not in parsed_logs['ub_watch']:
+            ub = parsed_logs['ub_watch']
+            ub_data = {'Metric': [], 'Value': []}
+
+            lat = ub.get('latency', {})
+            if lat:
+                ub_data['Metric'].extend(['Latency Path', 'Samples', 'Avg Read (ns)', 'Avg Write (ns)',
+                                         'Min Read (ns)', 'Min Write (ns)', 'Max Read (ns)', 'Max Write (ns)'])
+                ub_data['Value'].extend([
+                    lat.get('path', 'N/A'), lat.get('samples', 0),
+                    lat.get('avg_r', 0), lat.get('avg_w', 0),
+                    lat.get('min_r', 0), lat.get('min_w', 0),
+                    lat.get('max_r', 0), lat.get('max_w', 0)
+                ])
+
+            if ub_data['Metric']:
+                pd.DataFrame(ub_data).to_excel(writer, sheet_name='UBWatch_Latency', index=False)
+
+            # Bandwidth
+            bw_list = ub.get('bandwidth', [])
+            if bw_list:
+                bw_data = {
+                    'Chip': [bw['chip'] for bw in bw_list],
+                    'Ports': [bw['ports'] for bw in bw_list],
+                    'Avg Write (MB/s)': [bw['avg_wr'] for bw in bw_list],
+                    'Avg Read (MB/s)': [bw['avg_rd'] for bw in bw_list],
+                    'Avg Sum (MB/s)': [bw['avg_sum'] for bw in bw_list],
+                    'Max Write (MB/s)': [bw['max_wr'] for bw in bw_list],
+                    'Max Read (MB/s)': [bw['max_rd'] for bw in bw_list],
+                    'Max Sum (MB/s)': [bw['max_sum'] for bw in bw_list]
+                }
+                pd.DataFrame(bw_data).to_excel(writer, sheet_name='UBWatch_Bandwidth', index=False)
+
+        # ========== Sheet 10: Raw VM Data Time Series ==========
+        if monitor.data:
+            raw_data = {
+                'Timestamp': [d['timestamp'] for d in monitor.data],
+                'VM Name': [d['vm_name'] for d in monitor.data],
+                'PID': [d['pid'] for d in monitor.data],
+                'CPU (%)': [d['cpu_percent'] for d in monitor.data],
+                'Memory (MB)': [d['memory_mb'] for d in monitor.data],
+                'Hugepage (MB)': [d.get('memory_huge_mb', 0) for d in monitor.data]
+            }
+            pd.DataFrame(raw_data).to_excel(writer, sheet_name='Raw_VM_Data', index=False)
+
+        print(f"✓ Excel report exported: {output_file}")
+        return output_file
+
+    except ImportError:
+        print("⚠ openpyxl not available, skipping Excel export")
+        print("  Install with: pip install openpyxl")
+        return None
+    except Exception as e:
+        print(f"⚠ Excel export failed: {e}")
+        return None
 
 
 def print_capture_summary(results: dict, log_dir: str, numa_nodes: list = None):
@@ -1904,9 +2194,15 @@ def main():
     m.analyze_and_export(raw, sumf)
 
     # Print capture summary
+    capture_results = None
     if capture:
-        results = capture.get_results()
-        print_capture_summary(results, log_dir, m.target_numa_nodes)
+        capture_results = capture.get_results()
+        print_capture_summary(capture_results, log_dir, m.target_numa_nodes)
+
+    # Export to Excel (if pandas available)
+    if PANDAS_AVAILABLE:
+        excel_file = os.path.join(log_dir, 'analysis_report.xlsx')
+        export_to_excel(m, log_dir, m.target_numa_nodes, excel_file, capture_results)
 
     print(f"\n✅ Complete! All outputs saved to: {log_dir}/")
 
