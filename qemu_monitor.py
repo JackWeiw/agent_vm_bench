@@ -257,7 +257,8 @@ class LogCapture:
                 print(f"  [CMD] devkit_mem: {' '.join(cmd)}")
                 self.processes['devkit_mem'] = subprocess.Popen(
                     cmd, stdout=self.log_files['devkit_mem'],
-                    stderr=self.log_files['devkit_mem']
+                    stderr=self.log_files['devkit_mem'],
+                    cwd=self.log_dir  # Run in log_dir so output files go there
                 )
                 success.append('devkit_mem')
                 print(f"  ✓ Started devkit tuner memory (duration={self.duration}s)")
@@ -277,7 +278,8 @@ class LogCapture:
                 print(f"  [CMD] devkit_top_down: {' '.join(cmd)}")
                 self.processes['devkit_top_down'] = subprocess.Popen(
                     cmd, stdout=self.log_files['devkit_top_down'],
-                    stderr=self.log_files['devkit_top_down']
+                    stderr=self.log_files['devkit_top_down'],
+                    cwd=self.log_dir  # Run in log_dir so output files go there
                 )
                 success.append('devkit_top_down')
                 print(f"  ✓ Started devkit tuner top-down (cpu_range={cpu_range})")
@@ -297,7 +299,8 @@ class LogCapture:
                 print(f"  [CMD] ksys: {' '.join(cmd)}")
                 self.processes['ksys'] = subprocess.Popen(
                     cmd, stdout=self.log_files['ksys'],
-                    stderr=self.log_files['ksys']
+                    stderr=self.log_files['ksys'],
+                    cwd=self.log_dir  # Run in log_dir so report.json goes there
                 )
                 success.append('ksys')
                 print(f"  ✓ Started ksys collect (config={self.config['ksys_config_path']})")
@@ -316,7 +319,8 @@ class LogCapture:
                 print(f"  [CMD] ub_watch: {' '.join(cmd)}")
                 self.processes['ub_watch'] = subprocess.Popen(
                     cmd, stdout=self.log_files['ub_watch'],
-                    stderr=self.log_files['ub_watch']
+                    stderr=self.log_files['ub_watch'],
+                    cwd=self.log_dir  # Run in log_dir so output files go there
                 )
                 success.append('ub_watch')
                 print(f"  ✓ Started ub_watch (duration={self.duration}s)")
