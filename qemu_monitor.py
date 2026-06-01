@@ -451,30 +451,27 @@ def parse_devkit_top_down(log_path: str) -> dict:
         reports = re.split(r'TOP-DOWN Summary Report-\d+\s+Time:\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}', content)
 
         # Process each report (skip first empty split)
-        for i, report in enumerate(reports[1:], 0):
+        report_idx = 0
+        for report in reports[1:]:
             if not report.strip():
                 continue
 
             # Get timestamp from header
-            if i < len(report_headers):
-                result['timestamps'].append(report_headers[i])
+            if report_idx < len(report_headers):
+                result['timestamps'].append(report_headers[report_idx])
             else:
-                result['timestamps'].append(f'Report-{i+1}')
+                result['timestamps'].append(f'Report-{report_idx+1}')
 
-            # Parse Cycles, Instructions, IPC
+            # Parse Cycles, Instructions, IPC (always append, use 0 if not found)
             cycles_match = re.search(r'Cycles\s+([\d,]+)', report)
             inst_match = re.search(r'Instructions\s+([\d,]+)', report)
             ipc_match = re.search(r'IPC\s+([\d.]+)', report)
 
-            cycles_val = float(cycles_match.group(1).replace(',', '')) if cycles_match else 0
-            inst_val = float(inst_match.group(1).replace(',', '')) if inst_match else 0
-            ipc_val = float(ipc_match.group(1)) if ipc_match else 0
+            result['cycles'].append(float(cycles_match.group(1).replace(',', '')) if cycles_match else 0)
+            result['instructions'].append(float(inst_match.group(1).replace(',', '')) if inst_match else 0)
+            result['ipc'].append(float(ipc_match.group(1)) if ipc_match else 0)
 
-            result['cycles'].append(cycles_val)
-            result['instructions'].append(inst_val)
-            result['ipc'].append(ipc_val)
-
-            # Parse top-down metrics
+            # Parse top-down metrics (always append)
             bad_spec_match = re.search(r'Bad Speculation\s+([\d.]+)', report)
             frontend_match = re.search(r'Frontend Bound\s+([\d.]+)', report)
             retiring_match = re.search(r'Retiring\s+([\d.]+)', report)
@@ -485,7 +482,7 @@ def parse_devkit_top_down(log_path: str) -> dict:
             result['retiring'].append(float(retiring_match.group(1)) if retiring_match else 0)
             result['backend_bound'].append(float(backend_match.group(1)) if backend_match else 0)
 
-            # L3 Bound, Mem Bound
+            # L3 Bound, Mem Bound (always append)
             l3_match = re.search(r'L3 Bound\s+([\d.]+)', report)
             mem_match = re.search(r'Mem Bound\s+([\d.]+)', report)
             latency_match = re.search(r'Latency bound\s+([\d.]+)', report)
@@ -497,6 +494,19 @@ def parse_devkit_top_down(log_path: str) -> dict:
             result['mem_bandwidth_bound'].append(float(bw_match.group(1)) if bw_match else 0)
 
             result['report_count'] += 1
+            report_idx += 1
+
+        # Ensure all arrays have same length (truncate timestamps if needed)
+        expected_len = result['report_count']
+        for key in ['cycles', 'instructions', 'ipc', 'bad_speculation', 'frontend_bound',
+                    'retiring', 'backend_bound', 'l3_bound', 'mem_bound',
+                    'mem_latency_bound', 'mem_bandwidth_bound']:
+            # Pad with 0 if shorter
+            while len(result[key]) < expected_len:
+                result[key].append(0)
+            # Truncate if longer
+            result[key] = result[key][:expected_len]
+        result['timestamps'] = result['timestamps'][:expected_len]
 
         # Calculate averages
         avg_result = {'report_count': result['report_count']}
@@ -685,7 +695,8 @@ def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
             result['ddr_bandwidth_system']['write'].append(float(write_match.group(1)) if write_match else 0)
             result['ddr_bandwidth_system']['read'].append(float(read_match.group(1)) if read_match else 0)
 
-            # Parse NUMA bandwidth per node
+            # Parse NUMA bandwidth per node - track which nodes found in this report
+            found_nodes = set()
             for line in report.split('\n'):
                 if re.match(r'\s+[0-3]\s+[\d.]+MB/s', line):
                     node_match = re.match(r'\s+([0-3])\s+', line)
@@ -699,8 +710,34 @@ def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
                                 result['numa_bandwidth'][node_id] = {'read': [], 'write': []}
                             result['numa_bandwidth'][node_id]['read'].append(read_val)
                             result['numa_bandwidth'][node_id]['write'].append(write_val)
+                            found_nodes.add(node_id)
+
+            # For nodes not found in this report, append 0 to maintain consistent length
+            for node_id in result['numa_bandwidth']:
+                if node_id not in found_nodes:
+                    result['numa_bandwidth'][node_id]['read'].append(0)
+                    result['numa_bandwidth'][node_id]['write'].append(0)
 
             result['report_count'] += 1
+
+        # Ensure all main arrays have same length
+        expected_len = result['report_count']
+        result['timestamps'] = result['timestamps'][:expected_len]
+        for key in ['L1D', 'L1I', 'L2D', 'L2I']:
+            while len(result['cache_miss'][key]) < expected_len:
+                result['cache_miss'][key].append(0)
+            result['cache_miss'][key] = result['cache_miss'][key][:expected_len]
+        for key in ['write', 'read']:
+            while len(result['ddr_bandwidth_system'][key]) < expected_len:
+                result['ddr_bandwidth_system'][key].append(0)
+            result['ddr_bandwidth_system'][key] = result['ddr_bandwidth_system'][key][:expected_len]
+
+        # Ensure NUMA bandwidth arrays have consistent length
+        for node_id in result['numa_bandwidth']:
+            for key in ['read', 'write']:
+                while len(result['numa_bandwidth'][node_id][key]) < expected_len:
+                    result['numa_bandwidth'][node_id][key].append(0)
+                result['numa_bandwidth'][node_id][key] = result['numa_bandwidth'][node_id][key][:expected_len]
 
         # Calculate averages
         avg_result = {'report_count': result['report_count']}
@@ -1049,10 +1086,20 @@ def export_to_excel(monitor: 'QEMUMonitor', log_dir: str, numa_nodes: list = Non
                 }
                 pd.DataFrame(td_data).to_excel(writer, sheet_name='DevKit_TopDown', index=False)
 
-                # Timeline sheet
+                # Timeline sheet (with safety check)
                 if td.get('timeline') and td['timeline'].get('timestamp'):
-                    timeline_df = pd.DataFrame(td['timeline'])
-                    timeline_df.to_excel(writer, sheet_name='TopDown_Timeline', index=False)
+                    try:
+                        timeline_data = td['timeline']
+                        # Ensure all arrays have same length
+                        min_len = min(len(timeline_data.get(k, [])) for k in timeline_data.keys())
+                        # Truncate all arrays to same length
+                        for k in timeline_data:
+                            if isinstance(timeline_data[k], list):
+                                timeline_data[k] = timeline_data[k][:min_len]
+                        timeline_df = pd.DataFrame(timeline_data)
+                        timeline_df.to_excel(writer, sheet_name='TopDown_Timeline', index=False)
+                    except Exception as e:
+                        print(f"  Warning: TopDown_Timeline creation failed: {e}")
 
             # ========== Sheet 7: DevKit Memory ==========
             if 'devkit_mem' in parsed_logs and 'error' not in parsed_logs['devkit_mem']:
@@ -1082,10 +1129,20 @@ def export_to_excel(monitor: 'QEMUMonitor', log_dir: str, numa_nodes: list = Non
                         bw_data['Write (MB/s)'].append(numa_bw[node_id].get('write', 0))
                     pd.DataFrame(bw_data).to_excel(writer, sheet_name='NUMA_Bandwidth', index=False)
 
-                # Memory Timeline sheet
+                # Memory Timeline sheet (with safety check)
                 if mem.get('timeline') and mem['timeline'].get('timestamp'):
-                    mem_timeline_df = pd.DataFrame(mem['timeline'])
-                    mem_timeline_df.to_excel(writer, sheet_name='Memory_Timeline', index=False)
+                    try:
+                        timeline_data = mem['timeline']
+                        # Ensure all arrays have same length
+                        min_len = min(len(timeline_data.get(k, [])) for k in timeline_data.keys())
+                        # Truncate all arrays to same length
+                        for k in timeline_data:
+                            if isinstance(timeline_data[k], list):
+                                timeline_data[k] = timeline_data[k][:min_len]
+                        mem_timeline_df = pd.DataFrame(timeline_data)
+                        mem_timeline_df.to_excel(writer, sheet_name='Memory_Timeline', index=False)
+                    except Exception as e:
+                        print(f"  Warning: Memory_Timeline creation failed: {e}")
 
             # ========== Sheet 8: KSys ==========
             if 'ksys' in parsed_logs and 'error' not in parsed_logs['ksys']:
