@@ -1300,7 +1300,7 @@ def main():
     sync = parser.add_mutually_exclusive_group()
     sync.add_argument('--stress-process', type=str, help='Stress process name')
     sync.add_argument('--stress-file', type=str, help='Stress marker file (e.g., /tmp/bench_running.lock)')
-    parser.add_argument('-t','--time', type=int, help='Timer duration seconds')
+    parser.add_argument('-t','--time', type=int, default=60, help='Timer duration seconds (default 60)')
     parser.add_argument('-i','--interval', type=int, default=3, help='Sampling interval (default 3 seconds)')
     parser.add_argument('-o','--output', type=str, help='Output prefix')
     parser.add_argument('--numa', type=str, default='1', help='Specify NUMA nodes to monitor, comma-separated 0,1')
@@ -1336,11 +1336,9 @@ def main():
     # Start log capture (parallel with monitor)
     if args.enable_capture:
         print("\n🚀 Starting log collection tools...")
-        # Default duration: 60s if not specified
-        capture_duration = args.time if args.time else 60
-        capture = LogCapture(config, capture_duration, log_dir, m.target_numa_nodes)
+        capture = LogCapture(config, args.time, log_dir, m.target_numa_nodes)
         capture.start()
-        print(f"✓ Log collection tools started in background (duration={capture_duration}s)\n")
+        print(f"✓ Log collection tools started in background (duration={args.time}s)\n")
 
     # Start QEMU monitoring
     if args.stress_process:
