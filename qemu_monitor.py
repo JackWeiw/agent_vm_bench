@@ -361,12 +361,28 @@ class LogCapture:
         """Wait for all processes to complete, track failures"""
         for tool_name, proc in self.processes.items():
             try:
-                proc.wait()
+                # Add timeout to prevent hanging forever
+                # Tools should complete within duration + 60s buffer
+                timeout = self.duration + 60
+                proc.wait(timeout=timeout)
                 if proc.returncode != 0:
                     self.failed_runtime.append({
                         'tool': tool_name,
                         'returncode': proc.returncode,
                     })
+            except subprocess.TimeoutExpired:
+                # Process didn't finish within timeout, force terminate
+                print(f"⚠ {tool_name} timed out after {timeout}s, terminating...")
+                proc.terminate()
+                time.sleep(3)
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                self.failed_runtime.append({
+                    'tool': tool_name,
+                    'error': 'timeout',
+                })
             except Exception as e:
                 self.failed_runtime.append({
                     'tool': tool_name,
