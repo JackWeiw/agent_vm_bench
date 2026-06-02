@@ -21,7 +21,7 @@ vm:
 
 # Memory Migration Tool Configuration
 smap_tool:
-  path: "/home/l30038718/vm"
+  path: "/path/to/smap"                 # directory of smap tool
   swap_size_gb: "{{SWAP_SIZE_GB}}"      # Hugepage size (GB), converted to MB: swap_size_gb * 1024
   ratio: "{{RATIO}}"                    # Borrow ratio, e.g., 0.15 → converted to integer percentage 15
 
