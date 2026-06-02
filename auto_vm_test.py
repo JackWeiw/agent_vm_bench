@@ -31,7 +31,7 @@ import paramiko
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -42,8 +42,8 @@ class TestContext:
     log_file: str
     smap_tool_pid: Optional[int] = None
     monitor_pid: Optional[int] = None
-    vm_ips: List[str] = []
-    qemu_pids: Dict[str, int] = {}  # ip -> qemu pid
+    vm_ips: List[str] = field(default_factory=list)
+    qemu_pids: Dict[str, int] = field(default_factory=dict)
     start_time: float = 0.0
 
 
