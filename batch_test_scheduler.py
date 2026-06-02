@@ -113,7 +113,7 @@ def run_single_test(task: TestTask, config_file: str, batch_log_file: str) -> Tu
         f.write(f"  VM count: {task.vm_count}\n")
         f.write(f"  Ratio: {task.ratio}\n")
         f.write(f"  Active percent: {task.active_percent}\n")
-        f.write(f"  Config: {config_file}\n")
+        f.write(f"  Config file: {config_file}\n")
 
     print(f"\n{'=' * 60}")
     print(f"Running test: {task.task_id}")
@@ -122,24 +122,50 @@ def run_single_test(task: TestTask, config_file: str, batch_log_file: str) -> Tu
     # Execute auto_vm_test.py
     cmd = ["python", "auto_vm_test.py", "--config", config_file]
 
+    print(f"[DEBUG] Command: {' '.join(cmd)}")
+    print(f"[DEBUG] Working dir: {os.getcwd()}")
+
+    with open(batch_log_file, "a") as f:
+        f.write(f"[DEBUG] Command: {' '.join(cmd)}\n")
+        f.write(f"[DEBUG] Working dir: {os.getcwd()}\n")
+
     result = subprocess.run(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
 
-    # Log output
+    # Print and log stdout
+    print(f"[DEBUG] Return code: {result.returncode}")
+    print(f"[DEBUG] STDOUT ({len(result.stdout)} chars):")
+    print(result.stdout)
+
     with open(batch_log_file, "a") as f:
-        f.write(result.stdout)
-        if result.stderr:
-            f.write(f"\n[STDERR]\n{result.stderr}\n")
+        f.write(f"[DEBUG] Return code: {result.returncode}\n")
+        f.write(f"[DEBUG] STDOUT:\n{result.stdout}\n")
+
+    # Print and log stderr
+    if result.stderr:
+        print(f"[DEBUG] STDERR:")
+        print(result.stderr)
+        with open(batch_log_file, "a") as f:
+            f.write(f"[DEBUG] STDERR:\n{result.stderr}\n")
 
     # Parse result directory from output
     result_dir = ""
+    print(f"[DEBUG] Parsing result directory from output...")
     for line in result.stdout.split("\n"):
-        if "Result directory:" in line or "Result dir:" in line:
-            parts = line.split(":")
-            if len(parts) >= 2:
-                result_dir = parts[-1].strip()
-                break
+        print(f"[DEBUG] Line: '{line}'")
+        if "Result directory:" in line or "Result dir:" in line or "Test result saved to:" in line:
+            # Try different parsing patterns
+            if "Result directory:" in line or "Result dir:" in line:
+                parts = line.split(":")
+                if len(parts) >= 2:
+                    result_dir = parts[-1].strip()
+            elif "Test result saved to:" in line:
+                parts = line.split("saved to:")
+                if len(parts) >= 2:
+                    result_dir = parts[-1].strip()
+            print(f"[DEBUG] Found result_dir: {result_dir}")
+            break
 
     success = result.returncode == 0
 
