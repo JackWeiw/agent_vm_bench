@@ -487,6 +487,14 @@ def run_warmup(ctx: TestContext) -> bool:
         log(ctx, f"Warmup failed with return code {result.returncode}")
         return False
 
+    # Move warmup_summary to test result directory
+    import shutil
+    warmup_summaries = Path("results").glob("warmup_summary_*.txt")
+    for summary in warmup_summaries:
+        dest = os.path.join(ctx.result_dir, "vm_bench_lite", summary.name)
+        shutil.move(str(summary), dest)
+        log(ctx, f"Warmup summary moved: {summary.name}")
+
     log(ctx, "Warmup phase completed")
     return True
 
