@@ -264,18 +264,21 @@ Step 6: Browser Mode Warmup
   ├─ Collect warmup results
   └─ Record warmup time and success/failed VM count
 
-Step 7: Start Monitor (background run)
-  ├─ Build monitor command
+Step 7: Start Monitor (background run, waiting for benchmark)
+  ├─ Build monitor command (use --stress-file sync)
   │   python qemu_monitor.py -t {duration} -i {interval} \
   │     --enable-capture \
   │     --log-dir {result_dir}/qemu_monitor \
-  │     --numa {numa_nodes}
+  │     --numa {numa_nodes} \
+  │     --stress-file /tmp/vm_benchmark_running.lock
   ├─ Background start monitor process
   │   subprocess.Popen(monitor_cmd)
   ├─ Record monitor process PID
-  └─ Wait for monitor startup ready (check if log file starts writing)
+  └─ Monitor waits for lock file, not sampling yet
 
 Step 8: Browser Mode Test
+  ├─ Create lock file to signal monitor to start sampling
+  │   touch /tmp/vm_benchmark_running.lock
   ├─ Build test command (refer to README)
   │   # Calculate active VM count: active_count = int(count * active_percent)
   │   python vm_bench_lite.py -n {count} --start-ip {start_ip} --browser-mode \
@@ -287,12 +290,14 @@ Step 8: Browser Mode Test
   │     -t {duration}
   ├─ Execute test command
   ├─ Wait for test completion (duration seconds)
+  ├─ Remove lock file
+  │   rm /tmp/vm_benchmark_running.lock
   ├─ Collect test report
   └─ Record test statistics (success rate, latency, etc.)
 
-Step 9: Stop Monitor and Collect Results
+Step 9: Wait for Monitor Natural Completion and Collect Results
   ├─ Wait for monitor process natural end (after duration seconds)
-  ├─ Or manually stop monitor process (if test ended early)
+  │   # Monitor generates Excel report on natural completion
   ├─ Verify monitor log file completeness
   │   - qemu_monitor.csv
   │   - devkit_mem.log

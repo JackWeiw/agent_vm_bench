@@ -264,18 +264,21 @@ python auto_vm_test.py --config test_config.yaml
   ├─ 收集预热结果
   └─ 记录预热耗时和成功/失败VM数量
 
-步骤7: 启动监控（后台运行）
-  ├─ 构建监控命令
+步骤7: 启动监控（后台运行，等待压测启动）
+  ├─ 构建监控命令（使用--stress-file同步）
   │   python qemu_monitor.py -t {duration} -i {interval} \
   │     --enable-capture \
   │     --log-dir {result_dir}/qemu_monitor \
-  │     --numa {numa_nodes}
+  │     --numa {numa_nodes} \
+  │     --stress-file /tmp/vm_benchmark_running.lock
   ├─ 后台启动监控进程
   │   subprocess.Popen(monitor_cmd)
   ├─ 记录监控进程PID
-  └─ 等待监控启动就绪（检查日志文件是否开始写入）
+  └─ 监控等待锁文件出现，暂不开始采样
 
 步骤8: 浏览器模式测试
+  ├─ 创建锁文件通知监控开始采样
+  │   touch /tmp/vm_benchmark_running.lock
   ├─ 构建测试命令（参考README）
   │   # 计算活跃VM数量: active_count = int(count * active_percent)
   │   python vm_bench_lite.py -n {count} --start-ip {start_ip} --browser-mode \
@@ -287,12 +290,14 @@ python auto_vm_test.py --config test_config.yaml
   │     -t {duration}
   ├─ 执行测试命令
   ├─ 等待测试完成（duration秒）
+  ├─ 删除锁文件
+  │   rm /tmp/vm_benchmark_running.lock
   ├─ 收集测试报告
   └─ 记录测试统计（成功率、延迟等）
 
-步骤9: 停止监控并收集结果
+步骤9: 等待监控自然结束并收集结果
   ├─ 等待监控进程自然结束（duration秒后）
-  ├─ 或手动停止监控进程（如果测试提前结束）
+  │   # 监控自然结束时会生成Excel报告
   ├─ 验证监控日志文件完整性
   │   - qemu_monitor.csv
   │   - devkit_mem.log
