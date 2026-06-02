@@ -59,7 +59,29 @@ def log(ctx: TestContext, msg: str):
 def load_config(config_path: str) -> Dict:
     """Load and parse YAML config file"""
     with open(config_path) as f:
-        return yaml.safe_load(f)
+        config = yaml.safe_load(f)
+
+    # Normalize types (YAML may parse numbers as strings from template replacement)
+    config["vm"]["count"] = int(config["vm"]["count"])
+    config["smap_tool"]["swap_size_gb"] = int(config["smap_tool"]["swap_size_gb"])
+    config["smap_tool"]["ratio"] = float(config["smap_tool"]["ratio"])
+    config["test"]["active_percent"] = float(config["test"]["active_percent"])
+    config["test"]["duration"] = int(config["test"]["duration"])
+    config["test"]["batch_size"] = int(config["test"]["batch_size"])
+    config["test"]["batch_interval"] = int(config["test"]["batch_interval"])
+    config["test"]["browser_interval_min"] = int(config["test"]["browser_interval_min"])
+    config["test"]["browser_interval_max"] = int(config["test"]["browser_interval_max"])
+    config["warmup"]["loops"] = int(config["warmup"]["loops"])
+    config["warmup"]["delay"] = int(config["warmup"]["delay"])
+    config["warmup"]["batch_size"] = int(config["warmup"]["batch_size"])
+    config["warmup"]["batch_interval"] = int(config["warmup"]["batch_interval"])
+    config["monitor"]["interval"] = int(config["monitor"]["interval"])
+    config["wait"]["ssh_timeout"] = int(config["wait"]["ssh_timeout"])
+    config["wait"]["service_timeout"] = int(config["wait"]["service_timeout"])
+    config["wait"]["cpu_threshold"] = int(config["wait"]["cpu_threshold"])
+    config["wait"]["check_interval"] = int(config["wait"]["check_interval"])
+
+    return config
 
 
 def save_config_copy(ctx: TestContext, config_path: str):
