@@ -1,0 +1,756 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Multi-VM Agent Automation Test Script
+
+Executes a complete single test flow:
+1. Delete existing VMs → confirm deletion
+2. Create new VMs (n count)
+3. Start smap_tool
+4. Wait for VMs ready (SSH, openclaw gateway, CPU < 5%)
+5. Warmup phase
+6. Start monitoring (qemu_monitor.py)
+7. Benchmark phase
+8. Collect results
+9. Cleanup (kill smap_tool, delete VMs)
+
+Usage:
+    python auto_vm_test.py --config test_config.yaml
+"""
+
+import os
+import sys
+import time
+import signal
+import subprocess
+import argparse
+import yaml
+import re
+import psutil
+import paramiko
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional
+from dataclasses import dataclass
+
+
+@dataclass
+class TestContext:
+    """Test execution context"""
+    config: Dict
+    result_dir: str
+    log_file: str
+    smap_tool_pid: Optional[int] = None
+    monitor_pid: Optional[int] = None
+    vm_ips: List[str] = []
+    qemu_pids: Dict[str, int] = {}  # ip -> qemu pid
+    start_time: float = 0.0
+
+
+def log(ctx: TestContext, msg: str):
+    """Write log message to file and stdout"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{timestamp}] {msg}"
+    print(line)
+    with open(ctx.log_file, "a") as f:
+        f.write(line + "\n")
+
+
+def load_config(config_path: str) -> Dict:
+    """Load and parse YAML config file"""
+    with open(config_path) as f:
+        return yaml.safe_load(f)
+
+
+def save_config_copy(ctx: TestContext, config_path: str):
+    """Save config file copy to result directory"""
+    import shutil
+    dest = os.path.join(ctx.result_dir, "config.yaml")
+    shutil.copy(config_path, dest)
+    log(ctx, f"Config saved to {dest}")
+
+
+def create_result_dir(config: Dict) -> str:
+    """Create result directory with naming: vm{n}_ratio{ratio}_active{percent}_timestamp"""
+    base_dir = config["result"]["base_dir"]
+    vm_count = config["vm"]["count"]
+    ratio = config["smap_tool"]["ratio"]
+    active_percent = config["test"]["active_percent"]
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    dir_name = f"vm{vm_count}_ratio{ratio}_active{active_percent}_{timestamp}"
+    result_dir = os.path.join(base_dir, dir_name)
+    os.makedirs(result_dir, exist_ok=True)
+
+    # Create subdirectories
+    os.makedirs(os.path.join(result_dir, "vm_bench_lite"), exist_ok=True)
+    os.makedirs(os.path.join(result_dir, "qemu_monitor"), exist_ok=True)
+    os.makedirs(os.path.join(result_dir, "summary"), exist_ok=True)
+
+    return result_dir
+
+
+def setup_openstack_env(config: Dict) -> Dict:
+    """Setup OpenStack environment variables from openrc file"""
+    env = os.environ.copy()
+    openrc_path = os.path.expanduser(config["openstack"]["openrc_path"])
+
+    if not os.path.exists(openrc_path):
+        raise FileNotFoundError(f"OpenRC file not found: {openrc_path}")
+
+    with open(openrc_path) as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("export "):
+                m = re.match(r"export\s+(\w+)=(.*)", line)
+                if m:
+                    key, val = m.group(1), m.group(2).strip("\"'")
+                    env[key] = val
+
+    # Remove proxy settings
+    env.pop("http_proxy", None)
+    env.pop("https_proxy", None)
+    env.pop("HTTP_PROXY", None)
+    env.pop("HTTPS_PROXY", None)
+
+    return env
+
+
+# ==================== Step 2: Delete VMs ====================
+
+def delete_vms(ctx: TestContext, os_env: Dict) -> bool:
+    """Delete all existing VMs and confirm deletion"""
+    log(ctx, "Step 2: Deleting existing VMs...")
+
+    # Get VM list
+    result = subprocess.run(
+        ["openstack", "server", "list", "-c", "ID", "-f", "value"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=os_env, timeout=60
+    )
+
+    if result.returncode != 0:
+        log(ctx, f"Failed to list VMs: {result.stderr}")
+        return False
+
+    vm_ids = result.stdout.strip().split("\n")
+    vm_ids = [id for id in vm_ids if id.strip()]
+
+    if not vm_ids:
+        log(ctx, "No VMs to delete")
+        return True
+
+    log(ctx, f"Found {len(vm_ids)} VMs to delete")
+
+    # Delete VMs
+    result = subprocess.run(
+        ["openstack", "server", "delete", "--force"] + vm_ids,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=os_env, timeout=300
+    )
+
+    if result.returncode != 0:
+        log(ctx, f"Delete command failed: {result.stderr}")
+
+    # Wait and confirm deletion
+    max_wait = 120
+    start = time.time()
+
+    while time.time() - start < max_wait:
+        # Check via virsh
+        result = subprocess.run(
+            ["virsh", "list", "--all"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30
+        )
+
+        lines = result.stdout.strip().split("\n")
+        running_vms = [l for l in lines if "running" in l]
+
+        if not running_vms:
+            log(ctx, "All VMs deleted (virsh confirm)")
+            break
+
+        log(ctx, f"Waiting for VM deletion... ({len(running_vms)} still running)")
+        time.sleep(10)
+
+    # Final check via openstack
+    result = subprocess.run(
+        ["openstack", "server", "list", "-c", "ID", "-f", "value"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=os_env, timeout=60
+    )
+
+    remaining = [id for id in result.stdout.strip().split("\n") if id.strip()]
+
+    if remaining:
+        log(ctx, f"WARNING: {len(remaining)} VMs still exist, attempting force destroy...")
+        for vm_id in remaining:
+            subprocess.run(["virsh", "destroy", vm_id], timeout=30)
+        time.sleep(5)
+
+    log(ctx, "VM deletion completed")
+    return True
+
+
+# ==================== Step 3: Create VMs ====================
+
+def create_vms(ctx: TestContext, os_env: Dict) -> bool:
+    """Create VMs using create_server.py"""
+    log(ctx, "Step 3: Creating VMs...")
+
+    config = ctx.config
+    vm_count = config["vm"]["count"]
+    start_ip = config["vm"]["start_ip"]
+    subnet_prefix = config["openstack"]["subnet_prefix"]
+    network_id = config["openstack"]["network_id"]
+    az = config["openstack"]["az"]
+    flavor = config["openstack"]["flavor"]
+    image = config["openstack"]["image"]
+
+    # Calculate start IP number
+    if not start_ip.startswith(subnet_prefix):
+        raise ValueError(f"start_ip {start_ip} doesn't match subnet_prefix {subnet_prefix}")
+
+    start_ip_num = int(start_ip.split(".")[-1])
+
+    # Build command
+    cmd = [
+        "python3", "create_server.py",
+        "--start_ip", start_ip,
+        "--n", str(vm_count),
+        "--subnet-prefix", subnet_prefix,
+        "--network-id", network_id,
+        "--az", az,
+        "--flavor", flavor,
+        "--image", image
+    ]
+
+    log(ctx, f"Executing: {' '.join(cmd)}")
+
+    result = subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=1800
+    )
+
+    # Output result
+    print(result.stdout)
+    if result.stderr:
+        print(result.stderr)
+
+    if result.returncode != 0:
+        log(ctx, f"VM creation failed with return code {result.returncode}")
+        return False
+
+    # Parse created VM IPs
+    ctx.vm_ips = []
+    for i in range(vm_count):
+        ip = f"{subnet_prefix.rstrip('.')}.{start_ip_num + i}"
+        ctx.vm_ips.append(ip)
+
+    log(ctx, f"VM creation completed: {len(ctx.vm_ips)} VMs")
+    return True
+
+
+# ==================== Step 4: Start smap_tool ====================
+
+def get_qemu_pids(ctx: TestContext) -> Dict[str, int]:
+    """Get QEMU process PIDs and map to VM IPs"""
+    result = subprocess.run(
+        ["pidof", "qemu-kvm"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10
+    )
+
+    if result.returncode != 0 or not result.stdout.strip():
+        log(ctx, "No qemu-kvm processes found")
+        return {}
+
+    pids = result.stdout.strip().split()
+    log(ctx, f"Found {len(pids)} qemu-kvm processes")
+
+    # Map PIDs to IPs (simplified: assume sequential order matches IP order)
+    qemu_pids = {}
+    for i, pid in enumerate(pids[:len(ctx.vm_ips)]):
+        if i < len(ctx.vm_ips):
+            qemu_pids[ctx.vm_ips[i]] = int(pid)
+
+    ctx.qemu_pids = qemu_pids
+    return qemu_pids
+
+
+def start_smap_tool(ctx: TestContext) -> bool:
+    """Start smap_tool memory migration tool"""
+    log(ctx, "Step 4: Starting smap_tool...")
+
+    config = ctx.config
+    smap_path = config["smap_tool"]["path"]
+    swap_size_gb = config["smap_tool"]["swap_size_gb"]
+    ratio = config["smap_tool"]["ratio"]
+
+    # Clean old smap config
+    subprocess.run(["rm", "-rf", "/dev/shm/smap_config"], timeout=10)
+    log(ctx, "Cleaned /dev/shm/smap_config")
+
+    # Get QEMU PIDs
+    qemu_pids = get_qemu_pids(ctx)
+    if not qemu_pids:
+        log(ctx, "ERROR: No QEMU processes found")
+        return False
+
+    # Calculate parameters
+    vm_count = len(ctx.vm_ips)
+    swap_size_mb = int(swap_size_gb * 1024)
+    ratio_percent = int(ratio * 100)  # Convert 0.15 to 15
+
+    # Build command
+    pid_list = " ".join(str(p) for p in qemu_pids.values())
+    cmd = f"./smap_tool {vm_count} `pidof qemu-kvm` --swap-size {swap_size_mb} --ratio {ratio_percent}"
+
+    log(ctx, f"Executing: {cmd}")
+
+    # Start smap_tool in background
+    proc = subprocess.Popen(
+        cmd, shell=True, cwd=smap_path,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+
+    ctx.smap_tool_pid = proc.pid
+    log(ctx, f"smap_tool started with PID {proc.pid}")
+
+    # Wait a moment and verify
+    time.sleep(3)
+
+    if proc.poll() is None:
+        log(ctx, "smap_tool running successfully")
+        return True
+    else:
+        log(ctx, f"smap_tool failed to start, return code {proc.returncode}")
+        return False
+
+
+# ==================== Step 5: Wait for VMs Ready ====================
+
+def check_vm_ready(ip: str, username: str, password: str, qemu_pid: int, cpu_threshold: int) -> Tuple[bool, str]:
+    """Check if single VM is ready (SSH, openclaw gateway, CPU utilization)"""
+    try:
+        # SSH connection
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(hostname=ip, port=22, username=username, password=password,
+                    timeout=30, look_for_keys=False)
+
+        # Check openclaw process
+        stdin, stdout, stderr = ssh.exec_command("pgrep -f openclaw", timeout=10)
+        openclaw_pids = stdout.read().decode().strip()
+
+        if not openclaw_pids:
+            ssh.close()
+            return False, "openclaw process not found"
+
+        # Check port 18789
+        stdin, stdout, stderr = ssh.exec_command("ss -tln | grep 18789", timeout=10)
+        port_check = stdout.read().decode()
+
+        if '18789' not in port_check:
+            ssh.close()
+            return False, "port 18789 not listening"
+
+        ssh.close()
+
+        # Check CPU utilization on host
+        try:
+            proc = psutil.Process(qemu_pid)
+            cpu_percent = proc.cpu_percent(interval=1)
+
+            if cpu_percent > cpu_threshold:
+                return False, f"CPU utilization {cpu_percent}% > threshold {cpu_threshold}%"
+        except psutil.NoSuchProcess:
+            return False, "qemu process not found"
+
+        return True, "ready"
+
+    except paramiko.AuthenticationException:
+        return False, "SSH authentication failed"
+    except paramiko.SSHException as e:
+        return False, f"SSH error: {e}"
+    except Exception as e:
+        return False, f"Error: {e}"
+
+
+def wait_vms_ready(ctx: TestContext) -> bool:
+    """Wait for all VMs to be ready"""
+    log(ctx, "Step 5: Waiting for VMs ready...")
+
+    config = ctx.config
+    username = config["vm"]["username"]
+    password = config["vm"]["password"]
+    cpu_threshold = config["wait"]["cpu_threshold"]
+    check_interval = config["wait"]["check_interval"]
+    timeout = config["wait"]["service_timeout"]
+
+    start_time = time.time()
+    ready_vms = set()
+
+    while time.time() - start_time < timeout:
+        all_ready = True
+
+        for ip in ctx.vm_ips:
+            if ip in ready_vms:
+                continue
+
+            qemu_pid = ctx.qemu_pids.get(ip)
+            if not qemu_pid:
+                continue
+
+            ready, msg = check_vm_ready(ip, username, password, qemu_pid, cpu_threshold)
+
+            if ready:
+                ready_vms.add(ip)
+                log(ctx, f"VM {ip} ready")
+            else:
+                all_ready = False
+                # Only log if not trivial SSH timeout
+                if "SSH" not in msg or time.time() - start_time > 60:
+                    log(ctx, f"VM {ip} not ready: {msg}")
+
+        if all_ready and len(ready_vms) >= len(ctx.vm_ips) * 0.9:
+            log(ctx, f"All VMs ready: {len(ready_vms)}/{len(ctx.vm_ips)}")
+            return True
+
+        log(ctx, f"Waiting... {len(ready_vms)}/{len(ctx.vm_ips)} ready")
+        time.sleep(check_interval)
+
+    # Timeout
+    log(ctx, f"WARNING: Timeout, {len(ready_vms)}/{len(ctx.vm_ips)} ready")
+    return len(ready_vms) >= len(ctx.vm_ips) * 0.7  # Allow 30% failure
+
+
+# ==================== Step 6: Warmup Phase ====================
+
+def run_warmup(ctx: TestContext) -> bool:
+    """Run browser warmup phase"""
+    log(ctx, "Step 6: Running warmup phase...")
+
+    config = ctx.config
+    vm_count = config["vm"]["count"]
+    start_ip = config["vm"]["start_ip"]
+    warmup = config["warmup"]
+
+    # Build command
+    cmd = [
+        "python", "vm_bench_lite.py",
+        "-n", str(vm_count),
+        "--start-ip", start_ip,
+        "--browser-mode",
+        "-wp",  # Warmup phase
+        "--batch-size", str(warmup["batch_size"]),
+        "--batch-interval", str(warmup["batch_interval"]),
+        "--warmup-loops", str(warmup["loops"]),
+        "--warmup-delay", str(warmup["delay"])
+    ]
+
+    # Add warmup URLs
+    for url in warmup["urls"]:
+        cmd.extend(["--warmup-url", url])
+
+    log(ctx, f"Executing warmup command...")
+    log(ctx, f"Command: {' '.join(cmd[:10])}...")
+
+    result = subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=1800
+    )
+
+    print(result.stdout)
+    if result.stderr:
+        print(result.stderr)
+
+    if result.returncode != 0:
+        log(ctx, f"Warmup failed with return code {result.returncode}")
+        return False
+
+    log(ctx, "Warmup phase completed")
+    return True
+
+
+# ==================== Step 7: Start Monitoring ====================
+
+def start_monitor(ctx: TestContext) -> bool:
+    """Start qemu_monitor.py in background"""
+    log(ctx, "Step 7: Starting monitoring...")
+
+    config = ctx.config
+    monitor = config["monitor"]
+    test = config["test"]
+
+    duration = test["duration"] + 60  # Extra time for startup/shutdown
+    interval = monitor["interval"]
+    numa_nodes = ",".join(str(n) for n in monitor["numa_nodes"])
+    log_dir = os.path.join(ctx.result_dir, "qemu_monitor")
+
+    cmd = [
+        "python3", "qemu_monitor.py",
+        "-t", str(duration),
+        "-i", str(interval),
+        "--log-dir", log_dir,
+        "--numa", numa_nodes
+    ]
+
+    if monitor["enable_capture"]:
+        cmd.append("--enable-capture")
+
+    log(ctx, f"Executing: {' '.join(cmd)}")
+
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    ctx.monitor_pid = proc.pid
+    log(ctx, f"Monitor started with PID {proc.pid}")
+
+    # Wait for monitor to initialize
+    time.sleep(5)
+
+    # Check if monitor csv file is being created
+    csv_path = os.path.join(log_dir, "qemu_monitor.csv")
+    if os.path.exists(csv_path):
+        log(ctx, "Monitor running successfully")
+        return True
+
+    # Give it more time
+    time.sleep(5)
+    if proc.poll() is None:
+        log(ctx, "Monitor running (waiting for CSV)")
+        return True
+
+    log(ctx, f"Monitor failed to start")
+    return False
+
+
+# ==================== Step 8: Benchmark Phase ====================
+
+def run_benchmark(ctx: TestContext) -> bool:
+    """Run browser benchmark phase"""
+    log(ctx, "Step 8: Running benchmark phase...")
+
+    config = ctx.config
+    vm_count = config["vm"]["count"]
+    start_ip = config["vm"]["start_ip"]
+    test = config["test"]
+
+    # Build command
+    cmd = [
+        "python", "vm_bench_lite.py",
+        "-n", str(vm_count),
+        "--start-ip", start_ip,
+        "--browser-mode",
+        "-bsp", str(test["active_percent"]),  # Browser stress percent
+        "--batch-size", str(test["batch_size"]),
+        "--batch-interval", str(test["batch_interval"]),
+        "--browser-url", test["browser_url"],
+        "--browser-interval-min", str(test["browser_interval_min"]),
+        "--browser-interval-max", str(test["browser_interval_max"]),
+        "-t", str(test["duration"])
+    ]
+
+    log(ctx, f"Executing benchmark command...")
+    log(ctx, f"Command: {' '.join(cmd)}")
+
+    result = subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=test["duration"] + 300
+    )
+
+    print(result.stdout)
+    if result.stderr:
+        print(result.stderr)
+
+    if result.returncode != 0:
+        log(ctx, f"Benchmark failed with return code {result.returncode}")
+        return False
+
+    # Copy benchmark report to result directory
+    # vm_bench_lite saves reports to results/ directory
+    bench_reports = Path("results").glob("bench_report_*.txt")
+    for report in bench_reports:
+        import shutil
+        dest = os.path.join(ctx.result_dir, "vm_bench_lite", report.name)
+        shutil.copy(str(report), dest)
+        log(ctx, f"Benchmark report copied: {report.name}")
+
+    log(ctx, "Benchmark phase completed")
+    return True
+
+
+# ==================== Step 9: Stop Monitor and Collect Results ====================
+
+def stop_monitor(ctx: TestContext):
+    """Stop monitoring process"""
+    if ctx.monitor_pid:
+        log(ctx, f"Stopping monitor PID {ctx.monitor_pid}...")
+        try:
+            os.kill(ctx.monitor_pid, signal.SIGTERM)
+            time.sleep(5)
+            # Force kill if still running
+            try:
+                os.kill(ctx.monitor_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        except ProcessLookupError:
+            pass
+        log(ctx, "Monitor stopped")
+
+
+def collect_results(ctx: TestContext):
+    """Collect and organize results"""
+    log(ctx, "Step 9: Collecting results...")
+
+    # Monitor logs are already in qemu_monitor subdirectory
+
+    # Generate summary
+    summary = {
+        "test_id": os.path.basename(ctx.result_dir),
+        "test_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "duration": ctx.config["test"]["duration"],
+        "parameters": {
+            "vm_count": ctx.config["vm"]["count"],
+            "ratio": ctx.config["smap_tool"]["ratio"],
+            "active_percent": ctx.config["test"]["active_percent"],
+        }
+    }
+
+    # Save summary JSON
+    import json
+    summary_path = os.path.join(ctx.result_dir, "summary", "metrics_summary.json")
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    log(ctx, f"Results collected in {ctx.result_dir}")
+
+
+# ==================== Step 10: Cleanup ====================
+
+def cleanup(ctx: TestContext, os_env: Dict):
+    """Cleanup: stop smap_tool, delete VMs"""
+    log(ctx, "Step 10: Cleanup...")
+
+    # Stop smap_tool
+    if ctx.smap_tool_pid:
+        log(ctx, f"Stopping smap_tool PID {ctx.smap_tool_pid}...")
+        try:
+            os.kill(ctx.smap_tool_pid, signal.SIGTERM)
+            time.sleep(2)
+            try:
+                os.kill(ctx.smap_tool_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            log(ctx, "smap_tool stopped")
+        except ProcessLookupError:
+            log(ctx, "smap_tool already stopped")
+
+    # Delete VMs
+    delete_vms(ctx, os_env)
+
+    log(ctx, "Cleanup completed")
+
+
+# ==================== Main ====================
+
+def main():
+    parser = argparse.ArgumentParser(description="Multi-VM Agent Automation Test")
+    parser.add_argument("--config", required=True, help="Config YAML file path")
+
+    args = parser.parse_args()
+
+    # Load config
+    config = load_config(args.config)
+
+    # Create result directory
+    result_dir = create_result_dir(config)
+    log_file = os.path.join(result_dir, "test_log.txt")
+
+    # Initialize context
+    ctx = TestContext(
+        config=config,
+        result_dir=result_dir,
+        log_file=log_file,
+        start_time=time.time()
+    )
+
+    # Create log file
+    Path(log_file).touch()
+
+    log(ctx, "=" * 60)
+    log(ctx, "Multi-VM Agent Automation Test Started")
+    log(ctx, f"Config: {args.config}")
+    log(ctx, f"Result dir: {result_dir}")
+    log(ctx, "=" * 60)
+
+    # Save config copy
+    save_config_copy(ctx, args.config)
+
+    # Setup OpenStack environment
+    os_env = setup_openstack_env(config)
+
+    success = True
+
+    try:
+        # Step 2: Delete VMs
+        if not delete_vms(ctx, os_env):
+            log(ctx, "ERROR: Failed to delete VMs, aborting")
+            success = False
+            return
+
+        # Step 3: Create VMs
+        if not create_vms(ctx, os_env):
+            log(ctx, "ERROR: Failed to create VMs, aborting")
+            success = False
+            return
+
+        # Step 4: Start smap_tool
+        if not start_smap_tool(ctx):
+            log(ctx, "ERROR: Failed to start smap_tool, aborting")
+            success = False
+            cleanup(ctx, os_env)
+            return
+
+        # Step 5: Wait for VMs ready
+        if not wait_vms_ready(ctx):
+            log(ctx, "WARNING: Not all VMs ready, continuing with partial VMs")
+
+        # Step 6: Warmup
+        if not run_warmup(ctx):
+            log(ctx, "WARNING: Warmup failed, continuing...")
+
+        # Step 7: Start monitor
+        if not start_monitor(ctx):
+            log(ctx, "WARNING: Monitor failed to start, continuing without monitoring")
+
+        # Step 8: Benchmark
+        if not run_benchmark(ctx):
+            log(ctx, "ERROR: Benchmark failed")
+            success = False
+
+        # Step 9: Collect results
+        stop_monitor(ctx)
+        collect_results(ctx)
+
+        # Step 10: Cleanup
+        cleanup(ctx, os_env)
+
+    except KeyboardInterrupt:
+        log(ctx, "Test interrupted by user")
+        success = False
+        cleanup(ctx, os_env)
+
+    except Exception as e:
+        log(ctx, f"ERROR: {e}")
+        import traceback
+        log(ctx, traceback.format_exc())
+        success = False
+        cleanup(ctx, os_env)
+
+    finally:
+        elapsed = time.time() - ctx.start_time
+        log(ctx, "=" * 60)
+        log(ctx, f"Test completed in {elapsed:.1f} seconds")
+        log(ctx, f"Result: {'SUCCESS' if success else 'FAILED'}")
+        log(ctx, f"Result directory: {result_dir}")
+        log(ctx, "=" * 60)
+
+        print(f"\nTest result saved to: {result_dir}")
+
+
+if __name__ == "__main__":
+    main()

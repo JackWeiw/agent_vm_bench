@@ -1,0 +1,26 @@
+# ========================================
+# Multi-VM Agent Batch Test Config
+# ========================================
+
+# Test Parameter Matrix
+# Each combination of parameters will generate one test task
+test_matrix:
+  vm_counts: [50, 100]           # Number of VMs to test
+  ratios: [0.10, 0.15, 0.20]     # Memory borrow ratios (10%, 15%, 20%)
+  active_percentages: [0.5, 0.8] # Active VM percentages for benchmark
+
+# Fixed Parameters (applied to all tests)
+fixed_params:
+  start_ip: "192.168.110.11"     # Starting IP address
+  swap_size_gb: 200              # Hugepage size in GB
+  duration: 160                  # Test duration in seconds
+
+# Scheduler Configuration
+scheduler:
+  continue_on_failure: true      # Continue next test if current fails
+  cleanup_between_tests: true    # Cleanup VMs between tests (handled by auto_vm_test.py)
+
+# Result Configuration
+result:
+  template_path: "test_config_template.yaml"  # Config template file
+  base_dir: "results"           # Base directory for results

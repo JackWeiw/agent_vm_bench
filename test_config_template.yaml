@@ -1,0 +1,71 @@
+# ========================================
+# Multi-VM Agent Automation Test Config Template
+# ========================================
+# Note: {{xxx}} are dynamic parameters filled by batch scheduler
+
+# OpenStack Configuration
+openstack:
+  openrc_path: "~/.admin-openrc"
+  network_id: "cc56708a-c0c0-4d75-a87e-ed1b1a8af844"
+  flavor: "2U_4G_30G_4K"
+  image: "ubuntu-24.04"
+  az: "nova_zone:controller"
+  subnet_prefix: "192.168.110."
+
+# VM Configuration (dynamic parameters)
+vm:
+  count: "{{VM_COUNT}}"
+  start_ip: "{{START_IP}}"
+  username: "root"
+  password: "openEuler12#$"
+
+# Memory Migration Tool Configuration
+smap_tool:
+  path: "/home/l30038718/vm"
+  swap_size_gb: "{{SWAP_SIZE_GB}}"      # Hugepage size (GB), converted to MB: swap_size_gb * 1024
+  ratio: "{{RATIO}}"                    # Borrow ratio, e.g., 0.15 → converted to integer percentage 15
+
+# Test Configuration
+test:
+  duration: 160                         # Test duration (seconds)
+  active_percent: "{{ACTIVE_PERCENT}}"  # Active VM percentage, e.g., 0.5
+  batch_size: 10                        # Batch size
+  batch_interval: 5                     # Batch interval (seconds)
+  browser_interval_min: 5               # Browser task min interval (seconds)
+  browser_interval_max: 15              # Browser task max interval (seconds)
+  browser_url: "http://192.168.110.10:8080/Weibo.html"
+
+# Warmup Configuration
+warmup:
+  urls:
+    - "http://192.168.110.10:8080/China.html"
+    - "http://192.168.110.10:8080/Earth.html"
+    - "http://192.168.110.10:8080/Galaxy.html"
+    - "http://192.168.110.10:8080/Hubble_Space_Telescope.html"
+    - "http://192.168.110.10:8080/Human.html"
+    - "http://192.168.110.10:8080/List_of_paintings_by_Vincent_van_Gogh.html"
+    - "http://192.168.110.10:8080/Solar_System.html"
+    - "http://192.168.110.10:8080/United_States.html"
+    - "http://192.168.110.10:8080/World_War_II.html"
+  loops: 1                              # Warmup loop count
+  delay: 2                              # Delay between pages (seconds)
+  batch_size: 20                        # Warmup batch size
+  batch_interval: 5                     # Warmup batch interval (seconds)
+
+# Monitor Configuration
+monitor:
+  interval: 2                           # Monitor sampling interval (seconds)
+  numa_nodes: [0, 1]                    # NUMA nodes list
+  enable_capture: true                  # Enable log collection (devkit/ksys/ub_watch)
+  # Note: devkit/ksys/ub_watch paths use existing .env file config
+
+# Wait Configuration
+wait:
+  ssh_timeout: 300                      # SSH connection timeout (seconds)
+  service_timeout: 300                  # Service startup timeout (seconds)
+  cpu_threshold: 5                      # CPU utilization threshold (%)
+  check_interval: 10                    # Check interval (seconds)
+
+# Result Configuration
+result:
+  base_dir: "results"
