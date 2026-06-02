@@ -27,7 +27,7 @@ smap_tool:
 
 # Test Configuration
 test:
-  duration: 160                         # Test duration (seconds)
+  duration: "{{DURATION}}"                   # Test duration (seconds), dynamic parameter
   active_percent: "{{ACTIVE_PERCENT}}"  # Active VM percentage, e.g., 0.5
   batch_size: 10                        # Batch size
   batch_interval: 5                     # Batch interval (seconds)

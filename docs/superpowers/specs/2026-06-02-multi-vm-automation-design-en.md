@@ -163,6 +163,7 @@ result:
 | `{{SWAP_SIZE_GB}}` | Hugepage size (GB) | 200 |
 | `{{RATIO}}` | Borrow ratio | 0.15 |
 | `{{ACTIVE_PERCENT}}` | Active VM percentage | 0.5 |
+| `{{DURATION}}` | Test duration (seconds) | 160 |
 
 ---
 
@@ -184,6 +185,8 @@ Step 1: Initialization
   ├─ Create result directory: results/vm{n}_ratio{ratio}_active{percent}_timestamp/
   ├─ Save config file copy to result directory
   ├─ Initialize logging system
+  ├─ Clean up old lock file (prevent false detection)
+  │   rm -f /tmp/vm_benchmark_running.lock
   └─ Setup OpenStack environment variables
       source ~/.admin-openrc
       unset http_proxy
@@ -264,20 +267,23 @@ Step 6: Browser Mode Warmup
   ├─ Collect warmup results
   └─ Record warmup time and success/failed VM count
 
-Step 7: Start Monitor (background run)
+Step 7: Start Monitor (stress-file + duration sync)
   ├─ Build monitor command
   │   python qemu_monitor.py -t {duration} -i {interval} \
   │     --enable-capture \
   │     --log-dir {result_dir}/qemu_monitor \
-  │     --numa {numa_nodes}
+  │     --numa {numa_nodes} \
+  │     --stress-file /tmp/vm_benchmark_running.lock
   ├─ Background start monitor process
   │   subprocess.Popen(monitor_cmd)
   ├─ Record monitor process PID
-  └─ Wait for monitor startup ready (check if log file starts writing)
+  ├─ Monitor waits for lock file, not sampling yet (no idle sampling)
+  └─ Stops naturally after duration seconds and generates Excel
 
 Step 8: Browser Mode Test
+  ├─ Create lock file to signal monitor to start sampling
+  │   touch /tmp/vm_benchmark_running.lock
   ├─ Build test command (refer to README)
-  │   # Calculate active VM count: active_count = int(count * active_percent)
   │   python vm_bench_lite.py -n {count} --start-ip {start_ip} --browser-mode \
   │     -bsp {active_percent} \
   │     --batch-size {batch_size} --batch-interval {batch_interval} \
@@ -287,22 +293,23 @@ Step 8: Browser Mode Test
   │     -t {duration}
   ├─ Execute test command
   ├─ Wait for test completion (duration seconds)
+  ├─ Do NOT remove lock file, monitor uses duration to stop naturally
   ├─ Collect test report
   └─ Record test statistics (success rate, latency, etc.)
 
-Step 9: Stop Monitor and Collect Results
+Step 9: Wait for Monitor Natural Completion and Collect Results
   ├─ Wait for monitor process natural end (after duration seconds)
-  ├─ Or manually stop monitor process (if test ended early)
+  │   # Monitor needs 2-5 extra minutes to process logs and generate Excel
+  ├─ Wait up to 5 minutes to ensure Excel generation completes
   ├─ Verify monitor log file completeness
   │   - qemu_monitor.csv
-  │   - devkit_mem.log
-  │   - devkit_top_down.log
-  │   - ksys.log
-  │   - ub_watch.log
+  │   - summary.csv
   │   - analysis_report.xlsx
+  │   - devkit_mem.log / devkit_top_down.log
+  │   - ksys.log / ub_watch.log
+  ├─ Clean up lock file
+  │   rm /tmp/vm_benchmark_running.lock
   ├─ Move vm_bench_lite report to result directory
-  │   - bench_report_xxx.txt → {result_dir}/vm_bench_lite/
-  │   - warmup_summary_xxx.txt → {result_dir}/vm_bench_lite/
   ├─ Parse monitor log extract key metrics
   └─ Generate comprehensive test report
 
