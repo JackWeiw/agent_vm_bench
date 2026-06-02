@@ -244,7 +244,7 @@ python vm_bench_lite.py -n 100 --start-ip 192.168.110.11 --browser-mode \
 | `--warmup-loops` | 预热循环次数（默认 1） |
 | `--warmup-delay` | 预热页面间隔秒数（默认 2） |
 
-**注意：** 在不使用 LLM 的浏览器模式下（`--browser-mode` 但未指定 `--browser-use-llm`），基准测试会在每次请求的延迟上额外增加 10 秒，以模拟 LLM 响应延迟。这样可以获得与真实 Agent 工作流相当的 realistic 延时数据。
+**注意：** 在不使用 LLM 的浏览器模式下（`--browser-mode` 但未指定 `--browser-use-llm`），基准测试会在每次请求的延迟上额外增加 10 秒，以模拟 LLM 响应延迟。这样可以获得与真实 Agent 工作流相当的延时数据。
 
 ### 8. 删除 VM
 
@@ -252,3 +252,175 @@ python vm_bench_lite.py -n 100 --start-ip 192.168.110.11 --browser-mode \
 openstack server list -c ID -f value | xargs openstack server delete --force
 virsh list --all  # 检查删除是否完成
 ```
+
+---
+
+## 自动化批量测试
+
+自动化测试系统支持多组参数组合的批量测试，无需人工干预。
+
+### 系统概述
+
+自动化系统由以下组件构成：
+
+| 文件 | 说明 |
+| ---- | ---- |
+| `auto_vm_test.py` | 核心自动化脚本 - 执行单次完整测试流程 |
+| `batch_test_scheduler.py` | 批量调度器 - 协调多组参数的批量测试 |
+| `test_config_template.yaml` | 配置模板 - 包含动态参数占位符 |
+| `batch_config.yaml` | 批量配置 - 定义测试参数矩阵 |
+
+### 测试流程
+
+每次自动化测试执行以下步骤：
+
+1. **删除已存在的 VM** → 通过 virsh 确认删除完成
+2. **创建新 VM（n 个）** → 调用 create_server.py
+3. **启动 smap_tool**（内存迁移工具）
+4. **等待 VM 就绪** → SSH 连接、openclaw gateway 服务、CPU < 5%
+5. **预热阶段** → 所有 VM 执行浏览器预热
+6. **启动监控** → qemu_monitor.py 配合 stress-file 同步机制
+7. **压测阶段** → 指定百分比的 VM 执行浏览器测试
+8. **收集结果** → 等待 Excel 报告生成完成
+9. **清理环境** → 停止 smap_tool、删除 VM
+
+### 快速开始
+
+#### 前置条件
+
+1. 手动创建大页内存（如 200GB）
+2. 启动预热 Web 服务器（见第 4 节）
+3. 配置 `.env` 文件设置日志采集工具路径
+
+#### 运行批量测试
+
+```bash
+# 预览任务列表（不执行）
+python3 batch_test_scheduler.py --config batch_config.yaml --dry-run
+
+# 执行批量测试
+python3 batch_test_scheduler.py --config batch_config.yaml
+```
+
+### 配置说明
+
+#### 批量配置 (`batch_config.yaml`)
+
+定义测试参数矩阵：
+
+```yaml
+# 测试参数矩阵 - 每个组合生成一个测试任务
+test_matrix:
+  vm_counts: [50, 100]           # 测试的 VM 数量
+  ratios: [0.10, 0.15, 0.20]     # 内存借用比例（10%、15%、20%）
+  active_percentages: [0.5, 0.8] # 基准测试活跃 VM 百分比
+
+# 固定参数（应用于所有测试）
+fixed_params:
+  start_ip: "192.168.110.11"     # 起始 IP 地址
+  swap_size_gb: 200              # 大页大小（GB）
+  duration: 160                  # 测试持续时间（秒）
+
+# 调度配置
+scheduler:
+  continue_on_failure: true      # 测试失败后继续执行
+
+# 结果配置
+result:
+  template_path: "test_config_template.yaml"
+  base_dir: "results"
+```
+
+#### 配置模板 (`test_config_template.yaml`)
+
+包含所有测试参数和动态占位符：
+
+| 占位符 | 说明 | 示例 |
+| ------ | ---- | ---- |
+| `{{VM_COUNT}}` | VM 数量 | 100 |
+| `{{START_IP}}` | 起始 IP | "192.168.110.11" |
+| `{{SWAP_SIZE_GB}}` | 大页大小（GB） | 200 |
+| `{{RATIO}}` | 内存借用比例 | 0.15 |
+| `{{ACTIVE_PERCENT}}` | 活跃 VM 百分比 | 0.5 |
+| `{{DURATION}}` | 测试持续时间（秒） | 160 |
+
+### 结果组织结构
+
+每次测试创建独立的结果目录：
+
+```text
+results/
+├── batch_summary_20260602_143052.xlsx    # 批量测试汇总报告
+├── batch_log_20260602_143052.txt         # 批量执行日志
+├── temp_configs/                         # 临时配置文件
+│   ├── config_vm50_ratio0.10_active0.5.yaml
+│   └── ...
+│
+├── vm50_ratio0.10_active0.5_20260602_143052/  # 单次测试结果
+│   ├── config.yaml                       # 测试配置
+│   ├── test_log.txt                      # 测试执行日志
+│   │
+│   ├── vm_bench_lite/                    # 基准测试输出
+│   │   ├── bench_report_xxx.txt          # 基准测试报告
+│   │   └── warmup_summary_xxx.txt        # 预热摘要
+│   │
+│   ├── qemu_monitor/                     # 监控输出
+│   │   ├── qemu_monitor.csv              # 监控原始数据
+│   │   ├── summary.csv                   # 统计摘要
+│   │   ├── analysis_report.xlsx          # Excel 报告（含图表）
+│   │   ├── devkit_mem.log                # DevKit 内存日志
+│   │   ├── devkit_top_down.log           # DevKit top-down 日志
+│   │   ├── ksys.log                      # ksys 日志
+│   │   ├── ub_watch.log                  # ub_watch 日志
+│   │   └── monitor_stdout.log            # 监控标准输出
+│   │
+│   └── summary/                          # 分析摘要
+│       └── metrics_summary.json          # 关键指标 JSON
+│
+└── ... (其他测试结果)
+```
+
+### 监控与压测同步机制
+
+系统采用锁文件机制确保监控与压测时间精确对齐：
+
+1. **监控启动** → 等待 `/tmp/vm_benchmark_running.lock` 出现
+2. **压测开始** → 创建锁文件 → 监控开始采样
+3. **时间到期** → 监控自然停止 → 生成 Excel 报告
+4. **清理** → 删除锁文件
+
+这确保：
+- 压测前无空闲采样
+- 监控与压测时间精确对齐
+- Excel 报告完整生成
+
+### 高级用法
+
+#### 单次测试执行
+
+使用特定配置运行单次测试：
+
+```bash
+python3 auto_vm_test.py --config test_config.yaml
+```
+
+#### 自定义参数矩阵
+
+修改 `batch_config.yaml` 定义自定义测试场景：
+
+```yaml
+test_matrix:
+  vm_counts: [10, 20, 50, 100]
+  ratios: [0.05, 0.10, 0.15, 0.20, 0.25]
+  active_percentages: [0.3, 0.5, 0.7, 1.0]
+```
+
+这将生成 4 × 5 × 4 = 80 个测试组合。
+
+#### 修改测试模板
+
+编辑 `test_config_template.yaml` 可调整：
+- 预热 URL 列表和参数
+- 基准测试批次大小和间隔
+- 监控 NUMA 节点和采样间隔
+- 等待超时时间和阈值

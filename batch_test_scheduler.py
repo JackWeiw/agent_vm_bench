@@ -182,17 +182,14 @@ def run_single_test(task: TestTask, config_file: str, batch_log_file: str) -> Tu
     return success, result_dir
 
 
-def move_config_to_result(config_file: str, result_dir: str):
-    """Move temp config file to result directory"""
+def move_config_to_result(config_file: str, result_dir: str, task_id: str):
+    """Move temp config file to result directory with task_id suffix"""
     if not result_dir or not os.path.exists(result_dir):
         return
 
-    dest = os.path.join(result_dir, "config.yaml")
-    if os.path.exists(dest):
-        # Already has config copy from auto_vm_test.py
-        os.remove(config_file)
-    else:
-        shutil.move(config_file, dest)
+    # Use task_id in filename to avoid collision with auto_vm_test.py's config.yaml
+    dest = os.path.join(result_dir, f"config_{task_id}.yaml")
+    shutil.move(config_file, dest)
 
 
 def collect_all_results(tasks: List[TestTask], base_dir: str) -> Dict[str, Any]:
@@ -345,10 +342,10 @@ def main():
         task.result_dir = result_dir
 
         # Move config to result directory
-        if success and result_dir:
-            move_config_to_result(task.config_file, result_dir)
+        if result_dir:
+            move_config_to_result(task.config_file, result_dir, task.task_id)
         else:
-            # Keep failed config for debugging
+            # Keep failed config for debugging in temp_configs
             pass
 
         # Handle failure

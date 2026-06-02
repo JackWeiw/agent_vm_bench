@@ -248,3 +248,175 @@ python vm_bench_lite.py -n 100 --start-ip 192.168.110.11 --browser-mode \
 openstack server list -c ID -f value | xargs openstack server delete --force
 virsh list --all  # Check if deletion is complete
 ```
+
+---
+
+## Automated Batch Testing
+
+The automation system enables running multiple tests with different parameter combinations without manual intervention.
+
+### Overview
+
+The system consists of:
+
+| File | Description |
+| ---- | ----------- |
+| `auto_vm_test.py` | Core automation script - executes single complete test flow |
+| `batch_test_scheduler.py` | Batch scheduler - orchestrates multiple tests with parameter matrix |
+| `test_config_template.yaml` | Configuration template with dynamic parameter placeholders |
+| `batch_config.yaml` | Batch configuration - defines test parameter matrix |
+
+### Test Flow
+
+Each automated test executes the following steps:
+
+1. **Delete existing VMs** → Confirm deletion via virsh
+2. **Create new VMs** (n count) via create_server.py
+3. **Start smap_tool** (memory migration tool)
+4. **Wait for VMs ready** → SSH, openclaw gateway, CPU < 5%
+5. **Warmup phase** → Browser warmup on all VMs
+6. **Start monitoring** → qemu_monitor.py with stress-file sync
+7. **Benchmark phase** → Browser testing on active VM percentage
+8. **Collect results** → Wait for Excel report generation
+9. **Cleanup** → Stop smap_tool, delete VMs
+
+### Quick Start
+
+#### Prerequisites
+
+1. Manually create hugepages (e.g., 200GB)
+2. Start warmup web server (see Section 4)
+3. Configure `.env` file for log collection tools
+
+#### Run Batch Tests
+
+```bash
+# Preview tasks without execution
+python3 batch_test_scheduler.py --config batch_config.yaml --dry-run
+
+# Execute batch tests
+python3 batch_test_scheduler.py --config batch_config.yaml
+```
+
+### Configuration
+
+#### Batch Configuration (`batch_config.yaml`)
+
+Defines test parameter matrix:
+
+```yaml
+# Test Parameter Matrix - each combination generates one test task
+test_matrix:
+  vm_counts: [50, 100]           # Number of VMs to test
+  ratios: [0.10, 0.15, 0.20]     # Memory borrow ratios (10%, 15%, 20%)
+  active_percentages: [0.5, 0.8] # Active VM percentages for benchmark
+
+# Fixed Parameters (applied to all tests)
+fixed_params:
+  start_ip: "192.168.110.11"     # Starting IP address
+  swap_size_gb: 200              # Hugepage size in GB
+  duration: 160                  # Test duration in seconds
+
+# Scheduler Configuration
+scheduler:
+  continue_on_failure: true      # Continue after test failure
+
+# Result Configuration
+result:
+  template_path: "test_config_template.yaml"
+  base_dir: "results"
+```
+
+#### Configuration Template (`test_config_template.yaml`)
+
+Contains all test parameters with dynamic placeholders:
+
+| Placeholder | Description | Example |
+|-------------|-------------|---------|
+| `{{VM_COUNT}}` | VM count | 100 |
+| `{{START_IP}}` | Starting IP | "192.168.110.11" |
+| `{{SWAP_SIZE_GB}}` | Hugepage size (GB) | 200 |
+| `{{RATIO}}` | Memory borrow ratio | 0.15 |
+| `{{ACTIVE_PERCENT}}` | Active VM percentage | 0.5 |
+| `{{DURATION}}` | Test duration (seconds) | 160 |
+
+### Result Organization
+
+Each test creates a dedicated result directory:
+
+```text
+results/
+├── batch_summary_20260602_143052.xlsx    # Batch summary report
+├── batch_log_20260602_143052.txt         # Batch execution log
+├── temp_configs/                         # Temporary config files
+│   ├── config_vm50_ratio0.10_active0.5.yaml
+│   └── ...
+│
+├── vm50_ratio0.10_active0.5_20260602_143052/  # Single test result
+│   ├── config.yaml                       # Test configuration
+│   ├── test_log.txt                      # Test execution log
+│   │
+│   ├── vm_bench_lite/                    # Benchmark outputs
+│   │   ├── bench_report_xxx.txt          # Benchmark report
+│   │   └── warmup_summary_xxx.txt        # Warmup summary
+│   │
+│   ├── qemu_monitor/                     # Monitoring outputs
+│   │   ├── qemu_monitor.csv              # Raw monitoring data
+│   │   ├── summary.csv                   # Summary statistics
+│   │   ├── analysis_report.xlsx          # Excel report with charts
+│   │   ├── devkit_mem.log                # DevKit memory log
+│   │   ├── devkit_top_down.log           # DevKit top-down log
+│   │   ├── ksys.log                      # ksys log
+│   │   ├── ub_watch.log                  # ub_watch log
+│   │   └── monitor_stdout.log            # Monitor stdout
+│   │
+│   └── summary/                          # Analysis summary
+│       └── metrics_summary.json          # Key metrics JSON
+│
+└── ... (other test results)
+```
+
+### Monitor-Benchmark Synchronization
+
+The system uses a lock file mechanism to ensure monitoring aligns with benchmark timing:
+
+1. **Monitor starts** → Waits for `/tmp/vm_benchmark_running.lock`
+2. **Benchmark starts** → Creates lock file → Monitor begins sampling
+3. **Duration expires** → Monitor stops naturally → Generates Excel report
+4. **Cleanup** → Lock file removed
+
+This ensures:
+- No idle sampling before benchmark
+- Exact time alignment between monitoring and benchmark
+- Complete Excel report generation
+
+### Advanced Usage
+
+#### Single Test Execution
+
+Run a single test with specific configuration:
+
+```bash
+python3 auto_vm_test.py --config test_config.yaml
+```
+
+#### Custom Parameter Matrix
+
+Modify `batch_config.yaml` to define custom test scenarios:
+
+```yaml
+test_matrix:
+  vm_counts: [10, 20, 50, 100]
+  ratios: [0.05, 0.10, 0.15, 0.20, 0.25]
+  active_percentages: [0.3, 0.5, 0.7, 1.0]
+```
+
+This generates 4 × 5 × 4 = 80 test combinations.
+
+#### Modify Test Template
+
+Edit `test_config_template.yaml` to adjust:
+- Warmup URLs and parameters
+- Benchmark batch sizes and intervals
+- Monitoring NUMA nodes and interval
+- Wait timeouts and thresholds
