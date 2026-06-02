@@ -163,6 +163,7 @@ result:
 | `{{SWAP_SIZE_GB}}` | 大页量(GB) | 200 |
 | `{{RATIO}}` | 借用比例 | 0.15 |
 | `{{ACTIVE_PERCENT}}` | 活跃VM百分比 | 0.5 |
+| `{{DURATION}}` | 测试持续时间(秒) | 160 |
 
 ---
 

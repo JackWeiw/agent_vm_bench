@@ -88,7 +88,8 @@ def generate_temp_config(template_path: str, task: TestTask, fixed_params: Dict,
         "{{START_IP}}": fixed_params["start_ip"],
         "{{SWAP_SIZE_GB}}": str(fixed_params["swap_size_gb"]),
         "{{RATIO}}": str(task.ratio),
-        "{{ACTIVE_PERCENT}}": str(task.active_percent)
+        "{{ACTIVE_PERCENT}}": str(task.active_percent),
+        "{{DURATION}}": str(fixed_params["duration"])
     }
 
     for key, value in replacements.items():

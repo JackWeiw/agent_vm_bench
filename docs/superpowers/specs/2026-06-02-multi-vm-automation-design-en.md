@@ -163,6 +163,7 @@ result:
 | `{{SWAP_SIZE_GB}}` | Hugepage size (GB) | 200 |
 | `{{RATIO}}` | Borrow ratio | 0.15 |
 | `{{ACTIVE_PERCENT}}` | Active VM percentage | 0.5 |
+| `{{DURATION}}` | Test duration (seconds) | 160 |
 
 ---
 
