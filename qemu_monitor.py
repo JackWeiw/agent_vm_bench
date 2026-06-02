@@ -2080,7 +2080,7 @@ class QEMUMonitor:
                 sample = self.collect_sample()
                 elapsed_str = str(timedelta(seconds=int(elapsed)))
                 dur_str = str(timedelta(seconds=int(duration_seconds))) if duration_seconds else "∞"
-                self.display_realtime_table(sample, elapsed_str, dur_str, "Stress Sync", f"{check_type}={check_target}")
+                self.display_realtime_table(sample, elapsed_str, dur_str, f"Stress Sync: {check_type}={check_target}")
 
                 sl = max(0, interval_seconds - (time.time() - loop_start))
                 if sl > 0 and self.running:
