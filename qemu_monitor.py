@@ -2009,8 +2009,18 @@ class QEMUMonitor:
     def check_stress_file(self, file_path):
         return os.path.exists(file_path)
 
-    def wait_for_stress_and_monitor(self, check_type, check_target, interval_seconds=5):
+    def wait_for_stress_and_monitor(self, check_type, check_target, interval_seconds=5, duration_seconds=None):
+        """Wait for stress test to start, then monitor for specified duration.
+
+        Args:
+            check_type: 'process' or 'file'
+            check_target: process name or file path
+            interval_seconds: sampling interval
+            duration_seconds: optional max duration (monitor stops after this even if stress still running)
+        """
         print(f"Waiting for stress test to start... (Detection method: {check_type}={check_target})")
+        if duration_seconds:
+            print(f"Duration limit: {duration_seconds}s (will stop after this time)")
         stress_started = False
         while not stress_started:
             stress_started = (self.check_stress_process(check_target) if check_type == 'process'
@@ -2033,6 +2043,15 @@ class QEMUMonitor:
         try:
             while self.running:
                 loop_start = time.time()
+
+                # Check duration limit first (if set)
+                elapsed = time.time() - start_time
+                if duration_seconds and elapsed >= duration_seconds:
+                    print(f"\n✓ Duration limit ({duration_seconds}s) reached, stopping monitoring")
+                    self.running = False
+                    break
+
+                # Check if stress ended (file removed or process ended)
                 if check_type == 'process' and not self.check_stress_process(check_target):
                     print("\n✓ Stress process ended, stopping monitoring")
                     self.running = False
@@ -2043,8 +2062,9 @@ class QEMUMonitor:
                     break
 
                 sample = self.collect_sample()
-                elapsed = str(timedelta(seconds=int(time.time() - start_time)))
-                self.display_realtime_table(sample, elapsed, "Stress Sync", f"{check_type}={check_target}")
+                elapsed_str = str(timedelta(seconds=int(elapsed)))
+                dur_str = str(timedelta(seconds=int(duration_seconds))) if duration_seconds else "∞"
+                self.display_realtime_table(sample, elapsed_str, dur_str, "Stress Sync", f"{check_type}={check_target}")
 
                 sl = max(0, interval_seconds - (time.time() - loop_start))
                 if sl > 0 and self.running:
@@ -2366,9 +2386,9 @@ def main():
 
     # Start QEMU monitoring
     if args.stress_process:
-        m.wait_for_stress_and_monitor('process', args.stress_process, args.interval)
+        m.wait_for_stress_and_monitor('process', args.stress_process, args.interval, args.time)
     elif args.stress_file:
-        m.wait_for_stress_and_monitor('file', args.stress_file, args.interval)
+        m.wait_for_stress_and_monitor('file', args.stress_file, args.interval, args.time)
     else:
         m.start_monitoring(args.time, args.interval)
 

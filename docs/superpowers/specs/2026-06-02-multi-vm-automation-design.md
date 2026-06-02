@@ -184,6 +184,8 @@ python auto_vm_test.py --config test_config.yaml
   ├─ 创建结果目录: results/vm{n}_ratio{ratio}_active{percent}_时间戳/
   ├─ 保存配置文件副本到结果目录
   ├─ 初始化日志系统
+  ├─ 清理旧的锁文件（防止误判）
+  │   rm -f /tmp/vm_benchmark_running.lock
   └─ 设置OpenStack环境变量
       source ~/.admin-openrc
       unset http_proxy
@@ -264,8 +266,8 @@ python auto_vm_test.py --config test_config.yaml
   ├─ 收集预热结果
   └─ 记录预热耗时和成功/失败VM数量
 
-步骤7: 启动监控（后台运行，等待压测启动）
-  ├─ 构建监控命令（使用--stress-file同步）
+步骤7: 启动监控（stress-file + duration同步）
+  ├─ 构建监控命令
   │   python qemu_monitor.py -t {duration} -i {interval} \
   │     --enable-capture \
   │     --log-dir {result_dir}/qemu_monitor \
@@ -274,13 +276,13 @@ python auto_vm_test.py --config test_config.yaml
   ├─ 后台启动监控进程
   │   subprocess.Popen(monitor_cmd)
   ├─ 记录监控进程PID
-  └─ 监控等待锁文件出现，暂不开始采样
+  ├─ 监控等待锁文件出现，暂不采样（不空跑）
+  └─ duration秒后自然停止并生成Excel
 
 步骤8: 浏览器模式测试
   ├─ 创建锁文件通知监控开始采样
   │   touch /tmp/vm_benchmark_running.lock
   ├─ 构建测试命令（参考README）
-  │   # 计算活跃VM数量: active_count = int(count * active_percent)
   │   python vm_bench_lite.py -n {count} --start-ip {start_ip} --browser-mode \
   │     -bsp {active_percent} \
   │     --batch-size {batch_size} --batch-interval {batch_interval} \
@@ -290,24 +292,23 @@ python auto_vm_test.py --config test_config.yaml
   │     -t {duration}
   ├─ 执行测试命令
   ├─ 等待测试完成（duration秒）
-  ├─ 删除锁文件
-  │   rm /tmp/vm_benchmark_running.lock
+  ├─ 不删除锁文件，监控用duration自然结束
   ├─ 收集测试报告
   └─ 记录测试统计（成功率、延迟等）
 
 步骤9: 等待监控自然结束并收集结果
   ├─ 等待监控进程自然结束（duration秒后）
-  │   # 监控自然结束时会生成Excel报告
+  │   # 监控需要额外2-5分钟处理日志、生成Excel
+  ├─ 等待最多5分钟确保Excel生成完成
   ├─ 验证监控日志文件完整性
   │   - qemu_monitor.csv
-  │   - devkit_mem.log
-  │   - devkit_top_down.log
-  │   - ksys.log
-  │   - ub_watch.log
+  │   - summary.csv
   │   - analysis_report.xlsx
+  │   - devkit_mem.log / devkit_top_down.log
+  │   - ksys.log / ub_watch.log
+  ├─ 清理锁文件
+  │   rm /tmp/vm_benchmark_running.lock
   ├─ 移动vm_bench_lite报告到结果目录
-  │   - bench_report_xxx.txt → {result_dir}/vm_bench_lite/
-  │   - warmup_summary_xxx.txt → {result_dir}/vm_bench_lite/
   ├─ 解析监控日志提取关键指标
   └─ 生成综合测试报告
 

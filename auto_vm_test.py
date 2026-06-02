@@ -496,7 +496,11 @@ BENCHMARK_LOCK_FILE = "/tmp/vm_benchmark_running.lock"
 
 
 def start_monitor(ctx: TestContext) -> bool:
-    """Start qemu_monitor.py in background, waiting for benchmark lock file"""
+    """Start qemu_monitor.py with stress-file + duration sync
+
+    Monitor waits for lock file to appear before sampling (no idle sampling).
+    After duration seconds, monitor stops naturally and generates Excel.
+    """
     log(ctx, "Step 7: Starting monitoring...")
 
     config = ctx.config
@@ -508,8 +512,8 @@ def start_monitor(ctx: TestContext) -> bool:
     numa_nodes = ",".join(str(n) for n in monitor["numa_nodes"])
     log_dir = os.path.join(ctx.result_dir, "qemu_monitor")
 
-    # Use --stress-file to sync: monitor waits for lock file before starting
-    # This ensures monitoring time aligns exactly with benchmark time
+    # Use --stress-file + -t duration: monitor waits for lock file, then runs for duration
+    # This ensures: 1) no idle sampling before benchmark, 2) natural stop after duration, 3) Excel generated
     cmd = [
         "python3", "qemu_monitor.py",
         "-t", str(duration),
@@ -523,16 +527,17 @@ def start_monitor(ctx: TestContext) -> bool:
         cmd.append("--enable-capture")
 
     log(ctx, f"Executing: {' '.join(cmd)}")
-    log(ctx, f"Monitor will wait for benchmark lock file: {BENCHMARK_LOCK_FILE}")
+    log(ctx, f"Monitor waits for lock file: {BENCHMARK_LOCK_FILE}")
+    log(ctx, f"Monitor will run {duration}s after lock file appears, then generate Excel")
 
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     ctx.monitor_pid = proc.pid
-    log(ctx, f"Monitor started with PID {proc.pid} (waiting for benchmark)")
+    log(ctx, f"Monitor started with PID {ctx.monitor_pid}")
 
     time.sleep(2)
     if proc.poll() is None:
-        log(ctx, "Monitor ready, waiting for benchmark to start...")
+        log(ctx, "Monitor ready, waiting for benchmark lock file...")
         return True
 
     log(ctx, f"Monitor failed to start")
@@ -552,8 +557,8 @@ def run_benchmark(ctx: TestContext) -> bool:
 
     # Create lock file to signal monitor to start sampling
     Path(BENCHMARK_LOCK_FILE).touch()
-    log(ctx, f"Created benchmark lock file: {BENCHMARK_LOCK_FILE}")
-    log(ctx, "Monitor will now start sampling")
+    log(ctx, f"Created lock file: {BENCHMARK_LOCK_FILE}")
+    log(ctx, "Monitor will now start sampling (aligned with benchmark)")
 
     # Build command
     cmd = [
@@ -577,10 +582,9 @@ def run_benchmark(ctx: TestContext) -> bool:
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=test["duration"] + 300
     )
 
-    # Remove lock file after benchmark completes
-    if os.path.exists(BENCHMARK_LOCK_FILE):
-        os.remove(BENCHMARK_LOCK_FILE)
-        log(ctx, f"Removed benchmark lock file: {BENCHMARK_LOCK_FILE}")
+    # Note: Do NOT remove lock file here. Monitor uses duration to stop naturally.
+    # This ensures Excel report is generated properly.
+    log(ctx, "Benchmark completed, monitor will stop after duration and generate Excel")
 
     print(result.stdout)
     if result.stderr:
@@ -606,36 +610,52 @@ def run_benchmark(ctx: TestContext) -> bool:
 # ==================== Step 9: Stop Monitor and Collect Results ====================
 
 def stop_monitor(ctx: TestContext):
-    """Wait for monitor to complete naturally (generates Excel on completion)"""
+    """Wait for monitor to complete naturally and generate Excel report"""
     if ctx.monitor_pid:
         log(ctx, f"Waiting for monitor PID {ctx.monitor_pid} to complete...")
 
-        # Monitor has duration set, it will finish naturally and generate Excel
-        # Wait for it to finish (max wait = duration + 60s buffer)
+        # Monitor stops after duration seconds, then needs time to:
+        # 1. Wait for devkit/ksys/ub_watch to finish (they also run for duration)
+        # 2. Parse all log files
+        # 3. Generate Excel report with charts
+        # Total can take 2-5 minutes after sampling stops
         try:
             proc = psutil.Process(ctx.monitor_pid)
-            max_wait = ctx.config["test"]["duration"] + 60
+            # Wait up to 5 minutes for Excel generation
+            max_wait = 300
             start = time.time()
 
             while time.time() - start < max_wait:
                 if not proc.is_running():
-                    log(ctx, "Monitor completed naturally - Excel report generated")
+                    log(ctx, "Monitor completed - Excel report should be generated")
+                    # Extra wait to ensure files are fully written
+                    time.sleep(10)
                     break
+                elapsed = int(time.time() - start)
+                if elapsed % 30 == 0:  # Log every 30s
+                    log(ctx, f"Monitor still processing... ({elapsed}s elapsed)")
                 time.sleep(5)
 
-            # If still running after expected time, wait a bit more then force stop
+            # If still running after max_wait, force terminate
             if proc.is_running():
-                log(ctx, "Monitor still running, waiting additional 30s...")
-                time.sleep(30)
-                if proc.is_running():
-                    log(ctx, "Force terminating monitor...")
-                    os.kill(ctx.monitor_pid, signal.SIGTERM)
-                    time.sleep(3)
-                    log(ctx, "Monitor terminated (Excel may not be complete)")
+                log(ctx, f"Monitor still running after {max_wait}s, force terminating...")
+                os.kill(ctx.monitor_pid, signal.SIGTERM)
+                time.sleep(5)
+                try:
+                    os.kill(ctx.monitor_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                log(ctx, "Monitor terminated - Excel may not be complete")
         except psutil.NoSuchProcess:
-            log(ctx, "Monitor already completed")
+            log(ctx, "Monitor already completed - Excel should be generated")
+            time.sleep(10)  # Wait for final file writes
         except Exception as e:
             log(ctx, f"Error waiting for monitor: {e}")
+
+    # Clean up lock file after monitor completes
+    if os.path.exists(BENCHMARK_LOCK_FILE):
+        os.remove(BENCHMARK_LOCK_FILE)
+        log(ctx, f"Cleaned up lock file: {BENCHMARK_LOCK_FILE}")
 
 
 def collect_results(ctx: TestContext):
@@ -717,6 +737,11 @@ def main():
     # Create log file
     Path(log_file).touch()
 
+    # Clean up old lock file before test starts (prevent false detection)
+    if os.path.exists(BENCHMARK_LOCK_FILE):
+        os.remove(BENCHMARK_LOCK_FILE)
+        log(ctx, f"Cleaned up stale lock file before test: {BENCHMARK_LOCK_FILE}")
+
     log(ctx, "=" * 60)
     log(ctx, "Multi-VM Agent Automation Test Started")
     log(ctx, f"Config: {args.config}")
@@ -794,6 +819,11 @@ def main():
         log(ctx, f"Result: {'SUCCESS' if success else 'FAILED'}")
         log(ctx, f"Result directory: {result_dir}")
         log(ctx, "=" * 60)
+
+        # Ensure lock file is cleaned up on exit (prevent stale file for next test)
+        if os.path.exists(BENCHMARK_LOCK_FILE):
+            os.remove(BENCHMARK_LOCK_FILE)
+            log(ctx, f"Cleaned up lock file on exit: {BENCHMARK_LOCK_FILE}")
 
         print(f"\nTest result saved to: {result_dir}")
 
