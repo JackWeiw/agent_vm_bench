@@ -654,6 +654,9 @@ def generate_summary_report(results: Dict, output_path: str):
 
         df = pd.DataFrame(rows)
 
+        # Sort by vm_count, ratio, active_percent ascending
+        df = df.sort_values(by=['vm_count', 'ratio', 'active_percent'], ascending=[True, True, True])
+
         # Save to Excel
         df.to_excel(output_path, index=False, sheet_name="Summary")
 

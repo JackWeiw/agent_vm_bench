@@ -1,10 +1,9 @@
 # Multi-VM Agent Automation Test System Design Document
 
-**中文版**: [2026-06-02-multi-vm-automation-design.md](2026-06-02-multi-vm-automation-design.md)
+[**中文版**](design.md)
 
 **Date**: 2026-06-02
 **Author**: Jack
-**Status**: Design Phase
 
 ---
 
