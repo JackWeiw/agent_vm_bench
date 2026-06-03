@@ -1,6 +1,6 @@
 # 多VM Agent自动化测试系统设计文档
 
-**English Version**: [2026-06-02-multi-vm-automation-design-en.md](2026-06-02-multi-vm-automation-design-en.md)
+[**English Version**](design-en.md)
 
 **日期**: 2026-06-02
 **作者**: Jack
