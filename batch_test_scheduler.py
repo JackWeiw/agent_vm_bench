@@ -27,6 +27,9 @@ from pathlib import Path
 from typing import Dict, List, Any, Tuple
 from dataclasses import dataclass
 
+# Import shared metrics definitions
+from metrics import EXCEL_METRIC_KEY_MAP, BROWSER_METRIC_KEY_MAP, DISPLAY_NAME_MAP
+
 
 @dataclass
 class TestTask:
@@ -194,7 +197,10 @@ def move_config_to_result(config_file: str, result_dir: str, task_id: str):
 
 
 def extract_browser_metrics_from_report(result_dir: str) -> Dict:
-    """Extract browser metrics from vm_bench_lite bench_report file"""
+    """Extract browser metrics from vm_bench_lite bench_report file
+
+    Uses shared BROWSER_METRIC_KEY_MAP from metrics_definitions.py
+    """
     vm_bench_dir = os.path.join(result_dir, "vm_bench_lite")
 
     if not os.path.exists(vm_bench_dir):
@@ -210,28 +216,29 @@ def extract_browser_metrics_from_report(result_dir: str) -> Dict:
     with open(report_path, encoding="utf-8") as f:
         content = f.read()
 
-    # Parse metrics using regex
+    # Parse metrics using regex with shared mapping
     metrics = {}
-
-    # Success Rate: X.X%
-    match = re.search(r"Success Rate:\s+([\d.]+)%", content)
-    if match:
-        metrics["success_rate"] = float(match.group(1))
-
-    # Avg Latency: X.Xms
-    match = re.search(r"Avg Latency:\s+([\d.]+)ms", content)
-    if match:
-        metrics["avg_latency"] = float(match.group(1))
-
-    # P99 Latency: X.Xms
-    match = re.search(r"P99 Latency:\s+([\d.]+)ms", content)
-    if match:
-        metrics["p99_latency"] = float(match.group(1))
-
-    # Total Tasks
-    match = re.search(r"Total Tasks:\s+(\d+)", content)
-    if match:
-        metrics["total_tasks"] = int(match.group(1))
+    for source_name, internal_key in BROWSER_METRIC_KEY_MAP.items():
+        # Success Rate: X.X%
+        if source_name == "Success Rate":
+            match = re.search(r"Success Rate:\s+([\d.]+)%", content)
+            if match:
+                metrics[internal_key] = float(match.group(1))
+        # Avg Latency: X.Xms
+        elif source_name == "Avg Latency":
+            match = re.search(r"Avg Latency:\s+([\d.]+)ms", content)
+            if match:
+                metrics[internal_key] = float(match.group(1))
+        # P99 Latency: X.Xms
+        elif source_name == "P99 Latency":
+            match = re.search(r"P99 Latency:\s+([\d.]+)ms", content)
+            if match:
+                metrics[internal_key] = float(match.group(1))
+        # Total Tasks
+        elif source_name == "Total Tasks":
+            match = re.search(r"Total Tasks:\s+(\d+)", content)
+            if match:
+                metrics[internal_key] = int(match.group(1))
 
     return metrics
 
@@ -257,75 +264,33 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
     try:
         import pandas as pd
 
-        # ========== Summary sheet ==========
-        try:
-            df_summary = pd.read_excel(excel_path, sheet_name="Summary")
-            for idx, row in df_summary.iterrows():
-                metric = str(row["Metric"]).strip() if pd.notna(row["Metric"]) else ""
-                value = row["Value"]
-                if metric == "VM Avg CPU":
-                    metrics["avg_cpu_percent"] = float(value) if pd.notna(value) else 0
-                elif metric == "VM Peak Total CPU":
-                    metrics["max_cpu_percent"] = float(value) if pd.notna(value) else 0
-        except Exception:
-            pass
+        # Process each sheet using shared EXCEL_METRIC_KEY_MAP
+        for sheet_name, sheet_key_map in EXCEL_METRIC_KEY_MAP.items():
+            if sheet_name in ["-", "bench_report", "config.yaml", "NUMA_Bandwidth"]:
+                continue  # Skip non-Excel sources and special handling sheets
 
-        # ========== DevKit_TopDown sheet (13 metrics) ==========
-        try:
-            df_topdown = pd.read_excel(excel_path, sheet_name="DevKit_TopDown")
-            for idx, row in df_topdown.iterrows():
-                metric = str(row["Metric"]).strip() if pd.notna(row["Metric"]) else ""
-                value = row["Value"]
-                # Map metric names to keys
-                key_map = {
-                    "Cycles Avg": "td_cycles_avg",
-                    "Instructions Avg": "td_instructions_avg",
-                    "IPC Avg": "td_ipc_avg",
-                    "IPC Max": "td_ipc_max",
-                    "IPC Min": "td_ipc_min",
-                    "Bad Speculation (%)": "td_bad_speculation",
-                    "Frontend Bound (%)": "td_frontend_bound",
-                    "Retiring (%)": "td_retiring",
-                    "Backend Bound (%)": "td_backend_bound",
-                    "L3 Bound (%)": "td_l3_bound",
-                    "Mem Bound (%)": "td_mem_bound",
-                    "Latency Bound (%)": "td_latency_bound",
-                    "Bandwidth Bound (%)": "td_bandwidth_bound",
-                }
-                if metric in key_map:
-                    metrics[key_map[metric]] = float(value) if pd.notna(value) else 0
-        except Exception:
-            pass
+            try:
+                df = pd.read_excel(excel_path, sheet_name=sheet_name)
+                for idx, row in df.iterrows():
+                    metric = str(row["Metric"]).strip() if pd.notna(row.get("Metric", "")) else ""
+                    value = row.get("Value")
+                    if metric in sheet_key_map and pd.notna(value):
+                        try:
+                            metrics[sheet_key_map[metric]] = float(value)
+                        except (ValueError, TypeError):
+                            pass
+            except Exception:
+                pass
 
-        # ========== DevKit_Memory sheet (6 metrics) ==========
-        try:
-            df_mem = pd.read_excel(excel_path, sheet_name="DevKit_Memory")
-            for idx, row in df_mem.iterrows():
-                metric = str(row["Metric"]).strip() if pd.notna(row["Metric"]) else ""
-                value = row["Value"]
-                key_map = {
-                    "L1D Miss (%)": "mem_l1d_miss",
-                    "L1I Miss (%)": "mem_l1i_miss",
-                    "L2D Miss (%)": "mem_l2d_miss",
-                    "L2I Miss (%)": "mem_l2i_miss",
-                    "DDR Read (MB/s)": "mem_ddr_read",
-                    "DDR Write (MB/s)": "mem_ddr_write",
-                }
-                if metric in key_map:
-                    metrics[key_map[metric]] = float(value) if pd.notna(value) else 0
-        except Exception:
-            pass
-
-        # ========== NUMA_Bandwidth sheet ==========
+        # Special handling for NUMA_Bandwidth (different table structure)
         try:
             df_numa = pd.read_excel(excel_path, sheet_name="NUMA_Bandwidth")
-            # Store per-node bandwidth, also compute total
             total_read = 0.0
             total_write = 0.0
             for idx, row in df_numa.iterrows():
-                node = str(row["NUMA Node"]).strip() if pd.notna(row["NUMA Node"]) else ""
-                read = float(row["Read (MB/s)"]) if pd.notna(row["Read (MB/s)"]) else 0
-                write = float(row["Write (MB/s)"]) if pd.notna(row["Write (MB/s)"]) else 0
+                node = str(row["NUMA Node"]).strip() if pd.notna(row.get("NUMA Node", "")) else ""
+                read = float(row["Read (MB/s)"]) if pd.notna(row.get("Read (MB/s)")) else 0
+                write = float(row["Write (MB/s)"]) if pd.notna(row.get("Write (MB/s)")) else 0
                 if node:
                     metrics[f"numa{node}_read"] = read
                     metrics[f"numa{node}_write"] = write
@@ -333,54 +298,6 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
                     total_write += write
             metrics["numa_total_read"] = total_read
             metrics["numa_total_write"] = total_write
-        except Exception:
-            pass
-
-        # ========== KSys sheet ==========
-        try:
-            df_ksys = pd.read_excel(excel_path, sheet_name="KSys")
-            for idx, row in df_ksys.iterrows():
-                metric = str(row["Metric"]).strip() if pd.notna(row["Metric"]) else ""
-                value = row["Value"]
-                key_map = {
-                    "L2 Miss Latency Max": "ksys_l2_latency_max",
-                    "L2 Miss Latency Min": "ksys_l2_latency_min",
-                    "L2 Miss Latency Avg": "ksys_l2_latency_avg",
-                    "L3 Miss Latency Max": "ksys_l3_latency_max",
-                    "L3 Miss Latency Min": "ksys_l3_latency_min",
-                    "L3 Miss Latency Avg": "ksys_l3_latency_avg",
-                    "IPC": "ksys_ipc",
-                    "Retiring (%)": "ksys_retiring",
-                    "Frontend Bound (%)": "ksys_frontend_bound",
-                    "Bad Speculation (%)": "ksys_bad_speculation",
-                    "Backend Bound (%)": "ksys_backend_bound",
-                }
-                if metric in key_map:
-                    metrics[key_map[metric]] = float(value) if pd.notna(value) else 0
-        except Exception:
-            pass
-
-        # ========== UBWatch_Latency sheet ==========
-        try:
-            df_ub = pd.read_excel(excel_path, sheet_name="UBWatch_Latency")
-            for idx, row in df_ub.iterrows():
-                metric = str(row["Metric"]).strip() if pd.notna(row["Metric"]) else ""
-                value = row["Value"]
-                key_map = {
-                    "Samples": "ub_samples",
-                    "Avg Read (ns)": "ub_avg_read_ns",
-                    "Avg Write (ns)": "ub_avg_write_ns",
-                    "Min Read (ns)": "ub_min_read_ns",
-                    "Min Write (ns)": "ub_min_write_ns",
-                    "Max Read (ns)": "ub_max_read_ns",
-                    "Max Write (ns)": "ub_max_write_ns",
-                }
-                if metric in key_map:
-                    # Handle numeric values, skip "Latency Path" which is a string
-                    try:
-                        metrics[key_map[metric]] = float(value) if pd.notna(value) else 0
-                    except (ValueError, TypeError):
-                        pass
         except Exception:
             pass
 
@@ -396,53 +313,22 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
                 for row in ws.iter_rows(min_row=2, values_only=True):
                     if row[0]:
                         metric = str(row[0]).strip()
-                        if metric in key_map:
+                        if metric in key_map and row[1]:
                             try:
-                                result[key_map[metric]] = float(row[1]) if row[1] else 0
+                                result[key_map[metric]] = float(row[1])
                             except (ValueError, TypeError):
                                 pass
                 return result
 
-            # Summary sheet
-            if "Summary" in wb.sheetnames:
-                ws = wb["Summary"]
-                key_map = {"VM Avg CPU": "avg_cpu_percent", "VM Peak Total CPU": "max_cpu_percent"}
-                metrics.update(extract_sheet_metrics(ws, key_map))
+            # Process each sheet using shared EXCEL_METRIC_KEY_MAP
+            for sheet_name, sheet_key_map in EXCEL_METRIC_KEY_MAP.items():
+                if sheet_name in ["-", "bench_report", "config.yaml", "NUMA_Bandwidth"]:
+                    continue
+                if sheet_name in wb.sheetnames:
+                    ws = wb[sheet_name]
+                    metrics.update(extract_sheet_metrics(ws, sheet_key_map))
 
-            # DevKit_TopDown
-            if "DevKit_TopDown" in wb.sheetnames:
-                ws = wb["DevKit_TopDown"]
-                key_map = {
-                    "Cycles Avg": "td_cycles_avg",
-                    "Instructions Avg": "td_instructions_avg",
-                    "IPC Avg": "td_ipc_avg",
-                    "IPC Max": "td_ipc_max",
-                    "IPC Min": "td_ipc_min",
-                    "Bad Speculation (%)": "td_bad_speculation",
-                    "Frontend Bound (%)": "td_frontend_bound",
-                    "Retiring (%)": "td_retiring",
-                    "Backend Bound (%)": "td_backend_bound",
-                    "L3 Bound (%)": "td_l3_bound",
-                    "Mem Bound (%)": "td_mem_bound",
-                    "Latency Bound (%)": "td_latency_bound",
-                    "Bandwidth Bound (%)": "td_bandwidth_bound",
-                }
-                metrics.update(extract_sheet_metrics(ws, key_map))
-
-            # DevKit_Memory
-            if "DevKit_Memory" in wb.sheetnames:
-                ws = wb["DevKit_Memory"]
-                key_map = {
-                    "L1D Miss (%)": "mem_l1d_miss",
-                    "L1I Miss (%)": "mem_l1i_miss",
-                    "L2D Miss (%)": "mem_l2d_miss",
-                    "L2I Miss (%)": "mem_l2i_miss",
-                    "DDR Read (MB/s)": "mem_ddr_read",
-                    "DDR Write (MB/s)": "mem_ddr_write",
-                }
-                metrics.update(extract_sheet_metrics(ws, key_map))
-
-            # NUMA_Bandwidth
+            # Special handling for NUMA_Bandwidth
             if "NUMA_Bandwidth" in wb.sheetnames:
                 ws = wb["NUMA_Bandwidth"]
                 total_read = 0.0
@@ -461,38 +347,6 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
                             pass
                 metrics["numa_total_read"] = total_read
                 metrics["numa_total_write"] = total_write
-
-            # KSys
-            if "KSys" in wb.sheetnames:
-                ws = wb["KSys"]
-                key_map = {
-                    "L2 Miss Latency Max": "ksys_l2_latency_max",
-                    "L2 Miss Latency Min": "ksys_l2_latency_min",
-                    "L2 Miss Latency Avg": "ksys_l2_latency_avg",
-                    "L3 Miss Latency Max": "ksys_l3_latency_max",
-                    "L3 Miss Latency Min": "ksys_l3_latency_min",
-                    "L3 Miss Latency Avg": "ksys_l3_latency_avg",
-                    "IPC": "ksys_ipc",
-                    "Retiring (%)": "ksys_retiring",
-                    "Frontend Bound (%)": "ksys_frontend_bound",
-                    "Bad Speculation (%)": "ksys_bad_speculation",
-                    "Backend Bound (%)": "ksys_backend_bound",
-                }
-                metrics.update(extract_sheet_metrics(ws, key_map))
-
-            # UBWatch_Latency
-            if "UBWatch_Latency" in wb.sheetnames:
-                ws = wb["UBWatch_Latency"]
-                key_map = {
-                    "Samples": "ub_samples",
-                    "Avg Read (ns)": "ub_avg_read_ns",
-                    "Avg Write (ns)": "ub_avg_write_ns",
-                    "Min Read (ns)": "ub_min_read_ns",
-                    "Min Write (ns)": "ub_min_write_ns",
-                    "Max Read (ns)": "ub_max_read_ns",
-                    "Max Write (ns)": "ub_max_write_ns",
-                }
-                metrics.update(extract_sheet_metrics(ws, key_map))
 
         except ImportError:
             print(f"WARNING: Neither pandas nor openpyxl available for {result_dir}")
@@ -565,7 +419,10 @@ def collect_all_results(tasks: List[TestTask], base_dir: str) -> Dict[str, Any]:
 
 
 def generate_summary_report(results: Dict, output_path: str):
-    """Generate Excel summary report with ALL metrics from all sheets"""
+    """Generate Excel summary report with ALL metrics from all sheets
+
+    Uses shared metrics definitions from metrics_definitions.py
+    """
     try:
         import pandas as pd
 
@@ -576,83 +433,50 @@ def generate_summary_report(results: Dict, output_path: str):
             browser = task_data.get("browser_metrics", {})
             qemu = task_data.get("qemu_metrics", {})
 
-            # Basic test info
-            row = {
-                "test_id": task_data.get("task_id", ""),
-                "vm_count": params.get("vm_count", 0),
-                "ratio": params.get("ratio", 0),
-                "active_percent": params.get("active_percent", 0),
-                "active_vm_count": int(params.get("vm_count", 0) * params.get("active_percent", 0)),
-                "success": task_data.get("success", False),
-            }
+            # Build row dynamically using metrics definitions
+            row = {}
 
-            # Browser metrics
-            row["browser_success_rate"] = browser.get("success_rate", 0)
-            row["browser_avg_latency_ms"] = browser.get("avg_latency", 0)
-            row["browser_p99_latency_ms"] = browser.get("p99_latency", 0)
+            # Basic info (from task_data and params)
+            row["test_id"] = task_data.get("task_id", "")
+            row["vm_count"] = params.get("vm_count", 0)
+            row["ratio"] = params.get("ratio", 0)
+            row["active_percent"] = params.get("active_percent", 0)
+            row["active_vm_count"] = int(params.get("vm_count", 0) * params.get("active_percent", 0))
+            row["success"] = task_data.get("success", False)
 
-            # VM CPU metrics (from Summary sheet)
-            row["vm_avg_cpu_percent"] = qemu.get("avg_cpu_percent", 0)
-            row["vm_max_cpu_percent"] = qemu.get("max_cpu_percent", 0)
+            # Browser metrics (use internal keys from metrics_definitions)
+            for key in ["browser_success_rate", "browser_avg_latency_ms", "browser_p99_latency_ms", "browser_total_tasks"]:
+                # Map from old keys to new keys if needed
+                old_key_map = {
+                    "browser_success_rate": "browser_success_rate",
+                    "browser_avg_latency_ms": "browser_avg_latency_ms",
+                    "browser_p99_latency_ms": "browser_p99_latency_ms",
+                    "browser_total_tasks": "browser_total_tasks",
+                }
+                row[key] = browser.get(key, browser.get(old_key_map.get(key, key), 0))
 
-            # DevKit TopDown metrics (13 metrics)
-            row["td_cycles_avg"] = qemu.get("td_cycles_avg", 0)
-            row["td_instructions_avg"] = qemu.get("td_instructions_avg", 0)
-            row["td_ipc_avg"] = qemu.get("td_ipc_avg", 0)
-            row["td_ipc_max"] = qemu.get("td_ipc_max", 0)
-            row["td_ipc_min"] = qemu.get("td_ipc_min", 0)
-            row["td_bad_speculation_percent"] = qemu.get("td_bad_speculation", 0)
-            row["td_frontend_bound_percent"] = qemu.get("td_frontend_bound", 0)
-            row["td_retiring_percent"] = qemu.get("td_retiring", 0)
-            row["td_backend_bound_percent"] = qemu.get("td_backend_bound", 0)
-            row["td_l3_bound_percent"] = qemu.get("td_l3_bound", 0)
-            row["td_mem_bound_percent"] = qemu.get("td_mem_bound", 0)
-            row["td_latency_bound_percent"] = qemu.get("td_latency_bound", 0)
-            row["td_bandwidth_bound_percent"] = qemu.get("td_bandwidth_bound", 0)
-
-            # DevKit Memory metrics (6 metrics)
-            row["mem_l1d_miss_percent"] = qemu.get("mem_l1d_miss", 0)
-            row["mem_l1i_miss_percent"] = qemu.get("mem_l1i_miss", 0)
-            row["mem_l2d_miss_percent"] = qemu.get("mem_l2d_miss", 0)
-            row["mem_l2i_miss_percent"] = qemu.get("mem_l2i_miss", 0)
-            row["mem_ddr_read_mb_s"] = qemu.get("mem_ddr_read", 0)
-            row["mem_ddr_write_mb_s"] = qemu.get("mem_ddr_write", 0)
-
-            # NUMA Bandwidth (total)
-            row["numa_total_read_mb_s"] = qemu.get("numa_total_read", 0)
-            row["numa_total_write_mb_s"] = qemu.get("numa_total_write", 0)
-            # Per-node NUMA bandwidth (dynamically add if exists)
+            # All QEMU/Excel metrics - just copy them directly
             for key, value in qemu.items():
-                if key.startswith("numa") and "_read" in key and key != "numa_total_read":
-                    row[key] = value
-                elif key.startswith("numa") and "_write" in key and key != "numa_total_write":
-                    row[key] = value
-
-            # KSys metrics
-            row["ksys_l2_latency_max"] = qemu.get("ksys_l2_latency_max", 0)
-            row["ksys_l2_latency_min"] = qemu.get("ksys_l2_latency_min", 0)
-            row["ksys_l2_latency_avg"] = qemu.get("ksys_l2_latency_avg", 0)
-            row["ksys_l3_latency_max"] = qemu.get("ksys_l3_latency_max", 0)
-            row["ksys_l3_latency_min"] = qemu.get("ksys_l3_latency_min", 0)
-            row["ksys_l3_latency_avg"] = qemu.get("ksys_l3_latency_avg", 0)
-            row["ksys_ipc"] = qemu.get("ksys_ipc", 0)
-            row["ksys_retiring_percent"] = qemu.get("ksys_retiring", 0)
-            row["ksys_frontend_bound_percent"] = qemu.get("ksys_frontend_bound", 0)
-            row["ksys_bad_speculation_percent"] = qemu.get("ksys_bad_speculation", 0)
-            row["ksys_backend_bound_percent"] = qemu.get("ksys_backend_bound", 0)
-
-            # UBWatch Latency metrics
-            row["ub_samples"] = qemu.get("ub_samples", 0)
-            row["ub_avg_read_ns"] = qemu.get("ub_avg_read_ns", 0)
-            row["ub_avg_write_ns"] = qemu.get("ub_avg_write_ns", 0)
-            row["ub_min_read_ns"] = qemu.get("ub_min_read_ns", 0)
-            row["ub_min_write_ns"] = qemu.get("ub_min_write_ns", 0)
-            row["ub_max_read_ns"] = qemu.get("ub_max_read_ns", 0)
-            row["ub_max_write_ns"] = qemu.get("ub_max_write_ns", 0)
+                row[key] = value
 
             rows.append(row)
 
         df = pd.DataFrame(rows)
+
+        # Rename columns to display names using DISPLAY_NAME_MAP
+        rename_map = {}
+        for col in df.columns:
+            if col in DISPLAY_NAME_MAP:
+                rename_map[col] = DISPLAY_NAME_MAP[col]
+            # Handle dynamic NUMA columns
+            elif col.startswith("numa") and "_read" in col:
+                node = col.replace("numa", "").replace("_read", "")
+                rename_map[col] = f"NUMA{node} Read (MB/s)"
+            elif col.startswith("numa") and "_write" in col:
+                node = col.replace("numa", "").replace("_write", "")
+                rename_map[col] = f"NUMA{node} Write (MB/s)"
+
+        df = df.rename(columns=rename_map)
 
         # Save to Excel
         df.to_excel(output_path, index=False, sheet_name="Summary")
