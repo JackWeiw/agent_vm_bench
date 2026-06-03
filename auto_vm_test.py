@@ -40,10 +40,12 @@ class TestContext:
     config: Dict
     result_dir: str
     log_file: str
-    smap_tool_pid: Optional[int] = None
+    smap_pid: Optional[int] = None
+    smap_stdout: Optional[object] = None
+    smap_stderr: Optional[object] = None
     monitor_pid: Optional[int] = None
-    monitor_stdout_file: Optional[object] = None  # File handle for monitor stdout
-    monitor_stderr_file: Optional[object] = None  # File handle for monitor stderr
+    monitor_stdout: Optional[object] = None
+    monitor_stderr: Optional[object] = None
     vm_ips: List[str] = field(default_factory=list)
     qemu_pids: Dict[str, int] = field(default_factory=dict)
     start_time: float = 0.0
@@ -322,19 +324,28 @@ def start_smap_tool(ctx: TestContext) -> bool:
     ratio_percent = int(ratio * 100)  # Convert 0.15 to 15
 
     # Build command
-    pid_list = " ".join(str(p) for p in qemu_pids.values())
     cmd = f"./smap_tool {vm_count} `pidof qemu-kvm` --swap-size {swap_size_mb} --ratio {ratio_percent}"
 
     log(ctx, f"Executing: {cmd}")
 
+    # Redirect stdout/stderr to log files (prevent PIPE buffer overflow)
+    smap_log_dir = os.path.join(ctx.result_dir, "smap_tool")
+    os.makedirs(smap_log_dir, exist_ok=True)
+    smap_stdout_path = os.path.join(smap_log_dir, "smap_stdout.log")
+    smap_stderr_path = os.path.join(smap_log_dir, "smap_stderr.log")
+
+    ctx.smap_stdout = open(smap_stdout_path, 'w')
+    ctx.smap_stderr = open(smap_stderr_path, 'w')
+
     # Start smap_tool in background
     proc = subprocess.Popen(
         cmd, shell=True, cwd=smap_path,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        stdout=ctx.smap_stdout, stderr=ctx.smap_stderr
     )
 
-    ctx.smap_tool_pid = proc.pid
+    ctx.smap_pid = proc.pid
     log(ctx, f"smap_tool started with PID {proc.pid}")
+    log(ctx, f"smap_tool output redirected to {smap_log_dir}/")
 
     # Wait a moment and verify
     time.sleep(3)
@@ -343,6 +354,9 @@ def start_smap_tool(ctx: TestContext) -> bool:
         log(ctx, "smap_tool running successfully")
         return True
     else:
+        # Close files if failed
+        ctx.smap_stdout.close()
+        ctx.smap_stderr.close()
         log(ctx, f"smap_tool failed to start, return code {proc.returncode}")
         return False
 
@@ -552,8 +566,8 @@ def start_monitor(ctx: TestContext) -> bool:
     proc = subprocess.Popen(cmd, stdout=stdout_f, stderr=stderr_f)
 
     ctx.monitor_pid = proc.pid
-    ctx.monitor_stdout_file = stdout_f  # Store for later closing
-    ctx.monitor_stderr_file = stderr_f
+    ctx.monitor_stdout = stdout_f
+    ctx.monitor_stderr = stderr_f
 
     log(ctx, f"Monitor started with PID {ctx.monitor_pid}")
     log(ctx, f"Monitor output redirected to {monitor_stdout_log}")
@@ -691,14 +705,14 @@ def stop_monitor(ctx: TestContext):
             log(ctx, f"Error waiting for monitor: {e}")
 
         # Close file handles
-        if ctx.monitor_stdout_file:
+        if ctx.monitor_stdout:
             try:
-                ctx.monitor_stdout_file.close()
+                ctx.monitor_stdout.close()
             except:
                 pass
-        if ctx.monitor_stderr_file:
+        if ctx.monitor_stderr:
             try:
-                ctx.monitor_stderr_file.close()
+                ctx.monitor_stderr.close()
             except:
                 pass
 
@@ -742,18 +756,30 @@ def cleanup(ctx: TestContext, os_env: Dict):
     log(ctx, "Step 10: Cleanup...")
 
     # Stop smap_tool
-    if ctx.smap_tool_pid:
-        log(ctx, f"Stopping smap_tool PID {ctx.smap_tool_pid}...")
+    if ctx.smap_pid:
+        log(ctx, f"Stopping smap_tool PID {ctx.smap_pid}...")
         try:
-            os.kill(ctx.smap_tool_pid, signal.SIGTERM)
+            os.kill(ctx.smap_pid, signal.SIGTERM)
             time.sleep(2)
             try:
-                os.kill(ctx.smap_tool_pid, signal.SIGKILL)
+                os.kill(ctx.smap_pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             log(ctx, "smap_tool stopped")
         except ProcessLookupError:
             log(ctx, "smap_tool already stopped")
+
+    # Close smap_tool file handles
+    if ctx.smap_stdout:
+        try:
+            ctx.smap_stdout.close()
+        except:
+            pass
+    if ctx.smap_stderr:
+        try:
+            ctx.smap_stderr.close()
+        except:
+            pass
 
     # Delete VMs
     delete_vms(ctx, os_env)
