@@ -566,9 +566,17 @@ def collect_all_results(tasks: List[TestTask], base_dir: str) -> Dict[str, Any]:
 
 
 def generate_summary_report(results: Dict, output_path: str):
-    """Generate Excel summary report with ALL metrics from all sheets"""
+    """Generate Excel summary report with ALL metrics from all sheets
+
+    Output format:
+    Row 1: Source headers (merged cells showing data source)
+    Row 2: Column headers
+    Row 3+: Data rows
+    """
     try:
         import pandas as pd
+        from openpyxl import load_workbook
+        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
         # Build DataFrame with all metrics
         rows = []
@@ -659,13 +667,131 @@ def generate_summary_report(results: Dict, output_path: str):
         # Sort by vm_count, ratio, active_percent ascending
         df = df.sort_values(by=['vm_count', 'ratio', 'active_percent'], ascending=[True, True, True])
 
-        # Save to Excel
+        # Save to Excel first (creates basic structure)
         df.to_excel(output_path, index=False, sheet_name="Summary")
 
-        print(f"\nSummary report saved to: {output_path}")
+        # Now add source header row with merged cells
+        wb = load_workbook(output_path)
+        ws = wb["Summary"]
 
-    except ImportError:
-        print("WARNING: pandas not available, saving as JSON instead")
+        # Define column groupings with their sources
+        # Format: (source_name, start_col, end_col) - columns are 1-indexed
+        column_sources = []
+
+        # Track column positions
+        col_idx = 1
+
+        # Basic info (test_id, vm_count, ratio, active_percent, active_vm_count, success) - 6 columns
+        column_sources.append(("Basic Info (目录/config.yaml)", col_idx, col_idx + 5))
+        col_idx += 6
+
+        # Browser metrics - 4 columns
+        column_sources.append(("Browser (vm_bench_lite/bench_report.txt)", col_idx, col_idx + 3))
+        col_idx += 4
+
+        # VM CPU - 2 columns
+        column_sources.append(("VM CPU (Excel: Summary)", col_idx, col_idx + 1))
+        col_idx += 2
+
+        # DevKit TopDown - 13 columns
+        column_sources.append(("DevKit TopDown (Excel: DevKit_TopDown)", col_idx, col_idx + 12))
+        col_idx += 13
+
+        # DevKit Memory - 6 columns
+        column_sources.append(("DevKit Memory (Excel: DevKit_Memory)", col_idx, col_idx + 5))
+        col_idx += 6
+
+        # NUMA Bandwidth - 2 columns (base) + dynamic per-node columns
+        numa_end = col_idx + 1
+        # Check if there are per-node numa columns
+        numa_cols = [c for c in df.columns if c.startswith("numa") and c not in ["numa_total_read_mb_s", "numa_total_write_mb_s"]]
+        numa_end += len(numa_cols)
+        column_sources.append(("NUMA Bandwidth (Excel: NUMA_Bandwidth)", col_idx, numa_end))
+        col_idx = numa_end + 1
+
+        # KSys - 11 columns
+        column_sources.append(("KSys (Excel: KSys)", col_idx, col_idx + 10))
+        col_idx += 11
+
+        # UBWatch - 7 columns
+        column_sources.append(("UBWatch (Excel: UBWatch_Latency)", col_idx, col_idx + 6))
+
+        # Insert source header row at row 1
+        ws.insert_rows(1)
+
+        # Style definitions
+        header_font = Font(bold=True, size=11)
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_font_white = Font(bold=True, size=11, color="FFFFFF")
+        center_align = Alignment(horizontal="center", vertical="center")
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+
+        # Color fills for different sources
+        source_fills = {
+            "Basic": PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid"),  # Blue
+            "Browser": PatternFill(start_color="70AD47", end_color="70AD47", fill_type="solid"),  # Green
+            "VM CPU": PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid"),  # Orange
+            "DevKit TopDown": PatternFill(start_color="ED7D31", end_color="ED7D31", fill_type="solid"),  # Dark Orange
+            "DevKit Memory": PatternFill(start_color="A5A5A5", end_color="A5A5A5", fill_type="solid"),  # Gray
+            "NUMA": PatternFill(start_color="5B9BD5", end_color="5B9BD5", fill_type="solid"),  # Light Blue
+            "KSys": PatternFill(start_color="7030A0", end_color="7030A0", fill_type="solid"),  # Purple
+            "UBWatch": PatternFill(start_color="C55A11", end_color="C55A11", fill_type="solid"),  # Brown
+        }
+
+        # Create merged cells for source headers
+        for source_name, start_col, end_col in column_sources:
+            if start_col <= end_col:
+                # Merge cells
+                ws.merge_cells(start_row=1, start_column=start_col, end_row=1, end_column=end_col)
+
+                # Set value and style
+                cell = ws.cell(row=1, column=start_col)
+                cell.value = source_name
+                cell.alignment = center_align
+                cell.font = header_font_white
+
+                # Find matching fill color
+                fill = header_fill
+                for key, color_fill in source_fills.items():
+                    if key in source_name:
+                        fill = color_fill
+                        break
+                cell.fill = fill
+
+                # Add border to merged range
+                for c in range(start_col, end_col + 1):
+                    ws.cell(row=1, column=c).border = thin_border
+
+        # Style the column header row (row 2 now, after insert)
+        for c in range(1, len(df.columns) + 1):
+            cell = ws.cell(row=2, column=c)
+            cell.font = header_font
+            cell.fill = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
+            cell.alignment = center_align
+            cell.border = thin_border
+
+        # Set row height for header rows
+        ws.row_dimensions[1].height = 25
+        ws.row_dimensions[2].height = 20
+
+        # Freeze panes (freeze first two rows)
+        ws.freeze_panes = "A3"
+
+        # Save the workbook
+        wb.save(output_path)
+
+        print(f"\nSummary report saved to: {output_path}")
+        print(f"  - Row 1: Data source headers (merged cells)")
+        print(f"  - Row 2: Column names")
+        print(f"  - Row 3+: Test data")
+
+    except ImportError as e:
+        print(f"WARNING: Required libraries not available ({e}), saving as JSON instead")
         json_path = output_path.replace(".xlsx", ".json")
         with open(json_path, "w") as f:
             json.dump(results, f, indent=2)
