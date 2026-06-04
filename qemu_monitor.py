@@ -217,13 +217,23 @@ class LogCapture:
     All output is redirected to log files, not interfering with terminal display.
     """
 
-    def __init__(self, config: dict, duration: int, log_dir: str, numa_nodes: list):
+    # Default timeouts for different tools
+    DEFAULT_TOOL_TIMEOUTS = {
+        'devkit_mem': 60,      # DevKit usually completes quickly after duration
+        'devkit_top_down': 60,
+        'ub_watch': 60,
+        'ksys': 600,           # ksys needs extra time for data parsing (can be minutes)
+    }
+
+    def __init__(self, config: dict, duration: int, log_dir: str, numa_nodes: list,
+                 ksys_parse_timeout: int = None):
         """
         Args:
             config: paths from .env (devkit_path, ksys_path, ksys_config_path, ub_watch_path, devkit_cpu_range)
             duration: collection duration in seconds (same as qemu_monitor -t)
             log_dir: output directory for log files
             numa_nodes: list of NUMA nodes to monitor (for CPU range calculation)
+            ksys_parse_timeout: extra timeout for ksys parse phase (default 600s)
         """
         self.config = config
         self.duration = duration
@@ -234,6 +244,7 @@ class LogCapture:
         self.failed_startup = []  # tools that failed to start
         self.failed_runtime = []  # tools that failed during runtime
         self.start_time = None
+        self.ksys_parse_timeout = ksys_parse_timeout or self.DEFAULT_TOOL_TIMEOUTS['ksys']
 
     def _get_cpu_range(self) -> str:
         """Get CPU range for devkit top-down command"""
@@ -357,22 +368,176 @@ class LogCapture:
             except Exception:
                 pass
 
+    def _check_ksys_parse_progress(self) -> str:
+        """Check ksys.log for parse progress
+
+        Returns:
+            'completed' - parse finished, data output started
+            'parsing' - currently parsing data
+            'collecting' - still collecting data
+            'unknown' - cannot determine status
+        """
+        ksys_log_path = os.path.join(self.log_dir, 'ksys.log')
+        if not os.path.exists(ksys_log_path):
+            return 'unknown'
+
+        try:
+            with open(ksys_log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+
+            # Check parse completion markers
+            if 'Starting to process and print data' in content:
+                return 'completed'
+            if 'CPU Metrics' in content or 'Common Microarchitecture Metrics' in content:
+                return 'completed'
+            if 'Data saved successfully' in content:
+                return 'completed'
+
+            # Check if parsing started
+            if 'Starting to parse data' in content:
+                return 'parsing'
+
+            # Still in collection phase
+            if 'Starting to collect data' in content:
+                return 'collecting'
+
+            return 'unknown'
+        except Exception:
+            return 'unknown'
+
+    def _wait_for_ksys(self, proc) -> dict:
+        """Wait for ksys with extended timeout for parse phase
+
+        ksys has two phases:
+        1. Collect phase: duration seconds (data collection)
+        2. Parse phase: can take minutes for large data
+
+        Returns:
+            {'status': 'completed'|'timeout', 'returncode': int, 'elapsed': int}
+        """
+        tool_name = 'ksys'
+        start_time = time.time()
+
+        # Phase 1: Wait for collection to complete (duration + buffer)
+        collect_timeout = self.duration + 30
+        print(f"  [{tool_name}] Waiting for collection phase ({self.duration}s)...")
+
+        try:
+            proc.wait(timeout=collect_timeout)
+            elapsed = int(time.time() - start_time)
+            if proc.returncode == 0:
+                print(f"  ✓ {tool_name} completed in {elapsed}s")
+                return {'status': 'completed', 'returncode': 0, 'elapsed': elapsed}
+            else:
+                print(f"  ⚠ {tool_name} exited with code {proc.returncode} after {elapsed}s")
+                return {'status': 'completed', 'returncode': proc.returncode, 'elapsed': elapsed}
+        except subprocess.TimeoutExpired:
+            pass  # Continue to parse phase wait
+
+        # Phase 2: Wait for parse phase with extended timeout
+        parse_timeout = self.ksys_parse_timeout
+        total_timeout = collect_timeout + parse_timeout
+        print(f"  [{tool_name}] Collection done, waiting for parse phase (timeout={parse_timeout}s)...")
+
+        last_status = 'collecting'
+        warning_thresholds = [0.5, 0.75, 0.9]
+        warnings_given = [False, False, False]
+
+        while time.time() - start_time < total_timeout:
+            # Check if process completed
+            try:
+                proc.wait(timeout=5)
+                elapsed = int(time.time() - start_time)
+                if proc.returncode == 0:
+                    print(f"  ✓ {tool_name} parse completed, total {elapsed}s")
+                    return {'status': 'completed', 'returncode': 0, 'elapsed': elapsed}
+                else:
+                    print(f"  ⚠ {tool_name} exited with code {proc.returncode} after {elapsed}s")
+                    return {'status': 'completed', 'returncode': proc.returncode, 'elapsed': elapsed}
+            except subprocess.TimeoutExpired:
+                pass
+
+            # Check parse progress
+            current_status = self._check_ksys_parse_progress()
+            elapsed = int(time.time() - start_time)
+            elapsed_parse = elapsed - collect_timeout
+
+            if current_status != last_status:
+                last_status = current_status
+                if current_status == 'parsing':
+                    print(f"  [{tool_name}] Parse phase started ({elapsed}s total)")
+                elif current_status == 'completed':
+                    print(f"  [{tool_name}] Parse completed ({elapsed}s total)")
+
+            # Progress logging every 30s
+            if elapsed_parse > 0 and elapsed_parse % 30 == 0:
+                progress_ratio = elapsed_parse / parse_timeout
+                print(f"  [{tool_name}] Parse in progress... {elapsed_parse}s/{parse_timeout}s ({progress_ratio*100:.0f}%)")
+
+            # Warnings at thresholds
+            elapsed_ratio = elapsed_parse / parse_timeout
+            for i, threshold in enumerate(warning_thresholds):
+                if elapsed_ratio >= threshold and not warnings_given[i]:
+                    warnings_given[i] = True
+                    remaining = int(parse_timeout - elapsed_parse)
+                    print(f"  ⚠ [{tool_name}] Approaching parse timeout ({threshold*100:.0f}% used), {remaining}s remaining")
+
+            time.sleep(5)
+
+        # Timeout - force terminate
+        elapsed = int(time.time() - start_time)
+        print(f"  ⚠ [{tool_name}] Parse timeout after {elapsed}s total, terminating...")
+        proc.terminate()
+        time.sleep(3)
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+        print(f"  ⚠ {tool_name} timeout suggestions:")
+        print(f"      - Increase ksys_parse_timeout (current: {parse_timeout}s)")
+        print(f"      - Check ksys.log size and parse progress")
+        print(f"      - Reduce monitor sampling interval for less data")
+
+        return {'status': 'timeout', 'returncode': None, 'elapsed': elapsed}
+
     def wait(self):
-        """Wait for all processes to complete, track failures"""
+        """Wait for all processes to complete, track failures
+
+        Uses different timeouts for different tools:
+        - devkit/ub_watch: duration + 60s (quick completion expected)
+        - ksys: duration + ksys_parse_timeout (parse can take minutes)
+        """
         for tool_name, proc in self.processes.items():
             try:
-                # Add timeout to prevent hanging forever
-                # Tools should complete within duration + 60s buffer
-                timeout = self.duration + 60
-                proc.wait(timeout=timeout)
-                if proc.returncode != 0:
-                    self.failed_runtime.append({
-                        'tool': tool_name,
-                        'returncode': proc.returncode,
-                    })
+                # Get appropriate timeout for this tool
+                if tool_name == 'ksys':
+                    # ksys has special handling with parse phase monitoring
+                    result = self._wait_for_ksys(proc)
+                    if result['status'] == 'timeout':
+                        self.failed_runtime.append({
+                            'tool': tool_name,
+                            'error': 'parse_timeout',
+                            'elapsed': result['elapsed'],
+                        })
+                    elif result['returncode'] != 0:
+                        self.failed_runtime.append({
+                            'tool': tool_name,
+                            'returncode': result['returncode'],
+                        })
+                else:
+                    # Other tools: simple timeout
+                    timeout = self.duration + self.DEFAULT_TOOL_TIMEOUTS.get(tool_name, 60)
+                    proc.wait(timeout=timeout)
+                    if proc.returncode != 0:
+                        self.failed_runtime.append({
+                            'tool': tool_name,
+                            'returncode': proc.returncode,
+                        })
             except subprocess.TimeoutExpired:
                 # Process didn't finish within timeout, force terminate
-                print(f"⚠ {tool_name} timed out after {timeout}s, terminating...")
+                timeout_used = self.duration + self.DEFAULT_TOOL_TIMEOUTS.get(tool_name, 60)
+                print(f"⚠ {tool_name} timed out after {timeout_used}s, terminating...")
                 proc.terminate()
                 time.sleep(3)
                 try:
@@ -2367,6 +2532,8 @@ def main():
     parser.add_argument('--log-dir', type=str, help='Log output directory (default: logs_${timestamp}/ in current dir)')
     parser.add_argument('--enable-capture', action='store_true',
                         help='Enable parallel log collection with devkit/ksys/ub_watch')
+    parser.add_argument('--ksys-parse-timeout', type=int, default=600,
+                        help='Timeout for ksys data parsing phase in seconds (default: 600s, increase for large VM counts)')
     args = parser.parse_args()
 
     # Check root permission
@@ -2396,9 +2563,11 @@ def main():
     # Start log capture (parallel with monitor)
     if args.enable_capture:
         print("\n🚀 Starting log collection tools...")
-        capture = LogCapture(config, args.time, log_dir, m.target_numa_nodes)
+        capture = LogCapture(config, args.time, log_dir, m.target_numa_nodes,
+                             ksys_parse_timeout=args.ksys_parse_timeout)
         capture.start()
-        print(f"✓ Log collection tools started in background (duration={args.time}s)\n")
+        print(f"✓ Log collection tools started in background (duration={args.time}s)")
+        print(f"  ksys parse timeout: {args.ksys_parse_timeout}s")
 
     # Start QEMU monitoring
     if args.stress_process:
