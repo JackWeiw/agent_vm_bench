@@ -588,6 +588,7 @@ def generate_summary_report(results: Dict, output_path: str):
             }
 
             # Browser metrics
+            row["browser_total_tasks"] = browser.get("total_tasks", 0)
             row["browser_success_rate"] = browser.get("success_rate", 0)
             row["browser_avg_latency_ms"] = browser.get("avg_latency", 0)
             row["browser_p99_latency_ms"] = browser.get("p99_latency", 0)
