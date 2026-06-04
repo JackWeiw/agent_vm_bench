@@ -77,7 +77,7 @@ def generate_test_tasks(batch_config: Dict) -> List[TestTask]:
     return tasks
 
 
-def generate_temp_config(template_path: str, task: TestTask, fixed_params: Dict, output_dir: str) -> str:
+def generate_temp_config(template_path: str, task: TestTask, fixed_params: Dict, base_dir: str, output_dir: str) -> str:
     """Generate temporary config file for a test task"""
     # Load template
     with open(template_path) as f:
@@ -90,7 +90,8 @@ def generate_temp_config(template_path: str, task: TestTask, fixed_params: Dict,
         "{{SWAP_SIZE_GB}}": str(fixed_params["swap_size_gb"]),
         "{{RATIO}}": str(task.ratio),
         "{{ACTIVE_PERCENT}}": str(task.active_percent),
-        "{{DURATION}}": str(fixed_params["duration"])
+        "{{DURATION}}": str(fixed_params["duration"]),
+        "{{BASE_DIR}}": base_dir
     }
 
     for key, value in replacements.items():
@@ -850,7 +851,7 @@ def main():
 
         # Generate temp config
         task.config_file = generate_temp_config(
-            template_path, task, fixed_params, temp_config_dir
+            template_path, task, fixed_params, base_dir, temp_config_dir
         )
 
         # Run test
