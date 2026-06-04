@@ -385,6 +385,58 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
         except Exception:
             pass
 
+        # ========== UBWatch_Bandwidth sheet (per-chip per-port bandwidth) ==========
+        try:
+            df_bw = pd.read_excel(excel_path, sheet_name="UBWatch_Bandwidth")
+            # Calculate totals across all chip+port combinations
+            total_avg_wr = 0.0
+            total_avg_rd = 0.0
+            total_avg_sum = 0.0
+            total_max_wr = 0.0
+            total_max_rd = 0.0
+            total_max_sum = 0.0
+
+            for idx, row in df_bw.iterrows():
+                chip = int(row["Chip"]) if pd.notna(row["Chip"]) else None
+                ports = str(row["Ports"]).strip() if pd.notna(row["Ports"]) else ""
+                if chip is not None and ports:
+                    # Normalize ports name: "0&1" -> "p01", "8" -> "p8"
+                    port_key = "p" + ports.replace("&", "")
+
+                    avg_wr = float(row["Avg Write (MB/s)"]) if pd.notna(row["Avg Write (MB/s)"]) else 0
+                    avg_rd = float(row["Avg Read (MB/s)"]) if pd.notna(row["Avg Read (MB/s)"]) else 0
+                    avg_sum = float(row["Avg Sum (MB/s)"]) if pd.notna(row["Avg Sum (MB/s)"]) else 0
+                    max_wr = float(row["Max Write (MB/s)"]) if pd.notna(row["Max Write (MB/s)"]) else 0
+                    max_rd = float(row["Max Read (MB/s)"]) if pd.notna(row["Max Read (MB/s)"]) else 0
+                    max_sum = float(row["Max Sum (MB/s)"]) if pd.notna(row["Max Sum (MB/s)"]) else 0
+
+                    # Per-chip+port metrics (e.g., ub_bw_chip0_p01_avg_wr_mb_s)
+                    key_prefix = f"ub_bw_chip{chip}_{port_key}"
+                    metrics[f"{key_prefix}_avg_wr_mb_s"] = avg_wr
+                    metrics[f"{key_prefix}_avg_rd_mb_s"] = avg_rd
+                    metrics[f"{key_prefix}_avg_sum_mb_s"] = avg_sum
+                    metrics[f"{key_prefix}_max_wr_mb_s"] = max_wr
+                    metrics[f"{key_prefix}_max_rd_mb_s"] = max_rd
+                    metrics[f"{key_prefix}_max_sum_mb_s"] = max_sum
+
+                    # Accumulate totals
+                    total_avg_wr += avg_wr
+                    total_avg_rd += avg_rd
+                    total_avg_sum += avg_sum
+                    total_max_wr = max(total_max_wr, max_wr)
+                    total_max_rd = max(total_max_rd, max_rd)
+                    total_max_sum = max(total_max_sum, max_sum)
+
+            # Total bandwidth metrics (sum of all chip+port combinations)
+            metrics["ub_bw_total_avg_wr_mb_s"] = total_avg_wr
+            metrics["ub_bw_total_avg_rd_mb_s"] = total_avg_rd
+            metrics["ub_bw_total_avg_sum_mb_s"] = total_avg_sum
+            metrics["ub_bw_total_max_wr_mb_s"] = total_max_wr
+            metrics["ub_bw_total_max_rd_mb_s"] = total_max_rd
+            metrics["ub_bw_total_max_sum_mb_s"] = total_max_sum
+        except Exception:
+            pass
+
     except ImportError:
         # pandas not available, try openpyxl
         try:
@@ -494,6 +546,59 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
                     "Max Write (ns)": "ub_max_write_ns",
                 }
                 metrics.update(extract_sheet_metrics(ws, key_map))
+
+            # UBWatch_Bandwidth (per-chip per-port bandwidth)
+            if "UBWatch_Bandwidth" in wb.sheetnames:
+                ws = wb["UBWatch_Bandwidth"]
+                total_avg_wr = 0.0
+                total_avg_rd = 0.0
+                total_avg_sum = 0.0
+                total_max_wr = 0.0
+                total_max_rd = 0.0
+                total_max_sum = 0.0
+
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    if row[0] is not None:  # Chip column
+                        try:
+                            chip = int(row[0])
+                            ports = str(row[1]).strip() if row[1] else ""  # Ports column
+                            if ports:
+                                # Normalize ports name: "0&1" -> "p01", "8" -> "p8"
+                                port_key = "p" + ports.replace("&", "")
+
+                                avg_wr = float(row[2]) if row[2] else 0  # Avg Write
+                                avg_rd = float(row[3]) if row[3] else 0  # Avg Read
+                                avg_sum = float(row[4]) if row[4] else 0  # Avg Sum
+                                max_wr = float(row[5]) if row[5] else 0  # Max Write
+                                max_rd = float(row[6]) if row[6] else 0  # Max Read
+                                max_sum = float(row[7]) if row[7] else 0  # Max Sum
+
+                                # Per-chip+port metrics (e.g., ub_bw_chip0_p01_avg_wr_mb_s)
+                                key_prefix = f"ub_bw_chip{chip}_{port_key}"
+                                metrics[f"{key_prefix}_avg_wr_mb_s"] = avg_wr
+                                metrics[f"{key_prefix}_avg_rd_mb_s"] = avg_rd
+                                metrics[f"{key_prefix}_avg_sum_mb_s"] = avg_sum
+                                metrics[f"{key_prefix}_max_wr_mb_s"] = max_wr
+                                metrics[f"{key_prefix}_max_rd_mb_s"] = max_rd
+                                metrics[f"{key_prefix}_max_sum_mb_s"] = max_sum
+
+                                # Accumulate totals
+                                total_avg_wr += avg_wr
+                                total_avg_rd += avg_rd
+                                total_avg_sum += avg_sum
+                                total_max_wr = max(total_max_wr, max_wr)
+                                total_max_rd = max(total_max_rd, max_rd)
+                                total_max_sum = max(total_max_sum, max_sum)
+                        except (ValueError, TypeError):
+                            pass
+
+                # Total bandwidth metrics
+                metrics["ub_bw_total_avg_wr_mb_s"] = total_avg_wr
+                metrics["ub_bw_total_avg_rd_mb_s"] = total_avg_rd
+                metrics["ub_bw_total_avg_sum_mb_s"] = total_avg_sum
+                metrics["ub_bw_total_max_wr_mb_s"] = total_max_wr
+                metrics["ub_bw_total_max_rd_mb_s"] = total_max_rd
+                metrics["ub_bw_total_max_sum_mb_s"] = total_max_sum
 
         except ImportError:
             print(f"WARNING: Neither pandas nor openpyxl available for {result_dir}")
@@ -660,6 +765,19 @@ def generate_summary_report(results: Dict, output_path: str):
             row["ub_max_read_ns"] = qemu.get("ub_max_read_ns", 0)
             row["ub_max_write_ns"] = qemu.get("ub_max_write_ns", 0)
 
+            # UBWatch Bandwidth metrics - Total (6 metrics)
+            row["ub_bw_total_avg_wr_mb_s"] = qemu.get("ub_bw_total_avg_wr_mb_s", 0)
+            row["ub_bw_total_avg_rd_mb_s"] = qemu.get("ub_bw_total_avg_rd_mb_s", 0)
+            row["ub_bw_total_avg_sum_mb_s"] = qemu.get("ub_bw_total_avg_sum_mb_s", 0)
+            row["ub_bw_total_max_wr_mb_s"] = qemu.get("ub_bw_total_max_wr_mb_s", 0)
+            row["ub_bw_total_max_rd_mb_s"] = qemu.get("ub_bw_total_max_rd_mb_s", 0)
+            row["ub_bw_total_max_sum_mb_s"] = qemu.get("ub_bw_total_max_sum_mb_s", 0)
+
+            # UBWatch Bandwidth - Per-chip metrics (dynamically add if exists)
+            for key, value in qemu.items():
+                if key.startswith("ub_bw_chip"):
+                    row[key] = value
+
             rows.append(row)
 
         df = pd.DataFrame(rows)
@@ -713,8 +831,16 @@ def generate_summary_report(results: Dict, output_path: str):
         column_sources.append(("KSys (Excel: KSys)", col_idx, col_idx + 10))
         col_idx += 11
 
-        # UBWatch - 7 columns
-        column_sources.append(("UBWatch (Excel: UBWatch_Latency)", col_idx, col_idx + 6))
+        # UBWatch Latency - 7 columns
+        column_sources.append(("UBWatch Latency (Excel: UBWatch_Latency)", col_idx, col_idx + 6))
+        col_idx += 7
+
+        # UBWatch Bandwidth Total - 6 columns + dynamic per-chip+port columns
+        ub_bw_total_end = col_idx + 5
+        # Check if there are per-chip+port ub_bw columns
+        ub_bw_chip_cols = [c for c in df.columns if c.startswith("ub_bw_chip")]
+        ub_bw_total_end += len(ub_bw_chip_cols)
+        column_sources.append(("UBWatch Bandwidth (Excel: UBWatch_Bandwidth)", col_idx, ub_bw_total_end))
 
         # Insert source header row at row 1
         ws.insert_rows(1)
@@ -740,7 +866,8 @@ def generate_summary_report(results: Dict, output_path: str):
             "DevKit Memory": PatternFill(start_color="A5A5A5", end_color="A5A5A5", fill_type="solid"),  # Gray
             "NUMA": PatternFill(start_color="5B9BD5", end_color="5B9BD5", fill_type="solid"),  # Light Blue
             "KSys": PatternFill(start_color="7030A0", end_color="7030A0", fill_type="solid"),  # Purple
-            "UBWatch": PatternFill(start_color="C55A11", end_color="C55A11", fill_type="solid"),  # Brown
+            "UBWatch Latency": PatternFill(start_color="C55A11", end_color="C55A11", fill_type="solid"),  # Brown
+            "UBWatch Bandwidth": PatternFill(start_color="00B050", end_color="00B050", fill_type="solid"),  # Dark Green
         }
 
         # Create merged cells for source headers
