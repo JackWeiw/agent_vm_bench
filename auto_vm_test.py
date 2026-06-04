@@ -649,6 +649,102 @@ def run_benchmark(ctx: TestContext) -> bool:
 
 # ==================== Step 9: Stop Monitor and Collect Results ====================
 
+def wait_for_ksys_parse_completion(ctx: TestContext, timeout: int = 600) -> bool:
+    """Wait for ksys to complete data parsing phase
+
+    ksys workflow:
+    1. "Starting to collect data" - collection phase
+    2. "Starting to parse data" - parse phase (TIME CONSUMING, can take minutes)
+    3. "Starting to process and print data" - parse complete, output starts
+    4. Metrics output - final data
+
+    Returns True if ksys parse completed, False if timeout or no ksys log
+    """
+    ksys_log_path = os.path.join(ctx.result_dir, "qemu_monitor", "ksys.log")
+
+    if not os.path.exists(ksys_log_path):
+        log(ctx, "No ksys.log found, skipping ksys wait")
+        return True
+
+    log(ctx, f"Waiting for ksys parse completion (timeout={timeout}s)...")
+    log(ctx, "Tip: If timeout occurs frequently, increase 'ksys_parse_timeout' in config")
+
+    start_time = time.time()
+    parse_started = False
+    last_file_size = 0
+    warning_thresholds = [0.5, 0.75, 0.9]  # 50%, 75%, 90% of timeout
+    warnings_given = [False, False, False]
+
+    while time.time() - start_time < timeout:
+        try:
+            with open(ksys_log_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+
+            # Monitor file size growth as progress indicator
+            current_size = len(content)
+            if current_size > last_file_size:
+                last_file_size = current_size
+
+            # Check if parse started
+            if "Starting to parse data" in content and not parse_started:
+                parse_started = True
+                log(ctx, "ksys parse phase detected, waiting for completion...")
+
+            # Check if parse completed (process and print data)
+            if "Starting to process and print data" in content:
+                elapsed = int(time.time() - start_time)
+                log(ctx, f"ksys parse completed in {elapsed}s - data output started")
+                return True
+
+            # Alternative: check if CPU Metrics section appeared (data output)
+            if "CPU Metrics" in content or "Common Microarchitecture Metrics" in content:
+                elapsed = int(time.time() - start_time)
+                log(ctx, f"ksys data output detected in {elapsed}s - parse completed")
+                return True
+
+            # Check for "Data saved successfully" (JSON output mode)
+            if "Data saved successfully" in content:
+                elapsed = int(time.time() - start_time)
+                log(ctx, f"ksys data saved in {elapsed}s - fully completed")
+                return True
+
+            elapsed = int(time.time() - start_time)
+            elapsed_ratio = elapsed / timeout
+
+            # Progress logging every 30s
+            if elapsed % 30 == 0 and elapsed > 0:
+                size_kb = current_size / 1024
+                log(ctx, f"ksys parse in progress... {elapsed}s/{timeout}s ({elapsed_ratio*100:.0f}%), log size: {size_kb:.1f}KB")
+
+            # Warning at threshold points
+            for i, threshold in enumerate(warning_thresholds):
+                if elapsed_ratio >= threshold and not warnings_given[i]:
+                    warnings_given[i] = True
+                    remaining = int(timeout - elapsed)
+                    log(ctx, f"WARNING: ksys parse approaching timeout ({threshold*100:.0f}% used), {remaining}s remaining")
+                    if threshold >= 0.75:
+                        log(ctx, "  Consider increasing 'ksys_parse_timeout' in config for large VM counts")
+
+            time.sleep(5)
+
+        except Exception as e:
+            log(ctx, f"Error reading ksys.log: {e}")
+            time.sleep(5)
+
+    # Timeout - provide actionable advice
+    elapsed = int(time.time() - start_time)
+    log(ctx, f"WARNING: ksys parse wait timeout after {elapsed}s")
+    log(ctx, "  Possible causes:")
+    log(ctx, "    - Large VM count generates more data, parse takes longer")
+    log(ctx, "    - System under heavy load, ksys parse slowed")
+    log(ctx, "  Solutions:")
+    log(ctx, "    - Increase 'ksys_parse_timeout' in config (current: {timeout}s)")
+    log(ctx, "    - Reduce monitor sampling interval in config")
+    log(ctx, "    - Check ksys.log for parse progress")
+    log(ctx, f"    - Current ksys.log size: {os.path.getsize(ksys_log_path)/1024:.1f}KB")
+    return False
+
+
 def stop_monitor(ctx: TestContext):
     """Wait for monitor to complete naturally and generate Excel report"""
     if ctx.monitor_pid:
@@ -671,7 +767,13 @@ def stop_monitor(ctx: TestContext):
                     break
                 time.sleep(5)
 
-            # Phase 2: Wait for Excel generation (up to 120s)
+            # Phase 2: Wait for ksys parse completion (CRITICAL - can take minutes)
+            # ksys needs to finish parsing before Excel can include its data
+            ksys_timeout = ctx.config.get("monitor", {}).get("ksys_parse_timeout", 600)
+            log(ctx, f"ksys parse timeout configured: {ksys_timeout}s")
+            wait_for_ksys_parse_completion(ctx, ksys_timeout)
+
+            # Phase 3: Wait for Excel generation (up to 120s)
             log(ctx, "Waiting for Excel report generation...")
             excel_start = time.time()
             excel_timeout = 120

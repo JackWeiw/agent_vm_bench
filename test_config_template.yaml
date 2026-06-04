@@ -57,6 +57,7 @@ monitor:
   interval: 2                           # Monitor sampling interval (seconds)
   numa_nodes: [0, 1]                    # NUMA nodes list
   enable_capture: true                  # Enable log collection (devkit/ksys/ub_watch)
+  ksys_parse_timeout: 600               # ksys data parse timeout (seconds), large VM count may need more time
   # Note: devkit/ksys/ub_watch paths use existing .env file config
 
 # Wait Configuration
