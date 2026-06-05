@@ -344,12 +344,12 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
                 metric = str(row["Metric"]).strip() if pd.notna(row["Metric"]) else ""
                 value = row["Value"]
                 key_map = {
-                    "L2 Miss Latency Max": "ksys_l2_latency_max",
-                    "L2 Miss Latency Min": "ksys_l2_latency_min",
-                    "L2 Miss Latency Avg": "ksys_l2_latency_avg",
-                    "L3 Miss Latency Max": "ksys_l3_latency_max",
-                    "L3 Miss Latency Min": "ksys_l3_latency_min",
-                    "L3 Miss Latency Avg": "ksys_l3_latency_avg",
+                    "L2 Miss Latency Max": "ksys_l2_miss_latency_max",
+                    "L2 Miss Latency Min": "ksys_l2_miss_latency_min",
+                    "L2 Miss Latency Avg": "ksys_l2_miss_latency_avg",
+                    "L3 Miss Latency Max": "ksys_l3_miss_latency_max",
+                    "L3 Miss Latency Min": "ksys_l3_miss_latency_min",
+                    "L3 Miss Latency Avg": "ksys_l3_miss_latency_avg",
                     "IPC": "ksys_ipc",
                     "Retiring (%)": "ksys_retiring",
                     "Frontend Bound (%)": "ksys_frontend_bound",
@@ -519,12 +519,12 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
             if "KSys" in wb.sheetnames:
                 ws = wb["KSys"]
                 key_map = {
-                    "L2 Miss Latency Max": "ksys_l2_latency_max",
-                    "L2 Miss Latency Min": "ksys_l2_latency_min",
-                    "L2 Miss Latency Avg": "ksys_l2_latency_avg",
-                    "L3 Miss Latency Max": "ksys_l3_latency_max",
-                    "L3 Miss Latency Min": "ksys_l3_latency_min",
-                    "L3 Miss Latency Avg": "ksys_l3_latency_avg",
+                    "L2 Miss Latency Max": "ksys_l2_miss_latency_max",
+                    "L2 Miss Latency Min": "ksys_l2_miss_latency_min",
+                    "L2 Miss Latency Avg": "ksys_l2_miss_latency_avg",
+                    "L3 Miss Latency Max": "ksys_l3_miss_latency_max",
+                    "L3 Miss Latency Min": "ksys_l3_miss_latency_min",
+                    "L3 Miss Latency Avg": "ksys_l3_miss_latency_avg",
                     "IPC": "ksys_ipc",
                     "Retiring (%)": "ksys_retiring",
                     "Frontend Bound (%)": "ksys_frontend_bound",
@@ -744,12 +744,12 @@ def generate_summary_report(results: Dict, output_path: str):
                     row[key] = value
 
             # KSys metrics
-            row["ksys_l2_latency_max"] = qemu.get("ksys_l2_latency_max", 0)
-            row["ksys_l2_latency_min"] = qemu.get("ksys_l2_latency_min", 0)
-            row["ksys_l2_latency_avg"] = qemu.get("ksys_l2_latency_avg", 0)
-            row["ksys_l3_latency_max"] = qemu.get("ksys_l3_latency_max", 0)
-            row["ksys_l3_latency_min"] = qemu.get("ksys_l3_latency_min", 0)
-            row["ksys_l3_latency_avg"] = qemu.get("ksys_l3_latency_avg", 0)
+            row["ksys_l2_miss_latency_max"] = qemu.get("ksys_l2_miss_latency_max", 0)
+            row["ksys_l2_miss_latency_min"] = qemu.get("ksys_l2_miss_latency_min", 0)
+            row["ksys_l2_miss_latency_avg"] = qemu.get("ksys_l2_miss_latency_avg", 0)
+            row["ksys_l3_miss_latency_max"] = qemu.get("ksys_l3_miss_latency_max", 0)
+            row["ksys_l3_miss_latency_min"] = qemu.get("ksys_l3_miss_latency_min", 0)
+            row["ksys_l3_miss_latency_avg"] = qemu.get("ksys_l3_miss_latency_avg", 0)
             row["ksys_ipc"] = qemu.get("ksys_ipc", 0)
             row["ksys_retiring_percent"] = qemu.get("ksys_retiring", 0)
             row["ksys_frontend_bound_percent"] = qemu.get("ksys_frontend_bound", 0)
