@@ -263,7 +263,7 @@ class LogCapture:
         return calculate_cpu_range_from_numa(self.numa_nodes)
 
     def _start_tool(self, tool_name: str, cmd: list, log_filename: str,
-                    success_msg: str = None) -> tuple:
+                    success_msg: str = None, stderr_to_stdout: bool = False) -> tuple:
         """Helper to start a single collection tool
 
         Args:
@@ -271,6 +271,9 @@ class LogCapture:
             cmd: Command list to execute
             log_filename: Log file name (e.g., 'devkit_mem.log')
             success_msg: Optional custom success message
+            stderr_to_stdout: If True, redirect stderr to stdout (merged into log file)
+                             Useful for tools like ddr_latency where important output
+                             goes to stderr instead of stdout
 
         Returns:
             (success: bool, error_msg: str or None)
@@ -279,9 +282,13 @@ class LogCapture:
             log_path = os.path.join(self.log_dir, log_filename)
             self.log_files[tool_name] = open(log_path, 'w')
             print(f"  [CMD] {tool_name}: {' '.join(cmd)}")
+
+            # Handle stderr redirection based on tool requirements
+            stderr_target = subprocess.STDOUT if stderr_to_stdout else self.log_files[tool_name]
+
             self.processes[tool_name] = subprocess.Popen(
                 cmd, stdout=self.log_files[tool_name],
-                stderr=self.log_files[tool_name],
+                stderr=stderr_target,
                 cwd=self.log_dir
             )
             if success_msg:
@@ -363,7 +370,8 @@ class LogCapture:
                    '--all']
 
         return self._start_tool('ddr_latency', cmd, 'ddr_latency.log',
-                                f"Started DDR latency tool (numa={self.numa_nodes if self.numa_nodes else 'all'})")
+                                f"Started DDR latency tool (numa={self.numa_nodes if self.numa_nodes else 'all'})",
+                                stderr_to_stdout=True)
 
     def start(self) -> dict:
         """Start all collection processes in parallel using Popen
