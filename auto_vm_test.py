@@ -538,13 +538,16 @@ def start_monitor(ctx: TestContext) -> bool:
 
     # Use --stress-file + -t duration: monitor waits for lock file, then runs for duration
     # This ensures: 1) no idle sampling before benchmark, 2) natural stop after duration, 3) Excel generated
+    # --auto-skip: automatically skip missing tools (ksys, devkit, etc.) without prompting
+    #              This allows automated runs to continue even when tools are not available
     cmd = [
         "python3", "qemu_monitor.py",
         "-t", str(duration),
         "-i", str(interval),
         "--log-dir", log_dir,
         "--numa", numa_nodes,
-        "--stress-file", BENCHMARK_LOCK_FILE
+        "--stress-file", BENCHMARK_LOCK_FILE,
+        "--auto-skip"  # Auto-skip missing tools for automation
     ]
 
     if monitor["enable_capture"]:
@@ -553,6 +556,7 @@ def start_monitor(ctx: TestContext) -> bool:
     log(ctx, f"Executing: {' '.join(cmd)}")
     log(ctx, f"Monitor waits for lock file: {BENCHMARK_LOCK_FILE}")
     log(ctx, f"Monitor will run {duration}s after lock file appears, then generate Excel")
+    log(ctx, f"Auto-skip enabled: missing tools will be skipped without prompting")
 
     # Redirect stdout/stderr to log file instead of PIPE
     # PIPE buffer (64KB) can fill up and block the process when qemu_monitor outputs lots of data

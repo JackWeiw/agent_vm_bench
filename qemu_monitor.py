@@ -105,11 +105,13 @@ def save_env_config(config: dict):
                         f.write(f"{env_key}={value}\n")
 
 
-def validate_and_prompt_missing(config: dict) -> dict:
+def validate_and_prompt_missing(config: dict, auto_skip: bool = False) -> dict:
     """Validate paths and prompt user for missing/invalid ones
 
     Args:
         config: dict with path configurations
+        auto_skip: if True, automatically skip missing tools without prompting
+                   (useful for automated runs where user interaction is not possible)
 
     Returns:
         Updated config dict with valid paths or None for disabled tools
@@ -138,6 +140,15 @@ def validate_and_prompt_missing(config: dict) -> dict:
             print(f"\n⚠ {env_key} not configured or path invalid")
             if path:
                 print(f"  Current: {path}")
+
+            # Auto-skip mode: automatically disable missing tools without prompting
+            if auto_skip:
+                config[config_key] = None  # Mark as disabled
+                print(f"  ✓ {env_key} auto-skipped (auto_skip mode enabled)")
+                print(f"  → Test will continue without {env_key} data collection")
+                break
+
+            # Interactive mode: prompt user for input
             user_input = input(f"Enter {prompt_names[env_key]} (or 'skip' to disable): ").strip()
 
             if user_input.lower() == 'skip':
@@ -152,9 +163,13 @@ def validate_and_prompt_missing(config: dict) -> dict:
             else:
                 print(f"  ✗ Path does not exist: {user_input}")
 
-    # Save updated config to .env
-    save_env_config(config)
-    print("\n✓ Configuration saved to .env file")
+    # Save updated config to .env (only if not auto_skip, as auto_skip is temporary)
+    if not auto_skip:
+        save_env_config(config)
+        print("\n✓ Configuration saved to .env file")
+    else:
+        print("\n✓ Auto-skip mode: missing tools disabled for this run (not saved to .env)")
+
     return config
 
 
@@ -2837,6 +2852,8 @@ def main():
     parser.add_argument('--log-dir', type=str, help='Log output directory (default: logs_${timestamp}/ in current dir)')
     parser.add_argument('--enable-capture', action='store_true',
                         help='Enable parallel log collection with devkit/ksys/ub_watch')
+    parser.add_argument('--auto-skip', action='store_true',
+                        help='Automatically skip missing tools without prompting (for automated runs)')
     parser.add_argument('--ksys-parse-timeout', type=int, default=600,
                         help='Timeout for ksys data parsing phase in seconds (default: 600s, increase for large VM counts)')
     args = parser.parse_args()
@@ -2856,7 +2873,7 @@ def main():
     if args.enable_capture:
         print("\n📋 Loading log collection configuration...")
         config = load_env_config()
-        config = validate_and_prompt_missing(config)
+        config = validate_and_prompt_missing(config, auto_skip=args.auto_skip)
 
     # Create QEMUMonitor instance
     m = QEMUMonitor()
