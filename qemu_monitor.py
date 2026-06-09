@@ -262,6 +262,83 @@ class LogCapture:
         # Calculate from NUMA nodes
         return calculate_cpu_range_from_numa(self.numa_nodes)
 
+    def _start_tool(self, tool_name: str, cmd: list, log_filename: str,
+                    success_msg: str = None) -> tuple:
+        """Helper to start a single collection tool
+
+        Args:
+            tool_name: Name identifier for the tool (e.g., 'devkit_mem')
+            cmd: Command list to execute
+            log_filename: Log file name (e.g., 'devkit_mem.log')
+            success_msg: Optional custom success message
+
+        Returns:
+            (success: bool, error_msg: str or None)
+        """
+        try:
+            log_path = os.path.join(self.log_dir, log_filename)
+            self.log_files[tool_name] = open(log_path, 'w')
+            print(f"  [CMD] {tool_name}: {' '.join(cmd)}")
+            self.processes[tool_name] = subprocess.Popen(
+                cmd, stdout=self.log_files[tool_name],
+                stderr=self.log_files[tool_name],
+                cwd=self.log_dir
+            )
+            if success_msg:
+                print(f"  ✓ {success_msg}")
+            else:
+                print(f"  ✓ Started {tool_name} (duration={self.duration}s)")
+            return True, None
+        except Exception as e:
+            self.failed_startup.append(tool_name)
+            print(f"  ✗ Failed to start {tool_name}: {e}")
+            return False, str(e)
+
+    def _start_devkit_mem(self) -> tuple:
+        """Start DevKit memory tuner"""
+        if not self.config.get('devkit_path'):
+            return None, None  # Not configured
+        cmd = [self.config['devkit_path'], 'tuner', 'memory',
+               '-d', str(self.duration), '-i', '3']
+        return self._start_tool('devkit_mem', cmd, 'devkit_mem.log',
+                                f"Started devkit tuner memory (duration={self.duration}s)")
+
+    def _start_devkit_top_down(self) -> tuple:
+        """Start DevKit top-down tuner"""
+        if not self.config.get('devkit_path'):
+            return None, None  # Not configured
+        cpu_range = self._get_cpu_range()
+        cmd = [self.config['devkit_path'], 'tuner', 'top-down',
+               '-d', str(self.duration), '-i', '3', '-c', cpu_range]
+        return self._start_tool('devkit_top_down', cmd, 'devkit_top_down.log',
+                                f"Started devkit tuner top-down (cpu_range={cpu_range})")
+
+    def _start_ksys(self) -> tuple:
+        """Start ksys collection"""
+        if not (self.config.get('ksys_path') and self.config.get('ksys_config_path')):
+            return None, None  # Not configured
+        cmd = [self.config['ksys_path'], 'collect',
+               '-d', str(self.duration), '-i', '3',
+               '-c', self.config['ksys_config_path']]
+        return self._start_tool('ksys', cmd, 'ksys.log',
+                                f"Started ksys collect (config={self.config['ksys_config_path']})")
+
+    def _start_ub_watch(self) -> tuple:
+        """Start ub_watch"""
+        if not self.config.get('ub_watch_path'):
+            return None, None  # Not configured
+        cmd = [self.config['ub_watch_path'],
+               '-t', str(self.duration), '-i', '3']
+        return self._start_tool('ub_watch', cmd, 'ub_watch.log')
+
+    def _start_ddr_latency(self) -> tuple:
+        """Start DDR latency tool"""
+        if not self.config.get('ddr_latency_path'):
+            return None, None  # Not configured
+        cmd = ['python3', self.config['ddr_latency_path'],
+               '-d', str(self.duration), '-i', '3']
+        return self._start_tool('ddr_latency', cmd, 'ddr_latency.log')
+
     def start(self) -> dict:
         """Start all collection processes in parallel using Popen
 
@@ -272,107 +349,23 @@ class LogCapture:
         success = []
         failed = []
 
-        # DevKit memory tuner
-        if self.config.get('devkit_path'):
-            try:
-                log_path = os.path.join(self.log_dir, 'devkit_mem.log')
-                self.log_files['devkit_mem'] = open(log_path, 'w')
-                cmd = [self.config['devkit_path'], 'tuner', 'memory',
-                       '-d', str(self.duration), '-i', '3']
-                print(f"  [CMD] devkit_mem: {' '.join(cmd)}")
-                self.processes['devkit_mem'] = subprocess.Popen(
-                    cmd, stdout=self.log_files['devkit_mem'],
-                    stderr=self.log_files['devkit_mem'],
-                    cwd=self.log_dir  # Run in log_dir so output files go there
-                )
-                success.append('devkit_mem')
-                print(f"  ✓ Started devkit tuner memory (duration={self.duration}s)")
-            except Exception as e:
-                failed.append(('devkit_mem', str(e)))
-                self.failed_startup.append('devkit_mem')
-                print(f"  ✗ Failed to start devkit_mem: {e}")
+        # Start each tool
+        tools = [
+            ('devkit_mem', self._start_devkit_mem),
+            ('devkit_top_down', self._start_devkit_top_down),
+            ('ksys', self._start_ksys),
+            ('ub_watch', self._start_ub_watch),
+            ('ddr_latency', self._start_ddr_latency),
+        ]
 
-        # DevKit top-down tuner
-        if self.config.get('devkit_path'):
-            try:
-                log_path = os.path.join(self.log_dir, 'devkit_top_down.log')
-                self.log_files['devkit_top_down'] = open(log_path, 'w')
-                cpu_range = self._get_cpu_range()
-                cmd = [self.config['devkit_path'], 'tuner', 'top-down',
-                       '-d', str(self.duration), '-i', '3', '-c', cpu_range]
-                print(f"  [CMD] devkit_top_down: {' '.join(cmd)}")
-                self.processes['devkit_top_down'] = subprocess.Popen(
-                    cmd, stdout=self.log_files['devkit_top_down'],
-                    stderr=self.log_files['devkit_top_down'],
-                    cwd=self.log_dir  # Run in log_dir so output files go there
-                )
-                success.append('devkit_top_down')
-                print(f"  ✓ Started devkit tuner top-down (cpu_range={cpu_range})")
-            except Exception as e:
-                failed.append(('devkit_top_down', str(e)))
-                self.failed_startup.append('devkit_top_down')
-                print(f"  ✗ Failed to start devkit_top_down: {e}")
-
-        # ksys
-        if self.config.get('ksys_path') and self.config.get('ksys_config_path'):
-            try:
-                log_path = os.path.join(self.log_dir, 'ksys.log')
-                self.log_files['ksys'] = open(log_path, 'w')
-                cmd = [self.config['ksys_path'], 'collect',
-                       '-d', str(self.duration), '-i', '3',
-                       '-c', self.config['ksys_config_path']]
-                print(f"  [CMD] ksys: {' '.join(cmd)}")
-                self.processes['ksys'] = subprocess.Popen(
-                    cmd, stdout=self.log_files['ksys'],
-                    stderr=self.log_files['ksys'],
-                    cwd=self.log_dir  # Run in log_dir so report.json goes there
-                )
-                success.append('ksys')
-                print(f"  ✓ Started ksys collect (config={self.config['ksys_config_path']})")
-            except Exception as e:
-                failed.append(('ksys', str(e)))
-                self.failed_startup.append('ksys')
-                print(f"  ✗ Failed to start ksys: {e}")
-
-        # ub_watch
-        if self.config.get('ub_watch_path'):
-            try:
-                log_path = os.path.join(self.log_dir, 'ub_watch.log')
-                self.log_files['ub_watch'] = open(log_path, 'w')
-                cmd = [self.config['ub_watch_path'],
-                       '-t', str(self.duration), '-i', '3']
-                print(f"  [CMD] ub_watch: {' '.join(cmd)}")
-                self.processes['ub_watch'] = subprocess.Popen(
-                    cmd, stdout=self.log_files['ub_watch'],
-                    stderr=self.log_files['ub_watch'],
-                    cwd=self.log_dir  # Run in log_dir so output files go there
-                )
-                success.append('ub_watch')
-                print(f"  ✓ Started ub_watch (duration={self.duration}s)")
-            except Exception as e:
-                failed.append(('ub_watch', str(e)))
-                self.failed_startup.append('ub_watch')
-                print(f"  ✗ Failed to start ub_watch: {e}")
-
-        # DDR latency tool
-        if self.config.get('ddr_latency_path'):
-            try:
-                log_path = os.path.join(self.log_dir, 'ddr_latency.log')
-                self.log_files['ddr_latency'] = open(log_path, 'w')
-                cmd = ['python3', self.config['ddr_latency_path'],
-                       '-d', str(self.duration), '-i', '3']
-                print(f"  [CMD] ddr_latency: {' '.join(cmd)}")
-                self.processes['ddr_latency'] = subprocess.Popen(
-                    cmd, stdout=self.log_files['ddr_latency'],
-                    stderr=self.log_files['ddr_latency'],
-                    cwd=self.log_dir
-                )
-                success.append('ddr_latency')
-                print(f"  ✓ Started DDR latency tool (duration={self.duration}s)")
-            except Exception as e:
-                failed.append(('ddr_latency', str(e)))
-                self.failed_startup.append('ddr_latency')
-                print(f"  ✗ Failed to start ddr_latency: {e}")
+        for tool_name, start_func in tools:
+            result, error = start_func()
+            if result is None:
+                continue  # Tool not configured, skip
+            if result:
+                success.append(tool_name)
+            else:
+                failed.append((tool_name, error))
 
         return {'success': success, 'failed': failed}
 
