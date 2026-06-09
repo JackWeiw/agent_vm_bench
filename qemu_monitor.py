@@ -371,17 +371,17 @@ class LogCapture:
             if len(self.numa_nodes) == 1:
                 # Single NUMA node: use -n flag
                 cmd = ['python3', '-u', self.config['ddr_latency_path'],
-                       '-d', str(self.duration), '-i', '2',
+                       '-d', str(self.duration), '-i', '1',
                        '-n', str(self.numa_nodes[0])]
             else:
                 # Multiple NUMA nodes: use --all flag
                 cmd = ['python3', '-u', self.config['ddr_latency_path'],
-                       '-d', str(self.duration), '-i', '2',
+                       '-d', str(self.duration), '-i', '1',
                        '--all']
         else:
             # Default: monitor all
             cmd = ['python3', '-u', self.config['ddr_latency_path'],
-                   '-d', str(self.duration), '-i', '2',
+                   '-d', str(self.duration), '-i', '1',
                    '--all']
 
         return self._start_tool('ddr_latency', cmd, 'ddr_latency.log',
