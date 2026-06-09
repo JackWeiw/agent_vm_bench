@@ -437,6 +437,36 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
         except Exception:
             pass
 
+        # ========== DDR_Latency sheet ==========
+        try:
+            df_ddr = pd.read_excel(excel_path, sheet_name="DDR_Latency")
+            for idx, row in df_ddr.iterrows():
+                device = str(row["DDR Device"]).strip() if pd.notna(row["DDR Device"]) else ""
+                if device:
+                    # Per-device metrics - normalize device name
+                    device_key = device.replace('hisi_sccl', 'ddr_sccl').replace('ddrc', 'ddr')
+                    metrics[f"{device_key}_freq_mhz"] = float(row["Frequency (MHz)"]) if pd.notna(row["Frequency (MHz)"]) else 0
+                    metrics[f"{device_key}_rd_bw_gb_s"] = float(row["RD BW (GB/s)"]) if pd.notna(row["RD BW (GB/s)"]) else 0
+                    metrics[f"{device_key}_wr_bw_gb_s"] = float(row["WR BW (GB/s)"]) if pd.notna(row["WR BW (GB/s)"]) else 0
+                    metrics[f"{device_key}_rd_latency_cycle"] = float(row["RD Latency (cycle)"]) if pd.notna(row["RD Latency (cycle)"]) else 0
+                    metrics[f"{device_key}_wr_latency_cycle"] = float(row["WR Latency (cycle)"]) if pd.notna(row["WR Latency (cycle)"]) else 0
+
+            # Summary metrics (from the Metric/Value columns if present)
+            # Check if there's a Metric column with summary data
+            if "Metric" in df_ddr.columns and "Value" in df_ddr.columns:
+                for idx, row in df_ddr.iterrows():
+                    metric = str(row["Metric"]).strip() if pd.notna(row["Metric"]) else ""
+                    if metric == "Avg RD Latency (cycle)":
+                        metrics["ddr_avg_rd_latency_cycle"] = float(row["Value"]) if pd.notna(row["Value"]) else 0
+                    elif metric == "Avg WR Latency (cycle)":
+                        metrics["ddr_avg_wr_latency_cycle"] = float(row["Value"]) if pd.notna(row["Value"]) else 0
+                    elif metric == "Total RD BW (GB/s)":
+                        metrics["ddr_total_rd_bw_gb_s"] = float(row["Value"]) if pd.notna(row["Value"]) else 0
+                    elif metric == "Total WR BW (GB/s)":
+                        metrics["ddr_total_wr_bw_gb_s"] = float(row["Value"]) if pd.notna(row["Value"]) else 0
+        except Exception:
+            pass
+
     except ImportError:
         # pandas not available, try openpyxl
         try:
@@ -599,6 +629,42 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
                 metrics["ub_bw_total_max_wr_mb_s"] = total_max_wr
                 metrics["ub_bw_total_max_rd_mb_s"] = total_max_rd
                 metrics["ub_bw_total_max_sum_mb_s"] = total_max_sum
+
+            # DDR_Latency
+            if "DDR_Latency" in wb.sheetnames:
+                ws = wb["DDR_Latency"]
+                # Per-device data: DDR Device, Frequency (MHz), RD BW (GB/s), WR BW (GB/s), RD Latency (cycle), WR Latency (cycle)
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    if row[0]:  # DDR Device column
+                        device = str(row[0]).strip()
+                        if device and device != "Metric":  # Skip summary rows
+                            try:
+                                device_key = device.replace('hisi_sccl', 'ddr_sccl').replace('ddrc', 'ddr')
+                                metrics[f"{device_key}_freq_mhz"] = float(row[1]) if row[1] else 0  # Frequency
+                                metrics[f"{device_key}_rd_bw_gb_s"] = float(row[2]) if row[2] else 0  # RD BW
+                                metrics[f"{device_key}_wr_bw_gb_s"] = float(row[3]) if row[3] else 0  # WR BW
+                                metrics[f"{device_key}_rd_latency_cycle"] = float(row[4]) if row[4] else 0  # RD Latency
+                                metrics[f"{device_key}_wr_latency_cycle"] = float(row[5]) if row[5] else 0  # WR Latency
+                            except (ValueError, TypeError):
+                                pass
+
+                # Summary metrics (if present as Metric/Value columns)
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    if row[0] and str(row[0]).strip() in ["Avg RD Latency (cycle)", "Avg WR Latency (cycle)",
+                                                          "Total RD BW (GB/s)", "Total WR BW (GB/s)"]:
+                        metric = str(row[0]).strip()
+                        try:
+                            value = float(row[1]) if row[1] else 0
+                            if metric == "Avg RD Latency (cycle)":
+                                metrics["ddr_avg_rd_latency_cycle"] = value
+                            elif metric == "Avg WR Latency (cycle)":
+                                metrics["ddr_avg_wr_latency_cycle"] = value
+                            elif metric == "Total RD BW (GB/s)":
+                                metrics["ddr_total_rd_bw_gb_s"] = value
+                            elif metric == "Total WR BW (GB/s)":
+                                metrics["ddr_total_wr_bw_gb_s"] = value
+                        except (ValueError, TypeError):
+                            pass
 
         except ImportError:
             print(f"WARNING: Neither pandas nor openpyxl available for {result_dir}")
@@ -778,6 +844,17 @@ def generate_summary_report(results: Dict, output_path: str):
                 if key.startswith("ub_bw_chip"):
                     row[key] = value
 
+            # DDR Latency metrics - Summary
+            row["ddr_avg_rd_latency_cycle"] = qemu.get("ddr_avg_rd_latency_cycle", 0)
+            row["ddr_avg_wr_latency_cycle"] = qemu.get("ddr_avg_wr_latency_cycle", 0)
+            row["ddr_total_rd_bw_gb_s"] = qemu.get("ddr_total_rd_bw_gb_s", 0)
+            row["ddr_total_wr_bw_gb_s"] = qemu.get("ddr_total_wr_bw_gb_s", 0)
+
+            # DDR Latency - Per-device metrics (dynamically add if exists)
+            for key, value in qemu.items():
+                if key.startswith("ddr_sccl") or key.startswith("ddr_"):
+                    row[key] = value
+
             rows.append(row)
 
         df = pd.DataFrame(rows)
@@ -841,6 +918,14 @@ def generate_summary_report(results: Dict, output_path: str):
         ub_bw_chip_cols = [c for c in df.columns if c.startswith("ub_bw_chip")]
         ub_bw_total_end += len(ub_bw_chip_cols)
         column_sources.append(("UBWatch Bandwidth (Excel: UBWatch_Bandwidth)", col_idx, ub_bw_total_end))
+        col_idx = ub_bw_total_end + 1
+
+        # DDR Latency Summary - 4 columns + dynamic per-device columns
+        ddr_summary_end = col_idx + 3
+        # Check if there are per-device DDR latency columns
+        ddr_device_cols = [c for c in df.columns if c.startswith("ddr_") and c not in ["ddr_avg_rd_latency_cycle", "ddr_avg_wr_latency_cycle", "ddr_total_rd_bw_gb_s", "ddr_total_wr_bw_gb_s"]]
+        ddr_summary_end += len(ddr_device_cols)
+        column_sources.append(("DDR Latency (Excel: DDR_Latency)", col_idx, ddr_summary_end))
 
         # Insert source header row at row 1
         ws.insert_rows(1)

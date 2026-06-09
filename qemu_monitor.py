@@ -39,7 +39,7 @@ except ImportError:
 # ==================== .env Configuration Management ====================
 
 ENV_FILE_PATH = '.env'
-ENV_REQUIRED_KEYS = ['DEVKIT_PATH', 'KSYS_PATH', 'KSYS_CONFIG_PATH', 'UB_WATCH_PATH']
+ENV_REQUIRED_KEYS = ['DEVKIT_PATH', 'KSYS_PATH', 'KSYS_CONFIG_PATH', 'UB_WATCH_PATH', 'DDR_LATENCY_PATH']
 
 
 def load_env_config() -> dict:
@@ -54,6 +54,7 @@ def load_env_config() -> dict:
         'ksys_config_path': '',
         'ub_watch_path': '',
         'devkit_cpu_range': '',
+        'ddr_latency_path': '',
     }
 
     if DOTENV_AVAILABLE and os.path.exists(ENV_FILE_PATH):
@@ -65,6 +66,7 @@ def load_env_config() -> dict:
     config['ksys_config_path'] = os.environ.get('KSYS_CONFIG_PATH', '')
     config['ub_watch_path'] = os.environ.get('UB_WATCH_PATH', '')
     config['devkit_cpu_range'] = os.environ.get('DEVKIT_CPU_RANGE', '')
+    config['ddr_latency_path'] = os.environ.get('DDR_LATENCY_PATH', '')
 
     return config
 
@@ -91,6 +93,8 @@ def save_env_config(config: dict):
             set_key(env_path, 'UB_WATCH_PATH', config['ub_watch_path'])
         if config.get('devkit_cpu_range'):
             set_key(env_path, 'DEVKIT_CPU_RANGE', config['devkit_cpu_range'])
+        if config.get('ddr_latency_path'):
+            set_key(env_path, 'DDR_LATENCY_PATH', config['ddr_latency_path'])
     else:
         # Fallback: manual write
         with open(env_path, 'a') as f:
@@ -115,6 +119,7 @@ def validate_and_prompt_missing(config: dict) -> dict:
         'KSYS_PATH': 'ksys_path',
         'KSYS_CONFIG_PATH': 'ksys_config_path',
         'UB_WATCH_PATH': 'ub_watch_path',
+        'DDR_LATENCY_PATH': 'ddr_latency_path',
     }
 
     prompt_names = {
@@ -122,6 +127,7 @@ def validate_and_prompt_missing(config: dict) -> dict:
         'KSYS_PATH': 'ksys executable path',
         'KSYS_CONFIG_PATH': 'ksys config.yaml path',
         'UB_WATCH_PATH': 'ub_watch executable path',
+        'DDR_LATENCY_PATH': 'DDR latency tool path (920x_ddr_latency_v1.1.py)',
     }
 
     for env_key, config_key in key_mapping.items():
@@ -223,6 +229,7 @@ class LogCapture:
         'devkit_top_down': 60,
         'ub_watch': 60,
         'ksys': 600,           # ksys needs extra time for data parsing (can be minutes)
+        'ddr_latency': 60,     # DDR latency tool
     }
 
     def __init__(self, config: dict, duration: int, log_dir: str, numa_nodes: list,
@@ -346,6 +353,26 @@ class LogCapture:
                 failed.append(('ub_watch', str(e)))
                 self.failed_startup.append('ub_watch')
                 print(f"  ✗ Failed to start ub_watch: {e}")
+
+        # DDR latency tool
+        if self.config.get('ddr_latency_path'):
+            try:
+                log_path = os.path.join(self.log_dir, 'ddr_latency.log')
+                self.log_files['ddr_latency'] = open(log_path, 'w')
+                cmd = ['python3', self.config['ddr_latency_path'],
+                       '-d', str(self.duration), '-i', '3']
+                print(f"  [CMD] ddr_latency: {' '.join(cmd)}")
+                self.processes['ddr_latency'] = subprocess.Popen(
+                    cmd, stdout=self.log_files['ddr_latency'],
+                    stderr=self.log_files['ddr_latency'],
+                    cwd=self.log_dir
+                )
+                success.append('ddr_latency')
+                print(f"  ✓ Started DDR latency tool (duration={self.duration}s)")
+            except Exception as e:
+                failed.append(('ddr_latency', str(e)))
+                self.failed_startup.append('ddr_latency')
+                print(f"  ✗ Failed to start ddr_latency: {e}")
 
         return {'success': success, 'failed': failed}
 
@@ -1060,6 +1087,98 @@ def parse_ub_watch(log_path: str) -> dict:
         return {'error': str(e)}
 
 
+def parse_ddr_latency(log_path: str) -> dict:
+    """Parse DDR latency log file from 920x_ddr_latency tool
+
+    Expected output format:
+        DDR Name  Frequency  RD Bandwidth(GB/s)  WR Bandwidth(GB/s)  RD Latency(cycle)  WR Latency(cycle)
+        hisi_sccl3_ddrc0_0  2400  12.50  8.30  45.2  38.5
+
+    Returns:
+        {
+            'ddr_devices': [
+                {'name': 'hisi_sccl3_ddrc0_0', 'frequency': 2400,
+                 'rd_bw_gb_s': 12.50, 'wr_bw_gb_s': 8.30,
+                 'rd_latency_cycle': 45.2, 'wr_latency_cycle': 38.5}
+            ],
+            'summary': {
+                'avg_rd_latency_cycle': ...,
+                'avg_wr_latency_cycle': ...,
+                'total_rd_bw_gb_s': ...,
+                'total_wr_bw_gb_s': ...
+            }
+        }
+    """
+    try:
+        result = {'ddr_devices': [], 'summary': {}}
+
+        with open(log_path, 'r') as f:
+            content = f.read()
+
+        # Parse each DDR device line
+        # Format: DDR_NAME  Frequency  RD_BW  WR_BW  RD_Latency  WR_Latency
+        lines = content.strip().split('\n')
+
+        for line in lines:
+            # Skip header lines and empty lines
+            if not line.strip() or 'DDR Name' in line or 'Frequency' in line or 'Bandwidth' in line:
+                continue
+
+            parts = line.strip().split()
+            # Expected: name, freq, rd_bw, wr_bw, rd_latency, wr_latency
+            if len(parts) >= 6:
+                try:
+                    # Handle device name that may contain spaces (join first parts until we hit a number)
+                    name_parts = []
+                    freq_idx = 0
+                    for i, p in enumerate(parts):
+                        # Try to parse as number - this is the frequency
+                        try:
+                            float(p.replace(',', ''))
+                            freq_idx = i
+                            break
+                        except ValueError:
+                            name_parts.append(p)
+
+                    if name_parts:
+                        device_name = ' '.join(name_parts)
+                        frequency = float(parts[freq_idx].replace(',', ''))
+                        rd_bw = float(parts[freq_idx + 1].replace(',', ''))
+                        wr_bw = float(parts[freq_idx + 2].replace(',', ''))
+                        rd_latency = float(parts[freq_idx + 3].replace(',', ''))
+                        wr_latency = float(parts[freq_idx + 4].replace(',', ''))
+
+                        result['ddr_devices'].append({
+                            'name': device_name,
+                            'frequency': frequency,
+                            'rd_bw_gb_s': rd_bw,
+                            'wr_bw_gb_s': wr_bw,
+                            'rd_latency_cycle': rd_latency,
+                            'wr_latency_cycle': wr_latency
+                        })
+                except (ValueError, IndexError) as e:
+                    continue
+
+        # Calculate summary statistics
+        if result['ddr_devices']:
+            total_rd_bw = sum(d['rd_bw_gb_s'] for d in result['ddr_devices'])
+            total_wr_bw = sum(d['wr_bw_gb_s'] for d in result['ddr_devices'])
+            avg_rd_latency = sum(d['rd_latency_cycle'] for d in result['ddr_devices']) / len(result['ddr_devices'])
+            avg_wr_latency = sum(d['wr_latency_cycle'] for d in result['ddr_devices']) / len(result['ddr_devices'])
+
+            result['summary'] = {
+                'avg_rd_latency_cycle': round(avg_rd_latency, 2),
+                'avg_wr_latency_cycle': round(avg_wr_latency, 2),
+                'total_rd_bw_gb_s': round(total_rd_bw, 2),
+                'total_wr_bw_gb_s': round(total_wr_bw, 2)
+            }
+
+        return result
+
+    except Exception as e:
+        return {'error': str(e), 'ddr_devices': [], 'summary': {}}
+
+
 def parse_all_logs(log_dir: str, numa_nodes: list = None) -> dict:
     """Parse all log files in the directory
 
@@ -1096,6 +1215,11 @@ def parse_all_logs(log_dir: str, numa_nodes: list = None) -> dict:
     ub_path = os.path.join(log_dir, 'ub_watch.log')
     if os.path.exists(ub_path):
         results['ub_watch'] = parse_ub_watch(ub_path)
+
+    # Parse ddr_latency
+    ddr_path = os.path.join(log_dir, 'ddr_latency.log')
+    if os.path.exists(ddr_path):
+        results['ddr_latency'] = parse_ddr_latency(ddr_path)
 
     return results
 
@@ -1390,6 +1514,36 @@ def export_to_excel(monitor: 'QEMUMonitor', log_dir: str, numa_nodes: list = Non
                         'Max Sum (MB/s)': [bw['max_sum'] for bw in bw_list]
                     }
                     pd.DataFrame(bw_data).to_excel(writer, sheet_name='UBWatch_Bandwidth', index=False)
+
+            # ========== Sheet: DDR_Latency ==========
+            if 'ddr_latency' in parsed_logs and 'error' not in parsed_logs['ddr_latency']:
+                ddr = parsed_logs['ddr_latency']
+
+                # Per-device data
+                if ddr.get('ddr_devices'):
+                    device_data = {
+                        'DDR Device': [dev['name'] for dev in ddr['ddr_devices']],
+                        'Frequency (MHz)': [dev['frequency'] for dev in ddr['ddr_devices']],
+                        'RD BW (GB/s)': [dev['rd_bw_gb_s'] for dev in ddr['ddr_devices']],
+                        'WR BW (GB/s)': [dev['wr_bw_gb_s'] for dev in ddr['ddr_devices']],
+                        'RD Latency (cycle)': [dev['rd_latency_cycle'] for dev in ddr['ddr_devices']],
+                        'WR Latency (cycle)': [dev['wr_latency_cycle'] for dev in ddr['ddr_devices']]
+                    }
+                    pd.DataFrame(device_data).to_excel(writer, sheet_name='DDR_Latency', index=False)
+
+                # Summary data
+                if ddr.get('summary'):
+                    summary_data = {
+                        'Metric': ['Avg RD Latency (cycle)', 'Avg WR Latency (cycle)',
+                                   'Total RD BW (GB/s)', 'Total WR BW (GB/s)'],
+                        'Value': [ddr['summary']['avg_rd_latency_cycle'],
+                                  ddr['summary']['avg_wr_latency_cycle'],
+                                  ddr['summary']['total_rd_bw_gb_s'],
+                                  ddr['summary']['total_wr_bw_gb_s']]
+                    }
+                    # Append summary to DDR_Latency sheet (if no devices, create separate)
+                    if not ddr.get('ddr_devices'):
+                        pd.DataFrame(summary_data).to_excel(writer, sheet_name='DDR_Latency', index=False)
 
             # ========== Sheet 10: Raw VM Data Time Series ==========
             if monitor.data:
