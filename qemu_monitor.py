@@ -332,12 +332,34 @@ class LogCapture:
         return self._start_tool('ub_watch', cmd, 'ub_watch.log')
 
     def _start_ddr_latency(self) -> tuple:
-        """Start DDR latency tool"""
+        """Start DDR latency tool
+
+        Uses numa_nodes from self.numa_nodes to specify which NUMA nodes to monitor.
+        If multiple NUMA nodes, uses --all flag to monitor all.
+        """
         if not self.config.get('ddr_latency_path'):
             return None, None  # Not configured
-        cmd = ['python3', self.config['ddr_latency_path'],
-               '-d', str(self.duration), '-i', '2']
-        return self._start_tool('ddr_latency', cmd, 'ddr_latency.log')
+
+        # Determine NUMA argument based on self.numa_nodes
+        if self.numa_nodes and len(self.numa_nodes) > 0:
+            if len(self.numa_nodes) == 1:
+                # Single NUMA node: use -n flag
+                cmd = ['python3', self.config['ddr_latency_path'],
+                       '-d', str(self.duration), '-i', '2',
+                       '-n', str(self.numa_nodes[0])]
+            else:
+                # Multiple NUMA nodes: use --all flag
+                cmd = ['python3', self.config['ddr_latency_path'],
+                       '-d', str(self.duration), '-i', '2',
+                       '--all']
+        else:
+            # Default: monitor all
+            cmd = ['python3', self.config['ddr_latency_path'],
+                   '-d', str(self.duration), '-i', '2',
+                   '--all']
+
+        return self._start_tool('ddr_latency', cmd, 'ddr_latency.log',
+                                f"Started DDR latency tool (numa={self.numa_nodes if self.numa_nodes else 'all'})")
 
     def start(self) -> dict:
         """Start all collection processes in parallel using Popen
