@@ -158,6 +158,41 @@ def validate_and_prompt_missing(config: dict) -> dict:
     return config
 
 
+def validate_and_auto_skip(config: dict) -> dict:
+    """Validate paths and auto-skip missing/invalid ones (non-interactive mode)
+
+    Used for automated test scenarios where user interaction is not available.
+    Missing/invalid paths are automatically marked as disabled (None).
+
+    Args:
+        config: dict with path configurations
+
+    Returns:
+        Updated config dict with valid paths or None for disabled tools
+    """
+    key_mapping = {
+        'DEVKIT_PATH': 'devkit_path',
+        'KSYS_PATH': 'ksys_path',
+        'KSYS_CONFIG_PATH': 'ksys_config_path',
+        'UB_WATCH_PATH': 'ub_watch_path',
+        'DDR_LATENCY_PATH': 'ddr_latency_path',
+    }
+
+    for env_key, config_key in key_mapping.items():
+        path = config.get(config_key, '')
+
+        if not path or not os.path.exists(path):
+            if path:
+                print(f"⚠ {env_key}: path invalid ({path}), disabling for this session")
+            else:
+                print(f"⚠ {env_key}: not configured, disabling for this session")
+            config[config_key] = None  # Mark as disabled
+        else:
+            print(f"✓ {env_key}: {path}")
+
+    return config
+
+
 def calculate_cpu_range_from_numa(numa_nodes: list) -> str:
     """Calculate CPU core range from NUMA node IDs
 
@@ -349,17 +384,17 @@ class LogCapture:
             if len(self.numa_nodes) == 1:
                 # Single NUMA node: use -n flag
                 cmd = ['python3', '-u', self.config['ddr_latency_path'],
-                       '-d', str(self.duration), '-i', '2',
+                       '-d', str(self.duration), '-i', '1',
                        '-n', str(self.numa_nodes[0])]
             else:
                 # Multiple NUMA nodes: use --all flag
                 cmd = ['python3', '-u', self.config['ddr_latency_path'],
-                       '-d', str(self.duration), '-i', '2',
+                       '-d', str(self.duration), '-i', '1',
                        '--all']
         else:
             # Default: monitor all
             cmd = ['python3', '-u', self.config['ddr_latency_path'],
-                   '-d', str(self.duration), '-i', '2',
+                   '-d', str(self.duration), '-i', '1',
                    '--all']
 
         return self._start_tool('ddr_latency', cmd, 'ddr_latency.log',
@@ -2848,7 +2883,14 @@ def main():
     if args.enable_capture:
         print("\n📋 Loading log collection configuration...")
         config = load_env_config()
-        config = validate_and_prompt_missing(config)
+
+        # Use non-interactive validation for automated test modes (--stress-file/--stress-process)
+        # These modes are typically used in automated scripts where user input is not available
+        if args.stress_file or args.stress_process:
+            print("  Using non-interactive mode (auto-skip missing paths)")
+            config = validate_and_auto_skip(config)
+        else:
+            config = validate_and_prompt_missing(config)
 
     # Create QEMUMonitor instance
     m = QEMUMonitor()
