@@ -336,25 +336,29 @@ class LogCapture:
 
         Uses numa_nodes from self.numa_nodes to specify which NUMA nodes to monitor.
         If multiple NUMA nodes, uses --all flag to monitor all.
+
+        Note: Uses -u flag for unbuffered stdout/stderr to ensure all output
+              (DDR device lines + CORE lines) is captured in log file.
         """
         if not self.config.get('ddr_latency_path'):
             return None, None  # Not configured
 
         # Determine NUMA argument based on self.numa_nodes
+        # Use -u flag for unbuffered output (critical for capturing all DDR data)
         if self.numa_nodes and len(self.numa_nodes) > 0:
             if len(self.numa_nodes) == 1:
                 # Single NUMA node: use -n flag
-                cmd = ['python3', self.config['ddr_latency_path'],
+                cmd = ['python3', '-u', self.config['ddr_latency_path'],
                        '-d', str(self.duration), '-i', '2',
                        '-n', str(self.numa_nodes[0])]
             else:
                 # Multiple NUMA nodes: use --all flag
-                cmd = ['python3', self.config['ddr_latency_path'],
+                cmd = ['python3', '-u', self.config['ddr_latency_path'],
                        '-d', str(self.duration), '-i', '2',
                        '--all']
         else:
             # Default: monitor all
-            cmd = ['python3', self.config['ddr_latency_path'],
+            cmd = ['python3', '-u', self.config['ddr_latency_path'],
                    '-d', str(self.duration), '-i', '2',
                    '--all']
 
