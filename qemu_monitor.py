@@ -1081,51 +1081,111 @@ def parse_ub_watch(log_path: str) -> dict:
 
 
 def parse_ddr_latency(log_path: str) -> dict:
-    """Parse DDR latency log file from 920x_ddr_latency tool
+    """Parse DDR latency log file from 920x_ddr_latency_v1.1 tool
 
-    Expected output format:
-        DDR Name  Frequency  RD Bandwidth(GB/s)  WR Bandwidth(GB/s)  RD Latency(cycle)  WR Latency(cycle)
-        hisi_sccl3_ddrc0_0  2400  12.50  8.30  45.2  38.5
+    v1.1 format (TSV - tab separated):
+        Header: NUMA  Type    Device        Freq(MHz)  RD_BW(GB/s)  WR_BW(GB/s)  RD_Lat(cycle)  WR_Lat(cycle)  Uncore(GHz)
+        DDR device line:    NUMA{id}  DDR       {device_name}    {freq}      {rd_bw}      {wr_bw}      {rd_lat}        {wr_lat}        {uncore_ghz}
+        NUMA aggregate:     NUMA{id}  AGGREGATE {device_count}   -           {total_rd_bw} {total_wr_bw} {avg_rd_lat}    {avg_wr_lat}    {uncore_ghz}
+        Core frequency:     NUMA{id}  CORE      {freq_ghz}       {cpu_range}  -            -            -               -               {freq_ghz}
+
+    We only use AGGREGATE lines for NUMA-level DDR latency summary.
 
     Returns:
         {
-            'ddr_devices': [
-                {'name': 'hisi_sccl3_ddrc0_0', 'frequency': 2400,
-                 'rd_bw_gb_s': 12.50, 'wr_bw_gb_s': 8.30,
-                 'rd_latency_cycle': 45.2, 'wr_latency_cycle': 38.5}
-            ],
+            'numa_stats': {
+                numa_id: {
+                    'avg_rd_latency_cycle': ...,
+                    'avg_wr_latency_cycle': ...,
+                    'total_rd_bw_gb_s': ...,
+                    'total_wr_bw_gb_s': ...,
+                    'uncore_freq_ghz': ...,
+                    'core_freq_ghz': ...,  # from CORE lines
+                    'device_count': ...,
+                    'sample_count': ...
+                }
+            },
             'summary': {
-                'avg_rd_latency_cycle': ...,
+                'avg_rd_latency_cycle': ...,  # overall average
                 'avg_wr_latency_cycle': ...,
                 'total_rd_bw_gb_s': ...,
-                'total_wr_bw_gb_s': ...
+                'total_wr_bw_gb_s': ...,
+                'avg_uncore_freq_ghz': ...,
+                'avg_core_freq_ghz': ...
             }
         }
     """
     try:
-        result = {'ddr_devices': [], 'summary': {}}
+        result = {'numa_stats': {}, 'summary': {}}
 
         with open(log_path, 'r') as f:
             content = f.read()
 
-        # Parse each DDR device line
-        # Format: DDR_NAME  Frequency  RD_BW  WR_BW  RD_Latency  WR_Latency
         lines = content.strip().split('\n')
 
+        # Collect samples per NUMA (for AGGREGATE and CORE lines)
+        numa_aggregate_samples = defaultdict(list)  # numa_id -> list of AGGREGATE samples
+        numa_core_samples = defaultdict(list)       # numa_id -> list of CORE freq samples
+
         for line in lines:
-            # Skip header lines and empty lines
-            if not line.strip() or 'DDR Name' in line or 'Frequency' in line or 'Bandwidth' in line:
+            # Skip header and info lines
+            if not line.strip() or 'NUMA' in line and 'Type' in line:
+                # Check if it's the TSV header
+                if 'NUMA' in line and 'Type' in line and 'AGGREGATE' in line:
+                    continue
+                # Skip old format headers
+                if 'DDR Name' in line or 'Frequency' in line or 'Bandwidth' in line or 'Collection' in line or 'Sampling' in line:
+                    continue
                 continue
 
+            # Try to parse TSV format (v1.1)
+            parts = line.strip().split('\t')
+            if len(parts) >= 2 and parts[0].startswith('NUMA'):
+                try:
+                    # Parse NUMA ID from "NUMA0", "NUMA1", etc.
+                    numa_id = int(parts[0].replace('NUMA', '').replace('{', '').replace('}', ''))
+                    line_type = parts[1]
+
+                    if line_type == 'AGGREGATE' and len(parts) >= 9:
+                        # AGGREGATE line: NUMA{id} AGGREGATE {device_count} - {total_rd_bw} {total_wr_bw} {avg_rd_lat} {avg_wr_lat} {uncore_ghz}
+                        # parts: [NUMA{id}, AGGREGATE, device_count, -, total_rd_bw, total_wr_bw, avg_rd_lat, avg_wr_lat, uncore_ghz]
+                        device_count = int(parts[2])
+                        total_rd_bw = float(parts[4])
+                        total_wr_bw = float(parts[5])
+                        avg_rd_lat = float(parts[6])
+                        avg_wr_lat = float(parts[7])
+                        uncore_ghz = float(parts[8]) if len(parts) > 8 else 0.0
+
+                        numa_aggregate_samples[numa_id].append({
+                            'device_count': device_count,
+                            'total_rd_bw_gb_s': total_rd_bw,
+                            'total_wr_bw_gb_s': total_wr_bw,
+                            'avg_rd_latency_cycle': avg_rd_lat,
+                            'avg_wr_latency_cycle': avg_wr_lat,
+                            'uncore_freq_ghz': uncore_ghz
+                        })
+
+                    elif line_type == 'CORE' and len(parts) >= 4:
+                        # CORE line: NUMA{id} CORE {freq_ghz} {cpu_range} - - {freq_ghz}
+                        # parts: [NUMA{id}, CORE, freq_ghz, cpu_range, -, -, freq_ghz]
+                        core_freq_ghz = float(parts[2])
+                        numa_core_samples[numa_id].append({
+                            'core_freq_ghz': core_freq_ghz,
+                            'cpu_range': parts[3] if len(parts) > 3 else ''
+                        })
+
+                except (ValueError, IndexError) as e:
+                    continue
+                continue
+
+            # Fallback: Try to parse old format (space separated)
             parts = line.strip().split()
-            # Expected: name, freq, rd_bw, wr_bw, rd_latency, wr_latency
             if len(parts) >= 6:
                 try:
                     # Handle device name that may contain spaces (join first parts until we hit a number)
                     name_parts = []
                     freq_idx = 0
                     for i, p in enumerate(parts):
-                        # Try to parse as number - this is the frequency
                         try:
                             float(p.replace(',', ''))
                             freq_idx = i
@@ -1133,7 +1193,7 @@ def parse_ddr_latency(log_path: str) -> dict:
                         except ValueError:
                             name_parts.append(p)
 
-                    if name_parts:
+                    if name_parts and freq_idx + 4 < len(parts):
                         device_name = ' '.join(name_parts)
                         frequency = float(parts[freq_idx].replace(',', ''))
                         rd_bw = float(parts[freq_idx + 1].replace(',', ''))
@@ -1141,35 +1201,86 @@ def parse_ddr_latency(log_path: str) -> dict:
                         rd_latency = float(parts[freq_idx + 3].replace(',', ''))
                         wr_latency = float(parts[freq_idx + 4].replace(',', ''))
 
-                        result['ddr_devices'].append({
-                            'name': device_name,
-                            'frequency': frequency,
-                            'rd_bw_gb_s': rd_bw,
-                            'wr_bw_gb_s': wr_bw,
-                            'rd_latency_cycle': rd_latency,
-                            'wr_latency_cycle': wr_latency
-                        })
+                        # Extract NUMA ID from device name (hisi_sccl{id}_ddrc...)
+                        numa_id = None
+                        if 'hisi_sccl' in device_name:
+                            sccl_match = re.search(r'hisi_sccl(\d+)', device_name)
+                            if sccl_match:
+                                numa_id = int(sccl_match.group(1))
+
+                        if numa_id is not None:
+                            numa_aggregate_samples[numa_id].append({
+                                'device_count': 1,
+                                'total_rd_bw_gb_s': rd_bw,
+                                'total_wr_bw_gb_s': wr_bw,
+                                'avg_rd_latency_cycle': rd_latency,
+                                'avg_wr_latency_cycle': wr_latency,
+                                'uncore_freq_ghz': 0.0  # Old format doesn't have uncore freq
+                            })
+
                 except (ValueError, IndexError) as e:
                     continue
 
-        # Calculate summary statistics
-        if result['ddr_devices']:
-            total_rd_bw = sum(d['rd_bw_gb_s'] for d in result['ddr_devices'])
-            total_wr_bw = sum(d['wr_bw_gb_s'] for d in result['ddr_devices'])
-            avg_rd_latency = sum(d['rd_latency_cycle'] for d in result['ddr_devices']) / len(result['ddr_devices'])
-            avg_wr_latency = sum(d['wr_latency_cycle'] for d in result['ddr_devices']) / len(result['ddr_devices'])
+        # Aggregate samples per NUMA (compute averages)
+        for numa_id, samples in numa_aggregate_samples.items():
+            if not samples:
+                continue
+
+            # Calculate average values across all samples
+            avg_rd_bw = sum(s['total_rd_bw_gb_s'] for s in samples) / len(samples)
+            avg_wr_bw = sum(s['total_wr_bw_gb_s'] for s in samples) / len(samples)
+            avg_rd_latency = sum(s['avg_rd_latency_cycle'] for s in samples) / len(samples)
+            avg_wr_latency = sum(s['avg_wr_latency_cycle'] for s in samples) / len(samples)
+            avg_uncore = sum(s['uncore_freq_ghz'] for s in samples) / len(samples)
+            avg_device_count = sum(s['device_count'] for s in samples) / len(samples)
+
+            # Get core frequency for this NUMA (if available)
+            core_freq = None
+            if numa_id in numa_core_samples and numa_core_samples[numa_id]:
+                core_freq = sum(s['core_freq_ghz'] for s in numa_core_samples[numa_id]) / len(numa_core_samples[numa_id])
+
+            result['numa_stats'][numa_id] = {
+                'avg_rd_latency_cycle': round(avg_rd_latency, 2),
+                'avg_wr_latency_cycle': round(avg_wr_latency, 2),
+                'total_rd_bw_gb_s': round(avg_rd_bw, 2),
+                'total_wr_bw_gb_s': round(avg_wr_bw, 2),
+                'uncore_freq_ghz': round(avg_uncore, 3),
+                'core_freq_ghz': round(core_freq, 3) if core_freq else None,
+                'device_count': round(avg_device_count, 0),
+                'sample_count': len(samples)
+            }
+
+        # Sort NUMA stats by ID
+        result['numa_stats'] = dict(sorted(result['numa_stats'].items()))
+
+        # Calculate overall summary statistics
+        if result['numa_stats']:
+            total_rd_bw = sum(d['total_rd_bw_gb_s'] for d in result['numa_stats'].values())
+            total_wr_bw = sum(d['total_wr_bw_gb_s'] for d in result['numa_stats'].values())
+            avg_rd_latency = sum(d['avg_rd_latency_cycle'] for d in result['numa_stats'].values()) / len(result['numa_stats'])
+            avg_wr_latency = sum(d['avg_wr_latency_cycle'] for d in result['numa_stats'].values()) / len(result['numa_stats'])
+
+            # Calculate average uncore and core frequencies
+            uncore_freqs = [d['uncore_freq_ghz'] for d in result['numa_stats'].values() if d['uncore_freq_ghz'] > 0]
+            core_freqs = [d['core_freq_ghz'] for d in result['numa_stats'].values() if d['core_freq_ghz'] is not None]
+
+            avg_uncore = sum(uncore_freqs) / len(uncore_freqs) if uncore_freqs else 0.0
+            avg_core = sum(core_freqs) / len(core_freqs) if core_freqs else None
 
             result['summary'] = {
                 'avg_rd_latency_cycle': round(avg_rd_latency, 2),
                 'avg_wr_latency_cycle': round(avg_wr_latency, 2),
                 'total_rd_bw_gb_s': round(total_rd_bw, 2),
-                'total_wr_bw_gb_s': round(total_wr_bw, 2)
+                'total_wr_bw_gb_s': round(total_wr_bw, 2),
+                'avg_uncore_freq_ghz': round(avg_uncore, 3),
+                'avg_core_freq_ghz': round(avg_core, 3) if avg_core else None,
+                'numa_count': len(result['numa_stats'])
             }
 
         return result
 
     except Exception as e:
-        return {'error': str(e), 'ddr_devices': [], 'summary': {}}
+        return {'error': str(e), 'numa_stats': {}, 'summary': {}}
 
 
 def parse_all_logs(log_dir: str, numa_nodes: list = None) -> dict:
@@ -1508,35 +1619,47 @@ def export_to_excel(monitor: 'QEMUMonitor', log_dir: str, numa_nodes: list = Non
                     }
                     pd.DataFrame(bw_data).to_excel(writer, sheet_name='UBWatch_Bandwidth', index=False)
 
-            # ========== Sheet: DDR_Latency ==========
+            # ========== Sheet: DDR_Latency (NUMA Aggregate) ==========
             if 'ddr_latency' in parsed_logs and 'error' not in parsed_logs['ddr_latency']:
                 ddr = parsed_logs['ddr_latency']
 
-                # Per-device data
-                if ddr.get('ddr_devices'):
-                    device_data = {
-                        'DDR Device': [dev['name'] for dev in ddr['ddr_devices']],
-                        'Frequency (MHz)': [dev['frequency'] for dev in ddr['ddr_devices']],
-                        'RD BW (GB/s)': [dev['rd_bw_gb_s'] for dev in ddr['ddr_devices']],
-                        'WR BW (GB/s)': [dev['wr_bw_gb_s'] for dev in ddr['ddr_devices']],
-                        'RD Latency (cycle)': [dev['rd_latency_cycle'] for dev in ddr['ddr_devices']],
-                        'WR Latency (cycle)': [dev['wr_latency_cycle'] for dev in ddr['ddr_devices']]
+                # NUMA-level aggregate data (per NUMA stats)
+                if ddr.get('numa_stats'):
+                    numa_data = {
+                        'NUMA Node': list(ddr['numa_stats'].keys()),
+                        'Avg RD Latency (cycle)': [d['avg_rd_latency_cycle'] for d in ddr['numa_stats'].values()],
+                        'Avg WR Latency (cycle)': [d['avg_wr_latency_cycle'] for d in ddr['numa_stats'].values()],
+                        'Total RD BW (GB/s)': [d['total_rd_bw_gb_s'] for d in ddr['numa_stats'].values()],
+                        'Total WR BW (GB/s)': [d['total_wr_bw_gb_s'] for d in ddr['numa_stats'].values()],
+                        'Uncore Freq (GHz)': [d['uncore_freq_ghz'] for d in ddr['numa_stats'].values()],
+                        'Core Freq (GHz)': [d['core_freq_ghz'] if d['core_freq_ghz'] else 'N/A' for d in ddr['numa_stats'].values()],
+                        'Device Count': [d['device_count'] for d in ddr['numa_stats'].values()],
+                        'Sample Count': [d['sample_count'] for d in ddr['numa_stats'].values()]
                     }
-                    pd.DataFrame(device_data).to_excel(writer, sheet_name='DDR_Latency', index=False)
+                    pd.DataFrame(numa_data).to_excel(writer, sheet_name='DDR_Latency', index=False)
 
-                # Summary data
+                # Summary data (overall)
                 if ddr.get('summary'):
                     summary_data = {
-                        'Metric': ['Avg RD Latency (cycle)', 'Avg WR Latency (cycle)',
-                                   'Total RD BW (GB/s)', 'Total WR BW (GB/s)'],
+                        'Metric': ['Overall Avg RD Latency (cycle)', 'Overall Avg WR Latency (cycle)',
+                                   'Total RD BW (GB/s)', 'Total WR BW (GB/s)',
+                                   'Avg Uncore Freq (GHz)', 'Avg Core Freq (GHz)',
+                                   'NUMA Count'],
                         'Value': [ddr['summary']['avg_rd_latency_cycle'],
                                   ddr['summary']['avg_wr_latency_cycle'],
                                   ddr['summary']['total_rd_bw_gb_s'],
-                                  ddr['summary']['total_wr_bw_gb_s']]
+                                  ddr['summary']['total_wr_bw_gb_s'],
+                                  ddr['summary']['avg_uncore_freq_ghz'],
+                                  ddr['summary']['avg_core_freq_ghz'] if ddr['summary']['avg_core_freq_ghz'] else 'N/A',
+                                  ddr['summary']['numa_count']]
                     }
-                    # Append summary to DDR_Latency sheet (if no devices, create separate)
-                    if not ddr.get('ddr_devices'):
+                    # If no numa_stats, create DDR_Latency sheet with summary only
+                    if not ddr.get('numa_stats'):
                         pd.DataFrame(summary_data).to_excel(writer, sheet_name='DDR_Latency', index=False)
+                    else:
+                        # Append summary as a second table in the same sheet
+                        # (handled by writing to separate area after numa_data)
+                        pass  # Summary is already represented in the numa_stats average
 
             # ========== Sheet 10: Raw VM Data Time Series ==========
             if monitor.data:
