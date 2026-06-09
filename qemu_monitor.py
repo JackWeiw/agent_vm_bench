@@ -299,7 +299,7 @@ class LogCapture:
         if not self.config.get('devkit_path'):
             return None, None  # Not configured
         cmd = [self.config['devkit_path'], 'tuner', 'memory',
-               '-d', str(self.duration), '-i', '3']
+               '-d', str(self.duration), '-i', '2']
         return self._start_tool('devkit_mem', cmd, 'devkit_mem.log',
                                 f"Started devkit tuner memory (duration={self.duration}s)")
 
@@ -309,7 +309,7 @@ class LogCapture:
             return None, None  # Not configured
         cpu_range = self._get_cpu_range()
         cmd = [self.config['devkit_path'], 'tuner', 'top-down',
-               '-d', str(self.duration), '-i', '3', '-c', cpu_range]
+               '-d', str(self.duration), '-i', '2', '-c', cpu_range]
         return self._start_tool('devkit_top_down', cmd, 'devkit_top_down.log',
                                 f"Started devkit tuner top-down (cpu_range={cpu_range})")
 
@@ -318,7 +318,7 @@ class LogCapture:
         if not (self.config.get('ksys_path') and self.config.get('ksys_config_path')):
             return None, None  # Not configured
         cmd = [self.config['ksys_path'], 'collect',
-               '-d', str(self.duration), '-i', '3',
+               '-d', str(self.duration), '-i', '2',
                '-c', self.config['ksys_config_path']]
         return self._start_tool('ksys', cmd, 'ksys.log',
                                 f"Started ksys collect (config={self.config['ksys_config_path']})")
@@ -328,7 +328,7 @@ class LogCapture:
         if not self.config.get('ub_watch_path'):
             return None, None  # Not configured
         cmd = [self.config['ub_watch_path'],
-               '-t', str(self.duration), '-i', '3']
+               '-t', str(self.duration), '-i', '2']
         return self._start_tool('ub_watch', cmd, 'ub_watch.log')
 
     def _start_ddr_latency(self) -> tuple:
@@ -336,7 +336,7 @@ class LogCapture:
         if not self.config.get('ddr_latency_path'):
             return None, None  # Not configured
         cmd = ['python3', self.config['ddr_latency_path'],
-               '-d', str(self.duration), '-i', '3']
+               '-d', str(self.duration), '-i', '2']
         return self._start_tool('ddr_latency', cmd, 'ddr_latency.log')
 
     def start(self) -> dict:
