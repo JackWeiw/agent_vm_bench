@@ -1168,15 +1168,16 @@ def parse_ddr_latency(log_path: str) -> dict:
                     numa_id = int(parts[0].replace('NUMA', '').replace('{', '').replace('}', ''))
                     line_type = parts[1]
 
-                    if line_type == 'AGGREGATE' and len(parts) >= 9:
-                        # AGGREGATE line: NUMA{id} AGGREGATE {device_count} - {total_rd_bw} {total_wr_bw} {avg_rd_lat} {avg_wr_lat} {uncore_ghz}
-                        # parts: [NUMA{id}, AGGREGATE, device_count, -, total_rd_bw, total_wr_bw, avg_rd_lat, avg_wr_lat, uncore_ghz]
+                    if line_type == 'AGGREGATE' and len(parts) >= 8:
+                        # AGGREGATE line: NUMA{id} AGGREGATE {device_count} {total_rd_bw} {total_wr_bw} {avg_rd_lat} {avg_wr_lat} {uncore_ghz}
+                        # parts: [NUMA{id}, AGGREGATE, device_count, total_rd_bw, total_wr_bw, avg_rd_lat, avg_wr_lat, uncore_ghz]
+                        # Note: actual format from 920x_ddr_latency_v1.1.py line 543-545
                         device_count = int(parts[2])
-                        total_rd_bw = float(parts[4])
-                        total_wr_bw = float(parts[5])
-                        avg_rd_lat = float(parts[6])
-                        avg_wr_lat = float(parts[7])
-                        uncore_ghz = float(parts[8]) if len(parts) > 8 else 0.0
+                        total_rd_bw = float(parts[3])
+                        total_wr_bw = float(parts[4])
+                        avg_rd_lat = float(parts[5])
+                        avg_wr_lat = float(parts[6])
+                        uncore_ghz = float(parts[7]) if len(parts) > 7 else 0.0
 
                         numa_aggregate_samples[numa_id].append({
                             'device_count': device_count,
