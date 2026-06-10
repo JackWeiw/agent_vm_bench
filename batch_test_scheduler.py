@@ -437,33 +437,104 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
         except Exception:
             pass
 
-        # ========== DDR_Latency sheet ==========
+        # ========== DDR_Latency sheet (NUMA Aggregate format from qemu_monitor.py) ==========
+        # qemu_monitor.py exports DDR_Latency sheet with columns:
+        #   NUMA Node | Avg RD Latency (cycle) | Avg WR Latency (cycle) | Total RD BW (GB/s) | Total WR BW (GB/s) |
+        #   Uncore Freq (GHz) | Core Freq (GHz) | Device Count | Sample Count
         try:
             df_ddr = pd.read_excel(excel_path, sheet_name="DDR_Latency")
-            for idx, row in df_ddr.iterrows():
-                device = str(row["DDR Device"]).strip() if pd.notna(row["DDR Device"]) else ""
-                if device:
-                    # Per-device metrics - normalize device name
-                    device_key = device.replace('hisi_sccl', 'ddr_sccl').replace('ddrc', 'ddr')
-                    metrics[f"{device_key}_freq_mhz"] = float(row["Frequency (MHz)"]) if pd.notna(row["Frequency (MHz)"]) else 0
-                    metrics[f"{device_key}_rd_bw_gb_s"] = float(row["RD BW (GB/s)"]) if pd.notna(row["RD BW (GB/s)"]) else 0
-                    metrics[f"{device_key}_wr_bw_gb_s"] = float(row["WR BW (GB/s)"]) if pd.notna(row["WR BW (GB/s)"]) else 0
-                    metrics[f"{device_key}_rd_latency_cycle"] = float(row["RD Latency (cycle)"]) if pd.notna(row["RD Latency (cycle)"]) else 0
-                    metrics[f"{device_key}_wr_latency_cycle"] = float(row["WR Latency (cycle)"]) if pd.notna(row["WR Latency (cycle)"]) else 0
+
+            # Check which format the sheet is in (NUMA-based or Device-based)
+            # NUMA-based format (from qemu_monitor.py): has "NUMA Node" column
+            # Device-based format (legacy): has "DDR Device" column
+
+            if "NUMA Node" in df_ddr.columns:
+                # NUMA Aggregate format (current qemu_monitor.py output)
+                total_rd_bw = 0.0
+                total_wr_bw = 0.0
+                rd_latency_samples = []
+                wr_latency_samples = []
+
+                for idx, row in df_ddr.iterrows():
+                    numa_node = str(row["NUMA Node"]).strip() if pd.notna(row["NUMA Node"]) else ""
+                    if numa_node and numa_node != "Metric":  # Skip summary rows
+                        try:
+                            # Per-NUMA metrics
+                            numa_id = numa_node.replace("NUMA", "")
+                            rd_lat = float(row["Avg RD Latency (cycle)"]) if pd.notna(row["Avg RD Latency (cycle)"]) else 0
+                            wr_lat = float(row["Avg WR Latency (cycle)"]) if pd.notna(row["Avg WR Latency (cycle)"]) else 0
+                            rd_bw = float(row["Total RD BW (GB/s)"]) if pd.notna(row["Total RD BW (GB/s)"]) else 0
+                            wr_bw = float(row["Total WR BW (GB/s)"]) if pd.notna(row["Total WR BW (GB/s)"]) else 0
+                            uncore_freq = float(row["Uncore Freq (GHz)"]) if pd.notna(row["Uncore Freq (GHz)"]) else 0
+                            device_count = int(row["Device Count"]) if pd.notna(row["Device Count"]) else 0
+                            sample_count = int(row["Sample Count"]) if pd.notna(row["Sample Count"]) else 0
+
+                            # Store per-NUMA metrics
+                            metrics[f"ddr_numa{numa_id}_avg_rd_latency_cycle"] = rd_lat
+                            metrics[f"ddr_numa{numa_id}_avg_wr_latency_cycle"] = wr_lat
+                            metrics[f"ddr_numa{numa_id}_total_rd_bw_gb_s"] = rd_bw
+                            metrics[f"ddr_numa{numa_id}_total_wr_bw_gb_s"] = wr_bw
+                            metrics[f"ddr_numa{numa_id}_uncore_freq_ghz"] = uncore_freq
+                            metrics[f"ddr_numa{numa_id}_device_count"] = device_count
+                            metrics[f"ddr_numa{numa_id}_sample_count"] = sample_count
+
+                            # Accumulate for overall summary
+                            total_rd_bw += rd_bw
+                            total_wr_bw += wr_bw
+                            if rd_lat > 0:
+                                rd_latency_samples.append(rd_lat)
+                            if wr_lat > 0:
+                                wr_latency_samples.append(wr_lat)
+                        except (ValueError, TypeError):
+                            pass
+
+                # Calculate overall summary from NUMA data
+                if rd_latency_samples:
+                    metrics["ddr_avg_rd_latency_cycle"] = sum(rd_latency_samples) / len(rd_latency_samples)
+                if wr_latency_samples:
+                    metrics["ddr_avg_wr_latency_cycle"] = sum(wr_latency_samples) / len(wr_latency_samples)
+                metrics["ddr_total_rd_bw_gb_s"] = total_rd_bw
+                metrics["ddr_total_wr_bw_gb_s"] = total_wr_bw
+
+            elif "DDR Device" in df_ddr.columns:
+                # Legacy Device-based format (per DDR device)
+                for idx, row in df_ddr.iterrows():
+                    device = str(row["DDR Device"]).strip() if pd.notna(row["DDR Device"]) else ""
+                    if device:
+                        # Per-device metrics - normalize device name
+                        device_key = device.replace('hisi_sccl', 'ddr_sccl').replace('ddrc', 'ddr')
+                        metrics[f"{device_key}_freq_mhz"] = float(row["Frequency (MHz)"]) if pd.notna(row["Frequency (MHz)"]) else 0
+                        metrics[f"{device_key}_rd_bw_gb_s"] = float(row["RD BW (GB/s)"]) if pd.notna(row["RD BW (GB/s)"]) else 0
+                        metrics[f"{device_key}_wr_bw_gb_s"] = float(row["WR BW (GB/s)"]) if pd.notna(row["WR BW (GB/s)"]) else 0
+                        metrics[f"{device_key}_rd_latency_cycle"] = float(row["RD Latency (cycle)"]) if pd.notna(row["RD Latency (cycle)"]) else 0
+                        metrics[f"{device_key}_wr_latency_cycle"] = float(row["WR Latency (cycle)"]) if pd.notna(row["WR Latency (cycle)"]) else 0
 
             # Summary metrics (from the Metric/Value columns if present)
-            # Check if there's a Metric column with summary data
+            # These may appear in the same sheet after the NUMA/device data
             if "Metric" in df_ddr.columns and "Value" in df_ddr.columns:
                 for idx, row in df_ddr.iterrows():
                     metric = str(row["Metric"]).strip() if pd.notna(row["Metric"]) else ""
-                    if metric == "Avg RD Latency (cycle)":
+                    # Handle both old and new metric names
+                    if metric == "Avg RD Latency (cycle)" or metric == "Overall Avg RD Latency (cycle)":
                         metrics["ddr_avg_rd_latency_cycle"] = float(row["Value"]) if pd.notna(row["Value"]) else 0
-                    elif metric == "Avg WR Latency (cycle)":
+                    elif metric == "Avg WR Latency (cycle)" or metric == "Overall Avg WR Latency (cycle)":
                         metrics["ddr_avg_wr_latency_cycle"] = float(row["Value"]) if pd.notna(row["Value"]) else 0
                     elif metric == "Total RD BW (GB/s)":
                         metrics["ddr_total_rd_bw_gb_s"] = float(row["Value"]) if pd.notna(row["Value"]) else 0
                     elif metric == "Total WR BW (GB/s)":
                         metrics["ddr_total_wr_bw_gb_s"] = float(row["Value"]) if pd.notna(row["Value"]) else 0
+                    elif metric == "Avg Uncore Freq (GHz)":
+                        metrics["ddr_avg_uncore_freq_ghz"] = float(row["Value"]) if pd.notna(row["Value"]) else 0
+                    elif metric == "Avg Core Freq (GHz)":
+                        # Handle 'N/A' value
+                        val = row["Value"]
+                        if pd.notna(val) and val != 'N/A':
+                            try:
+                                metrics["ddr_avg_core_freq_ghz"] = float(val)
+                            except (ValueError, TypeError):
+                                pass
+                    elif metric == "NUMA Count":
+                        metrics["ddr_numa_count"] = int(row["Value"]) if pd.notna(row["Value"]) else 0
         except Exception:
             pass
 
@@ -630,41 +701,100 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
                 metrics["ub_bw_total_max_rd_mb_s"] = total_max_rd
                 metrics["ub_bw_total_max_sum_mb_s"] = total_max_sum
 
-            # DDR_Latency
+            # DDR_Latency (NUMA Aggregate format from qemu_monitor.py)
             if "DDR_Latency" in wb.sheetnames:
                 ws = wb["DDR_Latency"]
-                # Per-device data: DDR Device, Frequency (MHz), RD BW (GB/s), WR BW (GB/s), RD Latency (cycle), WR Latency (cycle)
+
+                # Read header row to determine format
+                header_row = list(ws.iter_rows(min_row=1, max_row=1, values_only=True))[0]
+                headers = [str(h).strip() if h else "" for h in header_row]
+
+                # Check if NUMA Node column exists (current format)
+                if "NUMA Node" in headers:
+                    # NUMA Aggregate format (current qemu_monitor.py output)
+                    # Columns: NUMA Node, Avg RD Latency (cycle), Avg WR Latency (cycle), Total RD BW (GB/s), Total WR BW (GB/s),
+                    #          Uncore Freq (GHz), Core Freq (GHz), Device Count, Sample Count
+                    total_rd_bw = 0.0
+                    total_wr_bw = 0.0
+                    rd_latency_samples = []
+                    wr_latency_samples = []
+
+                    for row in ws.iter_rows(min_row=2, values_only=True):
+                        if row[0]:  # NUMA Node column
+                            numa_node = str(row[0]).strip()
+                            if numa_node and numa_node != "Metric":  # Skip summary rows
+                                try:
+                                    numa_id = numa_node.replace("NUMA", "")
+
+                                    # Get values from columns (use header indices for robustness)
+                                    rd_lat = float(row[1]) if row[1] else 0  # Avg RD Latency
+                                    wr_lat = float(row[2]) if row[2] else 0  # Avg WR Latency
+                                    rd_bw = float(row[3]) if row[3] else 0   # Total RD BW
+                                    wr_bw = float(row[4]) if row[4] else 0   # Total WR BW
+
+                                    # Store per-NUMA metrics
+                                    metrics[f"ddr_numa{numa_id}_avg_rd_latency_cycle"] = rd_lat
+                                    metrics[f"ddr_numa{numa_id}_avg_wr_latency_cycle"] = wr_lat
+                                    metrics[f"ddr_numa{numa_id}_total_rd_bw_gb_s"] = rd_bw
+                                    metrics[f"ddr_numa{numa_id}_total_wr_bw_gb_s"] = wr_bw
+
+                                    # Accumulate for overall summary
+                                    total_rd_bw += rd_bw
+                                    total_wr_bw += wr_bw
+                                    if rd_lat > 0:
+                                        rd_latency_samples.append(rd_lat)
+                                    if wr_lat > 0:
+                                        wr_latency_samples.append(wr_lat)
+                                except (ValueError, TypeError):
+                                    pass
+
+                    # Calculate overall summary from NUMA data
+                    if rd_latency_samples:
+                        metrics["ddr_avg_rd_latency_cycle"] = sum(rd_latency_samples) / len(rd_latency_samples)
+                    if wr_latency_samples:
+                        metrics["ddr_avg_wr_latency_cycle"] = sum(wr_latency_samples) / len(wr_latency_samples)
+                    metrics["ddr_total_rd_bw_gb_s"] = total_rd_bw
+                    metrics["ddr_total_wr_bw_gb_s"] = total_wr_bw
+
+                elif "DDR Device" in headers:
+                    # Legacy Device-based format
+                    # Columns: DDR Device, Frequency (MHz), RD BW (GB/s), WR BW (GB/s), RD Latency (cycle), WR Latency (cycle)
+                    for row in ws.iter_rows(min_row=2, values_only=True):
+                        if row[0]:  # DDR Device column
+                            device = str(row[0]).strip()
+                            if device and device != "Metric":  # Skip summary rows
+                                try:
+                                    device_key = device.replace('hisi_sccl', 'ddr_sccl').replace('ddrc', 'ddr')
+                                    metrics[f"{device_key}_freq_mhz"] = float(row[1]) if row[1] else 0  # Frequency
+                                    metrics[f"{device_key}_rd_bw_gb_s"] = float(row[2]) if row[2] else 0  # RD BW
+                                    metrics[f"{device_key}_wr_bw_gb_s"] = float(row[3]) if row[3] else 0  # WR BW
+                                    metrics[f"{device_key}_rd_latency_cycle"] = float(row[4]) if row[4] else 0  # RD Latency
+                                    metrics[f"{device_key}_wr_latency_cycle"] = float(row[5]) if row[5] else 0  # WR Latency
+                                except (ValueError, TypeError):
+                                    pass
+
+                # Summary metrics (if present as Metric/Value columns in any format)
                 for row in ws.iter_rows(min_row=2, values_only=True):
-                    if row[0]:  # DDR Device column
-                        device = str(row[0]).strip()
-                        if device and device != "Metric":  # Skip summary rows
+                    if row[0]:
+                        metric_name = str(row[0]).strip()
+                        # Handle both old and new metric names
+                        summary_metrics = {
+                            "Avg RD Latency (cycle)": "ddr_avg_rd_latency_cycle",
+                            "Avg WR Latency (cycle)": "ddr_avg_wr_latency_cycle",
+                            "Overall Avg RD Latency (cycle)": "ddr_avg_rd_latency_cycle",
+                            "Overall Avg WR Latency (cycle)": "ddr_avg_wr_latency_cycle",
+                            "Total RD BW (GB/s)": "ddr_total_rd_bw_gb_s",
+                            "Total WR BW (GB/s)": "ddr_total_wr_bw_gb_s",
+                            "Avg Uncore Freq (GHz)": "ddr_avg_uncore_freq_ghz",
+                            "NUMA Count": "ddr_numa_count",
+                        }
+                        if metric_name in summary_metrics:
                             try:
-                                device_key = device.replace('hisi_sccl', 'ddr_sccl').replace('ddrc', 'ddr')
-                                metrics[f"{device_key}_freq_mhz"] = float(row[1]) if row[1] else 0  # Frequency
-                                metrics[f"{device_key}_rd_bw_gb_s"] = float(row[2]) if row[2] else 0  # RD BW
-                                metrics[f"{device_key}_wr_bw_gb_s"] = float(row[3]) if row[3] else 0  # WR BW
-                                metrics[f"{device_key}_rd_latency_cycle"] = float(row[4]) if row[4] else 0  # RD Latency
-                                metrics[f"{device_key}_wr_latency_cycle"] = float(row[5]) if row[5] else 0  # WR Latency
+                                value = row[1]
+                                if value and value != 'N/A':
+                                    metrics[summary_metrics[metric_name]] = float(value)
                             except (ValueError, TypeError):
                                 pass
-
-                # Summary metrics (if present as Metric/Value columns)
-                for row in ws.iter_rows(min_row=2, values_only=True):
-                    if row[0] and str(row[0]).strip() in ["Avg RD Latency (cycle)", "Avg WR Latency (cycle)",
-                                                          "Total RD BW (GB/s)", "Total WR BW (GB/s)"]:
-                        metric = str(row[0]).strip()
-                        try:
-                            value = float(row[1]) if row[1] else 0
-                            if metric == "Avg RD Latency (cycle)":
-                                metrics["ddr_avg_rd_latency_cycle"] = value
-                            elif metric == "Avg WR Latency (cycle)":
-                                metrics["ddr_avg_wr_latency_cycle"] = value
-                            elif metric == "Total RD BW (GB/s)":
-                                metrics["ddr_total_rd_bw_gb_s"] = value
-                            elif metric == "Total WR BW (GB/s)":
-                                metrics["ddr_total_wr_bw_gb_s"] = value
-                        except (ValueError, TypeError):
-                            pass
 
         except ImportError:
             print(f"WARNING: Neither pandas nor openpyxl available for {result_dir}")
@@ -850,9 +980,20 @@ def generate_summary_report(results: Dict, output_path: str):
             row["ddr_total_rd_bw_gb_s"] = qemu.get("ddr_total_rd_bw_gb_s", 0)
             row["ddr_total_wr_bw_gb_s"] = qemu.get("ddr_total_wr_bw_gb_s", 0)
 
-            # DDR Latency - Per-device metrics (dynamically add if exists)
+            # DDR Latency - Additional summary metrics (if present)
+            row["ddr_avg_uncore_freq_ghz"] = qemu.get("ddr_avg_uncore_freq_ghz", 0)
+            row["ddr_avg_core_freq_ghz"] = qemu.get("ddr_avg_core_freq_ghz", 0)
+            row["ddr_numa_count"] = qemu.get("ddr_numa_count", 0)
+
+            # DDR Latency - Per-NUMA metrics (dynamically add if exists)
+            # These are from NUMA Aggregate format: ddr_numa{id}_avg_rd_latency_cycle, etc.
             for key, value in qemu.items():
-                if key.startswith("ddr_sccl") or key.startswith("ddr_"):
+                if key.startswith("ddr_numa"):
+                    row[key] = value
+
+            # DDR Latency - Per-device metrics (legacy format, dynamically add if exists)
+            for key, value in qemu.items():
+                if key.startswith("ddr_sccl"):
                     row[key] = value
 
             rows.append(row)
@@ -920,11 +1061,11 @@ def generate_summary_report(results: Dict, output_path: str):
         column_sources.append(("UBWatch Bandwidth (Excel: UBWatch_Bandwidth)", col_idx, ub_bw_total_end))
         col_idx = ub_bw_total_end + 1
 
-        # DDR Latency Summary - 4 columns + dynamic per-device columns
-        ddr_summary_end = col_idx + 3
-        # Check if there are per-device DDR latency columns
-        ddr_device_cols = [c for c in df.columns if c.startswith("ddr_") and c not in ["ddr_avg_rd_latency_cycle", "ddr_avg_wr_latency_cycle", "ddr_total_rd_bw_gb_s", "ddr_total_wr_bw_gb_s"]]
-        ddr_summary_end += len(ddr_device_cols)
+        # DDR Latency Summary - 6 columns (base summary) + dynamic per-NUMA/per-device columns
+        ddr_summary_end = col_idx + 5  # 6 base columns: avg_rd_lat, avg_wr_lat, total_rd_bw, total_wr_bw, avg_uncore_freq, numa_count
+        # Check if there are per-NUMA or per-device DDR latency columns
+        ddr_extra_cols = [c for c in df.columns if c.startswith("ddr_numa") or c.startswith("ddr_sccl")]
+        ddr_summary_end += len(ddr_extra_cols)
         column_sources.append(("DDR Latency (Excel: DDR_Latency)", col_idx, ddr_summary_end))
 
         # Insert source header row at row 1
