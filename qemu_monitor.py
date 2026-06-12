@@ -395,14 +395,16 @@ class LogCapture:
             return (False, 'smap_bw_path not configured')
 
         # smap_bw requires sudo for dmesg access
-        # Command: sudo python3 <script_path> --clear --duration <duration>
+        # Command: sudo python3 <script_path> --clear --duration <dur> --timeout <dur+10>
+        timeout = self.duration + 10  # Extra buffer for cleanup
         cmd = [
             'sudo', 'python3', self.config['smap_bw_path'],
-            '--clear', '--duration', str(self.duration)
+            '--clear', '--duration', str(self.duration),
+            '--timeout', str(timeout)
         ]
         return self._start_tool(
             'smap_bw', cmd, 'smap_bw.log',
-            f"Started smap_bw (duration={self.duration}s)"
+            f"Started smap_bw (duration={self.duration}s, timeout={timeout}s)"
         )
 
     def start(self) -> dict:
