@@ -105,11 +105,12 @@ def save_env_config(config: dict):
                         f.write(f"{env_key}={value}\n")
 
 
-def validate_and_prompt_missing(config: dict) -> dict:
+def validate_and_prompt_missing(config: dict, non_interactive: bool = False) -> dict:
     """Validate paths and prompt user for missing/invalid ones
 
     Args:
         config: dict with path configurations
+        non_interactive: if True, skip prompts and disable missing tools silently
 
     Returns:
         Updated config dict with valid paths or None for disabled tools
@@ -133,28 +134,46 @@ def validate_and_prompt_missing(config: dict) -> dict:
     for env_key, config_key in key_mapping.items():
         path = config.get(config_key, '')
 
-        # Loop until valid path provided or user skips
-        while not path or not os.path.exists(path):
-            print(f"\n⚠ {env_key} not configured or path invalid")
-            if path:
-                print(f"  Current: {path}")
-            user_input = input(f"Enter {prompt_names[env_key]} (or 'skip' to disable): ").strip()
+        # Check if path is valid
+        if path and os.path.exists(path):
+            continue  # Path is valid, no action needed
 
-            if user_input.lower() == 'skip':
+        if non_interactive:
+            # Non-interactive mode: silently disable missing tools
+            if not path or not os.path.exists(path):
                 config[config_key] = None  # Mark as disabled
-                print(f"  ✓ {env_key} disabled for this session")
-                break
+                print(f"  ⚠ {env_key} not configured or invalid, disabled for this session")
+        else:
+            # Interactive mode: prompt user for input
+            while not path or not os.path.exists(path):
+                print(f"\n⚠ {env_key} not configured or path invalid")
+                if path:
+                    print(f"  Current: {path}")
+                user_input = input(f"Enter {prompt_names[env_key]} (or 'skip' to disable): ").strip()
 
-            if os.path.exists(user_input):
-                path = user_input
-                config[config_key] = user_input
-                print(f"  ✓ {env_key} set to: {user_input}")
-            else:
-                print(f"  ✗ Path does not exist: {user_input}")
+                if user_input.lower() == 'skip':
+                    config[config_key] = None  # Mark as disabled
+                    print(f"  ✓ {env_key} disabled for this session")
+                    break
 
-    # Save updated config to .env
-    save_env_config(config)
-    print("\n✓ Configuration saved to .env file")
+                if os.path.exists(user_input):
+                    path = user_input
+                    config[config_key] = user_input
+                    print(f"  ✓ {env_key} set to: {user_input}")
+                else:
+                    print(f"  ✗ Path does not exist: {user_input}")
+
+    # Save updated config to .env (only if any changes made)
+    if non_interactive:
+        # In non-interactive mode, don't save disabled tools to .env
+        # Only save valid paths
+        save_config = {k: v for k, v in config.items() if v is not None and v != ''}
+        if save_config:
+            save_env_config(save_config)
+    else:
+        save_env_config(config)
+        print("\n✓ Configuration saved to .env file")
+
     return config
 
 
@@ -376,9 +395,9 @@ class LogCapture:
             return (False, 'smap_bw_path not configured')
 
         # smap_bw requires sudo for dmesg access
-        # Command: sudo python3 smap_bw.py --clear --duration <duration>
+        # Command: sudo python3 <script_path> --clear --duration <duration>
         cmd = [
-            'sudo', self.config['smap_bw_path'],
+            'sudo', 'python3', self.config['smap_bw_path'],
             '--clear', '--duration', str(self.duration)
         ]
         return self._start_tool(
@@ -2769,7 +2788,9 @@ def main():
     parser.add_argument('--numa', type=str, default='1', help='Specify NUMA nodes to monitor, comma-separated 0,1')
     parser.add_argument('--log-dir', type=str, help='Log output directory (default: logs_${timestamp}/ in current dir)')
     parser.add_argument('--enable-capture', action='store_true',
-                        help='Enable parallel log collection with devkit/ksys/ub_watch')
+                        help='Enable parallel log collection with devkit/ksys/ub_watch/smap_bw')
+    parser.add_argument('--auto-skip', action='store_true',
+                        help='Auto-skip missing log capture tools (for automated testing)')
     parser.add_argument('--ksys-parse-timeout', type=int, default=600,
                         help='Timeout for ksys data parsing phase in seconds (default: 600s, increase for large VM counts)')
     args = parser.parse_args()
@@ -2789,7 +2810,7 @@ def main():
     if args.enable_capture:
         print("\n📋 Loading log collection configuration...")
         config = load_env_config()
-        config = validate_and_prompt_missing(config)
+        config = validate_and_prompt_missing(config, non_interactive=args.auto_skip)
 
     # Create QEMUMonitor instance
     m = QEMUMonitor()
