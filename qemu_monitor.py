@@ -39,20 +39,21 @@ except ImportError:
 # ==================== .env Configuration Management ====================
 
 ENV_FILE_PATH = '.env'
-ENV_REQUIRED_KEYS = ['DEVKIT_PATH', 'KSYS_PATH', 'KSYS_CONFIG_PATH', 'UB_WATCH_PATH']
+ENV_REQUIRED_KEYS = ['DEVKIT_PATH', 'KSYS_PATH', 'KSYS_CONFIG_PATH', 'UB_WATCH_PATH', 'SMAP_BW_PATH']
 
 
 def load_env_config() -> dict:
     """Load configuration from .env file
 
     Returns:
-        dict with keys: devkit_path, ksys_path, ksys_config_path, ub_watch_path, devkit_cpu_range
+        dict with keys: devkit_path, ksys_path, ksys_config_path, ub_watch_path, smap_bw_path, devkit_cpu_range
     """
     config = {
         'devkit_path': '',
         'ksys_path': '',
         'ksys_config_path': '',
         'ub_watch_path': '',
+        'smap_bw_path': '',
         'devkit_cpu_range': '',
     }
 
@@ -64,6 +65,7 @@ def load_env_config() -> dict:
     config['ksys_path'] = os.environ.get('KSYS_PATH', '')
     config['ksys_config_path'] = os.environ.get('KSYS_CONFIG_PATH', '')
     config['ub_watch_path'] = os.environ.get('UB_WATCH_PATH', '')
+    config['smap_bw_path'] = os.environ.get('SMAP_BW_PATH', '')
     config['devkit_cpu_range'] = os.environ.get('DEVKIT_CPU_RANGE', '')
 
     return config
@@ -89,6 +91,8 @@ def save_env_config(config: dict):
             set_key(env_path, 'KSYS_CONFIG_PATH', config['ksys_config_path'])
         if config.get('ub_watch_path'):
             set_key(env_path, 'UB_WATCH_PATH', config['ub_watch_path'])
+        if config.get('smap_bw_path'):
+            set_key(env_path, 'SMAP_BW_PATH', config['smap_bw_path'])
         if config.get('devkit_cpu_range'):
             set_key(env_path, 'DEVKIT_CPU_RANGE', config['devkit_cpu_range'])
     else:
@@ -101,11 +105,12 @@ def save_env_config(config: dict):
                         f.write(f"{env_key}={value}\n")
 
 
-def validate_and_prompt_missing(config: dict) -> dict:
+def validate_and_prompt_missing(config: dict, non_interactive: bool = False) -> dict:
     """Validate paths and prompt user for missing/invalid ones
 
     Args:
         config: dict with path configurations
+        non_interactive: if True, skip prompts and disable missing tools silently
 
     Returns:
         Updated config dict with valid paths or None for disabled tools
@@ -115,6 +120,7 @@ def validate_and_prompt_missing(config: dict) -> dict:
         'KSYS_PATH': 'ksys_path',
         'KSYS_CONFIG_PATH': 'ksys_config_path',
         'UB_WATCH_PATH': 'ub_watch_path',
+        'SMAP_BW_PATH': 'smap_bw_path',
     }
 
     prompt_names = {
@@ -122,33 +128,52 @@ def validate_and_prompt_missing(config: dict) -> dict:
         'KSYS_PATH': 'ksys executable path',
         'KSYS_CONFIG_PATH': 'ksys config.yaml path',
         'UB_WATCH_PATH': 'ub_watch executable path',
+        'SMAP_BW_PATH': 'smap_bw.py script path',
     }
 
     for env_key, config_key in key_mapping.items():
         path = config.get(config_key, '')
 
-        # Loop until valid path provided or user skips
-        while not path or not os.path.exists(path):
-            print(f"\n⚠ {env_key} not configured or path invalid")
-            if path:
-                print(f"  Current: {path}")
-            user_input = input(f"Enter {prompt_names[env_key]} (or 'skip' to disable): ").strip()
+        # Check if path is valid
+        if path and os.path.exists(path):
+            continue  # Path is valid, no action needed
 
-            if user_input.lower() == 'skip':
+        if non_interactive:
+            # Non-interactive mode: silently disable missing tools
+            if not path or not os.path.exists(path):
                 config[config_key] = None  # Mark as disabled
-                print(f"  ✓ {env_key} disabled for this session")
-                break
+                print(f"  ⚠ {env_key} not configured or invalid, disabled for this session")
+        else:
+            # Interactive mode: prompt user for input
+            while not path or not os.path.exists(path):
+                print(f"\n⚠ {env_key} not configured or path invalid")
+                if path:
+                    print(f"  Current: {path}")
+                user_input = input(f"Enter {prompt_names[env_key]} (or 'skip' to disable): ").strip()
 
-            if os.path.exists(user_input):
-                path = user_input
-                config[config_key] = user_input
-                print(f"  ✓ {env_key} set to: {user_input}")
-            else:
-                print(f"  ✗ Path does not exist: {user_input}")
+                if user_input.lower() == 'skip':
+                    config[config_key] = None  # Mark as disabled
+                    print(f"  ✓ {env_key} disabled for this session")
+                    break
 
-    # Save updated config to .env
-    save_env_config(config)
-    print("\n✓ Configuration saved to .env file")
+                if os.path.exists(user_input):
+                    path = user_input
+                    config[config_key] = user_input
+                    print(f"  ✓ {env_key} set to: {user_input}")
+                else:
+                    print(f"  ✗ Path does not exist: {user_input}")
+
+    # Save updated config to .env (only if any changes made)
+    if non_interactive:
+        # In non-interactive mode, don't save disabled tools to .env
+        # Only save valid paths
+        save_config = {k: v for k, v in config.items() if v is not None and v != ''}
+        if save_config:
+            save_env_config(save_config)
+    else:
+        save_env_config(config)
+        print("\n✓ Configuration saved to .env file")
+
     return config
 
 
@@ -211,7 +236,7 @@ def calculate_cpu_range_from_numa(numa_nodes: list) -> str:
 # ==================== LogCapture Class ====================
 
 class LogCapture:
-    """Parallel log collection with devkit, ksys, ub_watch
+    """Parallel log collection with devkit, ksys, ub_watch, smap_bw
 
     Runs collection tools in background, synchronized with QEMU monitoring duration.
     All output is redirected to log files, not interfering with terminal display.
@@ -223,6 +248,7 @@ class LogCapture:
         'devkit_top_down': 60,
         'ub_watch': 60,
         'ksys': 600,           # ksys needs extra time for data parsing (can be minutes)
+        'smap_bw': 60,         # smap_bw follows duration + some buffer
     }
 
     def __init__(self, config: dict, duration: int, log_dir: str, numa_nodes: list,
@@ -255,6 +281,132 @@ class LogCapture:
         # Calculate from NUMA nodes
         return calculate_cpu_range_from_numa(self.numa_nodes)
 
+    def _start_tool(self, tool_name: str, cmd: list, log_filename: str,
+                    success_msg: str) -> tuple:
+        """Helper to start a single tool process
+
+        Args:
+            tool_name: identifier for the tool (e.g., 'devkit_mem')
+            cmd: command list to execute
+            log_filename: log file name (e.g., 'devkit_mem.log')
+            success_msg: message to print on success
+
+        Returns:
+            (success: bool, error_msg: str or None)
+        """
+        try:
+            log_path = os.path.join(self.log_dir, log_filename)
+            self.log_files[tool_name] = open(log_path, 'w')
+            print(f"  [CMD] {tool_name}: {' '.join(cmd)}")
+            self.processes[tool_name] = subprocess.Popen(
+                cmd, stdout=self.log_files[tool_name],
+                stderr=self.log_files[tool_name],
+                cwd=self.log_dir
+            )
+            print(f"  ✓ {success_msg}")
+            return (True, None)
+        except Exception as e:
+            print(f"  ✗ Failed to start {tool_name}: {e}")
+            return (False, str(e))
+
+    def _start_devkit_mem(self) -> tuple:
+        """Start DevKit memory tuner
+
+        Returns:
+            (success: bool, error_msg: str or None)
+        """
+        if not self.config.get('devkit_path'):
+            return (False, 'devkit_path not configured')
+
+        cmd = [
+            self.config['devkit_path'], 'tuner', 'memory',
+            '-d', str(self.duration), '-i', '3'
+        ]
+        return self._start_tool(
+            'devkit_mem', cmd, 'devkit_mem.log',
+            f"Started devkit tuner memory (duration={self.duration}s)"
+        )
+
+    def _start_devkit_top_down(self) -> tuple:
+        """Start DevKit top-down tuner
+
+        Returns:
+            (success: bool, error_msg: str or None)
+        """
+        if not self.config.get('devkit_path'):
+            return (False, 'devkit_path not configured')
+
+        cpu_range = self._get_cpu_range()
+        cmd = [
+            self.config['devkit_path'], 'tuner', 'top-down',
+            '-d', str(self.duration), '-i', '3', '-c', cpu_range
+        ]
+        return self._start_tool(
+            'devkit_top_down', cmd, 'devkit_top_down.log',
+            f"Started devkit tuner top-down (cpu_range={cpu_range})"
+        )
+
+    def _start_ksys(self) -> tuple:
+        """Start ksys collector
+
+        Returns:
+            (success: bool, error_msg: str or None)
+        """
+        if not self.config.get('ksys_path'):
+            return (False, 'ksys_path not configured')
+        if not self.config.get('ksys_config_path'):
+            return (False, 'ksys_config_path not configured')
+
+        cmd = [
+            self.config['ksys_path'], 'collect',
+            '-d', str(self.duration), '-i', '3',
+            '-c', self.config['ksys_config_path']
+        ]
+        return self._start_tool(
+            'ksys', cmd, 'ksys.log',
+            f"Started ksys collect (config={self.config['ksys_config_path']})"
+        )
+
+    def _start_ub_watch(self) -> tuple:
+        """Start ub_watch
+
+        Returns:
+            (success: bool, error_msg: str or None)
+        """
+        if not self.config.get('ub_watch_path'):
+            return (False, 'ub_watch_path not configured')
+
+        cmd = [
+            self.config['ub_watch_path'],
+            '-t', str(self.duration), '-i', '3'
+        ]
+        return self._start_tool(
+            'ub_watch', cmd, 'ub_watch.log',
+            f"Started ub_watch (duration={self.duration}s)"
+        )
+
+    def _start_smap_bw(self) -> tuple:
+        """Start smap_bw SMAP migration bandwidth monitor
+
+        Returns:
+            (success: bool, error_msg: str or None)
+        """
+        if not self.config.get('smap_bw_path'):
+            return (False, 'smap_bw_path not configured')
+
+        # smap_bw requires sudo for dmesg access
+        # Command: sudo python3 <script_path> --clear --duration <dur> --timeout <dur+10>
+        timeout = self.duration + 10  # Extra buffer for cleanup
+        cmd = [
+            'sudo', 'python3', self.config['smap_bw_path'],
+            '--clear', '--duration', str(self.duration),
+            '--timeout', str(timeout)
+        ]
+        return self._start_tool(
+            'smap_bw', cmd, 'smap_bw.log',
+            f"Started smap_bw (duration={self.duration}s, timeout={timeout}s)"
+        )
+
     def start(self) -> dict:
         """Start all collection processes in parallel using Popen
 
@@ -265,87 +417,45 @@ class LogCapture:
         success = []
         failed = []
 
-        # DevKit memory tuner
-        if self.config.get('devkit_path'):
-            try:
-                log_path = os.path.join(self.log_dir, 'devkit_mem.log')
-                self.log_files['devkit_mem'] = open(log_path, 'w')
-                cmd = [self.config['devkit_path'], 'tuner', 'memory',
-                       '-d', str(self.duration), '-i', '3']
-                print(f"  [CMD] devkit_mem: {' '.join(cmd)}")
-                self.processes['devkit_mem'] = subprocess.Popen(
-                    cmd, stdout=self.log_files['devkit_mem'],
-                    stderr=self.log_files['devkit_mem'],
-                    cwd=self.log_dir  # Run in log_dir so output files go there
-                )
-                success.append('devkit_mem')
-                print(f"  ✓ Started devkit tuner memory (duration={self.duration}s)")
-            except Exception as e:
-                failed.append(('devkit_mem', str(e)))
-                self.failed_startup.append('devkit_mem')
-                print(f"  ✗ Failed to start devkit_mem: {e}")
+        # Start DevKit memory tuner
+        ok, err = self._start_devkit_mem()
+        if ok:
+            success.append('devkit_mem')
+        elif err and 'not configured' not in err:
+            failed.append(('devkit_mem', err))
+            self.failed_startup.append('devkit_mem')
 
-        # DevKit top-down tuner
-        if self.config.get('devkit_path'):
-            try:
-                log_path = os.path.join(self.log_dir, 'devkit_top_down.log')
-                self.log_files['devkit_top_down'] = open(log_path, 'w')
-                cpu_range = self._get_cpu_range()
-                cmd = [self.config['devkit_path'], 'tuner', 'top-down',
-                       '-d', str(self.duration), '-i', '3', '-c', cpu_range]
-                print(f"  [CMD] devkit_top_down: {' '.join(cmd)}")
-                self.processes['devkit_top_down'] = subprocess.Popen(
-                    cmd, stdout=self.log_files['devkit_top_down'],
-                    stderr=self.log_files['devkit_top_down'],
-                    cwd=self.log_dir  # Run in log_dir so output files go there
-                )
-                success.append('devkit_top_down')
-                print(f"  ✓ Started devkit tuner top-down (cpu_range={cpu_range})")
-            except Exception as e:
-                failed.append(('devkit_top_down', str(e)))
-                self.failed_startup.append('devkit_top_down')
-                print(f"  ✗ Failed to start devkit_top_down: {e}")
+        # Start DevKit top-down tuner
+        ok, err = self._start_devkit_top_down()
+        if ok:
+            success.append('devkit_top_down')
+        elif err and 'not configured' not in err:
+            failed.append(('devkit_top_down', err))
+            self.failed_startup.append('devkit_top_down')
 
-        # ksys
-        if self.config.get('ksys_path') and self.config.get('ksys_config_path'):
-            try:
-                log_path = os.path.join(self.log_dir, 'ksys.log')
-                self.log_files['ksys'] = open(log_path, 'w')
-                cmd = [self.config['ksys_path'], 'collect',
-                       '-d', str(self.duration), '-i', '3',
-                       '-c', self.config['ksys_config_path']]
-                print(f"  [CMD] ksys: {' '.join(cmd)}")
-                self.processes['ksys'] = subprocess.Popen(
-                    cmd, stdout=self.log_files['ksys'],
-                    stderr=self.log_files['ksys'],
-                    cwd=self.log_dir  # Run in log_dir so report.json goes there
-                )
-                success.append('ksys')
-                print(f"  ✓ Started ksys collect (config={self.config['ksys_config_path']})")
-            except Exception as e:
-                failed.append(('ksys', str(e)))
-                self.failed_startup.append('ksys')
-                print(f"  ✗ Failed to start ksys: {e}")
+        # Start ksys
+        ok, err = self._start_ksys()
+        if ok:
+            success.append('ksys')
+        elif err and 'not configured' not in err:
+            failed.append(('ksys', err))
+            self.failed_startup.append('ksys')
 
-        # ub_watch
-        if self.config.get('ub_watch_path'):
-            try:
-                log_path = os.path.join(self.log_dir, 'ub_watch.log')
-                self.log_files['ub_watch'] = open(log_path, 'w')
-                cmd = [self.config['ub_watch_path'],
-                       '-t', str(self.duration), '-i', '3']
-                print(f"  [CMD] ub_watch: {' '.join(cmd)}")
-                self.processes['ub_watch'] = subprocess.Popen(
-                    cmd, stdout=self.log_files['ub_watch'],
-                    stderr=self.log_files['ub_watch'],
-                    cwd=self.log_dir  # Run in log_dir so output files go there
-                )
-                success.append('ub_watch')
-                print(f"  ✓ Started ub_watch (duration={self.duration}s)")
-            except Exception as e:
-                failed.append(('ub_watch', str(e)))
-                self.failed_startup.append('ub_watch')
-                print(f"  ✗ Failed to start ub_watch: {e}")
+        # Start ub_watch
+        ok, err = self._start_ub_watch()
+        if ok:
+            success.append('ub_watch')
+        elif err and 'not configured' not in err:
+            failed.append(('ub_watch', err))
+            self.failed_startup.append('ub_watch')
+
+        # Start smap_bw
+        ok, err = self._start_smap_bw()
+        if ok:
+            success.append('smap_bw')
+        elif err and 'not configured' not in err:
+            failed.append(('smap_bw', err))
+            self.failed_startup.append('smap_bw')
 
         return {'success': success, 'failed': failed}
 
@@ -592,6 +702,7 @@ class LogCapture:
                 'devkit_top_down': os.path.join(self.log_dir, 'devkit_top_down.log'),
                 'ksys': os.path.join(self.log_dir, 'ksys.log'),
                 'ub_watch': os.path.join(self.log_dir, 'ub_watch.log'),
+                'smap_bw': os.path.join(self.log_dir, 'smap_bw.log'),
             },
             'duration': actual_duration,
         }
@@ -1060,6 +1171,111 @@ def parse_ub_watch(log_path: str) -> dict:
         return {'error': str(e)}
 
 
+def parse_smap_bw(log_path: str) -> dict:
+    """Parse smap_bw.log to extract SMAP migration bandwidth metrics
+
+    Returns:
+        {
+            'cycles': [{'cycle_no': int, 'total_pages': int, 'duration': float,
+                       'bandwidth_gb_s': float, 'directions': {(from, to): pages}}],
+            'summary': {'total_cycles': int, 'total_pages': int, 'avg_bandwidth_gb_s': float,
+                        'min_bandwidth_gb_s': float, 'max_bandwidth_gb_s': float},
+            'all_directions': set of (from_node, to_node) tuples for column headers
+        }
+    """
+    result = {
+        'cycles': [],
+        'summary': {},
+        'all_directions': set()
+    }
+
+    if not os.path.exists(log_path):
+        return {'error': 'File not found'}
+
+    try:
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+
+        # Parse each complete cycle report block (including direction stats)
+        # Better approach: match cycle block boundary first (from header to bandwidth line)
+        # Then extract details from within the block - avoids greedy matching issues
+        cycle_boundary_pattern = re.compile(
+            r'周期\s+(\d+)\s+迁移带宽报告(.*?)迁移带宽:\s+([\d.]+)\s+GB/s',
+            re.DOTALL
+        )
+
+        for match in cycle_boundary_pattern.finditer(content):
+            cycle_no = int(match.group(1))
+            cycle_body = match.group(2)
+            bandwidth = float(match.group(3))
+
+            # Extract details from cycle_body
+            pages_match = re.search(r'累计页数:\s+(\d+)', cycle_body)
+            total_pages = int(pages_match.group(1)) if pages_match else 0
+
+            duration_match = re.search(r'持续时长:\s+([\d.]+)\s+s', cycle_body)
+            duration = float(duration_match.group(1)) if duration_match else 0
+
+            # Extract directions from cycle_body
+            directions = {}
+            dir_pattern = re.compile(r'node\s+(\d+)\s+→\s+(\d+):\s+(\d+)\s+pages')
+            for dir_match in dir_pattern.finditer(cycle_body):
+                from_node = int(dir_match.group(1))
+                to_node = int(dir_match.group(2))
+                pages = int(dir_match.group(3))
+                directions[(from_node, to_node)] = pages
+                result['all_directions'].add((from_node, to_node))
+
+            result['cycles'].append({
+                'cycle_no': cycle_no,
+                'total_pages': total_pages,
+                'duration': duration,
+                'bandwidth_gb_s': bandwidth,
+                'directions': directions
+            })
+
+        # Parse global summary
+        # Pattern: 全局汇总
+        #   周期总数: N
+        #   总页数: X
+        #   平均带宽: Y GB/s
+        #   周期带宽范围: min ~ max GB/s
+        summary_pattern = re.compile(
+            r'全局汇总.*?'
+            r'周期总数:\s+(\d+).*?'
+            r'总页数:\s+(\d+).*?'
+            r'平均带宽:\s+([\d.]+)\s+GB/s.*?'
+            r'周期带宽范围:\s+([\d.]+)\s+~\s+([\d.]+)\s+GB/s',
+            re.DOTALL
+        )
+
+        summary_match = summary_pattern.search(content)
+        if summary_match:
+            result['summary'] = {
+                'total_cycles': int(summary_match.group(1)),
+                'total_pages': int(summary_match.group(2)),
+                'avg_bandwidth_gb_s': float(summary_match.group(3)),
+                'min_bandwidth_gb_s': float(summary_match.group(4)),
+                'max_bandwidth_gb_s': float(summary_match.group(5))
+            }
+
+        # If we got cycles but no summary, calculate summary from cycles
+        if result['cycles'] and not result['summary']:
+            bandwidths = [c['bandwidth_gb_s'] for c in result['cycles']]
+            result['summary'] = {
+                'total_cycles': len(result['cycles']),
+                'total_pages': sum(c['total_pages'] for c in result['cycles']),
+                'avg_bandwidth_gb_s': sum(bandwidths) / len(bandwidths),
+                'min_bandwidth_gb_s': min(bandwidths),
+                'max_bandwidth_gb_s': max(bandwidths)
+            }
+
+        return result
+
+    except Exception as e:
+        return {'error': str(e)}
+
+
 def parse_all_logs(log_dir: str, numa_nodes: list = None) -> dict:
     """Parse all log files in the directory
 
@@ -1072,7 +1288,8 @@ def parse_all_logs(log_dir: str, numa_nodes: list = None) -> dict:
             'devkit_top_down': parsed result,
             'devkit_mem': parsed result,
             'ksys': parsed result,
-            'ub_watch': parsed result
+            'ub_watch': parsed result,
+            'smap_bw': parsed result
         }
     """
     results = {}
@@ -1096,6 +1313,11 @@ def parse_all_logs(log_dir: str, numa_nodes: list = None) -> dict:
     ub_path = os.path.join(log_dir, 'ub_watch.log')
     if os.path.exists(ub_path):
         results['ub_watch'] = parse_ub_watch(ub_path)
+
+    # Parse smap_bw
+    smap_path = os.path.join(log_dir, 'smap_bw.log')
+    if os.path.exists(smap_path):
+        results['smap_bw'] = parse_smap_bw(smap_path)
 
     return results
 
@@ -1391,7 +1613,51 @@ def export_to_excel(monitor: 'QEMUMonitor', log_dir: str, numa_nodes: list = Non
                     }
                     pd.DataFrame(bw_data).to_excel(writer, sheet_name='UBWatch_Bandwidth', index=False)
 
-            # ========== Sheet 10: Raw VM Data Time Series ==========
+            # ========== Sheet 10: SMAP BW ==========
+            if 'smap_bw' in parsed_logs and 'error' not in parsed_logs['smap_bw']:
+                smap = parsed_logs['smap_bw']
+
+                # Summary sheet
+                summary = smap.get('summary', {})
+                if summary:
+                    smap_summary = {
+                        'Metric': ['Total Cycles', 'Total Pages', 'Avg Bandwidth (GB/s)',
+                                   'Min Bandwidth (GB/s)', 'Max Bandwidth (GB/s)'],
+                        'Value': [
+                            summary.get('total_cycles', 0),
+                            summary.get('total_pages', 0),
+                            summary.get('avg_bandwidth_gb_s', 0),
+                            summary.get('min_bandwidth_gb_s', 0),
+                            summary.get('max_bandwidth_gb_s', 0)
+                        ]
+                    }
+                    pd.DataFrame(smap_summary).to_excel(writer, sheet_name='SMAPBW_Summary', index=False)
+
+                # Per-cycle sheet with direction columns spread out
+                cycles = smap.get('cycles', [])
+                all_directions = smap.get('all_directions', set())
+                if cycles and all_directions:
+                    # Sort directions for consistent column order
+                    sorted_directions = sorted(all_directions)
+
+                    # Build column data
+                    cycle_data = {
+                        'Cycle': [c['cycle_no'] for c in cycles],
+                        'Pages': [c['total_pages'] for c in cycles],
+                        'Duration (s)': [c['duration'] for c in cycles],
+                        'Bandwidth (GB/s)': [c['bandwidth_gb_s'] for c in cycles],
+                    }
+
+                    # Add direction columns (e.g., "N0→N1_pages")
+                    for from_node, to_node in sorted_directions:
+                        col_name = f"N{from_node}→N{to_node}_pages"
+                        cycle_data[col_name] = [
+                            c['directions'].get((from_node, to_node), 0) for c in cycles
+                        ]
+
+                    pd.DataFrame(cycle_data).to_excel(writer, sheet_name='SMAPBW_Cycles', index=False)
+
+            # ========== Sheet 11: Raw VM Data Time Series ==========
             if monitor.data:
                 raw_data = {
                     'Timestamp': [d['timestamp'] for d in monitor.data],
@@ -2531,7 +2797,9 @@ def main():
     parser.add_argument('--numa', type=str, default='1', help='Specify NUMA nodes to monitor, comma-separated 0,1')
     parser.add_argument('--log-dir', type=str, help='Log output directory (default: logs_${timestamp}/ in current dir)')
     parser.add_argument('--enable-capture', action='store_true',
-                        help='Enable parallel log collection with devkit/ksys/ub_watch')
+                        help='Enable parallel log collection with devkit/ksys/ub_watch/smap_bw')
+    parser.add_argument('--auto-skip', action='store_true',
+                        help='Auto-skip missing log capture tools (for automated testing)')
     parser.add_argument('--ksys-parse-timeout', type=int, default=600,
                         help='Timeout for ksys data parsing phase in seconds (default: 600s, increase for large VM counts)')
     args = parser.parse_args()
@@ -2551,7 +2819,7 @@ def main():
     if args.enable_capture:
         print("\n📋 Loading log collection configuration...")
         config = load_env_config()
-        config = validate_and_prompt_missing(config)
+        config = validate_and_prompt_missing(config, non_interactive=args.auto_skip)
 
     # Create QEMUMonitor instance
     m = QEMUMonitor()

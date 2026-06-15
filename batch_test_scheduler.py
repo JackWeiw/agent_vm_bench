@@ -437,6 +437,47 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
         except Exception:
             pass
 
+        # ========== SMAPBW_Summary sheet (SMAP migration bandwidth) ==========
+        try:
+            df_smap = pd.read_excel(excel_path, sheet_name="SMAPBW_Summary")
+            for idx, row in df_smap.iterrows():
+                metric = str(row["Metric"]).strip() if pd.notna(row["Metric"]) else ""
+                value = row["Value"]
+                key_map = {
+                    "Total Cycles": "smapbw_total_cycles",
+                    "Total Pages": "smapbw_total_pages",
+                    "Avg Bandwidth (GB/s)": "smapbw_avg_bandwidth_gb_s",
+                    "Min Bandwidth (GB/s)": "smapbw_min_bandwidth_gb_s",
+                    "Max Bandwidth (GB/s)": "smapbw_max_bandwidth_gb_s",
+                }
+                if metric in key_map:
+                    metrics[key_map[metric]] = float(value) if pd.notna(value) else 0
+        except Exception:
+            pass
+
+        # ========== SMAPBW_Cycles sheet (per-cycle bandwidth details) ==========
+        try:
+            df_smap_cycles = pd.read_excel(excel_path, sheet_name="SMAPBW_Cycles")
+            # Calculate per-cycle statistics
+            cycles_list = []
+            for idx, row in df_smap_cycles.iterrows():
+                cycle_no = int(row["Cycle"]) if pd.notna(row["Cycle"]) else 0
+                bandwidth = float(row["Bandwidth (GB/s)"]) if pd.notna(row["Bandwidth (GB/s)"]) else 0
+                cycles_list.append(bandwidth)
+                # Store per-cycle bandwidth
+                metrics[f"smapbw_cycle{cycle_no}_bandwidth_gb_s"] = bandwidth
+            # Additional statistics from cycles if available
+            if cycles_list:
+                metrics["smapbw_cycle_count"] = len(cycles_list)
+                if "smapbw_avg_bandwidth_gb_s" not in metrics or metrics["smapbw_avg_bandwidth_gb_s"] == 0:
+                    metrics["smapbw_avg_bandwidth_gb_s"] = sum(cycles_list) / len(cycles_list)
+                if "smapbw_min_bandwidth_gb_s" not in metrics or metrics["smapbw_min_bandwidth_gb_s"] == 0:
+                    metrics["smapbw_min_bandwidth_gb_s"] = min(cycles_list)
+                if "smapbw_max_bandwidth_gb_s" not in metrics or metrics["smapbw_max_bandwidth_gb_s"] == 0:
+                    metrics["smapbw_max_bandwidth_gb_s"] = max(cycles_list)
+        except Exception:
+            pass
+
     except ImportError:
         # pandas not available, try openpyxl
         try:
@@ -599,6 +640,40 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
                 metrics["ub_bw_total_max_wr_mb_s"] = total_max_wr
                 metrics["ub_bw_total_max_rd_mb_s"] = total_max_rd
                 metrics["ub_bw_total_max_sum_mb_s"] = total_max_sum
+
+            # SMAPBW_Summary (SMAP migration bandwidth summary)
+            if "SMAPBW_Summary" in wb.sheetnames:
+                ws = wb["SMAPBW_Summary"]
+                key_map = {
+                    "Total Cycles": "smapbw_total_cycles",
+                    "Total Pages": "smapbw_total_pages",
+                    "Avg Bandwidth (GB/s)": "smapbw_avg_bandwidth_gb_s",
+                    "Min Bandwidth (GB/s)": "smapbw_min_bandwidth_gb_s",
+                    "Max Bandwidth (GB/s)": "smapbw_max_bandwidth_gb_s",
+                }
+                metrics.update(extract_sheet_metrics(ws, key_map))
+
+            # SMAPBW_Cycles (per-cycle bandwidth details)
+            if "SMAPBW_Cycles" in wb.sheetnames:
+                ws = wb["SMAPBW_Cycles"]
+                cycles_list = []
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    if row[0] is not None:  # Cycle column
+                        try:
+                            cycle_no = int(row[0])
+                            bandwidth = float(row[3]) if row[3] else 0  # Bandwidth (GB/s) column
+                            cycles_list.append(bandwidth)
+                            metrics[f"smapbw_cycle{cycle_no}_bandwidth_gb_s"] = bandwidth
+                        except (ValueError, TypeError):
+                            pass
+                if cycles_list:
+                    metrics["smapbw_cycle_count"] = len(cycles_list)
+                    if "smapbw_avg_bandwidth_gb_s" not in metrics or metrics.get("smapbw_avg_bandwidth_gb_s", 0) == 0:
+                        metrics["smapbw_avg_bandwidth_gb_s"] = sum(cycles_list) / len(cycles_list)
+                    if "smapbw_min_bandwidth_gb_s" not in metrics or metrics.get("smapbw_min_bandwidth_gb_s", 0) == 0:
+                        metrics["smapbw_min_bandwidth_gb_s"] = min(cycles_list)
+                    if "smapbw_max_bandwidth_gb_s" not in metrics or metrics.get("smapbw_max_bandwidth_gb_s", 0) == 0:
+                        metrics["smapbw_max_bandwidth_gb_s"] = max(cycles_list)
 
         except ImportError:
             print(f"WARNING: Neither pandas nor openpyxl available for {result_dir}")
@@ -778,6 +853,13 @@ def generate_summary_report(results: Dict, output_path: str):
                 if key.startswith("ub_bw_chip"):
                     row[key] = value
 
+            # SMAPBW Summary metrics (5 metrics)
+            row["smapbw_total_cycles"] = qemu.get("smapbw_total_cycles", 0)
+            row["smapbw_total_pages"] = qemu.get("smapbw_total_pages", 0)
+            row["smapbw_avg_bandwidth_gb_s"] = qemu.get("smapbw_avg_bandwidth_gb_s", 0)
+            row["smapbw_min_bandwidth_gb_s"] = qemu.get("smapbw_min_bandwidth_gb_s", 0)
+            row["smapbw_max_bandwidth_gb_s"] = qemu.get("smapbw_max_bandwidth_gb_s", 0)
+
             rows.append(row)
 
         df = pd.DataFrame(rows)
@@ -841,6 +923,10 @@ def generate_summary_report(results: Dict, output_path: str):
         ub_bw_chip_cols = [c for c in df.columns if c.startswith("ub_bw_chip")]
         ub_bw_total_end += len(ub_bw_chip_cols)
         column_sources.append(("UBWatch Bandwidth (Excel: UBWatch_Bandwidth)", col_idx, ub_bw_total_end))
+        col_idx = ub_bw_total_end + 1
+
+        # SMAPBW Summary - 5 columns (summary data only)
+        column_sources.append(("SMAPBW (Excel: SMAPBW_Summary)", col_idx, col_idx + 4))
 
         # Insert source header row at row 1
         ws.insert_rows(1)
@@ -868,6 +954,7 @@ def generate_summary_report(results: Dict, output_path: str):
             "KSys": PatternFill(start_color="7030A0", end_color="7030A0", fill_type="solid"),  # Purple
             "UBWatch Latency": PatternFill(start_color="C55A11", end_color="C55A11", fill_type="solid"),  # Brown
             "UBWatch Bandwidth": PatternFill(start_color="00B050", end_color="00B050", fill_type="solid"),  # Dark Green
+            "SMAPBW": PatternFill(start_color="FF6B6B", end_color="FF6B6B", fill_type="solid"),  # Red/Pink
         }
 
         # Create merged cells for source headers

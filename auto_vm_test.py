@@ -549,6 +549,7 @@ def start_monitor(ctx: TestContext) -> bool:
 
     if monitor["enable_capture"]:
         cmd.append("--enable-capture")
+        cmd.append("--auto-skip")  # Auto-skip missing tools for automated testing
 
     log(ctx, f"Executing: {' '.join(cmd)}")
     log(ctx, f"Monitor waits for lock file: {BENCHMARK_LOCK_FILE}")
