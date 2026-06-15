@@ -2800,11 +2800,13 @@ class QEMUMonitor:
 
     def display_realtime_table(self, sample_data, elapsed_time, duration, check_method=""):
         """Display real-time table"""
-        print('\033[2J\033[H', end='')
-        print("=" * 100)
-        print(f"QEMU VM Real-time Monitoring - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Elapsed: {elapsed_time} | Target: {duration if duration else 'Infinite'} | Detection Method: {check_method}")
-        print("=" * 100)
+        # Use more reliable clear screen method
+        print('\033[2J\033[H\033[?25h', end='', flush=True)  # Clear, home, show cursor
+        width = 100  # Consistent width for all separators
+        print("=" * width, flush=True)
+        print(f"QEMU VM Real-time Monitoring - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+        print(f"Elapsed: {elapsed_time} | Target: {duration if duration else 'Infinite'} | Detection Method: {check_method}", flush=True)
+        print("=" * width, flush=True)
 
         # Real-time display of specified NUMA node CPU
         numa_str = ""
@@ -2813,43 +2815,43 @@ class QEMUMonitor:
             current = hist[-1] if hist else 0.0
             peak = self.numa_cpu_peak[node]
             numa_str += f"NUMA{node} CPU: {current:.1f}% (Peak {peak:.1f}%)  "
-        print(numa_str.strip())
+        print(numa_str.strip(), flush=True)
 
         # Total Hugepages
         huge_usage = round((self.hugepage_used_mb / self.hugepage_total_mb * 100), 1) if self.hugepage_total_mb > 0 else 0.0
-        print(f"📄 Hugepage Memory: Total {self.hugepage_total_mb:.0f} MB  Used {self.hugepage_used_mb:.0f} MB ({huge_usage:.1f}%)  Free {self.hugepage_free_mb:.0f} MB")
+        print(f"📄 Hugepage Memory: Total {self.hugepage_total_mb:.0f} MB  Used {self.hugepage_used_mb:.0f} MB ({huge_usage:.1f}%)  Free {self.hugepage_free_mb:.0f} MB", flush=True)
 
         # Per-NUMA node hugepage statistics
         if self.hugepage_per_numa:
-            print("📄 Per-NUMA Node Hugepages:")
+            print("📄 Per-NUMA Node Hugepages:", flush=True)
             for node_id in sorted(self.hugepage_per_numa.keys()):
                 hp = self.hugepage_per_numa[node_id]
-                print(f"    NUMA {node_id:>2d} | Total {hp['total_mb']:>8.0f} MB | Used {hp['used_mb']:>8.0f} MB ({hp['usage_pct']:>5.1f}%) | Free {hp['free_mb']:>8.0f} MB")
+                print(f"    NUMA {node_id:>2d} | Total {hp['total_mb']:>8.0f} MB | Used {hp['used_mb']:>8.0f} MB ({hp['usage_pct']:>5.1f}%) | Free {hp['free_mb']:>8.0f} MB", flush=True)
 
         # Host machine total resources
         if self.host_cpu_history:
             host_cpu = self.host_cpu_history[-1]
             host_mem = self.host_mem_history[-1]
-            print(f"🖥️  Host Machine: CPU {host_cpu:.1f}% (Peak {self.peak_host_cpu:.1f}%) | Memory {host_mem['used_mb']:.0f}/{host_mem['total_mb']:.0f} MB ({host_mem['usage']:.1f}%, Peak {self.peak_host_mem_mb:.0f} MB)")
+            print(f"🖥️  Host Machine: CPU {host_cpu:.1f}% (Peak {self.peak_host_cpu:.1f}%) | Memory {host_mem['used_mb']:.0f}/{host_mem['total_mb']:.0f} MB ({host_mem['usage']:.1f}%, Peak {self.peak_host_mem_mb:.0f} MB)", flush=True)
 
         # Swap
         if self.swap_history:
             s = self.swap_history[-1]
             if s['total_mb'] > 0:
-                print(f"🔄 Swap:      Used {s['used_mb']:.0f}/{s['total_mb']:.0f} MB ({s['usage']:.1f}%) | Peak {self.peak_swap_used_mb:.0f} MB")
+                print(f"🔄 Swap:      Used {s['used_mb']:.0f}/{s['total_mb']:.0f} MB ({s['usage']:.1f}%) | Peak {self.peak_swap_used_mb:.0f} MB", flush=True)
             else:
-                print("🔄 Swap:      Not enabled")
+                print("🔄 Swap:      Not enabled", flush=True)
 
         self.print_numa_real_time()
 
         if not sample_data:
-            print("No running QEMU virtual machines detected")
+            print("No running QEMU virtual machines detected", flush=True)
             return
 
         # Table header: Add hugepage memory column
         header = f"{'VM Name':<28} {'PID':<10} {'CPU%':<10} {'Memory(MB)':<12} {'Hugepage(MB)':<12} {'Status':<10}"
-        print(header)
-        print("-" * 120)
+        print(header, flush=True)
+        print("-" * width, flush=True)
 
         sorted_vms = sorted(sample_data, key=lambda x: x['cpu_percent'], reverse=True)
         for vm in sorted_vms[:15]:
@@ -2857,14 +2859,14 @@ class QEMUMonitor:
             huge_mb = vm.get('memory_huge_mb', 0.0)
             row = (f"{name:<28} {vm['pid']:<10} {vm['cpu_percent']:<10.2f} "
                    f"{vm['memory_mb']:<12.2f} {huge_mb:<12.2f} {vm['status']:<10}")
-            print(row)
+            print(row, flush=True)
 
         if len(sorted_vms) > 15:
-            print(f"... {len(sorted_vms) - 15} more virtual machines ...")
+            print(f"... {len(sorted_vms) - 15} more virtual machines ...", flush=True)
 
-        print("-" * 120)
-        print(f"Total: {len(sample_data)} virtual machines | Data points: {len(self.data)}")
-        print("Press Ctrl+C to stop monitoring")
+        print("-" * width, flush=True)
+        print(f"Total: {len(sample_data)} virtual machines | Data points: {len(self.data)}", flush=True)
+        print("Press Ctrl+C to stop monitoring", flush=True)
 
     def check_stress_process(self, stress_pattern):
         try:
