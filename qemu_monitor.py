@@ -1197,29 +1197,29 @@ def parse_smap_bw(log_path: str) -> dict:
             content = f.read()
 
         # Parse each complete cycle report block (including direction stats)
-        # Pattern matches entire cycle block from header to bandwidth
-        cycle_block_pattern = re.compile(
-            r'周期\s+(\d+)\s+迁移带宽报告.*?'
-            r'累计页数:\s+(\d+).*?'
-            r'持续时长:\s+([\d.]+)\s+s.*?'
-            r'迁移方向统计:.*?'
-            r'(.*?)'  # Capture direction lines
-            r'─.*?'   # Separator line
-            r'迁移带宽:\s+([\d.]+)\s+GB/s',
+        # Better approach: match cycle block boundary first (from header to bandwidth line)
+        # Then extract details from within the block - avoids greedy matching issues
+        cycle_boundary_pattern = re.compile(
+            r'周期\s+(\d+)\s+迁移带宽报告(.*?)迁移带宽:\s+([\d.]+)\s+GB/s',
             re.DOTALL
         )
 
-        for match in cycle_block_pattern.finditer(content):
+        for match in cycle_boundary_pattern.finditer(content):
             cycle_no = int(match.group(1))
-            total_pages = int(match.group(2))
-            duration = float(match.group(3))
-            direction_block = match.group(4)
-            bandwidth = float(match.group(5))
+            cycle_body = match.group(2)
+            bandwidth = float(match.group(3))
 
-            # Parse direction stats within this cycle
+            # Extract details from cycle_body
+            pages_match = re.search(r'累计页数:\s+(\d+)', cycle_body)
+            total_pages = int(pages_match.group(1)) if pages_match else 0
+
+            duration_match = re.search(r'持续时长:\s+([\d.]+)\s+s', cycle_body)
+            duration = float(duration_match.group(1)) if duration_match else 0
+
+            # Extract directions from cycle_body
             directions = {}
             dir_pattern = re.compile(r'node\s+(\d+)\s+→\s+(\d+):\s+(\d+)\s+pages')
-            for dir_match in dir_pattern.finditer(direction_block):
+            for dir_match in dir_pattern.finditer(cycle_body):
                 from_node = int(dir_match.group(1))
                 to_node = int(dir_match.group(2))
                 pages = int(dir_match.group(3))
