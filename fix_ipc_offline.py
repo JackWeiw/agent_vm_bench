@@ -149,6 +149,9 @@ def parse_devkit_top_down_offline(log_path: str) -> Dict:
     avg_result['ipc_max'] = max(result['ipc']) if result['ipc'] else 0.0
     avg_result['ipc_min'] = min(result['ipc']) if result['ipc'] else 0.0
 
+    # IMPORTANT: Keep original IPC array for comparison
+    avg_result['ipc'] = result['ipc']  # Store raw IPC values for OLD formula calculation
+
     # Add timeline data
     avg_result['timestamps'] = result['timestamps']
     avg_result['timeline'] = {
