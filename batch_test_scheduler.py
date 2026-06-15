@@ -860,11 +860,6 @@ def generate_summary_report(results: Dict, output_path: str):
             row["smapbw_min_bandwidth_gb_s"] = qemu.get("smapbw_min_bandwidth_gb_s", 0)
             row["smapbw_max_bandwidth_gb_s"] = qemu.get("smapbw_max_bandwidth_gb_s", 0)
 
-            # SMAPBW Per-cycle metrics (dynamically add if exists)
-            for key, value in qemu.items():
-                if key.startswith("smapbw_cycle") and "_bandwidth" in key:
-                    row[key] = value
-
             rows.append(row)
 
         df = pd.DataFrame(rows)
@@ -930,12 +925,8 @@ def generate_summary_report(results: Dict, output_path: str):
         column_sources.append(("UBWatch Bandwidth (Excel: UBWatch_Bandwidth)", col_idx, ub_bw_total_end))
         col_idx = ub_bw_total_end + 1
 
-        # SMAPBW Summary - 5 columns + dynamic per-cycle columns
-        smapbw_end = col_idx + 4
-        # Check if there are per-cycle smapbw columns
-        smapbw_cycle_cols = [c for c in df.columns if c.startswith("smapbw_cycle") and "_bandwidth" in c]
-        smapbw_end += len(smapbw_cycle_cols)
-        column_sources.append(("SMAPBW (Excel: SMAPBW_Summary)", col_idx, smapbw_end))
+        # SMAPBW Summary - 5 columns (summary data only)
+        column_sources.append(("SMAPBW (Excel: SMAPBW_Summary)", col_idx, col_idx + 4))
 
         # Insert source header row at row 1
         ws.insert_rows(1)
