@@ -7,8 +7,6 @@ All tools' paths are loaded from .env and validated before use.
 """
 
 import os
-import re
-from typing import Dict, List, Optional
 
 # Try to import python-dotenv for .env support
 try:
@@ -302,11 +300,11 @@ def load_getfre_config(config_path: str) -> dict:
 
         if yaml_config:
             # Merge with defaults, yaml values take precedence
-            for key in default_config:
+            result = dict(default_config)
+            for key in result:
                 if key in yaml_config:
-                    default_config[key] = yaml_config[key]
-
-        return default_config
+                    result[key] = yaml_config[key]
+            return result
     except Exception as e:
         print(f"[WARN] Failed to load getfre_config.yaml: {e}")
         return default_config
