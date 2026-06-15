@@ -2915,6 +2915,10 @@ class QEMUMonitor:
         signal.signal(signal.SIGINT, handler)
         signal.signal(signal.SIGTERM, handler)
 
+        # Force flush all previous output before entering real-time display loop
+        sys.stdout.flush()
+        time.sleep(0.5)  # Give terminal time to settle
+
         try:
             while self.running:
                 loop_start = time.time()
@@ -2958,6 +2962,10 @@ class QEMUMonitor:
 
         print(f"Starting QEMU VM monitoring...")
         print(f"Sampling interval: {interval_seconds}s | {'Run indefinitely' if not duration_seconds else f'Duration: {duration_seconds}s'}")
+
+        # Force flush all previous output before entering real-time display loop
+        sys.stdout.flush()
+        time.sleep(0.5)  # Give terminal time to settle
 
         try:
             while self.running:
@@ -3264,6 +3272,7 @@ def main():
         capture.start()
         print(f"✓ Log collection tools started in background (duration={args.time}s)")
         print(f"  ksys parse timeout: {args.ksys_parse_timeout}s")
+        sys.stdout.flush()  # Force flush before monitoring starts
 
     # Start QEMU monitoring
     if args.stress_process:
