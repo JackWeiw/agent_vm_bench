@@ -478,6 +478,76 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
         except Exception:
             pass
 
+        # ========== Getfre_Summary sheet (Core Frequency Summary) ==========
+        try:
+            df_getfre_sum = pd.read_excel(excel_path, sheet_name="Getfre_Summary")
+            for idx, row in df_getfre_sum.iterrows():
+                numa = int(row["NUMA"]) if pd.notna(row["NUMA"]) else None
+                if numa is not None:
+                    avg_freq = float(row["Avg Frequency (MHz)"]) if pd.notna(row["Avg Frequency (MHz)"]) else 0
+                    min_freq = float(row["Min Frequency (MHz)"]) if pd.notna(row["Min Frequency (MHz)"]) else 0
+                    max_freq = float(row["Max Frequency (MHz)"]) if pd.notna(row["Max Frequency (MHz)"]) else 0
+                    sample_count = int(row["Sample Count"]) if pd.notna(row["Sample Count"]) else 0
+                    core_count = int(row["Core Count"]) if pd.notna(row["Core Count"]) else 0
+
+                    # Per-NUMA getfre metrics
+                    metrics[f"getfre_numa{numa}_avg_mhz"] = avg_freq
+                    metrics[f"getfre_numa{numa}_min_mhz"] = min_freq
+                    metrics[f"getfre_numa{numa}_max_mhz"] = max_freq
+                    metrics[f"getfre_numa{numa}_sample_count"] = sample_count
+                    metrics[f"getfre_numa{numa}_core_count"] = core_count
+        except Exception:
+            pass
+
+        # ========== Getfre_NUMA sheets (Per-core frequency details) ==========
+        # Check for Getfre_NUMA0, Getfre_NUMA1, etc.
+        try:
+            xl = pd.ExcelFile(excel_path)
+            getfre_numa_sheets = [s for s in xl.sheet_names if s.startswith("Getfre_NUMA")]
+
+            for sheet_name in getfre_numa_sheets:
+                # Extract NUMA ID from sheet name (e.g., "Getfre_NUMA0" -> 0)
+                numa_id = sheet_name.replace("Getfre_NUMA", "")
+
+                df_cores = pd.read_excel(excel_path, sheet_name=sheet_name)
+                # Calculate per-NUMA core frequency statistics
+                freq_avg_list = []
+                freq_min_list = []
+                freq_max_list = []
+
+                for idx, row in df_cores.iterrows():
+                    core_id = int(row["Core ID"]) if pd.notna(row["Core ID"]) else None
+                    if core_id is not None:
+                        avg_freq = float(row["Avg Frequency (MHz)"]) if pd.notna(row["Avg Frequency (MHz)"]) else 0
+                        min_freq = float(row["Min Frequency (MHz)"]) if pd.notna(row["Min Frequency (MHz)"]) else 0
+                        max_freq = float(row["Max Frequency (MHz)"]) if pd.notna(row["Max Frequency (MHz)"]) else 0
+
+                        freq_avg_list.append(avg_freq)
+                        freq_min_list.append(min_freq)
+                        freq_max_list.append(max_freq)
+
+                        # Store top frequency variance cores (optional, for detailed analysis)
+                        if max_freq - min_freq > 100:  # Only store if variance > 100 MHz
+                            metrics[f"getfre_numa{numa_id}_core{core_id}_avg_mhz"] = avg_freq
+                            metrics[f"getfre_numa{numa_id}_core{core_id}_variance_mhz"] = max_freq - min_freq
+
+                # Calculate overall statistics for this NUMA from per-core data
+                if freq_avg_list:
+                    # Weighted average across cores (each core's avg)
+                    overall_avg = sum(freq_avg_list) / len(freq_avg_list)
+                    overall_min = min(freq_min_list)
+                    overall_max = max(freq_max_list)
+                    overall_variance = overall_max - overall_min
+
+                    # Store as summary metrics (may override Getfre_Summary values)
+                    metrics[f"getfre_numa{numa_id}_overall_avg_mhz"] = overall_avg
+                    metrics[f"getfre_numa{numa_id}_overall_min_mhz"] = overall_min
+                    metrics[f"getfre_numa{numa_id}_overall_max_mhz"] = overall_max
+                    metrics[f"getfre_numa{numa_id}_overall_variance_mhz"] = overall_variance
+                    metrics[f"getfre_numa{numa_id}_core_count"] = len(freq_avg_list)
+        except Exception:
+            pass
+
     except ImportError:
         # pandas not available, try openpyxl
         try:
@@ -675,6 +745,63 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
                     if "smapbw_max_bandwidth_gb_s" not in metrics or metrics.get("smapbw_max_bandwidth_gb_s", 0) == 0:
                         metrics["smapbw_max_bandwidth_gb_s"] = max(cycles_list)
 
+            # Getfre_Summary (Core Frequency Summary)
+            if "Getfre_Summary" in wb.sheetnames:
+                ws = wb["Getfre_Summary"]
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    if row[0] is not None:  # NUMA column
+                        try:
+                            numa = int(row[0])
+                            avg_freq = float(row[1]) if row[1] else 0  # Avg Frequency (MHz)
+                            min_freq = float(row[2]) if row[2] else 0  # Min Frequency (MHz)
+                            max_freq = float(row[3]) if row[3] else 0  # Max Frequency (MHz)
+                            sample_count = int(row[4]) if row[4] else 0  # Sample Count
+                            core_count = int(row[5]) if row[5] else 0  # Core Count
+
+                            metrics[f"getfre_numa{numa}_avg_mhz"] = avg_freq
+                            metrics[f"getfre_numa{numa}_min_mhz"] = min_freq
+                            metrics[f"getfre_numa{numa}_max_mhz"] = max_freq
+                            metrics[f"getfre_numa{numa}_sample_count"] = sample_count
+                            metrics[f"getfre_numa{numa}_core_count"] = core_count
+                        except (ValueError, TypeError):
+                            pass
+
+            # Getfre_NUMA sheets (Per-core frequency details)
+            getfre_numa_sheets = [s for s in wb.sheetnames if s.startswith("Getfre_NUMA")]
+            for sheet_name in getfre_numa_sheets:
+                numa_id = sheet_name.replace("Getfre_NUMA", "")
+                ws = wb[sheet_name]
+                freq_avg_list = []
+                freq_min_list = []
+                freq_max_list = []
+
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    if row[0] is not None:  # Core ID column
+                        try:
+                            core_id = int(row[0])
+                            avg_freq = float(row[1]) if row[1] else 0  # Avg Frequency
+                            min_freq = float(row[2]) if row[2] else 0  # Min Frequency
+                            max_freq = float(row[3]) if row[3] else 0  # Max Frequency
+
+                            freq_avg_list.append(avg_freq)
+                            freq_min_list.append(min_freq)
+                            freq_max_list.append(max_freq)
+
+                            # Store variance cores
+                            if max_freq - min_freq > 100:
+                                metrics[f"getfre_numa{numa_id}_core{core_id}_avg_mhz"] = avg_freq
+                                metrics[f"getfre_numa{numa_id}_core{core_id}_variance_mhz"] = max_freq - min_freq
+                        except (ValueError, TypeError):
+                            pass
+
+                # Calculate overall statistics
+                if freq_avg_list:
+                    metrics[f"getfre_numa{numa_id}_overall_avg_mhz"] = sum(freq_avg_list) / len(freq_avg_list)
+                    metrics[f"getfre_numa{numa_id}_overall_min_mhz"] = min(freq_min_list)
+                    metrics[f"getfre_numa{numa_id}_overall_max_mhz"] = max(freq_max_list)
+                    metrics[f"getfre_numa{numa_id}_overall_variance_mhz"] = max(freq_max_list) - min(freq_min_list)
+                    metrics[f"getfre_numa{numa_id}_core_count"] = len(freq_avg_list)
+
         except ImportError:
             print(f"WARNING: Neither pandas nor openpyxl available for {result_dir}")
         except Exception as e:
@@ -860,6 +987,16 @@ def generate_summary_report(results: Dict, output_path: str):
             row["smapbw_min_bandwidth_gb_s"] = qemu.get("smapbw_min_bandwidth_gb_s", 0)
             row["smapbw_max_bandwidth_gb_s"] = qemu.get("smapbw_max_bandwidth_gb_s", 0)
 
+            # Getfre Core Frequency metrics - Per-NUMA summary
+            # Dynamically add getfre metrics for each NUMA found
+            for key, value in qemu.items():
+                if key.startswith("getfre_numa") and ("_avg_mhz" in key or "_min_mhz" in key or "_max_mhz" in key):
+                    row[key] = value
+                elif key.startswith("getfre_numa") and "_overall_variance_mhz" in key:
+                    row[key] = value
+                elif key.startswith("getfre_numa") and "_core_count" in key:
+                    row[key] = value
+
             rows.append(row)
 
         df = pd.DataFrame(rows)
@@ -927,6 +1064,13 @@ def generate_summary_report(results: Dict, output_path: str):
 
         # SMAPBW Summary - 5 columns (summary data only)
         column_sources.append(("SMAPBW (Excel: SMAPBW_Summary)", col_idx, col_idx + 4))
+        col_idx += 5
+
+        # Getfre Core Frequency - dynamic columns (per-NUMA metrics)
+        getfre_cols = [c for c in df.columns if c.startswith("getfre_numa")]
+        if getfre_cols:
+            getfre_end = col_idx + len(getfre_cols) - 1
+            column_sources.append(("Getfre CoreFreq (Excel: Getfre_Summary)", col_idx, getfre_end))
 
         # Insert source header row at row 1
         ws.insert_rows(1)
@@ -955,6 +1099,7 @@ def generate_summary_report(results: Dict, output_path: str):
             "UBWatch Latency": PatternFill(start_color="C55A11", end_color="C55A11", fill_type="solid"),  # Brown
             "UBWatch Bandwidth": PatternFill(start_color="00B050", end_color="00B050", fill_type="solid"),  # Dark Green
             "SMAPBW": PatternFill(start_color="FF6B6B", end_color="FF6B6B", fill_type="solid"),  # Red/Pink
+            "Getfre": PatternFill(start_color="00B0F0", end_color="00B0F0", fill_type="solid"),  # Cyan
         }
 
         # Create merged cells for source headers

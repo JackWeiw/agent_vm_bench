@@ -59,6 +59,7 @@ Delete old VMs → Confirm deletion → Create new VMs (n count) → Start smap_
 │  - smap_tool (Memory migration)                                 │
 │  - vm_bench_lite.py (Warmup + Test)                             │
 │  - qemu_monitor.py (Monitor)                                    │
+│  - getfre (Core frequency collection)                           │
 │  - openstack CLI / virsh (Delete VMs)                           │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -138,8 +139,8 @@ warmup:
 monitor:
   interval: 2                           # Monitor sampling interval (seconds)
   numa_nodes: [0, 1]                    # NUMA nodes list
-  enable_capture: true                  # Enable log collection (devkit/ksys/ub_watch)
-  # Note: devkit/ksys/ub_watch paths use existing .env file config
+  enable_capture: true                  # Enable log collection (devkit/ksys/ub_watch/smap_bw/getfre)
+  # Note: Tool paths configured via .env file, getfre uses getfre_config.yaml
 
 # Wait Configuration
 wait:
@@ -568,6 +569,9 @@ results/
 │   │   ├── devkit_top_down.log                 # devkit top-down log
 │   │   ├── ksys.log                            # ksys log
 │   │   ├── ub_watch.log                        # ub_watch log
+│   │   ├── smap_bw.log                         # smap_bw log
+│   │   ├── getfre_NUMA0.log                    # getfre NUMA0 frequency data
+│   │   ├── getfre_NUMA1.log                    # getfre NUMA1 frequency data
 │   │   └── *_report.json                       # ksys report
 │   │
 │   └───── summary/                             # Comprehensive analysis summary

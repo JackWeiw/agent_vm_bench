@@ -107,6 +107,8 @@ When using `--enable-capture`, qemu_monitor.py invokes the following performance
 | **devkit_mem** | Cache miss rates, DDR bandwidth | `devkit_mem.log` | DevKit_Memory, NUMA_Bandwidth | 6 + 2+ |
 | **ksys** | Kernel-level cache latency, IPC | `ksys.log` | KSys | 11 |
 | **ub_watch** | NUMA interconnect latency | `ub_watch.log` | UBWatch_Latency | 7 |
+| **smap_bw** | SMAP migration bandwidth | `smap_bw.log` | SMAPBW_Summary, SMAPBW_Cycles | 5+ |
+| **getfre** | Core frequency monitoring | `getfre_NUMA*.log` | Getfre_Summary, Getfre_NUMA* | 5+ per NUMA |
 
 ### Tool Details
 
@@ -145,6 +147,45 @@ NUMA interconnect monitoring:
 - **Latency**: Read/Write latency (ns) between NUMA nodes
 - **Bandwidth**: Interconnect bandwidth per chip/port
 
+#### smap_bw
+
+SMAP migration bandwidth monitoring:
+
+- **Bandwidth**: Memory migration bandwidth (GB/s) per cycle
+- **Pages**: Total migrated pages count
+- **Direction**: Per-direction migration statistics (NUMA node pairs)
+
+#### getfre
+
+Core frequency monitoring (物理核心频率采集):
+
+- **Frequency**: Real-time core frequency (MHz) per physical core
+- **NUMA Summary**: Average/min/max frequency per NUMA node
+- **Per-Core Details**: Frequency statistics for each core
+- **Variance Analysis**: High-variance cores (>100 MHz fluctuation)
+
+**Configuration**: Requires `getfre_config.yaml` for sampling parameters:
+
+```yaml
+# getfre_config.yaml
+getfre_path: /path/to/getfre    # executable path
+total_cores: 192                # 192-core system
+interval: 2                     # sampling interval (seconds)
+core_interval: 1                # core sampling interval (1=all, 2=every other)
+numa_nodes:                     # NUMA nodes to monitor
+  - 0
+  - 1
+```
+
+**NUMA to Physical Core Mapping** (192-core system with hyperthreading):
+
+| NUMA | Physical Cores | Logical Cores |
+|------|-----------------|---------------|
+| 0    | 0-47            | 0-95          |
+| 1    | 48-95           | 96-191        |
+| 2    | 96-143          | 192-287       |
+| 3    | 144-191         | 288-383       |
+
 ### Configuration (.env)
 
 ```env
@@ -157,6 +198,13 @@ KSYS_CONFIG_PATH=/path/to/config.yaml
 
 # ub_watch collection tool path
 UB_WATCH_PATH=/path/to/ub_watch
+
+# smap_bw script path
+SMAP_BW_PATH=/path/to/smap_bw.py
+
+# getfre executable path and config
+GETFRE_PATH=/path/to/getfre
+GETFRE_CONFIG_PATH=/path/to/getfre_config.yaml
 
 # DevKit top-down CPU core range (optional, auto-calculated from -numa)
 DEVKIT_CPU_RANGE=96-191
@@ -172,6 +220,9 @@ logs_20240601_143052/
 ├── devkit_mem.log         # DevKit memory output
 ├── ksys.log               # ksys output
 ├── ub_watch.log           # ub_watch output
+├── smap_bw.log            # smap_bw output
+├── getfre_NUMA0.log       # getfre NUMA 0 frequency data
+├── getfre_NUMA1.log       # getfre NUMA 1 frequency data
 ├── *_report.json          # ksys generated reports
 └── analysis_report.xlsx   # Aggregated Excel report
 ```
@@ -186,6 +237,10 @@ Collection Tools          →  analysis_report.xlsx  →  batch_summary.xlsx
 │                       →  NUMA_Bandwidth sheet  →  numa_* columns (2+)
 ├─ ksys.log             →  KSys sheet            →  ksys_* columns (11)
 ├─ ub_watch.log         →  UBWatch_Latency sheet →  ub_* columns (7)
+├─ smap_bw.log          →  SMAPBW_Summary sheet  →  smapbw_* columns (5)
+│                       →  SMAPBW_Cycles sheet   →  per-cycle details
+├─ getfre_NUMA*.log     →  Getfre_Summary sheet  →  getfre_numa*_avg/min/max_mhz
+│                       →  Getfre_NUMA* sheets   →  per-core frequency
 │
 └─ qemu_monitor (built-in) → Summary sheet       →  vm_avg/max_cpu (2)
 ```

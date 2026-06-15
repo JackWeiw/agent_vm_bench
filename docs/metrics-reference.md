@@ -19,6 +19,8 @@ The batch summary collects **50+ metrics** from multiple sources for comprehensi
 | `analysis_report.xlsx` - NUMA_Bandwidth | devkit_mem | NUMA Bandwidth | 2+ (dynamic) |
 | `analysis_report.xlsx` - KSys | ksys | Kernel Metrics | 11 |
 | `analysis_report.xlsx` - UBWatch_Latency | ub_watch | Interconnect | 7 |
+| `analysis_report.xlsx` - SMAPBW_Summary | smap_bw | SMAP Migration | 5 |
+| `analysis_report.xlsx` - Getfre_Summary | getfre | Core Frequency | 5+ per NUMA |
 
 ---
 
@@ -171,6 +173,47 @@ NUMA interconnect latency measurements.
 | `ub_min_write_ns` | Minimum write latency (ns) |
 | `ub_max_read_ns` | Maximum read latency (ns) |
 | `ub_max_write_ns` | Maximum write latency (ns) |
+
+---
+
+## SMAPBW Metrics
+
+> **Collection Tool**: `smap_bw` → `analysis_report.xlsx` SMAPBW_Summary, SMAPBW_Cycles sheets
+
+SMAP (Secure Memory Access Protection) migration bandwidth measurements.
+
+| Column | Description |
+|--------|-------------|
+| `smapbw_total_cycles` | Total migration cycles |
+| `smapbw_total_pages` | Total migrated pages |
+| `smapbw_avg_bandwidth_gb_s` | Average migration bandwidth (GB/s) |
+| `smapbw_min_bandwidth_gb_s` | Minimum bandwidth (GB/s) |
+| `smapbw_max_bandwidth_gb_s` | Maximum bandwidth (GB/s) |
+
+---
+
+## Getfre Core Frequency Metrics
+
+> **Collection Tool**: `getfre` → `analysis_report.xlsx` Getfre_Summary, Getfre_NUMA sheets
+>
+> See [Usage Guide - getfre](usage-guide.md#getfre) for tool details and configuration.
+
+Physical core frequency monitoring per NUMA node.
+
+| Column | Description |
+|--------|-------------|
+| `getfre_numa{n}_avg_mhz` | Average frequency for NUMA {n} (MHz) |
+| `getfre_numa{n}_min_mhz` | Minimum frequency for NUMA {n} (MHz) |
+| `getfre_numa{n}_max_mhz` | Maximum frequency for NUMA {n} (MHz) |
+| `getfre_numa{n}_overall_variance_mhz` | Frequency variance range (max - min) |
+| `getfre_numa{n}_core_count` | Number of cores monitored |
+| `getfre_numa{n}_sample_count` | Number of samples collected |
+
+### Frequency Analysis
+
+- **Low variance (< 100 MHz)**: Stable core frequency, good power management
+- **High variance (> 100 MHz)**: Frequency fluctuation, potential thermal/power throttling
+- **Per-core details**: High-variance cores (> 100 MHz) logged in Getfre_NUMA sheets
 
 ---
 

@@ -35,18 +35,25 @@ try:
 except ImportError:
     DOTENV_AVAILABLE = False
 
+# Try to import yaml for getfre config
+try:
+    import yaml
+    YAML_AVAILABLE = True
+except ImportError:
+    YAML_AVAILABLE = False
+
 
 # ==================== .env Configuration Management ====================
 
 ENV_FILE_PATH = '.env'
-ENV_REQUIRED_KEYS = ['DEVKIT_PATH', 'KSYS_PATH', 'KSYS_CONFIG_PATH', 'UB_WATCH_PATH', 'SMAP_BW_PATH']
+ENV_REQUIRED_KEYS = ['DEVKIT_PATH', 'KSYS_PATH', 'KSYS_CONFIG_PATH', 'UB_WATCH_PATH', 'SMAP_BW_PATH', 'GETFRE_PATH', 'GETFRE_CONFIG_PATH']
 
 
 def load_env_config() -> dict:
     """Load configuration from .env file
 
     Returns:
-        dict with keys: devkit_path, ksys_path, ksys_config_path, ub_watch_path, smap_bw_path, devkit_cpu_range
+        dict with keys: devkit_path, ksys_path, ksys_config_path, ub_watch_path, smap_bw_path, devkit_cpu_range, getfre_path, getfre_config_path
     """
     config = {
         'devkit_path': '',
@@ -55,6 +62,8 @@ def load_env_config() -> dict:
         'ub_watch_path': '',
         'smap_bw_path': '',
         'devkit_cpu_range': '',
+        'getfre_path': '',
+        'getfre_config_path': '',
     }
 
     if DOTENV_AVAILABLE and os.path.exists(ENV_FILE_PATH):
@@ -67,6 +76,8 @@ def load_env_config() -> dict:
     config['ub_watch_path'] = os.environ.get('UB_WATCH_PATH', '')
     config['smap_bw_path'] = os.environ.get('SMAP_BW_PATH', '')
     config['devkit_cpu_range'] = os.environ.get('DEVKIT_CPU_RANGE', '')
+    config['getfre_path'] = os.environ.get('GETFRE_PATH', '')
+    config['getfre_config_path'] = os.environ.get('GETFRE_CONFIG_PATH', '')
 
     return config
 
@@ -95,6 +106,10 @@ def save_env_config(config: dict):
             set_key(env_path, 'SMAP_BW_PATH', config['smap_bw_path'])
         if config.get('devkit_cpu_range'):
             set_key(env_path, 'DEVKIT_CPU_RANGE', config['devkit_cpu_range'])
+        if config.get('getfre_path'):
+            set_key(env_path, 'GETFRE_PATH', config['getfre_path'])
+        if config.get('getfre_config_path'):
+            set_key(env_path, 'GETFRE_CONFIG_PATH', config['getfre_config_path'])
     else:
         # Fallback: manual write
         with open(env_path, 'a') as f:
@@ -121,6 +136,8 @@ def validate_and_prompt_missing(config: dict, non_interactive: bool = False) -> 
         'KSYS_CONFIG_PATH': 'ksys_config_path',
         'UB_WATCH_PATH': 'ub_watch_path',
         'SMAP_BW_PATH': 'smap_bw_path',
+        'GETFRE_PATH': 'getfre_path',
+        'GETFRE_CONFIG_PATH': 'getfre_config_path',
     }
 
     prompt_names = {
@@ -129,6 +146,8 @@ def validate_and_prompt_missing(config: dict, non_interactive: bool = False) -> 
         'KSYS_CONFIG_PATH': 'ksys config.yaml path',
         'UB_WATCH_PATH': 'ub_watch executable path',
         'SMAP_BW_PATH': 'smap_bw.py script path',
+        'GETFRE_PATH': 'getfre executable path',
+        'GETFRE_CONFIG_PATH': 'getfre_config.yaml path',
     }
 
     for env_key, config_key in key_mapping.items():
@@ -233,6 +252,80 @@ def calculate_cpu_range_from_numa(numa_nodes: list) -> str:
     return ','.join(ranges)
 
 
+def numa_to_physical_cores(numa_nodes: list, core_interval: int = 1) -> dict:
+    """Convert NUMA node IDs to physical core IDs with sampling interval
+
+    Args:
+        numa_nodes: list of NUMA node IDs (e.g., [0, 1])
+        core_interval: sampling interval (1=all cores, 2=every other core)
+
+    Returns:
+        dict: {numa_id: [physical_core_ids]}
+        Example: {0: [0, 2, 4, ...46], 1: [48, 50, 52, ...94]}
+    """
+    # NUMA to physical core mapping for 192-core system with hyperthreading
+    # Each NUMA has 48 physical cores (96 logical cores with HT)
+    numa_physical_ranges = {
+        0: (0, 47),      # NUMA 0: physical cores 0-47
+        1: (48, 95),     # NUMA 1: physical cores 48-95
+        2: (96, 143),    # NUMA 2: physical cores 96-143
+        3: (144, 191),   # NUMA 3: physical cores 144-191
+    }
+
+    result = {}
+    for numa in numa_nodes:
+        if numa not in numa_physical_ranges:
+            print(f"⚠ Invalid NUMA node {numa}, skipping")
+            continue
+        start, end = numa_physical_ranges[numa]
+        # Apply core_interval sampling
+        cores = list(range(start, end + 1, core_interval))
+        result[numa] = cores
+
+    return result
+
+
+def load_getfre_config(config_path: str) -> dict:
+    """Load getfre configuration from YAML file
+
+    Args:
+        config_path: path to getfre_config.yaml
+
+    Returns:
+        dict with keys: getfre_path, total_cores, interval, core_interval, numa_nodes
+        Returns default config if file not found or invalid
+    """
+    default_config = {
+        'getfre_path': '',
+        'total_cores': 192,
+        'interval': 2,
+        'core_interval': 1,
+        'numa_nodes': [0, 1],
+    }
+
+    if not config_path or not os.path.exists(config_path):
+        return default_config
+
+    if not YAML_AVAILABLE:
+        print("⚠ yaml module not available, using default getfre config")
+        return default_config
+
+    try:
+        with open(config_path, 'r') as f:
+            yaml_config = yaml.safe_load(f)
+
+        if yaml_config:
+            # Merge with defaults, yaml values take precedence
+            for key in default_config:
+                if key in yaml_config:
+                    default_config[key] = yaml_config[key]
+
+        return default_config
+    except Exception as e:
+        print(f"⚠ Failed to load getfre_config.yaml: {e}")
+        return default_config
+
+
 # ==================== LogCapture Class ====================
 
 class LogCapture:
@@ -255,7 +348,7 @@ class LogCapture:
                  ksys_parse_timeout: int = None):
         """
         Args:
-            config: paths from .env (devkit_path, ksys_path, ksys_config_path, ub_watch_path, devkit_cpu_range)
+            config: paths from .env (devkit_path, ksys_path, ksys_config_path, ub_watch_path, devkit_cpu_range, getfre_path, getfre_config_path)
             duration: collection duration in seconds (same as qemu_monitor -t)
             log_dir: output directory for log files
             numa_nodes: list of NUMA nodes to monitor (for CPU range calculation)
@@ -271,6 +364,10 @@ class LogCapture:
         self.failed_runtime = []  # tools that failed during runtime
         self.start_time = None
         self.ksys_parse_timeout = ksys_parse_timeout or self.DEFAULT_TOOL_TIMEOUTS['ksys']
+        # getfre threading components
+        self.getfre_threads = {}  # {numa_id: Thread}
+        self.getfre_log_files = {}  # {numa_id: file handle}
+        self.getfre_stop_flags = {}  # {numa_id: Event}
 
     def _get_cpu_range(self) -> str:
         """Get CPU range for devkit top-down command"""
@@ -407,6 +504,135 @@ class LogCapture:
             f"Started smap_bw (duration={self.duration}s, timeout={timeout}s)"
         )
 
+    def _start_getfre(self) -> tuple:
+        """Start getfre core frequency collector
+
+        Uses threading to collect frequency data from multiple cores per NUMA node.
+        Each NUMA node has its own log file with aggregated data.
+
+        Returns:
+            (success: bool, error_msg: str or None)
+        """
+        if not self.config.get('getfre_path'):
+            return (False, 'getfre_path not configured')
+
+        # Load getfre config from YAML
+        getfre_config = load_getfre_config(self.config.get('getfre_config_path', ''))
+
+        # Use getfre_path from .env if available, otherwise from YAML
+        getfre_path = self.config.get('getfre_path') or getfre_config.get('getfre_path')
+        if not getfre_path or not os.path.exists(getfre_path):
+            return (False, f'getfre_path not found: {getfre_path}')
+
+        total_cores = getfre_config.get('total_cores', 192)
+        interval = getfre_config.get('interval', 2)
+        core_interval = getfre_config.get('core_interval', 1)
+        numa_nodes = getfre_config.get('numa_nodes', self.numa_nodes)
+
+        # Calculate physical cores per NUMA
+        numa_cores = numa_to_physical_cores(numa_nodes, core_interval)
+
+        if not numa_cores:
+            return (False, 'No valid NUMA nodes for getfre collection')
+
+        # Print command info (consistent with other tools)
+        total_cores_count = sum(len(c) for c in numa_cores.values())
+        numa_info = ', '.join([f'{n}:{len(c)}' for n, c in numa_cores.items()])
+        print(f"  [CMD] getfre: {getfre_path} {total_cores} (cores per NUMA: {numa_info})")
+
+        # Create threads for each NUMA node
+        self.getfre_threads = {}
+        self.getfre_log_files = {}
+        self.getfre_stop_flags = {}
+
+        for numa_id, cores in numa_cores.items():
+            log_filename = f'getfre_NUMA{numa_id}.log'
+            log_path = os.path.join(self.log_dir, log_filename)
+
+            try:
+                log_file = open(log_path, 'w')
+                self.getfre_log_files[numa_id] = log_file
+
+                # Write CSV header
+                log_file.write('timestamp,core,freq_mhz\n')
+
+                # Create stop flag for this thread
+                stop_flag = threading.Event()
+                self.getfre_stop_flags[numa_id] = stop_flag
+
+                # Create and start thread
+                thread = threading.Thread(
+                    target=self._getfre_collector_thread,
+                    args=(numa_id, cores, getfre_path, total_cores, interval, log_file, stop_flag),
+                    name=f'getfre-NUMA{numa_id}'
+                )
+                self.getfre_threads[numa_id] = thread
+                thread.start()
+
+            except Exception as e:
+                print(f"  ✗ Failed to start getfre for NUMA {numa_id}: {e}")
+                return (False, str(e))
+
+        # Print success message (single line, consistent with other tools)
+        print(f"  ✓ Started getfre (NUMA {','.join(map(str, numa_cores.keys()))}, {total_cores_count} cores, interval={interval}s)")
+
+        return (True, None)
+
+    def _getfre_collector_thread(self, numa_id: int, cores: list, getfre_path: str,
+                                  total_cores: int, interval: int, log_file, stop_flag):
+        """Thread function to collect core frequencies for a NUMA node
+
+        Args:
+            numa_id: NUMA node ID
+            cores: list of physical core IDs to collect
+            getfre_path: path to getfre executable
+            total_cores: total physical cores (192)
+            interval: sampling interval in seconds
+            log_file: file handle to write data
+            stop_flag: threading.Event to signal stop
+        """
+        start_time = time.time()
+        duration = self.duration
+
+        while not stop_flag.is_set() and (time.time() - start_time) < duration:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            # Collect frequency for each core in this NUMA
+            for core_id in cores:
+                try:
+                    # Call getfre: ./getfre <total_cores> <core_id>
+                    result = subprocess.run(
+                        [getfre_path, str(total_cores), str(core_id)],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+
+                    if result.returncode == 0:
+                        # Parse output: "Core 0 : 2300"
+                        output = result.stdout.strip()
+                        freq_match = re.search(r'Core\s+\d+\s*:\s*(\d+)', output)
+                        if freq_match:
+                            freq_mhz = int(freq_match.group(1))
+                            log_file.write(f"{timestamp},{core_id},{freq_mhz}\n")
+                    else:
+                        # Log error
+                        log_file.write(f"{timestamp},{core_id},ERROR\n")
+
+                except subprocess.TimeoutExpired:
+                    log_file.write(f"{timestamp},{core_id},TIMEOUT\n")
+                except Exception as e:
+                    log_file.write(f"{timestamp},{core_id},ERROR\n")
+
+            # Flush log file after each sampling cycle
+            log_file.flush()
+
+            # Wait for next interval (or stop signal)
+            stop_flag.wait(timeout=interval)
+
+        # Final flush
+        log_file.flush()
+
     def start(self) -> dict:
         """Start all collection processes in parallel using Popen
 
@@ -457,10 +683,34 @@ class LogCapture:
             failed.append(('smap_bw', err))
             self.failed_startup.append('smap_bw')
 
+        # Start getfre core frequency collector
+        ok, err = self._start_getfre()
+        if ok:
+            success.append('getfre')
+        elif err and 'not configured' not in err:
+            failed.append(('getfre', err))
+            self.failed_startup.append('getfre')
+
         return {'success': success, 'failed': failed}
 
     def stop(self):
-        """Stop all running processes"""
+        """Stop all running processes and threads"""
+        # Stop getfre threads first
+        for numa_id, stop_flag in self.getfre_stop_flags.items():
+            stop_flag.set()  # Signal threads to stop
+
+        # Wait for getfre threads to finish
+        for numa_id, thread in self.getfre_threads.items():
+            thread.join(timeout=5)
+
+        # Close getfre log files
+        for numa_id, f in self.getfre_log_files.items():
+            try:
+                f.close()
+            except Exception:
+                pass
+
+        # Stop other processes
         for tool_name, proc in self.processes.items():
             if proc.poll() is None:  # Still running
                 try:
@@ -693,6 +943,15 @@ class LogCapture:
         success = [t for t in all_tools
                    if t not in self.failed_startup and t not in [f['tool'] for f in self.failed_runtime]]
 
+        # Add getfre if threads started successfully
+        if self.getfre_threads and 'getfre' not in self.failed_startup:
+            success.append('getfre')
+
+        # Build getfre log files dict
+        getfre_logs = {}
+        for numa_id in self.getfre_log_files.keys():
+            getfre_logs[f'getfre_NUMA{numa_id}'] = os.path.join(self.log_dir, f'getfre_NUMA{numa_id}.log')
+
         return {
             'success': success,
             'failed_startup': self.failed_startup,
@@ -703,6 +962,7 @@ class LogCapture:
                 'ksys': os.path.join(self.log_dir, 'ksys.log'),
                 'ub_watch': os.path.join(self.log_dir, 'ub_watch.log'),
                 'smap_bw': os.path.join(self.log_dir, 'smap_bw.log'),
+                **getfre_logs  # Add getfre log files
             },
             'duration': actual_duration,
         }
@@ -1082,6 +1342,98 @@ def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
         return {'error': str(e), 'report_count': 0}
 
 
+def parse_getfre(log_path: str) -> dict:
+    """Parse getfre_NUMA*.log to extract core frequency metrics
+
+    Args:
+        log_path: path to getfre log file (e.g., getfre_NUMA0.log)
+
+    Returns:
+        {
+            'core_stats': {core_id: {'avg': x, 'max': y, 'min': z}},
+            'numa_avg': average frequency for this NUMA,
+            'timeline': {timestamp: {core_id: freq}},
+            'sample_count': number of samples
+        }
+    """
+    result = {
+        'core_stats': {},
+        'samples': {},  # {core_id: [freqs]}
+        'timeline': {},
+        'sample_count': 0
+    }
+
+    if not os.path.exists(log_path):
+        return {'error': 'File not found', 'sample_count': 0}
+
+    try:
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            # Skip header
+            lines = f.readlines()[1:]  # Skip 'timestamp,core,freq_mhz\n'
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            parts = line.split(',')
+            if len(parts) != 3:
+                continue
+
+            timestamp, core_id, freq_str = parts
+
+            # Skip ERROR/TIMEOUT entries
+            if freq_str in ('ERROR', 'TIMEOUT'):
+                continue
+
+            try:
+                core_id = int(core_id)
+                freq_mhz = int(freq_str)
+            except ValueError:
+                continue
+
+            # Track samples per core
+            if core_id not in result['samples']:
+                result['samples'][core_id] = []
+            result['samples'][core_id].append(freq_mhz)
+
+            # Track timeline
+            if timestamp not in result['timeline']:
+                result['timeline'][timestamp] = {}
+            result['timeline'][timestamp][core_id] = freq_mhz
+
+            result['sample_count'] += 1
+
+        # Calculate stats per core
+        for core_id, freqs in result['samples'].items():
+            if freqs:
+                result['core_stats'][core_id] = {
+                    'avg': sum(freqs) / len(freqs),
+                    'max': max(freqs),
+                    'min': min(freqs),
+                    'count': len(freqs)
+                }
+
+        # Calculate NUMA average (across all cores)
+        all_freqs = []
+        for freqs in result['samples'].values():
+            all_freqs.extend(freqs)
+
+        if all_freqs:
+            result['numa_avg'] = sum(all_freqs) / len(all_freqs)
+            result['numa_max'] = max(all_freqs)
+            result['numa_min'] = min(all_freqs)
+        else:
+            result['numa_avg'] = 0.0
+            result['numa_max'] = 0.0
+            result['numa_min'] = 0.0
+
+        return result
+
+    except Exception as e:
+        return {'error': str(e), 'sample_count': 0}
+
+
 def parse_ub_watch(log_path: str) -> dict:
     """Parse ub_watch.log to extract FINAL PERFORMANCE REPORT
 
@@ -1289,7 +1641,8 @@ def parse_all_logs(log_dir: str, numa_nodes: list = None) -> dict:
             'devkit_mem': parsed result,
             'ksys': parsed result,
             'ub_watch': parsed result,
-            'smap_bw': parsed result
+            'smap_bw': parsed result,
+            'getfre': {numa_id: parsed result}  # getfre results per NUMA
         }
     """
     results = {}
@@ -1318,6 +1671,15 @@ def parse_all_logs(log_dir: str, numa_nodes: list = None) -> dict:
     smap_path = os.path.join(log_dir, 'smap_bw.log')
     if os.path.exists(smap_path):
         results['smap_bw'] = parse_smap_bw(smap_path)
+
+    # Parse getfre logs (per NUMA)
+    getfre_results = {}
+    for numa_id in range(4):  # Check NUMA 0-3
+        getfre_path = os.path.join(log_dir, f'getfre_NUMA{numa_id}.log')
+        if os.path.exists(getfre_path):
+            getfre_results[numa_id] = parse_getfre(getfre_path)
+    if getfre_results:
+        results['getfre'] = getfre_results
 
     return results
 
@@ -1657,7 +2019,49 @@ def export_to_excel(monitor: 'QEMUMonitor', log_dir: str, numa_nodes: list = Non
 
                     pd.DataFrame(cycle_data).to_excel(writer, sheet_name='SMAPBW_Cycles', index=False)
 
-            # ========== Sheet 11: Raw VM Data Time Series ==========
+            # ========== Sheet 11: getfre Core Frequency ==========
+            if 'getfre' in parsed_logs:
+                getfre_data = parsed_logs['getfre']
+
+                # Summary sheet (all NUMA averages)
+                getfre_summary = {
+                    'NUMA': [],
+                    'Avg Frequency (MHz)': [],
+                    'Min Frequency (MHz)': [],
+                    'Max Frequency (MHz)': [],
+                    'Sample Count': [],
+                    'Core Count': []
+                }
+                for numa_id in sorted(getfre_data.keys()):
+                    gf = getfre_data[numa_id]
+                    if 'error' not in gf:
+                        getfre_summary['NUMA'].append(numa_id)
+                        getfre_summary['Avg Frequency (MHz)'].append(gf.get('numa_avg', 0))
+                        getfre_summary['Min Frequency (MHz)'].append(gf.get('numa_min', 0))
+                        getfre_summary['Max Frequency (MHz)'].append(gf.get('numa_max', 0))
+                        getfre_summary['Sample Count'].append(gf.get('sample_count', 0))
+                        getfre_summary['Core Count'].append(len(gf.get('core_stats', {})))
+
+                if getfre_summary['NUMA']:
+                    pd.DataFrame(getfre_summary).to_excel(writer, sheet_name='Getfre_Summary', index=False)
+
+                # Per-core sheet (per NUMA)
+                for numa_id in sorted(getfre_data.keys()):
+                    gf = getfre_data[numa_id]
+                    if 'error' not in gf:
+                        core_stats = gf.get('core_stats', {})
+                        if core_stats:
+                            core_data = {
+                                'Core ID': sorted(core_stats.keys()),
+                                'Avg Frequency (MHz)': [core_stats[c]['avg'] for c in sorted(core_stats.keys())],
+                                'Min Frequency (MHz)': [core_stats[c]['min'] for c in sorted(core_stats.keys())],
+                                'Max Frequency (MHz)': [core_stats[c]['max'] for c in sorted(core_stats.keys())],
+                                'Sample Count': [core_stats[c]['count'] for c in sorted(core_stats.keys())]
+                            }
+                            pd.DataFrame(core_data).to_excel(writer,
+                                sheet_name=f'Getfre_NUMA{numa_id}', index=False)
+
+            # ========== Sheet 12: Raw VM Data Time Series ==========
             if monitor.data:
                 raw_data = {
                     'Timestamp': [d['timestamp'] for d in monitor.data],
@@ -1917,6 +2321,28 @@ def print_capture_summary(results: dict, log_dir: str, numa_nodes: list = None):
                 if bw.get('avg_sum', 0) > 0:
                     print(f"    Chip {bw.get('chip', 0)} Ports {bw.get('ports', 'N/A')}: "
                           f"Wr={bw.get('avg_wr', 0):.2f} Rd={bw.get('avg_rd', 0):.2f} Sum={bw.get('avg_sum', 0):.2f} MB/s")
+
+    # getfre results
+    if 'getfre' in parsed:
+        getfre_data = parsed['getfre']
+        print(f"\n[getfre Core Frequency]")
+        for numa_id in sorted(getfre_data.keys()):
+            gf = getfre_data[numa_id]
+            if 'error' not in gf:
+                print(f"  NUMA {numa_id}: Avg={gf.get('numa_avg', 0):.0f} MHz "
+                      f"(Min={gf.get('numa_min', 0):.0f}, Max={gf.get('numa_max', 0):.0f}), "
+                      f"{gf.get('sample_count', 0)} samples")
+                # Show top 5 cores by frequency variance if available
+                core_stats = gf.get('core_stats', {})
+                if core_stats:
+                    sorted_cores = sorted(core_stats.items(),
+                                          key=lambda x: x[1]['max'] - x[1]['min'],
+                                          reverse=True)[:5]
+                    if sorted_cores:
+                        print(f"    Top 5 variable cores:")
+                        for core_id, stats in sorted_cores:
+                            print(f"      Core {core_id}: Avg={stats['avg']:.0f} "
+                                  f"(Min={stats['min']:.0f}, Max={stats['max']:.0f}) MHz")
 
     print("=" * 70)
 
@@ -2374,11 +2800,13 @@ class QEMUMonitor:
 
     def display_realtime_table(self, sample_data, elapsed_time, duration, check_method=""):
         """Display real-time table"""
-        print('\033[2J\033[H', end='')
-        print("=" * 100)
-        print(f"QEMU VM Real-time Monitoring - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Elapsed: {elapsed_time} | Target: {duration if duration else 'Infinite'} | Detection Method: {check_method}")
-        print("=" * 100)
+        # Use more reliable clear screen method
+        print('\033[2J\033[H\033[?25h', end='', flush=True)  # Clear, home, show cursor
+        width = 100  # Consistent width for all separators
+        print("=" * width, flush=True)
+        print(f"QEMU VM Real-time Monitoring - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+        print(f"Elapsed: {elapsed_time} | Target: {duration if duration else 'Infinite'} | Detection Method: {check_method}", flush=True)
+        print("=" * width, flush=True)
 
         # Real-time display of specified NUMA node CPU
         numa_str = ""
@@ -2387,43 +2815,43 @@ class QEMUMonitor:
             current = hist[-1] if hist else 0.0
             peak = self.numa_cpu_peak[node]
             numa_str += f"NUMA{node} CPU: {current:.1f}% (Peak {peak:.1f}%)  "
-        print(numa_str.strip())
+        print(numa_str.strip(), flush=True)
 
         # Total Hugepages
         huge_usage = round((self.hugepage_used_mb / self.hugepage_total_mb * 100), 1) if self.hugepage_total_mb > 0 else 0.0
-        print(f"📄 Hugepage Memory: Total {self.hugepage_total_mb:.0f} MB  Used {self.hugepage_used_mb:.0f} MB ({huge_usage:.1f}%)  Free {self.hugepage_free_mb:.0f} MB")
+        print(f"📄 Hugepage Memory: Total {self.hugepage_total_mb:.0f} MB  Used {self.hugepage_used_mb:.0f} MB ({huge_usage:.1f}%)  Free {self.hugepage_free_mb:.0f} MB", flush=True)
 
         # Per-NUMA node hugepage statistics
         if self.hugepage_per_numa:
-            print("📄 Per-NUMA Node Hugepages:")
+            print("📄 Per-NUMA Node Hugepages:", flush=True)
             for node_id in sorted(self.hugepage_per_numa.keys()):
                 hp = self.hugepage_per_numa[node_id]
-                print(f"    NUMA {node_id:>2d} | Total {hp['total_mb']:>8.0f} MB | Used {hp['used_mb']:>8.0f} MB ({hp['usage_pct']:>5.1f}%) | Free {hp['free_mb']:>8.0f} MB")
+                print(f"    NUMA {node_id:>2d} | Total {hp['total_mb']:>8.0f} MB | Used {hp['used_mb']:>8.0f} MB ({hp['usage_pct']:>5.1f}%) | Free {hp['free_mb']:>8.0f} MB", flush=True)
 
         # Host machine total resources
         if self.host_cpu_history:
             host_cpu = self.host_cpu_history[-1]
             host_mem = self.host_mem_history[-1]
-            print(f"🖥️  Host Machine: CPU {host_cpu:.1f}% (Peak {self.peak_host_cpu:.1f}%) | Memory {host_mem['used_mb']:.0f}/{host_mem['total_mb']:.0f} MB ({host_mem['usage']:.1f}%, Peak {self.peak_host_mem_mb:.0f} MB)")
+            print(f"🖥️  Host Machine: CPU {host_cpu:.1f}% (Peak {self.peak_host_cpu:.1f}%) | Memory {host_mem['used_mb']:.0f}/{host_mem['total_mb']:.0f} MB ({host_mem['usage']:.1f}%, Peak {self.peak_host_mem_mb:.0f} MB)", flush=True)
 
         # Swap
         if self.swap_history:
             s = self.swap_history[-1]
             if s['total_mb'] > 0:
-                print(f"🔄 Swap:      Used {s['used_mb']:.0f}/{s['total_mb']:.0f} MB ({s['usage']:.1f}%) | Peak {self.peak_swap_used_mb:.0f} MB")
+                print(f"🔄 Swap:      Used {s['used_mb']:.0f}/{s['total_mb']:.0f} MB ({s['usage']:.1f}%) | Peak {self.peak_swap_used_mb:.0f} MB", flush=True)
             else:
-                print("🔄 Swap:      Not enabled")
+                print("🔄 Swap:      Not enabled", flush=True)
 
         self.print_numa_real_time()
 
         if not sample_data:
-            print("No running QEMU virtual machines detected")
+            print("No running QEMU virtual machines detected", flush=True)
             return
 
         # Table header: Add hugepage memory column
         header = f"{'VM Name':<28} {'PID':<10} {'CPU%':<10} {'Memory(MB)':<12} {'Hugepage(MB)':<12} {'Status':<10}"
-        print(header)
-        print("-" * 120)
+        print(header, flush=True)
+        print("-" * width, flush=True)
 
         sorted_vms = sorted(sample_data, key=lambda x: x['cpu_percent'], reverse=True)
         for vm in sorted_vms[:15]:
@@ -2431,14 +2859,14 @@ class QEMUMonitor:
             huge_mb = vm.get('memory_huge_mb', 0.0)
             row = (f"{name:<28} {vm['pid']:<10} {vm['cpu_percent']:<10.2f} "
                    f"{vm['memory_mb']:<12.2f} {huge_mb:<12.2f} {vm['status']:<10}")
-            print(row)
+            print(row, flush=True)
 
         if len(sorted_vms) > 15:
-            print(f"... {len(sorted_vms) - 15} more virtual machines ...")
+            print(f"... {len(sorted_vms) - 15} more virtual machines ...", flush=True)
 
-        print("-" * 120)
-        print(f"Total: {len(sample_data)} virtual machines | Data points: {len(self.data)}")
-        print("Press Ctrl+C to stop monitoring")
+        print("-" * width, flush=True)
+        print(f"Total: {len(sample_data)} virtual machines | Data points: {len(self.data)}", flush=True)
+        print("Press Ctrl+C to stop monitoring", flush=True)
 
     def check_stress_process(self, stress_pattern):
         try:
@@ -2487,6 +2915,10 @@ class QEMUMonitor:
         signal.signal(signal.SIGINT, handler)
         signal.signal(signal.SIGTERM, handler)
 
+        # Force flush all previous output before entering real-time display loop
+        sys.stdout.flush()
+        time.sleep(0.5)  # Give terminal time to settle
+
         try:
             while self.running:
                 loop_start = time.time()
@@ -2530,6 +2962,10 @@ class QEMUMonitor:
 
         print(f"Starting QEMU VM monitoring...")
         print(f"Sampling interval: {interval_seconds}s | {'Run indefinitely' if not duration_seconds else f'Duration: {duration_seconds}s'}")
+
+        # Force flush all previous output before entering real-time display loop
+        sys.stdout.flush()
+        time.sleep(0.5)  # Give terminal time to settle
 
         try:
             while self.running:
@@ -2836,6 +3272,7 @@ def main():
         capture.start()
         print(f"✓ Log collection tools started in background (duration={args.time}s)")
         print(f"  ksys parse timeout: {args.ksys_parse_timeout}s")
+        sys.stdout.flush()  # Force flush before monitoring starts
 
     # Start QEMU monitoring
     if args.stress_process:

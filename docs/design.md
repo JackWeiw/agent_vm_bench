@@ -59,6 +59,7 @@
 │  - smap_tool (内存迁移)                                          │
 │  - vm_bench_lite.py (预热+测试)                                  │
 │  - qemu_monitor.py (监控)                                       │
+│  - getfre (核心频率采集)                                         │
 │  - openstack CLI / virsh (删除VM)                               │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -138,8 +139,8 @@ warmup:
 monitor:
   interval: 2                           # 监控采样间隔(秒)
   numa_nodes: [0, 1]                    # NUMA节点列表
-  enable_capture: true                  # 是否启用日志收集(devkit/ksys/ub_watch)
-  # 注意：devkit/ksys/ub_watch路径使用现有的.env文件配置，无需在此指定
+  enable_capture: true                  # 是否启用日志收集(devkit/ksys/ub_watch/smap_bw/getfre)
+  # 注意：工具路径使用.env文件配置，getfre使用getfre_config.yaml配置
 
 # 等待配置
 wait:
@@ -568,6 +569,9 @@ results/
 │   │   ├── devkit_top_down.log                 # devkit top-down日志
 │   │   ├── ksys.log                            # ksys日志
 │   │   ├── ub_watch.log                        # ub_watch日志
+│   │   ├── smap_bw.log                         # smap_bw日志
+│   │   ├── getfre_NUMA0.log                    # getfre NUMA0频率数据
+│   │   ├── getfre_NUMA1.log                    # getfre NUMA1频率数据
 │   │   └── *_report.json                       # ksys报告
 │   │
 │   └───── summary/                             # 综合分析摘要
