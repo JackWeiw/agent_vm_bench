@@ -535,6 +535,11 @@ class LogCapture:
         if not numa_cores:
             return (False, 'No valid NUMA nodes for getfre collection')
 
+        # Print command info (consistent with other tools)
+        total_cores_count = sum(len(c) for c in numa_cores.values())
+        numa_info = ', '.join([f'{n}:{len(c)}' for n, c in numa_cores.items()])
+        print(f"  [CMD] getfre: {getfre_path} {total_cores} (cores per NUMA: {numa_info})")
+
         # Create threads for each NUMA node
         self.getfre_threads = {}
         self.getfre_log_files = {}
@@ -564,11 +569,12 @@ class LogCapture:
                 self.getfre_threads[numa_id] = thread
                 thread.start()
 
-                print(f"  ✓ Started getfre collector for NUMA {numa_id} ({len(cores)} cores, interval={interval}s)")
-
             except Exception as e:
                 print(f"  ✗ Failed to start getfre for NUMA {numa_id}: {e}")
                 return (False, str(e))
+
+        # Print success message (single line, consistent with other tools)
+        print(f"  ✓ Started getfre (NUMA {','.join(map(str, numa_cores.keys()))}, {total_cores_count} cores, interval={interval}s)")
 
         return (True, None)
 

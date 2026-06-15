@@ -1,27 +1,20 @@
-# getfre 核心频率采集配置
 # Core frequency collection configuration
 
-# getfre 可执行文件路径
 # Path to getfre executable
 getfre_path: /path/to/getfre
 
-# 总物理核数 (128 或 192)
 # Total physical cores (must be 128 or 192)
 total_cores: 192
 
-# 采样间隔 (秒)
 # Sampling interval in seconds
 interval: 2
 
-# 核采样间隔 (每隔多少个核采集一个)
 # Core sampling interval
 # 1 = 采集所有核 (collect all cores)
 # 2 = 每隔 1 个核采集 (collect cores 0,2,4,6...)
 # 4 = 每隔 3 个核采集 (collect cores 0,4,8,12...)
 core_interval: 1
 
-# 要采集的 NUMA 节点列表
 # NUMA nodes to collect from
 numa_nodes:
-  - 0
   - 1
