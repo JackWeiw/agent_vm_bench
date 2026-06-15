@@ -108,7 +108,7 @@ def parse_devkit_top_down(log_path: str) -> dict:
 
         # Calculate averages
         avg_result = {'report_count': result['report_count']}
-        for key in ['cycles', 'instructions', 'ipc', 'bad_speculation', 'frontend_bound',
+        for key in ['cycles', 'instructions', 'bad_speculation', 'frontend_bound',
                     'retiring', 'backend_bound', 'l3_bound', 'mem_bound',
                     'mem_latency_bound', 'mem_bandwidth_bound']:
             if result[key]:
@@ -119,6 +119,13 @@ def parse_devkit_top_down(log_path: str) -> dict:
                 avg_result[f'{key}_avg'] = 0.0
                 avg_result[f'{key}_max'] = 0.0
                 avg_result[f'{key}_min'] = 0.0
+
+        # IPC average: correct formula is sum(instructions) / sum(cycles)
+        total_instructions = sum(result['instructions']) if result['instructions'] else 0
+        total_cycles = sum(result['cycles']) if result['cycles'] else 0
+        avg_result['ipc_avg'] = total_instructions / total_cycles if total_cycles > 0 else 0.0
+        avg_result['ipc_max'] = max(result['ipc']) if result['ipc'] else 0.0
+        avg_result['ipc_min'] = min(result['ipc']) if result['ipc'] else 0.0
 
         # Add timeline data
         avg_result['timestamps'] = result['timestamps']
