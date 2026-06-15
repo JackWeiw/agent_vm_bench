@@ -1176,16 +1176,17 @@ def parse_smap_bw(log_path: str) -> dict:
 
     Returns:
         {
-            'cycles': [{'cycle_no': int, 'total_pages': int, 'duration': float, 'bandwidth_gb_s': float}],
+            'cycles': [{'cycle_no': int, 'total_pages': int, 'duration': float,
+                       'bandwidth_gb_s': float, 'directions': {(from, to): pages}}],
             'summary': {'total_cycles': int, 'total_pages': int, 'avg_bandwidth_gb_s': float,
                         'min_bandwidth_gb_s': float, 'max_bandwidth_gb_s': float},
-            'direction_stats': [{from_node, to_node, pages}]
+            'all_directions': set of (from_node, to_node) tuples for column headers
         }
     """
     result = {
         'cycles': [],
         'summary': {},
-        'direction_stats': []
+        'all_directions': set()
     }
 
     if not os.path.exists(log_path):
@@ -1195,39 +1196,42 @@ def parse_smap_bw(log_path: str) -> dict:
         with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
 
-        # Parse each cycle report
-        # Pattern: 周期 N 迁移带宽报告
-        #   累计页数: X
-        #   持续时长: Y s
-        #   迁移带宽: Z GB/s
-        cycle_pattern = re.compile(
+        # Parse each complete cycle report block (including direction stats)
+        # Pattern matches entire cycle block from header to bandwidth
+        cycle_block_pattern = re.compile(
             r'周期\s+(\d+)\s+迁移带宽报告.*?'
             r'累计页数:\s+(\d+).*?'
             r'持续时长:\s+([\d.]+)\s+s.*?'
+            r'迁移方向统计:.*?'
+            r'(.*?)'  # Capture direction lines
+            r'─.*?'   # Separator line
             r'迁移带宽:\s+([\d.]+)\s+GB/s',
             re.DOTALL
         )
 
-        for match in cycle_pattern.finditer(content):
+        for match in cycle_block_pattern.finditer(content):
             cycle_no = int(match.group(1))
             total_pages = int(match.group(2))
             duration = float(match.group(3))
-            bandwidth = float(match.group(4))
+            direction_block = match.group(4)
+            bandwidth = float(match.group(5))
+
+            # Parse direction stats within this cycle
+            directions = {}
+            dir_pattern = re.compile(r'node\s+(\d+)\s+→\s+(\d+):\s+(\d+)\s+pages')
+            for dir_match in dir_pattern.finditer(direction_block):
+                from_node = int(dir_match.group(1))
+                to_node = int(dir_match.group(2))
+                pages = int(dir_match.group(3))
+                directions[(from_node, to_node)] = pages
+                result['all_directions'].add((from_node, to_node))
+
             result['cycles'].append({
                 'cycle_no': cycle_no,
                 'total_pages': total_pages,
                 'duration': duration,
-                'bandwidth_gb_s': bandwidth
-            })
-
-        # Parse direction stats for each cycle
-        # Pattern: node X → Y: N pages
-        dir_pattern = re.compile(r'node\s+(\d+)\s+→\s+(\d+):\s+(\d+)\s+pages')
-        for match in dir_pattern.finditer(content):
-            result['direction_stats'].append({
-                'from_node': int(match.group(1)),
-                'to_node': int(match.group(2)),
-                'pages': int(match.group(3))
+                'bandwidth_gb_s': bandwidth,
+                'directions': directions
             })
 
         # Parse global summary
@@ -1629,26 +1633,29 @@ def export_to_excel(monitor: 'QEMUMonitor', log_dir: str, numa_nodes: list = Non
                     }
                     pd.DataFrame(smap_summary).to_excel(writer, sheet_name='SMAPBW_Summary', index=False)
 
-                # Per-cycle sheet
+                # Per-cycle sheet with direction columns spread out
                 cycles = smap.get('cycles', [])
-                if cycles:
+                all_directions = smap.get('all_directions', set())
+                if cycles and all_directions:
+                    # Sort directions for consistent column order
+                    sorted_directions = sorted(all_directions)
+
+                    # Build column data
                     cycle_data = {
                         'Cycle': [c['cycle_no'] for c in cycles],
                         'Pages': [c['total_pages'] for c in cycles],
                         'Duration (s)': [c['duration'] for c in cycles],
-                        'Bandwidth (GB/s)': [c['bandwidth_gb_s'] for c in cycles]
+                        'Bandwidth (GB/s)': [c['bandwidth_gb_s'] for c in cycles],
                     }
-                    pd.DataFrame(cycle_data).to_excel(writer, sheet_name='SMAPBW_Cycles', index=False)
 
-                # Direction stats sheet
-                dir_stats = smap.get('direction_stats', [])
-                if dir_stats:
-                    dir_data = {
-                        'From Node': [d['from_node'] for d in dir_stats],
-                        'To Node': [d['to_node'] for d in dir_stats],
-                        'Pages': [d['pages'] for d in dir_stats]
-                    }
-                    pd.DataFrame(dir_data).to_excel(writer, sheet_name='SMAPBW_Directions', index=False)
+                    # Add direction columns (e.g., "N0→N1_pages")
+                    for from_node, to_node in sorted_directions:
+                        col_name = f"N{from_node}→N{to_node}_pages"
+                        cycle_data[col_name] = [
+                            c['directions'].get((from_node, to_node), 0) for c in cycles
+                        ]
+
+                    pd.DataFrame(cycle_data).to_excel(writer, sheet_name='SMAPBW_Cycles', index=False)
 
             # ========== Sheet 11: Raw VM Data Time Series ==========
             if monitor.data:
