@@ -14,7 +14,26 @@ For package-level import:
     from vm_bench_lite import Config, VMState
 """
 
-from vm_bench_lite.cli import main
+# Export commonly used classes for backward compatibility
+from .config import Config
+from .models import (
+    OOMType,
+    QAMetrics,
+    BrowserMetrics,
+    StressMetrics,
+    VMHealth,
+    VMState,
+)
 
-if __name__ == '__main__':
-    main()
+# Package version
+__version__ = '2.0.0'
+
+__all__ = [
+    'Config',
+    'OOMType',
+    'QAMetrics',
+    'BrowserMetrics',
+    'StressMetrics',
+    'VMHealth',
+    'VMState',
+]
