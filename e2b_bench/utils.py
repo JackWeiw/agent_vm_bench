@@ -1,7 +1,7 @@
 """
-工具函数模块
+Utility Functions Module
 
-提供日志格式化、时间处理、百分位计算等辅助函数
+Provides logging formatting, time handling, percentile calculation and other helper functions
 """
 
 import logging
@@ -11,7 +11,7 @@ from typing import List, Dict
 
 
 def setup_logging(level: int = logging.INFO) -> None:
-    """设置日志格式"""
+    """Setup logging format"""
     logging.basicConfig(
         level=level,
         format='%(asctime)s [%(levelname)s] %(message)s',
@@ -20,12 +20,12 @@ def setup_logging(level: int = logging.INFO) -> None:
 
 
 def format_timestamp(ts: float) -> str:
-    """格式化时间戳为 HH:MM:SS"""
+    """Format timestamp to HH:MM:SS"""
     return datetime.fromtimestamp(ts).strftime("%H:%M:%S")
 
 
 def format_duration(seconds: float) -> str:
-    """格式化时长为易读格式"""
+    """Format duration to readable format"""
     if seconds < 60:
         return f"{seconds:.1f}s"
     elif seconds < 3600:
@@ -39,9 +39,9 @@ def format_duration(seconds: float) -> str:
 
 
 def calc_percentiles(values: List[float]) -> Dict[str, float]:
-    """计算百分位统计
+    """Calculate percentile statistics
 
-    返回: {"min": x, "max": x, "avg": x, "p50": x, "p95": x, "p99": x}
+    Returns: {"min": x, "max": x, "avg": x, "p50": x, "p95": x, "p99": x}
     """
     if not values:
         return {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
@@ -65,7 +65,7 @@ def calc_percentiles(values: List[float]) -> Dict[str, float]:
 
 
 def calc_p99(values: List[float]) -> float:
-    """计算P99延迟"""
+    """Calculate P99 latency"""
     if not values:
         return 0.0
     sorted_vals = sorted(values)

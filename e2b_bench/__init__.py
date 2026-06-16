@@ -1,14 +1,14 @@
 """
-E2B Sandbox Bench - E2B沙箱批量性能测试套件
+E2B Sandbox Bench - E2B Sandbox Batch Performance Testing Suite
 
-功能：
-- 批量创建E2B沙箱，收集启动性能（时间、成功率、P50/P95/P99延迟）
-- 执行浏览器任务，收集执行性能（延迟、吞吐量）
-- 监控沙箱存活情况
-- 支持分批启动和随机任务间隔
-- 实时统计快照 + 最终报告
+Features:
+- Batch create E2B sandboxes, collect startup performance (time, success rate, P50/P95/P99 latency)
+- Execute browser tasks, collect execution performance (latency, throughput)
+- Monitor sandbox alive status
+- Support batched startup and random task interval
+- Real-time statistics snapshot + final report
 
-使用示例：
+Usage Examples:
     python -m e2b_bench --config config/e2b_bench.yaml
     python -m e2b_bench --config config/e2b_bench.yaml --total 50 --duration 300
 """

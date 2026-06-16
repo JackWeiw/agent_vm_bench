@@ -1,7 +1,7 @@
 """
-E2B Sandbox Bench - 模块入口
+E2B Sandbox Bench - Module Entry Point
 
-支持 python -m e2b_bench 运行
+Supports python -m e2b_bench execution
 """
 
 from .bench import main

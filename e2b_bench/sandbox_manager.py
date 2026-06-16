@@ -1,9 +1,9 @@
 """
-沙箱管理模块
+Sandbox Management Module
 
-负责E2B沙箱的创建、健康检查、批量控制和关闭
-保留沙箱句柄供后续任务执行使用
-支持端口检查（18789 openclaw-gateway + 11436 llama-server）
+Responsible for E2B sandbox creation, health check, batch control and termination
+Preserves sandbox handle for subsequent task execution
+Supports port check (18789 openclaw-gateway + 11436 llama-server)
 """
 
 import time
@@ -24,6 +24,7 @@ except ImportError:
                     def run(self, cmd, timeout=60, user="root"):
                         class Result:
                             exit_code = 0
+                            stdout = ""
                         return Result()
                 commands = MockCommands()
 
@@ -38,21 +39,21 @@ except ImportError:
 from .config import Config
 from .schemas import SandboxState, SandboxStatus
 
-# 需要检查的端口列表
+# Required ports to check
 REQUIRED_PORTS = [
     (18789, "openclaw-gateway"),
     (11436, "llama-server"),
 ]
 
-# 端口检查最大等待时间（秒）
+# Port check maximum wait time (seconds)
 PORT_CHECK_MAX_WAIT = 300
 
-# 端口检查间隔（秒）
+# Port check interval (seconds)
 PORT_CHECK_INTERVAL = 5
 
 
 class SandboxManager:
-    """沙箱生命周期管理"""
+    """Sandbox lifecycle management"""
 
     def __init__(self, config: Config, stop_event: Event):
         self.config = config
@@ -60,13 +61,13 @@ class SandboxManager:
         self.sandbox_states: Dict[int, SandboxState] = {}
 
     def create_all(self) -> Dict[int, SandboxState]:
-        """批量创建沙箱
+        """Batch create sandboxes
 
-        根据batch配置决定策略：
-        - 有batch_size：分批创建，避免资源突增
-        - 无配置：全并发创建，测试极限性能
+        Strategy based on batch config:
+        - With batch_size: batched creation to avoid resource spike
+        - Without config: full concurrent creation for max performance test
 
-        返回: {sandbox_id: SandboxState}
+        Returns: {sandbox_id: SandboxState}
         """
         if self.config.batch_size and self.config.batch_size > 0:
             return self._create_batched()
@@ -74,7 +75,7 @@ class SandboxManager:
             return self._create_concurrent()
 
     def _create_batched(self) -> Dict[int, SandboxState]:
-        """分批创建沙箱"""
+        """Batched sandbox creation"""
         total = self.config.total_count
         batch_size = self.config.batch_size
         batch_count = self.config.batch_count
@@ -96,11 +97,11 @@ class SandboxManager:
 
             print(f"\n[Batch {batch_id}/{batch_count-1}] Creating sandboxes {start_idx+1}-{end_idx}")
 
-            # 并发创建当前批次
+            # Concurrent creation of current batch
             batch_states = self._create_batch_concurrent(batch_id, start_idx, end_idx)
             self.sandbox_states.update(batch_states)
 
-            # 批次间等待（最后一批不等待）
+            # Wait between batches (last batch no wait)
             if batch_id < batch_count - 1 and self.config.batch_interval:
                 print(f"Waiting {self.config.batch_interval}s before next batch...")
                 time.sleep(self.config.batch_interval)
@@ -108,7 +109,7 @@ class SandboxManager:
         return self.sandbox_states
 
     def _create_batch_concurrent(self, batch_id: int, start: int, end: int) -> Dict[int, SandboxState]:
-        """并发创建一个批次的沙箱"""
+        """Concurrent creation of one batch"""
         states: Dict[int, SandboxState] = {}
 
         with ThreadPoolExecutor(max_workers=end - start) as executor:
@@ -128,10 +129,10 @@ class SandboxManager:
                 try:
                     result = future.result()
                     if result['success']:
-                        # sandbox.create成功，开始端口检查
+                        # sandbox.create succeeded, start port check
                         print(f"[Sandbox{sandbox_id}] Created in {result['create_elapsed']:.1f}s, checking ports...")
 
-                        # 端口检查
+                        # Port check
                         port_result = self._check_ports(state)
                         if port_result['success']:
                             state.creation_metrics.status = SandboxStatus.PORT_READY
@@ -154,7 +155,7 @@ class SandboxManager:
         return {i + 1: self.sandbox_states[i + 1] for i in range(start, end)}
 
     def _create_concurrent(self) -> Dict[int, SandboxState]:
-        """全并发创建所有沙箱"""
+        """Full concurrent creation of all sandboxes"""
         total = self.config.total_count
 
         print(f"\n{'='*60}")
@@ -165,12 +166,12 @@ class SandboxManager:
         return self._create_batch_concurrent(batch_id=0, start=0, end=total)
 
     def _create_single(self, state: SandboxState) -> Dict[str, any]:
-        """创建单个沙箱
+        """Create single sandbox
 
-        关键：保留沙箱句柄到 state.sandbox_obj
-        sandbox.create成功即记录时间，不等待端口
+        Key: Preserve sandbox handle in state.sandbox_obj
+        Record time when sandbox.create succeeds, no port waiting
 
-        返回: {'success': bool, 'create_elapsed': float, 'error': str}
+        Returns: {'success': bool, 'create_elapsed': float, 'error': str}
         """
         state.creation_metrics.status = SandboxStatus.CREATING
         state.creation_metrics.submit_time = time.time()
@@ -180,7 +181,7 @@ class SandboxManager:
                 self.config.template,
                 timeout=self.config.create_timeout
             )
-            # 保留沙箱句柄
+            # Preserve sandbox handle
             state.sandbox_obj = sbx
             state.creation_metrics.create_ready_time = time.time()
             state.creation_metrics.create_elapsed = state.creation_metrics.create_ready_time - state.creation_metrics.submit_time
@@ -200,11 +201,11 @@ class SandboxManager:
             }
 
     def _check_ports(self, state: SandboxState) -> Dict[str, any]:
-        """检查沙箱端口是否就绪
+        """Check if sandbox ports are ready
 
-        检查18789 (openclaw-gateway) 和 11436 (llama-server)
+        Check 18789 (openclaw-gateway) and 11436 (llama-server)
 
-        返回: {'success': bool, 'wait_elapsed': float, 'error': str}
+        Returns: {'success': bool, 'wait_elapsed': float, 'error': str}
         """
         sbx = state.sandbox_obj
         if not sbx:
@@ -229,7 +230,7 @@ class SandboxManager:
                         ready_ports.add(port)
                         print(f"[Sandbox{state.sandbox_id}] Port {port} ({name}) is listening")
                 except Exception as e:
-                    pass  # 继续检查其他端口
+                    pass  # Continue checking other ports
 
             if len(ready_ports) == len(REQUIRED_PORTS):
                 wait_elapsed = time.time() - start_time
@@ -242,7 +243,7 @@ class SandboxManager:
 
             time.sleep(PORT_CHECK_INTERVAL)
 
-        # 超时，返回缺失的端口信息
+        # Timeout, return missing ports info
         missing_ports = [f"{p}:{n}" for p, n in REQUIRED_PORTS if p not in ready_ports]
         wait_elapsed = time.time() - start_time
         return {
@@ -252,7 +253,7 @@ class SandboxManager:
         }
 
     def check_alive(self, state: SandboxState) -> bool:
-        """检查沙箱是否存活"""
+        """Check if sandbox is alive"""
         sbx = state.sandbox_obj
         if not sbx or not state.is_alive:
             return False
@@ -263,7 +264,7 @@ class SandboxManager:
             return False
 
     def kill_all(self) -> None:
-        """关闭所有沙箱（使用kill方法）"""
+        """Kill all sandboxes"""
         print("\nKilling all sandboxes...")
         killed_count = 0
         for state in self.sandbox_states.values():

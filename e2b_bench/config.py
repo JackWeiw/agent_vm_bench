@@ -1,7 +1,7 @@
 """
-配置管理模块
+Configuration Management Module
 
-支持YAML配置文件加载、命令行参数覆盖、E2B环境变量设置
+Supports YAML config file loading, CLI argument override, E2B environment variable setup
 """
 
 import os
@@ -13,40 +13,40 @@ from typing import List, Optional, Dict, Any
 
 @dataclass
 class Config:
-    """测试配置"""
-    # E2B环境变量
+    """Test configuration"""
+    # E2B environment variables
     e2b_access_token: str = ""
     e2b_api_key: str = ""
     e2b_domain: str = "e2b.app"
     e2b_api_url: str = "http://localhost:3000"
     e2b_http_ssl: str = "false"
 
-    # 沙箱配置
+    # Sandbox configuration
     template: str = "openclaw-browser-v1"
     create_timeout: int = 86400
     total_count: int = 100
 
-    # 批量控制（None表示全并发）
+    # Batch control (None means full concurrent)
     batch_size: Optional[int] = 20
     batch_interval: Optional[int] = 30
 
-    # 浏览器任务
+    # Browser task
     browser_urls: List[str] = field(default_factory=lambda: ["http://192.168.110.10:8080/Weibo.html"])
     browser_timeout: int = 200
     browser_interval_min: float = 0.5
     browser_interval_max: float = 3.0
 
-    # 测试运行
+    # Test run
     test_duration: int = 600
     stats_interval: int = 10
 
-    # 报告
+    # Report
     output_dir: str = "results/e2b"
     filename_prefix: str = "e2b_bench"
 
     @classmethod
     def load_from_yaml(cls, path: str) -> 'Config':
-        """从YAML文件加载配置"""
+        """Load configuration from YAML file"""
         with open(path, 'r', encoding='utf-8') as f:
             data = yaml.safe_load(f)
 
@@ -54,7 +54,7 @@ class Config:
 
     @classmethod
     def _from_dict(cls, data: Dict[str, Any]) -> 'Config':
-        """从字典构建Config"""
+        """Build Config from dictionary"""
         e2b_env = data.get('e2b_env', {})
         sandbox = data.get('sandbox', {})
         batch = data.get('batch', {})
@@ -90,8 +90,7 @@ class Config:
 
     @classmethod
     def merge_with_args(cls, yaml_config: 'Config', args: argparse.Namespace) -> 'Config':
-        """合并命令行参数（命令行优先级更高）"""
-        # 命令行参数覆盖YAML配置
+        """Merge CLI arguments (CLI has higher priority)"""
         return cls(
             e2b_access_token=args.e2b_access_token if args.e2b_access_token else yaml_config.e2b_access_token,
             e2b_api_key=args.e2b_api_key if args.e2b_api_key else yaml_config.e2b_api_key,
@@ -120,7 +119,7 @@ class Config:
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> 'Config':
-        """仅从命令行参数构建Config（无YAML文件时）"""
+        """Build Config from CLI arguments only (no YAML file)"""
         return cls(
             e2b_access_token=args.e2b_access_token or "",
             e2b_api_key=args.e2b_api_key or "",
@@ -148,7 +147,7 @@ class Config:
         )
 
     def setup_e2b_env(self) -> None:
-        """设置E2B SDK环境变量"""
+        """Setup E2B SDK environment variables"""
         if self.e2b_access_token:
             os.environ["E2B_ACCESS_TOKEN"] = self.e2b_access_token
         if self.e2b_api_key:
@@ -162,7 +161,7 @@ class Config:
 
     @property
     def batch_count(self) -> int:
-        """计算批次数量"""
+        """Calculate batch count"""
         if not self.batch_size:
-            return 1  # 全并发视为1批
+            return 1  # Full concurrent treated as 1 batch
         return (self.total_count + self.batch_size - 1) // self.batch_size

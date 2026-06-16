@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-E2B Sandbox Bench - 主入口
+E2B Sandbox Bench - Main Entry Point
 
-整合所有组件，运行测试流程：
-创建沙箱 → 启动统计 → 启动任务 → 运行时长 → 停止 → 报告
+Integrates all components, runs test workflow:
+Create sandboxes -> Start stats -> Start tasks -> Run duration -> Stop -> Report
 """
 
 import time
@@ -18,15 +18,15 @@ from .schemas import SandboxStatus
 
 
 def run_benchmark(config: Config) -> dict:
-    """运行E2B沙箱性能测试
+    """Run E2B sandbox performance test
 
     Args:
-        config: 测试配置对象
+        config: Test configuration object
 
     Returns:
         {'report': str, 'filepath': str}
     """
-    # 1. 设置E2B环境变量
+    # 1. Setup E2B environment variables
     config.setup_e2b_env()
 
     print("=" * 80)
@@ -41,10 +41,10 @@ def run_benchmark(config: Config) -> dict:
     print(f"  Duration: {config.test_duration}s")
     print("=" * 80)
 
-    # 停止信号
+    # Stop signal
     stop_event = threading.Event()
 
-    # 2. 创建沙箱
+    # 2. Create sandboxes
     print("\n[Phase 1] Creating sandboxes...")
     sandbox_manager = SandboxManager(config, stop_event)
     sandbox_states = sandbox_manager.create_all()
@@ -59,33 +59,33 @@ def run_benchmark(config: Config) -> dict:
 
     print(f"\nSandboxes ready for testing: {created_count}/{config.total_count}")
 
-    # 3. 启动统计收集
+    # 3. Start statistics collection
     print("\n[Phase 2] Starting stats collector...")
     stats_collector = StatsCollector(config, sandbox_states)
     stats_collector.start()
 
-    # 4. 启动任务执行
+    # 4. Start task execution
     print("\n[Phase 3] Starting browser tasks...")
     task_manager = TaskManager(config, sandbox_states, stop_event)
     task_manager.start_all()
 
-    # 5. 运行指定时长
+    # 5. Run for specified duration
     print(f"\n[Phase 4] Running for {config.test_duration} seconds...")
     try:
         time.sleep(config.test_duration)
     except KeyboardInterrupt:
         print("\nUser interrupt, stopping...")
 
-    # 6. 停止所有组件
+    # 6. Stop all components
     print("\n[Phase 5] Stopping...")
     stop_event.set()
     task_manager.wait_all(timeout=5)
     stats_collector.stop()
     sandbox_manager.kill_all()
 
-    time.sleep(0.5)  # 让守护线程完成最后的输出
+    time.sleep(0.5)  # Allow daemon threads to complete output
 
-    # 7. 生成并保存报告
+    # 7. Generate and save report
     report = stats_collector.generate_report()
     print("\n" + report)
 
@@ -96,42 +96,42 @@ def run_benchmark(config: Config) -> dict:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    """构建命令行参数解析器"""
+    """Build CLI argument parser"""
     parser = argparse.ArgumentParser(
-        description='E2B Sandbox Bench - E2B沙箱批量性能测试工具'
+        description='E2B Sandbox Bench - E2B Sandbox Batch Performance Testing Tool'
     )
 
-    # 配置文件
+    # Configuration file
     parser.add_argument('--config', type=str, default=None,
                         help='YAML configuration file path')
 
-    # E2B环境变量
+    # E2B environment variables
     parser.add_argument('--e2b-access-token', type=str, help='E2B access token')
     parser.add_argument('--e2b-api-key', type=str, help='E2B API key')
     parser.add_argument('--e2b-domain', type=str, help='E2B domain')
     parser.add_argument('--e2b-api-url', type=str, help='E2B API URL')
     parser.add_argument('--e2b-http-ssl', type=str, help='E2B HTTP SSL setting')
 
-    # 沙箱配置
+    # Sandbox configuration
     parser.add_argument('--template', type=str, help='E2B template name')
     parser.add_argument('--total', type=int, help='Total sandbox count')
     parser.add_argument('--create-timeout', type=int, help='Sandbox creation timeout')
 
-    # 批量控制
+    # Batch control
     parser.add_argument('--batch-size', type=int, help='Sandboxes per batch (None = full concurrent)')
     parser.add_argument('--batch-interval', type=int, help='Batch interval seconds')
 
-    # 浏览器任务
+    # Browser task
     parser.add_argument('--browser-url', type=str, action='append', help='Browser URL (can specify multiple)')
     parser.add_argument('--browser-timeout', type=int, help='Browser task timeout')
     parser.add_argument('--browser-interval-min', type=float, help='Task interval minimum')
     parser.add_argument('--browser-interval-max', type=float, help='Task interval maximum')
 
-    # 测试运行
+    # Test run
     parser.add_argument('--duration', type=int, help='Test duration seconds')
     parser.add_argument('--stats-interval', type=int, help='Stats snapshot interval')
 
-    # 报告
+    # Report
     parser.add_argument('--output-dir', type=str, help='Report output directory')
     parser.add_argument('--filename-prefix', type=str, help='Report filename prefix')
 
@@ -139,24 +139,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    """命令行入口"""
+    """CLI entry point"""
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    # 加载配置
+    # Load configuration
     if args.config:
         config = Config.load_from_yaml(args.config)
         config = Config.merge_with_args(config, args)
     else:
-        # 无配置文件时，使用命令行参数
+        # Without config file, use CLI arguments
         config = Config.from_args(args)
 
-    # 验证必填参数
+    # Validate required parameters
     if not config.e2b_access_token and not args.config:
         print("Error: E2B access token is required. Use --e2b-access-token or --config")
         return
 
-    # 运行测试
+    # Run test
     run_benchmark(config)
 
 

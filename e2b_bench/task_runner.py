@@ -1,8 +1,8 @@
 """
-任务执行模块
+Task Execution Module
 
-负责浏览器任务的执行、结果收集和异常处理
-每个沙箱一个独立线程
+Responsible for browser task execution, result collection and exception handling
+Each sandbox has an independent thread
 """
 
 import time
@@ -15,7 +15,7 @@ from .schemas import SandboxState, SandboxStatus
 
 
 class BrowserTaskRunner(threading.Thread):
-    """浏览器任务执行器（每个沙箱一个独立线程）"""
+    """Browser task runner (one independent thread per sandbox)"""
 
     def __init__(
         self,
@@ -30,8 +30,8 @@ class BrowserTaskRunner(threading.Thread):
         self.consecutive_errors = 0
 
     def run(self) -> None:
-        """任务执行主循环"""
-        # 等待沙箱端口就绪
+        """Task execution main loop"""
+        # Wait for sandbox ports ready
         while not self.stop_event.is_set():
             if self.state.creation_metrics.status == SandboxStatus.PORT_READY:
                 break
@@ -40,21 +40,21 @@ class BrowserTaskRunner(threading.Thread):
                 return
             time.sleep(0.5)
 
-        # 执行浏览器任务循环
+        # Browser task execution loop
         while not self.stop_event.is_set():
             if not self.state.is_alive:
                 print(f"[Sandbox{self.state.sandbox_id}] Sandbox offline, stopping tasks")
                 break
 
-            # 执行单个浏览器任务
+            # Execute single browser task
             success, latency = self._run_single_task()
 
-            # 更新指标
+            # Update metrics
             timeout = latency > self.config.browser_timeout
             self.state.browser_metrics.add(latency, success and not timeout, timeout)
             self.state.last_task_time = time.time()
 
-            # 错误处理
+            # Error handling
             if success and not timeout:
                 self.consecutive_errors = 0
             else:
@@ -64,7 +64,7 @@ class BrowserTaskRunner(threading.Thread):
                     print(f"[Sandbox{self.state.sandbox_id}] Marked offline (3 consecutive failures)")
                     break
 
-            # 随机间隔，避免请求突增
+            # Random interval to avoid request spike
             sleep_time = random.uniform(
                 self.config.browser_interval_min,
                 self.config.browser_interval_max
@@ -74,21 +74,21 @@ class BrowserTaskRunner(threading.Thread):
         print(f"[Sandbox{self.state.sandbox_id}] Task runner ended")
 
     def _run_single_task(self) -> Tuple[bool, float]:
-        """执行单个浏览器任务
+        """Execute single browser task
 
-        使用 state.sandbox_obj 句柄执行命令
+        Use state.sandbox_obj handle to execute command
 
-        返回: (success, latency_seconds)
+        Returns: (success, latency_seconds)
         """
         sbx = self.state.sandbox_obj
         if not sbx:
             return False, 0.0
 
-        # 获取当前URL（轮询方式）
+        # Get current URL (round-robin)
         url_idx = self.state.browser_metrics.total_tasks % len(self.config.browser_urls)
         url = self.config.browser_urls[url_idx]
 
-        # 构建浏览器命令
+        # Build browser command
         cmd = f"openclaw browser --browser-profile openclaw open '{url}'"
 
         start_time = time.perf_counter()
@@ -109,7 +109,7 @@ class BrowserTaskRunner(threading.Thread):
 
 
 class TaskManager:
-    """任务管理器 - 管理所有沙箱的任务执行线程"""
+    """Task manager - manages all sandbox task execution threads"""
 
     def __init__(
         self,
@@ -123,7 +123,7 @@ class TaskManager:
         self.runners: List[BrowserTaskRunner] = []
 
     def start_all(self) -> None:
-        """启动所有PORT_READY沙箱的任务执行线程"""
+        """Start task execution threads for all PORT_READY sandboxes"""
         active_count = 0
         for state in self.sandbox_states.values():
             if state.creation_metrics.status == SandboxStatus.PORT_READY:
@@ -135,6 +135,6 @@ class TaskManager:
         print(f"\nStarted {active_count} task runners")
 
     def wait_all(self, timeout: float = 5.0) -> None:
-        """等待所有任务线程结束"""
+        """Wait for all task threads to end"""
         for runner in self.runners:
             runner.join(timeout=timeout)
