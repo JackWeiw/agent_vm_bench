@@ -51,13 +51,13 @@ def run_benchmark(config: Config) -> dict:
 
     created_count = sum(
         1 for s in sandbox_states.values()
-        if s.creation_metrics.status == SandboxStatus.ACTIVE
+        if s.creation_metrics.status == SandboxStatus.PORT_READY
     )
     if created_count == 0:
-        print("No sandboxes created successfully, exiting.")
+        print("No sandboxes ready for testing, exiting.")
         return {}
 
-    print(f"\nSuccessfully created: {created_count}/{config.total_count} sandboxes")
+    print(f"\nSandboxes ready for testing: {created_count}/{config.total_count}")
 
     # 3. 启动统计收集
     print("\n[Phase 2] Starting stats collector...")
@@ -81,7 +81,7 @@ def run_benchmark(config: Config) -> dict:
     stop_event.set()
     task_manager.wait_all(timeout=5)
     stats_collector.stop()
-    sandbox_manager.close_all()
+    sandbox_manager.kill_all()
 
     time.sleep(0.5)  # 让守护线程完成最后的输出
 

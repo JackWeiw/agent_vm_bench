@@ -2,6 +2,7 @@
 统计收集模块
 
 负责实时快照收集、终端输出和最终报告生成
+包含详细的沙箱创建时间、端口等待时间、浏览器任务时间统计
 """
 
 import time
@@ -53,19 +54,32 @@ class StatsCollector:
         # 沙箱状态统计
         active_count = sum(
             1 for s in self.sandbox_states.values()
-            if s.creation_metrics.status == SandboxStatus.ACTIVE and s.is_alive
+            if s.creation_metrics.status == SandboxStatus.PORT_READY and s.is_alive
         )
         offline_count = sum(
             1 for s in self.sandbox_states.values()
-            if not s.is_alive or s.creation_metrics.status in (SandboxStatus.FAILED, SandboxStatus.OFFLINE)
+            if not s.is_alive or s.creation_metrics.status in (SandboxStatus.FAILED, SandboxStatus.PORT_FAILED, SandboxStatus.OFFLINE)
         )
 
-        # 创建性能统计（仅计算成功的沙箱）
-        creation_times = [
-            s.creation_metrics.elapsed for s in self.sandbox_states.values()
-            if s.creation_metrics.status == SandboxStatus.ACTIVE and s.creation_metrics.elapsed > 0
+        # 创建性能统计（仅计算端口就绪的沙箱）
+        create_times = [
+            s.creation_metrics.create_elapsed for s in self.sandbox_states.values()
+            if s.creation_metrics.status == SandboxStatus.PORT_READY and s.creation_metrics.create_elapsed > 0
         ]
-        creation_stats = calc_percentiles(creation_times)
+        port_wait_times = [
+            s.creation_metrics.port_wait_elapsed for s in self.sandbox_states.values()
+            if s.creation_metrics.status == SandboxStatus.PORT_READY and s.creation_metrics.port_wait_elapsed > 0
+        ]
+        total_times = [
+            s.creation_metrics.total_elapsed for s in self.sandbox_states.values()
+            if s.creation_metrics.status == SandboxStatus.PORT_READY and s.creation_metrics.total_elapsed > 0
+        ]
+
+        creation_stats = {
+            "create": calc_percentiles(create_times),
+            "port_wait": calc_percentiles(port_wait_times),
+            "total": calc_percentiles(total_times),
+        }
 
         # 浏览器任务统计
         browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
@@ -101,12 +115,14 @@ class StatsCollector:
         print(f"\n{'─'*70}")
         print(f"T+{snapshot.elapsed:6.1f}s  Status Snapshot")
         print(f"{'─'*70}")
-        print(f"  Sandboxes: {snapshot.active_sandboxes:3d} active / {snapshot.offline_sandboxes:2d} offline")
+        print(f"  Sandboxes: {snapshot.active_sandboxes:3d} ready / {snapshot.offline_sandboxes:2d} offline")
 
-        if snapshot.creation_stats["avg"] > 0:
-            print(f"  Creation:  avg={snapshot.creation_stats['avg']:.1f}s  "
-                  f"p50={snapshot.creation_stats['p50']:.1f}s  "
-                  f"p99={snapshot.creation_stats['p99']:.1f}s")
+        if snapshot.creation_stats.get("create") and snapshot.creation_stats["create"]["avg"] > 0:
+            print(f"  Create:    avg={snapshot.creation_stats['create']['avg']:.1f}s  "
+                  f"p99={snapshot.creation_stats['create']['p99']:.1f}s")
+        if snapshot.creation_stats.get("port_wait") and snapshot.creation_stats["port_wait"]["avg"] > 0:
+            print(f"  PortWait:  avg={snapshot.creation_stats['port_wait']['avg']:.1f}s  "
+                  f"p99={snapshot.creation_stats['port_wait']['p99']:.1f}s")
 
         print(f"  Browser:   {snapshot.browser_success:3d}/{snapshot.browser_total:3d}  "
               f"avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s")
@@ -131,34 +147,76 @@ class StatsCollector:
         lines.append(f"  Test Duration:   {self.config.test_duration}s")
 
         # 沙箱状态统计
-        active_states = [
+        ready_states = [
             s for s in self.sandbox_states.values()
-            if s.creation_metrics.status == SandboxStatus.ACTIVE
+            if s.creation_metrics.status == SandboxStatus.PORT_READY
         ]
         failed_states = [
             s for s in self.sandbox_states.values()
             if s.creation_metrics.status == SandboxStatus.FAILED
+        ]
+        port_failed_states = [
+            s for s in self.sandbox_states.values()
+            if s.creation_metrics.status == SandboxStatus.PORT_FAILED
         ]
         offline_states = [
             s for s in self.sandbox_states.values() if not s.is_alive
         ]
 
         lines.append(f"\n[Sandbox Status]")
-        lines.append(f"  Created:   {len(active_states)} / {len(self.sandbox_states)}")
-        lines.append(f"  Failed:    {len(failed_states)}")
-        lines.append(f"  Offline:   {len(offline_states)} (during test)")
+        lines.append(f"  Created (API):       {len([s for s in self.sandbox_states.values() if s.creation_metrics.status not in (SandboxStatus.PENDING, SandboxStatus.CREATING)])} / {len(self.sandbox_states)}")
+        lines.append(f"  Ports Ready:         {len(ready_states)} / {len(self.sandbox_states)}")
+        lines.append(f"  Create Failed:       {len(failed_states)}")
+        lines.append(f"  Port Check Failed:   {len(port_failed_states)}")
+        lines.append(f"  Offline (runtime):   {len(offline_states)}")
         if failed_states:
-            lines.append(f"  Failed IDs:  {[s.sandbox_id for s in failed_states[:10]]}")
+            lines.append(f"  Create Failed IDs:   {[s.sandbox_id for s in failed_states[:10]]}")
+        if port_failed_states:
+            lines.append(f"  Port Failed IDs:     {[s.sandbox_id for s in port_failed_states[:10]]}")
         if offline_states:
-            lines.append(f"  Offline IDs: {[s.sandbox_id for s in offline_states[:10]]}")
+            lines.append(f"  Offline IDs:         {[s.sandbox_id for s in offline_states[:10]]}")
 
-        # 创建性能统计
-        creation_times = [
-            s.creation_metrics.elapsed for s in active_states if s.creation_metrics.elapsed > 0
+        # sandbox.create 性能统计（仅计算创建成功的沙箱）
+        create_times = [
+            s.creation_metrics.create_elapsed for s in self.sandbox_states.values()
+            if s.creation_metrics.create_elapsed > 0 and s.creation_metrics.status not in (SandboxStatus.FAILED, SandboxStatus.PENDING, SandboxStatus.CREATING)
         ]
-        if creation_times:
-            stats = calc_percentiles(creation_times)
-            lines.append(f"\n[Creation Performance]")
+        if create_times:
+            stats = calc_percentiles(create_times)
+            lines.append(f"\n[Sandbox.create Performance]")
+            lines.append(f"  (sandbox.create API调用时间，不含端口等待)")
+            lines.append(f"  Min:  {stats['min']:.1f}s")
+            lines.append(f"  Max:  {stats['max']:.1f}s")
+            lines.append(f"  Avg:  {stats['avg']:.1f}s")
+            lines.append(f"  P50:  {stats['p50']:.1f}s")
+            lines.append(f"  P95:  {stats['p95']:.1f}s")
+            lines.append(f"  P99:  {stats['p99']:.1f}s")
+
+        # 端口等待性能统计
+        port_wait_times = [
+            s.creation_metrics.port_wait_elapsed for s in ready_states
+            if s.creation_metrics.port_wait_elapsed > 0
+        ]
+        if port_wait_times:
+            stats = calc_percentiles(port_wait_times)
+            lines.append(f"\n[Port Check Wait Performance]")
+            lines.append(f"  (等待18789 openclaw-gateway + 11436 llama-server端口就绪)")
+            lines.append(f"  Min:  {stats['min']:.1f}s")
+            lines.append(f"  Max:  {stats['max']:.1f}s")
+            lines.append(f"  Avg:  {stats['avg']:.1f}s")
+            lines.append(f"  P50:  {stats['p50']:.1f}s")
+            lines.append(f"  P95:  {stats['p95']:.1f}s")
+            lines.append(f"  P99:  {stats['p99']:.1f}s")
+
+        # 总启动时间（create + port_wait）
+        total_times = [
+            s.creation_metrics.total_elapsed for s in ready_states
+            if s.creation_metrics.total_elapsed > 0
+        ]
+        if total_times:
+            stats = calc_percentiles(total_times)
+            lines.append(f"\n[Total Startup Performance]")
+            lines.append(f"  (sandbox.create + 端口等待)")
             lines.append(f"  Min:  {stats['min']:.1f}s")
             lines.append(f"  Max:  {stats['max']:.1f}s")
             lines.append(f"  Avg:  {stats['avg']:.1f}s")

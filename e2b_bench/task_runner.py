@@ -31,11 +31,11 @@ class BrowserTaskRunner(threading.Thread):
 
     def run(self) -> None:
         """任务执行主循环"""
-        # 等待沙箱创建完成
+        # 等待沙箱端口就绪
         while not self.stop_event.is_set():
-            if self.state.creation_metrics.status == SandboxStatus.ACTIVE:
+            if self.state.creation_metrics.status == SandboxStatus.PORT_READY:
                 break
-            if self.state.creation_metrics.status in (SandboxStatus.FAILED, SandboxStatus.OFFLINE, SandboxStatus.CLOSED):
+            if self.state.creation_metrics.status in (SandboxStatus.FAILED, SandboxStatus.PORT_FAILED, SandboxStatus.OFFLINE, SandboxStatus.KILLED):
                 print(f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}")
                 return
             time.sleep(0.5)
@@ -123,10 +123,10 @@ class TaskManager:
         self.runners: List[BrowserTaskRunner] = []
 
     def start_all(self) -> None:
-        """启动所有ACTIVE沙箱的任务执行线程"""
+        """启动所有PORT_READY沙箱的任务执行线程"""
         active_count = 0
         for state in self.sandbox_states.values():
-            if state.creation_metrics.status == SandboxStatus.ACTIVE:
+            if state.creation_metrics.status == SandboxStatus.PORT_READY:
                 runner = BrowserTaskRunner(state, self.config, self.stop_event)
                 self.runners.append(runner)
                 runner.start()

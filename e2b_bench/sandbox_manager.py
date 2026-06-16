@@ -3,6 +3,7 @@
 
 负责E2B沙箱的创建、健康检查、批量控制和关闭
 保留沙箱句柄供后续任务执行使用
+支持端口检查（18789 openclaw-gateway + 11436 llama-server）
 """
 
 import time
@@ -18,6 +19,7 @@ except ImportError:
         @staticmethod
         def create(template, timeout=86400):
             class MockSandbox:
+                sandbox_id = "mock_sandbox_id"
                 class MockCommands:
                     def run(self, cmd, timeout=60, user="root"):
                         class Result:
@@ -25,12 +27,28 @@ except ImportError:
                         return Result()
                 commands = MockCommands()
 
-                def close(self):
+                def kill(self):
                     pass
             return MockSandbox()
 
+        @staticmethod
+        def kill(sandbox_id):
+            pass
+
 from .config import Config
 from .schemas import SandboxState, SandboxStatus
+
+# 需要检查的端口列表
+REQUIRED_PORTS = [
+    (18789, "openclaw-gateway"),
+    (11436, "llama-server"),
+]
+
+# 端口检查最大等待时间（秒）
+PORT_CHECK_MAX_WAIT = 300
+
+# 端口检查间隔（秒）
+PORT_CHECK_INTERVAL = 5
 
 
 class SandboxManager:
@@ -108,15 +126,26 @@ class SandboxManager:
                 state = self.sandbox_states[sandbox_id]
 
                 try:
-                    success, elapsed, error = future.result()
-                    if success:
-                        state.creation_metrics.status = SandboxStatus.ACTIVE
-                        state.creation_metrics.elapsed = elapsed
-                        print(f"[Sandbox{sandbox_id}] Created in {elapsed:.1f}s")
+                    result = future.result()
+                    if result['success']:
+                        # sandbox.create成功，开始端口检查
+                        print(f"[Sandbox{sandbox_id}] Created in {result['create_elapsed']:.1f}s, checking ports...")
+
+                        # 端口检查
+                        port_result = self._check_ports(state)
+                        if port_result['success']:
+                            state.creation_metrics.status = SandboxStatus.PORT_READY
+                            state.creation_metrics.port_wait_elapsed = port_result['wait_elapsed']
+                            state.creation_metrics.total_elapsed = result['create_elapsed'] + port_result['wait_elapsed']
+                            print(f"[Sandbox{sandbox_id}] Ports ready in {port_result['wait_elapsed']:.1f}s, total {state.creation_metrics.total_elapsed:.1f}s")
+                        else:
+                            state.creation_metrics.status = SandboxStatus.PORT_FAILED
+                            state.creation_metrics.port_check_error = port_result['error']
+                            print(f"[Sandbox{sandbox_id}] Port check failed: {port_result['error'][:50]}")
                     else:
                         state.creation_metrics.status = SandboxStatus.FAILED
-                        state.creation_metrics.error_msg = error
-                        print(f"[Sandbox{sandbox_id}] Failed: {error[:80]}")
+                        state.creation_metrics.error_msg = result['error']
+                        print(f"[Sandbox{sandbox_id}] Failed: {result['error'][:80]}")
                 except Exception as e:
                     state.creation_metrics.status = SandboxStatus.FAILED
                     state.creation_metrics.error_msg = str(e)
@@ -135,12 +164,13 @@ class SandboxManager:
 
         return self._create_batch_concurrent(batch_id=0, start=0, end=total)
 
-    def _create_single(self, state: SandboxState) -> Tuple[bool, float, str]:
+    def _create_single(self, state: SandboxState) -> Dict[str, any]:
         """创建单个沙箱
 
         关键：保留沙箱句柄到 state.sandbox_obj
+        sandbox.create成功即记录时间，不等待端口
 
-        返回: (success, elapsed_seconds, error_message)
+        返回: {'success': bool, 'create_elapsed': float, 'error': str}
         """
         state.creation_metrics.status = SandboxStatus.CREATING
         state.creation_metrics.submit_time = time.time()
@@ -152,12 +182,74 @@ class SandboxManager:
             )
             # 保留沙箱句柄
             state.sandbox_obj = sbx
-            state.creation_metrics.ready_time = time.time()
-            elapsed = state.creation_metrics.ready_time - state.creation_metrics.submit_time
-            return True, elapsed, ""
+            state.creation_metrics.create_ready_time = time.time()
+            state.creation_metrics.create_elapsed = state.creation_metrics.create_ready_time - state.creation_metrics.submit_time
+            state.creation_metrics.status = SandboxStatus.CREATED
+
+            return {
+                'success': True,
+                'create_elapsed': state.creation_metrics.create_elapsed,
+                'error': ''
+            }
         except Exception as e:
-            state.creation_metrics.ready_time = time.time()
-            return False, 0.0, str(e)
+            state.creation_metrics.create_ready_time = time.time()
+            return {
+                'success': False,
+                'create_elapsed': 0.0,
+                'error': str(e)
+            }
+
+    def _check_ports(self, state: SandboxState) -> Dict[str, any]:
+        """检查沙箱端口是否就绪
+
+        检查18789 (openclaw-gateway) 和 11436 (llama-server)
+
+        返回: {'success': bool, 'wait_elapsed': float, 'error': str}
+        """
+        sbx = state.sandbox_obj
+        if not sbx:
+            return {'success': False, 'wait_elapsed': 0.0, 'error': 'No sandbox handle'}
+
+        start_time = time.time()
+        ready_ports = set()
+
+        while time.time() - start_time < PORT_CHECK_MAX_WAIT:
+            if self.stop_event.is_set():
+                return {'success': False, 'wait_elapsed': time.time() - start_time, 'error': 'Stop event'}
+
+            for port, name in REQUIRED_PORTS:
+                if port in ready_ports:
+                    continue
+
+                try:
+                    cmd = f"ss -tlnp | grep ':{port}' || netstat -tlnp 2>/dev/null | grep ':{port}' || echo 'PORT_NOT_LISTENING'"
+                    result = sbx.commands.run(cmd, timeout=10, user="root")
+
+                    if result.exit_code == 0 and 'PORT_NOT_LISTENING' not in result.stdout:
+                        ready_ports.add(port)
+                        print(f"[Sandbox{state.sandbox_id}] Port {port} ({name}) is listening")
+                except Exception as e:
+                    pass  # 继续检查其他端口
+
+            if len(ready_ports) == len(REQUIRED_PORTS):
+                wait_elapsed = time.time() - start_time
+                state.creation_metrics.port_ready_time = time.time()
+                return {
+                    'success': True,
+                    'wait_elapsed': wait_elapsed,
+                    'error': ''
+                }
+
+            time.sleep(PORT_CHECK_INTERVAL)
+
+        # 超时，返回缺失的端口信息
+        missing_ports = [f"{p}:{n}" for p, n in REQUIRED_PORTS if p not in ready_ports]
+        wait_elapsed = time.time() - start_time
+        return {
+            'success': False,
+            'wait_elapsed': wait_elapsed,
+            'error': f"Timeout waiting for ports: {missing_ports}"
+        }
 
     def check_alive(self, state: SandboxState) -> bool:
         """检查沙箱是否存活"""
@@ -170,16 +262,16 @@ class SandboxManager:
         except Exception:
             return False
 
-    def close_all(self) -> None:
-        """关闭所有沙箱"""
-        print("\nClosing all sandboxes...")
-        closed_count = 0
+    def kill_all(self) -> None:
+        """关闭所有沙箱（使用kill方法）"""
+        print("\nKilling all sandboxes...")
+        killed_count = 0
         for state in self.sandbox_states.values():
             if state.sandbox_obj:
                 try:
-                    state.sandbox_obj.close()
-                    state.creation_metrics.status = SandboxStatus.CLOSED
-                    closed_count += 1
+                    state.sandbox_obj.kill()
+                    state.creation_metrics.status = SandboxStatus.KILLED
+                    killed_count += 1
                 except Exception as e:
-                    print(f"[Sandbox{state.sandbox_id}] Close error: {str(e)[:50]}")
-        print(f"Closed {closed_count} sandboxes")
+                    print(f"[Sandbox{state.sandbox_id}] Kill error: {str(e)[:50]}")
+        print(f"Killed {killed_count} sandboxes")
