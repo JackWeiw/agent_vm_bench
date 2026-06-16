@@ -9,9 +9,19 @@ E2B Sandbox Bench - E2B沙箱批量性能测试套件
 - 实时统计快照 + 最终报告
 
 使用示例：
-    python -m e2b_bench --config config/default.yaml
-    python -m e2b_bench --config config/default.yaml --total 50 --duration 300
+    python -m e2b_bench --config config/e2b_bench.yaml
+    python -m e2b_bench --config config/e2b_bench.yaml --total 50 --duration 300
 """
+
+from .config import Config
+from .schemas import (
+    SandboxState,
+    SandboxStatus,
+    CreationMetrics,
+    BrowserMetrics,
+    TestSnapshot,
+)
+from .bench import run_benchmark, main
 
 __version__ = "1.0.0"
 
@@ -19,6 +29,9 @@ __all__ = [
     'Config',
     'SandboxState',
     'SandboxStatus',
+    'CreationMetrics',
     'BrowserMetrics',
+    'TestSnapshot',
     'run_benchmark',
+    'main',
 ]
