@@ -12,6 +12,8 @@ Test framework for OpenStack VM memory overcommit scenarios with comprehensive p
 | [Design (EN)](docs/design-en.md) | English version of design doc |
 | [Metrics Reference](docs/metrics-reference.md) | All 50+ metrics explained |
 | [Usage Guide](docs/usage-guide.md) | Detailed tool usage and configuration |
+| [E2B Bench Usage](docs/e2b-bench-usage.md) | E2B Sandbox batch performance testing |
+| [E2B Bench Usage (中文)](docs/e2b-bench-usage-zh.md) | E2B沙箱批量性能测试指南 |
 
 ## Dependencies
 

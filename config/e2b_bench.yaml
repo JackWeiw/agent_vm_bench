@@ -1,0 +1,39 @@
+# config/e2b_bench.yaml
+# E2B Sandbox Batch Performance Test Configuration Template
+
+# E2B SDK environment variables (replace with real credentials)
+e2b_env:
+  E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+  E2B_API_KEY: "your_e2b_api_key_here"
+  E2B_DOMAIN: "e2b.app"
+  E2B_API_URL: "http://localhost:3000"
+  E2B_HTTP_SSL: "false"
+
+# Sandbox configuration
+sandbox:
+  template: "openclaw-browser-v1"
+  create_timeout: 86400
+  total_count: 100
+
+# Batch startup control (optional, full concurrent if not configured)
+batch:
+  size: 20
+  interval: 30
+
+# Browser task configuration
+browser:
+  urls:
+    - "http://192.168.110.10:8080/Weibo.html"
+  task_timeout: 200
+  interval_min: 0.5
+  interval_max: 3.0
+
+# Test run configuration
+test:
+  duration: 600
+  stats_interval: 10
+
+# Report configuration
+report:
+  output_dir: "results/e2b"
+  filename_prefix: "e2b_bench"
