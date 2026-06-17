@@ -103,7 +103,7 @@ class BrowserTaskRunner(threading.Thread):
             success = result.exit_code == 0
             return success, elapsed
         except Exception as e:
-            elapsed = time.perf_counter() - start_time
+            elapsed = time.perf_counter() - start_time + 10 # simulate llm response time
             print(f"[Sandbox{self.state.sandbox_id}] Task error: {str(e)[:50]}")
             return False, elapsed
 
