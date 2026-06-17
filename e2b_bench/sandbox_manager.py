@@ -271,7 +271,9 @@ class SandboxManager:
             if state.sandbox_obj:
                 try:
                     state.sandbox_obj.kill()
-                    state.creation_metrics.status = SandboxStatus.KILLED
+                    # Don't overwrite status - keep original (PORT_READY/FAILED etc) for stats
+                    # state.creation_metrics.status = SandboxStatus.KILLED
+                    state.is_alive = False
                     killed_count += 1
                 except Exception as e:
                     print(f"[Sandbox{state.sandbox_id}] Kill error: {str(e)[:50]}")

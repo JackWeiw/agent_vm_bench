@@ -1,0 +1,156 @@
+{
+    "models": {
+        "mode": "merge",
+        "providers": {
+            "vllm": {
+                "baseUrl": "http://192.168.110.10:9927/v1",
+                "apiKey": "huawei-kunpeng-ai",
+                "api": "openai-completions",
+                "models": [
+                    {
+                        "id": "GLM-4.7-W8A8",
+                        "name": "GLM-4.7-W8A8",
+                        "api": "openai-completions",
+                        "reasoning": false,
+                        "input": [
+                            "text"
+                        ],
+                        "cost": {
+                            "input": 0,
+                            "output": 0,
+                            "cacheRead": 0,
+                            "cacheWrite": 0
+                        },
+                        "contextWindow": 260000,
+                        "maxTokens": 260000
+                    }
+                ]
+            }
+        }
+    },
+    "agents": {
+        "defaults": {
+            "model": {
+                "primary": "vllm/GLM-4.7-W8A8"
+            },
+            "workspace": "/root/.openclaw/workspace",
+            "memorySearch": {
+                "enabled": true,
+                "provider": "openai",
+                "remote": {
+                    "baseUrl": "http://127.0.0.1:11436/v1",
+                    "apiKey": "kunpeng"
+                },
+                "chunking": {
+                    "tokens": 200,
+                    "overlap": 80
+                },
+                "model": "bge-m3-q8_0",
+                "store": {
+                    "vector": {
+                        "enabled": true
+                    }
+                },
+                "query": {
+                    "hybrid": {
+                        "enabled": false
+                    }
+                },
+                "cache": {
+                    "enabled": true
+                }
+            }
+        },
+        "list": [
+            {
+                "id": "main"
+            }
+        ]
+    },
+    "gateway": {
+        "port": 18789,
+        "mode": "local",
+        "bind": "lan",
+        "auth": {
+            "mode": "token",
+            "token": "test-token-123"
+        },
+        "tailscale": {
+            "mode": "off",
+            "resetOnExit": false
+        },
+        "controlUi": {
+            "allowInsecureAuth": true
+        },
+        "nodes": {
+            "denyCommands": [
+                "camera.snap",
+                "camera.clip",
+                "screen.record",
+                "contacts.add",
+                "calendar.add",
+                "reminders.add",
+                "sms.send"
+            ]
+        },
+        "http": {
+            "endpoints": {
+                "chatCompletions": {
+                    "enabled": true
+                }
+            }
+        }
+    },
+    "tools": {
+        "profile": "coding",
+        "exec": {
+            "security": "full",
+            "ask": "off"
+        }
+    },
+    "commands": {
+        "native": "auto",
+        "nativeSkills": "auto",
+        "restart": true,
+        "ownerDisplay": "raw"
+    },
+    "session": {
+        "dmScope": "per-channel-peer"
+    },
+    "memory": {
+        "backend": "builtin"
+    },
+    "skills": {
+        "install": {
+            "nodeManager": "npm"
+        }
+    },
+    "plugins": {
+        "slots": {
+            "memory": "memory-core"
+        },
+        "entries": {
+            "browser": {
+                "enabled": true
+            }
+        }
+    },
+    "browser": {
+        "enabled": true,
+        "noSandbox": true,
+        "headless": true,
+        "ssrfPolicy": {
+            "dangerouslyAllowPrivateNetwork": true
+        }
+    },
+    "wizard": {
+        "lastRunAt": "2026-06-16T02:09:59.660Z",
+        "lastRunVersion": "2026.6.6",
+        "lastRunCommand": "onboard",
+        "lastRunMode": "local"
+    },
+    "meta": {
+        "lastTouchedVersion": "2026.6.6",
+        "lastTouchedAt": "2026-06-16T02:09:59.748Z"
+    }
+}
