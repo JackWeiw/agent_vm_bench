@@ -40,24 +40,17 @@ PROXY=http://your-proxy:8888 HARBOR_IP=192.168.1.100 ./push_to_harbor.sh
 
 ### Step 3: Build E2B Template
 
-Before building the E2B template, ensure Harbor hostname is configured:
-
-```bash
-# Add to /etc/hosts
-echo "127.0.0.1 harbor" >> /etc/hosts
-```
-
-Then run the build script:
-
 ```bash
 # Install dependencies
 pip install e2b
 
-# Build template with E2B API server IP
-python build_e2b.py --server-ip 192.168.1.100
+# Build template with server IP and Harbor IP
+python build_e2b.py --server-ip 141.61.17.196 --harbor-ip 141.61.17.196
 
 # Optional: customize template settings
-python build_e2b.py --server-ip 192.168.1.100 --alias my-template --cpu 4 --memory 4096
+python build_e2b.py --server-ip 141.61.17.196 --harbor-ip 141.61.17.196 \
+    --alias my-template --cpu 4 --memory 4096 \
+    --image e2b-orchestration/ubuntu-openclaw-chromium:custom
 ```
 
 ## Configuration
@@ -70,12 +63,12 @@ python build_e2b.py --server-ip 192.168.1.100 --alias my-template --cpu 4 --memo
 - Set `HARBOR_IP` environment variable for push_to_harbor.sh
 - Harbor URL: `http://{HARBOR_IP}:2900/`
 - Default credentials: `admin` / `Harbor12345`
-- **For E2B template build**: Configure `/etc/hosts` with `127.0.0.1 harbor`
+- Harbor nginx reverse proxy port: `30443` (for E2B template build)
 
 ### E2B API Server
 - `--server-ip` parameter specifies the E2B orchestration API server IP
 - E2B API runs on port 3000: `http://{server_ip}:3000`
-- Harbor and E2B API are typically deployed on the same server
+- `--harbor-ip` parameter specifies Harbor registry IP (nginx port 30443)
 
 ### E2B Config File
 - Required: `/root/.e2b/config.json`

@@ -8,14 +8,13 @@ This script:
 3. Creates a sandbox for testing
 
 Usage:
-    python build_e2b.py --server-ip <e2b_api_server_ip>
+    python build_e2b.py --server-ip <e2b_api_server_ip> --harbor-ip <harbor_registry_ip>
 
 Example:
-    python build_e2b.py --server-ip 192.168.1.100
+    python build_e2b.py --server-ip 141.61.17.196 --harbor-ip 141.61.17.196
 
 Note:
-    Harbor registry is accessed via hostname 'harbor' configured in /etc/hosts.
-    Make sure to add '127.0.0.1 harbor' to /etc/hosts before running this script.
+    Harbor registry is accessed via IP:30443 (nginx reverse proxy).
     The Harbor registry and E2B API service are typically deployed on the same server.
 """
 
@@ -27,6 +26,11 @@ from e2b import Template, default_build_logger, wait_for_port
 from e2b import Sandbox
 
 
+# Default configuration
+DEFAULT_SERVER_IP = "141.61.17.196"
+DEFAULT_HARBOR_IP = "141.61.17.196"
+
+
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
@@ -34,8 +38,13 @@ def parse_arguments():
     )
     parser.add_argument(
         "--server-ip",
-        required=True,
-        help="E2B API server IP address (where E2B orchestration service is deployed)"
+        default=DEFAULT_SERVER_IP,
+        help=f"E2B API server IP address (default: {DEFAULT_SERVER_IP})"
+    )
+    parser.add_argument(
+        "--harbor-ip",
+        default=DEFAULT_HARBOR_IP,
+        help=f"Harbor registry IP address (default: {DEFAULT_HARBOR_IP})"
     )
     parser.add_argument(
         "--alias",
@@ -53,6 +62,11 @@ def parse_arguments():
         type=int,
         default=4096,
         help="Memory in MB for sandbox"
+    )
+    parser.add_argument(
+        "--image",
+        default="e2b-orchestration/ubuntu-openclaw-chromium:custom",
+        help="Image path in Harbor (default: e2b-orchestration/ubuntu-openclaw-chromium:custom)"
     )
     return parser.parse_args()
 
@@ -83,8 +97,8 @@ def load_e2b_config(config_path: str) -> tuple:
     team_api_key = data.get("teamApiKey")
 
     print("Extracted configuration:")
-    print(f"  accessToken: {access_token[:8]}..." if access_token else "  accessToken: None")
-    print(f"  teamApiKey: {team_api_key[:8]}..." if team_api_key else "  teamApiKey: None")
+    print(f"  accessToken: {access_token}")
+    print(f"  teamApiKey: {team_api_key}")
 
     if not access_token or not team_api_key:
         raise KeyError("Missing required fields: accessToken or teamApiKey")
@@ -105,34 +119,32 @@ def setup_environment(server_ip: str, access_token: str, team_api_key: str):
     os.environ["E2B_HTTP_SSL"] = "false"
     os.environ["E2B_ACCESS_TOKEN"] = access_token
     os.environ["E2B_API_KEY"] = team_api_key
+    os.environ["E2B_DOMAIN"] = "e2b.app"
 
     print(f"E2B API URL: {os.environ['E2B_API_URL']}")
 
 
-def build_template(alias: str, cpu_count: int, memory_mb: int):
+def build_template(harbor_ip: str, image: str, alias: str, cpu_count: int, memory_mb: int):
     """
     Build E2B template from Harbor image.
 
-    Note: Harbor is accessed via hostname 'harbor' (configured in /etc/hosts).
-    The Harbor registry is deployed on the same server as E2B API.
-
     Args:
+        harbor_ip: Harbor registry IP address
+        image: Image path in Harbor (project/image:tag)
         alias: Template alias name
         cpu_count: CPU count for the template
         memory_mb: Memory in MB for the template
     """
     print("Starting E2B template build...")
+    print(f"  Harbor image: {harbor_ip}:30443/{image}")
     print(f"  Template alias: {alias}")
     print(f"  CPU count: {cpu_count}")
     print(f"  Memory: {memory_mb} MB")
-    print("  Harbor image: harbor:443/e2b-orchestration/ubuntu-openclaw-chromium:custom")
 
     # Build template from Harbor image
-    # Note: Harbor uses nginx reverse proxy on port 443
-    # The hostname 'harbor' should be configured in /etc/hosts as '127.0.0.1 harbor'
+    # Harbor uses nginx reverse proxy on port 30443
     Template.build(
-        Template()
-        .from_dockerfile('FROM harbor:443/e2b-orchestration/ubuntu-openclaw-chromium:custom')
+        Template().from_dockerfile(f'FROM {harbor_ip}:30443/{image}')
         .set_start_cmd(
             "sudo websocat -b --exit-on-eof ws-l:0.0.0.0:8081 tcp:127.0.0.1:22",
             wait_for_port(8081)
@@ -170,6 +182,10 @@ def main():
     """Main entry point."""
     args = parse_arguments()
 
+    print("Configuration:")
+    print(f"  SERVER_IP: {args.server_ip}")
+    print(f"  HARBOR_IP: {args.harbor_ip}")
+
     config_path = "/root/.e2b/config.json"
 
     try:
@@ -180,7 +196,7 @@ def main():
         setup_environment(args.server_ip, access_token, team_api_key)
 
         # Build template
-        build_template(args.alias, args.cpu, args.memory)
+        build_template(args.harbor_ip, args.image, args.alias, args.cpu, args.memory)
 
         # Create sandbox
         sbx = create_sandbox(args.alias)
