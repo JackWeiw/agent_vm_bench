@@ -8,22 +8,22 @@ set -e
 PROXY="${PROXY:-http://90.255.211.160:8888}"  # Proxy server address
 HARBOR_IP="${HARBOR_IP:-localhost}"           # Harbor registry IP address
 
-# Color output
+# Color output (requires echo -e to interpret escape sequences)
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 log_info() {
-    echo "${GREEN}[INFO]${NC} $1"
+    echo -e "${GREEN}[INFO]${NC} $1"
 }
 
 log_warn() {
-    echo "${YELLOW}[WARN]${NC} $1"
+    echo -e "${YELLOW}[WARN]${NC} $1"
 }
 
 log_error() {
-    echo "${RED}[ERROR]${NC} $1"
+    echo -e "${RED}[ERROR]${NC} $1"
 }
 
 # Check if base image exists
