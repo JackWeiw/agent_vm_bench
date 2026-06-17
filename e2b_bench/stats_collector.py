@@ -246,6 +246,24 @@ class StatsCollector:
             lines.append(f"  Avg Latency:   {avg_ms:.1f}ms")
             lines.append(f"  P99 Latency:   {p99_ms:.1f}ms")
 
+        # Collect error details from failed sandboxes
+        failed_sandbox_errors = []
+        for s in self.sandbox_states.values():
+            if s.browser_metrics.failed_count > 0 and s.browser_metrics.last_error:
+                failed_sandbox_errors.append(
+                    (s.sandbox_id, s.browser_metrics.failed_count, s.browser_metrics.last_error)
+                )
+
+        if failed_sandbox_errors:
+            # Sort by failed count (descending)
+            failed_sandbox_errors.sort(key=lambda x: x[1], reverse=True)
+            lines.append(f"\n[Failed Sandbox Error Details]")
+            lines.append(f"  (Top 10 sandboxes with most failures)")
+            for sid, count, error in failed_sandbox_errors[:10]:
+                # Truncate error if too long
+                error_display = error[:150] if len(error) > 150 else error
+                lines.append(f"  Sandbox{sid}: {count} failures - {error_display}")
+
         lines.append("\n" + "=" * 80)
         return '\n'.join(lines)
 

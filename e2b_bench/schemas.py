@@ -45,6 +45,7 @@ class BrowserMetrics:
     failed_count: int = 0
     timeout_count: int = 0
     latencies: List[float] = field(default_factory=list)
+    last_error: str = ""  # Last error message for debugging
 
     def add(self, latency: float, success: bool, timeout: bool = False) -> None:
         """Add a task result"""

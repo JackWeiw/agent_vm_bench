@@ -101,10 +101,26 @@ class BrowserTaskRunner(threading.Thread):
             elapsed = time.perf_counter() - start_time
 
             success = result.exit_code == 0
+
+            # Log detailed error info on failure
+            if not success:
+                error_detail = f"exit_code={result.exit_code}"
+                if result.stderr:
+                    error_detail += f", stderr={result.stderr[:200]}"
+                if result.stdout:
+                    error_detail += f", stdout={result.stdout[:200]}"
+                print(f"[Sandbox{self.state.sandbox_id}] Task failed: {error_detail}")
+
+                # Store last error for debugging
+                self.state.browser_metrics.last_error = error_detail
+
             return success, elapsed
         except Exception as e:
-            elapsed = time.perf_counter() - start_time + 10 # simulate llm response time
-            print(f"[Sandbox{self.state.sandbox_id}] Task error: {str(e)[:50]}")
+            elapsed = time.perf_counter() - start_time + 10  # simulate llm response time
+            error_msg = str(e)
+            print(f"[Sandbox{self.state.sandbox_id}] Task exception: {error_msg}")
+            # Store last error for debugging
+            self.state.browser_metrics.last_error = error_msg
             return False, elapsed
 
 
