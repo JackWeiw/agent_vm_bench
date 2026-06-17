@@ -84,6 +84,9 @@ class BrowserTaskRunner(threading.Thread):
         if not sbx:
             return False, 0.0
 
+        # Get E2B sandbox_id for logging (different from internal sequence number)
+        e2b_sandbox_id = sbx.sandbox_id if hasattr(sbx, 'sandbox_id') else 'N/A'
+
         # Get current URL (round-robin)
         url_idx = self.state.browser_metrics.total_tasks % len(self.config.browser_urls)
         url = self.config.browser_urls[url_idx]
@@ -98,7 +101,7 @@ class BrowserTaskRunner(threading.Thread):
                 timeout=self.config.browser_timeout + 30,
                 user="root"
             )
-            elapsed = time.perf_counter() - start_time
+            elapsed = time.perf_counter() - start_time + 10  # simulate llm response time
 
             success = result.exit_code == 0
 
@@ -109,7 +112,7 @@ class BrowserTaskRunner(threading.Thread):
                     error_detail += f", stderr={result.stderr[:200]}"
                 if result.stdout:
                     error_detail += f", stdout={result.stdout[:200]}"
-                print(f"[Sandbox{self.state.sandbox_id}] Task failed: {error_detail}")
+                print(f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Task failed: {error_detail}")
 
                 # Store last error for debugging
                 self.state.browser_metrics.last_error = error_detail
@@ -118,7 +121,7 @@ class BrowserTaskRunner(threading.Thread):
         except Exception as e:
             elapsed = time.perf_counter() - start_time + 10  # simulate llm response time
             error_msg = str(e)
-            print(f"[Sandbox{self.state.sandbox_id}] Task exception: {error_msg}")
+            print(f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Task exception: {error_msg}")
             # Store last error for debugging
             self.state.browser_metrics.last_error = error_msg
             return False, elapsed

@@ -258,11 +258,51 @@ class StatsCollector:
             # Sort by failed count (descending)
             failed_sandbox_errors.sort(key=lambda x: x[1], reverse=True)
             lines.append(f"\n[Failed Sandbox Error Details]")
+            lines.append(f"  Total sandboxes with task failures: {len(failed_sandbox_errors)}")
             lines.append(f"  (Top 10 sandboxes with most failures)")
             for sid, count, error in failed_sandbox_errors[:10]:
                 # Truncate error if too long
                 error_display = error[:150] if len(error) > 150 else error
                 lines.append(f"  Sandbox{sid}: {count} failures - {error_display}")
+
+            # Error type classification
+            lines.append(f"\n[Error Type Classification]")
+            error_types = {
+                "Chrome start failed": 0,
+                "D-Bus connection error": 0,
+                "Gateway connection error": 0,
+                "Timeout": 0,
+                "Other": 0,
+            }
+            error_type_sandboxes = {
+                "Chrome start failed": [],
+                "D-Bus connection error": [],
+                "Gateway connection error": [],
+                "Timeout": [],
+                "Other": [],
+            }
+            for sid, count, error in failed_sandbox_errors:
+                error_lower = error.lower()
+                if "failed to start chrome" in error_lower or "chrome_start" in error_lower:
+                    error_types["Chrome start failed"] += count
+                    error_type_sandboxes["Chrome start failed"].append(sid)
+                elif "d-bus" in error_lower or "dbus" in error_lower or "failed to connect to the bus" in error_lower:
+                    error_types["D-Bus connection error"] += count
+                    error_type_sandboxes["D-Bus connection error"].append(sid)
+                elif "gateway" in error_lower or "cdp" in error_lower or "http_unreachable" in error_lower:
+                    error_types["Gateway connection error"] += count
+                    error_type_sandboxes["Gateway connection error"].append(sid)
+                elif "timeout" in error_lower:
+                    error_types["Timeout"] += count
+                    error_type_sandboxes["Timeout"].append(sid)
+                else:
+                    error_types["Other"] += count
+                    error_type_sandboxes["Other"].append(sid)
+
+            for error_type, count in error_types.items():
+                if count > 0:
+                    sids = error_type_sandboxes[error_type][:10]
+                    lines.append(f"  {error_type}: {count} errors (sandboxes: {sids}...)")
 
         lines.append("\n" + "=" * 80)
         return '\n'.join(lines)
