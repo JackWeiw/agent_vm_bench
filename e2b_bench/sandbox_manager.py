@@ -36,6 +36,25 @@ except ImportError:
         def kill(sandbox_id):
             pass
 
+        @staticmethod
+        def list():
+            """Mock list() for testing"""
+            return []
+
+        @staticmethod
+        def connect(sandbox_id):
+            """Mock connect() for testing"""
+            class MockSandbox:
+                sandbox_id = sandbox_id
+                class MockCommands:
+                    def run(self, cmd, timeout=60, user="root"):
+                        class Result:
+                            exit_code = 0
+                            stdout = ""
+                        return Result()
+                commands = MockCommands()
+            return MockSandbox()
+
 from .config import Config
 from .schemas import SandboxState, SandboxStatus
 
@@ -73,6 +92,74 @@ class SandboxManager:
             return self._create_batched()
         else:
             return self._create_concurrent()
+
+    def detect_existing(self) -> Dict[int, SandboxState]:
+        """Detect existing running sandboxes
+
+        Query E2B API for existing sandboxes, connect to them,
+        check port readiness, and prepare for benchmark.
+
+        Returns: {sandbox_id: SandboxState}
+        """
+        print(f"\n{'='*60}")
+        print("Detecting Existing Sandboxes")
+        print(f"  Template: {self.config.template}")
+        print(f"{'='*60}")
+
+        # List all running sandboxes
+        try:
+            existing_list = Sandbox.list()
+            print(f"  Found {len(existing_list)} running sandboxes")
+        except Exception as e:
+            print(f"  Failed to list sandboxes: {e}")
+            return {}
+
+        if not existing_list:
+            print("  No existing sandboxes found")
+            return {}
+
+        # Filter by template if possible (check if ListedSandbox has template info)
+        # Note: Sandbox.list() returns List[ListedSandbox] with sandbox_id, maybe template info
+        filtered_list = existing_list
+        # If template filtering is available:
+        # filtered_list = [s for s in existing_list if hasattr(s, 'template') and s.template == self.config.template]
+
+        print(f"  Processing {len(filtered_list)} sandboxes...")
+
+        # Connect to each sandbox and check ports
+        for i, listed_sandbox in enumerate(filtered_list):
+            sandbox_id = i + 1
+            e2b_sandbox_id = listed_sandbox.sandbox_id if hasattr(listed_sandbox, 'sandbox_id') else str(listed_sandbox)
+
+            state = SandboxState(sandbox_id=sandbox_id)
+            self.sandbox_states[sandbox_id] = state
+
+            print(f"\n[Sandbox{sandbox_id}] Connecting to E2B:{e2b_sandbox_id}...")
+
+            try:
+                # Connect to existing sandbox
+                sbx = Sandbox.connect(e2b_sandbox_id)
+                state.sandbox_obj = sbx
+                state.creation_metrics.status = SandboxStatus.CREATED
+                print(f"[Sandbox{sandbox_id}] Connected successfully")
+
+                # Check port readiness
+                port_result = self._check_ports(state)
+                if port_result['success']:
+                    state.creation_metrics.status = SandboxStatus.PORT_READY
+                    state.creation_metrics.port_wait_elapsed = port_result['wait_elapsed']
+                    print(f"[Sandbox{sandbox_id}] Ports ready in {port_result['wait_elapsed']:.1f}s")
+                else:
+                    state.creation_metrics.status = SandboxStatus.PORT_FAILED
+                    state.creation_metrics.port_check_error = port_result['error']
+                    print(f"[Sandbox{sandbox_id}] Port check failed: {port_result['error'][:50]}")
+
+            except Exception as e:
+                state.creation_metrics.status = SandboxStatus.FAILED
+                state.creation_metrics.error_msg = str(e)
+                print(f"[Sandbox{sandbox_id}] Connect failed: {str(e)[:80]}")
+
+        return self.sandbox_states
 
     def _create_batched(self) -> Dict[int, SandboxState]:
         """Batched sandbox creation"""

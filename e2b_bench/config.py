@@ -26,6 +26,9 @@ class Config:
     create_timeout: int = 86400
     total_count: int = 100
 
+    # Detect existing sandboxes mode
+    detect_existing: bool = False  # Detect existing sandboxes instead of creating new ones
+
     # Batch control (None means full concurrent)
     batch_size: Optional[int] = 20
     batch_interval: Optional[int] = 30
@@ -72,6 +75,7 @@ class Config:
             template=sandbox.get('template', "openclaw-browser-v1"),
             create_timeout=sandbox.get('create_timeout', 86400),
             total_count=sandbox.get('total_count', 100),
+            detect_existing=sandbox.get('detect_existing', False),
 
             batch_size=batch.get('size') if batch else None,
             batch_interval=batch.get('interval') if batch else None,
@@ -101,6 +105,7 @@ class Config:
             template=args.template if args.template else yaml_config.template,
             create_timeout=args.create_timeout if args.create_timeout else yaml_config.create_timeout,
             total_count=args.total if args.total else yaml_config.total_count,
+            detect_existing=args.detect if hasattr(args, 'detect') and args.detect else yaml_config.detect_existing,
 
             batch_size=args.batch_size if args.batch_size is not None else yaml_config.batch_size,
             batch_interval=args.batch_interval if args.batch_interval is not None else yaml_config.batch_interval,
@@ -130,6 +135,7 @@ class Config:
             template=args.template or "openclaw-browser-v1",
             create_timeout=args.create_timeout or 86400,
             total_count=args.total or 100,
+            detect_existing=args.detect if hasattr(args, 'detect') and args.detect else False,
 
             batch_size=args.batch_size,
             batch_interval=args.batch_interval,

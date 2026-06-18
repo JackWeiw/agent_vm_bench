@@ -33,31 +33,39 @@ def run_benchmark(config: Config) -> dict:
     print("E2B Sandbox Bench - Batch Performance Test")
     print("=" * 80)
     print(f"  Template: {config.template}")
-    print(f"  Total:    {config.total_count} sandboxes")
-    if config.batch_size:
-        print(f"  Batch:    {config.batch_count} batches x {config.batch_size} (interval {config.batch_interval}s)")
+    if config.detect_existing:
+        print(f"  Mode:     Detect existing sandboxes")
     else:
-        print(f"  Batch:    Full concurrent creation")
+        print(f"  Total:    {config.total_count} sandboxes")
+        if config.batch_size:
+            print(f"  Batch:    {config.batch_count} batches x {config.batch_size} (interval {config.batch_interval}s)")
+        else:
+            print(f"  Batch:    Full concurrent creation")
     print(f"  Duration: {config.test_duration}s")
     print("=" * 80)
 
     # Stop signal
     stop_event = threading.Event()
 
-    # 2. Create sandboxes
-    print("\n[Phase 1] Creating sandboxes...")
+    # 2. Create or detect sandboxes
     sandbox_manager = SandboxManager(config, stop_event)
-    sandbox_states = sandbox_manager.create_all()
 
-    created_count = sum(
+    if config.detect_existing:
+        print("\n[Phase 1] Detecting existing sandboxes...")
+        sandbox_states = sandbox_manager.detect_existing()
+    else:
+        print("\n[Phase 1] Creating sandboxes...")
+        sandbox_states = sandbox_manager.create_all()
+
+    ready_count = sum(
         1 for s in sandbox_states.values()
         if s.creation_metrics.status == SandboxStatus.PORT_READY
     )
-    if created_count == 0:
+    if ready_count == 0:
         print("No sandboxes ready for testing, exiting.")
         return {}
 
-    print(f"\nSandboxes ready for testing: {created_count}/{config.total_count}")
+    print(f"\nSandboxes ready for testing: {ready_count}")
 
     # 3. Start statistics collection
     print("\n[Phase 2] Starting stats collector...")
@@ -81,7 +89,12 @@ def run_benchmark(config: Config) -> dict:
     stop_event.set()
     task_manager.wait_all(timeout=5)
     stats_collector.stop()
-    sandbox_manager.kill_all()
+
+    # Only kill if we created the sandboxes (not in detect mode)
+    if not config.detect_existing:
+        sandbox_manager.kill_all()
+    else:
+        print("Sandboxes left running (detect mode - not killing)")
 
     time.sleep(0.5)  # Allow daemon threads to complete output
 
@@ -116,6 +129,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--template', type=str, help='E2B template name')
     parser.add_argument('--total', type=int, help='Total sandbox count')
     parser.add_argument('--create-timeout', type=int, help='Sandbox creation timeout')
+    parser.add_argument('--detect', action='store_true', help='Detect existing sandboxes instead of creating new ones')
 
     # Batch control
     parser.add_argument('--batch-size', type=int, help='Sandboxes per batch (None = full concurrent)')
