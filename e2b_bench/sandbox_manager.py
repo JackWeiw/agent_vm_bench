@@ -38,8 +38,10 @@ except ImportError:
 
         @staticmethod
         def list():
-            """Mock list() for testing"""
-            return []
+            """Mock list() for testing - returns iterable"""
+            class MockListedSandbox:
+                sandbox_id = "mock_sandbox_1"
+            return [MockListedSandbox()]  # Return list, not paginator
 
         @staticmethod
         def connect(sandbox_id):
@@ -99,16 +101,19 @@ class SandboxManager:
         Query E2B API for existing sandboxes, connect to them,
         check port readiness, and prepare for benchmark.
 
+        Sandbox.list() returns a SandboxPaginator, need to iterate it.
+
         Returns: {sandbox_id: SandboxState}
         """
         print(f"\n{'='*60}")
         print("Detecting Existing Sandboxes")
-        print(f"  Template: {self.config.template}")
         print(f"{'='*60}")
 
-        # List all running sandboxes
+        # List all running sandboxes - returns SandboxPaginator
         try:
-            existing_list = Sandbox.list()
+            paginator = Sandbox.list()
+            # Paginator needs to be iterated to get items
+            existing_list = list(paginator)
             print(f"  Found {len(existing_list)} running sandboxes")
         except Exception as e:
             print(f"  Failed to list sandboxes: {e}")
@@ -118,16 +123,10 @@ class SandboxManager:
             print("  No existing sandboxes found")
             return {}
 
-        # Filter by template if possible (check if ListedSandbox has template info)
-        # Note: Sandbox.list() returns List[ListedSandbox] with sandbox_id, maybe template info
-        filtered_list = existing_list
-        # If template filtering is available:
-        # filtered_list = [s for s in existing_list if hasattr(s, 'template') and s.template == self.config.template]
-
-        print(f"  Processing {len(filtered_list)} sandboxes...")
+        print(f"  Processing all sandboxes...")
 
         # Connect to each sandbox and check ports
-        for i, listed_sandbox in enumerate(filtered_list):
+        for i, listed_sandbox in enumerate(existing_list):
             sandbox_id = i + 1
             e2b_sandbox_id = listed_sandbox.sandbox_id if hasattr(listed_sandbox, 'sandbox_id') else str(listed_sandbox)
 

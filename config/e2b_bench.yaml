@@ -11,9 +11,10 @@ e2b_env:
 
 # Sandbox configuration
 sandbox:
-  template: "openclaw-browser-v1"
-  create_timeout: 86400
-  total_count: 100
+  template: "openclaw-browser-v1"    # E2B template name (used for creation)
+  create_timeout: 86400              # Sandbox creation timeout (seconds)
+  total_count: 100                   # Total sandbox count (creation mode)
+  detect_existing: false             # Detect existing sandboxes instead of creating new ones
 
 # Batch startup control (optional, full concurrent if not configured)
 batch:
