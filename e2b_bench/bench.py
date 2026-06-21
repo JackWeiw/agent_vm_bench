@@ -111,10 +111,11 @@ def run_benchmark(config: Config) -> dict:
             'filepath': None
         }
 
-    # 3. Warmup phase (if configured)
+    # 3. Warmup phase (only if warmup-only mode)
+    # Benchmark phase skips warmup - assumes sandboxes already warmed up
     task_manager = TaskManager(config, sandbox_states, stop_event)
 
-    if config.warmup_urls:
+    if config.warmup_only and config.warmup_urls:
         print("\n[Phase 2] Running warmup phase...")
         task_manager.start_warmup()
         warmup_start = time.time()
@@ -123,34 +124,44 @@ def run_benchmark(config: Config) -> dict:
         warmup_duration = time.time() - warmup_start
 
         print(f"\nWarmup completed: {completed} sandboxes | {failed} failed | duration {warmup_duration:.1f}s")
+        print("\n[Phase 2 Complete] Warmup-only mode finished.")
+        print(f"  Warmup completed: {completed}/{ready_count}")
+        print(f"  Sandboxes left running for later benchmark.")
+        return {
+            'report': f"Warmup-only: {completed}/{ready_count} sandboxes warmed up",
+            'filepath': None
+        }
 
-        # Warmup-only mode: exit after warmup
-        if config.warmup_only:
-            print("\n[Phase 2 Complete] Warmup-only mode finished.")
-            print(f"  Warmup completed: {completed}/{ready_count}")
-            print(f"  Sandboxes left running for later use.")
-            return {
-                'report': f"Warmup-only: {completed}/{ready_count} sandboxes warmed up",
-                'filepath': None
-            }
+    # 4. Benchmark phase (no warmup, just benchmark)
+    # Mark all sandboxes as warmup_done so they can start benchmark immediately
+    if not config.warmup_only:
+        # If warmup_urls is configured but not warmup-only, assume sandboxes need warmup_done
+        # For benchmark phase, mark all ready sandboxes as warmup_done (skip warmup)
+        for state in sandbox_states.values():
+            if state.creation_metrics.status == SandboxStatus.PORT_READY:
+                state.warmup_done = True
 
-    # 4. Start statistics collection
+    # 5. Start statistics collection
     print("\n[Phase 3] Starting stats collector...")
     stats_collector = StatsCollector(config, sandbox_states)
     stats_collector.start()
 
-    # 5. Start task execution (with batch control)
-    print("\n[Phase 4] Starting browser tasks...")
+    # 6. Start task execution (with batch control and benchmark_percent)
+    benchmark_count = max(1, int(ready_count * config.benchmark_percent))
+    if config.benchmark_percent < 1.0:
+        print(f"\n[Phase 4] Starting browser tasks on {benchmark_count}/{ready_count} sandboxes ({config.benchmark_percent*100:.0f}%)...")
+    else:
+        print(f"\n[Phase 4] Starting browser tasks...")
     task_manager.start_all()
 
-    # 6. Run for specified duration
+    # 7. Run for specified duration
     print(f"\n[Phase 5] Running for {config.test_duration} seconds...")
     try:
         time.sleep(config.test_duration)
     except KeyboardInterrupt:
         print("\nUser interrupt, stopping...")
 
-    # 7. Stop all components
+    # 8. Stop all components
     print("\n[Phase 6] Stopping...")
     stop_event.set()
     task_manager.wait_all(timeout=5)
@@ -164,7 +175,7 @@ def run_benchmark(config: Config) -> dict:
 
     time.sleep(0.5)  # Allow daemon threads to complete output
 
-    # 8. Generate and save report
+    # 9. Generate and save report
     report = stats_collector.generate_report()
     print("\n" + report)
 
