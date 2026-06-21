@@ -48,6 +48,7 @@ browser:
 test:
   duration: 600
   stats_interval: 10
+  benchmark_percent: 1.0    # Percentage of sandboxes for benchmark (1.0 = 100%, 0.5 = 50%)
 
 # Report configuration
 report:

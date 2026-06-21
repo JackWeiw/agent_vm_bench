@@ -284,11 +284,14 @@ class TaskManager:
         return completed, failed
 
     def start_all(self) -> None:
-        """Start task execution threads for all PORT_READY sandboxes
+        """Start task execution threads for PORT_READY sandboxes
 
         Strategy based on task_batch config:
         - With task_batch_size: batched start to avoid target server overload
         - Without config: full concurrent start for max load test
+
+        benchmark_percent controls how many sandboxes to include in benchmark
+        (e.g., 0.5 = 50% of ready sandboxes)
         """
         # Filter PORT_READY sandboxes that have completed warmup (or no warmup needed)
         ready_states = [
@@ -300,10 +303,21 @@ class TaskManager:
             print("No sandboxes ready for task execution")
             return
 
-        if self.config.task_batch_size and self.config.task_batch_size > 0:
-            self._start_batched(ready_states)
+        # Select subset based on benchmark_percent
+        total_ready = len(ready_states)
+        benchmark_count = max(1, int(total_ready * self.config.benchmark_percent))
+
+        if benchmark_count < total_ready:
+            # Select first N sandboxes for benchmark
+            benchmark_states = ready_states[:benchmark_count]
+            print(f"\nBenchmark subset: {benchmark_count}/{total_ready} sandboxes ({self.config.benchmark_percent*100:.0f}%)")
         else:
-            self._start_concurrent(ready_states)
+            benchmark_states = ready_states
+
+        if self.config.task_batch_size and self.config.task_batch_size > 0:
+            self._start_batched(benchmark_states)
+        else:
+            self._start_concurrent(benchmark_states)
 
     def _start_batched(self, ready_states: List[SandboxState]) -> None:
         """Batched task execution start"""

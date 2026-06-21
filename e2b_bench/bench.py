@@ -69,6 +69,12 @@ def run_benchmark(config: Config) -> dict:
             print(f"  Warmup:       {len(config.warmup_urls)} pages x {config.warmup_loops} loops (delay {config.warmup_delay}s)")
 
     print(f"  Duration: {config.test_duration}s")
+
+    # Benchmark percent display
+    if config.benchmark_percent < 1.0:
+        benchmark_count = config.benchmark_count
+        print(f"  Benchmark: {benchmark_count}/{config.total_count} sandboxes ({config.benchmark_percent*100:.0f}%)")
+
     print("=" * 80)
 
     # Stop signal
@@ -105,10 +111,11 @@ def run_benchmark(config: Config) -> dict:
             'filepath': None
         }
 
-    # 3. Warmup phase (if configured)
+    # 3. Warmup phase (only if warmup-only mode)
+    # Benchmark phase skips warmup - assumes sandboxes already warmed up
     task_manager = TaskManager(config, sandbox_states, stop_event)
 
-    if config.warmup_urls:
+    if config.warmup_only and config.warmup_urls:
         print("\n[Phase 2] Running warmup phase...")
         task_manager.start_warmup()
         warmup_start = time.time()
@@ -117,34 +124,44 @@ def run_benchmark(config: Config) -> dict:
         warmup_duration = time.time() - warmup_start
 
         print(f"\nWarmup completed: {completed} sandboxes | {failed} failed | duration {warmup_duration:.1f}s")
+        print("\n[Phase 2 Complete] Warmup-only mode finished.")
+        print(f"  Warmup completed: {completed}/{ready_count}")
+        print(f"  Sandboxes left running for later benchmark.")
+        return {
+            'report': f"Warmup-only: {completed}/{ready_count} sandboxes warmed up",
+            'filepath': None
+        }
 
-        # Warmup-only mode: exit after warmup
-        if config.warmup_only:
-            print("\n[Phase 2 Complete] Warmup-only mode finished.")
-            print(f"  Warmup completed: {completed}/{ready_count}")
-            print(f"  Sandboxes left running for later use.")
-            return {
-                'report': f"Warmup-only: {completed}/{ready_count} sandboxes warmed up",
-                'filepath': None
-            }
+    # 4. Benchmark phase (no warmup, just benchmark)
+    # Mark all sandboxes as warmup_done so they can start benchmark immediately
+    if not config.warmup_only:
+        # If warmup_urls is configured but not warmup-only, assume sandboxes need warmup_done
+        # For benchmark phase, mark all ready sandboxes as warmup_done (skip warmup)
+        for state in sandbox_states.values():
+            if state.creation_metrics.status == SandboxStatus.PORT_READY:
+                state.warmup_done = True
 
-    # 4. Start statistics collection
+    # 5. Start statistics collection
     print("\n[Phase 3] Starting stats collector...")
     stats_collector = StatsCollector(config, sandbox_states)
     stats_collector.start()
 
-    # 5. Start task execution (with batch control)
-    print("\n[Phase 4] Starting browser tasks...")
+    # 6. Start task execution (with batch control and benchmark_percent)
+    benchmark_count = max(1, int(ready_count * config.benchmark_percent))
+    if config.benchmark_percent < 1.0:
+        print(f"\n[Phase 4] Starting browser tasks on {benchmark_count}/{ready_count} sandboxes ({config.benchmark_percent*100:.0f}%)...")
+    else:
+        print(f"\n[Phase 4] Starting browser tasks...")
     task_manager.start_all()
 
-    # 6. Run for specified duration
+    # 7. Run for specified duration
     print(f"\n[Phase 5] Running for {config.test_duration} seconds...")
     try:
         time.sleep(config.test_duration)
     except KeyboardInterrupt:
         print("\nUser interrupt, stopping...")
 
-    # 7. Stop all components
+    # 8. Stop all components
     print("\n[Phase 6] Stopping...")
     stop_event.set()
     task_manager.wait_all(timeout=5)
@@ -158,7 +175,7 @@ def run_benchmark(config: Config) -> dict:
 
     time.sleep(0.5)  # Allow daemon threads to complete output
 
-    # 8. Generate and save report
+    # 9. Generate and save report
     report = stats_collector.generate_report()
     print("\n" + report)
 
@@ -175,7 +192,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     # Configuration file
-    parser.add_argument('--config', type=str, default=None,
+    parser.add_argument('-c', '--config', type=str, default=None,
                         help='YAML configuration file path')
 
     # E2B environment variables
@@ -186,10 +203,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--e2b-http-ssl', type=str, help='E2B HTTP SSL setting')
 
     # Sandbox configuration
-    parser.add_argument('--template', type=str, help='E2B template name')
-    parser.add_argument('--total', type=int, help='Total sandbox count')
+    parser.add_argument('-t', '--template', type=str, help='E2B template name')
+    parser.add_argument('-n', '--total', type=int, help='Total sandbox count')
     parser.add_argument('--create-timeout', type=int, help='Sandbox creation timeout')
-    parser.add_argument('--detect', action='store_true', help='Detect existing sandboxes instead of creating new ones')
+    parser.add_argument('-d', '--detect', action='store_true', help='Detect existing sandboxes instead of creating new ones')
     parser.add_argument('--create-only', action='store_true', help='Create sandboxes only without running tasks (Phase 0)')
 
     # Create batch control
@@ -207,17 +224,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--browser-interval-max', type=float, help='Task interval maximum')
 
     # Warmup configuration
-    parser.add_argument('--warmup-url', type=str, action='append', help='Warmup page URL (can specify multiple)')
+    parser.add_argument('-w', '--warmup-url', type=str, action='append', help='Warmup page URL (can specify multiple)')
     parser.add_argument('--warmup-loops', type=int, default=2, help='Warmup loop count')
     parser.add_argument('--warmup-delay', type=int, default=10, help='Warmup page delay (seconds)')
-    parser.add_argument('--warmup-only', action='store_true', help='Run warmup phase only, then exit')
+    parser.add_argument('-wp', '--warmup-only', action='store_true', help='Run warmup phase only, then exit')
+
+    # Benchmark control
+    parser.add_argument('-bp', '--benchmark-percent', type=float, default=1.0, help='Percentage of sandboxes for benchmark (e.g., 0.5 = 50%%)')
 
     # Test run
     parser.add_argument('--duration', type=int, help='Test duration seconds')
     parser.add_argument('--stats-interval', type=int, help='Stats snapshot interval')
 
     # Report
-    parser.add_argument('--output-dir', type=str, help='Report output directory')
+    parser.add_argument('-o', '--output-dir', type=str, help='Report output directory')
     parser.add_argument('--filename-prefix', type=str, help='Report filename prefix')
 
     return parser
