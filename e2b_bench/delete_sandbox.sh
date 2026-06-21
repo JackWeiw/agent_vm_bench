@@ -15,7 +15,7 @@ if [ -f "$ENV_FILE" ]; then
     set +a
 else
     echo "Error: Environment file not found: $ENV_FILE"
-    echo "Usage: ./delete_sandbox.sh [--env-file path/to/.env]"
+    echo "Usage: ./delete_sandbox.sh [path/to/.env]"
     exit 1
 fi
 
@@ -28,25 +28,28 @@ fi
 echo "E2B API URL: $E2B_API_URL"
 echo "E2B API Key: ${E2B_API_KEY:0:20}..."  # Show only first 20 chars for security
 
-# Get all sandbox IDs
+# Get all sandbox IDs (keep quotes, same as original working version)
 echo "Fetching sandbox list..."
-sandbox_ids=$(curl --request GET \
+sandbox_id=$(curl --request GET \
     --url "${E2B_API_URL}/sandboxes" \
     --header "x-api-key: ${E2B_API_KEY}" \
-    -s -k | jq -r '.[].sandboxID')
+    -s -k | jq '.[].sandboxID')
 
-if [ -z "$sandbox_ids" ]; then
+# Convert to array (same as original)
+sandbox_ids=($sandbox_id)
+
+if [ ${#sandbox_ids[@]} -eq 0 ]; then
     echo "No sandboxes found"
     exit 0
 fi
 
-# Count sandboxes
-count=$(echo "$sandbox_ids" | wc -l)
-echo "Found $count sandboxes"
+echo "Found ${#sandbox_ids[@]} sandboxes"
 
 # Delete each sandbox
-for sd_id in $sandbox_ids; do
-    echo "Deleting sandbox: $sd_id"
+for id in "${sandbox_ids[@]}"; do
+    echo "Deleting: $id"
+    # Remove surrounding quotes
+    sd_id=$(echo "${id/#\"/}" | sed 's/"$//')
     curl --request DELETE \
         --url "${E2B_API_URL}/sandboxes/${sd_id}" \
         --header "x-api-key: ${E2B_API_KEY}" \
@@ -54,4 +57,4 @@ for sd_id in $sandbox_ids; do
     echo ""
 done
 
-echo "Done! Deleted $count sandboxes"
+echo "Done! Deleted ${#sandbox_ids[@]} sandboxes"
