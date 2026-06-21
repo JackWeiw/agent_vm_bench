@@ -91,13 +91,13 @@ class SandboxManager:
     def create_all(self) -> Dict[int, SandboxState]:
         """Batch create sandboxes
 
-        Strategy based on batch config:
-        - With batch_size: batched creation to avoid resource spike
+        Strategy based on create_batch config:
+        - With create_batch_size: batched creation to avoid resource spike
         - Without config: full concurrent creation for max performance test
 
         Returns: {sandbox_id: SandboxState}
         """
-        if self.config.batch_size and self.config.batch_size > 0:
+        if self.config.create_batch_size and self.config.create_batch_size > 0:
             return self._create_batched()
         else:
             return self._create_concurrent()
@@ -173,14 +173,14 @@ class SandboxManager:
     def _create_batched(self) -> Dict[int, SandboxState]:
         """Batched sandbox creation"""
         total = self.config.total_count
-        batch_size = self.config.batch_size
-        batch_count = self.config.batch_count
+        batch_size = self.config.create_batch_size
+        batch_count = self.config.create_batch_count
 
         print(f"\n{'='*60}")
         print(f"Batched Sandbox Creation")
         print(f"  Total: {total} sandboxes")
         print(f"  Batches: {batch_count} x {batch_size}")
-        print(f"  Interval: {self.config.batch_interval}s")
+        print(f"  Interval: {self.config.create_batch_interval}s")
         print(f"{'='*60}")
 
         for batch_id in range(batch_count):
@@ -198,9 +198,9 @@ class SandboxManager:
             self.sandbox_states.update(batch_states)
 
             # Wait between batches (last batch no wait)
-            if batch_id < batch_count - 1 and self.config.batch_interval:
-                print(f"Waiting {self.config.batch_interval}s before next batch...")
-                time.sleep(self.config.batch_interval)
+            if batch_id < batch_count - 1 and self.config.create_batch_interval:
+                print(f"Waiting {self.config.create_batch_interval}s before next batch...")
+                time.sleep(self.config.create_batch_interval)
 
         return self.sandbox_states
 

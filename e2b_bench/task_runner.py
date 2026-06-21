@@ -3,6 +3,7 @@ Task Execution Module
 
 Responsible for browser task execution, result collection and exception handling
 Each sandbox has an independent thread
+Supports task batch control for gradual task execution start
 """
 
 import time
@@ -128,7 +129,7 @@ class BrowserTaskRunner(threading.Thread):
 
 
 class TaskManager:
-    """Task manager - manages all sandbox task execution threads"""
+    """Task manager - manages all sandbox task execution threads with batch control"""
 
     def __init__(
         self,
@@ -142,16 +143,77 @@ class TaskManager:
         self.runners: List[BrowserTaskRunner] = []
 
     def start_all(self) -> None:
-        """Start task execution threads for all PORT_READY sandboxes"""
-        active_count = 0
-        for state in self.sandbox_states.values():
-            if state.creation_metrics.status == SandboxStatus.PORT_READY:
+        """Start task execution threads for all PORT_READY sandboxes
+
+        Strategy based on task_batch config:
+        - With task_batch_size: batched start to avoid target server overload
+        - Without config: full concurrent start for max load test
+        """
+        # Filter PORT_READY sandboxes
+        ready_states = [
+            s for s in self.sandbox_states.values()
+            if s.creation_metrics.status == SandboxStatus.PORT_READY
+        ]
+
+        if not ready_states:
+            print("No sandboxes ready for task execution")
+            return
+
+        if self.config.task_batch_size and self.config.task_batch_size > 0:
+            self._start_batched(ready_states)
+        else:
+            self._start_concurrent(ready_states)
+
+    def _start_batched(self, ready_states: List[SandboxState]) -> None:
+        """Batched task execution start"""
+        total = len(ready_states)
+        batch_size = self.config.task_batch_size
+        batch_count = (total + batch_size - 1) // batch_size
+
+        print(f"\n{'='*60}")
+        print(f"Batched Task Execution Start")
+        print(f"  Total: {total} sandboxes")
+        print(f"  Batches: {batch_count} x {batch_size}")
+        print(f"  Interval: {self.config.task_batch_interval}s")
+        print(f"{'='*60}")
+
+        for batch_id in range(batch_count):
+            if self.stop_event.is_set():
+                print("Stop event detected, aborting task start")
+                break
+
+            start_idx = batch_id * batch_size
+            end_idx = min(start_idx + batch_size, total)
+            batch_states = ready_states[start_idx:end_idx]
+
+            print(f"\n[TaskBatch {batch_id}/{batch_count-1}] Starting tasks for sandboxes {start_idx+1}-{end_idx}")
+
+            # Start task runners for current batch
+            for state in batch_states:
                 runner = BrowserTaskRunner(state, self.config, self.stop_event)
                 self.runners.append(runner)
                 runner.start()
-                active_count += 1
 
-        print(f"\nStarted {active_count} task runners")
+            # Wait between batches (last batch no wait)
+            if batch_id < batch_count - 1 and self.config.task_batch_interval:
+                print(f"Waiting {self.config.task_batch_interval}s before next task batch...")
+                time.sleep(self.config.task_batch_interval)
+
+        print(f"\nStarted {len(self.runners)} task runners in {batch_count} batches")
+
+    def _start_concurrent(self, ready_states: List[SandboxState]) -> None:
+        """Full concurrent task execution start"""
+        print(f"\n{'='*60}")
+        print(f"Concurrent Task Execution Start")
+        print(f"  Total: {len(ready_states)} sandboxes (full concurrent)")
+        print(f"{'='*60}")
+
+        for state in ready_states:
+            runner = BrowserTaskRunner(state, self.config, self.stop_event)
+            self.runners.append(runner)
+            runner.start()
+
+        print(f"\nStarted {len(self.runners)} task runners")
 
     def wait_all(self, timeout: float = 5.0) -> None:
         """Wait for all task threads to end"""

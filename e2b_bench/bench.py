@@ -4,6 +4,11 @@ E2B Sandbox Bench - Main Entry Point
 
 Integrates all components, runs test workflow:
 Create sandboxes -> Start stats -> Start tasks -> Run duration -> Stop -> Report
+
+Supports three modes:
+1. Full workflow: create -> port check -> tasks -> stats
+2. Create-only: create -> port check -> exit (Phase 0)
+3. Detect existing: detect -> tasks -> stats
 """
 
 import time
@@ -33,14 +38,29 @@ def run_benchmark(config: Config) -> dict:
     print("E2B Sandbox Bench - Batch Performance Test")
     print("=" * 80)
     print(f"  Template: {config.template}")
+
+    # Mode display
     if config.detect_existing:
         print(f"  Mode:     Detect existing sandboxes")
+    elif config.create_only:
+        print(f"  Mode:     Create-only (Phase 0)")
     else:
-        print(f"  Total:    {config.total_count} sandboxes")
-        if config.batch_size:
-            print(f"  Batch:    {config.batch_count} batches x {config.batch_size} (interval {config.batch_interval}s)")
+        print(f"  Mode:     Full workflow")
+
+    print(f"  Total:    {config.total_count} sandboxes")
+
+    # Batch config display
+    if config.create_batch_size:
+        print(f"  Create Batch: {config.create_batch_count} batches x {config.create_batch_size} (interval {config.create_batch_interval}s)")
+    else:
+        print(f"  Create Batch: Full concurrent creation")
+
+    if not config.create_only and not config.detect_existing:
+        if config.task_batch_size:
+            print(f"  Task Batch:   {config.task_batch_count} batches x {config.task_batch_size} (interval {config.task_batch_interval}s)")
         else:
-            print(f"  Batch:    Full concurrent creation")
+            print(f"  Task Batch:   Full concurrent start")
+
     print(f"  Duration: {config.test_duration}s")
     print("=" * 80)
 
@@ -65,14 +85,25 @@ def run_benchmark(config: Config) -> dict:
         print("No sandboxes ready for testing, exiting.")
         return {}
 
-    print(f"\nSandboxes ready for testing: {ready_count}")
+    print(f"\nSandboxes ready: {ready_count}")
+
+    # Create-only mode: exit after creation
+    if config.create_only:
+        print("\n[Phase 0 Complete] Create-only mode finished.")
+        print(f"  Created: {len(sandbox_states)} sandboxes")
+        print(f"  Ports Ready: {ready_count}")
+        print(f"  Sandboxes left running for later use.")
+        return {
+            'report': f"Create-only: {ready_count}/{len(sandbox_states)} sandboxes ready",
+            'filepath': None
+        }
 
     # 3. Start statistics collection
     print("\n[Phase 2] Starting stats collector...")
     stats_collector = StatsCollector(config, sandbox_states)
     stats_collector.start()
 
-    # 4. Start task execution
+    # 4. Start task execution (with batch control)
     print("\n[Phase 3] Starting browser tasks...")
     task_manager = TaskManager(config, sandbox_states, stop_event)
     task_manager.start_all()
@@ -130,10 +161,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--total', type=int, help='Total sandbox count')
     parser.add_argument('--create-timeout', type=int, help='Sandbox creation timeout')
     parser.add_argument('--detect', action='store_true', help='Detect existing sandboxes instead of creating new ones')
+    parser.add_argument('--create-only', action='store_true', help='Create sandboxes only without running tasks (Phase 0)')
 
-    # Batch control
-    parser.add_argument('--batch-size', type=int, help='Sandboxes per batch (None = full concurrent)')
-    parser.add_argument('--batch-interval', type=int, help='Batch interval seconds')
+    # Create batch control
+    parser.add_argument('--create-batch-size', type=int, help='Sandboxes per creation batch (None = full concurrent)')
+    parser.add_argument('--create-batch-interval', type=int, help='Creation batch interval seconds')
+
+    # Task batch control
+    parser.add_argument('--task-batch-size', type=int, help='Sandboxes to start tasks per batch (None = full concurrent)')
+    parser.add_argument('--task-batch-interval', type=int, help='Task batch interval seconds')
 
     # Browser task
     parser.add_argument('--browser-url', type=str, action='append', help='Browser URL (can specify multiple)')

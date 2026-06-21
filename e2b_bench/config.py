@@ -29,9 +29,16 @@ class Config:
     # Detect existing sandboxes mode
     detect_existing: bool = False  # Detect existing sandboxes instead of creating new ones
 
-    # Batch control (None means full concurrent)
-    batch_size: Optional[int] = 20
-    batch_interval: Optional[int] = 30
+    # Create-only mode (create sandboxes without running tasks)
+    create_only: bool = False
+
+    # Create batch control (for sandbox creation, None means full concurrent)
+    create_batch_size: Optional[int] = None
+    create_batch_interval: Optional[int] = None
+
+    # Task batch control (for browser task execution, None means full concurrent)
+    task_batch_size: Optional[int] = None
+    task_batch_interval: Optional[int] = None
 
     # Browser task
     browser_urls: List[str] = field(default_factory=lambda: ["http://192.168.110.10:8080/Weibo.html"])
@@ -60,7 +67,8 @@ class Config:
         """Build Config from dictionary"""
         e2b_env = data.get('e2b_env', {})
         sandbox = data.get('sandbox', {})
-        batch = data.get('batch', {})
+        create_batch = data.get('create_batch', {})
+        task_batch = data.get('task_batch', {})
         browser = data.get('browser', {})
         test = data.get('test', {})
         report = data.get('report', {})
@@ -76,9 +84,13 @@ class Config:
             create_timeout=sandbox.get('create_timeout', 86400),
             total_count=sandbox.get('total_count', 100),
             detect_existing=sandbox.get('detect_existing', False),
+            create_only=sandbox.get('create_only', False),
 
-            batch_size=batch.get('size') if batch else None,
-            batch_interval=batch.get('interval') if batch else None,
+            create_batch_size=create_batch.get('size') if create_batch else None,
+            create_batch_interval=create_batch.get('interval') if create_batch else None,
+
+            task_batch_size=task_batch.get('size') if task_batch else None,
+            task_batch_interval=task_batch.get('interval') if task_batch else None,
 
             browser_urls=browser.get('urls', ["http://192.168.110.10:8080/Weibo.html"]),
             browser_timeout=browser.get('task_timeout', 200),
@@ -106,9 +118,13 @@ class Config:
             create_timeout=args.create_timeout if args.create_timeout else yaml_config.create_timeout,
             total_count=args.total if args.total else yaml_config.total_count,
             detect_existing=args.detect if hasattr(args, 'detect') and args.detect else yaml_config.detect_existing,
+            create_only=args.create_only if hasattr(args, 'create_only') and args.create_only else yaml_config.create_only,
 
-            batch_size=args.batch_size if args.batch_size is not None else yaml_config.batch_size,
-            batch_interval=args.batch_interval if args.batch_interval is not None else yaml_config.batch_interval,
+            create_batch_size=args.create_batch_size if args.create_batch_size is not None else yaml_config.create_batch_size,
+            create_batch_interval=args.create_batch_interval if args.create_batch_interval is not None else yaml_config.create_batch_interval,
+
+            task_batch_size=args.task_batch_size if args.task_batch_size is not None else yaml_config.task_batch_size,
+            task_batch_interval=args.task_batch_interval if args.task_batch_interval is not None else yaml_config.task_batch_interval,
 
             browser_urls=args.browser_url if args.browser_url else yaml_config.browser_urls,
             browser_timeout=args.browser_timeout if args.browser_timeout else yaml_config.browser_timeout,
@@ -136,9 +152,13 @@ class Config:
             create_timeout=args.create_timeout or 86400,
             total_count=args.total or 100,
             detect_existing=args.detect if hasattr(args, 'detect') and args.detect else False,
+            create_only=args.create_only if hasattr(args, 'create_only') and args.create_only else False,
 
-            batch_size=args.batch_size,
-            batch_interval=args.batch_interval,
+            create_batch_size=args.create_batch_size,
+            create_batch_interval=args.create_batch_interval,
+
+            task_batch_size=args.task_batch_size,
+            task_batch_interval=args.task_batch_interval,
 
             browser_urls=args.browser_url or ["http://192.168.110.10:8080/Weibo.html"],
             browser_timeout=args.browser_timeout or 200,
@@ -166,8 +186,17 @@ class Config:
             os.environ["E2B_HTTP_SSL"] = self.e2b_http_ssl
 
     @property
-    def batch_count(self) -> int:
-        """Calculate batch count"""
-        if not self.batch_size:
+    def create_batch_count(self) -> int:
+        """Calculate create batch count"""
+        if not self.create_batch_size:
             return 1  # Full concurrent treated as 1 batch
-        return (self.total_count + self.batch_size - 1) // self.batch_size
+        return (self.total_count + self.create_batch_size - 1) // self.create_batch_size
+
+    @property
+    def task_batch_count(self) -> int:
+        """Calculate task batch count (based on ready sandboxes)"""
+        # This will be calculated dynamically based on actual ready sandboxes
+        # For planning purposes, use total_count as estimate
+        if not self.task_batch_size:
+            return 1
+        return (self.total_count + self.task_batch_size - 1) // self.task_batch_size

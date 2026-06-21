@@ -139,11 +139,30 @@ class StatsCollector:
         lines.append(f"\n[Test Configuration]")
         lines.append(f"  Template:        {self.config.template}")
         lines.append(f"  Total Sandboxes: {self.config.total_count}")
-        if self.config.batch_size:
-            lines.append(f"  Batch Strategy:  {self.config.batch_count} batches x {self.config.batch_size} sandboxes")
-            lines.append(f"  Batch Interval:  {self.config.batch_interval}s")
+
+        # Display mode
+        if self.config.detect_existing:
+            lines.append(f"  Mode:            Detect existing sandboxes")
+        elif self.config.create_only:
+            lines.append(f"  Mode:            Create-only (Phase 0)")
         else:
-            lines.append(f"  Batch Strategy:  Full concurrent creation")
+            lines.append(f"  Mode:            Full workflow")
+
+        # Create batch config
+        if self.config.create_batch_size:
+            lines.append(f"  Create Batch:    {self.config.create_batch_count} batches x {self.config.create_batch_size} sandboxes")
+            lines.append(f"  Create Interval: {self.config.create_batch_interval}s")
+        else:
+            lines.append(f"  Create Batch:    Full concurrent creation")
+
+        # Task batch config
+        if not self.config.create_only:
+            if self.config.task_batch_size:
+                lines.append(f"  Task Batch:      {self.config.task_batch_count} batches x {self.config.task_batch_size} sandboxes")
+                lines.append(f"  Task Interval:   {self.config.task_batch_interval}s")
+            else:
+                lines.append(f"  Task Batch:      Full concurrent start")
+
         lines.append(f"  Test Duration:   {self.config.test_duration}s")
 
         # Sandbox status statistics
