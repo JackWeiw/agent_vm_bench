@@ -38,10 +38,17 @@ except ImportError:
 
         @staticmethod
         def list():
-            """Mock list() for testing - returns iterable"""
-            class MockListedSandbox:
-                sandbox_id = "mock_sandbox_1"
-            return [MockListedSandbox()]  # Return list, not paginator
+            """Mock list() for testing - returns Paginator-like object"""
+            class MockPaginator:
+                has_next = True
+                _items = [type('MockListedSandbox', (), {'sandbox_id': 'mock_sandbox_1'})()]
+
+                def next_items(self):
+                    if self.has_next:
+                        self.has_next = False
+                        return self._items
+                    return []
+            return MockPaginator()
 
         @staticmethod
         def connect(sandbox_id):
@@ -112,8 +119,11 @@ class SandboxManager:
         # List all running sandboxes - returns SandboxPaginator
         try:
             paginator = Sandbox.list()
-            # Paginator needs to be iterated to get items
-            existing_list = list(paginator)
+            # Paginator needs has_next and next_items() to iterate
+            existing_list = []
+            while paginator.has_next:
+                sandboxes = paginator.next_items()
+                existing_list.extend(sandboxes)
             print(f"  Found {len(existing_list)} running sandboxes")
         except Exception as e:
             print(f"  Failed to list sandboxes: {e}")
