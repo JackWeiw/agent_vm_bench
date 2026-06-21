@@ -11,14 +11,23 @@ e2b_env:
 
 # Sandbox configuration
 sandbox:
-  template: "openclaw-browser-v1"
-  create_timeout: 86400
-  total_count: 100
+  template: "openclaw-browser-v1"    # E2B template name (used for creation)
+  create_timeout: 86400              # Sandbox creation timeout (seconds)
+  total_count: 100                   # Total sandbox count (creation mode)
+  detect_existing: false             # Detect existing sandboxes instead of creating new ones
+  create_only: false                 # Create sandboxes only without running tasks (Phase 0)
 
-# Batch startup control (optional, full concurrent if not configured)
-batch:
-  size: 20
-  interval: 30
+# Sandbox creation batch control (optional, full concurrent if not configured)
+# Controls how many sandboxes to create per batch to avoid API/resource overload
+create_batch:
+  size: 20                           # Sandboxes per batch during creation
+  interval: 3                       # Interval between creation batches (seconds)
+
+# Task execution batch control (optional, full concurrent if not configured)
+# Controls how many sandboxes start tasks per batch to avoid target server overload
+task_batch:
+  size: 10                           # Sandboxes to start tasks per batch
+  interval: 5                        # Interval between task batches (seconds)
 
 # Browser task configuration
 browser:
@@ -27,6 +36,13 @@ browser:
   task_timeout: 200
   interval_min: 0.5
   interval_max: 3.0
+  # Warmup configuration (optional, run warmup pages before benchmark)
+  warmup_urls:
+    - "http://192.168.110.10:8080/page1.html"
+    - "http://192.168.110.10:8080/page2.html"
+  warmup_loops: 1            # Loop count for warmup pages
+  warmup_delay: 2           # Delay between warmup pages (seconds)
+  warmup_only: false         # Run warmup phase only, then exit
 
 # Test run configuration
 test:

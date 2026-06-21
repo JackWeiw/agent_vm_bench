@@ -36,6 +36,34 @@ except ImportError:
         def kill(sandbox_id):
             pass
 
+        @staticmethod
+        def list():
+            """Mock list() for testing - returns Paginator-like object"""
+            class MockPaginator:
+                has_next = True
+                _items = [type('MockListedSandbox', (), {'sandbox_id': 'mock_sandbox_1'})()]
+
+                def next_items(self):
+                    if self.has_next:
+                        self.has_next = False
+                        return self._items
+                    return []
+            return MockPaginator()
+
+        @staticmethod
+        def connect(sandbox_id):
+            """Mock connect() for testing"""
+            class MockSandbox:
+                sandbox_id = sandbox_id
+                class MockCommands:
+                    def run(self, cmd, timeout=60, user="root"):
+                        class Result:
+                            exit_code = 0
+                            stdout = ""
+                        return Result()
+                commands = MockCommands()
+            return MockSandbox()
+
 from .config import Config
 from .schemas import SandboxState, SandboxStatus
 
@@ -63,28 +91,96 @@ class SandboxManager:
     def create_all(self) -> Dict[int, SandboxState]:
         """Batch create sandboxes
 
-        Strategy based on batch config:
-        - With batch_size: batched creation to avoid resource spike
+        Strategy based on create_batch config:
+        - With create_batch_size: batched creation to avoid resource spike
         - Without config: full concurrent creation for max performance test
 
         Returns: {sandbox_id: SandboxState}
         """
-        if self.config.batch_size and self.config.batch_size > 0:
+        if self.config.create_batch_size and self.config.create_batch_size > 0:
             return self._create_batched()
         else:
             return self._create_concurrent()
 
+    def detect_existing(self) -> Dict[int, SandboxState]:
+        """Detect existing running sandboxes
+
+        Query E2B API for existing sandboxes, connect to them,
+        check port readiness, and prepare for benchmark.
+
+        Sandbox.list() returns a SandboxPaginator, need to iterate it.
+
+        Returns: {sandbox_id: SandboxState}
+        """
+        print(f"\n{'='*60}")
+        print("Detecting Existing Sandboxes")
+        print(f"{'='*60}")
+
+        # List all running sandboxes - returns SandboxPaginator
+        try:
+            paginator = Sandbox.list()
+            # Paginator needs has_next and next_items() to iterate
+            existing_list = []
+            while paginator.has_next:
+                sandboxes = paginator.next_items()
+                existing_list.extend(sandboxes)
+            print(f"  Found {len(existing_list)} running sandboxes")
+        except Exception as e:
+            print(f"  Failed to list sandboxes: {e}")
+            return {}
+
+        if not existing_list:
+            print("  No existing sandboxes found")
+            return {}
+
+        print(f"  Processing all sandboxes...")
+
+        # Connect to each sandbox and check ports
+        for i, listed_sandbox in enumerate(existing_list):
+            sandbox_id = i + 1
+            e2b_sandbox_id = listed_sandbox.sandbox_id if hasattr(listed_sandbox, 'sandbox_id') else str(listed_sandbox)
+
+            state = SandboxState(sandbox_id=sandbox_id)
+            self.sandbox_states[sandbox_id] = state
+
+            print(f"\n[Sandbox{sandbox_id}] Connecting to E2B:{e2b_sandbox_id}...")
+
+            try:
+                # Connect to existing sandbox
+                sbx = Sandbox.connect(e2b_sandbox_id)
+                state.sandbox_obj = sbx
+                state.creation_metrics.status = SandboxStatus.CREATED
+                print(f"[Sandbox{sandbox_id}] Connected successfully")
+
+                # Check port readiness
+                port_result = self._check_ports(state)
+                if port_result['success']:
+                    state.creation_metrics.status = SandboxStatus.PORT_READY
+                    state.creation_metrics.port_wait_elapsed = port_result['wait_elapsed']
+                    print(f"[Sandbox{sandbox_id}] Ports ready in {port_result['wait_elapsed']:.1f}s")
+                else:
+                    state.creation_metrics.status = SandboxStatus.PORT_FAILED
+                    state.creation_metrics.port_check_error = port_result['error']
+                    print(f"[Sandbox{sandbox_id}] Port check failed: {port_result['error'][:50]}")
+
+            except Exception as e:
+                state.creation_metrics.status = SandboxStatus.FAILED
+                state.creation_metrics.error_msg = str(e)
+                print(f"[Sandbox{sandbox_id}] Connect failed: {str(e)[:80]}")
+
+        return self.sandbox_states
+
     def _create_batched(self) -> Dict[int, SandboxState]:
         """Batched sandbox creation"""
         total = self.config.total_count
-        batch_size = self.config.batch_size
-        batch_count = self.config.batch_count
+        batch_size = self.config.create_batch_size
+        batch_count = self.config.create_batch_count
 
         print(f"\n{'='*60}")
         print(f"Batched Sandbox Creation")
         print(f"  Total: {total} sandboxes")
         print(f"  Batches: {batch_count} x {batch_size}")
-        print(f"  Interval: {self.config.batch_interval}s")
+        print(f"  Interval: {self.config.create_batch_interval}s")
         print(f"{'='*60}")
 
         for batch_id in range(batch_count):
@@ -102,9 +198,9 @@ class SandboxManager:
             self.sandbox_states.update(batch_states)
 
             # Wait between batches (last batch no wait)
-            if batch_id < batch_count - 1 and self.config.batch_interval:
-                print(f"Waiting {self.config.batch_interval}s before next batch...")
-                time.sleep(self.config.batch_interval)
+            if batch_id < batch_count - 1 and self.config.create_batch_interval:
+                print(f"Waiting {self.config.create_batch_interval}s before next batch...")
+                time.sleep(self.config.create_batch_interval)
 
         return self.sandbox_states
 

@@ -26,15 +26,31 @@ class Config:
     create_timeout: int = 86400
     total_count: int = 100
 
-    # Batch control (None means full concurrent)
-    batch_size: Optional[int] = 20
-    batch_interval: Optional[int] = 30
+    # Detect existing sandboxes mode
+    detect_existing: bool = False  # Detect existing sandboxes instead of creating new ones
+
+    # Create-only mode (create sandboxes without running tasks)
+    create_only: bool = False
+
+    # Create batch control (for sandbox creation, None means full concurrent)
+    create_batch_size: Optional[int] = None
+    create_batch_interval: Optional[int] = None
+
+    # Task batch control (for browser task execution, None means full concurrent)
+    task_batch_size: Optional[int] = None
+    task_batch_interval: Optional[int] = None
 
     # Browser task
     browser_urls: List[str] = field(default_factory=lambda: ["http://192.168.110.10:8080/Weibo.html"])
     browser_timeout: int = 200
     browser_interval_min: float = 0.5
     browser_interval_max: float = 3.0
+
+    # Warmup phase configuration
+    warmup_urls: List[str] = field(default_factory=list)  # Warmup page URL list
+    warmup_loops: int = 2             # Warmup loop count
+    warmup_delay: int = 10            # Delay between warmup pages (seconds)
+    warmup_only: bool = False         # Run warmup phase only, then exit
 
     # Test run
     test_duration: int = 600
@@ -57,7 +73,8 @@ class Config:
         """Build Config from dictionary"""
         e2b_env = data.get('e2b_env', {})
         sandbox = data.get('sandbox', {})
-        batch = data.get('batch', {})
+        create_batch = data.get('create_batch', {})
+        task_batch = data.get('task_batch', {})
         browser = data.get('browser', {})
         test = data.get('test', {})
         report = data.get('report', {})
@@ -72,14 +89,25 @@ class Config:
             template=sandbox.get('template', "openclaw-browser-v1"),
             create_timeout=sandbox.get('create_timeout', 86400),
             total_count=sandbox.get('total_count', 100),
+            detect_existing=sandbox.get('detect_existing', False),
+            create_only=sandbox.get('create_only', False),
 
-            batch_size=batch.get('size') if batch else None,
-            batch_interval=batch.get('interval') if batch else None,
+            create_batch_size=create_batch.get('size') if create_batch else None,
+            create_batch_interval=create_batch.get('interval') if create_batch else None,
+
+            task_batch_size=task_batch.get('size') if task_batch else None,
+            task_batch_interval=task_batch.get('interval') if task_batch else None,
 
             browser_urls=browser.get('urls', ["http://192.168.110.10:8080/Weibo.html"]),
             browser_timeout=browser.get('task_timeout', 200),
             browser_interval_min=browser.get('interval_min', 0.5),
             browser_interval_max=browser.get('interval_max', 3.0),
+
+            # Warmup configuration
+            warmup_urls=browser.get('warmup_urls', []),
+            warmup_loops=browser.get('warmup_loops', 2),
+            warmup_delay=browser.get('warmup_delay', 10),
+            warmup_only=browser.get('warmup_only', False),
 
             test_duration=test.get('duration', 600),
             stats_interval=test.get('stats_interval', 10),
@@ -101,14 +129,25 @@ class Config:
             template=args.template if args.template else yaml_config.template,
             create_timeout=args.create_timeout if args.create_timeout else yaml_config.create_timeout,
             total_count=args.total if args.total else yaml_config.total_count,
+            detect_existing=args.detect if hasattr(args, 'detect') and args.detect else yaml_config.detect_existing,
+            create_only=args.create_only if hasattr(args, 'create_only') and args.create_only else yaml_config.create_only,
 
-            batch_size=args.batch_size if args.batch_size is not None else yaml_config.batch_size,
-            batch_interval=args.batch_interval if args.batch_interval is not None else yaml_config.batch_interval,
+            create_batch_size=args.create_batch_size if args.create_batch_size is not None else yaml_config.create_batch_size,
+            create_batch_interval=args.create_batch_interval if args.create_batch_interval is not None else yaml_config.create_batch_interval,
+
+            task_batch_size=args.task_batch_size if args.task_batch_size is not None else yaml_config.task_batch_size,
+            task_batch_interval=args.task_batch_interval if args.task_batch_interval is not None else yaml_config.task_batch_interval,
 
             browser_urls=args.browser_url if args.browser_url else yaml_config.browser_urls,
             browser_timeout=args.browser_timeout if args.browser_timeout else yaml_config.browser_timeout,
             browser_interval_min=args.browser_interval_min if args.browser_interval_min else yaml_config.browser_interval_min,
             browser_interval_max=args.browser_interval_max if args.browser_interval_max else yaml_config.browser_interval_max,
+
+            # Warmup configuration
+            warmup_urls=args.warmup_url if args.warmup_url else yaml_config.warmup_urls,
+            warmup_loops=args.warmup_loops if args.warmup_loops else yaml_config.warmup_loops,
+            warmup_delay=args.warmup_delay if args.warmup_delay else yaml_config.warmup_delay,
+            warmup_only=args.warmup_only if hasattr(args, 'warmup_only') and args.warmup_only else yaml_config.warmup_only,
 
             test_duration=args.duration if args.duration else yaml_config.test_duration,
             stats_interval=args.stats_interval if args.stats_interval else yaml_config.stats_interval,
@@ -130,14 +169,25 @@ class Config:
             template=args.template or "openclaw-browser-v1",
             create_timeout=args.create_timeout or 86400,
             total_count=args.total or 100,
+            detect_existing=args.detect if hasattr(args, 'detect') and args.detect else False,
+            create_only=args.create_only if hasattr(args, 'create_only') and args.create_only else False,
 
-            batch_size=args.batch_size,
-            batch_interval=args.batch_interval,
+            create_batch_size=args.create_batch_size,
+            create_batch_interval=args.create_batch_interval,
+
+            task_batch_size=args.task_batch_size,
+            task_batch_interval=args.task_batch_interval,
 
             browser_urls=args.browser_url or ["http://192.168.110.10:8080/Weibo.html"],
             browser_timeout=args.browser_timeout or 200,
             browser_interval_min=args.browser_interval_min or 0.5,
             browser_interval_max=args.browser_interval_max or 3.0,
+
+            # Warmup configuration
+            warmup_urls=args.warmup_url or [],
+            warmup_loops=args.warmup_loops or 2,
+            warmup_delay=args.warmup_delay or 10,
+            warmup_only=args.warmup_only if hasattr(args, 'warmup_only') and args.warmup_only else False,
 
             test_duration=args.duration or 600,
             stats_interval=args.stats_interval or 10,
@@ -160,8 +210,17 @@ class Config:
             os.environ["E2B_HTTP_SSL"] = self.e2b_http_ssl
 
     @property
-    def batch_count(self) -> int:
-        """Calculate batch count"""
-        if not self.batch_size:
+    def create_batch_count(self) -> int:
+        """Calculate create batch count"""
+        if not self.create_batch_size:
             return 1  # Full concurrent treated as 1 batch
-        return (self.total_count + self.batch_size - 1) // self.batch_size
+        return (self.total_count + self.create_batch_size - 1) // self.create_batch_size
+
+    @property
+    def task_batch_count(self) -> int:
+        """Calculate task batch count (based on ready sandboxes)"""
+        # This will be calculated dynamically based on actual ready sandboxes
+        # For planning purposes, use total_count as estimate
+        if not self.task_batch_size:
+            return 1
+        return (self.total_count + self.task_batch_size - 1) // self.task_batch_size

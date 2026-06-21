@@ -3,7 +3,13 @@
 E2B Sandbox Bench - Main Entry Point
 
 Integrates all components, runs test workflow:
-Create sandboxes -> Start stats -> Start tasks -> Run duration -> Stop -> Report
+Create sandboxes -> Warmup -> Start stats -> Start tasks -> Run duration -> Stop -> Report
+
+Supports multiple modes:
+1. Full workflow: create -> port check -> warmup -> tasks -> stats
+2. Create-only: create -> port check -> exit (Phase 0)
+3. Detect existing: detect -> warmup -> tasks -> stats
+4. Warmup-only: create/detect -> warmup -> exit
 """
 
 import time
@@ -33,59 +39,126 @@ def run_benchmark(config: Config) -> dict:
     print("E2B Sandbox Bench - Batch Performance Test")
     print("=" * 80)
     print(f"  Template: {config.template}")
-    print(f"  Total:    {config.total_count} sandboxes")
-    if config.batch_size:
-        print(f"  Batch:    {config.batch_count} batches x {config.batch_size} (interval {config.batch_interval}s)")
+
+    # Mode display
+    if config.detect_existing:
+        print(f"  Mode:     Detect existing sandboxes")
+    elif config.create_only:
+        print(f"  Mode:     Create-only (Phase 0)")
+    elif config.warmup_only:
+        print(f"  Mode:     Warmup-only")
     else:
-        print(f"  Batch:    Full concurrent creation")
+        print(f"  Mode:     Full workflow")
+
+    print(f"  Total:    {config.total_count} sandboxes")
+
+    # Batch config display
+    if config.create_batch_size:
+        print(f"  Create Batch: {config.create_batch_count} batches x {config.create_batch_size} (interval {config.create_batch_interval}s)")
+    else:
+        print(f"  Create Batch: Full concurrent creation")
+
+    if not config.create_only:
+        if config.task_batch_size:
+            print(f"  Task Batch:   {config.task_batch_count} batches x {config.task_batch_size} (interval {config.task_batch_interval}s)")
+        else:
+            print(f"  Task Batch:   Full concurrent start")
+
+        # Warmup config display
+        if config.warmup_urls:
+            print(f"  Warmup:       {len(config.warmup_urls)} pages x {config.warmup_loops} loops (delay {config.warmup_delay}s)")
+
     print(f"  Duration: {config.test_duration}s")
     print("=" * 80)
 
     # Stop signal
     stop_event = threading.Event()
 
-    # 2. Create sandboxes
-    print("\n[Phase 1] Creating sandboxes...")
+    # 2. Create or detect sandboxes
     sandbox_manager = SandboxManager(config, stop_event)
-    sandbox_states = sandbox_manager.create_all()
 
-    created_count = sum(
+    if config.detect_existing:
+        print("\n[Phase 1] Detecting existing sandboxes...")
+        sandbox_states = sandbox_manager.detect_existing()
+    else:
+        print("\n[Phase 1] Creating sandboxes...")
+        sandbox_states = sandbox_manager.create_all()
+
+    ready_count = sum(
         1 for s in sandbox_states.values()
         if s.creation_metrics.status == SandboxStatus.PORT_READY
     )
-    if created_count == 0:
+    if ready_count == 0:
         print("No sandboxes ready for testing, exiting.")
         return {}
 
-    print(f"\nSandboxes ready for testing: {created_count}/{config.total_count}")
+    print(f"\nSandboxes ready: {ready_count}")
 
-    # 3. Start statistics collection
-    print("\n[Phase 2] Starting stats collector...")
+    # Create-only mode: exit after creation
+    if config.create_only:
+        print("\n[Phase 0 Complete] Create-only mode finished.")
+        print(f"  Created: {len(sandbox_states)} sandboxes")
+        print(f"  Ports Ready: {ready_count}")
+        print(f"  Sandboxes left running for later use.")
+        return {
+            'report': f"Create-only: {ready_count}/{len(sandbox_states)} sandboxes ready",
+            'filepath': None
+        }
+
+    # 3. Warmup phase (if configured)
+    task_manager = TaskManager(config, sandbox_states, stop_event)
+
+    if config.warmup_urls:
+        print("\n[Phase 2] Running warmup phase...")
+        task_manager.start_warmup()
+        warmup_start = time.time()
+
+        completed, failed = task_manager.wait_warmup(timeout=300)
+        warmup_duration = time.time() - warmup_start
+
+        print(f"\nWarmup completed: {completed} sandboxes | {failed} failed | duration {warmup_duration:.1f}s")
+
+        # Warmup-only mode: exit after warmup
+        if config.warmup_only:
+            print("\n[Phase 2 Complete] Warmup-only mode finished.")
+            print(f"  Warmup completed: {completed}/{ready_count}")
+            print(f"  Sandboxes left running for later use.")
+            return {
+                'report': f"Warmup-only: {completed}/{ready_count} sandboxes warmed up",
+                'filepath': None
+            }
+
+    # 4. Start statistics collection
+    print("\n[Phase 3] Starting stats collector...")
     stats_collector = StatsCollector(config, sandbox_states)
     stats_collector.start()
 
-    # 4. Start task execution
-    print("\n[Phase 3] Starting browser tasks...")
-    task_manager = TaskManager(config, sandbox_states, stop_event)
+    # 5. Start task execution (with batch control)
+    print("\n[Phase 4] Starting browser tasks...")
     task_manager.start_all()
 
-    # 5. Run for specified duration
-    print(f"\n[Phase 4] Running for {config.test_duration} seconds...")
+    # 6. Run for specified duration
+    print(f"\n[Phase 5] Running for {config.test_duration} seconds...")
     try:
         time.sleep(config.test_duration)
     except KeyboardInterrupt:
         print("\nUser interrupt, stopping...")
 
-    # 6. Stop all components
-    print("\n[Phase 5] Stopping...")
+    # 7. Stop all components
+    print("\n[Phase 6] Stopping...")
     stop_event.set()
     task_manager.wait_all(timeout=5)
     stats_collector.stop()
-    sandbox_manager.kill_all()
+
+    # Only kill if we created the sandboxes (not in detect mode)
+    if not config.detect_existing:
+        sandbox_manager.kill_all()
+    else:
+        print("Sandboxes left running (detect mode - not killing)")
 
     time.sleep(0.5)  # Allow daemon threads to complete output
 
-    # 7. Generate and save report
+    # 8. Generate and save report
     report = stats_collector.generate_report()
     print("\n" + report)
 
@@ -116,16 +189,28 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--template', type=str, help='E2B template name')
     parser.add_argument('--total', type=int, help='Total sandbox count')
     parser.add_argument('--create-timeout', type=int, help='Sandbox creation timeout')
+    parser.add_argument('--detect', action='store_true', help='Detect existing sandboxes instead of creating new ones')
+    parser.add_argument('--create-only', action='store_true', help='Create sandboxes only without running tasks (Phase 0)')
 
-    # Batch control
-    parser.add_argument('--batch-size', type=int, help='Sandboxes per batch (None = full concurrent)')
-    parser.add_argument('--batch-interval', type=int, help='Batch interval seconds')
+    # Create batch control
+    parser.add_argument('--create-batch-size', type=int, help='Sandboxes per creation batch (None = full concurrent)')
+    parser.add_argument('--create-batch-interval', type=int, help='Creation batch interval seconds')
+
+    # Task batch control
+    parser.add_argument('--task-batch-size', type=int, help='Sandboxes to start tasks per batch (None = full concurrent)')
+    parser.add_argument('--task-batch-interval', type=int, help='Task batch interval seconds')
 
     # Browser task
     parser.add_argument('--browser-url', type=str, action='append', help='Browser URL (can specify multiple)')
     parser.add_argument('--browser-timeout', type=int, help='Browser task timeout')
     parser.add_argument('--browser-interval-min', type=float, help='Task interval minimum')
     parser.add_argument('--browser-interval-max', type=float, help='Task interval maximum')
+
+    # Warmup configuration
+    parser.add_argument('--warmup-url', type=str, action='append', help='Warmup page URL (can specify multiple)')
+    parser.add_argument('--warmup-loops', type=int, default=2, help='Warmup loop count')
+    parser.add_argument('--warmup-delay', type=int, default=10, help='Warmup page delay (seconds)')
+    parser.add_argument('--warmup-only', action='store_true', help='Run warmup phase only, then exit')
 
     # Test run
     parser.add_argument('--duration', type=int, help='Test duration seconds')

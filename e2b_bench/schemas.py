@@ -45,6 +45,7 @@ class BrowserMetrics:
     failed_count: int = 0
     timeout_count: int = 0
     latencies: List[float] = field(default_factory=list)
+    last_error: str = ""  # Last error message for debugging
 
     def add(self, latency: float, success: bool, timeout: bool = False) -> None:
         """Add a task result"""
@@ -87,6 +88,7 @@ class SandboxState:
     is_alive: bool = True        # Sandbox alive status
     last_task_time: float = 0.0  # Last task execution time
     consecutive_failures: int = 0  # Consecutive failure count
+    warmup_done: bool = False    # Warmup phase completed flag
 
 
 @dataclass
