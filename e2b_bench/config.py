@@ -46,6 +46,12 @@ class Config:
     browser_interval_min: float = 0.5
     browser_interval_max: float = 3.0
 
+    # Warmup phase configuration
+    warmup_urls: List[str] = field(default_factory=list)  # Warmup page URL list
+    warmup_loops: int = 2             # Warmup loop count
+    warmup_delay: int = 10            # Delay between warmup pages (seconds)
+    warmup_only: bool = False         # Run warmup phase only, then exit
+
     # Test run
     test_duration: int = 600
     stats_interval: int = 10
@@ -97,6 +103,12 @@ class Config:
             browser_interval_min=browser.get('interval_min', 0.5),
             browser_interval_max=browser.get('interval_max', 3.0),
 
+            # Warmup configuration
+            warmup_urls=browser.get('warmup_urls', []),
+            warmup_loops=browser.get('warmup_loops', 2),
+            warmup_delay=browser.get('warmup_delay', 10),
+            warmup_only=browser.get('warmup_only', False),
+
             test_duration=test.get('duration', 600),
             stats_interval=test.get('stats_interval', 10),
 
@@ -131,6 +143,12 @@ class Config:
             browser_interval_min=args.browser_interval_min if args.browser_interval_min else yaml_config.browser_interval_min,
             browser_interval_max=args.browser_interval_max if args.browser_interval_max else yaml_config.browser_interval_max,
 
+            # Warmup configuration
+            warmup_urls=args.warmup_url if args.warmup_url else yaml_config.warmup_urls,
+            warmup_loops=args.warmup_loops if args.warmup_loops else yaml_config.warmup_loops,
+            warmup_delay=args.warmup_delay if args.warmup_delay else yaml_config.warmup_delay,
+            warmup_only=args.warmup_only if hasattr(args, 'warmup_only') and args.warmup_only else yaml_config.warmup_only,
+
             test_duration=args.duration if args.duration else yaml_config.test_duration,
             stats_interval=args.stats_interval if args.stats_interval else yaml_config.stats_interval,
 
@@ -164,6 +182,12 @@ class Config:
             browser_timeout=args.browser_timeout or 200,
             browser_interval_min=args.browser_interval_min or 0.5,
             browser_interval_max=args.browser_interval_max or 3.0,
+
+            # Warmup configuration
+            warmup_urls=args.warmup_url or [],
+            warmup_loops=args.warmup_loops or 2,
+            warmup_delay=args.warmup_delay or 10,
+            warmup_only=args.warmup_only if hasattr(args, 'warmup_only') and args.warmup_only else False,
 
             test_duration=args.duration or 600,
             stats_interval=args.stats_interval or 10,

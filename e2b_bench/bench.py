@@ -3,12 +3,13 @@
 E2B Sandbox Bench - Main Entry Point
 
 Integrates all components, runs test workflow:
-Create sandboxes -> Start stats -> Start tasks -> Run duration -> Stop -> Report
+Create sandboxes -> Warmup -> Start stats -> Start tasks -> Run duration -> Stop -> Report
 
-Supports three modes:
-1. Full workflow: create -> port check -> tasks -> stats
+Supports multiple modes:
+1. Full workflow: create -> port check -> warmup -> tasks -> stats
 2. Create-only: create -> port check -> exit (Phase 0)
-3. Detect existing: detect -> tasks -> stats
+3. Detect existing: detect -> warmup -> tasks -> stats
+4. Warmup-only: create/detect -> warmup -> exit
 """
 
 import time
@@ -44,6 +45,8 @@ def run_benchmark(config: Config) -> dict:
         print(f"  Mode:     Detect existing sandboxes")
     elif config.create_only:
         print(f"  Mode:     Create-only (Phase 0)")
+    elif config.warmup_only:
+        print(f"  Mode:     Warmup-only")
     else:
         print(f"  Mode:     Full workflow")
 
@@ -55,11 +58,15 @@ def run_benchmark(config: Config) -> dict:
     else:
         print(f"  Create Batch: Full concurrent creation")
 
-    if not config.create_only and not config.detect_existing:
+    if not config.create_only:
         if config.task_batch_size:
             print(f"  Task Batch:   {config.task_batch_count} batches x {config.task_batch_size} (interval {config.task_batch_interval}s)")
         else:
             print(f"  Task Batch:   Full concurrent start")
+
+        # Warmup config display
+        if config.warmup_urls:
+            print(f"  Warmup:       {len(config.warmup_urls)} pages x {config.warmup_loops} loops (delay {config.warmup_delay}s)")
 
     print(f"  Duration: {config.test_duration}s")
     print("=" * 80)
@@ -98,25 +105,47 @@ def run_benchmark(config: Config) -> dict:
             'filepath': None
         }
 
-    # 3. Start statistics collection
-    print("\n[Phase 2] Starting stats collector...")
+    # 3. Warmup phase (if configured)
+    task_manager = TaskManager(config, sandbox_states, stop_event)
+
+    if config.warmup_urls:
+        print("\n[Phase 2] Running warmup phase...")
+        task_manager.start_warmup()
+        warmup_start = time.time()
+
+        completed, failed = task_manager.wait_warmup(timeout=300)
+        warmup_duration = time.time() - warmup_start
+
+        print(f"\nWarmup completed: {completed} sandboxes | {failed} failed | duration {warmup_duration:.1f}s")
+
+        # Warmup-only mode: exit after warmup
+        if config.warmup_only:
+            print("\n[Phase 2 Complete] Warmup-only mode finished.")
+            print(f"  Warmup completed: {completed}/{ready_count}")
+            print(f"  Sandboxes left running for later use.")
+            return {
+                'report': f"Warmup-only: {completed}/{ready_count} sandboxes warmed up",
+                'filepath': None
+            }
+
+    # 4. Start statistics collection
+    print("\n[Phase 3] Starting stats collector...")
     stats_collector = StatsCollector(config, sandbox_states)
     stats_collector.start()
 
-    # 4. Start task execution (with batch control)
-    print("\n[Phase 3] Starting browser tasks...")
-    task_manager = TaskManager(config, sandbox_states, stop_event)
+    # 5. Start task execution (with batch control)
+    print("\n[Phase 4] Starting browser tasks...")
     task_manager.start_all()
 
-    # 5. Run for specified duration
-    print(f"\n[Phase 4] Running for {config.test_duration} seconds...")
+    # 6. Run for specified duration
+    print(f"\n[Phase 5] Running for {config.test_duration} seconds...")
     try:
         time.sleep(config.test_duration)
     except KeyboardInterrupt:
         print("\nUser interrupt, stopping...")
 
-    # 6. Stop all components
-    print("\n[Phase 5] Stopping...")
+    # 7. Stop all components
+    print("\n[Phase 6] Stopping...")
     stop_event.set()
     task_manager.wait_all(timeout=5)
     stats_collector.stop()
@@ -129,7 +158,7 @@ def run_benchmark(config: Config) -> dict:
 
     time.sleep(0.5)  # Allow daemon threads to complete output
 
-    # 7. Generate and save report
+    # 8. Generate and save report
     report = stats_collector.generate_report()
     print("\n" + report)
 
@@ -176,6 +205,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--browser-timeout', type=int, help='Browser task timeout')
     parser.add_argument('--browser-interval-min', type=float, help='Task interval minimum')
     parser.add_argument('--browser-interval-max', type=float, help='Task interval maximum')
+
+    # Warmup configuration
+    parser.add_argument('--warmup-url', type=str, action='append', help='Warmup page URL (can specify multiple)')
+    parser.add_argument('--warmup-loops', type=int, default=2, help='Warmup loop count')
+    parser.add_argument('--warmup-delay', type=int, default=10, help='Warmup page delay (seconds)')
+    parser.add_argument('--warmup-only', action='store_true', help='Run warmup phase only, then exit')
 
     # Test run
     parser.add_argument('--duration', type=int, help='Test duration seconds')

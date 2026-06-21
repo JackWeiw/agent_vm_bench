@@ -36,6 +36,13 @@ browser:
   task_timeout: 200
   interval_min: 0.5
   interval_max: 3.0
+  # Warmup configuration (optional, run warmup pages before benchmark)
+  warmup_urls:
+    - "http://192.168.110.10:8080/page1.html"
+    - "http://192.168.110.10:8080/page2.html"
+  warmup_loops: 2            # Loop count for warmup pages
+  warmup_delay: 10           # Delay between warmup pages (seconds)
+  warmup_only: false         # Run warmup phase only, then exit
 
 # Test run configuration
 test:

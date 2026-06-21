@@ -88,6 +88,7 @@ class SandboxState:
     is_alive: bool = True        # Sandbox alive status
     last_task_time: float = 0.0  # Last task execution time
     consecutive_failures: int = 0  # Consecutive failure count
+    warmup_done: bool = False    # Warmup phase completed flag
 
 
 @dataclass
