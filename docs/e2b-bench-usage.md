@@ -216,6 +216,17 @@ For each sandbox:
 - **Memory preheating** - When testing memory-intensive browser operations
 - **Two-phase testing** - Warmup all sandboxes first, then benchmark subset
 
+### Warmup Behavior in Different Modes
+
+| Mode | Warmup Behavior | Sandbox Source |
+|------|-----------------|----------------|
+| `--detect` + warmup | Warmup on detected sandboxes | Existing (no creation) |
+| No `--detect` + warmup | Warmup on newly created sandboxes | Newly created |
+| `--warmup-only` + `--detect` | Warmup only on detected sandboxes, then exit | Existing |
+| `--warmup-only` (no detect) | Create → Warmup → Exit | Newly created |
+
+**Note**: Warmup phase always runs after sandbox source is determined. It does not create new sandboxes when `--detect` is enabled.
+
 ## Batch Control
 
 ### Two Independent Batch Controls
