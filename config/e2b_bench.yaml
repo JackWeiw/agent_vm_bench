@@ -21,7 +21,7 @@ sandbox:
 # Controls how many sandboxes to create per batch to avoid API/resource overload
 create_batch:
   size: 20                           # Sandboxes per batch during creation
-  interval: 30                       # Interval between creation batches (seconds)
+  interval: 3                       # Interval between creation batches (seconds)
 
 # Task execution batch control (optional, full concurrent if not configured)
 # Controls how many sandboxes start tasks per batch to avoid target server overload
