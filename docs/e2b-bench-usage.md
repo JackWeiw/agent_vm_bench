@@ -6,10 +6,11 @@ E2B Sandbox batch performance testing tool for measuring sandbox startup perform
 
 - **Batch Sandbox Creation** - Support batched or full concurrent creation
 - **Port Check** - Automatically check 18789 (openclaw-gateway) and 11436 (llama-server) port readiness
+- **Browser Warmup Phase** - Optional warmup phase to preheat browser memory before benchmark
 - **Browser Task Execution** - Execute browser tasks and collect performance data
 - **Real-time Statistics** - Real-time display of creation time, port wait time, task latency
 - **Performance Report** - Generate detailed performance report (P50/P95/P99 latency)
-- **Three Running Modes** - Full workflow, create-only, detect existing
+- **Four Running Modes** - Full workflow, create-only, detect existing, warmup-only
 - **Separate Batch Control** - Independent batch config for creation and task execution
 
 ## Architecture
@@ -72,6 +73,21 @@ create_batch:
 task_batch:
   size: 10      # Sandboxes to start tasks per batch
   interval: 5   # Seconds between task batches
+
+# Browser warmup configuration (optional, preheat browser memory before benchmark)
+browser:
+  urls:
+    - "http://192.168.110.10:8080/Weibo.html"
+  task_timeout: 200
+  interval_min: 0.5
+  interval_max: 3.0
+  # Warmup configuration
+  warmup_urls:
+    - "http://192.168.110.10:8080/page1.html"
+    - "http://192.168.110.10:8080/page2.html"
+  warmup_loops: 2      # Number of warmup page loops
+  warmup_delay: 10     # Delay between warmup pages (seconds)
+  warmup_only: false   # Run warmup phase only, then exit
 ```
 
 ### 3. Run Test
@@ -123,13 +139,82 @@ python -m e2b_bench --config config/e2b_bench.yaml \
     --task-batch-interval 5
 ```
 
+#### Warmup-Only Mode
+
+Run warmup phase only to preheat browser memory, then exit. Sandboxes stay running for later benchmark:
+
+```bash
+python -m e2b_bench --config config/e2b_bench.yaml --warmup-only
+
+# With custom warmup pages
+python -m e2b_bench --config config/e2b_bench.yaml \
+    --warmup-only \
+    --warmup-url http://192.168.110.10:8080/page1.html \
+    --warmup-url http://192.168.110.10:8080/page2.html \
+    --warmup-loops 2 \
+    --warmup-delay 10
+```
+
+#### Full Workflow with Warmup
+
+Create sandboxes, run warmup, then execute benchmark:
+
+```bash
+python -m e2b_bench --config config/e2b_bench.yaml \
+    --warmup-url http://192.168.110.10:8080/page1.html \
+    --warmup-loops 2 \
+    --duration 600
+```
+
 ## Running Modes Comparison
 
 | Mode | Flag | Description | Sandbox Behavior |
 |------|------|-------------|------------------|
-| **Full Workflow** | (default) | Create → Port Check → Tasks → Report | Killed after test |
+| **Full Workflow** | (default) | Create → Port Check → Warmup → Tasks → Report | Killed after test |
 | **Create-Only** | `--create-only` | Create → Port Check → Exit | Left running |
-| **Detect Existing** | `--detect` | Detect → Tasks → Report | Left running |
+| **Detect Existing** | `--detect` | Detect → Warmup → Tasks → Report | Left running |
+| **Warmup-Only** | `--warmup-only` | Create/Detect → Warmup → Exit | Left running |
+
+## Warmup Phase
+
+### What is Warmup?
+
+Warmup phase preheats browser memory by visiting warmup pages before the actual benchmark. This helps:
+
+1. **Preload browser components** - Load Chromium and openclaw into memory
+2. **Stabilize memory footprint** - Bring QEMU process memory to target value
+3. **Reduce cold-start latency** - First benchmark task runs faster after warmup
+
+### Warmup Configuration
+
+```yaml
+browser:
+  warmup_urls:           # List of warmup pages
+    - "http://server/page1.html"
+    - "http://server/page2.html"
+  warmup_loops: 2        # Loop through warmup pages 2 times
+  warmup_delay: 10       # Wait 10s between each page
+  warmup_only: false     # If true, exit after warmup
+```
+
+### Warmup Workflow
+
+```text
+For each sandbox:
+  for loop in range(warmup_loops):
+    for url in warmup_urls:
+      openclaw browser open {url}
+      wait warmup_delay seconds
+  openclaw config set memory.chunking.tokens 200
+  openclaw memory index
+  mark warmup_done = True
+```
+
+### When to Use Warmup
+
+- **Before benchmark** - Run warmup to get stable performance measurements
+- **Memory preheating** - When testing memory-intensive browser operations
+- **Two-phase testing** - Warmup all sandboxes first, then benchmark subset
 
 ## Batch Control
 
@@ -191,6 +276,12 @@ Options:
   --browser-interval-min    Task interval minimum
   --browser-interval-max    Task interval maximum
   
+  # Warmup Phase
+  --warmup-url              Warmup page URL (can specify multiple)
+  --warmup-loops            Warmup loop count (default: 2)
+  --warmup-delay            Delay between warmup pages (default: 10)
+  --warmup-only             Run warmup phase only, then exit
+  
   # Test Run
   --duration                Test duration seconds
   --stats-interval          Stats snapshot interval
@@ -202,7 +293,7 @@ Options:
 
 ## Test Workflow
 
-```
+```text
 Phase 1: Create/Detect Sandboxes
     ├── [Full/Create-Only] Call sandbox.create() API
     ├── [Detect] Query existing sandboxes via Sandbox.list()
@@ -217,15 +308,23 @@ Phase 2: Port Check
 
 [Create-Only Mode: Exit Here]
 
-Phase 3: Start Browser Tasks
+Phase 3: Warmup Phase (optional)
+    ├── [With warmup_urls] Run warmup for each sandbox
+    ├── Visit warmup pages (warmup_loops times)
+    ├── Execute openclaw config set + memory index
+    └── Mark warmup_done when complete
+
+[Warmup-Only Mode: Exit Here]
+
+Phase 4: Start Browser Tasks
     ├── [With task_batch] Batched task start
     ├── [Without config] Full concurrent start
     └── Each sandbox has independent task thread
 
-Phase 4: Run Test
+Phase 5: Run Test
     └── Collect real-time statistics
 
-Phase 5: Stop and Report
+Phase 6: Stop and Report
     ├── [Created sandboxes] Kill all sandboxes
     ├── [Detect mode] Leave sandboxes running
     └── Generate performance report
