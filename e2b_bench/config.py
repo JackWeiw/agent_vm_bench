@@ -40,6 +40,9 @@ class Config:
     task_batch_size: Optional[int] = None
     task_batch_interval: Optional[int] = None
 
+    # Benchmark stress percent (percentage of sandboxes to run benchmark)
+    benchmark_percent: float = 1.0  # Percentage of sandboxes for benchmark (default 100%)
+
     # Browser task
     browser_urls: List[str] = field(default_factory=lambda: ["http://192.168.110.10:8080/Weibo.html"])
     browser_timeout: int = 200
@@ -98,6 +101,8 @@ class Config:
             task_batch_size=task_batch.get('size') if task_batch else None,
             task_batch_interval=task_batch.get('interval') if task_batch else None,
 
+            benchmark_percent=test.get('benchmark_percent', 1.0),
+
             browser_urls=browser.get('urls', ["http://192.168.110.10:8080/Weibo.html"]),
             browser_timeout=browser.get('task_timeout', 200),
             browser_interval_min=browser.get('interval_min', 0.5),
@@ -149,6 +154,8 @@ class Config:
             warmup_delay=args.warmup_delay if args.warmup_delay else yaml_config.warmup_delay,
             warmup_only=args.warmup_only if hasattr(args, 'warmup_only') and args.warmup_only else yaml_config.warmup_only,
 
+            benchmark_percent=args.benchmark_percent if args.benchmark_percent else yaml_config.benchmark_percent,
+
             test_duration=args.duration if args.duration else yaml_config.test_duration,
             stats_interval=args.stats_interval if args.stats_interval else yaml_config.stats_interval,
 
@@ -189,6 +196,8 @@ class Config:
             warmup_delay=args.warmup_delay or 10,
             warmup_only=args.warmup_only if hasattr(args, 'warmup_only') and args.warmup_only else False,
 
+            benchmark_percent=args.benchmark_percent if args.benchmark_percent else 1.0,
+
             test_duration=args.duration or 600,
             stats_interval=args.stats_interval or 10,
 
@@ -224,3 +233,11 @@ class Config:
         if not self.task_batch_size:
             return 1
         return (self.total_count + self.task_batch_size - 1) // self.task_batch_size
+
+    @property
+    def benchmark_count(self) -> int:
+        """Calculate actual sandbox count for benchmark phase
+
+        Based on benchmark_percent (e.g., 0.5 = 50% of sandboxes)
+        """
+        return max(1, int(self.total_count * self.benchmark_percent))

@@ -69,6 +69,12 @@ def run_benchmark(config: Config) -> dict:
             print(f"  Warmup:       {len(config.warmup_urls)} pages x {config.warmup_loops} loops (delay {config.warmup_delay}s)")
 
     print(f"  Duration: {config.test_duration}s")
+
+    # Benchmark percent display
+    if config.benchmark_percent < 1.0:
+        benchmark_count = config.benchmark_count
+        print(f"  Benchmark: {benchmark_count}/{config.total_count} sandboxes ({config.benchmark_percent*100:.0f}%)")
+
     print("=" * 80)
 
     # Stop signal
@@ -175,7 +181,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     # Configuration file
-    parser.add_argument('--config', type=str, default=None,
+    parser.add_argument('-c', '--config', type=str, default=None,
                         help='YAML configuration file path')
 
     # E2B environment variables
@@ -186,10 +192,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--e2b-http-ssl', type=str, help='E2B HTTP SSL setting')
 
     # Sandbox configuration
-    parser.add_argument('--template', type=str, help='E2B template name')
-    parser.add_argument('--total', type=int, help='Total sandbox count')
+    parser.add_argument('-t', '--template', type=str, help='E2B template name')
+    parser.add_argument('-n', '--total', type=int, help='Total sandbox count')
     parser.add_argument('--create-timeout', type=int, help='Sandbox creation timeout')
-    parser.add_argument('--detect', action='store_true', help='Detect existing sandboxes instead of creating new ones')
+    parser.add_argument('-d', '--detect', action='store_true', help='Detect existing sandboxes instead of creating new ones')
     parser.add_argument('--create-only', action='store_true', help='Create sandboxes only without running tasks (Phase 0)')
 
     # Create batch control
@@ -207,17 +213,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--browser-interval-max', type=float, help='Task interval maximum')
 
     # Warmup configuration
-    parser.add_argument('--warmup-url', type=str, action='append', help='Warmup page URL (can specify multiple)')
+    parser.add_argument('-w', '--warmup-url', type=str, action='append', help='Warmup page URL (can specify multiple)')
     parser.add_argument('--warmup-loops', type=int, default=2, help='Warmup loop count')
     parser.add_argument('--warmup-delay', type=int, default=10, help='Warmup page delay (seconds)')
-    parser.add_argument('--warmup-only', action='store_true', help='Run warmup phase only, then exit')
+    parser.add_argument('-wp', '--warmup-only', action='store_true', help='Run warmup phase only, then exit')
+
+    # Benchmark control
+    parser.add_argument('-bp', '--benchmark-percent', type=float, default=1.0, help='Percentage of sandboxes for benchmark (e.g., 0.5 = 50%%)')
 
     # Test run
     parser.add_argument('--duration', type=int, help='Test duration seconds')
     parser.add_argument('--stats-interval', type=int, help='Stats snapshot interval')
 
     # Report
-    parser.add_argument('--output-dir', type=str, help='Report output directory')
+    parser.add_argument('-o', '--output-dir', type=str, help='Report output directory')
     parser.add_argument('--filename-prefix', type=str, help='Report filename prefix')
 
     return parser
