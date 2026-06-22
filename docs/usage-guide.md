@@ -66,20 +66,26 @@ python3 create_server.py \
   --image ubuntu-24.04
 ```
 
-### qemu_monitor.py - Resource Monitoring
+### vm_monitor.py - Resource Monitoring
 
 ```bash
-# Basic monitoring
-python3 qemu_monitor.py -t 300 -i 2
+# Basic monitoring (QEMU, default)
+python3 vm_monitor.py -t 300 -i 2
+
+# Firecracker monitoring
+python3 vm_monitor.py --vmm firecracker -t 300 -i 2
 
 # With log collection
-python3 qemu_monitor.py -t 300 -i 2 --enable-capture
+python3 vm_monitor.py -t 300 -i 2 --enable-capture
 
 # Custom output directory
-python3 qemu_monitor.py -t 300 --enable-capture --log-dir /data/test_run_1
+python3 vm_monitor.py -t 300 --enable-capture --log-dir /data/test_run_1
 
 # Specific NUMA nodes
-python3 qemu_monitor.py -t 300 --enable-capture --numa 0,1
+python3 vm_monitor.py -t 300 --enable-capture --numa 0,1
+
+# Backward compatible (deprecated)
+python3 qemu_monitor.py -t 300 -i 2
 ```
 
 #### Parameters
@@ -88,10 +94,55 @@ python3 qemu_monitor.py -t 300 --enable-capture --numa 0,1
 |-----------|-------------|
 | `-t` | Duration in seconds |
 | `-i` | Sampling interval in seconds |
+| `--vmm` | VMM type: `qemu` (default) or `firecracker` |
 | `--enable-capture` | Enable log collection (devkit, ksys, ub_watch) |
 | `--log-dir` | Output directory |
 | `--numa` | NUMA nodes to monitor |
 | `--stress-file` | Lock file for sync with benchmark |
+
+#### VMM Types
+
+| VMM Type | Process Names | Description |
+|----------|---------------|-------------|
+| `qemu` | `qemu-kvm`, `qemu-system` | QEMU/KVM virtual machines (default) |
+| `firecracker` | `firecracker` | Firecracker microVMs (E2B sandboxes) |
+
+#### Python API
+
+```python
+from vm_monitor import QEMUMonitor, FirecrackerMonitor, VMMonitorBase
+
+# QEMU monitoring
+qemu_monitor = QEMUMonitor()
+qemu_monitor.target_numa_nodes = [0, 1]
+qemu_monitor.start_monitoring(duration_seconds=60, interval_seconds=3)
+qemu_monitor.analyze_and_export()
+
+# Firecracker monitoring
+fc_monitor = FirecrackerMonitor()
+fc_monitor.start_monitoring(duration_seconds=60, interval_seconds=3)
+
+# Custom VMM (extend VMMonitorBase)
+class MyVMMMonitor(VMMonitorBase):
+    def get_process_names(self):
+        return ('my-vmm-process',)
+    
+    def extract_vm_id(self, pid, cmdline):
+        return f"myvm-{pid}"
+    
+    def get_monitor_title(self):
+        return "My VMM Monitoring"
+    
+    def get_no_vm_message(self):
+        return "No running My VMM instances"
+    
+    def get_csv_filename_prefix(self):
+        return "my_vmm_monitor"
+    
+    def get_vms_realtime(self):
+        # Implement process discovery logic
+        ...
+```
 
 ---
 

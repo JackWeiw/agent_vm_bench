@@ -74,17 +74,23 @@ python3 create_server.py \
 ### 6. 资源监控
 
 ```bash
-# 基础监控
-python3 qemu_monitor.py -t 300 -i 2
+# 基础监控（QEMU，默认）
+python3 vm_monitor.py -t 300 -i 2
+
+# Firecracker 监控
+python3 vm_monitor.py --vmm firecracker -t 300 -i 2
 
 # 带日志采集
-python3 qemu_monitor.py -t 300 -i 2 --enable-capture
+python3 vm_monitor.py -t 300 -i 2 --enable-capture
 
 # 自定义输出目录
-python3 qemu_monitor.py -t 300 --enable-capture --log-dir /data/test_run_1
+python3 vm_monitor.py -t 300 --enable-capture --log-dir /data/test_run_1
 
 # 指定 NUMA 节点
-python3 qemu_monitor.py -t 300 --enable-capture --numa 0,1
+python3 vm_monitor.py -t 300 --enable-capture --numa 0,1
+
+# 向后兼容（已废弃）
+python3 qemu_monitor.py -t 300 -i 2
 ```
 
 ### 7. 运行压测
@@ -163,9 +169,35 @@ results/
 | 文件 | 说明 |
 |------|------|
 | `create_server.py` | 创建 OpenStack VM |
-| `qemu_monitor.py` | 监控 QEMU 资源 + 日志采集 |
+| `vm_monitor.py` | 监控 VM 资源（QEMU/Firecracker）+ 日志采集 |
+| `qemu_monitor.py` | （已废弃）QEMU 监控旧入口 |
 | `vm_bench_lite.py` | 浏览器/QA 压测 |
 | `auto_vm_test.py` | 单次测试自动化 |
 | `batch_test_scheduler.py` | 批量测试调度 |
 | `stress_tool.cpp` | VM 压测工具 |
 | `download_page.sh` | 下载预热页面 |
+
+---
+
+## vm_monitor 包
+
+`vm_monitor` 包提供统一的监控框架，支持多种 VMM 类型：
+
+| VMM 类型 | 进程名 | CLI 参数 |
+|----------|--------|----------|
+| QEMU | `qemu-kvm`, `qemu-system` | `--vmm qemu`（默认） |
+| Firecracker | `firecracker` | `--vmm firecracker` |
+
+**Python API：**
+
+```python
+from vm_monitor import QEMUMonitor, FirecrackerMonitor, VMMonitorBase
+
+# QEMU 监控
+qemu_monitor = QEMUMonitor()
+qemu_monitor.start_monitoring(duration_seconds=60, interval_seconds=3)
+
+# Firecracker 监控
+fc_monitor = FirecrackerMonitor()
+fc_monitor.start_monitoring(duration_seconds=60, interval_seconds=3)
+```
