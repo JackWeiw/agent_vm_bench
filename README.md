@@ -76,17 +76,23 @@ python3 create_server.py \
 ### 6. Resource Monitoring
 
 ```bash
-# Basic monitoring
-python3 qemu_monitor.py -t 300 -i 2
+# Basic monitoring (QEMU, default)
+python3 vm_monitor.py -t 300 -i 2
+
+# Firecracker monitoring
+python3 vm_monitor.py --vmm firecracker -t 300 -i 2
 
 # With log collection
-python3 qemu_monitor.py -t 300 -i 2 --enable-capture
+python3 vm_monitor.py -t 300 -i 2 --enable-capture
 
 # Custom output directory
-python3 qemu_monitor.py -t 300 --enable-capture --log-dir /data/test_run_1
+python3 vm_monitor.py -t 300 --enable-capture --log-dir /data/test_run_1
 
 # Specific NUMA nodes
-python3 qemu_monitor.py -t 300 --enable-capture --numa 0,1
+python3 vm_monitor.py -t 300 --enable-capture --numa 0,1
+
+# Backward compatible (deprecated)
+python3 qemu_monitor.py -t 300 -i 2
 ```
 
 ### 7. Run Benchmark
@@ -165,9 +171,35 @@ results/
 | File | Description |
 |------|-------------|
 | `create_server.py` | Create OpenStack VMs |
-| `qemu_monitor.py` | Monitor QEMU resources + log collection |
+| `vm_monitor.py` | Monitor VM resources (QEMU/Firecracker) + log collection |
+| `qemu_monitor.py` | (Deprecated) Legacy entry point for QEMU monitoring |
 | `vm_bench_lite.py` | Browser/QA benchmark |
 | `auto_vm_test.py` | Single test automation |
 | `batch_test_scheduler.py` | Batch test orchestration |
 | `stress_tool.cpp` | VM stress tool |
 | `download_page.sh` | Download warmup pages |
+
+---
+
+## vm_monitor Package
+
+The `vm_monitor` package provides a unified monitoring framework for multiple VMM types:
+
+| VMM Type | Process Names | CLI Flag |
+|----------|---------------|----------|
+| QEMU | `qemu-kvm`, `qemu-system` | `--vmm qemu` (default) |
+| Firecracker | `firecracker` | `--vmm firecracker` |
+
+**Python API:**
+
+```python
+from vm_monitor import QEMUMonitor, FirecrackerMonitor, VMMonitorBase
+
+# QEMU monitoring
+qemu_monitor = QEMUMonitor()
+qemu_monitor.start_monitoring(duration_seconds=60, interval_seconds=3)
+
+# Firecracker monitoring
+fc_monitor = FirecrackerMonitor()
+fc_monitor.start_monitoring(duration_seconds=60, interval_seconds=3)
+```
