@@ -100,12 +100,82 @@ def run_benchmark(config: Config) -> dict:
 
     print(f"\nSandboxes ready: {ready_count}")
 
-    # Create-only mode: exit after creation
+    # Create-only mode: exit after creation with detailed timing report
     if config.create_only:
         print("\n[Phase 0 Complete] Create-only mode finished.")
         print(f"  Created: {len(sandbox_states)} sandboxes")
         print(f"  Ports Ready: {ready_count}")
         print(f"  Sandboxes left running for later use.")
+
+        # Generate creation timing report
+        from .utils import calc_percentiles
+
+        # Sandbox status statistics
+        ready_states = [s for s in sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY]
+        failed_states = [s for s in sandbox_states.values() if s.creation_metrics.status == SandboxStatus.FAILED]
+        port_failed_states = [s for s in sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_FAILED]
+
+        print("\n" + "=" * 70)
+        print("Creation Timing Report")
+        print("=" * 70)
+        print(f"  Created (API):       {len([s for s in sandbox_states.values() if s.creation_metrics.status not in (SandboxStatus.PENDING, SandboxStatus.CREATING)])} / {len(sandbox_states)}")
+        print(f"  Ports Ready:         {len(ready_states)} / {len(sandbox_states)}")
+        print(f"  Create Failed:       {len(failed_states)}")
+        print(f"  Port Check Failed:   {len(port_failed_states)}")
+        if failed_states:
+            print(f"  Create Failed IDs:   {[s.sandbox_id for s in failed_states[:10]]}")
+        if port_failed_states:
+            print(f"  Port Failed IDs:     {[s.sandbox_id for s in port_failed_states[:10]]}")
+
+        # sandbox.create performance statistics
+        create_times = [
+            s.creation_metrics.create_elapsed for s in sandbox_states.values()
+            if s.creation_metrics.create_elapsed > 0 and s.creation_metrics.status not in (SandboxStatus.FAILED, SandboxStatus.PENDING, SandboxStatus.CREATING)
+        ]
+        if create_times:
+            stats = calc_percentiles(create_times)
+            print(f"\n[Sandbox.create Performance]")
+            print(f"  (sandbox.create API call time, excluding port wait)")
+            print(f"  Min:  {stats['min']:.1f}s")
+            print(f"  Max:  {stats['max']:.1f}s")
+            print(f"  Avg:  {stats['avg']:.1f}s")
+            print(f"  P50:  {stats['p50']:.1f}s")
+            print(f"  P95:  {stats['p95']:.1f}s")
+            print(f"  P99:  {stats['p99']:.1f}s")
+
+        # Port wait performance statistics
+        port_wait_times = [
+            s.creation_metrics.port_wait_elapsed for s in ready_states
+            if s.creation_metrics.port_wait_elapsed > 0
+        ]
+        if port_wait_times:
+            stats = calc_percentiles(port_wait_times)
+            print(f"\n[Port Check Wait Performance]")
+            print(f"  (Waiting for 18789 openclaw-gateway + 11436 llama-server ports)")
+            print(f"  Min:  {stats['min']:.1f}s")
+            print(f"  Max:  {stats['max']:.1f}s")
+            print(f"  Avg:  {stats['avg']:.1f}s")
+            print(f"  P50:  {stats['p50']:.1f}s")
+            print(f"  P95:  {stats['p95']:.1f}s")
+            print(f"  P99:  {stats['p99']:.1f}s")
+
+        # Total startup time (create + port_wait)
+        total_times = [
+            s.creation_metrics.total_elapsed for s in ready_states
+            if s.creation_metrics.total_elapsed > 0
+        ]
+        if total_times:
+            stats = calc_percentiles(total_times)
+            print(f"\n[Total Startup Performance]")
+            print(f"  (sandbox.create + port wait)")
+            print(f"  Min:  {stats['min']:.1f}s")
+            print(f"  Max:  {stats['max']:.1f}s")
+            print(f"  Avg:  {stats['avg']:.1f}s")
+            print(f"  P50:  {stats['p50']:.1f}s")
+            print(f"  P95:  {stats['p95']:.1f}s")
+            print(f"  P99:  {stats['p99']:.1f}s")
+
+        print("\n" + "=" * 70)
         return {
             'report': f"Create-only: {ready_count}/{len(sandbox_states)} sandboxes ready",
             'filepath': None
