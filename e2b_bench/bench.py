@@ -85,10 +85,14 @@ def run_benchmark(config: Config) -> dict:
 
     if config.detect_existing:
         print("\n[Phase 1] Detecting existing sandboxes...")
+        creation_start_time = time.time()
         sandbox_states = sandbox_manager.detect_existing()
+        creation_end_time = time.time()
     else:
         print("\n[Phase 1] Creating sandboxes...")
+        creation_start_time = time.time()
         sandbox_states = sandbox_manager.create_all()
+        creation_end_time = time.time()
 
     ready_count = sum(
         1 for s in sandbox_states.values()
@@ -118,6 +122,15 @@ def run_benchmark(config: Config) -> dict:
         print("\n" + "=" * 70)
         print("Creation Timing Report")
         print("=" * 70)
+
+        # Total elapsed time for all sandboxes
+        total_elapsed = creation_end_time - creation_start_time
+        print(f"\n[Overall Creation Time]")
+        print(f"  Total Wall Clock Time: {total_elapsed:.1f}s")
+        print(f"  (From first sandbox creation start to last sandbox port ready)")
+        print(f"  Throughput: {len(sandbox_states) / total_elapsed:.2f} sandboxes/sec")
+
+        print(f"\n[Sandbox Status]")
         print(f"  Created (API):       {len([s for s in sandbox_states.values() if s.creation_metrics.status not in (SandboxStatus.PENDING, SandboxStatus.CREATING)])} / {len(sandbox_states)}")
         print(f"  Ports Ready:         {len(ready_states)} / {len(sandbox_states)}")
         print(f"  Create Failed:       {len(failed_states)}")
