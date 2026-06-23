@@ -1,12 +1,13 @@
 # Docker Image Build Guide
 
-This directory contains all files needed to build the `ubuntu-openclaw-chromium:24.04-linuxarm64` base image for E2B templates.
+This directory contains all files needed to build the `ubuntu-openclaw-chromium:24.04` base image for E2B templates.
 
 ## File List
 
 | File | Description |
 |------|-------------|
-| `Dockerfile` | Docker build file |
+| `Dockerfile` | Docker build file (ARM64) |
+| `Dockerfile.x86` | Docker build file (x86_64) |
 | `openclaw.json` | Openclaw configuration file |
 | `llama_openclaw.conf` | Supervisor configuration (manages llama-server and openclaw-gateway) |
 | `push_to_harbor.sh` | Script to prepare image and push to Harbor |
@@ -16,9 +17,18 @@ This directory contains all files needed to build the `ubuntu-openclaw-chromium:
 
 ### Step 1: Build Base Image
 
+**ARM64:**
+
 ```bash
 cd dockerfile_build
 docker build -t ubuntu-openclaw-chromium:24.04-linuxarm64 .
+```
+
+**x86_64:**
+
+```bash
+cd dockerfile_build
+docker build -f Dockerfile.x86 -t ubuntu-openclaw-chromium:24.04-x86_64 .
 ```
 
 ### Step 2: Push to Harbor Registry
@@ -76,7 +86,7 @@ python build_e2b.py --server-ip 141.61.17.196 --harbor-ip 141.61.17.196 \
 
 ## Notes
 
-1. The image is designed for ARM64 architecture (Ubuntu 24.04)
+1. The image supports both ARM64 and x86_64 architectures
 2. Supervisor auto-starts llama-server (port 11436) and openclaw gateway (port 18789)
 3. Non-Snap Chromium is installed via xtradeb PPA
 4. Websocat bridges SSH to port 8081 for E2B connectivity
