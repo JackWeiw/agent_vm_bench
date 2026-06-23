@@ -43,7 +43,7 @@ RUN cd /root && \
     wget --no-check-certificate https://github.com/ggml-org/llama.cpp/releases/download/b9660/llama-b9660-bin-ubuntu-x64.tar.gz && \
     tar -zxvf llama-b9660-bin-ubuntu-x64.tar.gz && \
     rm -rf llama-b9660-bin-ubuntu-x64.tar.gz && \
-    wget --no-check-certificate -O bge-small-zh-v1.5-f16.gguf "https://huggingface.co/CompendiumLabs/bge-small-zh-v1.5-gguf/resolve/main/bge-small-zh-v1.5-f16.gguf?download=true"
+    wget --no-check-certificate -O bge-small-zh-v1.5-f16.gguf "https://hf-mirror.com/CompendiumLabs/bge-small-zh-v1.5-gguf/resolve/main/bge-small-zh-v1.5-f16.gguf"
 
 # Setup supervisor configuration for llama-server and openclaw gateway
 RUN mkdir -p /etc/supervisor/conf.d && \
