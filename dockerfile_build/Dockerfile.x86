@@ -1,5 +1,5 @@
-# Base image - Ubuntu 24.04 ARM64
-FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/ubuntu:24.04-linuxarm64
+# Base image - Ubuntu 24.04 x86_64
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/ubuntu:24.04
 
 # Set environment variables to avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
@@ -12,13 +12,13 @@ ENV https_proxy=${HTTPS_PROXY}
 ENV HTTP_PROXY=${HTTP_PROXY}
 ENV HTTPS_PROXY=${HTTPS_PROXY}
 
-# Install Node24
+# Configure DNS and install Node24
 RUN apt update && apt install -y wget xz-utils vim libgomp1 iproute2 net-tools supervisor gnupg && \
     cd /usr/local && \
-    wget --no-check-certificate https://nodejs.org/dist/v24.14.0/node-v24.14.0-linux-arm64.tar.xz && \
-    tar -xvf node-v24.14.0-linux-arm64.tar.xz && \
-    mv node-v24.14.0-linux-arm64 node24 && \
-    rm -rf node-v24.14.0-linux-arm64.tar.xz && \
+    wget --no-check-certificate https://nodejs.org/dist/v24.14.0/node-v24.14.0-linux-x64.tar.xz && \
+    tar -xvf node-v24.14.0-linux-x64.tar.xz && \
+    mv node-v24.14.0-linux-x64 node24 && \
+    rm -rf node-v24.14.0-linux-x64.tar.xz && \
     ln -sf /usr/local/node24/bin/node /usr/local/bin/node && \
     ln -sf /usr/local/node24/bin/npm /usr/local/bin/npm && \
     ln -sf /usr/local/node24/bin/npx /usr/local/bin/npx
@@ -40,9 +40,9 @@ COPY openclaw.json /root/.openclaw/openclaw.json
 
 # Download llama-server
 RUN cd /root && \
-    wget --no-check-certificate https://github.com/ggml-org/llama.cpp/releases/download/b9660/llama-b9660-bin-ubuntu-arm64.tar.gz && \
-    tar -zxvf llama-b9660-bin-ubuntu-arm64.tar.gz && \
-    rm -rf llama-b9660-bin-ubuntu-arm64.tar.gz && \
+    wget --no-check-certificate https://github.com/ggml-org/llama.cpp/releases/download/b9660/llama-b9660-bin-ubuntu-x64.tar.gz && \
+    tar -zxvf llama-b9660-bin-ubuntu-x64.tar.gz && \
+    rm -rf llama-b9660-bin-ubuntu-x64.tar.gz && \
     wget --no-check-certificate -O bge-small-zh-v1.5-f16.gguf "https://hf-mirror.com/CompendiumLabs/bge-small-zh-v1.5-gguf/resolve/main/bge-small-zh-v1.5-f16.gguf"
 
 # Setup supervisor configuration for llama-server and openclaw gateway
@@ -51,7 +51,7 @@ RUN mkdir -p /etc/supervisor/conf.d && \
 
 COPY llama_openclaw.conf /etc/supervisor/conf.d/llama_openclaw.conf
 
-# Add xtradeb PPA key for Chromium ARM64 (download directly)
+# Add xtradeb PPA key for Chromium x86_64 (download directly)
 RUN mkdir -p /usr/share/keyrings && \
     wget --no-check-certificate -O /tmp/xtradeb.asc "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x82BB6851C64F6880" && \
     gpg --dearmor -o /usr/share/keyrings/xtradeb-keyring.gpg /tmp/xtradeb.asc && \
