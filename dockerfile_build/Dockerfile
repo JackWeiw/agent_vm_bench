@@ -40,10 +40,10 @@ COPY openclaw.json /root/.openclaw/openclaw.json
 
 # Download llama-server
 RUN cd /root && \
-    wget https://github.com/ggml-org/llama.cpp/releases/download/b9660/llama-b9660-bin-ubuntu-arm64.tar.gz && \
+    wget --no-check-certificate https://github.com/ggml-org/llama.cpp/releases/download/b9660/llama-b9660-bin-ubuntu-arm64.tar.gz && \
     tar -zxvf llama-b9660-bin-ubuntu-arm64.tar.gz && \
     rm -rf llama-b9660-bin-ubuntu-arm64.tar.gz && \
-    wget -O bge-small-zh-v1.5-f16.gguf "https://huggingface.co/CompendiumLabs/bge-small-zh-v1.5-gguf/resolve/main/bge-small-zh-v1.5-f16.gguf?download=true"
+    wget --no-check-certificate -O bge-small-zh-v1.5-f16.gguf "https://huggingface.co/CompendiumLabs/bge-small-zh-v1.5-gguf/resolve/main/bge-small-zh-v1.5-f16.gguf?download=true"
 
 # Setup supervisor configuration for llama-server and openclaw gateway
 RUN mkdir -p /etc/supervisor/conf.d && \
@@ -53,7 +53,7 @@ COPY llama_openclaw.conf /etc/supervisor/conf.d/llama_openclaw.conf
 
 # Add xtradeb PPA key for Chromium ARM64 (download directly)
 RUN mkdir -p /usr/share/keyrings && \
-    wget -O /tmp/xtradeb.asc "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x82BB6851C64F6880" && \
+    wget --no-check-certificate -O /tmp/xtradeb.asc "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x82BB6851C64F6880" && \
     gpg --dearmor -o /usr/share/keyrings/xtradeb-keyring.gpg /tmp/xtradeb.asc && \
     rm /tmp/xtradeb.asc
 
