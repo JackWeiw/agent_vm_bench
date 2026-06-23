@@ -4,6 +4,14 @@ FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/ubuntu:24.04-linuxarm64
 # Set environment variables to avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Configure proxy (use build arg or default)
+ARG HTTP_PROXY=http://90.255.211.160:8888
+ARG HTTPS_PROXY=http://90.255.211.160:8888
+ENV http_proxy=${HTTP_PROXY}
+ENV https_proxy=${HTTPS_PROXY}
+ENV HTTP_PROXY=${HTTP_PROXY}
+ENV HTTPS_PROXY=${HTTPS_PROXY}
+
 # Install Node24
 RUN apt update && apt install -y wget xz-utils vim libgomp1 iproute2 net-tools supervisor gnupg && \
     cd /usr/local && \

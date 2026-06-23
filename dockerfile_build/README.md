@@ -31,6 +31,24 @@ cd dockerfile_build
 docker build -f Dockerfile.x86 -t ubuntu-openclaw-chromium:24.04-x86_64 .
 ```
 
+**Custom Proxy (optional):**
+
+If you need a different proxy, use `--build-arg`:
+
+```bash
+# ARM64 with custom proxy
+docker build -t ubuntu-openclaw-chromium:24.04-linuxarm64 \
+  --build-arg HTTP_PROXY=http://your-proxy:port \
+  --build-arg HTTPS_PROXY=http://your-proxy:port .
+
+# x86_64 with custom proxy
+docker build -f Dockerfile.x86 -t ubuntu-openclaw-chromium:24.04-x86_64 \
+  --build-arg HTTP_PROXY=http://your-proxy:port \
+  --build-arg HTTPS_PROXY=http://your-proxy:port .
+```
+
+> **Note:** Default proxy is `http://90.255.211.160:8888`. If your server needs proxy to access external network, the Dockerfile is already configured with this default.
+
 ### Step 2: Push to Harbor Registry
 
 ```bash
@@ -66,8 +84,18 @@ python build_e2b.py --server-ip 141.61.17.196 --harbor-ip 141.61.17.196 \
 ## Configuration
 
 ### Proxy Configuration
-- Set `PROXY` environment variable before running `push_to_harbor.sh`
-- Default: `http://90.255.211.160:8888`
+
+The Dockerfiles include proxy settings for servers that require proxy to access external network:
+
+- **Default proxy:** `http://90.255.211.160:8888`
+- **Docker build:** Uses `HTTP_PROXY` and `HTTPS_PROXY` build args
+- **push_to_harbor.sh:** Uses `PROXY` environment variable
+
+**To customize proxy during build:**
+
+```bash
+docker build --build-arg HTTP_PROXY=http://your-proxy:port --build-arg HTTPS_PROXY=http://your-proxy:port .
+```
 
 ### Harbor Registry
 - Set `HARBOR_IP` environment variable for push_to_harbor.sh
