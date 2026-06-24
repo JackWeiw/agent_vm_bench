@@ -9,7 +9,7 @@ Executes a complete single test flow:
 3. Start smap_tool
 4. Wait for VMs ready (SSH, openclaw gateway, CPU < 5%)
 5. Warmup phase
-6. Start monitoring (qemu_monitor.py)
+6. Start monitoring (vm_monitor.py)
 7. Benchmark phase
 8. Collect results
 9. Cleanup (kill smap_tool, delete VMs)
@@ -110,7 +110,7 @@ def create_result_dir(config: Dict) -> str:
 
     # Create subdirectories
     os.makedirs(os.path.join(result_dir, "vm_bench_lite"), exist_ok=True)
-    os.makedirs(os.path.join(result_dir, "qemu_monitor"), exist_ok=True)
+    os.makedirs(os.path.join(result_dir, "vm_monitor"), exist_ok=True)
     os.makedirs(os.path.join(result_dir, "summary"), exist_ok=True)
 
     return result_dir
@@ -520,7 +520,7 @@ BENCHMARK_LOCK_FILE = "/tmp/vm_benchmark_running.lock"
 
 
 def start_monitor(ctx: TestContext) -> bool:
-    """Start qemu_monitor.py with stress-file + duration sync
+    """Start vm_monitor.py with stress-file + duration sync
 
     Monitor waits for lock file to appear before sampling (no idle sampling).
     After duration seconds, monitor stops naturally and generates Excel.
@@ -534,12 +534,16 @@ def start_monitor(ctx: TestContext) -> bool:
     duration = test["duration"]
     interval = monitor["interval"]
     numa_nodes = ",".join(str(n) for n in monitor["numa_nodes"])
-    log_dir = os.path.join(ctx.result_dir, "qemu_monitor")
+    log_dir = os.path.join(ctx.result_dir, "vm_monitor")
+
+    # VMM type: default to qemu, can be configured in monitor["vmm"]
+    vmm_type = monitor.get("vmm", "qemu")
 
     # Use --stress-file + -t duration: monitor waits for lock file, then runs for duration
     # This ensures: 1) no idle sampling before benchmark, 2) natural stop after duration, 3) Excel generated
     cmd = [
-        "python3", "qemu_monitor.py",
+        "python3", "vm_monitor.py",
+        "--vmm", vmm_type,
         "-t", str(duration),
         "-i", str(interval),
         "--log-dir", log_dir,
@@ -556,7 +560,7 @@ def start_monitor(ctx: TestContext) -> bool:
     log(ctx, f"Monitor will run {duration}s after lock file appears, then generate Excel")
 
     # Redirect stdout/stderr to log file instead of PIPE
-    # PIPE buffer (64KB) can fill up and block the process when qemu_monitor outputs lots of data
+    # PIPE buffer (64KB) can fill up and block the process when vm_monitor outputs lots of data
     monitor_stdout_log = os.path.join(log_dir, "monitor_stdout.log")
     monitor_stderr_log = os.path.join(log_dir, "monitor_stderr.log")
 
@@ -661,7 +665,7 @@ def wait_for_ksys_parse_completion(ctx: TestContext, timeout: int = 600) -> bool
 
     Returns True if ksys parse completed, False if timeout or no ksys log
     """
-    ksys_log_path = os.path.join(ctx.result_dir, "qemu_monitor", "ksys.log")
+    ksys_log_path = os.path.join(ctx.result_dir, "vm_monitor", "ksys.log")
 
     if not os.path.exists(ksys_log_path):
         log(ctx, "No ksys.log found, skipping ksys wait")
@@ -829,7 +833,7 @@ def collect_results(ctx: TestContext):
     """Collect and organize results"""
     log(ctx, "Step 9: Collecting results...")
 
-    # Monitor logs are already in qemu_monitor subdirectory
+    # Monitor logs are already in vm_monitor subdirectory
 
     # Generate summary
     summary = {
