@@ -238,7 +238,7 @@ def extract_browser_metrics_from_report(result_dir: str) -> Dict:
 
 
 def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
-    """Extract QEMU and performance metrics from qemu_monitor analysis_report.xlsx
+    """Extract QEMU and performance metrics from vm_monitor analysis_report.xlsx
 
     Extracts ALL metrics from:
     - Summary sheet (VM CPU stats)
@@ -247,8 +247,8 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
     - KSys sheet (latency, IPC, topdown)
     - UBWatch_Latency sheet (8 metrics)
     """
-    qemu_dir = os.path.join(result_dir, "qemu_monitor")
-    excel_path = os.path.join(qemu_dir, "analysis_report.xlsx")
+    vm_dir = os.path.join(result_dir, "vm_monitor")
+    excel_path = os.path.join(vm_dir, "analysis_report.xlsx")
 
     if not os.path.exists(excel_path):
         return {}
@@ -1182,11 +1182,11 @@ def scan_existing_results(result_base_dir: str) -> List[TestTask]:
             active_percent = float(match.group(3))
 
             # Check if result files exist
-            has_qemu = os.path.exists(os.path.join(entry_path, "qemu_monitor", "analysis_report.xlsx"))
+            has_vm = os.path.exists(os.path.join(entry_path, "vm_monitor", "analysis_report.xlsx"))
             has_bench = os.path.exists(os.path.join(entry_path, "vm_bench_lite"))
 
             # Consider success if both result directories exist
-            success = has_qemu or has_bench
+            success = has_vm or has_bench
 
             task = TestTask(
                 task_id=entry,
