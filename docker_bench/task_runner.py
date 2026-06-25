@@ -398,8 +398,8 @@ class BrowserTaskRunner(threading.Thread):
 
         Returns: list of element refs (@e1, @e2, etc.)
         """
-        # Pattern for agent-browser element refs: @eN
-        pattern = r"@e[0-9]+"
+        # Pattern for agent-browser element refs: [ref=e1], [ref=e2], etc.
+        pattern = r"\[ref=(e\d+)\]"
         matches = re.findall(pattern, output)
         return matches[:50]  # Limit to 50 elements
 
