@@ -1,0 +1,53 @@
+# config/docker_bench.yaml
+# Docker Container Browser Automation Performance Test Configuration Template
+
+# Docker configuration
+docker:
+  image: "ubuntu-openclaw-chromium:24.04-arm64"  # Docker image name
+  container_prefix: "oc-bench"             # Container name prefix (oc-bench-1, oc-bench-2...)
+  cpu_limit: 2.0                           # CPU limit per container (--cpus)
+  memory_limit: "2g"                       # Memory limit per container (-m)
+  create_timeout: 300                      # Container creation timeout (seconds)
+
+# Container configuration
+container:
+  total_count: 10                          # Total container count (creation mode)
+  detect_existing: false                   # Detect existing containers instead of creating new ones
+  create_only: false                       # Create containers only without running tasks (Phase 0)
+
+# Container creation batch control (optional, full concurrent if not configured)
+# Controls how many containers to create per batch to avoid resource overload
+create_batch:
+  size: 5                                  # Containers per batch during creation
+  interval: 10                             # Interval between creation batches (seconds)
+
+# Task execution batch control (optional, full concurrent if not configured)
+# Controls how many containers start tasks per batch to avoid target server overload
+task_batch:
+  size: 5                                  # Containers to start tasks per batch
+  interval: 5                              # Interval between task batches (seconds)
+
+# Browser task configuration
+browser:
+  urls:
+    - "http://192.168.110.10:8080/Weibo.html"
+  task_timeout: 200                        # Browser task timeout (seconds)
+  interval_min: 0.5                        # Task interval minimum (seconds)
+  interval_max: 3.0                        # Task interval maximum (seconds)
+
+# Port check configuration
+port_check:
+  ports: [18789, 11436]                    # Ports to check (openclaw-gateway + llama-server)
+  max_wait: 300                            # Max wait time for ports (seconds)
+  interval: 5                              # Port check interval (seconds)
+
+# Test run configuration
+test:
+  duration: 160                            # Test duration (seconds)
+  stats_interval: 10                       # Stats snapshot interval (seconds)
+  benchmark_percent: 1.0                   # Percentage of containers for benchmark (1.0 = 100%, 0.5 = 50%)
+
+# Report configuration
+report:
+  output_dir: "results/docker"             # Report output directory
+  filename_prefix: "docker_bench"          # Report filename prefix
