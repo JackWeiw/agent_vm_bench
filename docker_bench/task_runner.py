@@ -67,7 +67,12 @@ class BrowserTaskRunner(threading.Thread):
                 break
 
             # Execute single browser task (5-step workflow)
-            success, latency, step_times = self._run_single_task()
+            success, latency, step_times, interrupted = self._run_single_task()
+
+            # If task was interrupted by stop_event, don't count as failure
+            if interrupted:
+                print(f"[Container{self.state.container_id}] Task interrupted by stop signal (not counted as failure)")
+                break
 
             # Update metrics
             timeout = latency > self.config.browser_timeout
@@ -130,14 +135,22 @@ class BrowserTaskRunner(threading.Thread):
         except Exception as e:
             return False, str(e)
 
-    def _run_single_task(self) -> Tuple[bool, float, Dict[str, float]]:
+    def _run_single_task(self) -> Tuple[bool, float, Dict[str, float], bool]:
         """Execute single browser task (complete 5-step workflow)
 
-        Returns: (success, latency_seconds, step_times)
+        Returns: (success, latency_seconds, step_times, interrupted)
+        - success: whether the task completed successfully
+        - latency: total time taken
+        - step_times: per-step timing
+        - interrupted: whether the task was interrupted by stop_event (not a failure)
         """
         container = self.state.docker_container
         if not container:
-            return False, 0.0, {}
+            return False, 0.0, {}, False
+
+        # Check stop_event before starting
+        if self.stop_event.is_set():
+            return False, 0.0, {}, True  # Interrupted, not a failure
 
         # Get current URL (round-robin)
         url_idx = self.state.browser_metrics.total_tasks % len(self.config.browser_urls)
@@ -154,41 +167,54 @@ class BrowserTaskRunner(threading.Thread):
             step_success, step_time, tab_id = self._step_open(url, label_name)
             step_times['open'] = step_time
             if not step_success:
-                return False, time.perf_counter() - start_time, step_times
+                # Check if interrupted
+                if self.stop_event.is_set():
+                    return False, time.perf_counter() - start_time, step_times, True
+                return False, time.perf_counter() - start_time, step_times, False
 
             # Step 2: Focus tab
             step_success, step_time = self._step_focus(tab_id)
             step_times['focus'] = step_time
             if not step_success:
-                return False, time.perf_counter() - start_time, step_times
+                if self.stop_event.is_set():
+                    return False, time.perf_counter() - start_time, step_times, True
+                return False, time.perf_counter() - start_time, step_times, False
 
             # Step 3: DOM snapshot
             step_success, step_time, elements = self._step_snapshot()
             step_times['snapshot'] = step_time
             if not step_success:
-                return False, time.perf_counter() - start_time, step_times
+                if self.stop_event.is_set():
+                    return False, time.perf_counter() - start_time, step_times, True
+                return False, time.perf_counter() - start_time, step_times, False
 
             # Step 4: Element click (with retry)
             step_success, step_time = self._step_click(elements)
             step_times['click'] = step_time
             if not step_success:
-                return False, time.perf_counter() - start_time, step_times
+                if self.stop_event.is_set():
+                    return False, time.perf_counter() - start_time, step_times, True
+                return False, time.perf_counter() - start_time, step_times, False
 
             # Step 5: Screenshot
             step_success, step_time = self._step_screenshot()
             step_times['screenshot'] = step_time
             if not step_success:
-                return False, time.perf_counter() - start_time, step_times
+                if self.stop_event.is_set():
+                    return False, time.perf_counter() - start_time, step_times, True
+                return False, time.perf_counter() - start_time, step_times, False
 
             elapsed = time.perf_counter() - start_time
-            return True, elapsed, step_times
+            return True, elapsed, step_times, False
 
         except Exception as e:
             elapsed = time.perf_counter() - start_time
             error_msg = str(e)
             print(f"[Container{self.state.container_id}] Task exception: {error_msg}")
             self.state.browser_metrics.last_error = error_msg
-            return False, elapsed, step_times
+            # Check if interrupted
+            interrupted = self.stop_event.is_set()
+            return False, elapsed, step_times, interrupted
 
     def _step_open(self, url: str, label: str) -> Tuple[bool, float, str]:
         """Step 1: Open page
