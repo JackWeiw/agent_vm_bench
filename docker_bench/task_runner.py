@@ -106,18 +106,27 @@ class BrowserTaskRunner(threading.Thread):
             return False, "No container handle"
 
         try:
-            # Check status first, then start if needed
-            cmd = "openclaw browser status || openclaw browser start"
+            # Use shell wrapper for || operator support
+            # Check status, if not running then start
+            cmd = "sh -c 'openclaw browser status | grep -q \"running: true\" || openclaw browser start'"
             result = container.exec_run(cmd, user="root")
-
-            output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
 
             if result.exit_code == 0:
                 self.state.browser_started = True
                 print(f"[Container{self.state.container_id}] Browser backend started")
                 return True, ""
             else:
-                return False, f"exit_code={result.exit_code}, output={output[:200]}"
+                # Try direct start if the above failed
+                cmd2 = "openclaw browser start"
+                result2 = container.exec_run(cmd2, user="root")
+                output2 = result2.output.decode('utf-8', errors='ignore') if isinstance(result2.output, bytes) else result2.output
+
+                if result2.exit_code == 0:
+                    self.state.browser_started = True
+                    print(f"[Container{self.state.container_id}] Browser backend started")
+                    return True, ""
+                else:
+                    return False, f"exit_code={result2.exit_code}, output={output2[:200]}"
         except Exception as e:
             return False, str(e)
 
