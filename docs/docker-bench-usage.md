@@ -1,13 +1,13 @@
 # Docker Container Bench - Usage Guide (English)
 
-Docker container browser automation performance testing tool for validating concurrent performance and stability of browser automation in Docker containerized deployment environments. Uses agent-browser CLI to implement a 4-step browser workflow.
+Docker container browser automation performance testing tool for validating concurrent performance and stability of browser automation in Docker containerized deployment environments. Uses **agent-browser** CLI to implement a 4-step browser workflow.
 
 ## Features
 
 - **Batch Container Creation** - Supports batched or full concurrent creation with CPU/Memory resource limits
 - **Port Check** - Automatically checks 18789 and 11436 ports readiness
 - **Complete Browser Workflow** - Executes 4-step browser workflow (open → snapshot → click → screenshot)
-- **Element Reference Reuse** - Successfully clicked @eN references are saved for reuse, improving efficiency
+- **Element Reference Reuse** - Successfully clicked `@eN` references are saved for reuse, improving efficiency
 - **QPS Statistics** - Uses queries per second (QPS) as the core performance metric
 - **Real-time Statistics** - Real-time display of creation time, port wait time, task latency
 - **Performance Report** - Generates detailed performance reports (P50/P95/P99 latency)
@@ -67,7 +67,7 @@ Post: agent-browser close --all (close browser session when test ends)
 - No explicit `focus` operation needed (agent-browser handles automatically)
 - Uses `@eN` element references (based on accessibility-tree, more stable)
 - Successful element references are saved and reused, improving subsequent test efficiency
-- All commands run in proxy-free environment (clears http_proxy etc.)
+- All commands run in proxy-free environment (clears `http_proxy` etc.)
 
 ## Quick Start
 
@@ -286,159 +286,12 @@ Options:
   --filename-prefix         Report filename prefix
 ```
 
-## Test Flow
+## Performance Comparison Fairness
 
-```text
-Phase 1: Create/Detect Containers
-    ├── [Full/Create-only] Call docker run --cpus -m image
-    ├── [Detect] Query existing containers via docker ps
-    ├── Record create_elapsed time (container creation time)
-    └── Start port check (18789 + 11436)
-
-Phase 2: Port Check
-    ├── Check 18789 port
-    ├── Check 11436 port
-    ├── Record port_wait_elapsed time
-    └── Mark PORT_READY when both ports ready
-
-[Create-only mode: exit here]
-
-Phase 3: Start Browser Tasks
-    ├── Check if agent-browser is installed
-    ├── [With task_batch] Start tasks in batches
-    ├── [Without config] Full concurrent start
-    └── Each container has independent task thread
-
-Phase 4: Run Test (4-step workflow)
-    ├── Step 1: open + wait --load networkidle
-    ├── Step 2: snapshot -i (get @eN refs)
-    ├── Step 3: click @eN (reuse successful element)
-    └── Step 4: screenshot
-    └── Collect real-time statistics
-
-Phase 5: Stop and Generate Report
-    ├── Close browser session (agent-browser close --all)
-    ├── [Created containers] Delete all containers
-    ├── [Detect mode] Keep containers running
-    └── Generate performance report (includes QPS)
-```
-
-## Container State Flow
-
-```text
-PENDING → CREATING → CREATED → PORT_READY → (ACTIVE) → KILLED
-                     ↓
-                  FAILED
-                     ↓
-               PORT_FAILED
-                     ↓
-                  OFFLINE
-```
-
-## Performance Report
-
-### Report Content
-
-1. **Test Configuration** - Image name, container spec, batch strategy, test duration
-2. **Container Status** - Creation count, failure count, port failures
-3. **Container Creation Performance** - docker run time (excluding port wait)
-4. **Port Wait Performance** - Time waiting for ports ready
-5. **Total Startup Performance** - create + port_wait total time
-6. **Browser Query Statistics** - Success rate, latency (P50/P95/P99)
-7. **QPS Statistics** - Queries per second
-8. **Per-Step Latency Analysis** - Average latency for each step
-
-### Report Example
-
-```text
-================================================================================
-Docker Container Bench - Browser Automation Performance Report
-================================================================================
-
-[Test Configuration]
-  Image:           ubuntu-openclaw-chromium:arm64
-  Container Spec:  2.0vCPU / 2g
-  Total Containers:20
-  Mode:            Full workflow
-  Create Batch:    4 batches x 5 containers
-  Create Interval: 10s
-  Task Batch:      4 batches x 5 containers
-  Task Interval:   5s
-  Test Duration:   300s
-
-[Browser Workflow (4 steps = 1 query)]
-  Step 1: agent-browser open + wait --load networkidle
-  Step 2: agent-browser snapshot -i
-  Step 3: agent-browser click @eN (reuse successful element)
-  Step 4: agent-browser screenshot
-
-[Container Status]
-  Created (Docker):   20 / 20
-  Ports Ready:        20 / 20
-  Create Failed:      0
-  Port Check Failed:  0
-  Offline (runtime):  2
-
-[Browser Query Statistics]
-  (4-step workflow = 1 query)
-  Total Queries: 1250
-  Success:       1170
-  Failed:        80 (timeout: 25)
-  Success Rate:  93.6%
-  Avg Latency:   2345.6ms
-  P99 Latency:   5678.2ms
-
-[Overall QPS]
-  Total QPS:     3.90 queries/sec
-  (Success queries / Test duration)
-
-[Per-Step Latency Analysis]
-  Open        : avg=856.2ms
-  Snapshot    : avg=567.8ms
-  Click       : avg=234.5ms
-  Screenshot  : avg=563.7ms
-```
-
-## Error Handling
-
-### Common Error Types
-
-| Error | Cause | Solution |
-|-------|-------|----------|
-| `Operation timed out` | Slow page load, network delay | Increase interval_min/max |
-| `CDP command timed out` | Large DOM tree, high concurrency pressure | Reduce concurrent containers |
-| `Not attached to an active page` | Page not fully loaded | Added wait --load networkidle |
-| `agent-browser not available` | agent-browser not installed in image | Install agent-browser in image |
-| `409 container name conflict` | Container already exists | Auto-delete existing containers |
-
-### High Concurrency Optimization Tips
-
-1. **Reduce concurrency pressure**:
-```yaml
-browser:
-  interval_min: 1.0   # Change from 0.5 to 1.0
-  interval_max: 5.0   # Change from 3.0 to 5.0
-```
-
-2. **Start tasks in batches**:
-```yaml
-task_batch:
-  size: 5
-  interval: 10
-```
-
-3. **Increase task timeout**:
-```yaml
-browser:
-  task_timeout: 300  # Change from 200 to 300
-```
-
-## Performance Comparison Note
-
-When using the same configuration (container count, CPU/Memory, test duration) to run tests on ARM and x86 servers, the QPS comparison is **fair**:
+When using the same configuration (container count, CPU/Memory, test duration) on ARM and x86 servers, the QPS comparison is **fair**:
 
 - Both execute the same 4-step workflow
-- `wait --load networkidle` waiting time is counted in latency
+- `wait --load networkidle` waiting time counts toward latency
 - Bottlenecks (Web Server or browser rendering) affect both equally
 - Final QPS difference reflects true architectural performance difference
 
