@@ -1,16 +1,17 @@
 """
 Task Execution Module
 
-Responsible for browser task execution (5-step workflow), result collection and exception handling
+Responsible for browser task execution (4-step workflow), result collection and exception handling
 Each container has an independent thread
 Supports task batch control for gradual task execution start
 
-Browser Workflow:
-  Step 1: openclaw browser open [URL] --label [NAME]  → Page open
-  Step 2: openclaw browser focus [TAB_ID]             → Tab focus
-  Step 3: openclaw browser snapshot --limit 200       → DOM snapshot
-  Step 4: openclaw browser click e218                 → Element click (retry on fail)
-  Step 5: openclaw browser screenshot                 → Visual screenshot
+Browser Workflow (using agent-browser):
+  Step 1: agent-browser open [URL]       → Page open
+  Step 2: agent-browser snapshot -i      → DOM snapshot (get element refs)
+  Step 3: agent-browser click @eN        → Element click (retry on fail)
+  Step 4: agent-browser screenshot       → Visual screenshot
+
+Note: agent-browser doesn't need explicit focus, open automatically works on current tab
 """
 
 import time
@@ -26,7 +27,7 @@ from .schemas import ContainerState, ContainerStatus
 class BrowserTaskRunner(threading.Thread):
     """Browser task runner (one independent thread per container)
 
-    Executes complete 5-step workflow as one query
+    Executes complete 4-step workflow as one query (agent-browser version)
     """
 
     def __init__(
@@ -102,7 +103,10 @@ class BrowserTaskRunner(threading.Thread):
         print(f"[Container{self.state.container_id}] Task runner ended")
 
     def _start_browser_backend(self) -> Tuple[bool, str]:
-        """Start OpenClaw browser backend (hot start)
+        """Start agent-browser daemon
+
+        agent-browser uses a daemon process that manages browser sessions.
+        Just ensure it's installed and ready.
 
         Returns: (success, error_msg)
         """
@@ -111,32 +115,32 @@ class BrowserTaskRunner(threading.Thread):
             return False, "No container handle"
 
         try:
-            # Use shell wrapper for || operator support
-            # Check status, if not running then start
-            cmd = "sh -c 'openclaw browser status | grep -q \"running: true\" || openclaw browser start'"
+            # Check if agent-browser is installed and daemon is running
+            # agent-browser doctor checks daemon status
+            cmd = "agent-browser doctor --offline --quick"
             result = container.exec_run(cmd, user="root")
 
             if result.exit_code == 0:
                 self.state.browser_started = True
-                print(f"[Container{self.state.container_id}] Browser backend started")
+                print(f"[Container{self.state.container_id}] agent-browser ready")
                 return True, ""
             else:
-                # Try direct start if the above failed
-                cmd2 = "openclaw browser start"
+                # Daemon might not be running, try to start via a simple open command
+                # agent-browser auto-starts daemon when needed
+                cmd2 = "agent-browser --version"
                 result2 = container.exec_run(cmd2, user="root")
-                output2 = result2.output.decode('utf-8', errors='ignore') if isinstance(result2.output, bytes) else result2.output
-
                 if result2.exit_code == 0:
                     self.state.browser_started = True
-                    print(f"[Container{self.state.container_id}] Browser backend started")
+                    print(f"[Container{self.state.container_id}] agent-browser installed (daemon auto-starts on first open)")
                     return True, ""
                 else:
-                    return False, f"exit_code={result2.exit_code}, output={output2[:200]}"
+                    output2 = result2.output.decode('utf-8', errors='ignore') if isinstance(result2.output, bytes) else result2.output
+                    return False, f"agent-browser not available: {output2[:200]}"
         except Exception as e:
             return False, str(e)
 
     def _run_single_task(self) -> Tuple[bool, float, Dict[str, float], bool]:
-        """Execute single browser task (complete 5-step workflow)
+        """Execute single browser task (complete 4-step workflow with agent-browser)
 
         Returns: (success, latency_seconds, step_times, interrupted)
         - success: whether the task completed successfully
@@ -156,31 +160,19 @@ class BrowserTaskRunner(threading.Thread):
         url_idx = self.state.browser_metrics.total_tasks % len(self.config.browser_urls)
         url = self.config.browser_urls[url_idx]
 
-        # Generate label name
-        label_name = f"test_{self.state.container_id}_{int(time.time())}"
-
         step_times = {}
         start_time = time.perf_counter()
 
         try:
-            # Step 1: Open page
-            step_success, step_time, tab_id = self._step_open(url, label_name)
+            # Step 1: Open page (agent-browser open)
+            step_success, step_time = self._step_open(url)
             step_times['open'] = step_time
             if not step_success:
-                # Check if interrupted
                 if self.stop_event.is_set():
                     return False, time.perf_counter() - start_time, step_times, True
                 return False, time.perf_counter() - start_time, step_times, False
 
-            # Step 2: Focus tab
-            step_success, step_time = self._step_focus(tab_id)
-            step_times['focus'] = step_time
-            if not step_success:
-                if self.stop_event.is_set():
-                    return False, time.perf_counter() - start_time, step_times, True
-                return False, time.perf_counter() - start_time, step_times, False
-
-            # Step 3: DOM snapshot
+            # Step 2: DOM snapshot (agent-browser snapshot -i)
             step_success, step_time, elements = self._step_snapshot()
             step_times['snapshot'] = step_time
             if not step_success:
@@ -188,7 +180,7 @@ class BrowserTaskRunner(threading.Thread):
                     return False, time.perf_counter() - start_time, step_times, True
                 return False, time.perf_counter() - start_time, step_times, False
 
-            # Step 4: Element click (with retry)
+            # Step 3: Element click (agent-browser click @eN)
             step_success, step_time = self._step_click(elements)
             step_times['click'] = step_time
             if not step_success:
@@ -196,7 +188,7 @@ class BrowserTaskRunner(threading.Thread):
                     return False, time.perf_counter() - start_time, step_times, True
                 return False, time.perf_counter() - start_time, step_times, False
 
-            # Step 5: Screenshot
+            # Step 4: Screenshot (agent-browser screenshot)
             step_success, step_time = self._step_screenshot()
             step_times['screenshot'] = step_time
             if not step_success:
@@ -216,13 +208,13 @@ class BrowserTaskRunner(threading.Thread):
             interrupted = self.stop_event.is_set()
             return False, elapsed, step_times, interrupted
 
-    def _step_open(self, url: str, label: str) -> Tuple[bool, float, str]:
-        """Step 1: Open page
+    def _step_open(self, url: str) -> Tuple[bool, float]:
+        """Step 1: Open page using agent-browser
 
-        Returns: (success, time_seconds, tab_id)
+        Returns: (success, time_seconds)
         """
         container = self.state.docker_container
-        cmd = f"openclaw browser open '{url}' --label '{label}'"
+        cmd = f"agent-browser open '{url}'"
 
         start = time.perf_counter()
         try:
@@ -232,53 +224,22 @@ class BrowserTaskRunner(threading.Thread):
             if result.exit_code != 0:
                 print(f"[Container{self.state.container_id}] Step 1 (open) failed: {output[:200]}")
                 self.state.browser_metrics.last_error = f"open failed: {output[:200]}"
-                return False, elapsed, ""
-
-            # Extract tab_id from output
-            tab_id = self._extract_tab_id(output)
-            return True, elapsed, tab_id
-
-        except Exception as e:
-            elapsed = time.perf_counter() - start
-            self.state.browser_metrics.last_error = f"open exception: {str(e)}"
-            return False, elapsed, ""
-
-    def _step_focus(self, tab_id: str) -> Tuple[bool, float]:
-        """Step 2: Focus tab
-
-        Returns: (success, time_seconds)
-        """
-        if not tab_id:
-            # Skip if no tab_id extracted
-            return True, 0.0
-
-        container = self.state.docker_container
-        cmd = f"openclaw browser focus '{tab_id}'"
-
-        start = time.perf_counter()
-        try:
-            result = container.exec_run(cmd, user="root")
-            elapsed = time.perf_counter() - start
-
-            if result.exit_code != 0:
-                output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
-                print(f"[Container{self.state.container_id}] Step 2 (focus) failed: {output[:100]}")
-                # Focus failure is not critical, continue
-                return True, elapsed
+                return False, elapsed
 
             return True, elapsed
 
         except Exception as e:
-            # Focus failure is not critical
-            return True, time.perf_counter() - start
+            elapsed = time.perf_counter() - start
+            self.state.browser_metrics.last_error = f"open exception: {str(e)}"
+            return False, elapsed
 
     def _step_snapshot(self) -> Tuple[bool, float, List[str]]:
-        """Step 3: DOM snapshot
+        """Step 2: DOM snapshot using agent-browser
 
-        Returns: (success, time_seconds, element_ids)
+        Returns: (success, time_seconds, element_refs)
         """
         container = self.state.docker_container
-        cmd = "openclaw browser snapshot --limit 200"
+        cmd = "agent-browser snapshot -i"
 
         start = time.perf_counter()
         try:
@@ -288,12 +249,12 @@ class BrowserTaskRunner(threading.Thread):
             output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
 
             if result.exit_code != 0:
-                print(f"[Container{self.state.container_id}] Step 3 (snapshot) failed: {output[:200]}")
+                print(f"[Container{self.state.container_id}] Step 2 (snapshot) failed: {output[:200]}")
                 self.state.browser_metrics.last_error = f"snapshot failed: {output[:200]}"
                 return False, elapsed, []
 
-            # Extract element IDs from output
-            elements = self._extract_element_ids(output)
+            # Extract element refs from output (@e1, @e2, etc.)
+            elements = self._extract_element_refs(output)
             return True, elapsed, elements
 
         except Exception as e:
@@ -302,7 +263,7 @@ class BrowserTaskRunner(threading.Thread):
             return False, elapsed, []
 
     def _step_click(self, elements: List[str]) -> Tuple[bool, float]:
-        """Step 4: Element click (try any clickable element, reuse successful one)
+        """Step 3: Element click using agent-browser
 
         Strategy:
         1. If we have a working element from previous click, try it first
@@ -315,68 +276,63 @@ class BrowserTaskRunner(threading.Thread):
 
         # Skip click if no elements available
         if not elements:
-            print(f"[Container{self.state.container_id}] Step 4 (click) skipped: no elements found")
+            print(f"[Container{self.state.container_id}] Step 3 (click) skipped: no elements found")
             return True, 0.0
 
         start = time.perf_counter()
 
         # Strategy 1: Try previously successful element first
         if self.state.working_click_element:
-            cmd = f"openclaw browser click {self.state.working_click_element}"
+            cmd = f"agent-browser click {self.state.working_click_element}"
             result = container.exec_run(cmd, user="root")
             elapsed = time.perf_counter() - start
 
             if result.exit_code == 0:
                 return True, elapsed
 
-            # Working element failed (page might have changed), clear it and try new ones
-            print(f"[Container{self.state.container_id}] Step 4 (click) previous working element {self.state.working_click_element} failed, trying new...")
+            # Working element failed, clear it and try new ones
+            print(f"[Container{self.state.container_id}] Step 3 (click) previous element {self.state.working_click_element} failed, trying new...")
             self.state.working_click_element = ""
 
-        # Strategy 2: Try elements from current snapshot (prefer middle elements)
-        try_elements = []
-        if len(elements) >= 3:
-            mid = len(elements) // 2
-            try_elements = [elements[mid], elements[0], elements[-1]]
-        else:
-            try_elements = elements[:3]
+        # Strategy 2: Try elements from current snapshot
+        try_elements = elements[:3] if len(elements) >= 3 else elements
 
-        for element_id in try_elements:
-            cmd = f"openclaw browser click {element_id}"
+        for element_ref in try_elements:
+            cmd = f"agent-browser click {element_ref}"
             result = container.exec_run(cmd, user="root")
             elapsed = time.perf_counter() - start
 
             if result.exit_code == 0:
                 # Found working element, save it for reuse
-                self.state.working_click_element = element_id
-                print(f"[Container{self.state.container_id}] Step 4 (click) succeeded with {element_id} (saved for reuse)")
+                self.state.working_click_element = element_ref
+                print(f"[Container{self.state.container_id}] Step 3 (click) succeeded with {element_ref} (saved for reuse)")
                 return True, elapsed
 
         # Strategy 3: Get fresh snapshot and retry
-        print(f"[Container{self.state.container_id}] Step 4 (click) initial attempts failed, getting fresh snapshot...")
+        print(f"[Container{self.state.container_id}] Step 3 (click) initial attempts failed, getting fresh snapshot...")
         time.sleep(0.5)
 
-        snapshot_cmd = "openclaw browser snapshot --limit 200"
+        snapshot_cmd = "agent-browser snapshot -i"
         snapshot_result = container.exec_run(snapshot_cmd, user="root")
 
         if snapshot_result.exit_code == 0:
             snapshot_output = snapshot_result.output.decode('utf-8', errors='ignore') if isinstance(snapshot_result.output, bytes) else snapshot_result.output
-            fresh_elements = self._extract_element_ids(snapshot_output)
+            fresh_elements = self._extract_element_refs(snapshot_output)
 
             if fresh_elements:
                 fresh_try = fresh_elements[:3] if len(fresh_elements) >= 3 else fresh_elements
-                for element_id in fresh_try:
-                    cmd = f"openclaw browser click {element_id}"
+                for element_ref in fresh_try:
+                    cmd = f"agent-browser click {element_ref}"
                     result = container.exec_run(cmd, user="root")
                     elapsed = time.perf_counter() - start
 
                     if result.exit_code == 0:
-                        self.state.working_click_element = element_id
-                        print(f"[Container{self.state.container_id}] Step 4 (click) retry succeeded with {element_id} (saved for reuse)")
+                        self.state.working_click_element = element_ref
+                        print(f"[Container{self.state.container_id}] Step 3 (click) retry succeeded with {element_ref}")
                         return True, elapsed
 
                 elapsed = time.perf_counter() - start
-                self.state.browser_metrics.last_error = f"click failed after fresh snapshot, tried {len(fresh_try)} elements"
+                self.state.browser_metrics.last_error = f"click failed after fresh snapshot"
                 return False, elapsed
             else:
                 elapsed = time.perf_counter() - start
@@ -388,12 +344,12 @@ class BrowserTaskRunner(threading.Thread):
             return False, elapsed
 
     def _step_screenshot(self) -> Tuple[bool, float]:
-        """Step 5: Screenshot
+        """Step 4: Screenshot using agent-browser
 
         Returns: (success, time_seconds)
         """
         container = self.state.docker_container
-        cmd = "openclaw browser screenshot"
+        cmd = "agent-browser screenshot"
 
         start = time.perf_counter()
         try:
@@ -402,7 +358,7 @@ class BrowserTaskRunner(threading.Thread):
 
             if result.exit_code != 0:
                 output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
-                print(f"[Container{self.state.container_id}] Step 5 (screenshot) failed: {output[:100]}")
+                print(f"[Container{self.state.container_id}] Step 4 (screenshot) failed: {output[:100]}")
                 self.state.browser_metrics.last_error = f"screenshot failed: {output[:200]}"
                 return False, elapsed
 
@@ -414,7 +370,7 @@ class BrowserTaskRunner(threading.Thread):
             return False, elapsed
 
     def _clear_browser_cache(self) -> bool:
-        """Clear browser cache after test
+        """Clear browser session after test
 
         Returns: success
         """
@@ -423,38 +379,20 @@ class BrowserTaskRunner(threading.Thread):
             return False
 
         try:
-            cmd = "rm -rf /root/.openclaw/browser/openclaw/user-data"
+            # Close browser session
+            cmd = "agent-browser close"
             result = container.exec_run(cmd, user="root")
             return result.exit_code == 0
         except Exception:
             return False
 
-    def _extract_tab_id(self, output: str) -> str:
-        """Extract tab ID from browser open output
+    def _extract_element_refs(self, output: str) -> List[str]:
+        """Extract element refs from agent-browser snapshot output
 
-        Returns: tab_id or empty string
+        Returns: list of element refs (@e1, @e2, etc.)
         """
-        # Try common patterns
-        patterns = [
-            r"Tab ID:\s*([a-zA-Z0-9_-]+)",
-            r"tab_id[=:\s]+([a-zA-Z0-9_-]+)",
-            r"id:\s*([a-zA-Z0-9_-]+)",
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, output)
-            if match:
-                return match.group(1)
-
-        return ""
-
-    def _extract_element_ids(self, output: str) -> List[str]:
-        """Extract element IDs from snapshot output
-
-        Returns: list of element IDs
-        """
-        # Pattern for elements like e123, e456, etc.
-        pattern = r"e[0-9]+"
+        # Pattern for agent-browser element refs: @eN
+        pattern = r"@e[0-9]+"
         matches = re.findall(pattern, output)
         return matches[:50]  # Limit to 50 elements
 
