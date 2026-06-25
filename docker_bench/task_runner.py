@@ -276,7 +276,10 @@ class BrowserTaskRunner(threading.Thread):
             return False, elapsed, []
 
     def _step_click(self, elements: List[str]) -> Tuple[bool, float]:
-        """Step 4: Element click (with retry and fresh snapshot)
+        """Step 4: Element click (try any clickable element, not fixed e218)
+
+        Strategy: Try elements from the list, any successful click counts.
+        On failure, get fresh snapshot and retry with new elements.
 
         Returns: (success, time_seconds)
         """
@@ -287,65 +290,62 @@ class BrowserTaskRunner(threading.Thread):
             print(f"[Container{self.state.container_id}] Step 4 (click) skipped: no elements found")
             return True, 0.0
 
-        # Try to click e218 (from spec), or fallback to middle element
-        element_id = "e218" if "e218" in elements else elements[len(elements) // 2] if len(elements) > 10 else elements[-1]
-
-        cmd = f"openclaw browser click {element_id}"
         start = time.perf_counter()
 
-        try:
-            # First attempt
+        # Try elements from the original snapshot (prefer middle elements, more likely visible)
+        # Try up to 3 elements from the list
+        try_elements = []
+        if len(elements) >= 3:
+            # Try middle element, then first, then last
+            mid = len(elements) // 2
+            try_elements = [elements[mid], elements[0], elements[-1]]
+        else:
+            try_elements = elements[:3]
+
+        for element_id in try_elements:
+            cmd = f"openclaw browser click {element_id}"
             result = container.exec_run(cmd, user="root")
             elapsed = time.perf_counter() - start
 
             if result.exit_code == 0:
+                print(f"[Container{self.state.container_id}] Step 4 (click) succeeded with {element_id}")
                 return True, elapsed
 
-            # Failed - need to get fresh snapshot before retry (like the bash script does)
-            output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
-            print(f"[Container{self.state.container_id}] Step 4 (click) first attempt failed, getting fresh snapshot...")
+        # All initial attempts failed - get fresh snapshot and retry
+        print(f"[Container{self.state.container_id}] Step 4 (click) initial attempts failed, getting fresh snapshot...")
+        time.sleep(0.5)  # Avoid DOM reorg lock
 
-            # Sleep briefly to avoid DOM reorg lock (like bash script)
-            time.sleep(0.5)
+        snapshot_cmd = "openclaw browser snapshot --limit 200"
+        snapshot_result = container.exec_run(snapshot_cmd, user="root")
 
-            # Get fresh snapshot
-            snapshot_cmd = "openclaw browser snapshot --limit 200"
-            snapshot_result = container.exec_run(snapshot_cmd, user="root")
+        if snapshot_result.exit_code == 0:
+            snapshot_output = snapshot_result.output.decode('utf-8', errors='ignore') if isinstance(snapshot_result.output, bytes) else snapshot_result.output
+            fresh_elements = self._extract_element_ids(snapshot_output)
 
-            if snapshot_result.exit_code == 0:
-                snapshot_output = snapshot_result.output.decode('utf-8', errors='ignore') if isinstance(snapshot_result.output, bytes) else snapshot_result.output
-                fresh_elements = self._extract_element_ids(snapshot_output)
-
-                # Try e218 again if found in fresh list, else try first element
-                if fresh_elements:
-                    retry_element = "e218" if "e218" in fresh_elements else fresh_elements[0]
-                    retry_cmd = f"openclaw browser click {retry_element}"
-                    retry_result = container.exec_run(retry_cmd, user="root")
+            if fresh_elements:
+                # Try up to 3 elements from fresh snapshot
+                fresh_try = fresh_elements[:3] if len(fresh_elements) >= 3 else fresh_elements[:min(3, len(fresh_elements))]
+                for element_id in fresh_try:
+                    cmd = f"openclaw browser click {element_id}"
+                    result = container.exec_run(cmd, user="root")
                     elapsed = time.perf_counter() - start
 
-                    if retry_result.exit_code == 0:
+                    if result.exit_code == 0:
+                        print(f"[Container{self.state.container_id}] Step 4 (click) retry succeeded with {element_id}")
                         return True, elapsed
 
-                    retry_output = retry_result.output.decode('utf-8', errors='ignore') if isinstance(retry_result.output, bytes) else retry_result.output
-                    print(f"[Container{self.state.container_id}] Step 4 (click) retry with {retry_element} failed")
-                    self.state.browser_metrics.last_error = f"click failed after fresh snapshot: {retry_output[:200]}"
-                    return False, elapsed
-                else:
-                    self.state.browser_metrics.last_error = f"click failed: no elements in fresh snapshot"
-                    return False, elapsed
-            else:
-                # Snapshot failed, just retry with original element
-                result = container.exec_run(cmd, user="root")
+                # All retry attempts failed
                 elapsed = time.perf_counter() - start
-                if result.exit_code == 0:
-                    return True, elapsed
-                output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
-                self.state.browser_metrics.last_error = f"click failed: {output[:200]}"
+                self.state.browser_metrics.last_error = f"click failed after fresh snapshot, tried {len(fresh_try)} elements"
                 return False, elapsed
-
-        except Exception as e:
+            else:
+                elapsed = time.perf_counter() - start
+                self.state.browser_metrics.last_error = f"click failed: no elements in fresh snapshot"
+                return False, elapsed
+        else:
+            # Fresh snapshot failed, mark as failed
             elapsed = time.perf_counter() - start
-            self.state.browser_metrics.last_error = f"click exception: {str(e)}"
+            self.state.browser_metrics.last_error = f"click failed: fresh snapshot failed"
             return False, elapsed
 
     def _step_screenshot(self) -> Tuple[bool, float]:
