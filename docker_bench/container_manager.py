@@ -8,6 +8,7 @@ Supports port check (18789 openclaw-gateway + 11436 llama-server)
 
 import time
 import docker
+import docker.errors
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Tuple, Optional
 from threading import Event
@@ -211,6 +212,14 @@ class ContainerManager:
         state.creation_metrics.submit_time = time.time()
 
         try:
+            # Remove existing container with same name if exists (handle 409 conflict)
+            try:
+                existing = self.docker_client.containers.get(state.container_name)
+                existing.remove(force=True)
+                print(f"[Container{state.container_id}] Removed existing container with same name")
+            except docker.errors.NotFound:
+                pass  # No existing container, proceed
+
             # Create container with resource limits
             container = self.docker_client.containers.run(
                 image=self.config.docker_image,
