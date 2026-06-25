@@ -22,5 +22,5 @@ scheduler:
 
 # Result Configuration
 result:
-  template_path: "test_config_template.yaml"  # Config template file
+  template_path: "config/test_config_template.yaml"  # Config template file (relative path from project root)
   base_dir: "results"           # Base directory for results
