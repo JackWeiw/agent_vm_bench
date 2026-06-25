@@ -7,7 +7,7 @@ Supports task batch control for gradual task execution start
 
 Browser Workflow (using agent-browser):
   Step 1: agent-browser open [URL]       → Page open
-  Step 2: agent-browser snapshot -i      → DOM snapshot (get element refs)
+  Step 2: agent-browser snapshot -i      → DOM snapshot (get @eN refs)
   Step 3: agent-browser click @eN        → Element click (retry on fail)
   Step 4: agent-browser screenshot       → Visual screenshot
 
@@ -53,7 +53,7 @@ class BrowserTaskRunner(threading.Thread):
                 return
             time.sleep(0.5)
 
-        # Start browser backend (hot start)
+        # Start browser backend (agent-browser daemon)
         if not self.state.browser_started:
             success, error = self._start_browser_backend()
             if not success:
@@ -67,7 +67,7 @@ class BrowserTaskRunner(threading.Thread):
                 print(f"[Container{self.state.container_id}] Container offline, stopping tasks")
                 break
 
-            # Execute single browser task (5-step workflow)
+            # Execute single browser task (4-step workflow)
             success, latency, step_times, interrupted = self._run_single_task()
 
             # If task was interrupted by stop_event, don't count as failure
@@ -120,6 +120,8 @@ class BrowserTaskRunner(threading.Thread):
             cmd = "agent-browser doctor --offline --quick"
             result = container.exec_run(cmd, user="root")
 
+            output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
+
             if result.exit_code == 0:
                 self.state.browser_started = True
                 print(f"[Container{self.state.container_id}] agent-browser ready")
@@ -140,7 +142,7 @@ class BrowserTaskRunner(threading.Thread):
             return False, str(e)
 
     def _run_single_task(self) -> Tuple[bool, float, Dict[str, float], bool]:
-        """Execute single browser task (complete 4-step workflow with agent-browser)
+        """Execute single browser task (complete 4-step workflow)
 
         Returns: (success, latency_seconds, step_times, interrupted)
         - success: whether the task completed successfully
@@ -180,7 +182,7 @@ class BrowserTaskRunner(threading.Thread):
                     return False, time.perf_counter() - start_time, step_times, True
                 return False, time.perf_counter() - start_time, step_times, False
 
-            # Step 3: Element click (agent-browser click @eN)
+            # Step 3: Element click (agent-browser click)
             step_success, step_time = self._step_click(elements)
             step_times['click'] = step_time
             if not step_success:
@@ -204,7 +206,6 @@ class BrowserTaskRunner(threading.Thread):
             error_msg = str(e)
             print(f"[Container{self.state.container_id}] Task exception: {error_msg}")
             self.state.browser_metrics.last_error = error_msg
-            # Check if interrupted
             interrupted = self.stop_event.is_set()
             return False, elapsed, step_times, interrupted
 
@@ -220,7 +221,9 @@ class BrowserTaskRunner(threading.Thread):
         try:
             result = container.exec_run(cmd, user="root")
             elapsed = time.perf_counter() - start
+
             output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
+
             if result.exit_code != 0:
                 print(f"[Container{self.state.container_id}] Step 1 (open) failed: {output[:200]}")
                 self.state.browser_metrics.last_error = f"open failed: {output[:200]}"
@@ -236,7 +239,7 @@ class BrowserTaskRunner(threading.Thread):
     def _step_snapshot(self) -> Tuple[bool, float, List[str]]:
         """Step 2: DOM snapshot using agent-browser
 
-        Returns: (success, time_seconds, element_refs)
+        Returns: (success, time_seconds, elements)
         """
         container = self.state.docker_container
         cmd = "agent-browser snapshot -i"
@@ -253,7 +256,7 @@ class BrowserTaskRunner(threading.Thread):
                 self.state.browser_metrics.last_error = f"snapshot failed: {output[:200]}"
                 return False, elapsed, []
 
-            # Extract element refs from output (@e1, @e2, etc.)
+            # Extract element refs (@e1, @e2, etc.) from output
             elements = self._extract_element_refs(output)
             return True, elapsed, elements
 
@@ -290,12 +293,17 @@ class BrowserTaskRunner(threading.Thread):
             if result.exit_code == 0:
                 return True, elapsed
 
-            # Working element failed, clear it and try new ones
-            print(f"[Container{self.state.container_id}] Step 3 (click) previous element {self.state.working_click_element} failed, trying new...")
+            # Working element failed (page might have changed), clear it and try new ones
+            print(f"[Container{self.state.container_id}] Step 3 (click) previous working element {self.state.working_click_element} failed, trying new...")
             self.state.working_click_element = ""
 
-        # Strategy 2: Try elements from current snapshot
-        try_elements = elements[:3] if len(elements) >= 3 else elements
+        # Strategy 2: Try elements from current snapshot (prefer middle elements)
+        try_elements = []
+        if len(elements) >= 3:
+            mid = len(elements) // 2
+            try_elements = [elements[mid], elements[0], elements[-1]]
+        else:
+            try_elements = elements[:3]
 
         for element_ref in try_elements:
             cmd = f"agent-browser click {element_ref}"
@@ -328,11 +336,11 @@ class BrowserTaskRunner(threading.Thread):
 
                     if result.exit_code == 0:
                         self.state.working_click_element = element_ref
-                        print(f"[Container{self.state.container_id}] Step 3 (click) retry succeeded with {element_ref}")
+                        print(f"[Container{self.state.container_id}] Step 3 (click) retry succeeded with {element_ref} (saved for reuse)")
                         return True, elapsed
 
                 elapsed = time.perf_counter() - start
-                self.state.browser_metrics.last_error = f"click failed after fresh snapshot"
+                self.state.browser_metrics.last_error = f"click failed after fresh snapshot, tried {len(fresh_try)} elements"
                 return False, elapsed
             else:
                 elapsed = time.perf_counter() - start
