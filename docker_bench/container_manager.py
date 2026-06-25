@@ -263,23 +263,20 @@ class ContainerManager:
                     continue
 
                 try:
-                    # Execute port check command inside container with timeout
-                    # Use simpler command: just check if ss shows the port
+                    # Execute port check command inside container
+                    # Note: docker SDK 7.0.0 does not support timeout in exec_run
                     cmd = f"ss -tlnp 2>/dev/null | grep ':{port}' && echo 'PORT_OK'"
-                    result = container.exec_run(cmd, user="root", timeout=10)
+                    result = container.exec_run(cmd, user="root")
 
                     output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
                     exit_code = result.exit_code
-
-                    # Debug: print raw output for troubleshooting
-                    # print(f"[Container{state.container_id}] Port {port} check: exit_code={exit_code}, output={output[:100]}")
 
                     # Check if port is listening (grep found the port or PORT_OK in output)
                     if exit_code == 0 or 'PORT_OK' in output:
                         ready_ports.add(port)
                         print(f"[Container{state.container_id}] Port {port} is listening")
                 except Exception as e:
-                    # exec_run timeout or other error - continue checking
+                    # exec_run error - continue checking
                     print(f"[Container{state.container_id}] Port {port} check exception: {str(e)[:50]}")
                     pass  # Continue checking other ports
 
