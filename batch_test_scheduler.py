@@ -248,6 +248,9 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
     - UBWatch_Latency sheet (8 metrics)
     """
     vm_dir = os.path.join(result_dir, "vm_monitor")
+    # Backward compatibility: also check qemu_monitor directory
+    if not os.path.exists(vm_dir):
+        vm_dir = os.path.join(result_dir, "qemu_monitor")
     excel_path = os.path.join(vm_dir, "analysis_report.xlsx")
 
     if not os.path.exists(excel_path):
@@ -1192,8 +1195,9 @@ def scan_existing_results(result_base_dir: str) -> List[TestTask]:
             ratio = float(match.group(2))
             active_percent = float(match.group(3))
 
-            # Check if result files exist
-            has_vm = os.path.exists(os.path.join(entry_path, "vm_monitor", "analysis_report.xlsx"))
+            # Check if result files exist (backward compatibility: check both vm_monitor and qemu_monitor)
+            has_vm = os.path.exists(os.path.join(entry_path, "vm_monitor", "analysis_report.xlsx")) or \
+                     os.path.exists(os.path.join(entry_path, "qemu_monitor", "analysis_report.xlsx"))
             has_bench = os.path.exists(os.path.join(entry_path, "vm_bench_lite"))
 
             # Consider success if both result directories exist
