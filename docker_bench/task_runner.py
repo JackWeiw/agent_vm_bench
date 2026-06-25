@@ -103,10 +103,10 @@ class BrowserTaskRunner(threading.Thread):
         print(f"[Container{self.state.container_id}] Task runner ended")
 
     def _start_browser_backend(self) -> Tuple[bool, str]:
-        """Start agent-browser daemon
+        """Start agent-browser daemon in clean environment
 
-        agent-browser uses a daemon process that manages browser sessions.
-        Just ensure it's installed and ready.
+        Clear proxy environment variables before starting agent-browser
+        to ensure it works properly without proxy interference.
 
         Returns: (success, error_msg)
         """
@@ -115,25 +115,32 @@ class BrowserTaskRunner(threading.Thread):
             return False, "No container handle"
 
         try:
-            # Check if agent-browser is installed and daemon is running
-            # agent-browser doctor checks daemon status
-            cmd = "agent-browser doctor --offline --quick"
-            result = container.exec_run(cmd, user="root")
+            # Step 1: Close any existing browser session
+            cmd_close = "agent-browser close --all"
+            container.exec_run(cmd_close, user="root")
+            time.sleep(0.5)
 
-            output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
+            # Step 2: Clear proxy environment variables
+            # Run in a clean shell without proxy
+            cmd_clear_proxy = "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY"
+            container.exec_run(cmd_clear_proxy, user="root", shell=True)
+
+            # Step 3: Check agent-browser status in clean environment
+            # Use sh -c to ensure environment is clean
+            cmd = "sh -c 'unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && agent-browser doctor --offline --quick'"
+            result = container.exec_run(cmd, user="root")
 
             if result.exit_code == 0:
                 self.state.browser_started = True
-                print(f"[Container{self.state.container_id}] agent-browser ready")
+                print(f"[Container{self.state.container_id}] agent-browser ready (clean env)")
                 return True, ""
             else:
-                # Daemon might not be running, try to start via a simple open command
-                # agent-browser auto-starts daemon when needed
-                cmd2 = "agent-browser --version"
+                # Check if agent-browser is installed at least
+                cmd2 = "sh -c 'unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && agent-browser --version'"
                 result2 = container.exec_run(cmd2, user="root")
                 if result2.exit_code == 0:
                     self.state.browser_started = True
-                    print(f"[Container{self.state.container_id}] agent-browser installed (daemon auto-starts on first open)")
+                    print(f"[Container{self.state.container_id}] agent-browser installed (daemon will auto-start)")
                     return True, ""
                 else:
                     output2 = result2.output.decode('utf-8', errors='ignore') if isinstance(result2.output, bytes) else result2.output
@@ -210,12 +217,13 @@ class BrowserTaskRunner(threading.Thread):
             return False, elapsed, step_times, interrupted
 
     def _step_open(self, url: str) -> Tuple[bool, float]:
-        """Step 1: Open page using agent-browser
+        """Step 1: Open page using agent-browser in clean environment
 
         Returns: (success, time_seconds)
         """
         container = self.state.docker_container
-        cmd = f"agent-browser open '{url}'"
+        # Run in clean shell without proxy
+        cmd = f"sh -c 'unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && agent-browser open \"{url}\"'"
 
         start = time.perf_counter()
         try:
@@ -237,12 +245,12 @@ class BrowserTaskRunner(threading.Thread):
             return False, elapsed
 
     def _step_snapshot(self) -> Tuple[bool, float, List[str]]:
-        """Step 2: DOM snapshot using agent-browser
+        """Step 2: DOM snapshot using agent-browser in clean environment
 
         Returns: (success, time_seconds, elements)
         """
         container = self.state.docker_container
-        cmd = "agent-browser snapshot -i"
+        cmd = "sh -c 'unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && agent-browser snapshot -i'"
 
         start = time.perf_counter()
         try:
@@ -286,7 +294,7 @@ class BrowserTaskRunner(threading.Thread):
 
         # Strategy 1: Try previously successful element first
         if self.state.working_click_element:
-            cmd = f"agent-browser click {self.state.working_click_element}"
+            cmd = f"sh -c 'unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && agent-browser click {self.state.working_click_element}'"
             result = container.exec_run(cmd, user="root")
             elapsed = time.perf_counter() - start
 
@@ -306,7 +314,7 @@ class BrowserTaskRunner(threading.Thread):
             try_elements = elements[:3]
 
         for element_ref in try_elements:
-            cmd = f"agent-browser click {element_ref}"
+            cmd = f"sh -c 'unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && agent-browser click {element_ref}'"
             result = container.exec_run(cmd, user="root")
             elapsed = time.perf_counter() - start
 
@@ -320,7 +328,7 @@ class BrowserTaskRunner(threading.Thread):
         print(f"[Container{self.state.container_id}] Step 3 (click) initial attempts failed, getting fresh snapshot...")
         time.sleep(0.5)
 
-        snapshot_cmd = "agent-browser snapshot -i"
+        snapshot_cmd = "sh -c 'unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && agent-browser snapshot -i'"
         snapshot_result = container.exec_run(snapshot_cmd, user="root")
 
         if snapshot_result.exit_code == 0:
@@ -330,7 +338,7 @@ class BrowserTaskRunner(threading.Thread):
             if fresh_elements:
                 fresh_try = fresh_elements[:3] if len(fresh_elements) >= 3 else fresh_elements
                 for element_ref in fresh_try:
-                    cmd = f"agent-browser click {element_ref}"
+                    cmd = f"sh -c 'unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && agent-browser click {element_ref}'"
                     result = container.exec_run(cmd, user="root")
                     elapsed = time.perf_counter() - start
 
@@ -352,12 +360,12 @@ class BrowserTaskRunner(threading.Thread):
             return False, elapsed
 
     def _step_screenshot(self) -> Tuple[bool, float]:
-        """Step 4: Screenshot using agent-browser
+        """Step 4: Screenshot using agent-browser in clean environment
 
         Returns: (success, time_seconds)
         """
         container = self.state.docker_container
-        cmd = "agent-browser screenshot"
+        cmd = "sh -c 'unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && agent-browser screenshot'"
 
         start = time.perf_counter()
         try:
@@ -387,8 +395,8 @@ class BrowserTaskRunner(threading.Thread):
             return False
 
         try:
-            # Close browser session
-            cmd = "agent-browser close"
+            # Close browser session in clean environment
+            cmd = "sh -c 'unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && agent-browser close --all'"
             result = container.exec_run(cmd, user="root")
             return result.exit_code == 0
         except Exception:
