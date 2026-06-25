@@ -282,10 +282,24 @@ class BrowserTaskRunner(threading.Thread):
         """
         container = self.state.docker_container
 
-        # Pick an element to click (e.g., e218 as mentioned in spec, or first available)
-        element_id = "e218"  # Default element as per spec
-        if elements and "e218" not in elements:
-            element_id = elements[0]  # Use first available if e218 not found
+        # Skip click if no elements available
+        if not elements:
+            print(f"[Container{self.state.container_id}] Step 4 (click) skipped: no elements found")
+            return True, 0.0
+
+        # Try to find a clickable element (prefer elements with higher numbers as they may be more visible)
+        # e218 is from the spec, but may not exist on all pages
+        element_id = None
+
+        # Try e218 first (from spec)
+        if "e218" in elements:
+            element_id = "e218"
+        else:
+            # Try elements from the middle of the list (more likely to be visible content)
+            if len(elements) > 10:
+                element_id = elements[len(elements) // 2]
+            else:
+                element_id = elements[-1]  # Use last element
 
         cmd = f"openclaw browser click {element_id}"
 
@@ -298,20 +312,28 @@ class BrowserTaskRunner(threading.Thread):
             if result.exit_code == 0:
                 return True, elapsed
 
-            # Retry on failure
+            # Try another element if first failed
             output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
-            print(f"[Container{self.state.container_id}] Step 4 (click) first attempt failed, retrying...")
+            print(f"[Container{self.state.container_id}] Step 4 (click) element {element_id} failed, trying another...")
 
-            result = container.exec_run(cmd, user="root")
-            elapsed = time.perf_counter() - start  # Total time including retry
+            # Try second element if available
+            if len(elements) > 1:
+                element_id2 = elements[0] if element_id != elements[0] else elements[1]
+                cmd2 = f"openclaw browser click {element_id2}"
+                result2 = container.exec_run(cmd2, user="root")
+                elapsed = time.perf_counter() - start
 
-            if result.exit_code == 0:
-                return True, elapsed
+                if result2.exit_code == 0:
+                    return True, elapsed
 
-            output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
-            print(f"[Container{self.state.container_id}] Step 4 (click) retry failed: {output[:100]}")
-            self.state.browser_metrics.last_error = f"click failed after retry: {output[:200]}"
-            return False, elapsed
+                output2 = result2.output.decode('utf-8', errors='ignore') if isinstance(result2.output, bytes) else result2.output
+                print(f"[Container{self.state.container_id}] Step 4 (click) element {element_id2} also failed")
+                self.state.browser_metrics.last_error = f"click failed: {output2[:200]}"
+                return False, elapsed
+            else:
+                # Only one element and it failed
+                self.state.browser_metrics.last_error = f"click failed: {output[:200]}"
+                return False, elapsed
 
         except Exception as e:
             elapsed = time.perf_counter() - start
