@@ -337,6 +337,17 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
         except Exception:
             pass
 
+        # ========== L3_Hit_Rate sheet ==========
+        try:
+            df_l3 = pd.read_excel(excel_path, sheet_name="L3_Hit_Rate")
+            for idx, row in df_l3.iterrows():
+                node = str(row["NUMA Node"]).strip() if pd.notna(row["NUMA Node"]) else ""
+                hit_rate = float(row["L3 Read Hit Rate (%)"]) if pd.notna(row["L3 Read Hit Rate (%)"]) else 0
+                if node:
+                    metrics[f"numa{node}_l3_hit_rate"] = hit_rate
+        except Exception:
+            pass
+
         # ========== KSys sheet ==========
         try:
             df_ksys = pd.read_excel(excel_path, sheet_name="KSys")

@@ -237,6 +237,15 @@ def export_to_excel(monitor: 'VMMonitorBase', log_dir: str, numa_nodes: list = N
                         bw_data['Write (MB/s)'].append(numa_bw[node_id].get('write', 0))
                     pd.DataFrame(bw_data).to_excel(writer, sheet_name='NUMA_Bandwidth', index=False)
 
+                # L3 Hit Rate as separate table
+                l3_hit = mem.get('l3_hit_rate', {})
+                if l3_hit:
+                    l3_data = {'NUMA Node': [], 'L3 Read Hit Rate (%)': []}
+                    for node_id in sorted(l3_hit.keys()):
+                        l3_data['NUMA Node'].append(node_id)
+                        l3_data['L3 Read Hit Rate (%)'].append(l3_hit[node_id])
+                    pd.DataFrame(l3_data).to_excel(writer, sheet_name='L3_Hit_Rate', index=False)
+
                 # Memory Timeline sheet (with safety check)
                 if mem.get('timeline') and mem['timeline'].get('timestamp'):
                     try:
