@@ -251,6 +251,7 @@ def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
             'cache_miss': {'L1D': avg, 'L1I': avg, 'L2D': avg, 'L2I': avg},
             'ddr_bandwidth_system': {'write': avg, 'read': avg},
             'numa_bandwidth': {node_id: {'read': avg, 'write': avg}},
+            'l3_hit_rate': {node_id: avg_hit_rate},  # L3 Read Hit Rate per NUMA node
             'timeline': {per-report data with timestamps},
             'report_count': number of reports
         }
@@ -259,6 +260,7 @@ def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
         'cache_miss': {'L1D': [], 'L1I': [], 'L2D': [], 'L2I': []},
         'ddr_bandwidth_system': {'write': [], 'read': []},
         'numa_bandwidth': {},
+        'l3_hit_rate': {},  # L3 Read Hit Rate per NUMA node (CCL=-- rows)
         'timestamps': [],
         'report_count': 0
     }
@@ -326,6 +328,34 @@ def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
                     result['numa_bandwidth'][node_id]['read'].append(0)
                     result['numa_bandwidth'][node_id]['write'].append(0)
 
+            # Parse L3 Read Hit Rate (CCL=-- rows are NUMA-level aggregates)
+            # Format: NODE  CCL  Read Hit Bandwidth  Read Bandwidth  Read Hit Rate
+            # Example: 0     --         4092.77MB/s     6371.99MB/s         64.23%
+            # Only collect for NUMA nodes specified in numa_nodes parameter
+            found_l3_nodes = set()
+            l3_section_match = re.search(r'2\. L3 Read Bandwidth and Hit Rate.*?───────────.*?\n.*?\n.*?\n(.*?)(?:───────────|$)', report, re.DOTALL)
+            if l3_section_match:
+                l3_lines = l3_section_match.group(1).strip().split('\n')
+                for line in l3_lines:
+                    # Match lines with NODE and CCL=-- (NUMA aggregate)
+                    # Pattern: NODE (digit) + whitespace + "--" + numbers + percentage
+                    l3_match = re.match(r'\s*([0-3])\s+--\s+[\d.]+MB/s\s+[\d.]+MB/s\s+([\d.]+)%', line.strip())
+                    if l3_match:
+                        node_id = int(l3_match.group(1))
+                        # Filter: only collect if node_id is in numa_nodes parameter
+                        if numa_nodes and node_id not in numa_nodes:
+                            continue
+                        hit_rate = float(l3_match.group(2))
+                        if node_id not in result['l3_hit_rate']:
+                            result['l3_hit_rate'][node_id] = []
+                        result['l3_hit_rate'][node_id].append(hit_rate)
+                        found_l3_nodes.add(node_id)
+
+            # For L3 nodes not found in this report, append 0 to maintain consistent length
+            for node_id in result['l3_hit_rate']:
+                if node_id not in found_l3_nodes:
+                    result['l3_hit_rate'][node_id].append(0)
+
             result['report_count'] += 1
 
         # Ensure all main arrays have same length
@@ -346,6 +376,12 @@ def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
                 while len(result['numa_bandwidth'][node_id][key]) < expected_len:
                     result['numa_bandwidth'][node_id][key].append(0)
                 result['numa_bandwidth'][node_id][key] = result['numa_bandwidth'][node_id][key][:expected_len]
+
+        # Ensure L3 hit rate arrays have consistent length
+        for node_id in result['l3_hit_rate']:
+            while len(result['l3_hit_rate'][node_id]) < expected_len:
+                result['l3_hit_rate'][node_id].append(0)
+            result['l3_hit_rate'][node_id] = result['l3_hit_rate'][node_id][:expected_len]
 
         # Calculate averages
         avg_result = {'report_count': result['report_count']}
@@ -376,6 +412,11 @@ def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
                 'write': sum(data['write']) / len(data['write']) if data['write'] else 0.0
             }
 
+        # L3 hit rate averages
+        avg_result['l3_hit_rate'] = {}
+        for node_id, data in result['l3_hit_rate'].items():
+            avg_result['l3_hit_rate'][node_id] = sum(data) / len(data) if data else 0.0
+
         # Add timeline data
         avg_result['timestamps'] = result['timestamps']
         avg_result['timeline'] = {
@@ -391,6 +432,10 @@ def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
         for node_id, data in result['numa_bandwidth'].items():
             avg_result['timeline'][f'NUMA{node_id}_read'] = data['read']
             avg_result['timeline'][f'NUMA{node_id}_write'] = data['write']
+
+        # Add L3 hit rate timeline
+        for node_id, data in result['l3_hit_rate'].items():
+            avg_result['timeline'][f'NUMA{node_id}_l3_hit_rate'] = data
 
         return avg_result
 

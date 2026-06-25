@@ -248,6 +248,9 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
     - UBWatch_Latency sheet (8 metrics)
     """
     vm_dir = os.path.join(result_dir, "vm_monitor")
+    # Backward compatibility: also check qemu_monitor directory
+    if not os.path.exists(vm_dir):
+        vm_dir = os.path.join(result_dir, "qemu_monitor")
     excel_path = os.path.join(vm_dir, "analysis_report.xlsx")
 
     if not os.path.exists(excel_path):
@@ -298,24 +301,64 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
         except Exception:
             pass
 
-        # ========== DevKit_Memory sheet (6 metrics) ==========
-        try:
-            df_mem = pd.read_excel(excel_path, sheet_name="DevKit_Memory")
-            for idx, row in df_mem.iterrows():
-                metric = str(row["Metric"]).strip() if pd.notna(row["Metric"]) else ""
-                value = row["Value"]
-                key_map = {
-                    "L1D Miss (%)": "mem_l1d_miss",
-                    "L1I Miss (%)": "mem_l1i_miss",
-                    "L2D Miss (%)": "mem_l2d_miss",
-                    "L2I Miss (%)": "mem_l2i_miss",
-                    "DDR Read (MB/s)": "mem_ddr_read",
-                    "DDR Write (MB/s)": "mem_ddr_write",
-                }
-                if metric in key_map:
-                    metrics[key_map[metric]] = float(value) if pd.notna(value) else 0
-        except Exception:
-            pass
+        # ========== DevKit_Memory sheet (backward compatible) ==========
+        # Try multiple sheet names for backward compatibility
+        mem_sheet_found = False
+        for sheet_name in ["DevKit_Memory", "DevKit_Memory", "devkit_mem"]:
+            try:
+                if sheet_name not in pd.ExcelFile(excel_path).sheet_names:
+                    continue
+                df_mem = pd.read_excel(excel_path, sheet_name=sheet_name)
+
+                # Try different column names for backward compatibility
+                metric_col = None
+                value_col = None
+                for col in df_mem.columns:
+                    if "Metric" in str(col) or "metric" in str(col).lower():
+                        metric_col = col
+                    if "Value" in str(col) or "value" in str(col).lower():
+                        value_col = col
+
+                if metric_col is None or value_col is None:
+                    continue
+
+                for idx, row in df_mem.iterrows():
+                    metric = str(row[metric_col]).strip() if pd.notna(row[metric_col]) else ""
+                    value = row[value_col]
+                    key_map = {
+                        "L1D Miss (%)": "mem_l1d_miss",
+                        "L1I Miss (%)": "mem_l1i_miss",
+                        "L2D Miss (%)": "mem_l2d_miss",
+                        "L2I Miss (%)": "mem_l2i_miss",
+                        "DDR Read (MB/s)": "mem_ddr_read",
+                        "DDR Write (MB/s)": "mem_ddr_write",
+                    }
+                    if metric in key_map:
+                        metrics[key_map[metric]] = float(value) if pd.notna(value) else 0
+                    # Extract L3 hit rate: NUMA0 L3 Hit Rate (%), NUMA1 L3 Hit Rate (%), etc.
+                    elif "L3 Hit Rate" in metric:
+                        # Parse "NUMA1 L3 Hit Rate (%)" -> numa1_l3_hit_rate
+                        numa_match = re.match(r"NUMA(\d+)\s+L3 Hit Rate", metric)
+                        if numa_match:
+                            node_id = numa_match.group(1)
+                            metrics[f"numa{node_id}_l3_hit_rate"] = float(value) if pd.notna(value) else 0
+
+                mem_sheet_found = True
+                break  # Found and processed, stop trying other names
+            except Exception:
+                continue
+
+        # If no DevKit_Memory sheet found, try to extract from L3_Hit_Rate sheet (legacy format)
+        if not mem_sheet_found:
+            try:
+                df_l3 = pd.read_excel(excel_path, sheet_name="L3_Hit_Rate")
+                for idx, row in df_l3.iterrows():
+                    node = str(row["NUMA Node"]).strip() if pd.notna(row["NUMA Node"]) else ""
+                    hit_rate = float(row["L3 Read Hit Rate (%)"]) if pd.notna(row["L3 Read Hit Rate (%)"]) else 0
+                    if node:
+                        metrics[f"numa{node}_l3_hit_rate"] = hit_rate
+            except Exception:
+                pass
 
         # ========== NUMA_Bandwidth sheet ==========
         try:
@@ -935,12 +978,19 @@ def generate_summary_report(results: Dict, output_path: str):
             row["mem_ddr_read_mb_s"] = qemu.get("mem_ddr_read", 0)
             row["mem_ddr_write_mb_s"] = qemu.get("mem_ddr_write", 0)
 
+            # L3 Hit Rate (per NUMA node) - part of DevKit Memory metrics
+            l3_hit_rate_cols = []
+            for key, value in qemu.items():
+                if key.startswith("numa") and "_l3_hit_rate" in key:
+                    row[key] = value
+                    l3_hit_rate_cols.append(key)
+
             # NUMA Bandwidth (total)
             row["numa_total_read_mb_s"] = qemu.get("numa_total_read", 0)
             row["numa_total_write_mb_s"] = qemu.get("numa_total_write", 0)
             # Per-node NUMA bandwidth (dynamically add if exists)
             for key, value in qemu.items():
-                if key.startswith("numa") and "_read" in key and key != "numa_total_read":
+                if key.startswith("numa") and "_read" in key and key != "numa_total_read" and "_l3_hit_rate" not in key:
                     row[key] = value
                 elif key.startswith("numa") and "_write" in key and key != "numa_total_write":
                     row[key] = value
@@ -1034,15 +1084,15 @@ def generate_summary_report(results: Dict, output_path: str):
         column_sources.append(("DevKit TopDown (Excel: DevKit_TopDown)", col_idx, col_idx + 12))
         col_idx += 13
 
-        # DevKit Memory - 6 columns
-        column_sources.append(("DevKit Memory (Excel: DevKit_Memory)", col_idx, col_idx + 5))
-        col_idx += 6
+        # DevKit Memory - 6 columns + dynamic L3 hit rate columns
+        l3_hit_cols = [c for c in df.columns if c.startswith("numa") and "_l3_hit_rate" in c]
+        mem_end = col_idx + 5 + len(l3_hit_cols)
+        column_sources.append(("DevKit Memory (Excel: DevKit_Memory)", col_idx, mem_end))
+        col_idx = mem_end + 1
 
         # NUMA Bandwidth - 2 columns (base) + dynamic per-node columns
-        numa_end = col_idx + 1
-        # Check if there are per-node numa columns
-        numa_cols = [c for c in df.columns if c.startswith("numa") and c not in ["numa_total_read_mb_s", "numa_total_write_mb_s"]]
-        numa_end += len(numa_cols)
+        numa_bw_cols = [c for c in df.columns if c.startswith("numa") and c not in ["numa_total_read_mb_s", "numa_total_write_mb_s"] and "_l3_hit_rate" not in c]
+        numa_end = col_idx + 1 + len(numa_bw_cols)
         column_sources.append(("NUMA Bandwidth (Excel: NUMA_Bandwidth)", col_idx, numa_end))
         col_idx = numa_end + 1
 
@@ -1181,8 +1231,9 @@ def scan_existing_results(result_base_dir: str) -> List[TestTask]:
             ratio = float(match.group(2))
             active_percent = float(match.group(3))
 
-            # Check if result files exist
-            has_vm = os.path.exists(os.path.join(entry_path, "vm_monitor", "analysis_report.xlsx"))
+            # Check if result files exist (backward compatibility: check both vm_monitor and qemu_monitor)
+            has_vm = os.path.exists(os.path.join(entry_path, "vm_monitor", "analysis_report.xlsx")) or \
+                     os.path.exists(os.path.join(entry_path, "qemu_monitor", "analysis_report.xlsx"))
             has_bench = os.path.exists(os.path.join(entry_path, "vm_bench_lite"))
 
             # Consider success if both result directories exist
