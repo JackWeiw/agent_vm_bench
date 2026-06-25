@@ -34,7 +34,8 @@ RUN npm config set strict-ssl false && \
     npm install @slack/web-api @slack/bolt && \
     ln -s /usr/local/node24/bin/openclaw /usr/local/bin/openclaw && \
     echo "No" | npx skills add https://github.com/vercel-labs/agent-browser --skill agent-browser -y && \
-    npm install -g agent-browser
+    npm install -g agent-browser && \
+    ln -s /usr/local/node24/bin/agent-browser /usr/local/bin/agent-browser
 
 # Create openclaw config directory and configuration
 RUN mkdir -p /root/.openclaw/workspace
