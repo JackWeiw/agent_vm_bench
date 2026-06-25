@@ -110,6 +110,7 @@ class ContainerState:
     last_task_time: float = 0.0          # Last task execution time
     consecutive_failures: int = 0        # Consecutive failure count
     browser_started: bool = False        # OpenClaw browser backend started flag
+    working_click_element: str = ""      # Element ID that successfully clicked (reuse for same page)
 
 
 @dataclass
