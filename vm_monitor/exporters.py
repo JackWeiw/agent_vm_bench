@@ -697,3 +697,89 @@ def print_capture_summary(results: dict, log_dir: str, numa_nodes: list = None):
                                   f"(Min={stats['min']:.0f}, Max={stats['max']:.0f}) MHz")
 
     print("=" * 70)
+
+
+def add_l3_hit_rate_to_excel(result_dir: str, numa_nodes: list = None) -> bool:
+    """Offline fix: Add L3 Hit Rate sheet to existing analysis_report.xlsx
+
+    Reads devkit_mem.log and extracts L3 hit rate, then adds it to the Excel file.
+    Useful for updating legacy Excel files that were generated before L3 hit rate extraction.
+
+    Args:
+        result_dir: Directory containing vm_monitor/ or qemu_monitor/ subdirectory
+        numa_nodes: List of NUMA nodes to filter (e.g., [0, 1])
+
+    Returns:
+        True if successful, False otherwise
+    """
+    if not PANDAS_AVAILABLE:
+        print("[WARN] pandas not available, cannot update Excel")
+        return False
+
+    from .parsers import parse_devkit_mem
+
+    # Find monitor directory (backward compatibility)
+    vm_dir = os.path.join(result_dir, "vm_monitor")
+    if not os.path.exists(vm_dir):
+        vm_dir = os.path.join(result_dir, "qemu_monitor")
+
+    if not os.path.exists(vm_dir):
+        print(f"[WARN] Monitor directory not found in {result_dir}")
+        return False
+
+    excel_path = os.path.join(vm_dir, "analysis_report.xlsx")
+    devkit_mem_path = os.path.join(vm_dir, "devkit_mem.log")
+
+    if not os.path.exists(excel_path):
+        print(f"[WARN] Excel file not found: {excel_path}")
+        return False
+
+    if not os.path.exists(devkit_mem_path):
+        print(f"[WARN] devkit_mem.log not found: {devkit_mem_path}")
+        return False
+
+    # Parse devkit_mem.log for L3 hit rate
+    print(f"Parsing {devkit_mem_path} for L3 hit rate...")
+    mem_data = parse_devkit_mem(devkit_mem_path, numa_nodes)
+
+    if 'error' in mem_data:
+        print(f"[WARN] Failed to parse devkit_mem.log: {mem_data['error']}")
+        return False
+
+    l3_hit = mem_data.get('l3_hit_rate', {})
+    if not l3_hit:
+        print("[WARN] No L3 hit rate data found in devkit_mem.log")
+        return False
+
+    # Read existing Excel and add L3_Hit_Rate sheet
+    try:
+        from openpyxl import load_workbook
+
+        wb = load_workbook(excel_path)
+
+        # Remove existing L3_Hit_Rate sheet if present
+        if 'L3_Hit_Rate' in wb.sheetnames:
+            wb.remove(wb['L3_Hit_Rate'])
+
+        # Create new sheet
+        ws = wb.create_sheet('L3_Hit_Rate')
+        ws['A1'] = 'NUMA Node'
+        ws['B1'] = 'L3 Read Hit Rate (%)'
+
+        for idx, node_id in enumerate(sorted(l3_hit.keys()), 2):
+            ws[f'A{idx}'] = node_id
+            ws[f'B{idx}'] = round(l3_hit[node_id], 2)
+
+        wb.save(excel_path)
+        print(f"[OK] Added L3_Hit_Rate sheet to {excel_path}")
+
+        # Print extracted data
+        print("L3 Hit Rate data:")
+        for node_id in sorted(l3_hit.keys()):
+            print(f"  NUMA {node_id}: {l3_hit[node_id]:.2f}%")
+
+        return True
+
+    except Exception as e:
+        print(f"[WARN] Failed to update Excel: {e}")
+        return False
