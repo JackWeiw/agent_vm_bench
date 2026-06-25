@@ -200,18 +200,15 @@ class BrowserTaskRunner(threading.Thread):
 
         start = time.perf_counter()
         try:
-            result = container.exec_run(cmd, timeout=60, user="root")
+            result = container.exec_run(cmd, user="root")
             elapsed = time.perf_counter() - start
-
             output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
-
             if result.exit_code != 0:
                 print(f"[Container{self.state.container_id}] Step 1 (open) failed: {output[:200]}")
                 self.state.browser_metrics.last_error = f"open failed: {output[:200]}"
                 return False, elapsed, ""
 
-            # Extract tab_id from output (format varies, need parsing)
-            # Example output: "Tab ID: abc123" or "tab_id=abc123"
+            # Extract tab_id from output
             tab_id = self._extract_tab_id(output)
             return True, elapsed, tab_id
 
@@ -234,7 +231,7 @@ class BrowserTaskRunner(threading.Thread):
 
         start = time.perf_counter()
         try:
-            result = container.exec_run(cmd, timeout=30, user="root")
+            result = container.exec_run(cmd, user="root")
             elapsed = time.perf_counter() - start
 
             if result.exit_code != 0:
@@ -259,7 +256,7 @@ class BrowserTaskRunner(threading.Thread):
 
         start = time.perf_counter()
         try:
-            result = container.exec_run(cmd, timeout=60, user="root")
+            result = container.exec_run(cmd, user="root")
             elapsed = time.perf_counter() - start
 
             output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
@@ -295,7 +292,7 @@ class BrowserTaskRunner(threading.Thread):
         # First attempt
         start = time.perf_counter()
         try:
-            result = container.exec_run(cmd, timeout=30, user="root")
+            result = container.exec_run(cmd, user="root")
             elapsed = time.perf_counter() - start
 
             if result.exit_code == 0:
@@ -305,7 +302,7 @@ class BrowserTaskRunner(threading.Thread):
             output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
             print(f"[Container{self.state.container_id}] Step 4 (click) first attempt failed, retrying...")
 
-            result = container.exec_run(cmd, timeout=30, user="root")
+            result = container.exec_run(cmd, user="root")
             elapsed = time.perf_counter() - start  # Total time including retry
 
             if result.exit_code == 0:
@@ -331,7 +328,7 @@ class BrowserTaskRunner(threading.Thread):
 
         start = time.perf_counter()
         try:
-            result = container.exec_run(cmd, timeout=30, user="root")
+            result = container.exec_run(cmd, user="root")
             elapsed = time.perf_counter() - start
 
             if result.exit_code != 0:
