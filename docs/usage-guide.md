@@ -352,7 +352,7 @@ python vm_bench_lite.py -n 100 --start-ip 192.168.110.11 --browser-mode \
 Runs complete test flow:
 
 ```bash
-python3 auto_vm_test.py --config test_config.yaml
+python3 auto_vm_test.py --config config/test_config.yaml
 ```
 
 Test flow:
@@ -371,13 +371,13 @@ Test flow:
 #### Preview Tasks
 
 ```bash
-python3 batch_test_scheduler.py --config batch_config.yaml --dry-run
+python3 batch_test_scheduler.py --config config/batch_config.yaml --dry-run
 ```
 
 #### Execute Batch
 
 ```bash
-python3 batch_test_scheduler.py --config batch_config.yaml
+python3 batch_test_scheduler.py --config config/batch_config.yaml
 ```
 
 #### Offline Summary
@@ -389,7 +389,7 @@ Generate summary from existing results:
 python3 batch_test_scheduler.py --offline --result-dir results
 
 # Use config's base_dir
-python batch_test_scheduler.py --offline --config batch_config.yaml
+python batch_test_scheduler.py --offline --config config/batch_config.yaml
 
 # Custom output
 python3 batch_test_scheduler.py --offline --result-dir results --output summary.xlsx

@@ -132,10 +132,10 @@ virsh list --all
 
 ```bash
 # 预览任务
-python3 batch_test_scheduler.py --config batch_config.yaml --dry-run
+python3 batch_test_scheduler.py --config config/batch_config.yaml --dry-run
 
 # 执行批量测试
-python3 batch_test_scheduler.py --config batch_config.yaml
+python3 batch_test_scheduler.py --config config/batch_config.yaml
 
 # 离线汇总（从已有结果）
 python3 batch_test_scheduler.py --offline --result-dir results
@@ -144,7 +144,7 @@ python3 batch_test_scheduler.py --offline --result-dir results
 ### 单次测试
 
 ```bash
-python3 auto_vm_test.py --config test_config.yaml
+python3 auto_vm_test.py --config config/test_config.yaml
 ```
 
 ### 结果目录结构

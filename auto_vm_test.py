@@ -15,7 +15,7 @@ Executes a complete single test flow:
 9. Cleanup (kill smap_tool, delete VMs)
 
 Usage:
-    python auto_vm_test.py --config test_config.yaml
+    python auto_vm_test.py --config config/test_config.yaml
 """
 
 import os

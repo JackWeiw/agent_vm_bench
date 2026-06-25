@@ -174,7 +174,7 @@ result:
 文件: `auto_vm_test.py`
 
 ```bash
-python auto_vm_test.py --config test_config.yaml
+python auto_vm_test.py --config config/test_config.yaml
 ```
 
 ### 4.2 执行流程详解
@@ -432,7 +432,7 @@ python3 qemu_monitor.py -t 300 --enable-capture --numa 0,1
 文件: `batch_test_scheduler.py`
 
 ```bash
-python batch_test_scheduler.py --config batch_config.yaml
+python batch_test_scheduler.py --config config/batch_config.yaml
 ```
 
 ### 5.2 执行流程

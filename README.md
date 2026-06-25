@@ -134,10 +134,10 @@ virsh list --all
 
 ```bash
 # Preview tasks
-python3 batch_test_scheduler.py --config batch_config.yaml --dry-run
+python3 batch_test_scheduler.py --config config/batch_config.yaml --dry-run
 
 # Execute batch
-python3 batch_test_scheduler.py --config batch_config.yaml
+python3 batch_test_scheduler.py --config config/batch_config.yaml
 
 # Offline summary from existing results
 python3 batch_test_scheduler.py --offline --result-dir results
@@ -146,7 +146,7 @@ python3 batch_test_scheduler.py --offline --result-dir results
 ### Single Test
 
 ```bash
-python3 auto_vm_test.py --config test_config.yaml
+python3 auto_vm_test.py --config config/test_config.yaml
 ```
 
 ### Result Structure
