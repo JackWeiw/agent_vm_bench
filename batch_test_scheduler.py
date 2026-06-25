@@ -301,7 +301,7 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
         except Exception:
             pass
 
-        # ========== DevKit_Memory sheet (6 metrics) ==========
+        # ========== DevKit_Memory sheet (6 metrics + L3 hit rate) ==========
         try:
             df_mem = pd.read_excel(excel_path, sheet_name="DevKit_Memory")
             for idx, row in df_mem.iterrows():
@@ -317,6 +317,13 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
                 }
                 if metric in key_map:
                     metrics[key_map[metric]] = float(value) if pd.notna(value) else 0
+                # Extract L3 hit rate: NUMA0 L3 Hit Rate (%), NUMA1 L3 Hit Rate (%), etc.
+                elif "L3 Hit Rate" in metric:
+                    # Parse "NUMA0 L3 Hit Rate (%)" -> numa0_l3_hit_rate
+                    numa_match = re.match(r"NUMA(\d+)\s+L3 Hit Rate", metric)
+                    if numa_match:
+                        node_id = numa_match.group(1)
+                        metrics[f"numa{node_id}_l3_hit_rate"] = float(value) if pd.notna(value) else 0
         except Exception:
             pass
 
@@ -337,17 +344,6 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
                     total_write += write
             metrics["numa_total_read"] = total_read
             metrics["numa_total_write"] = total_write
-        except Exception:
-            pass
-
-        # ========== L3_Hit_Rate sheet ==========
-        try:
-            df_l3 = pd.read_excel(excel_path, sheet_name="L3_Hit_Rate")
-            for idx, row in df_l3.iterrows():
-                node = str(row["NUMA Node"]).strip() if pd.notna(row["NUMA Node"]) else ""
-                hit_rate = float(row["L3 Read Hit Rate (%)"]) if pd.notna(row["L3 Read Hit Rate (%)"]) else 0
-                if node:
-                    metrics[f"numa{node}_l3_hit_rate"] = hit_rate
         except Exception:
             pass
 

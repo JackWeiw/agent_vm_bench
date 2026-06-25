@@ -212,18 +212,26 @@ def export_to_excel(monitor: 'VMMonitorBase', log_dir: str, numa_nodes: list = N
             # ========== Sheet 7: DevKit Memory ==========
             if 'devkit_mem' in parsed_logs and 'error' not in parsed_logs['devkit_mem']:
                 mem = parsed_logs['devkit_mem']
+
+                # Build metrics list dynamically to include L3 hit rate
+                metrics_list = [
+                    ('L1D Miss (%)', mem.get('cache_miss', {}).get('L1D', 0)),
+                    ('L1I Miss (%)', mem.get('cache_miss', {}).get('L1I', 0)),
+                    ('L2D Miss (%)', mem.get('cache_miss', {}).get('L2D', 0)),
+                    ('L2I Miss (%)', mem.get('cache_miss', {}).get('L2I', 0)),
+                    ('DDR Write (MB/s)', mem.get('ddr_bandwidth_system', {}).get('write', 0)),
+                    ('DDR Read (MB/s)', mem.get('ddr_bandwidth_system', {}).get('read', 0)),
+                ]
+
+                # Add L3 hit rate per NUMA node
+                l3_hit = mem.get('l3_hit_rate', {})
+                for node_id in sorted(l3_hit.keys()):
+                    metrics_list.append((f'NUMA{node_id} L3 Hit Rate (%)', l3_hit[node_id]))
+
                 mem_data = {
-                    'Metric': ['L1D Miss (%)', 'L1I Miss (%)', 'L2D Miss (%)', 'L2I Miss (%)',
-                              'DDR Write (MB/s)', 'DDR Read (MB/s)'],
-                    'Value': [
-                        mem.get('cache_miss', {}).get('L1D', 0),
-                        mem.get('cache_miss', {}).get('L1I', 0),
-                        mem.get('cache_miss', {}).get('L2D', 0),
-                        mem.get('cache_miss', {}).get('L2I', 0),
-                        mem.get('ddr_bandwidth_system', {}).get('write', 0),
-                        mem.get('ddr_bandwidth_system', {}).get('read', 0)
-                    ],
-                    'Report Count': [mem.get('report_count', 0)] * 6
+                    'Metric': [m[0] for m in metrics_list],
+                    'Value': [m[1] for m in metrics_list],
+                    'Report Count': [mem.get('report_count', 0)] * len(metrics_list)
                 }
                 pd.DataFrame(mem_data).to_excel(writer, sheet_name='DevKit_Memory', index=False)
 
@@ -236,15 +244,6 @@ def export_to_excel(monitor: 'VMMonitorBase', log_dir: str, numa_nodes: list = N
                         bw_data['Read (MB/s)'].append(numa_bw[node_id].get('read', 0))
                         bw_data['Write (MB/s)'].append(numa_bw[node_id].get('write', 0))
                     pd.DataFrame(bw_data).to_excel(writer, sheet_name='NUMA_Bandwidth', index=False)
-
-                # L3 Hit Rate as separate table
-                l3_hit = mem.get('l3_hit_rate', {})
-                if l3_hit:
-                    l3_data = {'NUMA Node': [], 'L3 Read Hit Rate (%)': []}
-                    for node_id in sorted(l3_hit.keys()):
-                        l3_data['NUMA Node'].append(node_id)
-                        l3_data['L3 Read Hit Rate (%)'].append(l3_hit[node_id])
-                    pd.DataFrame(l3_data).to_excel(writer, sheet_name='L3_Hit_Rate', index=False)
 
                 # Memory Timeline sheet (with safety check)
                 if mem.get('timeline') and mem['timeline'].get('timestamp'):
@@ -700,9 +699,9 @@ def print_capture_summary(results: dict, log_dir: str, numa_nodes: list = None):
 
 
 def add_l3_hit_rate_to_excel(result_dir: str, numa_nodes: list = None) -> bool:
-    """Offline fix: Add L3 Hit Rate sheet to existing analysis_report.xlsx
+    """Offline fix: Add L3 Hit Rate to DevKit_Memory sheet in existing analysis_report.xlsx
 
-    Reads devkit_mem.log and extracts L3 hit rate, then adds it to the Excel file.
+    Reads devkit_mem.log and extracts L3 hit rate, then adds it to DevKit_Memory sheet.
     Useful for updating legacy Excel files that were generated before L3 hit rate extraction.
 
     Args:
@@ -751,27 +750,36 @@ def add_l3_hit_rate_to_excel(result_dir: str, numa_nodes: list = None) -> bool:
         print("[WARN] No L3 hit rate data found in devkit_mem.log")
         return False
 
-    # Read existing Excel and add L3_Hit_Rate sheet
+    # Read existing Excel and update DevKit_Memory sheet
     try:
         from openpyxl import load_workbook
 
         wb = load_workbook(excel_path)
 
-        # Remove existing L3_Hit_Rate sheet if present
+        # Check if DevKit_Memory sheet exists
+        if 'DevKit_Memory' not in wb.sheetnames:
+            print("[WARN] DevKit_Memory sheet not found in Excel")
+            return False
+
+        ws = wb['DevKit_Memory']
+
+        # Find the last row with data (assume format: Metric | Value | Report Count)
+        max_row = ws.max_row
+
+        # Add L3 hit rate rows at the end
+        for node_id in sorted(l3_hit.keys()):
+            row_num = max_row + 1
+            ws.cell(row=row_num, column=1, value=f"NUMA{node_id} L3 Hit Rate (%)")
+            ws.cell(row=row_num, column=2, value=round(l3_hit[node_id], 2))
+            ws.cell(row=row_num, column=3, value=mem_data.get('report_count', 0))
+
+        # Remove old L3_Hit_Rate sheet if present (cleanup from previous version)
         if 'L3_Hit_Rate' in wb.sheetnames:
             wb.remove(wb['L3_Hit_Rate'])
-
-        # Create new sheet
-        ws = wb.create_sheet('L3_Hit_Rate')
-        ws['A1'] = 'NUMA Node'
-        ws['B1'] = 'L3 Read Hit Rate (%)'
-
-        for idx, node_id in enumerate(sorted(l3_hit.keys()), 2):
-            ws[f'A{idx}'] = node_id
-            ws[f'B{idx}'] = round(l3_hit[node_id], 2)
+            print("[INFO] Removed old L3_Hit_Rate sheet")
 
         wb.save(excel_path)
-        print(f"[OK] Added L3_Hit_Rate sheet to {excel_path}")
+        print(f"[OK] Added L3 hit rate to DevKit_Memory sheet in {excel_path}")
 
         # Print extracted data
         print("L3 Hit Rate data:")
