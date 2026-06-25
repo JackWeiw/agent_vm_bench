@@ -263,16 +263,19 @@ class ContainerManager:
                     continue
 
                 try:
-                    # Execute port check command inside container
-                    cmd = f"ss -tlnp | grep ':{port}' || netstat -tlnp 2>/dev/null | grep ':{port}' || echo 'PORT_NOT_LISTENING'"
-                    result = container.exec_run(cmd, user="root")
+                    # Execute port check command inside container with timeout
+                    # Use simpler command: just check if ss shows the port
+                    cmd = f"ss -tlnp 2>/dev/null | grep -q ':{port}' && echo 'PORT_OK' || echo 'PORT_NOT_LISTENING'"
+                    result = container.exec_run(cmd, user="root", timeout=10)
 
                     output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
 
-                    if result.exit_code == 0 and 'PORT_NOT_LISTENING' not in output:
+                    # Check if port is listening (PORT_OK in output means grep succeeded)
+                    if 'PORT_OK' in output:
                         ready_ports.add(port)
                         print(f"[Container{state.container_id}] Port {port} is listening")
                 except Exception as e:
+                    # exec_run timeout or other error - continue checking
                     pass  # Continue checking other ports
 
             if len(ready_ports) == len(self.config.required_ports):
