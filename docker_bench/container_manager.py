@@ -273,15 +273,15 @@ class ContainerManager:
 
                 try:
                     # Execute port check command inside container
-                    # Note: docker SDK 7.0.0 does not support timeout in exec_run
-                    cmd = f"ss -tlnp 2>/dev/null | grep ':{port}' && echo 'PORT_OK'"
+                    # Note: Use shell=True or sh -c to support pipe in exec_run
+                    cmd = f"sh -c 'ss -tlnp 2>/dev/null | grep :{port}'"
                     result = container.exec_run(cmd, user="root")
 
                     output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
                     exit_code = result.exit_code
 
-                    # Check if port is listening (grep found the port or PORT_OK in output)
-                    if exit_code == 0 or 'PORT_OK' in output:
+                    # Check if port is listening (grep found the port)
+                    if exit_code == 0 and len(output.strip()) > 0:
                         ready_ports.add(port)
                         print(f"[Container{state.container_id}] Port {port} is listening")
                 except Exception as e:
