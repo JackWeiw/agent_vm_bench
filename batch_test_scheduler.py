@@ -988,6 +988,11 @@ def generate_summary_report(results: Dict, output_path: str):
                 elif key.startswith("numa") and "_write" in key and key != "numa_total_write":
                     row[key] = value
 
+            # L3 Hit Rate (per NUMA node, dynamically add if exists)
+            for key, value in qemu.items():
+                if key.startswith("numa") and "_l3_hit_rate" in key:
+                    row[key] = value
+
             # KSys metrics
             row["ksys_l2_miss_latency_max"] = qemu.get("ksys_l2_miss_latency_max", 0)
             row["ksys_l2_miss_latency_min"] = qemu.get("ksys_l2_miss_latency_min", 0)
