@@ -14,6 +14,7 @@ Test framework for OpenStack VM memory overcommit scenarios with comprehensive p
 | [Usage Guide](docs/usage-guide.md) | Detailed tool usage and configuration |
 | [E2B Bench Usage](docs/e2b-bench-usage.md) | E2B Sandbox batch performance testing |
 | [E2B Bench Usage (中文)](docs/e2b-bench-usage-zh.md) | E2B沙箱批量性能测试指南 |
+| [Docker Bench Usage](docs/docker-bench-usage.md) | Docker container browser automation testing |
 | [Docker Bench Usage (中文)](docs/docker-bench-usage-zh.md) | Docker容器浏览器自动化性能测试指南 |
 
 ## Dependencies
