@@ -14,6 +14,7 @@ Test framework for OpenStack VM memory overcommit scenarios with comprehensive p
 | [Usage Guide](docs/usage-guide.md) | Detailed tool usage and configuration |
 | [E2B Bench Usage](docs/e2b-bench-usage.md) | E2B Sandbox batch performance testing |
 | [E2B Bench Usage (中文)](docs/e2b-bench-usage-zh.md) | E2B沙箱批量性能测试指南 |
+| [Docker Bench Usage (中文)](docs/docker-bench-usage-zh.md) | Docker容器浏览器自动化性能测试指南 |
 
 ## Dependencies
 
@@ -125,6 +126,56 @@ python vm_bench_lite.py -n 100 --start-ip 192.168.110.11 --browser-mode \
 openstack server list -c ID -f value | xargs openstack server delete --force
 virsh list --all
 ```
+
+---
+
+## Docker Container Bench
+
+Browser automation performance testing in Docker containers.
+
+### Quick Start
+
+```bash
+# Install dependencies
+pip install -r docker_bench/requirements.txt
+
+# Run with config file
+python -m docker_bench --config config/docker_bench.yaml
+
+# Create containers only (Phase 0)
+python -m docker_bench --config config/docker_bench.yaml --create-only
+
+# Detect existing containers and benchmark
+python -m docker_bench --config config/docker_bench.yaml --detect
+
+# Full CLI mode
+python -m docker_bench \
+    --image ubuntu-openclaw-chromium:arm64 \
+    --total 10 \
+    --cpu 2 \
+    --memory 2g \
+    --duration 160
+```
+
+### Browser Workflow (5 steps = 1 query)
+
+```text
+Step 1: openclaw browser open [URL] --label [NAME]
+Step 2: openclaw browser focus [TAB_ID]
+Step 3: openclaw browser snapshot --limit 200
+Step 4: openclaw browser click e218
+Step 5: openclaw browser screenshot
+```
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `docker_bench/bench.py` | Main entry point |
+| `docker_bench/container_manager.py` | Container lifecycle management |
+| `docker_bench/task_runner.py` | Browser task execution |
+| `docker_bench/stats_collector.py` | Statistics collection and reporting |
+| `config/docker_bench.yaml` | Configuration template |
 
 ---
 
