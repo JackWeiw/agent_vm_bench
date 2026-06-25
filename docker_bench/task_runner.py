@@ -103,10 +103,11 @@ class BrowserTaskRunner(threading.Thread):
         print(f"[Container{self.state.container_id}] Task runner ended")
 
     def _start_browser_backend(self) -> Tuple[bool, str]:
-        """Start agent-browser daemon in clean environment
+        """Start agent-browser daemon (once per container test session)
 
-        Clear proxy environment variables before starting agent-browser
-        to ensure it works properly without proxy interference.
+        Don't close existing sessions - let browser stay running.
+        agent-browser keeps browser alive across commands naturally.
+        Just ensure agent-browser is installed and ready.
 
         Returns: (success, error_msg)
         """
@@ -114,37 +115,23 @@ class BrowserTaskRunner(threading.Thread):
         if not container:
             return False, "No container handle"
 
+        # If already started, skip
+        if self.state.browser_started:
+            return True, ""
+
         try:
-            # Step 1: Close any existing browser session
-            cmd_close = "agent-browser close --all"
-            container.exec_run(cmd_close, user="root")
-            time.sleep(0.5)
-
-            # Step 2: Clear proxy environment variables
-            # Run in a clean shell without proxy
-            cmd_clear_proxy = "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY"
-            container.exec_run(cmd_clear_proxy, user="root", shell=True)
-
-            # Step 3: Check agent-browser status in clean environment
-            # Use sh -c to ensure environment is clean
-            cmd = "sh -c 'unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && agent-browser doctor --offline --quick'"
+            # Just check if agent-browser is installed
+            # Use sh -c wrapper for clean environment (no shell=True param)
+            cmd = "sh -c 'unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && agent-browser --version'"
             result = container.exec_run(cmd, user="root")
 
             if result.exit_code == 0:
                 self.state.browser_started = True
-                print(f"[Container{self.state.container_id}] agent-browser ready (clean env)")
+                print(f"[Container{self.state.container_id}] agent-browser ready (browser will stay running)")
                 return True, ""
             else:
-                # Check if agent-browser is installed at least
-                cmd2 = "sh -c 'unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && agent-browser --version'"
-                result2 = container.exec_run(cmd2, user="root")
-                if result2.exit_code == 0:
-                    self.state.browser_started = True
-                    print(f"[Container{self.state.container_id}] agent-browser installed (daemon will auto-start)")
-                    return True, ""
-                else:
-                    output2 = result2.output.decode('utf-8', errors='ignore') if isinstance(result2.output, bytes) else result2.output
-                    return False, f"agent-browser not available: {output2[:200]}"
+                output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
+                return False, f"agent-browser not available: {output[:200]}"
         except Exception as e:
             return False, str(e)
 
@@ -386,7 +373,10 @@ class BrowserTaskRunner(threading.Thread):
             return False, elapsed
 
     def _clear_browser_cache(self) -> bool:
-        """Clear browser session after test
+        """Close browser session at the end of test
+
+        Only called when task loop ends, not during each task.
+        This keeps browser running across all tasks for efficiency.
 
         Returns: success
         """
@@ -395,9 +385,10 @@ class BrowserTaskRunner(threading.Thread):
             return False
 
         try:
-            # Close browser session in clean environment
+            # Close all browser sessions at the end of test
             cmd = "sh -c 'unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && agent-browser close --all'"
             result = container.exec_run(cmd, user="root")
+            print(f"[Container{self.state.container_id}] Browser session closed")
             return result.exit_code == 0
         except Exception:
             return False
