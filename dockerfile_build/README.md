@@ -33,21 +33,21 @@ docker build -f Dockerfile.x86 -t ubuntu-openclaw-chromium:24.04-x86_64 .
 
 **Custom Proxy (optional):**
 
-If you need a different proxy, use `--build-arg`:
+If your server requires a proxy to access external network, use `--build-arg`:
 
 ```bash
-# ARM64 with custom proxy
+# ARM64 with proxy
 docker build -t ubuntu-openclaw-chromium:24.04-linuxarm64 \
   --build-arg HTTP_PROXY=http://your-proxy:port \
   --build-arg HTTPS_PROXY=http://your-proxy:port .
 
-# x86_64 with custom proxy
+# x86_64 with proxy
 docker build -f Dockerfile.x86 -t ubuntu-openclaw-chromium:24.04-x86_64 \
   --build-arg HTTP_PROXY=http://your-proxy:port \
   --build-arg HTTPS_PROXY=http://your-proxy:port .
 ```
 
-> **Note:** Default proxy is `http://90.255.211.160:8888`. If your server needs proxy to access external network, the Dockerfile is already configured with this default.
+> **Note:** Proxy is disabled by default. Only add `--build-arg` if your network requires proxy.
 
 ### Step 2: Push to Harbor Registry
 
