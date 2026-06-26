@@ -24,7 +24,7 @@ create_batch:
 # Task execution batch control (optional, full concurrent if not configured)
 # Controls how many containers start tasks per batch to avoid target server overload
 task_batch:
-  size: 5                                  # Containers to start tasks per batch
+  size: 10                                  # Containers to start tasks per batch
   interval: 5                              # Interval between task batches (seconds)
 
 # Browser task configuration
@@ -32,8 +32,8 @@ browser:
   urls:
     - "http://192.168.110.10:8080/Weibo.html"
   task_timeout: 200                        # Browser task timeout (seconds)
-  interval_min: 0.5                        # Task interval minimum (seconds)
-  interval_max: 3.0                        # Task interval maximum (seconds)
+  interval_min: 5                        # Task interval minimum (seconds)
+  interval_max: 15                        # Task interval maximum (seconds)
 
 # Port check configuration
 port_check:

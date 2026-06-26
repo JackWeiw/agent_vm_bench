@@ -34,8 +34,8 @@ browser:
   urls:
     - "http://192.168.110.10:8080/Weibo.html"
   task_timeout: 200
-  interval_min: 0.5
-  interval_max: 3.0
+  interval_min: 5
+  interval_max: 15
   # Warmup configuration (optional, run warmup pages before benchmark)
   warmup_urls:
     - "http://192.168.110.10:8080/page1.html"
