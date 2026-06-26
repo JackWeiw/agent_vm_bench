@@ -154,7 +154,7 @@ class Config:
             warmup_delay=args.warmup_delay if args.warmup_delay else yaml_config.warmup_delay,
             warmup_only=args.warmup_only if hasattr(args, 'warmup_only') and args.warmup_only else yaml_config.warmup_only,
 
-            benchmark_percent=args.benchmark_percent if args.benchmark_percent else yaml_config.benchmark_percent,
+            benchmark_percent=args.benchmark_percent if args.benchmark_percent is not None else yaml_config.benchmark_percent,
 
             test_duration=args.duration if args.duration else yaml_config.test_duration,
             stats_interval=args.stats_interval if args.stats_interval else yaml_config.stats_interval,
@@ -196,7 +196,7 @@ class Config:
             warmup_delay=args.warmup_delay or 10,
             warmup_only=args.warmup_only if hasattr(args, 'warmup_only') and args.warmup_only else False,
 
-            benchmark_percent=args.benchmark_percent if args.benchmark_percent else 1.0,
+            benchmark_percent=args.benchmark_percent if args.benchmark_percent is not None else 1.0,
 
             test_duration=args.duration or 600,
             stats_interval=args.stats_interval or 10,

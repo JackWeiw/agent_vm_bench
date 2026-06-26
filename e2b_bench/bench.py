@@ -313,7 +313,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('-wp', '--warmup-only', action='store_true', help='Run warmup phase only, then exit')
 
     # Benchmark control
-    parser.add_argument('-bp', '--benchmark-percent', type=float, default=1.0, help='Percentage of sandboxes for benchmark (e.g., 0.5 = 50%%)')
+    parser.add_argument('-bp', '--benchmark-percent', type=float, default=None, help='Percentage of sandboxes for benchmark (e.g., 0.5 = 50%%)')
 
     # Test run
     parser.add_argument('--duration', type=int, help='Test duration seconds')
