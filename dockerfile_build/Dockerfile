@@ -75,5 +75,11 @@ RUN apt update -o Acquire::https::Verify-Peer=false -o Acquire::https::Verify-Ho
 RUN > /var/log/llama.log && \
     > /var/log/openclaw.log
 
+# Unset proxy environment variables after build
+ENV http_proxy= \
+    https_proxy= \
+    HTTP_PROXY= \
+    HTTPS_PROXY=
+
 # Set the default command to run supervisor
 CMD ["/usr/bin/supervisord", "-n"]
