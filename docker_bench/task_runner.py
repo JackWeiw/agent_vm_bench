@@ -204,16 +204,19 @@ class BrowserTaskRunner(threading.Thread):
             return False, elapsed, step_times, interrupted
 
     def _step_open(self, url: str) -> Tuple[bool, float]:
-        """Step 1: Open page and wait for it to load using agent-browser
+        """Step 1: Open page using agent-browser with configurable timeout
 
-        Uses 'wait --load networkidle' to ensure page is fully loaded before proceeding.
+        Uses domcontentloaded with configurable timeout (default 60s).
+        Timeout is configurable via browser_open_timeout in config.
 
         Returns: (success, time_seconds)
         """
         container = self.state.docker_container
-        # Open page and wait for network idle to ensure page is fully loaded
-        # This prevents "Not attached to an active page" errors
-        cmd = f"sh -c 'unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && agent-browser open \"{url}\" && agent-browser wait --load networkidle'"
+        # Get timeout from config (in seconds), convert to milliseconds for agent-browser
+        timeout_ms = self.config.browser_open_timeout * 1000
+        # Use domcontentloaded with configurable timeout
+        # domcontentloaded is faster than networkidle for static pages
+        cmd = f"sh -c 'unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && agent-browser open \"{url}\" && agent-browser wait --load domcontentloaded --timeout {timeout_ms}'"
 
         start = time.perf_counter()
         try:
