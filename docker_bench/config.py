@@ -142,7 +142,7 @@ class Config:
             browser_interval_min=args.browser_interval_min if args.browser_interval_min else yaml_config.browser_interval_min,
             browser_interval_max=args.browser_interval_max if args.browser_interval_max else yaml_config.browser_interval_max,
 
-            benchmark_percent=args.benchmark_percent if args.benchmark_percent else yaml_config.benchmark_percent,
+            benchmark_percent=args.benchmark_percent if args.benchmark_percent is not None else yaml_config.benchmark_percent,
 
             test_duration=args.duration if args.duration else yaml_config.test_duration,
             stats_interval=args.stats_interval if args.stats_interval else yaml_config.stats_interval,
@@ -181,7 +181,7 @@ class Config:
             browser_interval_min=args.browser_interval_min or 0.5,
             browser_interval_max=args.browser_interval_max or 3.0,
 
-            benchmark_percent=args.benchmark_percent if args.benchmark_percent else 1.0,
+            benchmark_percent=args.benchmark_percent if args.benchmark_percent is not None else 1.0,
 
             test_duration=args.duration or 600,
             stats_interval=args.stats_interval or 10,
