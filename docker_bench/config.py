@@ -46,6 +46,7 @@ class Config:
     browser_timeout: int = 200            # Browser task timeout (seconds)
     browser_interval_min: float = 0.5     # Task interval minimum (seconds)
     browser_interval_max: float = 3.0     # Task interval maximum (seconds)
+    browser_open_timeout: int = 60        # Browser open + wait timeout (seconds)
 
     # Port check configuration
     required_ports: List[int] = field(default_factory=lambda: [18789, 11436])  # Ports to check
@@ -103,6 +104,7 @@ class Config:
             browser_timeout=browser.get('task_timeout', 200),
             browser_interval_min=browser.get('interval_min', 0.5),
             browser_interval_max=browser.get('interval_max', 3.0),
+            browser_open_timeout=browser.get('open_timeout', 60),
 
             required_ports=port_check.get('ports', [18789, 11436]),
             port_check_max_wait=port_check.get('max_wait', 300),

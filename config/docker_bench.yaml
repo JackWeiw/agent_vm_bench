@@ -32,8 +32,9 @@ browser:
   urls:
     - "http://192.168.110.10:8080/Weibo.html"
   task_timeout: 200                        # Browser task timeout (seconds)
-  interval_min: 5                        # Task interval minimum (seconds)
-  interval_max: 15                        # Task interval maximum (seconds)
+  open_timeout: 60                         # Browser open + wait timeout (seconds, default 60)
+  interval_min: 5                          # Task interval minimum (seconds)
+  interval_max: 15                         # Task interval maximum (seconds)
 
 # Port check configuration
 port_check:
