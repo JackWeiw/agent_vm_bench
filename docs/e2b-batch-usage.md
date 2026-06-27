@@ -28,6 +28,9 @@ e2b_env:
   E2B_ACCESS_TOKEN: "your_token"
   ...
 
+test:
+  duration: 600  # 测试时长，vm_monitor 采样窗口自动同步
+
 smap_tool:
   enabled: true
   path: "/path/to/smap_tool"
@@ -37,6 +40,7 @@ smap_tool:
 vm_monitor:
   enabled: true
   vmm_type: "firecracker"
+  # duration 自动使用 test.duration，无需单独配置
 ```
 
 ### 2. 执行批量测试

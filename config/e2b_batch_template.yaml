@@ -52,7 +52,7 @@ smap_tool:
 vm_monitor:
   enabled: true
   vmm_type: "firecracker"
-  duration: 600
+  # duration is automatically synced with test.duration
   log_dir: "results/e2b/vm_monitor"
   stress_file: "/dev/shm/e2b_benchmark_lock"
 
