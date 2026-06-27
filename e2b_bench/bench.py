@@ -19,6 +19,7 @@ import subprocess
 import signal
 import os
 import platform
+import shutil
 from pathlib import Path
 from datetime import datetime
 
@@ -69,10 +70,15 @@ class SmapToolManager:
         smap_dir = Path(self.config.smap_tool_path).parent
         smap_exe = Path(self.config.smap_tool_path).name
 
-        # Clean up existing smap_config
+        # Clean up existing smap_config (Linux only)
+        # Execute rm -rf /dev/shm/smap_config to clear previous config
         smap_config_path = Path("/dev/shm/smap_config")
         if smap_config_path.exists():
-            smap_config_path.unlink()
+            if smap_config_path.is_dir():
+                shutil.rmtree(smap_config_path)
+            else:
+                smap_config_path.unlink()
+            print("[SmapTool] Cleaned up existing /dev/shm/smap_config")
 
         cmd = (
             f"./{smap_exe} {sandbox_count} {firecracker_pids} "
