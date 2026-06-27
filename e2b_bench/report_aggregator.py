@@ -99,7 +99,33 @@ class ReportAggregator:
 
             rows.append(row)
 
-        return pd.DataFrame(rows)
+        df = pd.DataFrame(rows)
+
+        # Remove columns that are entirely empty/NaN (tools not enabled)
+        # Keep Basic columns (task_id, total_count, ratio, benchmark_percent) always
+        basic_cols = ['task_id', 'total_count', 'ratio', 'benchmark_percent']
+
+        # Identify columns to drop: all values are NaN, None, 0, or empty string
+        cols_to_drop = []
+        for col in df.columns:
+            if col in basic_cols:
+                continue  # Always keep basic columns
+
+            # Check if column is entirely empty
+            if df[col].isna().all():
+                cols_to_drop.append(col)
+            elif (df[col].fillna(0) == 0).all() and df[col].dtype in ['float64', 'int64']:
+                # All numeric values are 0 (tool not enabled or no data)
+                cols_to_drop.append(col)
+            elif (df[col].fillna('') == '').all() and df[col].dtype == 'object':
+                # All string values are empty
+                cols_to_drop.append(col)
+
+        if cols_to_drop:
+            print(f"[ReportAggregator] Dropping empty columns (tools not enabled): {cols_to_drop}")
+            df = df.drop(columns=cols_to_drop)
+
+        return df
 
     def _export_excel(self, df: 'pd.DataFrame', output_path: str) -> None:
         """Export DataFrame to styled Excel"""
