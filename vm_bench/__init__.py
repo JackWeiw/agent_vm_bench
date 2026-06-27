@@ -35,6 +35,7 @@ from .schemas import (
     VMState,
     TestSnapshot,
 )
+from .vm_manager import VMManager, VMConnection
 from .bench import run_benchmark, main
 
 __version__ = "1.0.0"
@@ -51,6 +52,8 @@ __all__ = [
     'VMHealth',
     'VMState',
     'TestSnapshot',
+    'VMManager',
+    'VMConnection',
     'run_benchmark',
     'main',
 ]
