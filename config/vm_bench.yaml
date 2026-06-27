@@ -1,0 +1,94 @@
+# config/vm_bench.yaml
+# VM Bench - OpenStack VM Batch Performance Test Configuration Template
+
+# OpenStack environment (from ~/.admin-openrc)
+openstack:
+  auth_source: "~/.admin-openrc"   # Load credentials from file
+
+# VM creation configuration (Phase 0)
+vm_create:
+  flavor: "2U_4G_40G"              # VM flavor
+  image: "ubuntu-24.04"            # Image name
+  network_id: "2661422b-37c4-4d84-90ce-521167c676c0"  # OpenStack network ID
+  availability_zone: "nova_zone:controller"
+  start_ip: "192.168.110.11"       # Starting IP
+  subnet_prefix: "192.168.110."
+  vm_prefix: "test_openclaw"       # VM name prefix
+  total_count: 80                  # Total VM count
+  create_timeout: 1200             # VM creation timeout (seconds)
+  create_only: false               # Create VMs only, don't benchmark
+  detect_existing: false           # Detect existing VMs instead of creating
+
+# VM creation batch control
+create_batch:
+  size: 20                         # VMs per batch (default: 20)
+  interval: 3                      # Seconds between batches (default: 3)
+
+# SSH connection configuration
+ssh:
+  port: 22
+  username: "root"
+  password: "openEuler12#$"
+  connect_timeout: 30
+  execute_timeout: 300
+
+# SSH connection batch control (optional, full concurrent if not configured)
+connect_batch:
+  size: null                       # Connections per batch (null = full concurrent)
+  interval: null                   # Seconds between batches
+
+# Task execution batch control
+task_batch:
+  size: 10                         # Tasks per batch (default: 10)
+  interval: 5                      # Seconds between batches (default: 5)
+
+# Task mode selection
+task:
+  mode: "browser"                  # "qa", "stress", "browser", "mixed"
+  duration: 600                    # Benchmark duration (seconds)
+
+# Browser task configuration
+browser:
+  urls:
+    - "http://192.168.110.10:8080/Weibo.html"
+  timeout: 200                     # Browser task timeout (seconds)
+  interval_min: 5                  # Task interval minimum (seconds, default: 5)
+  interval_max: 10                 # Task interval maximum (seconds, default: 10)
+  use_llm: false                   # Use LLM for browser tasks
+  benchmark_percent: 1.0           # Percentage of VMs for benchmark
+
+  # Warmup configuration (optional)
+  warmup_urls:
+    - "http://192.168.110.10:8080/page1.html"
+    - "http://192.168.110.10:8080/page2.html"
+  warmup_loops: 1                  # Warmup loop count (default: 1)
+  warmup_delay: 3                  # Delay between warmup pages (seconds, default: 3)
+  warmup_only: false               # Run warmup phase only
+
+# QA task configuration
+qa:
+  timeout: 600                     # QA query timeout (seconds)
+  init_timeout: 600                # Memory init timeout (seconds)
+  interval: 0.5                    # QA interval (seconds)
+  mode: "cli"                      # "cli" or "http"
+
+# Stress task configuration
+stress:
+  percent: 0.5                     # Percentage of VMs to stress
+  memory_mb: 2048                  # Stress memory per VM (MB)
+  duration: 300                    # Stress duration (seconds)
+  keepalive: true                  # Restart stress process if died
+
+# Test configuration
+test:
+  stats_interval: 10               # Stats snapshot interval (seconds)
+  health_check_interval: 5.0       # Health check interval (seconds)
+
+# Report configuration
+report:
+  output_dir: "results/vm"         # Report output directory
+  filename_prefix: "vm_bench"      # Report filename prefix
+
+# Cleanup configuration
+cleanup:
+  delete_after_test: false         # Delete VMs after benchmark
