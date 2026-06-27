@@ -10,6 +10,7 @@ import sys
 import time
 import argparse
 import yaml
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -59,8 +60,6 @@ class GroupRunner:
         Returns:
             List of completed BatchTask objects
         """
-        import threading
-
         results = []
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -115,13 +114,8 @@ class GroupRunner:
                 self._log(f"\n  Task {idx+1}/{len(self.group.tasks)}: {task.task_id}")
                 self._log(f"    benchmark_percent: {task.benchmark_percent}")
 
-                task_result = self._run_single_task(task, idx)
-                results.append(task_result)
-
-            # Mark all tasks in group
-            for task in self.group.tasks:
-                if task not in results:
-                    results.append(task)
+                self._run_single_task(task, idx)
+                results.append(task)
 
         except Exception as e:
             self._log(f"  ERROR: Group execution failed: {e}")
@@ -135,8 +129,8 @@ class GroupRunner:
 
         return results
 
-    def _run_single_task(self, task: BatchTask, task_idx: int) -> BatchTask:
-        """Run a single benchmark task"""
+    def _run_single_task(self, task: BatchTask, task_idx: int) -> None:
+        """Run a single benchmark task (modifies task in-place)"""
         import threading
 
         # Create result directory
@@ -203,8 +197,6 @@ class GroupRunner:
         # Mark success
         task.success = True
         self._log(f"    Task completed successfully")
-
-        return task
 
     def _get_group_config(self) -> Config:
         """Create Config for group (with group's total_count and ratio)"""
