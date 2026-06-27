@@ -210,6 +210,7 @@ class VmMonitorManager:
             "python3", str(vm_monitor_cli),
             "--vmm", self.config.vm_monitor_vmm_type,
             "-t", str(self.config.vm_monitor_duration),
+            "--numa", self.config.vm_monitor_numa,
             "--stress-file", str(stress_file),
             "--log-dir", str(log_dir),
             "--auto-skip"

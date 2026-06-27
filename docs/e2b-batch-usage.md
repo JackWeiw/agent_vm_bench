@@ -40,6 +40,7 @@ smap_tool:
 vm_monitor:
   enabled: true
   vmm_type: "firecracker"
+  numa: "1"  # NUMA nodes to monitor, comma-separated (e.g., "0,1")
   # duration 自动使用 test.duration，无需单独配置
 ```
 

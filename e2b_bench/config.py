@@ -55,6 +55,7 @@ class Config:
     vm_monitor_enabled: bool = False
     vm_monitor_vmm_type: str = "firecracker"
     vm_monitor_duration: int = 600
+    vm_monitor_numa: str = "1"  # NUMA nodes to monitor, comma-separated (e.g., "0,1")
     vm_monitor_log_dir: str = "results/e2b/vm_monitor"
     vm_monitor_stress_file: str = "/dev/shm/e2b_benchmark_lock"
 
@@ -149,6 +150,7 @@ class Config:
             vm_monitor_enabled=vm_monitor.get('enabled', False),
             vm_monitor_vmm_type=vm_monitor.get('vmm_type', "firecracker"),
             vm_monitor_duration=vm_monitor.get('duration', 600),
+            vm_monitor_numa=vm_monitor.get('numa', "1"),
             vm_monitor_log_dir=vm_monitor.get('log_dir', "results/e2b/vm_monitor"),
             vm_monitor_stress_file=vm_monitor.get('stress_file', "/dev/shm/e2b_benchmark_lock"),
         )
@@ -205,6 +207,7 @@ class Config:
             vm_monitor_enabled=yaml_config.vm_monitor_enabled,
             vm_monitor_vmm_type=yaml_config.vm_monitor_vmm_type,
             vm_monitor_duration=yaml_config.vm_monitor_duration,
+            vm_monitor_numa=yaml_config.vm_monitor_numa,
             vm_monitor_log_dir=yaml_config.vm_monitor_log_dir,
             vm_monitor_stress_file=yaml_config.vm_monitor_stress_file,
         )
@@ -260,6 +263,7 @@ class Config:
             vm_monitor_enabled=False,
             vm_monitor_vmm_type="firecracker",
             vm_monitor_duration=600,
+            vm_monitor_numa="1",
             vm_monitor_log_dir="results/e2b/vm_monitor",
             vm_monitor_stress_file="/dev/shm/e2b_benchmark_lock",
         )
