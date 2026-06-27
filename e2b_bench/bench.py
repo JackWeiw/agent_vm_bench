@@ -165,6 +165,124 @@ class SmapToolManager:
         return self.process.poll() is None
 
 
+class VmMonitorManager:
+    """Manage vm_monitor process lifecycle for performance monitoring"""
+
+    def __init__(self, config):
+        self.config = config
+        self.process = None
+        self.analysis_file = None
+
+    def start(self, task_id: str = "") -> bool:
+        """
+        Start vm_monitor process with stress-file sync
+
+        Command format:
+        python3 vm_monitor/cli.py --vmm firecracker -t <duration> --stress-file <file> --log-dir <dir>
+        """
+        if not self.config.vm_monitor_enabled:
+            print("[VmMonitor] Disabled in config, skipping")
+            return True
+
+        # Prepare log directory
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_dir_name = f"vm_monitor_{task_id}_{timestamp}" if task_id else f"vm_monitor_{timestamp}"
+        log_dir = Path(self.config.vm_monitor_log_dir) / log_dir_name
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        # Clean up existing stress file
+        stress_file = Path(self.config.vm_monitor_stress_file)
+        if stress_file.exists():
+            stress_file.unlink()
+
+        # Build command
+        # vm_monitor is in the project root directory
+        project_root = Path(__file__).parent.parent
+        vm_monitor_cli = project_root / "vm_monitor" / "cli.py"
+
+        cmd = [
+            "python3", str(vm_monitor_cli),
+            "--vmm", self.config.vm_monitor_vmm_type,
+            "-t", str(self.config.vm_monitor_duration),
+            "--stress-file", str(stress_file),
+            "--log-dir", str(log_dir),
+            "--auto-skip"
+        ]
+
+        print(f"[VmMonitor] Starting: {' '.join(cmd)}")
+        print(f"[VmMonitor] Log directory: {log_dir}")
+
+        try:
+            self.process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            print(f"[VmMonitor] Started with PID: {self.process.pid}")
+            print(f"[VmMonitor] Waiting for stress file: {stress_file}")
+
+            # Store expected analysis file path
+            self.analysis_file = str(log_dir / "analysis_report.xlsx")
+            return True
+        except Exception as e:
+            print(f"[VmMonitor] Failed to start: {e}")
+            return False
+
+    def trigger_sampling(self) -> None:
+        """Create stress file to trigger vm_monitor sampling"""
+        stress_file = Path(self.config.vm_monitor_stress_file)
+        stress_file.touch()
+        print(f"[VmMonitor] Stress file created: {stress_file}")
+
+    def stop_sampling(self) -> None:
+        """Remove stress file to stop vm_monitor sampling"""
+        stress_file = Path(self.config.vm_monitor_stress_file)
+        if stress_file.exists():
+            stress_file.unlink()
+            print(f"[VmMonitor] Stress file removed: {stress_file}")
+
+    def wait_for_report(self, timeout: int = 300) -> str:
+        """
+        Wait for analysis_report.xlsx to be generated
+
+        Returns file path if found, None if timeout
+        """
+        if not self.analysis_file:
+            return None
+
+        analysis_path = Path(self.analysis_file)
+        print(f"[VmMonitor] Waiting for report: {analysis_path}")
+
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            if analysis_path.exists() and analysis_path.stat().st_size > 0:
+                print(f"[VmMonitor] Report generated: {analysis_path}")
+                return str(analysis_path)
+            time.sleep(5)
+
+        print(f"[VmMonitor] Report not found after {timeout}s timeout")
+        return None
+
+    def stop(self) -> None:
+        """Stop vm_monitor process"""
+        if self.process is None:
+            return
+
+        print(f"[VmMonitor] Stopping process (PID: {self.process.pid})...")
+        try:
+            self.process.terminate()
+            self.process.wait(timeout=10)
+            print("[VmMonitor] Process stopped gracefully")
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            print("[VmMonitor] Process killed (timeout)")
+        except Exception as e:
+            print(f"[VmMonitor] Error stopping process: {e}")
+
+        self.process = None
+
+
 def run_benchmark(config: Config) -> dict:
     """Run E2B sandbox performance test
 
