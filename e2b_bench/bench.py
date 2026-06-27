@@ -15,12 +15,154 @@ Supports multiple modes:
 import time
 import argparse
 import threading
+import subprocess
+import signal
+import os
+import platform
+from pathlib import Path
+from datetime import datetime
 
 from .config import Config
 from .sandbox_manager import SandboxManager
 from .task_runner import TaskManager
 from .stats_collector import StatsCollector
 from .schemas import SandboxStatus
+
+
+class SmapToolManager:
+    """Manage smap_tool process lifecycle for memory migration monitoring"""
+
+    def __init__(self, config):
+        self.config = config
+        self.process = None
+        self.pid = None
+        self.log_file = None
+
+    def start(self, sandbox_count: int) -> bool:
+        """
+        Start smap_tool process
+
+        Command format:
+        ./smap_tool <count> `pidof firecracker` --swap-size <size> --ratio <ratio> --src-nid <nid> --dest-nid <nid>
+        """
+        if not self.config.smap_tool_enabled:
+            print("[SmapTool] Disabled in config, skipping")
+            return True
+
+        if not self.config.smap_tool_path:
+            print("[SmapTool] Path not configured, skipping")
+            return True
+
+        # Get firecracker PIDs
+        try:
+            result = subprocess.run(['pidof', 'firecracker'], capture_output=True, text=True)
+            if result.returncode != 0 or not result.stdout.strip():
+                print("[SmapTool] No firecracker processes found")
+                return False
+            firecracker_pids = result.stdout.strip()
+            print(f"[SmapTool] Found firecracker PIDs: {firecracker_pids}")
+        except Exception as e:
+            print(f"[SmapTool] Failed to get firecracker PIDs: {e}")
+            return False
+
+        # Build command
+        smap_dir = Path(self.config.smap_tool_path).parent
+        smap_exe = Path(self.config.smap_tool_path).name
+
+        # Clean up existing smap_config
+        smap_config_path = Path("/dev/shm/smap_config")
+        if smap_config_path.exists():
+            smap_config_path.unlink()
+
+        cmd = (
+            f"./{smap_exe} {sandbox_count} {firecracker_pids} "
+            f"--swap-size {self.config.smap_tool_swap_size} "
+            f"--ratio {self.config.smap_tool_ratio} "
+            f"--src-nid {self.config.smap_tool_src_nid} "
+            f"--dest-nid {self.config.smap_tool_dest_nid}"
+        )
+
+        print(f"[SmapTool] Starting: {cmd}")
+        print(f"[SmapTool] Working directory: {smap_dir}")
+
+        # Prepare log files
+        log_dir = Path(self.config.output_dir) / "smap_tool"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_file = open(log_dir / f"smap_{timestamp}.log", 'w')
+
+        try:
+            is_windows = platform.system() == 'Windows'
+
+            if is_windows:
+                # Windows: use CREATE_NEW_PROCESS_GROUP for process group management
+                self.process = subprocess.Popen(
+                    cmd,
+                    shell=True,
+                    cwd=str(smap_dir),
+                    stdout=self.log_file,
+                    stderr=self.log_file,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                )
+            else:
+                # Unix/Linux: use preexec_fn=os.setpgrp for process group
+                self.process = subprocess.Popen(
+                    cmd,
+                    shell=True,
+                    cwd=str(smap_dir),
+                    stdout=self.log_file,
+                    stderr=self.log_file,
+                    preexec_fn=os.setpgrp
+                )
+
+            self.pid = self.process.pid
+            print(f"[SmapTool] Started with PID: {self.pid}")
+            return True
+        except Exception as e:
+            print(f"[SmapTool] Failed to start: {e}")
+            return False
+
+    def stop(self) -> None:
+        """Stop smap_tool process"""
+        if self.process is None:
+            return
+
+        print(f"[SmapTool] Stopping process (PID: {self.pid})...")
+        try:
+            is_windows = platform.system() == 'Windows'
+
+            if is_windows:
+                # Windows: terminate/killsingle process directly
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    print("[SmapTool] Process killed (timeout)")
+            else:
+                # Unix/Linux: use killpg to kill entire process group
+                os.killpg(os.getpgid(self.pid), signal.SIGTERM)
+                try:
+                    self.process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(os.getpgid(self.pid), signal.SIGKILL)
+                    print("[SmapTool] Process killed (timeout)")
+
+            print("[SmapTool] Process stopped gracefully")
+        except Exception as e:
+            print(f"[SmapTool] Error stopping process: {e}")
+
+        if self.log_file:
+            self.log_file.close()
+
+        self.process = None
+        self.pid = None
+
+    def is_running(self) -> bool:
+        """Check if smap_tool process is still running"""
+        if self.process is None:
+            return False
+        return self.process.poll() is None
 
 
 def run_benchmark(config: Config) -> dict:
