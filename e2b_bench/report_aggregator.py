@@ -128,21 +128,35 @@ class ReportAggregator:
         return df
 
     def _export_excel(self, df: 'pd.DataFrame', output_path: str) -> None:
-        """Export DataFrame to styled Excel with colored header groups"""
+        """Export DataFrame to styled Excel with colored source row and headers"""
         import pandas as pd
 
         with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
-            df.to_excel(writer, sheet_name='Summary', index=False, startrow=1)
+            # Write data starting at row 2 (row 0 = source, row 1 = header)
+            df.to_excel(writer, sheet_name='Summary', index=False, startrow=2)
 
             workbook = writer.book
             worksheet = writer.sheets['Summary']
 
-            # Write colored headers based on column groups
+            # Row 0: Data source labels with colors
+            # Row 1: Column headers with colors
             for col_idx, col_name in enumerate(df.columns):
-                # Find which group this column belongs to
                 source = self._find_column_group(col_name)
                 color = self.SOURCE_COLORS.get(source, '#FFFFFF')
 
+                # Source row format
+                source_format = workbook.add_format({
+                    'align': 'center',
+                    'valign': 'vcenter',
+                    'border': 1,
+                    'bg_color': color,
+                    'font_color': '#333333'
+                })
+                # Write source name (simplified, e.g., "DevKit TopDown" instead of "DevKit_TopDown")
+                source_display = self._get_source_display_name(source)
+                worksheet.write(0, col_idx, source_display, source_format)
+
+                # Header row format
                 header_format = workbook.add_format({
                     'bold': True,
                     'align': 'center',
@@ -150,15 +164,34 @@ class ReportAggregator:
                     'border': 1,
                     'bg_color': color
                 })
-                worksheet.write(0, col_idx, col_name, header_format)
+                worksheet.write(1, col_idx, col_name, header_format)
 
             # Set column widths
             for col_idx, col_name in enumerate(df.columns):
                 max_len = max(
                     len(str(col_name)),
+                    len(self._get_source_display_name(self._find_column_group(col_name))),
                     df[col_name].astype(str).str.len().max() if len(df) > 0 else 0
                 )
                 worksheet.set_column(col_idx, col_idx, min(max_len + 2, 30))
+
+    def _get_source_display_name(self, source: str) -> str:
+        """Get human-readable display name for data source"""
+        # Convert underscore to space for display
+        display_names = {
+            'Basic': 'Basic',
+            'Browser': 'Browser',
+            'VM_CPU': 'VM CPU',
+            'DevKit_TopDown': 'DevKit TopDown',
+            'DevKit_Memory': 'DevKit Memory',
+            'NUMA_Bandwidth': 'NUMA Bandwidth',
+            'KSys': 'KSys',
+            'UBWatch_Latency': 'UBWatch Latency',
+            'UBWatch_Bandwidth': 'UBWatch Bandwidth',
+            'SMAPBW': 'SMAPBW',
+            'Getfre': 'Getfre',
+        }
+        return display_names.get(source, source.replace('_', ' '))
 
     def _find_column_group(self, col_name: str) -> str:
         """Find which group a column belongs to"""
