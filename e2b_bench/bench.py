@@ -185,6 +185,8 @@ class VmMonitorManager:
         self.log_dir = log_dir  # Custom log directory (for batch test result)
         self.process = None
         self.analysis_file = None
+        self.stdout_file = None  # Log file handle for stdout
+        self.stderr_file = None  # Log file handle for stderr
 
     def start(self, task_id: str = "") -> bool:
         """
@@ -228,15 +230,24 @@ class VmMonitorManager:
         print(f"[VmMonitor] Starting: {' '.join(cmd)}")
         print(f"[VmMonitor] Log directory: {log_path}")
 
+        # Redirect stdout/stderr to log files (not PIPE)
+        # PIPE buffer (64KB) can fill up and block the process when vm_monitor outputs lots of data
+        monitor_stdout_log = log_path / "monitor_stdout.log"
+        monitor_stderr_log = log_path / "monitor_stderr.log"
+
         try:
+            self.stdout_file = open(monitor_stdout_log, 'w', buffering=1)
+            self.stderr_file = open(monitor_stderr_log, 'w', buffering=1)
+
             self.process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=self.stdout_file,
+                stderr=self.stderr_file,
                 text=True
             )
             print(f"[VmMonitor] Started with PID: {self.process.pid}")
             print(f"[VmMonitor] Waiting for stress file: {stress_file}")
+            print(f"[VmMonitor] Output redirected to: {monitor_stdout_log}")
 
             # Store expected analysis file path
             self.analysis_file = str(log_path / "analysis_report.xlsx")
@@ -271,11 +282,17 @@ class VmMonitorManager:
         print(f"[VmMonitor] Waiting for report: {analysis_path}")
 
         start_time = time.time()
+        check_interval = 10  # Check every 10 seconds
         while time.time() - start_time < timeout:
             if analysis_path.exists() and analysis_path.stat().st_size > 0:
                 print(f"[VmMonitor] Report generated: {analysis_path}")
                 return str(analysis_path)
-            time.sleep(5)
+
+            elapsed = int(time.time() - start_time)
+            remaining = timeout - elapsed
+            if elapsed % 30 == 0:  # Log every 30 seconds
+                print(f"[VmMonitor] Waiting... {elapsed}s elapsed, {remaining}s remaining")
+            time.sleep(check_interval)
 
         print(f"[VmMonitor] Report not found after {timeout}s timeout")
         return None
@@ -295,6 +312,14 @@ class VmMonitorManager:
             print("[VmMonitor] Process killed (timeout)")
         except Exception as e:
             print(f"[VmMonitor] Error stopping process: {e}")
+
+        # Close log file handles
+        if self.stdout_file:
+            self.stdout_file.close()
+            self.stdout_file = None
+        if self.stderr_file:
+            self.stderr_file.close()
+            self.stderr_file = None
 
         self.process = None
 
