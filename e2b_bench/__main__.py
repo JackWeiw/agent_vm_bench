@@ -24,8 +24,8 @@ def main():
 
         scheduler = BatchScheduler(
             matrix_path=batch_args.matrix,
-            template_path=batch_args.template,
-            output_dir=batch_args.output_dir
+            template_path=batch_args.template,  # None if not provided, will read from matrix
+            output_dir=batch_args.output_dir     # None if not provided, will read from matrix
         )
 
         report_path = scheduler.run(continue_on_failure=batch_args.continue_on_failure)
