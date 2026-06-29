@@ -131,8 +131,6 @@ class GroupRunner:
 
     def _run_single_task(self, task: BatchTask, task_idx: int) -> None:
         """Run a single benchmark task (modifies task in-place)"""
-        import threading
-
         # Create result directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         result_dir = Path(self.config.output_dir) / f"{task.task_id}_{timestamp}"
@@ -141,6 +139,23 @@ class GroupRunner:
 
         # Update config for this task
         task_config = self._get_task_config(task)
+
+        # Save task config to result directory for reference
+        config_dict = {
+            'task_id': task.task_id,
+            'total_count': task.total_count,
+            'benchmark_percent': task.benchmark_percent,
+            'ratio': task.ratio,
+            'smap_tool_enabled': self.config.smap_tool_enabled,
+            'smap_tool_ratio': task.ratio if self.config.smap_tool_enabled else None,
+            'test_duration': self.config.test_duration,
+            'browser_urls': self.config.browser_urls,
+            'warmup_urls': self.config.warmup_urls if self.config.warmup_urls else [],
+        }
+        config_file = result_dir / "task_config.yaml"
+        with open(config_file, 'w', encoding='utf-8') as f:
+            yaml.dump(config_dict, f, default_flow_style=False, allow_unicode=True)
+        print(f"  Task config saved to: {config_file}")
 
         # Start vm_monitor
         vm_monitor = None
