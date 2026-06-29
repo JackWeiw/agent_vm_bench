@@ -191,7 +191,7 @@ class VmMonitorManager:
         Start vm_monitor process with stress-file sync
 
         Command format:
-        python3 vm_monitor/cli.py --vmm firecracker -t <duration> --stress-file <file> --log-dir <dir>
+        python3 vm_monitor.py --vmm firecracker -t <duration> --stress-file <file> --log-dir <dir>
         """
         if not self.config.vm_monitor_enabled:
             print("[VmMonitor] Disabled in config, skipping")
@@ -211,12 +211,12 @@ class VmMonitorManager:
         if stress_file.exists():
             stress_file.unlink()
 
-        # Build command
+        # Build command - use vm_monitor.py directly (not vm_monitor/cli.py)
         project_root = Path(__file__).parent.parent
-        vm_monitor_cli = project_root / "vm_monitor" / "cli.py"
+        vm_monitor_script = project_root / "vm_monitor.py"
 
         cmd = [
-            "python3", str(vm_monitor_cli),
+            "python3", str(vm_monitor_script),
             "--vmm", self.config.vm_monitor_vmm_type,
             "-t", str(self.config.vm_monitor_duration),
             "--numa", self.config.vm_monitor_numa,
