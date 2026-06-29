@@ -257,23 +257,27 @@ class GroupRunner:
 class BatchScheduler:
     """Main batch test scheduler"""
 
-    def __init__(self, matrix_path: str, template_path: str, output_dir: str = "results/e2b/batch"):
+    def __init__(self, matrix_path: str, template_path: str, output_dir: str = None):
         self.matrix_path = matrix_path
         self.template_path = template_path
-        self.output_dir = output_dir
 
         # Load configurations
         self.matrix_config = load_matrix_config(matrix_path)
         self.template_config = Config.load_from_yaml(template_path)
 
-        # Apply output_dir override
+        # Get output_dir from matrix config or use default
         if output_dir:
-            self.template_config.output_dir = output_dir
+            self.output_dir = output_dir
+        else:
+            self.output_dir = self.matrix_config.get('output_dir', 'results/e2b/batch')
+
+        # Apply output_dir to template config
+        self.template_config.output_dir = self.output_dir
 
         # Initialize components
         self.task_generator = TaskGenerator(self.matrix_config)
         self.metrics_extractor = MetricsExtractor()
-        self.report_aggregator = ReportAggregator(output_dir)
+        self.report_aggregator = ReportAggregator(self.output_dir)
 
         # Batch log file
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

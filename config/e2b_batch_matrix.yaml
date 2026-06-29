@@ -1,6 +1,9 @@
 # E2B Batch Test Matrix Configuration
 # Variable parameters for batch testing
 
+# Output directory for all test results
+output_dir: "results/e2b/batch"
+
 test_matrix:
   total_counts: [10, 20, 50]
   benchmark_percentages: [0.5, 0.75, 1.0]
