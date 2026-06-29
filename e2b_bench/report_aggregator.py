@@ -2,7 +2,7 @@
 Report Aggregator Module
 
 Aggregates metrics from multiple batch test tasks into a single Excel report.
-Supports styled output with data source grouping and color coding.
+Supports styled output with data source grouping and merged cells.
 """
 
 import os
@@ -33,18 +33,19 @@ class ReportAggregator:
         ],
     }
 
+    # Source colors (hex without # for openpyxl)
     SOURCE_COLORS = {
-        'Basic': '#FFFFFF',
-        'Browser': '#E3F2FD',
-        'VM_CPU': '#E8F5E9',
-        'DevKit_TopDown': '#FFF3E0',
-        'DevKit_Memory': '#FCE4EC',
-        'NUMA_Bandwidth': '#F3E5F5',
-        'KSys': '#E0F7FA',
-        'UBWatch_Latency': '#FFF8E1',
-        'UBWatch_Bandwidth': '#EFEBE9',
-        'SMAPBW': '#E8EAF6',
-        'Getfre': '#FBE9E7',
+        'Basic': '4472C4',      # Blue
+        'Browser': '70AD47',    # Green
+        'VM_CPU': 'FFC000',     # Orange
+        'DevKit_TopDown': 'ED7D31',  # Dark Orange
+        'DevKit_Memory': 'A5A5A5',   # Gray
+        'NUMA_Bandwidth': '5B9BD5',  # Light Blue
+        'KSys': '7030A0',       # Purple
+        'UBWatch_Latency': 'C55A11',  # Brown
+        'UBWatch_Bandwidth': '00B050',  # Dark Green
+        'SMAPBW': 'FF6B6B',     # Red/Pink
+        'Getfre': '00B0F0',     # Cyan
     }
 
     def __init__(self, output_dir: str = "results/e2b/batch"):
@@ -128,56 +129,128 @@ class ReportAggregator:
         return df
 
     def _export_excel(self, df: 'pd.DataFrame', output_path: str) -> None:
-        """Export DataFrame to styled Excel with colored source row and headers"""
+        """Export DataFrame to styled Excel with merged source headers"""
         import pandas as pd
+        from openpyxl import load_workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
 
-        with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
-            # Write data starting at row 2 (row 0 = source, row 1 = header)
-            df.to_excel(writer, sheet_name='Summary', index=False, startrow=2)
+        # Save basic Excel first with pandas
+        df.to_excel(output_path, index=False, sheet_name='Summary')
 
-            workbook = writer.book
-            worksheet = writer.sheets['Summary']
+        # Load with openpyxl to add styling
+        wb = load_workbook(output_path)
+        ws = wb['Summary']
 
-            # Row 0: Data source labels with colors
-            # Row 1: Column headers with colors
-            for col_idx, col_name in enumerate(df.columns):
-                source = self._find_column_group(col_name)
-                color = self.SOURCE_COLORS.get(source, '#FFFFFF')
+        # Build column source mapping
+        column_sources = self._build_column_sources(df)
 
-                # Source row format
-                source_format = workbook.add_format({
-                    'align': 'center',
-                    'valign': 'vcenter',
-                    'border': 1,
-                    'bg_color': color,
-                    'font_color': '#333333'
-                })
-                # Write source name (simplified, e.g., "DevKit TopDown" instead of "DevKit_TopDown")
-                source_display = self._get_source_display_name(source)
-                worksheet.write(0, col_idx, source_display, source_format)
+        # Insert source header row at row 1
+        ws.insert_rows(1)
 
-                # Header row format
-                header_format = workbook.add_format({
-                    'bold': True,
-                    'align': 'center',
-                    'valign': 'vcenter',
-                    'border': 1,
-                    'bg_color': color
-                })
-                worksheet.write(1, col_idx, col_name, header_format)
+        # Style definitions
+        header_font_white = Font(bold=True, size=11, color='FFFFFF')
+        header_font = Font(bold=True, size=11)
+        center_align = Alignment(horizontal='center', vertical='center')
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
 
-            # Set column widths
-            for col_idx, col_name in enumerate(df.columns):
-                max_len = max(
-                    len(str(col_name)),
-                    len(self._get_source_display_name(self._find_column_group(col_name))),
-                    df[col_name].astype(str).str.len().max() if len(df) > 0 else 0
-                )
-                worksheet.set_column(col_idx, col_idx, min(max_len + 2, 30))
+        # Create merged cells for source headers
+        for source_name, start_col, end_col in column_sources:
+            if start_col <= end_col:
+                # Merge cells (openpyxl uses 1-indexed columns)
+                ws.merge_cells(start_row=1, start_column=start_col, end_row=1, end_column=end_col)
+
+                # Set value and style
+                cell = ws.cell(row=1, column=start_col)
+                cell.value = source_name
+                cell.alignment = center_align
+                cell.font = header_font_white
+
+                # Get color for this source
+                source_key = self._get_source_key_from_name(source_name)
+                color = self.SOURCE_COLORS.get(source_key, '4472C4')
+                cell.fill = PatternFill(start_color=color, end_color=color, fill_type='solid')
+
+                # Add border to merged range
+                for c in range(start_col, end_col + 1):
+                    ws.cell(row=1, column=c).border = thin_border
+
+        # Style the column header row (row 2 now, after insert)
+        for c in range(1, len(df.columns) + 1):
+            cell = ws.cell(row=2, column=c)
+            cell.font = header_font
+            cell.fill = PatternFill(start_color='D9E2F3', end_color='D9E2F3', fill_type='solid')
+            cell.alignment = center_align
+            cell.border = thin_border
+
+        # Set row height for header rows
+        ws.row_dimensions[1].height = 25
+        ws.row_dimensions[2].height = 20
+
+        # Freeze panes (freeze first two rows)
+        ws.freeze_panes = 'A3'
+
+        # Save the workbook
+        wb.save(output_path)
+
+        print(f"  - Row 1: Data source headers (merged cells)")
+        print(f"  - Row 2: Column names")
+        print(f"  - Row 3+: Test data")
+
+    def _build_column_sources(self, df: 'pd.DataFrame') -> List[tuple]:
+        """Build column source groups for merging
+
+        Returns: List of (source_name, start_col, end_col) tuples (1-indexed)
+        """
+        column_sources = []
+        current_source = None
+        source_start = 1
+
+        for col_idx, col_name in enumerate(df.columns, start=1):
+            source = self._find_column_group(col_name)
+
+            if source != current_source:
+                # Close previous group
+                if current_source is not None:
+                    source_display = self._get_source_display_name(current_source)
+                    column_sources.append((source_display, source_start, col_idx - 1))
+
+                # Start new group
+                current_source = source
+                source_start = col_idx
+
+        # Close last group
+        if current_source is not None:
+            source_display = self._get_source_display_name(current_source)
+            column_sources.append((source_display, source_start, len(df.columns)))
+
+        return column_sources
+
+    def _get_source_key_from_name(self, display_name: str) -> str:
+        """Get source key from display name"""
+        # Reverse mapping
+        name_to_key = {
+            'Basic': 'Basic',
+            'Browser': 'Browser',
+            'VM CPU': 'VM_CPU',
+            'DevKit TopDown': 'DevKit_TopDown',
+            'DevKit Memory': 'DevKit_Memory',
+            'NUMA Bandwidth': 'NUMA_Bandwidth',
+            'KSys': 'KSys',
+            'UBWatch Latency': 'UBWatch_Latency',
+            'UBWatch Bandwidth': 'UBWatch_Bandwidth',
+            'SMAPBW': 'SMAPBW',
+            'Getfre': 'Getfre',
+        }
+        return name_to_key.get(display_name, 'Basic')
 
     def _get_source_display_name(self, source: str) -> str:
         """Get human-readable display name for data source"""
-        # Convert underscore to space for display
         display_names = {
             'Basic': 'Basic',
             'Browser': 'Browser',
