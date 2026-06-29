@@ -22,11 +22,7 @@ def main():
             batch_args.remove('--batch')
         batch_args = batch_parser.parse_args(batch_args)
 
-        scheduler = BatchScheduler(
-            matrix_path=batch_args.matrix,
-            template_path=batch_args.template,  # None if not provided, will read from matrix
-            output_dir=batch_args.output_dir     # None if not provided, will read from matrix
-        )
+        scheduler = BatchScheduler(matrix_path=batch_args.matrix)
 
         report_path = scheduler.run(continue_on_failure=batch_args.continue_on_failure)
         print(f"\nDone. Report: {report_path}")
