@@ -3,6 +3,7 @@ Batch Test Scheduler Module
 
 Orchestrates batch testing with sandbox reuse strategy.
 Groups tasks by (total_count, ratio) and reuses sandbox/smap_tool within groups.
+Supports offline mode: generate summary from existing test results.
 """
 
 import os
@@ -11,6 +12,7 @@ import time
 import argparse
 import yaml
 import threading
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -433,16 +435,219 @@ class BatchScheduler:
         return report_path
 
 
+def scan_existing_results(result_base_dir: str) -> List[Dict[str, Any]]:
+    """Scan existing E2B batch test result directories and extract metadata
+
+    Directory structure:
+    results/e2b/batch/
+      tc10_ratio10_20260629_140636/               # Group directory
+        smap_tool/
+        tc10_ratio10_bp0.5_20260629_140805/       # Task directory
+          config_tc10_ratio10_bp0.5.yaml
+          test_log.txt
+          bench_report.txt
+          vm_monitor/
+            analysis_report.xlsx
+
+    Returns list of dicts with task metadata and file paths
+    """
+    tasks = []
+
+    if not os.path.exists(result_base_dir):
+        print(f"ERROR: Result directory not found: {result_base_dir}")
+        return tasks
+
+    # Pattern for group directory: tc{n}_ratio{ratio}_timestamp
+    group_pattern = re.compile(r"^tc(\d+)_ratio([\d.]+)_\d{8}_\d{6}$")
+
+    # Pattern for task directory: tc{n}_ratio{ratio}_bp{percent}_timestamp
+    task_pattern = re.compile(r"^tc(\d+)_ratio([\d.]+)_bp([\d.]+)_\d{8}_\d{6}$")
+
+    for group_entry in os.listdir(result_base_dir):
+        group_path = os.path.join(result_base_dir, group_entry)
+
+        if not os.path.isdir(group_path):
+            continue
+
+        # Check if it's a group directory
+        group_match = group_pattern.match(group_entry)
+        if not group_match:
+            # Might be directly a task directory (older structure)
+            task_match = task_pattern.match(group_entry)
+            if task_match:
+                total_count = int(task_match.group(1))
+                ratio = float(task_match.group(2))
+                benchmark_percent = float(task_match.group(3))
+
+                task_info = _extract_task_info(
+                    group_path, group_entry,
+                    total_count, ratio, benchmark_percent
+                )
+                if task_info:
+                    tasks.append(task_info)
+            continue
+
+        # Scan task directories inside group
+        for task_entry in os.listdir(group_path):
+            task_path = os.path.join(group_path, task_entry)
+
+            if not os.path.isdir(task_path):
+                continue
+
+            task_match = task_pattern.match(task_entry)
+            if task_match:
+                total_count = int(task_match.group(1))
+                ratio = float(task_match.group(2))
+                benchmark_percent = float(task_match.group(3))
+
+                task_info = _extract_task_info(
+                    task_path, task_entry,
+                    total_count, ratio, benchmark_percent
+                )
+                if task_info:
+                    tasks.append(task_info)
+
+    # Sort by total_count, ratio, benchmark_percent
+    tasks.sort(key=lambda t: (t['total_count'], t['ratio'], t['benchmark_percent']))
+
+    return tasks
+
+
+def _extract_task_info(task_path: str, task_id: str,
+                       total_count: int, ratio: float,
+                       benchmark_percent: float) -> Optional[Dict[str, Any]]:
+    """Extract task info from a single task directory"""
+    # Check for required files
+    config_file = None
+    for f in os.listdir(task_path):
+        if f.startswith("config_") and f.endswith(".yaml"):
+            config_file = os.path.join(task_path, f)
+            break
+
+    analysis_file = os.path.join(task_path, "vm_monitor", "analysis_report.xlsx")
+    report_file = os.path.join(task_path, "bench_report.txt")
+
+    # Check if task has valid results
+    has_analysis = os.path.exists(analysis_file)
+    has_report = os.path.exists(report_file)
+    success = has_analysis or has_report
+
+    if not success:
+        print(f"  Skipping incomplete: {task_id}")
+        return None
+
+    print(f"  Found: {task_id} (tc={total_count}, ratio={ratio}, bp={benchmark_percent})")
+
+    return {
+        'task_id': task_id,
+        'total_count': total_count,
+        'ratio': ratio,
+        'benchmark_percent': benchmark_percent,
+        'result_dir': task_path,
+        'config_file': config_file,
+        'analysis_file': analysis_file if has_analysis else None,
+        'report_file': report_file if has_report else None,
+        'success': success,
+    }
+
+
+def offline_summary(result_base_dir: str, output_path: str = None) -> str:
+    """Generate batch summary from existing test results (offline mode)
+
+    Args:
+        result_base_dir: Base directory containing test results
+        output_path: Optional output Excel path
+
+    Returns:
+        Path to generated summary report
+    """
+    print("=" * 60)
+    print("E2B Offline Batch Summary Generator")
+    print("=" * 60)
+    print(f"Scanning result directory: {result_base_dir}")
+
+    # Scan existing results
+    task_infos = scan_existing_results(result_base_dir)
+
+    if not task_infos:
+        print("ERROR: No valid test result directories found")
+        return ""
+
+    print(f"\nFound {len(task_infos)} test results")
+
+    # Extract metrics
+    print("\n" + "=" * 60)
+    print("Extracting metrics from result files...")
+    print("=" * 60)
+
+    metrics_extractor = MetricsExtractor()
+    metrics_data = []
+
+    for task_info in task_infos:
+        metrics = {
+            'task_id': task_info['task_id'],
+            'total_count': task_info['total_count'],
+            'ratio': task_info['ratio'],
+            'benchmark_percent': task_info['benchmark_percent'],
+            'success': task_info['success'],
+            'error_msg': None,
+        }
+
+        # Extract browser metrics
+        if task_info['report_file']:
+            browser_metrics = metrics_extractor.extract_browser_metrics(task_info['report_file'])
+            metrics.update(browser_metrics)
+
+        # Extract vm_monitor metrics
+        if task_info['analysis_file']:
+            vm_metrics = metrics_extractor.extract(task_info['analysis_file'])
+            metrics.update(vm_metrics)
+
+        metrics_data.append(metrics)
+        print(f"  Extracted metrics from: {task_info['task_id']}")
+
+    # Generate output path if not specified
+    if output_path is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = os.path.join(result_base_dir, f"e2b_batch_summary_offline_{timestamp}.xlsx")
+
+    # Generate summary report
+    print("\nGenerating summary report...")
+    report_aggregator = ReportAggregator(result_base_dir)
+    report_path = report_aggregator.aggregate(metrics_data, os.path.basename(output_path))
+
+    # Print summary
+    success_count = sum(1 for t in task_infos if t['success'])
+    print("\n" + "=" * 60)
+    print("Offline Summary Complete")
+    print("=" * 60)
+    print(f"Total results processed: {len(task_infos)}")
+    print(f"Successful: {success_count}")
+    print(f"Incomplete: {len(task_infos) - success_count}")
+    print(f"Summary report: {report_path}")
+    print("=" * 60)
+
+    return report_path
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     """Build CLI argument parser"""
     parser = argparse.ArgumentParser(
         description='E2B Batch Test Scheduler - Automated batch testing with sandbox reuse'
     )
 
-    parser.add_argument('--matrix', required=True,
-                        help='Test matrix YAML config path (contains template_path, output_dir)')
+    # Online mode arguments
+    parser.add_argument('--matrix', help='Test matrix YAML config path (contains template_path, output_dir)')
+
+    # Offline mode arguments
+    parser.add_argument('--offline', action='store_true',
+                        help='Generate summary from existing results (offline mode)')
+    parser.add_argument('--result-dir', help='Result directory for offline mode')
+    parser.add_argument('--output', help='Output Excel path for offline mode')
+
+    # Common arguments
     parser.add_argument('--continue-on-failure', action='store_true',
-                        help='Continue testing if a group fails')
+                        help='Continue testing if a group fails (online mode only)')
 
     return parser
 
@@ -452,8 +657,23 @@ def main():
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    scheduler = BatchScheduler(matrix_path=args.matrix)
+    # Offline mode: generate summary from existing results
+    if args.offline:
+        if not args.result_dir:
+            print("ERROR: --result-dir is required for offline mode")
+            return
 
+        report_path = offline_summary(args.result_dir, args.output)
+        if report_path:
+            print(f"\nDone. Report: {report_path}")
+        return
+
+    # Online mode: run batch tests
+    if not args.matrix:
+        print("ERROR: --matrix is required for online mode")
+        return
+
+    scheduler = BatchScheduler(matrix_path=args.matrix)
     report_path = scheduler.run(continue_on_failure=args.continue_on_failure)
 
     print(f"\nDone. Report: {report_path}")
