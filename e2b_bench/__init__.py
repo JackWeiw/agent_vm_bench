@@ -1,37 +1,27 @@
 """
-E2B Sandbox Bench - E2B Sandbox Batch Performance Testing Suite
+E2B Bench - E2B Sandbox Batch Performance Testing Tool
 
-Features:
-- Batch create E2B sandboxes, collect startup performance (time, success rate, P50/P95/P99 latency)
-- Execute browser tasks, collect execution performance (latency, throughput)
-- Monitor sandbox alive status
-- Support batched startup and random task interval
-- Real-time statistics snapshot + final report
-
-Usage Examples:
-    python -m e2b_bench --config config/e2b_bench.yaml
-    python -m e2b_bench --config config/e2b_bench.yaml --total 50 --duration 300
+Provides:
+- Single sandbox benchmark (bench.py)
+- Batch test scheduler with sandbox reuse (batch_scheduler.py)
+- Metrics extraction from vm_monitor (metrics_extractor.py)
+- Report aggregation (report_aggregator.py)
 """
 
 from .config import Config
-from .schemas import (
-    SandboxState,
-    SandboxStatus,
-    CreationMetrics,
-    BrowserMetrics,
-    TestSnapshot,
-)
-from .bench import run_benchmark, main
-
-__version__ = "1.0.0"
+from .schemas import SandboxState, SandboxStatus, BatchTask, TaskGroup
+from .bench import run_benchmark, SmapToolManager, VmMonitorManager
+from .batch_scheduler import BatchScheduler, GroupRunner
+from .task_generator import TaskGenerator, load_matrix_config
+from .metrics_extractor import MetricsExtractor
+from .report_aggregator import ReportAggregator
 
 __all__ = [
     'Config',
-    'SandboxState',
-    'SandboxStatus',
-    'CreationMetrics',
-    'BrowserMetrics',
-    'TestSnapshot',
-    'run_benchmark',
-    'main',
+    'SandboxState', 'SandboxStatus', 'BatchTask', 'TaskGroup',
+    'run_benchmark', 'SmapToolManager', 'VmMonitorManager',
+    'BatchScheduler', 'GroupRunner',
+    'TaskGenerator', 'load_matrix_config',
+    'MetricsExtractor',
+    'ReportAggregator',
 ]

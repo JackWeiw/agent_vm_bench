@@ -5,7 +5,7 @@ Defines SandboxStatus, CreationMetrics, BrowserMetrics, SandboxState, TestSnapsh
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from enum import Enum
 import statistics
 
@@ -104,3 +104,34 @@ class TestSnapshot:
     browser_success: int = 0     # Successful task count
     browser_avg_latency: float = 0.0  # Average latency
     browser_p99_latency: float = 0.0  # P99 latency
+
+
+@dataclass
+class BatchTask:
+    """Single batch test task parameters"""
+    task_id: str              # Unique ID, e.g. "tc10_ratio10_bp0.5"
+    total_count: int          # Sandbox count
+    benchmark_percent: float  # Percentage of sandboxes for benchmark
+    ratio: int                # Memory migration ratio (%)
+
+    # Runtime state (filled after execution)
+    result_dir: Optional[str] = None      # Result directory path
+    report_file: Optional[str] = None     # bench_report.txt path
+    analysis_file: Optional[str] = None   # analysis_report.xlsx path
+    browser_metrics: Optional[Dict[str, Any]] = None  # Extracted browser metrics
+    vm_metrics: Optional[Dict[str, Any]] = None       # Extracted vm_monitor metrics
+    success: bool = False
+    error_msg: Optional[str] = None
+
+
+@dataclass
+class TaskGroup:
+    """Group of tasks that can reuse the same sandbox set"""
+    group_id: str             # Group ID, e.g. "tc10_ratio10"
+    total_count: int          # Shared by all tasks in group
+    ratio: int                # Shared by all tasks in group
+    tasks: List[BatchTask]    # Tasks with different benchmark_percent
+
+    # Runtime state
+    sandbox_states: Optional[Dict[int, Any]] = None  # Shared sandbox states
+    smap_tool_manager: Optional[Any] = None          # Shared SmapToolManager

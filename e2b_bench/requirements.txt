@@ -1,3 +1,5 @@
-# E2B Sandbox Bench Dependencies
+# E2B Bench Dependencies
 e2b>=0.15.0
 PyYAML>=6.0
+pandas>=1.3.0
+xlsxwriter>=3.0.0

@@ -15,12 +15,314 @@ Supports multiple modes:
 import time
 import argparse
 import threading
+import subprocess
+import signal
+import os
+import platform
+import shutil
+from pathlib import Path
+from datetime import datetime
 
 from .config import Config
 from .sandbox_manager import SandboxManager
 from .task_runner import TaskManager
 from .stats_collector import StatsCollector
 from .schemas import SandboxStatus
+
+
+class SmapToolManager:
+    """Manage smap_tool process lifecycle for memory migration monitoring"""
+
+    def __init__(self, config, log_dir: str = None):
+        self.config = config
+        self.log_dir = log_dir  # Custom log directory (for batch test result)
+        self.process = None
+        self.pid = None
+        self.stdout_file = None
+        self.stderr_file = None
+
+    def start(self, sandbox_count: int) -> bool:
+        """
+        Start smap_tool process
+
+        Command format:
+        ./smap_tool <count> `pidof firecracker` --swap-size <size> --ratio <ratio> --src-nid <nid> --dest-nid <nid>
+        """
+        if not self.config.smap_tool_enabled:
+            print("[SmapTool] Disabled in config, skipping")
+            return True
+
+        if not self.config.smap_tool_path:
+            print("[SmapTool] Path not configured, skipping")
+            return True
+
+        # Get firecracker PIDs
+        try:
+            result = subprocess.run(['pidof', 'firecracker'], capture_output=True, text=True)
+            if result.returncode != 0 or not result.stdout.strip():
+                print("[SmapTool] No firecracker processes found")
+                return False
+            firecracker_pids = result.stdout.strip()
+            print(f"[SmapTool] Found firecracker PIDs: {firecracker_pids}")
+        except Exception as e:
+            print(f"[SmapTool] Failed to get firecracker PIDs: {e}")
+            return False
+
+        # Build command
+        smap_dir = Path(self.config.smap_tool_path).parent
+        smap_exe = Path(self.config.smap_tool_path).name
+
+        # Clean up existing smap_config (Linux only)
+        smap_config_path = Path("/dev/shm/smap_config")
+        if smap_config_path.exists():
+            if smap_config_path.is_dir():
+                shutil.rmtree(smap_config_path)
+            else:
+                smap_config_path.unlink()
+            print("[SmapTool] Cleaned up existing /dev/shm/smap_config")
+
+        cmd = (
+            f"./{smap_exe} {sandbox_count} {firecracker_pids} "
+            f"--swap-size {self.config.smap_tool_swap_size} "
+            f"--ratio {self.config.smap_tool_ratio} "
+            f"--src-nid {self.config.smap_tool_src_nid} "
+            f"--dest-nid {self.config.smap_tool_dest_nid}"
+        )
+
+        print(f"[SmapTool] Starting: {cmd}")
+        print(f"[SmapTool] Working directory: {smap_dir}")
+
+        # Prepare log files in result directory
+        if self.log_dir:
+            log_path = Path(self.log_dir)
+        else:
+            log_path = Path(self.config.output_dir) / "smap_tool"
+        log_path.mkdir(parents=True, exist_ok=True)
+
+        self.stdout_file = open(log_path / "smap_stdout.log", 'w')
+        self.stderr_file = open(log_path / "smap_stderr.log", 'w')
+
+        try:
+            is_windows = platform.system() == 'Windows'
+
+            if is_windows:
+                # Windows: use CREATE_NEW_PROCESS_GROUP for process group management
+                self.process = subprocess.Popen(
+                    cmd,
+                    shell=True,
+                    cwd=str(smap_dir),
+                    stdout=self.stdout_file,
+                    stderr=self.stderr_file,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                )
+            else:
+                # Unix/Linux: use preexec_fn=os.setpgrp for process group
+                self.process = subprocess.Popen(
+                    cmd,
+                    shell=True,
+                    cwd=str(smap_dir),
+                    stdout=self.stdout_file,
+                    stderr=self.stderr_file,
+                    preexec_fn=os.setpgrp
+                )
+
+            self.pid = self.process.pid
+            print(f"[SmapTool] Started with PID: {self.pid}")
+            print(f"[SmapTool] Logs saved to: {log_path}")
+            return True
+        except Exception as e:
+            print(f"[SmapTool] Failed to start: {e}")
+            return False
+
+    def stop(self) -> None:
+        """Stop smap_tool process"""
+        if self.process is None:
+            return
+
+        print(f"[SmapTool] Stopping process (PID: {self.pid})...")
+        try:
+            is_windows = platform.system() == 'Windows'
+
+            if is_windows:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    print("[SmapTool] Process killed (timeout)")
+            else:
+                os.killpg(os.getpgid(self.pid), signal.SIGTERM)
+                try:
+                    self.process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(os.getpgid(self.pid), signal.SIGKILL)
+                    print("[SmapTool] Process killed (timeout)")
+
+            print("[SmapTool] Process stopped gracefully")
+        except Exception as e:
+            print(f"[SmapTool] Error stopping process: {e}")
+
+        if self.stdout_file:
+            self.stdout_file.close()
+        if self.stderr_file:
+            self.stderr_file.close()
+
+        self.process = None
+        self.pid = None
+
+    def is_running(self) -> bool:
+        """Check if smap_tool process is still running"""
+        if self.process is None:
+            return False
+        return self.process.poll() is None
+
+
+class VmMonitorManager:
+    """Manage vm_monitor process lifecycle for performance monitoring"""
+
+    def __init__(self, config, log_dir: str = None):
+        self.config = config
+        self.log_dir = log_dir  # Custom log directory (for batch test result)
+        self.process = None
+        self.analysis_file = None
+        self.stdout_file = None  # Log file handle for stdout
+        self.stderr_file = None  # Log file handle for stderr
+
+    def start(self, task_id: str = "") -> bool:
+        """
+        Start vm_monitor process with stress-file sync
+
+        Command format:
+        python3 vm_monitor.py --vmm firecracker -t <duration> --stress-file <file> --log-dir <dir>
+        """
+        if not self.config.vm_monitor_enabled:
+            print("[VmMonitor] Disabled in config, skipping")
+            return True
+
+        # Prepare log directory - use provided log_dir or default
+        if self.log_dir:
+            log_path = Path(self.log_dir)
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_dir_name = f"vm_monitor_{task_id}_{timestamp}" if task_id else f"vm_monitor_{timestamp}"
+            log_path = Path(self.config.vm_monitor_log_dir) / log_dir_name
+        log_path.mkdir(parents=True, exist_ok=True)
+
+        # Clean up existing stress file
+        stress_file = Path(self.config.vm_monitor_stress_file)
+        if stress_file.exists():
+            stress_file.unlink()
+
+        # Build command - use vm_monitor.py directly (not vm_monitor/cli.py)
+        project_root = Path(__file__).parent.parent
+        vm_monitor_script = project_root / "vm_monitor.py"
+
+        cmd = [
+            "python3", str(vm_monitor_script),
+            "--vmm", self.config.vm_monitor_vmm_type,
+            "-t", str(self.config.vm_monitor_duration),
+            "--numa", self.config.vm_monitor_numa,
+            "--stress-file", str(stress_file),
+            "--log-dir", str(log_path),
+            "--enable-capture",  # Enable all capture tools by default
+            "--auto-skip"        # Skip tools that are not available
+        ]
+
+        print(f"[VmMonitor] Starting: {' '.join(cmd)}")
+        print(f"[VmMonitor] Log directory: {log_path}")
+
+        # Redirect stdout/stderr to log files (not PIPE)
+        # PIPE buffer (64KB) can fill up and block the process when vm_monitor outputs lots of data
+        monitor_stdout_log = log_path / "monitor_stdout.log"
+        monitor_stderr_log = log_path / "monitor_stderr.log"
+
+        try:
+            self.stdout_file = open(monitor_stdout_log, 'w', buffering=1)
+            self.stderr_file = open(monitor_stderr_log, 'w', buffering=1)
+
+            self.process = subprocess.Popen(
+                cmd,
+                stdout=self.stdout_file,
+                stderr=self.stderr_file,
+                text=True
+            )
+            print(f"[VmMonitor] Started with PID: {self.process.pid}")
+            print(f"[VmMonitor] Waiting for stress file: {stress_file}")
+            print(f"[VmMonitor] Output redirected to: {monitor_stdout_log}")
+
+            # Store expected analysis file path
+            self.analysis_file = str(log_path / "analysis_report.xlsx")
+            return True
+        except Exception as e:
+            print(f"[VmMonitor] Failed to start: {e}")
+            return False
+
+    def trigger_sampling(self) -> None:
+        """Create stress file to trigger vm_monitor sampling"""
+        stress_file = Path(self.config.vm_monitor_stress_file)
+        stress_file.touch()
+        print(f"[VmMonitor] Stress file created: {stress_file}")
+
+    def stop_sampling(self) -> None:
+        """Remove stress file to stop vm_monitor sampling"""
+        stress_file = Path(self.config.vm_monitor_stress_file)
+        if stress_file.exists():
+            stress_file.unlink()
+            print(f"[VmMonitor] Stress file removed: {stress_file}")
+
+    def wait_for_report(self, timeout: int = 300) -> str:
+        """
+        Wait for analysis_report.xlsx to be generated
+
+        Returns file path if found, None if timeout
+        """
+        if not self.analysis_file:
+            return None
+
+        analysis_path = Path(self.analysis_file)
+        print(f"[VmMonitor] Waiting for report: {analysis_path}")
+
+        start_time = time.time()
+        check_interval = 10  # Check every 10 seconds
+        while time.time() - start_time < timeout:
+            if analysis_path.exists() and analysis_path.stat().st_size > 0:
+                print(f"[VmMonitor] Report generated: {analysis_path}")
+                return str(analysis_path)
+
+            elapsed = int(time.time() - start_time)
+            remaining = timeout - elapsed
+            if elapsed % 30 == 0:  # Log every 30 seconds
+                print(f"[VmMonitor] Waiting... {elapsed}s elapsed, {remaining}s remaining")
+            time.sleep(check_interval)
+
+        print(f"[VmMonitor] Report not found after {timeout}s timeout")
+        return None
+
+    def stop(self) -> None:
+        """Stop vm_monitor process"""
+        if self.process is None:
+            return
+
+        print(f"[VmMonitor] Stopping process (PID: {self.process.pid})...")
+        try:
+            self.process.terminate()
+            self.process.wait(timeout=10)
+            print("[VmMonitor] Process stopped gracefully")
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            print("[VmMonitor] Process killed (timeout)")
+        except Exception as e:
+            print(f"[VmMonitor] Error stopping process: {e}")
+
+        # Close log file handles
+        if self.stdout_file:
+            self.stdout_file.close()
+            self.stdout_file = None
+        if self.stderr_file:
+            self.stderr_file.close()
+            self.stderr_file = None
+
+        self.process = None
 
 
 def run_benchmark(config: Config) -> dict:
