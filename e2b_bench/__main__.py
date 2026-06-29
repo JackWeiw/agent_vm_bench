@@ -13,7 +13,7 @@ def main():
     # Check if --batch is in args before parsing
     if '--batch' in sys.argv:
         # Batch mode: delegate to batch_scheduler
-        from .batch_scheduler import build_arg_parser, BatchScheduler
+        from .batch_scheduler import build_arg_parser, BatchScheduler, offline_summary
 
         batch_parser = build_arg_parser()
         # Remove '--batch' from args for batch parser
@@ -22,8 +22,22 @@ def main():
             batch_args.remove('--batch')
         batch_args = batch_parser.parse_args(batch_args)
 
-        scheduler = BatchScheduler(matrix_path=batch_args.matrix)
+        # Offline mode: generate summary from existing results
+        if batch_args.offline:
+            if not batch_args.result_dir:
+                print("ERROR: --result-dir is required for offline mode")
+                return
+            report_path = offline_summary(batch_args.result_dir, batch_args.output)
+            if report_path:
+                print(f"\nDone. Report: {report_path}")
+            return
 
+        # Online mode: run batch tests
+        if not batch_args.matrix:
+            print("ERROR: --matrix is required for online mode")
+            return
+
+        scheduler = BatchScheduler(matrix_path=batch_args.matrix)
         report_path = scheduler.run(continue_on_failure=batch_args.continue_on_failure)
         print(f"\nDone. Report: {report_path}")
     else:
