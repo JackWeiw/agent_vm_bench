@@ -150,15 +150,16 @@ class GroupRunner:
         task_result_dir.mkdir(parents=True, exist_ok=True)
         task.result_dir = str(task_result_dir)
 
-        # Test log file for this task
+        # Test log file for this task - stream write with flush
         test_log_file = task_result_dir / "test_log.txt"
-        test_log_handle = open(test_log_file, 'w', encoding='utf-8')
+        test_log_handle = open(test_log_file, 'w', encoding='utf-8', buffering=1)  # Line buffering
 
         def task_log(msg: str):
-            """Write to both batch log and task test log"""
+            """Write to both batch log and task test log (streaming)"""
             self._log(msg)
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             test_log_handle.write(f"[{timestamp}] {msg}\n")
+            test_log_handle.flush()  # Ensure immediate write to disk
 
         task_log(f"Starting task: {task.task_id}")
         task_log(f"  Result directory: {task_result_dir}")
@@ -212,9 +213,17 @@ class GroupRunner:
             stats_collector.start()
             task_manager.start_all()
 
-            # Run for duration
+            # Run for duration with periodic status updates
             task_log(f"  Running for {self.config.test_duration}s...")
-            time.sleep(self.config.test_duration)
+            elapsed = 0
+            report_interval = 60  # Log status every 60 seconds
+            while elapsed < self.config.test_duration:
+                sleep_time = min(report_interval, self.config.test_duration - elapsed)
+                time.sleep(sleep_time)
+                elapsed += sleep_time
+                remaining = self.config.test_duration - elapsed
+                if remaining > 0:
+                    task_log(f"  Progress: {elapsed}s elapsed, {remaining}s remaining")
 
             # Stop
             stop_event.set()
@@ -291,9 +300,11 @@ class GroupRunner:
             self.stop_event.set()
 
     def _log(self, message: str):
-        """Write to batch log file"""
-        with open(self.batch_log_file, 'a', encoding='utf-8') as f:
-            f.write(message + '\n')
+        """Write to batch log file (streaming)"""
+        with open(self.batch_log_file, 'a', encoding='utf-8', buffering=1) as f:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"[{timestamp}] {message}\n")
+            f.flush()
 
 
 class BatchScheduler:
