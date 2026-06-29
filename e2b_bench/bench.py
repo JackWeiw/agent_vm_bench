@@ -224,7 +224,8 @@ class VmMonitorManager:
             "--numa", self.config.vm_monitor_numa,
             "--stress-file", str(stress_file),
             "--log-dir", str(log_path),
-            "--auto-skip"
+            "--enable-capture",  # Enable all capture tools by default
+            "--auto-skip"        # Skip tools that are not available
         ]
 
         print(f"[VmMonitor] Starting: {' '.join(cmd)}")

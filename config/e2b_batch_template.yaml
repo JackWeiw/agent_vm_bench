@@ -56,6 +56,7 @@ vm_monitor:
   numa: "1"  # NUMA nodes to monitor, comma-separated (e.g., "0,1")
   log_dir: "results/e2b/vm_monitor"
   stress_file: "/dev/shm/e2b_benchmark_lock"
+  # --enable-capture and --auto-skip are always added for batch testing
 
 report:
   output_dir: "results/e2b/batch"

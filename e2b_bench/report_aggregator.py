@@ -128,7 +128,7 @@ class ReportAggregator:
         return df
 
     def _export_excel(self, df: 'pd.DataFrame', output_path: str) -> None:
-        """Export DataFrame to styled Excel"""
+        """Export DataFrame to styled Excel with colored header groups"""
         import pandas as pd
 
         with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
@@ -137,28 +137,56 @@ class ReportAggregator:
             workbook = writer.book
             worksheet = writer.sheets['Summary']
 
-            header_format = workbook.add_format({
-                'bold': True,
-                'align': 'center',
-                'valign': 'vcenter',
-                'border': 1
-            })
-
+            # Write colored headers based on column groups
             for col_idx, col_name in enumerate(df.columns):
+                # Find which group this column belongs to
+                source = self._find_column_group(col_name)
+                color = self.SOURCE_COLORS.get(source, '#FFFFFF')
+
+                header_format = workbook.add_format({
+                    'bold': True,
+                    'align': 'center',
+                    'valign': 'vcenter',
+                    'border': 1,
+                    'bg_color': color
+                })
                 worksheet.write(0, col_idx, col_name, header_format)
 
-            for source, columns in self.COLUMN_GROUPS.items():
-                color = self.SOURCE_COLORS.get(source, '#FFFFFF')
-                cell_format = workbook.add_format({'bg_color': color})
-
-                for col_name in columns:
-                    if col_name in df.columns:
-                        col_idx = df.columns.get_loc(col_name)
-                        worksheet.set_column(col_idx, col_idx, None, cell_format)
-
+            # Set column widths
             for col_idx, col_name in enumerate(df.columns):
                 max_len = max(
                     len(str(col_name)),
                     df[col_name].astype(str).str.len().max() if len(df) > 0 else 0
                 )
                 worksheet.set_column(col_idx, col_idx, min(max_len + 2, 30))
+
+    def _find_column_group(self, col_name: str) -> str:
+        """Find which group a column belongs to"""
+        # Check defined groups first
+        for group, columns in self.COLUMN_GROUPS.items():
+            if col_name in columns:
+                return group
+
+        # Infer group from column name prefix
+        if col_name.startswith('Browser_'):
+            return 'Browser'
+        elif col_name.startswith('VM_CPU'):
+            return 'VM_CPU'
+        elif col_name.startswith('DevKit_TopDown'):
+            return 'DevKit_TopDown'
+        elif col_name.startswith('DevKit_Memory'):
+            return 'DevKit_Memory'
+        elif col_name.startswith('NUMA_Bandwidth'):
+            return 'NUMA_Bandwidth'
+        elif col_name.startswith('KSys'):
+            return 'KSys'
+        elif col_name.startswith('UBWatch_Latency'):
+            return 'UBWatch_Latency'
+        elif col_name.startswith('UBWatch_Bandwidth'):
+            return 'UBWatch_Bandwidth'
+        elif col_name.startswith('SMAPBW'):
+            return 'SMAPBW'
+        elif col_name.startswith('Getfre'):
+            return 'Getfre'
+
+        return 'Basic'
