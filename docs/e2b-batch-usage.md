@@ -71,27 +71,50 @@ python -m e2b_bench --batch \
 批量测试完成后，在 `output_dir` 目录下生成：
 
 ```
-results/e2b/batch/                          # output_dir
-├── tc10_ratio10_bp0.5_20260629_143052/     # task_id + timestamp
-│   ├── tc10_ratio10_bp0.5.yaml             # 测试配置文件
-│   ├── bench_report.txt                    # 压测报告
-│   └── vm_monitor/                         # vm_monitor 结果
-│       └── analysis_report.xlsx            # 性能指标报告
-├── tc10_ratio10_bp0.75_20260629_143155/
-│   ├── tc10_ratio10_bp0.75.yaml
-│   └── ...
-├── tc10_ratio20_bp0.5_20260629_143210/
-│   ├── tc10_ratio20_bp0.5.yaml             # 不同 ratio 对比
-│   └── ...
-├── e2b_batch_summary_20260629_143500.xlsx  # 汇总报告
-├── batch_log_20260629_143000.txt           # 执行日志
+results/e2b/batch/                              # output_dir
+├── tc10_ratio10_20260629_143052/               # Group 级别目录
+│   ├── smap_tool/                              # smap_tool 日志 (组内共享)
+│   │   ├── smap_stdout.log
+│   │   └── smap_stderr.log
+│   ├── tc10_ratio10_bp0.5_20260629_143100/     # Task 子目录
+│   │   ├── config_tc10_ratio10_bp0.5.yaml      # 测试配置文件
+│   │   ├── test_log.txt                        # 测试执行日志
+│   │   ├── bench_report.txt                    # 压测报告
+│   │   └── vm_monitor/                         # vm_monitor 结果
+│   │       └── analysis_report.xlsx            # 性能指标报告
+│   ├── tc10_ratio10_bp0.75_20260629_143200/
+│   │   ├── config_tc10_ratio10_bp0.75.yaml
+│   │   ├── test_log.txt
+│   │   └── ...
+│   ├── tc10_ratio10_bp1.0_20260629_143300/
+│   │   └── ...
+├── tc10_ratio20_20260629_144000/               # 不同 ratio 的 Group
+│   ├── smap_tool/
+│   │   └── smap_stdout.log                     # 不同 ratio 配置的 smap 日志
+│   │   └── smap_stderr.log
+│   ├── tc10_ratio20_bp0.5_20260629_144100/
+│   │   └── ...
+├── e2b_batch_summary_20260629_145000.xlsx      # 汇总报告
+├── batch_log_20260629_143000.txt               # 批量测试总日志
 ```
+
+**目录结构说明：**
+
+- **Group 目录** (`tc10_ratio10_20260629_143052/`): 按 `(total_count, ratio)` 分组，包含：
+  - `smap_tool/`: 组内共享的 smap_tool 日志
+  - 多个 Task 子目录 (不同 benchmark_percent)
+
+- **Task 目录** (`tc10_ratio10_bp0.5_20260629_143100/`): 单次测试结果，包含：
+  - `config_xxx.yaml`: 该测试的完整配置
+  - `test_log.txt`: 该测试的执行日志 (时间戳、各阶段状态)
+  - `bench_report.txt`: 浏览器压测报告
+  - `vm_monitor/`: vm_monitor 采集结果
 
 ## 配置文件说明
 
-### 测试配置文件 (每个子测试目录下)
+### 测试配置文件 (每个 Task 目录下)
 
-每个测试任务会保存配置文件 `<task_id>.yaml`，包含：
+每个测试任务会保存配置文件 `config_<task_id>.yaml`，包含：
 
 ```yaml
 task_id: tc10_ratio10_bp0.5

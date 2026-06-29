@@ -42,20 +42,25 @@ class GroupRunner:
         # Stop event
         self.stop_event = None
 
+        # Group-level result directory (for smap_tool logs)
+        self.group_result_dir: Optional[Path] = None
+
     def run(self) -> List[BatchTask]:
         """
         Execute all tasks in the group
 
         Flow:
-        1. Create sandboxes (shared)
-        2. Start smap_tool (shared)
-        3. Warmup (shared, once)
-        4. For each task:
-           - Start vm_monitor
+        1. Create group result directory (for smap_tool)
+        2. Create sandboxes (shared)
+        3. Start smap_tool (shared, logs to group_result_dir/smap_tool/)
+        4. Warmup (shared, once)
+        5. For each task:
+           - Create task result directory
+           - Start vm_monitor (logs to task_result_dir/vm_monitor/)
            - Run benchmark
            - Stop vm_monitor
-           - Collect results
-        5. Cleanup
+           - Save test_log.txt and results
+        6. Cleanup
 
         Returns:
             List of completed BatchTask objects
@@ -63,14 +68,21 @@ class GroupRunner:
         results = []
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+        # Create group-level result directory
+        group_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.group_result_dir = Path(self.config.output_dir) / f"{self.group.group_id}_{group_timestamp}"
+        self.group_result_dir.mkdir(parents=True, exist_ok=True)
+
         self._log(f"\n[{timestamp}] Starting group: {self.group.group_id}")
         self._log(f"  Total count: {self.group.total_count}")
         self._log(f"  Ratio: {self.group.ratio}")
         self._log(f"  Tasks: {len(self.group.tasks)}")
+        self._log(f"  Group result dir: {self.group_result_dir}")
 
         print(f"\n{'='*60}")
         print(f"Group: {self.group.group_id}")
         print(f"{'='*60}")
+        print(f"  Result directory: {self.group_result_dir}")
 
         try:
             # 1. Create sandboxes
@@ -93,9 +105,10 @@ class GroupRunner:
 
             self._log(f"  Sandboxes ready: {ready_count}")
 
-            # 2. Start smap_tool
+            # 2. Start smap_tool (logs to group_result_dir/smap_tool/)
             if self.config.smap_tool_enabled:
-                self.smap_tool = SmapToolManager(self._get_group_config())
+                smap_log_dir = str(self.group_result_dir / "smap_tool")
+                self.smap_tool = SmapToolManager(self._get_group_config(), log_dir=smap_log_dir)
                 success = self.smap_tool.start(ready_count)
                 if not success:
                     self._log(f"  WARN: smap_tool failed to start")
@@ -131,88 +144,117 @@ class GroupRunner:
 
     def _run_single_task(self, task: BatchTask, task_idx: int) -> None:
         """Run a single benchmark task (modifies task in-place)"""
-        # Create result directory
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        result_dir = Path(self.config.output_dir) / f"{task.task_id}_{timestamp}"
-        result_dir.mkdir(parents=True, exist_ok=True)
-        task.result_dir = str(result_dir)
+        # Create task result directory inside group result directory
+        task_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        task_result_dir = self.group_result_dir / f"{task.task_id}_{task_timestamp}"
+        task_result_dir.mkdir(parents=True, exist_ok=True)
+        task.result_dir = str(task_result_dir)
 
-        # Update config for this task
-        task_config = self._get_task_config(task)
+        # Test log file for this task
+        test_log_file = task_result_dir / "test_log.txt"
+        test_log_handle = open(test_log_file, 'w', encoding='utf-8')
 
-        # Save task config to result directory for reference
-        config_dict = {
-            'task_id': task.task_id,
-            'total_count': task.total_count,
-            'benchmark_percent': task.benchmark_percent,
-            'ratio': task.ratio,
-            'smap_tool_enabled': self.config.smap_tool_enabled,
-            'smap_tool_ratio': task.ratio if self.config.smap_tool_enabled else None,
-            'test_duration': self.config.test_duration,
-            'browser_urls': self.config.browser_urls,
-            'warmup_urls': self.config.warmup_urls if self.config.warmup_urls else [],
-        }
-        # Use task_id (matrix value) as config filename
-        config_file = result_dir / f"{task.task_id}.yaml"
-        with open(config_file, 'w', encoding='utf-8') as f:
-            yaml.dump(config_dict, f, default_flow_style=False, allow_unicode=True)
-        print(f"  Task config saved to: {config_file}")
+        def task_log(msg: str):
+            """Write to both batch log and task test log"""
+            self._log(msg)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            test_log_handle.write(f"[{timestamp}] {msg}\n")
 
-        # Start vm_monitor
-        vm_monitor = None
-        if self.config.vm_monitor_enabled:
-            vm_monitor = VmMonitorManager(task_config)
-            vm_monitor.start(task.task_id)
-            time.sleep(2)  # Wait for vm_monitor to initialize
+        task_log(f"Starting task: {task.task_id}")
+        task_log(f"  Result directory: {task_result_dir}")
 
-        # Create stop event for this task
-        stop_event = threading.Event()
+        try:
+            # Update config for this task
+            task_config = self._get_task_config(task)
 
-        # Start stats collector
-        stats_collector = StatsCollector(task_config, self.sandbox_states)
-        stats_collector.start()
+            # Save task config to result directory
+            config_dict = {
+                'task_id': task.task_id,
+                'total_count': task.total_count,
+                'benchmark_percent': task.benchmark_percent,
+                'ratio': task.ratio,
+                'smap_tool_enabled': self.config.smap_tool_enabled,
+                'smap_tool_ratio': task.ratio if self.config.smap_tool_enabled else None,
+                'test_duration': self.config.test_duration,
+                'browser_urls': self.config.browser_urls,
+                'warmup_urls': self.config.warmup_urls if self.config.warmup_urls else [],
+            }
+            config_file = task_result_dir / f"config_{task.task_id}.yaml"
+            with open(config_file, 'w', encoding='utf-8') as f:
+                yaml.dump(config_dict, f, default_flow_style=False, allow_unicode=True)
+            task_log(f"  Task config saved to: {config_file}")
 
-        # Start task manager
-        task_manager = TaskManager(task_config, self.sandbox_states, stop_event)
+            # Start vm_monitor (logs to task_result_dir/vm_monitor/)
+            vm_monitor = None
+            if self.config.vm_monitor_enabled:
+                vm_monitor_log_dir = str(task_result_dir / "vm_monitor")
+                vm_monitor = VmMonitorManager(task_config, log_dir=vm_monitor_log_dir)
+                vm_monitor.start(task.task_id)
+                task_log(f"  vm_monitor started, log_dir: {vm_monitor_log_dir}")
+                time.sleep(2)  # Wait for vm_monitor to initialize
 
-        # Trigger vm_monitor sampling
-        if vm_monitor:
-            vm_monitor.trigger_sampling()
+            # Create stop event for this task
+            stop_event = threading.Event()
 
-        # Start browser tasks
-        print(f"  Starting browser tasks (benchmark_percent={task.benchmark_percent})...")
-        task_manager.start_all()
+            # Start stats collector
+            stats_collector = StatsCollector(task_config, self.sandbox_states)
 
-        # Run for duration
-        print(f"  Running for {self.config.test_duration}s...")
-        time.sleep(self.config.test_duration)
+            # Start task manager
+            task_manager = TaskManager(task_config, self.sandbox_states, stop_event)
 
-        # Stop
-        stop_event.set()
-        task_manager.wait_all(timeout=5)
-        stats_collector.stop()
+            # Trigger vm_monitor sampling
+            if vm_monitor:
+                vm_monitor.trigger_sampling()
+                task_log(f"  vm_monitor sampling triggered")
 
-        # Stop vm_monitor sampling
-        if vm_monitor:
-            vm_monitor.stop_sampling()
+            # Start browser tasks
+            task_log(f"  Starting browser tasks (benchmark_percent={task.benchmark_percent})...")
+            stats_collector.start()
+            task_manager.start_all()
 
-        # Generate bench report
-        report = stats_collector.generate_report()
-        report_file = result_dir / "bench_report.txt"
-        with open(report_file, 'w', encoding='utf-8') as f:
-            f.write(report)
-        task.report_file = str(report_file)
+            # Run for duration
+            task_log(f"  Running for {self.config.test_duration}s...")
+            time.sleep(self.config.test_duration)
 
-        # Wait for vm_monitor analysis report
-        if vm_monitor:
-            analysis_file = vm_monitor.wait_for_report(timeout=300)
-            if analysis_file:
-                task.analysis_file = analysis_file
-            vm_monitor.stop()
+            # Stop
+            stop_event.set()
+            task_manager.wait_all(timeout=5)
+            stats_collector.stop()
+            task_log(f"  Benchmark stopped")
 
-        # Mark success
-        task.success = True
-        self._log(f"    Task completed successfully")
+            # Stop vm_monitor sampling
+            if vm_monitor:
+                vm_monitor.stop_sampling()
+                task_log(f"  vm_monitor sampling stopped")
+
+            # Generate bench report
+            report = stats_collector.generate_report()
+            report_file = task_result_dir / "bench_report.txt"
+            with open(report_file, 'w', encoding='utf-8') as f:
+                f.write(report)
+            task.report_file = str(report_file)
+            task_log(f"  Bench report saved to: {report_file}")
+
+            # Wait for vm_monitor analysis report
+            if vm_monitor:
+                analysis_file = vm_monitor.wait_for_report(timeout=300)
+                if analysis_file:
+                    task.analysis_file = analysis_file
+                    task_log(f"  vm_monitor analysis report: {analysis_file}")
+                vm_monitor.stop()
+                task_log(f"  vm_monitor stopped")
+
+            # Mark success
+            task.success = True
+            task_log(f"  Task completed successfully")
+
+        except Exception as e:
+            task.success = False
+            task.error_msg = str(e)
+            task_log(f"  ERROR: Task failed: {e}")
+
+        finally:
+            test_log_handle.close()
 
     def _get_group_config(self) -> Config:
         """Create Config for group (with group's total_count and ratio)"""

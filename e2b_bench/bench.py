@@ -33,11 +33,13 @@ from .schemas import SandboxStatus
 class SmapToolManager:
     """Manage smap_tool process lifecycle for memory migration monitoring"""
 
-    def __init__(self, config):
+    def __init__(self, config, log_dir: str = None):
         self.config = config
+        self.log_dir = log_dir  # Custom log directory (for batch test result)
         self.process = None
         self.pid = None
-        self.log_file = None
+        self.stdout_file = None
+        self.stderr_file = None
 
     def start(self, sandbox_count: int) -> bool:
         """
@@ -71,7 +73,6 @@ class SmapToolManager:
         smap_exe = Path(self.config.smap_tool_path).name
 
         # Clean up existing smap_config (Linux only)
-        # Execute rm -rf /dev/shm/smap_config to clear previous config
         smap_config_path = Path("/dev/shm/smap_config")
         if smap_config_path.exists():
             if smap_config_path.is_dir():
@@ -91,11 +92,15 @@ class SmapToolManager:
         print(f"[SmapTool] Starting: {cmd}")
         print(f"[SmapTool] Working directory: {smap_dir}")
 
-        # Prepare log files
-        log_dir = Path(self.config.output_dir) / "smap_tool"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.log_file = open(log_dir / f"smap_{timestamp}.log", 'w')
+        # Prepare log files in result directory
+        if self.log_dir:
+            log_path = Path(self.log_dir)
+        else:
+            log_path = Path(self.config.output_dir) / "smap_tool"
+        log_path.mkdir(parents=True, exist_ok=True)
+
+        self.stdout_file = open(log_path / "smap_stdout.log", 'w')
+        self.stderr_file = open(log_path / "smap_stderr.log", 'w')
 
         try:
             is_windows = platform.system() == 'Windows'
@@ -106,8 +111,8 @@ class SmapToolManager:
                     cmd,
                     shell=True,
                     cwd=str(smap_dir),
-                    stdout=self.log_file,
-                    stderr=self.log_file,
+                    stdout=self.stdout_file,
+                    stderr=self.stderr_file,
                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
                 )
             else:
@@ -116,13 +121,14 @@ class SmapToolManager:
                     cmd,
                     shell=True,
                     cwd=str(smap_dir),
-                    stdout=self.log_file,
-                    stderr=self.log_file,
+                    stdout=self.stdout_file,
+                    stderr=self.stderr_file,
                     preexec_fn=os.setpgrp
                 )
 
             self.pid = self.process.pid
             print(f"[SmapTool] Started with PID: {self.pid}")
+            print(f"[SmapTool] Logs saved to: {log_path}")
             return True
         except Exception as e:
             print(f"[SmapTool] Failed to start: {e}")
@@ -138,7 +144,6 @@ class SmapToolManager:
             is_windows = platform.system() == 'Windows'
 
             if is_windows:
-                # Windows: terminate/killsingle process directly
                 self.process.terminate()
                 try:
                     self.process.wait(timeout=10)
@@ -146,7 +151,6 @@ class SmapToolManager:
                     self.process.kill()
                     print("[SmapTool] Process killed (timeout)")
             else:
-                # Unix/Linux: use killpg to kill entire process group
                 os.killpg(os.getpgid(self.pid), signal.SIGTERM)
                 try:
                     self.process.wait(timeout=10)
@@ -158,8 +162,10 @@ class SmapToolManager:
         except Exception as e:
             print(f"[SmapTool] Error stopping process: {e}")
 
-        if self.log_file:
-            self.log_file.close()
+        if self.stdout_file:
+            self.stdout_file.close()
+        if self.stderr_file:
+            self.stderr_file.close()
 
         self.process = None
         self.pid = None
@@ -174,8 +180,9 @@ class SmapToolManager:
 class VmMonitorManager:
     """Manage vm_monitor process lifecycle for performance monitoring"""
 
-    def __init__(self, config):
+    def __init__(self, config, log_dir: str = None):
         self.config = config
+        self.log_dir = log_dir  # Custom log directory (for batch test result)
         self.process = None
         self.analysis_file = None
 
@@ -190,11 +197,14 @@ class VmMonitorManager:
             print("[VmMonitor] Disabled in config, skipping")
             return True
 
-        # Prepare log directory
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_dir_name = f"vm_monitor_{task_id}_{timestamp}" if task_id else f"vm_monitor_{timestamp}"
-        log_dir = Path(self.config.vm_monitor_log_dir) / log_dir_name
-        log_dir.mkdir(parents=True, exist_ok=True)
+        # Prepare log directory - use provided log_dir or default
+        if self.log_dir:
+            log_path = Path(self.log_dir)
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_dir_name = f"vm_monitor_{task_id}_{timestamp}" if task_id else f"vm_monitor_{timestamp}"
+            log_path = Path(self.config.vm_monitor_log_dir) / log_dir_name
+        log_path.mkdir(parents=True, exist_ok=True)
 
         # Clean up existing stress file
         stress_file = Path(self.config.vm_monitor_stress_file)
@@ -202,7 +212,6 @@ class VmMonitorManager:
             stress_file.unlink()
 
         # Build command
-        # vm_monitor is in the project root directory
         project_root = Path(__file__).parent.parent
         vm_monitor_cli = project_root / "vm_monitor" / "cli.py"
 
@@ -212,12 +221,12 @@ class VmMonitorManager:
             "-t", str(self.config.vm_monitor_duration),
             "--numa", self.config.vm_monitor_numa,
             "--stress-file", str(stress_file),
-            "--log-dir", str(log_dir),
+            "--log-dir", str(log_path),
             "--auto-skip"
         ]
 
         print(f"[VmMonitor] Starting: {' '.join(cmd)}")
-        print(f"[VmMonitor] Log directory: {log_dir}")
+        print(f"[VmMonitor] Log directory: {log_path}")
 
         try:
             self.process = subprocess.Popen(
@@ -230,7 +239,7 @@ class VmMonitorManager:
             print(f"[VmMonitor] Waiting for stress file: {stress_file}")
 
             # Store expected analysis file path
-            self.analysis_file = str(log_dir / "analysis_report.xlsx")
+            self.analysis_file = str(log_path / "analysis_report.xlsx")
             return True
         except Exception as e:
             print(f"[VmMonitor] Failed to start: {e}")
