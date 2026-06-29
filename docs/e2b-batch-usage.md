@@ -1,5 +1,7 @@
 # E2B Batch Test Scheduler 使用指南
 
+[English Documentation](e2b-batch-usage-en.md)
+
 ## 快速开始
 
 ### 1. 准备配置文件
@@ -49,6 +51,7 @@ vm_monitor:
   vmm_type: "firecracker"
   numa: "1"  # NUMA nodes to monitor, comma-separated (e.g., "0,1")
   # duration 自动使用 test.duration，无需单独配置
+  # --enable-capture 和 --auto-skip 默认添加
 ```
 
 ### 2. 执行批量测试
@@ -64,6 +67,9 @@ python -m e2b_bench --batch --matrix config/e2b_batch_matrix.yaml
 python -m e2b_bench --batch \
     --matrix config/e2b_batch_matrix.yaml \
     --continue-on-failure
+
+# 离线汇总（从已有结果生成报告）
+python -m e2b_bench --batch --offline --result-dir results/e2b/batch
 ```
 
 ### 3. 查看结果
@@ -81,16 +87,14 @@ results/e2b/batch/                              # output_dir
 │   │   ├── test_log.txt                        # 测试执行日志
 │   │   ├── bench_report.txt                    # 压测报告
 │   │   └── vm_monitor/                         # vm_monitor 结果
+│   │       ├── monitor_stdout.log
+│   │       ├── monitor_stderr.log
 │   │       └── analysis_report.xlsx            # 性能指标报告
 │   ├── tc10_ratio10_bp0.75_20260629_143200/
-│   │   ├── config_tc10_ratio10_bp0.75.yaml
-│   │   ├── test_log.txt
-│   │   └── ...
-│   ├── tc10_ratio10_bp1.0_20260629_143300/
 │   │   └── ...
 ├── tc10_ratio20_20260629_144000/               # 不同 ratio 的 Group
 │   ├── smap_tool/
-│   │   └── smap_stdout.log                     # 不同 ratio 配置的 smap 日志
+│   │   └── smap_stdout.log
 │   │   └── smap_stderr.log
 │   ├── tc10_ratio20_bp0.5_20260629_144100/
 │   │   └── ...
@@ -106,7 +110,7 @@ results/e2b/batch/                              # output_dir
 
 - **Task 目录** (`tc10_ratio10_bp0.5_20260629_143100/`): 单次测试结果，包含：
   - `config_xxx.yaml`: 该测试的完整配置
-  - `test_log.txt`: 该测试的执行日志 (时间戳、各阶段状态)
+  - `test_log.txt`: 该测试的执行日志 (流式写入，可实时查看)
   - `bench_report.txt`: 浏览器压测报告
   - `vm_monitor/`: vm_monitor 采集结果
 
@@ -170,7 +174,7 @@ smap_tool:
 2. 启动 smap_tool (ratio 参数，如果 enabled)
 3. 预热 (warmup_urls)
 4. 遍历 benchmark_percent:
-   - 启动 vm_monitor (--stress-file 同步)
+   - 启动 vm_monitor (--enable-capture --auto-skip --stress-file 同步)
    - 压测
    - 停止 vm_monitor
    - 保存测试配置和结果
@@ -192,5 +196,24 @@ smap_tool:
 | UBWatch Latency | UBWatch_Latency | 7 |
 | UBWatch Bandwidth | UBWatch_Bandwidth | per-chip+port |
 | SMAPBW | SMAPBW_Summary | 5 |
+| Getfre | Getfre_Summary | per-NUMA |
 
-汇总报告 `e2b_batch_summary_*.xlsx` 会自动排除未启用工具的空数据列。
+汇总报告 `e2b_batch_summary_*.xlsx`：
+
+- 自动排除未启用工具的空数据列
+- 第一行显示数据源标签（带颜色区分）
+- 第二行显示列名
+
+## 离线汇总
+
+从已有的测试结果目录生成汇总报告：
+
+```bash
+# 基本用法
+python -m e2b_bench --batch --offline --result-dir results/e2b/batch
+
+# 指定输出路径
+python -m e2b_bench --batch --offline --result-dir results/e2b/batch --output custom_summary.xlsx
+```
+
+离线模式会扫描结果目录，提取所有测试的指标，生成汇总 Excel。
