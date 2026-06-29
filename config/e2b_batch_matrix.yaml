@@ -1,9 +1,6 @@
 # E2B Batch Test Matrix Configuration
 # Variable parameters for batch testing
 
-# Output directory for all test results
-output_dir: "results/e2b/batch"
-
 test_matrix:
   total_counts: [10, 20, 50]
   benchmark_percentages: [0.5, 0.75, 1.0]
@@ -13,3 +10,8 @@ test_matrix:
 reuse_strategy:
   reuse_sandbox: true      # Reuse sandbox within same (total_count, ratio) group
   reuse_smap_tool: true    # Reuse smap_tool within same group
+
+# Result Configuration
+result:
+  template_path: "config/e2b_batch_template.yaml"  # Config template file (relative path from project root)
+  output_dir: "results/e2b/batch"                  # Output directory for all test results

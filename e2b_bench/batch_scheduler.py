@@ -257,26 +257,16 @@ class GroupRunner:
 class BatchScheduler:
     """Main batch test scheduler"""
 
-    def __init__(self, matrix_path: str, template_path: str = None, output_dir: str = None):
+    def __init__(self, matrix_path: str):
         self.matrix_path = matrix_path
 
         # Load matrix configuration
         self.matrix_config = load_matrix_config(matrix_path)
 
-        # Get result config from matrix
+        # Get result config from matrix (template_path and output_dir are required)
         result_config = self.matrix_config.get('result', {})
-
-        # Get template_path from result config or use provided value
-        if template_path:
-            self.template_path = template_path
-        else:
-            self.template_path = result_config.get('template_path', 'config/e2b_batch_template.yaml')
-
-        # Get output_dir from result config or use provided value
-        if output_dir:
-            self.output_dir = output_dir
-        else:
-            self.output_dir = result_config.get('output_dir', 'results/e2b/batch')
+        self.template_path = result_config.get('template_path', 'config/e2b_batch_template.yaml')
+        self.output_dir = result_config.get('output_dir', 'results/e2b/batch')
 
         # Load template configuration
         self.template_config = Config.load_from_yaml(self.template_path)
@@ -396,9 +386,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description='E2B Batch Test Scheduler - Automated batch testing with sandbox reuse'
     )
 
-    parser.add_argument('--matrix', required=True, help='Test matrix YAML config path (contains template_path and output_dir)')
-    parser.add_argument('--template', help='Template YAML config path (optional, overrides matrix config)')
-    parser.add_argument('--output-dir', help='Output directory (optional, overrides matrix config)')
+    parser.add_argument('--matrix', required=True,
+                        help='Test matrix YAML config path (contains template_path, output_dir)')
     parser.add_argument('--continue-on-failure', action='store_true',
                         help='Continue testing if a group fails')
 
@@ -410,11 +399,7 @@ def main():
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    scheduler = BatchScheduler(
-        matrix_path=args.matrix,
-        template_path=args.template,
-        output_dir=args.output_dir
-    )
+    scheduler = BatchScheduler(matrix_path=args.matrix)
 
     report_path = scheduler.run(continue_on_failure=args.continue_on_failure)
 

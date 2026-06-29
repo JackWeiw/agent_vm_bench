@@ -6,12 +6,9 @@
 
 #### 测试矩阵配置 (`config/e2b_batch_matrix.yaml`)
 
-定义可变参数维度和输出目录：
+定义可变参数维度和结果配置：
 
 ```yaml
-# Output directory for all test results
-output_dir: "results/e2b/batch"
-
 test_matrix:
   total_counts: [10, 20, 50]       # 沙箱数量
   benchmark_percentages: [0.5, 0.75, 1.0]  # 压测比例
@@ -20,6 +17,11 @@ test_matrix:
 reuse_strategy:
   reuse_sandbox: true              # 同组内复用沙箱
   reuse_smap_tool: true            # 同组内复用 smap_tool
+
+# Result Configuration
+result:
+  template_path: "config/e2b_batch_template.yaml"  # 模板配置文件路径
+  output_dir: "results/e2b/batch"                  # 结果输出目录
 ```
 
 #### 模板配置 (`config/e2b_batch_template.yaml`)
@@ -55,16 +57,13 @@ vm_monitor:
 # 单次基准测试
 python -m e2b_bench --config config/e2b_bench.yaml
 
-# 批量测试（output_dir 从 matrix 配置读取）
-python -m e2b_bench --batch \
-    --matrix config/e2b_batch_matrix.yaml \
-    --template config/e2b_batch_template.yaml
+# 批量测试（所有配置从 matrix 文件读取）
+python -m e2b_bench --batch --matrix config/e2b_batch_matrix.yaml
 
-# 批量测试（手动指定 output_dir，覆盖 matrix 配置）
+# 批量测试（失败后继续执行）
 python -m e2b_bench --batch \
     --matrix config/e2b_batch_matrix.yaml \
-    --template config/e2b_batch_template.yaml \
-    --output-dir results/e2b/custom_run
+    --continue-on-failure
 ```
 
 ### 3. 查看结果
