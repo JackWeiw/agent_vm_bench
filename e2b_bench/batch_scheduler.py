@@ -152,7 +152,8 @@ class GroupRunner:
             'browser_urls': self.config.browser_urls,
             'warmup_urls': self.config.warmup_urls if self.config.warmup_urls else [],
         }
-        config_file = result_dir / "task_config.yaml"
+        # Use task_id (matrix value) as config filename
+        config_file = result_dir / f"{task.task_id}.yaml"
         with open(config_file, 'w', encoding='utf-8') as f:
             yaml.dump(config_dict, f, default_flow_style=False, allow_unicode=True)
         print(f"  Task config saved to: {config_file}")
