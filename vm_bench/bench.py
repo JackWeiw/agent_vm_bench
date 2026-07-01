@@ -303,7 +303,7 @@ def run_benchmark(config: Config) -> dict:
     # === Graceful Shutdown ===
     print("\n[Phase 5] Stopping all components...")
     stop_event.set()
-    batch_controller.stop()
+    # batch_controller runs daemon thread, no need to stop explicitly
 
     for runner in runners:
         runner.join(timeout=2)
