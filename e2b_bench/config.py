@@ -43,6 +43,22 @@ class Config:
     # Benchmark stress percent (percentage of sandboxes to run benchmark)
     benchmark_percent: float = 1.0  # Percentage of sandboxes for benchmark (default 100%)
 
+    # smap_tool configuration (memory migration monitoring)
+    smap_tool_enabled: bool = False
+    smap_tool_path: str = ""
+    smap_tool_swap_size: int = 81920
+    smap_tool_ratio: int = 15
+    smap_tool_src_nid: int = 2
+    smap_tool_dest_nid: int = 5
+
+    # vm_monitor configuration (performance monitoring)
+    vm_monitor_enabled: bool = False
+    vm_monitor_vmm_type: str = "firecracker"
+    vm_monitor_duration: int = 600
+    vm_monitor_numa: str = "1"  # NUMA nodes to monitor, comma-separated (e.g., "0,1")
+    vm_monitor_log_dir: str = "results/e2b/vm_monitor"
+    vm_monitor_stress_file: str = "/dev/shm/e2b_benchmark_lock"
+
     # Browser task
     browser_urls: List[str] = field(default_factory=lambda: ["http://192.168.110.10:8080/Weibo.html"])
     browser_timeout: int = 200
@@ -81,6 +97,8 @@ class Config:
         browser = data.get('browser', {})
         test = data.get('test', {})
         report = data.get('report', {})
+        smap_tool = data.get('smap_tool', {})
+        vm_monitor = data.get('vm_monitor', {})
 
         return cls(
             e2b_access_token=e2b_env.get('E2B_ACCESS_TOKEN', ""),
@@ -119,6 +137,22 @@ class Config:
 
             output_dir=report.get('output_dir', "results/e2b"),
             filename_prefix=report.get('filename_prefix', "e2b_bench"),
+
+            # smap_tool configuration
+            smap_tool_enabled=smap_tool.get('enabled', False),
+            smap_tool_path=smap_tool.get('path', ""),
+            smap_tool_swap_size=smap_tool.get('swap_size', 81920),
+            smap_tool_ratio=smap_tool.get('ratio', 15),
+            smap_tool_src_nid=smap_tool.get('src_nid', 2),
+            smap_tool_dest_nid=smap_tool.get('dest_nid', 5),
+
+            # vm_monitor configuration
+            vm_monitor_enabled=vm_monitor.get('enabled', False),
+            vm_monitor_vmm_type=vm_monitor.get('vmm_type', "firecracker"),
+            vm_monitor_duration=vm_monitor.get('duration', 600),
+            vm_monitor_numa=vm_monitor.get('numa', "1"),
+            vm_monitor_log_dir=vm_monitor.get('log_dir', "results/e2b/vm_monitor"),
+            vm_monitor_stress_file=vm_monitor.get('stress_file', "/dev/shm/e2b_benchmark_lock"),
         )
 
     @classmethod
@@ -161,6 +195,21 @@ class Config:
 
             output_dir=args.output_dir if args.output_dir else yaml_config.output_dir,
             filename_prefix=args.filename_prefix if args.filename_prefix else yaml_config.filename_prefix,
+
+            # smap_tool and vm_monitor - use yaml values (no CLI override for these)
+            smap_tool_enabled=yaml_config.smap_tool_enabled,
+            smap_tool_path=yaml_config.smap_tool_path,
+            smap_tool_swap_size=yaml_config.smap_tool_swap_size,
+            smap_tool_ratio=yaml_config.smap_tool_ratio,
+            smap_tool_src_nid=yaml_config.smap_tool_src_nid,
+            smap_tool_dest_nid=yaml_config.smap_tool_dest_nid,
+
+            vm_monitor_enabled=yaml_config.vm_monitor_enabled,
+            vm_monitor_vmm_type=yaml_config.vm_monitor_vmm_type,
+            vm_monitor_duration=yaml_config.vm_monitor_duration,
+            vm_monitor_numa=yaml_config.vm_monitor_numa,
+            vm_monitor_log_dir=yaml_config.vm_monitor_log_dir,
+            vm_monitor_stress_file=yaml_config.vm_monitor_stress_file,
         )
 
     @classmethod
@@ -203,6 +252,20 @@ class Config:
 
             output_dir=args.output_dir or "results/e2b",
             filename_prefix=args.filename_prefix or "e2b_bench",
+
+            smap_tool_enabled=False,
+            smap_tool_path="",
+            smap_tool_swap_size=81920,
+            smap_tool_ratio=15,
+            smap_tool_src_nid=2,
+            smap_tool_dest_nid=5,
+
+            vm_monitor_enabled=False,
+            vm_monitor_vmm_type="firecracker",
+            vm_monitor_duration=600,
+            vm_monitor_numa="1",
+            vm_monitor_log_dir="results/e2b/vm_monitor",
+            vm_monitor_stress_file="/dev/shm/e2b_benchmark_lock",
         )
 
     def setup_e2b_env(self) -> None:
