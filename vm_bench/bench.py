@@ -113,15 +113,31 @@ def run_benchmark(config: Config) -> dict:
 
     stop_event = threading.Event()
 
-    # === Phase 0: VM Creation ===
+    # === Phase 0: VM Creation / Detection ===
     vm_manager = VMManager(config, stop_event)
 
     if config.detect_existing:
         print("\n[Phase 0] Detecting existing VMs...")
-        vm_states = {}  # Would need implementation for detect mode
-        # For now, skip detect mode in this initial implementation
-        print("Detect mode not yet implemented in modular version")
-        return {}
+        # Detect mode: connect to existing VMs via SSH based on IP range
+        # No OpenStack creation needed
+        ips = config.get_ip_range()
+        print(f"  Target IPs: {ips[0]} ~ {ips[-1]} ({len(ips)} IPs)")
+
+        # Initialize VM states for detection
+        vm_states = {}
+        for i, ip in enumerate(ips):
+            vm_id = i + 1
+            state = VMState(
+                vm_id=vm_id,
+                fixed_ip=ip,
+                vm_name=f"{config.vm_prefix}_{vm_id}",
+            )
+            # Mark as "ACTIVE" to skip creation phase
+            state.creation_metrics.status = VMStatus.ACTIVE
+            vm_states[vm_id] = state
+            vm_manager.vm_states[vm_id] = state
+
+        print(f"  Initialized {len(vm_states)} VM states for detection")
 
     elif not config.create_only:
         print("\n[Phase 0] Creating VMs via OpenStack...")
@@ -403,9 +419,10 @@ def main() -> None:
     else:
         config = Config.from_args(args)
 
-    # Validate
-    if not config.network_id and not args.config:
-        print("Error: network_id is required. Use --network-id or --config")
+    # Validate network_id only for create mode (not for detect mode)
+    if not config.detect_existing and not config.network_id:
+        print("Error: network_id is required for VM creation. Use --network-id or --config")
+        print("Hint: For detect mode, use --detect to connect to existing VMs")
         return
 
     # Run benchmark
