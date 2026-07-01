@@ -38,7 +38,11 @@ from .schemas import (
 from .vm_manager import VMManager, VMConnection
 from .bench import run_benchmark, main
 
-__version__ = "1.0.0"
+# Import version from project root
+try:
+    from ..version import __version__
+except ImportError:
+    __version__ = "0.1.0-alpha"  # Fallback for standalone testing
 
 __all__ = [
     'Config',
@@ -56,4 +60,5 @@ __all__ = [
     'VMConnection',
     'run_benchmark',
     'main',
+    '__version__',
 ]
