@@ -491,6 +491,26 @@ def run_benchmark(config: Config) -> dict:
             print(f"  P99:  {stats['p99']:.1f}s")
 
         print("\n" + "=" * 70)
+
+        # Save sandbox IDs to file if configured
+        if config.sandbox_ids_file:
+            successful_ids = [
+                s.sandbox_obj.sandbox_id
+                for s in sandbox_states.values()
+                if s.creation_metrics.status == SandboxStatus.PORT_READY
+                and s.sandbox_obj is not None
+            ]
+            if successful_ids:
+                try:
+                    with open(config.sandbox_ids_file, 'w') as f:
+                        for sid in successful_ids:
+                            f.write(f"{sid}\n")
+                    print(f"\nSaved {len(successful_ids)} sandbox IDs to: {config.sandbox_ids_file}")
+                except (IOError, OSError) as e:
+                    print(f"\nERROR: Failed to save sandbox IDs: {e}")
+            else:
+                print(f"\nWARNING: No successful sandboxes to save to {config.sandbox_ids_file}")
+
         return {
             'report': f"Create-only: {ready_count}/{len(sandbox_states)} sandboxes ready",
             'filepath': None
