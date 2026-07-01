@@ -32,6 +32,9 @@ class Config:
     # Create-only mode (create sandboxes without running tasks)
     create_only: bool = False
 
+    # Sandbox IDs file (for save/load sandbox IDs)
+    sandbox_ids_file: Optional[str] = None
+
     # Create batch control (for sandbox creation, None means full concurrent)
     create_batch_size: Optional[int] = None
     create_batch_interval: Optional[int] = None
@@ -112,6 +115,7 @@ class Config:
             total_count=sandbox.get('total_count', 100),
             detect_existing=sandbox.get('detect_existing', False),
             create_only=sandbox.get('create_only', False),
+            sandbox_ids_file=sandbox.get('sandbox_ids_file', None),
 
             create_batch_size=create_batch.get('size') if create_batch else None,
             create_batch_interval=create_batch.get('interval') if create_batch else None,
@@ -170,6 +174,7 @@ class Config:
             total_count=args.total if args.total else yaml_config.total_count,
             detect_existing=args.detect if hasattr(args, 'detect') and args.detect else yaml_config.detect_existing,
             create_only=args.create_only if hasattr(args, 'create_only') and args.create_only else yaml_config.create_only,
+            sandbox_ids_file=args.sandbox_ids_file if args.sandbox_ids_file else yaml_config.sandbox_ids_file,
 
             create_batch_size=args.create_batch_size if args.create_batch_size is not None else yaml_config.create_batch_size,
             create_batch_interval=args.create_batch_interval if args.create_batch_interval is not None else yaml_config.create_batch_interval,
@@ -227,6 +232,7 @@ class Config:
             total_count=args.total or 100,
             detect_existing=args.detect if hasattr(args, 'detect') and args.detect else False,
             create_only=args.create_only if hasattr(args, 'create_only') and args.create_only else False,
+            sandbox_ids_file=args.sandbox_ids_file if args.sandbox_ids_file else None,
 
             create_batch_size=args.create_batch_size,
             create_batch_interval=args.create_batch_interval,
