@@ -218,7 +218,10 @@ def delete_vms(ctx: TestContext, os_env: Dict) -> bool:
 # ==================== Step 3: Create VMs ====================
 
 def create_vms(ctx: TestContext, os_env: Dict) -> bool:
-    """Create VMs using create_server.py"""
+    """Create VMs using vm_bench module
+
+    Migrated from create_server.py to vm_bench.create_all()
+    """
     log(ctx, "Step 3: Creating VMs...")
 
     config = ctx.config
@@ -230,13 +233,81 @@ def create_vms(ctx: TestContext, os_env: Dict) -> bool:
     flavor = config["openstack"]["flavor"]
     image = config["openstack"]["image"]
 
-    # Calculate start IP number
-    if not start_ip.startswith(subnet_prefix):
-        raise ValueError(f"start_ip {start_ip} doesn't match subnet_prefix {subnet_prefix}")
+    # Import vm_bench module
+    try:
+        from vm_bench import Config, VMManager
+        from vm_bench.schemas import VMStatus
+        import threading
+    except ImportError as e:
+        log(ctx, f"ERROR: Failed to import vm_bench module: {e}")
+        # Fallback to old create_server.py
+        log(ctx, "Falling back to create_server.py...")
+        return create_vms_legacy(ctx, os_env)
+
+    # Build vm_bench config
+    vm_config = Config(
+        flavor=flavor,
+        image=image,
+        network_id=network_id,
+        availability_zone=az,
+        start_ip=start_ip,
+        subnet_prefix=subnet_prefix,
+        vm_prefix="test_openclaw",
+        total_count=vm_count,
+        create_timeout=1200,
+        create_only=True,  # Create only, don't benchmark
+        create_batch_size=20,
+        create_batch_interval=3,
+    )
+
+    stop_event = threading.Event()
+    vm_manager = VMManager(vm_config, stop_event)
+
+    log(ctx, f"Creating {vm_count} VMs via vm_bench module...")
+    log(ctx, f"  Flavor: {flavor}, Image: {image}")
+    log(ctx, f"  Start IP: {start_ip}, Network: {network_id}")
+
+    start_time = time.time()
+    vm_states = vm_manager.create_all()
+    elapsed = time.time() - start_time
+
+    # Count created VMs
+    ready_count = sum(
+        1 for s in vm_states.values()
+        if s.creation_metrics.status == VMStatus.ACTIVE
+    )
+
+    log(ctx, f"VM creation completed: {ready_count}/{vm_count} in {elapsed:.1f}s")
+
+    if ready_count < vm_count * 0.7:
+        log(ctx, f"ERROR: Too few VMs created ({ready_count}/{vm_count})")
+        return False
+
+    # Parse created VM IPs
+    ctx.vm_ips = []
+    for i in range(vm_count):
+        ip = f"{subnet_prefix.rstrip('.')}.{int(start_ip.split('.')[-1]) + i}"
+        ctx.vm_ips.append(ip)
+
+    log(ctx, f"VM IPs: {ctx.vm_ips[:5]}... (total {len(ctx.vm_ips)})")
+    return True
+
+
+def create_vms_legacy(ctx: TestContext, os_env: Dict) -> bool:
+    """Legacy fallback: Create VMs using create_server.py"""
+    log(ctx, "Using legacy create_server.py...")
+
+    config = ctx.config
+    vm_count = config["vm"]["count"]
+    start_ip = config["vm"]["start_ip"]
+    subnet_prefix = config["openstack"]["subnet_prefix"]
+    network_id = config["openstack"]["network_id"]
+    az = config["openstack"]["az"]
+    flavor = config["openstack"]["flavor"]
+    image = config["openstack"]["image"]
 
     start_ip_num = int(start_ip.split(".")[-1])
 
-    # Build command
     cmd = [
         "python3", "create_server.py",
         "--start_ip", start_ip,
@@ -254,7 +325,6 @@ def create_vms(ctx: TestContext, os_env: Dict) -> bool:
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=1800
     )
 
-    # Output result
     print(result.stdout)
     if result.stderr:
         print(result.stderr)
@@ -263,7 +333,6 @@ def create_vms(ctx: TestContext, os_env: Dict) -> bool:
         log(ctx, f"VM creation failed with return code {result.returncode}")
         return False
 
-    # Parse created VM IPs
     ctx.vm_ips = []
     for i in range(vm_count):
         ip = f"{subnet_prefix.rstrip('.')}.{start_ip_num + i}"
@@ -461,7 +530,10 @@ def wait_vms_ready(ctx: TestContext) -> bool:
 # ==================== Step 6: Warmup Phase ====================
 
 def run_warmup(ctx: TestContext) -> bool:
-    """Run browser warmup phase"""
+    """Run browser warmup phase using vm_bench module
+
+    Migrated from vm_bench_lite.py to vm_bench.run_benchmark()
+    """
     log(ctx, "Step 6: Running warmup phase...")
 
     config = ctx.config
@@ -469,7 +541,53 @@ def run_warmup(ctx: TestContext) -> bool:
     start_ip = config["vm"]["start_ip"]
     warmup = config["warmup"]
 
-    # Build command
+    # Import vm_bench module
+    try:
+        from vm_bench import Config, run_benchmark
+    except ImportError as e:
+        log(ctx, f"ERROR: Failed to import vm_bench module: {e}")
+        # Fallback to old vm_bench_lite.py
+        log(ctx, "Falling back to vm_bench_lite.py...")
+        return run_warmup_legacy(ctx)
+
+    # Build vm_bench config for warmup
+    vm_config = Config(
+        start_ip=start_ip,
+        total_count=vm_count,
+        task_mode="browser",
+        warmup_only=True,  # Warmup phase only
+        warmup_urls=warmup["urls"],
+        warmup_loops=warmup["loops"],
+        warmup_delay=warmup["delay"],
+        task_batch_size=warmup["batch_size"],
+        task_batch_interval=warmup["batch_interval"],
+        ssh_username=config["vm"]["username"],
+        ssh_password=config["vm"]["password"],
+        output_dir=os.path.join(ctx.result_dir, "vm_bench_lite"),
+    )
+
+    log(ctx, f"Running warmup via vm_bench module...")
+    log(ctx, f"  Warmup URLs: {len(warmup['urls'])} pages, {warmup['loops']} loops")
+    log(ctx, f"  Batch: {warmup['batch_size']} VMs/batch, {warmup['batch_interval']}s interval")
+
+    try:
+        result = run_benchmark(vm_config)
+        log(ctx, f"Warmup completed: {result.get('report', 'N/A')[:100]}")
+        return True
+    except Exception as e:
+        log(ctx, f"Warmup failed: {e}")
+        return False
+
+
+def run_warmup_legacy(ctx: TestContext) -> bool:
+    """Legacy fallback: Run warmup using vm_bench_lite.py"""
+    log(ctx, "Using legacy vm_bench_lite.py...")
+
+    config = ctx.config
+    vm_count = config["vm"]["count"]
+    start_ip = config["vm"]["start_ip"]
+    warmup = config["warmup"]
+
     cmd = [
         "python", "vm_bench_lite.py",
         "-n", str(vm_count),
@@ -482,7 +600,6 @@ def run_warmup(ctx: TestContext) -> bool:
         "--warmup-delay", str(warmup["delay"])
     ]
 
-    # Add warmup URLs
     for url in warmup["urls"]:
         cmd.extend(["--warmup-url", url])
 
@@ -592,7 +709,10 @@ def start_monitor(ctx: TestContext) -> bool:
 # ==================== Step 8: Benchmark Phase ====================
 
 def run_benchmark(ctx: TestContext) -> bool:
-    """Run browser benchmark phase"""
+    """Run browser benchmark phase using vm_bench module
+
+    Migrated from vm_bench_lite.py to vm_bench.run_benchmark()
+    """
     log(ctx, "Step 8: Running benchmark phase...")
 
     config = ctx.config
@@ -605,13 +725,68 @@ def run_benchmark(ctx: TestContext) -> bool:
     log(ctx, f"Created lock file: {BENCHMARK_LOCK_FILE}")
     log(ctx, "Monitor will now start sampling (aligned with benchmark)")
 
-    # Build command
+    # Import vm_bench module
+    try:
+        from vm_bench import Config, run_benchmark
+    except ImportError as e:
+        log(ctx, f"ERROR: Failed to import vm_bench module: {e}")
+        # Fallback to old vm_bench_lite.py
+        log(ctx, "Falling back to vm_bench_lite.py...")
+        return run_benchmark_legacy(ctx)
+
+    # Build vm_bench config for benchmark
+    vm_config = Config(
+        start_ip=start_ip,
+        total_count=vm_count,
+        task_mode="browser",
+        benchmark_percent=test["active_percent"],
+        test_duration=test["duration"],
+        browser_urls=[test["browser_url"]],
+        browser_timeout=200,
+        browser_interval_min=test["browser_interval_min"],
+        browser_interval_max=test["browser_interval_max"],
+        task_batch_size=test["batch_size"],
+        task_batch_interval=test["batch_interval"],
+        ssh_username=config["vm"]["username"],
+        ssh_password=config["vm"]["password"],
+        output_dir=os.path.join(ctx.result_dir, "vm_bench_lite"),
+    )
+
+    log(ctx, f"Running benchmark via vm_bench module...")
+    log(ctx, f"  Active percent: {test['active_percent']}")
+    log(ctx, f"  Duration: {test['duration']}s")
+    log(ctx, f"  Browser URL: {test['browser_url']}")
+    log(ctx, f"  Batch: {test['batch_size']} VMs/batch, {test['batch_interval']}s interval")
+
+    try:
+        result = run_benchmark(vm_config)
+        log(ctx, "Benchmark completed, monitor will stop after duration and generate Excel")
+
+        # Move benchmark report if exists
+        if result.get('filepath'):
+            log(ctx, f"Report saved: {result['filepath']}")
+
+        return True
+    except Exception as e:
+        log(ctx, f"Benchmark failed: {e}")
+        return False
+
+
+def run_benchmark_legacy(ctx: TestContext) -> bool:
+    """Legacy fallback: Run benchmark using vm_bench_lite.py"""
+    log(ctx, "Using legacy vm_bench_lite.py...")
+
+    config = ctx.config
+    vm_count = config["vm"]["count"]
+    start_ip = config["vm"]["start_ip"]
+    test = config["test"]
+
     cmd = [
         "python", "vm_bench_lite.py",
         "-n", str(vm_count),
         "--start-ip", start_ip,
         "--browser-mode",
-        "-bsp", str(test["active_percent"]),  # Browser stress percent
+        "-bsp", str(test["active_percent"]),
         "--batch-size", str(test["batch_size"]),
         "--batch-interval", str(test["batch_interval"]),
         "--browser-url", test["browser_url"],
@@ -627,8 +802,6 @@ def run_benchmark(ctx: TestContext) -> bool:
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=test["duration"] + 300
     )
 
-    # Note: Do NOT remove lock file here. Monitor uses duration to stop naturally.
-    # This ensures Excel report is generated properly.
     log(ctx, "Benchmark completed, monitor will stop after duration and generate Excel")
 
     print(result.stdout)
@@ -640,7 +813,6 @@ def run_benchmark(ctx: TestContext) -> bool:
         return False
 
     # Move benchmark report to result directory
-    # vm_bench_lite saves reports to results/ directory
     bench_reports = Path("results").glob("bench_report_*.txt")
     for report in bench_reports:
         import shutil
