@@ -138,6 +138,7 @@ def run_benchmark(config: Config) -> dict:
             vm_manager.vm_states[vm_id] = state
 
         print(f"  Initialized {len(vm_states)} VM states for detection")
+        ready_count = len(vm_states)  # All IPs are "ready" for detection
 
     elif not config.create_only:
         print("\n[Phase 0] Creating VMs via OpenStack...")
@@ -233,16 +234,22 @@ def run_benchmark(config: Config) -> dict:
     batch_controller.start()
 
     # === Warmup Phase (Browser mode) ===
-    if config.task_mode == "browser" and config.warmup_only and config.warmup_urls:
+    if config.task_mode == "browser" and config.warmup_only:
         print("\n[Phase 2] Warmup phase...")
 
-        warmup_runners = []
-        for vm_id, vm_conn in vm_connections.items():
-            if vm_states[vm_id].connection_metrics.status == VMStatus.CONNECTED:
-                # Run warmup inline for simplicity
-                browser_manager.warmup_phase(vm_conn, vm_states[vm_id])
+        if not config.warmup_urls:
+            print("  No warmup URLs configured, marking all VMs as warmup_done")
+            for state in vm_states.values():
+                state.warmup_done = True
+            warmup_count = connected_count
+        else:
+            print(f"  Warmup URLs: {len(config.warmup_urls)} pages, {config.warmup_loops} loops")
+            for vm_id, vm_conn in vm_connections.items():
+                if vm_states[vm_id].connection_metrics.status == VMStatus.CONNECTED:
+                    browser_manager.warmup_phase(vm_conn, vm_states[vm_id])
 
-        warmup_count = sum(1 for s in vm_states.values() if s.warmup_done)
+            warmup_count = sum(1 for s in vm_states.values() if s.warmup_done)
+
         print(f"\nWarmup completed: {warmup_count}/{connected_count}")
         print("[Phase 2 Complete] Warmup-only mode finished.")
 
