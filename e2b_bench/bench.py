@@ -386,9 +386,15 @@ def run_benchmark(config: Config) -> dict:
     sandbox_manager = SandboxManager(config, stop_event)
 
     if config.detect_existing:
-        print("\n[Phase 1] Detecting existing sandboxes...")
+        if config.sandbox_ids_file:
+            print(f"\n[Phase 1] Detecting sandboxes from ID file: {config.sandbox_ids_file}...")
+        else:
+            print("\n[Phase 1] Detecting existing sandboxes...")
         creation_start_time = time.time()
-        sandbox_states = sandbox_manager.detect_existing()
+        if config.sandbox_ids_file:
+            sandbox_states = sandbox_manager.detect_from_file(config.sandbox_ids_file)
+        else:
+            sandbox_states = sandbox_manager.detect_existing()
         creation_end_time = time.time()
     else:
         print("\n[Phase 1] Creating sandboxes...")
