@@ -593,6 +593,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--create-timeout', type=int, help='Sandbox creation timeout')
     parser.add_argument('-d', '--detect', action='store_true', help='Detect existing sandboxes instead of creating new ones')
     parser.add_argument('--create-only', action='store_true', help='Create sandboxes only without running tasks (Phase 0)')
+    parser.add_argument('--sandbox-ids-file', type=str, help='File path to save/load sandbox IDs (one ID per line)')
 
     # Create batch control
     parser.add_argument('--create-batch-size', type=int, help='Sandboxes per creation batch (None = full concurrent)')
