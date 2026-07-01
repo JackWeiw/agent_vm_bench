@@ -271,48 +271,48 @@ class Config:
             create_batch_size=args.create_batch_size if args.create_batch_size is not None else 20,
             create_batch_interval=args.create_batch_interval if args.create_batch_interval is not None else 3,
 
-            ssh_port=args.ssh_port if args.ssh_port is not None else 22,
-            ssh_username=args.ssh_username or "root",
-            ssh_password=args.ssh_password or "openEuler12#$",
-            ssh_connect_timeout=args.ssh_connect_timeout if args.ssh_connect_timeout is not None else 30,
-            ssh_execute_timeout=args.ssh_execute_timeout if args.ssh_execute_timeout is not None else 300,
+            ssh_port=args.ssh_port if hasattr(args, 'ssh_port') and args.ssh_port is not None else 22,
+            ssh_username=args.ssh_username if hasattr(args, 'ssh_username') and args.ssh_username else "root",
+            ssh_password=args.ssh_password if hasattr(args, 'ssh_password') and args.ssh_password else "openEuler12#$",
+            ssh_connect_timeout=args.ssh_connect_timeout if hasattr(args, 'ssh_connect_timeout') and args.ssh_connect_timeout is not None else 30,
+            ssh_execute_timeout=args.ssh_execute_timeout if hasattr(args, 'ssh_execute_timeout') and args.ssh_execute_timeout is not None else 300,
 
-            connect_batch_size=args.connect_batch_size if args.connect_batch_size is not None else None,
-            connect_batch_interval=args.connect_batch_interval if args.connect_batch_interval is not None else None,
+            connect_batch_size=args.connect_batch_size if hasattr(args, 'connect_batch_size') and args.connect_batch_size is not None else None,
+            connect_batch_interval=args.connect_batch_interval if hasattr(args, 'connect_batch_interval') and args.connect_batch_interval is not None else None,
 
-            task_batch_size=args.task_batch_size if args.task_batch_size is not None else 10,
-            task_batch_interval=args.task_batch_interval if args.task_batch_interval is not None else 5,
+            task_batch_size=args.task_batch_size if hasattr(args, 'task_batch_size') and args.task_batch_size is not None else 10,
+            task_batch_interval=args.task_batch_interval if hasattr(args, 'task_batch_interval') and args.task_batch_interval is not None else 5,
 
-            task_mode=args.task_mode or "browser",
-            test_duration=args.duration if args.duration is not None else 600,
+            task_mode=args.task_mode if hasattr(args, 'task_mode') and args.task_mode else "browser",
+            test_duration=args.duration if hasattr(args, 'duration') and args.duration is not None else 600,
 
-            browser_urls=args.browser_url or ["http://192.168.110.10:8080/Weibo.html"],
-            browser_timeout=args.browser_timeout if args.browser_timeout is not None else 200,
-            browser_interval_min=args.browser_interval_min if args.browser_interval_min is not None else 5.0,
-            browser_interval_max=args.browser_interval_max if args.browser_interval_max is not None else 10.0,
+            browser_urls=args.browser_url if hasattr(args, 'browser_url') and args.browser_url else ["http://192.168.110.10:8080/Weibo.html"],
+            browser_timeout=args.browser_timeout if hasattr(args, 'browser_timeout') and args.browser_timeout is not None else 200,
+            browser_interval_min=args.browser_interval_min if hasattr(args, 'browser_interval_min') and args.browser_interval_min is not None else 5.0,
+            browser_interval_max=args.browser_interval_max if hasattr(args, 'browser_interval_max') and args.browser_interval_max is not None else 10.0,
             browser_use_llm=args.browser_use_llm if hasattr(args, 'browser_use_llm') and args.browser_use_llm else False,
-            benchmark_percent=args.benchmark_percent if args.benchmark_percent is not None else 1.0,
+            benchmark_percent=args.benchmark_percent if hasattr(args, 'benchmark_percent') and args.benchmark_percent is not None else 1.0,
 
-            warmup_urls=args.warmup_url or [],
-            warmup_loops=args.warmup_loops if args.warmup_loops is not None else 1,
-            warmup_delay=args.warmup_delay if args.warmup_delay is not None else 3,
+            warmup_urls=args.warmup_url if hasattr(args, 'warmup_url') and args.warmup_url else [],
+            warmup_loops=args.warmup_loops if hasattr(args, 'warmup_loops') and args.warmup_loops is not None else 1,
+            warmup_delay=args.warmup_delay if hasattr(args, 'warmup_delay') and args.warmup_delay is not None else 3,
             warmup_only=args.warmup_only if hasattr(args, 'warmup_only') and args.warmup_only else False,
 
-            qa_timeout=args.qa_timeout if args.qa_timeout is not None else 600,
-            qa_init_timeout=args.qa_init_timeout if args.qa_init_timeout is not None else 600,
-            qa_interval=args.qa_interval if args.qa_interval is not None else 0.5,
-            qa_mode=args.qa_mode or "cli",
+            qa_timeout=args.qa_timeout if hasattr(args, 'qa_timeout') and args.qa_timeout is not None else 600,
+            qa_init_timeout=args.qa_init_timeout if hasattr(args, 'qa_init_timeout') and args.qa_init_timeout is not None else 600,
+            qa_interval=args.qa_interval if hasattr(args, 'qa_interval') and args.qa_interval is not None else 0.5,
+            qa_mode=args.qa_mode if hasattr(args, 'qa_mode') and args.qa_mode else "cli",
 
-            stress_percent=args.stress_percent if args.stress_percent is not None else 0.5,
-            stress_memory_mb=args.stress_memory if args.stress_memory is not None else 2048,
-            stress_keepalive=not args.no_keepalive if hasattr(args, 'no_keepalive') else True,
+            stress_percent=args.stress_percent if hasattr(args, 'stress_percent') and args.stress_percent is not None else 0.5,
+            stress_memory_mb=args.stress_memory if hasattr(args, 'stress_memory') and args.stress_memory is not None else 2048,
+            stress_keepalive=not args.no_keepalive if hasattr(args, 'no_keepalive') and args.no_keepalive else True,
 
-            stats_interval=args.stats_interval if args.stats_interval is not None else 10,
+            stats_interval=args.stats_interval if hasattr(args, 'stats_interval') and args.stats_interval is not None else 10,
 
-            output_dir=args.output_dir or "results/vm",
-            filename_prefix=args.filename_prefix or "vm_bench",
+            output_dir=args.output_dir if hasattr(args, 'output_dir') and args.output_dir else "results/vm",
+            filename_prefix=args.filename_prefix if hasattr(args, 'filename_prefix') and args.filename_prefix else "vm_bench",
 
-            delete_after_test=args.delete_after_test if hasattr(args, 'delete_after_test') else False,
+            delete_after_test=args.delete_after_test if hasattr(args, 'delete_after_test') and args.delete_after_test else False,
         )
 
     def load_openrc(self) -> dict:
