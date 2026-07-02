@@ -386,9 +386,15 @@ def run_benchmark(config: Config) -> dict:
     sandbox_manager = SandboxManager(config, stop_event)
 
     if config.detect_existing:
-        print("\n[Phase 1] Detecting existing sandboxes...")
+        if config.sandbox_ids_file:
+            print(f"\n[Phase 1] Detecting sandboxes from ID file: {config.sandbox_ids_file}...")
+        else:
+            print("\n[Phase 1] Detecting existing sandboxes...")
         creation_start_time = time.time()
-        sandbox_states = sandbox_manager.detect_existing()
+        if config.sandbox_ids_file:
+            sandbox_states = sandbox_manager.detect_from_file(config.sandbox_ids_file)
+        else:
+            sandbox_states = sandbox_manager.detect_existing()
         creation_end_time = time.time()
     else:
         print("\n[Phase 1] Creating sandboxes...")
@@ -491,6 +497,26 @@ def run_benchmark(config: Config) -> dict:
             print(f"  P99:  {stats['p99']:.1f}s")
 
         print("\n" + "=" * 70)
+
+        # Save sandbox IDs to file if configured
+        if config.sandbox_ids_file:
+            successful_ids = [
+                s.sandbox_obj.sandbox_id
+                for s in sandbox_states.values()
+                if s.creation_metrics.status == SandboxStatus.PORT_READY
+                and s.sandbox_obj is not None
+            ]
+            if successful_ids:
+                try:
+                    with open(config.sandbox_ids_file, 'w') as f:
+                        for sid in successful_ids:
+                            f.write(f"{sid}\n")
+                    print(f"\nSaved {len(successful_ids)} sandbox IDs to: {config.sandbox_ids_file}")
+                except (IOError, OSError) as e:
+                    print(f"\nERROR: Failed to save sandbox IDs: {e}")
+            else:
+                print(f"\nWARNING: No successful sandboxes to save to {config.sandbox_ids_file}")
+
         return {
             'report': f"Create-only: {ready_count}/{len(sandbox_states)} sandboxes ready",
             'filepath': None
@@ -593,6 +619,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--create-timeout', type=int, help='Sandbox creation timeout')
     parser.add_argument('-d', '--detect', action='store_true', help='Detect existing sandboxes instead of creating new ones')
     parser.add_argument('--create-only', action='store_true', help='Create sandboxes only without running tasks (Phase 0)')
+    parser.add_argument('--sandbox-ids-file', type=str, help='File path to save/load sandbox IDs (one ID per line)')
 
     # Create batch control
     parser.add_argument('--create-batch-size', type=int, help='Sandboxes per creation batch (None = full concurrent)')

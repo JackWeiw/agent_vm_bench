@@ -82,9 +82,9 @@ report:
 """
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
             f.write(yaml_content)
-            f.flush()
-            config = Config.load_from_yaml(f.name)
-            os.unlink(f.name)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
 
         assert config.template == "custom-template"
         assert config.total_count == 50
@@ -103,9 +103,9 @@ e2b_env:
 """
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
             f.write(yaml_content)
-            f.flush()
-            config = Config.load_from_yaml(f.name)
-            os.unlink(f.name)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
 
         assert config.e2b_access_token == "test_token"
         assert config.e2b_api_key == "test_key"
@@ -123,9 +123,9 @@ browser:
 """
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
             f.write(yaml_content)
-            f.flush()
-            config = Config.load_from_yaml(f.name)
-            os.unlink(f.name)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
 
         assert len(config.warmup_urls) == 2
         assert config.warmup_loops == 3
@@ -142,9 +142,9 @@ smap_tool:
 """
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
             f.write(yaml_content)
-            f.flush()
-            config = Config.load_from_yaml(f.name)
-            os.unlink(f.name)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
 
         assert config.smap_tool_enabled == True
         assert config.smap_tool_ratio == 20
@@ -162,9 +162,9 @@ vm_monitor:
 """
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
             f.write(yaml_content)
-            f.flush()
-            config = Config.load_from_yaml(f.name)
-            os.unlink(f.name)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
 
         assert config.vm_monitor_enabled == True
         assert config.vm_monitor_vmm_type == "qemu"
@@ -192,6 +192,77 @@ class TestConfigSetupEnv:
         assert os.environ["E2B_ACCESS_TOKEN"] == "my_token"
         assert os.environ["E2B_API_KEY"] == "my_key"
         assert os.environ["E2B_DOMAIN"] == "my.domain"
+
+
+class TestConfigSandboxIdsFile:
+    """Tests for sandbox_ids_file configuration"""
+
+    def test_default_none(self):
+        """Default sandbox_ids_file is None"""
+        config = Config()
+        assert config.sandbox_ids_file is None
+
+    def test_set_via_constructor(self):
+        """Set sandbox_ids_file via constructor"""
+        config = Config(sandbox_ids_file="ids.txt")
+        assert config.sandbox_ids_file == "ids.txt"
+
+    def test_load_from_yaml(self):
+        """Load sandbox_ids_file from YAML"""
+        yaml_content = """
+sandbox:
+  template: custom-template
+  sandbox_ids_file: my_sandbox_ids.txt
+"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.sandbox_ids_file == "my_sandbox_ids.txt"
+
+    def test_merge_with_args(self):
+        """CLI arg overrides YAML config"""
+        yaml_content = """
+sandbox:
+  sandbox_ids_file: yaml_ids.txt
+"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        import argparse
+        args = argparse.Namespace(
+            sandbox_ids_file="cli_ids.txt",
+            e2b_access_token=None, e2b_api_key=None, e2b_domain=None, e2b_api_url=None, e2b_http_ssl=None,
+            template=None, create_timeout=None, total=None, detect=False, create_only=False,
+            create_batch_size=None, create_batch_interval=None, task_batch_size=None, task_batch_interval=None,
+            browser_url=None, browser_timeout=None, browser_interval_min=None, browser_interval_max=None,
+            warmup_url=None, warmup_loops=None, warmup_delay=None, warmup_only=False,
+            benchmark_percent=None, duration=None, stats_interval=None, output_dir=None, filename_prefix=None,
+        )
+
+        config = Config.merge_with_args(yaml_config, args)
+        assert config.sandbox_ids_file == "cli_ids.txt"
+
+    def test_from_args(self):
+        """Build Config from CLI args only"""
+        import argparse
+        args = argparse.Namespace(
+            sandbox_ids_file="args_ids.txt", e2b_access_token="token",
+            e2b_api_key=None, e2b_domain=None, e2b_api_url=None, e2b_http_ssl=None,
+            template=None, create_timeout=None, total=None, detect=False, create_only=False,
+            create_batch_size=None, create_batch_interval=None, task_batch_size=None, task_batch_interval=None,
+            browser_url=None, browser_timeout=None, browser_interval_min=None, browser_interval_max=None,
+            warmup_url=None, warmup_loops=None, warmup_delay=None, warmup_only=False,
+            benchmark_percent=None, duration=None, stats_interval=None, output_dir=None, filename_prefix=None,
+        )
+
+        config = Config.from_args(args)
+        assert config.sandbox_ids_file == "args_ids.txt"
 
 
 if __name__ == '__main__':

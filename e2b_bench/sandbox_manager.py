@@ -6,6 +6,7 @@ Preserves sandbox handle for subsequent task execution
 Supports port check (18789 openclaw-gateway + 11436 llama-server)
 """
 
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Tuple, Optional
@@ -137,6 +138,118 @@ class SandboxManager:
 
         # Connect to each sandbox and check ports
         for i, listed_sandbox in enumerate(existing_list):
+            sandbox_id = i + 1
+            e2b_sandbox_id = listed_sandbox.sandbox_id if hasattr(listed_sandbox, 'sandbox_id') else str(listed_sandbox)
+
+            state = SandboxState(sandbox_id=sandbox_id)
+            self.sandbox_states[sandbox_id] = state
+
+            print(f"\n[Sandbox{sandbox_id}] Connecting to E2B:{e2b_sandbox_id}...")
+
+            try:
+                # Connect to existing sandbox
+                sbx = Sandbox.connect(e2b_sandbox_id)
+                state.sandbox_obj = sbx
+                state.creation_metrics.status = SandboxStatus.CREATED
+                print(f"[Sandbox{sandbox_id}] Connected successfully")
+
+                # Check port readiness
+                port_result = self._check_ports(state)
+                if port_result['success']:
+                    state.creation_metrics.status = SandboxStatus.PORT_READY
+                    state.creation_metrics.port_wait_elapsed = port_result['wait_elapsed']
+                    print(f"[Sandbox{sandbox_id}] Ports ready in {port_result['wait_elapsed']:.1f}s")
+                else:
+                    state.creation_metrics.status = SandboxStatus.PORT_FAILED
+                    state.creation_metrics.port_check_error = port_result['error']
+                    print(f"[Sandbox{sandbox_id}] Port check failed: {port_result['error'][:50]}")
+
+            except Exception as e:
+                state.creation_metrics.status = SandboxStatus.FAILED
+                state.creation_metrics.error_msg = str(e)
+                print(f"[Sandbox{sandbox_id}] Connect failed: {str(e)[:80]}")
+
+        return self.sandbox_states
+
+    def detect_from_file(self, ids_file: str) -> Dict[int, SandboxState]:
+        """Detect sandboxes from ID file with matching
+
+        Read target IDs from file, get running sandboxes via Sandbox.list(),
+        match intersection, connect and check ports.
+
+        Args:
+            ids_file: Path to file containing sandbox IDs (one per line)
+
+        Returns:
+            Dict of connected sandbox states {sandbox_id: SandboxState}
+        """
+        print(f"\n{'='*60}")
+        print("Detecting Sandboxes from ID File")
+        print(f"{'='*60}")
+        print(f"  ID file: {ids_file}")
+
+        # 1. Read target IDs from file
+        if not os.path.exists(ids_file):
+            raise FileNotFoundError(f"Sandbox IDs file not found: {ids_file}")
+
+        target_ids = set()
+        with open(ids_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    target_ids.add(line)
+
+        if not target_ids:
+            print(f"  WARNING: No IDs found in {ids_file}")
+            return {}
+
+        print(f"  Target IDs from file: {len(target_ids)}")
+
+        # 2. Get all running sandboxes
+        try:
+            paginator = Sandbox.list()
+            running_list = []
+            while paginator.has_next:
+                sandboxes = paginator.next_items()
+                running_list.extend(sandboxes)
+            print(f"  Running sandboxes: {len(running_list)}")
+        except Exception as e:
+            print(f"  Failed to list sandboxes: {e}")
+            return {}
+
+        if not running_list:
+            print("  No running sandboxes found")
+            return {}
+
+        # 3. Match: only keep sandboxes in both sets
+        matched = []
+        found_ids = set()
+
+        for listed_sandbox in running_list:
+            e2b_id = listed_sandbox.sandbox_id if hasattr(listed_sandbox, 'sandbox_id') else str(listed_sandbox)
+            if e2b_id in target_ids:
+                matched.append(listed_sandbox)
+                found_ids.add(e2b_id)
+
+        # IDs not found (in file but not running)
+        not_found = target_ids - found_ids
+        if not_found:
+            print(f"  WARNING: {len(not_found)} IDs not found or stopped")
+            for sid in list(not_found)[:5]:  # Show first 5
+                print(f"    - {sid}")
+            if len(not_found) > 5:
+                print(f"    ... and {len(not_found) - 5} more")
+
+        print(f"  Matched sandboxes: {len(matched)}")
+
+        if not matched:
+            print("  No matched sandboxes to benchmark")
+            return {}
+
+        # 4. Connect and check ports (same logic as detect_existing)
+        print(f"  Processing matched sandboxes...")
+
+        for i, listed_sandbox in enumerate(matched):
             sandbox_id = i + 1
             e2b_sandbox_id = listed_sandbox.sandbox_id if hasattr(listed_sandbox, 'sandbox_id') else str(listed_sandbox)
 
