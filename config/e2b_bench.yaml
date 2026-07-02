@@ -16,7 +16,7 @@ sandbox:
   total_count: 100                   # Total sandbox count (creation mode)
   detect_existing: false             # Detect existing sandboxes instead of creating new ones
   create_only: false                 # Create sandboxes only without running tasks (Phase 0)
-  sandbox_ids_file: ""               # File path to save/load sandbox IDs (one ID per line, empty = disabled)
+  sandbox_ids_file: "sandboxs.txt"               # File path to save/load sandbox IDs (one ID per line, empty = disabled)
 
 # Sandbox creation batch control (optional, full concurrent if not configured)
 # Controls how many sandboxes to create per batch to avoid API/resource overload
@@ -39,15 +39,22 @@ browser:
   interval_max: 15
   # Warmup configuration (optional, run warmup pages before benchmark)
   warmup_urls:
-    - "http://192.168.110.10:8080/page1.html"
-    - "http://192.168.110.10:8080/page2.html"
+    - "http://192.168.110.10:8080/China.html"
+    - "http://192.168.110.10:8080/Earth.html"
+    - "http://192.168.110.10:8080/Galaxy.html"
+    - "http://192.168.110.10:8080/Hubble_Space_Telescope.html"
+    - "http://192.168.110.10:8080/Human.html"
+    - "http://192.168.110.10:8080/List_of_paintings_by_Vincent_van_Gogh.html"
+    - "http://192.168.110.10:8080/Solar_System.html"
+    - "http://192.168.110.10:8080/United_States.html"
+    - "http://192.168.110.10:8080/World_War_II.html"
   warmup_loops: 1            # Loop count for warmup pages
   warmup_delay: 2           # Delay between warmup pages (seconds)
   warmup_only: false         # Run warmup phase only, then exit
 
 # Test run configuration
 test:
-  duration: 600
+  duration: 160
   stats_interval: 10
   benchmark_percent: 1.0    # Percentage of sandboxes for benchmark (1.0 = 100%, 0.5 = 50%)
 
