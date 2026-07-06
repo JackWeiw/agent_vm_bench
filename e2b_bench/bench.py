@@ -538,6 +538,26 @@ def run_benchmark(config: Config) -> dict:
         print("\n[Phase 2 Complete] Warmup-only mode finished.")
         print(f"  Warmup completed: {completed}/{ready_count}")
         print(f"  Sandboxes left running for later benchmark.")
+
+        # Save sandbox IDs to file if configured (same as create-only mode)
+        if config.sandbox_ids_file:
+            successful_ids = [
+                s.sandbox_obj.sandbox_id
+                for s in sandbox_states.values()
+                if s.creation_metrics.status == SandboxStatus.PORT_READY
+                and s.sandbox_obj is not None
+            ]
+            if successful_ids:
+                try:
+                    with open(config.sandbox_ids_file, 'w') as f:
+                        for sid in successful_ids:
+                            f.write(f"{sid}\n")
+                    print(f"\nSaved {len(successful_ids)} sandbox IDs to: {config.sandbox_ids_file}")
+                except (IOError, OSError) as e:
+                    print(f"\nERROR: Failed to save sandbox IDs: {e}")
+            else:
+                print(f"\nWARNING: No successful sandboxes to save to {config.sandbox_ids_file}")
+
         return {
             'report': f"Warmup-only: {completed}/{ready_count} sandboxes warmed up",
             'filepath': None
