@@ -23,9 +23,9 @@ fi
 # Load API key and token from ~/.e2b/config.json
 if [ -f "$E2B_CONFIG" ]; then
     echo "Loading API key and token from $E2B_CONFIG"
-    # Parse JSON to get api_key and token
-    E2B_API_KEY=$(jq -r '.api_key // empty' "$E2B_CONFIG" 2>/dev/null)
-    E2B_ACCESS_TOKEN=$(jq -r '.token // empty' "$E2B_CONFIG" 2>/dev/null)
+    # Parse JSON to get teamApiKey and accessToken
+    E2B_API_KEY=$(jq -r '.teamApiKey // empty' "$E2B_CONFIG" 2>/dev/null)
+    E2B_ACCESS_TOKEN=$(jq -r '.accessToken // empty' "$E2B_CONFIG" 2>/dev/null)
 else
     echo "Warning: E2B config file not found: $E2B_CONFIG"
 fi
