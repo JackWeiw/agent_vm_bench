@@ -142,9 +142,9 @@ def build_template(harbor_ip: str, image: str, alias: str, cpu_count: int, memor
     print(f"  Memory: {memory_mb} MB")
 
     # Build template from Harbor image
-    # Harbor uses nginx reverse proxy on port 30443
+    # Harbor uses nginx reverse proxy on port 443
     Template.build(
-        Template().from_dockerfile(f'FROM {harbor_ip}:30443/{image}')
+        Template().from_dockerfile(f'FROM harbor:443/{image}')
         .set_start_cmd(
             "sudo websocat -b --exit-on-eof ws-l:0.0.0.0:8081 tcp:127.0.0.1:22",
             wait_for_port(8081)
