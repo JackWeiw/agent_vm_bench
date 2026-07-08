@@ -24,7 +24,7 @@ RUN apt update && apt install -y wget xz-utils vim libgomp1 iproute2 net-tools s
     ln -sf /usr/local/node24/bin/npx /usr/local/bin/npx && \
     git config --global http.sslVerify false
 
-# Install openclaw 2026.6.6 and agent-browser
+# Install openclaw 2026.6.6 and agent-browser skill
 RUN npm config set strict-ssl false && \
     npm config set registry https://registry.npmmirror.com && \
     npm install -g @larksuiteoapi/node-sdk && \
@@ -33,9 +33,12 @@ RUN npm config set strict-ssl false && \
     cd /usr/local/node24/lib/node_modules/openclaw && \
     npm install @slack/web-api @slack/bolt && \
     ln -s /usr/local/node24/bin/openclaw /usr/local/bin/openclaw && \
-    echo "No" | npx skills add https://github.com/vercel-labs/agent-browser --skill agent-browser -y && \
     npm install -g agent-browser && \
-    ln -s /usr/local/node24/bin/agent-browser /usr/local/bin/agent-browser
+    ln -s /usr/local/node24/bin/agent-browser /usr/local/bin/agent-browser && \
+    mkdir -p /root/.openclaw/skills && \
+    cd /root/.openclaw/skills && \
+    npm install @anthropic-ai/agent-browser-skill 2>/dev/null || \
+    git clone --depth 1 https://github.com/vercel-labs/agent-browser.git agent-browser
 
 # Create openclaw config directory and configuration
 RUN mkdir -p /root/.openclaw/workspace
