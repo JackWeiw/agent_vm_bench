@@ -49,7 +49,7 @@ vm_monitor = data.get('vm_monitor', {})
 
 return cls(
     # ... existing fields ...
-    
+
     # smap_tool configuration
     smap_tool_enabled=smap_tool.get('enabled', False),
     smap_tool_path=smap_tool.get('path', ""),
@@ -57,7 +57,7 @@ return cls(
     smap_tool_ratio=smap_tool.get('ratio', 15),
     smap_tool_src_nid=smap_tool.get('src_nid', 2),
     smap_tool_dest_nid=smap_tool.get('dest_nid', 5),
-    
+
     # vm_monitor configuration
     vm_monitor_enabled=vm_monitor.get('enabled', False),
     vm_monitor_vmm_type=vm_monitor.get('vmm_type', "firecracker"),
@@ -145,28 +145,28 @@ from pathlib import Path
 ```python
 class SmapToolManager:
     """Manage smap_tool process lifecycle for memory migration monitoring"""
-    
+
     def __init__(self, config):
         self.config = config
         self.process: subprocess.Popen = None
         self.pid: int = None
         self.log_file = None
-    
+
     def start(self, sandbox_count: int) -> bool:
         """
         Start smap_tool process
-        
+
         Command format:
         ./smap_tool <count> `pidof firecracker` --swap-size <size> --ratio <ratio> --src-nid <nid> --dest-nid <nid>
         """
         if not self.config.smap_tool_enabled:
             print("[SmapTool] Disabled in config, skipping")
             return True
-        
+
         if not self.config.smap_tool_path:
             print("[SmapTool] Path not configured, skipping")
             return True
-        
+
         # Get firecracker PIDs
         try:
             result = subprocess.run(['pidof', 'firecracker'], capture_output=True, text=True)
@@ -178,16 +178,16 @@ class SmapToolManager:
         except Exception as e:
             print(f"[SmapTool] Failed to get firecracker PIDs: {e}")
             return False
-        
+
         # Build command
         smap_dir = Path(self.config.smap_tool_path).parent
         smap_exe = Path(self.config.smap_tool_path).name
-        
+
         # Clean up existing smap_config
         smap_config_path = Path("/dev/shm/smap_config")
         if smap_config_path.exists():
             smap_config_path.unlink()
-        
+
         cmd = (
             f"./{smap_exe} {sandbox_count} {firecracker_pids} "
             f"--swap-size {self.config.smap_tool_swap_size} "
@@ -195,16 +195,16 @@ class SmapToolManager:
             f"--src-nid {self.config.smap_tool_src_nid} "
             f"--dest-nid {self.config.smap_tool_dest_nid}"
         )
-        
+
         print(f"[SmapTool] Starting: {cmd}")
         print(f"[SmapTool] Working directory: {smap_dir}")
-        
+
         # Prepare log files
         log_dir = Path(self.config.output_dir) / "smap_tool"
         log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.log_file = open(log_dir / f"smap_{timestamp}.log", 'w')
-        
+
         try:
             self.process = subprocess.Popen(
                 cmd,
@@ -220,12 +220,12 @@ class SmapToolManager:
         except Exception as e:
             print(f"[SmapTool] Failed to start: {e}")
             return False
-    
+
     def stop(self) -> None:
         """Stop smap_tool process"""
         if self.process is None:
             return
-        
+
         print(f"[SmapTool] Stopping process (PID: {self.pid})...")
         try:
             # Send SIGTERM to process group
@@ -238,13 +238,13 @@ class SmapToolManager:
             print("[SmapTool] Process killed (timeout)")
         except Exception as e:
             print(f"[SmapTool] Error stopping process: {e}")
-        
+
         if self.log_file:
             self.log_file.close()
-        
+
         self.process = None
         self.pid = None
-    
+
     def is_running(self) -> bool:
         """Check if smap_tool process is still running"""
         if self.process is None:
@@ -291,39 +291,39 @@ from datetime import datetime
 ```python
 class VmMonitorManager:
     """Manage vm_monitor process lifecycle for performance monitoring"""
-    
+
     def __init__(self, config):
         self.config = config
         self.process: subprocess.Popen = None
         self.analysis_file: str = None
-    
+
     def start(self, task_id: str = "") -> bool:
         """
         Start vm_monitor process with stress-file sync
-        
+
         Command format:
         python3 vm_monitor/cli.py --vmm firecracker -t <duration> --stress-file <file> --log-dir <dir>
         """
         if not self.config.vm_monitor_enabled:
             print("[VmMonitor] Disabled in config, skipping")
             return True
-        
+
         # Prepare log directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_dir_name = f"vm_monitor_{task_id}_{timestamp}" if task_id else f"vm_monitor_{timestamp}"
         log_dir = Path(self.config.vm_monitor_log_dir) / log_dir_name
         log_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Clean up existing stress file
         stress_file = Path(self.config.vm_monitor_stress_file)
         if stress_file.exists():
             stress_file.unlink()
-        
+
         # Build command
         # vm_monitor is in the project root directory
         project_root = Path(__file__).parent.parent
         vm_monitor_cli = project_root / "vm_monitor" / "cli.py"
-        
+
         cmd = [
             "python3", str(vm_monitor_cli),
             "--vmm", self.config.vm_monitor_vmm_type,
@@ -332,10 +332,10 @@ class VmMonitorManager:
             "--log-dir", str(log_dir),
             "--auto-skip"  # Auto skip missing tools for batch testing
         ]
-        
+
         print(f"[VmMonitor] Starting: {' '.join(cmd)}")
         print(f"[VmMonitor] Log directory: {log_dir}")
-        
+
         try:
             self.process = subprocess.Popen(
                 cmd,
@@ -345,54 +345,54 @@ class VmMonitorManager:
             )
             print(f"[VmMonitor] Started with PID: {self.process.pid}")
             print(f"[VmMonitor] Waiting for stress file: {stress_file}")
-            
+
             # Store expected analysis file path
             self.analysis_file = str(log_dir / "analysis_report.xlsx")
             return True
         except Exception as e:
             print(f"[VmMonitor] Failed to start: {e}")
             return False
-    
+
     def trigger_sampling(self) -> None:
         """Create stress file to trigger vm_monitor sampling"""
         stress_file = Path(self.config.vm_monitor_stress_file)
         stress_file.touch()
         print(f"[VmMonitor] Stress file created: {stress_file}")
-    
+
     def stop_sampling(self) -> None:
         """Remove stress file to stop vm_monitor sampling"""
         stress_file = Path(self.config.vm_monitor_stress_file)
         if stress_file.exists():
             stress_file.unlink()
             print(f"[VmMonitor] Stress file removed: {stress_file}")
-    
+
     def wait_for_report(self, timeout: int = 300) -> str:
         """
         Wait for analysis_report.xlsx to be generated
-        
+
         Returns file path if found, None if timeout
         """
         if not self.analysis_file:
             return None
-        
+
         analysis_path = Path(self.analysis_file)
         print(f"[VmMonitor] Waiting for report: {analysis_path}")
-        
+
         start_time = time.time()
         while time.time() - start_time < timeout:
             if analysis_path.exists() and analysis_path.stat().st_size > 0:
                 print(f"[VmMonitor] Report generated: {analysis_path}")
                 return str(analysis_path)
             time.sleep(5)
-        
+
         print(f"[VmMonitor] Report not found after {timeout}s timeout")
         return None
-    
+
     def stop(self) -> None:
         """Stop vm_monitor process"""
         if self.process is None:
             return
-        
+
         print(f"[VmMonitor] Stopping process (PID: {self.process.pid})...")
         try:
             self.process.terminate()
@@ -403,7 +403,7 @@ class VmMonitorManager:
             print("[VmMonitor] Process killed (timeout)")
         except Exception as e:
             print(f"[VmMonitor] Error stopping process: {e}")
-        
+
         self.process = None
 ```
 
@@ -566,7 +566,7 @@ class BatchTask:
     total_count: int          # Sandbox count
     benchmark_percent: float  # Percentage of sandboxes for benchmark
     ratio: int                # Memory migration ratio (%)
-    
+
     # Runtime state (filled after execution)
     result_dir: Optional[str] = None      # Result directory path
     report_file: Optional[str] = None     # bench_report.txt path
@@ -589,7 +589,7 @@ class TaskGroup:
     total_count: int          # Shared by all tasks in group
     ratio: int                # Shared by all tasks in group
     tasks: List[BatchTask]    # Tasks with different benchmark_percent
-    
+
     # Runtime state
     sandbox_states: Optional[Dict[int, Any]] = None  # Shared sandbox states
     smap_tool_manager: Optional[Any] = None          # Shared SmapToolManager
@@ -633,36 +633,36 @@ from .schemas import BatchTask, TaskGroup
 
 class TaskGenerator:
     """Generate test tasks from parameter matrix"""
-    
+
     def __init__(self, matrix_config: Dict[str, Any]):
         """
         Initialize TaskGenerator with matrix configuration
-        
+
         Args:
             matrix_config: Dict containing test_matrix and reuse_strategy
         """
         self.matrix = matrix_config.get('test_matrix', {})
         self.reuse_strategy = matrix_config.get('reuse_strategy', {})
-        
+
         self.total_counts = self.matrix.get('total_counts', [10])
         self.benchmark_percentages = self.matrix.get('benchmark_percentages', [1.0])
         self.ratios = self.matrix.get('ratios', [15])
-    
+
     def generate_groups(self) -> List[TaskGroup]:
         """
         Generate TaskGroups grouped by (total_count, ratio)
-        
+
         Tasks in same group can reuse sandbox and smap_tool.
-        
+
         Returns:
             List of TaskGroup objects
         """
         groups = []
-        
+
         for total_count in self.total_counts:
             for ratio in self.ratios:
                 group_id = f"tc{total_count}_ratio{ratio}"
-                
+
                 # Generate all tasks for this group
                 tasks = []
                 for bp in self.benchmark_percentages:
@@ -674,7 +674,7 @@ class TaskGenerator:
                         ratio=ratio
                     )
                     tasks.append(task)
-                
+
                 group = TaskGroup(
                     group_id=group_id,
                     total_count=total_count,
@@ -682,13 +682,13 @@ class TaskGenerator:
                     tasks=tasks
                 )
                 groups.append(group)
-        
+
         return groups
-    
+
     def get_total_task_count(self) -> int:
         """Calculate total number of tasks across all groups"""
         return len(self.total_counts) * len(self.ratios) * len(self.benchmark_percentages)
-    
+
     def get_group_count(self) -> int:
         """Calculate number of groups"""
         return len(self.total_counts) * len(self.ratios)
@@ -715,7 +715,7 @@ for g in groups[:2]:
 "
 ```
 
-Expected: 
+Expected:
 ```
 Groups: 4, Tasks: 8
   Group tc10_ratio10: 2 tasks
@@ -745,7 +745,7 @@ git commit -m "feat(e2b_bench): implement TaskGenerator class"
 Metrics Extractor Module
 
 Extracts performance metrics from vm_monitor analysis_report.xlsx.
-Supports all sheet types: Summary, DevKit_TopDown, DevKit_Memory, 
+Supports all sheet types: Summary, DevKit_TopDown, DevKit_Memory,
 NUMA_Bandwidth, KSys, UBWatch_Latency, UBWatch_Bandwidth, SMAPBW, Getfre.
 """
 
@@ -757,30 +757,30 @@ from pathlib import Path
 
 class MetricsExtractor:
     """Extract metrics from vm_monitor analysis_report.xlsx"""
-    
+
     def __init__(self):
         pass
-    
+
     def extract(self, analysis_file: str) -> Dict[str, Any]:
         """
         Extract all metrics from analysis_report.xlsx
-        
+
         Args:
             analysis_file: Path to analysis_report.xlsx
-            
+
         Returns:
             Dict containing all extracted metrics with prefixed keys
         """
         if not os.path.exists(analysis_file):
             print(f"[MetricsExtractor] File not found: {analysis_file}")
             return {}
-        
+
         metrics = {}
-        
+
         try:
             import pandas as pd
             xls = pd.ExcelFile(analysis_file)
-            
+
             # Extract from each sheet
             metrics.update(self._extract_summary(xls))
             metrics.update(self._extract_devkit_topdown(xls))
@@ -792,14 +792,14 @@ class MetricsExtractor:
             metrics.update(self._extract_smapbw_summary(xls))
             metrics.update(self._extract_smapbw_cycles(xls))
             metrics.update(self._extract_getfre(xls))
-            
+
             print(f"[MetricsExtractor] Extracted {len(metrics)} metrics from {analysis_file}")
-            
+
         except Exception as e:
             print(f"[MetricsExtractor] Error extracting metrics: {e}")
-        
+
         return metrics
-    
+
     def _extract_summary(self, xls) -> Dict[str, Any]:
         """Extract Summary sheet metrics (VM CPU)"""
         metrics = {}
@@ -816,7 +816,7 @@ class MetricsExtractor:
         except Exception:
             pass
         return metrics
-    
+
     def _extract_devkit_topdown(self, xls) -> Dict[str, Any]:
         """Extract DevKit_TopDown sheet (13 metrics)"""
         metrics = {}
@@ -846,7 +846,7 @@ class MetricsExtractor:
         except Exception:
             pass
         return metrics
-    
+
     def _extract_devkit_memory(self, xls) -> Dict[str, Any]:
         """Extract DevKit_Memory sheet (6 metrics + per-NUMA L3 hit rate)"""
         metrics = {}
@@ -874,7 +874,7 @@ class MetricsExtractor:
         except Exception:
             pass
         return metrics
-    
+
     def _extract_numa_bandwidth(self, xls) -> Dict[str, Any]:
         """Extract NUMA_Bandwidth sheet"""
         metrics = {}
@@ -897,7 +897,7 @@ class MetricsExtractor:
         except Exception:
             pass
         return metrics
-    
+
     def _extract_ksys(self, xls) -> Dict[str, Any]:
         """Extract KSys sheet (11 metrics)"""
         metrics = {}
@@ -925,7 +925,7 @@ class MetricsExtractor:
         except Exception:
             pass
         return metrics
-    
+
     def _extract_ubwatch_latency(self, xls) -> Dict[str, Any]:
         """Extract UBWatch_Latency sheet (7 metrics)"""
         metrics = {}
@@ -952,7 +952,7 @@ class MetricsExtractor:
         except Exception:
             pass
         return metrics
-    
+
     def _extract_ubwatch_bandwidth(self, xls) -> Dict[str, Any]:
         """Extract UBWatch_Bandwidth sheet (dynamic per-chip per-port)"""
         metrics = {}
@@ -962,33 +962,33 @@ class MetricsExtractor:
             total_avg_wr = 0.0
             total_avg_rd = 0.0
             total_avg_sum = 0.0
-            
+
             for idx, row in df.iterrows():
                 chip = int(row.get("Chip", -1)) if row.get("Chip") is not None else None
                 ports = str(row.get("Ports", "")).strip()
                 if chip is not None and chip >= 0 and ports:
                     port_key = "p" + ports.replace("&", "")
-                    
+
                     avg_wr = self._to_float(row.get("Avg Write (MB/s)", 0))
                     avg_rd = self._to_float(row.get("Avg Read (MB/s)", 0))
                     avg_sum = self._to_float(row.get("Avg Sum (MB/s)", 0))
-                    
+
                     key_prefix = f"UBWatch_Bandwidth_Chip{chip}_{port_key}"
                     metrics[f"{key_prefix}_Avg_Write"] = avg_wr
                     metrics[f"{key_prefix}_Avg_Read"] = avg_rd
                     metrics[f"{key_prefix}_Avg_Sum"] = avg_sum
-                    
+
                     total_avg_wr += avg_wr
                     total_avg_rd += avg_rd
                     total_avg_sum += avg_sum
-            
+
             metrics["UBWatch_Bandwidth_Total_Avg_Write"] = total_avg_wr
             metrics["UBWatch_Bandwidth_Total_Avg_Read"] = total_avg_rd
             metrics["UBWatch_Bandwidth_Total_Avg_Sum"] = total_avg_sum
         except Exception:
             pass
         return metrics
-    
+
     def _extract_smapbw_summary(self, xls) -> Dict[str, Any]:
         """Extract SMAPBW_Summary sheet"""
         metrics = {}
@@ -1010,7 +1010,7 @@ class MetricsExtractor:
         except Exception:
             pass
         return metrics
-    
+
     def _extract_smapbw_cycles(self, xls) -> Dict[str, Any]:
         """Extract SMAPBW_Cycles sheet"""
         metrics = {}
@@ -1027,7 +1027,7 @@ class MetricsExtractor:
         except Exception:
             pass
         return metrics
-    
+
     def _extract_getfre(self, xls) -> Dict[str, Any]:
         """Extract Getfre_Summary sheet (per-NUMA CoreFreq)"""
         metrics = {}
@@ -1042,7 +1042,7 @@ class MetricsExtractor:
         except Exception:
             pass
         return metrics
-    
+
     def _to_float(self, value: Any) -> float:
         """Convert value to float, handling percentage strings"""
         if value is None:
@@ -1056,37 +1056,37 @@ class MetricsExtractor:
             return float(value)
         except (ValueError, TypeError):
             return 0.0
-    
+
     def extract_browser_metrics(self, report_file: str) -> Dict[str, Any]:
         """Extract browser metrics from bench_report.txt"""
         metrics = {}
         if not report_file or not os.path.exists(report_file):
             return metrics
-        
+
         try:
             with open(report_file, 'r', encoding='utf-8') as f:
                 content = f.read()
-            
+
             # Parse metrics using regex
             match = re.search(r"Success Rate:\s+([\d.]+)%", content)
             if match:
                 metrics["Browser_Success_Rate"] = float(match.group(1))
-            
+
             match = re.search(r"Avg Latency:\s+([\d.]+)ms", content)
             if match:
                 metrics["Browser_Avg_Latency_ms"] = float(match.group(1))
-            
+
             match = re.search(r"P99 Latency:\s+([\d.]+)ms", content)
             if match:
                 metrics["Browser_P99_Latency_ms"] = float(match.group(1))
-            
+
             match = re.search(r"Total Tasks:\s+(\d+)", content)
             if match:
                 metrics["Browser_Total_Tasks"] = int(match.group(1))
-                
+
         except Exception as e:
             print(f"[MetricsExtractor] Error extracting browser metrics: {e}")
-        
+
         return metrics
 ```
 
@@ -1130,7 +1130,7 @@ from pathlib import Path
 
 class ReportAggregator:
     """Aggregate batch test results into Excel report"""
-    
+
     # Column groupings for data source headers
     COLUMN_GROUPS = {
         'Basic': ['task_id', 'total_count', 'ratio', 'benchmark_percent'],
@@ -1150,7 +1150,7 @@ class ReportAggregator:
             'DevKit_Memory_DDR_Read', 'DevKit_Memory_DDR_Write',
         ],
     }
-    
+
     # Colors for different data sources
     SOURCE_COLORS = {
         'Basic': '#FFFFFF',      # White
@@ -1165,49 +1165,49 @@ class ReportAggregator:
         'SMAPBW': '#E8EAF6',     # Light Indigo
         'Getfre': '#FBE9E7',     # Light Deep Orange
     }
-    
+
     def __init__(self, output_dir: str = "results/e2b/batch"):
         self.output_dir = output_dir
-    
+
     def aggregate(self, metrics_data: List[Dict[str, Any]], output_filename: str = None) -> str:
         """
         Aggregate all test metrics into Excel report
-        
+
         Args:
             metrics_data: List of dicts, each containing task_id and metrics
             output_filename: Optional custom filename
-            
+
         Returns:
             Path to generated Excel file
         """
         if not metrics_data:
             print("[ReportAggregator] No metrics data to aggregate")
             return ""
-        
+
         import pandas as pd
-        
+
         # Build DataFrame
         df = self._build_dataframe(metrics_data)
-        
+
         # Sort by parameters
         df = df.sort_values(by=['total_count', 'ratio', 'benchmark_percent'])
-        
+
         # Generate output path
         os.makedirs(self.output_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = output_filename or f"e2b_batch_summary_{timestamp}.xlsx"
         output_path = os.path.join(self.output_dir, filename)
-        
+
         # Export with styling
         self._export_excel(df, output_path)
-        
+
         print(f"[ReportAggregator] Report saved to: {output_path}")
         return output_path
-    
+
     def _build_dataframe(self, metrics_data: List[Dict[str, Any]]) -> pd.DataFrame:
         """Build DataFrame from metrics list"""
         import pandas as pd
-        
+
         rows = []
         for m in metrics_data:
             row = {
@@ -1217,27 +1217,27 @@ class ReportAggregator:
                 'ratio': m.get('ratio', 0),
                 'benchmark_percent': m.get('benchmark_percent', 0),
             }
-            
+
             # Add all metrics dynamically
             for key, value in m.items():
                 if key not in row and key not in ['success', 'error_msg', 'result_dir']:
                     row[key] = value
-            
+
             rows.append(row)
-        
+
         return pd.DataFrame(rows)
-    
+
     def _export_excel(self, df: pd.DataFrame, output_path: str) -> None:
         """Export DataFrame to styled Excel"""
         import pandas as pd
-        
+
         # Use xlsxwriter for styling
         with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
             df.to_excel(writer, sheet_name='Summary', index=False, startrow=1)
-            
+
             workbook = writer.book
             worksheet = writer.sheets['Summary']
-            
+
             # Add header row with data source labels
             header_format = workbook.add_format({
                 'bold': True,
@@ -1245,22 +1245,22 @@ class ReportAggregator:
                 'valign': 'vcenter',
                 'border': 1
             })
-            
+
             # Write column headers
             for col_idx, col_name in enumerate(df.columns):
                 worksheet.write(0, col_idx + 1, col_name, header_format)
-            
+
             # Apply colors to columns based on data source
             for source, columns in self.COLUMN_GROUPS.items():
                 color = self.SOURCE_COLORS.get(source, '#FFFFFF')
                 cell_format = workbook.add_format({'bg_color': color})
-                
+
                 for col_name in columns:
                     if col_name in df.columns:
                         col_idx = df.columns.get_loc(col_name)
                         # Apply format to entire column (rows 1 to end)
                         worksheet.set_column(col_idx + 1, col_idx + 1, None, cell_format)
-            
+
             # Auto-adjust column widths
             for col_idx, col_name in enumerate(df.columns):
                 max_len = max(
@@ -1324,24 +1324,24 @@ from .bench import SmapToolManager, VmMonitorManager, print_config
 
 class GroupRunner:
     """Run a single TaskGroup with sandbox reuse"""
-    
+
     def __init__(self, group: TaskGroup, config: Config, batch_log_file: str):
         self.group = group
         self.config = config
         self.batch_log_file = batch_log_file
-        
+
         # Runtime managers (shared within group)
         self.sandbox_manager: Optional[SandboxManager] = None
         self.smap_tool: Optional[SmapToolManager] = None
         self.sandbox_states: Dict[int, SandboxState] = {}
-        
+
         # Stop event
         self.stop_event = None
-    
+
     def run(self) -> List[BatchTask]:
         """
         Execute all tasks in the group
-        
+
         Flow:
         1. Create sandboxes (shared)
         2. Start smap_tool (shared)
@@ -1352,32 +1352,32 @@ class GroupRunner:
            - Stop vm_monitor
            - Collect results
         5. Cleanup
-        
+
         Returns:
             List of completed BatchTask objects
         """
         import threading
-        
+
         results = []
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
+
         self._log(f"\n[{timestamp}] Starting group: {self.group.group_id}")
         self._log(f"  Total count: {self.group.total_count}")
         self._log(f"  Ratio: {self.group.ratio}")
         self._log(f"  Tasks: {len(self.group.tasks)}")
-        
+
         print(f"\n{'='*60}")
         print(f"Group: {self.group.group_id}")
         print(f"{'='*60}")
-        
+
         try:
             # 1. Create sandboxes
             self.stop_event = threading.Event()
             self.sandbox_manager = SandboxManager(self._get_group_config(), self.stop_event)
-            
+
             print(f"\n[Phase 1] Creating {self.group.total_count} sandboxes...")
             self.sandbox_states = self.sandbox_manager.create_all()
-            
+
             ready_count = sum(
                 1 for s in self.sandbox_states.values()
                 if s.creation_metrics.status == SandboxStatus.PORT_READY
@@ -1388,16 +1388,16 @@ class GroupRunner:
                     task.success = False
                     task.error_msg = "No sandboxes ready"
                 return self.group.tasks
-            
+
             self._log(f"  Sandboxes ready: {ready_count}")
-            
+
             # 2. Start smap_tool
             if self.config.smap_tool_enabled:
                 self.smap_tool = SmapToolManager(self._get_group_config())
                 success = self.smap_tool.start(ready_count)
                 if not success:
                     self._log(f"  WARN: smap_tool failed to start")
-            
+
             # 3. Warmup (shared, once)
             if self.config.warmup_urls:
                 print(f"\n[Phase 2] Running warmup...")
@@ -1405,104 +1405,104 @@ class GroupRunner:
                 task_manager.start_warmup()
                 task_manager.wait_warmup()
                 self._log(f"  Warmup completed")
-            
+
             # 4. Run each task with different benchmark_percent
             for idx, task in enumerate(self.group.tasks):
                 print(f"\n[Phase 3.{idx+1}] Task: {task.task_id}")
                 self._log(f"\n  Task {idx+1}/{len(self.group.tasks)}: {task.task_id}")
                 self._log(f"    benchmark_percent: {task.benchmark_percent}")
-                
+
                 task_result = self._run_single_task(task, idx)
                 results.append(task_result)
-            
+
             # Mark all tasks in group
             for task in self.group.tasks:
                 if task not in results:
                     results.append(task)
-            
+
         except Exception as e:
             self._log(f"  ERROR: Group execution failed: {e}")
             for task in self.group.tasks:
                 task.success = False
                 task.error_msg = str(e)
-        
+
         finally:
             # 5. Cleanup
             self._cleanup()
-        
+
         return results
-    
+
     def _run_single_task(self, task: BatchTask, task_idx: int) -> BatchTask:
         """Run a single benchmark task"""
         import threading
-        
+
         # Create result directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         result_dir = Path(self.config.output_dir) / f"{task.task_id}_{timestamp}"
         result_dir.mkdir(parents=True, exist_ok=True)
         task.result_dir = str(result_dir)
-        
+
         # Update config for this task
         task_config = self._get_task_config(task)
-        
+
         # Start vm_monitor
         vm_monitor = None
         if self.config.vm_monitor_enabled:
             vm_monitor = VmMonitorManager(task_config)
             vm_monitor.start(task.task_id)
             time.sleep(2)  # Wait for vm_monitor to initialize
-        
+
         # Create stop event for this task
         stop_event = threading.Event()
-        
+
         # Start stats collector
         stats_collector = StatsCollector(task_config, self.sandbox_states)
         stats_collector.start()
-        
+
         # Start task manager
         task_manager = TaskManager(task_config, self.sandbox_states, stop_event)
-        
+
         # Trigger vm_monitor sampling
         if vm_monitor:
             vm_monitor.trigger_sampling()
-        
+
         # Start browser tasks
         print(f"  Starting browser tasks (benchmark_percent={task.benchmark_percent})...")
         task_manager.start_all()
-        
+
         # Run for duration
         print(f"  Running for {self.config.test_duration}s...")
         time.sleep(self.config.test_duration)
-        
+
         # Stop
         stop_event.set()
         task_manager.wait_all(timeout=5)
         stats_collector.stop()
-        
+
         # Stop vm_monitor sampling
         if vm_monitor:
             vm_monitor.stop_sampling()
-        
+
         # Generate bench report
         report = stats_collector.generate_report()
         report_file = result_dir / "bench_report.txt"
         with open(report_file, 'w', encoding='utf-8') as f:
             f.write(report)
         task.report_file = str(report_file)
-        
+
         # Wait for vm_monitor analysis report
         if vm_monitor:
             analysis_file = vm_monitor.wait_for_report(timeout=300)
             if analysis_file:
                 task.analysis_file = analysis_file
             vm_monitor.stop()
-        
+
         # Mark success
         task.success = True
         self._log(f"    Task completed successfully")
-        
+
         return task
-    
+
     def _get_group_config(self) -> Config:
         """Create Config for group (with group's total_count and ratio)"""
         # Create a copy of config with group's parameters
@@ -1517,7 +1517,7 @@ class GroupRunner:
                 'benchmark_percent': 1.0,  # Will be overridden per task
             }
         }
-        
+
         # Merge with base config
         # For simplicity, modify existing config
         group_config = Config(
@@ -1525,31 +1525,31 @@ class GroupRunner:
         )
         group_config.total_count = self.group.total_count
         group_config.smap_tool_ratio = self.group.ratio
-        
+
         return group_config
-    
+
     def _get_task_config(self, task: BatchTask) -> Config:
         """Create Config for specific task"""
         task_config = self._get_group_config()
         task_config.benchmark_percent = task.benchmark_percent
         task_config.vm_monitor_duration = self.config.test_duration
         return task_config
-    
+
     def _cleanup(self):
         """Cleanup: stop smap_tool, kill sandboxes"""
         print(f"\n[Cleanup] Group: {self.group.group_id}")
-        
+
         if self.smap_tool:
             self.smap_tool.stop()
             self._log("  smap_tool stopped")
-        
+
         if self.sandbox_manager:
             self.sandbox_manager.kill_all()
             self._log("  Sandboxes killed")
-        
+
         if self.stop_event:
             self.stop_event.set()
-    
+
     def _log(self, message: str):
         """Write to batch log file"""
         with open(self.batch_log_file, 'a', encoding='utf-8') as f:
@@ -1558,79 +1558,79 @@ class GroupRunner:
 
 class BatchScheduler:
     """Main batch test scheduler"""
-    
+
     def __init__(self, matrix_path: str, template_path: str, output_dir: str = "results/e2b/batch"):
         self.matrix_path = matrix_path
         self.template_path = template_path
         self.output_dir = output_dir
-        
+
         # Load configurations
         self.matrix_config = load_matrix_config(matrix_path)
         self.template_config = Config.load_from_yaml(template_path)
-        
+
         # Apply output_dir override
         if output_dir:
             self.template_config.output_dir = output_dir
-        
+
         # Initialize components
         self.task_generator = TaskGenerator(self.matrix_config)
         self.metrics_extractor = MetricsExtractor()
         self.report_aggregator = ReportAggregator(output_dir)
-        
+
         # Batch log file
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.batch_log_file = os.path.join(output_dir, f"batch_log_{timestamp}.txt")
         os.makedirs(output_dir, exist_ok=True)
-    
+
     def run(self, continue_on_failure: bool = True) -> str:
         """
         Execute all batch tests
-        
+
         Args:
             continue_on_failure: Continue testing if a group fails
-            
+
         Returns:
             Path to summary report Excel file
         """
         print("\n" + "="*80)
         print("E2B Batch Test Scheduler")
         print("="*80)
-        
+
         # Print configuration
         print(f"\nMatrix: {self.matrix_path}")
         print(f"Template: {self.template_path}")
         print(f"Output: {self.output_dir}")
-        
+
         groups = self.task_generator.generate_groups()
         print(f"\nGroups: {len(groups)}")
         print(f"Total tasks: {self.task_generator.get_total_task_count()}")
-        
+
         # Setup E2B environment
         self.template_config.setup_e2b_env()
-        
+
         # Execute each group
         all_results: List[BatchTask] = []
-        
+
         for idx, group in enumerate(groups):
             print(f"\n{'='*80}")
             print(f"Group {idx+1}/{len(groups)}: {group.group_id}")
             print(f"{'='*80}")
-            
+
             runner = GroupRunner(group, self.template_config, self.batch_log_file)
             results = runner.run()
             all_results.extend(results)
-            
+
             # Check for failures
             failed = [t for t in results if not t.success]
             if failed and not continue_on_failure:
                 print(f"\nGroup failed, stopping (continue_on_failure=False)")
                 break
-        
+
         # Extract metrics
         print(f"\n{'='*80}")
         print("Extracting metrics...")
         print(f"{'='*80}")
-        
+
         metrics_data = []
         for task in all_results:
             metrics = {
@@ -1641,32 +1641,32 @@ class BatchScheduler:
                 'success': task.success,
                 'error_msg': task.error_msg,
             }
-            
+
             # Extract browser metrics
             if task.report_file:
                 browser_metrics = self.metrics_extractor.extract_browser_metrics(task.report_file)
                 metrics.update(browser_metrics)
                 task.browser_metrics = browser_metrics
-            
+
             # Extract vm_monitor metrics
             if task.analysis_file:
                 vm_metrics = self.metrics_extractor.extract(task.analysis_file)
                 metrics.update(vm_metrics)
                 task.vm_metrics = vm_metrics
-            
+
             metrics_data.append(metrics)
-        
+
         # Aggregate results
         print(f"\n{'='*80}")
         print("Generating summary report...")
         print(f"{'='*80}")
-        
+
         report_path = self.report_aggregator.aggregate(metrics_data)
-        
+
         # Print final summary
         success_count = sum(1 for t in all_results if t.success)
         failed_count = len(all_results) - success_count
-        
+
         print(f"\n{'='*80}")
         print("Batch Test Complete")
         print(f"{'='*80}")
@@ -1674,7 +1674,7 @@ class BatchScheduler:
         print(f"  Successful: {success_count}")
         print(f"  Failed: {failed_count}")
         print(f"  Summary report: {report_path}")
-        
+
         return report_path
 
 
@@ -1683,13 +1683,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description='E2B Batch Test Scheduler - Automated batch testing with sandbox reuse'
     )
-    
+
     parser.add_argument('--matrix', required=True, help='Test matrix YAML config path')
     parser.add_argument('--template', required=True, help='Template YAML config path')
     parser.add_argument('--output-dir', default='results/e2b/batch', help='Output directory')
-    parser.add_argument('--continue-on-failure', action='store_true', 
+    parser.add_argument('--continue-on-failure', action='store_true',
                         help='Continue testing if a group fails')
-    
+
     return parser
 
 
@@ -1697,15 +1697,15 @@ def main():
     """CLI entry point"""
     parser = build_arg_parser()
     args = parser.parse_args()
-    
+
     scheduler = BatchScheduler(
         matrix_path=args.matrix,
         template_path=args.template,
         output_dir=args.output_dir
     )
-    
+
     report_path = scheduler.run(continue_on_failure=args.continue_on_failure)
-    
+
     print(f"\nDone. Report: {report_path}")
 
 
@@ -1731,26 +1731,26 @@ import argparse
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description='E2B Bench Module')
-    
+
     # Mode selection
     parser.add_argument('--batch', action='store_true', help='Run batch test scheduler')
-    
+
     # Parse known args to get mode
     args, remaining = parser.parse_known_args()
-    
+
     if args.batch:
         # Batch mode: delegate to batch_scheduler
         from .batch_scheduler import build_arg_parser, BatchScheduler
-        
+
         batch_parser = build_arg_parser()
         batch_args = batch_parser.parse_args(remaining)
-        
+
         scheduler = BatchScheduler(
             matrix_path=batch_args.matrix,
             template_path=batch_args.template,
             output_dir=batch_args.output_dir
         )
-        
+
         report_path = scheduler.run(continue_on_failure=batch_args.continue_on_failure)
         print(f"\nDone. Report: {report_path}")
     else:
