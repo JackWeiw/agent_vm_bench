@@ -122,9 +122,7 @@ browser:
   interval_min: 10
   interval_max: 20
   benchmark_percent: 0.75
-
-warmup:
-  urls:
+  warmup_urls:
     - "http://example.com/page1.html"
     - "http://example.com/page2.html"
 """

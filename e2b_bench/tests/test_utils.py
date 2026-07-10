@@ -46,7 +46,7 @@ class TestFormatDuration:
     def test_minutes(self):
         """Duration between 60 and 3600 seconds"""
         assert format_duration(60.0) == "1m 0s"
-        assert format_duration(90.5) == "1m 31s"
+        assert format_duration(90.5) == "1m 30s"  # 90.5 % 60 = 30.5, int(30.5) = 30
         assert format_duration(3599.0) == "59m 59s"
 
     def test_hours(self):

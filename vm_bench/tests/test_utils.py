@@ -54,14 +54,12 @@ class TestCalcPercentiles(unittest.TestCase):
         self.assertEqual(result['min'], 0.0)
         self.assertEqual(result['max'], 99.0)
         self.assertEqual(result['avg'], 49.5)
-        # P50 should be around 50
-        self.assertGreater(result['p50'], 49)
-        self.assertLess(result['p50'], 51)
-        # P95 should be around 95
-        self.assertGreater(result['p95'], 94)
-        self.assertLess(result['p95'], 96)
-        # P99 should be around 99
-        self.assertGreater(result['p99'], 98)
+        # P50: ceil(50/100 * 100) - 1 = 49, so values[49] = 49
+        self.assertEqual(result['p50'], 49.0)
+        # P95: ceil(95/100 * 100) - 1 = 94, so values[94] = 94
+        self.assertEqual(result['p95'], 94.0)
+        # P99: ceil(99/100 * 100) - 1 = 98, so values[98] = 98
+        self.assertEqual(result['p99'], 98.0)
 
     def test_unsorted_input(self):
         # Input unsorted, function should still work

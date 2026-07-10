@@ -59,15 +59,17 @@ P99 Latency: 5678.90ms
 """
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
             f.write(report_content)
-            f.flush()
-            extractor = MetricsExtractor()
-            result = extractor.extract_browser_metrics(f.name)
-            os.unlink(f.name)
+            temp_path = f.name
 
-        assert result["Browser_Success_Rate"] == 95.50
-        assert result["Browser_Avg_Latency_ms"] == 1234.56
-        assert result["Browser_P99_Latency_ms"] == 5678.90
-        assert result["Browser_Total_Tasks"] == 100
+        try:
+            extractor = MetricsExtractor()
+            result = extractor.extract_browser_metrics(temp_path)
+            assert result["Browser_Success_Rate"] == 95.50
+            assert result["Browser_Avg_Latency_ms"] == 1234.56
+            assert result["Browser_P99_Latency_ms"] == 5678.90
+            assert result["Browser_Total_Tasks"] == 100
+        finally:
+            os.unlink(temp_path)
 
     def test_partial_report(self):
         """Extract partial metrics"""
@@ -76,15 +78,17 @@ Total Tasks: 50
 Success Rate: 80.0%
 """
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            temp_path = f.name
             f.write(report_content)
-            f.flush()
-            extractor = MetricsExtractor()
-            result = extractor.extract_browser_metrics(f.name)
-            os.unlink(f.name)
 
-        assert result["Browser_Success_Rate"] == 80.0
-        assert result["Browser_Total_Tasks"] == 50
-        assert "Browser_Avg_Latency_ms" not in result
+        try:
+            extractor = MetricsExtractor()
+            result = extractor.extract_browser_metrics(temp_path)
+            assert result["Browser_Success_Rate"] == 80.0
+            assert result["Browser_Total_Tasks"] == 50
+            assert "Browser_Avg_Latency_ms" not in result
+        finally:
+            os.unlink(temp_path)
 
 
 class TestExtractExcel:
@@ -106,14 +110,14 @@ class TestExtractExcel:
         with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
             excel_path = f.name
 
-        try:
-            with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-                summary_df = pd.DataFrame({
-                    'Metric': ['VM Avg CPU', 'VM Peak Total CPU'],
-                    'Value': [25.5, 80.0]
-                })
-                summary_df.to_excel(writer, sheet_name='Summary', index=False)
+        # Create Excel file
+        summary_df = pd.DataFrame({
+            'Metric': ['VM Avg CPU', 'VM Peak Total CPU'],
+            'Value': [25.5, 80.0]
+        })
+        summary_df.to_excel(excel_path, sheet_name='Summary', index=False, engine='openpyxl')
 
+        try:
             extractor = MetricsExtractor()
             result = extractor.extract(excel_path)
 
@@ -121,6 +125,8 @@ class TestExtractExcel:
             assert result["VM_CPU_Max"] == 80.0
 
         finally:
+            import gc
+            gc.collect()
             os.unlink(excel_path)
 
     @pytest.mark.skipif(
@@ -134,14 +140,14 @@ class TestExtractExcel:
         with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
             excel_path = f.name
 
-        try:
-            with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-                topdown_df = pd.DataFrame({
-                    'Metric': ['IPC Avg', 'Backend Bound (%)', 'Mem Bound (%)'],
-                    'Value': [0.85, 35.5, 20.0]
-                })
-                topdown_df.to_excel(writer, sheet_name='DevKit_TopDown', index=False)
+        # Create Excel file
+        topdown_df = pd.DataFrame({
+            'Metric': ['IPC Avg', 'Backend Bound (%)', 'Mem Bound (%)'],
+            'Value': [0.85, 35.5, 20.0]
+        })
+        topdown_df.to_excel(excel_path, sheet_name='DevKit_TopDown', index=False, engine='openpyxl')
 
+        try:
             extractor = MetricsExtractor()
             result = extractor.extract(excel_path)
 
@@ -150,6 +156,8 @@ class TestExtractExcel:
             assert result["DevKit_TopDown_Mem_Bound"] == 20.0
 
         finally:
+            import gc
+            gc.collect()
             os.unlink(excel_path)
 
 

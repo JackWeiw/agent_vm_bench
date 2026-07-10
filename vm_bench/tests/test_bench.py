@@ -43,7 +43,7 @@ class TestBuildArgParser(unittest.TestCase):
         self.assertTrue(args.warmup_only)
 
     def test_duration_arg(self):
-        args = self.parser.parse_args(['-t', '300'])
+        args = self.parser.parse_args(['--duration', '300'])
         self.assertEqual(args.duration, 300)
 
     def test_browser_url_arg(self):

@@ -177,15 +177,17 @@ result:
   output_dir: results/e2b/batch
 """
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+            temp_path = f.name
             f.write(yaml_content)
-            f.flush()
-            config = load_matrix_config(f.name)
-            os.unlink(f.name)
 
-        assert config['test_matrix']['total_counts'] == [10, 20]
-        assert config['test_matrix']['benchmark_percentages'] == [0.5, 1.0]
-        assert config['reuse_strategy']['reuse_sandbox'] == True
-        assert config['result']['output_dir'] == "results/e2b/batch"
+        try:
+            config = load_matrix_config(temp_path)
+            assert config['test_matrix']['total_counts'] == [10, 20]
+            assert config['test_matrix']['benchmark_percentages'] == [0.5, 1.0]
+            assert config['reuse_strategy']['reuse_sandbox'] == True
+            assert config['result']['output_dir'] == "results/e2b/batch"
+        finally:
+            os.unlink(temp_path)
 
 
 if __name__ == '__main__':

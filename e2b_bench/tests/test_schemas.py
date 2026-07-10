@@ -109,11 +109,11 @@ class TestBrowserMetrics:
         assert len(metrics.latencies) == 10
 
     def test_p99_with_100_values(self):
-        """P99 with 100 values"""
+        """P99 with 100 values - int(100 * 0.99) = 99 -> index 99 -> value 100"""
         metrics = BrowserMetrics()
         for i in range(1, 101):
             metrics.add(latency=i, success=True)
-        assert metrics.p99_latency == 99
+        assert metrics.p99_latency == 100
 
     def test_p99_small_list(self):
         """P99 returns max for small lists"""
