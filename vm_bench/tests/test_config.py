@@ -9,11 +9,11 @@ Tests:
 - Computed properties
 """
 
-import unittest
 import argparse
-import tempfile
 import os
 import sys
+import tempfile
+import unittest
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -86,6 +86,7 @@ class TestConfigYAMLLoading(unittest.TestCase):
     def tearDown(self):
         """Clean up temporary files"""
         import shutil
+
         shutil.rmtree(self.temp_dir)
 
     def test_yaml_basic_loading(self):
@@ -95,7 +96,7 @@ vm_create:
   start_ip: "192.168.120.1"
   flavor: "4U_8G_80G"
 """
-        with open(self.yaml_path, 'w') as f:
+        with open(self.yaml_path, "w") as f:
             f.write(yaml_content)
 
         config = Config.load_from_yaml(self.yaml_path)
@@ -126,7 +127,7 @@ browser:
     - "http://example.com/page1.html"
     - "http://example.com/page2.html"
 """
-        with open(self.yaml_path, 'w') as f:
+        with open(self.yaml_path, "w") as f:
             f.write(yaml_content)
 
         config = Config.load_from_yaml(self.yaml_path)
@@ -146,7 +147,7 @@ browser:
 vm_create:
   total_count: 30
 """
-        with open(self.yaml_path, 'w') as f:
+        with open(self.yaml_path, "w") as f:
             f.write(yaml_content)
 
         config = Config.load_from_yaml(self.yaml_path)
@@ -165,18 +166,50 @@ class TestConfigCLIArgs(unittest.TestCase):
             flavor="custom_flavor",
         )
         # Add missing attributes with None
-        for attr in ['auth_source', 'image', 'network_id', 'az', 'subnet_prefix',
-                     'vm_prefix', 'create_timeout', 'create_only', 'detect',
-                     'create_batch_size', 'create_batch_interval', 'ssh_port',
-                     'ssh_username', 'ssh_password', 'ssh_connect_timeout',
-                     'connect_batch_size', 'connect_batch_interval', 'task_batch_size',
-                     'task_batch_interval', 'task_mode', 'duration', 'browser_url',
-                     'browser_timeout', 'browser_interval_min', 'browser_interval_max',
-                     'browser_use_llm', 'benchmark_percent', 'warmup_url', 'warmup_loops',
-                     'warmup_delay', 'warmup_only', 'qa_timeout', 'qa_init_timeout',
-                     'qa_interval', 'qa_mode', 'stress_percent', 'stress_memory',
-                     'no_keepalive', 'stats_interval', 'output_dir', 'filename_prefix',
-                     'delete_after_test']:
+        for attr in [
+            "auth_source",
+            "image",
+            "network_id",
+            "az",
+            "subnet_prefix",
+            "vm_prefix",
+            "create_timeout",
+            "create_only",
+            "detect",
+            "create_batch_size",
+            "create_batch_interval",
+            "ssh_port",
+            "ssh_username",
+            "ssh_password",
+            "ssh_connect_timeout",
+            "connect_batch_size",
+            "connect_batch_interval",
+            "task_batch_size",
+            "task_batch_interval",
+            "task_mode",
+            "duration",
+            "browser_url",
+            "browser_timeout",
+            "browser_interval_min",
+            "browser_interval_max",
+            "browser_use_llm",
+            "benchmark_percent",
+            "warmup_url",
+            "warmup_loops",
+            "warmup_delay",
+            "warmup_only",
+            "qa_timeout",
+            "qa_init_timeout",
+            "qa_interval",
+            "qa_mode",
+            "stress_percent",
+            "stress_memory",
+            "no_keepalive",
+            "stats_interval",
+            "output_dir",
+            "filename_prefix",
+            "delete_after_test",
+        ]:
             if not hasattr(args, attr):
                 setattr(args, attr, None)
 
@@ -193,17 +226,50 @@ class TestConfigCLIArgs(unittest.TestCase):
             browser_timeout=0,
         )
         # Add missing attributes
-        for attr in ['auth_source', 'start_ip', 'flavor', 'image', 'network_id',
-                     'az', 'subnet_prefix', 'vm_prefix', 'create_timeout', 'create_only',
-                     'detect', 'create_batch_interval', 'ssh_port', 'ssh_username',
-                     'ssh_password', 'ssh_connect_timeout', 'connect_batch_size',
-                     'connect_batch_interval', 'task_batch_size', 'task_batch_interval',
-                     'task_mode', 'duration', 'browser_url', 'browser_interval_min',
-                     'browser_interval_max', 'browser_use_llm', 'benchmark_percent',
-                     'warmup_url', 'warmup_loops', 'warmup_delay', 'warmup_only',
-                     'qa_timeout', 'qa_init_timeout', 'qa_interval', 'qa_mode',
-                     'stress_percent', 'stress_memory', 'no_keepalive', 'stats_interval',
-                     'output_dir', 'filename_prefix', 'delete_after_test']:
+        for attr in [
+            "auth_source",
+            "start_ip",
+            "flavor",
+            "image",
+            "network_id",
+            "az",
+            "subnet_prefix",
+            "vm_prefix",
+            "create_timeout",
+            "create_only",
+            "detect",
+            "create_batch_interval",
+            "ssh_port",
+            "ssh_username",
+            "ssh_password",
+            "ssh_connect_timeout",
+            "connect_batch_size",
+            "connect_batch_interval",
+            "task_batch_size",
+            "task_batch_interval",
+            "task_mode",
+            "duration",
+            "browser_url",
+            "browser_interval_min",
+            "browser_interval_max",
+            "browser_use_llm",
+            "benchmark_percent",
+            "warmup_url",
+            "warmup_loops",
+            "warmup_delay",
+            "warmup_only",
+            "qa_timeout",
+            "qa_init_timeout",
+            "qa_interval",
+            "qa_mode",
+            "stress_percent",
+            "stress_memory",
+            "no_keepalive",
+            "stats_interval",
+            "output_dir",
+            "filename_prefix",
+            "delete_after_test",
+        ]:
             if not hasattr(args, attr):
                 setattr(args, attr, None)
 
@@ -222,6 +288,7 @@ class TestConfigMergePriority(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.temp_dir)
 
     def test_cli_overrides_yaml(self):
@@ -231,7 +298,7 @@ vm_create:
   start_ip: "192.168.110.50"
   flavor: "yaml_flavor"
 """
-        with open(self.yaml_path, 'w') as f:
+        with open(self.yaml_path, "w") as f:
             f.write(yaml_content)
 
         yaml_config = Config.load_from_yaml(self.yaml_path)
@@ -242,18 +309,50 @@ vm_create:
             flavor=None,  # Use YAML value
         )
         # Add missing attributes
-        for attr in ['auth_source', 'image', 'network_id', 'az', 'subnet_prefix',
-                     'vm_prefix', 'create_timeout', 'create_only', 'detect',
-                     'create_batch_size', 'create_batch_interval', 'ssh_port',
-                     'ssh_username', 'ssh_password', 'ssh_connect_timeout',
-                     'connect_batch_size', 'connect_batch_interval', 'task_batch_size',
-                     'task_batch_interval', 'task_mode', 'duration', 'browser_url',
-                     'browser_timeout', 'browser_interval_min', 'browser_interval_max',
-                     'browser_use_llm', 'benchmark_percent', 'warmup_url', 'warmup_loops',
-                     'warmup_delay', 'warmup_only', 'qa_timeout', 'qa_init_timeout',
-                     'qa_interval', 'qa_mode', 'stress_percent', 'stress_memory',
-                     'no_keepalive', 'stats_interval', 'output_dir', 'filename_prefix',
-                     'delete_after_test']:
+        for attr in [
+            "auth_source",
+            "image",
+            "network_id",
+            "az",
+            "subnet_prefix",
+            "vm_prefix",
+            "create_timeout",
+            "create_only",
+            "detect",
+            "create_batch_size",
+            "create_batch_interval",
+            "ssh_port",
+            "ssh_username",
+            "ssh_password",
+            "ssh_connect_timeout",
+            "connect_batch_size",
+            "connect_batch_interval",
+            "task_batch_size",
+            "task_batch_interval",
+            "task_mode",
+            "duration",
+            "browser_url",
+            "browser_timeout",
+            "browser_interval_min",
+            "browser_interval_max",
+            "browser_use_llm",
+            "benchmark_percent",
+            "warmup_url",
+            "warmup_loops",
+            "warmup_delay",
+            "warmup_only",
+            "qa_timeout",
+            "qa_init_timeout",
+            "qa_interval",
+            "qa_mode",
+            "stress_percent",
+            "stress_memory",
+            "no_keepalive",
+            "stats_interval",
+            "output_dir",
+            "filename_prefix",
+            "delete_after_test",
+        ]:
             if not hasattr(args, attr):
                 setattr(args, attr, None)
 
@@ -299,5 +398,5 @@ class TestConfigComputedProperties(unittest.TestCase):
         self.assertEqual(ips[4], "192.168.110.15")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

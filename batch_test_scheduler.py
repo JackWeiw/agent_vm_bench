@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Multi-VM Agent Batch Test Scheduler
 
@@ -13,24 +12,25 @@ Usage:
     python batch_test_scheduler.py --config config/batch_config.yaml
 """
 
-import os
-import sys
-import time
-import subprocess
 import argparse
-import yaml
 import json
-import shutil
+import os
 import re
+import shutil
+import subprocess
+import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any, Tuple
-from dataclasses import dataclass
+from typing import Any, Dict, List, Tuple
+
+import yaml
 
 
 @dataclass
 class TestTask:
     """Single test task definition"""
+
     task_id: str
     vm_count: int
     ratio: float
@@ -70,7 +70,7 @@ def generate_test_tasks(batch_config: Dict) -> List[TestTask]:
                     task_id=generate_task_id(vm_count, ratio, active_percent),
                     vm_count=vm_count,
                     ratio=ratio,
-                    active_percent=active_percent
+                    active_percent=active_percent,
                 )
                 tasks.append(task)
 
@@ -91,7 +91,7 @@ def generate_temp_config(template_path: str, task: TestTask, fixed_params: Dict,
         "{{RATIO}}": str(task.ratio),
         "{{ACTIVE_PERCENT}}": str(task.active_percent),
         "{{DURATION}}": str(fixed_params["duration"]),
-        "{{BASE_DIR}}": base_dir
+        "{{BASE_DIR}}": base_dir,
     }
 
     for key, value in replacements.items():
@@ -132,9 +132,7 @@ def run_single_test(task: TestTask, config_file: str, batch_log_file: str) -> Tu
         f.write(f"[DEBUG] Command: {' '.join(cmd)}\n")
         f.write(f"[DEBUG] Working dir: {os.getcwd()}\n")
 
-    result = subprocess.run(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-    )
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     # Print and log stdout
     print(f"[DEBUG] Return code: {result.returncode}")
@@ -147,14 +145,14 @@ def run_single_test(task: TestTask, config_file: str, batch_log_file: str) -> Tu
 
     # Print and log stderr
     if result.stderr:
-        print(f"[DEBUG] STDERR:")
+        print("[DEBUG] STDERR:")
         print(result.stderr)
         with open(batch_log_file, "a") as f:
             f.write(f"[DEBUG] STDERR:\n{result.stderr}\n")
 
     # Parse result directory from output
     result_dir = ""
-    print(f"[DEBUG] Parsing result directory from output...")
+    print("[DEBUG] Parsing result directory from output...")
     for line in result.stdout.split("\n"):
         print(f"[DEBUG] Line: '{line}'")
         if "Result directory:" in line or "Result dir:" in line or "Test result saved to:" in line:
@@ -595,6 +593,7 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
         # pandas not available, try openpyxl
         try:
             from openpyxl import load_workbook
+
             wb = load_workbook(excel_path, data_only=True)
 
             # Helper function to extract metrics from a sheet
@@ -926,7 +925,7 @@ def generate_summary_report(results: Dict, output_path: str):
     try:
         import pandas as pd
         from openpyxl import load_workbook
-        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
         # Build DataFrame with all metrics
         rows = []
@@ -990,9 +989,15 @@ def generate_summary_report(results: Dict, output_path: str):
             row["numa_total_write_mb_s"] = qemu.get("numa_total_write", 0)
             # Per-node NUMA bandwidth (dynamically add if exists)
             for key, value in qemu.items():
-                if key.startswith("numa") and "_read" in key and key != "numa_total_read" and "_l3_hit_rate" not in key:
-                    row[key] = value
-                elif key.startswith("numa") and "_write" in key and key != "numa_total_write":
+                if (
+                    key.startswith("numa")
+                    and "_read" in key
+                    and key != "numa_total_read"
+                    and "_l3_hit_rate" not in key
+                    or key.startswith("numa")
+                    and "_write" in key
+                    and key != "numa_total_write"
+                ):
                     row[key] = value
 
             # KSys metrics
@@ -1040,11 +1045,14 @@ def generate_summary_report(results: Dict, output_path: str):
             # Getfre Core Frequency metrics - Per-NUMA summary
             # Dynamically add getfre metrics for each NUMA found
             for key, value in qemu.items():
-                if key.startswith("getfre_numa") and ("_avg_mhz" in key or "_min_mhz" in key or "_max_mhz" in key):
-                    row[key] = value
-                elif key.startswith("getfre_numa") and "_overall_variance_mhz" in key:
-                    row[key] = value
-                elif key.startswith("getfre_numa") and "_core_count" in key:
+                if (
+                    key.startswith("getfre_numa")
+                    and ("_avg_mhz" in key or "_min_mhz" in key or "_max_mhz" in key)
+                    or key.startswith("getfre_numa")
+                    and "_overall_variance_mhz" in key
+                    or key.startswith("getfre_numa")
+                    and "_core_count" in key
+                ):
                     row[key] = value
 
             rows.append(row)
@@ -1052,7 +1060,7 @@ def generate_summary_report(results: Dict, output_path: str):
         df = pd.DataFrame(rows)
 
         # Sort by vm_count, ratio, active_percent ascending
-        df = df.sort_values(by=['vm_count', 'ratio', 'active_percent'], ascending=[True, True, True])
+        df = df.sort_values(by=["vm_count", "ratio", "active_percent"], ascending=[True, True, True])
 
         # Save to Excel first (creates basic structure)
         df.to_excel(output_path, index=False, sheet_name="Summary")
@@ -1091,7 +1099,13 @@ def generate_summary_report(results: Dict, output_path: str):
         col_idx = mem_end + 1
 
         # NUMA Bandwidth - 2 columns (base) + dynamic per-node columns
-        numa_bw_cols = [c for c in df.columns if c.startswith("numa") and c not in ["numa_total_read_mb_s", "numa_total_write_mb_s"] and "_l3_hit_rate" not in c]
+        numa_bw_cols = [
+            c
+            for c in df.columns
+            if c.startswith("numa")
+            and c not in ["numa_total_read_mb_s", "numa_total_write_mb_s"]
+            and "_l3_hit_rate" not in c
+        ]
         numa_end = col_idx + 1 + len(numa_bw_cols)
         column_sources.append(("NUMA Bandwidth (Excel: NUMA_Bandwidth)", col_idx, numa_end))
         col_idx = numa_end + 1
@@ -1131,10 +1145,7 @@ def generate_summary_report(results: Dict, output_path: str):
         header_font_white = Font(bold=True, size=11, color="FFFFFF")
         center_align = Alignment(horizontal="center", vertical="center")
         thin_border = Border(
-            left=Side(style='thin'),
-            right=Side(style='thin'),
-            top=Side(style='thin'),
-            bottom=Side(style='thin')
+            left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin")
         )
 
         # Color fills for different sources
@@ -1195,9 +1206,9 @@ def generate_summary_report(results: Dict, output_path: str):
         wb.save(output_path)
 
         print(f"\nSummary report saved to: {output_path}")
-        print(f"  - Row 1: Data source headers (merged cells)")
-        print(f"  - Row 2: Column names")
-        print(f"  - Row 3+: Test data")
+        print("  - Row 1: Data source headers (merged cells)")
+        print("  - Row 2: Column names")
+        print("  - Row 3+: Test data")
 
     except ImportError as e:
         print(f"WARNING: Required libraries not available ({e}), saving as JSON instead")
@@ -1232,8 +1243,9 @@ def scan_existing_results(result_base_dir: str) -> List[TestTask]:
             active_percent = float(match.group(3))
 
             # Check if result files exist (backward compatibility: check both vm_monitor and qemu_monitor)
-            has_vm = os.path.exists(os.path.join(entry_path, "vm_monitor", "analysis_report.xlsx")) or \
-                     os.path.exists(os.path.join(entry_path, "qemu_monitor", "analysis_report.xlsx"))
+            has_vm = os.path.exists(os.path.join(entry_path, "vm_monitor", "analysis_report.xlsx")) or os.path.exists(
+                os.path.join(entry_path, "qemu_monitor", "analysis_report.xlsx")
+            )
             has_bench = os.path.exists(os.path.join(entry_path, "vm_bench_lite"))
 
             # Consider success if both result directories exist
@@ -1245,7 +1257,7 @@ def scan_existing_results(result_base_dir: str) -> List[TestTask]:
                 ratio=ratio,
                 active_percent=active_percent,
                 result_dir=entry_path,
-                success=success
+                success=success,
             )
             tasks.append(task)
             print(f"  Found: {entry} (vm={vm_count}, ratio={ratio}, active={active_percent})")
@@ -1349,7 +1361,7 @@ def main():
     # Print task list
     print("\nTask list:")
     for i, task in enumerate(tasks):
-        print(f"  [{i+1}] {task.task_id}")
+        print(f"  [{i + 1}] {task.task_id}")
 
     if args.dry_run:
         print("\n[Dry run mode] Tasks listed but not executed")
@@ -1383,13 +1395,11 @@ def main():
 
     for i, task in enumerate(tasks):
         print(f"\n{'=' * 60}")
-        print(f"Task [{i+1}/{len(tasks)}]: {task.task_id}")
+        print(f"Task [{i + 1}/{len(tasks)}]: {task.task_id}")
         print(f"{'=' * 60}")
 
         # Generate temp config
-        task.config_file = generate_temp_config(
-            template_path, task, fixed_params, base_dir, temp_config_dir
-        )
+        task.config_file = generate_temp_config(template_path, task, fixed_params, base_dir, temp_config_dir)
 
         # Run test
         success, result_dir = run_single_test(task, task.config_file, batch_log_file)
@@ -1406,7 +1416,7 @@ def main():
 
         # Handle failure
         if not success and not scheduler_config["continue_on_failure"]:
-            print(f"\nTest failed, stopping batch execution")
+            print("\nTest failed, stopping batch execution")
             break
 
     elapsed = time.time() - start_time

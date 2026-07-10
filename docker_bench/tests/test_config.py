@@ -2,9 +2,11 @@
 Tests for Docker Bench configuration
 """
 
-import pytest
-import tempfile
 import os
+import tempfile
+
+import pytest
+
 from docker_bench.config import Config
 
 
@@ -132,7 +134,7 @@ container:
 test:
   duration: 120
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(yaml_content)
             yaml_path = f.name
 

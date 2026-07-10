@@ -4,9 +4,10 @@ Test MetricsExtractor Module
 Tests for MetricsExtractor: _to_float, extract_browser_metrics, extract from Excel
 """
 
-import pytest
 import os
 import tempfile
+
+import pytest
 
 from e2b_bench.metrics_extractor import MetricsExtractor
 
@@ -57,7 +58,7 @@ Success Rate: 95.50%
 Avg Latency: 1234.56ms
 P99 Latency: 5678.90ms
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write(report_content)
             temp_path = f.name
 
@@ -77,7 +78,7 @@ P99 Latency: 5678.90ms
 Total Tasks: 50
 Success Rate: 80.0%
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             temp_path = f.name
             f.write(report_content)
 
@@ -99,23 +100,17 @@ class TestExtractExcel:
         result = extractor.extract("/nonexistent/file.xlsx")
         assert result == {}
 
-    @pytest.mark.skipif(
-        not pytest.importorskip("pandas", reason="pandas not installed"),
-        reason="pandas not installed"
-    )
+    @pytest.mark.skipif(not pytest.importorskip("pandas", reason="pandas not installed"), reason="pandas not installed")
     def test_extract_summary_sheet(self):
         """Extract from Summary sheet"""
         import pandas as pd
 
-        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as f:
             excel_path = f.name
 
         # Create Excel file
-        summary_df = pd.DataFrame({
-            'Metric': ['VM Avg CPU', 'VM Peak Total CPU'],
-            'Value': [25.5, 80.0]
-        })
-        summary_df.to_excel(excel_path, sheet_name='Summary', index=False, engine='openpyxl')
+        summary_df = pd.DataFrame({"Metric": ["VM Avg CPU", "VM Peak Total CPU"], "Value": [25.5, 80.0]})
+        summary_df.to_excel(excel_path, sheet_name="Summary", index=False, engine="openpyxl")
 
         try:
             extractor = MetricsExtractor()
@@ -126,26 +121,23 @@ class TestExtractExcel:
 
         finally:
             import gc
+
             gc.collect()
             os.unlink(excel_path)
 
-    @pytest.mark.skipif(
-        not pytest.importorskip("pandas", reason="pandas not installed"),
-        reason="pandas not installed"
-    )
+    @pytest.mark.skipif(not pytest.importorskip("pandas", reason="pandas not installed"), reason="pandas not installed")
     def test_extract_devkit_topdown(self):
         """Extract from DevKit_TopDown sheet"""
         import pandas as pd
 
-        with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as f:
             excel_path = f.name
 
         # Create Excel file
-        topdown_df = pd.DataFrame({
-            'Metric': ['IPC Avg', 'Backend Bound (%)', 'Mem Bound (%)'],
-            'Value': [0.85, 35.5, 20.0]
-        })
-        topdown_df.to_excel(excel_path, sheet_name='DevKit_TopDown', index=False, engine='openpyxl')
+        topdown_df = pd.DataFrame(
+            {"Metric": ["IPC Avg", "Backend Bound (%)", "Mem Bound (%)"], "Value": [0.85, 35.5, 20.0]}
+        )
+        topdown_df.to_excel(excel_path, sheet_name="DevKit_TopDown", index=False, engine="openpyxl")
 
         try:
             extractor = MetricsExtractor()
@@ -157,9 +149,10 @@ class TestExtractExcel:
 
         finally:
             import gc
+
             gc.collect()
             os.unlink(excel_path)
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

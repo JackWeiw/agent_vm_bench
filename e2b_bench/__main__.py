@@ -5,21 +5,20 @@ Supports both single benchmark and batch test modes.
 """
 
 import sys
-import argparse
 
 
 def main():
     """Main entry point"""
     # Check if --batch is in args before parsing
-    if '--batch' in sys.argv:
+    if "--batch" in sys.argv:
         # Batch mode: delegate to batch_scheduler
-        from .batch_scheduler import build_arg_parser, BatchScheduler, offline_summary
+        from .batch_scheduler import BatchScheduler, build_arg_parser, offline_summary
 
         batch_parser = build_arg_parser()
         # Remove '--batch' from args for batch parser
         batch_args = sys.argv[1:]
-        if '--batch' in batch_args:
-            batch_args.remove('--batch')
+        if "--batch" in batch_args:
+            batch_args.remove("--batch")
         batch_args = batch_parser.parse_args(batch_args)
 
         # Offline mode: generate summary from existing results
@@ -43,8 +42,9 @@ def main():
     else:
         # Single benchmark mode
         from .bench import main as bench_main
+
         bench_main()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

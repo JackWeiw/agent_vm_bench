@@ -49,19 +49,24 @@ smap_bw.py — SMAP_migrate 周期带宽计算工具
     dmesg -w | python3 smap_bw.py
 """
 
-import re
-import sys
-import time
 import argparse
+import re
 import subprocess
+import sys
 import threading
+import time
 
-G = '\033[32m'; Y = '\033[33m'; C = '\033[36m'
-R = '\033[31m'; B = '\033[1m';  D = '\033[2m'; E = '\033[0m'
+G = "\033[32m"
+Y = "\033[33m"
+C = "\033[36m"
+R = "\033[31m"
+B = "\033[1m"
+D = "\033[2m"
+E = "\033[0m"
 
 RE_MIGRATE = re.compile(
-    r'$$\s*(\d+\.\d+)$$\s+SMAP_migrate:\s+$$(\d+)$$\s+'
-    r'pid\s+(\d+)\s+from\s+(\d+)\s+to\s+(\d+)\s+nr\s+(\d+)'
+    r"$$\s*(\d+\.\d+)$$\s+SMAP_migrate:\s+$$(\d+)$$\s+"
+    r"pid\s+(\d+)\s+from\s+(\d+)\s+to\s+(\d+)\s+nr\s+(\d+)"
 )
 
 
@@ -72,33 +77,42 @@ def parse_line(line):
     m = RE_MIGRATE.search(line)
     if m:
         return dict(
-            ts=float(m.group(1)), seq=int(m.group(2)),
-            pid=int(m.group(3)), frm=int(m.group(4)),
-            to=int(m.group(5)),  nr=int(m.group(6)),
+            ts=float(m.group(1)),
+            seq=int(m.group(2)),
+            pid=int(m.group(3)),
+            frm=int(m.group(4)),
+            to=int(m.group(5)),
+            nr=int(m.group(6)),
         )
     # 备用
-    if 'SMAP_migrate' not in line:
+    if "SMAP_migrate" not in line:
         return None
     try:
-        bracket_ts, rest = line.split(']', 1)
-        ts = float(bracket_ts.lstrip('[').strip())
+        bracket_ts, rest = line.split("]", 1)
+        ts = float(bracket_ts.lstrip("[").strip())
         parts = rest.split()
         idx = 0
         for i, p in enumerate(parts):
-            if p.startswith('SMAP_migrate'):
-                idx = i + 1; break
+            if p.startswith("SMAP_migrate"):
+                idx = i + 1
+                break
         seq = 0
         for i in range(idx, len(parts)):
-            if parts[i].startswith('['):
-                seq = int(parts[i].strip('[]'))
-                idx = i + 1; break
+            if parts[i].startswith("["):
+                seq = int(parts[i].strip("[]"))
+                idx = i + 1
+                break
+
         def find_val(kw):
             for j in range(idx, len(parts) - 1):
                 if parts[j] == kw:
                     return int(parts[j + 1])
             return 0
-        pid = find_val('pid'); frm = find_val('from')
-        to = find_val('to');   nr = find_val('nr')
+
+        pid = find_val("pid")
+        frm = find_val("from")
+        to = find_val("to")
+        nr = find_val("nr")
         if nr > 0:
             return dict(ts=ts, seq=seq, pid=pid, frm=frm, to=to, nr=nr)
     except (ValueError, IndexError):
@@ -108,9 +122,9 @@ def parse_line(line):
 
 def report_cycle(cycle_no, records):
     n = len(records)
-    total_nr = sum(r['nr'] for r in records)
-    t0 = records[0]['ts']
-    t1 = records[-1]['ts']
+    total_nr = sum(r["nr"] for r in records)
+    t0 = records[0]["ts"]
+    t1 = records[-1]["ts"]
     dt = t1 - t0
     if dt <= 0:
         dt = 0.000001
@@ -120,8 +134,8 @@ def report_cycle(cycle_no, records):
 
     nodes = {}
     for r in records:
-        key = (r['frm'], r['to'])
-        nodes[key] = nodes.get(key, 0) + r['nr']
+        key = (r["frm"], r["to"])
+        nodes[key] = nodes.get(key, 0) + r["nr"]
 
     print(f"""
 {B}╔══════════════════════════════════════════════╗
@@ -145,23 +159,18 @@ def report_cycle(cycle_no, records):
 
 def main():
     ap = argparse.ArgumentParser(
-        description='SMAP_migrate 周期带宽计算工具',
+        description="SMAP_migrate 周期带宽计算工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='示例:\n'
-               '  sudo python3 smap_bw.py --clear --timeout 15\n'
-               '  python3 smap_bw.py --file dmesg_log.txt\n'
-               '  dmesg -w | python3 smap_bw.py\n'
+        epilog="示例:\n"
+        "  sudo python3 smap_bw.py --clear --timeout 15\n"
+        "  python3 smap_bw.py --file dmesg_log.txt\n"
+        "  dmesg -w | python3 smap_bw.py\n",
     )
-    ap.add_argument('--timeout', type=float, default=10,
-                    help='无新事件超时秒数 (默认 10)')
-    ap.add_argument('--duration', type=float, default=None,
-                    help='从首条事件起采集时长上限 (秒)')
-    ap.add_argument('--clear', action='store_true',
-                    help='开始前清空 dmesg 缓冲区')
-    ap.add_argument('--file', type=str, default=None,
-                    help='从文件读取日志')
-    ap.add_argument('--debug', action='store_true',
-                    help='显示解析过程')
+    ap.add_argument("--timeout", type=float, default=10, help="无新事件超时秒数 (默认 10)")
+    ap.add_argument("--duration", type=float, default=None, help="从首条事件起采集时长上限 (秒)")
+    ap.add_argument("--clear", action="store_true", help="开始前清空 dmesg 缓冲区")
+    ap.add_argument("--file", type=str, default=None, help="从文件读取日志")
+    ap.add_argument("--debug", action="store_true", help="显示解析过程")
     args = ap.parse_args()
 
     print(f"""
@@ -172,24 +181,26 @@ def main():
 """)
 
     if args.clear:
-        subprocess.run(['dmesg', '-C'], check=True, capture_output=True)
+        subprocess.run(["dmesg", "-C"], check=True, capture_output=True)
         print(f"{D}  已清空 dmesg 缓冲区{E}")
 
     proc = None
     if args.file:
-        source = open(args.file, 'r', errors='replace')
-        label = "文件: {}".format(args.file)
+        source = open(args.file, errors="replace")
+        label = f"文件: {args.file}"
     elif not sys.stdin.isatty():
         source = sys.stdin
         label = "stdin 管道"
     else:
         proc = subprocess.Popen(
-            ['dmesg', '-w'],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, bufsize=1,
+            ["dmesg", "-w"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
         )
         source = proc.stdout
-        label = "dmesg -w (超时 {}s)".format(args.timeout)
+        label = f"dmesg -w (超时 {args.timeout}s)"
 
     print(f"{D}  数据源: {label}{E}")
     if args.duration is not None:
@@ -202,14 +213,14 @@ def main():
     prev_direction = None
     cycle_no = 0
     all_bw = []
-    wall_start = None          # 首条事件的 wall-clock 时间
+    wall_start = None  # 首条事件的 wall-clock 时间
     stopped = threading.Event()
-    stop_reason = [None]       # 记录停止原因
+    stop_reason = [None]  # 记录停止原因
     timer_lock = threading.Lock()
     timer = [None]
 
     def on_timeout():
-        stop_reason[0] = 'timeout'
+        stop_reason[0] = "timeout"
         stopped.set()
 
     def reset_timer():
@@ -217,7 +228,8 @@ def main():
             if timer[0]:
                 timer[0].cancel()
             t = threading.Timer(args.timeout, on_timeout)
-            t.daemon = True; t.start()
+            t.daemon = True
+            t.start()
             timer[0] = t
 
     def cleanup():
@@ -230,7 +242,7 @@ def main():
                 proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 proc.kill()
-        if hasattr(source, 'close'):
+        if hasattr(source, "close"):
             source.close()
 
     def finish_cycle():
@@ -242,7 +254,7 @@ def main():
         all_bw.append((t, d, b))
         current_records.clear()
 
-    need_timer = (proc is not None)
+    need_timer = proc is not None
 
     try:
         if need_timer:
@@ -264,11 +276,11 @@ def main():
             if args.duration is not None:
                 elapsed = time.monotonic() - wall_start
                 if elapsed >= args.duration:
-                    stop_reason[0] = 'duration'
+                    stop_reason[0] = "duration"
                     # 不 break，先把当前事件处理完再退出
                     stopped.set()
 
-            direction = (rec['frm'], rec['to'])
+            direction = (rec["frm"], rec["to"])
 
             if collecting and prev_direction == (5, 1) and direction == (1, 5):
                 finish_cycle()
@@ -278,15 +290,12 @@ def main():
 
             if collecting:
                 current_records.append(rec)
-                el = current_records[-1]['ts'] - current_records[0]['ts']
-                cum = sum(r['nr'] for r in current_records)
+                el = current_records[-1]["ts"] - current_records[0]["ts"]
+                cum = sum(r["nr"] for r in current_records)
                 if args.debug or (cycle_no == 0 and len(current_records) <= 3):
                     print(
-                        "  {}[{:4d}]{} pid={:<10d} {}->{} nr={:<6d} │ "
-                        "cycle={:<3d} cum_nr={:<8d} dt={:.6f}s".format(
-                            D, rec['seq'], E, rec['pid'],
-                            rec['frm'], rec['to'], rec['nr'],
-                            cycle_no + 1, cum, el
+                        "  {}[{:4d}]{} pid={:<10d} {}->{} nr={:<6d} │ cycle={:<3d} cum_nr={:<8d} dt={:.6f}s".format(
+                            D, rec["seq"], E, rec["pid"], rec["frm"], rec["to"], rec["nr"], cycle_no + 1, cum, el
                         )
                     )
 
@@ -302,9 +311,9 @@ def main():
             if collecting:
                 print(f"\n{D}  (输入结束，处理最后一个不完整周期){E}")
 
-        if stop_reason[0] == 'timeout':
+        if stop_reason[0] == "timeout":
             print(f"\n{Y}[TIMEOUT]{E} 超时 {args.timeout}s 无新事件")
-        elif stop_reason[0] == 'duration':
+        elif stop_reason[0] == "duration":
             wall_dur = time.monotonic() - wall_start if wall_start else 0
             print(f"\n{Y}[DURATION]{E} 已采集 {wall_dur:.1f}s，达到时长上限 {args.duration}s")
 
@@ -334,5 +343,5 @@ def main():
         print(f"\n{R}  未捕获到任何 SMAP_migrate 迁移周期。{E}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

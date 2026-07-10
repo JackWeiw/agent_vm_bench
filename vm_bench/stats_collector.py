@@ -4,16 +4,16 @@ Statistics Collector Module
 Real-time snapshot collection, terminal output and final report generation
 """
 
-import time
-import threading
-import statistics
 import os
+import statistics
+import threading
+import time
 from datetime import datetime
-from typing import List, Dict
+from typing import Dict, List
 
 from .config import Config
-from .schemas import VMState, VMStatus, TestSnapshot, OOMType
-from .utils import calc_percentiles, calc_p99
+from .schemas import TestSnapshot, VMState, VMStatus
+from .utils import calc_p99, calc_percentiles
 
 
 class StatsCollector:
@@ -52,25 +52,29 @@ class StatsCollector:
 
         # VM status counts
         active_count = sum(
-            1 for s in self.vm_states.values()
+            1
+            for s in self.vm_states.values()
             if s.connection_metrics.status == VMStatus.CONNECTED and s.health.is_connected
         )
         offline_count = sum(
-            1 for s in self.vm_states.values()
+            1
+            for s in self.vm_states.values()
             if not s.health.is_connected or s.connection_metrics.status in (VMStatus.OFFLINE, VMStatus.SHUTOFF)
         )
         failure_count = sum(1 for s in self.vm_states.values() if s.has_task_failure)
 
         # Creation stats (Phase 0)
         create_times = [
-            s.creation_metrics.elapsed for s in self.vm_states.values()
+            s.creation_metrics.elapsed
+            for s in self.vm_states.values()
             if s.creation_metrics.status == VMStatus.ACTIVE and s.creation_metrics.elapsed > 0
         ]
         creation_stats = calc_percentiles(create_times)
 
         # Connection stats (Phase 1)
         connect_times = [
-            s.connection_metrics.connect_elapsed for s in self.vm_states.values()
+            s.connection_metrics.connect_elapsed
+            for s in self.vm_states.values()
             if s.connection_metrics.status == VMStatus.CONNECTED and s.connection_metrics.connect_elapsed > 0
         ]
         connection_stats = calc_percentiles(connect_times)
@@ -155,27 +159,35 @@ class StatsCollector:
 
     def _print_snapshot(self, snapshot: TestSnapshot) -> None:
         """Print real-time snapshot"""
-        print(f"\n{'─'*70}")
+        print(f"\n{'─' * 70}")
         print(f"T+{snapshot.elapsed:6.1f}s  Status Snapshot")
-        print(f"{'─'*70}")
-        print(f"  VMs: {snapshot.active_vms:3d} active / {snapshot.offline_vms:2d} offline / {snapshot.total_failure_vms:2d} task failures")
+        print(f"{'─' * 70}")
+        print(
+            f"  VMs: {snapshot.active_vms:3d} active / {snapshot.offline_vms:2d} offline / {snapshot.total_failure_vms:2d} task failures"
+        )
 
         if snapshot.creation_stats and snapshot.creation_stats.get("avg", 0) > 0:
             print(f"  Create:  avg={snapshot.creation_stats['avg']:.1f}s  p99={snapshot.creation_stats['p99']:.1f}s")
 
         if snapshot.connection_stats and snapshot.connection_stats.get("avg", 0) > 0:
-            print(f"  Connect: avg={snapshot.connection_stats['avg']:.1f}s  p99={snapshot.connection_stats['p99']:.1f}s")
+            print(
+                f"  Connect: avg={snapshot.connection_stats['avg']:.1f}s  p99={snapshot.connection_stats['p99']:.1f}s"
+            )
 
         if self.config.task_mode == "browser":
-            print(f"  Browser: {snapshot.browser_success:3d}/{snapshot.browser_total:3d}  avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s")
+            print(
+                f"  Browser: {snapshot.browser_success:3d}/{snapshot.browser_total:3d}  avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s"
+            )
             if snapshot.browser_type_stats:
                 for tname, tcounts in sorted(snapshot.browser_type_stats.items()):
                     print(f"    [{tname}] success={tcounts['success']} failed={tcounts['failed']}")
 
         elif self.config.task_mode == "qa":
-            print(f"  QA:      {snapshot.qa_success:3d}/{snapshot.qa_total:3d}  avg={snapshot.qa_avg_latency:.2f}s  p99={snapshot.qa_p99_latency:.2f}s")
+            print(
+                f"  QA:      {snapshot.qa_success:3d}/{snapshot.qa_total:3d}  avg={snapshot.qa_avg_latency:.2f}s  p99={snapshot.qa_p99_latency:.2f}s"
+            )
 
-        print(f"{'─'*70}")
+        print(f"{'─' * 70}")
 
     def generate_report(self) -> str:
         """Generate final TXT report"""
@@ -185,7 +197,7 @@ class StatsCollector:
         lines.append("=" * 80)
 
         # Configuration
-        lines.append(f"\n[Test Configuration]")
+        lines.append("\n[Test Configuration]")
         lines.append(f"  Total VMs:      {self.config.total_count}")
         lines.append(f"  Task Mode:      {self.config.task_mode}")
         lines.append(f"  Test Duration:  {self.config.test_duration}s")
@@ -201,7 +213,7 @@ class StatsCollector:
         offline_vms = [s for s in self.vm_states.values() if not s.health.is_connected]
         failed_creation = [s for s in self.vm_states.values() if s.creation_metrics.status == VMStatus.CREATE_FAILED]
 
-        lines.append(f"\n[VM Status]")
+        lines.append("\n[VM Status]")
         lines.append(f"  Created (ACTIVE):  {len(created_vms)}")
         lines.append(f"  Connected:         {len(connected_vms)}")
         lines.append(f"  Creation Failed:   {len(failed_creation)}")
@@ -215,7 +227,7 @@ class StatsCollector:
         create_times = [s.creation_metrics.elapsed for s in created_vms if s.creation_metrics.elapsed > 0]
         if create_times:
             stats = calc_percentiles(create_times)
-            lines.append(f"\n[VM Creation Performance]")
+            lines.append("\n[VM Creation Performance]")
             lines.append(f"  Min:  {stats['min']:.1f}s")
             lines.append(f"  Max:  {stats['max']:.1f}s")
             lines.append(f"  Avg:  {stats['avg']:.1f}s")
@@ -224,10 +236,12 @@ class StatsCollector:
             lines.append(f"  P99:  {stats['p99']:.1f}s")
 
         # Connection Performance
-        connect_times = [s.connection_metrics.connect_elapsed for s in connected_vms if s.connection_metrics.connect_elapsed > 0]
+        connect_times = [
+            s.connection_metrics.connect_elapsed for s in connected_vms if s.connection_metrics.connect_elapsed > 0
+        ]
         if connect_times:
             stats = calc_percentiles(connect_times)
-            lines.append(f"\n[SSH Connection Performance]")
+            lines.append("\n[SSH Connection Performance]")
             lines.append(f"  Min:  {stats['min']:.1f}s")
             lines.append(f"  Max:  {stats['max']:.1f}s")
             lines.append(f"  Avg:  {stats['avg']:.1f}s")
@@ -246,7 +260,7 @@ class StatsCollector:
             total_failed = sum(s.browser_metrics.failed_count for s in self.vm_states.values())
             total_timeout = sum(s.browser_metrics.timeout_count for s in self.vm_states.values())
 
-            lines.append(f"\n[Browser Task Statistics]")
+            lines.append("\n[Browser Task Statistics]")
             lines.append(f"  Total Tasks:   {total_tasks}")
             lines.append(f"  Success:       {total_success}")
             lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
@@ -267,7 +281,7 @@ class StatsCollector:
             total_success = sum(s.qa_metrics.success_count for s in self.vm_states.values())
             total_failed = sum(s.qa_metrics.failed_count for s in self.vm_states.values())
 
-            lines.append(f"\n[QA Task Statistics]")
+            lines.append("\n[QA Task Statistics]")
             lines.append(f"  Total Queries: {total_queries}")
             lines.append(f"  Success:       {total_success}")
             lines.append(f"  Failed:        {total_failed}")
@@ -280,7 +294,7 @@ class StatsCollector:
                 lines.append(f"  P99 Latency:   {p99_ms:.1f}ms")
 
         lines.append("\n" + "=" * 80)
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
     def save_report(self, report: str) -> str:
         """Save report to file"""
@@ -291,7 +305,7 @@ class StatsCollector:
         filename = f"{self.config.filename_prefix}_{timestamp}.txt"
         filepath = os.path.join(output_dir, filename)
 
-        with open(filepath, 'w', encoding='utf-8') as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             f.write(report)
 
         return filepath

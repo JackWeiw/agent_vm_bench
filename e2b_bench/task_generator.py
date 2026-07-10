@@ -5,7 +5,8 @@ Generates TaskGroups and BatchTasks from test matrix configuration.
 Groups tasks by (total_count, ratio) for sandbox reuse.
 """
 
-from typing import List, Dict, Any
+from typing import Any, Dict, List
+
 from .schemas import BatchTask, TaskGroup
 
 
@@ -19,12 +20,12 @@ class TaskGenerator:
         Args:
             matrix_config: Dict containing test_matrix and reuse_strategy
         """
-        self.matrix = matrix_config.get('test_matrix', {})
-        self.reuse_strategy = matrix_config.get('reuse_strategy', {})
+        self.matrix = matrix_config.get("test_matrix", {})
+        self.reuse_strategy = matrix_config.get("reuse_strategy", {})
 
-        self.total_counts = self.matrix.get('total_counts', [10])
-        self.benchmark_percentages = self.matrix.get('benchmark_percentages', [1.0])
-        self.ratios = self.matrix.get('ratios', [15])
+        self.total_counts = self.matrix.get("total_counts", [10])
+        self.benchmark_percentages = self.matrix.get("benchmark_percentages", [1.0])
+        self.ratios = self.matrix.get("ratios", [15])
 
     def generate_groups(self) -> List[TaskGroup]:
         """
@@ -45,20 +46,10 @@ class TaskGenerator:
                 tasks = []
                 for bp in self.benchmark_percentages:
                     task_id = f"{group_id}_bp{bp}"
-                    task = BatchTask(
-                        task_id=task_id,
-                        total_count=total_count,
-                        benchmark_percent=bp,
-                        ratio=ratio
-                    )
+                    task = BatchTask(task_id=task_id, total_count=total_count, benchmark_percent=bp, ratio=ratio)
                     tasks.append(task)
 
-                group = TaskGroup(
-                    group_id=group_id,
-                    total_count=total_count,
-                    ratio=ratio,
-                    tasks=tasks
-                )
+                group = TaskGroup(group_id=group_id, total_count=total_count, ratio=ratio, tasks=tasks)
                 groups.append(group)
 
         return groups
@@ -75,5 +66,6 @@ class TaskGenerator:
 def load_matrix_config(path: str) -> Dict[str, Any]:
     """Load matrix configuration from YAML file"""
     import yaml
-    with open(path, 'r', encoding='utf-8') as f:
+
+    with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f)

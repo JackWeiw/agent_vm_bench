@@ -6,18 +6,18 @@ Integrates all components, runs test workflow:
 Phase 0: Create VMs (OpenStack) -> Phase 1: Connect (SSH) -> Benchmark -> Report
 """
 
-import time
 import argparse
 import threading
+import time
 from typing import Dict
 
 from .config import Config
-from .schemas import VMState, VMStatus
-from .vm_manager import VMManager
-from .task_runner import QATaskManager, StressTaskManager, BrowserTaskManager, VMTaskRunner
 from .health_checker import HealthChecker, OpenStackVMChecker
+from .schemas import VMState, VMStatus
 from .stats_collector import StatsCollector
+from .task_runner import BrowserTaskManager, QATaskManager, StressTaskManager, VMTaskRunner
 from .utils import calc_percentiles
+from .vm_manager import VMManager
 
 
 class BatchController:
@@ -49,9 +49,9 @@ class BatchController:
         for batch_id in range(max_batch + 1):
             vm_list = [vm_id for vm_id, bid in self.vm_batch_map.items() if bid == batch_id]
 
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"Batch {batch_id}/{max_batch} ready: VMs {vm_list}")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
 
             self.batch_ready[batch_id] = True
 
@@ -91,16 +91,16 @@ def run_benchmark(config: Config) -> dict:
     print(f"  Image:        {config.image}")
 
     if config.create_only:
-        print(f"  Mode:         Create-only (Phase 0)")
+        print("  Mode:         Create-only (Phase 0)")
     elif config.detect_existing:
-        print(f"  Mode:         Detect existing VMs")
+        print("  Mode:         Detect existing VMs")
     else:
-        print(f"  Mode:         Full workflow (Create + Benchmark)")
+        print("  Mode:         Full workflow (Create + Benchmark)")
 
     if config.create_batch_size:
         print(f"  Create Batch: {config.create_batch_count} x {config.create_batch_size}")
     else:
-        print(f"  Create Batch: Full concurrent")
+        print("  Create Batch: Full concurrent")
 
     if not config.create_only:
         print(f"  Task Mode:    {config.task_mode}")
@@ -146,10 +146,7 @@ def run_benchmark(config: Config) -> dict:
         vm_states = vm_manager.create_all()
         creation_end = time.time()
 
-        ready_count = sum(
-            1 for s in vm_states.values()
-            if s.creation_metrics.status == VMStatus.ACTIVE
-        )
+        ready_count = sum(1 for s in vm_states.values() if s.creation_metrics.status == VMStatus.ACTIVE)
 
         print(f"\nVMs created: {ready_count}/{config.total_count}")
         print(f"Creation elapsed: {creation_end - creation_start:.1f}s")
@@ -165,12 +162,9 @@ def run_benchmark(config: Config) -> dict:
         vm_states = vm_manager.create_all()
         creation_end = time.time()
 
-        ready_count = sum(
-            1 for s in vm_states.values()
-            if s.creation_metrics.status == VMStatus.ACTIVE
-        )
+        ready_count = sum(1 for s in vm_states.values() if s.creation_metrics.status == VMStatus.ACTIVE)
 
-        print(f"\n[Phase 0 Complete] Create-only mode finished.")
+        print("\n[Phase 0 Complete] Create-only mode finished.")
         print(f"  Created: {ready_count}/{config.total_count}")
         print(f"  Elapsed: {creation_end - creation_start:.1f}s")
 
@@ -178,7 +172,7 @@ def run_benchmark(config: Config) -> dict:
         create_times = [s.creation_metrics.elapsed for s in vm_states.values() if s.creation_metrics.elapsed > 0]
         if create_times:
             stats = calc_percentiles(create_times)
-            print(f"\n[Creation Performance]")
+            print("\n[Creation Performance]")
             print(f"  Min:  {stats['min']:.1f}s")
             print(f"  Max:  {stats['max']:.1f}s")
             print(f"  Avg:  {stats['avg']:.1f}s")
@@ -187,16 +181,13 @@ def run_benchmark(config: Config) -> dict:
             print(f"  P99:  {stats['p99']:.1f}s")
 
         print("\nVMs left running for later use.")
-        return {'report': f"Create-only: {ready_count}/{config.total_count}", 'filepath': None}
+        return {"report": f"Create-only: {ready_count}/{config.total_count}", "filepath": None}
 
     # === Phase 1: SSH Connection ===
     print("\n[Phase 1] Connecting to VMs via SSH...")
     vm_states = vm_manager.connect_all()
 
-    connected_count = sum(
-        1 for s in vm_states.values()
-        if s.connection_metrics.status == VMStatus.CONNECTED
-    )
+    connected_count = sum(1 for s in vm_states.values() if s.connection_metrics.status == VMStatus.CONNECTED)
 
     print(f"\nSSH connected: {connected_count}/{ready_count}")
 
@@ -255,7 +246,7 @@ def run_benchmark(config: Config) -> dict:
 
         vm_manager.close_all()
         health_checker.stop()
-        return {'report': f"Warmup: {warmup_count}/{connected_count}", 'filepath': None}
+        return {"report": f"Warmup: {warmup_count}/{connected_count}", "filepath": None}
 
     # === Stats Collector ===
     print("\n[Phase 2] Starting stats collector...")
@@ -326,90 +317,88 @@ def run_benchmark(config: Config) -> dict:
     filepath = stats_collector.save_report(report)
     print(f"\nReport saved to: {filepath}")
 
-    return {'report': report, 'filepath': filepath}
+    return {"report": report, "filepath": filepath}
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     """Build CLI argument parser"""
-    parser = argparse.ArgumentParser(
-        description='VM Bench - OpenStack VM Batch Performance Testing Tool'
-    )
+    parser = argparse.ArgumentParser(description="VM Bench - OpenStack VM Batch Performance Testing Tool")
 
     # Config file
-    parser.add_argument('-c', '--config', type=str, default=None,
-                        help='YAML configuration file path')
+    parser.add_argument("-c", "--config", type=str, default=None, help="YAML configuration file path")
 
     # OpenStack params
-    parser.add_argument('--auth-source', type=str, help='OpenStack auth source file')
-    parser.add_argument('--flavor', type=str, help='VM flavor')
-    parser.add_argument('--image', type=str, help='Image name')
-    parser.add_argument('--network-id', type=str, help='OpenStack network ID')
-    parser.add_argument('--az', type=str, help='Availability zone')
-    parser.add_argument('--subnet-prefix', type=str, help='Subnet IP prefix')
-    parser.add_argument('--vm-prefix', type=str, help='VM name prefix')
+    parser.add_argument("--auth-source", type=str, help="OpenStack auth source file")
+    parser.add_argument("--flavor", type=str, help="VM flavor")
+    parser.add_argument("--image", type=str, help="Image name")
+    parser.add_argument("--network-id", type=str, help="OpenStack network ID")
+    parser.add_argument("--az", type=str, help="Availability zone")
+    parser.add_argument("--subnet-prefix", type=str, help="Subnet IP prefix")
+    parser.add_argument("--vm-prefix", type=str, help="VM name prefix")
 
     # VM creation
-    parser.add_argument('-n', '--total', type=int, help='Total VM count')
-    parser.add_argument('--start-ip', type=str, help='Starting IP address')
-    parser.add_argument('--create-timeout', type=int, help='VM creation timeout')
-    parser.add_argument('--create-only', action='store_true', help='Create VMs only, no benchmark')
-    parser.add_argument('--detect', action='store_true', help='Detect existing VMs')
+    parser.add_argument("-n", "--total", type=int, help="Total VM count")
+    parser.add_argument("--start-ip", type=str, help="Starting IP address")
+    parser.add_argument("--create-timeout", type=int, help="VM creation timeout")
+    parser.add_argument("--create-only", action="store_true", help="Create VMs only, no benchmark")
+    parser.add_argument("--detect", action="store_true", help="Detect existing VMs")
 
     # Create batch
-    parser.add_argument('--create-batch-size', type=int, help='VMs per creation batch')
-    parser.add_argument('--create-batch-interval', type=int, help='Creation batch interval')
+    parser.add_argument("--create-batch-size", type=int, help="VMs per creation batch")
+    parser.add_argument("--create-batch-interval", type=int, help="Creation batch interval")
 
     # SSH params
-    parser.add_argument('--ssh-port', type=int, help='SSH port')
-    parser.add_argument('--ssh-username', type=str, help='SSH username')
-    parser.add_argument('--ssh-password', type=str, help='SSH password')
-    parser.add_argument('--ssh-connect-timeout', type=int, help='SSH connect timeout')
+    parser.add_argument("--ssh-port", type=int, help="SSH port")
+    parser.add_argument("--ssh-username", type=str, help="SSH username")
+    parser.add_argument("--ssh-password", type=str, help="SSH password")
+    parser.add_argument("--ssh-connect-timeout", type=int, help="SSH connect timeout")
 
     # Connect batch
-    parser.add_argument('--connect-batch-size', type=int, help='Connections per batch')
-    parser.add_argument('--connect-batch-interval', type=int, help='Connect batch interval')
+    parser.add_argument("--connect-batch-size", type=int, help="Connections per batch")
+    parser.add_argument("--connect-batch-interval", type=int, help="Connect batch interval")
 
     # Task batch
-    parser.add_argument('--task-batch-size', type=int, help='Tasks per batch')
-    parser.add_argument('--task-batch-interval', type=int, help='Task batch interval')
+    parser.add_argument("--task-batch-size", type=int, help="Tasks per batch")
+    parser.add_argument("--task-batch-interval", type=int, help="Task batch interval")
 
     # Task mode
-    parser.add_argument('--task-mode', type=str, choices=['qa', 'stress', 'browser', 'mixed'],
-                        help='Task execution mode')
-    parser.add_argument('--duration', type=int, help='Benchmark duration')
+    parser.add_argument(
+        "--task-mode", type=str, choices=["qa", "stress", "browser", "mixed"], help="Task execution mode"
+    )
+    parser.add_argument("--duration", type=int, help="Benchmark duration")
 
     # Browser params
-    parser.add_argument('--browser-url', type=str, action='append', help='Browser URL')
-    parser.add_argument('--browser-timeout', type=int, help='Browser task timeout')
-    parser.add_argument('--browser-interval-min', type=float, help='Browser interval min')
-    parser.add_argument('--browser-interval-max', type=float, help='Browser interval max')
-    parser.add_argument('--browser-use-llm', action='store_true', help='Use LLM for browser')
-    parser.add_argument('--benchmark-percent', type=float, help='Percentage of VMs for benchmark')
+    parser.add_argument("--browser-url", type=str, action="append", help="Browser URL")
+    parser.add_argument("--browser-timeout", type=int, help="Browser task timeout")
+    parser.add_argument("--browser-interval-min", type=float, help="Browser interval min")
+    parser.add_argument("--browser-interval-max", type=float, help="Browser interval max")
+    parser.add_argument("--browser-use-llm", action="store_true", help="Use LLM for browser")
+    parser.add_argument("--benchmark-percent", type=float, help="Percentage of VMs for benchmark")
 
     # Warmup
-    parser.add_argument('-w', '--warmup-url', type=str, action='append', help='Warmup URL')
-    parser.add_argument('--warmup-loops', type=int, help='Warmup loop count')
-    parser.add_argument('--warmup-delay', type=int, help='Warmup page delay')
-    parser.add_argument('--warmup-only', action='store_true', help='Run warmup only')
+    parser.add_argument("-w", "--warmup-url", type=str, action="append", help="Warmup URL")
+    parser.add_argument("--warmup-loops", type=int, help="Warmup loop count")
+    parser.add_argument("--warmup-delay", type=int, help="Warmup page delay")
+    parser.add_argument("--warmup-only", action="store_true", help="Run warmup only")
 
     # QA params
-    parser.add_argument('--qa-timeout', type=int, help='QA timeout')
-    parser.add_argument('--qa-init-timeout', type=int, help='QA init timeout')
-    parser.add_argument('--qa-interval', type=float, help='QA interval')
-    parser.add_argument('--qa-mode', type=str, choices=['cli', 'http'], help='QA mode')
+    parser.add_argument("--qa-timeout", type=int, help="QA timeout")
+    parser.add_argument("--qa-init-timeout", type=int, help="QA init timeout")
+    parser.add_argument("--qa-interval", type=float, help="QA interval")
+    parser.add_argument("--qa-mode", type=str, choices=["cli", "http"], help="QA mode")
 
     # Stress params
-    parser.add_argument('--stress-percent', type=float, help='Percentage of stress VMs')
-    parser.add_argument('--stress-memory', type=int, help='Stress memory MB')
-    parser.add_argument('--no-keepalive', action='store_true', help='Disable stress keepalive')
+    parser.add_argument("--stress-percent", type=float, help="Percentage of stress VMs")
+    parser.add_argument("--stress-memory", type=int, help="Stress memory MB")
+    parser.add_argument("--no-keepalive", action="store_true", help="Disable stress keepalive")
 
     # Report
-    parser.add_argument('--output-dir', type=str, help='Report output directory')
-    parser.add_argument('--filename-prefix', type=str, help='Report filename prefix')
-    parser.add_argument('--stats-interval', type=int, help='Stats snapshot interval')
+    parser.add_argument("--output-dir", type=str, help="Report output directory")
+    parser.add_argument("--filename-prefix", type=str, help="Report filename prefix")
+    parser.add_argument("--stats-interval", type=int, help="Stats snapshot interval")
 
     # Cleanup
-    parser.add_argument('--delete-after-test', action='store_true', help='Delete VMs after test')
+    parser.add_argument("--delete-after-test", action="store_true", help="Delete VMs after test")
 
     return parser
 

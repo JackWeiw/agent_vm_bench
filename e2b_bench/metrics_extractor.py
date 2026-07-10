@@ -8,8 +8,7 @@ NUMA_Bandwidth, KSys, UBWatch_Latency, UBWatch_Bandwidth, SMAPBW, Getfre.
 
 import os
 import re
-from typing import Dict, Any, Optional
-from pathlib import Path
+from typing import Any, Dict
 
 
 class MetricsExtractor:
@@ -36,6 +35,7 @@ class MetricsExtractor:
 
         try:
             import pandas as pd
+
             xls = pd.ExcelFile(analysis_file)
 
             # Extract from each sheet
@@ -62,6 +62,7 @@ class MetricsExtractor:
         metrics = {}
         try:
             import pandas as pd
+
             df = pd.read_excel(xls, sheet_name="Summary")
             for idx, row in df.iterrows():
                 metric = str(row.get("Metric", "")).strip()
@@ -79,6 +80,7 @@ class MetricsExtractor:
         metrics = {}
         try:
             import pandas as pd
+
             df = pd.read_excel(xls, sheet_name="DevKit_TopDown")
             key_map = {
                 "Cycles Avg": "DevKit_TopDown_Cycles_Avg",
@@ -109,6 +111,7 @@ class MetricsExtractor:
         metrics = {}
         try:
             import pandas as pd
+
             df = pd.read_excel(xls, sheet_name="DevKit_Memory")
             key_map = {
                 "L1D Miss (%)": "DevKit_Memory_L1D_Miss",
@@ -137,6 +140,7 @@ class MetricsExtractor:
         metrics = {}
         try:
             import pandas as pd
+
             df = pd.read_excel(xls, sheet_name="NUMA_Bandwidth")
             total_read = 0.0
             total_write = 0.0
@@ -160,6 +164,7 @@ class MetricsExtractor:
         metrics = {}
         try:
             import pandas as pd
+
             df = pd.read_excel(xls, sheet_name="KSys")
             key_map = {
                 "L2 Miss Latency Max": "KSys_L2_Miss_Latency_Max",
@@ -188,6 +193,7 @@ class MetricsExtractor:
         metrics = {}
         try:
             import pandas as pd
+
             df = pd.read_excel(xls, sheet_name="UBWatch_Latency")
             key_map = {
                 "Samples": "UBWatch_Latency_Samples",
@@ -215,6 +221,7 @@ class MetricsExtractor:
         metrics = {}
         try:
             import pandas as pd
+
             df = pd.read_excel(xls, sheet_name="UBWatch_Bandwidth")
             total_avg_wr = 0.0
             total_avg_rd = 0.0
@@ -251,6 +258,7 @@ class MetricsExtractor:
         metrics = {}
         try:
             import pandas as pd
+
             df = pd.read_excel(xls, sheet_name="SMAPBW_Summary")
             key_map = {
                 "Total Cycles": "SMAPBW_Total_Cycles",
@@ -273,6 +281,7 @@ class MetricsExtractor:
         metrics = {}
         try:
             import pandas as pd
+
             df = pd.read_excel(xls, sheet_name="SMAPBW_Cycles")
             for idx, row in df.iterrows():
                 metric = str(row.get("Metric", "")).strip()
@@ -289,6 +298,7 @@ class MetricsExtractor:
         metrics = {}
         try:
             import pandas as pd
+
             df = pd.read_excel(xls, sheet_name="Getfre_Summary")
             for idx, row in df.iterrows():
                 numa = str(row.get("NUMA", "")).strip()
@@ -305,8 +315,8 @@ class MetricsExtractor:
             return 0.0
         try:
             if isinstance(value, str):
-                if '%' in value:
-                    return float(value.replace('%', '').strip())
+                if "%" in value:
+                    return float(value.replace("%", "").strip())
                 return float(value.strip())
             return float(value)
         except (ValueError, TypeError):
@@ -319,7 +329,7 @@ class MetricsExtractor:
             return metrics
 
         try:
-            with open(report_file, 'r', encoding='utf-8') as f:
+            with open(report_file, encoding="utf-8") as f:
                 content = f.read()
 
             match = re.search(r"Success Rate:\s+([\d.]+)%", content)

@@ -3,9 +3,10 @@ Tests for Docker Bench utility functions
 """
 
 import pytest
+
 from docker_bench.utils import (
-    calc_percentiles,
     calc_p99,
+    calc_percentiles,
     format_duration,
 )
 

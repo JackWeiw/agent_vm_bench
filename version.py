@@ -7,6 +7,7 @@ __version_info__ = tuple(map(int, __version__.split(".")))
 # Version status
 VERSION_STATUS = "alpha"  # alpha, beta, stable
 
+
 # Full version string with status
 def get_version():
     if VERSION_STATUS != "stable":

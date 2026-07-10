@@ -4,12 +4,12 @@ Test TaskGenerator Module
 Tests for TaskGenerator: group generation, task counts, load_matrix_config
 """
 
-import pytest
 import os
 import tempfile
 
+import pytest
+
 from e2b_bench.task_generator import TaskGenerator, load_matrix_config
-from e2b_bench.schemas import BatchTask, TaskGroup
 
 
 class TestTaskGeneratorBasic:
@@ -17,13 +17,7 @@ class TestTaskGeneratorBasic:
 
     def test_single_group_single_task(self):
         """Minimal configuration"""
-        matrix_config = {
-            'test_matrix': {
-                'total_counts': [10],
-                'benchmark_percentages': [0.5],
-                'ratios': [15]
-            }
-        }
+        matrix_config = {"test_matrix": {"total_counts": [10], "benchmark_percentages": [0.5], "ratios": [15]}}
         generator = TaskGenerator(matrix_config)
         groups = generator.generate_groups()
 
@@ -35,13 +29,7 @@ class TestTaskGeneratorBasic:
 
     def test_task_id_format(self):
         """Task ID follows expected format"""
-        matrix_config = {
-            'test_matrix': {
-                'total_counts': [100],
-                'benchmark_percentages': [0.5],
-                'ratios': [15]
-            }
-        }
+        matrix_config = {"test_matrix": {"total_counts": [100], "benchmark_percentages": [0.5], "ratios": [15]}}
         generator = TaskGenerator(matrix_config)
         groups = generator.generate_groups()
 
@@ -54,13 +42,7 @@ class TestTaskGeneratorMultiple:
 
     def test_multiple_total_counts(self):
         """Multiple total_counts creates multiple groups"""
-        matrix_config = {
-            'test_matrix': {
-                'total_counts': [10, 20],
-                'benchmark_percentages': [1.0],
-                'ratios': [15]
-            }
-        }
+        matrix_config = {"test_matrix": {"total_counts": [10, 20], "benchmark_percentages": [1.0], "ratios": [15]}}
         generator = TaskGenerator(matrix_config)
         groups = generator.generate_groups()
 
@@ -71,13 +53,7 @@ class TestTaskGeneratorMultiple:
 
     def test_multiple_ratios(self):
         """Multiple ratios creates multiple groups"""
-        matrix_config = {
-            'test_matrix': {
-                'total_counts': [10],
-                'benchmark_percentages': [1.0],
-                'ratios': [10, 20]
-            }
-        }
+        matrix_config = {"test_matrix": {"total_counts": [10], "benchmark_percentages": [1.0], "ratios": [10, 20]}}
         generator = TaskGenerator(matrix_config)
         groups = generator.generate_groups()
 
@@ -89,11 +65,7 @@ class TestTaskGeneratorMultiple:
     def test_multiple_benchmark_percentages(self):
         """Multiple benchmark_percentages creates multiple tasks per group"""
         matrix_config = {
-            'test_matrix': {
-                'total_counts': [10],
-                'benchmark_percentages': [0.5, 0.75, 1.0],
-                'ratios': [15]
-            }
+            "test_matrix": {"total_counts": [10], "benchmark_percentages": [0.5, 0.75, 1.0], "ratios": [15]}
         }
         generator = TaskGenerator(matrix_config)
         groups = generator.generate_groups()
@@ -108,11 +80,7 @@ class TestTaskGeneratorMultiple:
     def test_full_matrix(self):
         """Full matrix: 2 total_counts * 2 ratios * 2 benchmark_percentages"""
         matrix_config = {
-            'test_matrix': {
-                'total_counts': [10, 20],
-                'benchmark_percentages': [0.5, 1.0],
-                'ratios': [10, 20]
-            }
+            "test_matrix": {"total_counts": [10, 20], "benchmark_percentages": [0.5, 1.0], "ratios": [10, 20]}
         }
         generator = TaskGenerator(matrix_config)
         groups = generator.generate_groups()
@@ -135,10 +103,10 @@ class TestTaskGeneratorCounts:
     def test_total_task_count(self):
         """Total task count calculation"""
         matrix_config = {
-            'test_matrix': {
-                'total_counts': [10, 20, 50],  # 3
-                'benchmark_percentages': [0.5, 0.75, 1.0],  # 3
-                'ratios': [10, 20]  # 2
+            "test_matrix": {
+                "total_counts": [10, 20, 50],  # 3
+                "benchmark_percentages": [0.5, 0.75, 1.0],  # 3
+                "ratios": [10, 20],  # 2
             }
         }
         generator = TaskGenerator(matrix_config)
@@ -148,9 +116,9 @@ class TestTaskGeneratorCounts:
     def test_group_count(self):
         """Group count = total_counts * ratios"""
         matrix_config = {
-            'test_matrix': {
-                'total_counts': [10, 20, 50],  # 3
-                'ratios': [10, 20]  # 2
+            "test_matrix": {
+                "total_counts": [10, 20, 50],  # 3
+                "ratios": [10, 20],  # 2
             }
         }
         generator = TaskGenerator(matrix_config)
@@ -176,19 +144,19 @@ result:
   template_path: config/template.yaml
   output_dir: results/e2b/batch
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             temp_path = f.name
             f.write(yaml_content)
 
         try:
             config = load_matrix_config(temp_path)
-            assert config['test_matrix']['total_counts'] == [10, 20]
-            assert config['test_matrix']['benchmark_percentages'] == [0.5, 1.0]
-            assert config['reuse_strategy']['reuse_sandbox'] == True
-            assert config['result']['output_dir'] == "results/e2b/batch"
+            assert config["test_matrix"]["total_counts"] == [10, 20]
+            assert config["test_matrix"]["benchmark_percentages"] == [0.5, 1.0]
+            assert config["reuse_strategy"]["reuse_sandbox"] == True
+            assert config["result"]["output_dir"] == "results/e2b/batch"
         finally:
             os.unlink(temp_path)
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

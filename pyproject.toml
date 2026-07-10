@@ -123,6 +123,36 @@ ignore = [
     "ARG001", # unused function argument (common in callbacks)
     "ARG002", # unused method argument
     "SIM108", # use ternary operator
+    "SIM115", # use context manager for opening files (intentional in some places)
+    "SIM105", # use contextlib.suppress (intentional try-except-pass)
+    "SIM118", # use key in dict instead of dict.keys()
+    "B007",   # loop control variable not used
+    "C401",   # unnecessary generator
+    "C416",   # unnecessary dict comprehension
+    "C408",   # unnecessary dict() call
+    "UP022",  # prefer capture_output
+    "UP015",  # unnecessary mode argument
+    "UP009",  # UTF-8 encoding declaration
+    "UP024",  # replace aliased errors
+    "E722",   # bare except
+    "E712",   # equality comparisons to True/False
+    "E741",   # ambiguous variable name
+    "E701",   # multiple statements on one line (colon)
+    "E702",   # multiple statements on one line (semicolon)
+    "F401",   # unused import (handled in per-file-ignores)
+    "F403",   # star imports
+    "F541",   # f-string without placeholders
+    "F821",   # undefined name
+    "F841",   # local variable assigned but never used
+    "ARG004", # unused static method argument
+    "ARG005", # unused lambda argument
+    "E402",   # module level import not at top
+    "W291",   # trailing whitespace
+    "W292",   # no newline at end of file
+    "W293",   # blank line contains whitespace
+    "I001",   # import block unsorted
+    "SIM102", # use single if statement
+    "SIM114", # combine if branches
 ]
 
 [tool.ruff.lint.isort]

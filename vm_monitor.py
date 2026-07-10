@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 VM Monitor Entry Script
 
@@ -17,5 +16,5 @@ For package usage:
 
 from vm_monitor.cli import main
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

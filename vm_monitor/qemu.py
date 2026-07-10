@@ -6,8 +6,10 @@ Monitors qemu-kvm and qemu-system processes.
 """
 
 import re
-import psutil
 from typing import Dict, List, Tuple
+
+import psutil
+
 from .base import VMMonitorBase
 
 
@@ -18,7 +20,7 @@ class QEMUMonitor(VMMonitorBase):
     """
 
     # Process names to match
-    PROCESS_NAMES = ('qemu-kvm', 'qemu-system')
+    PROCESS_NAMES = ("qemu-kvm", "qemu-system")
 
     def get_process_names(self) -> Tuple[str, ...]:
         """Return QEMU process names to match"""
@@ -34,7 +36,7 @@ class QEMUMonitor(VMMonitorBase):
         Returns:
             VM name string (e.g., 'vm-123' or parsed name)
         """
-        name_match = re.search(r'-name\s+([^,\s]+)', cmdline)
+        name_match = re.search(r"-name\s+([^,\s]+)", cmdline)
         if name_match:
             return name_match.group(1)
         return f"vm-{pid}"
@@ -62,27 +64,27 @@ class QEMUMonitor(VMMonitorBase):
         # Get process names from abstract method
         process_names = self.get_process_names()
 
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'status']):
+        for proc in psutil.process_iter(["pid", "name", "cmdline", "status"]):
             try:
-                proc_name = proc.info['name'] or ''
+                proc_name = proc.info["name"] or ""
                 # Check if process name matches any QEMU variant
                 if not any(qemu_name in proc_name for qemu_name in process_names):
                     continue
 
-                pid = proc.info['pid']
+                pid = proc.info["pid"]
                 current_pids.add(pid)
-                cmdline = ' '.join(proc.info['cmdline'] or [])
+                cmdline = " ".join(proc.info["cmdline"] or [])
 
                 # Use abstract method to extract VM ID
                 vm_name = self.extract_vm_id(pid, cmdline)
 
                 # Real Physical Memory: numastat
                 numastat_mem = self.get_vm_memory_from_numastat(pid)
-                memory_mb = numastat_mem.get('total_mb', 0.0)
-                memory_huge_mb = numastat_mem.get('huge_mb', 0.0)
-                memory_private_mb = numastat_mem.get('private_mb', 0.0)
-                memory_heap_mb = numastat_mem.get('heap_mb', 0.0)
-                memory_per_numa = numastat_mem.get('per_node', {})
+                memory_mb = numastat_mem.get("total_mb", 0.0)
+                memory_huge_mb = numastat_mem.get("huge_mb", 0.0)
+                memory_private_mb = numastat_mem.get("private_mb", 0.0)
+                memory_heap_mb = numastat_mem.get("heap_mb", 0.0)
+                memory_per_numa = numastat_mem.get("per_node", {})
 
                 # If numastat fails, fall back to psutil
                 if memory_mb <= 0:
@@ -115,17 +117,19 @@ class QEMUMonitor(VMMonitorBase):
                 cpu = round(max(0, min(cpu, 10000)), 2)
                 current_total_cpu += cpu
 
-                vms.append({
-                    'pid': pid,
-                    'name': vm_name,
-                    'cpu_percent': cpu,
-                    'memory_mb': memory_mb,
-                    'memory_huge_mb': memory_huge_mb,
-                    'memory_private_mb': memory_private_mb,
-                    'memory_heap_mb': memory_heap_mb,
-                    'memory_per_numa': memory_per_numa,
-                    'status': proc.info['status']
-                })
+                vms.append(
+                    {
+                        "pid": pid,
+                        "name": vm_name,
+                        "cpu_percent": cpu,
+                        "memory_mb": memory_mb,
+                        "memory_huge_mb": memory_huge_mb,
+                        "memory_private_mb": memory_private_mb,
+                        "memory_heap_mb": memory_heap_mb,
+                        "memory_per_numa": memory_per_numa,
+                        "status": proc.info["status"],
+                    }
+                )
 
             except:
                 continue

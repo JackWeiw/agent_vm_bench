@@ -5,15 +5,8 @@ Tests for utility functions: format_timestamp, format_duration, calc_percentiles
 """
 
 import pytest
-import os
-import tempfile
 
-from e2b_bench.utils import (
-    format_timestamp,
-    format_duration,
-    calc_percentiles,
-    calc_p99
-)
+from e2b_bench.utils import calc_p99, calc_percentiles, format_duration, format_timestamp
 
 
 class TestFormatTimestamp:
@@ -24,7 +17,7 @@ class TestFormatTimestamp:
         ts = 1704067200.0  # 2024-01-01 00:00:00 UTC
         result = format_timestamp(ts)
         assert len(result) == 8
-        assert ':' in result
+        assert ":" in result
 
     def test_format_different_timestamps(self):
         """Test different timestamps"""
@@ -122,5 +115,5 @@ class TestCalcP99:
         assert calc_p99(values) == 100
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

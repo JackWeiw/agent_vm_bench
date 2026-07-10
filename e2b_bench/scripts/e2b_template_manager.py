@@ -8,13 +8,14 @@ Supports deletion by templateID, alias, or all templates.
 Uses the same .env file format as delete_sandbox.sh.
 """
 
-import os
-import sys
-import signal
 import argparse
-import requests
-from typing import List, Dict, Optional, Any
+import os
+import signal
+import sys
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import requests
 
 # Global sandbox reference for cleanup
 _sandbox = None
@@ -48,7 +49,7 @@ def load_env_file(env_path: str) -> dict:
         sys.exit(1)
 
     env_vars = {}
-    with open(env_file, "r", encoding="utf-8") as f:
+    with open(env_file, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             # Skip empty lines and comments
@@ -60,9 +61,7 @@ def load_env_file(env_path: str) -> dict:
                 key = key.strip()
                 value = value.strip()
                 # Remove surrounding quotes if present
-                if value.startswith('"') and value.endswith('"'):
-                    value = value[1:-1]
-                elif value.startswith("'") and value.endswith("'"):
+                if value.startswith('"') and value.endswith('"') or value.startswith("'") and value.endswith("'"):
                     value = value[1:-1]
                 env_vars[key] = value
                 # Also set in os.environ for compatibility
@@ -82,7 +81,8 @@ def load_credentials(config_path: str) -> tuple:
         sys.exit(1)
 
     import json
-    with open(config_file, "r", encoding="utf-8") as f:
+
+    with open(config_file, encoding="utf-8") as f:
         data = json.load(f)
 
     access_token = data.get("accessToken")
@@ -126,10 +126,7 @@ def setup_env_from_env_file(env_path: str) -> dict:
     else:
         os.environ["E2B_HTTP_SSL"] = "true"
 
-    headers = {
-        "X-API-Key": e2b_api_key,
-        "Content-Type": "application/json"
-    }
+    headers = {"X-API-Key": e2b_api_key, "Content-Type": "application/json"}
 
     # Add Authorization header if access token is available
     if e2b_access_token:
@@ -139,7 +136,7 @@ def setup_env_from_env_file(env_path: str) -> dict:
         "base_url": e2b_api_url.rstrip("/"),
         "headers": headers,
         "access_token": e2b_access_token,
-        "team_api_key": e2b_api_key
+        "team_api_key": e2b_api_key,
     }
 
 
@@ -161,17 +158,13 @@ def setup_env_from_config(config_path: str, machine_ip: str = None) -> dict:
 
     base_url = os.environ.get("E2B_API_URL", "https://api.e2b.dev")
 
-    headers = {
-        "X-API-Key": team_api_key,
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
-    }
+    headers = {"X-API-Key": team_api_key, "Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
     return {
         "base_url": base_url.rstrip("/"),
         "headers": headers,
         "access_token": access_token,
-        "team_api_key": team_api_key
+        "team_api_key": team_api_key,
     }
 
 
@@ -268,6 +261,7 @@ def list_templates(env: dict) -> List[Dict]:
         data = resp.json()
 
         import json
+
         raw_preview = json.dumps(data, ensure_ascii=False)[:500]
         print(f"  [Debug] Raw response: {raw_preview}...")
 
@@ -370,7 +364,7 @@ def delete_all_templates(env: dict, templates: List[Any], force: bool = False):
         tid = _get_template_id(t)
         alias = _get_template_alias(t)
         if tid and tid != "N/A":
-            print(f"\n  [{deleted+failed+1}/{len(templates)}] Deleting {alias} ({tid})...")
+            print(f"\n  [{deleted + failed + 1}/{len(templates)}] Deleting {alias} ({tid})...")
             if delete_template(env, tid, force=True):
                 deleted += 1
             else:
@@ -457,9 +451,9 @@ def interactive_delete(env: dict, templates: List[Any]):
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
-        description='E2B Template Manager - Custom Deployment Version (Query then Delete)',
+        description="E2B Template Manager - Custom Deployment Version (Query then Delete)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
+        epilog="""
 Examples:
   # Use .env file (same format as delete_sandbox.sh)
   python e2b_template_manager.py --env-file .env
@@ -472,62 +466,46 @@ Examples:
   python e2b_template_manager.py --env-file .env --all -y
   python e2b_template_manager.py --env-file .env --alias openclaw-chromium-v1
   python e2b_template_manager.py --env-file .env --template-id abc123def456
-        '''
+        """,
     )
 
     parser.add_argument(
-        '--env-file',
+        "--env-file",
         type=str,
         default=None,
-        help='Path to .env file (same format as delete_sandbox.sh). If not specified, uses --config instead.'
+        help="Path to .env file (same format as delete_sandbox.sh). If not specified, uses --config instead.",
     )
 
     parser.add_argument(
-        '--config',
+        "--config",
         type=str,
-        default='/root/.e2b/config.json',
-        help='E2B config file path (default: /root/.e2b/config.json). Used when --env-file is not specified.'
+        default="/root/.e2b/config.json",
+        help="E2B config file path (default: /root/.e2b/config.json). Used when --env-file is not specified.",
     )
 
     parser.add_argument(
-        '--ip',
-        type=str,
-        default=None,
-        help='E2B custom deployment server IP (e.g., 192.168.110.10). Only used with --config.'
-    )
-
-    parser.add_argument(
-        '--template-id',
+        "--ip",
         type=str,
         default=None,
-        help='Specify template ID to delete (non-interactive mode)'
+        help="E2B custom deployment server IP (e.g., 192.168.110.10). Only used with --config.",
     )
 
     parser.add_argument(
-        '--alias',
-        type=str,
-        default=None,
-        help='Delete template by alias (e.g., openclaw-chromium-v1)'
+        "--template-id", type=str, default=None, help="Specify template ID to delete (non-interactive mode)"
     )
 
-    parser.add_argument(
-        '--all',
-        action='store_true',
-        dest='delete_all',
-        help='Delete all templates'
-    )
+    parser.add_argument("--alias", type=str, default=None, help="Delete template by alias (e.g., openclaw-chromium-v1)")
+
+    parser.add_argument("--all", action="store_true", dest="delete_all", help="Delete all templates")
 
     parser.add_argument(
-        '-y', '--yes',
-        action='store_true',
-        help='Skip confirmation, delete directly (use with --template-id / --alias / --all)'
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Skip confirmation, delete directly (use with --template-id / --alias / --all)",
     )
 
-    parser.add_argument(
-        '--list-only',
-        action='store_true',
-        help='Only query list, do not enter delete mode'
-    )
+    parser.add_argument("--list-only", action="store_true", help="Only query list, do not enter delete mode")
 
     args = parser.parse_args()
 
@@ -550,7 +528,7 @@ Examples:
     print(f"  E2B API URL: {env['base_url']}")
     print(f"  HTTP SSL: {os.environ.get('E2B_HTTP_SSL', 'default')}")
     # Only show first 20 chars of API key for security
-    api_key = env['team_api_key']
+    api_key = env["team_api_key"]
     print(f"  E2B API Key: {api_key[:20]}...")
 
     # Step 1: Query all templates

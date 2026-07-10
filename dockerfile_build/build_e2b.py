@@ -18,13 +18,12 @@ Note:
     The Harbor registry and E2B API service are typically deployed on the same server.
 """
 
-import os
-import json
 import argparse
+import json
+import os
 import sys
-from e2b import Template, default_build_logger, wait_for_port
-from e2b import Sandbox
 
+from e2b import Sandbox, Template, default_build_logger, wait_for_port
 
 # Default configuration
 DEFAULT_SERVER_IP = "141.61.17.196"
@@ -33,40 +32,20 @@ DEFAULT_HARBOR_IP = "141.61.17.196"
 
 def parse_arguments():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Build E2B template and create sandbox"
+    parser = argparse.ArgumentParser(description="Build E2B template and create sandbox")
+    parser.add_argument(
+        "--server-ip", default=DEFAULT_SERVER_IP, help=f"E2B API server IP address (default: {DEFAULT_SERVER_IP})"
     )
     parser.add_argument(
-        "--server-ip",
-        default=DEFAULT_SERVER_IP,
-        help=f"E2B API server IP address (default: {DEFAULT_SERVER_IP})"
+        "--harbor-ip", default=DEFAULT_HARBOR_IP, help=f"Harbor registry IP address (default: {DEFAULT_HARBOR_IP})"
     )
-    parser.add_argument(
-        "--harbor-ip",
-        default=DEFAULT_HARBOR_IP,
-        help=f"Harbor registry IP address (default: {DEFAULT_HARBOR_IP})"
-    )
-    parser.add_argument(
-        "--alias",
-        default="openclaw-chromium-v1",
-        help="Template alias name"
-    )
-    parser.add_argument(
-        "--cpu",
-        type=int,
-        default=2,
-        help="CPU count for sandbox"
-    )
-    parser.add_argument(
-        "--memory",
-        type=int,
-        default=4096,
-        help="Memory in MB for sandbox"
-    )
+    parser.add_argument("--alias", default="openclaw-chromium-v1", help="Template alias name")
+    parser.add_argument("--cpu", type=int, default=2, help="CPU count for sandbox")
+    parser.add_argument("--memory", type=int, default=4096, help="Memory in MB for sandbox")
     parser.add_argument(
         "--image",
         default="e2b-orchestration/ubuntu-openclaw-chromium:custom",
-        help="Image path in Harbor (default: e2b-orchestration/ubuntu-openclaw-chromium:custom)"
+        help="Image path in Harbor (default: e2b-orchestration/ubuntu-openclaw-chromium:custom)",
     )
     return parser.parse_args()
 
@@ -90,7 +69,7 @@ def load_e2b_config(config_path: str) -> tuple:
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(config_path, encoding="utf-8") as f:
         data = json.load(f)
 
     access_token = data.get("accessToken")
@@ -144,16 +123,14 @@ def build_template(harbor_ip: str, image: str, alias: str, cpu_count: int, memor
     # Build template from Harbor image
     # Harbor uses nginx reverse proxy on port 443
     Template.build(
-        Template().from_dockerfile(f'FROM harbor:443/{image}')
-        .set_start_cmd(
-            "sudo websocat -b --exit-on-eof ws-l:0.0.0.0:8081 tcp:127.0.0.1:22",
-            wait_for_port(8081)
-        ),
+        Template()
+        .from_dockerfile(f"FROM harbor:443/{image}")
+        .set_start_cmd("sudo websocat -b --exit-on-eof ws-l:0.0.0.0:8081 tcp:127.0.0.1:22", wait_for_port(8081)),
         alias=alias,
         cpu_count=cpu_count,
         memory_mb=memory_mb,
         on_build_logs=default_build_logger(),
-        skip_cache=True
+        skip_cache=True,
     )
 
     print("Template build completed!")

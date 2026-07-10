@@ -5,14 +5,14 @@ Responsible for QA, Stress, Browser task execution
 Each VM has an independent thread
 """
 
-import time
 import random
 import threading
-from typing import Tuple, Dict, Optional
+import time
+from typing import Optional, Tuple
 
 from .config import Config
-from .schemas import VMState, VMStatus, OOMType
-from .constants import QA_MEMORY_TEXT, QA_QUESTIONS, BROWSER_TASKS, STRESS_TOOL_PATH
+from .constants import BROWSER_TASKS, QA_MEMORY_TEXT, QA_QUESTIONS, STRESS_TOOL_PATH
+from .schemas import OOMType, VMState
 from .vm_manager import VMConnection
 
 
@@ -28,21 +28,21 @@ class QATaskManager:
         self._query_counter += 1
         resp_file = f"/tmp/openclaw_resp_{self._query_counter}.json"
 
-        escaped = content.replace('\\', '\\\\').replace('"', '\\"')
+        escaped = content.replace("\\", "\\\\").replace('"', '\\"')
 
         cmd = (
             f"curl -s -o {resp_file} -w '%{{time_total}}' "
             f"-X POST http://127.0.0.1:18789/v1/chat/completions "
             f"-H 'Authorization: Bearer test-token-123' "
             f"-H 'Content-Type: application/json' "
-            f"-d '{{\"model\":\"openclaw/default\",\"messages\":[{{\"role\":\"user\",\"content\":\"{escaped}\"}}]}}'"
+            f'-d \'{{"model":"openclaw/default","messages":[{{"role":"user","content":"{escaped}"}}]}}\''
         )
 
         success, stdout, _, duration, _ = vm.execute(cmd, timeout=timeout + 10, get_exit_code=True)
 
         latency = 0.0
         if success and stdout.strip():
-            parts = stdout.strip().split('\n')
+            parts = stdout.strip().split("\n")
             try:
                 latency = float(parts[-1])
             except (ValueError, IndexError):
@@ -126,11 +126,11 @@ class StressTaskManager:
         vm.execute(cleanup_cmd, timeout=5)
 
         start_cmd = (
-            f'nohup {STRESS_TOOL_PATH} '
-            f'-c 2 -m {self.config.stress_memory_mb} -i 5 -d {self.config.stress_duration} '
-            f'> /tmp/{log_id}.log 2>&1 & '
-            f'echo $! > /tmp/{log_id}.pid; sync; '
-            f'sleep 2; cat /tmp/{log_id}.pid'
+            f"nohup {STRESS_TOOL_PATH} "
+            f"-c 2 -m {self.config.stress_memory_mb} -i 5 -d {self.config.stress_duration} "
+            f"> /tmp/{log_id}.log 2>&1 & "
+            f"echo $! > /tmp/{log_id}.pid; sync; "
+            f"sleep 2; cat /tmp/{log_id}.pid"
         )
 
         success, stdout, stderr, _, _ = vm.execute(start_cmd, timeout=15, get_exit_code=True)
@@ -190,22 +190,22 @@ class StressTaskManager:
         return success and pid in stdout and "DEAD" not in stdout
 
     def _diagnose_failure(self, vm: VMConnection, log_id: str, phase: str) -> OOMType:
-        log_cmd = f'cat /tmp/{log_id}.log 2>/dev/null | head -20'
+        log_cmd = f"cat /tmp/{log_id}.log 2>/dev/null | head -20"
         success, stdout, _, _, _ = vm.execute(log_cmd, timeout=50, get_exit_code=True)
 
         if stdout:
             log_lower = stdout.lower()
-            if any(kw in log_lower for kw in ['cannot allocate', 'out of memory', 'oom', 'killed']):
+            if any(kw in log_lower for kw in ["cannot allocate", "out of memory", "oom", "killed"]):
                 return OOMType.START_OOM if phase == "start" else OOMType.RUNTIME_OOM
-            if any(kw in log_lower for kw in ['segmentation fault', 'sigsegv', 'crash', 'aborted']):
+            if any(kw in log_lower for kw in ["segmentation fault", "sigsegv", "crash", "aborted"]):
                 return OOMType.CRASH
-            if 'finished' in log_lower or 'completed' in log_lower:
+            if "finished" in log_lower or "completed" in log_lower:
                 return OOMType.NONE
 
         if phase == "runtime":
-            dmesg_cmd = f'dmesg | grep -i "killed process" | tail -3'
+            dmesg_cmd = 'dmesg | grep -i "killed process" | tail -3'
             success, stdout, _, _, _ = vm.execute(dmesg_cmd, timeout=50, get_exit_code=True)
-            if success and stdout and 'stress_tool' in stdout.lower():
+            if success and stdout and "stress_tool" in stdout.lower():
                 return OOMType.RUNTIME_OOM
 
         return OOMType.UNKNOWN
@@ -223,20 +223,20 @@ class BrowserTaskManager:
         self._task_counter += 1
         resp_file = f"/tmp/browser_resp_{self._task_counter}.json"
 
-        escaped = prompt.replace('\\', '\\\\').replace('"', '\\"')
+        escaped = prompt.replace("\\", "\\\\").replace('"', '\\"')
         cmd = (
             f"curl -s -o {resp_file} -w '%{{time_total}}' "
             f"-X POST http://127.0.0.1:18789/v1/chat/completions "
             f"-H 'Authorization: Bearer test-token-123' "
             f"-H 'Content-Type: application/json' "
-            f"-d '{{\"model\":\"openclaw/default\",\"stream\":false,\"messages\":[{{\"role\":\"user\",\"content\":\"{escaped}\"}}]}}'"
+            f'-d \'{{"model":"openclaw/default","stream":false,"messages":[{{"role":"user","content":"{escaped}"}}]}}\''
         )
 
         success, stdout, stderr, duration, _ = vm.execute(cmd, timeout=timeout + 30, get_exit_code=True)
 
         latency = 0.0
         if success and stdout.strip():
-            parts = stdout.strip().split('\n')
+            parts = stdout.strip().split("\n")
             try:
                 latency = float(parts[-1])
             except (ValueError, IndexError):
@@ -299,10 +299,10 @@ class BrowserTaskManager:
 
                 time.sleep(self.config.warmup_delay)
 
-        cmd1 = 'openclaw config set agents.defaults.memorySearch.chunking.tokens 200'
+        cmd1 = "openclaw config set agents.defaults.memorySearch.chunking.tokens 200"
         success1, _, _, _, _ = vm.execute(cmd1, timeout=30, get_exit_code=True)
 
-        cmd2 = 'openclaw memory index --force'
+        cmd2 = "openclaw memory index --force"
         success2, _, _, _, _ = vm.execute(cmd2, timeout=120, get_exit_code=True)
 
         state.warmup_done = True
@@ -393,10 +393,7 @@ class VMTaskRunner(threading.Thread):
 
                 # Task interval
                 if self.config.task_mode == "browser":
-                    sleep_time = random.uniform(
-                        self.config.browser_interval_min,
-                        self.config.browser_interval_max
-                    )
+                    sleep_time = random.uniform(self.config.browser_interval_min, self.config.browser_interval_max)
                 else:
                     sleep_time = self.config.qa_interval
                 time.sleep(sleep_time)

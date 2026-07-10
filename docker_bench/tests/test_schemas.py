@@ -3,11 +3,12 @@ Tests for Docker Bench schemas
 """
 
 import pytest
+
 from docker_bench.schemas import (
-    ContainerStatus,
-    CreationMetrics,
     BrowserMetrics,
     ContainerState,
+    ContainerStatus,
+    CreationMetrics,
     TestSnapshot,
 )
 
