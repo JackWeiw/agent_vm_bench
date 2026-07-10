@@ -109,8 +109,8 @@ except ImportError:
 # ==================== Constants ====================
 
 ENV_FILE_PATH = '.env'
-ENV_REQUIRED_KEYS = ['DEVKIT_PATH', 'KSYS_PATH', 'KSYS_CONFIG_PATH', 
-                     'UB_WATCH_PATH', 'SMAP_BW_PATH', 'GETFRE_PATH', 
+ENV_REQUIRED_KEYS = ['DEVKIT_PATH', 'KSYS_PATH', 'KSYS_CONFIG_PATH',
+                     'UB_WATCH_PATH', 'SMAP_BW_PATH', 'GETFRE_PATH',
                      'GETFRE_CONFIG_PATH']
 ```
 
@@ -119,10 +119,10 @@ ENV_REQUIRED_KEYS = ['DEVKIT_PATH', 'KSYS_PATH', 'KSYS_CONFIG_PATH',
 ```python
 def load_env_config() -> dict:
     """Load configuration from .env file
-    
+
     Returns:
-        dict with keys: devkit_path, ksys_path, ksys_config_path, 
-        ub_watch_path, smap_bw_path, devkit_cpu_range, 
+        dict with keys: devkit_path, ksys_path, ksys_config_path,
+        ub_watch_path, smap_bw_path, devkit_cpu_range,
         getfre_path, getfre_config_path
     """
     config = {
@@ -198,11 +198,11 @@ def save_env_config(config: dict):
 ```python
 def validate_and_prompt_missing(config: dict, non_interactive: bool = False) -> dict:
     """Validate paths and prompt user for missing/invalid ones
-    
+
     Args:
         config: dict with path configurations
         non_interactive: if True, skip prompts and disable missing tools silently
-        
+
     Returns:
         Updated config dict with valid paths or None for disabled tools
     """
@@ -277,10 +277,10 @@ def validate_and_prompt_missing(config: dict, non_interactive: bool = False) -> 
 ```python
 def calculate_cpu_range_from_numa(numa_nodes: list) -> str:
     """Calculate CPU core range from NUMA node IDs
-    
+
     Args:
         numa_nodes: list of NUMA node IDs (e.g., [0, 1])
-        
+
     Returns:
         CPU range string like "0-95,192-287"
     """
@@ -336,11 +336,11 @@ def calculate_cpu_range_from_numa(numa_nodes: list) -> str:
 ```python
 def numa_to_physical_cores(numa_nodes: list, core_interval: int = 1) -> dict:
     """Convert NUMA node IDs to physical core IDs with sampling interval
-    
+
     Args:
         numa_nodes: list of NUMA node IDs (e.g., [0, 1])
         core_interval: sampling interval (1=all cores, 2=every other core)
-        
+
     Returns:
         dict: {numa_id: [physical_core_ids]}
         Example: {0: [0, 2, 4, ...46], 1: [48, 50, 52, ...94]}
@@ -372,12 +372,12 @@ def numa_to_physical_cores(numa_nodes: list, core_interval: int = 1) -> dict:
 ```python
 def load_getfre_config(config_path: str) -> dict:
     """Load getfre configuration from YAML file
-    
+
     Args:
         config_path: path to getfre_config.yaml
-        
+
     Returns:
-        dict with keys: getfre_path, total_cores, interval, 
+        dict with keys: getfre_path, total_cores, interval,
         core_interval, numa_nodes
         Returns default config if file not found or invalid
     """
@@ -444,7 +444,7 @@ git commit -m "feat: extract config.py module from qemu_monitor"
 """
 Log Parser Module
 
-Parses output logs from various collection tools (devkit, ksys, ub_watch, 
+Parses output logs from various collection tools (devkit, ksys, ub_watch,
 smap_bw, getfre) and extracts structured metrics data.
 """
 
@@ -465,12 +465,12 @@ from .config import numa_to_physical_cores
 ```python
 def parse_devkit_top_down(log_path: str) -> dict:
     """Parse DevKit top-down tuner log file
-    
+
     Args:
         log_path: Path to devkit_top_down.log
-        
+
     Returns:
-        dict with keys: cycles_avg, ipc_avg, topdown metrics, 
+        dict with keys: cycles_avg, ipc_avg, topdown metrics,
         report_count, or {'error': str} on failure
     """
     # [Copy complete function from qemu_monitor.py:973-1060]
@@ -487,12 +487,12 @@ def parse_devkit_top_down(log_path: str) -> dict:
 ```python
 def parse_ksys(log_path: str) -> dict:
     """Parse ksys collect log file
-    
+
     Args:
         log_path: Path to ksys.log
-        
+
     Returns:
-        dict with keys: l2_miss_latency, l3_miss_latency, ipc, 
+        dict with keys: l2_miss_latency, l3_miss_latency, ipc,
         topdown metrics, or {'error': str} on failure
     """
     # [Copy complete function from qemu_monitor.py:1062-1138]
@@ -508,13 +508,13 @@ def parse_ksys(log_path: str) -> dict:
 ```python
 def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
     """Parse DevKit memory tuner log file
-    
+
     Args:
         log_path: Path to devkit_mem.log
         numa_nodes: Optional list of NUMA nodes for bandwidth filtering
-        
+
     Returns:
-        dict with keys: cache_miss, ddr_bandwidth_system, 
+        dict with keys: cache_miss, ddr_bandwidth_system,
         numa_bandwidth (filtered), report_count
     """
     # [Copy complete function from qemu_monitor.py:1140-1225]
@@ -530,12 +530,12 @@ def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
 ```python
 def parse_getfre(log_dir: str) -> dict:
     """Parse getfre core frequency log files (per-NUMA node)
-    
+
     Args:
         log_dir: Directory containing getfre_NUMA*.log files
-        
+
     Returns:
-        dict: {numa_id: {numa_avg, numa_min, numa_max, 
+        dict: {numa_id: {numa_avg, numa_min, numa_max,
         core_stats, sample_count}}
     """
     # [Copy complete function from qemu_monitor.py:1227-1340]
@@ -552,12 +552,12 @@ def parse_getfre(log_dir: str) -> dict:
 ```python
 def parse_ub_watch(log_path: str) -> dict:
     """Parse ub_watch latency and bandwidth log
-    
+
     Args:
         log_path: Path to ub_watch.log
-        
+
     Returns:
-        dict with keys: latency (path, samples, avg/min/max), 
+        dict with keys: latency (path, samples, avg/min/max),
         bandwidth list per chip/port
     """
     # [Copy complete function from qemu_monitor.py:1342-1415]
@@ -573,12 +573,12 @@ def parse_ub_watch(log_path: str) -> dict:
 ```python
 def parse_smap_bw(log_path: str) -> dict:
     """Parse smap_bw SMAP migration bandwidth log
-    
+
     Args:
         log_path: Path to smap_bw.log
-        
+
     Returns:
-        dict with keys: summary (total stats), cycles (per-cycle data), 
+        dict with keys: summary (total stats), cycles (per-cycle data),
         all_directions (set of migration patterns)
     """
     # [Copy complete function from qemu_monitor.py:1417-1530]
@@ -594,13 +594,13 @@ def parse_smap_bw(log_path: str) -> dict:
 ```python
 def parse_all_logs(log_dir: str, numa_nodes: list = None) -> dict:
     """Parse all log files in directory and aggregate results
-    
+
     Args:
         log_dir: Directory containing all log files
         numa_nodes: Optional NUMA nodes for bandwidth filtering
-        
+
     Returns:
-        dict with keys for each tool: devkit_top_down, ksys, 
+        dict with keys for each tool: devkit_top_down, ksys,
         devkit_mem, getfre, ub_watch, smap_bw
     """
     # [Copy complete function from qemu_monitor.py:1532-1684]
@@ -641,7 +641,7 @@ git commit -m "feat: extract parsers.py module from qemu_monitor"
 """
 Parallel Log Collection Module
 
-Runs multiple log collection tools (devkit, ksys, ub_watch, smap_bw, getfre) 
+Runs multiple log collection tools (devkit, ksys, ub_watch, smap_bw, getfre)
 in parallel subprocesses and threads, synchronized with QEMU monitoring duration.
 """
 
@@ -666,7 +666,7 @@ from .config import (
 ```python
 class LogCapture:
     """Parallel log collection with devkit, ksys, ub_watch, smap_bw
-    
+
     Runs collection tools in background, synchronized with QEMU monitoring duration.
     All output is redirected to log files, not interfering with terminal display.
     """
@@ -680,10 +680,10 @@ class LogCapture:
         'smap_bw': 60,         # smap_bw follows duration + some buffer
     }
 
-    def __init__(self, config: dict, duration: int, log_dir: str, 
+    def __init__(self, config: dict, duration: int, log_dir: str,
                  numa_nodes: list, ksys_parse_timeout: int = None):
         """Initialize log capture with configuration
-        
+
         Args:
             config: paths from .env (devkit_path, ksys_path, etc.)
             duration: collection duration in seconds
@@ -715,20 +715,20 @@ class LogCapture:
         # Use configured range if available
         if self.config.get('devkit_cpu_range'):
             return self.config['devkit_cpu_range']
-        
+
         # Calculate from NUMA nodes
         return calculate_cpu_range_from_numa(self.numa_nodes)
 
     def _start_tool(self, tool_name: str, cmd: list, log_filename: str,
                     success_msg: str) -> tuple:
         """Helper to start a single tool process
-        
+
         Args:
             tool_name: identifier for the tool (e.g., 'devkit_mem')
             cmd: command list to execute
             log_filename: log file name (e.g., 'devkit_mem.log')
             success_msg: message to print on success
-            
+
         Returns:
             (success: bool, error_msg: str or None)
         """
@@ -782,8 +782,8 @@ class LogCapture:
 ```python
     def _start_getfre(self) -> tuple:
         """Start getfre core frequency collector
-        
-        Uses threading to collect frequency data from multiple cores 
+
+        Uses threading to collect frequency data from multiple cores
         per NUMA node. Each NUMA node has its own log file.
         """
         # [Copy complete function from qemu_monitor.py:507-579]
@@ -794,8 +794,8 @@ class LogCapture:
         # - Stop flag mechanism
         ...
 
-    def _getfre_collector_thread(self, numa_id: int, cores: list, 
-                                  getfre_path: str, total_cores: int, 
+    def _getfre_collector_thread(self, numa_id: int, cores: list,
+                                  getfre_path: str, total_cores: int,
                                   interval: int, log_file, stop_flag):
         """Thread function to collect core frequencies for a NUMA node"""
         # [Copy complete function from qemu_monitor.py:581-634]
@@ -812,7 +812,7 @@ class LogCapture:
 ```python
     def start(self) -> dict:
         """Start all collection processes in parallel
-        
+
         Returns:
             {'success': [tool_names], 'failed': [(tool_name, error_msg)]}
         """
@@ -865,7 +865,7 @@ class LogCapture:
 ```python
     def get_results(self) -> dict:
         """Return collection results and status
-        
+
         Returns:
             dict with success/failed lists, log file paths, duration
         """
@@ -933,18 +933,18 @@ if TYPE_CHECKING:
 - [ ] **Step 2: Add export_to_excel function (main Excel export)**
 
 ```python
-def export_to_excel(monitor: 'QEMUMonitor', log_dir: str, 
+def export_to_excel(monitor: 'QEMUMonitor', log_dir: str,
                     numa_nodes: list = None, output_file: str = None,
                     capture_results: dict = None) -> Optional[str]:
     """Export monitoring data and parsed logs to Excel multi-sheet report
-    
+
     Args:
         monitor: QEMUMonitor instance (contains collected data)
         log_dir: Directory containing log files
         numa_nodes: NUMA nodes for bandwidth filtering
         output_file: Output Excel path (default: analysis_report.xlsx)
         capture_results: LogCapture results dict
-        
+
     Returns:
         Excel file path on success, None on failure
     """
@@ -977,10 +977,10 @@ def export_to_excel(monitor: 'QEMUMonitor', log_dir: str,
 - [ ] **Step 3: Add print_capture_summary function**
 
 ```python
-def print_capture_summary(results: dict, log_dir: str, 
+def print_capture_summary(results: dict, log_dir: str,
                           numa_nodes: list = None):
     """Print log collection summary at the end of monitoring
-    
+
     Args:
         results: capture results from LogCapture.get_results()
         log_dir: log directory path
@@ -1027,8 +1027,8 @@ git commit -m "feat: extract exporters.py module from qemu_monitor"
 """
 QEMU Monitor Core Module
 
-Real-time monitoring of QEMU virtual machine resource usage (CPU, memory, 
-Hugepage, NUMA nodes). Collects samples at configurable intervals and 
+Real-time monitoring of QEMU virtual machine resource usage (CPU, memory,
+Hugepage, NUMA nodes). Collects samples at configurable intervals and
 exports CSV summary reports.
 """
 
@@ -1054,10 +1054,10 @@ from typing import Dict, List, Optional, Tuple
 ```python
 class QEMUMonitor:
     """QEMU Virtual Machine Real-time Monitor
-    
+
     Monitors all QEMU processes (qemu-kvm, qemu-system) on the host,
     collecting CPU usage, memory (including hugepages), and NUMA statistics.
-    
+
     Attributes:
         running: Monitoring state flag
         data: List of collected sample records
@@ -1066,7 +1066,7 @@ class QEMUMonitor:
         hugepage_per_numa: Per-NUMA hugepage statistics
         host_cpu_history: Host total CPU timeline
         swap_history: Swap usage timeline
-        
+
     Example:
         >>> monitor = QEMUMonitor()
         >>> monitor.target_numa_nodes = [0, 1]
@@ -1195,7 +1195,7 @@ class QEMUMonitor:
         # [Copy from qemu_monitor.py:2769-2799]
         ...
 
-    def display_realtime_table(self, sample_data, elapsed_time, 
+    def display_realtime_table(self, sample_data, elapsed_time,
                                 duration, check_method=""):
         """Display real-time monitoring table"""
         # [Copy from qemu_monitor.py:2801-2869]
@@ -1225,8 +1225,8 @@ class QEMUMonitor:
 - [ ] **Step 8: Add monitoring loop methods**
 
 ```python
-    def wait_for_stress_and_monitor(self, check_type, check_target, 
-                                     interval_seconds=5, 
+    def wait_for_stress_and_monitor(self, check_type, check_target,
+                                     interval_seconds=5,
                                      duration_seconds=None):
         """Wait for stress test to start, then monitor"""
         # [Copy from qemu_monitor.py:2887-2953]
@@ -1291,12 +1291,12 @@ class QEMUMonitor:
 ```python
     def analyze_and_export(self, raw=None, summary=None):
         """Analyze collected data and export reports
-        
+
         Note: Imports exporters module lazily to avoid circular dependency.
         """
         # Delayed import to avoid circular dependency
         from .exporters import export_to_excel
-        
+
         vs = self.calculate_vm_stats()
         os = self.calculate_overall_stats(vs)
         rf = self.export_raw_csv(raw)
@@ -1383,14 +1383,14 @@ def main():
     → Monitor for 60 seconds with parallel log collection
         """
     )
-    
+
     # [Copy complete argparse setup from qemu_monitor.py:3227-3241]
     # Implementation preserves:
     # - Mutually exclusive group for stress sync
     # - All argument definitions
     # - Default values
     ...
-    
+
     args = parser.parse_args()
 ```
 
@@ -1434,10 +1434,10 @@ def main():
 
     # Start QEMU monitoring
     if args.stress_process:
-        m.wait_for_stress_and_monitor('process', args.stress_process, 
+        m.wait_for_stress_and_monitor('process', args.stress_process,
                                       args.interval, args.time)
     elif args.stress_file:
-        m.wait_for_stress_and_monitor('file', args.stress_file, 
+        m.wait_for_stress_and_monitor('file', args.stress_file,
                                       args.interval, args.time)
     else:
         m.start_monitoring(args.time, args.interval)
@@ -1503,10 +1503,10 @@ data export, and VM monitoring.
 Usage:
     # Package-level import (recommended)
     from qemu_monitor import QEMUMonitor, LogCapture
-    
+
     # Module-level import (for specific functions)
     from qemu_monitor.parsers import parse_devkit_top_down
-    
+
     # CLI entry point
     python -m qemu_monitor.cli -t 60 -i 3
 """
@@ -1600,7 +1600,7 @@ Usage remains unchanged:
     python qemu_monitor.py -t 600 -i 2
     python qemu_monitor.py --stress-file /tmp/bench_running.lock
     python qemu_monitor.py -t 60 --enable-capture
-    
+
 For package usage:
     from qemu_monitor import QEMUMonitor
 """

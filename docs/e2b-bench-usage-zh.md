@@ -286,42 +286,42 @@ python -m e2b_bench --help
 
 选项：
   --config                  YAML配置文件路径
-  
+
   # E2B环境
   --e2b-access-token        E2B访问令牌
   --e2b-api-key             E2B API密钥
-  
+
   # 沙箱配置
   --template                E2B模板名称
   --total                   沙箱总数
   --create-timeout          沙箱创建超时
   --detect                  检测已有沙箱模式
   --create-only             仅创建模式（Phase 0）
-  
+
   # 创建批量控制
   --create-batch-size       创建批次大小（不设置则全并发）
   --create-batch-interval   创建批次间隔秒数
-  
+
   # 压测批量控制
   --task-batch-size         压测批次大小（不设置则全并发）
   --task-batch-interval     压测批次间隔秒数
-  
+
   # 浏览器任务
   --browser-url             浏览器URL（可多次指定）
   --browser-timeout         浏览器任务超时
   --browser-interval-min    任务间隔最小值
   --browser-interval-max    任务间隔最大值
-  
+
   # 预热阶段
   --warmup-url              预热页面URL（可多次指定）
   --warmup-loops            预热循环次数（默认：2）
   --warmup-delay            预热页面间延迟（默认：10）
   --warmup-only             仅运行预热后退出
-  
+
   # 测试运行
   --duration                测试持续时间秒数
   --stats-interval          统计快照间隔
-  
+
   # 报告
   --output-dir              报告输出目录
   --filename-prefix         报告文件名前缀
