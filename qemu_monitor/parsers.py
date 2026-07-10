@@ -534,9 +534,7 @@ def parse_ub_watch(log_path: str) -> dict:
 
         # Find FINAL PERFORMANCE REPORT section
         final_section = re.search(
-            r"FINAL PERFORMANCE REPORT.*?Duration:.*?\n"
-            r"(.*?)"
-            r"\[System\] Cleanup done",
+            r"FINAL PERFORMANCE REPORT.*?Duration:.*?\n" r"(.*?)" r"\[System\] Cleanup done",
             content,
             re.DOTALL,
         )

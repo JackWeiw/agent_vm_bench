@@ -20,7 +20,7 @@ PAGES=(
     "Human"
     "List_of_paintings_by_Vincent_van_Gogh"
     "Galaxy"
-    "Weibo"  
+    "Weibo"
 )
 
 echo "=========================================="

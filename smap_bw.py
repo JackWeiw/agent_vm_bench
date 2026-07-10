@@ -65,8 +65,7 @@ D = "\033[2m"
 E = "\033[0m"
 
 RE_MIGRATE = re.compile(
-    r"$$\s*(\d+\.\d+)$$\s+SMAP_migrate:\s+$$(\d+)$$\s+"
-    r"pid\s+(\d+)\s+from\s+(\d+)\s+to\s+(\d+)\s+nr\s+(\d+)"
+    r"$$\s*(\d+\.\d+)$$\s+SMAP_migrate:\s+$$(\d+)$$\s+" r"pid\s+(\d+)\s+from\s+(\d+)\s+to\s+(\d+)\s+nr\s+(\d+)"
 )
 
 
@@ -137,7 +136,8 @@ def report_cycle(cycle_no, records):
         key = (r["frm"], r["to"])
         nodes[key] = nodes.get(key, 0) + r["nr"]
 
-    print(f"""
+    print(
+        f"""
 {B}╔══════════════════════════════════════════════╗
 ║           周期 {cycle_no:>3d} 迁移带宽报告            ║
 ╠══════════════════════════════════════════════╣{E}
@@ -148,12 +148,15 @@ def report_cycle(cycle_no, records):
   累计页数:     {total_nr}
   数据量:       {gb:.4f} GB
 {B}  ────────────────────────────────────────────{E}
-  迁移方向统计:""")
+  迁移方向统计:"""
+    )
     for (f, t_), nr in sorted(nodes.items()):
         print(f"    node {f} → {t_}:  {nr} pages")
-    print(f"""{B}  ────────────────────────────────────────────{E}
+    print(
+        f"""{B}  ────────────────────────────────────────────{E}
 {Y}{B}  迁移带宽:     {bw:.4f} GB/s{E}
-{B}╚══════════════════════════════════════════════╝{E}""")
+{B}╚══════════════════════════════════════════════╝{E}"""
+    )
     return total_nr, dt, bw
 
 
@@ -173,12 +176,14 @@ def main():
     ap.add_argument("--debug", action="store_true", help="显示解析过程")
     args = ap.parse_args()
 
-    print(f"""
+    print(
+        f"""
 {C}{B}┌──────────────────────────────────────────────┐
 │     SMAP_migrate 周期带宽计算工具            │
 │     检测方向切换: 1→5 阶段 + 5→1 阶段       │
 └──────────────────────────────────────────────┘{E}
-""")
+"""
+    )
 
     if args.clear:
         subprocess.run(["dmesg", "-C"], check=True, capture_output=True)
@@ -330,7 +335,8 @@ def main():
     if all_bw:
         total_pages = sum(x[0] for x in all_bw)
         avg_bw = sum(x[2] for x in all_bw) / len(all_bw)
-        print(f"""
+        print(
+            f"""
 {C}{B}┌──────────────────────────────────────────────┐
 │                全局汇总                      │
 ├──────────────────────────────────────────────┤{E}
@@ -338,7 +344,8 @@ def main():
   总页数:       {total_pages}
   平均带宽:     {avg_bw:.4f} GB/s
   周期带宽范围: {min(x[2] for x in all_bw):.4f} ~ {max(x[2] for x in all_bw):.4f} GB/s
-{B}└──────────────────────────────────────────────┘{E}""")
+{B}└──────────────────────────────────────────────┘{E}"""
+        )
     else:
         print(f"\n{R}  未捕获到任何 SMAP_migrate 迁移周期。{E}")
 
