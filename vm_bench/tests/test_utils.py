@@ -7,13 +7,13 @@ Tests:
 - calc_avg function
 """
 
-import unittest
-import sys
 import os
+import sys
+import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from vm_bench.utils import calc_percentiles, calc_p99, calc_avg
+from vm_bench.utils import calc_avg, calc_p99, calc_percentiles
 
 
 class TestCalcPercentiles(unittest.TestCase):
@@ -21,54 +21,52 @@ class TestCalcPercentiles(unittest.TestCase):
 
     def test_empty_list(self):
         result = calc_percentiles([])
-        self.assertEqual(result['min'], 0.0)
-        self.assertEqual(result['max'], 0.0)
-        self.assertEqual(result['avg'], 0.0)
-        self.assertEqual(result['p50'], 0.0)
-        self.assertEqual(result['p95'], 0.0)
-        self.assertEqual(result['p99'], 0.0)
-        self.assertEqual(result['count'], 0)
+        self.assertEqual(result["min"], 0.0)
+        self.assertEqual(result["max"], 0.0)
+        self.assertEqual(result["avg"], 0.0)
+        self.assertEqual(result["p50"], 0.0)
+        self.assertEqual(result["p95"], 0.0)
+        self.assertEqual(result["p99"], 0.0)
+        self.assertEqual(result["count"], 0)
 
     def test_single_value(self):
         result = calc_percentiles([5.0])
-        self.assertEqual(result['min'], 5.0)
-        self.assertEqual(result['max'], 5.0)
-        self.assertEqual(result['avg'], 5.0)
-        self.assertEqual(result['p50'], 5.0)
-        self.assertEqual(result['p95'], 5.0)
-        self.assertEqual(result['p99'], 5.0)
-        self.assertEqual(result['count'], 1)
+        self.assertEqual(result["min"], 5.0)
+        self.assertEqual(result["max"], 5.0)
+        self.assertEqual(result["avg"], 5.0)
+        self.assertEqual(result["p50"], 5.0)
+        self.assertEqual(result["p95"], 5.0)
+        self.assertEqual(result["p99"], 5.0)
+        self.assertEqual(result["count"], 1)
 
     def test_multiple_values(self):
         values = [1.0, 2.0, 3.0, 4.0, 5.0]
         result = calc_percentiles(values)
-        self.assertEqual(result['min'], 1.0)
-        self.assertEqual(result['max'], 5.0)
-        self.assertEqual(result['avg'], 3.0)
-        self.assertEqual(result['count'], 5)
+        self.assertEqual(result["min"], 1.0)
+        self.assertEqual(result["max"], 5.0)
+        self.assertEqual(result["avg"], 3.0)
+        self.assertEqual(result["count"], 5)
 
     def test_large_dataset(self):
         # Create 100 values from 0 to 99
         values = [float(i) for i in range(100)]
         result = calc_percentiles(values)
-        self.assertEqual(result['min'], 0.0)
-        self.assertEqual(result['max'], 99.0)
-        self.assertEqual(result['avg'], 49.5)
-        # P50 should be around 50
-        self.assertGreater(result['p50'], 49)
-        self.assertLess(result['p50'], 51)
-        # P95 should be around 95
-        self.assertGreater(result['p95'], 94)
-        self.assertLess(result['p95'], 96)
-        # P99 should be around 99
-        self.assertGreater(result['p99'], 98)
+        self.assertEqual(result["min"], 0.0)
+        self.assertEqual(result["max"], 99.0)
+        self.assertEqual(result["avg"], 49.5)
+        # P50: ceil(50/100 * 100) - 1 = 49, so values[49] = 49
+        self.assertEqual(result["p50"], 49.0)
+        # P95: ceil(95/100 * 100) - 1 = 94, so values[94] = 94
+        self.assertEqual(result["p95"], 94.0)
+        # P99: ceil(99/100 * 100) - 1 = 98, so values[98] = 98
+        self.assertEqual(result["p99"], 98.0)
 
     def test_unsorted_input(self):
         # Input unsorted, function should still work
         values = [5.0, 1.0, 3.0, 2.0, 4.0]
         result = calc_percentiles(values)
-        self.assertEqual(result['min'], 1.0)
-        self.assertEqual(result['max'], 5.0)
+        self.assertEqual(result["min"], 1.0)
+        self.assertEqual(result["max"], 5.0)
 
 
 class TestCalcP99(unittest.TestCase):
@@ -115,5 +113,5 @@ class TestCalcAvg(unittest.TestCase):
         self.assertEqual(calc_avg(values), 2000.0)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

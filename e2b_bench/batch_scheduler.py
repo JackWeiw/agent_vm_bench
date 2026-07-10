@@ -6,26 +6,26 @@ Groups tasks by (total_count, ratio) and reuses sandbox/smap_tool within groups.
 Supports offline mode: generate summary from existing test results.
 """
 
-import os
-import sys
-import time
 import argparse
-import yaml
-import threading
+import os
 import re
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 
+import yaml
+
+from .bench import SmapToolManager, VmMonitorManager
 from .config import Config
-from .schemas import BatchTask, TaskGroup, SandboxState, SandboxStatus
-from .task_generator import TaskGenerator, load_matrix_config
 from .metrics_extractor import MetricsExtractor
 from .report_aggregator import ReportAggregator
 from .sandbox_manager import SandboxManager
-from .task_runner import TaskManager
+from .schemas import BatchTask, SandboxState, SandboxStatus, TaskGroup
 from .stats_collector import StatsCollector
-from .bench import SmapToolManager, VmMonitorManager
+from .task_generator import TaskGenerator, load_matrix_config
+from .task_runner import TaskManager
 
 
 class GroupRunner:
@@ -81,9 +81,9 @@ class GroupRunner:
         self._log(f"  Tasks: {len(self.group.tasks)}")
         self._log(f"  Group result dir: {self.group_result_dir}")
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"Group: {self.group.group_id}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         print(f"  Result directory: {self.group_result_dir}")
 
         try:
@@ -95,11 +95,10 @@ class GroupRunner:
             self.sandbox_states = self.sandbox_manager.create_all()
 
             ready_count = sum(
-                1 for s in self.sandbox_states.values()
-                if s.creation_metrics.status == SandboxStatus.PORT_READY
+                1 for s in self.sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY
             )
             if ready_count == 0:
-                self._log(f"  ERROR: No sandboxes ready")
+                self._log("  ERROR: No sandboxes ready")
                 for task in self.group.tasks:
                     task.success = False
                     task.error_msg = "No sandboxes ready"
@@ -113,20 +112,20 @@ class GroupRunner:
                 self.smap_tool = SmapToolManager(self._get_group_config(), log_dir=smap_log_dir)
                 success = self.smap_tool.start(ready_count)
                 if not success:
-                    self._log(f"  WARN: smap_tool failed to start")
+                    self._log("  WARN: smap_tool failed to start")
 
             # 3. Warmup (shared, once)
             if self.config.warmup_urls:
-                print(f"\n[Phase 2] Running warmup...")
+                print("\n[Phase 2] Running warmup...")
                 task_manager = TaskManager(self._get_group_config(), self.sandbox_states, self.stop_event)
                 task_manager.start_warmup()
                 task_manager.wait_warmup()
-                self._log(f"  Warmup completed")
+                self._log("  Warmup completed")
 
             # 4. Run each task with different benchmark_percent
             for idx, task in enumerate(self.group.tasks):
-                print(f"\n[Phase 3.{idx+1}] Task: {task.task_id}")
-                self._log(f"\n  Task {idx+1}/{len(self.group.tasks)}: {task.task_id}")
+                print(f"\n[Phase 3.{idx + 1}] Task: {task.task_id}")
+                self._log(f"\n  Task {idx + 1}/{len(self.group.tasks)}: {task.task_id}")
                 self._log(f"    benchmark_percent: {task.benchmark_percent}")
 
                 self._run_single_task(task, idx)
@@ -154,7 +153,7 @@ class GroupRunner:
 
         # Test log file for this task - stream write with flush
         test_log_file = task_result_dir / "test_log.txt"
-        test_log_handle = open(test_log_file, 'w', encoding='utf-8', buffering=1)  # Line buffering
+        test_log_handle = open(test_log_file, "w", encoding="utf-8", buffering=1)  # Line buffering
 
         def task_log(msg: str):
             """Write to both batch log and task test log (streaming)"""
@@ -172,18 +171,18 @@ class GroupRunner:
 
             # Save task config to result directory
             config_dict = {
-                'task_id': task.task_id,
-                'total_count': task.total_count,
-                'benchmark_percent': task.benchmark_percent,
-                'ratio': task.ratio,
-                'smap_tool_enabled': self.config.smap_tool_enabled,
-                'smap_tool_ratio': task.ratio if self.config.smap_tool_enabled else None,
-                'test_duration': self.config.test_duration,
-                'browser_urls': self.config.browser_urls,
-                'warmup_urls': self.config.warmup_urls if self.config.warmup_urls else [],
+                "task_id": task.task_id,
+                "total_count": task.total_count,
+                "benchmark_percent": task.benchmark_percent,
+                "ratio": task.ratio,
+                "smap_tool_enabled": self.config.smap_tool_enabled,
+                "smap_tool_ratio": task.ratio if self.config.smap_tool_enabled else None,
+                "test_duration": self.config.test_duration,
+                "browser_urls": self.config.browser_urls,
+                "warmup_urls": self.config.warmup_urls if self.config.warmup_urls else [],
             }
             config_file = task_result_dir / f"config_{task.task_id}.yaml"
-            with open(config_file, 'w', encoding='utf-8') as f:
+            with open(config_file, "w", encoding="utf-8") as f:
                 yaml.dump(config_dict, f, default_flow_style=False, allow_unicode=True)
             task_log(f"  Task config saved to: {config_file}")
 
@@ -208,7 +207,7 @@ class GroupRunner:
             # Trigger vm_monitor sampling
             if vm_monitor:
                 vm_monitor.trigger_sampling()
-                task_log(f"  vm_monitor sampling triggered")
+                task_log("  vm_monitor sampling triggered")
 
             # Start browser tasks
             task_log(f"  Starting browser tasks (benchmark_percent={task.benchmark_percent})...")
@@ -231,17 +230,17 @@ class GroupRunner:
             stop_event.set()
             task_manager.wait_all(timeout=5)
             stats_collector.stop()
-            task_log(f"  Benchmark stopped")
+            task_log("  Benchmark stopped")
 
             # Stop vm_monitor sampling
             if vm_monitor:
                 vm_monitor.stop_sampling()
-                task_log(f"  vm_monitor sampling stopped")
+                task_log("  vm_monitor sampling stopped")
 
             # Generate bench report
             report = stats_collector.generate_report()
             report_file = task_result_dir / "bench_report.txt"
-            with open(report_file, 'w', encoding='utf-8') as f:
+            with open(report_file, "w", encoding="utf-8") as f:
                 f.write(report)
             task.report_file = str(report_file)
             task_log(f"  Bench report saved to: {report_file}")
@@ -253,11 +252,11 @@ class GroupRunner:
                     task.analysis_file = analysis_file
                     task_log(f"  vm_monitor analysis report: {analysis_file}")
                 vm_monitor.stop()
-                task_log(f"  vm_monitor stopped")
+                task_log("  vm_monitor stopped")
 
             # Mark success
             task.success = True
-            task_log(f"  Task completed successfully")
+            task_log("  Task completed successfully")
 
         except Exception as e:
             task.success = False
@@ -303,7 +302,7 @@ class GroupRunner:
 
     def _log(self, message: str):
         """Write to batch log file (streaming)"""
-        with open(self.batch_log_file, 'a', encoding='utf-8', buffering=1) as f:
+        with open(self.batch_log_file, "a", encoding="utf-8", buffering=1) as f:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             f.write(f"[{timestamp}] {message}\n")
             f.flush()
@@ -319,9 +318,9 @@ class BatchScheduler:
         self.matrix_config = load_matrix_config(matrix_path)
 
         # Get result config from matrix (template_path and output_dir are required)
-        result_config = self.matrix_config.get('result', {})
-        self.template_path = result_config.get('template_path', 'config/e2b_batch_template.yaml')
-        self.output_dir = result_config.get('output_dir', 'results/e2b/batch')
+        result_config = self.matrix_config.get("result", {})
+        self.template_path = result_config.get("template_path", "config/e2b_batch_template.yaml")
+        self.output_dir = result_config.get("output_dir", "results/e2b/batch")
 
         # Load template configuration
         self.template_config = Config.load_from_yaml(self.template_path)
@@ -349,9 +348,9 @@ class BatchScheduler:
         Returns:
             Path to summary report Excel file
         """
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("E2B Batch Test Scheduler")
-        print("="*80)
+        print("=" * 80)
 
         # Print configuration
         print(f"\nMatrix: {self.matrix_path}")
@@ -369,9 +368,9 @@ class BatchScheduler:
         all_results: List[BatchTask] = []
 
         for idx, group in enumerate(groups):
-            print(f"\n{'='*80}")
-            print(f"Group {idx+1}/{len(groups)}: {group.group_id}")
-            print(f"{'='*80}")
+            print(f"\n{'=' * 80}")
+            print(f"Group {idx + 1}/{len(groups)}: {group.group_id}")
+            print(f"{'=' * 80}")
 
             runner = GroupRunner(group, self.template_config, self.batch_log_file)
             results = runner.run()
@@ -380,23 +379,23 @@ class BatchScheduler:
             # Check for failures
             failed = [t for t in results if not t.success]
             if failed and not continue_on_failure:
-                print(f"\nGroup failed, stopping (continue_on_failure=False)")
+                print("\nGroup failed, stopping (continue_on_failure=False)")
                 break
 
         # Extract metrics
-        print(f"\n{'='*80}")
+        print(f"\n{'=' * 80}")
         print("Extracting metrics...")
-        print(f"{'='*80}")
+        print(f"{'=' * 80}")
 
         metrics_data = []
         for task in all_results:
             metrics = {
-                'task_id': task.task_id,
-                'total_count': task.total_count,
-                'ratio': task.ratio,
-                'benchmark_percent': task.benchmark_percent,
-                'success': task.success,
-                'error_msg': task.error_msg,
+                "task_id": task.task_id,
+                "total_count": task.total_count,
+                "ratio": task.ratio,
+                "benchmark_percent": task.benchmark_percent,
+                "success": task.success,
+                "error_msg": task.error_msg,
             }
 
             # Extract browser metrics
@@ -414,9 +413,9 @@ class BatchScheduler:
             metrics_data.append(metrics)
 
         # Aggregate results
-        print(f"\n{'='*80}")
+        print(f"\n{'=' * 80}")
         print("Generating summary report...")
-        print(f"{'='*80}")
+        print(f"{'=' * 80}")
 
         report_path = self.report_aggregator.aggregate(metrics_data)
 
@@ -424,9 +423,9 @@ class BatchScheduler:
         success_count = sum(1 for t in all_results if t.success)
         failed_count = len(all_results) - success_count
 
-        print(f"\n{'='*80}")
+        print(f"\n{'=' * 80}")
         print("Batch Test Complete")
-        print(f"{'='*80}")
+        print(f"{'=' * 80}")
         print(f"  Total tasks: {len(all_results)}")
         print(f"  Successful: {success_count}")
         print(f"  Failed: {failed_count}")
@@ -479,10 +478,7 @@ def scan_existing_results(result_base_dir: str) -> List[Dict[str, Any]]:
                 ratio = float(task_match.group(2))
                 benchmark_percent = float(task_match.group(3))
 
-                task_info = _extract_task_info(
-                    group_path, group_entry,
-                    total_count, ratio, benchmark_percent
-                )
+                task_info = _extract_task_info(group_path, group_entry, total_count, ratio, benchmark_percent)
                 if task_info:
                     tasks.append(task_info)
             continue
@@ -500,22 +496,19 @@ def scan_existing_results(result_base_dir: str) -> List[Dict[str, Any]]:
                 ratio = float(task_match.group(2))
                 benchmark_percent = float(task_match.group(3))
 
-                task_info = _extract_task_info(
-                    task_path, task_entry,
-                    total_count, ratio, benchmark_percent
-                )
+                task_info = _extract_task_info(task_path, task_entry, total_count, ratio, benchmark_percent)
                 if task_info:
                     tasks.append(task_info)
 
     # Sort by total_count, ratio, benchmark_percent
-    tasks.sort(key=lambda t: (t['total_count'], t['ratio'], t['benchmark_percent']))
+    tasks.sort(key=lambda t: (t["total_count"], t["ratio"], t["benchmark_percent"]))
 
     return tasks
 
 
-def _extract_task_info(task_path: str, task_id: str,
-                       total_count: int, ratio: float,
-                       benchmark_percent: float) -> Optional[Dict[str, Any]]:
+def _extract_task_info(
+    task_path: str, task_id: str, total_count: int, ratio: float, benchmark_percent: float
+) -> Optional[Dict[str, Any]]:
     """Extract task info from a single task directory"""
     # Check for required files
     config_file = None
@@ -539,15 +532,15 @@ def _extract_task_info(task_path: str, task_id: str,
     print(f"  Found: {task_id} (tc={total_count}, ratio={ratio}, bp={benchmark_percent})")
 
     return {
-        'task_id': task_id,
-        'total_count': total_count,
-        'ratio': ratio,
-        'benchmark_percent': benchmark_percent,
-        'result_dir': task_path,
-        'config_file': config_file,
-        'analysis_file': analysis_file if has_analysis else None,
-        'report_file': report_file if has_report else None,
-        'success': success,
+        "task_id": task_id,
+        "total_count": total_count,
+        "ratio": ratio,
+        "benchmark_percent": benchmark_percent,
+        "result_dir": task_path,
+        "config_file": config_file,
+        "analysis_file": analysis_file if has_analysis else None,
+        "report_file": report_file if has_report else None,
+        "success": success,
     }
 
 
@@ -585,22 +578,22 @@ def offline_summary(result_base_dir: str, output_path: str = None) -> str:
 
     for task_info in task_infos:
         metrics = {
-            'task_id': task_info['task_id'],
-            'total_count': task_info['total_count'],
-            'ratio': task_info['ratio'],
-            'benchmark_percent': task_info['benchmark_percent'],
-            'success': task_info['success'],
-            'error_msg': None,
+            "task_id": task_info["task_id"],
+            "total_count": task_info["total_count"],
+            "ratio": task_info["ratio"],
+            "benchmark_percent": task_info["benchmark_percent"],
+            "success": task_info["success"],
+            "error_msg": None,
         }
 
         # Extract browser metrics
-        if task_info['report_file']:
-            browser_metrics = metrics_extractor.extract_browser_metrics(task_info['report_file'])
+        if task_info["report_file"]:
+            browser_metrics = metrics_extractor.extract_browser_metrics(task_info["report_file"])
             metrics.update(browser_metrics)
 
         # Extract vm_monitor metrics
-        if task_info['analysis_file']:
-            vm_metrics = metrics_extractor.extract(task_info['analysis_file'])
+        if task_info["analysis_file"]:
+            vm_metrics = metrics_extractor.extract(task_info["analysis_file"])
             metrics.update(vm_metrics)
 
         metrics_data.append(metrics)
@@ -617,7 +610,7 @@ def offline_summary(result_base_dir: str, output_path: str = None) -> str:
     report_path = report_aggregator.aggregate(metrics_data, os.path.basename(output_path))
 
     # Print summary
-    success_count = sum(1 for t in task_infos if t['success'])
+    success_count = sum(1 for t in task_infos if t["success"])
     print("\n" + "=" * 60)
     print("Offline Summary Complete")
     print("=" * 60)
@@ -633,21 +626,21 @@ def offline_summary(result_base_dir: str, output_path: str = None) -> str:
 def build_arg_parser() -> argparse.ArgumentParser:
     """Build CLI argument parser"""
     parser = argparse.ArgumentParser(
-        description='E2B Batch Test Scheduler - Automated batch testing with sandbox reuse'
+        description="E2B Batch Test Scheduler - Automated batch testing with sandbox reuse"
     )
 
     # Online mode arguments
-    parser.add_argument('--matrix', help='Test matrix YAML config path (contains template_path, output_dir)')
+    parser.add_argument("--matrix", help="Test matrix YAML config path (contains template_path, output_dir)")
 
     # Offline mode arguments
-    parser.add_argument('--offline', action='store_true',
-                        help='Generate summary from existing results (offline mode)')
-    parser.add_argument('--result-dir', help='Result directory for offline mode')
-    parser.add_argument('--output', help='Output Excel path for offline mode')
+    parser.add_argument("--offline", action="store_true", help="Generate summary from existing results (offline mode)")
+    parser.add_argument("--result-dir", help="Result directory for offline mode")
+    parser.add_argument("--output", help="Output Excel path for offline mode")
 
     # Common arguments
-    parser.add_argument('--continue-on-failure', action='store_true',
-                        help='Continue testing if a group fails (online mode only)')
+    parser.add_argument(
+        "--continue-on-failure", action="store_true", help="Continue testing if a group fails (online mode only)"
+    )
 
     return parser
 
@@ -679,5 +672,5 @@ def main():
     print(f"\nDone. Report: {report_path}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

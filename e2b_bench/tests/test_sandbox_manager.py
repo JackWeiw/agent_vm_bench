@@ -4,15 +4,15 @@ Test SandboxManager Module
 Tests for sandbox creation, detection, and ID file filtering
 """
 
-import pytest
-import tempfile
 import os
-from unittest.mock import Mock, patch, MagicMock
+import tempfile
 from threading import Event
+from unittest.mock import Mock, patch
 
-from e2b_bench.sandbox_manager import SandboxManager
+import pytest
+
 from e2b_bench.config import Config
-from e2b_bench.schemas import SandboxStatus
+from e2b_bench.sandbox_manager import SandboxManager
 
 
 class TestDetectFromFile:
@@ -41,7 +41,7 @@ class TestDetectFromFile:
         stop_event = Event()
         manager = SandboxManager(config, stop_event)
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("")  # Empty file
             f.flush()
             temp_path = f.name
@@ -57,7 +57,7 @@ class TestDetectFromFile:
         stop_event = Event()
         manager = SandboxManager(config, stop_event)
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("\n  \n\n")  # Only whitespace
             f.flush()
             temp_path = f.name
@@ -72,26 +72,30 @@ class TestDetectFromFile:
         mock_paginator = Mock()
         # Set up next_items to return the list on first call, empty on subsequent
         call_count = [0]
+
         def next_items_side_effect():
             idx = call_count[0]
             call_count[0] += 1
             if idx < len(items_list):
                 return items_list[idx]
             return []
+
         mock_paginator.next_items = Mock(side_effect=next_items_side_effect)
 
         # Set up has_next as a property that changes based on call count
         has_next_count = [0]
+
         def get_has_next():
             idx = has_next_count[0]
             has_next_count[0] += 1
             return idx < len(items_list)
+
         type(mock_paginator).has_next = property(lambda self: get_has_next())
 
         return mock_paginator
 
-    @patch('e2b_bench.sandbox_manager.Sandbox.list')
-    @patch('e2b_bench.sandbox_manager.Sandbox.connect')
+    @patch("e2b_bench.sandbox_manager.Sandbox.list")
+    @patch("e2b_bench.sandbox_manager.Sandbox.connect")
     def test_matches_ids_from_file(self, mock_connect, mock_list):
         """Only sandboxes in file are connected"""
         config = Config()
@@ -99,15 +103,15 @@ class TestDetectFromFile:
         manager = SandboxManager(config, stop_event)
 
         # Create IDs file with 2 IDs
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("sbx_id_1\nsbx_id_2\n")
             f.flush()
             temp_path = f.name
 
         # Mock Sandbox.list() to return 3 running sandboxes
-        mock_paginator = self._make_paginator([
-            [Mock(sandbox_id="sbx_id_1"), Mock(sandbox_id="sbx_id_2"), Mock(sandbox_id="sbx_id_3")]
-        ])
+        mock_paginator = self._make_paginator(
+            [[Mock(sandbox_id="sbx_id_1"), Mock(sandbox_id="sbx_id_2"), Mock(sandbox_id="sbx_id_3")]]
+        )
         mock_list.return_value = mock_paginator
 
         # Mock Sandbox.connect() to return mock sandbox
@@ -120,8 +124,8 @@ class TestDetectFromFile:
         assert len(result) == 2
         assert mock_connect.call_count == 2
 
-    @patch('e2b_bench.sandbox_manager.Sandbox.list')
-    @patch('e2b_bench.sandbox_manager.Sandbox.connect')
+    @patch("e2b_bench.sandbox_manager.Sandbox.list")
+    @patch("e2b_bench.sandbox_manager.Sandbox.connect")
     def test_ids_not_running_shown_as_warning(self, mock_connect, mock_list):
         """IDs in file but not running should be warned"""
         config = Config()
@@ -129,15 +133,13 @@ class TestDetectFromFile:
         manager = SandboxManager(config, stop_event)
 
         # Create IDs file with 3 IDs
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("sbx_id_1\nsbx_id_2\nsbx_missing\n")
             f.flush()
             temp_path = f.name
 
         # Mock Sandbox.list() to return only 2 running sandboxes
-        mock_paginator = self._make_paginator([
-            [Mock(sandbox_id="sbx_id_1"), Mock(sandbox_id="sbx_id_2")]
-        ])
+        mock_paginator = self._make_paginator([[Mock(sandbox_id="sbx_id_1"), Mock(sandbox_id="sbx_id_2")]])
         mock_list.return_value = mock_paginator
 
         mock_connect.return_value = self._create_mock_sandbox("connected")
@@ -149,7 +151,7 @@ class TestDetectFromFile:
         assert len(result) == 2
         assert mock_connect.call_count == 2
 
-    @patch('e2b_bench.sandbox_manager.Sandbox.list')
+    @patch("e2b_bench.sandbox_manager.Sandbox.list")
     def test_no_matching_sandboxes_returns_empty(self, mock_list):
         """No matches returns empty dict"""
         config = Config()
@@ -157,15 +159,13 @@ class TestDetectFromFile:
         manager = SandboxManager(config, stop_event)
 
         # Create IDs file
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("sbx_not_running_1\nsbx_not_running_2\n")
             f.flush()
             temp_path = f.name
 
         # Mock Sandbox.list() to return different sandboxes
-        mock_paginator = self._make_paginator([
-            [Mock(sandbox_id="sbx_other_1"), Mock(sandbox_id="sbx_other_2")]
-        ])
+        mock_paginator = self._make_paginator([[Mock(sandbox_id="sbx_other_1"), Mock(sandbox_id="sbx_other_2")]])
         mock_list.return_value = mock_paginator
 
         result = manager.detect_from_file(temp_path)
@@ -174,5 +174,5 @@ class TestDetectFromFile:
         assert result == {}
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

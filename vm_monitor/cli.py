@@ -15,14 +15,15 @@ from datetime import datetime
 
 # Internal dependencies - all modules
 from .config import load_env_config, validate_and_prompt_missing
+from .exporters import export_to_excel, print_capture_summary
+from .firecracker import FirecrackerMonitor
 from .log_capture import LogCapture
 from .qemu import QEMUMonitor
-from .firecracker import FirecrackerMonitor
-from .exporters import export_to_excel, print_capture_summary
 
 # Try to import pandas for Excel availability check
 try:
     import pandas as pd
+
     PANDAS_AVAILABLE = True
 except ImportError:
     PANDAS_AVAILABLE = False
@@ -31,7 +32,7 @@ except ImportError:
 def main():
     """Main entry point for VM monitoring tool"""
     parser = argparse.ArgumentParser(
-        description='VM Monitoring Tool (supports QEMU and Firecracker)',
+        description="VM Monitoring Tool (supports QEMU and Firecracker)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 [Mode 1: Stress Sync Monitoring]
@@ -49,39 +50,46 @@ def main():
 [VMM Types]
   --vmm qemu         Monitor QEMU VMs (qemu-kvm, qemu-system)
   --vmm firecracker  Monitor Firecracker microVMs
-        """
+        """,
     )
 
     # VMM type selection
-    parser.add_argument('--vmm', type=str, choices=['qemu', 'firecracker'],
-                        default='qemu', help='VMM type to monitor (default: qemu)')
+    parser.add_argument(
+        "--vmm", type=str, choices=["qemu", "firecracker"], default="qemu", help="VMM type to monitor (default: qemu)"
+    )
 
     # Stress sync modes
     sync = parser.add_mutually_exclusive_group()
-    sync.add_argument('--stress-process', type=str, help='Stress process name')
-    sync.add_argument('--stress-file', type=str, help='Stress marker file (e.g., /tmp/bench_running.lock)')
+    sync.add_argument("--stress-process", type=str, help="Stress process name")
+    sync.add_argument("--stress-file", type=str, help="Stress marker file (e.g., /tmp/bench_running.lock)")
 
     # Timing parameters
-    parser.add_argument('-t','--time', type=int, default=60, help='Timer duration seconds (default 60)')
-    parser.add_argument('-i','--interval', type=int, default=3, help='Sampling interval (default 3 seconds)')
+    parser.add_argument("-t", "--time", type=int, default=60, help="Timer duration seconds (default 60)")
+    parser.add_argument("-i", "--interval", type=int, default=3, help="Sampling interval (default 3 seconds)")
 
     # Output parameters
-    parser.add_argument('-o','--output', type=str, help='Output prefix')
-    parser.add_argument('--numa', type=str, default='1', help='Specify NUMA nodes to monitor, comma-separated 0,1')
-    parser.add_argument('--log-dir', type=str, help='Log output directory (default: logs_${timestamp}/ in current dir)')
+    parser.add_argument("-o", "--output", type=str, help="Output prefix")
+    parser.add_argument("--numa", type=str, default="1", help="Specify NUMA nodes to monitor, comma-separated 0,1")
+    parser.add_argument("--log-dir", type=str, help="Log output directory (default: logs_${timestamp}/ in current dir)")
 
     # Log capture options
-    parser.add_argument('--enable-capture', action='store_true',
-                        help='Enable parallel log collection with devkit/ksys/ub_watch/smap_bw')
-    parser.add_argument('--auto-skip', action='store_true',
-                        help='Auto-skip missing log capture tools (for automated testing)')
-    parser.add_argument('--ksys-parse-timeout', type=int, default=600,
-                        help='Timeout for ksys data parsing phase in seconds (default: 600s, increase for large VM counts)')
+    parser.add_argument(
+        "--enable-capture", action="store_true", help="Enable parallel log collection with devkit/ksys/ub_watch/smap_bw"
+    )
+    parser.add_argument(
+        "--auto-skip", action="store_true", help="Auto-skip missing log capture tools (for automated testing)"
+    )
+    parser.add_argument(
+        "--ksys-parse-timeout",
+        type=int,
+        default=600,
+        help="Timeout for ksys data parsing phase in seconds (default: 600s, increase for large VM counts)",
+    )
 
     args = parser.parse_args()
 
     # Check root permission
-    if hasattr(os, 'geteuid') and os.geteuid() != 0:
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
         print("[WARN] Recommended to run as root, otherwise some processes cannot be read")
         time.sleep(1)
 
@@ -99,26 +107,27 @@ def main():
         config = validate_and_prompt_missing(config, non_interactive=args.auto_skip)
 
     # Create appropriate Monitor instance based on --vmm argument
-    if args.vmm == 'qemu':
+    if args.vmm == "qemu":
         m = QEMUMonitor()
-        csv_prefix = 'qemu_monitor'
-    elif args.vmm == 'firecracker':
+        csv_prefix = "qemu_monitor"
+    elif args.vmm == "firecracker":
         m = FirecrackerMonitor()
-        csv_prefix = 'firecracker_monitor'
+        csv_prefix = "firecracker_monitor"
     else:
         print(f"[ERROR] Unknown VMM type: {args.vmm}")
         sys.exit(1)
 
     try:
-        m.target_numa_nodes = list(map(int, args.numa.split(',')))
+        m.target_numa_nodes = list(map(int, args.numa.split(",")))
     except:
         m.target_numa_nodes = [0]
 
     # Start log capture (parallel with monitor)
     if args.enable_capture:
         print("\nStarting log collection tools...")
-        capture = LogCapture(config, args.time, log_dir, m.target_numa_nodes,
-                             ksys_parse_timeout=args.ksys_parse_timeout)
+        capture = LogCapture(
+            config, args.time, log_dir, m.target_numa_nodes, ksys_parse_timeout=args.ksys_parse_timeout
+        )
         capture.start()
         print(f"[OK] Log collection tools started in background (duration={args.time}s)")
         print(f"  ksys parse timeout: {args.ksys_parse_timeout}s")
@@ -126,9 +135,9 @@ def main():
 
     # Start VM monitoring
     if args.stress_process:
-        m.wait_for_stress_and_monitor('process', args.stress_process, args.interval, args.time)
+        m.wait_for_stress_and_monitor("process", args.stress_process, args.interval, args.time)
     elif args.stress_file:
-        m.wait_for_stress_and_monitor('file', args.stress_file, args.interval, args.time)
+        m.wait_for_stress_and_monitor("file", args.stress_file, args.interval, args.time)
     else:
         m.start_monitoring(args.time, args.interval)
 
@@ -151,7 +160,7 @@ def main():
 
     # Export to Excel (if pandas available)
     if PANDAS_AVAILABLE:
-        excel_file = os.path.join(log_dir, 'analysis_report.xlsx')
+        excel_file = os.path.join(log_dir, "analysis_report.xlsx")
         export_to_excel(m, log_dir, m.target_numa_nodes, excel_file, capture_results)
 
     print(f"\nComplete! All outputs saved to: {log_dir}/")

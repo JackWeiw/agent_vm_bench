@@ -7,10 +7,10 @@ Supports task batch control for gradual task execution start
 Supports warmup phase for memory preheating
 """
 
-import time
 import random
 import threading
-from typing import Tuple, List, Dict
+import time
+from typing import Dict, List, Tuple
 
 from .config import Config
 from .schemas import SandboxState, SandboxStatus
@@ -34,8 +34,15 @@ class WarmupRunner(threading.Thread):
         while True:
             if self.state.creation_metrics.status == SandboxStatus.PORT_READY:
                 break
-            if self.state.creation_metrics.status in (SandboxStatus.FAILED, SandboxStatus.PORT_FAILED, SandboxStatus.OFFLINE, SandboxStatus.KILLED):
-                print(f"[Sandbox{self.state.sandbox_id}] Cannot start warmup: {self.state.creation_metrics.status.value}")
+            if self.state.creation_metrics.status in (
+                SandboxStatus.FAILED,
+                SandboxStatus.PORT_FAILED,
+                SandboxStatus.OFFLINE,
+                SandboxStatus.KILLED,
+            ):
+                print(
+                    f"[Sandbox{self.state.sandbox_id}] Cannot start warmup: {self.state.creation_metrics.status.value}"
+                )
                 return
             time.sleep(0.5)
 
@@ -45,7 +52,7 @@ class WarmupRunner(threading.Thread):
             self.state.warmup_done = True
             return
 
-        e2b_sandbox_id = sbx.sandbox_id if hasattr(sbx, 'sandbox_id') else 'N/A'
+        e2b_sandbox_id = sbx.sandbox_id if hasattr(sbx, "sandbox_id") else "N/A"
         failed_urls = []
 
         # Loop through warmup pages
@@ -59,7 +66,7 @@ class WarmupRunner(threading.Thread):
                     result = sbx.commands.run(cmd, timeout=60, user="root")
                     if result.exit_code != 0:
                         failed_urls.append(url[:50])
-                except Exception as e:
+                except Exception:
                     failed_urls.append(url[:50])
 
                 # Delay between pages
@@ -68,10 +75,10 @@ class WarmupRunner(threading.Thread):
         # Execute openclaw config set and memory index (optional, for memory warmup)
         # These commands help bring QEMU memory to target value
         try:
-            cmd1 = 'openclaw config set agents.defaults.memorySearch.chunking.tokens 200'
+            cmd1 = "openclaw config set agents.defaults.memorySearch.chunking.tokens 200"
             sbx.commands.run(cmd1, timeout=30, user="root")
 
-            cmd2 = 'openclaw memory index --force'
+            cmd2 = "openclaw memory index --force"
             sbx.commands.run(cmd2, timeout=120, user="root")
         except Exception:
             pass  # Optional commands, ignore errors
@@ -106,8 +113,15 @@ class BrowserTaskRunner(threading.Thread):
         while not self.stop_event.is_set():
             if self.state.creation_metrics.status == SandboxStatus.PORT_READY:
                 break
-            if self.state.creation_metrics.status in (SandboxStatus.FAILED, SandboxStatus.PORT_FAILED, SandboxStatus.OFFLINE, SandboxStatus.KILLED):
-                print(f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}")
+            if self.state.creation_metrics.status in (
+                SandboxStatus.FAILED,
+                SandboxStatus.PORT_FAILED,
+                SandboxStatus.OFFLINE,
+                SandboxStatus.KILLED,
+            ):
+                print(
+                    f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}"
+                )
                 return
             time.sleep(0.5)
 
@@ -136,10 +150,7 @@ class BrowserTaskRunner(threading.Thread):
                     break
 
             # Random interval to avoid request spike
-            sleep_time = random.uniform(
-                self.config.browser_interval_min,
-                self.config.browser_interval_max
-            )
+            sleep_time = random.uniform(self.config.browser_interval_min, self.config.browser_interval_max)
             time.sleep(sleep_time)
 
         print(f"[Sandbox{self.state.sandbox_id}] Task runner ended")
@@ -156,7 +167,7 @@ class BrowserTaskRunner(threading.Thread):
             return False, 0.0
 
         # Get E2B sandbox_id for logging (different from internal sequence number)
-        e2b_sandbox_id = sbx.sandbox_id if hasattr(sbx, 'sandbox_id') else 'N/A'
+        e2b_sandbox_id = sbx.sandbox_id if hasattr(sbx, "sandbox_id") else "N/A"
 
         # Get current URL (round-robin)
         url_idx = self.state.browser_metrics.total_tasks % len(self.config.browser_urls)
@@ -167,11 +178,7 @@ class BrowserTaskRunner(threading.Thread):
 
         start_time = time.perf_counter()
         try:
-            result = sbx.commands.run(
-                cmd,
-                timeout=self.config.browser_timeout + 30,
-                user="root"
-            )
+            result = sbx.commands.run(cmd, timeout=self.config.browser_timeout + 30, user="root")
             elapsed = time.perf_counter() - start_time + 10  # simulate llm response time
 
             success = result.exit_code == 0
@@ -220,8 +227,7 @@ class TaskManager:
         After warmup, sandboxes are ready for actual benchmark.
         """
         ready_states = [
-            s for s in self.sandbox_states.values()
-            if s.creation_metrics.status == SandboxStatus.PORT_READY
+            s for s in self.sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY
         ]
 
         if not ready_states:
@@ -234,13 +240,13 @@ class TaskManager:
                 state.warmup_done = True
             return
 
-        print(f"\n{'='*60}")
-        print(f"Warmup Phase Starting")
+        print(f"\n{'=' * 60}")
+        print("Warmup Phase Starting")
         print(f"  Total: {len(ready_states)} sandboxes")
         print(f"  Warmup pages: {len(self.config.warmup_urls)}")
         print(f"  Loop count: {self.config.warmup_loops}")
         print(f"  Page delay: {self.config.warmup_delay}s")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         for state in ready_states:
             runner = WarmupRunner(state, self.config)
@@ -295,7 +301,8 @@ class TaskManager:
         """
         # Filter PORT_READY sandboxes that have completed warmup (or no warmup needed)
         ready_states = [
-            s for s in self.sandbox_states.values()
+            s
+            for s in self.sandbox_states.values()
             if s.creation_metrics.status == SandboxStatus.PORT_READY and s.warmup_done
         ]
 
@@ -310,7 +317,9 @@ class TaskManager:
         if benchmark_count < total_ready:
             # Select first N sandboxes for benchmark
             benchmark_states = ready_states[:benchmark_count]
-            print(f"\nBenchmark subset: {benchmark_count}/{total_ready} sandboxes ({self.config.benchmark_percent*100:.0f}%)")
+            print(
+                f"\nBenchmark subset: {benchmark_count}/{total_ready} sandboxes ({self.config.benchmark_percent * 100:.0f}%)"
+            )
         else:
             benchmark_states = ready_states
 
@@ -325,12 +334,12 @@ class TaskManager:
         batch_size = self.config.task_batch_size
         batch_count = (total + batch_size - 1) // batch_size
 
-        print(f"\n{'='*60}")
-        print(f"Batched Task Execution Start")
+        print(f"\n{'=' * 60}")
+        print("Batched Task Execution Start")
         print(f"  Total: {total} sandboxes")
         print(f"  Batches: {batch_count} x {batch_size}")
         print(f"  Interval: {self.config.task_batch_interval}s")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         for batch_id in range(batch_count):
             if self.stop_event.is_set():
@@ -341,7 +350,7 @@ class TaskManager:
             end_idx = min(start_idx + batch_size, total)
             batch_states = ready_states[start_idx:end_idx]
 
-            print(f"\n[TaskBatch {batch_id}/{batch_count-1}] Starting tasks for sandboxes {start_idx+1}-{end_idx}")
+            print(f"\n[TaskBatch {batch_id}/{batch_count - 1}] Starting tasks for sandboxes {start_idx + 1}-{end_idx}")
 
             # Start task runners for current batch
             for state in batch_states:
@@ -358,10 +367,10 @@ class TaskManager:
 
     def _start_concurrent(self, ready_states: List[SandboxState]) -> None:
         """Full concurrent task execution start"""
-        print(f"\n{'='*60}")
-        print(f"Concurrent Task Execution Start")
+        print(f"\n{'=' * 60}")
+        print("Concurrent Task Execution Start")
         print(f"  Total: {len(ready_states)} sandboxes (full concurrent)")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         for state in ready_states:
             runner = BrowserTaskRunner(state, self.config, self.stop_event)

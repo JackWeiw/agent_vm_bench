@@ -4,18 +4,11 @@ Test Schemas Module
 Tests for data structures: SandboxStatus, CreationMetrics, BrowserMetrics, SandboxState, BatchTask, TaskGroup
 """
 
-import pytest
 from unittest.mock import Mock
-import statistics
 
-from e2b_bench.schemas import (
-    SandboxStatus,
-    CreationMetrics,
-    BrowserMetrics,
-    SandboxState,
-    BatchTask,
-    TaskGroup
-)
+import pytest
+
+from e2b_bench.schemas import BatchTask, BrowserMetrics, CreationMetrics, SandboxState, SandboxStatus, TaskGroup
 
 
 class TestSandboxStatus:
@@ -53,7 +46,7 @@ class TestCreationMetrics:
             create_elapsed=5.5,
             port_wait_elapsed=3.0,
             total_elapsed=8.5,
-            status=SandboxStatus.PORT_READY
+            status=SandboxStatus.PORT_READY,
         )
         assert metrics.submit_time == 100.0
         assert metrics.total_elapsed == 8.5
@@ -109,11 +102,11 @@ class TestBrowserMetrics:
         assert len(metrics.latencies) == 10
 
     def test_p99_with_100_values(self):
-        """P99 with 100 values"""
+        """P99 with 100 values - int(100 * 0.99) = 99 -> index 99 -> value 100"""
         metrics = BrowserMetrics()
         for i in range(1, 101):
             metrics.add(latency=i, success=True)
-        assert metrics.p99_latency == 99
+        assert metrics.p99_latency == 100
 
     def test_p99_small_list(self):
         """P99 returns max for small lists"""
@@ -139,12 +132,7 @@ class TestSandboxState:
         """Custom state"""
         mock_sandbox = Mock()
         state = SandboxState(
-            sandbox_id=5,
-            sandbox_obj=mock_sandbox,
-            batch_id=2,
-            is_alive=False,
-            consecutive_failures=3,
-            warmup_done=True
+            sandbox_id=5, sandbox_obj=mock_sandbox, batch_id=2, is_alive=False, consecutive_failures=3, warmup_done=True
         )
         assert state.sandbox_id == 5
         assert state.is_alive == False
@@ -156,12 +144,7 @@ class TestBatchTask:
 
     def test_task_creation(self):
         """Create task with required fields"""
-        task = BatchTask(
-            task_id="tc10_ratio10_bp0.5",
-            total_count=10,
-            benchmark_percent=0.5,
-            ratio=10
-        )
+        task = BatchTask(task_id="tc10_ratio10_bp0.5", total_count=10, benchmark_percent=0.5, ratio=10)
         assert task.task_id == "tc10_ratio10_bp0.5"
         assert task.total_count == 10
         assert task.benchmark_percent == 0.5
@@ -185,17 +168,12 @@ class TestTaskGroup:
         """Create group with tasks"""
         tasks = [
             BatchTask(task_id="tc10_ratio10_bp0.5", total_count=10, benchmark_percent=0.5, ratio=10),
-            BatchTask(task_id="tc10_ratio10_bp1.0", total_count=10, benchmark_percent=1.0, ratio=10)
+            BatchTask(task_id="tc10_ratio10_bp1.0", total_count=10, benchmark_percent=1.0, ratio=10),
         ]
-        group = TaskGroup(
-            group_id="tc10_ratio10",
-            total_count=10,
-            ratio=10,
-            tasks=tasks
-        )
+        group = TaskGroup(group_id="tc10_ratio10", total_count=10, ratio=10, tasks=tasks)
         assert group.group_id == "tc10_ratio10"
         assert len(group.tasks) == 2
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

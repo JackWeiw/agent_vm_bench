@@ -6,7 +6,7 @@ Helper functions for percentile calculation, timing, etc.
 
 import math
 import statistics
-from typing import List, Dict
+from typing import Dict, List
 
 
 def calc_percentiles(values: List[float]) -> Dict[str, float]:

@@ -183,12 +183,12 @@ class BrowserMetrics:
     failed_count: int = 0
     timeout_count: int = 0
     latencies: List[float] = field(default_factory=list)
-    
+
     def add(self, latency: float, success: bool, timeout: bool = False)
-    
+
     @property
     def avg_latency(self) -> float
-    
+
     @property
     def p99_latency(self) -> float
 ```
@@ -201,10 +201,10 @@ class SandboxState:
     sandbox_id: int              # 序号（1, 2, 3...）
     sandbox_obj: Optional[object] = None  # E2B Sandbox对象引用（句柄）
     batch_id: int = -1           # 所属批次
-    
+
     creation_metrics: CreationMetrics = field(default_factory=CreationMetrics)
     browser_metrics: BrowserMetrics = field(default_factory=BrowserMetrics)
-    
+
     is_alive: bool = True        # 沙箱是否存活
     last_task_time: float = 0.0  # 最后一次任务执行时间
     consecutive_failures: int = 0  # 连续失败次数
@@ -238,24 +238,24 @@ class TestSnapshot:
 ```python
 class SandboxManager:
     """沙箱生命周期管理"""
-    
+
     def __init__(self, config: Config, stop_event: Event):
         self.config = config
         self.stop_event = stop_event
         self.sandbox_states: Dict[int, SandboxState] = {}
-    
+
     def create_all(self) -> Dict[int, SandboxState]:
         """批量创建沙箱"""
         if self.config.batch_size:
             return self._create_batched()   # 分批创建
         else:
             return self._create_concurrent() # 全并发创建
-    
+
     def _create_single(self, state: SandboxState) -> Tuple[bool, float, str]:
         """创建单个沙箱，保留句柄到state.sandbox_obj"""
         state.creation_metrics.status = SandboxStatus.CREATING
         state.creation_metrics.submit_time = time.time()
-        
+
         try:
             sbx = Sandbox.create(self.config.template, timeout=self.config.create_timeout)
             state.sandbox_obj = sbx  # 保留句柄
@@ -264,7 +264,7 @@ class SandboxManager:
             return True, elapsed, ""
         except Exception as e:
             return False, 0.0, str(e)
-    
+
     def check_alive(self, state: SandboxState) -> bool:
         """检查沙箱存活"""
         sbx = state.sandbox_obj
@@ -275,7 +275,7 @@ class SandboxManager:
             return result.exit_code == 0
         except:
             return False
-    
+
     def close_all(self) -> None:
         """关闭所有沙箱"""
         for state in self.sandbox_states.values():
@@ -296,29 +296,29 @@ class SandboxManager:
 ```python
 class BrowserTaskRunner(threading.Thread):
     """每个沙箱一个独立线程执行浏览器任务"""
-    
+
     def __init__(self, state: SandboxState, config: Config, stop_event: Event):
         super().__init__(daemon=True)
         self.state = state
         self.config = config
         self.stop_event = stop_event
-    
+
     def run(self):
         # 等待沙箱ACTIVE
         # 循环执行浏览器任务
         # 随机间隔 sleep
         # 连续3次失败则标记离线
-    
+
     def _run_single_task(self) -> Tuple[bool, float]:
         """执行单个任务，使用state.sandbox_obj句柄"""
         sbx = self.state.sandbox_obj
         url = self.config.browser_urls[idx]
         cmd = f"openclaw browser --browser-profile openclaw open '{url}'"
-        
+
         start = time.perf_counter()
         result = sbx.commands.run(cmd, timeout=..., user="root")
         elapsed = time.perf_counter() - start
-        
+
         return result.exit_code == 0, elapsed
 ```
 
@@ -327,10 +327,10 @@ class BrowserTaskRunner(threading.Thread):
 ```python
 class TaskManager:
     """管理所有沙箱的任务执行线程"""
-    
+
     def start_all(self) -> None:
         """启动所有ACTIVE沙箱的任务线程"""
-    
+
     def wait_all(self, timeout: float) -> None:
         """等待所有线程结束"""
 ```
@@ -344,26 +344,26 @@ class TaskManager:
 ```python
 class StatsCollector:
     """实时快照 + 最终报告"""
-    
+
     def start(self) -> None:
         """启动后台收集线程"""
-    
+
     def _collect_loop(self) -> None:
         """每隔stats_interval收集快照"""
-    
+
     def _take_snapshot(self) -> None:
         """收集并打印当前统计"""
-    
+
     def _print_snapshot(self, snapshot: TestSnapshot) -> None:
         """实时终端输出"""
         print(f"T+{elapsed}s  Status Snapshot")
         print(f"  Sandboxes: {active} active / {offline} offline")
         print(f"  Creation:  avg=Xs p50=Xs p99=Xs")
         print(f"  Browser:   {success}/{total} avg=Xs p99=Xs")
-    
+
     def generate_report(self) -> str:
         """生成最终TXT报告"""
-    
+
     def save_report(self, report: str) -> str:
         """保存报告到output_dir"""
 ```
@@ -415,35 +415,35 @@ E2B Sandbox Bench - Performance Report
 ```python
 def run_benchmark(config: Config) -> dict:
     """运行测试流程"""
-    
+
     # 1. 设置E2B环境变量
     config.setup_e2b_env()
-    
+
     # 2. 创建沙箱
     sandbox_manager = SandboxManager(config, stop_event)
     sandbox_states = sandbox_manager.create_all()
-    
+
     # 3. 启动统计收集
     stats_collector = StatsCollector(config, sandbox_states)
     stats_collector.start()
-    
+
     # 4. 启动任务执行
     task_manager = TaskManager(config, sandbox_states, stop_event)
     task_manager.start_all()
-    
+
     # 5. 运行指定时长
     time.sleep(config.test_duration)
-    
+
     # 6. 停止所有组件
     stop_event.set()
     task_manager.wait_all()
     stats_collector.stop()
     sandbox_manager.close_all()
-    
+
     # 7. 生成并保存报告
     report = stats_collector.generate_report()
     filepath = stats_collector.save_report(report)
-    
+
     return {'report': report, 'filepath': filepath}
 ```
 

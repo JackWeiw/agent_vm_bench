@@ -4,12 +4,10 @@ Health Checker Module
 VM Health monitoring via SSH and OpenStack status detection
 """
 
-import time
-import threading
-import subprocess
 import json
-import os
-import re
+import subprocess
+import threading
+import time
 from typing import Dict, Optional, Set
 
 from .config import Config
@@ -35,8 +33,11 @@ class OpenStackVMChecker:
         try:
             result = subprocess.run(
                 ["openstack", "server", "list", "-f", "json", "-c", "Name", "-c", "Networks"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, env=self.os_env, timeout=60
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=self.os_env,
+                timeout=60,
             )
             if result.returncode != 0:
                 print(f"[OpenStack] server list failed: {result.stderr.strip()}")
@@ -62,8 +63,11 @@ class OpenStackVMChecker:
         try:
             result = subprocess.run(
                 ["openstack", "server", "show", vm_name, "-f", "value", "-c", "status"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, env=self.os_env, timeout=30
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=self.os_env,
+                timeout=30,
             )
             if result.returncode == 0:
                 return result.stdout.strip()
@@ -92,7 +96,7 @@ class HealthChecker:
         config: Config,
         vm_states: Dict[int, VMState],
         vm_conns: Dict[int, VMConnection],
-        os_checker: Optional[OpenStackVMChecker] = None
+        os_checker: Optional[OpenStackVMChecker] = None,
     ):
         self.config = config
         self.vm_states = vm_states

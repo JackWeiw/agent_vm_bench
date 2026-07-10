@@ -5,63 +5,67 @@ Defines VMStatus, CreationMetrics, ConnectionMetrics, QAMetrics, BrowserMetrics,
 StressMetrics, VMHealth, VMState, TestSnapshot, OOMType
 """
 
-from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple
-from enum import Enum
 import statistics
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Dict, List, Optional, Tuple
 
 
 class VMStatus(Enum):
     """VM status enumeration (covers both OpenStack creation and SSH connection)"""
+
     # Phase 0: OpenStack Creation
-    PENDING = "pending"           # Not created yet
-    CREATING = "creating"         # OpenStack API call in progress
-    CREATED = "created"           # openstack create succeeded
-    ACTIVE = "active"             # VM status = ACTIVE (OpenStack confirmed)
+    PENDING = "pending"  # Not created yet
+    CREATING = "creating"  # OpenStack API call in progress
+    CREATED = "created"  # openstack create succeeded
+    ACTIVE = "active"  # VM status = ACTIVE (OpenStack confirmed)
     CREATE_FAILED = "create_failed"  # OpenStack creation failed
-    TIMEOUT = "timeout"           # Creation timeout
+    TIMEOUT = "timeout"  # Creation timeout
 
     # Phase 1: SSH Connection + Benchmark
-    CONNECTING = "connecting"     # SSH connection in progress
-    CONNECTED = "connected"       # SSH success
-    PORT_READY = "port_ready"     # Application ports verified (ready for tasks)
-    RUNNING = "running"           # Benchmark tasks in progress
+    CONNECTING = "connecting"  # SSH connection in progress
+    CONNECTED = "connected"  # SSH success
+    PORT_READY = "port_ready"  # Application ports verified (ready for tasks)
+    RUNNING = "running"  # Benchmark tasks in progress
 
     # Runtime states
-    OFFLINE = "offline"           # SSH connection lost
-    SHUTOFF = "shutoff"           # OpenStack SHUTOFF (memory overcommit)
-    ERROR = "error"               # OpenStack ERROR state
-    DELETED = "deleted"           # VM deleted
+    OFFLINE = "offline"  # SSH connection lost
+    SHUTOFF = "shutoff"  # OpenStack SHUTOFF (memory overcommit)
+    ERROR = "error"  # OpenStack ERROR state
+    DELETED = "deleted"  # VM deleted
 
 
 class OOMType(Enum):
     """OOM Type Classification for stress_tool failures"""
+
     NONE = "none"
-    START_OOM = "start_oom"          # OOM at startup (memory allocation failed)
-    RUNTIME_OOM = "runtime_oom"      # OOM at runtime (killed by OOM Killer)
-    CRASH = "crash"                   # Program crash (segmentation fault etc.)
-    UNKNOWN = "unknown"               # Unknown cause
+    START_OOM = "start_oom"  # OOM at startup (memory allocation failed)
+    RUNTIME_OOM = "runtime_oom"  # OOM at runtime (killed by OOM Killer)
+    CRASH = "crash"  # Program crash (segmentation fault etc.)
+    UNKNOWN = "unknown"  # Unknown cause
 
 
 @dataclass
 class CreationMetrics:
     """VM creation performance metrics (OpenStack)"""
-    submit_time: float = 0.0      # Creation submit time
-    active_time: float = 0.0      # VM becomes ACTIVE time
-    elapsed: float = 0.0          # submit -> ACTIVE duration
+
+    submit_time: float = 0.0  # Creation submit time
+    active_time: float = 0.0  # VM becomes ACTIVE time
+    elapsed: float = 0.0  # submit -> ACTIVE duration
     status: VMStatus = VMStatus.PENDING
-    vm_uuid: str = ""             # OpenStack VM UUID
+    vm_uuid: str = ""  # OpenStack VM UUID
     error_msg: str = ""
 
 
 @dataclass
 class ConnectionMetrics:
     """SSH connection metrics"""
-    connect_time: float = 0.0     # SSH connect start time
-    ready_time: float = 0.0       # SSH + ports ready time
+
+    connect_time: float = 0.0  # SSH connect start time
+    ready_time: float = 0.0  # SSH + ports ready time
     connect_elapsed: float = 0.0  # SSH connection duration
     port_wait_elapsed: float = 0.0  # Port check duration (if applicable)
-    total_elapsed: float = 0.0    # connect + port_wait
+    total_elapsed: float = 0.0  # connect + port_wait
     status: VMStatus = VMStatus.PENDING
     error_msg: str = ""
 
@@ -69,6 +73,7 @@ class ConnectionMetrics:
 @dataclass
 class QAMetrics:
     """QA performance metrics"""
+
     total_queries: int = 0
     success_count: int = 0
     failed_count: int = 0
@@ -108,6 +113,7 @@ class QAMetrics:
 @dataclass
 class BrowserMetrics:
     """Browser task metrics"""
+
     total_tasks: int = 0
     success_count: int = 0
     failed_count: int = 0
@@ -153,9 +159,10 @@ class BrowserMetrics:
 @dataclass
 class StressMetrics:
     """Stress process metrics"""
+
     start_count: int = 0
     restart_count: int = 0
-    oom_events: Dict[OOMType, int] = field(default_factory=lambda: {t: 0 for t in OOMType})
+    oom_events: Dict[OOMType, int] = field(default_factory=lambda: dict.fromkeys(OOMType, 0))
     last_start_time: float = 0.0
     current_pid: Optional[str] = None
 
@@ -163,6 +170,7 @@ class StressMetrics:
 @dataclass
 class VMHealth:
     """VM health status"""
+
     is_connected: bool = True
     last_seen: float = 0.0
     consecutive_failures: int = 0
@@ -187,10 +195,11 @@ class VMHealth:
 @dataclass
 class VMState:
     """Complete VM state (creation + connection + benchmark)"""
-    vm_id: int                    # Sequence number (1, 2, 3...)
-    vm_name: str = ""             # OpenStack VM name
-    fixed_ip: str = ""            # Fixed IP address
-    vm_uuid: str = ""             # OpenStack UUID
+
+    vm_id: int  # Sequence number (1, 2, 3...)
+    vm_name: str = ""  # OpenStack VM name
+    fixed_ip: str = ""  # Fixed IP address
+    vm_uuid: str = ""  # OpenStack UUID
 
     # Phase 0: Creation (OpenStack)
     creation_metrics: CreationMetrics = field(default_factory=CreationMetrics)
@@ -238,6 +247,7 @@ class VMState:
 @dataclass
 class TestSnapshot:
     """Test snapshot for real-time stats"""
+
     timestamp: float
     elapsed: float
     total_vms: int

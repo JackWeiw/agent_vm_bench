@@ -6,16 +6,16 @@ Includes detailed container creation time, port wait time, browser task time sta
 Calculates QPS (queries per second) as core performance metric
 """
 
-import time
-import threading
-import statistics
 import os
+import statistics
+import threading
+import time
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 
 from .config import Config
 from .schemas import ContainerState, ContainerStatus, TestSnapshot
-from .utils import calc_percentiles, calc_p99
+from .utils import calc_p99, calc_percentiles
 
 
 class StatsCollector:
@@ -54,25 +54,32 @@ class StatsCollector:
 
         # Container status statistics
         active_count = sum(
-            1 for s in self.container_states.values()
+            1
+            for s in self.container_states.values()
             if s.creation_metrics.status == ContainerStatus.PORT_READY and s.is_alive
         )
         offline_count = sum(
-            1 for s in self.container_states.values()
-            if not s.is_alive or s.creation_metrics.status in (ContainerStatus.FAILED, ContainerStatus.PORT_FAILED, ContainerStatus.OFFLINE)
+            1
+            for s in self.container_states.values()
+            if not s.is_alive
+            or s.creation_metrics.status
+            in (ContainerStatus.FAILED, ContainerStatus.PORT_FAILED, ContainerStatus.OFFLINE)
         )
 
         # Creation performance statistics (only port-ready containers)
         create_times = [
-            s.creation_metrics.create_elapsed for s in self.container_states.values()
+            s.creation_metrics.create_elapsed
+            for s in self.container_states.values()
             if s.creation_metrics.status == ContainerStatus.PORT_READY and s.creation_metrics.create_elapsed > 0
         ]
         port_wait_times = [
-            s.creation_metrics.port_wait_elapsed for s in self.container_states.values()
+            s.creation_metrics.port_wait_elapsed
+            for s in self.container_states.values()
             if s.creation_metrics.status == ContainerStatus.PORT_READY and s.creation_metrics.port_wait_elapsed > 0
         ]
         total_times = [
-            s.creation_metrics.total_elapsed for s in self.container_states.values()
+            s.creation_metrics.total_elapsed
+            for s in self.container_states.values()
             if s.creation_metrics.status == ContainerStatus.PORT_READY and s.creation_metrics.total_elapsed > 0
         ]
 
@@ -111,7 +118,7 @@ class StatsCollector:
             browser_success=browser_success,
             browser_avg_latency=browser_avg,
             browser_p99_latency=browser_p99,
-            qps=qps
+            qps=qps,
         )
         self.snapshots.append(snapshot)
 
@@ -120,22 +127,28 @@ class StatsCollector:
 
     def _print_snapshot(self, snapshot: TestSnapshot) -> None:
         """Print real-time snapshot"""
-        print(f"\n{'─'*70}")
+        print(f"\n{'─' * 70}")
         print(f"T+{snapshot.elapsed:6.1f}s  Status Snapshot")
-        print(f"{'─'*70}")
+        print(f"{'─' * 70}")
         print(f"  Containers: {snapshot.active_containers:3d} ready / {snapshot.offline_containers:2d} offline")
 
         if snapshot.creation_stats.get("create") and snapshot.creation_stats["create"]["avg"] > 0:
-            print(f"  Create:     avg={snapshot.creation_stats['create']['avg']:.1f}s  "
-                  f"p99={snapshot.creation_stats['create']['p99']:.1f}s")
+            print(
+                f"  Create:     avg={snapshot.creation_stats['create']['avg']:.1f}s  "
+                f"p99={snapshot.creation_stats['create']['p99']:.1f}s"
+            )
         if snapshot.creation_stats.get("port_wait") and snapshot.creation_stats["port_wait"]["avg"] > 0:
-            print(f"  PortWait:   avg={snapshot.creation_stats['port_wait']['avg']:.1f}s  "
-                  f"p99={snapshot.creation_stats['port_wait']['p99']:.1f}s")
+            print(
+                f"  PortWait:   avg={snapshot.creation_stats['port_wait']['avg']:.1f}s  "
+                f"p99={snapshot.creation_stats['port_wait']['p99']:.1f}s"
+            )
 
-        print(f"  Queries:    {snapshot.browser_success:3d}/{snapshot.browser_total:3d}  "
-              f"avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s")
+        print(
+            f"  Queries:    {snapshot.browser_success:3d}/{snapshot.browser_total:3d}  "
+            f"avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s"
+        )
         print(f"  QPS:        {snapshot.qps:.2f} queries/sec")
-        print(f"{'─'*70}")
+        print(f"{'─' * 70}")
 
     def generate_report(self) -> str:
         """Generate final TXT report"""
@@ -145,63 +158,64 @@ class StatsCollector:
         lines.append("=" * 80)
 
         # Configuration info
-        lines.append(f"\n[Test Configuration]")
+        lines.append("\n[Test Configuration]")
         lines.append(f"  Image:           {self.config.docker_image}")
         lines.append(f"  Container Spec:  {self.config.cpu_limit}vCPU / {self.config.memory_limit}")
         lines.append(f"  Total Containers:{self.config.total_count}")
 
         # Display mode
         if self.config.detect_existing:
-            lines.append(f"  Mode:            Detect existing containers")
+            lines.append("  Mode:            Detect existing containers")
         elif self.config.create_only:
-            lines.append(f"  Mode:            Create-only (Phase 0)")
+            lines.append("  Mode:            Create-only (Phase 0)")
         else:
-            lines.append(f"  Mode:            Full workflow")
+            lines.append("  Mode:            Full workflow")
 
         # Create batch config
         if self.config.create_batch_size:
-            lines.append(f"  Create Batch:    {self.config.create_batch_count} batches x {self.config.create_batch_size} containers")
+            lines.append(
+                f"  Create Batch:    {self.config.create_batch_count} batches x {self.config.create_batch_size} containers"
+            )
             lines.append(f"  Create Interval: {self.config.create_batch_interval}s")
         else:
-            lines.append(f"  Create Batch:    Full concurrent creation")
+            lines.append("  Create Batch:    Full concurrent creation")
 
         # Task batch config
         if not self.config.create_only:
             if self.config.task_batch_size:
-                lines.append(f"  Task Batch:      {self.config.task_batch_count} batches x {self.config.task_batch_size} containers")
+                lines.append(
+                    f"  Task Batch:      {self.config.task_batch_count} batches x {self.config.task_batch_size} containers"
+                )
                 lines.append(f"  Task Interval:   {self.config.task_batch_interval}s")
             else:
-                lines.append(f"  Task Batch:      Full concurrent start")
+                lines.append("  Task Batch:      Full concurrent start")
 
         lines.append(f"  Test Duration:   {self.config.test_duration}s")
 
         # Browser workflow
-        lines.append(f"\n[Browser Workflow (5 steps = 1 query)]")
-        lines.append(f"  Step 1: openclaw browser open [URL] --label [NAME]")
-        lines.append(f"  Step 2: openclaw browser focus [TAB_ID]")
-        lines.append(f"  Step 3: openclaw browser snapshot --limit 200")
-        lines.append(f"  Step 4: openclaw browser click e218 (retry on fail)")
-        lines.append(f"  Step 5: openclaw browser screenshot")
+        lines.append("\n[Browser Workflow (5 steps = 1 query)]")
+        lines.append("  Step 1: openclaw browser open [URL] --label [NAME]")
+        lines.append("  Step 2: openclaw browser focus [TAB_ID]")
+        lines.append("  Step 3: openclaw browser snapshot --limit 200")
+        lines.append("  Step 4: openclaw browser click e218 (retry on fail)")
+        lines.append("  Step 5: openclaw browser screenshot")
 
         # Container status statistics
         ready_states = [
-            s for s in self.container_states.values()
-            if s.creation_metrics.status == ContainerStatus.PORT_READY
+            s for s in self.container_states.values() if s.creation_metrics.status == ContainerStatus.PORT_READY
         ]
         failed_states = [
-            s for s in self.container_states.values()
-            if s.creation_metrics.status == ContainerStatus.FAILED
+            s for s in self.container_states.values() if s.creation_metrics.status == ContainerStatus.FAILED
         ]
         port_failed_states = [
-            s for s in self.container_states.values()
-            if s.creation_metrics.status == ContainerStatus.PORT_FAILED
+            s for s in self.container_states.values() if s.creation_metrics.status == ContainerStatus.PORT_FAILED
         ]
-        offline_states = [
-            s for s in self.container_states.values() if not s.is_alive
-        ]
+        offline_states = [s for s in self.container_states.values() if not s.is_alive]
 
-        lines.append(f"\n[Container Status]")
-        lines.append(f"  Created (Docker):   {len([s for s in self.container_states.values() if s.creation_metrics.status not in (ContainerStatus.PENDING, ContainerStatus.CREATING)])} / {len(self.container_states)}")
+        lines.append("\n[Container Status]")
+        lines.append(
+            f"  Created (Docker):   {len([s for s in self.container_states.values() if s.creation_metrics.status not in (ContainerStatus.PENDING, ContainerStatus.CREATING)])} / {len(self.container_states)}"
+        )
         lines.append(f"  Ports Ready:        {len(ready_states)} / {len(self.container_states)}")
         lines.append(f"  Create Failed:      {len(failed_states)}")
         lines.append(f"  Port Check Failed:  {len(port_failed_states)}")
@@ -215,13 +229,16 @@ class StatsCollector:
 
         # Container creation performance statistics
         create_times = [
-            s.creation_metrics.create_elapsed for s in self.container_states.values()
-            if s.creation_metrics.create_elapsed > 0 and s.creation_metrics.status not in (ContainerStatus.FAILED, ContainerStatus.PENDING, ContainerStatus.CREATING)
+            s.creation_metrics.create_elapsed
+            for s in self.container_states.values()
+            if s.creation_metrics.create_elapsed > 0
+            and s.creation_metrics.status
+            not in (ContainerStatus.FAILED, ContainerStatus.PENDING, ContainerStatus.CREATING)
         ]
         if create_times:
             stats = calc_percentiles(create_times)
-            lines.append(f"\n[Container Creation Performance]")
-            lines.append(f"  (docker run --cpus --mem elapsed time)")
+            lines.append("\n[Container Creation Performance]")
+            lines.append("  (docker run --cpus --mem elapsed time)")
             lines.append(f"  Min:  {stats['min']:.1f}s")
             lines.append(f"  Max:  {stats['max']:.1f}s")
             lines.append(f"  Avg:  {stats['avg']:.1f}s")
@@ -231,12 +248,11 @@ class StatsCollector:
 
         # Port wait performance statistics
         port_wait_times = [
-            s.creation_metrics.port_wait_elapsed for s in ready_states
-            if s.creation_metrics.port_wait_elapsed > 0
+            s.creation_metrics.port_wait_elapsed for s in ready_states if s.creation_metrics.port_wait_elapsed > 0
         ]
         if port_wait_times:
             stats = calc_percentiles(port_wait_times)
-            lines.append(f"\n[Port Check Wait Performance]")
+            lines.append("\n[Port Check Wait Performance]")
             lines.append(f"  (Waiting for {self.config.required_ports} ports)")
             lines.append(f"  Min:  {stats['min']:.1f}s")
             lines.append(f"  Max:  {stats['max']:.1f}s")
@@ -246,14 +262,11 @@ class StatsCollector:
             lines.append(f"  P99:  {stats['p99']:.1f}s")
 
         # Total startup time (create + port_wait)
-        total_times = [
-            s.creation_metrics.total_elapsed for s in ready_states
-            if s.creation_metrics.total_elapsed > 0
-        ]
+        total_times = [s.creation_metrics.total_elapsed for s in ready_states if s.creation_metrics.total_elapsed > 0]
         if total_times:
             stats = calc_percentiles(total_times)
-            lines.append(f"\n[Total Startup Performance]")
-            lines.append(f"  (Container creation + port wait)")
+            lines.append("\n[Total Startup Performance]")
+            lines.append("  (Container creation + port wait)")
             lines.append(f"  Min:  {stats['min']:.1f}s")
             lines.append(f"  Max:  {stats['max']:.1f}s")
             lines.append(f"  Avg:  {stats['avg']:.1f}s")
@@ -271,8 +284,8 @@ class StatsCollector:
         total_failed = sum(s.browser_metrics.failed_count for s in self.container_states.values())
         total_timeout = sum(s.browser_metrics.timeout_count for s in self.container_states.values())
 
-        lines.append(f"\n[Browser Query Statistics]")
-        lines.append(f"  (5-step workflow = 1 query)")
+        lines.append("\n[Browser Query Statistics]")
+        lines.append("  (5-step workflow = 1 query)")
         lines.append(f"  Total Queries: {total_queries}")
         lines.append(f"  Success:       {total_success}")
         lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
@@ -288,13 +301,13 @@ class StatsCollector:
         elapsed = time.time() - self.start_time
         if elapsed > 0 and total_success > 0:
             qps = total_success / elapsed
-            lines.append(f"\n[Overall QPS]")
+            lines.append("\n[Overall QPS]")
             lines.append(f"  Total QPS:     {qps:.2f} queries/sec")
-            lines.append(f"  (Success queries / Test duration)")
+            lines.append("  (Success queries / Test duration)")
 
         # Per-step latency analysis
-        lines.append(f"\n[Per-Step Latency Analysis]")
-        step_names = ['open', 'focus', 'snapshot', 'click', 'screenshot']
+        lines.append("\n[Per-Step Latency Analysis]")
+        step_names = ["open", "focus", "snapshot", "click", "screenshot"]
         for step_name in step_names:
             all_step_latencies = []
             for s in self.container_states.values():
@@ -316,16 +329,16 @@ class StatsCollector:
         if failed_container_errors:
             # Sort by failed count (descending)
             failed_container_errors.sort(key=lambda x: x[1], reverse=True)
-            lines.append(f"\n[Failed Container Error Details]")
+            lines.append("\n[Failed Container Error Details]")
             lines.append(f"  Total containers with query failures: {len(failed_container_errors)}")
-            lines.append(f"  (Top 10 containers with most failures)")
+            lines.append("  (Top 10 containers with most failures)")
             for cid, count, error in failed_container_errors[:10]:
                 # Truncate error if too long
                 error_display = error[:150] if len(error) > 150 else error
                 lines.append(f"  Container{cid}: {count} failures - {error_display}")
 
         lines.append("\n" + "=" * 80)
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
     def save_report(self, report: str) -> str:
         """Save report to file"""
@@ -336,7 +349,7 @@ class StatsCollector:
         filename = f"{self.config.filename_prefix}_{timestamp}.txt"
         filepath = os.path.join(output_dir, filename)
 
-        with open(filepath, 'w', encoding='utf-8') as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             f.write(report)
 
         return filepath

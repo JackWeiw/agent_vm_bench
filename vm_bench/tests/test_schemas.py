@@ -14,18 +14,24 @@ Tests:
 - TestSnapshot dataclass
 """
 
-import unittest
-import time
-import sys
 import os
+import sys
+import time
+import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from vm_bench.schemas import (
-    VMStatus, OOMType,
-    CreationMetrics, ConnectionMetrics,
-    QAMetrics, BrowserMetrics, StressMetrics,
-    VMHealth, VMState, TestSnapshot
+    BrowserMetrics,
+    ConnectionMetrics,
+    CreationMetrics,
+    OOMType,
+    QAMetrics,
+    StressMetrics,
+    TestSnapshot,
+    VMHealth,
+    VMState,
+    VMStatus,
 )
 
 
@@ -54,9 +60,22 @@ class TestVMStatusEnum(unittest.TestCase):
 
     def test_all_statuses_defined(self):
         """Ensure all expected statuses exist"""
-        expected = ["pending", "creating", "created", "active", "create_failed",
-                    "timeout", "connecting", "connected", "port_ready", "running",
-                    "offline", "shutoff", "error", "deleted"]
+        expected = [
+            "pending",
+            "creating",
+            "created",
+            "active",
+            "create_failed",
+            "timeout",
+            "connecting",
+            "connected",
+            "port_ready",
+            "running",
+            "offline",
+            "shutoff",
+            "error",
+            "deleted",
+        ]
         actual = [s.value for s in VMStatus]
         self.assertEqual(sorted(expected), sorted(actual))
 
@@ -91,7 +110,7 @@ class TestCreationMetrics(unittest.TestCase):
             elapsed=20.0,
             status=VMStatus.ACTIVE,
             vm_uuid="abc123",
-            error_msg="test error"
+            error_msg="test error",
         )
         self.assertEqual(metrics.submit_time, 100.0)
         self.assertEqual(metrics.elapsed, 20.0)
@@ -111,12 +130,7 @@ class TestConnectionMetrics(unittest.TestCase):
         self.assertEqual(metrics.status, VMStatus.PENDING)
 
     def test_custom_values(self):
-        metrics = ConnectionMetrics(
-            connect_time=10.0,
-            ready_time=15.0,
-            connect_elapsed=5.0,
-            status=VMStatus.CONNECTED
-        )
+        metrics = ConnectionMetrics(connect_time=10.0, ready_time=15.0, connect_elapsed=5.0, status=VMStatus.CONNECTED)
         self.assertEqual(metrics.connect_elapsed, 5.0)
         self.assertEqual(metrics.status, VMStatus.CONNECTED)
 
@@ -294,12 +308,7 @@ class TestVMState(unittest.TestCase):
 
     def test_custom_values(self):
         state = VMState(
-            vm_id=5,
-            vm_name="test_vm_5",
-            fixed_ip="192.168.110.15",
-            vm_uuid="uuid123",
-            is_stress_vm=True,
-            batch_id=2
+            vm_id=5, vm_name="test_vm_5", fixed_ip="192.168.110.15", vm_uuid="uuid123", is_stress_vm=True, batch_id=2
         )
         self.assertEqual(state.vm_id, 5)
         self.assertEqual(state.vm_name, "test_vm_5")
@@ -328,12 +337,7 @@ class TestTestSnapshot(unittest.TestCase):
 
     def test_default_values(self):
         snapshot = TestSnapshot(
-            timestamp=time.time(),
-            elapsed=100.0,
-            total_vms=10,
-            active_vms=8,
-            offline_vms=2,
-            total_failure_vms=1
+            timestamp=time.time(), elapsed=100.0, total_vms=10, active_vms=8, offline_vms=2, total_failure_vms=1
         )
         self.assertEqual(snapshot.total_vms, 10)
         self.assertEqual(snapshot.active_vms, 8)
@@ -352,12 +356,12 @@ class TestTestSnapshot(unittest.TestCase):
             browser_success=95,
             browser_avg_latency=5.0,
             browser_p99_latency=10.0,
-            browser_type_stats={"Page Access": {"success": 95, "failed": 5}}
+            browser_type_stats={"Page Access": {"success": 95, "failed": 5}},
         )
         self.assertEqual(snapshot.browser_total, 100)
         self.assertEqual(snapshot.browser_success, 95)
         self.assertEqual(snapshot.browser_type_stats["Page Access"]["success"], 95)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

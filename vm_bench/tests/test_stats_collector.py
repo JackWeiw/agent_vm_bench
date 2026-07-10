@@ -4,19 +4,16 @@ Unit tests for vm_bench stats collector module
 Tests statistics collection and report generation
 """
 
-import unittest
-import threading
-import time
-import sys
 import os
-import tempfile
 import shutil
-from unittest.mock import Mock, MagicMock, patch
+import sys
+import tempfile
+import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from vm_bench.config import Config
-from vm_bench.schemas import VMState, VMStatus, BrowserMetrics
+from vm_bench.schemas import VMState, VMStatus
 from vm_bench.stats_collector import StatsCollector
 
 
@@ -25,11 +22,7 @@ class TestStatsCollector(unittest.TestCase):
 
     def setUp(self):
         self.config = Config(
-            total_count=5,
-            task_mode="browser",
-            test_duration=60,
-            stats_interval=5,
-            output_dir=tempfile.mkdtemp()
+            total_count=5, task_mode="browser", test_duration=60, stats_interval=5, output_dir=tempfile.mkdtemp()
         )
 
         # Create mock VM states
@@ -90,11 +83,7 @@ class TestReportGeneration(unittest.TestCase):
     """Test report generation"""
 
     def setUp(self):
-        self.config = Config(
-            total_count=3,
-            task_mode="browser",
-            output_dir=tempfile.mkdtemp()
-        )
+        self.config = Config(total_count=3, task_mode="browser", output_dir=tempfile.mkdtemp())
 
         self.vm_states = {}
         for i in range(3):
@@ -147,10 +136,7 @@ class TestReportSaving(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
-        self.config = Config(
-            output_dir=self.temp_dir,
-            filename_prefix="test_bench"
-        )
+        self.config = Config(output_dir=self.temp_dir, filename_prefix="test_bench")
         self.vm_states = {1: VMState(vm_id=1)}
 
     def tearDown(self):
@@ -170,7 +156,7 @@ class TestReportSaving(unittest.TestCase):
         report = "Test report content"
         filepath = collector.save_report(report)
 
-        with open(filepath, 'r') as f:
+        with open(filepath) as f:
             content = f.read()
         self.assertEqual(content, report)
 
@@ -225,5 +211,5 @@ class TestConnectionStats(unittest.TestCase):
         self.assertIn("Connection Performance", report)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

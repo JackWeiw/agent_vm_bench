@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 QEMU Virtual Machine Real-time Monitoring Tool - DEPRECATED
 
@@ -30,17 +29,18 @@ import warnings
 warnings.warn(
     "qemu_monitor.py is deprecated. Please use vm_monitor.py with --vmm qemu argument.",
     DeprecationWarning,
-    stacklevel=2
+    stacklevel=2,
 )
 
 # Forward to vm_monitor.cli with --vmm qemu default
 from vm_monitor.cli import main
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Note: Users should migrate to vm_monitor.py --vmm qemu
     # This wrapper will auto-add --vmm qemu if not provided
     import sys
-    if '--vmm' not in sys.argv:
-        sys.argv.insert(1, '--vmm')
-        sys.argv.insert(2, 'qemu')
+
+    if "--vmm" not in sys.argv:
+        sys.argv.insert(1, "--vmm")
+        sys.argv.insert(2, "qemu")
     main()

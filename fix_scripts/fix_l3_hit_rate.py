@@ -16,6 +16,7 @@ Usage:
 import argparse
 import os
 import sys
+
 from vm_monitor.exporters import add_l3_hit_rate_to_excel
 
 
@@ -36,8 +37,9 @@ def fix_batch_results(batch_dir: str, numa_nodes: list = None):
         entry_path = os.path.join(batch_dir, entry)
         if os.path.isdir(entry_path):
             # Check if it has vm_monitor or qemu_monitor subdirectory
-            if os.path.exists(os.path.join(entry_path, "vm_monitor")) or \
-               os.path.exists(os.path.join(entry_path, "qemu_monitor")):
+            if os.path.exists(os.path.join(entry_path, "vm_monitor")) or os.path.exists(
+                os.path.join(entry_path, "qemu_monitor")
+            ):
                 result_dirs.append(entry_path)
 
     if not result_dirs:

@@ -4,9 +4,10 @@ Test Config Module
 Tests for Config dataclass: loading, merging, properties
 """
 
-import pytest
 import os
 import tempfile
+
+import pytest
 
 from e2b_bench.config import Config
 
@@ -80,7 +81,7 @@ browser:
 report:
   output_dir: custom_results
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(yaml_content)
             temp_path = f.name
         config = Config.load_from_yaml(temp_path)
@@ -101,7 +102,7 @@ e2b_env:
   E2B_API_KEY: test_key
   E2B_DOMAIN: custom.domain
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(yaml_content)
             temp_path = f.name
         config = Config.load_from_yaml(temp_path)
@@ -121,7 +122,7 @@ browser:
   warmup_loops: 3
   warmup_delay: 15
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(yaml_content)
             temp_path = f.name
         config = Config.load_from_yaml(temp_path)
@@ -140,7 +141,7 @@ smap_tool:
   src_nid: 0
   dest_nid: 3
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(yaml_content)
             temp_path = f.name
         config = Config.load_from_yaml(temp_path)
@@ -160,7 +161,7 @@ vm_monitor:
   duration: 120
   numa: "0,1"
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(yaml_content)
             temp_path = f.name
         config = Config.load_from_yaml(temp_path)
@@ -182,11 +183,7 @@ class TestConfigSetupEnv:
             if key in os.environ:
                 del os.environ[key]
 
-        config = Config(
-            e2b_access_token="my_token",
-            e2b_api_key="my_key",
-            e2b_domain="my.domain"
-        )
+        config = Config(e2b_access_token="my_token", e2b_api_key="my_key", e2b_domain="my.domain")
         config.setup_e2b_env()
 
         assert os.environ["E2B_ACCESS_TOKEN"] == "my_token"
@@ -214,7 +211,7 @@ sandbox:
   template: custom-template
   sandbox_ids_file: my_sandbox_ids.txt
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(yaml_content)
             temp_path = f.name
         config = Config.load_from_yaml(temp_path)
@@ -228,21 +225,43 @@ sandbox:
 sandbox:
   sandbox_ids_file: yaml_ids.txt
 """
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(yaml_content)
             temp_path = f.name
         yaml_config = Config.load_from_yaml(temp_path)
         os.unlink(temp_path)
 
         import argparse
+
         args = argparse.Namespace(
             sandbox_ids_file="cli_ids.txt",
-            e2b_access_token=None, e2b_api_key=None, e2b_domain=None, e2b_api_url=None, e2b_http_ssl=None,
-            template=None, create_timeout=None, total=None, detect=False, create_only=False,
-            create_batch_size=None, create_batch_interval=None, task_batch_size=None, task_batch_interval=None,
-            browser_url=None, browser_timeout=None, browser_interval_min=None, browser_interval_max=None,
-            warmup_url=None, warmup_loops=None, warmup_delay=None, warmup_only=False,
-            benchmark_percent=None, duration=None, stats_interval=None, output_dir=None, filename_prefix=None,
+            e2b_access_token=None,
+            e2b_api_key=None,
+            e2b_domain=None,
+            e2b_api_url=None,
+            e2b_http_ssl=None,
+            template=None,
+            create_timeout=None,
+            total=None,
+            detect=False,
+            create_only=False,
+            create_batch_size=None,
+            create_batch_interval=None,
+            task_batch_size=None,
+            task_batch_interval=None,
+            browser_url=None,
+            browser_timeout=None,
+            browser_interval_min=None,
+            browser_interval_max=None,
+            warmup_url=None,
+            warmup_loops=None,
+            warmup_delay=None,
+            warmup_only=False,
+            benchmark_percent=None,
+            duration=None,
+            stats_interval=None,
+            output_dir=None,
+            filename_prefix=None,
         )
 
         config = Config.merge_with_args(yaml_config, args)
@@ -251,19 +270,41 @@ sandbox:
     def test_from_args(self):
         """Build Config from CLI args only"""
         import argparse
+
         args = argparse.Namespace(
-            sandbox_ids_file="args_ids.txt", e2b_access_token="token",
-            e2b_api_key=None, e2b_domain=None, e2b_api_url=None, e2b_http_ssl=None,
-            template=None, create_timeout=None, total=None, detect=False, create_only=False,
-            create_batch_size=None, create_batch_interval=None, task_batch_size=None, task_batch_interval=None,
-            browser_url=None, browser_timeout=None, browser_interval_min=None, browser_interval_max=None,
-            warmup_url=None, warmup_loops=None, warmup_delay=None, warmup_only=False,
-            benchmark_percent=None, duration=None, stats_interval=None, output_dir=None, filename_prefix=None,
+            sandbox_ids_file="args_ids.txt",
+            e2b_access_token="token",
+            e2b_api_key=None,
+            e2b_domain=None,
+            e2b_api_url=None,
+            e2b_http_ssl=None,
+            template=None,
+            create_timeout=None,
+            total=None,
+            detect=False,
+            create_only=False,
+            create_batch_size=None,
+            create_batch_interval=None,
+            task_batch_size=None,
+            task_batch_interval=None,
+            browser_url=None,
+            browser_timeout=None,
+            browser_interval_min=None,
+            browser_interval_max=None,
+            warmup_url=None,
+            warmup_loops=None,
+            warmup_delay=None,
+            warmup_only=False,
+            benchmark_percent=None,
+            duration=None,
+            stats_interval=None,
+            output_dir=None,
+            filename_prefix=None,
         )
 
         config = Config.from_args(args)
         assert config.sandbox_ids_file == "args_ids.txt"
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

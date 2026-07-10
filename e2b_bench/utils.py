@@ -7,16 +7,12 @@ Provides logging formatting, time handling, percentile calculation and other hel
 import logging
 import statistics
 from datetime import datetime
-from typing import List, Dict
+from typing import Dict, List
 
 
 def setup_logging(level: int = logging.INFO) -> None:
     """Setup logging format"""
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s [%(levelname)s] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+    logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
 
 def format_timestamp(ts: float) -> str:
@@ -60,7 +56,7 @@ def calc_percentiles(values: List[float]) -> Dict[str, float]:
         "avg": statistics.mean(values),
         "p50": percentile(50),
         "p95": percentile(95),
-        "p99": percentile(99)
+        "p99": percentile(99),
     }
 
 

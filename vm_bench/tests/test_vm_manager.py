@@ -4,48 +4,35 @@ Unit tests for vm_bench VMManager module
 Tests use mocks to simulate SSH and OpenStack CLI behavior
 """
 
-import unittest
-import threading
-import time
-import sys
 import os
-from unittest.mock import Mock, MagicMock, patch, PropertyMock
+import sys
+import threading
+import unittest
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from vm_bench.config import Config
-from vm_bench.schemas import VMStatus, VMState
-from vm_bench.vm_manager import VMManager, VMConnection
+from vm_bench.schemas import VMState, VMStatus
+from vm_bench.vm_manager import VMConnection, VMManager
 
 
 class TestVMConnection(unittest.TestCase):
     """Test VMConnection SSH wrapper"""
 
     def test_init(self):
-        conn = VMConnection(
-            host="192.168.110.11",
-            port=22,
-            username="root",
-            password="test",
-            vm_id=1
-        )
+        conn = VMConnection(host="192.168.110.11", port=22, username="root", password="test", vm_id=1)
         self.assertEqual(conn.host, "192.168.110.11")
         self.assertEqual(conn.port, 22)
         self.assertEqual(conn.vm_id, 1)
         self.assertFalse(conn.connected)
 
-    @patch('vm_bench.vm_manager.paramiko.SSHClient')
+    @patch("vm_bench.vm_manager.paramiko.SSHClient")
     def test_connect_success(self, mock_ssh_client_class):
         mock_ssh = Mock()
         mock_ssh_client_class.return_value = mock_ssh
 
-        conn = VMConnection(
-            host="192.168.110.11",
-            port=22,
-            username="root",
-            password="test",
-            vm_id=1
-        )
+        conn = VMConnection(host="192.168.110.11", port=22, username="root", password="test", vm_id=1)
 
         result = conn.connect(timeout=30)
         self.assertTrue(result)
@@ -53,25 +40,19 @@ class TestVMConnection(unittest.TestCase):
         mock_ssh.set_missing_host_key_policy.assert_called_once()
         mock_ssh.connect.assert_called_once()
 
-    @patch('vm_bench.vm_manager.paramiko.SSHClient')
+    @patch("vm_bench.vm_manager.paramiko.SSHClient")
     def test_connect_failure(self, mock_ssh_client_class):
         mock_ssh = Mock()
         mock_ssh.connect.side_effect = Exception("Connection refused")
         mock_ssh_client_class.return_value = mock_ssh
 
-        conn = VMConnection(
-            host="192.168.110.11",
-            port=22,
-            username="root",
-            password="test",
-            vm_id=1
-        )
+        conn = VMConnection(host="192.168.110.11", port=22, username="root", password="test", vm_id=1)
 
         result = conn.connect(timeout=30)
         self.assertFalse(result)
         self.assertFalse(conn.connected)
 
-    @patch('vm_bench.vm_manager.paramiko.SSHClient')
+    @patch("vm_bench.vm_manager.paramiko.SSHClient")
     def test_execute_success(self, mock_ssh_client_class):
         mock_ssh = Mock()
         mock_stdin = Mock()
@@ -83,13 +64,7 @@ class TestVMConnection(unittest.TestCase):
         mock_ssh.exec_command.return_value = (mock_stdin, mock_stdout, mock_stderr)
         mock_ssh_client_class.return_value = mock_ssh
 
-        conn = VMConnection(
-            host="192.168.110.11",
-            port=22,
-            username="root",
-            password="test",
-            vm_id=1
-        )
+        conn = VMConnection(host="192.168.110.11", port=22, username="root", password="test", vm_id=1)
         conn.connected = True
         conn.ssh = mock_ssh
 
@@ -97,33 +72,21 @@ class TestVMConnection(unittest.TestCase):
         self.assertTrue(success)
         self.assertEqual(out, "output")
 
-    @patch('vm_bench.vm_manager.paramiko.SSHClient')
+    @patch("vm_bench.vm_manager.paramiko.SSHClient")
     def test_execute_not_connected(self, mock_ssh_client_class):
-        conn = VMConnection(
-            host="192.168.110.11",
-            port=22,
-            username="root",
-            password="test",
-            vm_id=1
-        )
+        conn = VMConnection(host="192.168.110.11", port=22, username="root", password="test", vm_id=1)
         conn.connected = False
 
         success, out, err, duration, code = conn.execute("ls", timeout=30)
         self.assertFalse(success)
         self.assertEqual(err, "Not connected")
 
-    @patch('vm_bench.vm_manager.paramiko.SSHClient')
+    @patch("vm_bench.vm_manager.paramiko.SSHClient")
     def test_close(self, mock_ssh_client_class):
         mock_ssh = Mock()
         mock_ssh_client_class.return_value = mock_ssh
 
-        conn = VMConnection(
-            host="192.168.110.11",
-            port=22,
-            username="root",
-            password="test",
-            vm_id=1
-        )
+        conn = VMConnection(host="192.168.110.11", port=22, username="root", password="test", vm_id=1)
         conn.ssh = mock_ssh
         conn.connected = True
 
@@ -167,7 +130,7 @@ class TestVMManager(unittest.TestCase):
         self.assertEqual(ips[1], "192.168.110.12")
         self.assertEqual(ips[2], "192.168.110.13")
 
-    @patch('vm_bench.vm_manager.subprocess.run')
+    @patch("vm_bench.vm_manager.subprocess.run")
     def test_check_vm_status(self, mock_run):
         manager = VMManager(self.config, self.stop_event)
         manager._openstack_available = True
@@ -181,7 +144,7 @@ class TestVMManager(unittest.TestCase):
         status = manager.check_vm_status("test-uuid")
         self.assertEqual(status, "ACTIVE")
 
-    @patch('vm_bench.vm_manager.subprocess.run')
+    @patch("vm_bench.vm_manager.subprocess.run")
     def test_check_vm_status_not_available(self, mock_run):
         manager = VMManager(self.config, self.stop_event)
         manager._openstack_available = False
@@ -189,7 +152,7 @@ class TestVMManager(unittest.TestCase):
         status = manager.check_vm_status("test-uuid")
         self.assertIsNone(status)
 
-    @patch('vm_bench.vm_manager.VMConnection')
+    @patch("vm_bench.vm_manager.VMConnection")
     def test_connect_single_success(self, mock_vm_conn_class):
         mock_conn = Mock()
         mock_conn.connect.return_value = True
@@ -204,7 +167,7 @@ class TestVMManager(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(state.connection_metrics.status, VMStatus.CONNECTED)
 
-    @patch('vm_bench.vm_manager.VMConnection')
+    @patch("vm_bench.vm_manager.VMConnection")
     def test_connect_single_failure(self, mock_vm_conn_class):
         mock_conn = Mock()
         mock_conn.connect.return_value = False
@@ -271,5 +234,5 @@ class TestVMStateTransitions(unittest.TestCase):
         self.assertEqual(state.creation_metrics.status, VMStatus.CREATE_FAILED)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

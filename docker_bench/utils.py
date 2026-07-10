@@ -5,7 +5,7 @@ Common helper functions for statistics and formatting
 """
 
 import statistics
-from typing import List, Dict
+from typing import Dict, List
 
 
 def calc_percentiles(values: List[float]) -> Dict[str, float]:
@@ -19,24 +19,24 @@ def calc_percentiles(values: List[float]) -> Dict[str, float]:
     """
     if not values:
         return {
-            'min': 0.0,
-            'max': 0.0,
-            'avg': 0.0,
-            'p50': 0.0,
-            'p95': 0.0,
-            'p99': 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "avg": 0.0,
+            "p50": 0.0,
+            "p95": 0.0,
+            "p99": 0.0,
         }
 
     sorted_vals = sorted(values)
     n = len(sorted_vals)
 
     return {
-        'min': sorted_vals[0],
-        'max': sorted_vals[-1],
-        'avg': statistics.mean(values),
-        'p50': sorted_vals[int(n * 0.50)] if n >= 2 else sorted_vals[0],
-        'p95': sorted_vals[int(n * 0.95)] if n >= 20 else sorted_vals[-1],
-        'p99': sorted_vals[int(n * 0.99)] if n >= 100 else sorted_vals[-1],
+        "min": sorted_vals[0],
+        "max": sorted_vals[-1],
+        "avg": statistics.mean(values),
+        "p50": sorted_vals[int(n * 0.50)] if n >= 2 else sorted_vals[0],
+        "p95": sorted_vals[int(n * 0.95)] if n >= 20 else sorted_vals[-1],
+        "p99": sorted_vals[int(n * 0.99)] if n >= 100 else sorted_vals[-1],
     }
 
 
