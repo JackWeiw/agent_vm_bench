@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Offline IPC Fix Tool for Batch Summary
 
@@ -19,19 +18,19 @@ Steps:
     4. Re-generate batch_summary.xlsx with corrected data
 """
 
-import os
-import sys
 import argparse
+import os
 import re
-import pandas as pd
-from pathlib import Path
+import sys
 from datetime import datetime
-from typing import Dict, List, Any, Tuple
-from collections import defaultdict
+from typing import Dict, List
+
+import pandas as pd
 
 # Import the corrected parser from qemu_monitor package
 try:
     from qemu_monitor.parsers import parse_devkit_top_down
+
     QEMU_MONITOR_AVAILABLE = True
 except ImportError:
     print("Warning: qemu_monitor.parsers not available, using built-in parser")
@@ -51,31 +50,31 @@ def parse_devkit_top_down_offline(log_path: str) -> Dict:
         dict with all metrics including corrected ipc_avg
     """
     if not os.path.exists(log_path):
-        return {'error': f'File not found: {log_path}', 'report_count': 0}
+        return {"error": f"File not found: {log_path}", "report_count": 0}
 
     try:
-        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+        with open(log_path, encoding="utf-8", errors="ignore") as f:
             content = f.read()
     except Exception as e:
-        return {'error': f'Failed to read file: {e}', 'report_count': 0}
+        return {"error": f"Failed to read file: {e}", "report_count": 0}
 
     # Split into reports
-    reports = re.split(r'TOP-DOWN Summary Report-\d+', content)
+    reports = re.split(r"TOP-DOWN Summary Report-\d+", content)
 
     result = {
-        'cycles': [],
-        'instructions': [],
-        'ipc': [],
-        'bad_speculation': [],
-        'frontend_bound': [],
-        'retiring': [],
-        'backend_bound': [],
-        'l3_bound': [],
-        'mem_bound': [],
-        'mem_latency_bound': [],
-        'mem_bandwidth_bound': [],
-        'timestamps': [],
-        'report_count': 0
+        "cycles": [],
+        "instructions": [],
+        "ipc": [],
+        "bad_speculation": [],
+        "frontend_bound": [],
+        "retiring": [],
+        "backend_bound": [],
+        "l3_bound": [],
+        "mem_bound": [],
+        "mem_latency_bound": [],
+        "mem_bandwidth_bound": [],
+        "timestamps": [],
+        "report_count": 0,
     }
 
     # Parse each report
@@ -83,84 +82,93 @@ def parse_devkit_top_down_offline(log_path: str) -> Dict:
         if not report.strip():
             continue
 
-        result['report_count'] += 1
+        result["report_count"] += 1
 
         # Extract timestamp
-        time_match = re.search(r'Time:(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})', report)
+        time_match = re.search(r"Time:(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})", report)
         if time_match:
-            result['timestamps'].append(time_match.group(1))
+            result["timestamps"].append(time_match.group(1))
         else:
-            result['timestamps'].append(f'Report-{report_idx}')
+            result["timestamps"].append(f"Report-{report_idx}")
 
         # Parse Cycles, Instructions, IPC
-        cycles_match = re.search(r'Cycles\s+([\d,]+)', report)
-        inst_match = re.search(r'Instructions\s+([\d,]+)', report)
-        ipc_match = re.search(r'IPC\s+([\d.]+)', report)
+        cycles_match = re.search(r"Cycles\s+([\d,]+)", report)
+        inst_match = re.search(r"Instructions\s+([\d,]+)", report)
+        ipc_match = re.search(r"IPC\s+([\d.]+)", report)
 
-        result['cycles'].append(float(cycles_match.group(1).replace(',', '')) if cycles_match else 0)
-        result['instructions'].append(float(inst_match.group(1).replace(',', '')) if inst_match else 0)
-        result['ipc'].append(float(ipc_match.group(1)) if ipc_match else 0)
+        result["cycles"].append(float(cycles_match.group(1).replace(",", "")) if cycles_match else 0)
+        result["instructions"].append(float(inst_match.group(1).replace(",", "")) if inst_match else 0)
+        result["ipc"].append(float(ipc_match.group(1)) if ipc_match else 0)
 
         # Parse top-down metrics
-        bad_spec_match = re.search(r'Bad Speculation\s+([\d.]+)', report)
-        frontend_match = re.search(r'Frontend Bound\s+([\d.]+)', report)
-        retiring_match = re.search(r'Retiring\s+([\d.]+)', report)
-        backend_match = re.search(r'Backend Bound\s+([\d.]+)', report)
+        bad_spec_match = re.search(r"Bad Speculation\s+([\d.]+)", report)
+        frontend_match = re.search(r"Frontend Bound\s+([\d.]+)", report)
+        retiring_match = re.search(r"Retiring\s+([\d.]+)", report)
+        backend_match = re.search(r"Backend Bound\s+([\d.]+)", report)
 
-        result['bad_speculation'].append(float(bad_spec_match.group(1)) if bad_spec_match else 0)
-        result['frontend_bound'].append(float(frontend_match.group(1)) if frontend_match else 0)
-        result['retiring'].append(float(retiring_match.group(1)) if retiring_match else 0)
-        result['backend_bound'].append(float(backend_match.group(1)) if backend_match else 0)
+        result["bad_speculation"].append(float(bad_spec_match.group(1)) if bad_spec_match else 0)
+        result["frontend_bound"].append(float(frontend_match.group(1)) if frontend_match else 0)
+        result["retiring"].append(float(retiring_match.group(1)) if retiring_match else 0)
+        result["backend_bound"].append(float(backend_match.group(1)) if backend_match else 0)
 
         # Parse memory bound metrics
-        l3_bound_match = re.search(r'L3 Bound\s+([\d.]+)', report)
-        mem_bound_match = re.search(r'Mem Bound\s+([\d.]+)', report)
-        lat_bound_match = re.search(r'Latency bound\s+([\d.]+)', report)
-        bw_bound_match = re.search(r'Bandwidth bound\s+([\d.]+)', report)
+        l3_bound_match = re.search(r"L3 Bound\s+([\d.]+)", report)
+        mem_bound_match = re.search(r"Mem Bound\s+([\d.]+)", report)
+        lat_bound_match = re.search(r"Latency bound\s+([\d.]+)", report)
+        bw_bound_match = re.search(r"Bandwidth bound\s+([\d.]+)", report)
 
-        result['l3_bound'].append(float(l3_bound_match.group(1)) if l3_bound_match else 0)
-        result['mem_bound'].append(float(mem_bound_match.group(1)) if mem_bound_match else 0)
-        result['mem_latency_bound'].append(float(lat_bound_match.group(1)) if lat_bound_match else 0)
-        result['mem_bandwidth_bound'].append(float(bw_bound_match.group(1)) if bw_bound_match else 0)
+        result["l3_bound"].append(float(l3_bound_match.group(1)) if l3_bound_match else 0)
+        result["mem_bound"].append(float(mem_bound_match.group(1)) if mem_bound_match else 0)
+        result["mem_latency_bound"].append(float(lat_bound_match.group(1)) if lat_bound_match else 0)
+        result["mem_bandwidth_bound"].append(float(bw_bound_match.group(1)) if bw_bound_match else 0)
 
-    if result['report_count'] == 0:
-        return {'error': 'No valid reports found', 'report_count': 0}
+    if result["report_count"] == 0:
+        return {"error": "No valid reports found", "report_count": 0}
 
     # Calculate averages with CORRECT IPC formula
-    avg_result = {'report_count': result['report_count']}
+    avg_result = {"report_count": result["report_count"]}
 
     # Standard averages for non-IPC metrics
-    for key in ['cycles', 'instructions', 'bad_speculation', 'frontend_bound',
-                'retiring', 'backend_bound', 'l3_bound', 'mem_bound',
-                'mem_latency_bound', 'mem_bandwidth_bound']:
+    for key in [
+        "cycles",
+        "instructions",
+        "bad_speculation",
+        "frontend_bound",
+        "retiring",
+        "backend_bound",
+        "l3_bound",
+        "mem_bound",
+        "mem_latency_bound",
+        "mem_bandwidth_bound",
+    ]:
         if result[key]:
-            avg_result[f'{key}_avg'] = sum(result[key]) / len(result[key])
-            avg_result[f'{key}_max'] = max(result[key])
-            avg_result[f'{key}_min'] = min(result[key])
+            avg_result[f"{key}_avg"] = sum(result[key]) / len(result[key])
+            avg_result[f"{key}_max"] = max(result[key])
+            avg_result[f"{key}_min"] = min(result[key])
         else:
-            avg_result[f'{key}_avg'] = 0.0
-            avg_result[f'{key}_max'] = 0.0
-            avg_result[f'{key}_min'] = 0.0
+            avg_result[f"{key}_avg"] = 0.0
+            avg_result[f"{key}_max"] = 0.0
+            avg_result[f"{key}_min"] = 0.0
 
     # CORRECT IPC calculation: sum(instructions) / sum(cycles)
-    total_instructions = sum(result['instructions']) if result['instructions'] else 0
-    total_cycles = sum(result['cycles']) if result['cycles'] else 0
-    avg_result['ipc_avg'] = total_instructions / total_cycles if total_cycles > 0 else 0.0
-    avg_result['ipc_max'] = max(result['ipc']) if result['ipc'] else 0.0
-    avg_result['ipc_min'] = min(result['ipc']) if result['ipc'] else 0.0
+    total_instructions = sum(result["instructions"]) if result["instructions"] else 0
+    total_cycles = sum(result["cycles"]) if result["cycles"] else 0
+    avg_result["ipc_avg"] = total_instructions / total_cycles if total_cycles > 0 else 0.0
+    avg_result["ipc_max"] = max(result["ipc"]) if result["ipc"] else 0.0
+    avg_result["ipc_min"] = min(result["ipc"]) if result["ipc"] else 0.0
 
     # IMPORTANT: Keep original IPC array for comparison
-    avg_result['ipc'] = result['ipc']  # Store raw IPC values for OLD formula calculation
+    avg_result["ipc"] = result["ipc"]  # Store raw IPC values for OLD formula calculation
 
     # Add timeline data
-    avg_result['timestamps'] = result['timestamps']
-    avg_result['timeline'] = {
-        'timestamp': result['timestamps'],
-        'ipc': result['ipc'],
-        'bad_speculation': result['bad_speculation'],
-        'frontend_bound': result['frontend_bound'],
-        'retiring': result['retiring'],
-        'backend_bound': result['backend_bound'],
+    avg_result["timestamps"] = result["timestamps"]
+    avg_result["timeline"] = {
+        "timestamp": result["timestamps"],
+        "ipc": result["ipc"],
+        "bad_speculation": result["bad_speculation"],
+        "frontend_bound": result["frontend_bound"],
+        "retiring": result["retiring"],
+        "backend_bound": result["backend_bound"],
     }
 
     return avg_result
@@ -177,8 +185,8 @@ def find_all_devkit_logs(result_base_dir: str) -> List[Dict]:
     # Walk through all subdirectories
     for root, dirs, files in os.walk(result_base_dir):
         # Look for devkit_top_down.log in qemu_monitor/ subdirectory
-        if 'devkit_top_down.log' in files:
-            log_path = os.path.join(root, 'devkit_top_down.log')
+        if "devkit_top_down.log" in files:
+            log_path = os.path.join(root, "devkit_top_down.log")
 
             # Determine task_id from directory structure
             # Typically: batch_results_XXX/vmX_ratioY_activeZ/qemu_monitor/
@@ -190,8 +198,8 @@ def find_all_devkit_logs(result_base_dir: str) -> List[Dict]:
             qemu_monitor_dir = root
 
             # Find task directory (parent of qemu_monitor)
-            if 'qemu_monitor' in parts:
-                idx = parts.index('qemu_monitor')
+            if "qemu_monitor" in parts:
+                idx = parts.index("qemu_monitor")
                 if idx > 0:
                     task_dir = os.path.join(result_base_dir, *parts[:idx])
                     task_id = parts[idx - 1]  # e.g., "vm4_ratio0.8_active0.75"
@@ -201,12 +209,9 @@ def find_all_devkit_logs(result_base_dir: str) -> List[Dict]:
                 task_id = parts[-1] if parts else "unknown"
                 task_dir = root
 
-            log_files.append({
-                'task_id': task_id,
-                'log_path': log_path,
-                'qemu_monitor_dir': qemu_monitor_dir,
-                'task_dir': task_dir
-            })
+            log_files.append(
+                {"task_id": task_id, "log_path": log_path, "qemu_monitor_dir": qemu_monitor_dir, "task_dir": task_dir}
+            )
 
     return log_files
 
@@ -221,13 +226,13 @@ def update_analysis_report(qemu_monitor_dir: str, parsed_data: Dict) -> bool:
     Returns:
         True if update successful, False otherwise
     """
-    excel_path = os.path.join(qemu_monitor_dir, 'analysis_report.xlsx')
+    excel_path = os.path.join(qemu_monitor_dir, "analysis_report.xlsx")
 
     if not os.path.exists(excel_path):
         print(f"  Warning: analysis_report.xlsx not found in {qemu_monitor_dir}")
         return False
 
-    if 'error' in parsed_data:
+    if "error" in parsed_data:
         print(f"  Error parsing data: {parsed_data['error']}")
         return False
 
@@ -239,8 +244,8 @@ def update_analysis_report(qemu_monitor_dir: str, parsed_data: Dict) -> bool:
                 all_sheets[sheet_name] = pd.read_excel(xls, sheet_name=sheet_name)
 
         # Update DevKit_TopDown sheet with corrected IPC
-        if 'DevKit_TopDown' in all_sheets:
-            df_topdown = all_sheets['DevKit_TopDown']
+        if "DevKit_TopDown" in all_sheets:
+            df_topdown = all_sheets["DevKit_TopDown"]
 
             # Find and update IPC Avg row
             ipc_avg_idx = None
@@ -248,39 +253,39 @@ def update_analysis_report(qemu_monitor_dir: str, parsed_data: Dict) -> bool:
             ipc_min_idx = None
 
             for idx, row in df_topdown.iterrows():
-                metric = str(row.get('Metric', '')).strip()
-                if metric == 'IPC Avg':
+                metric = str(row.get("Metric", "")).strip()
+                if metric == "IPC Avg":
                     ipc_avg_idx = idx
-                elif metric == 'IPC Max':
+                elif metric == "IPC Max":
                     ipc_max_idx = idx
-                elif metric == 'IPC Min':
+                elif metric == "IPC Min":
                     ipc_min_idx = idx
 
             # Update values
             if ipc_avg_idx is not None:
-                old_ipc_avg = df_topdown.loc[ipc_avg_idx, 'Value']
-                new_ipc_avg = parsed_data['ipc_avg']
+                old_ipc_avg = df_topdown.loc[ipc_avg_idx, "Value"]
+                new_ipc_avg = parsed_data["ipc_avg"]
 
-                df_topdown.loc[ipc_avg_idx, 'Value'] = new_ipc_avg
+                df_topdown.loc[ipc_avg_idx, "Value"] = new_ipc_avg
 
                 print(f"  IPC Avg: {old_ipc_avg:.4f} -> {new_ipc_avg:.4f} (corrected)")
 
             if ipc_max_idx is not None:
-                df_topdown.loc[ipc_max_idx, 'Value'] = parsed_data['ipc_max']
+                df_topdown.loc[ipc_max_idx, "Value"] = parsed_data["ipc_max"]
 
             if ipc_min_idx is not None:
-                df_topdown.loc[ipc_min_idx, 'Value'] = parsed_data['ipc_min']
+                df_topdown.loc[ipc_min_idx, "Value"] = parsed_data["ipc_min"]
 
-            all_sheets['DevKit_TopDown'] = df_topdown
+            all_sheets["DevKit_TopDown"] = df_topdown
 
         # Also update TopDown_Timeline sheet if it exists
-        if 'TopDown_Timeline' in all_sheets and 'timeline' in parsed_data:
+        if "TopDown_Timeline" in all_sheets and "timeline" in parsed_data:
             # Timeline IPC values are per-report, keep them unchanged
             # But we could add a note that avg is recalculated
             pass
 
         # Write back to Excel
-        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+        with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
             for sheet_name, df in all_sheets.items():
                 df.to_excel(writer, sheet_name=sheet_name, index=False)
 
@@ -394,7 +399,7 @@ def regenerate_batch_summary(result_base_dir: str, output_path: str = None):
     print(f"Found {len(log_files)} devkit_top_down.log files")
 
     # Collect metrics from each task by RE-PARSING log files
-    all_results = {'tasks': []}
+    all_results = {"tasks": []}
     ipc_comparison_data = []
 
     for log_info in log_files:
@@ -402,7 +407,7 @@ def regenerate_batch_summary(result_base_dir: str, output_path: str = None):
 
         # Parse task_id to extract parameters
         # Format: vmX_ratioY_activeZ
-        match = re.match(r'vm(\d+)_ratio([\d.]+)_active([\d.]+)', log_info['task_id'])
+        match = re.match(r"vm(\d+)_ratio([\d.]+)_active([\d.]+)", log_info["task_id"])
         if match:
             vm_count = int(match.group(1))
             ratio = float(match.group(2))
@@ -413,73 +418,74 @@ def regenerate_batch_summary(result_base_dir: str, output_path: str = None):
             active_percent = 0.0
 
         # === KEY FIX: Re-parse log file with correct formula ===
-        log_path = log_info['log_path']
+        log_path = log_info["log_path"]
 
         if QEMU_MONITOR_AVAILABLE:
             parsed_data = parse_devkit_top_down(log_path)
         else:
             parsed_data = parse_devkit_top_down_offline(log_path)
 
-        if 'error' in parsed_data:
+        if "error" in parsed_data:
             print(f"  Error parsing log: {parsed_data['error']}")
             qemu_metrics = {}
         else:
             # Build qemu_metrics dict from parsed data (CORRECT IPC!)
             qemu_metrics = {
                 # Correct IPC values from log file
-                'td_ipc_avg': parsed_data['ipc_avg'],  # CORRECTED!
-                'td_ipc_max': parsed_data['ipc_max'],
-                'td_ipc_min': parsed_data['ipc_min'],
-                'td_cycles_avg': parsed_data['cycles_avg'],
-                'td_instructions_avg': parsed_data['instructions_avg'],
-
+                "td_ipc_avg": parsed_data["ipc_avg"],  # CORRECTED!
+                "td_ipc_max": parsed_data["ipc_max"],
+                "td_ipc_min": parsed_data["ipc_min"],
+                "td_cycles_avg": parsed_data["cycles_avg"],
+                "td_instructions_avg": parsed_data["instructions_avg"],
                 # Topdown metrics (averages)
-                'td_bad_speculation': parsed_data['bad_speculation_avg'],
-                'td_frontend_bound': parsed_data['frontend_bound_avg'],
-                'td_retiring': parsed_data['retiring_avg'],
-                'td_backend_bound': parsed_data['backend_bound_avg'],
-                'td_l3_bound': parsed_data['l3_bound_avg'],
-                'td_mem_bound': parsed_data['mem_bound_avg'],
-                'td_latency_bound': parsed_data['mem_latency_bound_avg'],
-                'td_bandwidth_bound': parsed_data['mem_bandwidth_bound_avg'],
+                "td_bad_speculation": parsed_data["bad_speculation_avg"],
+                "td_frontend_bound": parsed_data["frontend_bound_avg"],
+                "td_retiring": parsed_data["retiring_avg"],
+                "td_backend_bound": parsed_data["backend_bound_avg"],
+                "td_l3_bound": parsed_data["l3_bound_avg"],
+                "td_mem_bound": parsed_data["mem_bound_avg"],
+                "td_latency_bound": parsed_data["mem_latency_bound_avg"],
+                "td_bandwidth_bound": parsed_data["mem_bandwidth_bound_avg"],
             }
 
             # Extract other metrics from Excel (CPU, memory, etc.)
-            other_metrics = extract_qemu_metrics_from_excel(log_info['task_dir'])
+            other_metrics = extract_qemu_metrics_from_excel(log_info["task_dir"])
             qemu_metrics.update(other_metrics)
 
             # Calculate OLD IPC for comparison
-            old_ipc_avg = sum(parsed_data['ipc']) / len(parsed_data['ipc']) if parsed_data['ipc'] else 0
-            new_ipc_avg = parsed_data['ipc_avg']
+            old_ipc_avg = sum(parsed_data["ipc"]) / len(parsed_data["ipc"]) if parsed_data["ipc"] else 0
+            new_ipc_avg = parsed_data["ipc_avg"]
 
             print(f"  OLD IPC avg (wrong): {old_ipc_avg:.4f}")
             print(f"  NEW IPC avg (correct): {new_ipc_avg:.4f}")
             print(f"  Difference: {abs(old_ipc_avg - new_ipc_avg):.4f}")
             print(f"  Reports: {parsed_data['report_count']}")
 
-            ipc_comparison_data.append({
-                'task_id': log_info['task_id'],
-                'old_ipc': old_ipc_avg,
-                'new_ipc': new_ipc_avg,
-                'diff': abs(old_ipc_avg - new_ipc_avg),
-                'reports': parsed_data['report_count']
-            })
+            ipc_comparison_data.append(
+                {
+                    "task_id": log_info["task_id"],
+                    "old_ipc": old_ipc_avg,
+                    "new_ipc": new_ipc_avg,
+                    "diff": abs(old_ipc_avg - new_ipc_avg),
+                    "reports": parsed_data["report_count"],
+                }
+            )
 
         # Build task result
         task_result = {
-            'task_id': log_info['task_id'],
-            'success': True,
-            'parameters': {
-                'vm_count': vm_count,
-                'ratio': ratio,
-                'active_percent': active_percent,
-                'active_vm_count': int(vm_count * active_percent)
+            "task_id": log_info["task_id"],
+            "success": True,
+            "parameters": {
+                "vm_count": vm_count,
+                "ratio": ratio,
+                "active_percent": active_percent,
+                "active_vm_count": int(vm_count * active_percent),
             },
-            'browser_metrics': {},
-            'qemu_metrics': qemu_metrics
+            "browser_metrics": {},
+            "qemu_metrics": qemu_metrics,
         }
 
-        all_results['tasks'].append(task_result)
+        all_results["tasks"].append(task_result)
 
     # Generate output path
     if output_path is None:
@@ -489,7 +495,7 @@ def regenerate_batch_summary(result_base_dir: str, output_path: str = None):
     # Generate summary Excel
     generate_summary_excel(all_results, output_path)
 
-    print(f"\nSuccess! Corrected batch_summary saved to:")
+    print("\nSuccess! Corrected batch_summary saved to:")
     print(f"  {output_path}")
 
     # === Print IPC Comparison Table ===
@@ -501,12 +507,14 @@ def regenerate_batch_summary(result_base_dir: str, output_path: str = None):
         print("-" * 80)
 
         for item in ipc_comparison_data:
-            print(f"{item['task_id']:<30} {item['old_ipc']:<12.4f} {item['new_ipc']:<12.4f} "
-                  f"{item['diff']:<10.4f} {item['reports']:<8}")
+            print(
+                f"{item['task_id']:<30} {item['old_ipc']:<12.4f} {item['new_ipc']:<12.4f} "
+                f"{item['diff']:<10.4f} {item['reports']:<8}"
+            )
 
         # Summary statistics
-        avg_diff = sum(item['diff'] for item in ipc_comparison_data) / len(ipc_comparison_data)
-        max_diff = max(item['diff'] for item in ipc_comparison_data)
+        avg_diff = sum(item["diff"] for item in ipc_comparison_data) / len(ipc_comparison_data)
+        max_diff = max(item["diff"] for item in ipc_comparison_data)
 
         print("-" * 80)
         print(f"Average difference: {avg_diff:.4f}")
@@ -529,8 +537,7 @@ def generate_summary_excel(results: Dict, output_path: str):
     """Generate batch_summary.xlsx with all metrics (copy from batch_test_scheduler.py)"""
     try:
         from openpyxl import Workbook
-        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-        from openpyxl.utils.dataframe import dataframe_to_rows
+        from openpyxl.styles import Alignment, Font, PatternFill
 
         # Build DataFrame
         rows = []
@@ -545,7 +552,6 @@ def generate_summary_excel(results: Dict, output_path: str):
                 "active_percent": params.get("active_percent", 0),
                 "active_vm_count": params.get("active_vm_count", 0),
                 "success": task_data.get("success", False),
-
                 # DevKit TopDown metrics (13)
                 "td_cycles_avg": qemu.get("td_cycles_avg", 0),
                 "td_instructions_avg": qemu.get("td_instructions_avg", 0),
@@ -560,7 +566,6 @@ def generate_summary_excel(results: Dict, output_path: str):
                 "td_mem_bound": qemu.get("td_mem_bound", 0),
                 "td_latency_bound": qemu.get("td_latency_bound", 0),
                 "td_bandwidth_bound": qemu.get("td_bandwidth_bound", 0),
-
                 # DevKit Memory metrics
                 "mem_l1d_miss": qemu.get("mem_l1d_miss", 0),
                 "mem_l1i_miss": qemu.get("mem_l1i_miss", 0),
@@ -568,7 +573,6 @@ def generate_summary_excel(results: Dict, output_path: str):
                 "mem_l2i_miss": qemu.get("mem_l2i_miss", 0),
                 "mem_ddr_read": qemu.get("mem_ddr_read", 0),
                 "mem_ddr_write": qemu.get("mem_ddr_write", 0),
-
                 # Summary metrics
                 "avg_cpu_percent": qemu.get("avg_cpu_percent", 0),
                 "max_cpu_percent": qemu.get("max_cpu_percent", 0),
@@ -619,14 +623,14 @@ def generate_summary_excel(results: Dict, output_path: str):
     except Exception as e:
         print(f"Error generating Excel: {e}")
         # Fallback: save as CSV
-        csv_path = output_path.replace('.xlsx', '.csv')
+        csv_path = output_path.replace(".xlsx", ".csv")
         pd.DataFrame(rows).to_csv(csv_path, index=False)
         print(f"Saved as CSV instead: {csv_path}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Offline IPC Fix Tool - Re-calculate td_ipc_avg with correct formula',
+        description="Offline IPC Fix Tool - Re-calculate td_ipc_avg with correct formula",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -641,15 +645,18 @@ IPC Formula:
     NEW (correct): sum(instructions) / sum(cycles)
 
 This tool ALWAYS re-parses devkit_top_down.log files to get correct IPC.
-        """
+        """,
     )
 
-    parser.add_argument('--result-dir', required=True,
-                        help='Base directory containing batch test results (e.g., batch_results_20260615)')
-    parser.add_argument('--output',
-                        help='Output path for corrected batch_summary.xlsx (default: auto-generated)')
-    parser.add_argument('--step-by-step', action='store_true',
-                        help='Also update each analysis_report.xlsx (optional, for reference)')
+    parser.add_argument(
+        "--result-dir",
+        required=True,
+        help="Base directory containing batch test results (e.g., batch_results_20260615)",
+    )
+    parser.add_argument("--output", help="Output path for corrected batch_summary.xlsx (default: auto-generated)")
+    parser.add_argument(
+        "--step-by-step", action="store_true", help="Also update each analysis_report.xlsx (optional, for reference)"
+    )
 
     args = parser.parse_args()
 
@@ -663,7 +670,7 @@ This tool ALWAYS re-parses devkit_top_down.log files to get correct IPC.
     print("Offline IPC Fix Tool")
     print("=" * 70)
     print(f"Result directory: {result_base_dir}")
-    print(f"Correct IPC formula: sum(instructions) / sum(cycles)")
+    print("Correct IPC formula: sum(instructions) / sum(cycles)")
     print("=" * 70)
 
     # Optional: Update individual analysis_report.xlsx files
@@ -680,12 +687,12 @@ This tool ALWAYS re-parses devkit_top_down.log files to get correct IPC.
             print(f"\n[{log_info['task_id']}]")
 
             if QEMU_MONITOR_AVAILABLE:
-                parsed_data = parse_devkit_top_down(log_info['log_path'])
+                parsed_data = parse_devkit_top_down(log_info["log_path"])
             else:
-                parsed_data = parse_devkit_top_down_offline(log_info['log_path'])
+                parsed_data = parse_devkit_top_down_offline(log_info["log_path"])
 
-            if 'error' not in parsed_data:
-                if update_analysis_report(log_info['qemu_monitor_dir'], parsed_data):
+            if "error" not in parsed_data:
+                if update_analysis_report(log_info["qemu_monitor_dir"], parsed_data):
                     updated_count += 1
 
         print(f"\nUpdated {updated_count} analysis_report.xlsx files")
@@ -694,5 +701,5 @@ This tool ALWAYS re-parses devkit_top_down.log files to get correct IPC.
     regenerate_batch_summary(result_base_dir, args.output)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

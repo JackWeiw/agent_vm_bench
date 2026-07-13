@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 QEMU Monitor Core Module - DEPRECATED
 
@@ -24,10 +23,10 @@ import warnings
 warnings.warn(
     "qemu_monitor.monitor module is deprecated. Please use vm_monitor.QEMUMonitor instead.",
     DeprecationWarning,
-    stacklevel=2
+    stacklevel=2,
 )
 
 # Forward QEMUMonitor from vm_monitor
 from vm_monitor.qemu import QEMUMonitor
 
-__all__ = ['QEMUMonitor']
+__all__ = ["QEMUMonitor"]

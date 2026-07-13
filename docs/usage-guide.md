@@ -126,19 +126,19 @@ fc_monitor.start_monitoring(duration_seconds=60, interval_seconds=3)
 class MyVMMMonitor(VMMonitorBase):
     def get_process_names(self):
         return ('my-vmm-process',)
-    
+
     def extract_vm_id(self, pid, cmdline):
         return f"myvm-{pid}"
-    
+
     def get_monitor_title(self):
         return "My VMM Monitoring"
-    
+
     def get_no_vm_message(self):
         return "No running My VMM instances"
-    
+
     def get_csv_filename_prefix(self):
         return "my_vmm_monitor"
-    
+
     def get_vms_realtime(self):
         # Implement process discovery logic
         ...

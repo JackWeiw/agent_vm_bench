@@ -261,42 +261,42 @@ python -m e2b_bench --help
 
 Options:
   --config                  YAML configuration file path
-  
+
   # E2B Environment
   --e2b-access-token        E2B access token
   --e2b-api-key             E2B API key
-  
+
   # Sandbox Configuration
   --template                E2B template name
   --total                   Total sandbox count
   --create-timeout          Sandbox creation timeout
   --detect                  Detect existing sandboxes mode
   --create-only             Create-only mode (Phase 0)
-  
+
   # Creation Batch Control
   --create-batch-size       Sandboxes per creation batch (None = full concurrent)
   --create-batch-interval   Creation batch interval seconds
-  
+
   # Task Batch Control
   --task-batch-size         Sandboxes to start tasks per batch (None = full concurrent)
   --task-batch-interval     Task batch interval seconds
-  
+
   # Browser Task
   --browser-url             Browser URL (can specify multiple)
   --browser-timeout         Browser task timeout
   --browser-interval-min    Task interval minimum
   --browser-interval-max    Task interval maximum
-  
+
   # Warmup Phase
   --warmup-url              Warmup page URL (can specify multiple)
   --warmup-loops            Warmup loop count (default: 2)
   --warmup-delay            Delay between warmup pages (default: 10)
   --warmup-only             Run warmup phase only, then exit
-  
+
   # Test Run
   --duration                Test duration seconds
   --stats-interval          Stats snapshot interval
-  
+
   # Report
   --output-dir              Report output directory
   --filename-prefix         Report filename prefix

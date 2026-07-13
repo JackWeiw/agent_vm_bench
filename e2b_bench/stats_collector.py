@@ -5,16 +5,16 @@ Responsible for real-time snapshot collection, terminal output and final report 
 Includes detailed sandbox creation time, port wait time, browser task time statistics
 """
 
-import time
-import threading
-import statistics
 import os
+import statistics
+import threading
+import time
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 
 from .config import Config
 from .schemas import SandboxState, SandboxStatus, TestSnapshot
-from .utils import calc_percentiles, calc_p99
+from .utils import calc_p99, calc_percentiles
 
 
 class StatsCollector:
@@ -53,25 +53,31 @@ class StatsCollector:
 
         # Sandbox status statistics
         active_count = sum(
-            1 for s in self.sandbox_states.values()
+            1
+            for s in self.sandbox_states.values()
             if s.creation_metrics.status == SandboxStatus.PORT_READY and s.is_alive
         )
         offline_count = sum(
-            1 for s in self.sandbox_states.values()
-            if not s.is_alive or s.creation_metrics.status in (SandboxStatus.FAILED, SandboxStatus.PORT_FAILED, SandboxStatus.OFFLINE)
+            1
+            for s in self.sandbox_states.values()
+            if not s.is_alive
+            or s.creation_metrics.status in (SandboxStatus.FAILED, SandboxStatus.PORT_FAILED, SandboxStatus.OFFLINE)
         )
 
         # Creation performance statistics (only port-ready sandboxes)
         create_times = [
-            s.creation_metrics.create_elapsed for s in self.sandbox_states.values()
+            s.creation_metrics.create_elapsed
+            for s in self.sandbox_states.values()
             if s.creation_metrics.status == SandboxStatus.PORT_READY and s.creation_metrics.create_elapsed > 0
         ]
         port_wait_times = [
-            s.creation_metrics.port_wait_elapsed for s in self.sandbox_states.values()
+            s.creation_metrics.port_wait_elapsed
+            for s in self.sandbox_states.values()
             if s.creation_metrics.status == SandboxStatus.PORT_READY and s.creation_metrics.port_wait_elapsed > 0
         ]
         total_times = [
-            s.creation_metrics.total_elapsed for s in self.sandbox_states.values()
+            s.creation_metrics.total_elapsed
+            for s in self.sandbox_states.values()
             if s.creation_metrics.status == SandboxStatus.PORT_READY and s.creation_metrics.total_elapsed > 0
         ]
 
@@ -103,7 +109,7 @@ class StatsCollector:
             browser_total=browser_total,
             browser_success=browser_success,
             browser_avg_latency=browser_avg,
-            browser_p99_latency=browser_p99
+            browser_p99_latency=browser_p99,
         )
         self.snapshots.append(snapshot)
 
@@ -112,21 +118,27 @@ class StatsCollector:
 
     def _print_snapshot(self, snapshot: TestSnapshot) -> None:
         """Print real-time snapshot"""
-        print(f"\n{'─'*70}")
+        print(f"\n{'─' * 70}")
         print(f"T+{snapshot.elapsed:6.1f}s  Status Snapshot")
-        print(f"{'─'*70}")
+        print(f"{'─' * 70}")
         print(f"  Sandboxes: {snapshot.active_sandboxes:3d} ready / {snapshot.offline_sandboxes:2d} offline")
 
         if snapshot.creation_stats.get("create") and snapshot.creation_stats["create"]["avg"] > 0:
-            print(f"  Create:    avg={snapshot.creation_stats['create']['avg']:.1f}s  "
-                  f"p99={snapshot.creation_stats['create']['p99']:.1f}s")
+            print(
+                f"  Create:    avg={snapshot.creation_stats['create']['avg']:.1f}s  "
+                f"p99={snapshot.creation_stats['create']['p99']:.1f}s"
+            )
         if snapshot.creation_stats.get("port_wait") and snapshot.creation_stats["port_wait"]["avg"] > 0:
-            print(f"  PortWait:  avg={snapshot.creation_stats['port_wait']['avg']:.1f}s  "
-                  f"p99={snapshot.creation_stats['port_wait']['p99']:.1f}s")
+            print(
+                f"  PortWait:  avg={snapshot.creation_stats['port_wait']['avg']:.1f}s  "
+                f"p99={snapshot.creation_stats['port_wait']['p99']:.1f}s"
+            )
 
-        print(f"  Browser:   {snapshot.browser_success:3d}/{snapshot.browser_total:3d}  "
-              f"avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s")
-        print(f"{'─'*70}")
+        print(
+            f"  Browser:   {snapshot.browser_success:3d}/{snapshot.browser_total:3d}  "
+            f"avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s"
+        )
+        print(f"{'─' * 70}")
 
     def generate_report(self) -> str:
         """Generate final TXT report"""
@@ -136,54 +148,53 @@ class StatsCollector:
         lines.append("=" * 80)
 
         # Configuration info
-        lines.append(f"\n[Test Configuration]")
+        lines.append("\n[Test Configuration]")
         lines.append(f"  Template:        {self.config.template}")
         lines.append(f"  Total Sandboxes: {self.config.total_count}")
 
         # Display mode
         if self.config.detect_existing:
-            lines.append(f"  Mode:            Detect existing sandboxes")
+            lines.append("  Mode:            Detect existing sandboxes")
         elif self.config.create_only:
-            lines.append(f"  Mode:            Create-only (Phase 0)")
+            lines.append("  Mode:            Create-only (Phase 0)")
         else:
-            lines.append(f"  Mode:            Full workflow")
+            lines.append("  Mode:            Full workflow")
 
         # Create batch config
         if self.config.create_batch_size:
-            lines.append(f"  Create Batch:    {self.config.create_batch_count} batches x {self.config.create_batch_size} sandboxes")
+            lines.append(
+                f"  Create Batch:    {self.config.create_batch_count} batches x {self.config.create_batch_size} sandboxes"
+            )
             lines.append(f"  Create Interval: {self.config.create_batch_interval}s")
         else:
-            lines.append(f"  Create Batch:    Full concurrent creation")
+            lines.append("  Create Batch:    Full concurrent creation")
 
         # Task batch config
         if not self.config.create_only:
             if self.config.task_batch_size:
-                lines.append(f"  Task Batch:      {self.config.task_batch_count} batches x {self.config.task_batch_size} sandboxes")
+                lines.append(
+                    f"  Task Batch:      {self.config.task_batch_count} batches x {self.config.task_batch_size} sandboxes"
+                )
                 lines.append(f"  Task Interval:   {self.config.task_batch_interval}s")
             else:
-                lines.append(f"  Task Batch:      Full concurrent start")
+                lines.append("  Task Batch:      Full concurrent start")
 
         lines.append(f"  Test Duration:   {self.config.test_duration}s")
 
         # Sandbox status statistics
         ready_states = [
-            s for s in self.sandbox_states.values()
-            if s.creation_metrics.status == SandboxStatus.PORT_READY
+            s for s in self.sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY
         ]
-        failed_states = [
-            s for s in self.sandbox_states.values()
-            if s.creation_metrics.status == SandboxStatus.FAILED
-        ]
+        failed_states = [s for s in self.sandbox_states.values() if s.creation_metrics.status == SandboxStatus.FAILED]
         port_failed_states = [
-            s for s in self.sandbox_states.values()
-            if s.creation_metrics.status == SandboxStatus.PORT_FAILED
+            s for s in self.sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_FAILED
         ]
-        offline_states = [
-            s for s in self.sandbox_states.values() if not s.is_alive
-        ]
+        offline_states = [s for s in self.sandbox_states.values() if not s.is_alive]
 
-        lines.append(f"\n[Sandbox Status]")
-        lines.append(f"  Created (API):       {len([s for s in self.sandbox_states.values() if s.creation_metrics.status not in (SandboxStatus.PENDING, SandboxStatus.CREATING)])} / {len(self.sandbox_states)}")
+        lines.append("\n[Sandbox Status]")
+        lines.append(
+            f"  Created (API):       {len([s for s in self.sandbox_states.values() if s.creation_metrics.status not in (SandboxStatus.PENDING, SandboxStatus.CREATING)])} / {len(self.sandbox_states)}"
+        )
         lines.append(f"  Ports Ready:         {len(ready_states)} / {len(self.sandbox_states)}")
         lines.append(f"  Create Failed:       {len(failed_states)}")
         lines.append(f"  Port Check Failed:   {len(port_failed_states)}")
@@ -197,13 +208,15 @@ class StatsCollector:
 
         # sandbox.create performance statistics
         create_times = [
-            s.creation_metrics.create_elapsed for s in self.sandbox_states.values()
-            if s.creation_metrics.create_elapsed > 0 and s.creation_metrics.status not in (SandboxStatus.FAILED, SandboxStatus.PENDING, SandboxStatus.CREATING)
+            s.creation_metrics.create_elapsed
+            for s in self.sandbox_states.values()
+            if s.creation_metrics.create_elapsed > 0
+            and s.creation_metrics.status not in (SandboxStatus.FAILED, SandboxStatus.PENDING, SandboxStatus.CREATING)
         ]
         if create_times:
             stats = calc_percentiles(create_times)
-            lines.append(f"\n[Sandbox.create Performance]")
-            lines.append(f"  (sandbox.create API call time, excluding port wait)")
+            lines.append("\n[Sandbox.create Performance]")
+            lines.append("  (sandbox.create API call time, excluding port wait)")
             lines.append(f"  Min:  {stats['min']:.1f}s")
             lines.append(f"  Max:  {stats['max']:.1f}s")
             lines.append(f"  Avg:  {stats['avg']:.1f}s")
@@ -213,13 +226,12 @@ class StatsCollector:
 
         # Port wait performance statistics
         port_wait_times = [
-            s.creation_metrics.port_wait_elapsed for s in ready_states
-            if s.creation_metrics.port_wait_elapsed > 0
+            s.creation_metrics.port_wait_elapsed for s in ready_states if s.creation_metrics.port_wait_elapsed > 0
         ]
         if port_wait_times:
             stats = calc_percentiles(port_wait_times)
-            lines.append(f"\n[Port Check Wait Performance]")
-            lines.append(f"  (Waiting for 18789 openclaw-gateway + 11436 llama-server ports)")
+            lines.append("\n[Port Check Wait Performance]")
+            lines.append("  (Waiting for 18789 openclaw-gateway + 11436 llama-server ports)")
             lines.append(f"  Min:  {stats['min']:.1f}s")
             lines.append(f"  Max:  {stats['max']:.1f}s")
             lines.append(f"  Avg:  {stats['avg']:.1f}s")
@@ -228,14 +240,11 @@ class StatsCollector:
             lines.append(f"  P99:  {stats['p99']:.1f}s")
 
         # Total startup time (create + port_wait)
-        total_times = [
-            s.creation_metrics.total_elapsed for s in ready_states
-            if s.creation_metrics.total_elapsed > 0
-        ]
+        total_times = [s.creation_metrics.total_elapsed for s in ready_states if s.creation_metrics.total_elapsed > 0]
         if total_times:
             stats = calc_percentiles(total_times)
-            lines.append(f"\n[Total Startup Performance]")
-            lines.append(f"  (sandbox.create + port wait)")
+            lines.append("\n[Total Startup Performance]")
+            lines.append("  (sandbox.create + port wait)")
             lines.append(f"  Min:  {stats['min']:.1f}s")
             lines.append(f"  Max:  {stats['max']:.1f}s")
             lines.append(f"  Avg:  {stats['avg']:.1f}s")
@@ -253,7 +262,7 @@ class StatsCollector:
         total_failed = sum(s.browser_metrics.failed_count for s in self.sandbox_states.values())
         total_timeout = sum(s.browser_metrics.timeout_count for s in self.sandbox_states.values())
 
-        lines.append(f"\n[Browser Task Statistics]")
+        lines.append("\n[Browser Task Statistics]")
         lines.append(f"  Total Tasks:   {total_tasks}")
         lines.append(f"  Success:       {total_success}")
         lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
@@ -276,16 +285,16 @@ class StatsCollector:
         if failed_sandbox_errors:
             # Sort by failed count (descending)
             failed_sandbox_errors.sort(key=lambda x: x[1], reverse=True)
-            lines.append(f"\n[Failed Sandbox Error Details]")
+            lines.append("\n[Failed Sandbox Error Details]")
             lines.append(f"  Total sandboxes with task failures: {len(failed_sandbox_errors)}")
-            lines.append(f"  (Top 10 sandboxes with most failures)")
+            lines.append("  (Top 10 sandboxes with most failures)")
             for sid, count, error in failed_sandbox_errors[:10]:
                 # Truncate error if too long
                 error_display = error[:150] if len(error) > 150 else error
                 lines.append(f"  Sandbox{sid}: {count} failures - {error_display}")
 
             # Error type classification
-            lines.append(f"\n[Error Type Classification]")
+            lines.append("\n[Error Type Classification]")
             error_types = {
                 "Chrome start failed": 0,
                 "D-Bus connection error": 0,
@@ -324,7 +333,7 @@ class StatsCollector:
                     lines.append(f"  {error_type}: {count} errors (sandboxes: {sids}...)")
 
         lines.append("\n" + "=" * 80)
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
     def save_report(self, report: str) -> str:
         """Save report to file"""
@@ -335,7 +344,7 @@ class StatsCollector:
         filename = f"{self.config.filename_prefix}_{timestamp}.txt"
         filepath = os.path.join(output_dir, filename)
 
-        with open(filepath, 'w', encoding='utf-8') as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             f.write(report)
 
         return filepath

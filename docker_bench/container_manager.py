@@ -7,11 +7,12 @@ Supports port check (18789 openclaw-gateway + 11436 llama-server)
 """
 
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Event
+from typing import Dict, Tuple
+
 import docker
 import docker.errors
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Tuple, Optional
-from threading import Event
 
 from .config import Config
 from .schemas import ContainerState, ContainerStatus
@@ -48,17 +49,14 @@ class ContainerManager:
 
         Returns: {container_id: ContainerState}
         """
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("Detecting Existing Containers")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         # List containers matching the prefix
         try:
             all_containers = self.docker_client.containers.list(all=False)  # Only running
-            matching_containers = [
-                c for c in all_containers
-                if c.name.startswith(self.config.container_prefix)
-            ]
+            matching_containers = [c for c in all_containers if c.name.startswith(self.config.container_prefix)]
             print(f"  Found {len(matching_containers)} running containers with prefix '{self.config.container_prefix}'")
         except Exception as e:
             print(f"  Failed to list containers: {e}")
@@ -68,7 +66,7 @@ class ContainerManager:
             print("  No existing containers found")
             return {}
 
-        print(f"  Processing all containers...")
+        print("  Processing all containers...")
 
         # Process each container
         for i, docker_container in enumerate(matching_containers):
@@ -88,13 +86,13 @@ class ContainerManager:
 
                 # Check port readiness
                 port_result = self._check_ports(state)
-                if port_result['success']:
+                if port_result["success"]:
                     state.creation_metrics.status = ContainerStatus.PORT_READY
-                    state.creation_metrics.port_wait_elapsed = port_result['wait_elapsed']
+                    state.creation_metrics.port_wait_elapsed = port_result["wait_elapsed"]
                     print(f"[Container{container_id}] Ports ready in {port_result['wait_elapsed']:.1f}s")
                 else:
                     state.creation_metrics.status = ContainerStatus.PORT_FAILED
-                    state.creation_metrics.port_check_error = port_result['error']
+                    state.creation_metrics.port_check_error = port_result["error"]
                     print(f"[Container{container_id}] Port check failed: {port_result['error'][:50]}")
 
             except Exception as e:
@@ -110,14 +108,14 @@ class ContainerManager:
         batch_size = self.config.create_batch_size
         batch_count = self.config.create_batch_count
 
-        print(f"\n{'='*60}")
-        print(f"Batched Container Creation")
+        print(f"\n{'=' * 60}")
+        print("Batched Container Creation")
         print(f"  Total: {total} containers")
         print(f"  Image: {self.config.docker_image}")
         print(f"  Spec:  {self.config.cpu_limit}vCPU / {self.config.memory_limit}")
         print(f"  Batches: {batch_count} x {batch_size}")
         print(f"  Interval: {self.config.create_batch_interval}s")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         for batch_id in range(batch_count):
             if self.stop_event.is_set():
@@ -127,7 +125,7 @@ class ContainerManager:
             start_idx = batch_id * batch_size
             end_idx = min(start_idx + batch_size, total)
 
-            print(f"\n[Batch {batch_id}/{batch_count-1}] Creating containers {start_idx+1}-{end_idx}")
+            print(f"\n[Batch {batch_id}/{batch_count - 1}] Creating containers {start_idx + 1}-{end_idx}")
 
             # Concurrent creation of current batch
             batch_states = self._create_batch_concurrent(batch_id, start_idx, end_idx)
@@ -161,24 +159,30 @@ class ContainerManager:
 
                 try:
                     result = future.result()
-                    if result['success']:
+                    if result["success"]:
                         # Container created, start port check
-                        print(f"[Container{container_id}] Created in {result['create_elapsed']:.1f}s, checking ports...")
+                        print(
+                            f"[Container{container_id}] Created in {result['create_elapsed']:.1f}s, checking ports..."
+                        )
 
                         # Port check
                         port_result = self._check_ports(state)
-                        if port_result['success']:
+                        if port_result["success"]:
                             state.creation_metrics.status = ContainerStatus.PORT_READY
-                            state.creation_metrics.port_wait_elapsed = port_result['wait_elapsed']
-                            state.creation_metrics.total_elapsed = result['create_elapsed'] + port_result['wait_elapsed']
-                            print(f"[Container{container_id}] Ports ready in {port_result['wait_elapsed']:.1f}s, total {state.creation_metrics.total_elapsed:.1f}s")
+                            state.creation_metrics.port_wait_elapsed = port_result["wait_elapsed"]
+                            state.creation_metrics.total_elapsed = (
+                                result["create_elapsed"] + port_result["wait_elapsed"]
+                            )
+                            print(
+                                f"[Container{container_id}] Ports ready in {port_result['wait_elapsed']:.1f}s, total {state.creation_metrics.total_elapsed:.1f}s"
+                            )
                         else:
                             state.creation_metrics.status = ContainerStatus.PORT_FAILED
-                            state.creation_metrics.port_check_error = port_result['error']
+                            state.creation_metrics.port_check_error = port_result["error"]
                             print(f"[Container{container_id}] Port check failed: {port_result['error'][:50]}")
                     else:
                         state.creation_metrics.status = ContainerStatus.FAILED
-                        state.creation_metrics.error_msg = result['error']
+                        state.creation_metrics.error_msg = result["error"]
                         print(f"[Container{container_id}] Failed: {result['error'][:80]}")
                 except Exception as e:
                     state.creation_metrics.status = ContainerStatus.FAILED
@@ -191,12 +195,12 @@ class ContainerManager:
         """Full concurrent creation of all containers"""
         total = self.config.total_count
 
-        print(f"\n{'='*60}")
-        print(f"Concurrent Container Creation")
+        print(f"\n{'=' * 60}")
+        print("Concurrent Container Creation")
         print(f"  Total: {total} containers (full concurrent)")
         print(f"  Image: {self.config.docker_image}")
         print(f"  Spec:  {self.config.cpu_limit}vCPU / {self.config.memory_limit}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         return self._create_batch_concurrent(batch_id=0, start=0, end=total)
 
@@ -233,21 +237,15 @@ class ContainerManager:
             # Preserve container handle
             state.docker_container = container
             state.creation_metrics.create_ready_time = time.time()
-            state.creation_metrics.create_elapsed = state.creation_metrics.create_ready_time - state.creation_metrics.submit_time
+            state.creation_metrics.create_elapsed = (
+                state.creation_metrics.create_ready_time - state.creation_metrics.submit_time
+            )
             state.creation_metrics.status = ContainerStatus.CREATED
 
-            return {
-                'success': True,
-                'create_elapsed': state.creation_metrics.create_elapsed,
-                'error': ''
-            }
+            return {"success": True, "create_elapsed": state.creation_metrics.create_elapsed, "error": ""}
         except Exception as e:
             state.creation_metrics.create_ready_time = time.time()
-            return {
-                'success': False,
-                'create_elapsed': 0.0,
-                'error': str(e)
-            }
+            return {"success": False, "create_elapsed": 0.0, "error": str(e)}
 
     def _check_ports(self, state: ContainerState) -> Dict[str, any]:
         """Check if container ports are ready
@@ -258,14 +256,14 @@ class ContainerManager:
         """
         container = state.docker_container
         if not container:
-            return {'success': False, 'wait_elapsed': 0.0, 'error': 'No container handle'}
+            return {"success": False, "wait_elapsed": 0.0, "error": "No container handle"}
 
         start_time = time.time()
         ready_ports = set()
 
         while time.time() - start_time < self.config.port_check_max_wait:
             if self.stop_event.is_set():
-                return {'success': False, 'wait_elapsed': time.time() - start_time, 'error': 'Stop event'}
+                return {"success": False, "wait_elapsed": time.time() - start_time, "error": "Stop event"}
 
             for port in self.config.required_ports:
                 if port in ready_ports:
@@ -277,7 +275,11 @@ class ContainerManager:
                     cmd = f"sh -c 'ss -tlnp 2>/dev/null | grep :{port}'"
                     result = container.exec_run(cmd, user="root")
 
-                    output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
+                    output = (
+                        result.output.decode("utf-8", errors="ignore")
+                        if isinstance(result.output, bytes)
+                        else result.output
+                    )
                     exit_code = result.exit_code
 
                     # Check if port is listening (grep found the port)
@@ -292,22 +294,14 @@ class ContainerManager:
             if len(ready_ports) == len(self.config.required_ports):
                 wait_elapsed = time.time() - start_time
                 state.creation_metrics.port_ready_time = time.time()
-                return {
-                    'success': True,
-                    'wait_elapsed': wait_elapsed,
-                    'error': ''
-                }
+                return {"success": True, "wait_elapsed": wait_elapsed, "error": ""}
 
             time.sleep(self.config.port_check_interval)
 
         # Timeout, return missing ports info
         missing_ports = [p for p in self.config.required_ports if p not in ready_ports]
         wait_elapsed = time.time() - start_time
-        return {
-            'success': False,
-            'wait_elapsed': wait_elapsed,
-            'error': f"Timeout waiting for ports: {missing_ports}"
-        }
+        return {"success": False, "wait_elapsed": wait_elapsed, "error": f"Timeout waiting for ports: {missing_ports}"}
 
     def check_alive(self, state: ContainerState) -> bool:
         """Check if container is alive"""
@@ -316,7 +310,7 @@ class ContainerManager:
             return False
         try:
             container.reload()  # Refresh container status
-            return container.status == 'running'
+            return container.status == "running"
         except Exception:
             return False
 
@@ -335,7 +329,9 @@ class ContainerManager:
             cmd = "openclaw browser status && start || openclaw browser start"
             result = container.exec_run(cmd, user="root")
 
-            output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
+            output = (
+                result.output.decode("utf-8", errors="ignore") if isinstance(result.output, bytes) else result.output
+            )
 
             if result.exit_code == 0:
                 state.browser_started = True

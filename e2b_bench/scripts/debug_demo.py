@@ -6,11 +6,11 @@ An interactive script to debug command execution in E2B sandbox.
 Allows continuous custom command testing until Ctrl+C is received.
 """
 
-import os
-import sys
-import json
-import signal
 import argparse
+import json
+import os
+import signal
+import sys
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -46,7 +46,7 @@ def load_credentials(config_path: str) -> tuple:
         print(f"Error: Config file not found: {config_path}")
         sys.exit(1)
 
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(config_path, encoding="utf-8") as f:
         data = json.load(f)
 
     access_token = data.get("accessToken")
@@ -119,11 +119,11 @@ def interactive_command_loop(sbx, default_url: str = "http://192.168.110.10:8080
                     # Print full stdout, truncate if very long
                     stdout = result.stdout
                     if len(stdout) > 2000:
-                        print(f"  stdout (truncated):")
+                        print("  stdout (truncated):")
                         print(stdout[:2000])
                         print(f"  ... ({len(stdout) - 2000} more chars)")
                     else:
-                        print(f"  stdout:")
+                        print("  stdout:")
                         print(stdout)
                 else:
                     print("  stdout: (empty)")
@@ -131,11 +131,11 @@ def interactive_command_loop(sbx, default_url: str = "http://192.168.110.10:8080
                 if result.stderr:
                     stderr = result.stderr
                     if len(stderr) > 1000:
-                        print(f"  stderr (truncated):")
+                        print("  stderr (truncated):")
                         print(stderr[:1000])
                         print(f"  ... ({len(stderr) - 1000} more chars)")
                     else:
-                        print(f"  stderr:")
+                        print("  stderr:")
                         print(stderr)
                 else:
                     print("  stderr: (empty)")
@@ -176,7 +176,7 @@ def debug_sandbox_commands(config_path: str, machine_ip: str = None, template: s
     try:
         sbx = Sandbox.create(template_name, timeout=86400)
         _sandbox = sbx  # Set global reference for cleanup
-        print(f"✓ Sandbox created successfully")
+        print("✓ Sandbox created successfully")
         print(f"  Sandbox ID: {sbx.sandbox_id if hasattr(sbx, 'sandbox_id') else 'N/A'}")
     except Exception as e:
         print(f"✗ Failed to create sandbox: {e}")
@@ -196,7 +196,7 @@ def debug_sandbox_commands(config_path: str, machine_ip: str = None, template: s
             if "NOT listening" in result.stdout:
                 print(f"    ✗ {result.stdout.strip()}")
             else:
-                print(f"    ✓ Listening")
+                print("    ✓ Listening")
         except Exception as e:
             print(f"    ✗ Error: {str(e)[:50]}")
 
@@ -207,36 +207,21 @@ def debug_sandbox_commands(config_path: str, machine_ip: str = None, template: s
 
 def main():
     """Main entry point with CLI argument parsing"""
-    parser = argparse.ArgumentParser(
-        description='E2B Sandbox Debug Demo - Interactive command testing tool'
-    )
+    parser = argparse.ArgumentParser(description="E2B Sandbox Debug Demo - Interactive command testing tool")
 
     parser.add_argument(
-        '--config',
+        "--config",
         type=str,
-        default='/root/.e2b/config.json',
-        help='Path to E2B config JSON file (default: /root/.e2b/config.json)'
+        default="/root/.e2b/config.json",
+        help="Path to E2B config JSON file (default: /root/.e2b/config.json)",
     )
 
-    parser.add_argument(
-        '--ip',
-        type=str,
-        default=None,
-        help='Machine IP address for E2B API URL (e.g., 90.91.159.195)'
-    )
+    parser.add_argument("--ip", type=str, default=None, help="Machine IP address for E2B API URL (e.g., 90.91.159.195)")
+
+    parser.add_argument("--template", type=str, default=None, help="E2B template name (default: openclaw-chromium-v1)")
 
     parser.add_argument(
-        '--template',
-        type=str,
-        default=None,
-        help='E2B template name (default: openclaw-chromium-v1)'
-    )
-
-    parser.add_argument(
-        '--url',
-        type=str,
-        default='http://192.168.110.10:8080/Weibo.html',
-        help='Default test URL for browser commands'
+        "--url", type=str, default="http://192.168.110.10:8080/Weibo.html", help="Default test URL for browser commands"
     )
 
     args = parser.parse_args()
@@ -246,11 +231,7 @@ def main():
 
     # Run debug
     try:
-        debug_sandbox_commands(
-            config_path=args.config,
-            machine_ip=args.ip,
-            template=args.template
-        )
+        debug_sandbox_commands(config_path=args.config, machine_ip=args.ip, template=args.template)
     except Exception as e:
         print(f"\n✗ Fatal error: {e}")
         if _sandbox:

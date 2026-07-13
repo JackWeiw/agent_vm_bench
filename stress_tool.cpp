@@ -118,7 +118,7 @@ void memory_worker(size_t memory_mb, int duration_sec) {
         for (auto* block : blocks) delete[] block;
         return;
     }
-    
+
     std::cout << "[Memory] Allocation complete, " << blocks.size() << " blocks, total "
               << memory_mb << " MB. Entering low-frequency keepalive mode (access 1 byte every 100ms)..." << std::endl;
 

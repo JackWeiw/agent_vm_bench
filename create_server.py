@@ -35,6 +35,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
+
 @dataclass
 class VMResult:
     name: str
@@ -45,6 +46,7 @@ class VMResult:
     status: str = "pending"  # pending / active / error / timeout / submit_failed
     elapsed: float = 0.0
     detail: str = ""
+
 
 def load_openrc(path: str = os.path.expanduser("~/.admin-openrc")) -> dict:
     """Parse export statements in openrc file, return environment variable dict."""
@@ -59,6 +61,7 @@ def load_openrc(path: str = os.path.expanduser("~/.admin-openrc")) -> dict:
                     env[key] = val
     return env
 
+
 def get_os_env() -> dict:
     """Load openrc environment variables, remove http proxy."""
     env = os.environ.copy()
@@ -68,6 +71,7 @@ def get_os_env() -> dict:
     env.pop("HTTP_PROXY", None)
     env.pop("HTTPS_PROXY", None)
     return env
+
 
 def create_and_wait_vm(
     vm_name: str,
@@ -81,17 +85,25 @@ def create_and_wait_vm(
 ) -> VMResult:
     result = VMResult(name=vm_name, fixed_ip=fixed_ip)
     result.submit_time = time.time()
-    
+
     proc = subprocess.Popen(
         [
-            "openstack", "server", "create",
-            "--flavor", flavor,
-            "--image", image,
-            "--nic", f"net-id={network_id},v4-fixed-ip={fixed_ip}",
-            "--availability-zone", az,
+            "openstack",
+            "server",
+            "create",
+            "--flavor",
+            flavor,
+            "--image",
+            image,
+            "--nic",
+            f"net-id={network_id},v4-fixed-ip={fixed_ip}",
+            "--availability-zone",
+            az,
             "--wait",
-            "-f", "value",
-            "-c", "id",
+            "-f",
+            "value",
+            "-c",
+            "id",
             vm_name,
         ],
         stdout=subprocess.PIPE,
@@ -124,7 +136,11 @@ def create_and_wait_vm(
     # Use VM ID (not name) to avoid ambiguity when duplicate names exist
     confirm = subprocess.run(
         ["openstack", "server", "show", result.vm_id, "-f", "value", "-c", "status"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, timeout=30,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        timeout=30,
     )
     state = confirm.stdout.strip()
     if state == "ACTIVE":
@@ -136,11 +152,13 @@ def create_and_wait_vm(
 
     return result
 
+
 def calc_stats(elapsed_list: list[float]) -> dict:
     if not elapsed_list:
         return {}
     sorted_list = sorted(elapsed_list)
     n = len(sorted_list)
+
     def percentile(p: float) -> float:
         idx = min(int(math.ceil(p / 100.0 * n)) - 1, n - 1)
         return sorted_list[max(idx, 0)]
@@ -155,7 +173,16 @@ def calc_stats(elapsed_list: list[float]) -> dict:
         "count": n,
     }
 
+
 def main():
+    import warnings
+
+    warnings.warn(
+        "create_server.py is deprecated. "
+        "Use 'python -m vm_bench --create-only' instead. See docs/vm_bench-usage-guide.md",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     parser = argparse.ArgumentParser(description="Batch create OpenStack VMs and statistics creation performance")
     parser.add_argument("--start_ip", default=None, help="Starting IP, e.g., 192.168.110.131")
     parser.add_argument("--n", type=int, default=1, help="Number of VMs to create")
@@ -171,15 +198,15 @@ def main():
 
     # Dynamic IP parsing
     subnet_prefix = args.subnet_prefix
-    prefix_stripped = subnet_prefix.rstrip('.')
+    prefix_stripped = subnet_prefix.rstrip(".")
     start_ip_num = 131  # Default value
 
     if args.start_ip:
-        if not args.start_ip.startswith(prefix_stripped + '.'):
+        if not args.start_ip.startswith(prefix_stripped + "."):
             print(f"Error: Invalid IP format, must start with {prefix_stripped}.")
             sys.exit(1)
         try:
-            start_ip_num = int(args.start_ip.split('.')[-1])
+            start_ip_num = int(args.start_ip.split(".")[-1])
         except ValueError:
             print("Error: Last IP segment must be a number")
             sys.exit(1)
@@ -216,7 +243,7 @@ def main():
         return create_and_wait_vm(
             vm_name=name,
             fixed_ip=ip,
-            flavor=args.flavor, 
+            flavor=args.flavor,
             image=args.image,
             network_id=network_id,
             az=az,
@@ -261,6 +288,7 @@ def main():
         print(f"  {'P99:':<10s} {stats['p99']:<10.1f}s")
 
     print("=" * 55)
+
 
 if __name__ == "__main__":
     main()

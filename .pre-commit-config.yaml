@@ -1,0 +1,60 @@
+# Pre-commit hooks configuration
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+
+default_stages: [pre-commit]
+fail_fast: false
+
+repos:
+  # General file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--unsafe]
+      - id: check-json
+      - id: check-toml
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key
+      - id: debug-statements
+        language_version: python3
+
+  # Python code formatting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.1.9
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+# Bandit is too noisy for this project - many false positives for:
+# - B108: /dev/shm and /tmp usage (intentional for shared memory)
+# - B507: SSH AutoAddPolicy (required for dynamic VM connections)
+# - B601: Paramiko calls (intentional for VM management)
+# - B602: shell=True (required for complex subprocess commands)
+# Security is enforced through code review instead
+#   - repo: https://github.com/PyCQA/bandit
+#     rev: 1.7.6
+#     hooks:
+#       - id: bandit
+#         args: [-r, -ll, -s, B108,B507,B601,B602]
+#         files: ^(vm_monitor|vm_bench|e2b_bench|docker_bench)/
+
+# CI configuration
+ci:
+  autofix_commit_msg: |
+    [pre-commit.ci] auto fixes from pre-commit.com hooks
+
+    for more information, see https://pre-commit.ci
+  autofix_prs: true
+  autoupdate_branch: ""
+  autoupdate_commit_msg: "[pre-commit.ci] pre-commit autoupdate"
+  autoupdate_schedule: weekly
+  skip: []
+  submodules: false

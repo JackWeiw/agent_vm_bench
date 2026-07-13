@@ -160,7 +160,7 @@ class BrowserMetrics:
     failed_count: int = 0
     timeout_count: int = 0
     latencies: List[float] = field(default_factory=list)
-    
+
     def add(self, latency: float, success: bool, timeout: bool = False) -> None:
         """添加一次任务结果"""
         self.total_tasks += 1
@@ -172,12 +172,12 @@ class BrowserMetrics:
             self.latencies.append(latency)
         else:
             self.failed_count += 1
-    
+
     @property
     def avg_latency(self) -> float:
         """平均延迟（秒）"""
         return statistics.mean(self.latencies) if self.latencies else 0.0
-    
+
     @property
     def p99_latency(self) -> float:
         """P99延迟（秒）"""
@@ -195,10 +195,10 @@ class SandboxState:
     sandbox_id: int              # 序号（1, 2, 3...）
     sandbox_obj: Optional[object] = None  # E2B Sandbox对象引用（句柄）
     batch_id: int = -1           # 所属批次
-    
+
     creation_metrics: CreationMetrics = field(default_factory=CreationMetrics)
     browser_metrics: BrowserMetrics = field(default_factory=BrowserMetrics)
-    
+
     is_alive: bool = True        # 沙箱是否存活
     last_task_time: float = 0.0  # 最后一次任务执行时间
     consecutive_failures: int = 0  # 连续失败次数
@@ -279,20 +279,20 @@ def format_duration(seconds: float) -> str:
 
 def calc_percentiles(values: List[float]) -> Dict[str, float]:
     """计算百分位统计
-    
+
     返回: {"min": x, "max": x, "avg": x, "p50": x, "p95": x, "p99": x}
     """
     if not values:
         return {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
-    
+
     sorted_vals = sorted(values)
     n = len(sorted_vals)
-    
+
     def percentile(p: float) -> float:
         idx = int(n * p / 100)
         idx = min(idx, n - 1)
         return sorted_vals[idx]
-    
+
     return {
         "min": sorted_vals[0],
         "max": sorted_vals[-1],
@@ -353,38 +353,38 @@ class Config:
     e2b_domain: str = "e2b.app"
     e2b_api_url: str = "http://localhost:3000"
     e2b_http_ssl: str = "false"
-    
+
     # 沙箱配置
     template: str = "openclaw-browser-v1"
     create_timeout: int = 86400
     total_count: int = 100
-    
+
     # 批量控制（None表示全并发）
     batch_size: Optional[int] = 20
     batch_interval: Optional[int] = 30
-    
+
     # 浏览器任务
     browser_urls: List[str] = field(default_factory=lambda: ["http://192.168.110.10:8080/Weibo.html"])
     browser_timeout: int = 200
     browser_interval_min: float = 0.5
     browser_interval_max: float = 3.0
-    
+
     # 测试运行
     test_duration: int = 600
     stats_interval: int = 10
-    
+
     # 报告
     output_dir: str = "results/e2b"
     filename_prefix: str = "e2b_bench"
-    
+
     @classmethod
     def load_from_yaml(cls, path: str) -> cls:
         """从YAML文件加载配置"""
         with open(path, 'r', encoding='utf-8') as f:
             data = yaml.safe_load(f)
-        
+
         return cls._from_dict(data)
-    
+
     @classmethod
     def _from_dict(cls, data: Dict[str, Any]) -> cls:
         """从字典构建Config"""
@@ -394,33 +394,33 @@ class Config:
         browser = data.get('browser', {})
         test = data.get('test', {})
         report = data.get('report', {})
-        
+
         return cls(
             e2b_access_token=e2b_env.get('E2B_ACCESS_TOKEN', ""),
             e2b_api_key=e2b_env.get('E2B_API_KEY', ""),
             e2b_domain=e2b_env.get('E2B_DOMAIN', "e2b.app"),
             e2b_api_url=e2b_env.get('E2B_API_URL', "http://localhost:3000"),
             e2b_http_ssl=e2b_env.get('E2B_HTTP_SSL', "false"),
-            
+
             template=sandbox.get('template', "openclaw-browser-v1"),
             create_timeout=sandbox.get('create_timeout', 86400),
             total_count=sandbox.get('total_count', 100),
-            
+
             batch_size=batch.get('size') if batch else None,
             batch_interval=batch.get('interval') if batch else None,
-            
+
             browser_urls=browser.get('urls', ["http://192.168.110.10:8080/Weibo.html"]),
             browser_timeout=browser.get('task_timeout', 200),
             browser_interval_min=browser.get('interval_min', 0.5),
             browser_interval_max=browser.get('interval_max', 3.0),
-            
+
             test_duration=test.get('duration', 600),
             stats_interval=test.get('stats_interval', 10),
-            
+
             output_dir=report.get('output_dir', "results/e2b"),
             filename_prefix=report.get('filename_prefix', "e2b_bench"),
         )
-    
+
     @classmethod
     def merge_with_args(cls, yaml_config: cls, args: argparse.Namespace) -> cls:
         """合并命令行参数（命令行优先级更高）"""
@@ -431,26 +431,26 @@ class Config:
             e2b_domain=args.e2b_domain if args.e2b_domain else yaml_config.e2b_domain,
             e2b_api_url=args.e2b_api_url if args.e2b_api_url else yaml_config.e2b_api_url,
             e2b_http_ssl=args.e2b_http_ssl if args.e2b_http_ssl else yaml_config.e2b_http_ssl,
-            
+
             template=args.template if args.template else yaml_config.template,
             create_timeout=args.create_timeout if args.create_timeout else yaml_config.create_timeout,
             total_count=args.total if args.total else yaml_config.total_count,
-            
+
             batch_size=args.batch_size if args.batch_size is not None else yaml_config.batch_size,
             batch_interval=args.batch_interval if args.batch_interval is not None else yaml_config.batch_interval,
-            
+
             browser_urls=args.browser_url if args.browser_url else yaml_config.browser_urls,
             browser_timeout=args.browser_timeout if args.browser_timeout else yaml_config.browser_timeout,
             browser_interval_min=args.browser_interval_min if args.browser_interval_min else yaml_config.browser_interval_min,
             browser_interval_max=args.browser_interval_max if args.browser_interval_max else yaml_config.browser_interval_max,
-            
+
             test_duration=args.duration if args.duration else yaml_config.test_duration,
             stats_interval=args.stats_interval if args.stats_interval else yaml_config.stats_interval,
-            
+
             output_dir=args.output_dir if args.output_dir else yaml_config.output_dir,
             filename_prefix=args.filename_prefix if args.filename_prefix else yaml_config.filename_prefix,
         )
-    
+
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> cls:
         """仅从命令行参数构建Config（无YAML文件时）"""
@@ -460,26 +460,26 @@ class Config:
             e2b_domain=args.e2b_domain or "e2b.app",
             e2b_api_url=args.e2b_api_url or "http://localhost:3000",
             e2b_http_ssl=args.e2b_http_ssl or "false",
-            
+
             template=args.template or "openclaw-browser-v1",
             create_timeout=args.create_timeout or 86400,
             total_count=args.total or 100,
-            
+
             batch_size=args.batch_size,
             batch_interval=args.batch_interval,
-            
+
             browser_urls=args.browser_url or ["http://192.168.110.10:8080/Weibo.html"],
             browser_timeout=args.browser_timeout or 200,
             browser_interval_min=args.browser_interval_min or 0.5,
             browser_interval_max=args.browser_interval_max or 3.0,
-            
+
             test_duration=args.duration or 600,
             stats_interval=args.stats_interval or 10,
-            
+
             output_dir=args.output_dir or "results/e2b",
             filename_prefix=args.filename_prefix or "e2b_bench",
         )
-    
+
     def setup_e2b_env(self) -> None:
         """设置E2B SDK环境变量"""
         if self.e2b_access_token:
@@ -492,7 +492,7 @@ class Config:
             os.environ["E2B_API_URL"] = self.e2b_api_url
         if self.e2b_http_ssl:
             os.environ["E2B_HTTP_SSL"] = self.e2b_http_ssl
-    
+
     @property
     def batch_count(self) -> int:
         """计算批次数量"""
@@ -553,78 +553,78 @@ from .schemas import SandboxState, SandboxStatus
 
 class SandboxManager:
     """沙箱生命周期管理"""
-    
+
     def __init__(self, config: Config, stop_event: Event):
         self.config = config
         self.stop_event = stop_event
         self.sandbox_states: Dict[int, SandboxState] = {}
-    
+
     def create_all(self) -> Dict[int, SandboxState]:
         """批量创建沙箱
-        
+
         根据batch配置决定策略：
         - 有batch_size：分批创建，避免资源突增
         - 无配置：全并发创建，测试极限性能
-        
+
         返回: {sandbox_id: SandboxState}
         """
         if self.config.batch_size and self.config.batch_size > 0:
             return self._create_batched()
         else:
             return self._create_concurrent()
-    
+
     def _create_batched(self) -> Dict[int, SandboxState]:
         """分批创建沙箱"""
         total = self.config.total_count
         batch_size = self.config.batch_size
         batch_count = self.config.batch_count
-        
+
         print(f"\n{'='*60}")
         print(f"Batched Sandbox Creation")
         print(f"  Total: {total} sandboxes")
         print(f"  Batches: {batch_count} x {batch_size}")
         print(f"  Interval: {self.config.batch_interval}s")
         print(f"{'='*60}")
-        
+
         for batch_id in range(batch_count):
             if self.stop_event.is_set():
                 print("Stop event detected, aborting creation")
                 break
-            
+
             start_idx = batch_id * batch_size
             end_idx = min(start_idx + batch_size, total)
-            
+
             print(f"\n[Batch {batch_id}/{batch_count-1}] Creating sandboxes {start_idx+1}-{end_idx}")
-            
+
             # 并发创建当前批次
             batch_states = self._create_batch_concurrent(batch_id, start_idx, end_idx)
             self.sandbox_states.update(batch_states)
-            
+
             # 批次间等待（最后一批不等待）
             if batch_id < batch_count - 1 and self.config.batch_interval:
                 print(f"Waiting {self.config.batch_interval}s before next batch...")
                 time.sleep(self.config.batch_interval)
-        
+
         return self.sandbox_states
-    
+
     def _create_batch_concurrent(self, batch_id: int, start: int, end: int) -> Dict[int, SandboxState]:
         """并发创建一个批次的沙箱"""
         states: Dict[int, SandboxState] = {}
-        
+
         with ThreadPoolExecutor(max_workers=end - start) as executor:
             futures = {}
-            
+
             for i in range(start, end):
                 sandbox_id = i + 1
                 state = SandboxState(sandbox_id=sandbox_id, batch_id=batch_id)
                 self.sandbox_states[sandbox_id] = state
                 future = executor.submit(self._create_single, state)
                 futures[future] = sandbox_id
-            
+
             for future in as_completed(futures):
                 sandbox_id = futures[future]
                 state = self.sandbox_states[sandbox_id]
-                
+
                 try:
                     success, elapsed, error = future.result()
                     if success:
@@ -639,30 +639,30 @@ class SandboxManager:
                     state.creation_metrics.status = SandboxStatus.FAILED
                     state.creation_metrics.error_msg = str(e)
                     print(f"[Sandbox{sandbox_id}] Exception: {str(e)[:80]}")
-        
+
         return {i + 1: self.sandbox_states[i + 1] for i in range(start, end)}
-    
+
     def _create_concurrent(self) -> Dict[int, SandboxState]:
         """全并发创建所有沙箱"""
         total = self.config.total_count
-        
+
         print(f"\n{'='*60}")
         print(f"Concurrent Sandbox Creation")
         print(f"  Total: {total} sandboxes (full concurrent)")
         print(f"{'='*60}")
-        
+
         return self._create_batch_concurrent(batch_id=0, start=0, end=total)
-    
+
     def _create_single(self, state: SandboxState) -> Tuple[bool, float, str]:
         """创建单个沙箱
-        
+
         关键：保留沙箱句柄到 state.sandbox_obj
-        
+
         返回: (success, elapsed_seconds, error_message)
         """
         state.creation_metrics.status = SandboxStatus.CREATING
         state.creation_metrics.submit_time = time.time()
-        
+
         try:
             sbx = Sandbox.create(
                 self.config.template,
@@ -676,7 +676,7 @@ class SandboxManager:
         except Exception as e:
             state.creation_metrics.ready_time = time.time()
             return False, 0.0, str(e)
-    
+
     def check_alive(self, state: SandboxState) -> bool:
         """检查沙箱是否存活"""
         sbx = state.sandbox_obj
@@ -687,7 +687,7 @@ class SandboxManager:
             return result.exit_code == 0
         except Exception:
             return False
-    
+
     def close_all(self) -> None:
         """关闭所有沙箱"""
         print("\nClosing all sandboxes...")
@@ -739,7 +739,7 @@ from .schemas import SandboxState, SandboxStatus
 
 class BrowserTaskRunner(threading.Thread):
     """浏览器任务执行器（每个沙箱一个独立线程）"""
-    
+
     def __init__(
         self,
         state: SandboxState,
@@ -751,7 +751,7 @@ class BrowserTaskRunner(threading.Thread):
         self.config = config
         self.stop_event = stop_event
         self.consecutive_errors = 0
-    
+
     def run(self) -> None:
         """任务执行主循环"""
         # 等待沙箱创建完成
@@ -762,21 +762,21 @@ class BrowserTaskRunner(threading.Thread):
                 print(f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}")
                 return
             time.sleep(0.5)
-        
+
         # 执行浏览器任务循环
         while not self.stop_event.is_set():
             if not self.state.is_alive:
                 print(f"[Sandbox{self.state.sandbox_id}] Sandbox offline, stopping tasks")
                 break
-            
+
             # 执行单个浏览器任务
             success, latency = self._run_single_task()
-            
+
             # 更新指标
             timeout = latency > self.config.browser_timeout
             self.state.browser_metrics.add(latency, success and not timeout, timeout)
             self.state.last_task_time = time.time()
-            
+
             # 错误处理
             if success and not timeout:
                 self.consecutive_errors = 0
@@ -786,34 +786,34 @@ class BrowserTaskRunner(threading.Thread):
                     self.state.is_alive = False
                     print(f"[Sandbox{self.state.sandbox_id}] Marked offline (3 consecutive failures)")
                     break
-            
+
             # 随机间隔，避免请求突增
             sleep_time = random.uniform(
                 self.config.browser_interval_min,
                 self.config.browser_interval_max
             )
             time.sleep(sleep_time)
-        
+
         print(f"[Sandbox{self.state.sandbox_id}] Task runner ended")
-    
+
     def _run_single_task(self) -> Tuple[bool, float]:
         """执行单个浏览器任务
-        
+
         使用 state.sandbox_obj 句柄执行命令
-        
+
         返回: (success, latency_seconds)
         """
         sbx = self.state.sandbox_obj
         if not sbx:
             return False, 0.0
-        
+
         # 获取当前URL（轮询方式）
         url_idx = self.state.browser_metrics.total_tasks % len(self.config.browser_urls)
         url = self.config.browser_urls[url_idx]
-        
+
         # 构建浏览器命令
         cmd = f"openclaw browser --browser-profile openclaw open '{url}'"
-        
+
         start_time = time.perf_counter()
         try:
             result = sbx.commands.run(
@@ -822,7 +822,7 @@ class BrowserTaskRunner(threading.Thread):
                 user="root"
             )
             elapsed = time.perf_counter() - start_time
-            
+
             success = result.exit_code == 0
             return success, elapsed
         except Exception as e:
@@ -833,7 +833,7 @@ class BrowserTaskRunner(threading.Thread):
 
 class TaskManager:
     """任务管理器 - 管理所有沙箱的任务执行线程"""
-    
+
     def __init__(
         self,
         config: Config,
@@ -844,7 +844,7 @@ class TaskManager:
         self.sandbox_states = sandbox_states
         self.stop_event = stop_event
         self.runners: List[BrowserTaskRunner] = []
-    
+
     def start_all(self) -> None:
         """启动所有ACTIVE沙箱的任务执行线程"""
         active_count = 0
@@ -854,9 +854,9 @@ class TaskManager:
                 self.runners.append(runner)
                 runner.start()
                 active_count += 1
-        
+
         print(f"\nStarted {active_count} task runners")
-    
+
     def wait_all(self, timeout: float = 5.0) -> None:
         """等待所有任务线程结束"""
         for runner in self.runners:
@@ -901,7 +901,7 @@ from .utils import calc_percentiles, calc_p99
 
 class StatsCollector:
     """统计收集器 - 实时快照 + 最终报告"""
-    
+
     def __init__(self, config: Config, sandbox_states: Dict[int, SandboxState]):
         self.config = config
         self.sandbox_states = sandbox_states
@@ -909,30 +909,30 @@ class StatsCollector:
         self.start_time: float = 0.0
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
-    
+
     def start(self) -> None:
         """启动后台收集线程"""
         self.start_time = time.time()
         self._thread = threading.Thread(target=self._collect_loop, daemon=True)
         self._thread.start()
-    
+
     def stop(self) -> None:
         """停止收集"""
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=2)
-    
+
     def _collect_loop(self) -> None:
         """定期收集快照"""
         while not self._stop.is_set():
             self._take_snapshot()
             time.sleep(self.config.stats_interval)
-    
+
     def _take_snapshot(self) -> None:
         """收集当前时刻的统计快照"""
         now = time.time()
         elapsed = now - self.start_time
-        
+
         # 沙箱状态统计
         active_count = sum(
             1 for s in self.sandbox_states.values()
@@ -942,26 +942,26 @@ class StatsCollector:
             1 for s in self.sandbox_states.values()
             if not s.is_alive or s.creation_metrics.status in (SandboxStatus.FAILED, SandboxStatus.OFFLINE)
         )
-        
+
         # 创建性能统计（仅计算成功的沙箱）
         creation_times = [
             s.creation_metrics.elapsed for s in self.sandbox_states.values()
             if s.creation_metrics.status == SandboxStatus.ACTIVE and s.creation_metrics.elapsed > 0
         ]
         creation_stats = calc_percentiles(creation_times)
-        
+
         # 浏览器任务统计
         browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
         browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
-        
+
         # 收集最近的延迟数据（每个沙箱最近10条）
         all_latencies: List[float] = []
         for s in self.sandbox_states.values():
             all_latencies.extend(s.browser_metrics.latencies[-10:])
-        
+
         browser_avg = statistics.mean(all_latencies) if all_latencies else 0.0
         browser_p99 = calc_p99(all_latencies)
-        
+
         snapshot = TestSnapshot(
             timestamp=now,
             elapsed=elapsed,
@@ -975,33 +975,33 @@ class StatsCollector:
             browser_p99_latency=browser_p99
         )
         self.snapshots.append(snapshot)
-        
+
         # 实时终端输出
         self._print_snapshot(snapshot)
-    
+
     def _print_snapshot(self, snapshot: TestSnapshot) -> None:
         """打印实时快照"""
         print(f"\n{'─'*70}")
         print(f"T+{snapshot.elapsed:6.1f}s  Status Snapshot")
         print(f"{'─'*70}")
         print(f"  Sandboxes: {snapshot.active_sandboxes:3d} active / {snapshot.offline_sandboxes:2d} offline")
-        
+
         if snapshot.creation_stats["avg"] > 0:
             print(f"  Creation:  avg={snapshot.creation_stats['avg']:.1f}s  "
                   f"p50={snapshot.creation_stats['p50']:.1f}s  "
                   f"p99={snapshot.creation_stats['p99']:.1f}s")
-        
+
         print(f"  Browser:   {snapshot.browser_success:3d}/{snapshot.browser_total:3d}  "
               f"avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s")
         print(f"{'─'*70}")
-    
+
     def generate_report(self) -> str:
         """生成最终TXT报告"""
         lines: List[str] = []
         lines.append("=" * 80)
         lines.append("E2B Sandbox Bench - Performance Report")
         lines.append("=" * 80)
-        
+
         # 配置信息
         lines.append(f"\n[Test Configuration]")
         lines.append(f"  Template:        {self.config.template}")
@@ -1012,7 +1012,7 @@ class StatsCollector:
         else:
             lines.append(f"  Batch Strategy:  Full concurrent creation")
         lines.append(f"  Test Duration:   {self.config.test_duration}s")
-        
+
         # 沙箱状态统计
         active_states = [
             s for s in self.sandbox_states.values()
@@ -1025,7 +1025,7 @@ class StatsCollector:
         offline_states = [
             s for s in self.sandbox_states.values() if not s.is_alive
         ]
-        
+
         lines.append(f"\n[Sandbox Status]")
         lines.append(f"  Created:   {len(active_states)} / {len(self.sandbox_states)}")
         lines.append(f"  Failed:    {len(failed_states)}")
@@ -1034,7 +1034,7 @@ class StatsCollector:
             lines.append(f"  Failed IDs:  {[s.sandbox_id for s in failed_states[:10]]}")
         if offline_states:
             lines.append(f"  Offline IDs: {[s.sandbox_id for s in offline_states[:10]]}")
-        
+
         # 创建性能统计
         creation_times = [
             s.creation_metrics.elapsed for s in active_states if s.creation_metrics.elapsed > 0
@@ -1048,44 +1048,44 @@ class StatsCollector:
             lines.append(f"  P50:  {stats['p50']:.1f}s")
             lines.append(f"  P95:  {stats['p95']:.1f}s")
             lines.append(f"  P99:  {stats['p99']:.1f}s")
-        
+
         # 浏览器任务统计
         all_latencies: List[float] = []
         for s in self.sandbox_states.values():
             all_latencies.extend(s.browser_metrics.latencies)
-        
+
         total_tasks = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
         total_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
         total_failed = sum(s.browser_metrics.failed_count for s in self.sandbox_states.values())
         total_timeout = sum(s.browser_metrics.timeout_count for s in self.sandbox_states.values())
-        
+
         lines.append(f"\n[Browser Task Statistics]")
         lines.append(f"  Total Tasks:   {total_tasks}")
         lines.append(f"  Success:       {total_success}")
         lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
         lines.append(f"  Success Rate:  {total_success / max(1, total_tasks) * 100:.1f}%")
-        
+
         if all_latencies:
             avg_ms = statistics.mean(all_latencies) * 1000
             p99_ms = calc_p99(all_latencies) * 1000
             lines.append(f"  Avg Latency:   {avg_ms:.1f}ms")
             lines.append(f"  P99 Latency:   {p99_ms:.1f}ms")
-        
+
         lines.append("\n" + "=" * 80)
         return '\n'.join(lines)
-    
+
     def save_report(self, report: str) -> str:
         """保存报告到文件"""
         output_dir = self.config.output_dir
         os.makedirs(output_dir, exist_ok=True)
-        
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{self.config.filename_prefix}_{timestamp}.txt"
         filepath = os.path.join(output_dir, filename)
-        
+
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(report)
-        
+
         return filepath
 ```
 
@@ -1127,16 +1127,16 @@ from .schemas import SandboxStatus
 
 def run_benchmark(config: Config) -> dict:
     """运行E2B沙箱性能测试
-    
+
     Args:
         config: 测试配置对象
-        
+
     Returns:
         {'report': str, 'filepath': str}
     """
     # 1. 设置E2B环境变量
     config.setup_e2b_env()
-    
+
     print("=" * 80)
     print("E2B Sandbox Bench - Batch Performance Test")
     print("=" * 80)
@@ -1148,15 +1148,15 @@ def run_benchmark(config: Config) -> dict:
         print(f"  Batch:    Full concurrent creation")
     print(f"  Duration: {config.test_duration}s")
     print("=" * 80)
-    
+
     # 停止信号
     stop_event = threading.Event()
-    
+
     # 2. 创建沙箱
     print("\n[Phase 1] Creating sandboxes...")
     sandbox_manager = SandboxManager(config, stop_event)
     sandbox_states = sandbox_manager.create_all()
-    
+
     created_count = sum(
         1 for s in sandbox_states.values()
         if s.creation_metrics.status == SandboxStatus.ACTIVE
@@ -1164,42 +1164,42 @@ def run_benchmark(config: Config) -> dict:
     if created_count == 0:
         print("No sandboxes created successfully, exiting.")
         return {}
-    
+
     print(f"\nSuccessfully created: {created_count}/{config.total_count} sandboxes")
-    
+
     # 3. 启动统计收集
     print("\n[Phase 2] Starting stats collector...")
     stats_collector = StatsCollector(config, sandbox_states)
     stats_collector.start()
-    
+
     # 4. 启动任务执行
     print("\n[Phase 3] Starting browser tasks...")
     task_manager = TaskManager(config, sandbox_states, stop_event)
     task_manager.start_all()
-    
+
     # 5. 运行指定时长
     print(f"\n[Phase 4] Running for {config.test_duration} seconds...")
     try:
         time.sleep(config.test_duration)
     except KeyboardInterrupt:
         print("\nUser interrupt, stopping...")
-    
+
     # 6. 停止所有组件
     print("\n[Phase 5] Stopping...")
     stop_event.set()
     task_manager.wait_all(timeout=5)
     stats_collector.stop()
     sandbox_manager.close_all()
-    
+
     time.sleep(0.5)  # 让守护线程完成最后的输出
-    
+
     # 7. 生成并保存报告
     report = stats_collector.generate_report()
     print("\n" + report)
-    
+
     filepath = stats_collector.save_report(report)
     print(f"\nReport saved to: {filepath}")
-    
+
     return {'report': report, 'filepath': filepath}
 
 
@@ -1208,41 +1208,41 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description='E2B Sandbox Bench - E2B沙箱批量性能测试工具'
     )
-    
+
     # 配置文件
     parser.add_argument('--config', type=str, default=None,
                         help='YAML configuration file path')
-    
+
     # E2B环境变量
     parser.add_argument('--e2b-access-token', type=str, help='E2B access token')
     parser.add_argument('--e2b-api-key', type=str, help='E2B API key')
     parser.add_argument('--e2b-domain', type=str, help='E2B domain')
     parser.add_argument('--e2b-api-url', type=str, help='E2B API URL')
     parser.add_argument('--e2b-http-ssl', type=str, help='E2B HTTP SSL setting')
-    
+
     # 沙箱配置
     parser.add_argument('--template', type=str, help='E2B template name')
     parser.add_argument('--total', type=int, help='Total sandbox count')
     parser.add_argument('--create-timeout', type=int, help='Sandbox creation timeout')
-    
+
     # 批量控制
     parser.add_argument('--batch-size', type=int, help='Sandboxes per batch (None = full concurrent)')
     parser.add_argument('--batch-interval', type=int, help='Batch interval seconds')
-    
+
     # 浏览器任务
     parser.add_argument('--browser-url', type=str, action='append', help='Browser URL (can specify multiple)')
     parser.add_argument('--browser-timeout', type=int, help='Browser task timeout')
     parser.add_argument('--browser-interval-min', type=float, help='Task interval minimum')
     parser.add_argument('--browser-interval-max', type=float, help='Task interval maximum')
-    
+
     # 测试运行
     parser.add_argument('--duration', type=int, help='Test duration seconds')
     parser.add_argument('--stats-interval', type=int, help='Stats snapshot interval')
-    
+
     # 报告
     parser.add_argument('--output-dir', type=str, help='Report output directory')
     parser.add_argument('--filename-prefix', type=str, help='Report filename prefix')
-    
+
     return parser
 
 
@@ -1250,7 +1250,7 @@ def main() -> None:
     """命令行入口"""
     parser = build_arg_parser()
     args = parser.parse_args()
-    
+
     # 加载配置
     if args.config:
         config = Config.load_from_yaml(args.config)
@@ -1258,12 +1258,12 @@ def main() -> None:
     else:
         # 无配置文件时，使用命令行参数
         config = Config.from_args(args)
-    
+
     # 验证必填参数
     if not config.e2b_access_token and not args.config:
         print("Error: E2B access token is required. Use --e2b-access-token or --config")
         return
-    
+
     # 运行测试
     run_benchmark(config)
 

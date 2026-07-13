@@ -14,11 +14,11 @@ Browser Workflow (using agent-browser):
 Note: agent-browser doesn't need explicit focus, open automatically works on current tab
 """
 
-import time
 import random
-import threading
 import re
-from typing import Tuple, List, Dict
+import threading
+import time
+from typing import Dict, List, Tuple
 
 from .config import Config
 from .schemas import ContainerState, ContainerStatus
@@ -48,8 +48,15 @@ class BrowserTaskRunner(threading.Thread):
         while not self.stop_event.is_set():
             if self.state.creation_metrics.status == ContainerStatus.PORT_READY:
                 break
-            if self.state.creation_metrics.status in (ContainerStatus.FAILED, ContainerStatus.PORT_FAILED, ContainerStatus.OFFLINE, ContainerStatus.KILLED):
-                print(f"[Container{self.state.container_id}] Cannot start tasks: {self.state.creation_metrics.status.value}")
+            if self.state.creation_metrics.status in (
+                ContainerStatus.FAILED,
+                ContainerStatus.PORT_FAILED,
+                ContainerStatus.OFFLINE,
+                ContainerStatus.KILLED,
+            ):
+                print(
+                    f"[Container{self.state.container_id}] Cannot start tasks: {self.state.creation_metrics.status.value}"
+                )
                 return
             time.sleep(0.5)
 
@@ -91,10 +98,7 @@ class BrowserTaskRunner(threading.Thread):
                     break
 
             # Random interval to avoid request spike
-            sleep_time = random.uniform(
-                self.config.browser_interval_min,
-                self.config.browser_interval_max
-            )
+            sleep_time = random.uniform(self.config.browser_interval_min, self.config.browser_interval_max)
             time.sleep(sleep_time)
 
         # Clear browser cache after task loop ends
@@ -130,7 +134,11 @@ class BrowserTaskRunner(threading.Thread):
                 print(f"[Container{self.state.container_id}] agent-browser ready (browser will stay running)")
                 return True, ""
             else:
-                output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
+                output = (
+                    result.output.decode("utf-8", errors="ignore")
+                    if isinstance(result.output, bytes)
+                    else result.output
+                )
                 return False, f"agent-browser not available: {output[:200]}"
         except Exception as e:
             return False, str(e)
@@ -162,7 +170,7 @@ class BrowserTaskRunner(threading.Thread):
         try:
             # Step 1: Open page (agent-browser open)
             step_success, step_time = self._step_open(url)
-            step_times['open'] = step_time
+            step_times["open"] = step_time
             if not step_success:
                 if self.stop_event.is_set():
                     return False, time.perf_counter() - start_time, step_times, True
@@ -170,7 +178,7 @@ class BrowserTaskRunner(threading.Thread):
 
             # Step 2: DOM snapshot (agent-browser snapshot -i)
             step_success, step_time, elements = self._step_snapshot()
-            step_times['snapshot'] = step_time
+            step_times["snapshot"] = step_time
             if not step_success:
                 if self.stop_event.is_set():
                     return False, time.perf_counter() - start_time, step_times, True
@@ -178,7 +186,7 @@ class BrowserTaskRunner(threading.Thread):
 
             # Step 3: Element click (agent-browser click)
             step_success, step_time = self._step_click(elements)
-            step_times['click'] = step_time
+            step_times["click"] = step_time
             if not step_success:
                 if self.stop_event.is_set():
                     return False, time.perf_counter() - start_time, step_times, True
@@ -186,7 +194,7 @@ class BrowserTaskRunner(threading.Thread):
 
             # Step 4: Screenshot (agent-browser screenshot)
             step_success, step_time = self._step_screenshot()
-            step_times['screenshot'] = step_time
+            step_times["screenshot"] = step_time
             if not step_success:
                 if self.stop_event.is_set():
                     return False, time.perf_counter() - start_time, step_times, True
@@ -223,7 +231,9 @@ class BrowserTaskRunner(threading.Thread):
             result = container.exec_run(cmd, user="root")
             elapsed = time.perf_counter() - start
 
-            output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
+            output = (
+                result.output.decode("utf-8", errors="ignore") if isinstance(result.output, bytes) else result.output
+            )
 
             if result.exit_code != 0:
                 print(f"[Container{self.state.container_id}] Step 1 (open) failed: {output[:200]}")
@@ -250,7 +260,9 @@ class BrowserTaskRunner(threading.Thread):
             result = container.exec_run(cmd, user="root")
             elapsed = time.perf_counter() - start
 
-            output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
+            output = (
+                result.output.decode("utf-8", errors="ignore") if isinstance(result.output, bytes) else result.output
+            )
 
             if result.exit_code != 0:
                 print(f"[Container{self.state.container_id}] Step 2 (snapshot) failed: {output[:200]}")
@@ -295,7 +307,9 @@ class BrowserTaskRunner(threading.Thread):
                 return True, elapsed
 
             # Working element failed (page might have changed), clear it and try new ones
-            print(f"[Container{self.state.container_id}] Step 3 (click) previous working element {self.state.working_click_element} failed, trying new...")
+            print(
+                f"[Container{self.state.container_id}] Step 3 (click) previous working element {self.state.working_click_element} failed, trying new..."
+            )
             self.state.working_click_element = ""
 
         # Strategy 2: Try elements from current snapshot (prefer middle elements)
@@ -314,7 +328,9 @@ class BrowserTaskRunner(threading.Thread):
             if result.exit_code == 0:
                 # Found working element, save it for reuse
                 self.state.working_click_element = element_ref
-                print(f"[Container{self.state.container_id}] Step 3 (click) succeeded with {element_ref} (saved for reuse)")
+                print(
+                    f"[Container{self.state.container_id}] Step 3 (click) succeeded with {element_ref} (saved for reuse)"
+                )
                 return True, elapsed
 
         # Strategy 3: Get fresh snapshot and retry
@@ -325,7 +341,11 @@ class BrowserTaskRunner(threading.Thread):
         snapshot_result = container.exec_run(snapshot_cmd, user="root")
 
         if snapshot_result.exit_code == 0:
-            snapshot_output = snapshot_result.output.decode('utf-8', errors='ignore') if isinstance(snapshot_result.output, bytes) else snapshot_result.output
+            snapshot_output = (
+                snapshot_result.output.decode("utf-8", errors="ignore")
+                if isinstance(snapshot_result.output, bytes)
+                else snapshot_result.output
+            )
             fresh_elements = self._extract_element_refs(snapshot_output)
 
             if fresh_elements:
@@ -337,19 +357,23 @@ class BrowserTaskRunner(threading.Thread):
 
                     if result.exit_code == 0:
                         self.state.working_click_element = element_ref
-                        print(f"[Container{self.state.container_id}] Step 3 (click) retry succeeded with {element_ref} (saved for reuse)")
+                        print(
+                            f"[Container{self.state.container_id}] Step 3 (click) retry succeeded with {element_ref} (saved for reuse)"
+                        )
                         return True, elapsed
 
                 elapsed = time.perf_counter() - start
-                self.state.browser_metrics.last_error = f"click failed after fresh snapshot, tried {len(fresh_try)} elements"
+                self.state.browser_metrics.last_error = (
+                    f"click failed after fresh snapshot, tried {len(fresh_try)} elements"
+                )
                 return False, elapsed
             else:
                 elapsed = time.perf_counter() - start
-                self.state.browser_metrics.last_error = f"click failed: no elements in fresh snapshot"
+                self.state.browser_metrics.last_error = "click failed: no elements in fresh snapshot"
                 return False, elapsed
         else:
             elapsed = time.perf_counter() - start
-            self.state.browser_metrics.last_error = f"click failed: fresh snapshot failed"
+            self.state.browser_metrics.last_error = "click failed: fresh snapshot failed"
             return False, elapsed
 
     def _step_screenshot(self) -> Tuple[bool, float]:
@@ -366,7 +390,11 @@ class BrowserTaskRunner(threading.Thread):
             elapsed = time.perf_counter() - start
 
             if result.exit_code != 0:
-                output = result.output.decode('utf-8', errors='ignore') if isinstance(result.output, bytes) else result.output
+                output = (
+                    result.output.decode("utf-8", errors="ignore")
+                    if isinstance(result.output, bytes)
+                    else result.output
+                )
                 print(f"[Container{self.state.container_id}] Step 4 (screenshot) failed: {output[:100]}")
                 self.state.browser_metrics.last_error = f"screenshot failed: {output[:200]}"
                 return False, elapsed
@@ -436,8 +464,7 @@ class TaskManager:
         """
         # Filter PORT_READY containers
         ready_states = [
-            s for s in self.container_states.values()
-            if s.creation_metrics.status == ContainerStatus.PORT_READY
+            s for s in self.container_states.values() if s.creation_metrics.status == ContainerStatus.PORT_READY
         ]
 
         if not ready_states:
@@ -451,7 +478,9 @@ class TaskManager:
         if benchmark_count < total_ready:
             # Select first N containers for benchmark
             benchmark_states = ready_states[:benchmark_count]
-            print(f"\nBenchmark subset: {benchmark_count}/{total_ready} containers ({self.config.benchmark_percent*100:.0f}%)")
+            print(
+                f"\nBenchmark subset: {benchmark_count}/{total_ready} containers ({self.config.benchmark_percent * 100:.0f}%)"
+            )
         else:
             benchmark_states = ready_states
 
@@ -466,12 +495,12 @@ class TaskManager:
         batch_size = self.config.task_batch_size
         batch_count = (total + batch_size - 1) // batch_size
 
-        print(f"\n{'='*60}")
-        print(f"Batched Task Execution Start")
+        print(f"\n{'=' * 60}")
+        print("Batched Task Execution Start")
         print(f"  Total: {total} containers")
         print(f"  Batches: {batch_count} x {batch_size}")
         print(f"  Interval: {self.config.task_batch_interval}s")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         for batch_id in range(batch_count):
             if self.stop_event.is_set():
@@ -482,7 +511,7 @@ class TaskManager:
             end_idx = min(start_idx + batch_size, total)
             batch_states = ready_states[start_idx:end_idx]
 
-            print(f"\n[TaskBatch {batch_id}/{batch_count-1}] Starting tasks for containers {start_idx+1}-{end_idx}")
+            print(f"\n[TaskBatch {batch_id}/{batch_count - 1}] Starting tasks for containers {start_idx + 1}-{end_idx}")
 
             # Start task runners for current batch
             for state in batch_states:
@@ -499,10 +528,10 @@ class TaskManager:
 
     def _start_concurrent(self, ready_states: List[ContainerState]) -> None:
         """Full concurrent task execution start"""
-        print(f"\n{'='*60}")
-        print(f"Concurrent Task Execution Start")
+        print(f"\n{'=' * 60}")
+        print("Concurrent Task Execution Start")
         print(f"  Total: {len(ready_states)} containers (full concurrent)")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         for state in ready_states:
             runner = BrowserTaskRunner(state, self.config, self.stop_event)

@@ -12,6 +12,8 @@ Test framework for OpenStack VM memory overcommit scenarios with comprehensive p
 | [Design (EN)](docs/design-en.md) | English version of design doc |
 | [Metrics Reference](docs/metrics-reference.md) | All 50+ metrics explained |
 | [Usage Guide](docs/usage-guide.md) | Detailed tool usage and configuration |
+| [vm_bench Usage](docs/vm_bench-usage-guide.md) | **Modular vm_bench package usage (recommended)** |
+| [vm_bench Usage (中文)](docs/vm_bench-usage-guide-zh.md) | vm_bench 模块使用指南 |
 | [E2B Bench Usage](docs/e2b-bench-usage.md) | E2B Sandbox batch performance testing |
 | [E2B Bench Usage (中文)](docs/e2b-bench-usage-zh.md) | E2B沙箱批量性能测试指南 |
 | [Docker Bench Usage](docs/docker-bench-usage.md) | Docker container browser automation testing |
@@ -62,18 +64,61 @@ cd web_content/en.wikipedia.org/wiki
 numactl --cpunodebind=2,3 --membind=2,3 python3 -m http.server 8080
 ```
 
-### 5. Create VMs
+---
+
+## vm_bench Package (Modular)
+
+The `vm_bench` package is the **recommended** modular approach for VM creation and benchmarking, replacing the original `create_server.py` and `vm_bench_lite.py`.
+
+### Quick Start
 
 ```bash
-python3 create_server.py \
-  --start_ip 192.168.110.11 \
-  --n 10 \
-  --subnet-prefix 192.168.110. \
-  --network-id cc56708a-c0c0-4d75-a87e-ed1b1a8af844 \
-  --az nova_zone:controller \
-  --flavor 2U_4G_30G_4K \
-  --image ubuntu-24.04
+# Install dependencies
+pip install -r vm_bench/requirements.txt
+
+# Create VMs only (Phase 0)
+python -m vm_bench --config config/vm_bench.yaml --create-only
+
+# Detect existing VMs and benchmark
+python -m vm_bench --config config/vm_bench.yaml --detect -bsp 0.5 -t 300
+
+# Warmup only
+python -m vm_bench --config config/vm_bench.yaml --warmup-only
+
+# Full workflow
+python -m vm_bench --config config/vm_bench.yaml
 ```
+
+### Python API
+
+```python
+from vm_bench import Config, VMManager, run_benchmark
+
+# Create VMs
+config = Config(total_count=20, start_ip="192.168.110.11", ...)
+manager = VMManager(config, threading.Event())
+vm_states = manager.create_all()
+
+# Run benchmark
+result = run_benchmark(config)
+print(result['report'])
+```
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `vm_bench/config.py` | Configuration management (YAML + CLI) |
+| `vm_bench/vm_manager.py` | VM lifecycle (OpenStack + SSH) |
+| `vm_bench/task_runner.py` | Task execution (QA, Stress, Browser) |
+| `vm_bench/bench.py` | Main orchestration entry point |
+| `config/vm_bench.yaml` | Configuration template |
+
+See [vm_bench Usage Guide](docs/vm_bench-usage-guide.md) for details.
+
+---
+
+## Legacy Scripts
 
 ### 6. Resource Monitoring
 

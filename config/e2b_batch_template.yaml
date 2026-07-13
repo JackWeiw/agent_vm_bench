@@ -1,0 +1,63 @@
+# E2B Batch Test Template Configuration
+# Fixed parameters for batch testing (variable parameters in e2b_batch_matrix.yaml)
+
+e2b_env:
+  E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+  E2B_API_KEY: "your_e2b_api_key_here"
+  E2B_DOMAIN: "e2b.app"
+  E2B_API_URL: "http://localhost:3000"
+  E2B_HTTP_SSL: "false"
+
+sandbox:
+  template: "openclaw-browser-v1"
+  create_timeout: 86400
+  # total_count will be overridden by test matrix
+  detect_existing: false
+  create_only: false
+
+create_batch:
+  size: 20
+  interval: 3
+
+task_batch:
+  size: 10
+  interval: 5
+
+browser:
+  urls:
+    - "http://192.168.110.10:8080/Weibo.html"
+  task_timeout: 200
+  interval_min: 5
+  interval_max: 15
+  warmup_urls:
+    - "http://192.168.110.10:8080/page1.html"
+  warmup_loops: 1
+  warmup_delay: 2
+  warmup_only: false
+
+test:
+  duration: 600
+  stats_interval: 10
+  # benchmark_percent will be overridden by test matrix
+
+# smap_tool configuration (ratio will be overridden by test matrix)
+smap_tool:
+  enabled: true
+  path: "/path/to/smap_tool"  # Change to actual path
+  swap_size: 81920
+  src_nid: 2
+  dest_nid: 5
+
+# vm_monitor configuration
+vm_monitor:
+  enabled: true
+  vmm_type: "firecracker"
+  # duration is automatically synced with test.duration
+  numa: "1"  # NUMA nodes to monitor, comma-separated (e.g., "0,1")
+  log_dir: "results/e2b/vm_monitor"
+  stress_file: "/dev/shm/e2b_benchmark_lock"
+  # --enable-capture and --auto-skip are always added for batch testing
+
+report:
+  output_dir: "results/e2b/batch"
+  filename_prefix: "e2b_batch"

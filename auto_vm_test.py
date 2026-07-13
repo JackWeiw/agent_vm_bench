@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Multi-VM Agent Automation Test Script
 
@@ -18,25 +17,26 @@ Usage:
     python auto_vm_test.py --config config/test_config.yaml
 """
 
+import argparse
 import os
-import sys
-import time
+import re
 import signal
 import subprocess
-import argparse
-import yaml
-import re
-import psutil
-import paramiko
+import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
-from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
+
+import paramiko
+import psutil
+import yaml
 
 
 @dataclass
 class TestContext:
     """Test execution context"""
+
     config: Dict
     result_dir: str
     log_file: str
@@ -91,6 +91,7 @@ def load_config(config_path: str) -> Dict:
 def save_config_copy(ctx: TestContext, config_path: str):
     """Save config file copy to result directory"""
     import shutil
+
     dest = os.path.join(ctx.result_dir, "config.yaml")
     shutil.copy(config_path, dest)
     log(ctx, f"Config saved to {dest}")
@@ -144,6 +145,7 @@ def setup_openstack_env(config: Dict) -> Dict:
 
 # ==================== Step 2: Delete VMs ====================
 
+
 def delete_vms(ctx: TestContext, os_env: Dict) -> bool:
     """Delete all existing VMs and confirm deletion"""
     log(ctx, "Step 2: Deleting existing VMs...")
@@ -151,7 +153,11 @@ def delete_vms(ctx: TestContext, os_env: Dict) -> bool:
     # Get VM list
     result = subprocess.run(
         ["openstack", "server", "list", "-c", "ID", "-f", "value"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=os_env, timeout=60
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=os_env,
+        timeout=60,
     )
 
     if result.returncode != 0:
@@ -170,7 +176,11 @@ def delete_vms(ctx: TestContext, os_env: Dict) -> bool:
     # Delete VMs
     result = subprocess.run(
         ["openstack", "server", "delete", "--force"] + vm_ids,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=os_env, timeout=300
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=os_env,
+        timeout=300,
     )
 
     if result.returncode != 0:
@@ -183,8 +193,7 @@ def delete_vms(ctx: TestContext, os_env: Dict) -> bool:
     while time.time() - start < max_wait:
         # Check via virsh
         result = subprocess.run(
-            ["virsh", "list", "--all"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30
+            ["virsh", "list", "--all"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30
         )
 
         lines = result.stdout.strip().split("\n")
@@ -200,7 +209,11 @@ def delete_vms(ctx: TestContext, os_env: Dict) -> bool:
     # Final check via openstack
     result = subprocess.run(
         ["openstack", "server", "list", "-c", "ID", "-f", "value"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=os_env, timeout=60
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=os_env,
+        timeout=60,
     )
 
     remaining = [id for id in result.stdout.strip().split("\n") if id.strip()]
@@ -217,8 +230,12 @@ def delete_vms(ctx: TestContext, os_env: Dict) -> bool:
 
 # ==================== Step 3: Create VMs ====================
 
+
 def create_vms(ctx: TestContext, os_env: Dict) -> bool:
-    """Create VMs using create_server.py"""
+    """Create VMs using vm_bench module
+
+    Migrated from create_server.py to vm_bench.create_all()
+    """
     log(ctx, "Step 3: Creating VMs...")
 
     config = ctx.config
@@ -230,31 +247,102 @@ def create_vms(ctx: TestContext, os_env: Dict) -> bool:
     flavor = config["openstack"]["flavor"]
     image = config["openstack"]["image"]
 
-    # Calculate start IP number
-    if not start_ip.startswith(subnet_prefix):
-        raise ValueError(f"start_ip {start_ip} doesn't match subnet_prefix {subnet_prefix}")
+    # Import vm_bench module
+    try:
+        import threading
+
+        from vm_bench import Config, VMManager
+        from vm_bench.schemas import VMStatus
+    except ImportError as e:
+        log(ctx, f"ERROR: Failed to import vm_bench module: {e}")
+        # Fallback to old create_server.py
+        log(ctx, "Falling back to create_server.py...")
+        return create_vms_legacy(ctx, os_env)
+
+    # Build vm_bench config
+    vm_config = Config(
+        flavor=flavor,
+        image=image,
+        network_id=network_id,
+        availability_zone=az,
+        start_ip=start_ip,
+        subnet_prefix=subnet_prefix,
+        vm_prefix="test_openclaw",
+        total_count=vm_count,
+        create_timeout=1200,
+        create_only=True,  # Create only, don't benchmark
+        create_batch_size=20,
+        create_batch_interval=3,
+    )
+
+    stop_event = threading.Event()
+    vm_manager = VMManager(vm_config, stop_event)
+
+    log(ctx, f"Creating {vm_count} VMs via vm_bench module...")
+    log(ctx, f"  Flavor: {flavor}, Image: {image}")
+    log(ctx, f"  Start IP: {start_ip}, Network: {network_id}")
+
+    start_time = time.time()
+    vm_states = vm_manager.create_all()
+    elapsed = time.time() - start_time
+
+    # Count created VMs
+    ready_count = sum(1 for s in vm_states.values() if s.creation_metrics.status == VMStatus.ACTIVE)
+
+    log(ctx, f"VM creation completed: {ready_count}/{vm_count} in {elapsed:.1f}s")
+
+    if ready_count < vm_count * 0.7:
+        log(ctx, f"ERROR: Too few VMs created ({ready_count}/{vm_count})")
+        return False
+
+    # Parse created VM IPs
+    ctx.vm_ips = []
+    for i in range(vm_count):
+        ip = f"{subnet_prefix.rstrip('.')}.{int(start_ip.split('.')[-1]) + i}"
+        ctx.vm_ips.append(ip)
+
+    log(ctx, f"VM IPs: {ctx.vm_ips[:5]}... (total {len(ctx.vm_ips)})")
+    return True
+
+
+def create_vms_legacy(ctx: TestContext, os_env: Dict) -> bool:
+    """Legacy fallback: Create VMs using create_server.py"""
+    log(ctx, "Using legacy create_server.py...")
+
+    config = ctx.config
+    vm_count = config["vm"]["count"]
+    start_ip = config["vm"]["start_ip"]
+    subnet_prefix = config["openstack"]["subnet_prefix"]
+    network_id = config["openstack"]["network_id"]
+    az = config["openstack"]["az"]
+    flavor = config["openstack"]["flavor"]
+    image = config["openstack"]["image"]
 
     start_ip_num = int(start_ip.split(".")[-1])
 
-    # Build command
     cmd = [
-        "python3", "create_server.py",
-        "--start_ip", start_ip,
-        "--n", str(vm_count),
-        "--subnet-prefix", subnet_prefix,
-        "--network-id", network_id,
-        "--az", az,
-        "--flavor", flavor,
-        "--image", image
+        "python3",
+        "create_server.py",
+        "--start_ip",
+        start_ip,
+        "--n",
+        str(vm_count),
+        "--subnet-prefix",
+        subnet_prefix,
+        "--network-id",
+        network_id,
+        "--az",
+        az,
+        "--flavor",
+        flavor,
+        "--image",
+        image,
     ]
 
     log(ctx, f"Executing: {' '.join(cmd)}")
 
-    result = subprocess.run(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=1800
-    )
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=1800)
 
-    # Output result
     print(result.stdout)
     if result.stderr:
         print(result.stderr)
@@ -263,7 +351,6 @@ def create_vms(ctx: TestContext, os_env: Dict) -> bool:
         log(ctx, f"VM creation failed with return code {result.returncode}")
         return False
 
-    # Parse created VM IPs
     ctx.vm_ips = []
     for i in range(vm_count):
         ip = f"{subnet_prefix.rstrip('.')}.{start_ip_num + i}"
@@ -275,11 +362,11 @@ def create_vms(ctx: TestContext, os_env: Dict) -> bool:
 
 # ==================== Step 4: Start smap_tool ====================
 
+
 def get_qemu_pids(ctx: TestContext) -> Dict[str, int]:
     """Get QEMU process PIDs and map to VM IPs"""
     result = subprocess.run(
-        ["pidof", "qemu-kvm"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10
+        ["pidof", "qemu-kvm"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10
     )
 
     if result.returncode != 0 or not result.stdout.strip():
@@ -291,7 +378,7 @@ def get_qemu_pids(ctx: TestContext) -> Dict[str, int]:
 
     # Map PIDs to IPs (simplified: assume sequential order matches IP order)
     qemu_pids = {}
-    for i, pid in enumerate(pids[:len(ctx.vm_ips)]):
+    for i, pid in enumerate(pids[: len(ctx.vm_ips)]):
         if i < len(ctx.vm_ips):
             qemu_pids[ctx.vm_ips[i]] = int(pid)
 
@@ -334,14 +421,11 @@ def start_smap_tool(ctx: TestContext) -> bool:
     smap_stdout_path = os.path.join(smap_log_dir, "smap_stdout.log")
     smap_stderr_path = os.path.join(smap_log_dir, "smap_stderr.log")
 
-    ctx.smap_stdout = open(smap_stdout_path, 'w')
-    ctx.smap_stderr = open(smap_stderr_path, 'w')
+    ctx.smap_stdout = open(smap_stdout_path, "w")
+    ctx.smap_stderr = open(smap_stderr_path, "w")
 
     # Start smap_tool in background
-    proc = subprocess.Popen(
-        cmd, shell=True, cwd=smap_path,
-        stdout=ctx.smap_stdout, stderr=ctx.smap_stderr
-    )
+    proc = subprocess.Popen(cmd, shell=True, cwd=smap_path, stdout=ctx.smap_stdout, stderr=ctx.smap_stderr)
 
     ctx.smap_pid = proc.pid
     log(ctx, f"smap_tool started with PID {proc.pid}")
@@ -363,14 +447,14 @@ def start_smap_tool(ctx: TestContext) -> bool:
 
 # ==================== Step 5: Wait for VMs Ready ====================
 
+
 def check_vm_ready(ip: str, username: str, password: str, qemu_pid: int, cpu_threshold: int) -> Tuple[bool, str]:
     """Check if single VM is ready (SSH, openclaw gateway, CPU utilization)"""
     try:
         # SSH connection
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(hostname=ip, port=22, username=username, password=password,
-                    timeout=30, look_for_keys=False)
+        ssh.connect(hostname=ip, port=22, username=username, password=password, timeout=30, look_for_keys=False)
 
         # Check openclaw process
         stdin, stdout, stderr = ssh.exec_command("pgrep -f openclaw", timeout=10)
@@ -384,7 +468,7 @@ def check_vm_ready(ip: str, username: str, password: str, qemu_pid: int, cpu_thr
         stdin, stdout, stderr = ssh.exec_command("ss -tln | grep 18789", timeout=10)
         port_check = stdout.read().decode()
 
-        if '18789' not in port_check:
+        if "18789" not in port_check:
             ssh.close()
             return False, "port 18789 not listening"
 
@@ -460,8 +544,12 @@ def wait_vms_ready(ctx: TestContext) -> bool:
 
 # ==================== Step 6: Warmup Phase ====================
 
+
 def run_warmup(ctx: TestContext) -> bool:
-    """Run browser warmup phase"""
+    """Run browser warmup phase using vm_bench module
+
+    Migrated from vm_bench_lite.py to vm_bench.run_benchmark()
+    """
     log(ctx, "Step 6: Running warmup phase...")
 
     config = ctx.config
@@ -469,29 +557,79 @@ def run_warmup(ctx: TestContext) -> bool:
     start_ip = config["vm"]["start_ip"]
     warmup = config["warmup"]
 
-    # Build command
+    # Import vm_bench module
+    try:
+        from vm_bench import Config, run_benchmark
+    except ImportError as e:
+        log(ctx, f"ERROR: Failed to import vm_bench module: {e}")
+        # Fallback to old vm_bench_lite.py
+        log(ctx, "Falling back to vm_bench_lite.py...")
+        return run_warmup_legacy(ctx)
+
+    # Build vm_bench config for warmup
+    vm_config = Config(
+        start_ip=start_ip,
+        total_count=vm_count,
+        task_mode="browser",
+        warmup_only=True,  # Warmup phase only
+        warmup_urls=warmup["urls"],
+        warmup_loops=warmup["loops"],
+        warmup_delay=warmup["delay"],
+        task_batch_size=warmup["batch_size"],
+        task_batch_interval=warmup["batch_interval"],
+        ssh_username=config["vm"]["username"],
+        ssh_password=config["vm"]["password"],
+        output_dir=os.path.join(ctx.result_dir, "vm_bench_lite"),
+    )
+
+    log(ctx, "Running warmup via vm_bench module...")
+    log(ctx, f"  Warmup URLs: {len(warmup['urls'])} pages, {warmup['loops']} loops")
+    log(ctx, f"  Batch: {warmup['batch_size']} VMs/batch, {warmup['batch_interval']}s interval")
+
+    try:
+        result = run_benchmark(vm_config)
+        log(ctx, f"Warmup completed: {result.get('report', 'N/A')[:100]}")
+        return True
+    except Exception as e:
+        log(ctx, f"Warmup failed: {e}")
+        return False
+
+
+def run_warmup_legacy(ctx: TestContext) -> bool:
+    """Legacy fallback: Run warmup using vm_bench_lite.py"""
+    log(ctx, "Using legacy vm_bench_lite.py...")
+
+    config = ctx.config
+    vm_count = config["vm"]["count"]
+    start_ip = config["vm"]["start_ip"]
+    warmup = config["warmup"]
+
     cmd = [
-        "python", "vm_bench_lite.py",
-        "-n", str(vm_count),
-        "--start-ip", start_ip,
+        "python",
+        "vm_bench_lite.py",
+        "-n",
+        str(vm_count),
+        "--start-ip",
+        start_ip,
         "--browser-mode",
         "-wp",  # Warmup phase
-        "--batch-size", str(warmup["batch_size"]),
-        "--batch-interval", str(warmup["batch_interval"]),
-        "--warmup-loops", str(warmup["loops"]),
-        "--warmup-delay", str(warmup["delay"])
+        "--batch-size",
+        str(warmup["batch_size"]),
+        "--batch-interval",
+        str(warmup["batch_interval"]),
+        "--warmup-loops",
+        str(warmup["loops"]),
+        "--warmup-delay",
+        str(warmup["delay"]),
     ]
 
-    # Add warmup URLs
     for url in warmup["urls"]:
         cmd.extend(["--warmup-url", url])
 
-    log(ctx, f"Executing warmup command...")
+    log(ctx, "Executing warmup command...")
     log(ctx, f"Command: {' '.join(cmd[:10])}...")
 
-    result = subprocess.run(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=1800
-    )
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=1800)
 
     print(result.stdout)
     if result.stderr:
@@ -503,6 +641,7 @@ def run_warmup(ctx: TestContext) -> bool:
 
     # Move warmup_summary to test result directory
     import shutil
+
     warmup_summaries = Path("results").glob("warmup_summary_*.txt")
     for summary in warmup_summaries:
         dest = os.path.join(ctx.result_dir, "vm_bench_lite", summary.name)
@@ -542,13 +681,20 @@ def start_monitor(ctx: TestContext) -> bool:
     # Use --stress-file + -t duration: monitor waits for lock file, then runs for duration
     # This ensures: 1) no idle sampling before benchmark, 2) natural stop after duration, 3) Excel generated
     cmd = [
-        "python3", "vm_monitor.py",
-        "--vmm", vmm_type,
-        "-t", str(duration),
-        "-i", str(interval),
-        "--log-dir", log_dir,
-        "--numa", numa_nodes,
-        "--stress-file", BENCHMARK_LOCK_FILE
+        "python3",
+        "vm_monitor.py",
+        "--vmm",
+        vmm_type,
+        "-t",
+        str(duration),
+        "-i",
+        str(interval),
+        "--log-dir",
+        log_dir,
+        "--numa",
+        numa_nodes,
+        "--stress-file",
+        BENCHMARK_LOCK_FILE,
     ]
 
     if monitor["enable_capture"]:
@@ -565,8 +711,8 @@ def start_monitor(ctx: TestContext) -> bool:
     monitor_stderr_log = os.path.join(log_dir, "monitor_stderr.log")
 
     # Open files and keep them open while process runs
-    stdout_f = open(monitor_stdout_log, 'w')
-    stderr_f = open(monitor_stderr_log, 'w')
+    stdout_f = open(monitor_stdout_log, "w")
+    stderr_f = open(monitor_stderr_log, "w")
 
     proc = subprocess.Popen(cmd, stdout=stdout_f, stderr=stderr_f)
 
@@ -585,14 +731,18 @@ def start_monitor(ctx: TestContext) -> bool:
     # If failed to start, close files
     stdout_f.close()
     stderr_f.close()
-    log(ctx, f"Monitor failed to start")
+    log(ctx, "Monitor failed to start")
     return False
 
 
 # ==================== Step 8: Benchmark Phase ====================
 
+
 def run_benchmark(ctx: TestContext) -> bool:
-    """Run browser benchmark phase"""
+    """Run browser benchmark phase using vm_bench module
+
+    Migrated from vm_bench_lite.py to vm_bench.run_benchmark()
+    """
     log(ctx, "Step 8: Running benchmark phase...")
 
     config = ctx.config
@@ -605,30 +755,93 @@ def run_benchmark(ctx: TestContext) -> bool:
     log(ctx, f"Created lock file: {BENCHMARK_LOCK_FILE}")
     log(ctx, "Monitor will now start sampling (aligned with benchmark)")
 
-    # Build command
+    # Import vm_bench module
+    try:
+        from vm_bench import Config, run_benchmark
+    except ImportError as e:
+        log(ctx, f"ERROR: Failed to import vm_bench module: {e}")
+        # Fallback to old vm_bench_lite.py
+        log(ctx, "Falling back to vm_bench_lite.py...")
+        return run_benchmark_legacy(ctx)
+
+    # Build vm_bench config for benchmark
+    vm_config = Config(
+        start_ip=start_ip,
+        total_count=vm_count,
+        task_mode="browser",
+        benchmark_percent=test["active_percent"],
+        test_duration=test["duration"],
+        browser_urls=[test["browser_url"]],
+        browser_timeout=200,
+        browser_interval_min=test["browser_interval_min"],
+        browser_interval_max=test["browser_interval_max"],
+        task_batch_size=test["batch_size"],
+        task_batch_interval=test["batch_interval"],
+        ssh_username=config["vm"]["username"],
+        ssh_password=config["vm"]["password"],
+        output_dir=os.path.join(ctx.result_dir, "vm_bench_lite"),
+    )
+
+    log(ctx, "Running benchmark via vm_bench module...")
+    log(ctx, f"  Active percent: {test['active_percent']}")
+    log(ctx, f"  Duration: {test['duration']}s")
+    log(ctx, f"  Browser URL: {test['browser_url']}")
+    log(ctx, f"  Batch: {test['batch_size']} VMs/batch, {test['batch_interval']}s interval")
+
+    try:
+        result = run_benchmark(vm_config)
+        log(ctx, "Benchmark completed, monitor will stop after duration and generate Excel")
+
+        # Move benchmark report if exists
+        if result.get("filepath"):
+            log(ctx, f"Report saved: {result['filepath']}")
+
+        return True
+    except Exception as e:
+        log(ctx, f"Benchmark failed: {e}")
+        return False
+
+
+def run_benchmark_legacy(ctx: TestContext) -> bool:
+    """Legacy fallback: Run benchmark using vm_bench_lite.py"""
+    log(ctx, "Using legacy vm_bench_lite.py...")
+
+    config = ctx.config
+    vm_count = config["vm"]["count"]
+    start_ip = config["vm"]["start_ip"]
+    test = config["test"]
+
     cmd = [
-        "python", "vm_bench_lite.py",
-        "-n", str(vm_count),
-        "--start-ip", start_ip,
+        "python",
+        "vm_bench_lite.py",
+        "-n",
+        str(vm_count),
+        "--start-ip",
+        start_ip,
         "--browser-mode",
-        "-bsp", str(test["active_percent"]),  # Browser stress percent
-        "--batch-size", str(test["batch_size"]),
-        "--batch-interval", str(test["batch_interval"]),
-        "--browser-url", test["browser_url"],
-        "--browser-interval-min", str(test["browser_interval_min"]),
-        "--browser-interval-max", str(test["browser_interval_max"]),
-        "-t", str(test["duration"])
+        "-bsp",
+        str(test["active_percent"]),
+        "--batch-size",
+        str(test["batch_size"]),
+        "--batch-interval",
+        str(test["batch_interval"]),
+        "--browser-url",
+        test["browser_url"],
+        "--browser-interval-min",
+        str(test["browser_interval_min"]),
+        "--browser-interval-max",
+        str(test["browser_interval_max"]),
+        "-t",
+        str(test["duration"]),
     ]
 
-    log(ctx, f"Executing benchmark command...")
+    log(ctx, "Executing benchmark command...")
     log(ctx, f"Command: {' '.join(cmd)}")
 
     result = subprocess.run(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=test["duration"] + 300
     )
 
-    # Note: Do NOT remove lock file here. Monitor uses duration to stop naturally.
-    # This ensures Excel report is generated properly.
     log(ctx, "Benchmark completed, monitor will stop after duration and generate Excel")
 
     print(result.stdout)
@@ -640,10 +853,10 @@ def run_benchmark(ctx: TestContext) -> bool:
         return False
 
     # Move benchmark report to result directory
-    # vm_bench_lite saves reports to results/ directory
     bench_reports = Path("results").glob("bench_report_*.txt")
     for report in bench_reports:
         import shutil
+
         dest = os.path.join(ctx.result_dir, "vm_bench_lite", report.name)
         shutil.move(str(report), dest)
         log(ctx, f"Benchmark report moved: {report.name}")
@@ -653,6 +866,7 @@ def run_benchmark(ctx: TestContext) -> bool:
 
 
 # ==================== Step 9: Stop Monitor and Collect Results ====================
+
 
 def wait_for_ksys_parse_completion(ctx: TestContext, timeout: int = 600) -> bool:
     """Wait for ksys to complete data parsing phase
@@ -682,7 +896,7 @@ def wait_for_ksys_parse_completion(ctx: TestContext, timeout: int = 600) -> bool
 
     while time.time() - start_time < timeout:
         try:
-            with open(ksys_log_path, "r", encoding="utf-8", errors="ignore") as f:
+            with open(ksys_log_path, encoding="utf-8", errors="ignore") as f:
                 content = f.read()
 
             # Monitor file size growth as progress indicator
@@ -719,14 +933,20 @@ def wait_for_ksys_parse_completion(ctx: TestContext, timeout: int = 600) -> bool
             # Progress logging every 30s
             if elapsed % 30 == 0 and elapsed > 0:
                 size_kb = current_size / 1024
-                log(ctx, f"ksys parse in progress... {elapsed}s/{timeout}s ({elapsed_ratio*100:.0f}%), log size: {size_kb:.1f}KB")
+                log(
+                    ctx,
+                    f"ksys parse in progress... {elapsed}s/{timeout}s ({elapsed_ratio * 100:.0f}%), log size: {size_kb:.1f}KB",
+                )
 
             # Warning at threshold points
             for i, threshold in enumerate(warning_thresholds):
                 if elapsed_ratio >= threshold and not warnings_given[i]:
                     warnings_given[i] = True
                     remaining = int(timeout - elapsed)
-                    log(ctx, f"WARNING: ksys parse approaching timeout ({threshold*100:.0f}% used), {remaining}s remaining")
+                    log(
+                        ctx,
+                        f"WARNING: ksys parse approaching timeout ({threshold * 100:.0f}% used), {remaining}s remaining",
+                    )
                     if threshold >= 0.75:
                         log(ctx, "  Consider increasing 'ksys_parse_timeout' in config for large VM counts")
 
@@ -746,7 +966,7 @@ def wait_for_ksys_parse_completion(ctx: TestContext, timeout: int = 600) -> bool
     log(ctx, "    - Increase 'ksys_parse_timeout' in config (current: {timeout}s)")
     log(ctx, "    - Reduce monitor sampling interval in config")
     log(ctx, "    - Check ksys.log for parse progress")
-    log(ctx, f"    - Current ksys.log size: {os.path.getsize(ksys_log_path)/1024:.1f}KB")
+    log(ctx, f"    - Current ksys.log size: {os.path.getsize(ksys_log_path) / 1024:.1f}KB")
     return False
 
 
@@ -844,11 +1064,12 @@ def collect_results(ctx: TestContext):
             "vm_count": ctx.config["vm"]["count"],
             "ratio": ctx.config["smap_tool"]["ratio"],
             "active_percent": ctx.config["test"]["active_percent"],
-        }
+        },
     }
 
     # Save summary JSON
     import json
+
     summary_path = os.path.join(ctx.result_dir, "summary", "metrics_summary.json")
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
@@ -857,6 +1078,7 @@ def collect_results(ctx: TestContext):
 
 
 # ==================== Step 10: Cleanup ====================
+
 
 def cleanup(ctx: TestContext, os_env: Dict):
     """Cleanup: stop smap_tool, delete VMs"""
@@ -896,6 +1118,7 @@ def cleanup(ctx: TestContext, os_env: Dict):
 
 # ==================== Main ====================
 
+
 def main():
     parser = argparse.ArgumentParser(description="Multi-VM Agent Automation Test")
     parser.add_argument("--config", required=True, help="Config YAML file path")
@@ -910,12 +1133,7 @@ def main():
     log_file = os.path.join(result_dir, "test_log.txt")
 
     # Initialize context
-    ctx = TestContext(
-        config=config,
-        result_dir=result_dir,
-        log_file=log_file,
-        start_time=time.time()
-    )
+    ctx = TestContext(config=config, result_dir=result_dir, log_file=log_file, start_time=time.time())
 
     # Create log file
     Path(log_file).touch()
@@ -991,6 +1209,7 @@ def main():
     except Exception as e:
         log(ctx, f"ERROR: {e}")
         import traceback
+
         log(ctx, traceback.format_exc())
         success = False
         cleanup(ctx, os_env)

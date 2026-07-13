@@ -101,13 +101,13 @@ from typing import Dict, List, Optional, Tuple
 ```python
 class VMMonitorBase(ABC):
     """Abstract base class for Virtual Machine Monitor implementations
-    
+
     Provides:
     - System-level monitoring (NUMA, hugepage, host CPU/mem, swap)
     - Process cache management
     - Generic sampling loop and display infrastructure
     - Export/analysis infrastructure
-    
+
     Subclasses must implement:
     - get_vms_realtime(): VMM-specific process discovery
     - get_process_names(): Return process names to match
@@ -116,7 +116,7 @@ class VMMonitorBase(ABC):
     - get_no_vm_message(): Return message when no VMs detected
     - get_csv_filename_prefix(): Return prefix for CSV filenames
     """
-    
+
     def __init__(self):
         """Initialize monitor with empty data containers"""
         # Core state
@@ -124,14 +124,14 @@ class VMMonitorBase(ABC):
         self.data = []
         self.stop_event = threading.Event()
         self.process_cache = {}
-        
+
         # NUMA memory tracking
         self.numa_memory_history = []
-        
+
         # VM tracking peaks
         self.peak_total_memory_mb = 0.0
         self.peak_total_cpu = 0.0
-        
+
         # Hugepage tracking
         self.hugepage_total_mb = 0.0
         self.hugepage_free_mb = 0.0
@@ -140,17 +140,17 @@ class VMMonitorBase(ABC):
         self.peak_hugepage_used_mb = 0.0
         self.hugepage_per_numa = {}
         self.hugepage_per_numa_history = []
-        
+
         # Host machine tracking
         self.host_cpu_history = []
         self.host_mem_history = []
         self.peak_host_cpu = 0.0
         self.peak_host_mem_mb = 0.0
-        
+
         # Swap tracking
         self.swap_history = []
         self.peak_swap_used_mb = 0.0
-        
+
         # NUMA CPU tracking
         self.target_numa_nodes = [0]
         self.numa_cpu_history = defaultdict(list)
@@ -177,46 +177,46 @@ class VMMonitorBase(ABC):
 
 ```python
     # ==================== Abstract Methods ====================
-    
+
     @abstractmethod
     def get_vms_realtime(self) -> List[Dict]:
         """Discover and collect stats for running VMs
-        
+
         Returns:
             List of dicts with keys: pid, name, cpu_percent, memory_mb,
-            memory_huge_mb, memory_private_mb, memory_heap_mb, 
+            memory_huge_mb, memory_private_mb, memory_heap_mb,
             memory_per_numa, status
         """
         pass
-    
+
     @abstractmethod
     def get_process_names(self) -> Tuple[str, ...]:
         """Return tuple of process names to match"""
         pass
-    
+
     @abstractmethod
     def extract_vm_id(self, pid: int, cmdline: str) -> str:
         """Extract VM/Sandbox ID from process info
-        
+
         Args:
             pid: Process ID
             cmdline: Full command line string
-            
+
         Returns:
             VM/Sandbox ID string
         """
         pass
-    
+
     @abstractmethod
     def get_monitor_title(self) -> str:
         """Return title string for monitoring display"""
         pass
-    
+
     @abstractmethod
     def get_no_vm_message(self) -> str:
         """Return message when no VMs are detected"""
         pass
-    
+
     @abstractmethod
     def get_csv_filename_prefix(self) -> str:
         """Return prefix for CSV output filenames"""
@@ -248,7 +248,7 @@ def collect_sample(self):
 
 # display_realtime_table() 修改
 def display_realtime_table(self, sample_data, elapsed_time, duration, check_method=""):
-    # ... 
+    # ...
     print(f"{self.get_monitor_title()} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
     # ...
     if not sample_data:
@@ -302,24 +302,24 @@ from .base import VMMonitorBase
 ```python
 class QEMUMonitor(VMMonitorBase):
     """QEMU Virtual Machine Monitor
-    
+
     Monitors qemu-kvm and qemu-system processes.
     """
-    
+
     # Process names to match
     PROCESS_NAMES = ('qemu-kvm', 'qemu-system')
-    
+
     def get_process_names(self) -> Tuple[str, ...]:
         """Return QEMU process names to match"""
         return self.PROCESS_NAMES
-    
+
     def extract_vm_id(self, pid: int, cmdline: str) -> str:
         """Extract VM name from -name parameter
-        
+
         Args:
             pid: Process ID
             cmdline: Full command line string
-            
+
         Returns:
             VM name string (e.g., 'vm-123' or parsed name)
         """
@@ -340,22 +340,22 @@ def get_vms_realtime(self) -> List[Dict]:
     current_pids = set()
     current_total_mem = 0.0
     current_total_cpu = 0.0
-    
+
     process_names = self.get_process_names()
-    
+
     for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'status']):
         try:
             proc_name = proc.info['name'] or ''
             if not any(name in proc_name for name in process_names):
                 continue
-            
+
             pid = proc.info['pid']
             current_pids.add(pid)
             cmdline = ' '.join(proc.info['cmdline'] or [])
-            
+
             # Extract VM ID using subclass method
             vm_name = self.extract_vm_id(pid, cmdline)
-            
+
             # Memory via numastat
             numastat_mem = self.get_vm_memory_from_numastat(pid)
             memory_mb = numastat_mem.get('total_mb', 0.0)
@@ -363,7 +363,7 @@ def get_vms_realtime(self) -> List[Dict]:
             memory_private_mb = numastat_mem.get('private_mb', 0.0)
             memory_heap_mb = numastat_mem.get('heap_mb', 0.0)
             memory_per_numa = numastat_mem.get('per_node', {})
-            
+
             # Fallback to psutil if numastat fails
             if memory_mb <= 0:
                 try:
@@ -372,9 +372,9 @@ def get_vms_realtime(self) -> List[Dict]:
                 except:
                     mem_info = proc.memory_info()
                     memory_mb = round(mem_info.rss / 1024 / 1024, 2)
-            
+
             current_total_mem += memory_mb
-            
+
             # CPU stats with caching
             if pid not in self.process_cache:
                 try:
@@ -391,10 +391,10 @@ def get_vms_realtime(self) -> List[Dict]:
                 except psutil.NoSuchProcess:
                     self.process_cache.pop(pid, None)
                     cpu = 0.0
-            
+
             cpu = round(max(0, min(cpu, 10000)), 2)
             current_total_cpu += cpu
-            
+
             vms.append({
                 'pid': pid,
                 'name': vm_name,
@@ -408,18 +408,18 @@ def get_vms_realtime(self) -> List[Dict]:
             })
         except:
             continue
-    
+
     # Update peaks
     if current_total_mem > self.peak_total_memory_mb:
         self.peak_total_memory_mb = current_total_mem
     if current_total_cpu > self.peak_total_cpu:
         self.peak_total_cpu = current_total_cpu
-    
+
     # Clean dead processes from cache
     dead_pids = [p for p in self.process_cache if p not in current_pids]
     for p in dead_pids:
         self.process_cache.pop(p, None)
-    
+
     return vms
 ```
 
@@ -466,27 +466,27 @@ from .base import VMMonitorBase
 ```python
 class FirecrackerMonitor(VMMonitorBase):
     """Firecracker microVM Monitor
-    
+
     Monitors firecracker processes.
     """
-    
+
     # Process names to match
     PROCESS_NAMES = ('firecracker',)
-    
+
     def get_process_names(self) -> Tuple[str, ...]:
         """Return Firecracker process names to match"""
         return self.PROCESS_NAMES
-    
+
     def extract_vm_id(self, pid: int, cmdline: str) -> str:
         """Extract Sandbox ID from Firecracker process
-        
+
         Simple implementation: use PID as fallback.
         Can be extended to parse --id or --api-sock path.
-        
+
         Args:
             pid: Process ID
             cmdline: Full command line string
-            
+
         Returns:
             Sandbox ID string (e.g., 'fc-123')
         """
@@ -505,22 +505,22 @@ def get_vms_realtime(self) -> List[Dict]:
     current_pids = set()
     current_total_mem = 0.0
     current_total_cpu = 0.0
-    
+
     process_names = self.get_process_names()
-    
+
     for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'status']):
         try:
             proc_name = proc.info['name'] or ''
             if not any(name in proc_name for name in process_names):
                 continue
-            
+
             pid = proc.info['pid']
             current_pids.add(pid)
             cmdline = ' '.join(proc.info['cmdline'] or [])
-            
+
             # Extract Sandbox ID
             sandbox_id = self.extract_vm_id(pid, cmdline)
-            
+
             # Memory via numastat
             numastat_mem = self.get_vm_memory_from_numastat(pid)
             memory_mb = numastat_mem.get('total_mb', 0.0)
@@ -528,7 +528,7 @@ def get_vms_realtime(self) -> List[Dict]:
             memory_private_mb = numastat_mem.get('private_mb', 0.0)
             memory_heap_mb = numastat_mem.get('heap_mb', 0.0)
             memory_per_numa = numastat_mem.get('per_node', {})
-            
+
             # Fallback to psutil
             if memory_mb <= 0:
                 try:
@@ -537,9 +537,9 @@ def get_vms_realtime(self) -> List[Dict]:
                 except:
                     mem_info = proc.memory_info()
                     memory_mb = round(mem_info.rss / 1024 / 1024, 2)
-            
+
             current_total_mem += memory_mb
-            
+
             # CPU stats with caching
             if pid not in self.process_cache:
                 try:
@@ -556,10 +556,10 @@ def get_vms_realtime(self) -> List[Dict]:
                 except psutil.NoSuchProcess:
                     self.process_cache.pop(pid, None)
                     cpu = 0.0
-            
+
             cpu = round(max(0, min(cpu, 10000)), 2)
             current_total_cpu += cpu
-            
+
             vms.append({
                 'pid': pid,
                 'name': sandbox_id,
@@ -573,18 +573,18 @@ def get_vms_realtime(self) -> List[Dict]:
             })
         except:
             continue
-    
+
     # Update peaks
     if current_total_mem > self.peak_total_memory_mb:
         self.peak_total_memory_mb = current_total_mem
     if current_total_cpu > self.peak_total_cpu:
         self.peak_total_cpu = current_total_cpu
-    
+
     # Clean cache
     dead_pids = [p for p in self.process_cache if p not in current_pids]
     for p in dead_pids:
         self.process_cache.pop(p, None)
-    
+
     return vms
 ```
 
@@ -650,7 +650,7 @@ if TYPE_CHECKING:
 def export_to_excel(monitor: 'VMMonitorBase', log_dir: str, numa_nodes: list = None,
                     output_file: str = None, capture_results: dict = None) -> str:
     """Export all monitoring and parsed log data to Excel
-    
+
     Args:
         monitor: VMMonitorBase instance (QEMUMonitor or FirecrackerMonitor)
         ...
@@ -809,7 +809,7 @@ def main():
     -> Monitor Firecracker microVMs
         """
     )
-    
+
     # VMM type selection
     parser.add_argument(
         '--vmm',
@@ -818,7 +818,7 @@ def main():
         default='qemu',
         help='VMM type to monitor (default: qemu)'
     )
-    
+
     # Other arguments (same as original)
     sync = parser.add_mutually_exclusive_group()
     sync.add_argument('--stress-process', type=str, help='Stress process name')
