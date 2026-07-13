@@ -95,7 +95,7 @@ def load_turns(session_path):
             elif ctype == "toolCall":
                 tool_calls.append(
                     {
-                        "id": c.get("id") or "chatcmpl-tool-%d" % len(turns),
+                        "id": c.get("id") or f"chatcmpl-tool-{len(turns)}",
                         "type": "function",
                         "function": {
                             "name": c.get("name", ""),
@@ -112,7 +112,7 @@ def load_turns(session_path):
                 "tool_calls": tool_calls,
                 "llm_duration_ms": max(0, int(llm_duration)),
                 "model": m.get("model", "GLM-4.7-W8A8"),
-                "response_id": m.get("responseId") or "chatcmpl-fake-%d" % len(turns),
+                "response_id": m.get("responseId") or f"chatcmpl-fake-{len(turns)}",
                 "usage": usage,
                 "stop_reason": m.get("stopReason", "toolUse"),
                 "inner_ts_rel": (inner - first_ts) if inner is not None else None,
@@ -458,16 +458,15 @@ def main():
     sys.stderr.write("fake_llm - Fake LLM Service\n")
     sys.stderr.write("=" * 64 + "\n")
     sys.stderr.write(f"Session file     : {session_path}\n")
-    sys.stderr.write("Total turns      : %d\n" % len(turns))
-    sys.stderr.write("Total LLM time   : %.1fs\n" % (total_llm_ms / 1000.0))
-    sys.stderr.write("Avg per turn     : %.2fs\n" % (total_llm_ms / 1000.0 / len(turns)))
+    sys.stderr.write(f"Total turns      : {len(turns)}\n")
+    sys.stderr.write(f"Total LLM time   : {total_llm_ms / 1000.0:.1f}s\n")
+    sys.stderr.write(f"Avg per turn     : {total_llm_ms / 1000.0 / len(turns):.2f}s\n")
     sys.stderr.write(f"Time scaling     : {args.scale}\n")
     sys.stderr.write(
-        "Wait mode        : %s\n"
-        % ("Disabled (--no-sleep)" if args.no_sleep else "Enabled (simulating model call time)")
+        f"Wait mode        : {'Disabled (--no-sleep)' if args.no_sleep else 'Enabled (simulating model call time)'}\n"
     )
-    sys.stderr.write("Listen address   : http://%s:%d\n" % (args.host, args.port))
-    sys.stderr.write("OpenAI BaseURL   : http://%s:%d/v1\n" % (args.host, args.port))
+    sys.stderr.write(f"Listen address   : http://{args.host}:{args.port}\n")
+    sys.stderr.write(f"OpenAI BaseURL   : http://{args.host}:{args.port}/v1\n")
     sys.stderr.write("Model name       : {} (can be any value in openclaw config)\n".format(turns[0]["model"]))
     sys.stderr.write("-" * 64 + "\n")
     sys.stderr.write("Point openclaw model BaseURL to the address above.\n")
@@ -481,7 +480,7 @@ def main():
         with FakeLLMHandler.stats_lock:
             s = FakeLLMHandler.stats
         sys.stderr.write(
-            "[fake_llm] Stats: %d calls served, simulated LLM time %.1fs\n" % (s["calls"], s["llm_ms_slept"] / 1000.0)
+            f"[fake_llm] Stats: {s['calls']} calls served, simulated LLM time {s['llm_ms_slept'] / 1000.0:.1f}s\n"
         )
         server.shutdown()
 
