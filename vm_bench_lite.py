@@ -1614,6 +1614,13 @@ def run_benchmark(config: Config) -> dict:
 
 
 def main():
+    import warnings
+
+    warnings.warn(
+        "vm_bench_lite.py is deprecated. Use 'python -m vm_bench' instead. See docs/vm_bench-usage-guide.md",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     parser = argparse.ArgumentParser(description="VM Bench Lite v2")
     parser.add_argument("-n", "--vms", type=int, default=80, help="Total VM count")
     parser.add_argument("--stress-percent", type=float, default=0.5, help="Percentage of VMs to run stress_tool")

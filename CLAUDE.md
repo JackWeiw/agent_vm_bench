@@ -229,8 +229,11 @@ config/
 
 ## Known Issues / Limitations
 
-1. **smap_tool path hardcoded** - Should move to `.env` or config
-2. **Deprecated qemu_monitor.py** - Use `vm_monitor.py` instead
+1. **Deprecated scripts (marked in v0.2.0)**:
+   - `vm_bench_lite.py` → use `vm_bench/` package
+   - `create_server.py` → use `vm_bench --create-only`
+   - `qemu_monitor.py` and `qemu_monitor/` → use `vm_monitor`
+2. **smap_tool path hardcoded** - Should move to `.env` or config
 3. **No unit tests** - Core components lack test coverage
 4. **Versioned files** - `920x_ddr_latency_v*.py` should be consolidated
 5. **Working notes in root** - `findings.md`, `progress.md`, `task_plan.md` should move to `docs/`

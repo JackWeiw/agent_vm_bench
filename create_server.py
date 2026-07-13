@@ -175,6 +175,14 @@ def calc_stats(elapsed_list: list[float]) -> dict:
 
 
 def main():
+    import warnings
+
+    warnings.warn(
+        "create_server.py is deprecated. "
+        "Use 'python -m vm_bench --create-only' instead. See docs/vm_bench-usage-guide.md",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     parser = argparse.ArgumentParser(description="Batch create OpenStack VMs and statistics creation performance")
     parser.add_argument("--start_ip", default=None, help="Starting IP, e.g., 192.168.110.131")
     parser.add_argument("--n", type=int, default=1, help="Number of VMs to create")
