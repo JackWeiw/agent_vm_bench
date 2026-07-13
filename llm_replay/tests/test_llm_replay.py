@@ -258,9 +258,7 @@ class TestPrebuilt(unittest.TestCase):
         self.turn = Turn(
             index=0,
             text="Hello world",
-            tool_calls=[
-                ToolCall(id="tool-001", name="browser_open", arguments='{"url": "https://example.com"}')
-            ],
+            tool_calls=[ToolCall(id="tool-001", name="browser_open", arguments='{"url": "https://example.com"}')],
             llm_duration_ms=5000,
             model="GLM-4.7-W8A8",
             response_id="chatcmpl-001",

@@ -14,6 +14,7 @@ from typing import Optional, List, Dict, Any
 @dataclass
 class ToolCall:
     """A single tool call within a turn."""
+
     id: str
     name: str
     arguments: str  # JSON-encoded arguments
@@ -37,6 +38,7 @@ class Turn:
 
     Contains all information needed to reconstruct an OpenAI-compatible response.
     """
+
     index: int
     text: Optional[str] = None
     tool_calls: List[ToolCall] = field(default_factory=list)
@@ -79,6 +81,7 @@ class SessionMetadata:
 
     Provides summary information and validation results.
     """
+
     name: str
     path: str
     total_turns: int = 0
@@ -113,6 +116,7 @@ class PrebuiltTurn:
 
     Contains pre-serialized JSON bytes for fast response.
     """
+
     turn: Turn
 
     # Pre-built JSON responses (bytes for zero-copy)
@@ -130,6 +134,7 @@ class PrebuiltSession:
 
     Contains all turns with pre-serialized responses for maximum performance.
     """
+
     metadata: SessionMetadata
     turns: List[PrebuiltTurn] = field(default_factory=list)
 
@@ -159,6 +164,7 @@ class RequestStats:
 
     Used for tracking performance metrics.
     """
+
     timestamp: datetime
     session_name: str
     turn_index: int
@@ -176,6 +182,7 @@ class ConnectionStats:
 
     Tracks the progress and performance of one agent connection.
     """
+
     connection_id: str
     session_name: str
     current_turn: int = 0

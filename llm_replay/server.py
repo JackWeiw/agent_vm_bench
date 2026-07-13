@@ -99,9 +99,7 @@ class FakeLLMServer:
 
         await self._site.start()
 
-        logger.info(
-            f"Server started on http://{self.config.server.host}:{self.config.server.port}"
-        )
+        logger.info(f"Server started on http://{self.config.server.host}:{self.config.server.port}")
         logger.info(f"Loaded sessions: {self.session_pool.list_session_names()}")
         logger.info(f"OpenAI BaseURL: http://{self.config.server.host}:{self.config.server.port}/v1")
 
@@ -180,21 +178,25 @@ class FakeLLMServer:
         for session_name in self.session_pool.list_session_names():
             session = self.session_pool.get_session(session_name)
             if session:
-                models.append({
-                    "id": session_name,
-                    "object": "model",
-                    "owned_by": "llm-replay",
-                    "created": int(time.time()),
-                    "metadata": {
-                        "total_turns": len(session),
-                        "total_tool_calls": session.metadata.total_tool_calls,
-                    },
-                })
+                models.append(
+                    {
+                        "id": session_name,
+                        "object": "model",
+                        "owned_by": "llm-replay",
+                        "created": int(time.time()),
+                        "metadata": {
+                            "total_turns": len(session),
+                            "total_tool_calls": session.metadata.total_tool_calls,
+                        },
+                    }
+                )
 
-        return web.json_response({
-            "object": "list",
-            "data": models,
-        })
+        return web.json_response(
+            {
+                "object": "list",
+                "data": models,
+            }
+        )
 
     async def _handle_sessions(self, request: web.Request) -> web.Response:
         """Handle /v1/sessions requests (list available sessions)."""
@@ -202,20 +204,24 @@ class FakeLLMServer:
         for session_name in self.session_pool.list_session_names():
             session = self.session_pool.get_session(session_name)
             if session:
-                sessions.append({
-                    "name": session_name,
-                    "total_turns": len(session),
-                    "total_tool_calls": session.metadata.total_tool_calls,
-                    "total_llm_time_s": session.metadata.total_llm_time_ms / 1000,
-                    "unique_tools": session.metadata.unique_tools,
-                    "model": session.metadata.model,
-                    "is_valid": session.metadata.is_valid,
-                })
+                sessions.append(
+                    {
+                        "name": session_name,
+                        "total_turns": len(session),
+                        "total_tool_calls": session.metadata.total_tool_calls,
+                        "total_llm_time_s": session.metadata.total_llm_time_ms / 1000,
+                        "unique_tools": session.metadata.unique_tools,
+                        "model": session.metadata.model,
+                        "is_valid": session.metadata.is_valid,
+                    }
+                )
 
-        return web.json_response({
-            "sessions": sessions,
-            "total": len(sessions),
-        })
+        return web.json_response(
+            {
+                "sessions": sessions,
+                "total": len(sessions),
+            }
+        )
 
     async def _handle_metrics(self, request: web.Request) -> web.Response:
         """Handle /metrics requests (Prometheus-style)."""
@@ -239,7 +245,7 @@ class FakeLLMServer:
         lines.append(f"llm_replay_llm_time_seconds {summary['total_llm_time_s']}")
 
         for name, s in summary.get("sessions", {}).items():
-            lines.append(f"llm_replay_session_requests_total{{session=\"{name}\"}} {s['total_requests']}")
+            lines.append(f'llm_replay_session_requests_total{{session="{name}"}} {s["total_requests"]}')
 
         return web.Response(text="\n".join(lines) + "\n", content_type="text/plain")
 
@@ -292,10 +298,7 @@ class FakeLLMServer:
 
         # Infer turn index from assistant message count
         # This is the robust method that works regardless of retry/connection state
-        assistant_count = sum(
-            1 for m in messages
-            if isinstance(m, dict) and m.get("role") == "assistant"
-        )
+        assistant_count = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant")
         turn_index = assistant_count
 
         # Get the pre-built turn
@@ -303,10 +306,7 @@ class FakeLLMServer:
 
         if prebuilt_turn is None:
             # Out of range - return empty stop response
-            logger.warning(
-                f"Turn {turn_index} out of range for session '{session_name}' "
-                f"(max {len(session) - 1})"
-            )
+            logger.warning(f"Turn {turn_index} out of range for session '{session_name}' (max {len(session) - 1})")
 
             # Record stats
             if self.stats_collector:

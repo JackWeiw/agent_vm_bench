@@ -291,10 +291,7 @@ def parse_session(path: str, parser_type: Optional[str] = None) -> SessionMetada
 
     # Select parser
     if parser_type and parser_type != "auto":
-        parser_cls = next(
-            (p for p in PARSER_REGISTRY if p.format_name() == parser_type),
-            None
-        )
+        parser_cls = next((p for p in PARSER_REGISTRY if p.format_name() == parser_type), None)
         if not parser_cls:
             raise ValueError(f"Unknown parser type: {parser_type}")
     else:

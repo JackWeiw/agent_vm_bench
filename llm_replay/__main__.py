@@ -35,10 +35,12 @@ def setup_logging(config: Config):
     # Console handler
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setLevel(level)
-    console_handler.setFormatter(logging.Formatter(
-        config.logging.format,
-        config.logging.date_format,
-    ))
+    console_handler.setFormatter(
+        logging.Formatter(
+            config.logging.format,
+            config.logging.date_format,
+        )
+    )
     root_logger.addHandler(console_handler)
 
     # File handler (optional)
@@ -46,10 +48,12 @@ def setup_logging(config: Config):
         try:
             file_handler = logging.FileHandler(config.logging.file_path)
             file_handler.setLevel(level)
-            file_handler.setFormatter(logging.Formatter(
-                config.logging.format,
-                config.logging.date_format,
-            ))
+            file_handler.setFormatter(
+                logging.Formatter(
+                    config.logging.format,
+                    config.logging.date_format,
+                )
+            )
             root_logger.addHandler(file_handler)
         except Exception as e:
             logging.warning(f"Failed to open log file: {e}")
@@ -66,9 +70,11 @@ def print_banner(config: Config, session_pool: SessionPool):
     for name in session_pool.list_session_names():
         session = session_pool.get_session(name)
         if session:
-            print(f"  - {name}: {len(session)} turns, "
-                  f"{session.metadata.total_tool_calls} tool_calls, "
-                  f"{session.metadata.total_llm_time_ms / 1000:.1f}s LLM time")
+            print(
+                f"  - {name}: {len(session)} turns, "
+                f"{session.metadata.total_tool_calls} tool_calls, "
+                f"{session.metadata.total_llm_time_ms / 1000:.1f}s LLM time"
+            )
 
     print(f"Total Turns:        {session_pool.get_total_turns()}")
     print(f"Total Tool Calls:   {session_pool.get_total_tool_calls()}")

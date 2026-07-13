@@ -77,39 +77,74 @@ def _build_openai_stream_chunks(
     chunks: List[Dict[str, Any]] = []
 
     # First chunk: role
-    chunks.append({
-        "id": response_id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": model,
-        "choices": [
-            {
-                "index": 0,
-                "delta": {"role": "assistant"},
-                "finish_reason": None,
-            }
-        ],
-    })
+    chunks.append(
+        {
+            "id": response_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant"},
+                    "finish_reason": None,
+                }
+            ],
+        }
+    )
 
     # Text content chunk
     if turn.text:
-        chunks.append({
-            "id": response_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": model,
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {"content": turn.text},
-                    "finish_reason": None,
-                }
-            ],
-        })
+        chunks.append(
+            {
+                "id": response_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": turn.text},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        )
 
     # Tool call chunks (each tool call is a separate chunk)
     for i, tc in enumerate(turn.tool_calls):
-        chunks.append({
+        chunks.append(
+            {
+                "id": response_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "index": i,
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.name,
+                                        "arguments": tc.arguments,
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        )
+
+    # Final chunk: finish_reason
+    chunks.append(
+        {
             "id": response_id,
             "object": "chat.completion.chunk",
             "created": created,
@@ -117,39 +152,12 @@ def _build_openai_stream_chunks(
             "choices": [
                 {
                     "index": 0,
-                    "delta": {
-                        "role": "assistant",
-                        "tool_calls": [
-                            {
-                                "index": i,
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.name,
-                                    "arguments": tc.arguments,
-                                },
-                            }
-                        ],
-                    },
-                    "finish_reason": None,
+                    "delta": {},
+                    "finish_reason": turn.finish_reason,
                 }
             ],
-        })
-
-    # Final chunk: finish_reason
-    chunks.append({
-        "id": response_id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": model,
-        "choices": [
-            {
-                "index": 0,
-                "delta": {},
-                "finish_reason": turn.finish_reason,
-            }
-        ],
-    })
+        }
+    )
 
     return chunks
 
@@ -171,10 +179,7 @@ def prebuild_turn(turn: Turn, default_model: Optional[str] = None) -> PrebuiltTu
 
     # Build streaming chunks
     chunks_dict = _build_openai_stream_chunks(turn, default_model)
-    chunks_json = [
-        json.dumps(chunk, ensure_ascii=False).encode("utf-8")
-        for chunk in chunks_dict
-    ]
+    chunks_json = [json.dumps(chunk, ensure_ascii=False).encode("utf-8") for chunk in chunks_dict]
 
     return PrebuiltTurn(
         turn=turn,
@@ -203,6 +208,7 @@ def prebuild_session(metadata: SessionMetadata) -> PrebuiltSession:
 
     # Use the correct parser
     from llm_replay.parser import auto_detect_parser
+
     parser_cls = auto_detect_parser(metadata.path)
     raw_turns = parser_cls.parse(metadata.path)
 

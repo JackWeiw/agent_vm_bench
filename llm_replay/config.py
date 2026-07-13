@@ -16,6 +16,7 @@ import yaml
 @dataclass
 class ServerConfig:
     """HTTP server configuration."""
+
     host: str = "0.0.0.0"
     port: int = 5199
     max_connections: int = 500
@@ -30,6 +31,7 @@ class ServerConfig:
 @dataclass
 class TimingConfig:
     """Timing simulation configuration."""
+
     scale: float = 1.0
     no_sleep: bool = False
     jitter: float = 0.0  # Random jitter in seconds
@@ -38,6 +40,7 @@ class TimingConfig:
 @dataclass
 class SessionsConfig:
     """Sessions loading configuration."""
+
     directory: str = "./sessions"
     parser_type: str = "auto"  # auto, browser-session, openai-session
 
@@ -48,6 +51,7 @@ class SessionsConfig:
 @dataclass
 class StatsConfig:
     """Statistics collection configuration."""
+
     enabled: bool = True
     export_dir: str = "./results/llm_replay"
     export_format: str = "excel"  # excel, json, both
@@ -58,6 +62,7 @@ class StatsConfig:
 @dataclass
 class LoggingConfig:
     """Logging configuration."""
+
     level: str = "INFO"
     format: str = "[%(asctime)s] [%(levelname)s] %(message)s"
     date_format: str = "%H:%M:%S"
@@ -74,6 +79,7 @@ class Config:
 
     Can be loaded from YAML file or constructed directly.
     """
+
     server: ServerConfig = field(default_factory=ServerConfig)
     timing: TimingConfig = field(default_factory=TimingConfig)
     sessions: SessionsConfig = field(default_factory=SessionsConfig)

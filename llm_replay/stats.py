@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Any
 try:
     from openpyxl import Workbook
     from openpyxl.styles import Font, Alignment, PatternFill
+
     HAS_OPENPYXL = True
 except ImportError:
     HAS_OPENPYXL = False
@@ -29,6 +30,7 @@ except ImportError:
 @dataclass
 class RequestRecord:
     """Record of a single request."""
+
     timestamp: str  # ISO format
     session_name: str
     turn_index: int
@@ -43,6 +45,7 @@ class RequestRecord:
 @dataclass
 class SessionStats:
     """Statistics for a single session."""
+
     name: str
     total_requests: int = 0
     turns_served: int = 0
@@ -57,6 +60,7 @@ class SessionStats:
 @dataclass
 class GlobalStats:
     """Global statistics across all sessions."""
+
     start_time: datetime
     sessions: Dict[str, SessionStats] = field(default_factory=dict)
 
@@ -192,8 +196,7 @@ class StatsCollector:
 
             if not is_out_of_range and not error:
                 session_stats.turns_served += 1
-                session_stats.turn_distribution[turn_index] = \
-                    session_stats.turn_distribution.get(turn_index, 0) + 1
+                session_stats.turn_distribution[turn_index] = session_stats.turn_distribution.get(turn_index, 0) + 1
 
             if is_out_of_range:
                 session_stats.out_of_range_requests += 1
@@ -305,17 +308,34 @@ class StatsCollector:
 
             # Requests sheet
             ws_requests = wb.create_sheet("Requests")
-            ws_requests.append([
-                "Timestamp", "Session", "Turn", "LLM Duration (ms)",
-                "Actual Delay (ms)", "Type", "Client", "Out of Range", "Error"
-            ])
+            ws_requests.append(
+                [
+                    "Timestamp",
+                    "Session",
+                    "Turn",
+                    "LLM Duration (ms)",
+                    "Actual Delay (ms)",
+                    "Type",
+                    "Client",
+                    "Out of Range",
+                    "Error",
+                ]
+            )
 
             for r in self.request_records:
-                ws_requests.append([
-                    r.timestamp, r.session_name, r.turn_index, r.llm_duration_ms,
-                    r.actual_delay_ms, r.response_type, r.client_id or "-",
-                    r.is_out_of_range, r.error or "-"
-                ])
+                ws_requests.append(
+                    [
+                        r.timestamp,
+                        r.session_name,
+                        r.turn_index,
+                        r.llm_duration_ms,
+                        r.actual_delay_ms,
+                        r.response_type,
+                        r.client_id or "-",
+                        r.is_out_of_range,
+                        r.error or "-",
+                    ]
+                )
 
             wb.save(filename)
 
