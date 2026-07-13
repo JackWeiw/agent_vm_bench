@@ -105,19 +105,41 @@ async def async_main(config: Config):
     # Load sessions
     session_pool = SessionPool()
 
-    # Resolve directory path relative to project root
+    # Resolve directory path relative to config file (if used) or cwd
     sessions_dir = Path(config.sessions.directory)
     if not sessions_dir.is_absolute():
-        # Try relative to current working directory first
-        cwd_sessions = Path.cwd() / sessions_dir
-        if cwd_sessions.exists():
-            sessions_dir = cwd_sessions
-        else:
-            # Try relative to package location
-            package_root = Path(__file__).parent.parent
-            pkg_sessions = package_root / sessions_dir
-            if pkg_sessions.exists():
-                sessions_dir = pkg_sessions
+        # Get the config file's directory if --config was used
+        import sys
+        config_dir = None
+        for i, arg in enumerate(sys.argv):
+            if arg == "--config" and i + 1 < len(sys.argv):
+                config_path = Path(sys.argv[i + 1])
+                if config_path.exists():
+                    config_dir = config_path.parent
+                break
+
+        # Try relative to config file directory first
+        if config_dir:
+            config_sessions = config_dir / sessions_dir
+            if config_sessions.exists():
+                sessions_dir = config_sessions
+            else:
+                # Try relative to config file's parent (project root style)
+                project_sessions = config_dir.parent / sessions_dir
+                if project_sessions.exists():
+                    sessions_dir = project_sessions
+
+        # Fallback: try relative to cwd
+        if not sessions_dir.exists():
+            cwd_sessions = Path.cwd() / sessions_dir
+            if cwd_sessions.exists():
+                sessions_dir = cwd_sessions
+            else:
+                # Try relative to package location
+                package_root = Path(__file__).parent
+                pkg_sessions = package_root / sessions_dir
+                if pkg_sessions.exists():
+                    sessions_dir = pkg_sessions
 
     config.sessions.directory = str(sessions_dir)
 
@@ -147,7 +169,8 @@ async def async_main(config: Config):
 
     if len(session_pool) == 0:
         logging.error("No sessions loaded. Check your sessions directory or file paths.")
-        logging.error(f"Sessions directory: {sessions_dir}")
+        logging.error(f"Sessions directory resolved to: {sessions_dir}")
+        logging.error(f"Directory exists: {sessions_dir.exists()}")
         if sessions_dir.exists():
             jsonl_files = list(sessions_dir.glob("*.jsonl"))
             logging.error(f"Found {len(jsonl_files)} .jsonl files in directory")
