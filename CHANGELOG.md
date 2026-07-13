@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-> **Current Version**: `0.2.0`  
+> **Current Version**: `0.2.0`
 > **Version Source**: [`version.py`](version.py)
 
 ## [0.2.0] - 2024-07-13
