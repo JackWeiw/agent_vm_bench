@@ -2,8 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
-> **Current Version**: `0.1.0-alpha`  
+> **Current Version**: `0.2.0`  
 > **Version Source**: [`version.py`](version.py)
+
+## [0.2.0] - 2024-07-13
+
+### Deprecated
+- `vm_bench_lite.py` - Use `python -m vm_bench` instead
+- `create_server.py` - Use `python -m vm_bench --create-only` instead
+- `qemu_monitor.py` and `qemu_monitor/` - Use `vm_monitor` instead (deprecated in v0.1.0)
+
+### Note
+Deprecated scripts remain functional in this release. Removal timeline will be announced in future versions.
+
+---
 
 ## [0.1.0-alpha] - 2024-06-27
 
@@ -47,8 +59,8 @@ This project follows [Semantic Versioning](https://semver.org/):
 
 | Version | Target | Description |
 |---------|--------|-------------|
-| `v0.1.0` | Now | Refactoring complete, unit tests added |
-| `v0.2.0` | Next | More integration tests, bug fixes |
+| `v0.1.0` | Past | Refactoring complete, unit tests added |
+| `v0.2.0` | Now | Mark legacy scripts as deprecated |
 | `v1.0.0` | Stable | First stable release, mark legacy deprecated |
 | `v2.0.0` | Future | Remove legacy scripts (`create_server.py`, `vm_bench_lite.py`) |
 
