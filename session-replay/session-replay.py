@@ -1,7 +1,47 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-fake_llm.py - OpenAI-compatible fake LLM service for replaying browser-session-3 call paths and timing.
+session-replay.py - DEPRECATED: Use llm_replay package instead.
+
+This file is kept for backward compatibility only.
+For new implementations, use:
+
+    python -m llm_replay --sessions-dir ./sessions --port 5199
+
+The new llm_replay package provides:
+  - High-performance async architecture (aiohttp)
+  - Multiple session support with session pool
+  - Pre-built responses for zero-copy serving
+  - YAML configuration support
+  - Statistics collection with Excel/JSON export
+  - Designed to handle 200+ concurrent connections
+
+Migration guide:
+  - Old: session-replay.py --session <file> --port 5199
+  - New: python -m llm_replay --sessions <file> --port 5199
+
+See: llm_replay/__main__.py for full CLI options.
+"""
+
+# DEPRECATED WARNING
+import sys
+import warnings
+
+warnings.warn(
+    "session-replay.py is deprecated. Use 'python -m llm_replay' instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+print("=" * 70)
+print("DEPRECATED: session-replay.py is deprecated.")
+print("Use the new llm_replay package instead:")
+print("  python -m llm_replay --sessions-dir ./sessions --port 5199")
+print("=" * 70)
+print()
+
+# Original implementation follows below (kept for reference)
+# ---------------------------------------------------------------------------
 
 How it works:
   1. Parse the browser-session-3 session file and extract all assistant messages in chronological order (99 total).
