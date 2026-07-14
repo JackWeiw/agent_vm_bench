@@ -199,15 +199,7 @@ def prebuild_session(metadata: SessionMetadata) -> PrebuiltSession:
     Returns:
         PrebuiltSession with all turns pre-serialized
     """
-    # Re-parse to get turns (metadata only contains summary)
-    # Note: In production, we'd pass turns directly to avoid re-parsing
-    # But for now, we re-parse for simplicity
-    turns = []
-    import importlib
-    import llm_replay.parser as parser_module
-
-    # Use the correct parser
-    from llm_replay.parser import auto_detect_parser
+    from .parser import auto_detect_parser
 
     parser_cls = auto_detect_parser(metadata.path)
     raw_turns = parser_cls.parse(metadata.path)

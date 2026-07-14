@@ -165,7 +165,7 @@ class BrowserSessionParser(SessionParser):
             # Calculate LLM duration
             outer_ts = _iso_to_ms(event.get("timestamp"))
             inner_ts = _iso_to_ms(msg.get("timestamp"))
-            llm_duration = (outer_ts - inner_ts) if (outer_ts and inner_ts) else 0
+            llm_duration = (outer_ts - inner_ts) if (outer_ts is not None and inner_ts is not None) else 0
 
             # Extract text content
             text_parts = []

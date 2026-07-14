@@ -228,8 +228,13 @@ def merge_cli_args(config: Config, **kwargs) -> Config:
         config.server.port = kwargs["port"]
 
     # Timing overrides
-    if "scale" in kwargs and kwargs["scale"]:
-        config.timing.scale = kwargs["scale"]
+    if "scale" in kwargs and kwargs["scale"] is not None:
+        # Validate and clamp scale to non-negative
+        scale = kwargs["scale"]
+        if scale < 0:
+            print(f"[Warning] --scale={scale} is negative, clamping to 0.0")
+            scale = 0.0
+        config.timing.scale = scale
     if "no_sleep" in kwargs and kwargs["no_sleep"]:
         config.timing.no_sleep = True
 

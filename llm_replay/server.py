@@ -121,8 +121,17 @@ class FakeLLMServer:
         """Middleware for request timing and stats."""
         start_time = time.time()
 
-        # Track connection
-        conn_id = f"{request.remote}:{request.transport.get_extra_info('socket').getsockname()[1]}"
+        # Track connection (handle None transport gracefully)
+        try:
+            if request.transport is not None:
+                socket = request.transport.get_extra_info("socket")
+                port = socket.getsockname()[1] if socket else 0
+                conn_id = f"{request.remote or 'unknown'}:{port}"
+            else:
+                conn_id = f"{request.remote or 'unknown'}:0"
+        except Exception:
+            conn_id = "unknown"
+
         self._active_connections.add(conn_id)
 
         if self.stats_collector:

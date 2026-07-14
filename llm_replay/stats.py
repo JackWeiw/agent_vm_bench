@@ -213,7 +213,9 @@ class StatsCollector:
     async def record_connection_close(self):
         """Record a connection close."""
         async with self._lock:
-            self.global_stats.active_connections -= 1
+            # Guard against negative counter (race condition safety)
+            if self.global_stats.active_connections > 0:
+                self.global_stats.active_connections -= 1
 
     def get_summary(self) -> Dict[str, Any]:
         """Get current summary (no lock needed for read)."""
