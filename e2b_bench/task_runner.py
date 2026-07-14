@@ -315,8 +315,8 @@ class TaskManager:
         benchmark_count = max(1, int(total_ready * self.config.benchmark_percent))
 
         if benchmark_count < total_ready:
-            # Select first N sandboxes for benchmark
-            benchmark_states = ready_states[:benchmark_count]
+            # Randomly select N sandboxes for benchmark
+            benchmark_states = random.sample(ready_states, benchmark_count)
             print(
                 f"\nBenchmark subset: {benchmark_count}/{total_ready} sandboxes ({self.config.benchmark_percent * 100:.0f}%)"
             )
