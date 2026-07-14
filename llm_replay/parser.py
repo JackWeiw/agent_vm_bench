@@ -120,8 +120,13 @@ class BrowserSessionParser(SessionParser):
                 if not first_line:
                     return False
                 obj = json.loads(first_line)
-                # Check for expected structure
-                return obj.get("type") == "message" and "message" in obj
+                # Check for expected structure - support multiple formats
+                # Format 1: type="message" with message field (original)
+                # Format 2: type="session" (openclaw format) - check for session structure
+                if obj.get("type") == "message" and "message" in obj:
+                    return True
+                # Check if file contains assistant messages
+                return obj.get("type") == "session"
         except (json.JSONDecodeError, IOError):
             return False
 
