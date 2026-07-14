@@ -428,6 +428,81 @@ See project documentation for integration with:
 - `docker_bench` - Docker container testing
 - `vm_bench_lite` - Browser automation benchmarking
 
+### OpenClaw Agent Configuration for E2B/Docker Bench
+
+To use llm_replay with OpenClaw Agent in E2B or Docker benchmarking, modify the `openclaw.json` configuration file:
+
+**Original (using real LLM):**
+
+```json
+{
+  "models": {
+    "providers": {
+      "vllm": {
+        "baseUrl": "http://192.168.110.10:9927/v1",
+        "apiKey": "your-api-key",
+        "api": "openai-completions",
+        "models": [{"id": "GLM-4.7-W8A8", ...}]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {"primary": "vllm/GLM-4.7-W8A8"}
+    }
+  }
+}
+```
+
+**Modified (using llm_replay):**
+
+```json
+{
+  "models": {
+    "providers": {
+      "llm-replay": {
+        "baseUrl": "http://<LLM_REPLAY_SERVER_IP>:5199/v1",
+        "apiKey": "dummy-key",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "browser-session-3",
+            "name": "browser-session-3",
+            "api": "openai-completions",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+            "contextWindow": 260000,
+            "maxTokens": 10000
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {"primary": "llm-replay/browser-session-3"}
+    }
+  }
+}
+```
+
+**Key configuration changes:**
+
+| Field | Real LLM | llm_replay |
+| ----- | -------- | ---------- |
+| `baseUrl` | Real LLM server | `http://<server>:5199/v1` |
+| `apiKey` | Valid API key | Any dummy value |
+| `model.id` | Real model name | Session filename (without `.jsonl`) |
+| `agents.defaults.model.primary` | `vllm/GLM-4.7-W8A8` | `llm-replay/browser-session-3` |
+
+**Important:**
+
+1. Replace `<LLM_REPLAY_SERVER_IP>` with the actual server IP address
+2. The `model.id` must match the session filename (without `.jsonl` extension)
+3. Ensure session files are complete (100+ turns for complex tasks)
+4. Multiple agents can use different sessions by specifying different model IDs
+
 ## Deprecated
 
 The old `session-replay/session-replay.py` is deprecated. Use this package instead.
