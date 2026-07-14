@@ -1,0 +1,66 @@
+# LLM Replay Server Configuration
+# High-performance session replay for agent benchmarking
+
+server:
+  # HTTP server settings
+  host: "0.0.0.0"
+  port: 5199
+
+  # Performance tuning for 200+ concurrent connections
+  max_connections: 500
+  request_timeout: 60
+  keep_alive_timeout: 30
+  tcp_nodelay: true
+  buffer_size: 65536
+
+sessions:
+  # Directory containing session .jsonl files
+  # Relative path is resolved from the config file's directory
+  # e.g., "../sessions" means sessions/ directory at project root
+  directory: "../sessions"
+
+  # Parser type: "auto" (detect format), "browser-session", "openai-session"
+  parser_type: "auto"
+
+  # Optional: Explicit list of sessions (overrides directory scan)
+  # explicit_sessions:
+  #   - "./sessions/browser-session-3.jsonl"
+  #   - "./sessions/qa-session-2.jsonl"
+
+timing:
+  # Time scaling: 1.0 = real speed, 0.1 = 10x faster (for debugging)
+  scale: 1.0
+
+  # Skip timing simulation entirely (for maximum speed debugging)
+  no_sleep: false
+
+  # Random jitter to simulate network latency (in seconds)
+  jitter: 0.0
+
+stats:
+  # Enable statistics collection
+  enabled: true
+
+  # Export directory for stats files
+  export_dir: "./results/llm_replay"
+
+  # Export format: "excel", "json", or "both"
+  export_format: "excel"
+
+  # Interval between batch writes (seconds)
+  batch_write_interval: 10
+
+  # Track per-connection statistics
+  per_connection_stats: true
+
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  level: "INFO"
+
+  # Log format
+  format: "[%(asctime)s] [%(levelname)s] %(message)s"
+  date_format: "%H:%M:%S"
+
+  # File logging (optional)
+  file_enabled: false
+  # file_path: "./logs/llm_replay.log"
