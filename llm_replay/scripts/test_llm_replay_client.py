@@ -91,11 +91,7 @@ def test_chat_completion(model: str, num_turns: int = 3):
         # If there are tool calls, add tool results
         if message.get("tool_calls"):
             for tc in message["tool_calls"]:
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": "Tool result placeholder"
-                })
+                messages.append({"role": "tool", "tool_call_id": tc["id"], "content": "Tool result placeholder"})
 
     print()
 

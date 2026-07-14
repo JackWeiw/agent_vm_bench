@@ -110,6 +110,7 @@ async def async_main(config: Config):
     if not sessions_dir.is_absolute():
         # Get the config file's directory if --config was used
         import sys
+
         config_dir = None
         for i, arg in enumerate(sys.argv):
             if arg == "--config" and i + 1 < len(sys.argv):
