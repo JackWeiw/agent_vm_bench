@@ -7,12 +7,13 @@ Tests for sandbox creation, detection, and ID file filtering
 import os
 import tempfile
 from threading import Event
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, call
 
 import pytest
 
 from e2b_bench.config import Config
 from e2b_bench.sandbox_manager import SandboxManager
+from e2b_bench.schemas import SandboxState, SandboxStatus
 
 
 class TestDetectFromFile:
@@ -176,3 +177,95 @@ class TestDetectFromFile:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestNumaBinding:
+    """Tests for NUMA binding during sandbox creation"""
+
+    def test_create_single_with_numa_bind(self):
+        """Sandbox.create is called with envs containing FC_BIND when numa_bind is set"""
+        config = Config(numa_bind=2)
+        stop_event = Event()
+        manager = SandboxManager(config, stop_event)
+
+        state = SandboxState(sandbox_id=1)
+
+        with patch("e2b_bench.sandbox_manager.Sandbox.create") as mock_create:
+            # Mock Sandbox.create to return a sandbox object
+            mock_sandbox = Mock()
+            mock_sandbox.sandbox_id = "test_sandbox"
+            mock_create.return_value = mock_sandbox
+
+            result = manager._create_single(state)
+
+            # Verify Sandbox.create was called with correct envs
+            mock_create.assert_called_once()
+            args, kwargs = mock_create.call_args
+
+            # Check envs parameter
+            assert "envs" in kwargs
+            assert kwargs["envs"] == {"FC_BIND": "2"}
+
+            # Verify result
+            assert result["success"] is True
+            assert state.sandbox_obj == mock_sandbox
+            assert state.creation_metrics.status == SandboxStatus.CREATED
+
+    def test_create_single_with_custom_numa_bind(self):
+        """Sandbox.create uses custom numa_bind value"""
+        config = Config(numa_bind=5)
+        stop_event = Event()
+        manager = SandboxManager(config, stop_event)
+
+        state = SandboxState(sandbox_id=1)
+
+        with patch("e2b_bench.sandbox_manager.Sandbox.create") as mock_create:
+            mock_sandbox = Mock()
+            mock_create.return_value = mock_sandbox
+
+            result = manager._create_single(state)
+
+            # Verify correct NUMA node is passed
+            args, kwargs = mock_create.call_args
+            assert kwargs["envs"] == {"FC_BIND": "5"}
+            assert result["success"] is True
+
+    def test_create_single_without_numa_bind(self):
+        """Sandbox.create is called without envs when numa_bind is None"""
+        config = Config(numa_bind=None)
+        stop_event = Event()
+        manager = SandboxManager(config, stop_event)
+
+        state = SandboxState(sandbox_id=1)
+
+        with patch("e2b_bench.sandbox_manager.Sandbox.create") as mock_create:
+            mock_sandbox = Mock()
+            mock_create.return_value = mock_sandbox
+
+            result = manager._create_single(state)
+
+            # Verify Sandbox.create was called with envs=None (or omitted)
+            mock_create.assert_called_once()
+            args, kwargs = mock_create.call_args
+
+            # envs should be None when numa_bind is None
+            assert kwargs.get("envs") is None or "envs" not in kwargs
+
+            assert result["success"] is True
+
+    def test_create_single_handles_exception(self):
+        """_create_single handles exceptions and returns error"""
+        config = Config(numa_bind=2)
+        stop_event = Event()
+        manager = SandboxManager(config, stop_event)
+
+        state = SandboxState(sandbox_id=1)
+
+        with patch("e2b_bench.sandbox_manager.Sandbox.create") as mock_create:
+            mock_create.side_effect = Exception("Connection failed")
+
+            result = manager._create_single(state)
+
+            assert result["success"] is False
+            assert "Connection failed" in result["error"]
+            assert state.creation_metrics.status == SandboxStatus.CREATING

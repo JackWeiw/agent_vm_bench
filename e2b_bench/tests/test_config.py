@@ -306,5 +306,154 @@ sandbox:
         assert config.sandbox_ids_file == "args_ids.txt"
 
 
+class TestConfigNumaBind:
+    """Tests for numa_bind configuration"""
+
+    def test_default_numa_bind(self):
+        """Default numa_bind is 2"""
+        config = Config()
+        assert config.numa_bind == 2
+
+    def test_set_via_constructor(self):
+        """Set numa_bind via constructor"""
+        config = Config(numa_bind=3)
+        assert config.numa_bind == 3
+
+    def test_set_null_via_constructor(self):
+        """Set numa_bind to None (disabled)"""
+        config = Config(numa_bind=None)
+        assert config.numa_bind is None
+
+    def test_load_from_yaml(self):
+        """Load numa_bind from YAML"""
+        yaml_content = """
+sandbox:
+  template: custom-template
+  numa_bind: 5
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.numa_bind == 5
+
+    def test_load_null_from_yaml(self):
+        """Load numa_bind as null from YAML (disabled)"""
+        yaml_content = """
+sandbox:
+  template: custom-template
+  numa_bind: null
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.numa_bind is None
+
+    def test_load_missing_numa_bind_defaults_to_2(self):
+        """Missing numa_bind in YAML defaults to 2"""
+        yaml_content = """
+sandbox:
+  template: custom-template
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.numa_bind == 2
+
+    def test_merge_with_args_uses_yaml_value(self):
+        """merge_with_args uses YAML value for numa_bind"""
+        yaml_content = """
+sandbox:
+  numa_bind: 4
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        import argparse
+
+        args = argparse.Namespace(
+            sandbox_ids_file=None,
+            e2b_access_token=None,
+            e2b_api_key=None,
+            e2b_domain=None,
+            e2b_api_url=None,
+            e2b_http_ssl=None,
+            template=None,
+            create_timeout=None,
+            total=None,
+            detect=False,
+            create_only=False,
+            create_batch_size=None,
+            create_batch_interval=None,
+            task_batch_size=None,
+            task_batch_interval=None,
+            browser_url=None,
+            browser_timeout=None,
+            browser_interval_min=None,
+            browser_interval_max=None,
+            warmup_url=None,
+            warmup_loops=None,
+            warmup_delay=None,
+            warmup_only=False,
+            benchmark_percent=None,
+            duration=None,
+            stats_interval=None,
+            output_dir=None,
+            filename_prefix=None,
+        )
+
+        config = Config.merge_with_args(yaml_config, args)
+        assert config.numa_bind == 4
+
+    def test_from_args_defaults_to_2(self):
+        """from_args defaults numa_bind to 2"""
+        import argparse
+
+        args = argparse.Namespace(
+            sandbox_ids_file=None,
+            e2b_access_token=None,
+            e2b_api_key=None,
+            e2b_domain=None,
+            e2b_api_url=None,
+            e2b_http_ssl=None,
+            template=None,
+            create_timeout=None,
+            total=None,
+            detect=False,
+            create_only=False,
+            create_batch_size=None,
+            create_batch_interval=None,
+            task_batch_size=None,
+            task_batch_interval=None,
+            browser_url=None,
+            browser_timeout=None,
+            browser_interval_min=None,
+            browser_interval_max=None,
+            warmup_url=None,
+            warmup_loops=None,
+            warmup_delay=None,
+            warmup_only=False,
+            benchmark_percent=None,
+            duration=None,
+            stats_interval=None,
+            output_dir=None,
+            filename_prefix=None,
+        )
+
+        config = Config.from_args(args)
+        assert config.numa_bind == 2
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
