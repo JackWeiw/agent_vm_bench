@@ -405,13 +405,9 @@ class SandboxManager:
             # Build envs dict with NUMA binding if configured
             envs = {}
             if self.config.numa_bind is not None:
-                envs['FC_BIND'] = str(self.config.numa_bind)
+                envs["FC_BIND"] = str(self.config.numa_bind)
 
-            sbx = Sandbox.create(
-                self.config.template,
-                timeout=self.config.create_timeout,
-                envs=envs if envs else None
-            )
+            sbx = Sandbox.create(self.config.template, timeout=self.config.create_timeout, envs=envs if envs else None)
             # Preserve sandbox handle
             state.sandbox_obj = sbx
             state.creation_metrics.create_ready_time = time.time()
