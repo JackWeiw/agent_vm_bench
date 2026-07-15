@@ -28,6 +28,9 @@ class Config:
     create_timeout: int = 86400
     total_count: int = 100
 
+    # NUMA binding for sandbox creation (None = no binding, int = bind to specific NUMA node)
+    numa_bind: Optional[int] = 2
+
     # Detect existing sandboxes mode
     detect_existing: bool = False  # Detect existing sandboxes instead of creating new ones
 
@@ -117,6 +120,7 @@ class Config:
             detect_existing=sandbox.get("detect_existing", False),
             create_only=sandbox.get("create_only", False),
             sandbox_ids_file=sandbox.get("sandbox_ids_file", None),
+            numa_bind=sandbox.get("numa_bind", 2),
             create_batch_size=create_batch.get("size") if create_batch else None,
             create_batch_interval=create_batch.get("interval") if create_batch else None,
             task_batch_size=task_batch.get("size") if task_batch else None,
@@ -168,6 +172,7 @@ class Config:
             if hasattr(args, "create_only") and args.create_only
             else yaml_config.create_only,
             sandbox_ids_file=args.sandbox_ids_file if args.sandbox_ids_file else yaml_config.sandbox_ids_file,
+            numa_bind=yaml_config.numa_bind,  # Use yaml config for numa_bind
             create_batch_size=args.create_batch_size
             if args.create_batch_size is not None
             else yaml_config.create_batch_size,
@@ -230,6 +235,7 @@ class Config:
             detect_existing=args.detect if hasattr(args, "detect") and args.detect else False,
             create_only=args.create_only if hasattr(args, "create_only") and args.create_only else False,
             sandbox_ids_file=args.sandbox_ids_file if args.sandbox_ids_file else None,
+            numa_bind=2,  # Default to NUMA node 2 when using CLI args only
             create_batch_size=args.create_batch_size,
             create_batch_interval=args.create_batch_interval,
             task_batch_size=args.task_batch_size,

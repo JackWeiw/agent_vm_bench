@@ -18,7 +18,7 @@ except ImportError:
     # Mock for development/testing without E2B SDK
     class Sandbox:
         @staticmethod
-        def create(template, timeout=86400):
+        def create(template, timeout=86400, envs=None):  # noqa: ARG001 - envs unused in mock
             class MockSandbox:
                 sandbox_id = "mock_sandbox_id"
 
@@ -402,7 +402,12 @@ class SandboxManager:
         state.creation_metrics.submit_time = time.time()
 
         try:
-            sbx = Sandbox.create(self.config.template, timeout=self.config.create_timeout)
+            # Build envs dict with NUMA binding if configured
+            envs = {}
+            if self.config.numa_bind is not None:
+                envs["FC_BIND"] = str(self.config.numa_bind)
+
+            sbx = Sandbox.create(self.config.template, timeout=self.config.create_timeout, envs=envs if envs else None)
             # Preserve sandbox handle
             state.sandbox_obj = sbx
             state.creation_metrics.create_ready_time = time.time()
