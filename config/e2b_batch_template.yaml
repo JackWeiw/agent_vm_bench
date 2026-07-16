@@ -8,6 +8,21 @@ e2b_env:
   E2B_API_URL: "http://localhost:3000"
   E2B_HTTP_SSL: "false"
 
+# Task mode: "browser" (default) or "llm"
+task_mode: "browser"
+
+# LLM benchmark configuration (only used when task_mode: "llm")
+llm:
+  enabled: false
+  endpoint: "http://192.168.1.10:5199/v1"
+  model: "browser-scenario-1"
+  timeout: 600
+  request_timeout: 30
+  health_check: true
+  scenario_file: ""
+  interval_min: 5.0
+  interval_max: 15.0
+
 sandbox:
   template: "openclaw-browser-v1"
   create_timeout: 86400

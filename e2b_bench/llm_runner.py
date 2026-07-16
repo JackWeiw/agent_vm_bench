@@ -1,0 +1,232 @@
+"""
+LLM Scenario Runner Module
+
+Executes LLM scenarios by triggering OpenClaw agent in sandbox via Gateway HTTP API.
+Each sandbox runs scenarios in a loop with configurable intervals.
+"""
+
+import random
+import threading
+import time
+from typing import Tuple
+
+from .config import Config
+from .schemas import SandboxState, SandboxStatus
+
+
+class LLMScenarioRunner(threading.Thread):
+    """LLM scenario runner (one independent thread per sandbox)"""
+
+    def __init__(
+        self,
+        state: SandboxState,
+        config: Config,
+        prompt: str,
+        stop_event: threading.Event,
+    ):
+        super().__init__(daemon=True)
+        self.state = state
+        self.config = config
+        self.prompt = prompt
+        self.stop_event = stop_event
+        self.consecutive_errors = 0
+
+    def run(self) -> None:
+        """Scenario execution main loop"""
+        # Wait for sandbox PORT_READY
+        while not self.stop_event.is_set():
+            if self.state.creation_metrics.status == SandboxStatus.PORT_READY:
+                break
+            if self.state.creation_metrics.status in (
+                SandboxStatus.FAILED,
+                SandboxStatus.PORT_FAILED,
+                SandboxStatus.OFFLINE,
+                SandboxStatus.KILLED,
+            ):
+                print(
+                    f"[Sandbox{self.state.sandbox_id}] Cannot start LLM scenarios: "
+                    f"{self.state.creation_metrics.status.value}"
+                )
+                return
+            time.sleep(0.5)
+
+        # Scenario execution loop
+        while not self.stop_event.is_set():
+            if not self.state.is_alive:
+                print(f"[Sandbox{self.state.sandbox_id}] Sandbox offline, stopping LLM scenarios")
+                break
+
+            # Execute single scenario
+            success, latency = self._execute_scenario()
+
+            # Update metrics
+            timeout = latency > self.config.llm.timeout
+            self.state.llm_metrics.add_result(latency, success and not timeout, timeout)
+            self.state.last_task_time = time.time()
+
+            # Error handling: mark offline after 3 consecutive failures
+            if success and not timeout:
+                self.consecutive_errors = 0
+            else:
+                self.consecutive_errors += 1
+                if self.consecutive_errors >= 3:
+                    self.state.is_alive = False
+                    print(f"[Sandbox{self.state.sandbox_id}] Marked offline (3 consecutive failures)")
+                    break
+
+            # Random interval between scenarios
+            sleep_time = random.uniform(
+                self.config.llm.interval_min,
+                self.config.llm.interval_max,
+            )
+            time.sleep(sleep_time)
+
+        print(f"[Sandbox{self.state.sandbox_id}] LLM scenario runner ended")
+
+    def _execute_scenario(self) -> Tuple[bool, float]:
+        """
+        Execute single scenario via Gateway HTTP API.
+
+        Returns: (success, latency_seconds)
+        """
+        sbx = self.state.sandbox_obj
+        if not sbx:
+            return False, 0.0
+
+        # Get E2B sandbox_id for logging
+        e2b_sandbox_id = sbx.sandbox_id if hasattr(sbx, "sandbox_id") else "N/A"
+
+        start_time = time.perf_counter()
+        try:
+            # Build and execute Gateway HTTP request
+            cmd = self._build_gateway_request()
+            result = sbx.commands.run(cmd, timeout=self.config.llm.timeout + 30, user="root")
+            elapsed = time.perf_counter() - start_time
+
+            success = result.exit_code == 0
+
+            if not success:
+                error_detail = f"exit_code={result.exit_code}"
+                if result.stderr:
+                    error_detail += f", stderr={result.stderr[:200]}"
+                if result.stdout:
+                    error_detail += f", stdout={result.stdout[:200]}"
+                print(f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Scenario failed: {error_detail}")
+                self.state.llm_metrics.last_error = error_detail
+
+            return success, elapsed
+
+        except Exception as e:
+            elapsed = time.perf_counter() - start_time
+            error_msg = str(e)
+            print(f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Scenario exception: {error_msg}")
+            self.state.llm_metrics.last_error = error_msg
+            return False, elapsed
+
+    def _build_gateway_request(self) -> str:
+        """
+        Build Gateway HTTP request command.
+
+        Uses OpenAI-compatible /v1/chat/completions endpoint.
+        Gateway is on 127.0.0.1:18789 inside sandbox.
+        """
+        # Escape prompt for shell
+        escaped = self.prompt.replace("'", "'\\''")
+
+        # Gateway HTTP request via curl
+        # - OpenAI-compatible endpoint: /v1/chat/completions
+        # - Fixed Authorization token: test-token-123
+        # - Model: scenario name from config
+        cmd = (
+            f"curl -s -o /dev/null -w '%{{time_total}}' "
+            f"-X POST http://127.0.0.1:18789/v1/chat/completions "
+            f"-H 'Authorization: Bearer test-token-123' "
+            f"-H 'Content-Type: application/json' "
+            f'-d \'{{"model":"{self.config.llm.model}",'
+            f'"messages":[{{"role":"user","content":"{escaped}"}}]}}\' '
+            f"--max-time {self.config.llm.request_timeout}"
+        )
+        return cmd
+
+
+class LLMTaskManager:
+    """LLM task manager - manages all sandbox scenario execution threads"""
+
+    def __init__(
+        self,
+        config: Config,
+        sandbox_states: dict,
+        prompt: str,
+        stop_event: threading.Event,
+    ):
+        self.config = config
+        self.sandbox_states = sandbox_states
+        self.prompt = prompt
+        self.stop_event = stop_event
+        self.runners: list = []
+
+    def start_all(self) -> None:
+        """Start scenario execution threads for PORT_READY sandboxes"""
+        # Filter PORT_READY sandboxes that have completed warmup (or no warmup needed)
+        ready_states = [
+            s
+            for s in self.sandbox_states.values()
+            if s.creation_metrics.status == SandboxStatus.PORT_READY and s.warmup_done
+        ]
+
+        if not ready_states:
+            print("No sandboxes ready for LLM scenario execution")
+            return
+
+        # Select subset based on benchmark_percent
+        total_ready = len(ready_states)
+        benchmark_count = max(1, int(total_ready * self.config.benchmark_percent))
+
+        if benchmark_count < total_ready:
+            benchmark_states = random.sample(ready_states, benchmark_count)
+            print(
+                f"\nBenchmark subset: {benchmark_count}/{total_ready} sandboxes "
+                f"({self.config.benchmark_percent * 100:.0f}%)"
+            )
+        else:
+            benchmark_states = ready_states
+
+        # Start scenario runners
+        print(f"\n{'=' * 60}")
+        print("LLM Scenario Execution Start")
+        print(f"  Total: {len(benchmark_states)} sandboxes")
+        print(f"  Scenario: {self.config.llm.model}")
+        print(f"{'=' * 60}")
+
+        for state in benchmark_states:
+            runner = LLMScenarioRunner(state, self.config, self.prompt, self.stop_event)
+            self.runners.append(runner)
+            runner.start()
+
+        print(f"\nStarted {len(self.runners)} LLM scenario runners")
+
+    def wait_all(self, timeout: float = 5.0) -> None:
+        """Wait for all scenario threads to end"""
+        for runner in self.runners:
+            runner.join(timeout=timeout)
+
+
+def check_mockllm_health(endpoint: str, timeout: int = 5) -> bool:
+    """
+    Check if MockLLM service is healthy.
+
+    Args:
+        endpoint: MockLLM service base URL
+        timeout: Request timeout in seconds
+
+    Returns:
+        True if service is healthy, False otherwise
+    """
+    import requests
+
+    try:
+        url = f"{endpoint.rstrip('/')}/health"
+        resp = requests.get(url, timeout=timeout)
+        return resp.status_code == 200
+    except Exception:
+        return False
