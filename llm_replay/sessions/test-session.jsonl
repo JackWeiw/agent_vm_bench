@@ -1,0 +1,1 @@
+{"type": "message", "timestamp": "2024-01-01T00:00:05Z", "message": {"role": "assistant", "timestamp": "2024-01-01T00:00:00Z", "model": "test-model", "content": [{"type": "text", "text": "Hello"}], "stopReason": "endTurn", "responseId": "chatcmpl-001", "usage": {"input": 100, "output": 50, "total": 150}}}

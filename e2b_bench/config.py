@@ -13,6 +13,21 @@ import yaml
 
 
 @dataclass
+class LLMConfig:
+    """LLM benchmark configuration"""
+
+    enabled: bool = False  # Enable LLM benchmark mode
+    endpoint: str = ""  # MockLLM service address (e.g., "http://192.168.1.10:5199/v1")
+    model: str = ""  # Session/scenario name (e.g., "browser-scenario-1")
+    timeout: int = 600  # Scenario-level timeout (seconds)
+    request_timeout: int = 30  # Single HTTP request timeout (seconds)
+    health_check: bool = True  # Check MockLLM service health before starting
+    scenario_file: str = ""  # scenarios.yaml path (optional, default: llm_replay/config/scenarios.yaml)
+    interval_min: float = 5.0  # Scenario execution interval minimum (seconds)
+    interval_max: float = 15.0  # Scenario execution interval maximum (seconds)
+
+
+@dataclass
 class Config:
     """Test configuration"""
 
@@ -22,6 +37,12 @@ class Config:
     e2b_domain: str = "e2b.app"
     e2b_api_url: str = "http://localhost:3000"
     e2b_http_ssl: str = "false"
+
+    # Task mode: "browser" | "llm"
+    task_mode: str = "browser"
+
+    # LLM benchmark configuration
+    llm: LLMConfig = field(default_factory=LLMConfig)
 
     # Sandbox configuration
     template: str = "openclaw-browser-v1"
@@ -107,6 +128,7 @@ class Config:
         report = data.get("report", {})
         smap_tool = data.get("smap_tool", {})
         vm_monitor = data.get("vm_monitor", {})
+        llm = data.get("llm", {})
 
         return cls(
             e2b_access_token=e2b_env.get("E2B_ACCESS_TOKEN", ""),
@@ -153,6 +175,20 @@ class Config:
             vm_monitor_numa=vm_monitor.get("numa", "1"),
             vm_monitor_log_dir=vm_monitor.get("log_dir", "results/e2b/vm_monitor"),
             vm_monitor_stress_file=vm_monitor.get("stress_file", "/dev/shm/e2b_benchmark_lock"),
+            # Task mode
+            task_mode=data.get("task_mode", "browser"),
+            # LLM configuration
+            llm=LLMConfig(
+                enabled=llm.get("enabled", False),
+                endpoint=llm.get("endpoint", ""),
+                model=llm.get("model", ""),
+                timeout=llm.get("timeout", 600),
+                request_timeout=llm.get("request_timeout", 30),
+                health_check=llm.get("health_check", True),
+                scenario_file=llm.get("scenario_file", ""),
+                interval_min=llm.get("interval_min", 5.0),
+                interval_max=llm.get("interval_max", 15.0),
+            ),
         )
 
     @classmethod
@@ -218,6 +254,9 @@ class Config:
             vm_monitor_numa=yaml_config.vm_monitor_numa,
             vm_monitor_log_dir=yaml_config.vm_monitor_log_dir,
             vm_monitor_stress_file=yaml_config.vm_monitor_stress_file,
+            # Task mode and LLM config
+            task_mode=getattr(args, "task_mode", yaml_config.task_mode),
+            llm=yaml_config.llm,
         )
 
     @classmethod
@@ -266,6 +305,9 @@ class Config:
             vm_monitor_numa="1",
             vm_monitor_log_dir="results/e2b/vm_monitor",
             vm_monitor_stress_file="/dev/shm/e2b_benchmark_lock",
+            # Task mode and LLM config
+            task_mode=getattr(args, "task_mode", "browser"),
+            llm=LLMConfig(),
         )
 
     def setup_e2b_env(self) -> None:

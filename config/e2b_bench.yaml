@@ -9,6 +9,21 @@ e2b_env:
   E2B_API_URL: "http://localhost:3000"
   E2B_HTTP_SSL: "false"
 
+# Task mode: "browser" (default) or "llm"
+task_mode: "browser"
+
+# LLM benchmark configuration (only used when task_mode: "llm")
+llm:
+  enabled: false                          # Enable LLM benchmark mode
+  endpoint: "http://192.168.1.10:5199/v1" # MockLLM service address
+  model: "browser-scenario-1"             # Scenario name (matches session filename)
+  timeout: 600                             # Scenario-level timeout (seconds)
+  request_timeout: 30                      # Single HTTP request timeout (seconds)
+  health_check: true                       # Check MockLLM health before starting
+  scenario_file: ""                        # scenarios.yaml path (empty = default path)
+  interval_min: 5.0                        # Scenario execution interval min (seconds)
+  interval_max: 15.0                       # Scenario execution interval max (seconds)
+
 # Sandbox configuration
 sandbox:
   template: "openclaw-browser-v1"    # E2B template name (used for creation)
