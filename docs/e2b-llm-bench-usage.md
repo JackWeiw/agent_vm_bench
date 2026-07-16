@@ -5,16 +5,112 @@ This guide explains how to use the LLM benchmark feature in e2b_bench.
 ## Overview
 
 The LLM benchmark mode allows you to:
-1. Create E2B sandboxes with OpenClaw agent pre-installed
-2. Configure OpenClaw to use MockLLM service as LLM endpoint
-3. Execute predefined scenarios by sending prompts via Gateway HTTP API
-4. Collect performance metrics (latency, success rate, P99, etc.)
+1. Create E2B sandboxes with OpenClaw agent pre-configured to use MockLLM
+2. Execute predefined scenarios by sending prompts via Gateway HTTP API
+3. Collect performance metrics (latency, success rate, P99, etc.)
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  e2b_bench (Control Plane)                                      │
+│  - Health check MockLLM service                                 │
+│  - Load scenario config (scenarios.yaml)                        │
+│  - Trigger scenario execution via Gateway                       │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                    Gateway HTTP Request
+                    (OpenAI-compatible API)
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Sandbox (OpenClaw Agent)                                        │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  openclaw.json (Pre-configured in template)               │  │
+│  │  {                                                         │  │
+│  │    "models": {                                             │  │
+│  │      "providers": {                                        │  │
+│  │        "llm-replay": {                                     │  │
+│  │          "baseUrl": "http://<MOCKLLM_IP>:5199/v1",        │  │
+│  │          "models": [{"id": "browser-scenario-1"}]         │  │
+│  │        }                                                   │  │
+│  │      }                                                     │  │
+│  │    }                                                       │  │
+│  │  }                                                         │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                │                                 │
+│                    Agent -> MockLLM Request                      │
+│                                │                                 │
+└────────────────────────────────┼────────────────────────────────┘
+                                 │
+                                 ▼
+                 ┌───────────────────────────────────┐
+                 │  MockLLM Service (llm_replay)     │
+                 │  - /v1/chat/completions           │
+                 │  - Session-based replay           │
+                 └───────────────────────────────────┘
+```
+
+**Important**: The MockLLM endpoint must be pre-configured in the sandbox template's `openclaw.json`. The `llm.endpoint` in e2b_bench.yaml is only used for health checking, not for configuring the agent.
 
 ## Prerequisites
 
 1. **MockLLM Service**: Must be running before starting the benchmark
 2. **Session Files**: JSONL files in `llm_replay/sessions/` directory
 3. **Scenario Config**: `llm_replay/config/scenarios.yaml` defining prompts
+4. **Sandbox Template**: Must have `openclaw.json` pre-configured to use MockLLM endpoint
+
+## Sandbox Template Configuration
+
+The sandbox template must have OpenClaw configured to use MockLLM as the LLM provider. This is done in the `openclaw.json` file inside the sandbox.
+
+### Example openclaw.json Configuration
+
+```json
+{
+  "models": {
+    "providers": {
+      "llm-replay": {
+        "baseUrl": "http://192.168.1.10:5199/v1",
+        "apiKey": "dummy-key",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "browser-scenario-1",
+            "name": "browser-scenario-1",
+            "api": "openai-completions",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+            "contextWindow": 260000,
+            "maxTokens": 10000
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {"primary": "llm-replay/browser-scenario-1"}
+    }
+  }
+}
+```
+
+### Key Configuration Fields
+
+| Field | Value | Description |
+|-------|-------|-------------|
+| `baseUrl` | `http://<MOCKLLM_IP>:5199/v1` | MockLLM service address (must be reachable from sandbox) |
+| `apiKey` | `dummy-key` | Any value (MockLLM doesn't validate) |
+| `models[].id` | `browser-scenario-1` | Must match session filename (without .jsonl) |
+| `agents.defaults.model.primary` | `llm-replay/browser-scenario-1` | Default model for agent |
+
+### Network Considerations
+
+- The `baseUrl` must be reachable from inside the sandbox
+- Use the host's IP address (not `localhost` or `127.0.0.1`)
+- Ensure firewall allows connections on port 5199
 
 ## Quick Start
 
@@ -49,14 +145,16 @@ task_mode: "llm"
 # LLM configuration
 llm:
   enabled: true
-  endpoint: "http://192.168.1.10:5199/v1"  # MockLLM service address
-  model: "browser-scenario-1"               # Scenario name
+  endpoint: "http://192.168.1.10:5199/v1"  # MockLLM service address (for health check)
+  model: "browser-scenario-1"               # Scenario name (must match openclaw.json model)
   timeout: 600                               # Scenario timeout (seconds)
   request_timeout: 30                        # HTTP request timeout (seconds)
   health_check: true                         # Check MockLLM health before starting
   interval_min: 5.0                          # Min interval between scenarios
   interval_max: 15.0                         # Max interval between scenarios
 ```
+
+**Note**: The `endpoint` field is used for health checking only. The actual LLM endpoint used by the agent is configured in the sandbox template's `openclaw.json`.
 
 ### 4. Run Benchmark
 
@@ -75,14 +173,16 @@ python -m e2b_bench --task-mode llm --total 10 --duration 300
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | false | Enable LLM benchmark mode |
-| `endpoint` | str | "" | MockLLM service base URL |
-| `model` | str | "" | Scenario/session name |
+| `endpoint` | str | "" | MockLLM service base URL (for health check only) |
+| `model` | str | "" | Scenario/session name (must match openclaw.json) |
 | `timeout` | int | 600 | Scenario-level timeout (seconds) |
 | `request_timeout` | int | 30 | Single HTTP request timeout (seconds) |
 | `health_check` | bool | true | Check MockLLM health before starting |
 | `scenario_file` | str | "" | Custom scenarios.yaml path |
 | `interval_min` | float | 5.0 | Min interval between scenarios (seconds) |
 | `interval_max` | float | 15.0 | Max interval between scenarios (seconds) |
+
+**Note**: The `endpoint` is used for health checking the MockLLM service before starting the benchmark. The actual LLM endpoint used by the agent must be configured in the sandbox template's `openclaw.json` file.
 
 ## How It Works
 
