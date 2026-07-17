@@ -30,6 +30,9 @@ from .schemas import SandboxStatus
 from .stats_collector import StatsCollector
 from .task_runner import TaskManager
 
+# Warmup wave size constant - max sandboxes per wave in warmup-only mode
+WARMUP_WAVE_SIZE = 100
+
 
 class SmapToolManager:
     """Manage smap_tool process lifecycle for memory migration monitoring"""
