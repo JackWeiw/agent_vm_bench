@@ -606,12 +606,7 @@ def run_benchmark(config: Config) -> dict:
         print(f"\n[Phase 5] Configuring OpenClaw to use MockLLM...")
         print(f"  Endpoint: {config.llm.endpoint}")
         print(f"  Model: {config.llm.model}")
-        configured = OpenClawConfig.configure_all(
-            sandbox_states,
-            config.llm.endpoint,
-            config.llm.model,
-            timeout=30
-        )
+        configured = OpenClawConfig.configure_all(sandbox_states, config.llm.endpoint, config.llm.model, timeout=30)
         if configured == 0:
             print("ERROR: Failed to configure any sandbox with MockLLM endpoint")
             return {"report": "Failed to configure OpenClaw", "filepath": None}

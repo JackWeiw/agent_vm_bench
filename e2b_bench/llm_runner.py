@@ -83,10 +83,7 @@ class OpenClawConfig:
         Returns:
             Number of successfully configured sandboxes
         """
-        ready = [
-            s for s in states.values()
-            if s.creation_metrics.status == SandboxStatus.PORT_READY and s.sandbox_obj
-        ]
+        ready = [s for s in states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY and s.sandbox_obj]
 
         success = 0
         for state in ready:
