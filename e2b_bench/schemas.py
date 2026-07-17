@@ -51,9 +51,18 @@ class BrowserMetrics:
         self._timeout_count: int = 0
         self._latencies: List[float] = []
         self._last_error: str = ""
+        # Step-level timing for tab-switch mode
+        self._step_times: Dict[str, List[float]] = {}
 
-    def add(self, latency: float, success: bool, timeout: bool = False) -> None:
-        """Add a task result (thread-safe)"""
+    def add(self, latency: float, success: bool, timeout: bool = False, step_times: Dict[str, float] = None) -> None:
+        """Add a task result (thread-safe)
+
+        Args:
+            latency: Total latency for the task
+            success: Whether the task succeeded
+            timeout: Whether the task timed out
+            step_times: Optional dict of step name -> latency (e.g., {"tab_switch": 0.5, "snapshot": 1.2})
+        """
         with self._lock:
             self._total_tasks += 1
             if timeout:
@@ -64,6 +73,13 @@ class BrowserMetrics:
                 self._latencies.append(latency)
             else:
                 self._failed_count += 1
+
+            # Record step-level times
+            if step_times:
+                for step_name, step_latency in step_times.items():
+                    if step_name not in self._step_times:
+                        self._step_times[step_name] = []
+                    self._step_times[step_name].append(step_latency)
 
     @property
     def total_tasks(self) -> int:
@@ -116,6 +132,27 @@ class BrowserMetrics:
             if len(sorted_lat) >= 100:
                 return sorted_lat[int(len(sorted_lat) * 0.99)]
             return sorted_lat[-1]
+
+    def get_step_stats(self) -> Dict[str, Dict[str, float]]:
+        """Get statistics for each step (avg, p99)
+
+        Returns:
+            Dict of step_name -> {"avg": float, "p99": float, "count": int}
+        """
+        with self._lock:
+            result = {}
+            for step_name, times in self._step_times.items():
+                if not times:
+                    continue
+                sorted_times = sorted(times)
+                avg = statistics.mean(times)
+                p99 = sorted_times[-1] if len(sorted_times) < 100 else sorted_times[int(len(sorted_times) * 0.99)]
+                result[step_name] = {
+                    "avg": avg,
+                    "p99": p99,
+                    "count": len(times),
+                }
+            return result
 
 
 @dataclass

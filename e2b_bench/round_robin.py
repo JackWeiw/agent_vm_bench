@@ -107,11 +107,11 @@ class TabSwitchRunner(threading.Thread):
         # Always record metrics, even for failed operations
         elapsed = time.perf_counter() - start_time
         timeout = elapsed > self.config.browser_timeout
-        self.state.browser_metrics.add(elapsed, success and not timeout, timeout)
+        self.state.browser_metrics.add(elapsed, success and not timeout, timeout, step_times=step_times)
         self.state.last_task_time = time.time()
 
         if success:
-            print(f"[Sandbox{self.state.sandbox_id}] Tab {tab_id} completed in {elapsed:.2f}s")
+            print(f"[Sandbox{self.state.sandbox_id}] Tab {tab_id} completed in {elapsed:.2f}s (tab_switch={step_times.get('tab_switch', 0):.2f}s, snapshot={step_times.get('snapshot', 0):.2f}s)")
         else:
             self.consecutive_errors += 1
             if self.consecutive_errors >= 3:

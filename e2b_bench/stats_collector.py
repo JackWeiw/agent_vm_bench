@@ -295,6 +295,39 @@ class StatsCollector:
             lines.append(f"  Avg Latency:   {avg_ms:.1f}ms")
             lines.append(f"  P99 Latency:   {p99_ms:.1f}ms")
 
+        # Step-level timing statistics for tab-switch mode
+        all_step_times: Dict[str, List[float]] = {}
+        for s in self.sandbox_states.values():
+            step_stats = s.browser_metrics.get_step_stats()
+            for step_name, stats in step_stats.items():
+                if step_name not in all_step_times:
+                    all_step_times[step_name] = []
+                # Get raw times from metrics (need to access internal data)
+                for _ in range(stats["count"]):
+                    all_step_times[step_name].append(stats["avg"])  # Approximate
+
+        # Better approach: aggregate step times directly
+        aggregated_steps: Dict[str, Dict[str, float]] = {}
+        for s in self.sandbox_states.values():
+            step_stats = s.browser_metrics.get_step_stats()
+            for step_name, stats in step_stats.items():
+                if step_name not in aggregated_steps:
+                    aggregated_steps[step_name] = {"total_time": 0.0, "count": 0, "max_p99": 0.0}
+                aggregated_steps[step_name]["total_time"] += stats["avg"] * stats["count"]
+                aggregated_steps[step_name]["count"] += stats["count"]
+                aggregated_steps[step_name]["max_p99"] = max(aggregated_steps[step_name]["max_p99"], stats["p99"])
+
+        if aggregated_steps:
+            lines.append("\n[Step-Level Timing (Tab-Switch Mode)]")
+            lines.append(f"  {'Step':<15} {'Count':<8} {'Avg(ms)':<12} {'P99(ms)':<12}")
+            lines.append("  " + "-" * 50)
+            for step_name in ["tab_switch", "snapshot", "click", "screenshot"]:
+                if step_name in aggregated_steps:
+                    stats = aggregated_steps[step_name]
+                    avg_ms = (stats["total_time"] / stats["count"]) * 1000 if stats["count"] > 0 else 0
+                    p99_ms = stats["max_p99"] * 1000
+                    lines.append(f"  {step_name:<15} {stats['count']:<8} {avg_ms:<12.1f} {p99_ms:<12.1f}")
+
         # Collect error details from failed sandboxes
         failed_sandbox_errors = []
         for s in self.sandbox_states.values():
