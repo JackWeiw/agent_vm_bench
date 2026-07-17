@@ -22,11 +22,12 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Dict
 
 from .config import Config
 from .round_robin import RoundRobinTaskManager
 from .sandbox_manager import SandboxManager
-from .schemas import SandboxStatus
+from .schemas import SandboxState, SandboxStatus
 from .stats_collector import StatsCollector
 from .task_runner import TaskManager
 
@@ -328,6 +329,34 @@ class VmMonitorManager:
             self.stderr_file = None
 
         self.process = None
+
+
+def append_sandbox_ids(config: Config, sandbox_states: Dict[int, SandboxState]) -> None:
+    """Append sandbox IDs to file (one ID per line)
+
+    Called after each wave completes, supports incremental ID saving.
+
+    Args:
+        config: Configuration object
+        sandbox_states: Dictionary of sandbox states
+    """
+    if not config.sandbox_ids_file:
+        return
+
+    successful_ids = [
+        s.sandbox_obj.sandbox_id
+        for s in sandbox_states.values()
+        if s.creation_metrics.status == SandboxStatus.PORT_READY and s.sandbox_obj is not None
+    ]
+
+    if successful_ids:
+        try:
+            with open(config.sandbox_ids_file, "a") as f:  # Append mode
+                for sid in successful_ids:
+                    f.write(f"{sid}\n")
+            print(f"Appended {len(successful_ids)} sandbox IDs to: {config.sandbox_ids_file}")
+        except OSError as e:
+            print(f"ERROR: Failed to append sandbox IDs: {e}")
 
 
 def run_benchmark(config: Config) -> dict:
