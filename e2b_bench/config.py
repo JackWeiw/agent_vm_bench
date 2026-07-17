@@ -254,8 +254,8 @@ class Config:
             vm_monitor_numa=yaml_config.vm_monitor_numa,
             vm_monitor_log_dir=yaml_config.vm_monitor_log_dir,
             vm_monitor_stress_file=yaml_config.vm_monitor_stress_file,
-            # Task mode and LLM config
-            task_mode=getattr(args, "task_mode", yaml_config.task_mode),
+            # Task mode and LLM config (priority: CLI > YAML > default)
+            task_mode=args.task_mode or yaml_config.task_mode or "browser",
             llm=yaml_config.llm,
         )
 
