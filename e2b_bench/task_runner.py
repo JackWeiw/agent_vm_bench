@@ -25,6 +25,10 @@ class WarmupRunner(threading.Thread):
     The warmup_loops parameter is not applicable for tab-based warmup.
     """
 
+    # Class-level flag to ensure warning is printed only once
+    _warmup_loops_warned = False
+    _warn_lock = threading.Lock()
+
     def __init__(
         self,
         state: SandboxState,
@@ -65,11 +69,14 @@ class WarmupRunner(threading.Thread):
         e2b_sandbox_id = sbx.sandbox_id if hasattr(sbx, "sandbox_id") else "N/A"
         failed_urls = []
 
-        # Warn if warmup_loops > 1 (not applicable for tab-switch mode)
+        # Warn if warmup_loops > 1 (not applicable for tab-switch mode) - only once
         if self.config.warmup_loops > 1:
-            print(
-                f"[Sandbox{self.state.sandbox_id}] Note: warmup_loops={self.config.warmup_loops} is ignored in tab-switch mode (each URL opened once)"
-            )
+            with WarmupRunner._warn_lock:
+                if not WarmupRunner._warmup_loops_warned:
+                    print(
+                        f"[Warmup] Note: warmup_loops={self.config.warmup_loops} is ignored in tab-switch mode (each URL opened once)"
+                    )
+                    WarmupRunner._warmup_loops_warned = True
 
         # Check if agent-browser is available
         try:
@@ -96,15 +103,16 @@ class WarmupRunner(threading.Thread):
                     # Subsequent tabs: use tab new
                     cmd = f'agent-browser tab new "{url}"'
 
-                result = sbx.commands.run(cmd, timeout=60, user="root")
+                # Use longer timeout for tab operations (120s instead of 60s)
+                result = sbx.commands.run(cmd, timeout=120, user="root")
 
                 if result.exit_code != 0:
                     failed_urls.append(url[:50])
                     continue
 
-                # Wait for page load
-                wait_cmd = "agent-browser wait --load domcontentloaded --timeout 60000"
-                sbx.commands.run(wait_cmd, timeout=70, user="root")
+                # Wait for page load with longer timeout
+                wait_cmd = "agent-browser wait --load domcontentloaded --timeout 120000"
+                sbx.commands.run(wait_cmd, timeout=130, user="root")
 
                 # Store tab ID (t1, t2, ...)
                 self.state.tab_ids.append(f"t{i+1}")
