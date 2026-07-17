@@ -608,7 +608,9 @@ def run_benchmark(config: Config) -> dict:
 
             if config.detect_existing:
                 # Use already-detected sandboxes, split into waves for warmup
-                ready_states = [s for s in sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY]
+                ready_states = [
+                    s for s in sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY
+                ]
                 total_detected = len(ready_states)
                 total_waves = (total_detected + WARMUP_WAVE_SIZE - 1) // WARMUP_WAVE_SIZE
 
