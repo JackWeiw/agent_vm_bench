@@ -55,7 +55,7 @@ class Config:
     benchmark_mode: str = "fixed"  # "fixed" (default) or "round_robin"
     round_count: Optional[int] = None  # Number of sandbox groups (mutually exclusive with round_size)
     round_size: Optional[int] = None  # Sandboxes per round (mutually exclusive with round_count)
-    round_interval: int = 30  # Round interval in seconds for round_robin mode (default: 30s)
+    round_interval: int = 5  # Round interval in seconds for round_robin mode (default: 5s)
 
     # smap_tool configuration (memory migration monitoring)
     smap_tool_enabled: bool = False
@@ -136,7 +136,7 @@ class Config:
             benchmark_mode=test.get("benchmark_mode", "fixed"),
             round_count=test.get("round_count"),
             round_size=test.get("round_size"),
-            round_interval=test.get("round_interval", 30),
+            round_interval=test.get("round_interval", 5),
             browser_urls=browser.get("urls", ["http://192.168.110.10:8080/Weibo.html"]),
             browser_timeout=browser.get("task_timeout", 200),
             browser_interval_min=browser.get("interval_min", 0.5),
@@ -270,7 +270,7 @@ class Config:
             benchmark_mode=getattr(args, "benchmark_mode", None) or "fixed",
             round_count=getattr(args, "round_count", None),
             round_size=getattr(args, "round_size", None),
-            round_interval=getattr(args, "round_interval", None) or 30,
+            round_interval=getattr(args, "round_interval", None) or 5,
             test_duration=args.duration or 600,
             stats_interval=args.stats_interval or 10,
             output_dir=args.output_dir or "results/e2b",

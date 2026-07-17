@@ -5,9 +5,11 @@ Responsible for browser task execution, result collection and exception handling
 Each sandbox has an independent thread
 Supports task batch control for gradual task execution start
 Supports warmup phase for memory preheating
+Supports agent-browser tab management for tab-switch benchmark mode
 """
 
 import random
+import re
 import threading
 import time
 from typing import Dict, List, Tuple
@@ -17,7 +19,11 @@ from .schemas import SandboxState, SandboxStatus
 
 
 class WarmupRunner(threading.Thread):
-    """Warmup phase runner - executes warmup pages for a single sandbox"""
+    """Warmup phase runner - opens multiple tabs using agent-browser
+
+    Note: In tab-switch mode, each URL is opened once as a separate tab.
+    The warmup_loops parameter is not applicable for tab-based warmup.
+    """
 
     def __init__(
         self,
@@ -29,7 +35,11 @@ class WarmupRunner(threading.Thread):
         self.config = config
 
     def run(self) -> None:
-        """Execute warmup phase for this sandbox"""
+        """Execute warmup phase for this sandbox - open multiple tabs
+
+        Tab-switch mode: Opens each warmup URL as a separate tab.
+        Each URL is opened exactly once (warmup_loops is ignored for tabs).
+        """
         # Wait for sandbox ports ready
         while True:
             if self.state.creation_metrics.status == SandboxStatus.PORT_READY:
@@ -55,33 +65,56 @@ class WarmupRunner(threading.Thread):
         e2b_sandbox_id = sbx.sandbox_id if hasattr(sbx, "sandbox_id") else "N/A"
         failed_urls = []
 
-        # Loop through warmup pages
-        for loop in range(self.config.warmup_loops):
-            for url in self.config.warmup_urls:
-                if not url.strip():
+        # Warn if warmup_loops > 1 (not applicable for tab-switch mode)
+        if self.config.warmup_loops > 1:
+            print(
+                f"[Sandbox{self.state.sandbox_id}] Note: warmup_loops={self.config.warmup_loops} is ignored in tab-switch mode (each URL opened once)"
+            )
+
+        # Check if agent-browser is available
+        try:
+            result = sbx.commands.run("agent-browser --version", timeout=30, user="root")
+            if result.exit_code != 0:
+                print(f"[Sandbox{self.state.sandbox_id}] agent-browser not available, skipping tab warmup")
+                self.state.warmup_done = True
+                return
+        except Exception as e:
+            print(f"[Sandbox{self.state.sandbox_id}] Failed to check agent-browser: {e}")
+            self.state.warmup_done = True
+            return
+
+        # Open tabs with warmup_urls (each URL in a new tab)
+        for i, url in enumerate(self.config.warmup_urls):
+            if not url.strip():
+                continue
+
+            try:
+                if i == 0:
+                    # First tab: use open (replaces current page)
+                    cmd = f'agent-browser open "{url}"'
+                else:
+                    # Subsequent tabs: use tab new
+                    cmd = f'agent-browser tab new "{url}"'
+
+                result = sbx.commands.run(cmd, timeout=60, user="root")
+
+                if result.exit_code != 0:
+                    failed_urls.append(url[:50])
                     continue
 
-                cmd = f"openclaw browser --browser-profile openclaw open '{url}'"
-                try:
-                    result = sbx.commands.run(cmd, timeout=60, user="root")
-                    if result.exit_code != 0:
-                        failed_urls.append(url[:50])
-                except Exception:
-                    failed_urls.append(url[:50])
+                # Wait for page load
+                wait_cmd = "agent-browser wait --load domcontentloaded --timeout 60000"
+                sbx.commands.run(wait_cmd, timeout=70, user="root")
+
+                # Store tab ID (t1, t2, ...)
+                self.state.tab_ids.append(f"t{i+1}")
 
                 # Delay between pages
                 time.sleep(self.config.warmup_delay)
 
-        # Execute openclaw config set and memory index (optional, for memory warmup)
-        # These commands help bring QEMU memory to target value
-        try:
-            cmd1 = "openclaw config set agents.defaults.memorySearch.chunking.tokens 200"
-            sbx.commands.run(cmd1, timeout=30, user="root")
-
-            cmd2 = "openclaw memory index --force"
-            sbx.commands.run(cmd2, timeout=120, user="root")
-        except Exception:
-            pass  # Optional commands, ignore errors
+            except Exception as e:
+                print(f"[Sandbox{self.state.sandbox_id}] Failed to open tab {i+1}: {e}")
+                failed_urls.append(url[:50])
 
         # Mark warmup complete
         self.state.warmup_done = True
@@ -89,7 +122,9 @@ class WarmupRunner(threading.Thread):
         if failed_urls:
             print(f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Warmup had {len(failed_urls)} failed pages")
         else:
-            print(f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Warmup completed")
+            print(
+                f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Warmup completed: {len(self.state.tab_ids)} tabs opened"
+            )
 
 
 class BrowserTaskRunner(threading.Thread):

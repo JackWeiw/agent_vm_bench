@@ -5,6 +5,7 @@ Defines SandboxStatus, CreationMetrics, BrowserMetrics, SandboxState, TestSnapsh
 """
 
 import statistics
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -39,43 +40,82 @@ class CreationMetrics:
     port_check_error: str = ""  # Port check error message
 
 
-@dataclass
 class BrowserMetrics:
-    """Browser task metrics"""
+    """Browser task metrics (thread-safe for concurrent access)"""
 
-    total_tasks: int = 0
-    success_count: int = 0
-    failed_count: int = 0
-    timeout_count: int = 0
-    latencies: List[float] = field(default_factory=list)
-    last_error: str = ""  # Last error message for debugging
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._total_tasks: int = 0
+        self._success_count: int = 0
+        self._failed_count: int = 0
+        self._timeout_count: int = 0
+        self._latencies: List[float] = []
+        self._last_error: str = ""
 
     def add(self, latency: float, success: bool, timeout: bool = False) -> None:
-        """Add a task result"""
-        self.total_tasks += 1
-        if timeout:
-            self.timeout_count += 1
-            self.failed_count += 1
-        elif success:
-            self.success_count += 1
-            self.latencies.append(latency)
-        else:
-            self.failed_count += 1
+        """Add a task result (thread-safe)"""
+        with self._lock:
+            self._total_tasks += 1
+            if timeout:
+                self._timeout_count += 1
+                self._failed_count += 1
+            elif success:
+                self._success_count += 1
+                self._latencies.append(latency)
+            else:
+                self._failed_count += 1
+
+    @property
+    def total_tasks(self) -> int:
+        with self._lock:
+            return self._total_tasks
+
+    @property
+    def success_count(self) -> int:
+        with self._lock:
+            return self._success_count
+
+    @property
+    def failed_count(self) -> int:
+        with self._lock:
+            return self._failed_count
+
+    @property
+    def timeout_count(self) -> int:
+        with self._lock:
+            return self._timeout_count
+
+    @property
+    def latencies(self) -> List[float]:
+        with self._lock:
+            return list(self._latencies)  # Return a copy for thread safety
+
+    @property
+    def last_error(self) -> str:
+        with self._lock:
+            return self._last_error
+
+    @last_error.setter
+    def last_error(self, value: str) -> None:
+        with self._lock:
+            self._last_error = value
 
     @property
     def avg_latency(self) -> float:
         """Average latency (seconds)"""
-        return statistics.mean(self.latencies) if self.latencies else 0.0
+        with self._lock:
+            return statistics.mean(self._latencies) if self._latencies else 0.0
 
     @property
     def p99_latency(self) -> float:
         """P99 latency (seconds)"""
-        if not self.latencies:
-            return 0.0
-        sorted_lat = sorted(self.latencies)
-        if len(sorted_lat) >= 100:
-            return sorted_lat[int(len(sorted_lat) * 0.99)]
-        return sorted_lat[-1]
+        with self._lock:
+            if not self._latencies:
+                return 0.0
+            sorted_lat = sorted(self._latencies)
+            if len(sorted_lat) >= 100:
+                return sorted_lat[int(len(sorted_lat) * 0.99)]
+            return sorted_lat[-1]
 
 
 @dataclass
@@ -93,6 +133,9 @@ class SandboxState:
     last_task_time: float = 0.0  # Last task execution time
     consecutive_failures: int = 0  # Consecutive failure count
     warmup_done: bool = False  # Warmup phase completed flag
+
+    # Tab state (for round_robin tab-switch mode)
+    tab_ids: List[str] = field(default_factory=list)  # Active tab IDs [t1, t2, ...]
 
 
 @dataclass

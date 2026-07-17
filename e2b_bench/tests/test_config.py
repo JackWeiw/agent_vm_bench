@@ -199,7 +199,7 @@ class TestConfigRoundRobin:
         config = Config()
         assert config.benchmark_mode == "fixed"
         assert config.round_count is None
-        assert config.round_interval == 30
+        assert config.round_interval == 5
 
     def test_set_via_constructor(self):
         """Set round-robin config via constructor"""
@@ -241,7 +241,7 @@ test:
         # Should use defaults when not specified
         assert config.benchmark_mode == "fixed"
         assert config.round_count is None
-        assert config.round_interval == 30
+        assert config.round_interval == 5
 
     def test_merge_with_args_override(self):
         """CLI args override YAML config for round-robin"""
@@ -461,7 +461,7 @@ test:
             # The config file should have benchmark_mode: "round_robin"
             assert config.benchmark_mode == "round_robin"
             assert config.round_count == 5
-            assert config.round_interval == 30
+            assert config.round_interval == 5  # Updated default value
 
 
 def _create_minimal_args():

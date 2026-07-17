@@ -60,11 +60,15 @@ test:
   benchmark_percent: 1.0    # Percentage of sandboxes for benchmark (1.0 = 100%, 0.5 = 50%)
 
   # Round-robin mode configuration (optional)
+  # Tab-switch mode: each round operates on a specific tab (round_id % len(warmup_urls))
+  # - Warmup phase opens N tabs (N = len(warmup_urls))
+  # - Round N operates on tab tN, cycling through tabs
+  # - Creates swap in events when accessing migrated memory
   benchmark_mode: "round_robin"   # "fixed" (default) or "round_robin"
   # Specify ONE of the following (mutually exclusive):
   round_count: 5                  # Number of sandbox groups (sandboxes_per_group = total / round_count)
   # round_size: 2                  # Sandboxes per round (group_count = ceil(total / round_size))
-  round_interval: 30              # Round interval in seconds
+  round_interval: 5               # Round interval in seconds (allows time for memory migration)
 
 # Report configuration
 report:

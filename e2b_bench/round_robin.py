@@ -3,16 +3,125 @@ Round-Robin Task Manager Module
 
 Manages round-robin sandbox rotation for memory migration stress testing.
 Each round activates a different subset of sandboxes to ensure even memory access distribution.
+
+Supports tab-switch mode:
+- Warmup phase opens multiple tabs per sandbox
+- Each round operates on a specific tab (round_id % len(tab_ids))
+- Creates swap in events when accessing migrated memory
 """
 
+import re
 import threading
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .config import Config
 from .schemas import SandboxState, SandboxStatus
 from .stats_collector import StatsCollector
-from .task_runner import BrowserTaskRunner
+
+
+class TabSwitchRunner(threading.Thread):
+    """Runner for tab-switch benchmark - operates on a specific tab per round"""
+
+    def __init__(
+        self,
+        state: SandboxState,
+        config: Config,
+        stop_event: threading.Event,
+        round_id: int,
+    ):
+        super().__init__(daemon=True)
+        self.state = state
+        self.config = config
+        self.stop_event = stop_event
+        self.round_id = round_id
+        self.consecutive_errors = 0
+
+    def run(self) -> None:
+        """Execute tab-switch operations for this round"""
+        sbx = self.state.sandbox_obj
+        if not sbx:
+            return
+
+        e2b_sandbox_id = sbx.sandbox_id if hasattr(sbx, "sandbox_id") else "N/A"
+
+        # Determine which tab to operate on this round
+        if not self.state.tab_ids:
+            print(f"[Sandbox{self.state.sandbox_id}] No tabs available for tab-switch")
+            return
+
+        tab_index = self.round_id % len(self.state.tab_ids)
+        tab_id = self.state.tab_ids[tab_index]
+
+        start_time = time.perf_counter()
+        success = True
+        step_times = {}
+
+        try:
+            # Step 1: Switch to target tab
+            step_start = time.perf_counter()
+            result = sbx.commands.run(f"agent-browser tab {tab_id}", timeout=30, user="root")
+            step_times["tab_switch"] = time.perf_counter() - step_start
+
+            if result.exit_code != 0:
+                print(f"[Sandbox{self.state.sandbox_id}] Tab switch failed: {tab_id}")
+                success = False
+            else:
+                # Small delay after tab switch (may trigger swap in)
+                time.sleep(0.5)
+
+                # Step 2: DOM snapshot
+                step_start = time.perf_counter()
+                result = sbx.commands.run("agent-browser snapshot -i", timeout=60, user="root")
+                step_times["snapshot"] = time.perf_counter() - step_start
+
+                if result.exit_code != 0:
+                    print(f"[Sandbox{self.state.sandbox_id}] Snapshot failed")
+                    success = False
+                else:
+                    # Extract element refs
+                    elements = self._extract_element_refs(result.stdout)
+
+                    # Step 3: Element click (try first valid element)
+                    if elements:
+                        step_start = time.perf_counter()
+                        click_result = sbx.commands.run(f"agent-browser click {elements[0]}", timeout=30, user="root")
+                        step_times["click"] = time.perf_counter() - step_start
+                        if click_result.exit_code != 0:
+                            print(f"[Sandbox{self.state.sandbox_id}] Click failed")
+                            # Don't fail the whole operation, continue to screenshot
+
+                    # Step 4: Screenshot
+                    step_start = time.perf_counter()
+                    screenshot_result = sbx.commands.run("agent-browser screenshot", timeout=30, user="root")
+                    step_times["screenshot"] = time.perf_counter() - step_start
+                    if screenshot_result.exit_code != 0:
+                        print(f"[Sandbox{self.state.sandbox_id}] Screenshot failed")
+                        # Don't fail the whole operation
+
+        except Exception as e:
+            success = False
+            print(f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Tab {tab_id} error: {e}")
+            self.state.browser_metrics.last_error = str(e)
+
+        # Always record metrics, even for failed operations
+        elapsed = time.perf_counter() - start_time
+        timeout = elapsed > self.config.browser_timeout
+        self.state.browser_metrics.add(elapsed, success and not timeout, timeout)
+        self.state.last_task_time = time.time()
+
+        if success:
+            print(f"[Sandbox{self.state.sandbox_id}] Tab {tab_id} completed in {elapsed:.2f}s")
+        else:
+            self.consecutive_errors += 1
+            if self.consecutive_errors >= 3:
+                self.state.is_alive = False
+
+    def _extract_element_refs(self, output: str) -> List[str]:
+        """Extract element refs from agent-browser snapshot output"""
+        pattern = r"\[ref=(e\d+)\]"
+        matches = re.findall(pattern, output)
+        return matches[:50]  # Limit to 50 elements
 
 
 class RoundRobinTaskManager:
@@ -22,6 +131,10 @@ class RoundRobinTaskManager:
     1. Even memory access distribution across all sandboxes
     2. No overlap between rounds (each sandbox appears in exactly one round)
     3. Equal load per round (balanced distribution)
+
+    Tab-switch mode:
+    - Each round operates on a specific tab (round_id % len(tab_ids))
+    - Detects existing tabs at startup (cross-process state)
     """
 
     def __init__(
@@ -50,19 +163,77 @@ class RoundRobinTaskManager:
 
         # Current round state
         self.current_round: int = 0
-        self.active_runners: List[BrowserTaskRunner] = []
+        self.active_runners: List[TabSwitchRunner] = []
         self.round_stop_event: Optional[threading.Event] = None
+
+    def _detect_tabs(self) -> None:
+        """Detect existing tabs for each sandbox (cross-process state).
+
+        Since warmup and benchmark may run in different processes,
+        we need to detect tabs at benchmark start using agent-browser tab command.
+        """
+        print("\n[RoundRobin] Detecting existing tabs...")
+
+        for state in self.all_ready_states:
+            sbx = state.sandbox_obj
+            if not sbx:
+                continue
+
+            try:
+                # List existing tabs
+                result = sbx.commands.run("agent-browser tab", timeout=30, user="root")
+
+                if result.exit_code == 0:
+                    # Parse tab IDs from output (format: t1, t2, t3, ...)
+                    output = result.stdout if result.stdout else ""
+                    tab_ids = self._parse_tab_list(output)
+
+                    if tab_ids:
+                        state.tab_ids = tab_ids
+                        print(f"[Sandbox{state.sandbox_id}] Detected {len(tab_ids)} tabs: {tab_ids}")
+                    else:
+                        # No tabs detected, mark as warning
+                        print(f"[Sandbox{state.sandbox_id}] Warning: No tabs detected")
+                else:
+                    print(f"[Sandbox{state.sandbox_id}] Failed to list tabs")
+
+            except Exception as e:
+                print(f"[Sandbox{state.sandbox_id}] Tab detection error: {e}")
+
+    def _parse_tab_list(self, output: str) -> List[str]:
+        """Parse tab IDs from agent-browser tab output.
+
+        Output format:
+          [t1] url1 - http://...
+          [t2] url2 - http://...
+
+        The regex matches t1, t2, etc. from [t1], [t2] patterns.
+        """
+        tab_ids = []
+
+        # Match tab IDs (t1, t2, t3, etc.) from [tN] patterns
+        pattern = r"\[(t\d+)\]|\b(t\d+)\b"
+        matches = re.findall(pattern, output)
+
+        # re.findall returns tuples for groups, flatten and filter
+        for match in matches:
+            tab_id = match[0] if match[0] else match[1]
+            if tab_id:
+                tab_ids.append(tab_id)
+
+        return tab_ids
 
     def run(self) -> None:
         """Execute the round-robin test.
 
         Main loop:
         1. Prepare sandbox groups (equal distribution)
-        2. Calculate number of rounds (auto or from config)
-        3. For each round: start tasks -> wait interval -> stop tasks
-        4. Loop back to first group if rounds exceed groups (cycling)
-        5. Track statistics per round
-        6. Stop when duration is reached or all rounds completed
+        2. Detect existing tabs (cross-process state)
+        3. Calculate number of rounds (auto or from config)
+        4. For each round: start tasks -> wait interval -> stop tasks
+        5. Loop back to first group if rounds exceed groups (cycling)
+        6. Track statistics per round
+        7. Stop when duration is reached or all rounds completed
         """
         import math
         import time
@@ -74,7 +245,19 @@ class RoundRobinTaskManager:
             print("[RoundRobin] No sandbox groups to execute")
             return
 
-        # 2. Calculate number of rounds (auto or from config)
+        # 2. Detect existing tabs (cross-process state)
+        self._detect_tabs()
+
+        # Check if any tabs were detected
+        sandboxes_with_tabs = sum(1 for s in self.all_ready_states if s.tab_ids)
+        if sandboxes_with_tabs == 0:
+            print("[RoundRobin] Warning: No tabs detected in any sandbox")
+            print("[RoundRobin] Make sure to run warmup phase first to open tabs")
+            return
+
+        print(f"[RoundRobin] Sandboxes with tabs: {sandboxes_with_tabs}/{len(self.all_ready_states)}")
+
+        # 3. Calculate number of rounds (auto or from config)
         rounds = self._calculate_rounds()
         num_groups = len(self.sandbox_groups)
 
@@ -89,7 +272,7 @@ class RoundRobinTaskManager:
             print(f"\n[RoundRobin] Total rounds: {rounds}")
         print(f"[RoundRobin] Sandboxes per round: {len(self.sandbox_groups[0])} (balanced)")
 
-        # 3. Execute each round (with cycling) until duration is reached
+        # 4. Execute each round (with cycling) until duration is reached
         start_time = time.time()
         for round_id in range(rounds):
             # Check stop conditions
@@ -187,13 +370,19 @@ class RoundRobinTaskManager:
         # Get current round's sandbox group (with cycling)
         current_states = self.sandbox_groups[group_idx]
 
+        # Determine which tab this round operates on
+        # All sandboxes should have the same number of tabs
+        sample_state = current_states[0] if current_states else None
+        tab_count = len(sample_state.tab_ids) if sample_state and sample_state.tab_ids else 0
+        tab_index = round_id % tab_count if tab_count > 0 else 0
+
         # Show cycle info if this is a repeated group
         if round_id >= num_groups:
             print(
-                f"\n[Round {round_id}] (cycle {round_id // num_groups}, group {group_idx}) Starting {len(current_states)} sandboxes"
+                f"\n[Round {round_id}] (cycle {round_id // num_groups}, group {group_idx}) Starting {len(current_states)} sandboxes, tab t{tab_index + 1}"
             )
         else:
-            print(f"\n[Round {round_id}] Starting {len(current_states)} sandboxes")
+            print(f"\n[Round {round_id}] Starting {len(current_states)} sandboxes, tab t{tab_index + 1}")
 
         # Mark current round for statistics tracking
         self.stats_collector.set_round(round_id)
@@ -201,10 +390,15 @@ class RoundRobinTaskManager:
         # Create round-specific stop event
         self.round_stop_event = threading.Event()
 
-        # Start task runners for current round
+        # Start tab-switch runners for current round
         self.active_runners = []
         for state in current_states:
-            runner = BrowserTaskRunner(state, self.config, self.round_stop_event)
+            # Skip sandboxes without tabs
+            if not state.tab_ids:
+                print(f"[Sandbox{state.sandbox_id}] Skipping - no tabs available")
+                continue
+
+            runner = TabSwitchRunner(state, self.config, self.round_stop_event, round_id)
             self.active_runners.append(runner)
             runner.start()
 
