@@ -28,6 +28,10 @@ class StatsCollector:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
+        # Round tracking for round-robin mode
+        self.current_round: Optional[int] = None
+        self.round_snapshots: Dict[int, List[TestSnapshot]] = {}
+
     def start(self) -> None:
         """Start background collection thread"""
         self.start_time = time.time()
@@ -39,6 +43,19 @@ class StatsCollector:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=2)
+
+    def set_round(self, round_id: Optional[int]) -> None:
+        """Set current round for statistics tracking.
+
+        Called by RoundRobinTaskManager to mark which round is currently active.
+        Snapshots collected during this round will be grouped together.
+
+        Args:
+            round_id: Current round index (None to clear)
+        """
+        self.current_round = round_id
+        if round_id is not None and round_id not in self.round_snapshots:
+            self.round_snapshots[round_id] = []
 
     def _collect_loop(self) -> None:
         """Periodic snapshot collection"""
@@ -112,6 +129,10 @@ class StatsCollector:
             browser_p99_latency=browser_p99,
         )
         self.snapshots.append(snapshot)
+
+        # Track round-specific snapshots
+        if self.current_round is not None:
+            self.round_snapshots[self.current_round].append(snapshot)
 
         # Real-time terminal output
         self._print_snapshot(snapshot)
@@ -331,6 +352,24 @@ class StatsCollector:
                 if count > 0:
                     sids = error_type_sandboxes[error_type][:10]
                     lines.append(f"  {error_type}: {count} errors (sandboxes: {sids}...)")
+
+        # Round comparison for round-robin mode
+        if self.round_snapshots:
+            lines.append("\n" + "=" * 80)
+            lines.append("[Round Comparison]")
+            lines.append("=" * 80)
+            lines.append(f"{'Round':<8} {'Tasks':<8} {'Success%':<10} {'Avg(s)':<10} {'P99(s)':<10}")
+            lines.append("-" * 50)
+
+            for round_id in sorted(self.round_snapshots.keys()):
+                snapshots = self.round_snapshots[round_id]
+                if snapshots:
+                    tasks = sum(s.browser_total for s in snapshots)
+                    success = sum(s.browser_success for s in snapshots)
+                    avg = statistics.mean(s.browser_avg_latency for s in snapshots if s.browser_avg_latency > 0) if any(s.browser_avg_latency > 0 for s in snapshots) else 0.0
+                    p99 = max(s.browser_p99_latency for s in snapshots) if snapshots else 0.0
+                    rate = success / max(1, tasks) * 100 if tasks > 0 else 0.0
+                    lines.append(f"{round_id:<8} {tasks:<8} {rate:<10.1f} {avg:<10.2f} {p99:<10.2f}")
 
         lines.append("\n" + "=" * 80)
         return "\n".join(lines)
