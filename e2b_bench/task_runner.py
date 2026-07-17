@@ -169,16 +169,9 @@ class BrowserTaskRunner(threading.Thread):
         # Get E2B sandbox_id for logging (different from internal sequence number)
         e2b_sandbox_id = sbx.sandbox_id if hasattr(sbx, "sandbox_id") else "N/A"
 
-        # Merge warmup_urls and browser_urls for round-robin selection
-        all_urls = self.config.warmup_urls + self.config.browser_urls
-
-        if not all_urls:
-            print(f"[Sandbox{self.state.sandbox_id}] No URLs configured for browser task")
-            return False, 0.0
-
         # Get current URL (round-robin)
-        url_idx = self.state.browser_metrics.total_tasks % len(all_urls)
-        url = all_urls[url_idx]
+        url_idx = self.state.browser_metrics.total_tasks % len(self.config.browser_urls)
+        url = self.config.browser_urls[url_idx]
 
         # Build browser command
         cmd = f"openclaw browser --browser-profile openclaw open '{url}'"
