@@ -40,25 +40,19 @@ class OpenClawConfig:
             return False
 
         try:
-            # Set provider baseUrl
-            cmd = f"openclaw config set models.providers.llm-replay.baseUrl '{endpoint}'"
+            # Write complete provider config in one command
+            # OpenClaw validates config atomically - partial updates fail
+            # Note: apiKey is required for custom providers, use fixed value
+            config_json = (
+                '{"api":"openai-completions",'
+                f'"baseUrl":"{endpoint}",'
+                '"apiKey":"huawei-kunpeng-ai",'
+                f'"models":[{"id":"{model}","name":"{model}"}]}}'
+            )
+            cmd = f"openclaw config set models.providers.llm-replay '{config_json}'"
             result = sbx.commands.run(cmd, timeout=timeout, user="root")
             if result.exit_code != 0:
-                print(f"[Sandbox{state.sandbox_id}] Failed to set baseUrl: {result.stderr[:100]}")
-                return False
-
-            # Set provider API type
-            cmd = "openclaw config set models.providers.llm-replay.api 'openai-completions'"
-            result = sbx.commands.run(cmd, timeout=timeout, user="root")
-            if result.exit_code != 0:
-                print(f"[Sandbox{state.sandbox_id}] Failed to set api: {result.stderr[:100]}")
-                return False
-
-            # Set model ID in provider
-            cmd = f"openclaw config set models.providers.llm-replay.models.0.id '{model}'"
-            result = sbx.commands.run(cmd, timeout=timeout, user="root")
-            if result.exit_code != 0:
-                print(f"[Sandbox{state.sandbox_id}] Failed to set model: {result.stderr[:100]}")
+                print(f"[Sandbox{state.sandbox_id}] Failed to set provider config: {result.stderr[:200]}")
                 return False
 
             # Set default model for agent
