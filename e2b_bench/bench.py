@@ -433,6 +433,9 @@ def run_benchmark(config: Config) -> dict:
     # 2. Create or detect sandboxes
     sandbox_manager = SandboxManager(config, stop_event)
 
+    # Check if wave-based warmup will handle creation (skip Phase 1 in this case)
+    needs_wave_warmup = config.warmup_only and not config.detect_existing and config.total_count > WARMUP_WAVE_SIZE
+
     if config.detect_existing:
         if config.sandbox_ids_file:
             print(f"\n[Phase 1] Detecting sandboxes from ID file: {config.sandbox_ids_file}...")
@@ -444,6 +447,12 @@ def run_benchmark(config: Config) -> dict:
         else:
             sandbox_states = sandbox_manager.detect_existing()
         creation_end_time = time.time()
+    elif needs_wave_warmup:
+        # Wave-based warmup will create sandboxes in batches - skip Phase 1
+        print(f"\n[Phase 1] Skipped - wave-based warmup will create {config.total_count} sandboxes in batches")
+        sandbox_states = {}
+        creation_start_time = time.time()
+        creation_end_time = time.time()
     else:
         print("\n[Phase 1] Creating sandboxes...")
         creation_start_time = time.time()
@@ -451,11 +460,14 @@ def run_benchmark(config: Config) -> dict:
         creation_end_time = time.time()
 
     ready_count = sum(1 for s in sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY)
-    if ready_count == 0:
+
+    # Skip ready_count check for wave-based warmup (will create sandboxes in Phase 2)
+    if ready_count == 0 and not needs_wave_warmup:
         print("No sandboxes ready for testing, exiting.")
         return {}
 
-    print(f"\nSandboxes ready: {ready_count}")
+    if ready_count > 0:
+        print(f"\nSandboxes ready: {ready_count}")
 
     # Create-only mode: exit after creation with detailed timing report
     if config.create_only:
@@ -588,55 +600,95 @@ def run_benchmark(config: Config) -> dict:
             # Append sandbox IDs to file
             append_sandbox_ids(config, sandbox_states)
         else:
-            # Multiple waves: create and warmup in batches of 100
+            # Multiple waves: warmup in batches of 100
+            # Behavior depends on --detect mode:
+            # - With --detect: use already-detected sandboxes, split into waves for warmup
+            # - Without --detect: create new sandboxes in each wave (then warmup)
             all_sandbox_states = {}
-            remaining = config.total_count
-            wave_id = 0
-            total_waves = (config.total_count + WARMUP_WAVE_SIZE - 1) // WARMUP_WAVE_SIZE
 
-            print(f"  Wave-based warmup: {config.total_count} sandboxes in {total_waves} waves")
+            if config.detect_existing:
+                # Use already-detected sandboxes, split into waves for warmup
+                ready_states = [s for s in sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY]
+                total_detected = len(ready_states)
+                total_waves = (total_detected + WARMUP_WAVE_SIZE - 1) // WARMUP_WAVE_SIZE
 
-            while remaining > 0:
-                current_wave_size = min(WARMUP_WAVE_SIZE, remaining)
+                print(f"  Wave-based warmup: {total_detected} detected sandboxes in {total_waves} waves")
 
-                print(f"\n[Wave {wave_id + 1}/{total_waves}] Creating {current_wave_size} sandboxes...")
+                for wave_id in range(total_waves):
+                    start_idx = wave_id * WARMUP_WAVE_SIZE
+                    end_idx = min(start_idx + WARMUP_WAVE_SIZE, total_detected)
+                    wave_states_list = ready_states[start_idx:end_idx]
 
-                # Create wave config with current wave size
-                wave_config = Config(
-                    **{k: v for k, v in config.__dict__.items()},
-                )
-                wave_config.total_count = current_wave_size
+                    print(f"\n[Wave {wave_id + 1}/{total_waves}] Warming up {len(wave_states_list)} sandboxes...")
 
-                # Create wave sandbox manager
-                wave_manager = SandboxManager(wave_config, stop_event)
-                wave_states = wave_manager.create_all()
+                    # Create wave_states dict for TaskManager
+                    wave_states = {s.sandbox_id: s for s in wave_states_list}
 
-                wave_ready_count = sum(
-                    1 for s in wave_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY
-                )
+                    # Warmup current wave
+                    if config.warmup_urls:
+                        wave_config = Config(**{k: v for k, v in config.__dict__.items()})
+                        wave_config.total_count = len(wave_states_list)
+                        wave_task_manager = TaskManager(wave_config, wave_states, stop_event)
+                        wave_task_manager.start_warmup()
+                        completed, failed = wave_task_manager.wait_warmup(timeout=300)
+                        print(f"[Wave {wave_id + 1}] Warmup: {completed} completed, {failed} failed")
 
-                if wave_ready_count == 0:
-                    print(f"[Wave {wave_id + 1}] ERROR: No sandboxes ready, stopping")
-                    break
+                    # Update all_sandbox_states
+                    for state in wave_states_list:
+                        all_sandbox_states[state.sandbox_id] = state
 
-                # Update sandbox IDs for all states
-                for sid, state in wave_states.items():
-                    # Re-index to global namespace
-                    state.sandbox_id = wave_id * WARMUP_WAVE_SIZE + sid
-                    all_sandbox_states[state.sandbox_id] = state
+                    # Append sandbox IDs after each wave
+                    append_sandbox_ids(config, wave_states)
 
-                # Warmup current wave
-                if config.warmup_urls:
-                    wave_task_manager = TaskManager(wave_config, wave_states, stop_event)
-                    wave_task_manager.start_warmup()
-                    completed, failed = wave_task_manager.wait_warmup(timeout=300)
-                    print(f"[Wave {wave_id + 1}] Warmup: {completed} completed, {failed} failed")
+            else:
+                # Create new sandboxes in each wave
+                remaining = config.total_count
+                wave_id = 0
+                total_waves = (config.total_count + WARMUP_WAVE_SIZE - 1) // WARMUP_WAVE_SIZE
 
-                # Append sandbox IDs after each wave
-                append_sandbox_ids(config, wave_states)
+                print(f"  Wave-based warmup: {config.total_count} sandboxes in {total_waves} waves")
 
-                remaining -= current_wave_size
-                wave_id += 1
+                while remaining > 0:
+                    current_wave_size = min(WARMUP_WAVE_SIZE, remaining)
+
+                    print(f"\n[Wave {wave_id + 1}/{total_waves}] Creating {current_wave_size} sandboxes...")
+
+                    # Create wave config with current wave size
+                    wave_config = Config(
+                        **{k: v for k, v in config.__dict__.items()},
+                    )
+                    wave_config.total_count = current_wave_size
+
+                    # Create wave sandbox manager
+                    wave_manager = SandboxManager(wave_config, stop_event)
+                    wave_states = wave_manager.create_all()
+
+                    wave_ready_count = sum(
+                        1 for s in wave_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY
+                    )
+
+                    if wave_ready_count == 0:
+                        print(f"[Wave {wave_id + 1}] ERROR: No sandboxes ready, stopping")
+                        break
+
+                    # Update sandbox IDs for all states
+                    for sid, state in wave_states.items():
+                        # Re-index to global namespace
+                        state.sandbox_id = wave_id * WARMUP_WAVE_SIZE + sid
+                        all_sandbox_states[state.sandbox_id] = state
+
+                    # Warmup current wave
+                    if config.warmup_urls:
+                        wave_task_manager = TaskManager(wave_config, wave_states, stop_event)
+                        wave_task_manager.start_warmup()
+                        completed, failed = wave_task_manager.wait_warmup(timeout=300)
+                        print(f"[Wave {wave_id + 1}] Warmup: {completed} completed, {failed} failed")
+
+                    # Append sandbox IDs after each wave
+                    append_sandbox_ids(config, wave_states)
+
+                    remaining -= current_wave_size
+                    wave_id += 1
 
             total_completed = sum(1 for s in all_sandbox_states.values() if s.warmup_done)
             print(f"\n[Phase 2 Complete] Warmup-only mode finished.")
