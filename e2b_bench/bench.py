@@ -673,6 +673,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Percentage of sandboxes for benchmark (e.g., 0.5 = 50%%)",
     )
 
+    # Round-robin mode control
+    parser.add_argument(
+        "-bm",
+        "--benchmark-mode",
+        type=str,
+        choices=["fixed", "round_robin"],
+        default="fixed",
+        help="Benchmark mode: 'fixed' (default) or 'round_robin'",
+    )
+    parser.add_argument(
+        "-rc",
+        "--round-count",
+        type=int,
+        default=None,
+        help="Round count for round_robin mode",
+    )
+    parser.add_argument(
+        "-ri",
+        "--round-interval",
+        type=int,
+        default=30,
+        help="Round interval in seconds for round_robin mode (default: 30)",
+    )
+
     # Test run
     parser.add_argument("--duration", type=int, help="Test duration seconds")
     parser.add_argument("--stats-interval", type=int, help="Stats snapshot interval")
