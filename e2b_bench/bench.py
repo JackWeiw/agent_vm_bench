@@ -712,14 +712,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--round-count",
         type=int,
         default=None,
-        help="Round count for round_robin mode",
+        help="Number of sandbox groups for round_robin mode (mutually exclusive with --round-size)",
+    )
+    parser.add_argument(
+        "-rs",
+        "--round-size",
+        type=int,
+        default=None,
+        help="Sandboxes per round for round_robin mode (mutually exclusive with --round-count)",
     )
     parser.add_argument(
         "-ri",
         "--round-interval",
         type=int,
-        default=30,
-        help="Round interval in seconds for round_robin mode (default: 30)",
+        default=5,
+        help="Round interval in seconds for round_robin mode (default: 5)",
     )
 
     # Test run

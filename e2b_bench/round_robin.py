@@ -101,13 +101,16 @@ class RoundRobinTaskManager:
     def _prepare_sandbox_groups(self) -> None:
         """Prepare sandbox groups for round-robin execution.
 
-        Distributes sandboxes evenly across rounds:
+        Group count determination (priority order):
+        1. If round_count is specified: use it
+        2. If round_size is specified: group_count = ceil(total / round_size)
+        3. Otherwise: use min(total, 10) as default
+
+        Distributes sandboxes evenly across groups:
         - Base distribution: total // group_count
-        - Remainder distributed to first N rounds
+        - Remainder distributed to first N groups
 
         Example: 103 sandboxes ÷ 5 groups = [21, 21, 21, 20, 20]
-
-        If round_count is not specified, uses a default of min(total, 10) groups.
         """
         import math
 
@@ -123,15 +126,17 @@ class RoundRobinTaskManager:
             print("[RoundRobin] No ready sandboxes available")
             return
 
-        # Determine number of groups
-        # If round_count is specified, use it; otherwise use a default
+        # Determine number of groups (priority: round_count > round_size > default)
         if self.config.round_count and self.config.round_count > 0:
             group_count = self.config.round_count
+            print(f"[RoundRobin] Using round_count={group_count} groups")
+        elif self.config.round_size and self.config.round_size > 0:
+            group_count = math.ceil(total / self.config.round_size)
+            print(f"[RoundRobin] Using round_size={self.config.round_size}, calculated {group_count} groups")
         else:
-            # Auto-calculate: use min(total, 10) groups by default
-            # This allows cycling if duration is long enough
+            # Default: use min(total, 10) groups
             group_count = min(total, 10)
-            print(f"[RoundRobin] Auto-configured {group_count} sandbox groups")
+            print(f"[RoundRobin] Auto-configured {group_count} sandbox groups (default)")
 
         # Calculate base distribution and remainder
         base_per_round = total // group_count
