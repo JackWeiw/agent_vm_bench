@@ -381,7 +381,7 @@ test:
             warmup_delay=None,
             warmup_only=False,
             benchmark_percent=None,
-            benchmark_mode="fixed",  # argparse default value
+            benchmark_mode=None,  # argparse default value (None means not specified)
             round_count=None,
             round_size=None,
             round_interval=None,
@@ -446,8 +446,8 @@ test:
         )
 
         config = Config.merge_with_args(yaml_config, args)
-        # YAML benchmark_mode wins (YAML priority), CLI round_count wins (YAML was empty)
-        assert config.benchmark_mode == "round_robin"  # YAML wins
+        # CLI explicitly provided value wins over YAML
+        assert config.benchmark_mode == "fixed"  # CLI wins
         assert config.round_count == 10  # CLI wins (YAML was None)
         assert config.round_interval == 60  # CLI wins (YAML was None)
 

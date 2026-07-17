@@ -62,9 +62,9 @@ test:
   # Round-robin mode configuration (optional)
   benchmark_mode: "round_robin"   # "fixed" (default) or "round_robin"
   # Specify ONE of the following (mutually exclusive):
-  # round_count: 5               # Number of sandbox groups (sandboxes_per_group = total / round_count)
-  round_size: 2                  # Sandboxes per round (group_count = ceil(total / round_size))
-  round_interval: 5              # Round interval in seconds
+  round_count: 5                  # Number of sandbox groups (sandboxes_per_group = total / round_count)
+  # round_size: 2                  # Sandboxes per round (group_count = ceil(total / round_size))
+  round_interval: 30              # Round interval in seconds
 
 # Report configuration
 report:

@@ -778,7 +778,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--benchmark-mode",
         type=str,
         choices=["fixed", "round_robin"],
-        default="fixed",
+        default=None,
         help="Benchmark mode: 'fixed' (default) or 'round_robin'",
     )
     parser.add_argument(
@@ -799,8 +799,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "-ri",
         "--round-interval",
         type=int,
-        default=5,
-        help="Round interval in seconds for round_robin mode (default: 5)",
+        default=None,
+        help="Round interval in seconds for round_robin mode (default: 30)",
     )
 
     # Test run
