@@ -14,6 +14,89 @@ from .config import Config
 from .schemas import SandboxState, SandboxStatus
 
 
+class OpenClawConfig:
+    """Configure OpenClaw to use MockLLM provider"""
+
+    @staticmethod
+    def set_provider(state: SandboxState, endpoint: str, model: str, timeout: int = 30) -> bool:
+        """
+        Configure OpenClaw to use MockLLM as LLM provider.
+
+        Uses 'openclaw config set' to update provider settings.
+        Gateway hot-reloads after config change.
+
+        Args:
+            state: Sandbox state with sandbox object
+            endpoint: MockLLM URL (e.g., "http://192.168.1.10:5199/v1")
+            model: Scenario name (e.g., "browser-scenario-1")
+            timeout: Command timeout in seconds
+
+        Returns:
+            True if successful, False otherwise
+        """
+        sbx = state.sandbox_obj
+        if not sbx:
+            print(f"[Sandbox{state.sandbox_id}] No sandbox object")
+            return False
+
+        try:
+            # Set provider baseUrl
+            cmd = f"openclaw config set models.providers.llm-replay.baseUrl '{endpoint}'"
+            result = sbx.commands.run(cmd, timeout=timeout, user="root")
+            if result.exit_code != 0:
+                print(f"[Sandbox{state.sandbox_id}] Failed to set baseUrl: {result.stderr[:100]}")
+                return False
+
+            # Set provider API type
+            cmd = "openclaw config set models.providers.llm-replay.api 'openai-completions'"
+            result = sbx.commands.run(cmd, timeout=timeout, user="root")
+            if result.exit_code != 0:
+                print(f"[Sandbox{state.sandbox_id}] Failed to set api: {result.stderr[:100]}")
+                return False
+
+            # Set model ID in provider
+            cmd = f"openclaw config set models.providers.llm-replay.models.0.id '{model}'"
+            result = sbx.commands.run(cmd, timeout=timeout, user="root")
+            if result.exit_code != 0:
+                print(f"[Sandbox{state.sandbox_id}] Failed to set model: {result.stderr[:100]}")
+                return False
+
+            # Set default model for agent
+            cmd = f"openclaw models set llm-replay/{model}"
+            result = sbx.commands.run(cmd, timeout=timeout, user="root")
+            if result.exit_code != 0:
+                print(f"[Sandbox{state.sandbox_id}] Failed to set default model: {result.stderr[:100]}")
+                return False
+
+            print(f"[Sandbox{state.sandbox_id}] OpenClaw configured: {endpoint} -> {model}")
+            return True
+
+        except Exception as e:
+            print(f"[Sandbox{state.sandbox_id}] Config error: {e}")
+            return False
+
+    @staticmethod
+    def configure_all(states: dict, endpoint: str, model: str, timeout: int = 30) -> int:
+        """
+        Configure all PORT_READY sandboxes.
+
+        Returns:
+            Number of successfully configured sandboxes
+        """
+        ready = [
+            s for s in states.values()
+            if s.creation_metrics.status == SandboxStatus.PORT_READY and s.sandbox_obj
+        ]
+
+        success = 0
+        for state in ready:
+            if OpenClawConfig.set_provider(state, endpoint, model, timeout):
+                success += 1
+
+        print(f"\nConfigured {success}/{len(ready)} sandboxes")
+        return success
+
+
 class LLMScenarioRunner(threading.Thread):
     """LLM scenario runner (one independent thread per sandbox)"""
 

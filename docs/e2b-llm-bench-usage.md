@@ -5,39 +5,39 @@ This guide explains how to use the LLM benchmark feature in e2b_bench.
 ## Overview
 
 The LLM benchmark mode allows you to:
-1. Create E2B sandboxes with OpenClaw agent pre-configured to use MockLLM
-2. Execute predefined scenarios by sending prompts via Gateway HTTP API
-3. Collect performance metrics (latency, success rate, P99, etc.)
+1. Create E2B sandboxes with OpenClaw agent
+2. Dynamically configure OpenClaw to use MockLLM as LLM provider
+3. Execute predefined scenarios by sending prompts via Gateway HTTP API
+4. Collect performance metrics (latency, success rate, P99, etc.)
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  e2b_bench (Control Plane)                                      │
-│  - Health check MockLLM service                                 │
-│  - Load scenario config (scenarios.yaml)                        │
-│  - Trigger scenario execution via Gateway                       │
+│  1. Health check MockLLM service                                │
+│  2. Load scenario config (scenarios.yaml)                       │
+│  3. Dynamically configure OpenClaw (openclaw config set)        │
+│  4. Trigger scenario execution via Gateway                      │
 └─────────────────────────────────────────────────────────────────┘
                                 │
-                    Gateway HTTP Request
-                    (OpenAI-compatible API)
+              ┌─────────────────┴─────────────────┐
+              │   openclaw config set             │
+              │   models.providers.llm-replay.*   │
+              └─────────────────┬─────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  Sandbox (OpenClaw Agent)                                        │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │  openclaw.json (Pre-configured in template)               │  │
-│  │  {                                                         │  │
-│  │    "models": {                                             │  │
-│  │      "providers": {                                        │  │
-│  │        "llm-replay": {                                     │  │
-│  │          "baseUrl": "http://<MOCKLLM_IP>:5199/v1",        │  │
-│  │          "models": [{"id": "browser-scenario-1"}]         │  │
-│  │        }                                                   │  │
-│  │      }                                                     │  │
-│  │    }                                                       │  │
-│  │  }                                                         │  │
+│  │  Dynamic Configuration (via CLI)                           │  │
+│  │  openclaw config set models.providers.llm-replay.baseUrl  │  │
+│  │                           'http://<MOCKLLM_IP>:5199/v1'   │  │
+│  │  openclaw config set models.providers.llm-replay.models.0 │  │
+│  │                           'browser-scenario-1'             │  │
 │  └───────────────────────────────────────────────────────────┘  │
+│                                │                                 │
+│                    Gateway Hot-Reload                           │
 │                                │                                 │
 │                    Agent -> MockLLM Request                      │
 │                                │                                 │
@@ -51,66 +51,15 @@ The LLM benchmark mode allows you to:
                  └───────────────────────────────────┘
 ```
 
-**Important**: The MockLLM endpoint must be pre-configured in the sandbox template's `openclaw.json`. The `llm.endpoint` in e2b_bench.yaml is only used for health checking, not for configuring the agent.
+**Key Feature**: OpenClaw is dynamically configured before each benchmark run using `openclaw config set` commands. The Gateway automatically hot-reloads after configuration changes.
 
 ## Prerequisites
 
 1. **MockLLM Service**: Must be running before starting the benchmark
 2. **Session Files**: JSONL files in `llm_replay/sessions/` directory
 3. **Scenario Config**: `llm_replay/config/scenarios.yaml` defining prompts
-4. **Sandbox Template**: Must have `openclaw.json` pre-configured to use MockLLM endpoint
 
-## Sandbox Template Configuration
-
-The sandbox template must have OpenClaw configured to use MockLLM as the LLM provider. This is done in the `openclaw.json` file inside the sandbox.
-
-### Example openclaw.json Configuration
-
-```json
-{
-  "models": {
-    "providers": {
-      "llm-replay": {
-        "baseUrl": "http://192.168.1.10:5199/v1",
-        "apiKey": "dummy-key",
-        "api": "openai-completions",
-        "models": [
-          {
-            "id": "browser-scenario-1",
-            "name": "browser-scenario-1",
-            "api": "openai-completions",
-            "reasoning": false,
-            "input": ["text"],
-            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-            "contextWindow": 260000,
-            "maxTokens": 10000
-          }
-        ]
-      }
-    }
-  },
-  "agents": {
-    "defaults": {
-      "model": {"primary": "llm-replay/browser-scenario-1"}
-    }
-  }
-}
-```
-
-### Key Configuration Fields
-
-| Field | Value | Description |
-|-------|-------|-------------|
-| `baseUrl` | `http://<MOCKLLM_IP>:5199/v1` | MockLLM service address (must be reachable from sandbox) |
-| `apiKey` | `dummy-key` | Any value (MockLLM doesn't validate) |
-| `models[].id` | `browser-scenario-1` | Must match session filename (without .jsonl) |
-| `agents.defaults.model.primary` | `llm-replay/browser-scenario-1` | Default model for agent |
-
-### Network Considerations
-
-- The `baseUrl` must be reachable from inside the sandbox
-- Use the host's IP address (not `localhost` or `127.0.0.1`)
-- Ensure firewall allows connections on port 5199
+**Note**: Unlike static configuration, you don't need to create separate sandbox templates for each scenario. The sandbox template only needs OpenClaw installed; configuration is applied dynamically at runtime.
 
 ## Quick Start
 
@@ -145,8 +94,8 @@ task_mode: "llm"
 # LLM configuration
 llm:
   enabled: true
-  endpoint: "http://192.168.1.10:5199/v1"  # MockLLM service address (for health check)
-  model: "browser-scenario-1"               # Scenario name (must match openclaw.json model)
+  endpoint: "http://192.168.1.10:5199/v1"  # MockLLM service address
+  model: "browser-scenario-1"               # Scenario name
   timeout: 600                               # Scenario timeout (seconds)
   request_timeout: 30                        # HTTP request timeout (seconds)
   health_check: true                         # Check MockLLM health before starting
@@ -182,7 +131,7 @@ python -m e2b_bench --task-mode llm --total 10 --duration 300
 | `interval_min` | float | 5.0 | Min interval between scenarios (seconds) |
 | `interval_max` | float | 15.0 | Max interval between scenarios (seconds) |
 
-**Note**: The `endpoint` is used for health checking the MockLLM service before starting the benchmark. The actual LLM endpoint used by the agent must be configured in the sandbox template's `openclaw.json` file.
+**Note**: The `endpoint` is used for both health checking and dynamic configuration of OpenClaw in sandboxes.
 
 ## How It Works
 
@@ -197,9 +146,14 @@ python -m e2b_bench --task-mode llm --total 10 --duration 300
    │
 4. Load scenario config and get prompt
    │
-5. Start stats collector
+5. Configure OpenClaw in all sandboxes:
+   │   - openclaw config set models.providers.llm-replay.baseUrl
+   │   - openclaw config set models.providers.llm-replay.models.0.id
+   │   - Gateway hot-reloads automatically
    │
-6. For each sandbox:
+6. Start stats collector
+   │
+7. For each sandbox:
    │   a. Build Gateway HTTP request with prompt
    │   b. Execute via sandbox.commands.run()
    │   c. Wait for response
@@ -207,7 +161,7 @@ python -m e2b_bench --task-mode llm --total 10 --duration 300
    │   e. Random interval
    │   f. Repeat a-e (reset context each time)
    │
-7. Run for test_duration
+8. Run for test_duration
    │
 8. Stop and generate report
 ```

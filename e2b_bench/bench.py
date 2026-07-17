@@ -25,7 +25,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import Config
-from .llm_runner import check_mockllm_health, LLMTaskManager
+from .llm_runner import check_mockllm_health, LLMTaskManager, OpenClawConfig
 from .sandbox_manager import SandboxManager
 from .scenario_loader import find_scenario_file, load_scenarios
 from .schemas import SandboxStatus
@@ -602,8 +602,26 @@ def run_benchmark(config: Config) -> dict:
             print(f"ERROR: {e}")
             return {"report": str(e), "filepath": None}
 
+        # Configure OpenClaw in all sandboxes to use MockLLM
+        print(f"\n[Phase 5] Configuring OpenClaw to use MockLLM...")
+        print(f"  Endpoint: {config.llm.endpoint}")
+        print(f"  Model: {config.llm.model}")
+        configured = OpenClawConfig.configure_all(
+            sandbox_states,
+            config.llm.endpoint,
+            config.llm.model,
+            timeout=30
+        )
+        if configured == 0:
+            print("ERROR: Failed to configure any sandbox with MockLLM endpoint")
+            return {"report": "Failed to configure OpenClaw", "filepath": None}
+
+        # Wait for Gateway to hot-reload
+        print("Waiting for Gateway hot-reload...")
+        time.sleep(3)
+
         # 6. Start statistics collection
-        print("\n[Phase 5] Starting stats collector...")
+        print("\n[Phase 6] Starting stats collector...")
         stats_collector = StatsCollector(config, sandbox_states)
         stats_collector.start()
 
@@ -612,14 +630,14 @@ def run_benchmark(config: Config) -> dict:
         llm_task_manager.start_all()
 
         # 8. Run for specified duration
-        print(f"\n[Phase 6] Running for {config.test_duration} seconds...")
+        print(f"\n[Phase 7] Running for {config.test_duration} seconds...")
         try:
             time.sleep(config.test_duration)
         except KeyboardInterrupt:
             print("\nUser interrupt, stopping...")
 
         # 9. Stop all components
-        print("\n[Phase 7] Stopping...")
+        print("\n[Phase 8] Stopping...")
         stop_event.set()
         llm_task_manager.wait_all(timeout=5)
         stats_collector.stop()
