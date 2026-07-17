@@ -110,9 +110,9 @@ class TabSwitchRunner(threading.Thread):
         self.state.browser_metrics.add(elapsed, success and not timeout, timeout, step_times=step_times)
         self.state.last_task_time = time.time()
 
-        if success:
-            print(f"[Sandbox{self.state.sandbox_id}] Tab {tab_id} completed in {elapsed:.2f}s (tab_switch={step_times.get('tab_switch', 0):.2f}s, snapshot={step_times.get('snapshot', 0):.2f}s)")
-        else:
+        # Only print failures, not successes (reduce log noise)
+        if not success:
+            print(f"[Sandbox{self.state.sandbox_id}] Tab {tab_id} failed in {elapsed:.2f}s")
             self.consecutive_errors += 1
             if self.consecutive_errors >= 3:
                 self.state.is_alive = False
@@ -405,7 +405,7 @@ class RoundRobinTaskManager:
         self.current_round = round_id
 
     def _stop_round(self) -> None:
-        """Stop the current round."""
+        """Stop the current round and print summary."""
         if not self.round_stop_event:
             return
 
@@ -416,14 +416,35 @@ class RoundRobinTaskManager:
         for runner in self.active_runners:
             runner.join(timeout=2)
 
+        # Aggregate step timing from sandbox states
+        step_totals = {}
+        for state in self.all_ready_states:
+            if state.tab_ids:
+                metrics = state.browser_metrics
+                step_stats = metrics.get_step_stats()
+                for step_name, stats in step_stats.items():
+                    if step_name not in step_totals:
+                        step_totals[step_name] = {"total": 0.0, "count": 0}
+                    step_totals[step_name]["total"] += stats["avg"] * stats["count"]
+                    step_totals[step_name]["count"] += stats["count"]
+
+        # Print round summary with step timing
+        runner_count = len(self.active_runners)
+        if runner_count > 0 and step_totals:
+            avg_tab_switch = (step_totals.get("tab_switch", {}).get("total", 0) / max(1, step_totals.get("tab_switch", {}).get("count", 1))) * 1000
+            avg_snapshot = (step_totals.get("snapshot", {}).get("total", 0) / max(1, step_totals.get("snapshot", {}).get("count", 1))) * 1000
+
+            tab_index = self.current_round % len(self.all_ready_states[0].tab_ids) if self.all_ready_states and self.all_ready_states[0].tab_ids else 0
+            print(f"[Round {self.current_round}] Completed: {runner_count} sandboxes, tab t{tab_index + 1}, avg: tab_switch={avg_tab_switch:.0f}ms, snapshot={avg_snapshot:.0f}ms")
+        else:
+            print(f"[Round {self.current_round}] Completed: {runner_count} sandboxes")
+
         # Clear round state
         self.active_runners.clear()
         self.round_stop_event = None
 
         # Clear round marker in stats collector
         self.stats_collector.set_round(None)
-
-        print(f"[Round {self.current_round}] Stopped")
 
     def _calculate_rounds(self) -> int:
         """Calculate total number of rounds.
