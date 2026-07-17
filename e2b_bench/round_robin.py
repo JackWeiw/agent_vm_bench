@@ -431,11 +431,23 @@ class RoundRobinTaskManager:
         # Print round summary with step timing
         runner_count = len(self.active_runners)
         if runner_count > 0 and step_totals:
-            avg_tab_switch = (step_totals.get("tab_switch", {}).get("total", 0) / max(1, step_totals.get("tab_switch", {}).get("count", 1))) * 1000
-            avg_snapshot = (step_totals.get("snapshot", {}).get("total", 0) / max(1, step_totals.get("snapshot", {}).get("count", 1))) * 1000
+            avg_tab_switch = (
+                step_totals.get("tab_switch", {}).get("total", 0)
+                / max(1, step_totals.get("tab_switch", {}).get("count", 1))
+            ) * 1000
+            avg_snapshot = (
+                step_totals.get("snapshot", {}).get("total", 0)
+                / max(1, step_totals.get("snapshot", {}).get("count", 1))
+            ) * 1000
 
-            tab_index = self.current_round % len(self.all_ready_states[0].tab_ids) if self.all_ready_states and self.all_ready_states[0].tab_ids else 0
-            print(f"[Round {self.current_round}] Completed: {runner_count} sandboxes, tab t{tab_index + 1}, avg: tab_switch={avg_tab_switch:.0f}ms, snapshot={avg_snapshot:.0f}ms")
+            tab_index = (
+                self.current_round % len(self.all_ready_states[0].tab_ids)
+                if self.all_ready_states and self.all_ready_states[0].tab_ids
+                else 0
+            )
+            print(
+                f"[Round {self.current_round}] Completed: {runner_count} sandboxes, tab t{tab_index + 1}, avg: tab_switch={avg_tab_switch:.0f}ms, snapshot={avg_snapshot:.0f}ms"
+            )
         else:
             print(f"[Round {self.current_round}] Completed: {runner_count} sandboxes")
 
