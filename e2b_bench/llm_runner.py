@@ -5,6 +5,7 @@ Executes LLM scenarios by triggering OpenClaw agent in sandbox via Gateway HTTP 
 Each sandbox runs scenarios in a loop with configurable intervals.
 """
 
+import json
 import random
 import threading
 import time
@@ -43,12 +44,12 @@ class OpenClawConfig:
             # Write complete provider config in one command
             # OpenClaw validates config atomically - partial updates fail
             # Note: apiKey is required for custom providers, use fixed value
-            config_json = (
-                '{"api":"openai-completions",'
-                f'"baseUrl":"{endpoint}",'
-                '"apiKey":"huawei-kunpeng-ai",'
-                f'"models":[{"id":"{model}","name":"{model}"}]}}'
-            )
+            config_json = json.dumps({
+                "api": "openai-completions",
+                "baseUrl": endpoint,
+                "apiKey": "huawei-kunpeng-ai",
+                "models": [{"id": model, "name": model}]
+            })
             cmd = f"openclaw config set models.providers.llm-replay '{config_json}'"
             result = sbx.commands.run(cmd, timeout=timeout, user="root")
             if result.exit_code != 0:
