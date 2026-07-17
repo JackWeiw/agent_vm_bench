@@ -389,7 +389,9 @@ def run_benchmark(config: Config) -> dict:
         print(f"  Benchmark Mode: fixed")
         if config.benchmark_percent < 1.0:
             benchmark_count = config.benchmark_count
-            print(f"  Benchmark: {benchmark_count}/{config.total_count} sandboxes ({config.benchmark_percent * 100:.0f}%)")
+            print(
+                f"  Benchmark: {benchmark_count}/{config.total_count} sandboxes ({config.benchmark_percent * 100:.0f}%)"
+            )
 
     print("=" * 80)
 
@@ -591,13 +593,9 @@ def run_benchmark(config: Config) -> dict:
         print(f"  Rounds: {config.round_count}")
         print(f"  Interval: {config.round_interval}s per round")
         print(f"  Total sandboxes: {ready_count}")
-        print(
-            f"  Per round (balanced): ~{ready_count // config.round_count if config.round_count else 0}"
-        )
+        print(f"  Per round (balanced): ~{ready_count // config.round_count if config.round_count else 0}")
 
-        round_robin_manager = RoundRobinTaskManager(
-            config, sandbox_states, stop_event, stats_collector
-        )
+        round_robin_manager = RoundRobinTaskManager(config, sandbox_states, stop_event, stats_collector)
         round_robin_manager.run()
     else:
         # Fixed mode (original behavior)

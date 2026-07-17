@@ -82,7 +82,9 @@ class RoundRobinTaskManager:
         will_cycle = rounds > num_groups
         if will_cycle:
             print(f"\n[RoundRobin] Total rounds: {rounds} (cycling enabled)")
-            print(f"[RoundRobin] Sandbox groups: {num_groups}, cycles: {rounds // num_groups}x + {rounds % num_groups} rounds")
+            print(
+                f"[RoundRobin] Sandbox groups: {num_groups}, cycles: {rounds // num_groups}x + {rounds % num_groups} rounds"
+            )
         else:
             print(f"\n[RoundRobin] Total rounds: {rounds}")
         print(f"[RoundRobin] Sandboxes per round: {len(self.sandbox_groups[0])} (balanced)")
@@ -98,7 +100,9 @@ class RoundRobinTaskManager:
             # Check if duration is reached
             elapsed = time.time() - start_time
             if elapsed >= self.config.test_duration:
-                print(f"[RoundRobin] Duration reached ({elapsed:.1f}s >= {self.config.test_duration}s), ending at round {round_id}")
+                print(
+                    f"[RoundRobin] Duration reached ({elapsed:.1f}s >= {self.config.test_duration}s), ending at round {round_id}"
+                )
                 break
 
             # Cycle back to first group if needed
@@ -127,9 +131,7 @@ class RoundRobinTaskManager:
 
         # Get all ready sandboxes
         self.all_ready_states = [
-            s
-            for s in self.sandbox_states.values()
-            if s.creation_metrics.status == SandboxStatus.PORT_READY
+            s for s in self.sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY
         ]
 
         total = len(self.all_ready_states)
@@ -187,7 +189,9 @@ class RoundRobinTaskManager:
 
         # Show cycle info if this is a repeated group
         if round_id >= num_groups:
-            print(f"\n[Round {round_id}] (cycle {round_id // num_groups}, group {group_idx}) Starting {len(current_states)} sandboxes")
+            print(
+                f"\n[Round {round_id}] (cycle {round_id // num_groups}, group {group_idx}) Starting {len(current_states)} sandboxes"
+            )
         else:
             print(f"\n[Round {round_id}] Starting {len(current_states)} sandboxes")
 
@@ -245,7 +249,9 @@ class RoundRobinTaskManager:
         # Auto-calculate based on duration and interval
         if self.config.round_interval > 0:
             rounds = math.ceil(self.config.test_duration / self.config.round_interval)
-            print(f"[RoundRobin] Auto-calculated {rounds} rounds from duration={self.config.test_duration}s, interval={self.config.round_interval}s")
+            print(
+                f"[RoundRobin] Auto-calculated {rounds} rounds from duration={self.config.test_duration}s, interval={self.config.round_interval}s"
+            )
             return rounds
 
         # Fallback: number of groups (no cycling)

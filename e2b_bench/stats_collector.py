@@ -366,7 +366,11 @@ class StatsCollector:
                 if snapshots:
                     tasks = sum(s.browser_total for s in snapshots)
                     success = sum(s.browser_success for s in snapshots)
-                    avg = statistics.mean(s.browser_avg_latency for s in snapshots if s.browser_avg_latency > 0) if any(s.browser_avg_latency > 0 for s in snapshots) else 0.0
+                    avg = (
+                        statistics.mean(s.browser_avg_latency for s in snapshots if s.browser_avg_latency > 0)
+                        if any(s.browser_avg_latency > 0 for s in snapshots)
+                        else 0.0
+                    )
                     p99 = max(s.browser_p99_latency for s in snapshots) if snapshots else 0.0
                     rate = success / max(1, tasks) * 100 if tasks > 0 else 0.0
                     lines.append(f"{round_id:<8} {tasks:<8} {rate:<10.1f} {avg:<10.2f} {p99:<10.2f}")

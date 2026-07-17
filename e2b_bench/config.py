@@ -215,7 +215,9 @@ class Config:
             # Round-robin mode configuration
             # YAML config takes priority over CLI default (from argparse)
             # Use CLI value only when: 1) no YAML config exists, or 2) user explicitly provides different value
-            benchmark_mode=yaml_config.benchmark_mode if yaml_config.benchmark_mode else (args.benchmark_mode or "fixed"),
+            benchmark_mode=yaml_config.benchmark_mode
+            if yaml_config.benchmark_mode
+            else (args.benchmark_mode or "fixed"),
             round_count=args.round_count if args.round_count else yaml_config.round_count,
             round_size=args.round_size if args.round_size else yaml_config.round_size,
             round_interval=args.round_interval if args.round_interval else yaml_config.round_interval,
