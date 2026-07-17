@@ -176,25 +176,33 @@ class LLMScenarioRunner(threading.Thread):
         start_time = time.perf_counter()
         try:
             # Build payload JSON file to avoid shell escaping issues
+            # Use streaming mode to keep connection alive during long agent execution
             payload = {
                 "model": "openclaw",
-                "messages": [{"role": "user", "content": self.prompt}]
+                "messages": [{"role": "user", "content": self.prompt}],
+                "stream": True  # Enable streaming to prevent timeout during long execution
             }
             payload_json = json.dumps(payload, ensure_ascii=False)
 
-            # Write payload to temp file in sandbox
+            # Write payload to temp file in sandbox using files.write API
+            # This avoids shell escaping issues
             payload_path = "/tmp/llm_payload.json"
-            write_cmd = f"cat > {payload_path} << 'PAYLOAD_EOF'\n{payload_json}\nPAYLOAD_EOF"
-            sbx.commands.run(write_cmd, timeout=10, user="root")
+            try:
+                sbx.files.write(payload_path, payload_json)
+            except Exception as write_error:
+                print(f"[Sandbox{self.state.sandbox_id}] Failed to write payload file: {write_error}")
+                return False, 0.0
 
             # Execute Gateway HTTP request with payload file
+            # Use streaming mode (stream: true) to keep connection alive during long execution
+            # This prevents timeout issues when agent takes a long time
             cmd = (
-                f"curl -s -o /dev/null -w '%{{time_total}}' "
-                f"-X POST http://127.0.0.1:18789/v1/chat/completions "
+                f"curl -s -X POST http://127.0.0.1:18789/v1/chat/completions "
                 f"-H 'Authorization: Bearer test-token-123' "
                 f"-H 'Content-Type: application/json' "
                 f"-d @{payload_path} "
-                f"--max-time {self.config.llm.timeout}"
+                f"--max-time {self.config.llm.timeout} "
+                f"-o /dev/null -w '%{{time_total}}'"
             )
             result = sbx.commands.run(cmd, timeout=self.config.llm.timeout + 30, user="root")
             elapsed = time.perf_counter() - start_time
