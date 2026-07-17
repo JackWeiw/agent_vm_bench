@@ -380,16 +380,16 @@ def run_benchmark(config: Config) -> dict:
 
     print(f"  Duration: {config.test_duration}s")
 
-    # Benchmark percent display
-    if config.benchmark_percent < 1.0:
-        benchmark_count = config.benchmark_count
-        print(f"  Benchmark: {benchmark_count}/{config.total_count} sandboxes ({config.benchmark_percent * 100:.0f}%)")
-
-    # Benchmark mode display
+    # Benchmark mode display (with mode-specific info)
     if config.benchmark_mode == "round_robin":
         print(f"  Benchmark Mode: round_robin ({config.round_count} rounds x {config.round_interval}s)")
+        print(f"  Sandboxes: All {config.total_count} sandboxes will be tested across rounds")
     else:
+        # Benchmark percent display (only for fixed mode)
         print(f"  Benchmark Mode: fixed")
+        if config.benchmark_percent < 1.0:
+            benchmark_count = config.benchmark_count
+            print(f"  Benchmark: {benchmark_count}/{config.total_count} sandboxes ({config.benchmark_percent * 100:.0f}%)")
 
     print("=" * 80)
 
