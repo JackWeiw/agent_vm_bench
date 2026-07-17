@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import Config
+from .round_robin import RoundRobinTaskManager
 from .sandbox_manager import SandboxManager
 from .schemas import SandboxStatus
 from .stats_collector import StatsCollector
@@ -384,6 +385,12 @@ def run_benchmark(config: Config) -> dict:
         benchmark_count = config.benchmark_count
         print(f"  Benchmark: {benchmark_count}/{config.total_count} sandboxes ({config.benchmark_percent * 100:.0f}%)")
 
+    # Benchmark mode display
+    if config.benchmark_mode == "round_robin":
+        print(f"  Benchmark Mode: round_robin ({config.round_count} rounds x {config.round_interval}s)")
+    else:
+        print(f"  Benchmark Mode: fixed")
+
     print("=" * 80)
 
     # Stop signal
@@ -576,21 +583,39 @@ def run_benchmark(config: Config) -> dict:
     stats_collector.start()
 
     # 6. Start task execution (with batch control and benchmark_percent)
-    benchmark_count = max(1, int(ready_count * config.benchmark_percent))
-    if config.benchmark_percent < 1.0:
+    if config.benchmark_mode == "round_robin":
+        # Round-robin mode: rotate sandbox groups across rounds
+        benchmark_count = max(1, int(ready_count * config.benchmark_percent))
+        print(f"\n[Phase 4] Starting round-robin browser tasks...")
+        print(f"  Mode: round_robin")
+        print(f"  Rounds: {config.round_count}")
+        print(f"  Interval: {config.round_interval}s per round")
+        print(f"  Total sandboxes: {ready_count}")
         print(
-            f"\n[Phase 4] Starting browser tasks on {benchmark_count}/{ready_count} sandboxes ({config.benchmark_percent * 100:.0f}%)..."
+            f"  Per round (balanced): ~{ready_count // config.round_count if config.round_count else 0}"
         )
-    else:
-        print("\n[Phase 4] Starting browser tasks...")
-    task_manager.start_all()
 
-    # 7. Run for specified duration
-    print(f"\n[Phase 5] Running for {config.test_duration} seconds...")
-    try:
-        time.sleep(config.test_duration)
-    except KeyboardInterrupt:
-        print("\nUser interrupt, stopping...")
+        round_robin_manager = RoundRobinTaskManager(
+            config, sandbox_states, stop_event, stats_collector
+        )
+        round_robin_manager.run()
+    else:
+        # Fixed mode (original behavior)
+        benchmark_count = max(1, int(ready_count * config.benchmark_percent))
+        if config.benchmark_percent < 1.0:
+            print(
+                f"\n[Phase 4] Starting browser tasks on {benchmark_count}/{ready_count} sandboxes ({config.benchmark_percent * 100:.0f}%)..."
+            )
+        else:
+            print("\n[Phase 4] Starting browser tasks...")
+        task_manager.start_all()
+
+        # 7. Run for specified duration
+        print(f"\n[Phase 5] Running for {config.test_duration} seconds...")
+        try:
+            time.sleep(config.test_duration)
+        except KeyboardInterrupt:
+            print("\nUser interrupt, stopping...")
 
     # 8. Stop all components
     print("\n[Phase 6] Stopping...")
