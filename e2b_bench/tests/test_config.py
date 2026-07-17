@@ -340,6 +340,117 @@ test:
         assert config.round_count == 4
         assert config.round_interval == 20
 
+    def test_yaml_priority_over_cli_default(self):
+        """YAML config takes priority over CLI default for benchmark_mode"""
+        yaml_content = """
+test:
+  benchmark_mode: round_robin
+  round_interval: 30
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        import argparse
+
+        # Simulate argparse with default value (user didn't specify --benchmark-mode)
+        args = argparse.Namespace(
+            e2b_access_token=None,
+            e2b_api_key=None,
+            e2b_domain=None,
+            e2b_api_url=None,
+            e2b_http_ssl=None,
+            template=None,
+            create_timeout=None,
+            total=None,
+            detect=False,
+            create_only=False,
+            sandbox_ids_file=None,
+            create_batch_size=None,
+            create_batch_interval=None,
+            task_batch_size=None,
+            task_batch_interval=None,
+            browser_url=None,
+            browser_timeout=None,
+            browser_interval_min=None,
+            browser_interval_max=None,
+            warmup_url=None,
+            warmup_loops=None,
+            warmup_delay=None,
+            warmup_only=False,
+            benchmark_percent=None,
+            benchmark_mode="fixed",  # argparse default value
+            round_count=None,
+            round_size=None,
+            round_interval=None,
+            duration=None,
+            stats_interval=None,
+            output_dir=None,
+            filename_prefix=None,
+        )
+
+        config = Config.merge_with_args(yaml_config, args)
+        # YAML value should win over CLI default
+        assert config.benchmark_mode == "round_robin"
+        assert config.round_interval == 30  # YAML value preserved
+
+    def test_cli_explicit_override_yaml(self):
+        """CLI explicitly provided value overrides YAML config when YAML is empty"""
+        yaml_content = """
+test:
+  benchmark_mode: round_robin
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        import argparse
+
+        args = argparse.Namespace(
+            e2b_access_token=None,
+            e2b_api_key=None,
+            e2b_domain=None,
+            e2b_api_url=None,
+            e2b_http_ssl=None,
+            template=None,
+            create_timeout=None,
+            total=None,
+            detect=False,
+            create_only=False,
+            sandbox_ids_file=None,
+            create_batch_size=None,
+            create_batch_interval=None,
+            task_batch_size=None,
+            task_batch_interval=None,
+            browser_url=None,
+            browser_timeout=None,
+            browser_interval_min=None,
+            browser_interval_max=None,
+            warmup_url=None,
+            warmup_loops=None,
+            warmup_delay=None,
+            warmup_only=False,
+            benchmark_percent=None,
+            benchmark_mode="fixed",  # User explicitly provided different value
+            round_count=10,
+            round_size=None,
+            round_interval=60,
+            duration=None,
+            stats_interval=None,
+            output_dir=None,
+            filename_prefix=None,
+        )
+
+        config = Config.merge_with_args(yaml_config, args)
+        # YAML benchmark_mode wins (YAML priority), CLI round_count wins (YAML was empty)
+        assert config.benchmark_mode == "round_robin"  # YAML wins
+        assert config.round_count == 10  # CLI wins (YAML was None)
+        assert config.round_interval == 60  # CLI wins (YAML was None)
+
     def test_actual_yaml_file_loads_round_robin(self):
         """Test that the actual e2b_bench.yaml loads round_robin correctly"""
         import os.path
