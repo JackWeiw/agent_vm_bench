@@ -58,9 +58,13 @@ class RoundRobinTaskManager:
 
         Main loop:
         1. Prepare sandbox groups (equal distribution)
-        2. For each round: start tasks -> wait interval -> stop tasks
-        3. Track statistics per round
+        2. Calculate number of rounds (auto or from config)
+        3. For each round: start tasks -> wait interval -> stop tasks
+        4. Loop back to first group if rounds exceed groups (cycling)
+        5. Track statistics per round
         """
+        import math
+
         # 1. Prepare sandbox groups
         self._prepare_sandbox_groups()
 
@@ -68,17 +72,26 @@ class RoundRobinTaskManager:
             print("[RoundRobin] No sandbox groups to execute")
             return
 
-        # 2. Calculate number of rounds
+        # 2. Calculate number of rounds (auto or from config)
         rounds = self._calculate_rounds()
-        print(f"\n[RoundRobin] Total rounds: {rounds}")
+        num_groups = len(self.sandbox_groups)
+
+        # Check if cycling will occur
+        will_cycle = rounds > num_groups
+        if will_cycle:
+            print(f"\n[RoundRobin] Total rounds: {rounds} (cycling enabled)")
+            print(f"[RoundRobin] Sandbox groups: {num_groups}, cycles: {rounds // num_groups}x + {rounds % num_groups} rounds")
+        else:
+            print(f"\n[RoundRobin] Total rounds: {rounds}")
         print(f"[RoundRobin] Sandboxes per round: {len(self.sandbox_groups[0])} (balanced)")
 
-        # 3. Execute each round
+        # 3. Execute each round (with cycling)
         for round_id in range(rounds):
             if self.stop_event.is_set():
                 print(f"[RoundRobin] Stop event detected, ending at round {round_id}")
                 break
 
+            # Cycle back to first group if needed
             self._start_round(round_id)
             time.sleep(self.config.round_interval)
             self._stop_round()
@@ -89,11 +102,15 @@ class RoundRobinTaskManager:
         """Prepare sandbox groups for round-robin execution.
 
         Distributes sandboxes evenly across rounds:
-        - Base distribution: total // round_count
+        - Base distribution: total // group_count
         - Remainder distributed to first N rounds
 
-        Example: 103 sandboxes ÷ 5 rounds = [21, 21, 21, 20, 20]
+        Example: 103 sandboxes ÷ 5 groups = [21, 21, 21, 20, 20]
+
+        If round_count is not specified, uses a default of min(total, 10) groups.
         """
+        import math
+
         # Get all ready sandboxes
         self.all_ready_states = [
             s
@@ -106,23 +123,28 @@ class RoundRobinTaskManager:
             print("[RoundRobin] No ready sandboxes available")
             return
 
-        round_count = self.config.round_count
-        if not round_count or round_count <= 0:
-            print(f"[RoundRobin] Invalid round_count: {round_count}")
-            return
+        # Determine number of groups
+        # If round_count is specified, use it; otherwise use a default
+        if self.config.round_count and self.config.round_count > 0:
+            group_count = self.config.round_count
+        else:
+            # Auto-calculate: use min(total, 10) groups by default
+            # This allows cycling if duration is long enough
+            group_count = min(total, 10)
+            print(f"[RoundRobin] Auto-configured {group_count} sandbox groups")
 
         # Calculate base distribution and remainder
-        base_per_round = total // round_count
-        remainder = total % round_count
+        base_per_round = total // group_count
+        remainder = total % group_count
 
-        print(f"[RoundRobin] Preparing groups: {total} sandboxes ÷ {round_count} rounds")
+        print(f"[RoundRobin] Preparing groups: {total} sandboxes ÷ {group_count} groups")
         print(f"[RoundRobin] Base per round: {base_per_round}, remainder: {remainder}")
 
         # Split into groups
         self.sandbox_groups = []
         start_idx = 0
 
-        for i in range(round_count):
+        for i in range(group_count):
             # First N rounds get one extra sandbox (remainder distribution)
             per_round = base_per_round + (1 if i < remainder else 0)
             end_idx = start_idx + per_round
@@ -138,15 +160,20 @@ class RoundRobinTaskManager:
         """Start a specific round.
 
         Args:
-            round_id: Round index (0-based)
+            round_id: Round index (0-based, can exceed num_groups for cycling)
         """
-        if round_id >= len(self.sandbox_groups):
-            print(f"[RoundRobin] Invalid round_id: {round_id}")
-            return
+        # Cycle back to first group if round_id exceeds number of groups
+        num_groups = len(self.sandbox_groups)
+        group_idx = round_id % num_groups
 
-        # Get current round's sandbox group
-        current_states = self.sandbox_groups[round_id]
-        print(f"\n[Round {round_id}] Starting {len(current_states)} sandboxes")
+        # Get current round's sandbox group (with cycling)
+        current_states = self.sandbox_groups[group_idx]
+
+        # Show cycle info if this is a repeated group
+        if round_id >= num_groups:
+            print(f"\n[Round {round_id}] (cycle {round_id // num_groups}, group {group_idx}) Starting {len(current_states)} sandboxes")
+        else:
+            print(f"\n[Round {round_id}] Starting {len(current_states)} sandboxes")
 
         # Mark current round for statistics tracking
         self.stats_collector.set_round(round_id)
@@ -187,7 +214,23 @@ class RoundRobinTaskManager:
     def _calculate_rounds(self) -> int:
         """Calculate total number of rounds.
 
+        If round_count is specified, use it.
+        Otherwise, auto-calculate based on duration and interval.
+
         Returns:
             Number of rounds to execute
         """
+        import math
+
+        # If round_count is specified, use it
+        if self.config.round_count and self.config.round_count > 0:
+            return self.config.round_count
+
+        # Auto-calculate based on duration and interval
+        if self.config.round_interval > 0:
+            rounds = math.ceil(self.config.test_duration / self.config.round_interval)
+            print(f"[RoundRobin] Auto-calculated {rounds} rounds from duration={self.config.test_duration}s, interval={self.config.round_interval}s")
+            return rounds
+
+        # Fallback: number of groups (no cycling)
         return len(self.sandbox_groups)
