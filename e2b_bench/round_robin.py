@@ -55,7 +55,7 @@ class TabSwitchRunner(threading.Thread):
         success = True
         step_times = {}
         failed_step = None  # Track which step failed
-        error_detail = ""   # Detailed error message
+        error_detail = ""  # Detailed error message
 
         try:
             # Step 1: Switch to target tab
