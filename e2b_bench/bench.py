@@ -612,8 +612,7 @@ def run_benchmark(config: Config) -> dict:
                 wave_states = wave_manager.create_all()
 
                 wave_ready_count = sum(
-                    1 for s in wave_states.values()
-                    if s.creation_metrics.status == SandboxStatus.PORT_READY
+                    1 for s in wave_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY
                 )
 
                 if wave_ready_count == 0:
