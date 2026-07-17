@@ -186,7 +186,8 @@ class LLMScenarioRunner(threading.Thread):
 
             # Write payload to temp file in sandbox using files.write API
             # This avoids shell escaping issues
-            payload_path = "/tmp/llm_payload.json"
+            # Use /home/user directory which has write permissions
+            payload_path = "/home/user/llm_payload.json"
             try:
                 sbx.files.write(payload_path, payload_json)
             except Exception as write_error:
