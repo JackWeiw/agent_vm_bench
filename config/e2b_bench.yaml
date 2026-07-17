@@ -59,6 +59,11 @@ test:
   stats_interval: 10
   benchmark_percent: 1.0    # Percentage of sandboxes for benchmark (1.0 = 100%, 0.5 = 50%)
 
+  # Round-robin mode configuration (optional)
+  benchmark_mode: "fixed"   # "fixed" (default) or "round_robin"
+  # round_count: 5          # Round count for round_robin mode
+  # round_interval: 30      # Round interval in seconds for round_robin mode
+
 # Report configuration
 report:
   output_dir: "results/e2b"
