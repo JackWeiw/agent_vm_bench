@@ -160,7 +160,10 @@ class LLMScenarioRunner(threading.Thread):
 
     def _execute_scenario(self) -> Tuple[bool, float]:
         """
-        Execute single scenario via Gateway HTTP API.
+        Execute complete scenario via Gateway HTTP API.
+
+        Sends initial prompt and waits for agent to complete all turns.
+        Agent handles multi-turn conversation internally with MockLLM.
 
         Returns: (success, latency_seconds)
         """
@@ -168,13 +171,31 @@ class LLMScenarioRunner(threading.Thread):
         if not sbx:
             return False, 0.0
 
-        # Get E2B sandbox_id for logging
         e2b_sandbox_id = sbx.sandbox_id if hasattr(sbx, "sandbox_id") else "N/A"
 
         start_time = time.perf_counter()
         try:
-            # Build and execute Gateway HTTP request
-            cmd = self._build_gateway_request()
+            # Build payload JSON file to avoid shell escaping issues
+            payload = {
+                "model": "openclaw",
+                "messages": [{"role": "user", "content": self.prompt}]
+            }
+            payload_json = json.dumps(payload, ensure_ascii=False)
+
+            # Write payload to temp file in sandbox
+            payload_path = "/tmp/llm_payload.json"
+            write_cmd = f"cat > {payload_path} << 'PAYLOAD_EOF'\n{payload_json}\nPAYLOAD_EOF"
+            sbx.commands.run(write_cmd, timeout=10, user="root")
+
+            # Execute Gateway HTTP request with payload file
+            cmd = (
+                f"curl -s -o /dev/null -w '%{{time_total}}' "
+                f"-X POST http://127.0.0.1:18789/v1/chat/completions "
+                f"-H 'Authorization: Bearer test-token-123' "
+                f"-H 'Content-Type: application/json' "
+                f"-d @{payload_path} "
+                f"--max-time {self.config.llm.timeout}"
+            )
             result = sbx.commands.run(cmd, timeout=self.config.llm.timeout + 30, user="root")
             elapsed = time.perf_counter() - start_time
 
@@ -188,6 +209,9 @@ class LLMScenarioRunner(threading.Thread):
                     error_detail += f", stdout={result.stdout[:200]}"
                 print(f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Scenario failed: {error_detail}")
                 self.state.llm_metrics.last_error = error_detail
+            else:
+                # Log completion time for successful scenarios
+                print(f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Scenario completed in {elapsed:.1f}s")
 
             return success, elapsed
 
@@ -197,31 +221,6 @@ class LLMScenarioRunner(threading.Thread):
             print(f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Scenario exception: {error_msg}")
             self.state.llm_metrics.last_error = error_msg
             return False, elapsed
-
-    def _build_gateway_request(self) -> str:
-        """
-        Build Gateway HTTP request command.
-
-        Uses OpenAI-compatible /v1/chat/completions endpoint.
-        Gateway is on 127.0.0.1:18789 inside sandbox.
-        """
-        # Escape prompt for shell
-        escaped = self.prompt.replace("'", "'\\''")
-
-        # Gateway HTTP request via curl
-        # - OpenAI-compatible endpoint: /v1/chat/completions
-        # - Fixed Authorization token: test-token-123
-        # - Model: scenario name from config
-        cmd = (
-            f"curl -s -o /dev/null -w '%{{time_total}}' "
-            f"-X POST http://127.0.0.1:18789/v1/chat/completions "
-            f"-H 'Authorization: Bearer test-token-123' "
-            f"-H 'Content-Type: application/json' "
-            f'-d \'{{"model":"{self.config.llm.model}",'
-            f'"messages":[{{"role":"user","content":"{escaped}"}}]}}\' '
-            f"--max-time {self.config.llm.request_timeout}"
-        )
-        return cmd
 
 
 class LLMTaskManager:
