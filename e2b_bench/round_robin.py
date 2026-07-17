@@ -62,8 +62,10 @@ class RoundRobinTaskManager:
         3. For each round: start tasks -> wait interval -> stop tasks
         4. Loop back to first group if rounds exceed groups (cycling)
         5. Track statistics per round
+        6. Stop when duration is reached or all rounds completed
         """
         import math
+        import time
 
         # 1. Prepare sandbox groups
         self._prepare_sandbox_groups()
@@ -85,10 +87,18 @@ class RoundRobinTaskManager:
             print(f"\n[RoundRobin] Total rounds: {rounds}")
         print(f"[RoundRobin] Sandboxes per round: {len(self.sandbox_groups[0])} (balanced)")
 
-        # 3. Execute each round (with cycling)
+        # 3. Execute each round (with cycling) until duration is reached
+        start_time = time.time()
         for round_id in range(rounds):
+            # Check stop conditions
             if self.stop_event.is_set():
                 print(f"[RoundRobin] Stop event detected, ending at round {round_id}")
+                break
+
+            # Check if duration is reached
+            elapsed = time.time() - start_time
+            if elapsed >= self.config.test_duration:
+                print(f"[RoundRobin] Duration reached ({elapsed:.1f}s >= {self.config.test_duration}s), ending at round {round_id}")
                 break
 
             # Cycle back to first group if needed
@@ -96,7 +106,8 @@ class RoundRobinTaskManager:
             time.sleep(self.config.round_interval)
             self._stop_round()
 
-        print(f"\n[RoundRobin] Completed {min(self.current_round + 1, rounds)} rounds")
+        elapsed = time.time() - start_time
+        print(f"\n[RoundRobin] Completed {min(self.current_round + 1, rounds)} rounds in {elapsed:.1f}s")
 
     def _prepare_sandbox_groups(self) -> None:
         """Prepare sandbox groups for round-robin execution.
