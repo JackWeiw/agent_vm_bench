@@ -476,9 +476,13 @@ class TabSwitchRunner(threading.Thread):
 
         success, step_times, failed_step, error_detail = self._execute_steps(sbx, tab_id)
 
-        self._record_metrics(start_time, success, step_times, error_detail)
+        elapsed = self._record_metrics(start_time, success, step_times, error_detail)
 
-        if not success:
+        if success:
+            # Print success summary with step timing breakdown
+            step_breakdown = ", ".join(f"{k}={v:.2f}s" for k, v in step_times.items() if v > 0)
+            print(f"[Sandbox{self.state.sandbox_id}] Tab {tab_id} completed in {elapsed:.2f}s ({step_breakdown})")
+        else:
             self._handle_failure(tab_id, failed_step, error_detail)
 
     def _get_target_tab(self) -> str:
@@ -636,8 +640,12 @@ class TabSwitchRunner(threading.Thread):
         else:
             return "exception", f"exception: {error_str[:100]}"
 
-    def _record_metrics(self, start_time: float, success: bool, step_times: Dict[str, float], error_detail: str) -> None:
-        """Record metrics for this operation."""
+    def _record_metrics(self, start_time: float, success: bool, step_times: Dict[str, float], error_detail: str) -> float:
+        """Record metrics for this operation.
+
+        Returns:
+            Elapsed time in seconds
+        """
         elapsed = time.perf_counter() - start_time
         timeout = elapsed > self.config.browser_timeout
         self.state.browser_metrics.add(elapsed, success and not timeout, timeout, step_times=step_times)
@@ -645,6 +653,8 @@ class TabSwitchRunner(threading.Thread):
 
         if not success and error_detail:
             self.state.browser_metrics.last_error = error_detail
+
+        return elapsed
 
     def _handle_failure(self, tab_id: str, failed_step: str, error_detail: str) -> None:
         """Handle failure after metrics are recorded."""
