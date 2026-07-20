@@ -33,8 +33,9 @@ class StatsCollector:
         self.round_snapshots: Dict[int, List[TestSnapshot]] = {}
 
         # Round start totals - recorded at round switch to decouple from snapshot timing
-        # Key: round_id, Value: {"total": int, "success": int}
-        self._round_start_totals: Dict[int, Dict[str, int]] = {}
+        # Key: round_id, Value: {"total": int, "success": int, "sandbox_latency_counts": Dict[int, int]}
+        # sandbox_latency_counts: {sandbox_id: latency_count} - tracks how many latencies each sandbox has at round start
+        self._round_start_totals: Dict[int, Dict[str, any]] = {}
 
     def start(self) -> None:
         """Start background collection thread"""
@@ -63,6 +64,10 @@ class StatsCollector:
         # Get current cumulative totals before switching rounds
         browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
         browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
+        # Track latency count per sandbox for accurate round latency extraction
+        sandbox_latency_counts = {
+            s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()
+        }
 
         # Switch to new round
         self.current_round = round_id
@@ -78,6 +83,7 @@ class StatsCollector:
                 self._round_start_totals[round_id] = {
                     "total": browser_total,
                     "success": browser_success,
+                    "sandbox_latency_counts": sandbox_latency_counts,
                 }
 
     def _collect_loop(self) -> None:
@@ -437,34 +443,45 @@ class StatsCollector:
             total_rounds = len(self._round_start_totals)
             total_tasks = 0
             total_success = 0
-            round_finals: Dict[int, Dict[str, int]] = {}
+            round_finals: Dict[int, Dict[str, any]] = {}
 
             # Get final cumulative values
             final_browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
             final_browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
+            final_sandbox_latency_counts = {
+                s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()
+            }
 
             # Compute each round's delta
-            prev_cumulative = 0
             for round_id in sorted(self._round_start_totals.keys()):
                 start_total = self._round_start_totals[round_id]["total"]
                 start_success = self._round_start_totals[round_id]["success"]
+                start_sandbox_latency_counts = self._round_start_totals[round_id]["sandbox_latency_counts"]
 
                 # For the last round, use final cumulative; otherwise use next round's start
                 if round_id == max(self._round_start_totals.keys()):
                     end_total = final_browser_total
                     end_success = final_browser_success
+                    end_sandbox_latency_counts = final_sandbox_latency_counts
                 else:
                     next_round = round_id + 1
                     if next_round in self._round_start_totals:
                         end_total = self._round_start_totals[next_round]["total"]
                         end_success = self._round_start_totals[next_round]["success"]
+                        end_sandbox_latency_counts = self._round_start_totals[next_round]["sandbox_latency_counts"]
                     else:
                         end_total = final_browser_total
                         end_success = final_browser_success
+                        end_sandbox_latency_counts = final_sandbox_latency_counts
 
                 tasks = end_total - start_total
                 success = end_success - start_success
-                round_finals[round_id] = {"tasks": tasks, "success": success}
+                round_finals[round_id] = {
+                    "tasks": tasks,
+                    "success": success,
+                    "end_sandbox_latency_counts": end_sandbox_latency_counts,
+                    "start_sandbox_latency_counts": start_sandbox_latency_counts,
+                }
                 total_tasks += tasks
                 total_success += success
 
@@ -478,14 +495,25 @@ class StatsCollector:
                 tasks = round_finals[round_id]["tasks"]
                 success = round_finals[round_id]["success"]
 
-                # Get latency stats from snapshots for this round
-                snapshots = self.round_snapshots.get(round_id, [])
-                avg = (
-                    statistics.mean(s.browser_avg_latency for s in snapshots if s.browser_avg_latency > 0)
-                    if any(s.browser_avg_latency > 0 for s in snapshots)
-                    else 0.0
-                )
-                p99 = max(s.browser_p99_latency for s in snapshots) if snapshots else 0.0
+                # Extract latencies for this round using per-sandbox latency counts
+                round_latencies: List[float] = []
+                start_counts = round_finals[round_id]["start_sandbox_latency_counts"]
+                end_counts = round_finals[round_id]["end_sandbox_latency_counts"]
+
+                for s in self.sandbox_states.values():
+                    sandbox_id = s.sandbox_id
+                    start_count = start_counts.get(sandbox_id, 0)
+                    end_count = end_counts.get(sandbox_id, len(s.browser_metrics.latencies))
+                    # Get latencies added during this round
+                    round_latencies.extend(s.browser_metrics.get_latencies_since(start_count)[:end_count - start_count])
+
+                if round_latencies:
+                    avg = statistics.mean(round_latencies)
+                    p99 = calc_p99(round_latencies)
+                else:
+                    avg = 0.0
+                    p99 = 0.0
+
                 rate = success / max(1, tasks) * 100 if tasks > 0 else 0.0
                 lines.append(f"{round_id:<8} {tasks:<8} {rate:<10.1f} {avg:<10.2f} {p99:<10.2f}")
 

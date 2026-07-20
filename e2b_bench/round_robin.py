@@ -215,7 +215,14 @@ class RoundRobinTaskManager:
 
         # Initialize Round 0 baseline if this is the first round
         if round_id == 0 and 0 not in self.stats_collector._round_start_totals:
-            self.stats_collector._round_start_totals[0] = {"total": 0, "success": 0}
+            sandbox_latency_counts = {
+                s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()
+            }
+            self.stats_collector._round_start_totals[0] = {
+                "total": 0,
+                "success": 0,
+                "sandbox_latency_counts": sandbox_latency_counts,
+            }
 
         # Create round-specific stop event
         self.round_stop_event = threading.Event()
@@ -250,9 +257,13 @@ class RoundRobinTaskManager:
         if next_round < self._planned_rounds and next_round not in self.stats_collector._round_start_totals:
             browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
             browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
+            sandbox_latency_counts = {
+                s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()
+            }
             self.stats_collector._round_start_totals[next_round] = {
                 "total": browser_total,
                 "success": browser_success,
+                "sandbox_latency_counts": sandbox_latency_counts,
             }
 
         # Aggregate step timing from active runners' sandbox states (not all sandboxes)

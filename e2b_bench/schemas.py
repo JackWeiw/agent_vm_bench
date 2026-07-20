@@ -154,6 +154,20 @@ class BrowserMetrics:
                 }
             return result
 
+    def get_latencies_since(self, start_count: int) -> List[float]:
+        """Get latencies added after a certain count.
+
+        Args:
+            start_count: The latency count at the start (e.g., from previous round)
+
+        Returns:
+            List of latencies added since start_count
+        """
+        with self._lock:
+            if start_count >= len(self._latencies):
+                return []
+            return list(self._latencies[start_count:])
+
 
 @dataclass
 class SandboxState:
