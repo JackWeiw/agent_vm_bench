@@ -467,98 +467,163 @@ class TabSwitchRunner(threading.Thread):
         if not sbx:
             return
 
-        # Determine which tab to operate on this round
         if not self.state.tab_ids:
             print(f"[Sandbox{self.state.sandbox_id}] No tabs available for tab-switch")
             return
 
-        tab_index = self.round_id % len(self.state.tab_ids)
-        tab_id = self.state.tab_ids[tab_index]
-
+        tab_id = self._get_target_tab()
         start_time = time.perf_counter()
+
+        success, step_times, failed_step, error_detail = self._execute_steps(sbx, tab_id)
+
+        self._record_metrics(start_time, success, step_times, error_detail)
+
+        if not success:
+            self._handle_failure(tab_id, failed_step, error_detail)
+
+    def _get_target_tab(self) -> str:
+        """Determine which tab to operate on this round.
+
+        Returns:
+            Tab ID (e.g., 't1', 't2', ...)
+        """
+        tab_index = self.round_id % len(self.state.tab_ids)
+        return self.state.tab_ids[tab_index]
+
+    def _execute_steps(self, sbx, tab_id: str) -> Tuple[bool, Dict[str, float], str, str]:
+        """Execute all tab-switch steps.
+
+        Args:
+            sbx: Sandbox object
+            tab_id: Target tab ID
+
+        Returns:
+            Tuple of (success, step_times, failed_step, error_detail)
+        """
         success = True
         step_times = {}
         failed_step = None
         error_detail = ""
+        elements = []
 
         try:
             # Step 1: Switch to target tab
-            step_start = time.perf_counter()
-            result = sbx.commands.run(f"agent-browser tab {tab_id}", timeout=30, user="root")
-            step_times["tab_switch"] = time.perf_counter() - step_start
-
-            if result.exit_code != 0:
-                success = False
+            success, error_detail = self._step_tab_switch(sbx, tab_id, step_times)
+            if not success:
                 failed_step = "tab_switch"
-                error_detail = f"tab_switch failed for {tab_id}: exit_code={result.exit_code}"
-            else:
-                # Small delay after tab switch (may trigger swap in)
-                time.sleep(0.5)
+                return success, step_times, failed_step, error_detail
 
-                # Step 2: DOM snapshot
-                step_start = time.perf_counter()
-                result = sbx.commands.run("agent-browser snapshot -i", timeout=60, user="root")
-                step_times["snapshot"] = time.perf_counter() - step_start
+            # Step 2: DOM snapshot
+            success, elements, error_detail = self._step_snapshot(sbx, step_times)
+            if not success:
+                failed_step = "snapshot"
+                return success, step_times, failed_step, error_detail
 
-                if result.exit_code != 0:
-                    success = False
-                    failed_step = "snapshot"
-                    error_detail = f"snapshot failed: exit_code={result.exit_code}"
-                else:
-                    # Extract element refs
-                    elements = self._extract_element_refs(result.stdout)
+            # Step 3: Element click (optional, non-fatal)
+            self._step_click(sbx, elements, step_times)
 
-                    # Step 3: Element click (try first valid element)
-                    if elements:
-                        step_start = time.perf_counter()
-                        click_result = sbx.commands.run(f"agent-browser click {elements[0]}", timeout=30, user="root")
-                        step_times["click"] = time.perf_counter() - step_start
-                        if click_result.exit_code != 0:
-                            error_detail = f"click failed on {elements[0]}: exit_code={click_result.exit_code}"
-
-                    # Step 4: Screenshot
-                    step_start = time.perf_counter()
-                    screenshot_result = sbx.commands.run("agent-browser screenshot", timeout=30, user="root")
-                    step_times["screenshot"] = time.perf_counter() - step_start
-                    if screenshot_result.exit_code != 0:
-                        if error_detail:
-                            error_detail += f"; screenshot failed: exit_code={screenshot_result.exit_code}"
-                        else:
-                            error_detail = f"screenshot failed: exit_code={screenshot_result.exit_code}"
+            # Step 4: Screenshot (non-fatal)
+            self._step_screenshot(sbx, step_times)
 
         except Exception as e:
             success = False
-            error_str = str(e)
-            if "context deadline exceeded" in error_str or "timed out" in error_str:
-                if "tab_switch" not in step_times:
-                    failed_step = "tab_switch"
-                    error_detail = f"tab_switch timed out after 30s"
-                elif "snapshot" not in step_times:
-                    failed_step = "snapshot"
-                    error_detail = f"snapshot timed out after 60s"
-                else:
-                    failed_step = "unknown"
-                    error_detail = f"operation timed out: {error_str[:100]}"
-            else:
-                failed_step = "exception"
-                error_detail = f"exception: {error_str[:100]}"
+            failed_step, error_detail = self._classify_exception(e, step_times)
 
-        # Always record metrics, even for failed operations
+        return success, step_times, failed_step, error_detail
+
+    def _step_tab_switch(self, sbx, tab_id: str, step_times: Dict[str, float]) -> Tuple[bool, str]:
+        """Step 1: Switch to target tab.
+
+        Returns:
+            Tuple of (success, error_detail)
+        """
+        step_start = time.perf_counter()
+        result = sbx.commands.run(f"agent-browser tab {tab_id}", timeout=30, user="root")
+        step_times["tab_switch"] = time.perf_counter() - step_start
+
+        if result.exit_code != 0:
+            return False, f"tab_switch failed for {tab_id}: exit_code={result.exit_code}"
+
+        # Small delay after tab switch (may trigger swap in)
+        time.sleep(0.5)
+        return True, ""
+
+    def _step_snapshot(self, sbx, step_times: Dict[str, float]) -> Tuple[bool, List[str], str]:
+        """Step 2: DOM snapshot.
+
+        Returns:
+            Tuple of (success, elements, error_detail)
+        """
+        step_start = time.perf_counter()
+        result = sbx.commands.run("agent-browser snapshot -i", timeout=60, user="root")
+        step_times["snapshot"] = time.perf_counter() - step_start
+
+        if result.exit_code != 0:
+            return False, [], f"snapshot failed: exit_code={result.exit_code}"
+
+        elements = self._extract_element_refs(result.stdout)
+        return True, elements, ""
+
+    def _step_click(self, sbx, elements: List[str], step_times: Dict[str, float]) -> None:
+        """Step 3: Element click (non-fatal)."""
+        if not elements:
+            return
+
+        step_start = time.perf_counter()
+        result = sbx.commands.run(f"agent-browser click {elements[0]}", timeout=30, user="root")
+        step_times["click"] = time.perf_counter() - step_start
+
+        # Click failure is not fatal, just recorded
+        if result.exit_code != 0:
+            step_times["click_error"] = result.exit_code
+
+    def _step_screenshot(self, sbx, step_times: Dict[str, float]) -> None:
+        """Step 4: Screenshot (non-fatal)."""
+        step_start = time.perf_counter()
+        result = sbx.commands.run("agent-browser screenshot", timeout=30, user="root")
+        step_times["screenshot"] = time.perf_counter() - step_start
+
+        # Screenshot failure is not fatal, just recorded
+        if result.exit_code != 0:
+            step_times["screenshot_error"] = result.exit_code
+
+    def _classify_exception(self, e: Exception, step_times: Dict[str, float]) -> Tuple[str, str]:
+        """Classify exception to determine which step failed.
+
+        Args:
+            e: The caught exception
+            step_times: Dict of recorded step times
+
+        Returns:
+            Tuple of (failed_step, error_detail)
+        """
+        error_str = str(e)
+        if "context deadline exceeded" in error_str or "timed out" in error_str:
+            if "tab_switch" not in step_times:
+                return "tab_switch", "tab_switch timed out after 30s"
+            elif "snapshot" not in step_times:
+                return "snapshot", "snapshot timed out after 60s"
+            else:
+                return "unknown", f"operation timed out: {error_str[:100]}"
+        else:
+            return "exception", f"exception: {error_str[:100]}"
+
+    def _record_metrics(self, start_time: float, success: bool, step_times: Dict[str, float], error_detail: str) -> None:
+        """Record metrics for this operation."""
         elapsed = time.perf_counter() - start_time
         timeout = elapsed > self.config.browser_timeout
         self.state.browser_metrics.add(elapsed, success and not timeout, timeout, step_times=step_times)
         self.state.last_task_time = time.time()
 
-        # Record detailed error for failed operations
         if not success and error_detail:
             self.state.browser_metrics.last_error = error_detail
 
-        # Only print failures, not successes (reduce log noise)
-        if not success:
-            print(f"[Sandbox{self.state.sandbox_id}] Tab {tab_id} failed at {failed_step}: {error_detail}")
-            self.consecutive_errors += 1
-            if self.consecutive_errors >= 3:
-                self.state.is_alive = False
+    def _handle_failure(self, tab_id: str, failed_step: str, error_detail: str) -> None:
+        """Handle failure after metrics are recorded."""
+        print(f"[Sandbox{self.state.sandbox_id}] Tab {tab_id} failed at {failed_step}: {error_detail}")
+        self.consecutive_errors += 1
+        if self.consecutive_errors >= 3:
+            self.state.is_alive = False
 
     def _extract_element_refs(self, output: str) -> List[str]:
         """Extract element refs from agent-browser snapshot output.
