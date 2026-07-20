@@ -60,6 +60,7 @@ class RoundRobinTaskManager:
 
         # Current round state
         self.current_round: int = 0
+        self._planned_rounds: int = 0  # Total rounds planned to run
         self.active_runners: List[TabOperationRunner] = []
         self.round_stop_event: Optional[threading.Event] = None
 
@@ -84,6 +85,7 @@ class RoundRobinTaskManager:
 
         # 2. Calculate number of rounds (auto or from config)
         rounds = self._calculate_rounds()
+        self._planned_rounds = rounds  # Store for _stop_round to check
         num_groups = len(self.sandbox_groups)
 
         # Check if cycling will occur
@@ -205,8 +207,15 @@ class RoundRobinTaskManager:
         else:
             print(f"\n[Round {round_id}] Starting {len(current_states)} sandboxes")
 
-        # Mark current round for statistics tracking
-        self.stats_collector.set_round(round_id)
+        # Mark current round for statistics tracking (for snapshot grouping)
+        # Note: Baseline is recorded in _stop_round() after tasks complete
+        self.stats_collector.current_round = round_id
+        if round_id not in self.stats_collector.round_snapshots:
+            self.stats_collector.round_snapshots[round_id] = []
+
+        # Initialize Round 0 baseline if this is the first round
+        if round_id == 0 and 0 not in self.stats_collector._round_start_totals:
+            self.stats_collector._round_start_totals[0] = {"total": 0, "success": 0}
 
         # Create round-specific stop event
         self.round_stop_event = threading.Event()
@@ -228,15 +237,23 @@ class RoundRobinTaskManager:
         # Signal all runners to stop
         self.round_stop_event.set()
 
-        # Wait for runners to finish
+        # Wait for runners to finish (120s timeout for operations that take ~46s)
         for runner in self.active_runners:
-            runner.join(timeout=2)
+            runner.join(timeout=120)
 
         # Force a final snapshot to capture this round's final metrics
-        # This ensures round data is recorded even if stats_interval is long
-        # Note: current_round is still set, so snapshot will be recorded to correct round
-        print(f"[Round {self.current_round}] Recording final snapshot...")
         self.stats_collector._take_snapshot()
+
+        # Record baseline for NEXT round AFTER current round's tasks are complete
+        # Only record if next_round will actually run (don't create ghost rounds)
+        next_round = self.current_round + 1
+        if next_round < self._planned_rounds and next_round not in self.stats_collector._round_start_totals:
+            browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
+            browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
+            self.stats_collector._round_start_totals[next_round] = {
+                "total": browser_total,
+                "success": browser_success,
+            }
 
         # Aggregate step timing from active runners' sandbox states (not all sandboxes)
         step_totals = {}
@@ -270,8 +287,8 @@ class RoundRobinTaskManager:
         self.active_runners.clear()
         self.round_stop_event = None
 
-        # Clear round marker in stats collector
-        self.stats_collector.set_round(None)
+        # Clear round marker in stats collector (but keep baseline)
+        self.stats_collector.current_round = None
 
     def _calculate_rounds(self) -> int:
         """Calculate total number of rounds.

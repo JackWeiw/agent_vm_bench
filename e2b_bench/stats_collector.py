@@ -64,22 +64,21 @@ class StatsCollector:
         browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
         browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
 
-        # Debug: Always log the current state
-        print(f"[StatsCollector] set_round({round_id}): cumulative total={browser_total}")
-
         # Switch to new round
         self.current_round = round_id
 
         if round_id is not None:
+            # Initialize snapshot list if needed
             if round_id not in self.round_snapshots:
                 self.round_snapshots[round_id] = []
 
-            # Key: Record cumulative totals at round start as baseline for delta calculation
-            # Round delta = current cumulative - round start cumulative
-            self._round_start_totals[round_id] = {
-                "total": browser_total,
-                "success": browser_success,
-            }
+            # CRITICAL: Only record baseline if this round doesn't have one yet
+            # This prevents overwriting when cycling (round 0 runs again later)
+            if round_id not in self._round_start_totals:
+                self._round_start_totals[round_id] = {
+                    "total": browser_total,
+                    "success": browser_success,
+                }
 
     def _collect_loop(self) -> None:
         """Periodic snapshot collection"""
@@ -450,9 +449,6 @@ class StatsCollector:
                 start_total = self._round_start_totals[round_id]["total"]
                 start_success = self._round_start_totals[round_id]["success"]
 
-                # Debug: log baseline values
-                print(f"[Report] Round {round_id} baseline: {start_total}")
-
                 # For the last round, use final cumulative; otherwise use next round's start
                 if round_id == max(self._round_start_totals.keys()):
                     end_total = final_browser_total
@@ -471,9 +467,6 @@ class StatsCollector:
                 round_finals[round_id] = {"tasks": tasks, "success": success}
                 total_tasks += tasks
                 total_success += success
-
-                # Debug: log delta calculation
-                print(f"[Report] Round {round_id}: end={end_total} - start={start_total} = {tasks} tasks")
 
             lines.append(f"  Summary: {total_tasks} tasks across {total_rounds} rounds")
             lines.append("")
