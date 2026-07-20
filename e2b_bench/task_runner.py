@@ -520,10 +520,19 @@ class TabSwitchRunner(threading.Thread):
                 return success, step_times, failed_step, error_detail
 
             # Step 3: Element click (optional, non-fatal)
-            self._step_click(sbx, elements, step_times)
+            _, click_error = self._step_click(sbx, elements, step_times)
 
             # Step 4: Screenshot (non-fatal)
-            self._step_screenshot(sbx, step_times)
+            _, screenshot_error = self._step_screenshot(sbx, step_times)
+
+            # Combine non-fatal errors for logging
+            non_fatal_errors = []
+            if click_error:
+                non_fatal_errors.append(click_error)
+            if screenshot_error:
+                non_fatal_errors.append(screenshot_error)
+            if non_fatal_errors:
+                error_detail = "; ".join(non_fatal_errors)
 
         except Exception as e:
             success = False
@@ -564,28 +573,47 @@ class TabSwitchRunner(threading.Thread):
         elements = self._extract_element_refs(result.stdout)
         return True, elements, ""
 
-    def _step_click(self, sbx, elements: List[str], step_times: Dict[str, float]) -> None:
-        """Step 3: Element click (non-fatal)."""
+    def _step_click(self, sbx, elements: List[str], step_times: Dict[str, float]) -> Tuple[bool, str]:
+        """Step 3: Element click (non-fatal).
+
+        Args:
+            sbx: Sandbox object
+            elements: List of element refs
+            step_times: Dict to record timing
+
+        Returns:
+            Tuple of (success, error_detail) - error_detail is empty string on success
+        """
         if not elements:
-            return
+            return True, ""
 
         step_start = time.perf_counter()
         result = sbx.commands.run(f"agent-browser click {elements[0]}", timeout=30, user="root")
         step_times["click"] = time.perf_counter() - step_start
 
-        # Click failure is not fatal, just recorded
+        # Click failure is not fatal, but return error for logging
         if result.exit_code != 0:
-            step_times["click_error"] = result.exit_code
+            return True, f"click failed on {elements[0]}: exit_code={result.exit_code}"
+        return True, ""
 
-    def _step_screenshot(self, sbx, step_times: Dict[str, float]) -> None:
-        """Step 4: Screenshot (non-fatal)."""
+    def _step_screenshot(self, sbx, step_times: Dict[str, float]) -> Tuple[bool, str]:
+        """Step 4: Screenshot (non-fatal).
+
+        Args:
+            sbx: Sandbox object
+            step_times: Dict to record timing
+
+        Returns:
+            Tuple of (success, error_detail) - error_detail is empty string on success
+        """
         step_start = time.perf_counter()
         result = sbx.commands.run("agent-browser screenshot", timeout=30, user="root")
         step_times["screenshot"] = time.perf_counter() - step_start
 
-        # Screenshot failure is not fatal, just recorded
+        # Screenshot failure is not fatal, but return error for logging
         if result.exit_code != 0:
-            step_times["screenshot_error"] = result.exit_code
+            return True, f"screenshot failed: exit_code={result.exit_code}"
+        return True, ""
 
     def _classify_exception(self, e: Exception, step_times: Dict[str, float]) -> Tuple[str, str]:
         """Classify exception to determine which step failed.
