@@ -55,18 +55,32 @@ class StatsCollector:
         """
         self.current_round = round_id
         if round_id is not None:
+            # Mark that rounds have started (allows _collect_loop to start taking snapshots)
+            self._round_started = True
             if round_id not in self.round_snapshots:
                 self.round_snapshots[round_id] = []
             # Record baseline totals at the START of this round
             # This ensures round_total/round_success reflect delta for this round only
             current_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
             current_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
+
+            # Debug: Log baseline to diagnose round 0 issue
+            if round_id == 0:
+                print(f"[StatsCollector] set_round(0): baseline_total={current_total}, baseline_success={current_success}")
+
             self._round_baseline_total = current_total
             self._round_baseline_success = current_success
 
     def _collect_loop(self) -> None:
         """Periodic snapshot collection"""
         while not self._stop.is_set():
+            # Skip snapshot if no round has been set yet (prevents polluting round 0 baseline)
+            # The first snapshot should be taken after round 0 starts
+            if self.current_round is None and not hasattr(self, "_round_started"):
+                # Wait for first round to start
+                time.sleep(0.1)
+                continue
+
             self._take_snapshot()
             time.sleep(self.config.stats_interval)
 
@@ -121,6 +135,9 @@ class StatsCollector:
             round_success = browser_success - self._round_baseline_success
         else:
             # Fallback if no round baseline set
+            # Debug: This should not happen during normal round execution
+            if self.current_round is not None:
+                print(f"[StatsCollector] WARNING: round_baseline not set for round {self.current_round}")
             round_total = browser_total
             round_success = browser_success
 
