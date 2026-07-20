@@ -400,6 +400,11 @@ class StatsCollector:
                 "D-Bus connection error": 0,
                 "Gateway connection error": 0,
                 "Timeout": 0,
+                "Open tab failed": 0,
+                "Page load failed": 0,
+                "Snapshot failed": 0,
+                "Click failed": 0,
+                "Screenshot failed": 0,
                 "Other": 0,
             }
             error_type_sandboxes = {
@@ -407,10 +412,16 @@ class StatsCollector:
                 "D-Bus connection error": [],
                 "Gateway connection error": [],
                 "Timeout": [],
+                "Open tab failed": [],
+                "Page load failed": [],
+                "Snapshot failed": [],
+                "Click failed": [],
+                "Screenshot failed": [],
                 "Other": [],
             }
             for sid, count, error in failed_sandbox_errors:
                 error_lower = error.lower()
+                # Legacy error types (from old BrowserTaskRunner)
                 if "failed to start chrome" in error_lower or "chrome_start" in error_lower:
                     error_types["Chrome start failed"] += count
                     error_type_sandboxes["Chrome start failed"].append(sid)
@@ -420,7 +431,23 @@ class StatsCollector:
                 elif "gateway" in error_lower or "cdp" in error_lower or "http_unreachable" in error_lower:
                     error_types["Gateway connection error"] += count
                     error_type_sandboxes["Gateway connection error"].append(sid)
-                elif "timeout" in error_lower:
+                # New error types (from TabOperationRunner)
+                elif "open_tab failed" in error_lower:
+                    error_types["Open tab failed"] += count
+                    error_type_sandboxes["Open tab failed"].append(sid)
+                elif "page_load failed" in error_lower:
+                    error_types["Page load failed"] += count
+                    error_type_sandboxes["Page load failed"].append(sid)
+                elif "snapshot failed" in error_lower:
+                    error_types["Snapshot failed"] += count
+                    error_type_sandboxes["Snapshot failed"].append(sid)
+                elif "click failed" in error_lower:
+                    error_types["Click failed"] += count
+                    error_type_sandboxes["Click failed"].append(sid)
+                elif "screenshot failed" in error_lower:
+                    error_types["Screenshot failed"] += count
+                    error_type_sandboxes["Screenshot failed"].append(sid)
+                elif "timeout" in error_lower or "timed out" in error_lower:
                     error_types["Timeout"] += count
                     error_type_sandboxes["Timeout"].append(sid)
                 else:

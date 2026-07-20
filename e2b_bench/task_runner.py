@@ -605,14 +605,25 @@ class TabOperationRunner(threading.Thread):
         step_times["open_tab"] = time.perf_counter() - step_start
 
         if result.exit_code != 0:
-            return False, f"open_tab failed for {url}: exit_code={result.exit_code}"
+            # Build detailed error message with exit_code, stderr, stdout
+            error_parts = [f"open_tab failed: exit_code={result.exit_code}"]
+            if result.stderr:
+                error_parts.append(f"stderr={result.stderr[:200]}")
+            if result.stdout:
+                error_parts.append(f"stdout={result.stdout[:200]}")
+            error_parts.append(f"url={url[:80]}")
+            return False, " | ".join(error_parts)
 
         # Wait for page load
         wait_result = sbx.commands.run(
             "agent-browser wait --load domcontentloaded --timeout 60000", timeout=70, user="root"
         )
         if wait_result.exit_code != 0:
-            return False, f"page load timeout for {url}"
+            error_parts = [f"page_load failed: exit_code={wait_result.exit_code}"]
+            if wait_result.stderr:
+                error_parts.append(f"stderr={wait_result.stderr[:200]}")
+            error_parts.append(f"url={url[:80]}")
+            return False, " | ".join(error_parts)
 
         return True, ""
 
@@ -627,7 +638,13 @@ class TabOperationRunner(threading.Thread):
         step_times["snapshot"] = time.perf_counter() - step_start
 
         if result.exit_code != 0:
-            return False, [], f"snapshot failed: exit_code={result.exit_code}"
+            # Build detailed error message
+            error_parts = [f"snapshot failed: exit_code={result.exit_code}"]
+            if result.stderr:
+                error_parts.append(f"stderr={result.stderr[:200]}")
+            if result.stdout:
+                error_parts.append(f"stdout={result.stdout[:200]}")
+            return False, [], " | ".join(error_parts)
 
         elements = extract_element_refs(result.stdout)
         return True, elements, ""
@@ -652,7 +669,11 @@ class TabOperationRunner(threading.Thread):
 
         # Click failure is not fatal, but return error for logging
         if result.exit_code != 0:
-            return True, f"click failed on {elements[0]}: exit_code={result.exit_code}"
+            error_parts = [f"click failed: exit_code={result.exit_code}"]
+            if result.stderr:
+                error_parts.append(f"stderr={result.stderr[:100]}")
+            error_parts.append(f"element={elements[0]}")
+            return True, " | ".join(error_parts)
         return True, ""
 
     def _step_screenshot(self, sbx, step_times: Dict[str, float]) -> Tuple[bool, str]:
@@ -671,7 +692,10 @@ class TabOperationRunner(threading.Thread):
 
         # Screenshot failure is not fatal, but return error for logging
         if result.exit_code != 0:
-            return True, f"screenshot failed: exit_code={result.exit_code}"
+            error_parts = [f"screenshot failed: exit_code={result.exit_code}"]
+            if result.stderr:
+                error_parts.append(f"stderr={result.stderr[:100]}")
+            return True, " | ".join(error_parts)
         return True, ""
 
     def _classify_exception(self, e: Exception, step_times: Dict[str, float]) -> Tuple[str, str]:
