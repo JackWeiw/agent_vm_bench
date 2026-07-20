@@ -109,7 +109,7 @@ class StatsCollector:
         browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
 
         # Track previous totals for per-round calculation
-        if not hasattr(self, '_prev_browser_total'):
+        if not hasattr(self, "_prev_browser_total"):
             self._prev_browser_total = 0
             self._prev_browser_success = 0
 
@@ -415,8 +415,8 @@ class StatsCollector:
                 snapshots = self.round_snapshots[round_id]
                 if snapshots:
                     # Use per-round deltas instead of cumulative
-                    tasks = sum(getattr(s, 'round_total', s.browser_total) for s in snapshots)
-                    success = sum(getattr(s, 'round_success', s.browser_success) for s in snapshots)
+                    tasks = sum(getattr(s, "round_total", s.browser_total) for s in snapshots)
+                    success = sum(getattr(s, "round_success", s.browser_success) for s in snapshots)
                     avg = (
                         statistics.mean(s.browser_avg_latency for s in snapshots if s.browser_avg_latency > 0)
                         if any(s.browser_avg_latency > 0 for s in snapshots)

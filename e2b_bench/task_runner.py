@@ -5,12 +5,12 @@ Responsible for browser task execution, result collection and exception handling
 Each sandbox has an independent thread
 Supports task batch control for gradual task execution start
 Supports warmup phase for memory preheating
-Supports agent-browser tab management for tab-switch benchmark mode
+Supports agent-browser operations for benchmark mode
 
 Classes:
-- WarmupRunner: Opens multiple tabs during warmup phase
+- WarmupRunner: Opens multiple tabs during warmup phase (memory allocation)
 - BrowserTaskRunner: Executes browser tasks in fixed mode
-- TabSwitchRunner: Executes tab-switch operations in round-robin mode
+- TabOperationRunner: Opens new tab and executes operations in round-robin mode
 - TaskManager: Manages warmup and task execution threads
 """
 
@@ -27,8 +27,10 @@ from .schemas import SandboxState, SandboxStatus
 class WarmupRunner(threading.Thread):
     """Warmup phase runner - opens multiple tabs using agent-browser
 
-    Note: In tab-switch mode, each URL is opened once as a separate tab.
-    The warmup_loops parameter is not applicable for tab-based warmup.
+    Opens each warmup URL as a separate tab, then executes operations
+    (snapshot -> click -> screenshot) to allocate memory.
+
+    The warmup_loops parameter is not applicable - each URL is opened once.
     """
 
     # Class-level flag to ensure warning is printed only once
@@ -47,7 +49,7 @@ class WarmupRunner(threading.Thread):
     def run(self) -> None:
         """Execute warmup phase for this sandbox - open multiple tabs
 
-        Tab-switch mode: Opens each warmup URL as a separate tab.
+        Opens each warmup URL as a separate tab.
         Each URL is opened exactly once (warmup_loops is ignored for tabs).
         """
         # Wait for sandbox ports ready
@@ -75,13 +77,11 @@ class WarmupRunner(threading.Thread):
         e2b_sandbox_id = sbx.sandbox_id if hasattr(sbx, "sandbox_id") else "N/A"
         failed_urls = []
 
-        # Warn if warmup_loops > 1 (not applicable for tab-switch mode) - only once
+        # Warn if warmup_loops > 1 (not applicable) - only once
         if self.config.warmup_loops > 1:
             with WarmupRunner._warn_lock:
                 if not WarmupRunner._warmup_loops_warned:
-                    print(
-                        f"[Warmup] Note: warmup_loops={self.config.warmup_loops} is ignored in tab-switch mode (each URL opened once)"
-                    )
+                    print(f"[Warmup] Note: warmup_loops={self.config.warmup_loops} is ignored (each URL opened once)")
                     WarmupRunner._warmup_loops_warned = True
 
         # Check if agent-browser is available
@@ -477,17 +477,19 @@ class TaskManager:
             runner.join(timeout=timeout)
 
 
-class TabSwitchRunner(threading.Thread):
-    """Runner for tab-switch benchmark - operates on a specific tab per round.
+class TabOperationRunner(threading.Thread):
+    """Runner for tab operations in round-robin benchmark mode.
 
-    Used in round-robin tab-switch mode where each round executes operations
-    on a different tab (switch → snapshot → click → screenshot).
+    Each round opens a NEW tab with a URL, then executes:
+    new tab -> snapshot -> click -> screenshot
+
+    This allocates new memory per round, triggering swap out events.
 
     Attributes:
-        state: Sandbox state containing tab_ids and metrics
+        state: Sandbox state for metrics
         config: Test configuration
         stop_event: Global stop event
-        round_id: Current round number (determines which tab to operate on)
+        round_id: Current round number
     """
 
     def __init__(
@@ -505,44 +507,41 @@ class TabSwitchRunner(threading.Thread):
         self.consecutive_errors = 0
 
     def run(self) -> None:
-        """Execute tab-switch operations for this round."""
+        """Execute tab operations for this round.
+
+        Opens a new tab with browser_url, then executes snapshot -> click -> screenshot.
+        """
         sbx = self.state.sandbox_obj
         if not sbx:
             return
 
-        if not self.state.tab_ids:
-            print(f"[Sandbox{self.state.sandbox_id}] No tabs available for tab-switch")
+        # Get URL for this round (round-robin from browser_urls)
+        if not self.config.browser_urls:
+            print(f"[Sandbox{self.state.sandbox_id}] No browser_urls configured")
             return
 
-        tab_id = self._get_target_tab()
+        url_index = self.round_id % len(self.config.browser_urls)
+        url = self.config.browser_urls[url_index]
+
         start_time = time.perf_counter()
 
-        success, step_times, failed_step, error_detail = self._execute_steps(sbx, tab_id)
+        success, step_times, failed_step, error_detail = self._execute_steps(sbx, url)
 
         elapsed = self._record_metrics(start_time, success, step_times, error_detail)
 
         if success:
             # Print success summary with step timing breakdown
             step_breakdown = ", ".join(f"{k}={v:.2f}s" for k, v in step_times.items() if v > 0)
-            print(f"[Sandbox{self.state.sandbox_id}] Tab {tab_id} completed in {elapsed:.2f}s ({step_breakdown})")
+            print(f"[Sandbox{self.state.sandbox_id}] New tab completed in {elapsed:.2f}s ({step_breakdown})")
         else:
-            self._handle_failure(tab_id, failed_step, error_detail)
+            self._handle_failure(url, failed_step, error_detail)
 
-    def _get_target_tab(self) -> str:
-        """Determine which tab to operate on this round.
-
-        Returns:
-            Tab ID (e.g., 't1', 't2', ...)
-        """
-        tab_index = self.round_id % len(self.state.tab_ids)
-        return self.state.tab_ids[tab_index]
-
-    def _execute_steps(self, sbx, tab_id: str) -> Tuple[bool, Dict[str, float], str, str]:
-        """Execute all tab-switch steps.
+    def _execute_steps(self, sbx, url: str) -> Tuple[bool, Dict[str, float], str, str]:
+        """Execute all steps: open new tab -> snapshot -> click -> screenshot.
 
         Args:
             sbx: Sandbox object
-            tab_id: Target tab ID
+            url: URL to open in new tab
 
         Returns:
             Tuple of (success, step_times, failed_step, error_detail)
@@ -554,10 +553,10 @@ class TabSwitchRunner(threading.Thread):
         elements = []
 
         try:
-            # Step 1: Switch to target tab
-            success, error_detail = self._step_tab_switch(sbx, tab_id, step_times)
+            # Step 1: Open new tab with URL
+            success, error_detail = self._step_open_tab(sbx, url, step_times)
             if not success:
-                failed_step = "tab_switch"
+                failed_step = "open_tab"
                 return success, step_times, failed_step, error_detail
 
             # Step 2: DOM snapshot
@@ -587,21 +586,26 @@ class TabSwitchRunner(threading.Thread):
 
         return success, step_times, failed_step, error_detail
 
-    def _step_tab_switch(self, sbx, tab_id: str, step_times: Dict[str, float]) -> Tuple[bool, str]:
-        """Step 1: Switch to target tab.
+    def _step_open_tab(self, sbx, url: str, step_times: Dict[str, float]) -> Tuple[bool, str]:
+        """Step 1: Open new tab with URL.
 
         Returns:
             Tuple of (success, error_detail)
         """
         step_start = time.perf_counter()
-        result = sbx.commands.run(f"agent-browser tab {tab_id}", timeout=30, user="root")
-        step_times["tab_switch"] = time.perf_counter() - step_start
+        result = sbx.commands.run(f'agent-browser tab new "{url}"', timeout=60, user="root")
+        step_times["open_tab"] = time.perf_counter() - step_start
 
         if result.exit_code != 0:
-            return False, f"tab_switch failed for {tab_id}: exit_code={result.exit_code}"
+            return False, f"open_tab failed for {url}: exit_code={result.exit_code}"
 
-        # Small delay after tab switch (may trigger swap in)
-        time.sleep(0.5)
+        # Wait for page load
+        wait_result = sbx.commands.run(
+            "agent-browser wait --load domcontentloaded --timeout 60000", timeout=70, user="root"
+        )
+        if wait_result.exit_code != 0:
+            return False, f"page load timeout for {url}"
+
         return True, ""
 
     def _step_snapshot(self, sbx, step_times: Dict[str, float]) -> Tuple[bool, List[str], str]:
@@ -663,19 +667,11 @@ class TabSwitchRunner(threading.Thread):
         return True, ""
 
     def _classify_exception(self, e: Exception, step_times: Dict[str, float]) -> Tuple[str, str]:
-        """Classify exception to determine which step failed.
-
-        Args:
-            e: The caught exception
-            step_times: Dict of recorded step times
-
-        Returns:
-            Tuple of (failed_step, error_detail)
-        """
+        """Classify exception to determine which step failed."""
         error_str = str(e)
         if "context deadline exceeded" in error_str or "timed out" in error_str:
-            if "tab_switch" not in step_times:
-                return "tab_switch", "tab_switch timed out after 30s"
+            if "open_tab" not in step_times:
+                return "open_tab", "open_tab timed out after 60s"
             elif "snapshot" not in step_times:
                 return "snapshot", "snapshot timed out after 60s"
             else:
@@ -683,7 +679,9 @@ class TabSwitchRunner(threading.Thread):
         else:
             return "exception", f"exception: {error_str[:100]}"
 
-    def _record_metrics(self, start_time: float, success: bool, step_times: Dict[str, float], error_detail: str) -> float:
+    def _record_metrics(
+        self, start_time: float, success: bool, step_times: Dict[str, float], error_detail: str
+    ) -> float:
         """Record metrics for this operation.
 
         Returns:
@@ -718,3 +716,7 @@ class TabSwitchRunner(threading.Thread):
         pattern = r"\[ref=(e\d+)\]"
         matches = re.findall(pattern, output)
         return matches[:50]  # Limit to 50 elements
+
+
+# Alias for backward compatibility
+TabSwitchRunner = TabOperationRunner
