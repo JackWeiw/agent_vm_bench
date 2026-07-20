@@ -179,8 +179,9 @@ class SandboxState:
 
     def __post_init__(self):
         """Initialize lock after dataclass creation."""
-        # Ensure _lock is a proper instance attribute
-        if not hasattr(self, "_lock") or not isinstance(self._lock, threading.Lock):
+        # Ensure _lock is a proper lock instance
+        # Note: threading.Lock() returns _thread.lock type, not threading.Lock class
+        if not hasattr(self, "_lock") or not hasattr(self._lock, "acquire"):
             object.__setattr__(self, "_lock", threading.Lock())
 
     def update_last_task_time(self, timestamp: float) -> None:
