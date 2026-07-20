@@ -24,6 +24,20 @@ from .config import Config
 from .schemas import SandboxState, SandboxStatus
 
 
+def extract_element_refs(output: str) -> List[str]:
+    """Extract element refs from agent-browser snapshot output.
+
+    Args:
+        output: stdout from agent-browser snapshot -i command
+
+    Returns:
+        List of element refs (e.g., ['e1', 'e2', ...])
+    """
+    pattern = r"\[ref=(e\d+)\]"
+    matches = re.findall(pattern, output)
+    return matches[:50]  # Limit to 50 elements
+
+
 class WarmupRunner(threading.Thread):
     """Warmup phase runner - opens multiple tabs using agent-browser
 
@@ -157,7 +171,7 @@ class WarmupRunner(threading.Thread):
             return
 
         # Extract element refs
-        elements = self._extract_element_refs(result.stdout)
+        elements = extract_element_refs(result.stdout)
 
         # Step 2: Element click (try first valid element)
         if elements:
@@ -169,19 +183,6 @@ class WarmupRunner(threading.Thread):
         screenshot_result = sbx.commands.run("agent-browser screenshot", timeout=30, user="root")
         if screenshot_result.exit_code != 0:
             print(f"[Sandbox{self.state.sandbox_id}] Tab {tab_num}: screenshot failed")
-
-    def _extract_element_refs(self, output: str) -> List[str]:
-        """Extract element refs from agent-browser snapshot output.
-
-        Args:
-            output: stdout from agent-browser snapshot -i command
-
-        Returns:
-            List of element refs (e.g., ['e1', 'e2', ...])
-        """
-        pattern = r"\[ref=(e\d+)\]"
-        matches = re.findall(pattern, output)
-        return matches[:50]  # Limit to 50 elements
 
 
 class BrowserTaskRunner(threading.Thread):
@@ -621,7 +622,7 @@ class TabOperationRunner(threading.Thread):
         if result.exit_code != 0:
             return False, [], f"snapshot failed: exit_code={result.exit_code}"
 
-        elements = self._extract_element_refs(result.stdout)
+        elements = extract_element_refs(result.stdout)
         return True, elements, ""
 
     def _step_click(self, sbx, elements: List[str], step_times: Dict[str, float]) -> Tuple[bool, str]:
@@ -703,20 +704,3 @@ class TabOperationRunner(threading.Thread):
         self.consecutive_errors += 1
         if self.consecutive_errors >= 3:
             self.state.is_alive = False
-
-    def _extract_element_refs(self, output: str) -> List[str]:
-        """Extract element refs from agent-browser snapshot output.
-
-        Args:
-            output: stdout from agent-browser snapshot -i command
-
-        Returns:
-            List of element refs (e.g., ['e1', 'e2', ...])
-        """
-        pattern = r"\[ref=(e\d+)\]"
-        matches = re.findall(pattern, output)
-        return matches[:50]  # Limit to 50 elements
-
-
-# Alias for backward compatibility
-TabSwitchRunner = TabOperationRunner
