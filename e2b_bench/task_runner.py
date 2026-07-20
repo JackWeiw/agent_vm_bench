@@ -123,6 +123,9 @@ class WarmupRunner(threading.Thread):
                 # Store tab ID (t1, t2, ...)
                 self.state.tab_ids.append(f"t{i+1}")
 
+                # Execute operations on this tab: snapshot -> click -> screenshot
+                self._execute_tab_operations(sbx, i + 1)
+
                 # Delay between pages
                 time.sleep(self.config.warmup_delay)
 
@@ -139,6 +142,46 @@ class WarmupRunner(threading.Thread):
             print(
                 f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Warmup completed: {len(self.state.tab_ids)} tabs opened"
             )
+
+    def _execute_tab_operations(self, sbx, tab_num: int) -> None:
+        """Execute operations on a tab after it's opened.
+
+        Args:
+            sbx: Sandbox object
+            tab_num: Tab number (1-based, for logging)
+        """
+        # Step 1: DOM snapshot
+        result = sbx.commands.run("agent-browser snapshot -i", timeout=60, user="root")
+        if result.exit_code != 0:
+            print(f"[Sandbox{self.state.sandbox_id}] Tab {tab_num}: snapshot failed")
+            return
+
+        # Extract element refs
+        elements = self._extract_element_refs(result.stdout)
+
+        # Step 2: Element click (try first valid element)
+        if elements:
+            click_result = sbx.commands.run(f"agent-browser click {elements[0]}", timeout=30, user="root")
+            if click_result.exit_code != 0:
+                print(f"[Sandbox{self.state.sandbox_id}] Tab {tab_num}: click failed on {elements[0]}")
+
+        # Step 3: Screenshot
+        screenshot_result = sbx.commands.run("agent-browser screenshot", timeout=30, user="root")
+        if screenshot_result.exit_code != 0:
+            print(f"[Sandbox{self.state.sandbox_id}] Tab {tab_num}: screenshot failed")
+
+    def _extract_element_refs(self, output: str) -> List[str]:
+        """Extract element refs from agent-browser snapshot output.
+
+        Args:
+            output: stdout from agent-browser snapshot -i command
+
+        Returns:
+            List of element refs (e.g., ['e1', 'e2', ...])
+        """
+        pattern = r"\[ref=(e\d+)\]"
+        matches = re.findall(pattern, output)
+        return matches[:50]  # Limit to 50 elements
 
 
 class BrowserTaskRunner(threading.Thread):
