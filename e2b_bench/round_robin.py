@@ -88,18 +88,14 @@ class RoundRobinTaskManager:
         self._planned_rounds = rounds  # Store for _stop_round to check
         num_groups = len(self.sandbox_groups)
 
-        # Check if cycling will occur
-        will_cycle = rounds > num_groups
-        if will_cycle:
-            print(f"\n[RoundRobin] Total rounds: {rounds} (cycling enabled)")
-            print(
-                f"[RoundRobin] Sandbox groups: {num_groups}, cycles: {rounds // num_groups}x + {rounds % num_groups} rounds"
-            )
+        # Print cycling info
+        if self.config.round_count and self.config.round_count > 0:
+            print(f"\n[RoundRobin] Will run {rounds} rounds (round_count specified)")
         else:
-            print(f"\n[RoundRobin] Total rounds: {rounds}")
-        print(f"[RoundRobin] Sandboxes per round: {len(self.sandbox_groups[0])} (balanced)")
+            print(f"\n[RoundRobin] Will cycle continuously until duration={self.config.test_duration}s")
+        print(f"[RoundRobin] Sandbox groups: {num_groups}, {len(self.sandbox_groups[0])} sandboxes per round")
 
-        # 4. Execute each round (with cycling) until duration is reached
+        # 3. Execute each round (with cycling) until duration is reached
         start_time = time.time()
         for round_id in range(rounds):
             # Check stop conditions
@@ -117,8 +113,19 @@ class RoundRobinTaskManager:
 
             # Cycle back to first group if needed
             self._start_round(round_id)
-            time.sleep(self.config.round_interval)
+
+            # Wait for all runners to complete
+            # Each runner executes one task (tab operations) and finishes naturally
+            for runner in self.active_runners:
+                runner.join(timeout=120)
+
+            # Now stop the round (records metrics and baseline)
             self._stop_round()
+
+            # Wait for round_interval before starting next round
+            # This is the gap between rounds (after tasks complete)
+            if elapsed + self.config.round_interval < self.config.test_duration:
+                time.sleep(self.config.round_interval)
 
         elapsed = time.time() - start_time
         print(f"\n[RoundRobin] Completed {min(self.current_round + 1, rounds)} rounds in {elapsed:.1f}s")
@@ -237,16 +244,16 @@ class RoundRobinTaskManager:
         self.current_round = round_id
 
     def _stop_round(self) -> None:
-        """Stop the current round and print summary."""
+        """Stop the current round and print summary.
+
+        Note: This method assumes runners have already completed (joined in main loop).
+        It only records metrics and prints the round summary.
+        """
         if not self.round_stop_event:
             return
 
-        # Signal all runners to stop
+        # Signal stop event (in case any runner is still waiting)
         self.round_stop_event.set()
-
-        # Wait for runners to finish (120s timeout for operations that take ~46s)
-        for runner in self.active_runners:
-            runner.join(timeout=120)
 
         # Force a final snapshot to capture this round's final metrics
         self.stats_collector._take_snapshot()
@@ -304,25 +311,23 @@ class RoundRobinTaskManager:
     def _calculate_rounds(self) -> int:
         """Calculate total number of rounds.
 
-        If round_count is specified, use it.
-        Otherwise, auto-calculate based on duration and interval.
+        Priority:
+        1. If round_count is specified: use it exactly
+        2. Otherwise: return a large number and rely on duration check in run()
+
+        When round_size is set, we want continuous cycling within test_duration.
+        The actual number of rounds depends on:
+        - Task execution time per round
+        - round_interval (gap between rounds)
+        - test_duration (total test time)
 
         Returns:
-            Number of rounds to execute
+            Number of rounds to execute (or a large number if cycling until duration)
         """
-        import math
-
-        # If round_count is specified, use it
+        # If round_count is specified, use it exactly
         if self.config.round_count and self.config.round_count > 0:
             return self.config.round_count
 
-        # Auto-calculate based on duration and interval
-        if self.config.round_interval > 0:
-            rounds = math.ceil(self.config.test_duration / self.config.round_interval)
-            print(
-                f"[RoundRobin] Auto-calculated {rounds} rounds from duration={self.config.test_duration}s, interval={self.config.round_interval}s"
-            )
-            return rounds
-
-        # Fallback: number of groups (no cycling)
-        return len(self.sandbox_groups)
+        # Return a large number and rely on duration check in run() to stop
+        # This allows continuous cycling until test_duration is reached
+        return 10000  # Large enough to cycle until duration ends
