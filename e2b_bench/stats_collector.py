@@ -32,6 +32,10 @@ class StatsCollector:
         self.current_round: Optional[int] = None
         self.round_snapshots: Dict[int, List[TestSnapshot]] = {}
 
+        # Round final totals - computed at round switch time, not snapshot time
+        # Key: round_id, Value: {"tasks": int, "success": int}
+        self._round_final_totals: Dict[int, Dict[str, int]] = {}
+
     def start(self) -> None:
         """Start background collection thread"""
         self.start_time = time.time()
@@ -50,39 +54,40 @@ class StatsCollector:
         Called by RoundRobinTaskManager to mark which round is currently active.
         Snapshots collected during this round will be grouped together.
 
+        IMPORTANT: This method computes and finalizes the previous round's task
+        count at the moment of round switch, decoupling from snapshot timing.
+
         Args:
             round_id: Current round index (None to clear)
         """
-        self.current_round = round_id
-        if round_id is not None:
-            # Mark that rounds have started (allows _collect_loop to start taking snapshots)
-            self._round_started = True
-            if round_id not in self.round_snapshots:
-                self.round_snapshots[round_id] = []
-            # Record baseline totals at the START of this round
-            # This ensures round_total/round_success reflect delta for this round only
+        # Step 1: Finalize previous round's task count (if any)
+        if self.current_round is not None and hasattr(self, "_round_baseline_total"):
             current_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
             current_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
 
-            # Debug: Log baseline to diagnose round 0 issue
-            if round_id == 0:
-                print(
-                    f"[StatsCollector] set_round(0): baseline_total={current_total}, baseline_success={current_success}"
-                )
+            # Compute and freeze the final delta for the previous round
+            self._round_final_totals[self.current_round] = {
+                "tasks": current_total - self._round_baseline_total,
+                "success": current_success - self._round_baseline_success,
+            }
 
+        # Step 2: Switch to new round
+        self.current_round = round_id
+
+        # Step 3: Initialize new round's baseline
+        if round_id is not None:
+            if round_id not in self.round_snapshots:
+                self.round_snapshots[round_id] = []
+
+            # Record baseline totals at the START of this round
+            current_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
+            current_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
             self._round_baseline_total = current_total
             self._round_baseline_success = current_success
 
     def _collect_loop(self) -> None:
         """Periodic snapshot collection"""
         while not self._stop.is_set():
-            # Skip snapshot if no round has been set yet (prevents polluting round 0 baseline)
-            # The first snapshot should be taken after round 0 starts
-            if self.current_round is None and not hasattr(self, "_round_started"):
-                # Wait for first round to start
-                time.sleep(0.1)
-                continue
-
             self._take_snapshot()
             time.sleep(self.config.stats_interval)
 
@@ -132,14 +137,13 @@ class StatsCollector:
         browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
 
         # Calculate per-round deltas using round baseline
+        # Note: These are real-time estimates for snapshots
+        # Final round totals are computed at set_round() switch time
         if hasattr(self, "_round_baseline_total"):
             round_total = browser_total - self._round_baseline_total
             round_success = browser_success - self._round_baseline_success
         else:
             # Fallback if no round baseline set
-            # Debug: This should not happen during normal round execution
-            if self.current_round is not None:
-                print(f"[StatsCollector] WARNING: round_baseline not set for round {self.current_round}")
             round_total = browser_total
             round_success = browser_success
 
@@ -428,21 +432,15 @@ class StatsCollector:
                     lines.append(f"  {error_type}: {count} errors (sandboxes: {sids}...)")
 
         # Round comparison for round-robin mode
-        if self.round_snapshots:
+        if self._round_final_totals:
             lines.append("\n" + "=" * 80)
             lines.append("[Round Comparison]")
             lines.append("=" * 80)
 
-            # Show summary of all rounds
-            total_rounds = len(self.round_snapshots)
-            total_tasks = 0
-            total_success = 0
-            for round_id in sorted(self.round_snapshots.keys()):
-                snapshots = self.round_snapshots[round_id]
-                if snapshots:
-                    last_snapshot = snapshots[-1]
-                    total_tasks += getattr(last_snapshot, "round_total", 0)
-                    total_success += getattr(last_snapshot, "round_success", 0)
+            # Calculate totals from finalized round data
+            total_rounds = len(self._round_final_totals)
+            total_tasks = sum(d["tasks"] for d in self._round_final_totals.values())
+            total_success = sum(d["success"] for d in self._round_final_totals.values())
 
             lines.append(f"  Summary: {total_tasks} tasks across {total_rounds} rounds")
             lines.append("")
@@ -450,22 +448,20 @@ class StatsCollector:
             lines.append(f"{'Round':<8} {'Tasks':<8} {'Success%':<10} {'Avg(s)':<10} {'P99(s)':<10}")
             lines.append("-" * 50)
 
-            for round_id in sorted(self.round_snapshots.keys()):
-                snapshots = self.round_snapshots[round_id]
-                if snapshots:
-                    # Use the LAST snapshot's round_total/round_success for this round
-                    # (it represents cumulative delta for the round)
-                    last_snapshot = snapshots[-1]
-                    tasks = getattr(last_snapshot, "round_total", 0)
-                    success = getattr(last_snapshot, "round_success", 0)
-                    avg = (
-                        statistics.mean(s.browser_avg_latency for s in snapshots if s.browser_avg_latency > 0)
-                        if any(s.browser_avg_latency > 0 for s in snapshots)
-                        else 0.0
-                    )
-                    p99 = max(s.browser_p99_latency for s in snapshots) if snapshots else 0.0
-                    rate = success / max(1, tasks) * 100 if tasks > 0 else 0.0
-                    lines.append(f"{round_id:<8} {tasks:<8} {rate:<10.1f} {avg:<10.2f} {p99:<10.2f}")
+            for round_id in sorted(self._round_final_totals.keys()):
+                tasks = self._round_final_totals[round_id]["tasks"]
+                success = self._round_final_totals[round_id]["success"]
+
+                # Get latency stats from snapshots for this round
+                snapshots = self.round_snapshots.get(round_id, [])
+                avg = (
+                    statistics.mean(s.browser_avg_latency for s in snapshots if s.browser_avg_latency > 0)
+                    if any(s.browser_avg_latency > 0 for s in snapshots)
+                    else 0.0
+                )
+                p99 = max(s.browser_p99_latency for s in snapshots) if snapshots else 0.0
+                rate = success / max(1, tasks) * 100 if tasks > 0 else 0.0
+                lines.append(f"{round_id:<8} {tasks:<8} {rate:<10.1f} {avg:<10.2f} {p99:<10.2f}")
 
         lines.append("\n" + "=" * 80)
         return "\n".join(lines)
