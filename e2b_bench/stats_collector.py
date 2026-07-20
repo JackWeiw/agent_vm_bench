@@ -54,8 +54,15 @@ class StatsCollector:
             round_id: Current round index (None to clear)
         """
         self.current_round = round_id
-        if round_id is not None and round_id not in self.round_snapshots:
-            self.round_snapshots[round_id] = []
+        if round_id is not None:
+            if round_id not in self.round_snapshots:
+                self.round_snapshots[round_id] = []
+            # Record baseline totals at the START of this round
+            # This ensures round_total/round_success reflect delta for this round only
+            current_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
+            current_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
+            self._round_baseline_total = current_total
+            self._round_baseline_success = current_success
 
     def _collect_loop(self) -> None:
         """Periodic snapshot collection"""
@@ -108,14 +115,14 @@ class StatsCollector:
         browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
         browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
 
-        # Track previous totals for per-round calculation
-        if not hasattr(self, "_prev_browser_total"):
-            self._prev_browser_total = 0
-            self._prev_browser_success = 0
-
-        # Calculate per-round deltas
-        round_total = browser_total - self._prev_browser_total
-        round_success = browser_success - self._prev_browser_success
+        # Calculate per-round deltas using round baseline
+        if hasattr(self, "_round_baseline_total"):
+            round_total = browser_total - self._round_baseline_total
+            round_success = browser_success - self._round_baseline_success
+        else:
+            # Fallback if no round baseline set
+            round_total = browser_total
+            round_success = browser_success
 
         # Collect recent latency data (last 10 per sandbox)
         all_latencies: List[float] = []
@@ -147,9 +154,6 @@ class StatsCollector:
         # Track round-specific snapshots
         if self.current_round is not None:
             self.round_snapshots[self.current_round].append(snapshot)
-            # Update previous totals at the end of each round snapshot
-            self._prev_browser_total = browser_total
-            self._prev_browser_success = browser_success
 
         # Real-time terminal output
         self._print_snapshot(snapshot)
@@ -338,7 +342,8 @@ class StatsCollector:
             lines.append("\n[Step-Level Timing (Tab-Switch Mode)]")
             lines.append(f"  {'Step':<15} {'Count':<8} {'Avg(ms)':<12} {'P99(ms)':<12}")
             lines.append("  " + "-" * 50)
-            for step_name in ["tab_switch", "snapshot", "click", "screenshot"]:
+            # Use actual step names: open_tab (not tab_switch), snapshot, click, screenshot
+            for step_name in ["open_tab", "snapshot", "click", "screenshot"]:
                 if step_name in aggregated_steps:
                     stats = aggregated_steps[step_name]
                     avg_ms = (stats["total_time"] / stats["count"]) * 1000 if stats["count"] > 0 else 0

@@ -232,32 +232,31 @@ class RoundRobinTaskManager:
         for runner in self.active_runners:
             runner.join(timeout=2)
 
-        # Aggregate step timing from sandbox states
+        # Aggregate step timing from active runners' sandbox states (not all sandboxes)
         step_totals = {}
-        for state in self.all_ready_states:
+        for runner in self.active_runners:
+            state = runner.state
             metrics = state.browser_metrics
             step_stats = metrics.get_step_stats()
             for step_name, stats in step_stats.items():
                 if step_name not in step_totals:
-                    step_totals[step_name] = {"total": 0.0, "count": 0}
+                    step_totals[step_name] = {"total": 0.0, "count": 0, "min_count": float("inf")}
                 step_totals[step_name]["total"] += stats["avg"] * stats["count"]
                 step_totals[step_name]["count"] += stats["count"]
+                # Track min count to detect steps with different sample counts
+                step_totals[step_name]["min_count"] = min(step_totals[step_name]["min_count"], stats["count"])
 
         # Print round summary with step timing
         runner_count = len(self.active_runners)
         if runner_count > 0 and step_totals:
-            avg_open_tab = (
-                step_totals.get("open_tab", {}).get("total", 0)
-                / max(1, step_totals.get("open_tab", {}).get("count", 1))
-            ) * 1000
-            avg_snapshot = (
-                step_totals.get("snapshot", {}).get("total", 0)
-                / max(1, step_totals.get("snapshot", {}).get("count", 1))
-            ) * 1000
+            avg_parts = []
+            for step_name in ["open_tab", "snapshot", "click", "screenshot"]:
+                if step_name in step_totals:
+                    avg_ms = (step_totals[step_name]["total"] / max(1, step_totals[step_name]["count"])) * 1000
+                    avg_parts.append(f"{step_name}={avg_ms:.0f}ms")
 
-            print(
-                f"[Round {self.current_round}] Completed: {runner_count} sandboxes, avg: open_tab={avg_open_tab:.0f}ms, snapshot={avg_snapshot:.0f}ms"
-            )
+            avg_str = ", ".join(avg_parts) if avg_parts else "no timing data"
+            print(f"[Round {self.current_round}] Completed: {runner_count} sandboxes, avg: {avg_str}")
         else:
             print(f"[Round {self.current_round}] Completed: {runner_count} sandboxes")
 

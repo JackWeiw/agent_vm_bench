@@ -230,7 +230,7 @@ class BrowserTaskRunner(threading.Thread):
             # Update metrics
             timeout = latency > self.config.browser_timeout
             self.state.browser_metrics.add(latency, success and not timeout, timeout)
-            self.state.last_task_time = time.time()
+            self.state.update_last_task_time(time.time())  # Thread-safe update
 
             # Error handling
             if success and not timeout:
@@ -514,6 +514,7 @@ class TabOperationRunner(threading.Thread):
         """
         sbx = self.state.sandbox_obj
         if not sbx:
+            print(f"[Sandbox{self.state.sandbox_id}] No sandbox handle available for tab operations")
             return
 
         # Get URL for this round (round-robin from browser_urls)
@@ -572,7 +573,13 @@ class TabOperationRunner(threading.Thread):
             # Step 4: Screenshot (non-fatal)
             _, screenshot_error = self._step_screenshot(sbx, step_times)
 
-            # Combine non-fatal errors for logging
+            # Log non-fatal errors (click/screenshot failures)
+            if click_error:
+                print(f"[Sandbox{self.state.sandbox_id}] Non-fatal: {click_error}")
+            if screenshot_error:
+                print(f"[Sandbox{self.state.sandbox_id}] Non-fatal: {screenshot_error}")
+
+            # Combine non-fatal errors for metrics tracking
             non_fatal_errors = []
             if click_error:
                 non_fatal_errors.append(click_error)
@@ -691,16 +698,22 @@ class TabOperationRunner(threading.Thread):
         elapsed = time.perf_counter() - start_time
         timeout = elapsed > self.config.browser_timeout
         self.state.browser_metrics.add(elapsed, success and not timeout, timeout, step_times=step_times)
-        self.state.last_task_time = time.time()
+        self.state.update_last_task_time(time.time())  # Thread-safe update
 
         if not success and error_detail:
             self.state.browser_metrics.last_error = error_detail
 
         return elapsed
 
-    def _handle_failure(self, tab_id: str, failed_step: str, error_detail: str) -> None:
-        """Handle failure after metrics are recorded."""
-        print(f"[Sandbox{self.state.sandbox_id}] Tab {tab_id} failed at {failed_step}: {error_detail}")
+    def _handle_failure(self, url: str, failed_step: str, error_detail: str) -> None:
+        """Handle failure after metrics are recorded.
+
+        Args:
+            url: URL that was being processed when failure occurred
+            failed_step: Name of the step that failed
+            error_detail: Detailed error message
+        """
+        print(f"[Sandbox{self.state.sandbox_id}] URL '{url[:50]}' failed at {failed_step}: {error_detail}")
         self.consecutive_errors += 1
         if self.consecutive_errors >= 3:
             self.state.is_alive = False

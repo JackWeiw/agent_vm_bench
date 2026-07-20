@@ -167,12 +167,39 @@ class SandboxState:
     browser_metrics: BrowserMetrics = field(default_factory=BrowserMetrics)
 
     is_alive: bool = True  # Sandbox alive status
-    last_task_time: float = 0.0  # Last task execution time
+    last_task_time: float = 0.0  # Last task execution time (thread-safe via update_last_task_time)
     consecutive_failures: int = 0  # Consecutive failure count
     warmup_done: bool = False  # Warmup phase completed flag
 
     # Tab state (for round_robin tab-switch mode)
     tab_ids: List[str] = field(default_factory=list)  # Active tab IDs [t1, t2, ...]
+
+    # Thread lock for last_task_time (not serialized)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+
+    def __post_init__(self):
+        """Initialize lock after dataclass creation."""
+        # Ensure _lock is a proper instance attribute
+        if not hasattr(self, "_lock") or not isinstance(self._lock, threading.Lock):
+            object.__setattr__(self, "_lock", threading.Lock())
+
+    def update_last_task_time(self, timestamp: float) -> None:
+        """Thread-safe update of last_task_time.
+
+        Args:
+            timestamp: Wall-clock timestamp (from time.time())
+        """
+        with self._lock:
+            self.last_task_time = timestamp
+
+    def get_last_task_time(self) -> float:
+        """Thread-safe read of last_task_time.
+
+        Returns:
+            Last task execution timestamp
+        """
+        with self._lock:
+            return self.last_task_time
 
 
 @dataclass
