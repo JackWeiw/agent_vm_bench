@@ -66,7 +66,9 @@ class StatsCollector:
 
             # Debug: Log baseline to diagnose round 0 issue
             if round_id == 0:
-                print(f"[StatsCollector] set_round(0): baseline_total={current_total}, baseline_success={current_success}")
+                print(
+                    f"[StatsCollector] set_round(0): baseline_total={current_total}, baseline_success={current_success}"
+                )
 
             self._round_baseline_total = current_total
             self._round_baseline_success = current_success
