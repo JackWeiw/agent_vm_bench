@@ -413,6 +413,21 @@ class StatsCollector:
             lines.append("\n" + "=" * 80)
             lines.append("[Round Comparison]")
             lines.append("=" * 80)
+
+            # Show summary of all rounds
+            total_rounds = len(self.round_snapshots)
+            total_tasks = 0
+            total_success = 0
+            for round_id in sorted(self.round_snapshots.keys()):
+                snapshots = self.round_snapshots[round_id]
+                if snapshots:
+                    last_snapshot = snapshots[-1]
+                    total_tasks += getattr(last_snapshot, "round_total", 0)
+                    total_success += getattr(last_snapshot, "round_success", 0)
+
+            lines.append(f"  Summary: {total_tasks} tasks across {total_rounds} rounds")
+            lines.append("")
+
             lines.append(f"{'Round':<8} {'Tasks':<8} {'Success%':<10} {'Avg(s)':<10} {'P99(s)':<10}")
             lines.append("-" * 50)
 
@@ -424,9 +439,6 @@ class StatsCollector:
                     last_snapshot = snapshots[-1]
                     tasks = getattr(last_snapshot, "round_total", 0)
                     success = getattr(last_snapshot, "round_success", 0)
-                    # Skip empty rounds (no tasks executed)
-                    if tasks == 0:
-                        continue
                     avg = (
                         statistics.mean(s.browser_avg_latency for s in snapshots if s.browser_avg_latency > 0)
                         if any(s.browser_avg_latency > 0 for s in snapshots)

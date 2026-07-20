@@ -234,6 +234,8 @@ class RoundRobinTaskManager:
 
         # Force a final snapshot to capture this round's final metrics
         # This ensures round data is recorded even if stats_interval is long
+        # Note: current_round is still set, so snapshot will be recorded to correct round
+        print(f"[Round {self.current_round}] Recording final snapshot...")
         self.stats_collector._take_snapshot()
 
         # Aggregate step timing from active runners' sandbox states (not all sandboxes)
