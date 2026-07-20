@@ -4,147 +4,22 @@ Round-Robin Task Manager Module
 Manages round-robin sandbox rotation for memory migration stress testing.
 Each round activates a different subset of sandboxes to ensure even memory access distribution.
 
-Supports tab-switch mode:
-- Warmup phase opens multiple tabs per sandbox
+Tab-switch mode:
+- Warmup phase opens multiple tabs per sandbox (via WarmupRunner in task_runner.py)
 - Each round operates on a specific tab (round_id % len(tab_ids))
+- TabSwitchRunner (from task_runner.py) executes per-tab operations
 - Creates swap in events when accessing migrated memory
 """
 
 import re
 import threading
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from .config import Config
 from .schemas import SandboxState, SandboxStatus
 from .stats_collector import StatsCollector
-
-
-class TabSwitchRunner(threading.Thread):
-    """Runner for tab-switch benchmark - operates on a specific tab per round"""
-
-    def __init__(
-        self,
-        state: SandboxState,
-        config: Config,
-        stop_event: threading.Event,
-        round_id: int,
-    ):
-        super().__init__(daemon=True)
-        self.state = state
-        self.config = config
-        self.stop_event = stop_event
-        self.round_id = round_id
-        self.consecutive_errors = 0
-
-    def run(self) -> None:
-        """Execute tab-switch operations for this round"""
-        sbx = self.state.sandbox_obj
-        if not sbx:
-            return
-
-        # Determine which tab to operate on this round
-        if not self.state.tab_ids:
-            print(f"[Sandbox{self.state.sandbox_id}] No tabs available for tab-switch")
-            return
-
-        tab_index = self.round_id % len(self.state.tab_ids)
-        tab_id = self.state.tab_ids[tab_index]
-
-        start_time = time.perf_counter()
-        success = True
-        step_times = {}
-        failed_step = None  # Track which step failed
-        error_detail = ""  # Detailed error message
-
-        try:
-            # Step 1: Switch to target tab
-            step_start = time.perf_counter()
-            result = sbx.commands.run(f"agent-browser tab {tab_id}", timeout=30, user="root")
-            step_times["tab_switch"] = time.perf_counter() - step_start
-
-            if result.exit_code != 0:
-                success = False
-                failed_step = "tab_switch"
-                error_detail = f"tab_switch failed for {tab_id}: exit_code={result.exit_code}"
-            else:
-                # Small delay after tab switch (may trigger swap in)
-                time.sleep(0.5)
-
-                # Step 2: DOM snapshot
-                step_start = time.perf_counter()
-                result = sbx.commands.run("agent-browser snapshot -i", timeout=60, user="root")
-                step_times["snapshot"] = time.perf_counter() - step_start
-
-                if result.exit_code != 0:
-                    success = False
-                    failed_step = "snapshot"
-                    error_detail = f"snapshot failed: exit_code={result.exit_code}"
-                else:
-                    # Extract element refs
-                    elements = self._extract_element_refs(result.stdout)
-
-                    # Step 3: Element click (try first valid element)
-                    if elements:
-                        step_start = time.perf_counter()
-                        click_result = sbx.commands.run(f"agent-browser click {elements[0]}", timeout=30, user="root")
-                        step_times["click"] = time.perf_counter() - step_start
-                        if click_result.exit_code != 0:
-                            # Click failure is not fatal, just log it
-                            error_detail = f"click failed on {elements[0]}: exit_code={click_result.exit_code}"
-
-                    # Step 4: Screenshot
-                    step_start = time.perf_counter()
-                    screenshot_result = sbx.commands.run("agent-browser screenshot", timeout=30, user="root")
-                    step_times["screenshot"] = time.perf_counter() - step_start
-                    if screenshot_result.exit_code != 0:
-                        # Screenshot failure is not fatal, just log it
-                        if error_detail:
-                            error_detail += f"; screenshot failed: exit_code={screenshot_result.exit_code}"
-                        else:
-                            error_detail = f"screenshot failed: exit_code={screenshot_result.exit_code}"
-
-        except Exception as e:
-            success = False
-            # Extract which step timed out from exception message
-            error_str = str(e)
-            if "context deadline exceeded" in error_str or "timed out" in error_str:
-                # Infer which step failed based on what was recorded
-                if "tab_switch" not in step_times:
-                    failed_step = "tab_switch"
-                    error_detail = f"tab_switch timed out after 30s"
-                elif "snapshot" not in step_times:
-                    failed_step = "snapshot"
-                    error_detail = f"snapshot timed out after 60s"
-                else:
-                    failed_step = "unknown"
-                    error_detail = f"operation timed out: {error_str[:100]}"
-            else:
-                failed_step = "exception"
-                error_detail = f"exception: {error_str[:100]}"
-
-        # Always record metrics, even for failed operations
-        elapsed = time.perf_counter() - start_time
-        timeout = elapsed > self.config.browser_timeout
-        self.state.browser_metrics.add(elapsed, success and not timeout, timeout, step_times=step_times)
-        self.state.last_task_time = time.time()
-
-        # Record detailed error for failed operations
-        if not success and error_detail:
-            self.state.browser_metrics.last_error = error_detail
-
-        # Only print failures, not successes (reduce log noise)
-        if not success:
-            print(f"[Sandbox{self.state.sandbox_id}] Tab {tab_id} failed at {failed_step}: {error_detail}")
-            self.consecutive_errors += 1
-            if self.consecutive_errors >= 3:
-                self.state.is_alive = False
-
-    def _extract_element_refs(self, output: str) -> List[str]:
-        """Extract element refs from agent-browser snapshot output"""
-        pattern = r"\[ref=(e\d+)\]"
-        matches = re.findall(pattern, output)
-        return matches[:50]  # Limit to 50 elements
+from .task_runner import TabSwitchRunner
 
 
 class RoundRobinTaskManager:
