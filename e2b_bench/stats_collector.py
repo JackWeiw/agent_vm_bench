@@ -104,9 +104,18 @@ class StatsCollector:
             "total": calc_percentiles(total_times),
         }
 
-        # Browser task statistics
+        # Browser task statistics (cumulative)
         browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
         browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
+
+        # Track previous totals for per-round calculation
+        if not hasattr(self, '_prev_browser_total'):
+            self._prev_browser_total = 0
+            self._prev_browser_success = 0
+
+        # Calculate per-round deltas
+        round_total = browser_total - self._prev_browser_total
+        round_success = browser_success - self._prev_browser_success
 
         # Collect recent latency data (last 10 per sandbox)
         all_latencies: List[float] = []
@@ -128,11 +137,19 @@ class StatsCollector:
             browser_avg_latency=browser_avg,
             browser_p99_latency=browser_p99,
         )
+
+        # Add per-round fields for round comparison
+        snapshot.round_total = round_total
+        snapshot.round_success = round_success
+
         self.snapshots.append(snapshot)
 
         # Track round-specific snapshots
         if self.current_round is not None:
             self.round_snapshots[self.current_round].append(snapshot)
+            # Update previous totals at the end of each round snapshot
+            self._prev_browser_total = browser_total
+            self._prev_browser_success = browser_success
 
         # Real-time terminal output
         self._print_snapshot(snapshot)
@@ -397,8 +414,9 @@ class StatsCollector:
             for round_id in sorted(self.round_snapshots.keys()):
                 snapshots = self.round_snapshots[round_id]
                 if snapshots:
-                    tasks = sum(s.browser_total for s in snapshots)
-                    success = sum(s.browser_success for s in snapshots)
+                    # Use per-round deltas instead of cumulative
+                    tasks = sum(getattr(s, 'round_total', s.browser_total) for s in snapshots)
+                    success = sum(getattr(s, 'round_success', s.browser_success) for s in snapshots)
                     avg = (
                         statistics.mean(s.browser_avg_latency for s in snapshots if s.browser_avg_latency > 0)
                         if any(s.browser_avg_latency > 0 for s in snapshots)
