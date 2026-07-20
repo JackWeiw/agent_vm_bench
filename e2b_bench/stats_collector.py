@@ -65,9 +65,7 @@ class StatsCollector:
         browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
         browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
         # Track latency count per sandbox for accurate round latency extraction
-        sandbox_latency_counts = {
-            s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()
-        }
+        sandbox_latency_counts = {s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()}
 
         # Switch to new round
         self.current_round = round_id
@@ -532,7 +530,9 @@ class StatsCollector:
                     start_count = start_counts.get(sandbox_id, 0)
                     end_count = end_counts.get(sandbox_id, len(s.browser_metrics.latencies))
                     # Get latencies added during this round
-                    round_latencies.extend(s.browser_metrics.get_latencies_since(start_count)[:end_count - start_count])
+                    round_latencies.extend(
+                        s.browser_metrics.get_latencies_since(start_count)[: end_count - start_count]
+                    )
 
                 if round_latencies:
                     avg = statistics.mean(round_latencies)
