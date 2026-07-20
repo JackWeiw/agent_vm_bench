@@ -232,6 +232,10 @@ class RoundRobinTaskManager:
         for runner in self.active_runners:
             runner.join(timeout=2)
 
+        # Force a final snapshot to capture this round's final metrics
+        # This ensures round data is recorded even if stats_interval is long
+        self.stats_collector._take_snapshot()
+
         # Aggregate step timing from active runners' sandbox states (not all sandboxes)
         step_totals = {}
         for runner in self.active_runners:
