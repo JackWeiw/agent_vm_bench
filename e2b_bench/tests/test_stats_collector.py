@@ -1,7 +1,8 @@
 """
 Test Stats Collector Module
 
-Tests for statistics collection, error classification, and round comparison
+Tests for statistics collection, error classification, round comparison,
+and tail latency analysis
 """
 
 from unittest.mock import Mock, patch
@@ -339,6 +340,113 @@ class TestStatsCollectorRoundLatencyDelta:
         # Round 1 should have avg of [3.0, 4.0, 4.0, 5.0] = 4.0
         # Round 2 should have avg of [5.0, 6.0, 6.0, 7.0] = 6.0
         # Note: The report shows latency in seconds, so we check for these values
+
+
+class TestStatsCollectorTailLatency:
+    """Tests for tail latency analysis in reports"""
+
+    def setup_method(self):
+        """Set up test fixtures"""
+        self.config = Mock(spec=Config)
+        self.config.template = "test-template"
+        self.config.total_count = 2
+        self.config.detect_existing = False
+        self.config.create_only = False
+        self.config.create_batch_size = None
+        self.config.task_batch_size = None
+        self.config.test_duration = 60
+        self.config.output_dir = "/tmp/test"
+        self.config.filename_prefix = "test"
+        self.config.stats_interval = 5
+
+    def _create_sandbox_with_step_times(self, sandbox_id: int, step_times: dict):
+        """Helper to create a sandbox state with step times"""
+        state = SandboxState(sandbox_id=sandbox_id)
+        state.browser_metrics = BrowserMetrics()
+        # Add step times using the add method
+        total_latency = sum(step_times.values())
+        state.browser_metrics.add(latency=total_latency, success=True, step_times=step_times)
+        state.creation_metrics.status = SandboxStatus.PORT_READY
+        return state
+
+    def test_step_level_timing_shows_tail_ratio(self):
+        """Step-Level Timing should include tail ratio"""
+        sandbox_states = {
+            1: self._create_sandbox_with_step_times(1, {"open_tab": 0.8, "page_load": 1.2}),
+            2: self._create_sandbox_with_step_times(2, {"open_tab": 0.9, "page_load": 1.3}),
+        }
+
+        collector = StatsCollector(self.config, sandbox_states)
+        report = collector.generate_report()
+
+        assert "[Step-Level Timing" in report
+        assert "Tail Ratio" in report
+        assert "open_tab" in report
+        assert "page_load" in report
+
+    def test_step_level_timing_shows_percentiles(self):
+        """Step-Level Timing should show P50, P95, P99"""
+        sandbox_states = {
+            1: self._create_sandbox_with_step_times(1, {"open_tab": 0.8}),
+        }
+
+        collector = StatsCollector(self.config, sandbox_states)
+        report = collector.generate_report()
+
+        assert "P50(ms)" in report
+        assert "P95(ms)" in report
+        assert "P99(ms)" in report
+
+    def test_round_comparison_shows_tail_ratio(self):
+        """Round Comparison should include tail ratio"""
+        sandbox_states = {
+            1: self._create_sandbox_with_step_times(1, {"open_tab": 1.0}),
+            2: self._create_sandbox_with_step_times(2, {"open_tab": 2.0}),
+        }
+
+        collector = StatsCollector(self.config, sandbox_states)
+        collector._round_start_totals[0] = {
+            "total": 0,
+            "success": 0,
+            "sandbox_latency_counts": {1: 0, 2: 0},
+        }
+
+        report = collector.generate_report()
+
+        assert "[Round Comparison]" in report
+        assert "Tail" in report
+
+    def test_round_comparison_shows_percentiles(self):
+        """Round Comparison should show P50, P95, P99"""
+        sandbox_states = {
+            1: self._create_sandbox_with_step_times(1, {"open_tab": 1.0}),
+        }
+
+        collector = StatsCollector(self.config, sandbox_states)
+        collector._round_start_totals[0] = {
+            "total": 0,
+            "success": 0,
+            "sandbox_latency_counts": {1: 0},
+        }
+
+        report = collector.generate_report()
+
+        assert "P50(s)" in report
+        assert "P95(s)" in report
+        assert "P99(s)" in report
+
+    def test_tail_latency_severity_classification(self):
+        """Report should show severity classification"""
+        # Create significant tail: most values at 1.0, one at 5.0
+        sandbox_states = {
+            i: self._create_sandbox_with_step_times(i, {"open_tab": 1.0 if i < 8 else 5.0}) for i in range(10)
+        }
+
+        collector = StatsCollector(self.config, sandbox_states)
+        report = collector.generate_report()
+
+        # Should show one of the severity levels
+        assert any(level in report for level in ["minimal", "moderate", "significant"])
 
 
 if __name__ == "__main__":

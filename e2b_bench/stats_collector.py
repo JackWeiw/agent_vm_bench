@@ -350,7 +350,9 @@ class StatsCollector:
 
         if all_step_times:
             lines.append("\n[Step-Level Timing (Tab-Switch Mode)]")
-            lines.append(f"  {'Step':<12} {'Count':<7} {'P50(ms)':<10} {'P95(ms)':<10} {'P99(ms)':<10} {'Tail Ratio':<15}")
+            lines.append(
+                f"  {'Step':<12} {'Count':<7} {'P50(ms)':<10} {'P95(ms)':<10} {'P99(ms)':<10} {'Tail Ratio':<15}"
+            )
             lines.append("  " + "-" * 70)
 
             for step_name in ["open_tab", "page_load", "snapshot", "click", "screenshot"]:
@@ -513,7 +515,9 @@ class StatsCollector:
             lines.append(f"  Summary: {total_tasks} tasks across {total_rounds} rounds")
             lines.append("")
 
-            lines.append(f"{'Round':<7} {'Tasks':<7} {'Success%':<9} {'P50(s)':<9} {'P95(s)':<9} {'P99(s)':<9} {'Tail':<12}")
+            lines.append(
+                f"{'Round':<7} {'Tasks':<7} {'Success%':<9} {'P50(s)':<9} {'P95(s)':<9} {'P99(s)':<9} {'Tail':<12}"
+            )
             lines.append("-" * 70)
 
             for round_id in sorted(round_finals.keys()):
