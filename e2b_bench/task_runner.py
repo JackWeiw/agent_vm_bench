@@ -595,14 +595,19 @@ class TabOperationRunner(threading.Thread):
         return success, step_times, failed_step, error_detail
 
     def _step_open_tab(self, sbx, url: str, step_times: Dict[str, float]) -> Tuple[bool, str]:
-        """Step 1: Open new tab with URL.
+        """Step 1: Open new tab with URL and wait for page load.
+
+        Records two separate timings:
+        - open_tab: Time to create new tab
+        - page_load: Time to wait for networkidle
 
         Returns:
             Tuple of (success, error_detail)
         """
-        step_start = time.perf_counter()
+        # Step 1a: Create new tab
+        tab_start = time.perf_counter()
         result = sbx.commands.run(f'agent-browser tab new "{url}"', timeout=60, user="root")
-        step_times["open_tab"] = time.perf_counter() - step_start
+        step_times["open_tab"] = time.perf_counter() - tab_start
 
         if result.exit_code != 0:
             # Build detailed error message with exit_code, stderr, stdout
@@ -614,10 +619,11 @@ class TabOperationRunner(threading.Thread):
             error_parts.append(f"url={url[:80]}")
             return False, " | ".join(error_parts)
 
-        # Wait for page load
-        wait_result = sbx.commands.run(
-            "agent-browser wait --load domcontentloaded --timeout 60000", timeout=70, user="root"
-        )
+        # Step 1b: Wait for network idle (page fully loaded)
+        wait_start = time.perf_counter()
+        wait_result = sbx.commands.run("agent-browser wait --load networkidle --timeout 60000", timeout=70, user="root")
+        step_times["page_load"] = time.perf_counter() - wait_start
+
         if wait_result.exit_code != 0:
             error_parts = [f"page_load failed: exit_code={wait_result.exit_code}"]
             if wait_result.stderr:

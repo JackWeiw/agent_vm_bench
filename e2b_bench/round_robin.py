@@ -291,7 +291,7 @@ class RoundRobinTaskManager:
         runner_count = len(self.active_runners)
         if runner_count > 0 and step_totals:
             avg_parts = []
-            for step_name in ["open_tab", "snapshot", "click", "screenshot"]:
+            for step_name in ["open_tab", "page_load", "snapshot", "click", "screenshot"]:
                 if step_name in step_totals:
                     avg_ms = (step_totals[step_name]["total"] / max(1, step_totals[step_name]["count"])) * 1000
                     avg_parts.append(f"{step_name}={avg_ms:.0f}ms")

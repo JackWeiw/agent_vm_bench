@@ -364,8 +364,8 @@ class StatsCollector:
             lines.append("\n[Step-Level Timing (Tab-Switch Mode)]")
             lines.append(f"  {'Step':<15} {'Count':<8} {'Avg(ms)':<12} {'P99(ms)':<12}")
             lines.append("  " + "-" * 50)
-            # Use actual step names: open_tab (not tab_switch), snapshot, click, screenshot
-            for step_name in ["open_tab", "snapshot", "click", "screenshot"]:
+            # Use actual step names: open_tab, page_load, snapshot, click, screenshot
+            for step_name in ["open_tab", "page_load", "snapshot", "click", "screenshot"]:
                 if step_name in aggregated_steps:
                     stats = aggregated_steps[step_name]
                     avg_ms = (stats["total_time"] / stats["count"]) * 1000 if stats["count"] > 0 else 0
