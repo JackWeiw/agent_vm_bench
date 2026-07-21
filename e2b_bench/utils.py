@@ -68,3 +68,75 @@ def calc_p99(values: List[float]) -> float:
     if len(sorted_vals) >= 100:
         return sorted_vals[int(len(sorted_vals) * 0.99)]
     return sorted_vals[-1]
+
+
+def calc_tail_ratio(values: List[float]) -> float:
+    """Calculate tail latency ratio (P99 / P50).
+
+    Tail ratio indicates severity of long-tail latency:
+    - < 1.2x: Minimal tail latency (well-behaved distribution)
+    - 1.2x ~ 1.5x: Moderate tail latency
+    - > 1.5x: Significant tail latency (outliers present)
+
+    Returns:
+        Tail ratio (P99 / P50), or 1.0 if insufficient data
+    """
+    if not values or len(values) < 5:
+        return 1.0
+
+    stats = calc_percentiles(values)
+    p50 = stats["p50"]
+    p99 = stats["p99"]
+
+    if p50 <= 0:
+        return 1.0
+
+    return p99 / p50
+
+
+def classify_tail_latency(tail_ratio: float) -> str:
+    """Classify tail latency severity.
+
+    Args:
+        tail_ratio: P99/P50 ratio
+
+    Returns:
+        Classification string: "minimal", "moderate", or "significant"
+    """
+    if tail_ratio < 1.2:
+        return "minimal"
+    elif tail_ratio < 1.5:
+        return "moderate"
+    else:
+        return "significant"
+
+
+def format_latency_distribution(values: List[float], unit: str = "ms") -> str:
+    """Format latency distribution as a compact string.
+
+    Shows P50, P95, P99 and tail ratio for quick analysis.
+
+    Args:
+        values: List of latency values in seconds
+        unit: Output unit ("ms" or "s")
+
+    Returns:
+        Formatted string like "P50=20ms, P95=45ms, P99=50ms, tail=2.5x (significant)"
+    """
+    if not values:
+        return "no data"
+
+    stats = calc_percentiles(values)
+    tail_ratio = calc_tail_ratio(values)
+    severity = classify_tail_latency(tail_ratio)
+
+    multiplier = 1000 if unit == "ms" else 1
+
+    parts = [
+        f"P50={stats['p50'] * multiplier:.0f}{unit}",
+        f"P95={stats['p95'] * multiplier:.0f}{unit}",
+        f"P99={stats['p99'] * multiplier:.0f}{unit}",
+        f"tail={tail_ratio:.2f}x ({severity})",
+    ]
+
+    return ", ".join(parts)

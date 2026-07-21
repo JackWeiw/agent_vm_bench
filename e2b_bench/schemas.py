@@ -154,6 +154,17 @@ class BrowserMetrics:
                 }
             return result
 
+    def get_step_times_copy(self) -> Dict[str, List[float]]:
+        """Get a thread-safe copy of all step times.
+
+        Used for detailed tail latency analysis across all sandboxes.
+
+        Returns:
+            Dict of step_name -> list of latency values (copy)
+        """
+        with self._lock:
+            return {step_name: list(times) for step_name, times in self._step_times.items()}
+
     def get_latencies_since(self, start_count: int) -> List[float]:
         """Get latencies added after a certain count.
 

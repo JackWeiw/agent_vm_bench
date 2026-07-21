@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 
 from .config import Config
 from .schemas import SandboxState, SandboxStatus, TestSnapshot
-from .utils import calc_p99, calc_percentiles
+from .utils import calc_p99, calc_percentiles, calc_tail_ratio, classify_tail_latency
 
 
 class StatsCollector:
@@ -339,38 +339,38 @@ class StatsCollector:
             lines.append(f"  P99 Latency:   {p99_ms:.1f}ms")
 
         # Step-level timing statistics for tab-switch mode
+        # Collect all step times across sandboxes for accurate percentiles
         all_step_times: Dict[str, List[float]] = {}
         for s in self.sandbox_states.values():
-            step_stats = s.browser_metrics.get_step_stats()
-            for step_name, stats in step_stats.items():
+            step_times_copy = s.browser_metrics.get_step_times_copy()
+            for step_name, times in step_times_copy.items():
                 if step_name not in all_step_times:
                     all_step_times[step_name] = []
-                # Get raw times from metrics (need to access internal data)
-                for _ in range(stats["count"]):
-                    all_step_times[step_name].append(stats["avg"])  # Approximate
+                all_step_times[step_name].extend(times)
 
-        # Better approach: aggregate step times directly
-        aggregated_steps: Dict[str, Dict[str, float]] = {}
-        for s in self.sandbox_states.values():
-            step_stats = s.browser_metrics.get_step_stats()
-            for step_name, stats in step_stats.items():
-                if step_name not in aggregated_steps:
-                    aggregated_steps[step_name] = {"total_time": 0.0, "count": 0, "max_p99": 0.0}
-                aggregated_steps[step_name]["total_time"] += stats["avg"] * stats["count"]
-                aggregated_steps[step_name]["count"] += stats["count"]
-                aggregated_steps[step_name]["max_p99"] = max(aggregated_steps[step_name]["max_p99"], stats["p99"])
-
-        if aggregated_steps:
+        if all_step_times:
             lines.append("\n[Step-Level Timing (Tab-Switch Mode)]")
-            lines.append(f"  {'Step':<15} {'Count':<8} {'Avg(ms)':<12} {'P99(ms)':<12}")
-            lines.append("  " + "-" * 50)
-            # Use actual step names: open_tab, page_load, snapshot, click, screenshot
+            lines.append(f"  {'Step':<12} {'Count':<7} {'P50(ms)':<10} {'P95(ms)':<10} {'P99(ms)':<10} {'Tail Ratio':<15}")
+            lines.append("  " + "-" * 70)
+
             for step_name in ["open_tab", "page_load", "snapshot", "click", "screenshot"]:
-                if step_name in aggregated_steps:
-                    stats = aggregated_steps[step_name]
-                    avg_ms = (stats["total_time"] / stats["count"]) * 1000 if stats["count"] > 0 else 0
-                    p99_ms = stats["max_p99"] * 1000
-                    lines.append(f"  {step_name:<15} {stats['count']:<8} {avg_ms:<12.1f} {p99_ms:<12.1f}")
+                if step_name in all_step_times and all_step_times[step_name]:
+                    times = all_step_times[step_name]
+                    stats = calc_percentiles(times)
+                    tail_ratio = calc_tail_ratio(times)
+                    severity = classify_tail_latency(tail_ratio)
+
+                    p50_ms = stats["p50"] * 1000
+                    p95_ms = stats["p95"] * 1000
+                    p99_ms = stats["p99"] * 1000
+                    count = len(times)
+
+                    lines.append(
+                        f"  {step_name:<12} {count:<7} {p50_ms:<10.1f} {p95_ms:<10.1f} {p99_ms:<10.1f} {tail_ratio:<.2f}x ({severity})"
+                    )
+
+            lines.append("\n  Tail Ratio: P99/P50 - indicates long-tail latency severity")
+            lines.append("  < 1.2x: minimal | 1.2-1.5x: moderate | > 1.5x: significant")
 
         # Collect error details from failed sandboxes
         failed_sandbox_errors = []
@@ -513,8 +513,8 @@ class StatsCollector:
             lines.append(f"  Summary: {total_tasks} tasks across {total_rounds} rounds")
             lines.append("")
 
-            lines.append(f"{'Round':<8} {'Tasks':<8} {'Success%':<10} {'Avg(s)':<10} {'P99(s)':<10}")
-            lines.append("-" * 50)
+            lines.append(f"{'Round':<7} {'Tasks':<7} {'Success%':<9} {'P50(s)':<9} {'P95(s)':<9} {'P99(s)':<9} {'Tail':<12}")
+            lines.append("-" * 70)
 
             for round_id in sorted(round_finals.keys()):
                 tasks = round_finals[round_id]["tasks"]
@@ -535,14 +535,23 @@ class StatsCollector:
                     )
 
                 if round_latencies:
-                    avg = statistics.mean(round_latencies)
-                    p99 = calc_p99(round_latencies)
+                    stats = calc_percentiles(round_latencies)
+                    p50 = stats["p50"]
+                    p95 = stats["p95"]
+                    p99 = stats["p99"]
+                    tail_ratio = calc_tail_ratio(round_latencies)
+                    severity = classify_tail_latency(tail_ratio)
                 else:
-                    avg = 0.0
+                    p50 = 0.0
+                    p95 = 0.0
                     p99 = 0.0
+                    tail_ratio = 1.0
+                    severity = "N/A"
 
                 rate = success / max(1, tasks) * 100 if tasks > 0 else 0.0
-                lines.append(f"{round_id:<8} {tasks:<8} {rate:<10.1f} {avg:<10.2f} {p99:<10.2f}")
+                lines.append(
+                    f"{round_id:<7} {tasks:<7} {rate:<9.1f} {p50:<9.2f} {p95:<9.2f} {p99:<9.2f} {tail_ratio:<.2f}x ({severity})"
+                )
 
         lines.append("\n" + "=" * 80)
         return "\n".join(lines)
