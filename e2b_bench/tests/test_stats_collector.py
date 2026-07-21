@@ -380,12 +380,12 @@ class TestStatsCollectorTailLatency:
         report = collector.generate_report()
 
         assert "[Step-Level Timing" in report
-        assert "Tail Ratio" in report
+        assert "Tail" in report
         assert "open_tab" in report
         assert "page_load" in report
 
     def test_step_level_timing_shows_percentiles(self):
-        """Step-Level Timing should show P50, P95, P99"""
+        """Step-Level Timing should show Avg, P50, P95, P99"""
         sandbox_states = {
             1: self._create_sandbox_with_step_times(1, {"open_tab": 0.8}),
         }
@@ -393,6 +393,7 @@ class TestStatsCollectorTailLatency:
         collector = StatsCollector(self.config, sandbox_states)
         report = collector.generate_report()
 
+        assert "Avg(ms)" in report
         assert "P50(ms)" in report
         assert "P95(ms)" in report
         assert "P99(ms)" in report
@@ -417,7 +418,7 @@ class TestStatsCollectorTailLatency:
         assert "Tail" in report
 
     def test_round_comparison_shows_percentiles(self):
-        """Round Comparison should show P50, P95, P99"""
+        """Round Comparison should show Avg, P50, P95, P99"""
         sandbox_states = {
             1: self._create_sandbox_with_step_times(1, {"open_tab": 1.0}),
         }
@@ -431,6 +432,7 @@ class TestStatsCollectorTailLatency:
 
         report = collector.generate_report()
 
+        assert "Avg(s)" in report
         assert "P50(s)" in report
         assert "P95(s)" in report
         assert "P99(s)" in report
