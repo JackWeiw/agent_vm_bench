@@ -106,16 +106,64 @@ def export_to_excel(
             )
             summary_data["Unit"].extend(["MB", "MB", "MB", "%"])
 
-            # Swap stats
+            # Swap Capacity stats
             if monitor.swap_history:
-                swap_avg = round(sum(s["used_mb"] for s in monitor.swap_history) / len(monitor.swap_history), 0)
-                swap_total = monitor.swap_history[0]["total_mb"] if monitor.swap_history else 0
+                swap_avg_used = round(
+                    sum(s["capacity"]["used_mb"] for s in monitor.swap_history) / len(monitor.swap_history), 0
+                )
+                swap_total = monitor.swap_history[0]["capacity"]["total_mb"] if monitor.swap_history else 0
                 swap_peak_pct = round(monitor.peak_swap_used_mb / swap_total * 100, 1) if swap_total > 0 else 0
                 summary_data["Metric"].extend(["Swap Total", "Swap Avg Used", "Swap Peak Used", "Swap Peak Usage %"])
                 summary_data["Value"].extend(
-                    [round(swap_total, 0), swap_avg, round(monitor.peak_swap_used_mb, 0), swap_peak_pct]
+                    [round(swap_total, 0), swap_avg_used, round(monitor.peak_swap_used_mb, 0), swap_peak_pct]
                 )
                 summary_data["Unit"].extend(["MB", "MB", "MB", "%"])
+
+                # Swap Cache stats
+                swap_avg_cached = round(
+                    sum(s["cache"]["cached_mb"] for s in monitor.swap_history) / len(monitor.swap_history), 2
+                )
+                swap_avg_cached_ratio = round(
+                    sum(s["cache"]["cached_ratio_pct"] for s in monitor.swap_history) / len(monitor.swap_history), 1
+                )
+                summary_data["Metric"].extend(["Swap Cached Avg", "Swap Cached Peak", "Swap Cached Avg Ratio %"])
+                summary_data["Value"].extend(
+                    [swap_avg_cached, round(monitor.peak_swap_cached_mb, 2), swap_avg_cached_ratio]
+                )
+                summary_data["Unit"].extend(["MB", "MB", "%"])
+
+                # Swap Activity stats
+                swap_avg_in_rate = round(
+                    sum(s["activity"]["swap_in_rate"] for s in monitor.swap_history) / len(monitor.swap_history), 2
+                )
+                swap_avg_out_rate = round(
+                    sum(s["activity"]["swap_out_rate"] for s in monitor.swap_history) / len(monitor.swap_history), 2
+                )
+                swap_peak_in_rate = round(max(s["activity"]["swap_in_rate"] for s in monitor.swap_history), 2)
+                swap_peak_out_rate = round(max(s["activity"]["swap_out_rate"] for s in monitor.swap_history), 2)
+                swap_total_in = monitor.swap_history[-1]["activity"]["pswpin_cumulative"]
+                swap_total_out = monitor.swap_history[-1]["activity"]["pswpout_cumulative"]
+                summary_data["Metric"].extend(
+                    [
+                        "Swap Avg In Rate",
+                        "Swap Avg Out Rate",
+                        "Swap Peak In Rate",
+                        "Swap Peak Out Rate",
+                        "Swap Total In Pages",
+                        "Swap Total Out Pages",
+                    ]
+                )
+                summary_data["Value"].extend(
+                    [
+                        swap_avg_in_rate,
+                        swap_avg_out_rate,
+                        swap_peak_in_rate,
+                        swap_peak_out_rate,
+                        swap_total_in,
+                        swap_total_out,
+                    ]
+                )
+                summary_data["Unit"].extend(["pages/s", "pages/s", "pages/s", "pages/s", "pages", "pages"])
 
             # VM stats
             vm_stats = monitor.calculate_vm_stats()
@@ -502,6 +550,26 @@ def export_to_excel(
                 }
                 pd.DataFrame(raw_data).to_excel(writer, sheet_name="Raw_VM_Data", index=False)
 
+            # ========== Swap_Timeline Sheet ==========
+            if monitor.swap_history:
+                swap_timeline_data = {
+                    "Timestamp": [],
+                    "Swap Used (MB)": [],
+                    "Swap Cached (MB)": [],
+                    "Swap Cache Ratio (%)": [],
+                    "Swap In Rate (pages/s)": [],
+                    "Swap Out Rate (pages/s)": [],
+                }
+                for i, s in enumerate(monitor.swap_history):
+                    timestamp = monitor.data[i]["timestamp"] if i < len(monitor.data) else f"Sample {i+1}"
+                    swap_timeline_data["Timestamp"].append(timestamp)
+                    swap_timeline_data["Swap Used (MB)"].append(s["capacity"]["used_mb"])
+                    swap_timeline_data["Swap Cached (MB)"].append(s["cache"]["cached_mb"])
+                    swap_timeline_data["Swap Cache Ratio (%)"].append(s["cache"]["cached_ratio_pct"])
+                    swap_timeline_data["Swap In Rate (pages/s)"].append(s["activity"]["swap_in_rate"])
+                    swap_timeline_data["Swap Out Rate (pages/s)"].append(s["activity"]["swap_out_rate"])
+                pd.DataFrame(swap_timeline_data).to_excel(writer, sheet_name="Swap_Timeline", index=False)
+
         # ========== Add Charts (using openpyxl directly) ==========
         try:
             from openpyxl import load_workbook
@@ -596,6 +664,25 @@ def export_to_excel(
                 bar2.add_data(data)
                 bar2.set_categories(cats)
                 ws.add_chart(bar2, "D2")
+
+            # Chart 6: Swap In/Out Rate Timeline
+            if "Swap_Timeline" in wb.sheetnames:
+                ws = wb["Swap_Timeline"]
+                if ws.max_row > 1:
+                    swap_line = LineChart()
+                    swap_line.title = "Swap In/Out Rate Over Time"
+                    swap_line.style = 13
+                    swap_line.y_axis.title = "pages/s"
+                    swap_line.x_axis.title = "Time"
+                    swap_line.width = 18
+                    swap_line.height = 8
+
+                    # Swap In Rate (col 5) and Swap Out Rate (col 6)
+                    data = Reference(ws, min_col=5, min_row=1, max_col=6, max_row=ws.max_row)
+                    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+                    swap_line.add_data(data, titles_from_data=True)
+                    swap_line.set_categories(cats)
+                    ws.add_chart(swap_line, "H2")
 
             wb.save(output_file)
             print("[OK] Charts added to Excel report")
