@@ -11,7 +11,7 @@ import pytest
 
 from e2b_bench.config import Config
 from e2b_bench.schemas import BrowserMetrics, SandboxState, SandboxStatus
-from e2b_bench.stats_collector import StatsCollector
+from e2b_bench.stats_collector import ReportFormatter, StatsCollector
 
 
 class TestStatsCollectorErrorClassification:
@@ -276,6 +276,164 @@ class TestStatsCollectorRoundComparison:
         assert "x" * 200 not in report  # Full 200-char string should not appear
         # But error type classification should still work
         assert "Other" in report
+
+
+class TestStatsCollectorRoundBaselineTiming:
+    """Tests for round baseline timing correctness.
+
+    The key bug: set_round(round_id) records the baseline at round START,
+    before tasks begin. But tasks from the PREVIOUS round may not have
+    finished yet (they run in separate threads). This causes:
+
+    - Round 0 baseline = 0 (correct, no prior tasks)
+    - Round 1 baseline = 0 (wrong! should be 20, because Round 0 tasks
+      haven't completed yet when set_round(1) is called)
+    - Round 3 shows cumulative of Round 2 + Round 3 (because Round 3
+      baseline was wrong)
+
+    The fix: baseline should be recorded AFTER the previous round's tasks
+    have completed, not at the start of the next round.
+    """
+
+    def setup_method(self):
+        """Set up test fixtures"""
+        self.config = Mock(spec=Config)
+        self.config.template = "test-template"
+        self.config.total_count = 4
+        self.config.detect_existing = False
+        self.config.create_only = False
+        self.config.create_batch_size = None
+        self.config.task_batch_size = None
+        self.config.test_duration = 60
+        self.config.output_dir = "/tmp/test"
+        self.config.filename_prefix = "test"
+        self.config.stats_interval = 5
+
+    def _create_sandbox_with_latencies(self, sandbox_id: int, latencies: list):
+        """Helper to create a sandbox state with specific latencies"""
+        state = SandboxState(sandbox_id=sandbox_id)
+        state.browser_metrics = BrowserMetrics()
+        for lat in latencies:
+            state.browser_metrics.add(latency=lat, success=True)
+        state.creation_metrics.status = SandboxStatus.PORT_READY
+        return state
+
+    def test_four_rounds_each_20_tasks(self):
+        """4 rounds of 20 sandboxes each should show 20 tasks per round.
+
+        This is the core scenario from the bug report:
+        80 sandboxes, 4 rounds, each round has 20 sandboxes doing 1 task.
+        Expected: Round 0=20, Round 1=20, Round 2=20, Round 3=20
+
+        The fix records baselines AFTER tasks complete:
+        - Round 0: baseline=0 (initialized before any round starts)
+        - Round 1: baseline=20 (recorded after Round 0 completes)
+        - Round 2: baseline=40 (recorded after Round 1 completes)
+        - Round 3: baseline=60 (recorded after Round 2 completes)
+        - Final:    total=80
+        """
+        # 80 sandboxes, each completing 1 task
+        sandbox_states = {
+            i: self._create_sandbox_with_latencies(i, [46.23])
+            for i in range(80)
+        }
+
+        collector = StatsCollector(self.config, sandbox_states)
+
+        # Simulate correct baseline recording (after tasks complete)
+        collector._round_start_totals[0] = {
+            "total": 0,
+            "success": 0,
+            "sandbox_latency_counts": {i: 0 for i in range(80)},
+        }
+        collector._round_start_totals[1] = {
+            "total": 20,
+            "success": 20,
+            "sandbox_latency_counts": {i: 1 for i in range(20)} | {i: 0 for i in range(20, 80)},
+        }
+        collector._round_start_totals[2] = {
+            "total": 40,
+            "success": 40,
+            "sandbox_latency_counts": {i: 1 for i in range(40)} | {i: 0 for i in range(40, 80)},
+        }
+        collector._round_start_totals[3] = {
+            "total": 60,
+            "success": 60,
+            "sandbox_latency_counts": {i: 1 for i in range(60)} | {i: 0 for i in range(60, 80)},
+        }
+
+        report = collector.generate_report()
+
+        assert "[Round Comparison]" in report
+        assert "Summary: 80 tasks across 4 rounds" in report
+
+        # Each round should have 20 tasks
+        # Parse the report to verify round tasks
+        formatter = ReportFormatter(self.config, sandbox_states)
+        round_finals = formatter._calculate_round_finals(collector._round_start_totals)
+
+        assert round_finals[0]["tasks"] == 20
+        assert round_finals[1]["tasks"] == 20
+        assert round_finals[2]["tasks"] == 20
+        assert round_finals[3]["tasks"] == 20
+
+    def test_buggy_baseline_shows_wrong_tasks(self):
+        """Demonstrate the bug: wrong baseline timing gives wrong task counts.
+
+        When baseline is recorded at round START (before tasks complete):
+        - Round 0: baseline=0 (correct)
+        - Round 1: baseline=0 (wrong! tasks from Round 0 haven't completed)
+        - Round 2: baseline=20 (wrong! only Round 0 tasks completed)
+        - Round 3: baseline=40 (wrong! Round 2 tasks haven't completed yet)
+
+        Calculation:
+        - Round 0: totals[1]-totals[0] = 0-0 = 0 (wrong!)
+        - Round 1: totals[2]-totals[1] = 20-0 = 20 (wrong attribution!)
+        - Round 2: totals[3]-totals[2] = 40-20 = 20 (wrong attribution!)
+        - Round 3: final-totals[3] = 80-40 = 40 (cumulative of Round 2+3!)
+
+        This matches the user's observed output exactly.
+        """
+        sandbox_states = {
+            i: self._create_sandbox_with_latencies(i, [46.23])
+            for i in range(80)
+        }
+
+        collector = StatsCollector(self.config, sandbox_states)
+
+        # Simulate BUGGY baseline (recorded at round start before tasks complete)
+        collector._round_start_totals[0] = {
+            "total": 0,
+            "success": 0,
+            "sandbox_latency_counts": {i: 0 for i in range(80)},
+        }
+        # Round 1 baseline recorded before Round 0 tasks completed
+        collector._round_start_totals[1] = {
+            "total": 0,
+            "success": 0,
+            "sandbox_latency_counts": {i: 0 for i in range(80)},
+        }
+        # Round 2 baseline recorded after only Round 0 tasks completed
+        collector._round_start_totals[2] = {
+            "total": 20,
+            "success": 20,
+            "sandbox_latency_counts": {i: 1 for i in range(20)} | {i: 0 for i in range(20, 80)},
+        }
+        # Round 3 baseline recorded after only Round 0 and Round 1 tasks completed
+        collector._round_start_totals[3] = {
+            "total": 40,
+            "success": 40,
+            "sandbox_latency_counts": {i: 1 for i in range(40)} | {i: 0 for i in range(40, 80)},
+        }
+
+        formatter = ReportFormatter(self.config, sandbox_states)
+        round_finals = formatter._calculate_round_finals(collector._round_start_totals)
+
+        # BUGGY results matching user's observed output:
+        assert round_finals[0]["tasks"] == 0   # BUG: should be 20
+        assert round_finals[1]["tasks"] == 20  # Wrong attribution (Round 0's data)
+        assert round_finals[2]["tasks"] == 20  # Wrong attribution (Round 1's data)
+        assert round_finals[3]["tasks"] == 40  # BUG: cumulative of Round 2 + Round 3
 
 
 class TestStatsCollectorRoundLatencyDelta:
