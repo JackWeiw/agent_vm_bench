@@ -74,6 +74,9 @@ class VMMonitorBase(ABC):
         # Swap Statistics
         self.swap_history = []
         self.peak_swap_used_mb = 0.0
+        self.peak_swap_cached_mb = 0.0
+        self._last_pswpin = None
+        self._last_pswpout = None
 
         # Specified NUMA Node CPU Statistics
         self.target_numa_nodes = [0]
@@ -375,11 +378,52 @@ class VMMonitorBase(ABC):
             swap_total_mb = round(swap.total / 1024 / 1024, 2)
             swap_free_mb = round(swap.free / 1024 / 1024, 2)
             swap_usage = round(swap.percent, 1)
-            self.swap_history.append(
-                {"used_mb": swap_used_mb, "total_mb": swap_total_mb, "free_mb": swap_free_mb, "usage": swap_usage}
-            )
+
+            # Swap Cache from /proc/meminfo
+            meminfo = self._read_meminfo()
+            swap_cached_mb = meminfo.get("SwapCached", 0)
+            swap_cached_ratio = round(swap_cached_mb / swap_used_mb * 100, 1) if swap_used_mb > 0 else 0.0
+
+            # Swap Activity from /proc/vmstat
+            vmstat = self._read_vmstat()
+            pswpin_now = vmstat.get("pswpin", 0)
+            pswpout_now = vmstat.get("pswpout", 0)
+
+            # Delta and rate: first sample has no prior baseline -> rate=0
+            if self._last_pswpin is not None:
+                pswpin_delta = pswpin_now - self._last_pswpin
+                pswpout_delta = pswpout_now - self._last_pswpout
+                swap_in_rate = round(pswpin_delta / self.interval, 2) if self.interval > 0 else 0
+                swap_out_rate = round(pswpout_delta / self.interval, 2) if self.interval > 0 else 0
+            else:
+                pswpin_delta = 0
+                pswpout_delta = 0
+                swap_in_rate = 0
+                swap_out_rate = 0
+
+            self._last_pswpin = pswpin_now
+            self._last_pswpout = pswpout_now
+
+            self.swap_history.append({
+                "capacity": {
+                    "total_mb": swap_total_mb, "free_mb": swap_free_mb,
+                    "used_mb": swap_used_mb, "usage_pct": swap_usage,
+                },
+                "cache": {
+                    "cached_mb": swap_cached_mb,
+                    "cached_ratio_pct": swap_cached_ratio,
+                },
+                "activity": {
+                    "pswpin_delta": pswpin_delta, "pswpout_delta": pswpout_delta,
+                    "swap_in_rate": swap_in_rate, "swap_out_rate": swap_out_rate,
+                    "pswpin_cumulative": pswpin_now, "pswpout_cumulative": pswpout_now,
+                },
+            })
+
             if swap_used_mb > self.peak_swap_used_mb:
                 self.peak_swap_used_mb = swap_used_mb
+            if swap_cached_mb > self.peak_swap_cached_mb:
+                self.peak_swap_cached_mb = swap_cached_mb
         except:
             pass
 
