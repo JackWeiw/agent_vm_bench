@@ -614,9 +614,16 @@ class VMMonitorBase(ABC):
         # Swap
         if self.swap_history:
             s = self.swap_history[-1]
-            if s["capacity"]["total_mb"] > 0:
+            cap = s["capacity"]
+            if cap["total_mb"] > 0:
+                cch = s["cache"]
+                act = s["activity"]
+                in_fmt = f"{act['swap_in_rate']:>6.1f}" if act["swap_in_rate"] > 0 else "    -"
+                out_fmt = f"{act['swap_out_rate']:>6.1f}" if act["swap_out_rate"] > 0 else "    -"
                 print(
-                    f"Swap:      Used {s['capacity']['used_mb']:.0f}/{s['capacity']['total_mb']:.0f} MB ({s['capacity']['usage_pct']:.1f}%) | Cached {s['cache']['cached_mb']:.1f} MB | Peak {self.peak_swap_used_mb:.0f} MB",
+                    f"Swap:      {cap['used_mb']:>6.0f}/{cap['total_mb']:>6.0f} MB ({cap['usage_pct']:>5.1f}%)"
+                    f" | Cached {cch['cached_mb']:>6.1f} MB"
+                    f" | In/Out {in_fmt}/{out_fmt} pg/s",
                     flush=True,
                 )
             else:
@@ -1106,12 +1113,13 @@ class VMMonitorBase(ABC):
                 else 0
             )
             print("[Swap Partition]")
-            print(f"  Total Capacity:     {swap_total_mb:.0f} MB")
-            print(f"  Avg Usage:          {swap_avg_used_mb:.0f} MB")
-            print(f"  Peak Usage:         {self.peak_swap_used_mb:.0f} MB ({swap_peak_pct:.1f}%)")
-            print(f"  Avg Cached:         {swap_avg_cached_mb:.2f} MB")
-            print(f"  Peak Cached:        {self.peak_swap_cached_mb:.2f} MB")
-            print(f"  Avg Cache Ratio:    {swap_avg_cached_ratio:.1f}%")
+            print(f"  Total:   {swap_total_mb:>8.0f} MB")
+            print(
+                f"  Avg Used | {swap_avg_used_mb:>8.0f} MB | Peak {self.peak_swap_used_mb:>8.0f} MB ({swap_peak_pct:>5.1f}%)"
+            )
+            print(
+                f"  Avg Cache| {swap_avg_cached_mb:>8.2f} MB | Peak {self.peak_swap_cached_mb:>8.2f} MB ({swap_avg_cached_ratio:>5.1f}%)"
+            )
 
             swap_avg_in_rate = (
                 round(sum(s["activity"]["swap_in_rate"] for s in self.swap_history) / len(self.swap_history), 2)
@@ -1132,12 +1140,12 @@ class VMMonitorBase(ABC):
             swap_total_in = self.swap_history[-1]["activity"]["pswpin_cumulative"] if self.swap_history else 0
             swap_total_out = self.swap_history[-1]["activity"]["pswpout_cumulative"] if self.swap_history else 0
             print("[Swap Activity]")
-            print(f"  Avg In Rate:   {swap_avg_in_rate:.2f} pages/s")
-            print(f"  Avg Out Rate:  {swap_avg_out_rate:.2f} pages/s")
-            print(f"  Peak In Rate:  {swap_peak_in_rate:.2f} pages/s")
-            print(f"  Peak Out Rate: {swap_peak_out_rate:.2f} pages/s")
-            print(f"  Total In:      {swap_total_in} pages")
-            print(f"  Total Out:     {swap_total_out} pages")
+            print(
+                f"  Avg In  | {swap_avg_in_rate:>8.2f} pg/s | Peak {swap_peak_in_rate:>8.2f} pg/s | Total {swap_total_in:>10d} pg"
+            )
+            print(
+                f"  Avg Out | {swap_avg_out_rate:>8.2f} pg/s | Peak {swap_peak_out_rate:>8.2f} pg/s | Total {swap_total_out:>10d} pg"
+            )
 
         if vm_stats:
             print("\n[TOP10 CPU]")
