@@ -404,21 +404,28 @@ class VMMonitorBase(ABC):
             self._last_pswpin = pswpin_now
             self._last_pswpout = pswpout_now
 
-            self.swap_history.append({
-                "capacity": {
-                    "total_mb": swap_total_mb, "free_mb": swap_free_mb,
-                    "used_mb": swap_used_mb, "usage_pct": swap_usage,
-                },
-                "cache": {
-                    "cached_mb": swap_cached_mb,
-                    "cached_ratio_pct": swap_cached_ratio,
-                },
-                "activity": {
-                    "pswpin_delta": pswpin_delta, "pswpout_delta": pswpout_delta,
-                    "swap_in_rate": swap_in_rate, "swap_out_rate": swap_out_rate,
-                    "pswpin_cumulative": pswpin_now, "pswpout_cumulative": pswpout_now,
-                },
-            })
+            self.swap_history.append(
+                {
+                    "capacity": {
+                        "total_mb": swap_total_mb,
+                        "free_mb": swap_free_mb,
+                        "used_mb": swap_used_mb,
+                        "usage_pct": swap_usage,
+                    },
+                    "cache": {
+                        "cached_mb": swap_cached_mb,
+                        "cached_ratio_pct": swap_cached_ratio,
+                    },
+                    "activity": {
+                        "pswpin_delta": pswpin_delta,
+                        "pswpout_delta": pswpout_delta,
+                        "swap_in_rate": swap_in_rate,
+                        "swap_out_rate": swap_out_rate,
+                        "pswpin_cumulative": pswpin_now,
+                        "pswpout_cumulative": pswpout_now,
+                    },
+                }
+            )
 
             if swap_used_mb > self.peak_swap_used_mb:
                 self.peak_swap_used_mb = swap_used_mb
@@ -951,14 +958,10 @@ class VMMonitorBase(ABC):
                 else 0
             )
             swap_peak_in_rate = (
-                round(max(s["activity"]["swap_in_rate"] for s in self.swap_history), 2)
-                if self.swap_history
-                else 0
+                round(max(s["activity"]["swap_in_rate"] for s in self.swap_history), 2) if self.swap_history else 0
             )
             swap_peak_out_rate = (
-                round(max(s["activity"]["swap_out_rate"] for s in self.swap_history), 2)
-                if self.swap_history
-                else 0
+                round(max(s["activity"]["swap_out_rate"] for s in self.swap_history), 2) if self.swap_history else 0
             )
             swap_total_in = self.swap_history[-1]["activity"]["pswpin_cumulative"] if self.swap_history else 0
             swap_total_out = self.swap_history[-1]["activity"]["pswpout_cumulative"] if self.swap_history else 0
@@ -1121,14 +1124,10 @@ class VMMonitorBase(ABC):
                 else 0
             )
             swap_peak_in_rate = (
-                round(max(s["activity"]["swap_in_rate"] for s in self.swap_history), 2)
-                if self.swap_history
-                else 0
+                round(max(s["activity"]["swap_in_rate"] for s in self.swap_history), 2) if self.swap_history else 0
             )
             swap_peak_out_rate = (
-                round(max(s["activity"]["swap_out_rate"] for s in self.swap_history), 2)
-                if self.swap_history
-                else 0
+                round(max(s["activity"]["swap_out_rate"] for s in self.swap_history), 2) if self.swap_history else 0
             )
             swap_total_in = self.swap_history[-1]["activity"]["pswpin_cumulative"] if self.swap_history else 0
             swap_total_out = self.swap_history[-1]["activity"]["pswpout_cumulative"] if self.swap_history else 0

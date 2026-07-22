@@ -58,10 +58,7 @@ class TestReadMeminfo(unittest.TestCase):
 
     def test_parse_swap_total_free(self):
         """Should parse SwapTotal and SwapFree as MB"""
-        content = (
-            "SwapTotal:        2048000 kB\n"
-            "SwapFree:         1948000 kB\n"
-        )
+        content = "SwapTotal:        2048000 kB\n" "SwapFree:         1948000 kB\n"
         path = self._write_mock_meminfo(content)
         monitor = DummyMonitor()
         with patch("vm_monitor.base.open", return_value=open(path)):
@@ -99,12 +96,7 @@ class TestReadVmstat(unittest.TestCase):
 
     def test_parse_pswpin_pswpout(self):
         """Should parse pswpin and pswpout as integers"""
-        content = (
-            "nr_free_pages 256000\n"
-            "pswpin 543210\n"
-            "pswpout 432100\n"
-            "pgpgin 12345\n"
-        )
+        content = "nr_free_pages 256000\n" "pswpin 543210\n" "pswpout 432100\n" "pgpgin 12345\n"
         path = self._write_mock_vmstat(content)
         monitor = DummyMonitor()
         with patch("vm_monitor.base.open", return_value=open(path)):
@@ -139,12 +131,9 @@ class TestCollectSwapStats(unittest.TestCase):
 
     def test_first_sample_has_zero_rate(self):
         """First sample should have rate=0 (no prior baseline)"""
-        mock_swap = MagicMock(total=2048*1024*1024, used=100*1024*1024,
-                              free=1948*1024*1024, percent=4.9)
+        mock_swap = MagicMock(total=2048 * 1024 * 1024, used=100 * 1024 * 1024, free=1948 * 1024 * 1024, percent=4.9)
         meminfo_content = (
-            "SwapTotal:        2048000 kB\n"
-            "SwapFree:         1948000 kB\n"
-            "SwapCached:         46144 kB\n"
+            "SwapTotal:        2048000 kB\n" "SwapFree:         1948000 kB\n" "SwapCached:         46144 kB\n"
         )
         vmstat_content = "pswpin 543210\npswpout 432100\n"
 
@@ -156,14 +145,17 @@ class TestCollectSwapStats(unittest.TestCase):
         vmstat_path.write(vmstat_content)
         vmstat_path.close()
 
-        with patch("vm_monitor.base.psutil.swap_memory", return_value=mock_swap), \
-             patch("vm_monitor.base.open") as mock_open:
+        with patch("vm_monitor.base.psutil.swap_memory", return_value=mock_swap), patch(
+            "vm_monitor.base.open"
+        ) as mock_open:
+
             def open_side_effect(path, *args, **kwargs):
                 if "meminfo" in path:
                     return open(meminfo_path.name)
                 elif "vmstat" in path:
                     return open(vmstat_path.name)
                 return open(path, *args, **kwargs)
+
             mock_open.side_effect = open_side_effect
             self.monitor.collect_swap_stats()
 
@@ -196,8 +188,7 @@ class TestCollectSwapStats(unittest.TestCase):
 
     def test_second_sample_computes_rate(self):
         """Second sample should compute delta and rate from difference"""
-        mock_swap = MagicMock(total=2048*1024*1024, used=100*1024*1024,
-                              free=1948*1024*1024, percent=4.9)
+        mock_swap = MagicMock(total=2048 * 1024 * 1024, used=100 * 1024 * 1024, free=1948 * 1024 * 1024, percent=4.9)
 
         vmstat1 = "pswpin 543210\npswpout 432100\n"
         vmstat2 = "pswpin 543330\npswpout 432180\n"
@@ -218,16 +209,19 @@ class TestCollectSwapStats(unittest.TestCase):
         vmstat_paths = [vmstat_path1.name, vmstat_path2.name]
         call_count = [0]
 
-        with patch("vm_monitor.base.psutil.swap_memory", return_value=mock_swap), \
-             patch("vm_monitor.base.open") as mock_open:
+        with patch("vm_monitor.base.psutil.swap_memory", return_value=mock_swap), patch(
+            "vm_monitor.base.open"
+        ) as mock_open:
+
             def open_side_effect(path, *args, **kwargs):
                 if "vmstat" in path:
                     idx = call_count[0]
                     call_count[0] += 1
-                    return open(vmstat_paths[min(idx, len(vmstat_paths)-1)])
+                    return open(vmstat_paths[min(idx, len(vmstat_paths) - 1)])
                 elif "meminfo" in path:
                     return open(meminfo_path.name)
                 return open(path, *args, **kwargs)
+
             mock_open.side_effect = open_side_effect
 
             self.monitor.collect_swap_stats()
@@ -236,8 +230,8 @@ class TestCollectSwapStats(unittest.TestCase):
         snapshot2 = self.monitor.swap_history[1]
         self.assertEqual(snapshot2["activity"]["pswpin_delta"], 120)
         self.assertEqual(snapshot2["activity"]["pswpout_delta"], 80)
-        self.assertAlmostEqual(snapshot2["activity"]["swap_in_rate"], 120/3, places=2)
-        self.assertAlmostEqual(snapshot2["activity"]["swap_out_rate"], 80/3, places=2)
+        self.assertAlmostEqual(snapshot2["activity"]["swap_in_rate"], 120 / 3, places=2)
+        self.assertAlmostEqual(snapshot2["activity"]["swap_out_rate"], 80 / 3, places=2)
 
         os.unlink(meminfo_path.name)
         os.unlink(vmstat_path1.name)
@@ -247,8 +241,7 @@ class TestCollectSwapStats(unittest.TestCase):
         """peak_swap_cached_mb should track high-water mark"""
         self.monitor.peak_swap_cached_mb = 0.0
 
-        mock_swap1 = MagicMock(total=2048*1024*1024, used=100*1024*1024,
-                               free=1948*1024*1024, percent=4.9)
+        mock_swap1 = MagicMock(total=2048 * 1024 * 1024, used=100 * 1024 * 1024, free=1948 * 1024 * 1024, percent=4.9)
         meminfo1 = "SwapCached:         46144 kB\nSwapTotal:        2048000 kB\nSwapFree:         1948000 kB\n"
         vmstat1 = "pswpin 100\npswpout 50\n"
 
@@ -274,24 +267,27 @@ class TestCollectSwapStats(unittest.TestCase):
         call_count = [0]
         meminfo_count = [0]
 
-        with patch("vm_monitor.base.psutil.swap_memory", return_value=mock_swap1), \
-             patch("vm_monitor.base.open") as mock_open:
+        with patch("vm_monitor.base.psutil.swap_memory", return_value=mock_swap1), patch(
+            "vm_monitor.base.open"
+        ) as mock_open:
+
             def open_side_effect(path, *args, **kwargs):
                 if "meminfo" in path:
                     idx = meminfo_count[0]
                     meminfo_count[0] += 1
-                    return open(meminfo_paths[min(idx, len(meminfo_paths)-1)])
+                    return open(meminfo_paths[min(idx, len(meminfo_paths) - 1)])
                 elif "vmstat" in path:
                     idx = call_count[0]
                     call_count[0] += 1
-                    return open(vmstat_paths[min(idx, len(vmstat_paths)-1)])
+                    return open(vmstat_paths[min(idx, len(vmstat_paths) - 1)])
                 return open(path, *args, **kwargs)
+
             mock_open.side_effect = open_side_effect
 
             self.monitor.collect_swap_stats()
             self.monitor.collect_swap_stats()
 
-        self.assertAlmostEqual(self.monitor.peak_swap_cached_mb, 82944/1024, places=2)
+        self.assertAlmostEqual(self.monitor.peak_swap_cached_mb, 82944 / 1024, places=2)
 
         os.unlink(meminfo_path1.name)
         os.unlink(meminfo_path2.name)

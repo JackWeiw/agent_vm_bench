@@ -113,9 +113,7 @@ def export_to_excel(
                 )
                 swap_total = monitor.swap_history[0]["capacity"]["total_mb"] if monitor.swap_history else 0
                 swap_peak_pct = round(monitor.peak_swap_used_mb / swap_total * 100, 1) if swap_total > 0 else 0
-                summary_data["Metric"].extend(
-                    ["Swap Total", "Swap Avg Used", "Swap Peak Used", "Swap Peak Usage %"]
-                )
+                summary_data["Metric"].extend(["Swap Total", "Swap Avg Used", "Swap Peak Used", "Swap Peak Usage %"])
                 summary_data["Value"].extend(
                     [round(swap_total, 0), swap_avg_used, round(monitor.peak_swap_used_mb, 0), swap_peak_pct]
                 )
@@ -128,9 +126,7 @@ def export_to_excel(
                 swap_avg_cached_ratio = round(
                     sum(s["cache"]["cached_ratio_pct"] for s in monitor.swap_history) / len(monitor.swap_history), 1
                 )
-                summary_data["Metric"].extend(
-                    ["Swap Cached Avg", "Swap Cached Peak", "Swap Cached Avg Ratio %"]
-                )
+                summary_data["Metric"].extend(["Swap Cached Avg", "Swap Cached Peak", "Swap Cached Avg Ratio %"])
                 summary_data["Value"].extend(
                     [swap_avg_cached, round(monitor.peak_swap_cached_mb, 2), swap_avg_cached_ratio]
                 )
@@ -143,25 +139,29 @@ def export_to_excel(
                 swap_avg_out_rate = round(
                     sum(s["activity"]["swap_out_rate"] for s in monitor.swap_history) / len(monitor.swap_history), 2
                 )
-                swap_peak_in_rate = round(
-                    max(s["activity"]["swap_in_rate"] for s in monitor.swap_history), 2
-                )
-                swap_peak_out_rate = round(
-                    max(s["activity"]["swap_out_rate"] for s in monitor.swap_history), 2
-                )
+                swap_peak_in_rate = round(max(s["activity"]["swap_in_rate"] for s in monitor.swap_history), 2)
+                swap_peak_out_rate = round(max(s["activity"]["swap_out_rate"] for s in monitor.swap_history), 2)
                 swap_total_in = monitor.swap_history[-1]["activity"]["pswpin_cumulative"]
                 swap_total_out = monitor.swap_history[-1]["activity"]["pswpout_cumulative"]
                 summary_data["Metric"].extend(
                     [
-                        "Swap Avg In Rate", "Swap Avg Out Rate",
-                        "Swap Peak In Rate", "Swap Peak Out Rate",
-                        "Swap Total In Pages", "Swap Total Out Pages",
+                        "Swap Avg In Rate",
+                        "Swap Avg Out Rate",
+                        "Swap Peak In Rate",
+                        "Swap Peak Out Rate",
+                        "Swap Total In Pages",
+                        "Swap Total Out Pages",
                     ]
                 )
                 summary_data["Value"].extend(
-                    [swap_avg_in_rate, swap_avg_out_rate,
-                     swap_peak_in_rate, swap_peak_out_rate,
-                     swap_total_in, swap_total_out]
+                    [
+                        swap_avg_in_rate,
+                        swap_avg_out_rate,
+                        swap_peak_in_rate,
+                        swap_peak_out_rate,
+                        swap_total_in,
+                        swap_total_out,
+                    ]
                 )
                 summary_data["Unit"].extend(["pages/s", "pages/s", "pages/s", "pages/s", "pages", "pages"])
 
@@ -561,9 +561,7 @@ def export_to_excel(
                     "Swap Out Rate (pages/s)": [],
                 }
                 for i, s in enumerate(monitor.swap_history):
-                    timestamp = (
-                        monitor.data[i]["timestamp"] if i < len(monitor.data) else f"Sample {i+1}"
-                    )
+                    timestamp = monitor.data[i]["timestamp"] if i < len(monitor.data) else f"Sample {i+1}"
                     swap_timeline_data["Timestamp"].append(timestamp)
                     swap_timeline_data["Swap Used (MB)"].append(s["capacity"]["used_mb"])
                     swap_timeline_data["Swap Cached (MB)"].append(s["cache"]["cached_mb"])
