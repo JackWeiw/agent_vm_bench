@@ -911,19 +911,63 @@ class VMMonitorBase(ABC):
                     w.writerow([f"NUMA{node_id} Hugepage Avg Free MB", avg_free])
                     w.writerow([f"NUMA{node_id} Hugepage Avg Usage %", avg_usage])
 
-            swap_avg_mb = (
-                round(sum(s["used_mb"] for s in self.swap_history) / len(self.swap_history), 0)
+            # Swap Capacity
+            swap_avg_used_mb = (
+                round(sum(s["capacity"]["used_mb"] for s in self.swap_history) / len(self.swap_history), 0)
                 if self.swap_history
                 else 0
             )
-            w.writerow(
-                ["Swap Total Capacity MB", round(self.swap_history[0]["total_mb"], 0) if self.swap_history else 0]
-            )
-            w.writerow(["Swap Avg Usage MB", swap_avg_mb])
-            w.writerow(["Swap Peak Usage MB", round(self.peak_swap_used_mb, 0)])
-            swap_total = self.swap_history[0]["total_mb"] if self.swap_history else 0
+            swap_total = self.swap_history[0]["capacity"]["total_mb"] if self.swap_history else 0
             swap_peak_pct = round(self.peak_swap_used_mb / swap_total * 100, 1) if swap_total > 0 else 0
+            w.writerow(["Swap Total Capacity MB", round(swap_total, 0)])
+            w.writerow(["Swap Avg Usage MB", swap_avg_used_mb])
+            w.writerow(["Swap Peak Usage MB", round(self.peak_swap_used_mb, 0)])
             w.writerow(["Swap Peak Usage %", swap_peak_pct])
+
+            # Swap Cache
+            swap_avg_cached_mb = (
+                round(sum(s["cache"]["cached_mb"] for s in self.swap_history) / len(self.swap_history), 2)
+                if self.swap_history
+                else 0
+            )
+            swap_avg_cached_ratio = (
+                round(sum(s["cache"]["cached_ratio_pct"] for s in self.swap_history) / len(self.swap_history), 1)
+                if self.swap_history
+                else 0
+            )
+            w.writerow(["Swap Cached Avg MB", swap_avg_cached_mb])
+            w.writerow(["Swap Cached Peak MB", round(self.peak_swap_cached_mb, 2)])
+            w.writerow(["Swap Cached Avg Ratio %", swap_avg_cached_ratio])
+
+            # Swap Activity
+            swap_avg_in_rate = (
+                round(sum(s["activity"]["swap_in_rate"] for s in self.swap_history) / len(self.swap_history), 2)
+                if self.swap_history
+                else 0
+            )
+            swap_avg_out_rate = (
+                round(sum(s["activity"]["swap_out_rate"] for s in self.swap_history) / len(self.swap_history), 2)
+                if self.swap_history
+                else 0
+            )
+            swap_peak_in_rate = (
+                round(max(s["activity"]["swap_in_rate"] for s in self.swap_history), 2)
+                if self.swap_history
+                else 0
+            )
+            swap_peak_out_rate = (
+                round(max(s["activity"]["swap_out_rate"] for s in self.swap_history), 2)
+                if self.swap_history
+                else 0
+            )
+            swap_total_in = self.swap_history[-1]["activity"]["pswpin_cumulative"] if self.swap_history else 0
+            swap_total_out = self.swap_history[-1]["activity"]["pswpout_cumulative"] if self.swap_history else 0
+            w.writerow(["Swap Avg In Rate (pages/s)", swap_avg_in_rate])
+            w.writerow(["Swap Avg Out Rate (pages/s)", swap_avg_out_rate])
+            w.writerow(["Swap Peak In Rate (pages/s)", swap_peak_in_rate])
+            w.writerow(["Swap Peak Out Rate (pages/s)", swap_peak_out_rate])
+            w.writerow(["Swap Total In Pages", swap_total_in])
+            w.writerow(["Swap Total Out Pages", swap_total_out])
 
             w.writerow([])
             w.writerow(["=== Single VM Statistics ==="])
