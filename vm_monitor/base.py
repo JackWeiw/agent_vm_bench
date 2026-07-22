@@ -383,6 +383,44 @@ class VMMonitorBase(ABC):
         except:
             pass
 
+    def _read_meminfo(self) -> dict:
+        """Read /proc/meminfo and return dict of field -> MB values
+
+        All values in /proc/meminfo are in kB; this method converts to MB.
+        Returns empty dict if file is unavailable.
+        """
+        result = {}
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        key = parts[0].rstrip(":")
+                        value_kb = int(parts[1])
+                        result[key] = round(value_kb / 1024, 2)
+        except (FileNotFoundError, PermissionError):
+            pass
+        return result
+
+    def _read_vmstat(self) -> dict:
+        """Read /proc/vmstat and return dict of field -> raw integer values
+
+        Returns empty dict if file is unavailable.
+        """
+        result = {}
+        try:
+            with open("/proc/vmstat") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        try:
+                            result[parts[0]] = int(parts[1])
+                        except ValueError:
+                            pass
+        except (FileNotFoundError, PermissionError):
+            pass
+        return result
+
     def get_vm_memory_from_numastat(self, pid):
         """Use numastat -p PID to get process memory (including hugepages)"""
         result = {"total_mb": 0.0, "huge_mb": 0.0, "private_mb": 0.0, "heap_mb": 0.0, "stack_mb": 0.0, "per_node": {}}
