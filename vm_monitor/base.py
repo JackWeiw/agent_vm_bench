@@ -614,9 +614,9 @@ class VMMonitorBase(ABC):
         # Swap
         if self.swap_history:
             s = self.swap_history[-1]
-            if s["total_mb"] > 0:
+            if s["capacity"]["total_mb"] > 0:
                 print(
-                    f"Swap:      Used {s['used_mb']:.0f}/{s['total_mb']:.0f} MB ({s['usage']:.1f}%) | Peak {self.peak_swap_used_mb:.0f} MB",
+                    f"Swap:      Used {s['capacity']['used_mb']:.0f}/{s['capacity']['total_mb']:.0f} MB ({s['capacity']['usage_pct']:.1f}%) | Cached {s['cache']['cached_mb']:.1f} MB | Peak {self.peak_swap_used_mb:.0f} MB",
                     flush=True,
                 )
             else:
