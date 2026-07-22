@@ -159,19 +159,23 @@ class Config:
     def merge_with_args(cls, yaml_config: "Config", args: argparse.Namespace) -> "Config":
         """Merge CLI arguments (CLI has higher priority)"""
         return cls(
-            e2b_access_token=args.e2b_access_token if args.e2b_access_token else yaml_config.e2b_access_token,
-            e2b_api_key=args.e2b_api_key if args.e2b_api_key else yaml_config.e2b_api_key,
-            e2b_domain=args.e2b_domain if args.e2b_domain else yaml_config.e2b_domain,
-            e2b_api_url=args.e2b_api_url if args.e2b_api_url else yaml_config.e2b_api_url,
-            e2b_http_ssl=args.e2b_http_ssl if args.e2b_http_ssl else yaml_config.e2b_http_ssl,
-            template=args.template if args.template else yaml_config.template,
+            e2b_access_token=args.e2b_access_token
+            if args.e2b_access_token is not None
+            else yaml_config.e2b_access_token,
+            e2b_api_key=args.e2b_api_key if args.e2b_api_key is not None else yaml_config.e2b_api_key,
+            e2b_domain=args.e2b_domain if args.e2b_domain is not None else yaml_config.e2b_domain,
+            e2b_api_url=args.e2b_api_url if args.e2b_api_url is not None else yaml_config.e2b_api_url,
+            e2b_http_ssl=args.e2b_http_ssl if args.e2b_http_ssl is not None else yaml_config.e2b_http_ssl,
+            template=args.template if args.template is not None else yaml_config.template,
             create_timeout=args.create_timeout if args.create_timeout is not None else yaml_config.create_timeout,
             total_count=args.total if args.total is not None else yaml_config.total_count,
             detect_existing=args.detect if hasattr(args, "detect") and args.detect else yaml_config.detect_existing,
             create_only=args.create_only
             if hasattr(args, "create_only") and args.create_only
             else yaml_config.create_only,
-            sandbox_ids_file=args.sandbox_ids_file if args.sandbox_ids_file else yaml_config.sandbox_ids_file,
+            sandbox_ids_file=args.sandbox_ids_file
+            if args.sandbox_ids_file is not None
+            else yaml_config.sandbox_ids_file,
             numa_bind=yaml_config.numa_bind,  # Use yaml config for numa_bind
             create_batch_size=args.create_batch_size
             if args.create_batch_size is not None
@@ -183,7 +187,7 @@ class Config:
             task_batch_interval=args.task_batch_interval
             if args.task_batch_interval is not None
             else yaml_config.task_batch_interval,
-            browser_urls=args.browser_url if args.browser_url else yaml_config.browser_urls,
+            browser_urls=args.browser_url if args.browser_url is not None else yaml_config.browser_urls,
             browser_timeout=args.browser_timeout if args.browser_timeout is not None else yaml_config.browser_timeout,
             browser_interval_min=args.browser_interval_min
             if args.browser_interval_min is not None
@@ -192,7 +196,7 @@ class Config:
             if args.browser_interval_max is not None
             else yaml_config.browser_interval_max,
             # Warmup configuration
-            warmup_urls=args.warmup_url if args.warmup_url else yaml_config.warmup_urls,
+            warmup_urls=args.warmup_url if args.warmup_url is not None else yaml_config.warmup_urls,
             warmup_loops=args.warmup_loops if args.warmup_loops is not None else yaml_config.warmup_loops,
             warmup_delay=args.warmup_delay if args.warmup_delay is not None else yaml_config.warmup_delay,
             warmup_only=args.warmup_only
@@ -203,8 +207,8 @@ class Config:
             else yaml_config.benchmark_percent,
             test_duration=args.duration if args.duration is not None else yaml_config.test_duration,
             stats_interval=args.stats_interval if args.stats_interval is not None else yaml_config.stats_interval,
-            output_dir=args.output_dir if args.output_dir else yaml_config.output_dir,
-            filename_prefix=args.filename_prefix if args.filename_prefix else yaml_config.filename_prefix,
+            output_dir=args.output_dir if args.output_dir is not None else yaml_config.output_dir,
+            filename_prefix=args.filename_prefix if args.filename_prefix is not None else yaml_config.filename_prefix,
             # smap_tool and vm_monitor - use yaml values (no CLI override for these)
             smap_tool_enabled=yaml_config.smap_tool_enabled,
             smap_tool_path=yaml_config.smap_tool_path,
@@ -224,36 +228,38 @@ class Config:
     def from_args(cls, args: argparse.Namespace) -> "Config":
         """Build Config from CLI arguments only (no YAML file)"""
         return cls(
-            e2b_access_token=args.e2b_access_token or "",
-            e2b_api_key=args.e2b_api_key or "",
-            e2b_domain=args.e2b_domain or "e2b.app",
-            e2b_api_url=args.e2b_api_url or "http://localhost:3000",
-            e2b_http_ssl=args.e2b_http_ssl or "false",
-            template=args.template or "openclaw-browser-v1",
+            e2b_access_token=args.e2b_access_token if args.e2b_access_token is not None else "",
+            e2b_api_key=args.e2b_api_key if args.e2b_api_key is not None else "",
+            e2b_domain=args.e2b_domain if args.e2b_domain is not None else "e2b.app",
+            e2b_api_url=args.e2b_api_url if args.e2b_api_url is not None else "http://localhost:3000",
+            e2b_http_ssl=args.e2b_http_ssl if args.e2b_http_ssl is not None else "false",
+            template=args.template if args.template is not None else "openclaw-browser-v1",
             create_timeout=args.create_timeout if args.create_timeout is not None else 86400,
             total_count=args.total if args.total is not None else 100,
             detect_existing=args.detect if hasattr(args, "detect") and args.detect else False,
             create_only=args.create_only if hasattr(args, "create_only") and args.create_only else False,
-            sandbox_ids_file=args.sandbox_ids_file if args.sandbox_ids_file else None,
+            sandbox_ids_file=args.sandbox_ids_file if args.sandbox_ids_file is not None else None,
             numa_bind=2,  # Default to NUMA node 2 when using CLI args only
             create_batch_size=args.create_batch_size,
             create_batch_interval=args.create_batch_interval,
             task_batch_size=args.task_batch_size,
             task_batch_interval=args.task_batch_interval,
-            browser_urls=args.browser_url or ["http://192.168.110.10:8080/Weibo.html"],
+            browser_urls=args.browser_url
+            if args.browser_url is not None
+            else ["http://192.168.110.10:8080/Weibo.html"],
             browser_timeout=args.browser_timeout if args.browser_timeout is not None else 200,
             browser_interval_min=args.browser_interval_min if args.browser_interval_min is not None else 0.5,
             browser_interval_max=args.browser_interval_max if args.browser_interval_max is not None else 3.0,
             # Warmup configuration
-            warmup_urls=args.warmup_url or [],
+            warmup_urls=args.warmup_url if args.warmup_url is not None else [],
             warmup_loops=args.warmup_loops if args.warmup_loops is not None else 2,
             warmup_delay=args.warmup_delay if args.warmup_delay is not None else 10,
             warmup_only=args.warmup_only if hasattr(args, "warmup_only") and args.warmup_only else False,
             benchmark_percent=args.benchmark_percent if args.benchmark_percent is not None else 1.0,
             test_duration=args.duration if args.duration is not None else 600,
             stats_interval=args.stats_interval if args.stats_interval is not None else 10,
-            output_dir=args.output_dir or "results/e2b",
-            filename_prefix=args.filename_prefix or "e2b_bench",
+            output_dir=args.output_dir if args.output_dir is not None else "results/e2b",
+            filename_prefix=args.filename_prefix if args.filename_prefix is not None else "e2b_bench",
             smap_tool_enabled=False,
             smap_tool_path="",
             smap_tool_swap_size=81920,
