@@ -74,6 +74,9 @@ class VMMonitorBase(ABC):
         # Swap Statistics
         self.swap_history = []
         self.peak_swap_used_mb = 0.0
+        self.peak_swap_cached_mb = 0.0
+        self._last_pswpin = None
+        self._last_pswpout = None
 
         # Specified NUMA Node CPU Statistics
         self.target_numa_nodes = [0]
@@ -375,13 +378,99 @@ class VMMonitorBase(ABC):
             swap_total_mb = round(swap.total / 1024 / 1024, 2)
             swap_free_mb = round(swap.free / 1024 / 1024, 2)
             swap_usage = round(swap.percent, 1)
+
+            # Swap Cache from /proc/meminfo
+            meminfo = self._read_meminfo()
+            swap_cached_mb = meminfo.get("SwapCached", 0)
+            swap_cached_ratio = round(swap_cached_mb / swap_used_mb * 100, 1) if swap_used_mb > 0 else 0.0
+
+            # Swap Activity from /proc/vmstat
+            vmstat = self._read_vmstat()
+            pswpin_now = vmstat.get("pswpin", 0)
+            pswpout_now = vmstat.get("pswpout", 0)
+
+            # Delta and rate: first sample has no prior baseline -> rate=0
+            if self._last_pswpin is not None:
+                pswpin_delta = pswpin_now - self._last_pswpin
+                pswpout_delta = pswpout_now - self._last_pswpout
+                swap_in_rate = round(pswpin_delta / self.interval, 2) if self.interval > 0 else 0
+                swap_out_rate = round(pswpout_delta / self.interval, 2) if self.interval > 0 else 0
+            else:
+                pswpin_delta = 0
+                pswpout_delta = 0
+                swap_in_rate = 0
+                swap_out_rate = 0
+
+            self._last_pswpin = pswpin_now
+            self._last_pswpout = pswpout_now
+
             self.swap_history.append(
-                {"used_mb": swap_used_mb, "total_mb": swap_total_mb, "free_mb": swap_free_mb, "usage": swap_usage}
+                {
+                    "capacity": {
+                        "total_mb": swap_total_mb,
+                        "free_mb": swap_free_mb,
+                        "used_mb": swap_used_mb,
+                        "usage_pct": swap_usage,
+                    },
+                    "cache": {
+                        "cached_mb": swap_cached_mb,
+                        "cached_ratio_pct": swap_cached_ratio,
+                    },
+                    "activity": {
+                        "pswpin_delta": pswpin_delta,
+                        "pswpout_delta": pswpout_delta,
+                        "swap_in_rate": swap_in_rate,
+                        "swap_out_rate": swap_out_rate,
+                        "pswpin_cumulative": pswpin_now,
+                        "pswpout_cumulative": pswpout_now,
+                    },
+                }
             )
+
             if swap_used_mb > self.peak_swap_used_mb:
                 self.peak_swap_used_mb = swap_used_mb
+            if swap_cached_mb > self.peak_swap_cached_mb:
+                self.peak_swap_cached_mb = swap_cached_mb
         except:
             pass
+
+    def _read_meminfo(self) -> dict:
+        """Read /proc/meminfo and return dict of field -> MB values
+
+        All values in /proc/meminfo are in kB; this method converts to MB.
+        Returns empty dict if file is unavailable.
+        """
+        result = {}
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        key = parts[0].rstrip(":")
+                        value_kb = int(parts[1])
+                        result[key] = round(value_kb / 1024, 2)
+        except (FileNotFoundError, PermissionError):
+            pass
+        return result
+
+    def _read_vmstat(self) -> dict:
+        """Read /proc/vmstat and return dict of field -> raw integer values
+
+        Returns empty dict if file is unavailable.
+        """
+        result = {}
+        try:
+            with open("/proc/vmstat") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        try:
+                            result[parts[0]] = int(parts[1])
+                        except ValueError:
+                            pass
+        except (FileNotFoundError, PermissionError):
+            pass
+        return result
 
     def get_vm_memory_from_numastat(self, pid):
         """Use numastat -p PID to get process memory (including hugepages)"""
@@ -525,9 +614,16 @@ class VMMonitorBase(ABC):
         # Swap
         if self.swap_history:
             s = self.swap_history[-1]
-            if s["total_mb"] > 0:
+            cap = s["capacity"]
+            if cap["total_mb"] > 0:
+                cch = s["cache"]
+                act = s["activity"]
+                in_fmt = f"{act['swap_in_rate']:>6.1f}" if act["swap_in_rate"] > 0 else "    -"
+                out_fmt = f"{act['swap_out_rate']:>6.1f}" if act["swap_out_rate"] > 0 else "    -"
                 print(
-                    f"Swap:      Used {s['used_mb']:.0f}/{s['total_mb']:.0f} MB ({s['usage']:.1f}%) | Peak {self.peak_swap_used_mb:.0f} MB",
+                    f"Swap:      {cap['used_mb']:>6.0f}/{cap['total_mb']:>6.0f} MB ({cap['usage_pct']:>5.1f}%)"
+                    f" | Cached {cch['cached_mb']:>6.1f} MB"
+                    f" | In/Out {in_fmt}/{out_fmt} pg/s",
                     flush=True,
                 )
             else:
@@ -829,19 +925,59 @@ class VMMonitorBase(ABC):
                     w.writerow([f"NUMA{node_id} Hugepage Avg Free MB", avg_free])
                     w.writerow([f"NUMA{node_id} Hugepage Avg Usage %", avg_usage])
 
-            swap_avg_mb = (
-                round(sum(s["used_mb"] for s in self.swap_history) / len(self.swap_history), 0)
+            # Swap Capacity
+            swap_avg_used_mb = (
+                round(sum(s["capacity"]["used_mb"] for s in self.swap_history) / len(self.swap_history), 0)
                 if self.swap_history
                 else 0
             )
-            w.writerow(
-                ["Swap Total Capacity MB", round(self.swap_history[0]["total_mb"], 0) if self.swap_history else 0]
-            )
-            w.writerow(["Swap Avg Usage MB", swap_avg_mb])
-            w.writerow(["Swap Peak Usage MB", round(self.peak_swap_used_mb, 0)])
-            swap_total = self.swap_history[0]["total_mb"] if self.swap_history else 0
+            swap_total = self.swap_history[0]["capacity"]["total_mb"] if self.swap_history else 0
             swap_peak_pct = round(self.peak_swap_used_mb / swap_total * 100, 1) if swap_total > 0 else 0
+            w.writerow(["Swap Total Capacity MB", round(swap_total, 0)])
+            w.writerow(["Swap Avg Usage MB", swap_avg_used_mb])
+            w.writerow(["Swap Peak Usage MB", round(self.peak_swap_used_mb, 0)])
             w.writerow(["Swap Peak Usage %", swap_peak_pct])
+
+            # Swap Cache
+            swap_avg_cached_mb = (
+                round(sum(s["cache"]["cached_mb"] for s in self.swap_history) / len(self.swap_history), 2)
+                if self.swap_history
+                else 0
+            )
+            swap_avg_cached_ratio = (
+                round(sum(s["cache"]["cached_ratio_pct"] for s in self.swap_history) / len(self.swap_history), 1)
+                if self.swap_history
+                else 0
+            )
+            w.writerow(["Swap Cached Avg MB", swap_avg_cached_mb])
+            w.writerow(["Swap Cached Peak MB", round(self.peak_swap_cached_mb, 2)])
+            w.writerow(["Swap Cached Avg Ratio %", swap_avg_cached_ratio])
+
+            # Swap Activity
+            swap_avg_in_rate = (
+                round(sum(s["activity"]["swap_in_rate"] for s in self.swap_history) / len(self.swap_history), 2)
+                if self.swap_history
+                else 0
+            )
+            swap_avg_out_rate = (
+                round(sum(s["activity"]["swap_out_rate"] for s in self.swap_history) / len(self.swap_history), 2)
+                if self.swap_history
+                else 0
+            )
+            swap_peak_in_rate = (
+                round(max(s["activity"]["swap_in_rate"] for s in self.swap_history), 2) if self.swap_history else 0
+            )
+            swap_peak_out_rate = (
+                round(max(s["activity"]["swap_out_rate"] for s in self.swap_history), 2) if self.swap_history else 0
+            )
+            swap_total_in = self.swap_history[-1]["activity"]["pswpin_cumulative"] if self.swap_history else 0
+            swap_total_out = self.swap_history[-1]["activity"]["pswpout_cumulative"] if self.swap_history else 0
+            w.writerow(["Swap Avg In Rate (pages/s)", swap_avg_in_rate])
+            w.writerow(["Swap Avg Out Rate (pages/s)", swap_avg_out_rate])
+            w.writerow(["Swap Peak In Rate (pages/s)", swap_peak_in_rate])
+            w.writerow(["Swap Peak Out Rate (pages/s)", swap_peak_out_rate])
+            w.writerow(["Swap Total In Pages", swap_total_in])
+            w.writerow(["Swap Total Out Pages", swap_total_out])
 
             w.writerow([])
             w.writerow(["=== Single VM Statistics ==="])
@@ -959,17 +1095,57 @@ class VMMonitorBase(ABC):
                 )
 
         if self.swap_history:
-            swap_avg_mb = (
-                round(sum(s["used_mb"] for s in self.swap_history) / len(self.swap_history), 0)
+            swap_avg_used_mb = (
+                round(sum(s["capacity"]["used_mb"] for s in self.swap_history) / len(self.swap_history), 0)
                 if self.swap_history
                 else 0
             )
-            swap_total_mb = self.swap_history[0]["total_mb"] if self.swap_history else 0
+            swap_total_mb = self.swap_history[0]["capacity"]["total_mb"] if self.swap_history else 0
             swap_peak_pct = round(self.peak_swap_used_mb / swap_total_mb * 100, 1) if swap_total_mb > 0 else 0
+            swap_avg_cached_mb = (
+                round(sum(s["cache"]["cached_mb"] for s in self.swap_history) / len(self.swap_history), 2)
+                if self.swap_history
+                else 0
+            )
+            swap_avg_cached_ratio = (
+                round(sum(s["cache"]["cached_ratio_pct"] for s in self.swap_history) / len(self.swap_history), 1)
+                if self.swap_history
+                else 0
+            )
             print("[Swap Partition]")
-            print(f"  Total Capacity:     {swap_total_mb:.0f} MB")
-            print(f"  Avg Usage:    {swap_avg_mb:.0f} MB")
-            print(f"  Peak Usage:    {self.peak_swap_used_mb:.0f} MB ({swap_peak_pct:.1f}%)")
+            print(f"  Total:   {swap_total_mb:>8.0f} MB")
+            print(
+                f"  Avg Used | {swap_avg_used_mb:>8.0f} MB | Peak {self.peak_swap_used_mb:>8.0f} MB ({swap_peak_pct:>5.1f}%)"
+            )
+            print(
+                f"  Avg Cache| {swap_avg_cached_mb:>8.2f} MB | Peak {self.peak_swap_cached_mb:>8.2f} MB ({swap_avg_cached_ratio:>5.1f}%)"
+            )
+
+            swap_avg_in_rate = (
+                round(sum(s["activity"]["swap_in_rate"] for s in self.swap_history) / len(self.swap_history), 2)
+                if self.swap_history
+                else 0
+            )
+            swap_avg_out_rate = (
+                round(sum(s["activity"]["swap_out_rate"] for s in self.swap_history) / len(self.swap_history), 2)
+                if self.swap_history
+                else 0
+            )
+            swap_peak_in_rate = (
+                round(max(s["activity"]["swap_in_rate"] for s in self.swap_history), 2) if self.swap_history else 0
+            )
+            swap_peak_out_rate = (
+                round(max(s["activity"]["swap_out_rate"] for s in self.swap_history), 2) if self.swap_history else 0
+            )
+            swap_total_in = self.swap_history[-1]["activity"]["pswpin_cumulative"] if self.swap_history else 0
+            swap_total_out = self.swap_history[-1]["activity"]["pswpout_cumulative"] if self.swap_history else 0
+            print("[Swap Activity]")
+            print(
+                f"  Avg In  | {swap_avg_in_rate:>8.2f} pg/s | Peak {swap_peak_in_rate:>8.2f} pg/s | Total {swap_total_in:>10d} pg"
+            )
+            print(
+                f"  Avg Out | {swap_avg_out_rate:>8.2f} pg/s | Peak {swap_peak_out_rate:>8.2f} pg/s | Total {swap_total_out:>10d} pg"
+            )
 
         if vm_stats:
             print("\n[TOP10 CPU]")
