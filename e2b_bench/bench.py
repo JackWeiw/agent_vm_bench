@@ -660,8 +660,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # Warmup configuration
     parser.add_argument("-w", "--warmup-url", type=str, action="append", help="Warmup page URL (can specify multiple)")
-    parser.add_argument("--warmup-loops", type=int, default=2, help="Warmup loop count")
-    parser.add_argument("--warmup-delay", type=int, default=10, help="Warmup page delay (seconds)")
+    parser.add_argument("--warmup-loops", type=int, default=None, help="Warmup loop count")
+    parser.add_argument("--warmup-delay", type=int, default=None, help="Warmup page delay (seconds)")
     parser.add_argument("-wp", "--warmup-only", action="store_true", help="Run warmup phase only, then exit")
 
     # Benchmark control

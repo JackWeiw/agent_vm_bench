@@ -306,6 +306,340 @@ sandbox:
         assert config.sandbox_ids_file == "args_ids.txt"
 
 
+class TestConfigWarmupMerge:
+    """Tests for warmup configuration merging with CLI args
+
+    Previously, warmup_delay and warmup_loops used truthiness checks
+    (if args.warmup_delay) instead of is not None, causing CLI defaults
+    to shadow YAML values even when the user didn't explicitly pass CLI args.
+    """
+
+    def _make_namespace(self, **overrides):
+        """Create a default argparse Namespace with all None defaults"""
+        defaults = {
+            "sandbox_ids_file": None,
+            "e2b_access_token": None,
+            "e2b_api_key": None,
+            "e2b_domain": None,
+            "e2b_api_url": None,
+            "e2b_http_ssl": None,
+            "template": None,
+            "create_timeout": None,
+            "total": None,
+            "detect": False,
+            "create_only": False,
+            "create_batch_size": None,
+            "create_batch_interval": None,
+            "task_batch_size": None,
+            "task_batch_interval": None,
+            "browser_url": None,
+            "browser_timeout": None,
+            "browser_interval_min": None,
+            "browser_interval_max": None,
+            "warmup_url": None,
+            "warmup_loops": None,
+            "warmup_delay": None,
+            "warmup_only": False,
+            "benchmark_percent": None,
+            "duration": None,
+            "stats_interval": None,
+            "output_dir": None,
+            "filename_prefix": None,
+        }
+        defaults.update(overrides)
+        import argparse
+
+        return argparse.Namespace(**defaults)
+
+    def test_yaml_warmup_delay_not_shadowed_by_cli_none(self):
+        """YAML warmup_delay value should be used when CLI doesn't override"""
+        yaml_content = """
+browser:
+  warmup_urls:
+    - http://example.com/warmup1
+  warmup_loops: 1
+  warmup_delay: 2
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        args = self._make_namespace()  # All None = user didn't pass any CLI args
+        config = Config.merge_with_args(yaml_config, args)
+
+        assert config.warmup_delay == 2  # YAML value, NOT default 10
+        assert config.warmup_loops == 1  # YAML value, NOT default 2
+
+    def test_cli_warmup_delay_overrides_yaml(self):
+        """CLI warmup_delay should override YAML when explicitly provided"""
+        yaml_content = """
+browser:
+  warmup_delay: 2
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        args = self._make_namespace(warmup_delay=5)
+        config = Config.merge_with_args(yaml_config, args)
+
+        assert config.warmup_delay == 5  # CLI override wins
+
+    def test_cli_warmup_delay_zero_overrides_yaml(self):
+        """CLI warmup_delay=0 should override YAML (is not None, not truthiness)"""
+        yaml_content = """
+browser:
+  warmup_delay: 2
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        args = self._make_namespace(warmup_delay=0)
+        config = Config.merge_with_args(yaml_config, args)
+
+        assert config.warmup_delay == 0  # 0 should override, not fall through to YAML
+
+    def test_from_args_warmup_defaults_when_none(self):
+        """from_args should use dataclass defaults when CLI args are None"""
+        args = self._make_namespace()
+        config = Config.from_args(args)
+
+        assert config.warmup_delay == 10  # dataclass default
+        assert config.warmup_loops == 2  # dataclass default
+
+    def test_from_args_warmup_delay_zero_accepted(self):
+        """from_args should accept warmup_delay=0 (is not None, not truthiness)"""
+        args = self._make_namespace(warmup_delay=0)
+        config = Config.from_args(args)
+
+        assert config.warmup_delay == 0  # 0 is valid, not replaced by default 10
+
+    def test_yaml_numeric_fields_not_shadowed_by_cli_none(self):
+        """All numeric YAML values should survive when CLI args are None
+
+        This tests the broader pattern: numeric fields that previously used
+        truthiness checks now use is not None checks.
+        """
+        yaml_content = """
+sandbox:
+  create_timeout: 7200
+  total_count: 50
+browser:
+  task_timeout: 100
+  interval_min: 1.0
+  interval_max: 5.0
+test:
+  duration: 300
+  stats_interval: 5
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        args = self._make_namespace()
+        config = Config.merge_with_args(yaml_config, args)
+
+        assert config.create_timeout == 7200  # YAML, not default 86400
+        assert config.total_count == 50  # YAML, not default 100
+        assert config.browser_timeout == 100  # YAML, not default 200
+        assert config.browser_interval_min == 1.0  # YAML, not default 0.5
+        assert config.browser_interval_max == 5.0  # YAML, not default 3.0
+        assert config.test_duration == 300  # YAML, not default 600
+        assert config.stats_interval == 5  # YAML, not default 10
+
+
+class TestConfigPriorityChain:
+    """Tests for the full priority chain: CLI > YAML > defaults
+
+    Every field type (string, numeric, list) must correctly implement
+    this priority using is not None checks instead of truthiness.
+    """
+
+    def _make_namespace(self, **overrides):
+        """Create a default argparse Namespace with all None defaults"""
+        defaults = {
+            "sandbox_ids_file": None,
+            "e2b_access_token": None,
+            "e2b_api_key": None,
+            "e2b_domain": None,
+            "e2b_api_url": None,
+            "e2b_http_ssl": None,
+            "template": None,
+            "create_timeout": None,
+            "total": None,
+            "detect": False,
+            "create_only": False,
+            "create_batch_size": None,
+            "create_batch_interval": None,
+            "task_batch_size": None,
+            "task_batch_interval": None,
+            "browser_url": None,
+            "browser_timeout": None,
+            "browser_interval_min": None,
+            "browser_interval_max": None,
+            "warmup_url": None,
+            "warmup_loops": None,
+            "warmup_delay": None,
+            "warmup_only": False,
+            "benchmark_percent": None,
+            "duration": None,
+            "stats_interval": None,
+            "output_dir": None,
+            "filename_prefix": None,
+        }
+        defaults.update(overrides)
+        import argparse
+
+        return argparse.Namespace(**defaults)
+
+    def test_priority_cli_over_yaml_string(self):
+        """CLI string overrides YAML string value"""
+        yaml_content = """
+e2b_env:
+  E2B_DOMAIN: yaml-domain
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        args = self._make_namespace(e2b_domain="cli-domain")
+        config = Config.merge_with_args(yaml_config, args)
+        assert config.e2b_domain == "cli-domain"  # CLI wins over YAML
+
+    def test_priority_yaml_over_default_string(self):
+        """YAML string overrides dataclass default when CLI is None"""
+        yaml_content = """
+e2b_env:
+  E2B_DOMAIN: yaml-domain
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        args = self._make_namespace()  # CLI e2b_domain is None
+        config = Config.merge_with_args(yaml_config, args)
+        assert config.e2b_domain == "yaml-domain"  # YAML wins over default "e2b.app"
+
+    def test_priority_default_string_when_yaml_missing(self):
+        """Dataclass default is used when both CLI and YAML are absent"""
+        yaml_content = """
+e2b_env: {}
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        args = self._make_namespace()
+        config = Config.merge_with_args(yaml_config, args)
+        assert config.e2b_domain == "e2b.app"  # Default
+
+    def test_priority_cli_over_yaml_list(self):
+        """CLI list overrides YAML list value"""
+        yaml_content = """
+browser:
+  urls:
+    - http://yaml-url.com/page
+  warmup_urls:
+    - http://yaml-warmup.com/page
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        args = self._make_namespace(
+            browser_url=["http://cli-url.com/page"],
+            warmup_url=["http://cli-warmup.com/page"],
+        )
+        config = Config.merge_with_args(yaml_config, args)
+        assert config.browser_urls == ["http://cli-url.com/page"]
+        assert config.warmup_urls == ["http://cli-warmup.com/page"]
+
+    def test_priority_yaml_over_default_list(self):
+        """YAML list overrides default when CLI is None"""
+        yaml_content = """
+browser:
+  urls:
+    - http://yaml-url.com/page
+  warmup_urls:
+    - http://yaml-warmup.com/page
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        args = self._make_namespace()
+        config = Config.merge_with_args(yaml_config, args)
+        assert config.browser_urls == ["http://yaml-url.com/page"]
+        assert config.warmup_urls == ["http://yaml-warmup.com/page"]
+
+    def test_priority_cli_over_yaml_numeric(self):
+        """CLI numeric overrides YAML numeric value"""
+        yaml_content = """
+test:
+  duration: 300
+  stats_interval: 5
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        args = self._make_namespace(duration=500, stats_interval=20)
+        config = Config.merge_with_args(yaml_config, args)
+        assert config.test_duration == 500  # CLI wins
+        assert config.stats_interval == 20  # CLI wins
+
+    def test_priority_yaml_over_default_numeric(self):
+        """YAML numeric overrides default when CLI is None"""
+        yaml_content = """
+test:
+  duration: 300
+  stats_interval: 5
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        args = self._make_namespace()
+        config = Config.merge_with_args(yaml_config, args)
+        assert config.test_duration == 300  # YAML wins over default 600
+        assert config.stats_interval == 5  # YAML wins over default 10
+
+    def test_from_args_string_priority(self):
+        """from_args: CLI string > dataclass default"""
+        args = self._make_namespace(e2b_domain="my.domain")
+        config = Config.from_args(args)
+        assert config.e2b_domain == "my.domain"  # CLI wins over default "e2b.app"
+
+    def test_from_args_string_default(self):
+        """from_args: dataclass default when CLI is None"""
+        args = self._make_namespace()
+        config = Config.from_args(args)
+        assert config.e2b_domain == "e2b.app"  # Default
+
+
 class TestConfigNumaBind:
     """Tests for numa_bind configuration"""
 
