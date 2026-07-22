@@ -320,22 +320,23 @@ class ReportFormatter:
 
         lines = ["\n" + "=" * 80, "[Round Comparison]", "=" * 80]
 
-        # Calculate round finals
-        total_rounds = len(round_start_totals)
+        # Calculate round finals (includes post-last-round sentinel with tasks=0)
         round_finals = self._calculate_round_finals(round_start_totals)
 
-        total_tasks = sum(r["tasks"] for r in round_finals.values())
+        # Filter out rounds with tasks=0 (post-last-round baseline sentinel)
+        active_rounds = {k: v for k, v in round_finals.items() if v["tasks"] > 0}
+        total_tasks = sum(r["tasks"] for r in active_rounds.values())
 
-        lines.append(f"\n  Summary: {total_tasks} tasks across {total_rounds} rounds")
+        lines.append(f"\n  Summary: {total_tasks} tasks across {len(active_rounds)} rounds")
 
         # Build table
         headers = ["Round", "Tasks", "Success%", "Avg(s)", "P50(s)", "P95(s)", "P99(s)", "Tail"]
         rows = []
 
-        for round_id in sorted(round_finals.keys()):
-            tasks = round_finals[round_id]["tasks"]
-            success = round_finals[round_id]["success"]
-            latencies = round_finals[round_id]["latencies"]
+        for round_id in sorted(active_rounds.keys()):
+            tasks = active_rounds[round_id]["tasks"]
+            success = active_rounds[round_id]["success"]
+            latencies = active_rounds[round_id]["latencies"]
 
             if latencies:
                 stats = calc_percentiles(latencies)

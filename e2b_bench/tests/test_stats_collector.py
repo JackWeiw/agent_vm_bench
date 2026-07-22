@@ -330,7 +330,7 @@ class TestStatsCollectorRoundBaselineTiming:
         - Round 1: baseline=20 (recorded after Round 0 completes)
         - Round 2: baseline=40 (recorded after Round 1 completes)
         - Round 3: baseline=60 (recorded after Round 2 completes)
-        - Final:    total=80
+        - Post-last: baseline=80 (recorded after Round 3 completes)
         """
         # 80 sandboxes, each completing 1 task
         sandbox_states = {
@@ -341,6 +341,63 @@ class TestStatsCollectorRoundBaselineTiming:
         collector = StatsCollector(self.config, sandbox_states)
 
         # Simulate correct baseline recording (after tasks complete)
+        # This includes the "post-last-round" baseline (totals[4])
+        collector._round_start_totals[0] = {
+            "total": 0,
+            "success": 0,
+            "sandbox_latency_counts": {i: 0 for i in range(80)},
+        }
+        collector._round_start_totals[1] = {
+            "total": 20,
+            "success": 20,
+            "sandbox_latency_counts": {i: 1 for i in range(20)} | {i: 0 for i in range(20, 80)},
+        }
+        collector._round_start_totals[2] = {
+            "total": 40,
+            "success": 40,
+            "sandbox_latency_counts": {i: 1 for i in range(40)} | {i: 0 for i in range(40, 80)},
+        }
+        collector._round_start_totals[3] = {
+            "total": 60,
+            "success": 60,
+            "sandbox_latency_counts": {i: 1 for i in range(60)} | {i: 0 for i in range(60, 80)},
+        }
+        # Post-last-round baseline: cumulative totals after all rounds complete
+        collector._round_start_totals[4] = {
+            "total": 80,
+            "success": 80,
+            "sandbox_latency_counts": {i: 1 for i in range(80)},
+        }
+
+        report = collector.generate_report()
+
+        assert "[Round Comparison]" in report
+        assert "Summary: 80 tasks across 4 rounds" in report
+
+        # Each round should have 20 tasks
+        formatter = ReportFormatter(self.config, sandbox_states)
+        round_finals = formatter._calculate_round_finals(collector._round_start_totals)
+
+        assert round_finals[0]["tasks"] == 20
+        assert round_finals[1]["tasks"] == 20
+        assert round_finals[2]["tasks"] == 20
+        assert round_finals[3]["tasks"] == 20
+
+    def test_four_rounds_without_post_last_baseline(self):
+        """4 rounds without post-last baseline should still work via final_browser_total.
+
+        Even if the post-last-round baseline is not recorded (e.g. early termination),
+        _calculate_round_finals falls back to final_browser_total for the last round.
+        This test verifies that fallback also works correctly.
+        """
+        sandbox_states = {
+            i: self._create_sandbox_with_latencies(i, [46.23])
+            for i in range(80)
+        }
+
+        collector = StatsCollector(self.config, sandbox_states)
+
+        # Baselines WITHOUT post-last-round entry
         collector._round_start_totals[0] = {
             "total": 0,
             "success": 0,
@@ -362,16 +419,10 @@ class TestStatsCollectorRoundBaselineTiming:
             "sandbox_latency_counts": {i: 1 for i in range(60)} | {i: 0 for i in range(60, 80)},
         }
 
-        report = collector.generate_report()
-
-        assert "[Round Comparison]" in report
-        assert "Summary: 80 tasks across 4 rounds" in report
-
-        # Each round should have 20 tasks
-        # Parse the report to verify round tasks
         formatter = ReportFormatter(self.config, sandbox_states)
         round_finals = formatter._calculate_round_finals(collector._round_start_totals)
 
+        # Round 3 falls back to final_browser_total = 80
         assert round_finals[0]["tasks"] == 20
         assert round_finals[1]["tasks"] == 20
         assert round_finals[2]["tasks"] == 20

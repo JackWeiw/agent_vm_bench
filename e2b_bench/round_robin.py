@@ -258,10 +258,12 @@ class RoundRobinTaskManager:
         # Force a final snapshot to capture this round's final metrics
         self.stats_collector._take_snapshot()
 
-        # Record baseline for NEXT round AFTER current round's tasks are complete
-        # Only record if next_round will actually run (don't create ghost rounds)
+        # Record baseline for NEXT round AFTER current round's tasks are complete.
+        # This includes the last round — we record a "post-last" baseline so that
+        # _calculate_round_finals can use it as the end boundary for the final round,
+        # avoiding dependency on final_browser_total which may be stale.
         next_round = self.current_round + 1
-        if next_round < self._planned_rounds and next_round not in self.stats_collector._round_start_totals:
+        if next_round not in self.stats_collector._round_start_totals:
             browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
             browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
             sandbox_latency_counts = {
