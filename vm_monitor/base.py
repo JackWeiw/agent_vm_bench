@@ -324,8 +324,11 @@ class VMMonitorBase(ABC):
         print("=" * 100)
         print("NUMA Node Memory Real-time Usage")
         for n in nodes:
+            sc = n.get("swap_cached_mb", 0)
+            avail = n.get("available_mb", 0)
             print(
-                f"    NUMA Node {n['node']:>2d} | Total Memory {n['total']:>8.2f} MB | Used {n['used']:>8.2f} MB | Free {n['free']:>8.2f} MB | Usage {n['usage']:>5.1f}%"
+                f"    NUMA Node {n['node']:>2d} | Total {n['total']:>8.2f} MB | Used {n['used']:>8.2f} MB | "
+                f"Free {n['free']:>8.2f} MB | Avail {avail:>8.2f} MB | SwapCache {sc:>6.1f} MB | Usage {n['usage']:>5.1f}%"
             )
         print("=" * 100)
 
@@ -705,6 +708,19 @@ class VMMonitorBase(ABC):
             else:
                 print("Swap:      Not enabled", flush=True)
 
+        # SwapCache per NUMA
+        if self.numa_memory_history:
+            latest_numa = self.numa_memory_history[-1]["nodes"]
+            if latest_numa:
+                sc_parts = []
+                total_sc = 0.0
+                for n in latest_numa:
+                    sc = n.get("swap_cached_mb", 0)
+                    total_sc += sc
+                    sc_parts.append(f"NUMA{n['node']} {sc:.1f} MB")
+                sc_str = " | ".join(sc_parts)
+                print(f"SwapCache: Total {total_sc:.1f} MB | {sc_str}", flush=True)
+
         self.print_numa_real_time()
 
         if not sample_data:
@@ -731,6 +747,14 @@ class VMMonitorBase(ABC):
 
         print("-" * width, flush=True)
         print(f"Total: {len(sample_data)} virtual machines | Data points: {len(self.data)}", flush=True)
+
+        # VM total memory
+        if self.vm_total_memory_history:
+            vt = self.vm_total_memory_history[-1]
+            numa_parts = [f"NUMA{k}: {v:.0f} MB" for k, v in sorted(vt["per_numa"].items())]
+            numa_str = " | ".join(numa_parts) if numa_parts else "N/A"
+            print(f"VM Total Memory: {vt['total_mb']:.0f} MB ({vt['vm_count']} VMs) | {numa_str}", flush=True)
+
         print("Press Ctrl+C to stop monitoring", flush=True)
 
     def check_stress_process(self, stress_pattern):
@@ -1055,6 +1079,38 @@ class VMMonitorBase(ABC):
             w.writerow(["Swap Total In Pages", swap_total_in])
             w.writerow(["Swap Total Out Pages", swap_total_out])
 
+            # SwapCache per NUMA
+            if self.numa_memory_history:
+                sc_summary = defaultdict(list)
+                for entry in self.numa_memory_history:
+                    for n in entry["nodes"]:
+                        sc_summary[n["node"]].append(n.get("swap_cached_mb", 0))
+                w.writerow([])
+                w.writerow(["=== SwapCache per NUMA Node ==="])
+                for node_id in sorted(sc_summary.keys()):
+                    vals = sc_summary[node_id]
+                    avg_sc = round(sum(vals) / len(vals), 2)
+                    peak_sc = round(max(vals), 2)
+                    w.writerow([f"NUMA{node_id} SwapCache Avg MB", avg_sc])
+                    w.writerow([f"NUMA{node_id} SwapCache Peak MB", peak_sc])
+
+            # VM Total Memory
+            if self.vm_total_memory_history:
+                w.writerow([])
+                w.writerow(["=== VM Total Memory ==="])
+                total_vals = [h["total_mb"] for h in self.vm_total_memory_history]
+                avg_total = round(sum(total_vals) / len(total_vals), 2)
+                peak_total = round(max(total_vals), 2)
+                w.writerow(["VM Total Memory Avg MB", avg_total])
+                w.writerow(["VM Total Memory Peak MB", peak_total])
+                all_nodes = set()
+                for h in self.vm_total_memory_history:
+                    all_nodes.update(h["per_numa"].keys())
+                for node_id in sorted(all_nodes):
+                    node_vals = [h["per_numa"].get(node_id, 0) for h in self.vm_total_memory_history]
+                    avg_node = round(sum(node_vals) / len(node_vals), 2)
+                    w.writerow([f"NUMA{node_id} VM Memory Avg MB", avg_node])
+
             w.writerow([])
             w.writerow(["=== Single VM Statistics ==="])
             w.writerow(
@@ -1222,6 +1278,34 @@ class VMMonitorBase(ABC):
             print(
                 f"  Avg Out | {swap_avg_out_rate:>8.2f} pg/s | Peak {swap_peak_out_rate:>8.2f} pg/s | Total {swap_total_out:>10d} pg"
             )
+
+        # SwapCache per NUMA summary
+        if self.numa_memory_history:
+            print("[SwapCache per NUMA Node]")
+            sc_summary = defaultdict(list)
+            for entry in self.numa_memory_history:
+                for n in entry["nodes"]:
+                    sc_summary[n["node"]].append(n.get("swap_cached_mb", 0))
+            for node_id in sorted(sc_summary.keys()):
+                vals = sc_summary[node_id]
+                avg_sc = round(sum(vals) / len(vals), 2)
+                peak_sc = round(max(vals), 2)
+                print(f"  NUMA {node_id:>2d} | Avg SwapCache {avg_sc:>8.2f} MB | Peak {peak_sc:>8.2f} MB")
+
+        # VM total memory summary
+        if self.vm_total_memory_history:
+            print("[VM Total Memory]")
+            total_vals = [h["total_mb"] for h in self.vm_total_memory_history]
+            avg_total = round(sum(total_vals) / len(total_vals), 2)
+            peak_total = round(max(total_vals), 2)
+            print(f"  Avg Total: {avg_total:.0f} MB | Peak Total: {peak_total:.0f} MB")
+            all_nodes = set()
+            for h in self.vm_total_memory_history:
+                all_nodes.update(h["per_numa"].keys())
+            for node_id in sorted(all_nodes):
+                node_vals = [h["per_numa"].get(node_id, 0) for h in self.vm_total_memory_history]
+                avg_node = round(sum(node_vals) / len(node_vals), 2)
+                print(f"  NUMA {node_id:>2d} | Avg VM Memory {avg_node:>8.0f} MB")
 
         if vm_stats:
             print("\n[TOP10 CPU]")
