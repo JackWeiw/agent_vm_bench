@@ -51,6 +51,12 @@ class Config:
     # Benchmark stress percent (percentage of sandboxes to run benchmark)
     benchmark_percent: float = 1.0  # Percentage of sandboxes for benchmark (default 100%)
 
+    # Round-robin mode configuration
+    benchmark_mode: str = "fixed"  # "fixed" (default) or "round_robin"
+    round_count: Optional[int] = None  # Number of sandbox groups (mutually exclusive with round_size)
+    round_size: Optional[int] = None  # Sandboxes per round (mutually exclusive with round_count)
+    round_interval: int = 5  # Round interval in seconds for round_robin mode (default: 5s)
+
     # smap_tool configuration (memory migration monitoring)
     smap_tool_enabled: bool = False
     smap_tool_path: str = ""
@@ -126,6 +132,11 @@ class Config:
             task_batch_size=task_batch.get("size") if task_batch else None,
             task_batch_interval=task_batch.get("interval") if task_batch else None,
             benchmark_percent=test.get("benchmark_percent", 1.0),
+            # Round-robin mode configuration
+            benchmark_mode=test.get("benchmark_mode", "fixed"),
+            round_count=test.get("round_count"),
+            round_size=test.get("round_size"),
+            round_interval=test.get("round_interval", 5),
             browser_urls=browser.get("urls", ["http://192.168.110.10:8080/Weibo.html"]),
             browser_timeout=browser.get("task_timeout", 200),
             browser_interval_min=browser.get("interval_min", 0.5),
@@ -205,6 +216,19 @@ class Config:
             benchmark_percent=args.benchmark_percent
             if args.benchmark_percent is not None
             else yaml_config.benchmark_percent,
+            # Round-robin mode configuration (CLI takes priority over YAML)
+            benchmark_mode=getattr(args, "benchmark_mode", None)
+            if getattr(args, "benchmark_mode", None) is not None
+            else yaml_config.benchmark_mode,
+            round_count=getattr(args, "round_count", None)
+            if getattr(args, "round_count", None) is not None
+            else yaml_config.round_count,
+            round_size=getattr(args, "round_size", None)
+            if getattr(args, "round_size", None) is not None
+            else yaml_config.round_size,
+            round_interval=getattr(args, "round_interval", None)
+            if getattr(args, "round_interval", None) is not None
+            else yaml_config.round_interval,
             test_duration=args.duration if args.duration is not None else yaml_config.test_duration,
             stats_interval=args.stats_interval if args.stats_interval is not None else yaml_config.stats_interval,
             output_dir=args.output_dir if args.output_dir is not None else yaml_config.output_dir,
@@ -256,6 +280,15 @@ class Config:
             warmup_delay=args.warmup_delay if args.warmup_delay is not None else 10,
             warmup_only=args.warmup_only if hasattr(args, "warmup_only") and args.warmup_only else False,
             benchmark_percent=args.benchmark_percent if args.benchmark_percent is not None else 1.0,
+            # Round-robin mode configuration
+            benchmark_mode=getattr(args, "benchmark_mode", None)
+            if getattr(args, "benchmark_mode", None) is not None
+            else "fixed",
+            round_count=getattr(args, "round_count", None),
+            round_size=getattr(args, "round_size", None),
+            round_interval=getattr(args, "round_interval", None)
+            if getattr(args, "round_interval", None) is not None
+            else 5,
             test_duration=args.duration if args.duration is not None else 600,
             stats_interval=args.stats_interval if args.stats_interval is not None else 10,
             output_dir=args.output_dir if args.output_dir is not None else "results/e2b",

@@ -115,6 +115,61 @@ class TestBrowserMetrics:
             metrics.add(latency=i, success=True)
         assert metrics.p99_latency == 10
 
+    def test_get_latencies_since_empty(self):
+        """get_latencies_since on empty metrics returns empty list"""
+        metrics = BrowserMetrics()
+        result = metrics.get_latencies_since(0)
+        assert result == []
+
+    def test_get_latencies_since_start_zero(self):
+        """get_latencies_since(0) returns all latencies"""
+        metrics = BrowserMetrics()
+        for i in [1.0, 2.0, 3.0, 4.0, 5.0]:
+            metrics.add(latency=i, success=True)
+        result = metrics.get_latencies_since(0)
+        assert result == [1.0, 2.0, 3.0, 4.0, 5.0]
+
+    def test_get_latencies_since_middle(self):
+        """get_latencies_since from middle index"""
+        metrics = BrowserMetrics()
+        for i in [1.0, 2.0, 3.0, 4.0, 5.0]:
+            metrics.add(latency=i, success=True)
+        result = metrics.get_latencies_since(2)
+        assert result == [3.0, 4.0, 5.0]
+
+    def test_get_latencies_since_last(self):
+        """get_latencies_since(last index) returns last element"""
+        metrics = BrowserMetrics()
+        for i in [1.0, 2.0, 3.0, 4.0, 5.0]:
+            metrics.add(latency=i, success=True)
+        result = metrics.get_latencies_since(4)
+        assert result == [5.0]
+
+    def test_get_latencies_since_beyond_length(self):
+        """get_latencies_since beyond length returns empty list"""
+        metrics = BrowserMetrics()
+        for i in [1.0, 2.0, 3.0]:
+            metrics.add(latency=i, success=True)
+        result = metrics.get_latencies_since(10)
+        assert result == []
+
+    def test_get_latencies_since_equal_length(self):
+        """get_latencies_since with start_count equal to length returns empty"""
+        metrics = BrowserMetrics()
+        for i in [1.0, 2.0, 3.0]:
+            metrics.add(latency=i, success=True)
+        result = metrics.get_latencies_since(3)
+        assert result == []
+
+    def test_get_latencies_since_thread_safety(self):
+        """get_latencies_since returns a copy, not reference"""
+        metrics = BrowserMetrics()
+        metrics.add(latency=1.0, success=True)
+        result = metrics.get_latencies_since(0)
+        # Modify returned list should not affect internal state
+        result.append(99.0)
+        assert metrics.latencies == [1.0]
+
 
 class TestSandboxState:
     """Tests for SandboxState dataclass"""

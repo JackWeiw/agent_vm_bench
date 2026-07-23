@@ -191,6 +191,318 @@ class TestConfigSetupEnv:
         assert os.environ["E2B_DOMAIN"] == "my.domain"
 
 
+class TestConfigRoundRobin:
+    """Tests for round-robin mode configuration"""
+
+    def test_default_benchmark_mode(self):
+        """Default benchmark_mode is 'fixed'"""
+        config = Config()
+        assert config.benchmark_mode == "fixed"
+        assert config.round_count is None
+        assert config.round_interval == 5
+
+    def test_set_via_constructor(self):
+        """Set round-robin config via constructor"""
+        config = Config(benchmark_mode="round_robin", round_count=5, round_interval=60)
+        assert config.benchmark_mode == "round_robin"
+        assert config.round_count == 5
+        assert config.round_interval == 60
+
+    def test_load_from_yaml(self):
+        """Load round-robin config from YAML"""
+        yaml_content = """
+test:
+  benchmark_mode: round_robin
+  round_count: 10
+  round_interval: 45
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.benchmark_mode == "round_robin"
+        assert config.round_count == 10
+        assert config.round_interval == 45
+
+    def test_load_yaml_with_defaults(self):
+        """Load YAML with round-robin fields using defaults"""
+        yaml_content = """
+test:
+  duration: 160
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        # Should use defaults when not specified
+        assert config.benchmark_mode == "fixed"
+        assert config.round_count is None
+        assert config.round_interval == 5
+
+    def test_merge_with_args_override(self):
+        """CLI args override YAML config for round-robin"""
+        yaml_content = """
+test:
+  benchmark_mode: fixed
+  round_count: 3
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        import argparse
+
+        args = argparse.Namespace(
+            e2b_access_token=None,
+            e2b_api_key=None,
+            e2b_domain=None,
+            e2b_api_url=None,
+            e2b_http_ssl=None,
+            template=None,
+            create_timeout=None,
+            total=None,
+            detect=False,
+            create_only=False,
+            sandbox_ids_file=None,
+            create_batch_size=None,
+            create_batch_interval=None,
+            task_batch_size=None,
+            task_batch_interval=None,
+            browser_url=None,
+            browser_timeout=None,
+            browser_interval_min=None,
+            browser_interval_max=None,
+            warmup_url=None,
+            warmup_loops=None,
+            warmup_delay=None,
+            warmup_only=False,
+            benchmark_percent=None,
+            benchmark_mode="round_robin",
+            round_count=7,
+            round_interval=25,
+            duration=None,
+            stats_interval=None,
+            output_dir=None,
+            filename_prefix=None,
+        )
+
+        config = Config.merge_with_args(yaml_config, args)
+        assert config.benchmark_mode == "round_robin"
+        assert config.round_count == 7
+        assert config.round_interval == 25
+
+    def test_from_args(self):
+        """Build Config from CLI args with round-robin"""
+        import argparse
+
+        args = argparse.Namespace(
+            e2b_access_token=None,
+            e2b_api_key=None,
+            e2b_domain=None,
+            e2b_api_url=None,
+            e2b_http_ssl=None,
+            template=None,
+            create_timeout=None,
+            total=None,
+            detect=False,
+            create_only=False,
+            sandbox_ids_file=None,
+            create_batch_size=None,
+            create_batch_interval=None,
+            task_batch_size=None,
+            task_batch_interval=None,
+            browser_url=None,
+            browser_timeout=None,
+            browser_interval_min=None,
+            browser_interval_max=None,
+            warmup_url=None,
+            warmup_loops=None,
+            warmup_delay=None,
+            warmup_only=False,
+            benchmark_percent=None,
+            benchmark_mode="round_robin",
+            round_count=4,
+            round_interval=20,
+            duration=None,
+            stats_interval=None,
+            output_dir=None,
+            filename_prefix=None,
+        )
+
+        config = Config.from_args(args)
+        assert config.benchmark_mode == "round_robin"
+        assert config.round_count == 4
+        assert config.round_interval == 20
+
+    def test_yaml_priority_over_cli_default(self):
+        """YAML config takes priority over CLI default for benchmark_mode"""
+        yaml_content = """
+test:
+  benchmark_mode: round_robin
+  round_interval: 30
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        import argparse
+
+        # Simulate argparse with default value (user didn't specify --benchmark-mode)
+        args = argparse.Namespace(
+            e2b_access_token=None,
+            e2b_api_key=None,
+            e2b_domain=None,
+            e2b_api_url=None,
+            e2b_http_ssl=None,
+            template=None,
+            create_timeout=None,
+            total=None,
+            detect=False,
+            create_only=False,
+            sandbox_ids_file=None,
+            create_batch_size=None,
+            create_batch_interval=None,
+            task_batch_size=None,
+            task_batch_interval=None,
+            browser_url=None,
+            browser_timeout=None,
+            browser_interval_min=None,
+            browser_interval_max=None,
+            warmup_url=None,
+            warmup_loops=None,
+            warmup_delay=None,
+            warmup_only=False,
+            benchmark_percent=None,
+            benchmark_mode=None,  # argparse default value (None means not specified)
+            round_count=None,
+            round_size=None,
+            round_interval=None,
+            duration=None,
+            stats_interval=None,
+            output_dir=None,
+            filename_prefix=None,
+        )
+
+        config = Config.merge_with_args(yaml_config, args)
+        # YAML value should win over CLI default
+        assert config.benchmark_mode == "round_robin"
+        assert config.round_interval == 30  # YAML value preserved
+
+    def test_cli_explicit_override_yaml(self):
+        """CLI explicitly provided value overrides YAML config when YAML is empty"""
+        yaml_content = """
+test:
+  benchmark_mode: round_robin
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        import argparse
+
+        args = argparse.Namespace(
+            e2b_access_token=None,
+            e2b_api_key=None,
+            e2b_domain=None,
+            e2b_api_url=None,
+            e2b_http_ssl=None,
+            template=None,
+            create_timeout=None,
+            total=None,
+            detect=False,
+            create_only=False,
+            sandbox_ids_file=None,
+            create_batch_size=None,
+            create_batch_interval=None,
+            task_batch_size=None,
+            task_batch_interval=None,
+            browser_url=None,
+            browser_timeout=None,
+            browser_interval_min=None,
+            browser_interval_max=None,
+            warmup_url=None,
+            warmup_loops=None,
+            warmup_delay=None,
+            warmup_only=False,
+            benchmark_percent=None,
+            benchmark_mode="fixed",  # User explicitly provided different value
+            round_count=10,
+            round_size=None,
+            round_interval=60,
+            duration=None,
+            stats_interval=None,
+            output_dir=None,
+            filename_prefix=None,
+        )
+
+        config = Config.merge_with_args(yaml_config, args)
+        # CLI explicitly provided value wins over YAML
+        assert config.benchmark_mode == "fixed"  # CLI wins
+        assert config.round_count == 10  # CLI wins (YAML was None)
+        assert config.round_interval == 60  # CLI wins (YAML was None)
+
+    def test_actual_yaml_file_loads_round_robin(self):
+        """Test that the actual e2b_bench.yaml loads round_robin correctly"""
+        import os.path
+
+        yaml_path = "config/e2b_bench.yaml"
+        if os.path.exists(yaml_path):
+            config = Config.load_from_yaml(yaml_path)
+            # The config file should have benchmark_mode: "round_robin"
+            assert config.benchmark_mode == "round_robin"
+            assert config.round_count == 5
+            assert config.round_interval == 5  # Updated default value
+
+
+def _create_minimal_args():
+    """Helper to create minimal argparse Namespace with all round-robin fields"""
+    import argparse
+
+    return argparse.Namespace(
+        e2b_access_token=None,
+        e2b_api_key=None,
+        e2b_domain=None,
+        e2b_api_url=None,
+        e2b_http_ssl=None,
+        template=None,
+        create_timeout=None,
+        total=None,
+        detect=False,
+        create_only=False,
+        sandbox_ids_file=None,
+        create_batch_size=None,
+        create_batch_interval=None,
+        task_batch_size=None,
+        task_batch_interval=None,
+        browser_url=None,
+        browser_timeout=None,
+        browser_interval_min=None,
+        browser_interval_max=None,
+        warmup_url=None,
+        warmup_loops=None,
+        warmup_delay=None,
+        warmup_only=False,
+        benchmark_percent=None,
+        benchmark_mode=None,  # Add round-robin field
+        round_count=None,  # Add round-robin field
+        round_interval=None,  # Add round-robin field
+        duration=None,
+        stats_interval=None,
+        output_dir=None,
+        filename_prefix=None,
+    )
+
+
 class TestConfigSandboxIdsFile:
     """Tests for sandbox_ids_file configuration"""
 
@@ -258,6 +570,9 @@ sandbox:
             warmup_delay=None,
             warmup_only=False,
             benchmark_percent=None,
+            benchmark_mode=None,
+            round_count=None,
+            round_interval=None,
             duration=None,
             stats_interval=None,
             output_dir=None,
@@ -296,6 +611,9 @@ sandbox:
             warmup_delay=None,
             warmup_only=False,
             benchmark_percent=None,
+            benchmark_mode=None,
+            round_count=None,
+            round_interval=None,
             duration=None,
             stats_interval=None,
             output_dir=None,
@@ -741,6 +1059,9 @@ sandbox:
             warmup_delay=None,
             warmup_only=False,
             benchmark_percent=None,
+            benchmark_mode=None,
+            round_count=None,
+            round_interval=None,
             duration=None,
             stats_interval=None,
             output_dir=None,
@@ -779,6 +1100,9 @@ sandbox:
             warmup_delay=None,
             warmup_only=False,
             benchmark_percent=None,
+            benchmark_mode=None,
+            round_count=None,
+            round_interval=None,
             duration=None,
             stats_interval=None,
             output_dir=None,
