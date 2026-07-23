@@ -479,6 +479,34 @@ class VMMonitorBase(ABC):
         except:
             pass
 
+    # ===================== Collect VM Total Memory =====================
+    def collect_vm_total_memory(self, vms: List[Dict]) -> Dict:
+        """Aggregate total memory consumption of all VMs per sample
+
+        Sums memory_mb across all VMs and per_numa breakdown.
+        Stores result in vm_total_memory_history for timeline export.
+
+        Args:
+            vms: List of VM dicts from get_vms_realtime()
+
+        Returns:
+            Dict with total_mb, vm_count, per_numa breakdown, timestamp
+        """
+        total_mb = sum(vm["memory_mb"] for vm in vms)
+        per_numa = defaultdict(float)
+        for vm in vms:
+            for node_id, mem in vm.get("memory_per_numa", {}).items():
+                per_numa[node_id] += mem.get("total_mb", 0)
+
+        entry = {
+            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "total_mb": round(total_mb, 2),
+            "vm_count": len(vms),
+            "per_numa": {k: round(v, 2) for k, v in per_numa.items()},
+        }
+        self.vm_total_memory_history.append(entry)
+        return entry
+
     def _read_meminfo(self) -> dict:
         """Read /proc/meminfo and return dict of field -> MB values
 
@@ -582,6 +610,9 @@ class VMMonitorBase(ABC):
         self.collect_swap_stats()
         vms = self.get_vms_realtime()
         self.last_vm_count = len(vms)
+
+        # Aggregate VM total memory
+        self.collect_vm_total_memory(vms)
 
         timestamp = datetime.now()
         sample_data = []
