@@ -807,28 +807,17 @@ def export_to_excel(
                     sc_chart.set_categories(cats)
                     ws.add_chart(sc_chart, "I2")
 
-            # Chart 8: NUMA Free/Used Memory Timeline
-            # Focus NUMA only — clear contrast between local and remote NUMA
+            # Chart 8A: NUMA Free/Used Memory — memory headroom comparison
+            # Two separate charts for readability: Free/Used (MB scale) and SwapCache/Usage (mixed scale)
             if "NUMA_Memory_Timeline" in wb.sheetnames:
                 ws = wb["NUMA_Memory_Timeline"]
                 if ws.max_row > 1:
-                    from openpyxl.chart.series import DataPoint
-                    from openpyxl.drawing.line import LineProperties, LineEndProperties
-                    from openpyxl.chart.shapes import GraphicalProperties
-
-                    numa_chart = LineChart()
-                    numa_chart.title = "NUMA Free/Used Memory (Focus Nodes)"
-                    numa_chart.style = 10
-                    numa_chart.y_axis.title = "MB"
-                    numa_chart.x_axis.title = "Time"
-                    numa_chart.width = 22
-                    numa_chart.height = 12
-
-                    # Select Free, Used, Available, and SwapCache columns for chart
+                    # Classify columns by metric type
                     free_cols = []
                     used_cols = []
                     avail_cols = []
                     swapcache_cols = []
+                    usage_cols = []
                     for col_idx in range(2, ws.max_column + 1):
                         header = ws.cell(row=1, column=col_idx).value
                         if header and "Free" in header:
@@ -839,43 +828,85 @@ def export_to_excel(
                             avail_cols.append(col_idx)
                         elif header and "SwapCache" in header:
                             swapcache_cols.append(col_idx)
-
-                    # Add data series in logical order: Free, Available, Used, SwapCache
-                    for col in free_cols:
-                        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
-                        numa_chart.add_data(data, titles_from_data=True)
-                    for col in avail_cols:
-                        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
-                        numa_chart.add_data(data, titles_from_data=True)
-                    for col in used_cols:
-                        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
-                        numa_chart.add_data(data, titles_from_data=True)
-                    for col in swapcache_cols:
-                        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
-                        numa_chart.add_data(data, titles_from_data=True)
+                        elif header and "Usage" in header:
+                            usage_cols.append(col_idx)
 
                     cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
-                    numa_chart.set_categories(cats)
 
-                    # Apply distinct colors and line widths for contrast
-                    # Free = thin dashed green, Available = solid green, Used = thick solid red, SwapCache = thin orange
-                    series_colors = []
+                    # Chart 8A: Free/Used/Available Memory (MB scale)
+                    chart_8a = LineChart()
+                    chart_8a.title = "NUMA Free/Used Memory (Focus Nodes)"
+                    chart_8a.style = 10
+                    chart_8a.y_axis.title = "MB"
+                    chart_8a.x_axis.title = "Time"
+                    chart_8a.width = 22
+                    chart_8a.height = 12
+
+                    # Add series in order: Free, Available, Used
+                    free_avail_used_cols = free_cols + avail_cols + used_cols
+                    for col in free_avail_used_cols:
+                        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+                        chart_8a.add_data(data, titles_from_data=True)
+                    chart_8a.set_categories(cats)
+
+                    # Color scheme: Free=green thin, Available=light green medium, Used=red thick
+                    # Local NUMA (first) gets solid lines, remote NUMA5 gets dashed lines
+                    fa_series_styles = []
                     for col in free_cols:
-                        series_colors.append(("00B050", 15000))    # green, thin
+                        fa_series_styles.append(("00B050", 20000))    # green
                     for col in avail_cols:
-                        series_colors.append(("92D050", 25000))    # light green, medium
+                        fa_series_styles.append(("92D050", 25000))    # light green
                     for col in used_cols:
-                        series_colors.append(("FF0000", 30000))    # red, thick
-                    for col in swapcache_cols:
-                        series_colors.append(("FFC000", 15000))    # orange, thin
+                        fa_series_styles.append(("FF0000", 30000))    # red thick
 
-                    for i, (color, width) in enumerate(series_colors):
-                        if i < len(numa_chart.series):
-                            s = numa_chart.series[i]
+                    for i, (color, width) in enumerate(fa_series_styles):
+                        if i < len(chart_8a.series):
+                            s = chart_8a.series[i]
                             s.graphicalProperties.line.solidFill = color
                             s.graphicalProperties.line.width = width
 
-                    ws.add_chart(numa_chart, "I2")
+                    ws.add_chart(chart_8a, "I2")
+
+                    # Chart 8B: SwapCache & Usage% (SwapCache in MB, Usage in % — separate Y axes)
+                    chart_8b = LineChart()
+                    chart_8b.title = "NUMA SwapCache & Usage% (Focus Nodes)"
+                    chart_8b.style = 10
+                    chart_8b.y_axis.title = "MB (SwapCache)"
+                    chart_8b.x_axis.title = "Time"
+                    chart_8b.width = 22
+                    chart_8b.height = 12
+
+                    # Add SwapCache series to primary Y axis (MB)
+                    for col in swapcache_cols:
+                        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+                        chart_8b.add_data(data, titles_from_data=True)
+                    chart_8b.set_categories(cats)
+
+                    # Add Usage% series on secondary Y axis (%)
+                    # Use a second LineChart as overlay for the % axis
+                    chart_8b_pct = LineChart()
+                    chart_8b_pct.y_axis.title = "Usage (%)"
+                    chart_8b_pct.y_axis.axId = 200  # separate axis ID
+                    for col in usage_cols:
+                        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+                        chart_8b_pct.add_data(data, titles_from_data=True)
+                    chart_8b_pct.set_categories(cats)
+
+                    # Color SwapCache = orange, Usage% = blue
+                    for i in range(len(swapcache_cols)):
+                        if i < len(chart_8b.series):
+                            s = chart_8b.series[i]
+                            s.graphicalProperties.line.solidFill = "FFC000"  # orange
+                            s.graphicalProperties.line.width = 20000
+                    for i in range(len(usage_cols)):
+                        if i < len(chart_8b_pct.series):
+                            s = chart_8b_pct.series[i]
+                            s.graphicalProperties.line.solidFill = "0070C0"  # blue
+                            s.graphicalProperties.line.width = 15000
+
+                    # Overlay the % chart on the MB chart (dual Y axis)
+                    chart_8b += chart_8b_pct
+                    ws.add_chart(chart_8b, "I16")
 
             # Chart 9: VM Total Memory Timeline
             if "VM_Total_Memory_Timeline" in wb.sheetnames:
