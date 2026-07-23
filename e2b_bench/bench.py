@@ -719,10 +719,14 @@ def run_benchmark(config: Config) -> dict:
         benchmark_count = max(1, int(ready_count * config.benchmark_percent))
         print(f"\n[Phase 4] Starting round-robin browser tasks...")
         print(f"  Mode: round_robin")
-        print(f"  Rounds: {config.round_count}")
+        print(f"  Round size: {config.round_size} sandboxes per round")
+        if config.round_count:
+            print(f"  Max rounds: {config.round_count} (stops when round_count or duration reached)")
+        else:
+            print(f"  Max rounds: unlimited (stops when duration={config.test_duration}s reached)")
+        print(f"  Duration limit: {config.test_duration}s")
         print(f"  Interval: {config.round_interval}s per round")
         print(f"  Total sandboxes: {ready_count}")
-        print(f"  Per round (balanced): ~{ready_count // config.round_count if config.round_count else 0}")
 
         round_robin_manager = RoundRobinTaskManager(config, sandbox_states, stop_event, stats_collector)
         round_robin_manager.run()
@@ -839,14 +843,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--round-count",
         type=int,
         default=None,
-        help="Number of sandbox groups for round_robin mode (mutually exclusive with --round-size)",
+        help="Max number of rounds to run (termination condition, coexists with --round-size and duration)",
     )
     parser.add_argument(
         "-rs",
         "--round-size",
         type=int,
         default=None,
-        help="Sandboxes per round for round_robin mode (mutually exclusive with --round-count)",
+        help="Sandboxes per round (determines group count, coexists with --round-count, default: 5)",
     )
     parser.add_argument(
         "-ri",

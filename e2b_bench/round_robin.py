@@ -90,7 +90,9 @@ class RoundRobinTaskManager:
 
         # Print cycling info
         if self.config.round_count and self.config.round_count > 0:
-            print(f"\n[RoundRobin] Will run {rounds} rounds (round_count specified)")
+            print(
+                f"\n[RoundRobin] Will run up to {rounds} rounds (whichever ends first: round_count={rounds} or duration={self.config.test_duration}s)"
+            )
         else:
             print(f"\n[RoundRobin] Will cycle continuously until duration={self.config.test_duration}s")
         print(f"[RoundRobin] Sandbox groups: {num_groups}, {len(self.sandbox_groups[0])} sandboxes per round")
@@ -133,16 +135,18 @@ class RoundRobinTaskManager:
     def _prepare_sandbox_groups(self) -> None:
         """Prepare sandbox groups for round-robin execution.
 
-        Group count determination (priority order):
-        1. If round_count is specified: use it
-        2. If round_size is specified: group_count = ceil(total / round_size)
-        3. Otherwise: use min(total, 10) as default
+        Group count determination:
+        1. If round_size > 0: group_count = ceil(total / round_size)
+        2. Otherwise: use min(total, 10) as default
+
+        Note: round_count does NOT affect group count — it only controls
+        the max number of rounds to execute (termination condition).
 
         Distributes sandboxes evenly across groups:
         - Base distribution: total // group_count
         - Remainder distributed to first N groups
 
-        Example: 103 sandboxes ÷ 5 groups = [21, 21, 21, 20, 20]
+        Example: 103 sandboxes ÷ round_size=5 = 21 groups, [5,5,...,5,3]
         """
         import math
 
@@ -156,11 +160,8 @@ class RoundRobinTaskManager:
             print("[RoundRobin] No ready sandboxes available")
             return
 
-        # Determine number of groups (priority: round_count > round_size > default)
-        if self.config.round_count and self.config.round_count > 0:
-            group_count = self.config.round_count
-            print(f"[RoundRobin] Using round_count={group_count} groups")
-        elif self.config.round_size and self.config.round_size > 0:
+        # Determine number of groups based on round_size (determines group granularity)
+        if self.config.round_size and self.config.round_size > 0:
             group_count = math.ceil(total / self.config.round_size)
             print(f"[RoundRobin] Using round_size={self.config.round_size}, calculated {group_count} groups")
         else:
@@ -311,25 +312,22 @@ class RoundRobinTaskManager:
         self.stats_collector.current_round = None
 
     def _calculate_rounds(self) -> int:
-        """Calculate total number of rounds.
+        """Calculate max number of rounds to execute.
 
-        Priority:
-        1. If round_count is specified: use it exactly
-        2. Otherwise: return a large number and rely on duration check in run()
+        round_count controls termination: if specified, the test stops after
+        that many rounds OR when duration is reached (whichever comes first).
+        If round_count is not specified, the test runs until duration is reached.
 
-        When round_size is set, we want continuous cycling within test_duration.
-        The actual number of rounds depends on:
-        - Task execution time per round
-        - round_interval (gap between rounds)
-        - test_duration (total test time)
+        Note: round_size determines group count (via _prepare_sandbox_groups),
+        round_count determines the max number of round iterations. They coexist.
 
         Returns:
-            Number of rounds to execute (or a large number if cycling until duration)
+            Max rounds to execute (or a large number if relying on duration only)
         """
-        # If round_count is specified, use it exactly
+        # If round_count is specified, use it as the max round limit
         if self.config.round_count and self.config.round_count > 0:
             return self.config.round_count
 
-        # Return a large number and rely on duration check in run() to stop
+        # No round_count specified — rely on duration check in run() to stop
         # This allows continuous cycling until test_duration is reached
         return 10000  # Large enough to cycle until duration ends
