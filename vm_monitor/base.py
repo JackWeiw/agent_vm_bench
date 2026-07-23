@@ -814,6 +814,7 @@ class VMMonitorBase(ABC):
             duration_seconds: optional max duration (monitor stops after this even if stress still running)
         """
         print(f"Waiting for stress test to start... (Detection method: {check_type}={check_target})")
+        self.interval = interval_seconds
         if duration_seconds:
             print(f"Duration limit: {duration_seconds}s (will stop after this time)")
         stress_started = False
@@ -873,6 +874,7 @@ class VMMonitorBase(ABC):
         return self.data
 
     def start_monitoring(self, duration_seconds=None, interval_seconds=5):
+        self.interval = interval_seconds
         self.running = True
         start_time = time.time()
 
