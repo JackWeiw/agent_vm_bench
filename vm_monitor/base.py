@@ -23,6 +23,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
 
@@ -798,6 +799,266 @@ class VMMonitorBase(ABC):
             result["swapcache_per_node"][node_id] = round(result["swapcache_per_node"][node_id], 2)
 
         return result
+
+    # ==================== Parallel VM Metrics Collection ====================
+    def _discover_vm_processes(self) -> List[Dict]:
+        """Phase 1: Discover VM processes via psutil.process_iter (serial).
+
+        Scans all system processes, filters by get_process_names(), and
+        extracts VM IDs. Returns lightweight candidate dicts with no
+        per-VM I/O metrics yet — those are collected in Phase 2.
+
+        Returns:
+            List of dicts with pid, proc_name, cmdline, status, vm_name.
+        """
+        candidates = []
+        process_names = self.get_process_names()
+
+        for proc in psutil.process_iter(["pid", "name", "cmdline", "status"]):
+            try:
+                proc_name = proc.info["name"] or ""
+                if not any(name in proc_name for name in process_names):
+                    continue
+
+                pid = proc.info["pid"]
+                cmdline = " ".join(proc.info["cmdline"] or [])
+                vm_name = self.extract_vm_id(pid, cmdline)
+
+                candidates.append({
+                    "pid": pid,
+                    "proc_name": proc_name,
+                    "cmdline": cmdline,
+                    "status": proc.info["status"],
+                    "vm_name": vm_name,
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        return candidates
+
+    def _collect_vm_metrics_serial(self, vm_candidates: List[Dict]) -> List[Dict]:
+        """Phase 2 serial: collect per-VM metrics one by one.
+
+        Used as fallback when VM count is small (<4) to avoid
+        ThreadPoolExecutor overhead. Produces the same return structure
+        as _collect_vm_metrics_parallel().
+
+        Args:
+            vm_candidates: List of dicts from _discover_vm_processes()
+
+        Returns:
+            List of complete VM dicts (same structure as get_vms_realtime()).
+        """
+        vms = []
+        current_pids = set()
+        current_total_mem = 0.0
+        current_total_cpu = 0.0
+
+        for candidate in vm_candidates:
+            pid = candidate["pid"]
+            current_pids.add(pid)
+
+            # NUMA memory via numa_maps fast path + numastat fallback
+            numastat_mem = self.get_vm_memory_from_numastat(pid)
+            memory_mb = numastat_mem.get("total_mb", 0.0)
+            memory_huge_mb = numastat_mem.get("huge_mb", 0.0)
+            memory_private_mb = numastat_mem.get("private_mb", 0.0)
+            memory_heap_mb = numastat_mem.get("heap_mb", 0.0)
+            memory_per_numa = numastat_mem.get("per_node", {})
+            memory_swapcache_mb = numastat_mem.get("swapcache_mb", 0.0)
+            memory_swapcache_per_numa = numastat_mem.get("swapcache_per_node", {})
+
+            # If numa_maps + numastat both fail, fall back to psutil
+            if memory_mb <= 0:
+                try:
+                    p = psutil.Process(pid)
+                    mem_info = p.memory_info()
+                    memory_mb = round(mem_info.pss / 1024 / 1024, 2)
+                except Exception:
+                    try:
+                        p = psutil.Process(pid)
+                        mem_info = p.memory_info()
+                        memory_mb = round(mem_info.rss / 1024 / 1024, 2)
+                    except Exception:
+                        pass
+
+            current_total_mem += memory_mb
+
+            # CPU: seed for new PIDs, delta for cached PIDs
+            if pid not in self.process_cache:
+                try:
+                    p = psutil.Process(pid)
+                    p.cpu_percent()  # seed call — returns 0.0
+                    self.process_cache[pid] = p
+                    cpu = 0.0
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    cpu = 0.0
+            else:
+                try:
+                    cpu = self.process_cache[pid].cpu_percent()
+                except psutil.NoSuchProcess:
+                    self.process_cache.pop(pid, None)
+                    cpu = 0.0
+
+            cpu = round(max(0, min(cpu, 10000)), 2)
+            current_total_cpu += cpu
+
+            vms.append({
+                "pid": pid,
+                "name": candidate["vm_name"],
+                "cpu_percent": cpu,
+                "memory_mb": memory_mb,
+                "memory_huge_mb": memory_huge_mb,
+                "memory_private_mb": memory_private_mb,
+                "memory_heap_mb": memory_heap_mb,
+                "memory_per_numa": memory_per_numa,
+                "memory_swapcache_mb": memory_swapcache_mb,
+                "memory_swapcache_per_numa": memory_swapcache_per_numa,
+                "status": candidate["status"],
+            })
+
+        if current_total_mem > self.peak_total_memory_mb:
+            self.peak_total_memory_mb = current_total_mem
+        if current_total_cpu > self.peak_total_cpu:
+            self.peak_total_cpu = current_total_cpu
+
+        # Clean dead processes from cache
+        dead_pids = [p for p in self.process_cache if p not in current_pids]
+        for p in dead_pids:
+            self.process_cache.pop(p, None)
+
+        return vms
+
+    def _collect_vm_metrics_parallel(self, vm_candidates: List[Dict]) -> List[Dict]:
+        """Phase 2 parallel: collect per-VM metrics using ThreadPoolExecutor.
+
+        Step A (parallel): each thread reads numa_maps and seeds cpu_percent
+        for new PIDs. Step B (serial): transfer seed Process objects to
+        cache and call cpu_percent delta for cached PIDs.
+
+        Args:
+            vm_candidates: List of dicts from _discover_vm_processes()
+
+        Returns:
+            List of complete VM dicts (same structure as get_vms_realtime()).
+        """
+        if not vm_candidates:
+            return []
+
+        # Small VM count: skip thread pool overhead
+        if len(vm_candidates) < 4:
+            return self._collect_vm_metrics_serial(vm_candidates)
+
+        max_workers = min(64, max(4, len(vm_candidates)))
+
+        # Step A: parallel numa_maps reads + seed Process creation for new PIDs
+        def _collect_single_vm(candidate):
+            pid = candidate["pid"]
+            result = {
+                "pid": pid,
+                "name": candidate["vm_name"],
+                "status": candidate["status"],
+                "cpu_percent": 0.0,
+                "memory_mb": 0.0,
+                "memory_huge_mb": 0.0,
+                "memory_private_mb": 0.0,
+                "memory_heap_mb": 0.0,
+                "memory_per_numa": {},
+                "memory_swapcache_mb": 0.0,
+                "memory_swapcache_per_numa": {},
+                "_is_new_pid": False,
+                "_seed_process": None,
+            }
+
+            # numa_maps read (I/O-bound, ~10ms)
+            numastat_mem = self.get_vm_memory_from_numastat(pid)
+            result["memory_mb"] = numastat_mem.get("total_mb", 0.0)
+            result["memory_huge_mb"] = numastat_mem.get("huge_mb", 0.0)
+            result["memory_private_mb"] = numastat_mem.get("private_mb", 0.0)
+            result["memory_heap_mb"] = numastat_mem.get("heap_mb", 0.0)
+            result["memory_per_numa"] = numastat_mem.get("per_node", {})
+            result["memory_swapcache_mb"] = numastat_mem.get("swapcache_mb", 0.0)
+            result["memory_swapcache_per_numa"] = numastat_mem.get("swapcache_per_node", {})
+
+            # If numa_maps + numastat both fail, fall back to psutil
+            if result["memory_mb"] <= 0:
+                try:
+                    p = psutil.Process(pid)
+                    mem_info = p.memory_info()
+                    result["memory_mb"] = round(mem_info.pss / 1024 / 1024, 2)
+                except Exception:
+                    try:
+                        p = psutil.Process(pid)
+                        mem_info = p.memory_info()
+                        result["memory_mb"] = round(mem_info.rss / 1024 / 1024, 2)
+                    except Exception:
+                        pass
+
+            # Seed cpu_percent for new PIDs (fresh Process object in thread)
+            # Read-only check: pid not in self.process_cache is safe under GIL
+            if pid not in self.process_cache:
+                try:
+                    seed_proc = psutil.Process(pid)
+                    seed_proc.cpu_percent()  # seed call — returns 0.0
+                    result["_is_new_pid"] = True
+                    result["_seed_process"] = seed_proc
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
+            return result
+
+        # Execute Step A in parallel
+        vm_results = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {executor.submit(_collect_single_vm, c): c for c in vm_candidates}
+            for future in as_completed(future_map):
+                try:
+                    vm_results.append(future.result())
+                except Exception:
+                    continue
+
+        # Step B: serial cpu_percent delta calls + cache update
+        current_pids = set()
+        current_total_mem = 0.0
+        current_total_cpu = 0.0
+
+        for vm in vm_results:
+            pid = vm["pid"]
+            current_pids.add(pid)
+            current_total_mem += vm["memory_mb"]
+
+            # Transfer seed Process objects from threads into cache
+            if vm["_is_new_pid"] and vm["_seed_process"] is not None:
+                self.process_cache[pid] = vm["_seed_process"]
+                cpu = 0.0  # first sample always 0
+            elif pid in self.process_cache:
+                try:
+                    cpu = self.process_cache[pid].cpu_percent()  # serial delta call
+                except psutil.NoSuchProcess:
+                    self.process_cache.pop(pid, None)
+                    cpu = 0.0
+            else:
+                cpu = 0.0
+
+            cpu = round(max(0, min(cpu, 10000)), 2)
+            current_total_cpu += cpu
+            vm["cpu_percent"] = cpu
+
+            # Remove internal keys before returning
+            vm.pop("_is_new_pid", None)
+            vm.pop("_seed_process", None)
+
+        if current_total_mem > self.peak_total_memory_mb:
+            self.peak_total_memory_mb = current_total_mem
+        if current_total_cpu > self.peak_total_cpu:
+            self.peak_total_cpu = current_total_cpu
+
+        # Clean dead processes from cache
+        dead_pids = [p for p in self.process_cache if p not in current_pids]
+        for p in dead_pids:
+            self.process_cache.pop(p, None)
+
+        return vm_results
 
     # ==================== Template Methods ====================
     def collect_sample(self):

@@ -6,6 +6,8 @@ import unittest
 from collections import defaultdict
 from unittest.mock import MagicMock, patch
 
+import psutil
+
 from vm_monitor.base import VMMonitorBase
 
 
@@ -566,6 +568,276 @@ class TestGetVmMemoryFromNumaMaps(unittest.TestCase):
         self.assertIn(0, result["per_node"])
         self.assertIn(2, result["per_node"])
         self.assertIn(5, result["per_node"])
+
+
+class TestDiscoverVmProcesses(unittest.TestCase):
+    """Tests for _discover_vm_processes() filtering and VM ID extraction"""
+
+    def test_finds_matching_processes(self):
+        """Should discover processes matching get_process_names()"""
+        monitor = DummyMonitor()
+        mock_procs = [
+            MagicMock(info={"pid": 100, "name": "test_process", "cmdline": ["--id", "vm0"], "status": "running"}),
+            MagicMock(info={"pid": 101, "name": "other_process", "cmdline": [], "status": "running"}),
+            MagicMock(info={"pid": 102, "name": "test_process_extra", "cmdline": [], "status": "sleeping"}),
+        ]
+
+        with patch("vm_monitor.base.psutil.process_iter", return_value=mock_procs):
+            candidates = monitor._discover_vm_processes()
+
+        self.assertEqual(len(candidates), 2)  # skips other_process
+        self.assertEqual(candidates[0]["pid"], 100)
+        self.assertEqual(candidates[1]["pid"], 102)
+
+    def test_skips_dead_processes(self):
+        """Should skip processes that throw NoSuchProcess"""
+        monitor = DummyMonitor()
+        mock_procs = [
+            MagicMock(info={"pid": 100, "name": "test_process", "cmdline": [], "status": "running"}),
+            MagicMock(info={"pid": 101, "name": "test_process", "cmdline": [], "status": "running"}),
+        ]
+        # First proc works, second throws NoSuchProcess during iteration
+        mock_procs[1].info = None  # force exception in try block
+
+        with patch("vm_monitor.base.psutil.process_iter", return_value=mock_procs[:1]):
+            candidates = monitor._discover_vm_processes()
+
+        self.assertEqual(len(candidates), 1)
+
+    def test_returns_candidate_fields(self):
+        """Candidates should have pid, proc_name, cmdline, status, vm_name"""
+        monitor = DummyMonitor()
+        mock_procs = [
+            MagicMock(info={"pid": 100, "name": "test_process", "cmdline": ["--id", "vm0"], "status": "running"}),
+        ]
+
+        with patch("vm_monitor.base.psutil.process_iter", return_value=mock_procs):
+            candidates = monitor._discover_vm_processes()
+
+        c = candidates[0]
+        self.assertIn("pid", c)
+        self.assertIn("proc_name", c)
+        self.assertIn("cmdline", c)
+        self.assertIn("status", c)
+        self.assertIn("vm_name", c)
+
+    def test_empty_result_when_no_vms(self):
+        """Should return empty list when no matching processes found"""
+        monitor = DummyMonitor()
+        mock_procs = [
+            MagicMock(info={"pid": 100, "name": "unrelated", "cmdline": [], "status": "running"}),
+        ]
+
+        with patch("vm_monitor.base.psutil.process_iter", return_value=mock_procs):
+            candidates = monitor._discover_vm_processes()
+
+        self.assertEqual(candidates, [])
+
+
+class TestCollectVmMetricsParallel(unittest.TestCase):
+    """Tests for _collect_vm_metrics_parallel() and _collect_vm_metrics_serial()"""
+
+    def _make_candidate(self, pid, vm_name="vm0", status="running"):
+        """Create a lightweight VM candidate dict"""
+        return {
+            "pid": pid,
+            "proc_name": "test_process",
+            "cmdline": "",
+            "status": status,
+            "vm_name": vm_name,
+        }
+
+    def test_parallel_returns_vm_dicts(self):
+        """Parallel collection should return complete VM dicts"""
+        monitor = DummyMonitor()
+        candidates = [
+            self._make_candidate(100, "vm-100"),
+            self._make_candidate(101, "vm-101"),
+            self._make_candidate(102, "vm-102"),
+            self._make_candidate(103, "vm-103"),
+        ]
+
+        # Mock numa_maps to return data for each PID
+        def mock_numa_maps_result(pid):
+            return {
+                "total_mb": 2048.0, "huge_mb": 0.0, "private_mb": 1000.0,
+                "heap_mb": 50.0, "per_node": {0: {"total_mb": 1024.0}, 2: {"total_mb": 1024.0}},
+                "swapcache_mb": 100.0, "swapcache_per_node": {0: 50.0, 2: 50.0},
+            }
+
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), \
+             patch("vm_monitor.base.psutil.Process") as mock_process_cls:
+            # Mock Process.cpu_percent to return seed=0 then delta=5.0
+            mock_proc = MagicMock()
+            mock_proc.cpu_percent.return_value = 5.0
+            mock_process_cls.return_value = mock_proc
+
+            vms = monitor._collect_vm_metrics_parallel(candidates)
+
+        self.assertEqual(len(vms), 4)
+        for vm in vms:
+            self.assertIn("pid", vm)
+            self.assertIn("name", vm)
+            self.assertIn("cpu_percent", vm)
+            self.assertIn("memory_mb", vm)
+            self.assertIn("memory_swapcache_mb", vm)
+            self.assertIn("status", vm)
+            # Internal keys should not be in final result
+            self.assertNotIn("_is_new_pid", vm)
+            self.assertNotIn("_seed_process", vm)
+
+    def test_serial_returns_same_structure(self):
+        """Serial collection should return same dict structure as parallel"""
+        monitor = DummyMonitor()
+        candidates = [self._make_candidate(100, "vm-100")]
+
+        def mock_numa_maps_result(pid):
+            return {
+                "total_mb": 2048.0, "huge_mb": 0.0, "private_mb": 1000.0,
+                "heap_mb": 50.0, "per_node": {0: {"total_mb": 2048.0}},
+                "swapcache_mb": 100.0, "swapcache_per_node": {0: 100.0},
+            }
+
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), \
+             patch("vm_monitor.base.psutil.Process") as mock_process_cls:
+            mock_proc = MagicMock()
+            mock_proc.cpu_percent.return_value = 0.0  # seed call
+            mock_process_cls.return_value = mock_proc
+
+            vms = monitor._collect_vm_metrics_serial(candidates)
+
+        self.assertEqual(len(vms), 1)
+        vm = vms[0]
+        self.assertEqual(vm["pid"], 100)
+        self.assertEqual(vm["name"], "vm-100")
+        self.assertEqual(vm["memory_mb"], 2048.0)
+
+    def test_small_count_uses_serial_path(self):
+        """Less than 4 VMs should use serial path (no ThreadPoolExecutor)"""
+        monitor = DummyMonitor()
+        candidates = [self._make_candidate(100)]
+
+        def mock_numa_maps_result(pid):
+            return {"total_mb": 100.0, "huge_mb": 0.0, "private_mb": 50.0,
+                    "heap_mb": 0.0, "per_node": {}, "swapcache_mb": 0.0, "swapcache_per_node": {}}
+
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), \
+             patch("vm_monitor.base.psutil.Process") as mock_process_cls:
+            mock_proc = MagicMock()
+            mock_proc.cpu_percent.return_value = 0.0
+            mock_process_cls.return_value = mock_proc
+
+            vms = monitor._collect_vm_metrics_parallel(candidates)
+
+        # Should have used serial path (<4 candidates)
+        self.assertEqual(len(vms), 1)
+
+    def test_empty_candidates_returns_empty(self):
+        """Empty candidate list should return empty result immediately"""
+        monitor = DummyMonitor()
+        vms = monitor._collect_vm_metrics_parallel([])
+        self.assertEqual(vms, [])
+
+    def test_dead_process_handled_gracefully(self):
+        """Dead process should produce zeroed metrics, not crash"""
+        monitor = DummyMonitor()
+        candidates = [self._make_candidate(99999)]
+
+        # numa_maps returns empty dict (process gone)
+        def mock_numa_maps_result(pid):
+            return {"total_mb": 0.0, "huge_mb": 0.0, "private_mb": 0.0,
+                    "heap_mb": 0.0, "per_node": {}, "swapcache_mb": 0.0, "swapcache_per_node": {}}
+
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), \
+             patch("vm_monitor.base.psutil.Process", side_effect=psutil.NoSuchProcess(99999)):
+            vms = monitor._collect_vm_metrics_serial(candidates)
+
+        self.assertEqual(len(vms), 1)
+        vm = vms[0]
+        self.assertEqual(vm["memory_mb"], 0.0)
+        self.assertEqual(vm["cpu_percent"], 0.0)
+
+    def test_process_cache_updated_serially(self):
+        """Seed Process objects from threads should be transferred to cache serially"""
+        monitor = DummyMonitor()
+        candidates = [
+            self._make_candidate(100),
+            self._make_candidate(101),
+            self._make_candidate(102),
+            self._make_candidate(103),
+        ]
+
+        def mock_numa_maps_result(pid):
+            return {"total_mb": 100.0, "huge_mb": 0.0, "private_mb": 50.0,
+                    "heap_mb": 0.0, "per_node": {}, "swapcache_mb": 0.0, "swapcache_per_node": {}}
+
+        # Create mock Process objects that will be seeded in threads
+        seed_procs = {}
+        for pid in [100, 101, 102, 103]:
+            mp = MagicMock()
+            mp.cpu_percent.return_value = 0.0  # seed call returns 0
+            seed_procs[pid] = mp
+
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), \
+             patch("vm_monitor.base.psutil.Process", side_effect=lambda pid: seed_procs[pid]):
+            vms = monitor._collect_vm_metrics_parallel(candidates)
+
+        # All seed Process objects should now be in process_cache
+        self.assertEqual(len(monitor.process_cache), 4)
+        for pid in [100, 101, 102, 103]:
+            self.assertIn(pid, monitor.process_cache)
+
+    def test_peak_tracking(self):
+        """Peak memory and CPU should be tracked correctly across cycles"""
+        monitor = DummyMonitor()
+        candidates = [self._make_candidate(100), self._make_candidate(101)]
+
+        def mock_numa_maps_result(pid):
+            return {"total_mb": 2048.0, "huge_mb": 0.0, "private_mb": 1000.0,
+                    "heap_mb": 50.0, "per_node": {}, "swapcache_mb": 0.0, "swapcache_per_node": {}}
+
+        # Each PID gets its own Process mock with cpu_percent behavior:
+        # first call (seed) → 0.0, subsequent calls → 5.0
+        proc_mocks = {}
+        for pid in [100, 101]:
+            mp = MagicMock()
+            mp.cpu_percent.side_effect = [0.0] + [5.0] * 10  # seed=0, then always 5.0
+            proc_mocks[pid] = mp
+
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), \
+             patch("vm_monitor.base.psutil.Process", side_effect=lambda pid: proc_mocks[pid]):
+            # Cycle 1: seed — cpu_percent returns 0.0 for each PID
+            vms1 = monitor._collect_vm_metrics_serial(candidates)
+            self.assertEqual(monitor.peak_total_memory_mb, 4096.0)
+            self.assertEqual(monitor.peak_total_cpu, 0.0)  # first cycle seeds, cpu=0
+
+            # Cycle 2: delta — cpu_percent returns 5.0 for each PID
+            vms2 = monitor._collect_vm_metrics_serial(candidates)
+            self.assertEqual(monitor.peak_total_cpu, 10.0)  # 2 * 5.0
+
+    def test_dead_pid_cleaned_from_cache(self):
+        """PIDs not in current sample should be removed from process_cache"""
+        monitor = DummyMonitor()
+        # Pre-populate cache with a dead PID
+        monitor.process_cache[999] = MagicMock()
+
+        candidates = [self._make_candidate(100)]
+
+        def mock_numa_maps_result(pid):
+            return {"total_mb": 100.0, "huge_mb": 0.0, "private_mb": 50.0,
+                    "heap_mb": 0.0, "per_node": {}, "swapcache_mb": 0.0, "swapcache_per_node": {}}
+
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), \
+             patch("vm_monitor.base.psutil.Process") as mock_process_cls:
+            mock_proc = MagicMock()
+            mock_proc.cpu_percent.return_value = 0.0
+            mock_process_cls.return_value = mock_proc
+
+            vms = monitor._collect_vm_metrics_serial(candidates)
+
+        # Dead PID 999 should have been cleaned
+        self.assertNotIn(999, monitor.process_cache)
+        self.assertIn(100, monitor.process_cache)
 
 
 if __name__ == "__main__":
