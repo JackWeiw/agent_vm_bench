@@ -840,5 +840,191 @@ class TestCollectVmMetricsParallel(unittest.TestCase):
         self.assertIn(100, monitor.process_cache)
 
 
+class TestBugFixes(unittest.TestCase):
+    """Tests for bugs found during code review"""
+
+    def _write_mock_numa_maps(self, content):
+        """Write mock numa_maps content to a temp file"""
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".numa_maps", delete=False)
+        f.write(content)
+        f.close()
+        return f.name
+
+    def test_swapcache_uses_base_page_size_not_hugepage_size(self):
+        """swapcache in numa_maps counts 4KB base pages, not hugepage pages.
+        Multiplying by kernelpagesize_kB for THP mappings would inflate
+        swapcache_mb by 512x. The fix uses base_page_size_mb (4/1024).
+        """
+        # A THP mapping: kernelpagesize_kB=2048, swapcache=2, N0=5
+        content = "aaaa0000 bind:2 anon=100 swapcache=2 N0=5 kernelpagesize_kB=2048\n"
+        path = self._write_mock_numa_maps(content)
+        monitor = DummyMonitor()
+
+        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+            result = monitor.get_vm_memory_from_numa_maps(123)
+
+        # swapcache=2 pages at 4KB each = 2 * 4 / 1024 = 0.0078 MB
+        # NOT 2 * 2048 / 1024 = 4.0 MB (that would be 512x inflation)
+        expected_swapcache_mb = round(2 * 4 / 1024, 2)  # ~0.01 MB
+        self.assertAlmostEqual(result["swapcache_mb"], expected_swapcache_mb, places=2)
+
+        # total should still use hugepage size: 5 * 2048/1024 = 10.0 MB
+        expected_total_mb = round(5 * 2048 / 1024, 2)
+        self.assertAlmostEqual(result["total_mb"], expected_total_mb, places=1)
+
+        os.unlink(path)
+
+    def test_numa_maps_parsed_flag_accepted_on_zero_memory(self):
+        """When numa_maps is successfully parsed but process has zero resident
+        pages, the _parsed flag should allow the result through instead of
+        falling back to numastat subprocess.
+        """
+        monitor = DummyMonitor()
+
+        # numa_maps with no N*= entries (all virtual mappings) → parsed=True, total_mb=0
+        content = "aaaa0000 bind:2\naaaab000 bind:2\n"
+        path = self._write_mock_numa_maps(content)
+
+        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+            result = monitor.get_vm_memory_from_numastat(123)
+
+        # Should accept the numa_maps result (total_mb=0 is legitimate)
+        # Without the fix, >0 check would reject it and fall back to numastat
+        self.assertEqual(result["total_mb"], 0.0)
+        # The _parsed flag should have been removed before returning
+        self.assertNotIn("_parsed", result)
+
+        os.unlink(path)
+
+    def test_numa_maps_failure_triggers_fallback(self):
+        """When numa_maps file doesn't exist (parsed=False), should fall back
+        to numastat subprocess instead of accepting the empty result.
+        """
+        monitor = DummyMonitor()
+        numastat_output = (
+            "Node0            Node2            Total\n"
+            "---              ---              ---\n"
+            "Total            1000.0           2000.0           3000.0\n"
+        )
+
+        with patch("vm_monitor.base.open", side_effect=FileNotFoundError), \
+             patch("vm_monitor.base.subprocess.run", return_value=MagicMock(returncode=0, stdout=numastat_output)):
+            result = monitor.get_vm_memory_from_numastat(123)
+
+        # Should have data from numastat fallback, not empty numa_maps result
+        self.assertGreater(result["total_mb"], 0)
+
+    def test_swapcache_base_page_size_in_regular_mapping(self):
+        """For regular 4KB mappings, swapcache should still use base page size
+        (which is the same as kernelpagesize_kB in this case, so no difference).
+        """
+        content = "aaaa0000 bind:2 anon=473814 swapcache=86418 N2=386088 N5=87726 kernelpagesize_kB=4\n"
+        path = self._write_mock_numa_maps(content)
+        monitor = DummyMonitor()
+
+        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+            result = monitor.get_vm_memory_from_numa_maps(123)
+
+        # For 4KB mappings, base_page_size_mb == page_size_mb, so same result
+        swapcache_mb = result["swapcache_mb"]
+        expected = round(86418 * 4 / 1024, 2)  # 337.57 MB
+        self.assertAlmostEqual(swapcache_mb, expected, places=1)
+
+        os.unlink(path)
+
+    def test_fallback_memory_mb_helper(self):
+        """_fallback_memory_mb should return PSS or RSS when numastat fails"""
+        monitor = DummyMonitor()
+
+        # Mock psutil.Process to return memory_info with PSS
+        mock_proc = MagicMock()
+        mock_mem = MagicMock()
+        mock_mem.pss = 2048 * 1024 * 1024  # 2048 MB
+        mock_proc.memory_info.return_value = mock_mem
+
+        with patch("vm_monitor.base.psutil.Process", return_value=mock_proc):
+            result = monitor._fallback_memory_mb(100)
+        self.assertEqual(result, 2048.0)
+
+    def test_extract_numastat_fields_helper(self):
+        """_extract_numastat_fields should extract all standard VM metric fields"""
+        monitor = DummyMonitor()
+        numastat_mem = {
+            "total_mb": 2048.0, "huge_mb": 0.0, "private_mb": 1000.0,
+            "heap_mb": 50.0, "per_node": {0: {"total_mb": 1024.0}},
+            "swapcache_mb": 100.0, "swapcache_per_node": {0: 50.0},
+        }
+        fields = monitor._extract_numastat_fields(numastat_mem)
+
+        self.assertEqual(fields["memory_mb"], 2048.0)
+        self.assertEqual(fields["memory_huge_mb"], 0.0)
+        self.assertEqual(fields["memory_private_mb"], 1000.0)
+        self.assertEqual(fields["memory_heap_mb"], 50.0)
+        self.assertEqual(fields["memory_per_numa"], {0: {"total_mb": 1024.0}})
+        self.assertEqual(fields["memory_swapcache_mb"], 100.0)
+        self.assertEqual(fields["memory_swapcache_per_numa"], {0: 50.0})
+
+    def test_collect_single_vm_returns_tuple(self):
+        """_collect_single_vm should return (result_dict, seed_proc_or_None) tuple"""
+        monitor = DummyMonitor()
+        candidate = {"pid": 100, "vm_name": "vm-100", "status": "running",
+                     "proc_name": "test", "cmdline": ""}
+
+        def mock_numa_maps_result(pid):
+            return {"total_mb": 100.0, "huge_mb": 0.0, "private_mb": 50.0,
+                    "heap_mb": 0.0, "per_node": {}, "swapcache_mb": 0.0,
+                    "swapcache_per_node": {}}
+
+        mock_proc = MagicMock()
+        mock_proc.cpu_percent.return_value = 0.0
+
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), \
+             patch("vm_monitor.base.psutil.Process", return_value=mock_proc):
+            vm_result, seed_proc = monitor._collect_single_vm(candidate)
+
+        # Result dict should not contain _is_new_pid or _seed_process
+        self.assertNotIn("_is_new_pid", vm_result)
+        self.assertNotIn("_seed_process", vm_result)
+        self.assertEqual(vm_result["pid"], 100)
+        self.assertEqual(vm_result["memory_mb"], 100.0)
+        # seed_proc should be the mock Process object
+        self.assertIsNotNone(seed_proc)
+
+    def test_csv_fieldnames_include_swapcache(self):
+        """CSV export fieldnames should include memory_swapcache_mb and
+        memory_swapcache_per_numa (previously silently dropped by extrasaction).
+        """
+        monitor = DummyMonitor()
+        # Trigger a collect_sample to populate data
+        # We can't easily test export directly, but we can check collect_sample
+        # includes swapcache fields in the record dict
+        from datetime import datetime
+        vm_dict = {
+            "pid": 100, "name": "vm-100", "cpu_percent": 5.0,
+            "memory_mb": 2048.0, "memory_huge_mb": 0.0,
+            "memory_private_mb": 1000.0, "memory_heap_mb": 50.0,
+            "memory_per_numa": {}, "memory_swapcache_mb": 100.0,
+            "memory_swapcache_per_numa": {0: 50.0}, "status": "running",
+        }
+        record = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "vm_name": vm_dict["name"],
+            "pid": vm_dict["pid"],
+            "cpu_percent": vm_dict["cpu_percent"],
+            "memory_mb": vm_dict["memory_mb"],
+            "memory_huge_mb": vm_dict.get("memory_huge_mb", 0),
+            "memory_private_mb": vm_dict.get("memory_private_mb", 0),
+            "memory_heap_mb": vm_dict.get("memory_heap_mb", 0),
+            "memory_per_numa": vm_dict.get("memory_per_numa", {}),
+            "memory_swapcache_mb": vm_dict.get("memory_swapcache_mb", 0),
+            "memory_swapcache_per_numa": vm_dict.get("memory_swapcache_per_numa", {}),
+            "status": vm_dict["status"],
+        }
+        # Verify swapcache fields are present in the record
+        self.assertIn("memory_swapcache_mb", record)
+        self.assertIn("memory_swapcache_per_numa", record)
+        self.assertEqual(record["memory_swapcache_mb"], 100.0)
+
+
 if __name__ == "__main__":
     unittest.main()

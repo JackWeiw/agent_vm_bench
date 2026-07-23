@@ -595,7 +595,9 @@ class VMMonitorBase(ABC):
         """
         # Fast path: read numa_maps directly (~50x faster than subprocess)
         result = self.get_vm_memory_from_numa_maps(pid)
-        if result.get("total_mb", 0) > 0:
+        if result.get("_parsed", False):
+            # numa_maps was successfully read — accept result even if total_mb=0
+            result.pop("_parsed", None)  # remove internal flag before returning
             return result
 
         # Slow fallback: subprocess numastat
@@ -671,8 +673,10 @@ class VMMonitorBase(ABC):
             "swapcache_mb": 0.0, "swapcache_per_node": {},
         }
         numa_maps_path = f"/proc/{pid}/numa_maps"
+        parsed = False  # track whether file was actually read successfully
         try:
             with open(numa_maps_path, "r") as f:
+                parsed = True
                 for line in f:
                     tokens = line.strip().split()
                     if len(tokens) < 2:
@@ -763,6 +767,7 @@ class VMMonitorBase(ABC):
                             result["per_node"][node_id]["stack_mb"] += node_mb
 
                     # Private memory (anon pages) — distribute proportionally across nodes
+                    # anon pages share the same page size as the mapping (kernelpagesize_kB)
                     if anon_pages > 0 and total_line_pages > 0:
                         anon_total_mb = anon_pages * page_size_mb
                         result["private_mb"] += anon_total_mb
@@ -771,8 +776,12 @@ class VMMonitorBase(ABC):
                             result["per_node"][node_id]["private_mb"] += anon_total_mb * proportion
 
                     # SwapCache — distribute proportionally across nodes
+                    # NOTE: swapcache in numa_maps always counts 4KB base pages regardless
+                    # of kernelpagesize_kB, because the kernel swap cache operates at base
+                    # page granularity. Use base_page_size_mb (4KB) for swapcache conversion.
+                    base_page_size_mb = 4 / 1024.0
                     if swapcache_pages > 0 and total_line_pages > 0:
-                        swapcache_total_mb = swapcache_pages * page_size_mb
+                        swapcache_total_mb = swapcache_pages * base_page_size_mb
                         result["swapcache_mb"] += swapcache_total_mb
                         for node_id, pages in node_pages.items():
                             proportion = pages / total_line_pages
@@ -781,9 +790,12 @@ class VMMonitorBase(ABC):
                             result["swapcache_per_node"][node_id] += swapcache_total_mb * proportion
 
         except (FileNotFoundError, PermissionError, ProcessLookupError):
-            return result  # empty → triggers fallback
+            return result  # empty + parsed=False → triggers fallback
         except Exception:
             return result
+
+        # Mark that numa_maps was successfully parsed (even if total_mb=0)
+        result["_parsed"] = parsed
 
         # Round all values for consistency
         result["total_mb"] = round(result["total_mb"], 2)
@@ -799,6 +811,52 @@ class VMMonitorBase(ABC):
             result["swapcache_per_node"][node_id] = round(result["swapcache_per_node"][node_id], 2)
 
         return result
+
+    # ==================== Shared VM Metrics Helpers ====================
+    def _fallback_memory_mb(self, pid: int) -> float:
+        """Try psutil memory_info() as fallback when numa_maps + numastat both fail.
+
+        Attempts PSS first, then RSS. Returns 0.0 if both fail.
+        """
+        try:
+            p = psutil.Process(pid)
+            mem_info = p.memory_info()
+            return round(mem_info.pss / 1024 / 1024, 2)
+        except Exception:
+            try:
+                p = psutil.Process(pid)
+                mem_info = p.memory_info()
+                return round(mem_info.rss / 1024 / 1024, 2)
+            except Exception:
+                return 0.0
+
+    def _extract_numastat_fields(self, numastat_mem: dict) -> dict:
+        """Extract standard VM metric fields from numastat/numa_maps result dict.
+
+        Returns a flat dict with memory_mb, memory_huge_mb, etc.
+        """
+        return {
+            "memory_mb": numastat_mem.get("total_mb", 0.0),
+            "memory_huge_mb": numastat_mem.get("huge_mb", 0.0),
+            "memory_private_mb": numastat_mem.get("private_mb", 0.0),
+            "memory_heap_mb": numastat_mem.get("heap_mb", 0.0),
+            "memory_per_numa": numastat_mem.get("per_node", {}),
+            "memory_swapcache_mb": numastat_mem.get("swapcache_mb", 0.0),
+            "memory_swapcache_per_numa": numastat_mem.get("swapcache_per_node", {}),
+        }
+
+    def _finalize_vm_collection(self, vms: List[Dict], current_pids: set,
+                                 current_total_mem: float, current_total_cpu: float):
+        """Common post-processing: update peak trackers, clean dead PIDs from cache."""
+        if current_total_mem > self.peak_total_memory_mb:
+            self.peak_total_memory_mb = current_total_mem
+        if current_total_cpu > self.peak_total_cpu:
+            self.peak_total_cpu = current_total_cpu
+
+        # Clean dead processes from cache
+        dead_pids = [p for p in self.process_cache if p not in current_pids]
+        for p in dead_pids:
+            self.process_cache.pop(p, None)
 
     # ==================== Parallel VM Metrics Collection ====================
     def _discover_vm_processes(self) -> List[Dict]:
@@ -860,29 +918,13 @@ class VMMonitorBase(ABC):
 
             # NUMA memory via numa_maps fast path + numastat fallback
             numastat_mem = self.get_vm_memory_from_numastat(pid)
-            memory_mb = numastat_mem.get("total_mb", 0.0)
-            memory_huge_mb = numastat_mem.get("huge_mb", 0.0)
-            memory_private_mb = numastat_mem.get("private_mb", 0.0)
-            memory_heap_mb = numastat_mem.get("heap_mb", 0.0)
-            memory_per_numa = numastat_mem.get("per_node", {})
-            memory_swapcache_mb = numastat_mem.get("swapcache_mb", 0.0)
-            memory_swapcache_per_numa = numastat_mem.get("swapcache_per_node", {})
+            fields = self._extract_numastat_fields(numastat_mem)
 
             # If numa_maps + numastat both fail, fall back to psutil
-            if memory_mb <= 0:
-                try:
-                    p = psutil.Process(pid)
-                    mem_info = p.memory_info()
-                    memory_mb = round(mem_info.pss / 1024 / 1024, 2)
-                except Exception:
-                    try:
-                        p = psutil.Process(pid)
-                        mem_info = p.memory_info()
-                        memory_mb = round(mem_info.rss / 1024 / 1024, 2)
-                    except Exception:
-                        pass
+            if fields["memory_mb"] <= 0:
+                fields["memory_mb"] = self._fallback_memory_mb(pid)
 
-            current_total_mem += memory_mb
+            current_total_mem += fields["memory_mb"]
 
             # CPU: seed for new PIDs, delta for cached PIDs
             if pid not in self.process_cache:
@@ -907,26 +949,11 @@ class VMMonitorBase(ABC):
                 "pid": pid,
                 "name": candidate["vm_name"],
                 "cpu_percent": cpu,
-                "memory_mb": memory_mb,
-                "memory_huge_mb": memory_huge_mb,
-                "memory_private_mb": memory_private_mb,
-                "memory_heap_mb": memory_heap_mb,
-                "memory_per_numa": memory_per_numa,
-                "memory_swapcache_mb": memory_swapcache_mb,
-                "memory_swapcache_per_numa": memory_swapcache_per_numa,
+                **fields,
                 "status": candidate["status"],
             })
 
-        if current_total_mem > self.peak_total_memory_mb:
-            self.peak_total_memory_mb = current_total_mem
-        if current_total_cpu > self.peak_total_cpu:
-            self.peak_total_cpu = current_total_cpu
-
-        # Clean dead processes from cache
-        dead_pids = [p for p in self.process_cache if p not in current_pids]
-        for p in dead_pids:
-            self.process_cache.pop(p, None)
-
+        self._finalize_vm_collection(vms, current_pids, current_total_mem, current_total_cpu)
         return vms
 
     def _collect_vm_metrics_parallel(self, vm_candidates: List[Dict]) -> List[Dict]:
@@ -952,68 +979,18 @@ class VMMonitorBase(ABC):
         max_workers = min(64, max(4, len(vm_candidates)))
 
         # Step A: parallel numa_maps reads + seed Process creation for new PIDs
-        def _collect_single_vm(candidate):
-            pid = candidate["pid"]
-            result = {
-                "pid": pid,
-                "name": candidate["vm_name"],
-                "status": candidate["status"],
-                "cpu_percent": 0.0,
-                "memory_mb": 0.0,
-                "memory_huge_mb": 0.0,
-                "memory_private_mb": 0.0,
-                "memory_heap_mb": 0.0,
-                "memory_per_numa": {},
-                "memory_swapcache_mb": 0.0,
-                "memory_swapcache_per_numa": {},
-                "_is_new_pid": False,
-                "_seed_process": None,
-            }
-
-            # numa_maps read (I/O-bound, ~10ms)
-            numastat_mem = self.get_vm_memory_from_numastat(pid)
-            result["memory_mb"] = numastat_mem.get("total_mb", 0.0)
-            result["memory_huge_mb"] = numastat_mem.get("huge_mb", 0.0)
-            result["memory_private_mb"] = numastat_mem.get("private_mb", 0.0)
-            result["memory_heap_mb"] = numastat_mem.get("heap_mb", 0.0)
-            result["memory_per_numa"] = numastat_mem.get("per_node", {})
-            result["memory_swapcache_mb"] = numastat_mem.get("swapcache_mb", 0.0)
-            result["memory_swapcache_per_numa"] = numastat_mem.get("swapcache_per_node", {})
-
-            # If numa_maps + numastat both fail, fall back to psutil
-            if result["memory_mb"] <= 0:
-                try:
-                    p = psutil.Process(pid)
-                    mem_info = p.memory_info()
-                    result["memory_mb"] = round(mem_info.pss / 1024 / 1024, 2)
-                except Exception:
-                    try:
-                        p = psutil.Process(pid)
-                        mem_info = p.memory_info()
-                        result["memory_mb"] = round(mem_info.rss / 1024 / 1024, 2)
-                    except Exception:
-                        pass
-
-            # Seed cpu_percent for new PIDs (fresh Process object in thread)
-            # Read-only check: pid not in self.process_cache is safe under GIL
-            if pid not in self.process_cache:
-                try:
-                    seed_proc = psutil.Process(pid)
-                    seed_proc.cpu_percent()  # seed call — returns 0.0
-                    result["_is_new_pid"] = True
-                    result["_seed_process"] = seed_proc
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-
-            return result
-
-        # Execute Step A in parallel
+        # seed_procs maps pid -> psutil.Process for new PIDs (separate from result dict)
         vm_results = []
+        seed_procs = {}
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_map = {executor.submit(_collect_single_vm, c): c for c in vm_candidates}
+            future_map = {executor.submit(self._collect_single_vm, c): c for c in vm_candidates}
             for future in as_completed(future_map):
                 try:
-                    vm_results.append(future.result())
+                    vm_result, seed_proc = future.result()
+                    vm_results.append(vm_result)
+                    if seed_proc is not None:
+                        seed_procs[vm_result["pid"]] = seed_proc
                 except Exception:
                     continue
 
@@ -1028,8 +1005,8 @@ class VMMonitorBase(ABC):
             current_total_mem += vm["memory_mb"]
 
             # Transfer seed Process objects from threads into cache
-            if vm["_is_new_pid"] and vm["_seed_process"] is not None:
-                self.process_cache[pid] = vm["_seed_process"]
+            if pid in seed_procs:
+                self.process_cache[pid] = seed_procs[pid]
                 cpu = 0.0  # first sample always 0
             elif pid in self.process_cache:
                 try:
@@ -1044,21 +1021,44 @@ class VMMonitorBase(ABC):
             current_total_cpu += cpu
             vm["cpu_percent"] = cpu
 
-            # Remove internal keys before returning
-            vm.pop("_is_new_pid", None)
-            vm.pop("_seed_process", None)
-
-        if current_total_mem > self.peak_total_memory_mb:
-            self.peak_total_memory_mb = current_total_mem
-        if current_total_cpu > self.peak_total_cpu:
-            self.peak_total_cpu = current_total_cpu
-
-        # Clean dead processes from cache
-        dead_pids = [p for p in self.process_cache if p not in current_pids]
-        for p in dead_pids:
-            self.process_cache.pop(p, None)
-
+        self._finalize_vm_collection(vm_results, current_pids, current_total_mem, current_total_cpu)
         return vm_results
+
+    def _collect_single_vm(self, candidate: Dict) -> Tuple[Dict, object]:
+        """Collect metrics for a single VM candidate (callable from ThreadPoolExecutor).
+
+        Returns a tuple of (vm_result_dict, seed_process_or_None).
+        seed_process is a psutil.Process object with cpu_percent seeded for new PIDs.
+        """
+        pid = candidate["pid"]
+        seed_proc = None
+
+        # NUMA memory via numa_maps fast path + numastat fallback
+        numastat_mem = self.get_vm_memory_from_numastat(pid)
+        fields = self._extract_numastat_fields(numastat_mem)
+
+        # If numa_maps + numastat both fail, fall back to psutil
+        if fields["memory_mb"] <= 0:
+            fields["memory_mb"] = self._fallback_memory_mb(pid)
+
+        # Seed cpu_percent for new PIDs (fresh Process object in thread)
+        # Read-only check: pid not in self.process_cache is safe under GIL
+        if pid not in self.process_cache:
+            try:
+                seed_proc = psutil.Process(pid)
+                seed_proc.cpu_percent()  # seed call — returns 0.0
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                seed_proc = None
+
+        result = {
+            "pid": pid,
+            "name": candidate["vm_name"],
+            "cpu_percent": 0.0,  # placeholder, filled in Step B
+            **fields,
+            "status": candidate["status"],
+        }
+
+        return result, seed_proc
 
     # ==================== Template Methods ====================
     def collect_sample(self):
@@ -1355,6 +1355,9 @@ class VMMonitorBase(ABC):
                 "memory_huge_mb",
                 "memory_private_mb",
                 "memory_heap_mb",
+                "memory_per_numa",
+                "memory_swapcache_mb",
+                "memory_swapcache_per_numa",
                 "status",
             ]
             w = csv.DictWriter(f, fieldnames, extrasaction="ignore")
