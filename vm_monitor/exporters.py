@@ -602,12 +602,20 @@ def export_to_excel(
                     )
 
             # ========== NUMA_Memory_Timeline Sheet ==========
+            # Focus NUMA nodes: CLI-specified + remote borrowing node (NUMA5)
+            # NUMA5 is the default remote borrowing node; if not present on this system, skip it
+            _REMOTE_NUMA_ID = 5
             if monitor.numa_memory_history:
                 all_numa_ids = sorted(set(
                     n["node"] for entry in monitor.numa_memory_history for n in entry["nodes"]
                 ))
+                focus_numa_ids = sorted(set(
+                    list(numa_nodes or []) + [_REMOTE_NUMA_ID]
+                ))
+                focus_numa_ids = [nid for nid in focus_numa_ids if nid in all_numa_ids]
+
                 mem_timeline_data = {"Timestamp": []}
-                for nid in all_numa_ids:
+                for nid in focus_numa_ids:
                     for field, label in [
                         ("total_mb", f"NUMA{nid} Total (MB)"),
                         ("used_mb", f"NUMA{nid} Used (MB)"),
@@ -622,7 +630,7 @@ def export_to_excel(
                 for entry in monitor.numa_memory_history:
                     mem_timeline_data["Timestamp"].append(entry["ts"])
                     node_lookup = {n["node"]: n for n in entry["nodes"]}
-                    for nid in all_numa_ids:
+                    for nid in focus_numa_ids:
                         node_data = node_lookup.get(nid, {})
                         for field, label in [
                             ("total_mb", f"NUMA{nid} Total (MB)"),
@@ -800,36 +808,73 @@ def export_to_excel(
                     ws.add_chart(sc_chart, "I2")
 
             # Chart 8: NUMA Free/Used Memory Timeline
+            # Focus NUMA only — clear contrast between local and remote NUMA
             if "NUMA_Memory_Timeline" in wb.sheetnames:
                 ws = wb["NUMA_Memory_Timeline"]
                 if ws.max_row > 1:
+                    from openpyxl.chart.series import DataPoint
+                    from openpyxl.drawing.line import LineProperties, LineEndProperties
+                    from openpyxl.chart.shapes import GraphicalProperties
+
                     numa_chart = LineChart()
-                    numa_chart.title = "NUMA Free/Used Memory Over Time"
-                    numa_chart.style = 13
+                    numa_chart.title = "NUMA Free/Used Memory (Focus Nodes)"
+                    numa_chart.style = 10
                     numa_chart.y_axis.title = "MB"
                     numa_chart.x_axis.title = "Time"
                     numa_chart.width = 22
-                    numa_chart.height = 10
+                    numa_chart.height = 12
 
-                    # Select only Free and Used columns for chart readability
+                    # Select Free, Used, Available, and SwapCache columns for chart
                     free_cols = []
                     used_cols = []
+                    avail_cols = []
+                    swapcache_cols = []
                     for col_idx in range(2, ws.max_column + 1):
                         header = ws.cell(row=1, column=col_idx).value
                         if header and "Free" in header:
                             free_cols.append(col_idx)
                         elif header and "Used" in header:
                             used_cols.append(col_idx)
+                        elif header and "Available" in header:
+                            avail_cols.append(col_idx)
+                        elif header and "SwapCache" in header:
+                            swapcache_cols.append(col_idx)
 
+                    # Add data series in logical order: Free, Available, Used, SwapCache
                     for col in free_cols:
+                        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+                        numa_chart.add_data(data, titles_from_data=True)
+                    for col in avail_cols:
                         data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
                         numa_chart.add_data(data, titles_from_data=True)
                     for col in used_cols:
                         data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
                         numa_chart.add_data(data, titles_from_data=True)
+                    for col in swapcache_cols:
+                        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+                        numa_chart.add_data(data, titles_from_data=True)
 
                     cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
                     numa_chart.set_categories(cats)
+
+                    # Apply distinct colors and line widths for contrast
+                    # Free = thin dashed green, Available = solid green, Used = thick solid red, SwapCache = thin orange
+                    series_colors = []
+                    for col in free_cols:
+                        series_colors.append(("00B050", 15000))    # green, thin
+                    for col in avail_cols:
+                        series_colors.append(("92D050", 25000))    # light green, medium
+                    for col in used_cols:
+                        series_colors.append(("FF0000", 30000))    # red, thick
+                    for col in swapcache_cols:
+                        series_colors.append(("FFC000", 15000))    # orange, thin
+
+                    for i, (color, width) in enumerate(series_colors):
+                        if i < len(numa_chart.series):
+                            s = numa_chart.series[i]
+                            s.graphicalProperties.line.solidFill = color
+                            s.graphicalProperties.line.width = width
+
                     ws.add_chart(numa_chart, "I2")
 
             # Chart 9: VM Total Memory Timeline

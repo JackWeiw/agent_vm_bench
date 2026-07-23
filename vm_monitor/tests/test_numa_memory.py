@@ -273,5 +273,41 @@ class TestBackwardCompatIntegration(unittest.TestCase):
         os.unlink(node0_path)
 
 
+class TestGetFocusNumaNodes(unittest.TestCase):
+    """Tests for get_focus_numa_nodes() combining target + remote NUMA"""
+
+    def test_focus_includes_target_and_remote(self):
+        """Focus should include target_numa_nodes + NUMA5 if both exist"""
+        monitor = DummyMonitor()
+        monitor.target_numa_nodes = [0, 1]
+        monitor.available_numa_nodes = [0, 1, 2, 5]
+        focus = monitor.get_focus_numa_nodes()
+        self.assertEqual(focus, [0, 1, 5])
+
+    def test_remote_not_available_excluded(self):
+        """NUMA5 should be excluded if not present on the system"""
+        monitor = DummyMonitor()
+        monitor.target_numa_nodes = [0, 1]
+        monitor.available_numa_nodes = [0, 1, 2, 3]
+        focus = monitor.get_focus_numa_nodes()
+        self.assertEqual(focus, [0, 1])
+
+    def test_target_overlaps_remote(self):
+        """If target includes NUMA5, no duplicate in focus list"""
+        monitor = DummyMonitor()
+        monitor.target_numa_nodes = [0, 5]
+        monitor.available_numa_nodes = [0, 1, 5]
+        focus = monitor.get_focus_numa_nodes()
+        self.assertEqual(focus, [0, 5])
+
+    def test_empty_target_with_remote(self):
+        """Empty target should still include NUMA5 if available"""
+        monitor = DummyMonitor()
+        monitor.target_numa_nodes = []
+        monitor.available_numa_nodes = [0, 1, 5]
+        focus = monitor.get_focus_numa_nodes()
+        self.assertEqual(focus, [5])
+
+
 if __name__ == "__main__":
     unittest.main()

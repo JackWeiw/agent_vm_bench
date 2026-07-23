@@ -46,6 +46,9 @@ class VMMonitorBase(ABC):
         vm_total_memory_history: VM total memory aggregation timeline
     """
 
+    # Remote borrowing NUMA node — hardcoded as NUMA5, may not exist on all systems
+    _REMOTE_NUMA_ID = 5
+
     # Fields to extract from per-NUMA meminfo (sysfs name -> dict key)
     _NUMA_MEMINFO_FIELDS = {
         "MemTotal": "total_mb",
@@ -321,15 +324,25 @@ class VMMonitorBase(ABC):
         nodes = self.get_numa_nodes_memory()
         if not nodes:
             return
+        focus_nodes = self.get_focus_numa_nodes()
         print("=" * 100)
         print("NUMA Node Memory Real-time Usage")
         for n in nodes:
+            nid = n["node"]
             sc = n.get("swap_cached_mb", 0)
-            avail = n.get("available_mb", 0)
-            print(
-                f"    NUMA Node {n['node']:>2d} | Total {n['total']:>8.2f} MB | Used {n['used']:>8.2f} MB | "
-                f"Free {n['free']:>8.2f} MB | Avail {avail:>8.2f} MB | SwapCache {sc:>6.1f} MB | Usage {n['usage']:>5.1f}%"
-            )
+            if nid in focus_nodes:
+                # Focus NUMA: show detailed free/available/SwapCache
+                avail = n.get("available_mb", 0)
+                print(
+                    f"    NUMA Node {nid:>2d} * | Total {n['total']:>8.2f} MB | Used {n['used']:>8.2f} MB | "
+                    f"Free {n['free']:>8.2f} MB | Avail {avail:>8.2f} MB | SwapCache {sc:>6.1f} MB | Usage {n['usage']:>5.1f}%"
+                )
+            else:
+                # Non-focus NUMA: show only basic total/used/SwapCache
+                print(
+                    f"    NUMA Node {nid:>2d}   | Total {n['total']:>8.2f} MB | Used {n['used']:>8.2f} MB | "
+                    f"SwapCache {sc:>6.1f} MB | Usage {n['usage']:>5.1f}%"
+                )
         print("=" * 100)
 
     def print_final_numa_stats(self):
@@ -367,6 +380,16 @@ class VMMonitorBase(ABC):
             return sorted(nodes)
         except:
             return [0]
+
+    def get_focus_numa_nodes(self) -> list:
+        """Get focus NUMA nodes: CLI-specified target nodes + remote borrowing node.
+
+        The remote borrowing node (NUMA5) is added for free memory monitoring.
+        If NUMA5 does not exist on this system, it is silently excluded.
+        Returns only nodes that actually exist on the system.
+        """
+        focus = sorted(set(self.target_numa_nodes + [self._REMOTE_NUMA_ID]))
+        return [n for n in focus if n in self.available_numa_nodes]
 
     # ===================== Collect Specified NUMA Node CPU Usage =====================
     def collect_numa_cpu(self):
