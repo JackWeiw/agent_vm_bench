@@ -517,25 +517,33 @@ class VMMonitorBase(ABC):
         """Aggregate total memory consumption of all VMs per sample
 
         Sums memory_mb across all VMs and per_numa breakdown.
+        Also aggregates swapcache per NUMA node.
         Stores result in vm_total_memory_history for timeline export.
 
         Args:
             vms: List of VM dicts from get_vms_realtime()
 
         Returns:
-            Dict with total_mb, vm_count, per_numa breakdown, timestamp
+            Dict with total_mb, vm_count, per_numa breakdown, timestamp,
+            plus swapcache_mb and swapcache_per_numa aggregates.
         """
         total_mb = sum(vm["memory_mb"] for vm in vms)
+        swapcache_mb = sum(vm.get("memory_swapcache_mb", 0) for vm in vms)
         per_numa = defaultdict(float)
+        swapcache_per_numa = defaultdict(float)
         for vm in vms:
             for node_id, mem in vm.get("memory_per_numa", {}).items():
                 per_numa[node_id] += mem.get("total_mb", 0)
+            for node_id, sc in vm.get("memory_swapcache_per_numa", {}).items():
+                swapcache_per_numa[node_id] += sc
 
         entry = {
             "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "total_mb": round(total_mb, 2),
             "vm_count": len(vms),
             "per_numa": {k: round(v, 2) for k, v in per_numa.items()},
+            "swapcache_mb": round(swapcache_mb, 2),
+            "swapcache_per_numa": {k: round(v, 2) for k, v in swapcache_per_numa.items()},
         }
         self.vm_total_memory_history.append(entry)
         return entry
@@ -579,7 +587,17 @@ class VMMonitorBase(ABC):
         return result
 
     def get_vm_memory_from_numastat(self, pid):
-        """Use numastat -p PID to get process memory (including hugepages)"""
+        """Get process NUMA memory statistics.
+
+        Uses /proc/<pid>/numa_maps (fast, ~0.01s) first.
+        Falls back to numastat -p <pid> (slow, ~0.1-0.5s) if numa_maps fails.
+        """
+        # Fast path: read numa_maps directly (~50x faster than subprocess)
+        result = self.get_vm_memory_from_numa_maps(pid)
+        if result.get("total_mb", 0) > 0:
+            return result
+
+        # Slow fallback: subprocess numastat
         result = {"total_mb": 0.0, "huge_mb": 0.0, "private_mb": 0.0, "heap_mb": 0.0, "stack_mb": 0.0, "per_node": {}}
         try:
             output = subprocess.run(["numastat", "-p", str(pid)], capture_output=True, text=True, timeout=5)
@@ -592,13 +610,13 @@ class VMMonitorBase(ABC):
                 line = line.strip()
                 if not line:
                     continue
-                if line.startswith("Node"):
-                    for p in line.split():
-                        if p.startswith("Node"):
-                            try:
-                                node_ids.append(int(p.replace("Node", "")))
-                            except:
-                                pass
+                # Extract node IDs from header line (handles both "Node0" and "Node 0" formats)
+                node_matches = re.findall(r"Node\s*(\d+)", line)
+                if node_matches:
+                    for nid_str in node_matches:
+                        nid = int(nid_str)
+                        if nid not in node_ids:
+                            node_ids.append(nid)
 
             for line in lines:
                 vals = re.findall(r"[\d.]+", line)
@@ -634,6 +652,153 @@ class VMMonitorBase(ABC):
             pass
         return result
 
+    # ===================== VM Memory from numa_maps (Fast Path) =====================
+    def get_vm_memory_from_numa_maps(self, pid: int) -> dict:
+        """Read /proc/<pid>/numa_maps to get per-NUMA process memory statistics.
+
+        ~50x faster than numastat subprocess (0.01s vs 0.1-0.5s per process).
+        Falls back gracefully: returns empty dict on error, triggering numastat fallback.
+
+        Returns:
+            Same structure as get_vm_memory_from_numastat(), plus:
+            - swapcache_mb: total swapcache pages converted to MB
+            - swapcache_per_node: per-node swapcache breakdown
+        """
+        result = {
+            "total_mb": 0.0, "huge_mb": 0.0, "private_mb": 0.0,
+            "heap_mb": 0.0, "stack_mb": 0.0, "per_node": {},
+            "swapcache_mb": 0.0, "swapcache_per_node": {},
+        }
+        numa_maps_path = f"/proc/{pid}/numa_maps"
+        try:
+            with open(numa_maps_path, "r") as f:
+                for line in f:
+                    tokens = line.strip().split()
+                    if len(tokens) < 2:
+                        continue
+
+                    # Parse fields from tokens (skip first token = virtual address)
+                    node_pages = {}       # {node_id: page_count}
+                    anon_pages = 0
+                    kernelpagesize_kb = 4  # default page size
+                    is_heap = False
+                    is_stack = False
+                    is_huge = False
+                    swapcache_pages = 0
+
+                    for token in tokens[1:]:
+                        # Boolean markers (no value)
+                        if token == "heap":
+                            is_heap = True
+                            continue
+                        if token == "stack":
+                            is_stack = True
+                            continue
+                        if token == "huge":
+                            is_huge = True
+                            continue
+                        if token == "default":
+                            continue
+
+                        # Policy tokens: bind:N, interleave:N-M, prefer:N
+                        if ":" in token and not token.startswith("file="):
+                            # e.g. "bind:2" or "interleave:0-5"
+                            prefix = token.split(":")[0]
+                            if prefix in ("bind", "interleave", "prefer"):
+                                continue
+
+                        # key=value pairs
+                        if "=" in token:
+                            key, value = token.split("=", 1)
+                            # N<node>=<pages>
+                            node_match = re.match(r"^N(\d+)$", key)
+                            if node_match and value.isdigit():
+                                node_id = int(node_match.group(1))
+                                node_pages[node_id] = int(value)
+                            elif key == "anon" and value.isdigit():
+                                anon_pages = int(value)
+                            elif key == "kernelpagesize_kB" and value.isdigit():
+                                kernelpagesize_kb = int(value)
+                            elif key == "swapcache" and value.isdigit():
+                                swapcache_pages = int(value)
+                            # file, mapped, dirty, active, mapmax — informational, skip
+
+                    # Skip lines with no N<node>= allocations (no physical pages)
+                    if not node_pages:
+                        continue
+
+                    # Detect hugepages via page size > 4kB
+                    if kernelpagesize_kb > 4:
+                        is_huge = True
+
+                    # Convert pages to MB
+                    total_line_pages = sum(node_pages.values())
+                    page_size_mb = kernelpagesize_kb / 1024.0
+
+                    # Accumulate totals
+                    line_total_mb = total_line_pages * page_size_mb
+                    result["total_mb"] += line_total_mb
+                    if is_huge:
+                        result["huge_mb"] += line_total_mb
+                    if is_heap:
+                        result["heap_mb"] += line_total_mb
+                    if is_stack:
+                        result["stack_mb"] += line_total_mb
+
+                    # Accumulate per-node totals
+                    for node_id, pages in node_pages.items():
+                        node_mb = pages * page_size_mb
+                        if node_id not in result["per_node"]:
+                            result["per_node"][node_id] = {
+                                "total_mb": 0.0, "huge_mb": 0.0,
+                                "heap_mb": 0.0, "stack_mb": 0.0, "private_mb": 0.0,
+                            }
+                        result["per_node"][node_id]["total_mb"] += node_mb
+                        if is_huge:
+                            result["per_node"][node_id]["huge_mb"] += node_mb
+                        if is_heap:
+                            result["per_node"][node_id]["heap_mb"] += node_mb
+                        if is_stack:
+                            result["per_node"][node_id]["stack_mb"] += node_mb
+
+                    # Private memory (anon pages) — distribute proportionally across nodes
+                    if anon_pages > 0 and total_line_pages > 0:
+                        anon_total_mb = anon_pages * page_size_mb
+                        result["private_mb"] += anon_total_mb
+                        for node_id, pages in node_pages.items():
+                            proportion = pages / total_line_pages
+                            result["per_node"][node_id]["private_mb"] += anon_total_mb * proportion
+
+                    # SwapCache — distribute proportionally across nodes
+                    if swapcache_pages > 0 and total_line_pages > 0:
+                        swapcache_total_mb = swapcache_pages * page_size_mb
+                        result["swapcache_mb"] += swapcache_total_mb
+                        for node_id, pages in node_pages.items():
+                            proportion = pages / total_line_pages
+                            if node_id not in result["swapcache_per_node"]:
+                                result["swapcache_per_node"][node_id] = 0.0
+                            result["swapcache_per_node"][node_id] += swapcache_total_mb * proportion
+
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            return result  # empty → triggers fallback
+        except Exception:
+            return result
+
+        # Round all values for consistency
+        result["total_mb"] = round(result["total_mb"], 2)
+        result["huge_mb"] = round(result["huge_mb"], 2)
+        result["private_mb"] = round(result["private_mb"], 2)
+        result["heap_mb"] = round(result["heap_mb"], 2)
+        result["stack_mb"] = round(result["stack_mb"], 2)
+        result["swapcache_mb"] = round(result["swapcache_mb"], 2)
+        for node_id in result["per_node"]:
+            for k in result["per_node"][node_id]:
+                result["per_node"][node_id][k] = round(result["per_node"][node_id][k], 2)
+        for node_id in result["swapcache_per_node"]:
+            result["swapcache_per_node"][node_id] = round(result["swapcache_per_node"][node_id], 2)
+
+        return result
+
     # ==================== Template Methods ====================
     def collect_sample(self):
         """Collect one sample (full refresh each time)"""
@@ -665,6 +830,8 @@ class VMMonitorBase(ABC):
                 "memory_private_mb": vm.get("memory_private_mb", 0),
                 "memory_heap_mb": vm.get("memory_heap_mb", 0),
                 "memory_per_numa": vm.get("memory_per_numa", {}),
+                "memory_swapcache_mb": vm.get("memory_swapcache_mb", 0),
+                "memory_swapcache_per_numa": vm.get("memory_swapcache_per_numa", {}),
                 "status": vm["status"],
             }
             sample_data.append(record)

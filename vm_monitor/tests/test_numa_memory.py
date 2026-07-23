@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 from collections import defaultdict
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from vm_monitor.base import VMMonitorBase
 
@@ -307,6 +307,265 @@ class TestGetFocusNumaNodes(unittest.TestCase):
         monitor.available_numa_nodes = [0, 1, 5]
         focus = monitor.get_focus_numa_nodes()
         self.assertEqual(focus, [5])
+
+
+
+class TestGetVmMemoryFromNumaMaps(unittest.TestCase):
+    """Tests for get_vm_memory_from_numa_maps() fast-path parser"""
+
+    # Real numa_maps sample from user's firecracker process
+    SAMPLE_NUMA_MAPS = (
+        "aaaaae5e0000 bind:2 file=/fc-versions/v1.13.1/firecracker mapped=432 mapmax=200 N1=432 kernelpagesize_kB=4\n"
+        "aaaaae7c1000 bind:2 file=/fc-versions/v1.13.1/firecracker anon=8 dirty=8 active=0 N2=8 kernelpagesize_kB=4\n"
+        "aaaaae7d0000 bind:2 file=/fc-versions/v1.13.1/firecracker anon=1 dirty=1 active=0 N2=1 kernelpagesize_kB=4\n"
+        "aaaab9e69000 bind:2 heap anon=14 dirty=14 active=12 N2=14 kernelpagesize_kB=4\n"
+        "fffe78000000 bind:2\n"
+        "fffe78021000 bind:2\n"
+        "fffe7c000000 bind:2\n"
+        "fffe7c021000 bind:2\n"
+        "fffe80000000 bind:2 anon=473814 dirty=431729 swapcache=86418 active=203383 N2=386088 N5=87726 kernelpagesize_kB=4\n"
+        "ffff80000000 bind:2\n"
+        "ffff80021000 bind:2\n"
+        "ffff858c6000 bind:2\n"
+        "ffff858d6000 bind:2 anon=1 dirty=1 N2=1 kernelpagesize_kB=4\n"
+        "ffff85ad6000 bind:2\n"
+        "ffff85ae6000 bind:2 anon=3 dirty=3 N2=3 kernelpagesize_kB=4\n"
+        "ffff85d10000 bind:2\n"
+        "ffff85d20000 bind:2\n"
+        "ffff85f20000 bind:2\n"
+        "ffff85f20000 bind:2 file=/usr/lib/aarch64-linux-gnu/libc.so.6 mapped=271 mapmax=721 N0=271 kernelpagesize_kB=4\n"
+        "ffff860ac000 bind:2 file=/usr/lib/aarch64-linux-gnu/libc.so.6\n"
+        "ffff860bc000 bind:2 file=/usr/lib/aarch64-linux-gnu/libc.so.6 anon=1 dirty=1 active=0 N2=1 kernelpagesize_kB=4\n"
+        "ffff860c0000 bind:2 file=/usr/lib/aarch64-linux-gnu/libc.so.6 anon=2 dirty=2 active=0 N2=2 kernelpagesize_kB=4\n"
+        "ffff860c2000 bind:2 anon=4 dirty=4 active=0 N2=4 kernelpagesize_kB=4\n"
+        "ffff860d0000 bind:2 file=/usr/lib/aarch64-linux-gnu/libgcc_s.so.1 mapped=16 mapmax=230 N0=1 N1=8 N2=7 kernelpagesize_kB=4\n"
+        "ffff8611d000 bind:2 anon=1 dirty=1 N2=1 kernelpagesize_kB=4\n"
+        "ffff8611e000 bind:2 file=/memfd:iov_deque\\040(deleted) dirty=1 N2=1 kernelpagesize_kB=4\n"
+        "ffff86120000 bind:2 file=/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 mapped=39 mapmax=717 N0=39 kernelpagesize_kB=4\n"
+        "ffff86147000 bind:2 file=/memfd:iov_deque\\040(deleted) dirty=1 mapmax=2 active=0 N2=1 kernelpagesize_kB=4\n"
+        "ffff86148000 bind:2 file=/memfd:iov_deque\\040(deleted) dirty=1 mapmax=2 active=0 N2=1 kernelpagesize_kB=4\n"
+        "ffff86149000 bind:2 file=anon_inode:kvm-vcpu:1 dirty=1 active=0 N2=1 kernelpagesize_kB=4\n"
+        "ffff8614b000 bind:2 file=anon_inode:kvm-vcpu:0 dirty=1 active=0 N2=1 kernelpagesize_kB=4\n"
+        "ffff86153000 bind:2 anon=1 dirty=1 N2=1 kernelpagesize_kB=4\n"
+        "ffff8615e000 bind:2 file=/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 anon=1 dirty=1 active=0 N2=1 kernelpagesize_kB=4\n"
+        "ffff86160000 bind:2 file=/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 anon=1 dirty=1 active=0 N2=1 kernelpages_kB=4\n"
+        "ffffcb2e0000 bind:2 stack anon=4 dirty=4 active=1 N2=4 kernelpagesize_kB=4\n"
+    )
+
+    def _write_mock_numa_maps(self, content):
+        """Write mock numa_maps content to a temp file"""
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".numa_maps", delete=False)
+        f.write(content)
+        f.close()
+        return f.name
+
+    def test_basic_parse(self):
+        """Should parse numa_maps and produce correct total_mb and per_node"""
+        path = self._write_mock_numa_maps(self.SAMPLE_NUMA_MAPS)
+        monitor = DummyMonitor()
+
+        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+            result = monitor.get_vm_memory_from_numa_maps(2677236)
+
+        self.assertGreater(result["total_mb"], 0)
+        self.assertIn(0, result["per_node"])
+        self.assertIn(1, result["per_node"])
+        self.assertIn(2, result["per_node"])
+        self.assertIn(5, result["per_node"])
+        self.assertGreater(result["per_node"][2]["total_mb"], 0)
+        self.assertGreater(result["per_node"][5]["total_mb"], 0)
+
+        os.unlink(path)
+
+    def test_heap_detection(self):
+        """Lines with 'heap' marker should accumulate into heap_mb"""
+        content = "aaaab9e69000 bind:2 heap anon=14 dirty=14 active=12 N2=14 kernelpagesize_kB=4\n"
+        path = self._write_mock_numa_maps(content)
+        monitor = DummyMonitor()
+
+        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+            result = monitor.get_vm_memory_from_numa_maps(123)
+
+        self.assertAlmostEqual(result["heap_mb"], 14 * 4 / 1024, places=2)
+        self.assertAlmostEqual(result["per_node"][2]["heap_mb"], 14 * 4 / 1024, places=2)
+
+        os.unlink(path)
+
+    def test_stack_detection(self):
+        """Lines with 'stack' marker should accumulate into stack_mb"""
+        content = "ffffcb2e0000 bind:2 stack anon=4 dirty=4 active=1 N2=4 kernelpagesize_kB=4\n"
+        path = self._write_mock_numa_maps(content)
+        monitor = DummyMonitor()
+
+        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+            result = monitor.get_vm_memory_from_numa_maps(123)
+
+        self.assertAlmostEqual(result["stack_mb"], 4 * 4 / 1024, places=2)
+        self.assertAlmostEqual(result["per_node"][2]["stack_mb"], 4 * 4 / 1024, places=2)
+
+        os.unlink(path)
+
+    def test_proportional_private_distribution(self):
+        """anon pages on multi-node lines should distribute proportionally"""
+        # anon=473814, N2=386088, N5=87726 → total_line_pages = 473814
+        # proportion: N2 = 386088/473814 ≈ 81.3%, N5 = 87726/473814 ≈ 18.5%
+        content = "fffe80000000 bind:2 anon=473814 dirty=431729 N2=386088 N5=87726 kernelpagesize_kB=4\n"
+        path = self._write_mock_numa_maps(content)
+        monitor = DummyMonitor()
+
+        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+            result = monitor.get_vm_memory_from_numa_maps(123)
+
+        total_anon_mb = 473814 * 4 / 1024
+        self.assertAlmostEqual(result["private_mb"], round(total_anon_mb, 2), places=0)
+
+        # N2 gets ~81.3% of private, N5 gets ~18.5%
+        n2_proportion = 386088 / 473814
+        n5_proportion = 87726 / 473814
+        self.assertAlmostEqual(
+            result["per_node"][2]["private_mb"],
+            round(total_anon_mb * n2_proportion, 2), places=0
+        )
+        self.assertAlmostEqual(
+            result["per_node"][5]["private_mb"],
+            round(total_anon_mb * n5_proportion, 2), places=0
+        )
+
+        os.unlink(path)
+
+    def test_swapcache_with_proportional_distribution(self):
+        """swapcache on multi-node lines should distribute proportionally"""
+        content = "fffe80000000 bind:2 anon=473814 swapcache=86418 N2=386088 N5=87726 kernelpagesize_kB=4\n"
+        path = self._write_mock_numa_maps(content)
+        monitor = DummyMonitor()
+
+        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+            result = monitor.get_vm_memory_from_numa_maps(123)
+
+        total_swapcache_mb = 86418 * 4 / 1024
+        self.assertAlmostEqual(result["swapcache_mb"], round(total_swapcache_mb, 2), places=0)
+
+        n2_proportion = 386088 / 473814
+        n5_proportion = 87726 / 473814
+        self.assertAlmostEqual(
+            result["swapcache_per_node"][2],
+            round(total_swapcache_mb * n2_proportion, 2), places=0
+        )
+        self.assertAlmostEqual(
+            result["swapcache_per_node"][5],
+            round(total_swapcache_mb * n5_proportion, 2), places=0
+        )
+
+        os.unlink(path)
+
+    def test_skip_empty_lines(self):
+        """Lines with no N<node>= fields should be skipped"""
+        content = (
+            "fffe78000000 bind:2\n"
+            "fffe7c000000 bind:2\n"
+            "aaaaae7c1000 bind:2 anon=8 N2=8 kernelpagesize_kB=4\n"
+        )
+        path = self._write_mock_numa_maps(content)
+        monitor = DummyMonitor()
+
+        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+            result = monitor.get_vm_memory_from_numa_maps(123)
+
+        # Only the 3rd line has N2=8, so total should be 8 * 4 / 1024 ≈ 0.031 MB
+        self.assertAlmostEqual(result["total_mb"], round(8 * 4 / 1024, 2), places=2)
+
+        os.unlink(path)
+
+    def test_default_pagesize(self):
+        """Lines without kernelpagesize_kB should default to 4 kB"""
+        content = "aaaaae7c1000 bind:2 anon=8 N2=8\n"
+        path = self._write_mock_numa_maps(content)
+        monitor = DummyMonitor()
+
+        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+            result = monitor.get_vm_memory_from_numa_maps(123)
+
+        self.assertAlmostEqual(result["total_mb"], round(8 * 4 / 1024, 2), places=2)
+
+        os.unlink(path)
+
+    def test_hugepage_via_kernelpagesize(self):
+        """Lines with kernelpagesize_kB > 4 should be treated as hugepages"""
+        content = "aaaa0000 bind:2 anon=64 N2=64 kernelpagesize_kB=64\n"
+        path = self._write_mock_numa_maps(content)
+        monitor = DummyMonitor()
+
+        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+            result = monitor.get_vm_memory_from_numa_maps(123)
+
+        expected_mb = 64 * 64 / 1024  # 4 MB
+        self.assertAlmostEqual(result["huge_mb"], round(expected_mb, 2), places=2)
+        self.assertAlmostEqual(result["per_node"][2]["huge_mb"], round(expected_mb, 2), places=2)
+
+        os.unlink(path)
+
+    def test_missing_numa_maps_triggers_fallback(self):
+        """When numa_maps doesn't exist, get_vm_memory_from_numa_maps returns empty dict"""
+        monitor = DummyMonitor()
+
+        with patch("vm_monitor.base.open", side_effect=FileNotFoundError):
+            result = monitor.get_vm_memory_from_numa_maps(99999)
+
+        self.assertEqual(result["total_mb"], 0.0)
+        self.assertEqual(result["per_node"], {})
+
+    def test_fallback_to_numastat_subprocess(self):
+        """get_vm_memory_from_numastat should fall back to subprocess when numa_maps fails"""
+        monitor = DummyMonitor()
+
+        # numastat -p <pid> real output format: header line with Node columns,
+        # then data rows with label prefix and numeric values on the same line.
+        # Real numastat uses "Node 0" (with space) format.
+        numastat_output = (
+            "Node 0           Node 2           Node 5           Total\n"
+            "---              ---              ---              ---\n"
+            "Huge             0.00             512.00           0.00             512.00\n"
+            "Heap             100.0            200.0            0.0              300.0\n"
+            "Stack            1.0              2.0              0.0              3.0\n"
+            "Private          100.0            200.0            0.0              300.0\n"
+            "Total            1000.0           2000.0           0.0              3000.0\n"
+        )
+
+        with patch("vm_monitor.base.open", side_effect=FileNotFoundError), \
+             patch("vm_monitor.base.subprocess.run", return_value=MagicMock(returncode=0, stdout=numastat_output)):
+            result = monitor.get_vm_memory_from_numastat(123)
+
+        # Should have data from numastat fallback
+        self.assertGreater(result["total_mb"], 0)
+        self.assertAlmostEqual(result["total_mb"], 3000.0, places=1)
+        self.assertAlmostEqual(result["heap_mb"], 300.0, places=1)
+        self.assertIn(0, result["per_node"])
+        self.assertIn(2, result["per_node"])
+        self.assertIn(5, result["per_node"])
+        self.assertAlmostEqual(result["per_node"][0]["total_mb"], 1000.0, places=1)
+        self.assertAlmostEqual(result["per_node"][2]["total_mb"], 2000.0, places=1)
+
+    def test_fallback_numastat_node0_format(self):
+        """numastat parser should also handle Node0 (no space) format"""
+        monitor = DummyMonitor()
+
+        # Some numactl versions use "Node0" format (no space between Node and number)
+        numastat_output = (
+            "Node0            Node2            Node5            Total\n"
+            "---              ---              ---              ---\n"
+            "Huge             0.00             512.00           0.00             512.00\n"
+            "Heap             100.0            200.0            0.0              300.0\n"
+            "Total            1000.0           2000.0           0.0              3000.0\n"
+        )
+
+        with patch("vm_monitor.base.open", side_effect=FileNotFoundError), \
+             patch("vm_monitor.base.subprocess.run", return_value=MagicMock(returncode=0, stdout=numastat_output)):
+            result = monitor.get_vm_memory_from_numastat(123)
+
+        self.assertGreater(result["total_mb"], 0)
+        self.assertIn(0, result["per_node"])
+        self.assertIn(2, result["per_node"])
+        self.assertIn(5, result["per_node"])
 
 
 if __name__ == "__main__":

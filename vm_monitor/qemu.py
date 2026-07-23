@@ -78,13 +78,15 @@ class QEMUMonitor(VMMonitorBase):
                 # Use abstract method to extract VM ID
                 vm_name = self.extract_vm_id(pid, cmdline)
 
-                # Real Physical Memory: numastat
+                # Real Physical Memory: numastat (fast path: numa_maps, fallback: subprocess)
                 numastat_mem = self.get_vm_memory_from_numastat(pid)
                 memory_mb = numastat_mem.get("total_mb", 0.0)
                 memory_huge_mb = numastat_mem.get("huge_mb", 0.0)
                 memory_private_mb = numastat_mem.get("private_mb", 0.0)
                 memory_heap_mb = numastat_mem.get("heap_mb", 0.0)
                 memory_per_numa = numastat_mem.get("per_node", {})
+                memory_swapcache_mb = numastat_mem.get("swapcache_mb", 0.0)
+                memory_swapcache_per_numa = numastat_mem.get("swapcache_per_node", {})
 
                 # If numastat fails, fall back to psutil
                 if memory_mb <= 0:
@@ -127,6 +129,8 @@ class QEMUMonitor(VMMonitorBase):
                         "memory_private_mb": memory_private_mb,
                         "memory_heap_mb": memory_heap_mb,
                         "memory_per_numa": memory_per_numa,
+                        "memory_swapcache_mb": memory_swapcache_mb,
+                        "memory_swapcache_per_numa": memory_swapcache_per_numa,
                         "status": proc.info["status"],
                     }
                 )
