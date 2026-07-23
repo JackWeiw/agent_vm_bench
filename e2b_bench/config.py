@@ -53,8 +53,10 @@ class Config:
 
     # Round-robin mode configuration
     benchmark_mode: str = "fixed"  # "fixed" (default) or "round_robin"
-    round_count: Optional[int] = None  # Number of sandbox groups (mutually exclusive with round_size)
-    round_size: Optional[int] = None  # Sandboxes per round (mutually exclusive with round_count)
+    round_count: Optional[
+        int
+    ] = None  # Max number of rounds to run (termination condition, coexists with round_size and duration)
+    round_size: int = 5  # Sandboxes per round (determines group count, coexists with round_count)
     round_interval: int = 5  # Round interval in seconds for round_robin mode (default: 5s)
 
     # smap_tool configuration (memory migration monitoring)
@@ -135,7 +137,7 @@ class Config:
             # Round-robin mode configuration
             benchmark_mode=test.get("benchmark_mode", "fixed"),
             round_count=test.get("round_count"),
-            round_size=test.get("round_size"),
+            round_size=test.get("round_size", 5),
             round_interval=test.get("round_interval", 5),
             browser_urls=browser.get("urls", ["http://192.168.110.10:8080/Weibo.html"]),
             browser_timeout=browser.get("task_timeout", 200),
@@ -285,7 +287,7 @@ class Config:
             if getattr(args, "benchmark_mode", None) is not None
             else "fixed",
             round_count=getattr(args, "round_count", None),
-            round_size=getattr(args, "round_size", None),
+            round_size=getattr(args, "round_size", None) if getattr(args, "round_size", None) is not None else 5,
             round_interval=getattr(args, "round_interval", None)
             if getattr(args, "round_interval", None) is not None
             else 5,

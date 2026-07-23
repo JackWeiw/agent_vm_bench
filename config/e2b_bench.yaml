@@ -65,9 +65,13 @@ test:
   # - Round N operates on tab tN, cycling through tabs
   # - Creates swap in events when accessing migrated memory
   benchmark_mode: "round_robin"   # "fixed" (default) or "round_robin"
-  # Specify ONE of the following (mutually exclusive):
-  round_count: 5                  # Number of sandbox groups (sandboxes_per_group = total / round_count)
-  # round_size: 2                  # Sandboxes per round (group_count = ceil(total / round_size))
+  # Both round_count and round_size can coexist:
+  # - round_size: determines how many sandboxes per round (group granularity)
+  # - round_count: determines max number of rounds to run (termination condition)
+  # - duration: test time limit (termination condition)
+  # Test stops when round_count OR duration is reached (whichever comes first)
+  round_size: 5                   # Sandboxes per round (default: 5, group_count = ceil(total / round_size))
+  round_count: 5                  # Max number of rounds (termination condition, stops when reached or duration exceeded)
   round_interval: 5               # Round interval in seconds (allows time for memory migration)
 
 # Report configuration
