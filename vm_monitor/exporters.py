@@ -557,9 +557,11 @@ def export_to_excel(
             # If lengths differ (edge case), we align by swap_history length and
             # fill missing per-NUMA data with 0.
             if monitor.swap_history:
-                all_numa_ids = sorted(set(
-                    n["node"] for entry in monitor.numa_memory_history for n in entry["nodes"]
-                )) if monitor.numa_memory_history else []
+                all_numa_ids = (
+                    sorted(set(n["node"] for entry in monitor.numa_memory_history for n in entry["nodes"]))
+                    if monitor.numa_memory_history
+                    else []
+                )
 
                 swap_timeline_data = {
                     "Timestamp": [],
@@ -587,15 +589,11 @@ def export_to_excel(
                         node_lookup = {n["node"]: n for n in monitor.numa_memory_history[i]["nodes"]}
                         for nid in all_numa_ids:
                             node_data = node_lookup.get(nid, {})
-                            swap_timeline_data[f"NUMA{nid} SwapCache (MB)"].append(
-                                node_data.get("swap_cached_mb", 0)
-                            )
+                            swap_timeline_data[f"NUMA{nid} SwapCache (MB)"].append(node_data.get("swap_cached_mb", 0))
                     else:
                         # Edge case: numa_memory_history shorter than swap_history
                         for nid in all_numa_ids:
                             swap_timeline_data[f"NUMA{nid} SwapCache (MB)"].append(0)
-
-
 
                 pd.DataFrame(swap_timeline_data).to_excel(writer, sheet_name="Swap_Timeline", index=False)
 
@@ -604,12 +602,8 @@ def export_to_excel(
             # NUMA5 is the default remote borrowing node; if not present on this system, skip it
             _REMOTE_NUMA_ID = 5
             if monitor.numa_memory_history:
-                all_numa_ids = sorted(set(
-                    n["node"] for entry in monitor.numa_memory_history for n in entry["nodes"]
-                ))
-                focus_numa_ids = sorted(set(
-                    list(numa_nodes or []) + [_REMOTE_NUMA_ID]
-                ))
+                all_numa_ids = sorted(set(n["node"] for entry in monitor.numa_memory_history for n in entry["nodes"]))
+                focus_numa_ids = sorted(set(list(numa_nodes or []) + [_REMOTE_NUMA_ID]))
                 focus_numa_ids = [nid for nid in focus_numa_ids if nid in all_numa_ids]
 
                 mem_timeline_data = {"Timestamp": []}
@@ -642,15 +636,13 @@ def export_to_excel(
                             mem_timeline_data[label].append(node_data.get(field, 0))
 
                 if mem_timeline_data["Timestamp"]:
-                    pd.DataFrame(mem_timeline_data).to_excel(
-                        writer, sheet_name="NUMA_Memory_Timeline", index=False
-                    )
+                    pd.DataFrame(mem_timeline_data).to_excel(writer, sheet_name="NUMA_Memory_Timeline", index=False)
 
             # ========== VM_Total_Memory_Timeline Sheet ==========
             if monitor.vm_total_memory_history:
-                all_vm_numa_ids = sorted(set(
-                    k for h in monitor.vm_total_memory_history for k in h.get("per_numa", {}).keys()
-                ))
+                all_vm_numa_ids = sorted(
+                    set(k for h in monitor.vm_total_memory_history for k in h.get("per_numa", {}).keys())
+                )
                 vm_mem_data = {
                     "Timestamp": [],
                     "VM Total Memory (MB)": [],
@@ -664,14 +656,10 @@ def export_to_excel(
                     vm_mem_data["VM Total Memory (MB)"].append(h["total_mb"])
                     vm_mem_data["VM Count"].append(h["vm_count"])
                     for nid in all_vm_numa_ids:
-                        vm_mem_data[f"NUMA{nid} VM Memory (MB)"].append(
-                            h.get("per_numa", {}).get(nid, 0)
-                        )
+                        vm_mem_data[f"NUMA{nid} VM Memory (MB)"].append(h.get("per_numa", {}).get(nid, 0))
 
                 if vm_mem_data["Timestamp"]:
-                    pd.DataFrame(vm_mem_data).to_excel(
-                        writer, sheet_name="VM_Total_Memory_Timeline", index=False
-                    )
+                    pd.DataFrame(vm_mem_data).to_excel(writer, sheet_name="VM_Total_Memory_Timeline", index=False)
 
         # ========== Add Charts (using openpyxl directly) ==========
         try:
@@ -872,11 +860,11 @@ def export_to_excel(
                     # Local NUMA (first) gets solid lines, remote NUMA5 gets dashed lines
                     fa_series_styles = []
                     for col in free_cols:
-                        fa_series_styles.append(("00B050", 20000))    # green
+                        fa_series_styles.append(("00B050", 20000))  # green
                     for col in avail_cols:
-                        fa_series_styles.append(("92D050", 25000))    # light green
+                        fa_series_styles.append(("92D050", 25000))  # light green
                     for col in used_cols:
-                        fa_series_styles.append(("FF0000", 30000))    # red thick
+                        fa_series_styles.append(("FF0000", 30000))  # red thick
 
                     for i, (color, width) in enumerate(fa_series_styles):
                         if i < len(chart_8a.series):

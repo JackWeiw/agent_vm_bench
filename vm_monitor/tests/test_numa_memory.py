@@ -72,8 +72,10 @@ class TestGetNumaNodesMemory(unittest.TestCase):
 
         monitor = DummyMonitor()
 
-        with patch("vm_monitor.base.os.listdir", return_value=["node0"]), \
-             patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(node0_path) if "node0/meminfo" in p else open(p, *a, **k)):
+        with patch("vm_monitor.base.os.listdir", return_value=["node0"]), patch(
+            "vm_monitor.base.open",
+            side_effect=lambda p, *a, **k: open(node0_path) if "node0/meminfo" in p else open(p, *a, **k),
+        ):
             nodes = monitor.get_numa_nodes_memory()
 
         self.assertEqual(len(nodes), 1)
@@ -100,8 +102,10 @@ class TestGetNumaNodesMemory(unittest.TestCase):
 
         monitor = DummyMonitor()
 
-        with patch("vm_monitor.base.os.listdir", return_value=["node0"]), \
-             patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(node0_path) if "node0/meminfo" in p else open(p, *a, **k)):
+        with patch("vm_monitor.base.os.listdir", return_value=["node0"]), patch(
+            "vm_monitor.base.open",
+            side_effect=lambda p, *a, **k: open(node0_path) if "node0/meminfo" in p else open(p, *a, **k),
+        ):
             nodes = monitor.get_numa_nodes_memory()
 
         node = nodes[0]
@@ -128,8 +132,10 @@ class TestGetNumaNodesMemory(unittest.TestCase):
 
         monitor = DummyMonitor()
 
-        with patch("vm_monitor.base.os.listdir", return_value=["node0"]), \
-             patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(node0_path) if "node0/meminfo" in p else open(p, *a, **k)):
+        with patch("vm_monitor.base.os.listdir", return_value=["node0"]), patch(
+            "vm_monitor.base.open",
+            side_effect=lambda p, *a, **k: open(node0_path) if "node0/meminfo" in p else open(p, *a, **k),
+        ):
             nodes = monitor.get_numa_nodes_memory()
 
         node = nodes[0]
@@ -158,8 +164,9 @@ class TestGetNumaNodesMemory(unittest.TestCase):
                     return open(val)
             return open(path, *a, **k)
 
-        with patch("vm_monitor.base.os.listdir", return_value=["node0", "node5"]), \
-             patch("vm_monitor.base.open", side_effect=open_side_effect):
+        with patch("vm_monitor.base.os.listdir", return_value=["node0", "node5"]), patch(
+            "vm_monitor.base.open", side_effect=open_side_effect
+        ):
             nodes = monitor.get_numa_nodes_memory()
 
         self.assertEqual(len(nodes), 2)
@@ -179,12 +186,22 @@ class TestCollectVmTotalMemory(unittest.TestCase):
         """Should sum memory_mb from all VMs"""
         monitor = DummyMonitor()
         vms = [
-            {"name": "vm0", "pid": 100, "memory_mb": 2048.0,
-             "memory_per_numa": {0: {"total_mb": 1024.0}, 5: {"total_mb": 1024.0}},
-             "cpu_percent": 10.0, "status": "running"},
-            {"name": "vm1", "pid": 101, "memory_mb": 4096.0,
-             "memory_per_numa": {0: {"total_mb": 2048.0}, 5: {"total_mb": 2048.0}},
-             "cpu_percent": 20.0, "status": "running"},
+            {
+                "name": "vm0",
+                "pid": 100,
+                "memory_mb": 2048.0,
+                "memory_per_numa": {0: {"total_mb": 1024.0}, 5: {"total_mb": 1024.0}},
+                "cpu_percent": 10.0,
+                "status": "running",
+            },
+            {
+                "name": "vm1",
+                "pid": 101,
+                "memory_mb": 4096.0,
+                "memory_per_numa": {0: {"total_mb": 2048.0}, 5: {"total_mb": 2048.0}},
+                "cpu_percent": 20.0,
+                "status": "running",
+            },
         ]
         entry = monitor.collect_vm_total_memory(vms)
         self.assertAlmostEqual(entry["total_mb"], 2048.0 + 4096.0, places=2)
@@ -205,10 +222,24 @@ class TestCollectVmTotalMemory(unittest.TestCase):
     def test_accumulates_history(self):
         """Multiple calls should accumulate history entries"""
         monitor = DummyMonitor()
-        vms1 = [{"name": "vm0", "pid": 100, "memory_mb": 2048.0,
-                 "memory_per_numa": {0: {"total_mb": 2048.0}}, "status": "running"}]
-        vms2 = [{"name": "vm0", "pid": 100, "memory_mb": 2100.0,
-                 "memory_per_numa": {0: {"total_mb": 2100.0}}, "status": "running"}]
+        vms1 = [
+            {
+                "name": "vm0",
+                "pid": 100,
+                "memory_mb": 2048.0,
+                "memory_per_numa": {0: {"total_mb": 2048.0}},
+                "status": "running",
+            }
+        ]
+        vms2 = [
+            {
+                "name": "vm0",
+                "pid": 100,
+                "memory_mb": 2100.0,
+                "memory_per_numa": {0: {"total_mb": 2100.0}},
+                "status": "running",
+            }
+        ]
         monitor.collect_vm_total_memory(vms1)
         monitor.collect_vm_total_memory(vms2)
         self.assertEqual(len(monitor.vm_total_memory_history), 2)
@@ -240,8 +271,10 @@ class TestBackwardCompatIntegration(unittest.TestCase):
         }
         node0_path = create_mock_node_meminfo(0, node0_fields)
 
-        with patch("vm_monitor.base.os.listdir", return_value=["node0"]), \
-             patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(node0_path) if "node0/meminfo" in p else open(p, *a, **k)):
+        with patch("vm_monitor.base.os.listdir", return_value=["node0"]), patch(
+            "vm_monitor.base.open",
+            side_effect=lambda p, *a, **k: open(node0_path) if "node0/meminfo" in p else open(p, *a, **k),
+        ):
             monitor.get_numa_nodes_memory()
 
         entry = monitor.numa_memory_history[0]
@@ -267,8 +300,10 @@ class TestBackwardCompatIntegration(unittest.TestCase):
         node0_fields = {"MemTotal": 8000000, "MemFree": 2000000, "SwapCached": 50000}
         node0_path = create_mock_node_meminfo(0, node0_fields)
 
-        with patch("vm_monitor.base.os.listdir", return_value=["node0"]), \
-             patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(node0_path) if "node0/meminfo" in p else open(p, *a, **k)):
+        with patch("vm_monitor.base.os.listdir", return_value=["node0"]), patch(
+            "vm_monitor.base.open",
+            side_effect=lambda p, *a, **k: open(node0_path) if "node0/meminfo" in p else open(p, *a, **k),
+        ):
             # Should not raise any exception
             monitor.print_numa_real_time()
 
@@ -309,7 +344,6 @@ class TestGetFocusNumaNodes(unittest.TestCase):
         monitor.available_numa_nodes = [0, 1, 5]
         focus = monitor.get_focus_numa_nodes()
         self.assertEqual(focus, [5])
-
 
 
 class TestGetVmMemoryFromNumaMaps(unittest.TestCase):
@@ -366,7 +400,9 @@ class TestGetVmMemoryFromNumaMaps(unittest.TestCase):
         path = self._write_mock_numa_maps(self.SAMPLE_NUMA_MAPS)
         monitor = DummyMonitor()
 
-        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+        with patch(
+            "vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)
+        ):
             result = monitor.get_vm_memory_from_numa_maps(2677236)
 
         self.assertGreater(result["total_mb"], 0)
@@ -385,7 +421,9 @@ class TestGetVmMemoryFromNumaMaps(unittest.TestCase):
         path = self._write_mock_numa_maps(content)
         monitor = DummyMonitor()
 
-        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+        with patch(
+            "vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)
+        ):
             result = monitor.get_vm_memory_from_numa_maps(123)
 
         self.assertAlmostEqual(result["heap_mb"], 14 * 4 / 1024, places=2)
@@ -399,7 +437,9 @@ class TestGetVmMemoryFromNumaMaps(unittest.TestCase):
         path = self._write_mock_numa_maps(content)
         monitor = DummyMonitor()
 
-        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+        with patch(
+            "vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)
+        ):
             result = monitor.get_vm_memory_from_numa_maps(123)
 
         self.assertAlmostEqual(result["stack_mb"], 4 * 4 / 1024, places=2)
@@ -415,7 +455,9 @@ class TestGetVmMemoryFromNumaMaps(unittest.TestCase):
         path = self._write_mock_numa_maps(content)
         monitor = DummyMonitor()
 
-        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+        with patch(
+            "vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)
+        ):
             result = monitor.get_vm_memory_from_numa_maps(123)
 
         total_anon_mb = 473814 * 4 / 1024
@@ -424,14 +466,8 @@ class TestGetVmMemoryFromNumaMaps(unittest.TestCase):
         # N2 gets ~81.3% of private, N5 gets ~18.5%
         n2_proportion = 386088 / 473814
         n5_proportion = 87726 / 473814
-        self.assertAlmostEqual(
-            result["per_node"][2]["private_mb"],
-            round(total_anon_mb * n2_proportion, 2), places=0
-        )
-        self.assertAlmostEqual(
-            result["per_node"][5]["private_mb"],
-            round(total_anon_mb * n5_proportion, 2), places=0
-        )
+        self.assertAlmostEqual(result["per_node"][2]["private_mb"], round(total_anon_mb * n2_proportion, 2), places=0)
+        self.assertAlmostEqual(result["per_node"][5]["private_mb"], round(total_anon_mb * n5_proportion, 2), places=0)
 
         os.unlink(path)
 
@@ -441,7 +477,9 @@ class TestGetVmMemoryFromNumaMaps(unittest.TestCase):
         path = self._write_mock_numa_maps(content)
         monitor = DummyMonitor()
 
-        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+        with patch(
+            "vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)
+        ):
             result = monitor.get_vm_memory_from_numa_maps(123)
 
         total_swapcache_mb = 86418 * 4 / 1024
@@ -449,28 +487,22 @@ class TestGetVmMemoryFromNumaMaps(unittest.TestCase):
 
         n2_proportion = 386088 / 473814
         n5_proportion = 87726 / 473814
-        self.assertAlmostEqual(
-            result["swapcache_per_node"][2],
-            round(total_swapcache_mb * n2_proportion, 2), places=0
-        )
-        self.assertAlmostEqual(
-            result["swapcache_per_node"][5],
-            round(total_swapcache_mb * n5_proportion, 2), places=0
-        )
+        self.assertAlmostEqual(result["swapcache_per_node"][2], round(total_swapcache_mb * n2_proportion, 2), places=0)
+        self.assertAlmostEqual(result["swapcache_per_node"][5], round(total_swapcache_mb * n5_proportion, 2), places=0)
 
         os.unlink(path)
 
     def test_skip_empty_lines(self):
         """Lines with no N<node>= fields should be skipped"""
         content = (
-            "fffe78000000 bind:2\n"
-            "fffe7c000000 bind:2\n"
-            "aaaaae7c1000 bind:2 anon=8 N2=8 kernelpagesize_kB=4\n"
+            "fffe78000000 bind:2\n" "fffe7c000000 bind:2\n" "aaaaae7c1000 bind:2 anon=8 N2=8 kernelpagesize_kB=4\n"
         )
         path = self._write_mock_numa_maps(content)
         monitor = DummyMonitor()
 
-        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+        with patch(
+            "vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)
+        ):
             result = monitor.get_vm_memory_from_numa_maps(123)
 
         # Only the 3rd line has N2=8, so total should be 8 * 4 / 1024 ≈ 0.031 MB
@@ -484,7 +516,9 @@ class TestGetVmMemoryFromNumaMaps(unittest.TestCase):
         path = self._write_mock_numa_maps(content)
         monitor = DummyMonitor()
 
-        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+        with patch(
+            "vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)
+        ):
             result = monitor.get_vm_memory_from_numa_maps(123)
 
         self.assertAlmostEqual(result["total_mb"], round(8 * 4 / 1024, 2), places=2)
@@ -497,7 +531,9 @@ class TestGetVmMemoryFromNumaMaps(unittest.TestCase):
         path = self._write_mock_numa_maps(content)
         monitor = DummyMonitor()
 
-        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+        with patch(
+            "vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)
+        ):
             result = monitor.get_vm_memory_from_numa_maps(123)
 
         expected_mb = 64 * 64 / 1024  # 4 MB
@@ -533,8 +569,9 @@ class TestGetVmMemoryFromNumaMaps(unittest.TestCase):
             "Total            1000.0           2000.0           0.0              3000.0\n"
         )
 
-        with patch("vm_monitor.base.open", side_effect=FileNotFoundError), \
-             patch("vm_monitor.base.subprocess.run", return_value=MagicMock(returncode=0, stdout=numastat_output)):
+        with patch("vm_monitor.base.open", side_effect=FileNotFoundError), patch(
+            "vm_monitor.base.subprocess.run", return_value=MagicMock(returncode=0, stdout=numastat_output)
+        ):
             result = monitor.get_vm_memory_from_numastat(123)
 
         # Should have data from numastat fallback
@@ -560,8 +597,9 @@ class TestGetVmMemoryFromNumaMaps(unittest.TestCase):
             "Total            1000.0           2000.0           0.0              3000.0\n"
         )
 
-        with patch("vm_monitor.base.open", side_effect=FileNotFoundError), \
-             patch("vm_monitor.base.subprocess.run", return_value=MagicMock(returncode=0, stdout=numastat_output)):
+        with patch("vm_monitor.base.open", side_effect=FileNotFoundError), patch(
+            "vm_monitor.base.subprocess.run", return_value=MagicMock(returncode=0, stdout=numastat_output)
+        ):
             result = monitor.get_vm_memory_from_numastat(123)
 
         self.assertGreater(result["total_mb"], 0)
@@ -660,13 +698,18 @@ class TestCollectVmMetricsParallel(unittest.TestCase):
         # Mock numa_maps to return data for each PID
         def mock_numa_maps_result(pid):
             return {
-                "total_mb": 2048.0, "huge_mb": 0.0, "private_mb": 1000.0,
-                "heap_mb": 50.0, "per_node": {0: {"total_mb": 1024.0}, 2: {"total_mb": 1024.0}},
-                "swapcache_mb": 100.0, "swapcache_per_node": {0: 50.0, 2: 50.0},
+                "total_mb": 2048.0,
+                "huge_mb": 0.0,
+                "private_mb": 1000.0,
+                "heap_mb": 50.0,
+                "per_node": {0: {"total_mb": 1024.0}, 2: {"total_mb": 1024.0}},
+                "swapcache_mb": 100.0,
+                "swapcache_per_node": {0: 50.0, 2: 50.0},
             }
 
-        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), \
-             patch("vm_monitor.base.psutil.Process") as mock_process_cls:
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), patch(
+            "vm_monitor.base.psutil.Process"
+        ) as mock_process_cls:
             # Mock Process.cpu_percent to return seed=0 then delta=5.0
             mock_proc = MagicMock()
             mock_proc.cpu_percent.return_value = 5.0
@@ -693,13 +736,18 @@ class TestCollectVmMetricsParallel(unittest.TestCase):
 
         def mock_numa_maps_result(pid):
             return {
-                "total_mb": 2048.0, "huge_mb": 0.0, "private_mb": 1000.0,
-                "heap_mb": 50.0, "per_node": {0: {"total_mb": 2048.0}},
-                "swapcache_mb": 100.0, "swapcache_per_node": {0: 100.0},
+                "total_mb": 2048.0,
+                "huge_mb": 0.0,
+                "private_mb": 1000.0,
+                "heap_mb": 50.0,
+                "per_node": {0: {"total_mb": 2048.0}},
+                "swapcache_mb": 100.0,
+                "swapcache_per_node": {0: 100.0},
             }
 
-        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), \
-             patch("vm_monitor.base.psutil.Process") as mock_process_cls:
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), patch(
+            "vm_monitor.base.psutil.Process"
+        ) as mock_process_cls:
             mock_proc = MagicMock()
             mock_proc.cpu_percent.return_value = 0.0  # seed call
             mock_process_cls.return_value = mock_proc
@@ -718,11 +766,19 @@ class TestCollectVmMetricsParallel(unittest.TestCase):
         candidates = [self._make_candidate(100)]
 
         def mock_numa_maps_result(pid):
-            return {"total_mb": 100.0, "huge_mb": 0.0, "private_mb": 50.0,
-                    "heap_mb": 0.0, "per_node": {}, "swapcache_mb": 0.0, "swapcache_per_node": {}}
+            return {
+                "total_mb": 100.0,
+                "huge_mb": 0.0,
+                "private_mb": 50.0,
+                "heap_mb": 0.0,
+                "per_node": {},
+                "swapcache_mb": 0.0,
+                "swapcache_per_node": {},
+            }
 
-        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), \
-             patch("vm_monitor.base.psutil.Process") as mock_process_cls:
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), patch(
+            "vm_monitor.base.psutil.Process"
+        ) as mock_process_cls:
             mock_proc = MagicMock()
             mock_proc.cpu_percent.return_value = 0.0
             mock_process_cls.return_value = mock_proc
@@ -745,11 +801,19 @@ class TestCollectVmMetricsParallel(unittest.TestCase):
 
         # numa_maps returns empty dict (process gone)
         def mock_numa_maps_result(pid):
-            return {"total_mb": 0.0, "huge_mb": 0.0, "private_mb": 0.0,
-                    "heap_mb": 0.0, "per_node": {}, "swapcache_mb": 0.0, "swapcache_per_node": {}}
+            return {
+                "total_mb": 0.0,
+                "huge_mb": 0.0,
+                "private_mb": 0.0,
+                "heap_mb": 0.0,
+                "per_node": {},
+                "swapcache_mb": 0.0,
+                "swapcache_per_node": {},
+            }
 
-        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), \
-             patch("vm_monitor.base.psutil.Process", side_effect=psutil.NoSuchProcess(99999)):
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), patch(
+            "vm_monitor.base.psutil.Process", side_effect=psutil.NoSuchProcess(99999)
+        ):
             vms = monitor._collect_vm_metrics_serial(candidates)
 
         self.assertEqual(len(vms), 1)
@@ -768,8 +832,15 @@ class TestCollectVmMetricsParallel(unittest.TestCase):
         ]
 
         def mock_numa_maps_result(pid):
-            return {"total_mb": 100.0, "huge_mb": 0.0, "private_mb": 50.0,
-                    "heap_mb": 0.0, "per_node": {}, "swapcache_mb": 0.0, "swapcache_per_node": {}}
+            return {
+                "total_mb": 100.0,
+                "huge_mb": 0.0,
+                "private_mb": 50.0,
+                "heap_mb": 0.0,
+                "per_node": {},
+                "swapcache_mb": 0.0,
+                "swapcache_per_node": {},
+            }
 
         # Create mock Process objects that will be seeded in threads
         seed_procs = {}
@@ -778,8 +849,9 @@ class TestCollectVmMetricsParallel(unittest.TestCase):
             mp.cpu_percent.return_value = 0.0  # seed call returns 0
             seed_procs[pid] = mp
 
-        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), \
-             patch("vm_monitor.base.psutil.Process", side_effect=lambda pid: seed_procs[pid]):
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), patch(
+            "vm_monitor.base.psutil.Process", side_effect=lambda pid: seed_procs[pid]
+        ):
             vms = monitor._collect_vm_metrics_parallel(candidates)
 
         # All seed Process objects should now be in process_cache
@@ -793,8 +865,15 @@ class TestCollectVmMetricsParallel(unittest.TestCase):
         candidates = [self._make_candidate(100), self._make_candidate(101)]
 
         def mock_numa_maps_result(pid):
-            return {"total_mb": 2048.0, "huge_mb": 0.0, "private_mb": 1000.0,
-                    "heap_mb": 50.0, "per_node": {}, "swapcache_mb": 0.0, "swapcache_per_node": {}}
+            return {
+                "total_mb": 2048.0,
+                "huge_mb": 0.0,
+                "private_mb": 1000.0,
+                "heap_mb": 50.0,
+                "per_node": {},
+                "swapcache_mb": 0.0,
+                "swapcache_per_node": {},
+            }
 
         # Each PID gets its own Process mock with cpu_percent behavior:
         # first call (seed) → 0.0, subsequent calls → 5.0
@@ -804,8 +883,9 @@ class TestCollectVmMetricsParallel(unittest.TestCase):
             mp.cpu_percent.side_effect = [0.0] + [5.0] * 10  # seed=0, then always 5.0
             proc_mocks[pid] = mp
 
-        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), \
-             patch("vm_monitor.base.psutil.Process", side_effect=lambda pid: proc_mocks[pid]):
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), patch(
+            "vm_monitor.base.psutil.Process", side_effect=lambda pid: proc_mocks[pid]
+        ):
             # Cycle 1: seed — cpu_percent returns 0.0 for each PID
             vms1 = monitor._collect_vm_metrics_serial(candidates)
             self.assertEqual(monitor.peak_total_memory_mb, 4096.0)
@@ -824,11 +904,19 @@ class TestCollectVmMetricsParallel(unittest.TestCase):
         candidates = [self._make_candidate(100)]
 
         def mock_numa_maps_result(pid):
-            return {"total_mb": 100.0, "huge_mb": 0.0, "private_mb": 50.0,
-                    "heap_mb": 0.0, "per_node": {}, "swapcache_mb": 0.0, "swapcache_per_node": {}}
+            return {
+                "total_mb": 100.0,
+                "huge_mb": 0.0,
+                "private_mb": 50.0,
+                "heap_mb": 0.0,
+                "per_node": {},
+                "swapcache_mb": 0.0,
+                "swapcache_per_node": {},
+            }
 
-        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), \
-             patch("vm_monitor.base.psutil.Process") as mock_process_cls:
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), patch(
+            "vm_monitor.base.psutil.Process"
+        ) as mock_process_cls:
             mock_proc = MagicMock()
             mock_proc.cpu_percent.return_value = 0.0
             mock_process_cls.return_value = mock_proc
@@ -860,7 +948,9 @@ class TestBugFixes(unittest.TestCase):
         path = self._write_mock_numa_maps(content)
         monitor = DummyMonitor()
 
-        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+        with patch(
+            "vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)
+        ):
             result = monitor.get_vm_memory_from_numa_maps(123)
 
         # swapcache=2 pages at 4KB each = 2 * 4 / 1024 = 0.0078 MB
@@ -885,7 +975,9 @@ class TestBugFixes(unittest.TestCase):
         content = "aaaa0000 bind:2\naaaab000 bind:2\n"
         path = self._write_mock_numa_maps(content)
 
-        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+        with patch(
+            "vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)
+        ):
             result = monitor.get_vm_memory_from_numastat(123)
 
         # Should accept the numa_maps result (total_mb=0 is legitimate)
@@ -907,8 +999,9 @@ class TestBugFixes(unittest.TestCase):
             "Total            1000.0           2000.0           3000.0\n"
         )
 
-        with patch("vm_monitor.base.open", side_effect=FileNotFoundError), \
-             patch("vm_monitor.base.subprocess.run", return_value=MagicMock(returncode=0, stdout=numastat_output)):
+        with patch("vm_monitor.base.open", side_effect=FileNotFoundError), patch(
+            "vm_monitor.base.subprocess.run", return_value=MagicMock(returncode=0, stdout=numastat_output)
+        ):
             result = monitor.get_vm_memory_from_numastat(123)
 
         # Should have data from numastat fallback, not empty numa_maps result
@@ -922,7 +1015,9 @@ class TestBugFixes(unittest.TestCase):
         path = self._write_mock_numa_maps(content)
         monitor = DummyMonitor()
 
-        with patch("vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)):
+        with patch(
+            "vm_monitor.base.open", side_effect=lambda p, *a, **k: open(path) if "numa_maps" in p else open(p, *a, **k)
+        ):
             result = monitor.get_vm_memory_from_numa_maps(123)
 
         # For 4KB mappings, base_page_size_mb == page_size_mb, so same result
@@ -950,9 +1045,13 @@ class TestBugFixes(unittest.TestCase):
         """_extract_numastat_fields should extract all standard VM metric fields"""
         monitor = DummyMonitor()
         numastat_mem = {
-            "total_mb": 2048.0, "huge_mb": 0.0, "private_mb": 1000.0,
-            "heap_mb": 50.0, "per_node": {0: {"total_mb": 1024.0}},
-            "swapcache_mb": 100.0, "swapcache_per_node": {0: 50.0},
+            "total_mb": 2048.0,
+            "huge_mb": 0.0,
+            "private_mb": 1000.0,
+            "heap_mb": 50.0,
+            "per_node": {0: {"total_mb": 1024.0}},
+            "swapcache_mb": 100.0,
+            "swapcache_per_node": {0: 50.0},
         }
         fields = monitor._extract_numastat_fields(numastat_mem)
 
@@ -967,19 +1066,25 @@ class TestBugFixes(unittest.TestCase):
     def test_collect_single_vm_returns_tuple(self):
         """_collect_single_vm should return (result_dict, seed_proc_or_None) tuple"""
         monitor = DummyMonitor()
-        candidate = {"pid": 100, "vm_name": "vm-100", "status": "running",
-                     "proc_name": "test", "cmdline": ""}
+        candidate = {"pid": 100, "vm_name": "vm-100", "status": "running", "proc_name": "test", "cmdline": ""}
 
         def mock_numa_maps_result(pid):
-            return {"total_mb": 100.0, "huge_mb": 0.0, "private_mb": 50.0,
-                    "heap_mb": 0.0, "per_node": {}, "swapcache_mb": 0.0,
-                    "swapcache_per_node": {}}
+            return {
+                "total_mb": 100.0,
+                "huge_mb": 0.0,
+                "private_mb": 50.0,
+                "heap_mb": 0.0,
+                "per_node": {},
+                "swapcache_mb": 0.0,
+                "swapcache_per_node": {},
+            }
 
         mock_proc = MagicMock()
         mock_proc.cpu_percent.return_value = 0.0
 
-        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), \
-             patch("vm_monitor.base.psutil.Process", return_value=mock_proc):
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), patch(
+            "vm_monitor.base.psutil.Process", return_value=mock_proc
+        ):
             vm_result, seed_proc = monitor._collect_single_vm(candidate)
 
         # Result dict should not contain _is_new_pid or _seed_process
@@ -999,12 +1104,19 @@ class TestBugFixes(unittest.TestCase):
         # We can't easily test export directly, but we can check collect_sample
         # includes swapcache fields in the record dict
         from datetime import datetime
+
         vm_dict = {
-            "pid": 100, "name": "vm-100", "cpu_percent": 5.0,
-            "memory_mb": 2048.0, "memory_huge_mb": 0.0,
-            "memory_private_mb": 1000.0, "memory_heap_mb": 50.0,
-            "memory_per_numa": {}, "memory_swapcache_mb": 100.0,
-            "memory_swapcache_per_numa": {0: 50.0}, "status": "running",
+            "pid": 100,
+            "name": "vm-100",
+            "cpu_percent": 5.0,
+            "memory_mb": 2048.0,
+            "memory_huge_mb": 0.0,
+            "memory_private_mb": 1000.0,
+            "memory_heap_mb": 50.0,
+            "memory_per_numa": {},
+            "memory_swapcache_mb": 100.0,
+            "memory_swapcache_per_numa": {0: 50.0},
+            "status": "running",
         }
         record = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

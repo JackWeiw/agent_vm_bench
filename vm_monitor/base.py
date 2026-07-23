@@ -183,8 +183,7 @@ class VMMonitorBase(ABC):
         """
         numa_nodes = []
         try:
-            node_dirs = [d for d in os.listdir("/sys/devices/system/node/")
-                         if d.startswith("node") and d[4:].isdigit()]
+            node_dirs = [d for d in os.listdir("/sys/devices/system/node/") if d.startswith("node") and d[4:].isdigit()]
             for node in sorted(node_dirs, key=lambda x: int(x[4:])):
                 node_id = int(node[4:])
                 path = f"/sys/devices/system/node/{node}/meminfo"
@@ -225,9 +224,7 @@ class VMMonitorBase(ABC):
         except Exception:
             pass
 
-        self.numa_memory_history.append(
-            {"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "nodes": numa_nodes}
-        )
+        self.numa_memory_history.append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "nodes": numa_nodes})
         return numa_nodes
 
     def collect_hugepage_stats(self):
@@ -668,9 +665,14 @@ class VMMonitorBase(ABC):
             - swapcache_per_node: per-node swapcache breakdown
         """
         result = {
-            "total_mb": 0.0, "huge_mb": 0.0, "private_mb": 0.0,
-            "heap_mb": 0.0, "stack_mb": 0.0, "per_node": {},
-            "swapcache_mb": 0.0, "swapcache_per_node": {},
+            "total_mb": 0.0,
+            "huge_mb": 0.0,
+            "private_mb": 0.0,
+            "heap_mb": 0.0,
+            "stack_mb": 0.0,
+            "per_node": {},
+            "swapcache_mb": 0.0,
+            "swapcache_per_node": {},
         }
         numa_maps_path = f"/proc/{pid}/numa_maps"
         parsed = False  # track whether file was actually read successfully
@@ -683,7 +685,7 @@ class VMMonitorBase(ABC):
                         continue
 
                     # Parse fields from tokens (skip first token = virtual address)
-                    node_pages = {}       # {node_id: page_count}
+                    node_pages = {}  # {node_id: page_count}
                     anon_pages = 0
                     kernelpagesize_kb = 4  # default page size
                     is_heap = False
@@ -755,8 +757,11 @@ class VMMonitorBase(ABC):
                         node_mb = pages * page_size_mb
                         if node_id not in result["per_node"]:
                             result["per_node"][node_id] = {
-                                "total_mb": 0.0, "huge_mb": 0.0,
-                                "heap_mb": 0.0, "stack_mb": 0.0, "private_mb": 0.0,
+                                "total_mb": 0.0,
+                                "huge_mb": 0.0,
+                                "heap_mb": 0.0,
+                                "stack_mb": 0.0,
+                                "private_mb": 0.0,
                             }
                         result["per_node"][node_id]["total_mb"] += node_mb
                         if is_huge:
@@ -845,8 +850,9 @@ class VMMonitorBase(ABC):
             "memory_swapcache_per_numa": numastat_mem.get("swapcache_per_node", {}),
         }
 
-    def _finalize_vm_collection(self, vms: List[Dict], current_pids: set,
-                                 current_total_mem: float, current_total_cpu: float):
+    def _finalize_vm_collection(
+        self, vms: List[Dict], current_pids: set, current_total_mem: float, current_total_cpu: float
+    ):
         """Common post-processing: update peak trackers, clean dead PIDs from cache."""
         if current_total_mem > self.peak_total_memory_mb:
             self.peak_total_memory_mb = current_total_mem
@@ -882,13 +888,15 @@ class VMMonitorBase(ABC):
                 cmdline = " ".join(proc.info["cmdline"] or [])
                 vm_name = self.extract_vm_id(pid, cmdline)
 
-                candidates.append({
-                    "pid": pid,
-                    "proc_name": proc_name,
-                    "cmdline": cmdline,
-                    "status": proc.info["status"],
-                    "vm_name": vm_name,
-                })
+                candidates.append(
+                    {
+                        "pid": pid,
+                        "proc_name": proc_name,
+                        "cmdline": cmdline,
+                        "status": proc.info["status"],
+                        "vm_name": vm_name,
+                    }
+                )
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
 
@@ -945,13 +953,15 @@ class VMMonitorBase(ABC):
             cpu = round(max(0, min(cpu, 10000)), 2)
             current_total_cpu += cpu
 
-            vms.append({
-                "pid": pid,
-                "name": candidate["vm_name"],
-                "cpu_percent": cpu,
-                **fields,
-                "status": candidate["status"],
-            })
+            vms.append(
+                {
+                    "pid": pid,
+                    "name": candidate["vm_name"],
+                    "cpu_percent": cpu,
+                    **fields,
+                    "status": candidate["status"],
+                }
+            )
 
         self._finalize_vm_collection(vms, current_pids, current_total_mem, current_total_cpu)
         return vms
