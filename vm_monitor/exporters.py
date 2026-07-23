@@ -570,6 +570,103 @@ def export_to_excel(
                     swap_timeline_data["Swap Out Rate (pages/s)"].append(s["activity"]["swap_out_rate"])
                 pd.DataFrame(swap_timeline_data).to_excel(writer, sheet_name="Swap_Timeline", index=False)
 
+            # ========== SwapCache_Per_NUMA_Timeline Sheet ==========
+            if monitor.numa_memory_history and monitor.swap_history:
+                all_numa_ids = sorted(set(
+                    n["node"] for entry in monitor.numa_memory_history for n in entry["nodes"]
+                ))
+                sc_timeline_data = {
+                    "Timestamp": [],
+                    "SwapCache Total (MB)": [],
+                }
+                for nid in all_numa_ids:
+                    sc_timeline_data[f"NUMA{nid} SwapCache (MB)"] = []
+
+                min_len = min(len(monitor.swap_history), len(monitor.numa_memory_history))
+                for i in range(min_len):
+                    swap_entry = monitor.swap_history[i]
+                    numa_entry = monitor.numa_memory_history[i]
+                    ts = numa_entry["ts"]
+                    sc_timeline_data["Timestamp"].append(ts)
+                    sc_timeline_data["SwapCache Total (MB)"].append(swap_entry["cache"]["cached_mb"])
+                    node_lookup = {n["node"]: n for n in numa_entry["nodes"]}
+                    for nid in all_numa_ids:
+                        node_data = node_lookup.get(nid, {})
+                        sc_timeline_data[f"NUMA{nid} SwapCache (MB)"].append(
+                            node_data.get("swap_cached_mb", 0)
+                        )
+
+                if sc_timeline_data["Timestamp"]:
+                    pd.DataFrame(sc_timeline_data).to_excel(
+                        writer, sheet_name="SwapCache_Per_NUMA_Timeline", index=False
+                    )
+
+            # ========== NUMA_Memory_Timeline Sheet ==========
+            if monitor.numa_memory_history:
+                all_numa_ids = sorted(set(
+                    n["node"] for entry in monitor.numa_memory_history for n in entry["nodes"]
+                ))
+                mem_timeline_data = {"Timestamp": []}
+                for nid in all_numa_ids:
+                    for field, label in [
+                        ("total_mb", f"NUMA{nid} Total (MB)"),
+                        ("used_mb", f"NUMA{nid} Used (MB)"),
+                        ("free_mb", f"NUMA{nid} Free (MB)"),
+                        ("available_mb", f"NUMA{nid} Available (MB)"),
+                        ("swap_cached_mb", f"NUMA{nid} SwapCache (MB)"),
+                        ("anon_pages_mb", f"NUMA{nid} AnonPages (MB)"),
+                        ("usage_pct", f"NUMA{nid} Usage (%)"),
+                    ]:
+                        mem_timeline_data[label] = []
+
+                for entry in monitor.numa_memory_history:
+                    mem_timeline_data["Timestamp"].append(entry["ts"])
+                    node_lookup = {n["node"]: n for n in entry["nodes"]}
+                    for nid in all_numa_ids:
+                        node_data = node_lookup.get(nid, {})
+                        for field, label in [
+                            ("total_mb", f"NUMA{nid} Total (MB)"),
+                            ("used_mb", f"NUMA{nid} Used (MB)"),
+                            ("free_mb", f"NUMA{nid} Free (MB)"),
+                            ("available_mb", f"NUMA{nid} Available (MB)"),
+                            ("swap_cached_mb", f"NUMA{nid} SwapCache (MB)"),
+                            ("anon_pages_mb", f"NUMA{nid} AnonPages (MB)"),
+                            ("usage_pct", f"NUMA{nid} Usage (%)"),
+                        ]:
+                            mem_timeline_data[label].append(node_data.get(field, 0))
+
+                if mem_timeline_data["Timestamp"]:
+                    pd.DataFrame(mem_timeline_data).to_excel(
+                        writer, sheet_name="NUMA_Memory_Timeline", index=False
+                    )
+
+            # ========== VM_Total_Memory_Timeline Sheet ==========
+            if monitor.vm_total_memory_history:
+                all_vm_numa_ids = sorted(set(
+                    k for h in monitor.vm_total_memory_history for k in h.get("per_numa", {}).keys()
+                ))
+                vm_mem_data = {
+                    "Timestamp": [],
+                    "VM Total Memory (MB)": [],
+                    "VM Count": [],
+                }
+                for nid in all_vm_numa_ids:
+                    vm_mem_data[f"NUMA{nid} VM Memory (MB)"] = []
+
+                for h in monitor.vm_total_memory_history:
+                    vm_mem_data["Timestamp"].append(h["ts"])
+                    vm_mem_data["VM Total Memory (MB)"].append(h["total_mb"])
+                    vm_mem_data["VM Count"].append(h["vm_count"])
+                    for nid in all_vm_numa_ids:
+                        vm_mem_data[f"NUMA{nid} VM Memory (MB)"].append(
+                            h.get("per_numa", {}).get(nid, 0)
+                        )
+
+                if vm_mem_data["Timestamp"]:
+                    pd.DataFrame(vm_mem_data).to_excel(
+                        writer, sheet_name="VM_Total_Memory_Timeline", index=False
+                    )
+
         # ========== Add Charts (using openpyxl directly) ==========
         try:
             from openpyxl import load_workbook
@@ -683,6 +780,75 @@ def export_to_excel(
                     swap_line.add_data(data, titles_from_data=True)
                     swap_line.set_categories(cats)
                     ws.add_chart(swap_line, "H2")
+
+            # Chart 7: SwapCache per NUMA Timeline
+            if "SwapCache_Per_NUMA_Timeline" in wb.sheetnames:
+                ws = wb["SwapCache_Per_NUMA_Timeline"]
+                if ws.max_row > 1:
+                    sc_chart = LineChart()
+                    sc_chart.title = "SwapCache per NUMA Over Time"
+                    sc_chart.style = 13
+                    sc_chart.y_axis.title = "MB"
+                    sc_chart.x_axis.title = "Time"
+                    sc_chart.width = 22
+                    sc_chart.height = 10
+
+                    data = Reference(ws, min_col=2, min_row=1, max_col=ws.max_column, max_row=ws.max_row)
+                    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+                    sc_chart.add_data(data, titles_from_data=True)
+                    sc_chart.set_categories(cats)
+                    ws.add_chart(sc_chart, "I2")
+
+            # Chart 8: NUMA Free/Used Memory Timeline
+            if "NUMA_Memory_Timeline" in wb.sheetnames:
+                ws = wb["NUMA_Memory_Timeline"]
+                if ws.max_row > 1:
+                    numa_chart = LineChart()
+                    numa_chart.title = "NUMA Free/Used Memory Over Time"
+                    numa_chart.style = 13
+                    numa_chart.y_axis.title = "MB"
+                    numa_chart.x_axis.title = "Time"
+                    numa_chart.width = 22
+                    numa_chart.height = 10
+
+                    # Select only Free and Used columns for chart readability
+                    free_cols = []
+                    used_cols = []
+                    for col_idx in range(2, ws.max_column + 1):
+                        header = ws.cell(row=1, column=col_idx).value
+                        if header and "Free" in header:
+                            free_cols.append(col_idx)
+                        elif header and "Used" in header:
+                            used_cols.append(col_idx)
+
+                    for col in free_cols:
+                        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+                        numa_chart.add_data(data, titles_from_data=True)
+                    for col in used_cols:
+                        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+                        numa_chart.add_data(data, titles_from_data=True)
+
+                    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+                    numa_chart.set_categories(cats)
+                    ws.add_chart(numa_chart, "I2")
+
+            # Chart 9: VM Total Memory Timeline
+            if "VM_Total_Memory_Timeline" in wb.sheetnames:
+                ws = wb["VM_Total_Memory_Timeline"]
+                if ws.max_row > 1:
+                    vm_chart = LineChart()
+                    vm_chart.title = "VM Total Memory Over Time"
+                    vm_chart.style = 13
+                    vm_chart.y_axis.title = "MB"
+                    vm_chart.x_axis.title = "Time"
+                    vm_chart.width = 18
+                    vm_chart.height = 8
+
+                    data = Reference(ws, min_col=2, min_row=1, max_col=ws.max_column, max_row=ws.max_row)
+                    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+                    vm_chart.add_data(data, titles_from_data=True)
+                    vm_chart.set_categories(cats)
+                    ws.add_chart(vm_chart, "I2")
 
             wb.save(output_file)
             print("[OK] Charts added to Excel report")
