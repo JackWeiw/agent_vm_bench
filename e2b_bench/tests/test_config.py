@@ -199,6 +199,7 @@ class TestConfigRoundRobin:
         config = Config()
         assert config.benchmark_mode == "fixed"
         assert config.round_count is None
+        assert config.round_size == 5
         assert config.round_interval == 5
 
     def test_set_via_constructor(self):
@@ -241,6 +242,7 @@ test:
         # Should use defaults when not specified
         assert config.benchmark_mode == "fixed"
         assert config.round_count is None
+        assert config.round_size == 5
         assert config.round_interval == 5
 
     def test_merge_with_args_override(self):
@@ -461,7 +463,258 @@ test:
             # The config file should have benchmark_mode: "round_robin"
             assert config.benchmark_mode == "round_robin"
             assert config.round_count == 5
+            assert config.round_size == 5
             assert config.round_interval == 5  # Updated default value
+
+    # --- round_size and coexistence tests (after removing mutual exclusivity) ---
+
+    def test_round_size_default_is_5(self):
+        """Default round_size is 5 (not None)"""
+        config = Config()
+        assert config.round_size == 5
+
+    def test_round_size_via_constructor(self):
+        """Set round_size via constructor"""
+        config = Config(round_size=10)
+        assert config.round_size == 10
+
+    def test_round_size_from_yaml(self):
+        """Load round_size from YAML"""
+        yaml_content = """
+test:
+  round_size: 10
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+        assert config.round_size == 10
+
+    def test_round_size_yaml_default_when_missing(self):
+        """YAML without round_size uses default 5"""
+        yaml_content = """
+test:
+  duration: 160
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+        assert config.round_size == 5  # Default, not None
+
+    def test_round_size_and_round_count_coexist(self):
+        """round_size and round_count can both be set (no mutual exclusivity)"""
+        config = Config(benchmark_mode="round_robin", round_size=5, round_count=10)
+        assert config.round_size == 5
+        assert config.round_count == 10
+
+    def test_round_size_and_round_count_from_yaml(self):
+        """Load both round_size and round_count from YAML (coexistence)"""
+        yaml_content = """
+test:
+  benchmark_mode: round_robin
+  round_size: 5
+  round_count: 10
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+        assert config.benchmark_mode == "round_robin"
+        assert config.round_size == 5
+        assert config.round_count == 10
+
+    def test_round_size_merge_with_args(self):
+        """CLI overrides YAML round_size"""
+        yaml_content = """
+test:
+  round_size: 3
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        import argparse
+
+        args = argparse.Namespace(
+            e2b_access_token=None,
+            e2b_api_key=None,
+            e2b_domain=None,
+            e2b_api_url=None,
+            e2b_http_ssl=None,
+            template=None,
+            create_timeout=None,
+            total=None,
+            detect=False,
+            create_only=False,
+            sandbox_ids_file=None,
+            create_batch_size=None,
+            create_batch_interval=None,
+            task_batch_size=None,
+            task_batch_interval=None,
+            browser_url=None,
+            browser_timeout=None,
+            browser_interval_min=None,
+            browser_interval_max=None,
+            warmup_url=None,
+            warmup_loops=None,
+            warmup_delay=None,
+            warmup_only=False,
+            benchmark_percent=None,
+            benchmark_mode=None,
+            round_count=None,
+            round_size=10,
+            round_interval=None,
+            duration=None,
+            stats_interval=None,
+            output_dir=None,
+            filename_prefix=None,
+        )
+
+        config = Config.merge_with_args(yaml_config, args)
+        assert config.round_size == 10  # CLI wins over YAML 3
+
+    def test_round_size_cli_zero_overrides_yaml(self):
+        """CLI round_size=0 overrides YAML (is-not-None, not truthiness)"""
+        yaml_content = """
+test:
+  round_size: 5
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        yaml_config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        import argparse
+
+        args = argparse.Namespace(
+            e2b_access_token=None,
+            e2b_api_key=None,
+            e2b_domain=None,
+            e2b_api_url=None,
+            e2b_http_ssl=None,
+            template=None,
+            create_timeout=None,
+            total=None,
+            detect=False,
+            create_only=False,
+            sandbox_ids_file=None,
+            create_batch_size=None,
+            create_batch_interval=None,
+            task_batch_size=None,
+            task_batch_interval=None,
+            browser_url=None,
+            browser_timeout=None,
+            browser_interval_min=None,
+            browser_interval_max=None,
+            warmup_url=None,
+            warmup_loops=None,
+            warmup_delay=None,
+            warmup_only=False,
+            benchmark_percent=None,
+            benchmark_mode=None,
+            round_count=None,
+            round_size=0,
+            round_interval=None,
+            duration=None,
+            stats_interval=None,
+            output_dir=None,
+            filename_prefix=None,
+        )
+
+        config = Config.merge_with_args(yaml_config, args)
+        assert config.round_size == 0  # 0 should override, not fall through to YAML
+
+    def test_from_args_round_size_default_when_none(self):
+        """from_args should use default 5 when round_size is None"""
+        import argparse
+
+        args = argparse.Namespace(
+            e2b_access_token=None,
+            e2b_api_key=None,
+            e2b_domain=None,
+            e2b_api_url=None,
+            e2b_http_ssl=None,
+            template=None,
+            create_timeout=None,
+            total=None,
+            detect=False,
+            create_only=False,
+            sandbox_ids_file=None,
+            create_batch_size=None,
+            create_batch_interval=None,
+            task_batch_size=None,
+            task_batch_interval=None,
+            browser_url=None,
+            browser_timeout=None,
+            browser_interval_min=None,
+            browser_interval_max=None,
+            warmup_url=None,
+            warmup_loops=None,
+            warmup_delay=None,
+            warmup_only=False,
+            benchmark_percent=None,
+            benchmark_mode=None,
+            round_count=None,
+            round_size=None,
+            round_interval=None,
+            duration=None,
+            stats_interval=None,
+            output_dir=None,
+            filename_prefix=None,
+        )
+
+        config = Config.from_args(args)
+        assert config.round_size == 5  # Default, not None
+
+    def test_from_args_round_size_explicit(self):
+        """from_args with explicit round_size value"""
+        import argparse
+
+        args = argparse.Namespace(
+            e2b_access_token=None,
+            e2b_api_key=None,
+            e2b_domain=None,
+            e2b_api_url=None,
+            e2b_http_ssl=None,
+            template=None,
+            create_timeout=None,
+            total=None,
+            detect=False,
+            create_only=False,
+            sandbox_ids_file=None,
+            create_batch_size=None,
+            create_batch_interval=None,
+            task_batch_size=None,
+            task_batch_interval=None,
+            browser_url=None,
+            browser_timeout=None,
+            browser_interval_min=None,
+            browser_interval_max=None,
+            warmup_url=None,
+            warmup_loops=None,
+            warmup_delay=None,
+            warmup_only=False,
+            benchmark_percent=None,
+            benchmark_mode="round_robin",
+            round_count=10,
+            round_size=3,
+            round_interval=None,
+            duration=None,
+            stats_interval=None,
+            output_dir=None,
+            filename_prefix=None,
+        )
+
+        config = Config.from_args(args)
+        assert config.round_size == 3  # Explicit value
+        assert config.round_count == 10  # Coexistence
 
 
 def _create_minimal_args():
@@ -495,6 +748,7 @@ def _create_minimal_args():
         benchmark_percent=None,
         benchmark_mode=None,  # Add round-robin field
         round_count=None,  # Add round-robin field
+        round_size=None,  # Add round-robin field
         round_interval=None,  # Add round-robin field
         duration=None,
         stats_interval=None,
@@ -572,6 +826,7 @@ sandbox:
             benchmark_percent=None,
             benchmark_mode=None,
             round_count=None,
+            round_size=None,
             round_interval=None,
             duration=None,
             stats_interval=None,
@@ -613,6 +868,7 @@ sandbox:
             benchmark_percent=None,
             benchmark_mode=None,
             round_count=None,
+            round_size=None,
             round_interval=None,
             duration=None,
             stats_interval=None,
@@ -1061,6 +1317,7 @@ sandbox:
             benchmark_percent=None,
             benchmark_mode=None,
             round_count=None,
+            round_size=None,
             round_interval=None,
             duration=None,
             stats_interval=None,
@@ -1102,6 +1359,7 @@ sandbox:
             benchmark_percent=None,
             benchmark_mode=None,
             round_count=None,
+            round_size=None,
             round_interval=None,
             duration=None,
             stats_interval=None,
