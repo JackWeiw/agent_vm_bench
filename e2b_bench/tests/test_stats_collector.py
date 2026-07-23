@@ -333,10 +333,7 @@ class TestStatsCollectorRoundBaselineTiming:
         - Post-last: baseline=80 (recorded after Round 3 completes)
         """
         # 80 sandboxes, each completing 1 task
-        sandbox_states = {
-            i: self._create_sandbox_with_latencies(i, [46.23])
-            for i in range(80)
-        }
+        sandbox_states = {i: self._create_sandbox_with_latencies(i, [46.23]) for i in range(80)}
 
         collector = StatsCollector(self.config, sandbox_states)
 
@@ -390,10 +387,7 @@ class TestStatsCollectorRoundBaselineTiming:
         _calculate_round_finals falls back to final_browser_total for the last round.
         This test verifies that fallback also works correctly.
         """
-        sandbox_states = {
-            i: self._create_sandbox_with_latencies(i, [46.23])
-            for i in range(80)
-        }
+        sandbox_states = {i: self._create_sandbox_with_latencies(i, [46.23]) for i in range(80)}
 
         collector = StatsCollector(self.config, sandbox_states)
 
@@ -445,10 +439,7 @@ class TestStatsCollectorRoundBaselineTiming:
 
         This matches the user's observed output exactly.
         """
-        sandbox_states = {
-            i: self._create_sandbox_with_latencies(i, [46.23])
-            for i in range(80)
-        }
+        sandbox_states = {i: self._create_sandbox_with_latencies(i, [46.23]) for i in range(80)}
 
         collector = StatsCollector(self.config, sandbox_states)
 
@@ -481,7 +472,7 @@ class TestStatsCollectorRoundBaselineTiming:
         round_finals = formatter._calculate_round_finals(collector._round_start_totals)
 
         # BUGGY results matching user's observed output:
-        assert round_finals[0]["tasks"] == 0   # BUG: should be 20
+        assert round_finals[0]["tasks"] == 0  # BUG: should be 20
         assert round_finals[1]["tasks"] == 20  # Wrong attribution (Round 0's data)
         assert round_finals[2]["tasks"] == 20  # Wrong attribution (Round 1's data)
         assert round_finals[3]["tasks"] == 40  # BUG: cumulative of Round 2 + Round 3

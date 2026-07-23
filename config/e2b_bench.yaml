@@ -34,7 +34,7 @@ task_batch:
 # Browser task configuration
 browser:
   urls:
-    - "http://192.168.110.10:8080/Weibo.html"
+    - "http://192.168.110.10:8080/Hubble_Space_Telescope.html"
   task_timeout: 200
   interval_min: 5
   interval_max: 15
@@ -50,7 +50,7 @@ browser:
     - "http://192.168.110.10:8080/United_States.html"
     - "http://192.168.110.10:8080/World_War_II.html"
   warmup_loops: 1            # Loop count for warmup pages
-  warmup_delay: 2           # Delay between warmup pages (seconds)
+  warmup_delay: 5           # Delay between warmup pages (seconds)
   warmup_only: false         # Run warmup phase only, then exit
 
 # Test run configuration
