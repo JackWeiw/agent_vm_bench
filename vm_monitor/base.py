@@ -477,6 +477,7 @@ class VMMonitorBase(ABC):
 
             self.swap_history.append(
                 {
+                    "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "capacity": {
                         "total_mb": swap_total_mb,
                         "free_mb": swap_free_mb,

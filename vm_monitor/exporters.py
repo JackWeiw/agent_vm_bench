@@ -551,55 +551,60 @@ def export_to_excel(
                 pd.DataFrame(raw_data).to_excel(writer, sheet_name="Raw_VM_Data", index=False)
 
             # ========== Swap_Timeline Sheet ==========
+            # Combines swap partition data + per-NUMA SwapCache for unified view
             if monitor.swap_history:
+                all_numa_ids = sorted(set(
+                    n["node"] for entry in monitor.numa_memory_history for n in entry["nodes"]
+                )) if monitor.numa_memory_history else []
+
+                # Align swap_history and numa_memory_history by timestamp
+                min_len = min(len(monitor.swap_history), len(monitor.numa_memory_history)) if monitor.numa_memory_history else len(monitor.swap_history)
+
                 swap_timeline_data = {
                     "Timestamp": [],
                     "Swap Used (MB)": [],
+                    "Swap Free (MB)": [],
                     "Swap Cached (MB)": [],
                     "Swap Cache Ratio (%)": [],
                     "Swap In Rate (pages/s)": [],
                     "Swap Out Rate (pages/s)": [],
                 }
-                for i, s in enumerate(monitor.swap_history):
-                    timestamp = monitor.data[i]["timestamp"] if i < len(monitor.data) else f"Sample {i+1}"
-                    swap_timeline_data["Timestamp"].append(timestamp)
+                for nid in all_numa_ids:
+                    swap_timeline_data[f"NUMA{nid} SwapCache (MB)"] = []
+
+                for i in range(min_len):
+                    s = monitor.swap_history[i]
+                    swap_timeline_data["Timestamp"].append(s["ts"])
                     swap_timeline_data["Swap Used (MB)"].append(s["capacity"]["used_mb"])
+                    swap_timeline_data["Swap Free (MB)"].append(s["capacity"]["free_mb"])
                     swap_timeline_data["Swap Cached (MB)"].append(s["cache"]["cached_mb"])
                     swap_timeline_data["Swap Cache Ratio (%)"].append(s["cache"]["cached_ratio_pct"])
                     swap_timeline_data["Swap In Rate (pages/s)"].append(s["activity"]["swap_in_rate"])
                     swap_timeline_data["Swap Out Rate (pages/s)"].append(s["activity"]["swap_out_rate"])
-                pd.DataFrame(swap_timeline_data).to_excel(writer, sheet_name="Swap_Timeline", index=False)
 
-            # ========== SwapCache_Per_NUMA_Timeline Sheet ==========
-            if monitor.numa_memory_history and monitor.swap_history:
-                all_numa_ids = sorted(set(
-                    n["node"] for entry in monitor.numa_memory_history for n in entry["nodes"]
-                ))
-                sc_timeline_data = {
-                    "Timestamp": [],
-                    "SwapCache Total (MB)": [],
-                }
-                for nid in all_numa_ids:
-                    sc_timeline_data[f"NUMA{nid} SwapCache (MB)"] = []
+                    # Per-NUMA SwapCache from numa_memory_history
+                    if i < len(monitor.numa_memory_history):
+                        node_lookup = {n["node"]: n for n in monitor.numa_memory_history[i]["nodes"]}
+                        for nid in all_numa_ids:
+                            node_data = node_lookup.get(nid, {})
+                            swap_timeline_data[f"NUMA{nid} SwapCache (MB)"].append(
+                                node_data.get("swap_cached_mb", 0)
+                            )
 
-                min_len = min(len(monitor.swap_history), len(monitor.numa_memory_history))
-                for i in range(min_len):
-                    swap_entry = monitor.swap_history[i]
-                    numa_entry = monitor.numa_memory_history[i]
-                    ts = numa_entry["ts"]
-                    sc_timeline_data["Timestamp"].append(ts)
-                    sc_timeline_data["SwapCache Total (MB)"].append(swap_entry["cache"]["cached_mb"])
-                    node_lookup = {n["node"]: n for n in numa_entry["nodes"]}
+                # Handle remaining swap_history entries beyond numa_memory_history
+                for i in range(min_len, len(monitor.swap_history)):
+                    s = monitor.swap_history[i]
+                    swap_timeline_data["Timestamp"].append(s["ts"])
+                    swap_timeline_data["Swap Used (MB)"].append(s["capacity"]["used_mb"])
+                    swap_timeline_data["Swap Free (MB)"].append(s["capacity"]["free_mb"])
+                    swap_timeline_data["Swap Cached (MB)"].append(s["cache"]["cached_mb"])
+                    swap_timeline_data["Swap Cache Ratio (%)"].append(s["cache"]["cached_ratio_pct"])
+                    swap_timeline_data["Swap In Rate (pages/s)"].append(s["activity"]["swap_in_rate"])
+                    swap_timeline_data["Swap Out Rate (pages/s)"].append(s["activity"]["swap_out_rate"])
                     for nid in all_numa_ids:
-                        node_data = node_lookup.get(nid, {})
-                        sc_timeline_data[f"NUMA{nid} SwapCache (MB)"].append(
-                            node_data.get("swap_cached_mb", 0)
-                        )
+                        swap_timeline_data[f"NUMA{nid} SwapCache (MB)"].append(0)
 
-                if sc_timeline_data["Timestamp"]:
-                    pd.DataFrame(sc_timeline_data).to_excel(
-                        writer, sheet_name="SwapCache_Per_NUMA_Timeline", index=False
-                    )
+                pd.DataFrame(swap_timeline_data).to_excel(writer, sheet_name="Swap_Timeline", index=False)
 
             # ========== NUMA_Memory_Timeline Sheet ==========
             # Focus NUMA nodes: CLI-specified + remote borrowing node (NUMA5)
@@ -770,7 +775,7 @@ def export_to_excel(
                 bar2.set_categories(cats)
                 ws.add_chart(bar2, "D2")
 
-            # Chart 6: Swap In/Out Rate Timeline
+            # Chart 6: Swap In/Out Rate + SwapCached Timeline
             if "Swap_Timeline" in wb.sheetnames:
                 ws = wb["Swap_Timeline"]
                 if ws.max_row > 1:
@@ -782,30 +787,51 @@ def export_to_excel(
                     swap_line.width = 18
                     swap_line.height = 8
 
-                    # Swap In Rate (col 5) and Swap Out Rate (col 6)
-                    data = Reference(ws, min_col=5, min_row=1, max_col=6, max_row=ws.max_row)
-                    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
-                    swap_line.add_data(data, titles_from_data=True)
-                    swap_line.set_categories(cats)
+                    # Find Swap In Rate and Swap Out Rate columns by header name
+                    in_col = None
+                    out_col = None
+                    for col_idx in range(2, ws.max_column + 1):
+                        header = ws.cell(row=1, column=col_idx).value
+                        if header and "In Rate" in header:
+                            in_col = col_idx
+                        elif header and "Out Rate" in header:
+                            out_col = col_idx
+
+                    if in_col and out_col:
+                        data = Reference(ws, min_col=in_col, min_row=1, max_col=out_col, max_row=ws.max_row)
+                        cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+                        swap_line.add_data(data, titles_from_data=True)
+                        swap_line.set_categories(cats)
                     ws.add_chart(swap_line, "H2")
 
-            # Chart 7: SwapCache per NUMA Timeline
-            if "SwapCache_Per_NUMA_Timeline" in wb.sheetnames:
-                ws = wb["SwapCache_Per_NUMA_Timeline"]
+            # Chart 7: SwapCache (Total + per NUMA) from Swap_Timeline sheet
+            if "Swap_Timeline" in wb.sheetnames:
+                ws = wb["Swap_Timeline"]
                 if ws.max_row > 1:
                     sc_chart = LineChart()
                     sc_chart.title = "SwapCache per NUMA Over Time"
-                    sc_chart.style = 13
+                    sc_chart.style = 10
                     sc_chart.y_axis.title = "MB"
                     sc_chart.x_axis.title = "Time"
                     sc_chart.width = 22
                     sc_chart.height = 10
 
-                    data = Reference(ws, min_col=2, min_row=1, max_col=ws.max_column, max_row=ws.max_row)
-                    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
-                    sc_chart.add_data(data, titles_from_data=True)
-                    sc_chart.set_categories(cats)
-                    ws.add_chart(sc_chart, "I2")
+                    # Find Swap Cached + per-NUMA SwapCache columns by header name
+                    sc_cols = []
+                    for col_idx in range(2, ws.max_column + 1):
+                        header = ws.cell(row=1, column=col_idx).value
+                        if header and ("SwapCached" in header or "SwapCache" in header or "Cached" in header):
+                            sc_cols.append(col_idx)
+
+                    if sc_cols:
+                        # Build data reference across all SwapCache columns
+                        min_sc_col = min(sc_cols)
+                        max_sc_col = max(sc_cols)
+                        data = Reference(ws, min_col=min_sc_col, min_row=1, max_col=max_sc_col, max_row=ws.max_row)
+                        cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+                        sc_chart.add_data(data, titles_from_data=True)
+                        sc_chart.set_categories(cats)
+                    ws.add_chart(sc_chart, "H16")
 
             # Chart 8A: NUMA Free/Used Memory — memory headroom comparison
             # Two separate charts for readability: Free/Used (MB scale) and SwapCache/Usage (mixed scale)
