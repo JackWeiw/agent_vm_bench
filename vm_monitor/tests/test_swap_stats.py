@@ -161,6 +161,7 @@ class TestCollectSwapStats(unittest.TestCase):
 
         snapshot = self.monitor.swap_history[0]
         # Verify nested structure
+        self.assertIn("ts", snapshot)
         self.assertIn("capacity", snapshot)
         self.assertIn("cache", snapshot)
         self.assertIn("activity", snapshot)
