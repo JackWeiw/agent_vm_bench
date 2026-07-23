@@ -321,13 +321,19 @@ class VMMonitorBase(ABC):
         )
 
     def print_numa_real_time(self):
-        nodes = self.get_numa_nodes_memory()
-        if not nodes:
+        """Display the latest NUMA memory data from numa_memory_history.
+
+        Uses the most recent entry from numa_memory_history (collected by
+        collect_sample) rather than re-reading sysfs, to avoid duplicate
+        data collection and keep history aligned with other metrics.
+        """
+        if not self.numa_memory_history:
             return
+        latest = self.numa_memory_history[-1]["nodes"]
         focus_nodes = self.get_focus_numa_nodes()
         print("=" * 100)
         print("NUMA Node Memory Real-time Usage")
-        for n in nodes:
+        for n in latest:
             nid = n["node"]
             sc = n.get("swap_cached_mb", 0)
             if nid in focus_nodes:
@@ -635,6 +641,7 @@ class VMMonitorBase(ABC):
         self.collect_numa_cpu()
         self.collect_host_stats()
         self.collect_swap_stats()
+        self.get_numa_nodes_memory()  # Collect NUMA meminfo in same cycle as swap/hugepage
         vms = self.get_vms_realtime()
         self.last_vm_count = len(vms)
 

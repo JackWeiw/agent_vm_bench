@@ -552,13 +552,14 @@ def export_to_excel(
 
             # ========== Swap_Timeline Sheet ==========
             # Combines swap partition data + per-NUMA SwapCache for unified view
+            # Both swap_history and numa_memory_history are collected in the same
+            # collect_sample() cycle, so they should have equal length.
+            # If lengths differ (edge case), we align by swap_history length and
+            # fill missing per-NUMA data with 0.
             if monitor.swap_history:
                 all_numa_ids = sorted(set(
                     n["node"] for entry in monitor.numa_memory_history for n in entry["nodes"]
                 )) if monitor.numa_memory_history else []
-
-                # Align swap_history and numa_memory_history by timestamp
-                min_len = min(len(monitor.swap_history), len(monitor.numa_memory_history)) if monitor.numa_memory_history else len(monitor.swap_history)
 
                 swap_timeline_data = {
                     "Timestamp": [],
@@ -572,8 +573,7 @@ def export_to_excel(
                 for nid in all_numa_ids:
                     swap_timeline_data[f"NUMA{nid} SwapCache (MB)"] = []
 
-                for i in range(min_len):
-                    s = monitor.swap_history[i]
+                for i, s in enumerate(monitor.swap_history):
                     swap_timeline_data["Timestamp"].append(s["ts"])
                     swap_timeline_data["Swap Used (MB)"].append(s["capacity"]["used_mb"])
                     swap_timeline_data["Swap Free (MB)"].append(s["capacity"]["free_mb"])
@@ -582,7 +582,7 @@ def export_to_excel(
                     swap_timeline_data["Swap In Rate (pages/s)"].append(s["activity"]["swap_in_rate"])
                     swap_timeline_data["Swap Out Rate (pages/s)"].append(s["activity"]["swap_out_rate"])
 
-                    # Per-NUMA SwapCache from numa_memory_history
+                    # Per-NUMA SwapCache from numa_memory_history (same cycle)
                     if i < len(monitor.numa_memory_history):
                         node_lookup = {n["node"]: n for n in monitor.numa_memory_history[i]["nodes"]}
                         for nid in all_numa_ids:
@@ -590,19 +590,12 @@ def export_to_excel(
                             swap_timeline_data[f"NUMA{nid} SwapCache (MB)"].append(
                                 node_data.get("swap_cached_mb", 0)
                             )
+                    else:
+                        # Edge case: numa_memory_history shorter than swap_history
+                        for nid in all_numa_ids:
+                            swap_timeline_data[f"NUMA{nid} SwapCache (MB)"].append(0)
 
-                # Handle remaining swap_history entries beyond numa_memory_history
-                for i in range(min_len, len(monitor.swap_history)):
-                    s = monitor.swap_history[i]
-                    swap_timeline_data["Timestamp"].append(s["ts"])
-                    swap_timeline_data["Swap Used (MB)"].append(s["capacity"]["used_mb"])
-                    swap_timeline_data["Swap Free (MB)"].append(s["capacity"]["free_mb"])
-                    swap_timeline_data["Swap Cached (MB)"].append(s["cache"]["cached_mb"])
-                    swap_timeline_data["Swap Cache Ratio (%)"].append(s["cache"]["cached_ratio_pct"])
-                    swap_timeline_data["Swap In Rate (pages/s)"].append(s["activity"]["swap_in_rate"])
-                    swap_timeline_data["Swap Out Rate (pages/s)"].append(s["activity"]["swap_out_rate"])
-                    for nid in all_numa_ids:
-                        swap_timeline_data[f"NUMA{nid} SwapCache (MB)"].append(0)
+
 
                 pd.DataFrame(swap_timeline_data).to_excel(writer, sheet_name="Swap_Timeline", index=False)
 
