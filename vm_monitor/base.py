@@ -39,11 +39,24 @@ class VMMonitorBase(ABC):
         running: Monitoring state flag
         data: List of collected sample records
         target_numa_nodes: NUMA nodes to monitor for CPU stats
-        numa_memory_history: NUMA memory usage timeline
+        numa_memory_history: NUMA memory usage timeline (full meminfo)
         hugepage_per_numa: Per-NUMA hugepage statistics
         host_cpu_history: Host total CPU timeline
         swap_history: Swap usage timeline
+        vm_total_memory_history: VM total memory aggregation timeline
     """
+
+    # Fields to extract from per-NUMA meminfo (sysfs name -> dict key)
+    _NUMA_MEMINFO_FIELDS = {
+        "MemTotal": "total_mb",
+        "MemFree": "free_mb",
+        "MemAvailable": "available_mb",
+        "SwapCached": "swap_cached_mb",
+        "Active": "active_mb",
+        "Inactive": "inactive_mb",
+        "AnonPages": "anon_pages_mb",
+        "FilePages": "file_pages_mb",
+    }
 
     def __init__(self):
         """Initialize monitor with empty data containers"""
@@ -77,6 +90,9 @@ class VMMonitorBase(ABC):
         self.peak_swap_cached_mb = 0.0
         self._last_pswpin = None
         self._last_pswpout = None
+
+        # VM Total Memory Aggregation
+        self.vm_total_memory_history = []
 
         # Specified NUMA Node CPU Statistics
         self.target_numa_nodes = [0]
@@ -154,31 +170,60 @@ class VMMonitorBase(ABC):
 
     # ==================== NUMA Memory Statistics ====================
     def get_numa_nodes_memory(self):
+        """Collect full per-NUMA meminfo from /sys/devices/system/node/node{N}/meminfo
+
+        Parses MemTotal, MemFree, MemAvailable, SwapCached, Active, Inactive,
+        AnonPages, FilePages for each NUMA node. Computes used_mb and usage_pct
+        from total - free. Preserves backward-compat alias keys (total, used,
+        free, usage).
+        """
         numa_nodes = []
         try:
-            node_dirs = [d for d in os.listdir("/sys/devices/system/node/") if d.startswith("node") and d[4:].isdigit()]
+            node_dirs = [d for d in os.listdir("/sys/devices/system/node/")
+                         if d.startswith("node") and d[4:].isdigit()]
             for node in sorted(node_dirs, key=lambda x: int(x[4:])):
                 node_id = int(node[4:])
                 path = f"/sys/devices/system/node/{node}/meminfo"
                 with open(path) as f:
                     lines = f.read().splitlines()
-                total = free = 0
-                for l in lines:
-                    if "MemTotal" in l:
-                        total = int(l.split()[3]) * 1024
-                    if "MemFree" in l:
-                        free = int(l.split()[3]) * 1024
-                used = total - free
-                total_mb = round(total / 1024 / 1024, 2)
-                used_mb = round(used / 1024 / 1024, 2)
-                free_mb = round(free / 1024 / 1024, 2)
-                usage = round(used / total * 100, 2) if total > 0 else 0.0
-                numa_nodes.append(
-                    {"node": node_id, "total": total_mb, "used": used_mb, "free": free_mb, "usage": usage}
-                )
-        except:
+
+                # Parse all relevant fields using regex
+                # Format: "Node N FieldName:     value kB"
+                parsed_mb = {}
+                for line in lines:
+                    match = re.match(r"Node\s+\d+\s+(\w+):\s+(\d+)\s+kB", line)
+                    if match:
+                        field_name = match.group(1)
+                        value_kb = int(match.group(2))
+                        value_mb = round(value_kb / 1024, 2)
+                        parsed_mb[field_name] = value_mb
+
+                # Build result dict with canonical keys
+                result = {"node": node_id}
+                for sysfs_name, dict_key in self._NUMA_MEMINFO_FIELDS.items():
+                    result[dict_key] = parsed_mb.get(sysfs_name, 0.0)
+
+                # Compute derived fields
+                total_mb = result.get("total_mb", 0.0)
+                free_mb = result.get("free_mb", 0.0)
+                used_mb = round(total_mb - free_mb, 2)
+                usage_pct = round(used_mb / total_mb * 100, 2) if total_mb > 0 else 0.0
+                result["used_mb"] = used_mb
+                result["usage_pct"] = usage_pct
+
+                # Backward-compat aliases (no suffix)
+                result["total"] = total_mb
+                result["used"] = used_mb
+                result["free"] = free_mb
+                result["usage"] = usage_pct
+
+                numa_nodes.append(result)
+        except Exception:
             pass
-        self.numa_memory_history.append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "nodes": numa_nodes})
+
+        self.numa_memory_history.append(
+            {"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "nodes": numa_nodes}
+        )
         return numa_nodes
 
     def collect_hugepage_stats(self):
