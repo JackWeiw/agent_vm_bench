@@ -16,6 +16,20 @@ class ReportAggregator:
     COLUMN_GROUPS = {
         "Basic": ["task_id", "total_count", "ratio", "benchmark_percent"],
         "Browser": ["Browser_Success_Rate", "Browser_Avg_Latency_ms", "Browser_P99_Latency_ms", "Browser_Total_Tasks"],
+        "Browser_Steps": [
+            "Browser_open_tab_Count",
+            "Browser_open_tab_Avg_ms",
+            "Browser_open_tab_P99_ms",
+            "Browser_snapshot_Count",
+            "Browser_snapshot_Avg_ms",
+            "Browser_snapshot_P99_ms",
+            "Browser_click_Count",
+            "Browser_click_Avg_ms",
+            "Browser_click_P99_ms",
+            "Browser_screenshot_Count",
+            "Browser_screenshot_Avg_ms",
+            "Browser_screenshot_P99_ms",
+        ],
         "VM_CPU": ["VM_CPU_Mean", "VM_CPU_Max"],
         "DevKit_TopDown": [
             "DevKit_TopDown_Cycles_Avg",
@@ -46,6 +60,7 @@ class ReportAggregator:
     SOURCE_COLORS = {
         "Basic": "4472C4",  # Blue
         "Browser": "70AD47",  # Green
+        "Browser_Steps": "5B9BD5",  # Light Blue (step timing subset)
         "VM_CPU": "FFC000",  # Orange
         "DevKit_TopDown": "ED7D31",  # Dark Orange
         "DevKit_Memory": "A5A5A5",  # Gray
@@ -239,6 +254,7 @@ class ReportAggregator:
         name_to_key = {
             "Basic": "Basic",
             "Browser": "Browser",
+            "Browser Steps": "Browser_Steps",
             "VM CPU": "VM_CPU",
             "DevKit TopDown": "DevKit_TopDown",
             "DevKit Memory": "DevKit_Memory",
@@ -256,6 +272,7 @@ class ReportAggregator:
         display_names = {
             "Basic": "Basic",
             "Browser": "Browser",
+            "Browser_Steps": "Browser Steps",
             "VM_CPU": "VM CPU",
             "DevKit_TopDown": "DevKit TopDown",
             "DevKit_Memory": "DevKit Memory",

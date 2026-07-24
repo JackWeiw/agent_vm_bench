@@ -23,14 +23,19 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Dict
 
 from .config import Config
 from .llm_runner import check_mockllm_health, LLMTaskManager, OpenClawConfig
+from .round_robin import RoundRobinTaskManager
 from .sandbox_manager import SandboxManager
 from .scenario_loader import find_scenario_file, load_scenarios
-from .schemas import SandboxStatus
+from .schemas import SandboxState, SandboxStatus
 from .stats_collector import StatsCollector
 from .task_runner import TaskManager
+
+# Warmup wave size constant - max sandboxes per wave in warmup-only mode
+WARMUP_WAVE_SIZE = 100
 
 
 class SmapToolManager:
@@ -329,6 +334,34 @@ class VmMonitorManager:
         self.process = None
 
 
+def append_sandbox_ids(config: Config, sandbox_states: Dict[int, SandboxState]) -> None:
+    """Append sandbox IDs to file (one ID per line)
+
+    Called after each wave completes, supports incremental ID saving.
+
+    Args:
+        config: Configuration object
+        sandbox_states: Dictionary of sandbox states
+    """
+    if not config.sandbox_ids_file:
+        return
+
+    successful_ids = [
+        s.sandbox_obj.sandbox_id
+        for s in sandbox_states.values()
+        if s.creation_metrics.status == SandboxStatus.PORT_READY and s.sandbox_obj is not None
+    ]
+
+    if successful_ids:
+        try:
+            with open(config.sandbox_ids_file, "a") as f:  # Append mode
+                for sid in successful_ids:
+                    f.write(f"{sid}\n")
+            print(f"Appended {len(successful_ids)} sandbox IDs to: {config.sandbox_ids_file}")
+        except OSError as e:
+            print(f"ERROR: Failed to append sandbox IDs: {e}")
+
+
 def run_benchmark(config: Config) -> dict:
     """Run E2B sandbox performance test
 
@@ -386,10 +419,18 @@ def run_benchmark(config: Config) -> dict:
 
     print(f"  Duration: {config.test_duration}s")
 
-    # Benchmark percent display
-    if config.benchmark_percent < 1.0:
-        benchmark_count = config.benchmark_count
-        print(f"  Benchmark: {benchmark_count}/{config.total_count} sandboxes ({config.benchmark_percent * 100:.0f}%)")
+    # Benchmark mode display (with mode-specific info)
+    if config.benchmark_mode == "round_robin":
+        print(f"  Benchmark Mode: round_robin ({config.round_count} rounds x {config.round_interval}s)")
+        print(f"  Sandboxes: All {config.total_count} sandboxes will be tested across rounds")
+    else:
+        # Benchmark percent display (only for fixed mode)
+        print(f"  Benchmark Mode: fixed")
+        if config.benchmark_percent < 1.0:
+            benchmark_count = config.benchmark_count
+            print(
+                f"  Benchmark: {benchmark_count}/{config.total_count} sandboxes ({config.benchmark_percent * 100:.0f}%)"
+            )
 
     print("=" * 80)
 
@@ -398,6 +439,9 @@ def run_benchmark(config: Config) -> dict:
 
     # 2. Create or detect sandboxes
     sandbox_manager = SandboxManager(config, stop_event)
+
+    # Check if wave-based warmup will handle creation (skip Phase 1 in this case)
+    needs_wave_warmup = config.warmup_only and not config.detect_existing and config.total_count > WARMUP_WAVE_SIZE
 
     if config.detect_existing:
         if config.sandbox_ids_file:
@@ -410,6 +454,12 @@ def run_benchmark(config: Config) -> dict:
         else:
             sandbox_states = sandbox_manager.detect_existing()
         creation_end_time = time.time()
+    elif needs_wave_warmup:
+        # Wave-based warmup will create sandboxes in batches - skip Phase 1
+        print(f"\n[Phase 1] Skipped - wave-based warmup will create {config.total_count} sandboxes in batches")
+        sandbox_states = {}
+        creation_start_time = time.time()
+        creation_end_time = time.time()
     else:
         print("\n[Phase 1] Creating sandboxes...")
         creation_start_time = time.time()
@@ -417,11 +467,14 @@ def run_benchmark(config: Config) -> dict:
         creation_end_time = time.time()
 
     ready_count = sum(1 for s in sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY)
-    if ready_count == 0:
+
+    # Skip ready_count check for wave-based warmup (will create sandboxes in Phase 2)
+    if ready_count == 0 and not needs_wave_warmup:
         print("No sandboxes ready for testing, exiting.")
         return {}
 
-    print(f"\nSandboxes ready: {ready_count}")
+    if ready_count > 0:
+        print(f"\nSandboxes ready: {ready_count}")
 
     # Create-only mode: exit after creation with detailed timing report
     if config.create_only:
@@ -537,36 +590,121 @@ def run_benchmark(config: Config) -> dict:
 
     if config.warmup_only and config.warmup_urls:
         print("\n[Phase 2] Running warmup phase...")
-        task_manager.start_warmup()
-        warmup_start = time.time()
 
-        completed, failed = task_manager.wait_warmup(timeout=300)
-        warmup_duration = time.time() - warmup_start
+        # Check if wave-based warmup is needed
+        if config.total_count <= WARMUP_WAVE_SIZE:
+            # Single wave: existing logic
+            warmup_start = time.time()
+            task_manager.start_warmup()
+            completed, failed = task_manager.wait_warmup(timeout=300)
+            warmup_duration = time.time() - warmup_start
 
-        print(f"\nWarmup completed: {completed} sandboxes | {failed} failed | duration {warmup_duration:.1f}s")
-        print("\n[Phase 2 Complete] Warmup-only mode finished.")
-        print(f"  Warmup completed: {completed}/{ready_count}")
-        print("  Sandboxes left running for later benchmark.")
+            print(f"\nWarmup completed: {completed} sandboxes | {failed} failed | duration {warmup_duration:.1f}s")
+            print("\n[Phase 2 Complete] Warmup-only mode finished.")
+            print(f"  Warmup completed: {completed}/{ready_count}")
+            print("  Sandboxes left running for later benchmark.")
 
-        # Save sandbox IDs to file if configured (same as create-only mode)
-        if config.sandbox_ids_file:
-            successful_ids = [
-                s.sandbox_obj.sandbox_id
-                for s in sandbox_states.values()
-                if s.creation_metrics.status == SandboxStatus.PORT_READY and s.sandbox_obj is not None
-            ]
-            if successful_ids:
-                try:
-                    with open(config.sandbox_ids_file, "w") as f:
-                        for sid in successful_ids:
-                            f.write(f"{sid}\n")
-                    print(f"\nSaved {len(successful_ids)} sandbox IDs to: {config.sandbox_ids_file}")
-                except OSError as e:
-                    print(f"\nERROR: Failed to save sandbox IDs: {e}")
+            # Append sandbox IDs to file
+            append_sandbox_ids(config, sandbox_states)
+        else:
+            # Multiple waves: warmup in batches of 100
+            # Behavior depends on --detect mode:
+            # - With --detect: use already-detected sandboxes, split into waves for warmup
+            # - Without --detect: create new sandboxes in each wave (then warmup)
+            all_sandbox_states = {}
+
+            if config.detect_existing:
+                # Use already-detected sandboxes, split into waves for warmup
+                ready_states = [
+                    s for s in sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY
+                ]
+                total_detected = len(ready_states)
+                total_waves = (total_detected + WARMUP_WAVE_SIZE - 1) // WARMUP_WAVE_SIZE
+
+                print(f"  Wave-based warmup: {total_detected} detected sandboxes in {total_waves} waves")
+
+                for wave_id in range(total_waves):
+                    start_idx = wave_id * WARMUP_WAVE_SIZE
+                    end_idx = min(start_idx + WARMUP_WAVE_SIZE, total_detected)
+                    wave_states_list = ready_states[start_idx:end_idx]
+
+                    print(f"\n[Wave {wave_id + 1}/{total_waves}] Warming up {len(wave_states_list)} sandboxes...")
+
+                    # Create wave_states dict for TaskManager
+                    wave_states = {s.sandbox_id: s for s in wave_states_list}
+
+                    # Warmup current wave
+                    if config.warmup_urls:
+                        wave_config = Config(**{k: v for k, v in config.__dict__.items()})
+                        wave_config.total_count = len(wave_states_list)
+                        wave_task_manager = TaskManager(wave_config, wave_states, stop_event)
+                        wave_task_manager.start_warmup()
+                        completed, failed = wave_task_manager.wait_warmup(timeout=300)
+                        print(f"[Wave {wave_id + 1}] Warmup: {completed} completed, {failed} failed")
+
+                    # Update all_sandbox_states
+                    for state in wave_states_list:
+                        all_sandbox_states[state.sandbox_id] = state
+
+                    # Append sandbox IDs after each wave
+                    append_sandbox_ids(config, wave_states)
+
             else:
-                print(f"\nWARNING: No successful sandboxes to save to {config.sandbox_ids_file}")
+                # Create new sandboxes in each wave
+                remaining = config.total_count
+                wave_id = 0
+                total_waves = (config.total_count + WARMUP_WAVE_SIZE - 1) // WARMUP_WAVE_SIZE
 
-        return {"report": f"Warmup-only: {completed}/{ready_count} sandboxes warmed up", "filepath": None}
+                print(f"  Wave-based warmup: {config.total_count} sandboxes in {total_waves} waves")
+
+                while remaining > 0:
+                    current_wave_size = min(WARMUP_WAVE_SIZE, remaining)
+
+                    print(f"\n[Wave {wave_id + 1}/{total_waves}] Creating {current_wave_size} sandboxes...")
+
+                    # Create wave config with current wave size
+                    wave_config = Config(
+                        **{k: v for k, v in config.__dict__.items()},
+                    )
+                    wave_config.total_count = current_wave_size
+
+                    # Create wave sandbox manager
+                    wave_manager = SandboxManager(wave_config, stop_event)
+                    wave_states = wave_manager.create_all()
+
+                    wave_ready_count = sum(
+                        1 for s in wave_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY
+                    )
+
+                    if wave_ready_count == 0:
+                        print(f"[Wave {wave_id + 1}] ERROR: No sandboxes ready, stopping")
+                        break
+
+                    # Update sandbox IDs for all states
+                    for sid, state in wave_states.items():
+                        # Re-index to global namespace
+                        state.sandbox_id = wave_id * WARMUP_WAVE_SIZE + sid
+                        all_sandbox_states[state.sandbox_id] = state
+
+                    # Warmup current wave
+                    if config.warmup_urls:
+                        wave_task_manager = TaskManager(wave_config, wave_states, stop_event)
+                        wave_task_manager.start_warmup()
+                        completed, failed = wave_task_manager.wait_warmup(timeout=300)
+                        print(f"[Wave {wave_id + 1}] Warmup: {completed} completed, {failed} failed")
+
+                    # Append sandbox IDs after each wave
+                    append_sandbox_ids(config, wave_states)
+
+                    remaining -= current_wave_size
+                    wave_id += 1
+
+            total_completed = sum(1 for s in all_sandbox_states.values() if s.warmup_done)
+            print(f"\n[Phase 2 Complete] Warmup-only mode finished.")
+            print(f"  Total warmed up: {total_completed}/{len(all_sandbox_states)}")
+            print("  Sandboxes left running for later benchmark.")
+
+        return {"report": f"Warmup-only mode completed", "filepath": None}
 
     # 4. Benchmark phase (no warmup, just benchmark)
     # Mark all sandboxes as warmup_done so they can start benchmark immediately
@@ -661,21 +799,39 @@ def run_benchmark(config: Config) -> dict:
     stats_collector.start()
 
     # 6. Start task execution (with batch control and benchmark_percent)
-    benchmark_count = max(1, int(ready_count * config.benchmark_percent))
-    if config.benchmark_percent < 1.0:
-        print(
-            f"\n[Phase 4] Starting browser tasks on {benchmark_count}/{ready_count} sandboxes ({config.benchmark_percent * 100:.0f}%)..."
-        )
-    else:
-        print("\n[Phase 4] Starting browser tasks...")
-    task_manager.start_all()
+    if config.benchmark_mode == "round_robin":
+        # Round-robin mode: rotate sandbox groups across rounds
+        benchmark_count = max(1, int(ready_count * config.benchmark_percent))
+        print(f"\n[Phase 4] Starting round-robin browser tasks...")
+        print(f"  Mode: round_robin")
+        print(f"  Round size: {config.round_size} sandboxes per round")
+        if config.round_count:
+            print(f"  Max rounds: {config.round_count} (stops when round_count or duration reached)")
+        else:
+            print(f"  Max rounds: unlimited (stops when duration={config.test_duration}s reached)")
+        print(f"  Duration limit: {config.test_duration}s")
+        print(f"  Interval: {config.round_interval}s per round")
+        print(f"  Total sandboxes: {ready_count}")
 
-    # 7. Run for specified duration
-    print(f"\n[Phase 5] Running for {config.test_duration} seconds...")
-    try:
-        time.sleep(config.test_duration)
-    except KeyboardInterrupt:
-        print("\nUser interrupt, stopping...")
+        round_robin_manager = RoundRobinTaskManager(config, sandbox_states, stop_event, stats_collector)
+        round_robin_manager.run()
+    else:
+        # Fixed mode (original behavior)
+        benchmark_count = max(1, int(ready_count * config.benchmark_percent))
+        if config.benchmark_percent < 1.0:
+            print(
+                f"\n[Phase 4] Starting browser tasks on {benchmark_count}/{ready_count} sandboxes ({config.benchmark_percent * 100:.0f}%)..."
+            )
+        else:
+            print("\n[Phase 4] Starting browser tasks...")
+        task_manager.start_all()
+
+        # 7. Run for specified duration
+        print(f"\n[Phase 5] Running for {config.test_duration} seconds...")
+        try:
+            time.sleep(config.test_duration)
+        except KeyboardInterrupt:
+            print("\nUser interrupt, stopping...")
 
     # 8. Stop all components
     print("\n[Phase 6] Stopping...")
@@ -754,8 +910,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # Warmup configuration
     parser.add_argument("-w", "--warmup-url", type=str, action="append", help="Warmup page URL (can specify multiple)")
-    parser.add_argument("--warmup-loops", type=int, default=2, help="Warmup loop count")
-    parser.add_argument("--warmup-delay", type=int, default=10, help="Warmup page delay (seconds)")
+    parser.add_argument("--warmup-loops", type=int, default=None, help="Warmup loop count")
+    parser.add_argument("--warmup-delay", type=int, default=None, help="Warmup page delay (seconds)")
     parser.add_argument("-wp", "--warmup-only", action="store_true", help="Run warmup phase only, then exit")
 
     # Benchmark control
@@ -765,6 +921,37 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Percentage of sandboxes for benchmark (e.g., 0.5 = 50%%)",
+    )
+
+    # Round-robin mode control
+    parser.add_argument(
+        "-bm",
+        "--benchmark-mode",
+        type=str,
+        choices=["fixed", "round_robin"],
+        default=None,
+        help="Benchmark mode: 'fixed' (default) or 'round_robin'",
+    )
+    parser.add_argument(
+        "-rc",
+        "--round-count",
+        type=int,
+        default=None,
+        help="Max number of rounds to run (termination condition, coexists with --round-size and duration)",
+    )
+    parser.add_argument(
+        "-rs",
+        "--round-size",
+        type=int,
+        default=None,
+        help="Sandboxes per round (determines group count, coexists with --round-count, default: 5)",
+    )
+    parser.add_argument(
+        "-ri",
+        "--round-interval",
+        type=int,
+        default=None,
+        help="Round interval in seconds for round_robin mode (default: 30)",
     )
 
     # Test run

@@ -106,16 +106,64 @@ def export_to_excel(
             )
             summary_data["Unit"].extend(["MB", "MB", "MB", "%"])
 
-            # Swap stats
+            # Swap Capacity stats
             if monitor.swap_history:
-                swap_avg = round(sum(s["used_mb"] for s in monitor.swap_history) / len(monitor.swap_history), 0)
-                swap_total = monitor.swap_history[0]["total_mb"] if monitor.swap_history else 0
+                swap_avg_used = round(
+                    sum(s["capacity"]["used_mb"] for s in monitor.swap_history) / len(monitor.swap_history), 0
+                )
+                swap_total = monitor.swap_history[0]["capacity"]["total_mb"] if monitor.swap_history else 0
                 swap_peak_pct = round(monitor.peak_swap_used_mb / swap_total * 100, 1) if swap_total > 0 else 0
                 summary_data["Metric"].extend(["Swap Total", "Swap Avg Used", "Swap Peak Used", "Swap Peak Usage %"])
                 summary_data["Value"].extend(
-                    [round(swap_total, 0), swap_avg, round(monitor.peak_swap_used_mb, 0), swap_peak_pct]
+                    [round(swap_total, 0), swap_avg_used, round(monitor.peak_swap_used_mb, 0), swap_peak_pct]
                 )
                 summary_data["Unit"].extend(["MB", "MB", "MB", "%"])
+
+                # Swap Cache stats
+                swap_avg_cached = round(
+                    sum(s["cache"]["cached_mb"] for s in monitor.swap_history) / len(monitor.swap_history), 2
+                )
+                swap_avg_cached_ratio = round(
+                    sum(s["cache"]["cached_ratio_pct"] for s in monitor.swap_history) / len(monitor.swap_history), 1
+                )
+                summary_data["Metric"].extend(["Swap Cached Avg", "Swap Cached Peak", "Swap Cached Avg Ratio %"])
+                summary_data["Value"].extend(
+                    [swap_avg_cached, round(monitor.peak_swap_cached_mb, 2), swap_avg_cached_ratio]
+                )
+                summary_data["Unit"].extend(["MB", "MB", "%"])
+
+                # Swap Activity stats
+                swap_avg_in_rate = round(
+                    sum(s["activity"]["swap_in_rate"] for s in monitor.swap_history) / len(monitor.swap_history), 2
+                )
+                swap_avg_out_rate = round(
+                    sum(s["activity"]["swap_out_rate"] for s in monitor.swap_history) / len(monitor.swap_history), 2
+                )
+                swap_peak_in_rate = round(max(s["activity"]["swap_in_rate"] for s in monitor.swap_history), 2)
+                swap_peak_out_rate = round(max(s["activity"]["swap_out_rate"] for s in monitor.swap_history), 2)
+                swap_total_in = monitor.swap_history[-1]["activity"]["pswpin_cumulative"]
+                swap_total_out = monitor.swap_history[-1]["activity"]["pswpout_cumulative"]
+                summary_data["Metric"].extend(
+                    [
+                        "Swap Avg In Rate",
+                        "Swap Avg Out Rate",
+                        "Swap Peak In Rate",
+                        "Swap Peak Out Rate",
+                        "Swap Total In Pages",
+                        "Swap Total Out Pages",
+                    ]
+                )
+                summary_data["Value"].extend(
+                    [
+                        swap_avg_in_rate,
+                        swap_avg_out_rate,
+                        swap_peak_in_rate,
+                        swap_peak_out_rate,
+                        swap_total_in,
+                        swap_total_out,
+                    ]
+                )
+                summary_data["Unit"].extend(["pages/s", "pages/s", "pages/s", "pages/s", "pages", "pages"])
 
             # VM stats
             vm_stats = monitor.calculate_vm_stats()
@@ -502,6 +550,117 @@ def export_to_excel(
                 }
                 pd.DataFrame(raw_data).to_excel(writer, sheet_name="Raw_VM_Data", index=False)
 
+            # ========== Swap_Timeline Sheet ==========
+            # Combines swap partition data + per-NUMA SwapCache for unified view
+            # Both swap_history and numa_memory_history are collected in the same
+            # collect_sample() cycle, so they should have equal length.
+            # If lengths differ (edge case), we align by swap_history length and
+            # fill missing per-NUMA data with 0.
+            if monitor.swap_history:
+                all_numa_ids = (
+                    sorted(set(n["node"] for entry in monitor.numa_memory_history for n in entry["nodes"]))
+                    if monitor.numa_memory_history
+                    else []
+                )
+
+                swap_timeline_data = {
+                    "Timestamp": [],
+                    "Swap Used (MB)": [],
+                    "Swap Free (MB)": [],
+                    "Swap Cached (MB)": [],
+                    "Swap Cache Ratio (%)": [],
+                    "Swap In Rate (pages/s)": [],
+                    "Swap Out Rate (pages/s)": [],
+                }
+                for nid in all_numa_ids:
+                    swap_timeline_data[f"NUMA{nid} SwapCache (MB)"] = []
+
+                for i, s in enumerate(monitor.swap_history):
+                    swap_timeline_data["Timestamp"].append(s["ts"])
+                    swap_timeline_data["Swap Used (MB)"].append(s["capacity"]["used_mb"])
+                    swap_timeline_data["Swap Free (MB)"].append(s["capacity"]["free_mb"])
+                    swap_timeline_data["Swap Cached (MB)"].append(s["cache"]["cached_mb"])
+                    swap_timeline_data["Swap Cache Ratio (%)"].append(s["cache"]["cached_ratio_pct"])
+                    swap_timeline_data["Swap In Rate (pages/s)"].append(s["activity"]["swap_in_rate"])
+                    swap_timeline_data["Swap Out Rate (pages/s)"].append(s["activity"]["swap_out_rate"])
+
+                    # Per-NUMA SwapCache from numa_memory_history (same cycle)
+                    if i < len(monitor.numa_memory_history):
+                        node_lookup = {n["node"]: n for n in monitor.numa_memory_history[i]["nodes"]}
+                        for nid in all_numa_ids:
+                            node_data = node_lookup.get(nid, {})
+                            swap_timeline_data[f"NUMA{nid} SwapCache (MB)"].append(node_data.get("swap_cached_mb", 0))
+                    else:
+                        # Edge case: numa_memory_history shorter than swap_history
+                        for nid in all_numa_ids:
+                            swap_timeline_data[f"NUMA{nid} SwapCache (MB)"].append(0)
+
+                pd.DataFrame(swap_timeline_data).to_excel(writer, sheet_name="Swap_Timeline", index=False)
+
+            # ========== NUMA_Memory_Timeline Sheet ==========
+            # Focus NUMA nodes: CLI-specified + remote borrowing node (NUMA5)
+            # NUMA5 is the default remote borrowing node; if not present on this system, skip it
+            _REMOTE_NUMA_ID = 5
+            if monitor.numa_memory_history:
+                all_numa_ids = sorted(set(n["node"] for entry in monitor.numa_memory_history for n in entry["nodes"]))
+                focus_numa_ids = sorted(set(list(numa_nodes or []) + [_REMOTE_NUMA_ID]))
+                focus_numa_ids = [nid for nid in focus_numa_ids if nid in all_numa_ids]
+
+                mem_timeline_data = {"Timestamp": []}
+                for nid in focus_numa_ids:
+                    for field, label in [
+                        ("total_mb", f"NUMA{nid} Total (MB)"),
+                        ("used_mb", f"NUMA{nid} Used (MB)"),
+                        ("free_mb", f"NUMA{nid} Free (MB)"),
+                        ("available_mb", f"NUMA{nid} Available (MB)"),
+                        ("swap_cached_mb", f"NUMA{nid} SwapCache (MB)"),
+                        ("anon_pages_mb", f"NUMA{nid} AnonPages (MB)"),
+                        ("usage_pct", f"NUMA{nid} Usage (%)"),
+                    ]:
+                        mem_timeline_data[label] = []
+
+                for entry in monitor.numa_memory_history:
+                    mem_timeline_data["Timestamp"].append(entry["ts"])
+                    node_lookup = {n["node"]: n for n in entry["nodes"]}
+                    for nid in focus_numa_ids:
+                        node_data = node_lookup.get(nid, {})
+                        for field, label in [
+                            ("total_mb", f"NUMA{nid} Total (MB)"),
+                            ("used_mb", f"NUMA{nid} Used (MB)"),
+                            ("free_mb", f"NUMA{nid} Free (MB)"),
+                            ("available_mb", f"NUMA{nid} Available (MB)"),
+                            ("swap_cached_mb", f"NUMA{nid} SwapCache (MB)"),
+                            ("anon_pages_mb", f"NUMA{nid} AnonPages (MB)"),
+                            ("usage_pct", f"NUMA{nid} Usage (%)"),
+                        ]:
+                            mem_timeline_data[label].append(node_data.get(field, 0))
+
+                if mem_timeline_data["Timestamp"]:
+                    pd.DataFrame(mem_timeline_data).to_excel(writer, sheet_name="NUMA_Memory_Timeline", index=False)
+
+            # ========== VM_Total_Memory_Timeline Sheet ==========
+            if monitor.vm_total_memory_history:
+                all_vm_numa_ids = sorted(
+                    set(k for h in monitor.vm_total_memory_history for k in h.get("per_numa", {}).keys())
+                )
+                vm_mem_data = {
+                    "Timestamp": [],
+                    "VM Total Memory (MB)": [],
+                    "VM Count": [],
+                }
+                for nid in all_vm_numa_ids:
+                    vm_mem_data[f"NUMA{nid} VM Memory (MB)"] = []
+
+                for h in monitor.vm_total_memory_history:
+                    vm_mem_data["Timestamp"].append(h["ts"])
+                    vm_mem_data["VM Total Memory (MB)"].append(h["total_mb"])
+                    vm_mem_data["VM Count"].append(h["vm_count"])
+                    for nid in all_vm_numa_ids:
+                        vm_mem_data[f"NUMA{nid} VM Memory (MB)"].append(h.get("per_numa", {}).get(nid, 0))
+
+                if vm_mem_data["Timestamp"]:
+                    pd.DataFrame(vm_mem_data).to_excel(writer, sheet_name="VM_Total_Memory_Timeline", index=False)
+
         # ========== Add Charts (using openpyxl directly) ==========
         try:
             from openpyxl import load_workbook
@@ -596,6 +755,183 @@ def export_to_excel(
                 bar2.add_data(data)
                 bar2.set_categories(cats)
                 ws.add_chart(bar2, "D2")
+
+            # Chart 6: Swap In/Out Rate + SwapCached Timeline
+            if "Swap_Timeline" in wb.sheetnames:
+                ws = wb["Swap_Timeline"]
+                if ws.max_row > 1:
+                    swap_line = LineChart()
+                    swap_line.title = "Swap In/Out Rate Over Time"
+                    swap_line.style = 13
+                    swap_line.y_axis.title = "pages/s"
+                    swap_line.x_axis.title = "Time"
+                    swap_line.width = 18
+                    swap_line.height = 8
+
+                    # Find Swap In Rate and Swap Out Rate columns by header name
+                    in_col = None
+                    out_col = None
+                    for col_idx in range(2, ws.max_column + 1):
+                        header = ws.cell(row=1, column=col_idx).value
+                        if header and "In Rate" in header:
+                            in_col = col_idx
+                        elif header and "Out Rate" in header:
+                            out_col = col_idx
+
+                    if in_col and out_col:
+                        data = Reference(ws, min_col=in_col, min_row=1, max_col=out_col, max_row=ws.max_row)
+                        cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+                        swap_line.add_data(data, titles_from_data=True)
+                        swap_line.set_categories(cats)
+                    ws.add_chart(swap_line, "H2")
+
+            # Chart 7: SwapCache (Total + per NUMA) from Swap_Timeline sheet
+            if "Swap_Timeline" in wb.sheetnames:
+                ws = wb["Swap_Timeline"]
+                if ws.max_row > 1:
+                    sc_chart = LineChart()
+                    sc_chart.title = "SwapCache per NUMA Over Time"
+                    sc_chart.style = 10
+                    sc_chart.y_axis.title = "MB"
+                    sc_chart.x_axis.title = "Time"
+                    sc_chart.width = 22
+                    sc_chart.height = 10
+
+                    # Find Swap Cached + per-NUMA SwapCache columns by header name
+                    sc_cols = []
+                    for col_idx in range(2, ws.max_column + 1):
+                        header = ws.cell(row=1, column=col_idx).value
+                        if header and ("SwapCached" in header or "SwapCache" in header or "Cached" in header):
+                            sc_cols.append(col_idx)
+
+                    if sc_cols:
+                        # Build data reference across all SwapCache columns
+                        min_sc_col = min(sc_cols)
+                        max_sc_col = max(sc_cols)
+                        data = Reference(ws, min_col=min_sc_col, min_row=1, max_col=max_sc_col, max_row=ws.max_row)
+                        cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+                        sc_chart.add_data(data, titles_from_data=True)
+                        sc_chart.set_categories(cats)
+                    ws.add_chart(sc_chart, "H16")
+
+            # Chart 8A: NUMA Free/Used Memory — memory headroom comparison
+            # Two separate charts for readability: Free/Used (MB scale) and SwapCache/Usage (mixed scale)
+            if "NUMA_Memory_Timeline" in wb.sheetnames:
+                ws = wb["NUMA_Memory_Timeline"]
+                if ws.max_row > 1:
+                    # Classify columns by metric type
+                    free_cols = []
+                    used_cols = []
+                    avail_cols = []
+                    swapcache_cols = []
+                    usage_cols = []
+                    for col_idx in range(2, ws.max_column + 1):
+                        header = ws.cell(row=1, column=col_idx).value
+                        if header and "Free" in header:
+                            free_cols.append(col_idx)
+                        elif header and "Used" in header:
+                            used_cols.append(col_idx)
+                        elif header and "Available" in header:
+                            avail_cols.append(col_idx)
+                        elif header and "SwapCache" in header:
+                            swapcache_cols.append(col_idx)
+                        elif header and "Usage" in header:
+                            usage_cols.append(col_idx)
+
+                    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+
+                    # Chart 8A: Free/Used/Available Memory (MB scale)
+                    chart_8a = LineChart()
+                    chart_8a.title = "NUMA Free/Used Memory (Focus Nodes)"
+                    chart_8a.style = 10
+                    chart_8a.y_axis.title = "MB"
+                    chart_8a.x_axis.title = "Time"
+                    chart_8a.width = 22
+                    chart_8a.height = 12
+
+                    # Add series in order: Free, Available, Used
+                    free_avail_used_cols = free_cols + avail_cols + used_cols
+                    for col in free_avail_used_cols:
+                        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+                        chart_8a.add_data(data, titles_from_data=True)
+                    chart_8a.set_categories(cats)
+
+                    # Color scheme: Free=green thin, Available=light green medium, Used=red thick
+                    # Local NUMA (first) gets solid lines, remote NUMA5 gets dashed lines
+                    fa_series_styles = []
+                    for col in free_cols:
+                        fa_series_styles.append(("00B050", 20000))  # green
+                    for col in avail_cols:
+                        fa_series_styles.append(("92D050", 25000))  # light green
+                    for col in used_cols:
+                        fa_series_styles.append(("FF0000", 30000))  # red thick
+
+                    for i, (color, width) in enumerate(fa_series_styles):
+                        if i < len(chart_8a.series):
+                            s = chart_8a.series[i]
+                            s.graphicalProperties.line.solidFill = color
+                            s.graphicalProperties.line.width = width
+
+                    ws.add_chart(chart_8a, "I2")
+
+                    # Chart 8B: SwapCache & Usage% (SwapCache in MB, Usage in % — separate Y axes)
+                    chart_8b = LineChart()
+                    chart_8b.title = "NUMA SwapCache & Usage% (Focus Nodes)"
+                    chart_8b.style = 10
+                    chart_8b.y_axis.title = "MB (SwapCache)"
+                    chart_8b.x_axis.title = "Time"
+                    chart_8b.width = 22
+                    chart_8b.height = 12
+
+                    # Add SwapCache series to primary Y axis (MB)
+                    for col in swapcache_cols:
+                        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+                        chart_8b.add_data(data, titles_from_data=True)
+                    chart_8b.set_categories(cats)
+
+                    # Add Usage% series on secondary Y axis (%)
+                    # Use a second LineChart as overlay for the % axis
+                    chart_8b_pct = LineChart()
+                    chart_8b_pct.y_axis.title = "Usage (%)"
+                    chart_8b_pct.y_axis.axId = 200  # separate axis ID
+                    for col in usage_cols:
+                        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+                        chart_8b_pct.add_data(data, titles_from_data=True)
+                    chart_8b_pct.set_categories(cats)
+
+                    # Color SwapCache = orange, Usage% = blue
+                    for i in range(len(swapcache_cols)):
+                        if i < len(chart_8b.series):
+                            s = chart_8b.series[i]
+                            s.graphicalProperties.line.solidFill = "FFC000"  # orange
+                            s.graphicalProperties.line.width = 20000
+                    for i in range(len(usage_cols)):
+                        if i < len(chart_8b_pct.series):
+                            s = chart_8b_pct.series[i]
+                            s.graphicalProperties.line.solidFill = "0070C0"  # blue
+                            s.graphicalProperties.line.width = 15000
+
+                    # Overlay the % chart on the MB chart (dual Y axis)
+                    chart_8b += chart_8b_pct
+                    ws.add_chart(chart_8b, "I16")
+
+            # Chart 9: VM Total Memory Timeline
+            if "VM_Total_Memory_Timeline" in wb.sheetnames:
+                ws = wb["VM_Total_Memory_Timeline"]
+                if ws.max_row > 1:
+                    vm_chart = LineChart()
+                    vm_chart.title = "VM Total Memory Over Time"
+                    vm_chart.style = 13
+                    vm_chart.y_axis.title = "MB"
+                    vm_chart.x_axis.title = "Time"
+                    vm_chart.width = 18
+                    vm_chart.height = 8
+
+                    data = Reference(ws, min_col=2, min_row=1, max_col=ws.max_column, max_row=ws.max_row)
+                    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+                    vm_chart.add_data(data, titles_from_data=True)
+                    vm_chart.set_categories(cats)
+                    ws.add_chart(vm_chart, "I2")
 
             wb.save(output_file)
             print("[OK] Charts added to Excel report")

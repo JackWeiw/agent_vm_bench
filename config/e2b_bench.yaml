@@ -49,7 +49,7 @@ task_batch:
 # Browser task configuration
 browser:
   urls:
-    - "http://192.168.110.10:8080/Weibo.html"
+    - "http://192.168.110.10:8080/Hubble_Space_Telescope.html"
   task_timeout: 200
   interval_min: 5
   interval_max: 15
@@ -65,7 +65,7 @@ browser:
     - "http://192.168.110.10:8080/United_States.html"
     - "http://192.168.110.10:8080/World_War_II.html"
   warmup_loops: 1            # Loop count for warmup pages
-  warmup_delay: 2           # Delay between warmup pages (seconds)
+  warmup_delay: 5           # Delay between warmup pages (seconds)
   warmup_only: false         # Run warmup phase only, then exit
 
 # Test run configuration
@@ -73,6 +73,21 @@ test:
   duration: 160
   stats_interval: 10
   benchmark_percent: 1.0    # Percentage of sandboxes for benchmark (1.0 = 100%, 0.5 = 50%)
+
+  # Round-robin mode configuration (optional)
+  # Tab-switch mode: each round operates on a specific tab (round_id % len(warmup_urls))
+  # - Warmup phase opens N tabs (N = len(warmup_urls))
+  # - Round N operates on tab tN, cycling through tabs
+  # - Creates swap in events when accessing migrated memory
+  benchmark_mode: "round_robin"   # "fixed" (default) or "round_robin"
+  # Both round_count and round_size can coexist:
+  # - round_size: determines how many sandboxes per round (group granularity)
+  # - round_count: determines max number of rounds to run (termination condition)
+  # - duration: test time limit (termination condition)
+  # Test stops when round_count OR duration is reached (whichever comes first)
+  round_size: 5                   # Sandboxes per round (default: 5, group_count = ceil(total / round_size))
+  round_count: 5                  # Max number of rounds (termination condition, stops when reached or duration exceeded)
+  round_interval: 5               # Round interval in seconds (allows time for memory migration)
 
 # Report configuration
 report:

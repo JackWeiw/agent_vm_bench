@@ -44,12 +44,14 @@ class OpenClawConfig:
             # Write complete provider config in one command
             # OpenClaw validates config atomically - partial updates fail
             # Note: apiKey is required for custom providers, use fixed value
-            config_json = json.dumps({
-                "api": "openai-completions",
-                "baseUrl": endpoint,
-                "apiKey": "huawei-kunpeng-ai",
-                "models": [{"id": model, "name": model}]
-            })
+            config_json = json.dumps(
+                {
+                    "api": "openai-completions",
+                    "baseUrl": endpoint,
+                    "apiKey": "huawei-kunpeng-ai",
+                    "models": [{"id": model, "name": model}],
+                }
+            )
             cmd = f"openclaw config set models.providers.llm-replay '{config_json}'"
             result = sbx.commands.run(cmd, timeout=timeout, user="root")
             if result.exit_code != 0:
@@ -180,7 +182,7 @@ class LLMScenarioRunner(threading.Thread):
             payload = {
                 "model": "openclaw",
                 "messages": [{"role": "user", "content": self.prompt}],
-                "stream": True  # Enable streaming to prevent timeout during long execution
+                "stream": True,  # Enable streaming to prevent timeout during long execution
             }
             payload_json = json.dumps(payload, ensure_ascii=False)
 

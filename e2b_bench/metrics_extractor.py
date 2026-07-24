@@ -323,7 +323,12 @@ class MetricsExtractor:
             return 0.0
 
     def extract_browser_metrics(self, report_file: str) -> Dict[str, Any]:
-        """Extract browser metrics from bench_report.txt"""
+        """Extract browser metrics from bench_report.txt
+
+        Extracts:
+        - Overall metrics: Success Rate, Avg/P99 Latency, Total Tasks
+        - Step-level timing: open_tab, snapshot, click, screenshot (avg/p99 in ms)
+        """
         metrics = {}
         if not report_file or not os.path.exists(report_file):
             return metrics
@@ -332,6 +337,7 @@ class MetricsExtractor:
             with open(report_file, encoding="utf-8") as f:
                 content = f.read()
 
+            # Overall metrics
             match = re.search(r"Success Rate:\s+([\d.]+)%", content)
             if match:
                 metrics["Browser_Success_Rate"] = float(match.group(1))
@@ -347,6 +353,18 @@ class MetricsExtractor:
             match = re.search(r"Total Tasks:\s+(\d+)", content)
             if match:
                 metrics["Browser_Total_Tasks"] = int(match.group(1))
+
+            # Step-level timing extraction
+            # Format from StatsCollector: "  open_tab        120      234.5        567.8"
+            step_pattern = r"^\s+(open_tab|snapshot|click|screenshot)\s+(\d+)\s+([\d.]+)\s+([\d.]+)"
+            for match in re.finditer(step_pattern, content, re.MULTILINE):
+                step_name = match.group(1)
+                count = int(match.group(2))
+                avg_ms = float(match.group(3))
+                p99_ms = float(match.group(4))
+                metrics[f"Browser_{step_name}_Count"] = count
+                metrics[f"Browser_{step_name}_Avg_ms"] = avg_ms
+                metrics[f"Browser_{step_name}_P99_ms"] = p99_ms
 
         except Exception as e:
             print(f"[MetricsExtractor] Error extracting browser metrics: {e}")

@@ -46,7 +46,7 @@ The framework collects **50+ performance metrics** from hardware counters, kerne
 |---------|---------|-----------|
 | `vm_monitor/` | VMM monitoring (QEMU/Firecracker) | `base.py`, `qemu.py`, `firecracker.py` |
 | `qemu_monitor/` | Legacy QEMU monitoring (deprecated) | Use `vm_monitor` instead |
-| `e2b_bench/` | E2B sandbox testing | `bench.py`, `sandbox_manager.py`, `batch_scheduler.py` |
+| `e2b_bench/` | E2B sandbox testing | `bench.py`, `round_robin.py`, `task_runner.py`, `sandbox_manager.py`, `batch_scheduler.py`, `stats_collector.py`, `metrics_extractor.py`, `report_aggregator.py` |
 | `docker_bench/` | Docker container testing | `bench.py`, `container_manager.py` |
 | `vm_bench_lite/` | Browser/QA benchmark execution | Browser warmup + benchmark phases |
 
@@ -74,7 +74,36 @@ The framework collects **50+ performance metrics** from hardware counters, kerne
 - Streaming logs to files use `buffering=1` (line buffering)
 - Include timestamps in log messages
 
-### Entry Points
+### E2B Bench Testing Workflow
+
+The complete end-to-end testing flow for E2B sandbox benchmarks:
+
+```text
+download_page.sh → docker build → push_to_harbor.sh → build_e2b.py → http.server
+     ↓                 ↓              ↓                 ↓            ↓
+  Web pages     Docker image    Harbor registry    E2B template    Web server
+                                                                       ↓
+                              config/e2b_bench.yaml (template + URL)
+                                       ↓
+                              --create-only → --detect → benchmark → delete_sandbox.sh
+```
+
+### Prerequisite Steps
+
+1. **Download pages**: `bash download_page.sh` → saves to `web_content/`
+2. **Build image**: `cd dockerfile_build && docker build -t ubuntu-openclaw-chromium:24.04-linuxarm64 .`
+3. **Push to Harbor**: `HARBOR_IP=X bash push_to_harbor.sh` → pushes to Harbor registry
+4. **Build E2B template**: `python3 build_e2b.py --server-ip X --alias openclaw-browser-v1` → requires `~/.e2b/config.json`
+5. **Start web server**: `cd web_content/en.wikipedia.org/wiki && numactl --cpunodebind=2,3 --membind=2,3 python3 -m http.server 8080`
+6. **Modify config**: Edit `config/e2b_bench.yaml` with template name, local IP URLs, E2B API URL
+
+### Testing Steps
+
+7. **Create sandboxes**: `python -m e2b_bench --config config/e2b_bench.yaml --create-only`
+8. **Run benchmark**: `python -m e2b_bench --config config/e2b_bench.yaml --detect` (fixed or `-bm round_robin`)
+9. **Delete sandboxes**: `cd e2b_bench/scripts && bash delete_sandbox.sh`
+
+## Entry Points
 
 | Script | Purpose | CLI |
 |--------|---------|-----|
@@ -82,7 +111,7 @@ The framework collects **50+ performance metrics** from hardware counters, kerne
 | `vm_bench_lite.py` | Browser/QA benchmark | `-n`, `-wp`, `-bsp`, `-t` |
 | `auto_vm_test.py` | Single OpenStack test | `--config` |
 | `batch_test_scheduler.py` | Batch OpenStack tests | `--config`, `--dry-run`, `--offline` |
-| `e2b_bench/__main__.py` | E2B testing | `--config`, `--batch`, `--detect` |
+| `e2b_bench/__main__.py` | E2B testing | `--config`, `--batch`, `--detect`, `-bm round_robin` |
 | `docker_bench/__main__.py` | Docker testing | `--config`, `--create-only`, `--detect` |
 
 ## External Tool Dependencies
@@ -125,21 +154,38 @@ Each tool produces logs parsed by `vm_monitor/parsers.py`:
 8. Cleanup (stop smap_tool, delete VMs)
 ```
 
+### E2B Single Test (bench.py)
+
+```
+1. Setup E2B environment variables
+2. Create/Detect sandboxes (with NUMA binding, ID persistence)
+3. Port check (18789 + 11436)
+   [Create-Only: Exit here]
+4. Warmup phase (agent-browser tab mode: open N tabs per sandbox)
+   [Warmup-Only: Exit here]
+5. Start stats collector + smap_tool + vm_monitor
+6. Benchmark phase:
+   - Fixed mode: subset of sandboxes run concurrent browser tasks
+   - Round-robin mode: groups rotate, each round opens new tab (5 steps with step-level timing)
+7. Collect results → Generate TXT report (with round comparison, step timing, error classification, tail analysis)
+8. Cleanup (stop smap_tool, kill/detect sandboxes)
+```
+
 ### E2B Batch Test (batch_scheduler.py)
 
 ```
-1. Group tasks by (total_count, ratio)
+1. Group tasks by (total_count, ratio) from matrix config
 2. For each group:
    - Create sandboxes (shared within group)
    - Start smap_tool (shared logs)
-   - Warmup (shared)
+   - Warmup (shared, agent-browser tab mode)
    - For each benchmark_percent:
-     - Start vm_monitor (task-specific)
-     - Run benchmark
-     - Stop vm_monitor
+     - Start vm_monitor (task-specific, with stress-file sync)
+     - Run benchmark (fixed or round-robin mode)
+     - Stop vm_monitor sampling → wait for analysis_report.xlsx
      - Save task results
    - Cleanup group
-3. Extract metrics → Aggregate summary
+3. Extract metrics from vm_monitor + browser reports → Aggregate styled Excel summary
 ```
 
 ### Docker Bench (bench.py)

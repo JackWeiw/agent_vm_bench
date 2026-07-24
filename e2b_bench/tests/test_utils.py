@@ -1,12 +1,21 @@
 """
 Test Utils Module
 
-Tests for utility functions: format_timestamp, format_duration, calc_percentiles, calc_p99
+Tests for utility functions: format_timestamp, format_duration, calc_percentiles, calc_p99,
+tail latency analysis functions
 """
 
 import pytest
 
-from e2b_bench.utils import calc_p99, calc_percentiles, format_duration, format_timestamp
+from e2b_bench.utils import (
+    calc_p99,
+    calc_percentiles,
+    calc_tail_ratio,
+    classify_tail_latency,
+    format_duration,
+    format_latency_distribution,
+    format_timestamp,
+)
 
 
 class TestFormatTimestamp:
@@ -113,6 +122,108 @@ class TestCalcP99:
         values = list(range(1, 101))
         # int(len(values) * 0.99) = 99 -> index 99 -> value 100
         assert calc_p99(values) == 100
+
+
+class TestCalcTailRatio:
+    """Tests for calc_tail_ratio (P99/P50)"""
+
+    def test_empty_list(self):
+        """Empty list returns 1.0"""
+        assert calc_tail_ratio([]) == 1.0
+
+    def test_insufficient_data(self):
+        """Less than 5 values returns 1.0"""
+        assert calc_tail_ratio([1.0, 2.0]) == 1.0
+        assert calc_tail_ratio([1.0, 2.0, 3.0, 4.0]) == 1.0
+
+    def test_uniform_distribution(self):
+        """Uniform values should have ratio near 1.0"""
+        values = [1.0] * 10
+        ratio = calc_tail_ratio(values)
+        assert ratio == 1.0
+
+    def test_minimal_tail(self):
+        """Small variance = minimal tail ratio"""
+        values = [1.0] * 9 + [1.1]  # P50=1.0, P99=1.1
+        ratio = calc_tail_ratio(values)
+        assert ratio < 1.2
+
+    def test_moderate_tail(self):
+        """Moderate variance = moderate tail ratio"""
+        # With 10 values: P50 index = int(10*50/100) = 5 -> value at index 5
+        # [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.2, 1.3, 1.4, 1.5]
+        values = [1.0] * 6 + [1.2, 1.3, 1.4, 1.5]
+        ratio = calc_tail_ratio(values)
+        # P50=1.0, P99=1.5 -> ratio=1.5 (borderline moderate/significant)
+        assert 1.2 <= ratio <= 1.6
+
+    def test_significant_tail(self):
+        """Large variance = significant tail ratio"""
+        values = [1.0] * 8 + [5.0, 10.0]  # P50=1.0, P99=10.0
+        ratio = calc_tail_ratio(values)
+        assert ratio >= 1.5
+
+    def test_zero_p50(self):
+        """P50=0 should return 1.0 to avoid division by zero"""
+        values = [0.0, 0.0, 0.0, 0.0, 1.0]
+        ratio = calc_tail_ratio(values)
+        assert ratio == 1.0
+
+
+class TestClassifyTailLatency:
+    """Tests for classify_tail_latency"""
+
+    def test_minimal_classification(self):
+        """Ratio < 1.2 is minimal"""
+        assert classify_tail_latency(1.0) == "minimal"
+        assert classify_tail_latency(1.1) == "minimal"
+        assert classify_tail_latency(1.19) == "minimal"
+
+    def test_moderate_classification(self):
+        """Ratio 1.2-1.5 is moderate"""
+        assert classify_tail_latency(1.2) == "moderate"
+        assert classify_tail_latency(1.3) == "moderate"
+        assert classify_tail_latency(1.49) == "moderate"
+
+    def test_significant_classification(self):
+        """Ratio >= 1.5 is significant"""
+        assert classify_tail_latency(1.5) == "significant"
+        assert classify_tail_latency(2.0) == "significant"
+        assert classify_tail_latency(10.0) == "significant"
+
+
+class TestFormatLatencyDistribution:
+    """Tests for format_latency_distribution"""
+
+    def test_empty_values(self):
+        """Empty list returns 'no data'"""
+        assert format_latency_distribution([]) == "no data"
+
+    def test_format_with_ms_unit(self):
+        """Test with ms unit (default)"""
+        # Use values that give clear P50 result
+        # With 3 values [0.001, 0.002, 0.003], P50=0.002 (index 1)
+        values = [0.001, 0.002, 0.003]  # 1ms, 2ms, 3ms
+        result = format_latency_distribution(values, unit="ms")
+        assert "P50=2ms" in result  # 0.002 * 1000 = 2ms
+        assert "P95=3ms" in result  # 0.003 * 1000 = 3ms
+        assert "P99=3ms" in result
+        assert "tail=" in result
+
+    def test_format_with_s_unit(self):
+        """Test with seconds unit"""
+        # With 3 values [1.0, 2.0, 3.0], P50=2.0 (index 1)
+        values = [1.0, 2.0, 3.0]
+        result = format_latency_distribution(values, unit="s")
+        assert "P50=2s" in result
+        assert "P95=3s" in result
+
+    def test_includes_severity(self):
+        """Should include severity classification"""
+        # Create data with significant tail
+        values = [1.0] * 8 + [10.0, 15.0]
+        result = format_latency_distribution(values)
+        assert "(significant)" in result or "(moderate)" in result or "(minimal)" in result
 
 
 if __name__ == "__main__":

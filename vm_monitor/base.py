@@ -23,6 +23,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
 
@@ -39,11 +40,27 @@ class VMMonitorBase(ABC):
         running: Monitoring state flag
         data: List of collected sample records
         target_numa_nodes: NUMA nodes to monitor for CPU stats
-        numa_memory_history: NUMA memory usage timeline
+        numa_memory_history: NUMA memory usage timeline (full meminfo)
         hugepage_per_numa: Per-NUMA hugepage statistics
         host_cpu_history: Host total CPU timeline
         swap_history: Swap usage timeline
+        vm_total_memory_history: VM total memory aggregation timeline
     """
+
+    # Remote borrowing NUMA node — hardcoded as NUMA5, may not exist on all systems
+    _REMOTE_NUMA_ID = 5
+
+    # Fields to extract from per-NUMA meminfo (sysfs name -> dict key)
+    _NUMA_MEMINFO_FIELDS = {
+        "MemTotal": "total_mb",
+        "MemFree": "free_mb",
+        "MemAvailable": "available_mb",
+        "SwapCached": "swap_cached_mb",
+        "Active": "active_mb",
+        "Inactive": "inactive_mb",
+        "AnonPages": "anon_pages_mb",
+        "FilePages": "file_pages_mb",
+    }
 
     def __init__(self):
         """Initialize monitor with empty data containers"""
@@ -74,6 +91,12 @@ class VMMonitorBase(ABC):
         # Swap Statistics
         self.swap_history = []
         self.peak_swap_used_mb = 0.0
+        self.peak_swap_cached_mb = 0.0
+        self._last_pswpin = None
+        self._last_pswpout = None
+
+        # VM Total Memory Aggregation
+        self.vm_total_memory_history = []
 
         # Specified NUMA Node CPU Statistics
         self.target_numa_nodes = [0]
@@ -151,6 +174,13 @@ class VMMonitorBase(ABC):
 
     # ==================== NUMA Memory Statistics ====================
     def get_numa_nodes_memory(self):
+        """Collect full per-NUMA meminfo from /sys/devices/system/node/node{N}/meminfo
+
+        Parses MemTotal, MemFree, MemAvailable, SwapCached, Active, Inactive,
+        AnonPages, FilePages for each NUMA node. Computes used_mb and usage_pct
+        from total - free. Preserves backward-compat alias keys (total, used,
+        free, usage).
+        """
         numa_nodes = []
         try:
             node_dirs = [d for d in os.listdir("/sys/devices/system/node/") if d.startswith("node") and d[4:].isdigit()]
@@ -159,22 +189,41 @@ class VMMonitorBase(ABC):
                 path = f"/sys/devices/system/node/{node}/meminfo"
                 with open(path) as f:
                     lines = f.read().splitlines()
-                total = free = 0
-                for l in lines:
-                    if "MemTotal" in l:
-                        total = int(l.split()[3]) * 1024
-                    if "MemFree" in l:
-                        free = int(l.split()[3]) * 1024
-                used = total - free
-                total_mb = round(total / 1024 / 1024, 2)
-                used_mb = round(used / 1024 / 1024, 2)
-                free_mb = round(free / 1024 / 1024, 2)
-                usage = round(used / total * 100, 2) if total > 0 else 0.0
-                numa_nodes.append(
-                    {"node": node_id, "total": total_mb, "used": used_mb, "free": free_mb, "usage": usage}
-                )
-        except:
+
+                # Parse all relevant fields using regex
+                # Format: "Node N FieldName:     value kB"
+                parsed_mb = {}
+                for line in lines:
+                    match = re.match(r"Node\s+\d+\s+(\w+):\s+(\d+)\s+kB", line)
+                    if match:
+                        field_name = match.group(1)
+                        value_kb = int(match.group(2))
+                        value_mb = round(value_kb / 1024, 2)
+                        parsed_mb[field_name] = value_mb
+
+                # Build result dict with canonical keys
+                result = {"node": node_id}
+                for sysfs_name, dict_key in self._NUMA_MEMINFO_FIELDS.items():
+                    result[dict_key] = parsed_mb.get(sysfs_name, 0.0)
+
+                # Compute derived fields
+                total_mb = result.get("total_mb", 0.0)
+                free_mb = result.get("free_mb", 0.0)
+                used_mb = round(total_mb - free_mb, 2)
+                usage_pct = round(used_mb / total_mb * 100, 2) if total_mb > 0 else 0.0
+                result["used_mb"] = used_mb
+                result["usage_pct"] = usage_pct
+
+                # Backward-compat aliases (no suffix)
+                result["total"] = total_mb
+                result["used"] = used_mb
+                result["free"] = free_mb
+                result["usage"] = usage_pct
+
+                numa_nodes.append(result)
+        except Exception:
             pass
+
         self.numa_memory_history.append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "nodes": numa_nodes})
         return numa_nodes
 
@@ -270,15 +319,34 @@ class VMMonitorBase(ABC):
         )
 
     def print_numa_real_time(self):
-        nodes = self.get_numa_nodes_memory()
-        if not nodes:
+        """Display the latest NUMA memory data from numa_memory_history.
+
+        Uses the most recent entry from numa_memory_history (collected by
+        collect_sample) rather than re-reading sysfs, to avoid duplicate
+        data collection and keep history aligned with other metrics.
+        """
+        if not self.numa_memory_history:
             return
+        latest = self.numa_memory_history[-1]["nodes"]
+        focus_nodes = self.get_focus_numa_nodes()
         print("=" * 100)
         print("NUMA Node Memory Real-time Usage")
-        for n in nodes:
-            print(
-                f"    NUMA Node {n['node']:>2d} | Total Memory {n['total']:>8.2f} MB | Used {n['used']:>8.2f} MB | Free {n['free']:>8.2f} MB | Usage {n['usage']:>5.1f}%"
-            )
+        for n in latest:
+            nid = n["node"]
+            sc = n.get("swap_cached_mb", 0)
+            if nid in focus_nodes:
+                # Focus NUMA: show detailed free/available/SwapCache
+                avail = n.get("available_mb", 0)
+                print(
+                    f"    NUMA Node {nid:>2d} * | Total {n['total']:>8.2f} MB | Used {n['used']:>8.2f} MB | "
+                    f"Free {n['free']:>8.2f} MB | Avail {avail:>8.2f} MB | SwapCache {sc:>6.1f} MB | Usage {n['usage']:>5.1f}%"
+                )
+            else:
+                # Non-focus NUMA: show only basic total/used/SwapCache
+                print(
+                    f"    NUMA Node {nid:>2d}   | Total {n['total']:>8.2f} MB | Used {n['used']:>8.2f} MB | "
+                    f"SwapCache {sc:>6.1f} MB | Usage {n['usage']:>5.1f}%"
+                )
         print("=" * 100)
 
     def print_final_numa_stats(self):
@@ -316,6 +384,16 @@ class VMMonitorBase(ABC):
             return sorted(nodes)
         except:
             return [0]
+
+    def get_focus_numa_nodes(self) -> list:
+        """Get focus NUMA nodes: CLI-specified target nodes + remote borrowing node.
+
+        The remote borrowing node (NUMA5) is added for free memory monitoring.
+        If NUMA5 does not exist on this system, it is silently excluded.
+        Returns only nodes that actually exist on the system.
+        """
+        focus = sorted(set(self.target_numa_nodes + [self._REMOTE_NUMA_ID]))
+        return [n for n in focus if n in self.available_numa_nodes]
 
     # ===================== Collect Specified NUMA Node CPU Usage =====================
     def collect_numa_cpu(self):
@@ -375,16 +453,151 @@ class VMMonitorBase(ABC):
             swap_total_mb = round(swap.total / 1024 / 1024, 2)
             swap_free_mb = round(swap.free / 1024 / 1024, 2)
             swap_usage = round(swap.percent, 1)
+
+            # Swap Cache from /proc/meminfo
+            meminfo = self._read_meminfo()
+            swap_cached_mb = meminfo.get("SwapCached", 0)
+            swap_cached_ratio = round(swap_cached_mb / swap_used_mb * 100, 1) if swap_used_mb > 0 else 0.0
+
+            # Swap Activity from /proc/vmstat
+            vmstat = self._read_vmstat()
+            pswpin_now = vmstat.get("pswpin", 0)
+            pswpout_now = vmstat.get("pswpout", 0)
+
+            # Delta and rate: first sample has no prior baseline -> rate=0
+            if self._last_pswpin is not None:
+                pswpin_delta = pswpin_now - self._last_pswpin
+                pswpout_delta = pswpout_now - self._last_pswpout
+                swap_in_rate = round(pswpin_delta / self.interval, 2) if self.interval > 0 else 0
+                swap_out_rate = round(pswpout_delta / self.interval, 2) if self.interval > 0 else 0
+            else:
+                pswpin_delta = 0
+                pswpout_delta = 0
+                swap_in_rate = 0
+                swap_out_rate = 0
+
+            self._last_pswpin = pswpin_now
+            self._last_pswpout = pswpout_now
+
             self.swap_history.append(
-                {"used_mb": swap_used_mb, "total_mb": swap_total_mb, "free_mb": swap_free_mb, "usage": swap_usage}
+                {
+                    "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "capacity": {
+                        "total_mb": swap_total_mb,
+                        "free_mb": swap_free_mb,
+                        "used_mb": swap_used_mb,
+                        "usage_pct": swap_usage,
+                    },
+                    "cache": {
+                        "cached_mb": swap_cached_mb,
+                        "cached_ratio_pct": swap_cached_ratio,
+                    },
+                    "activity": {
+                        "pswpin_delta": pswpin_delta,
+                        "pswpout_delta": pswpout_delta,
+                        "swap_in_rate": swap_in_rate,
+                        "swap_out_rate": swap_out_rate,
+                        "pswpin_cumulative": pswpin_now,
+                        "pswpout_cumulative": pswpout_now,
+                    },
+                }
             )
+
             if swap_used_mb > self.peak_swap_used_mb:
                 self.peak_swap_used_mb = swap_used_mb
+            if swap_cached_mb > self.peak_swap_cached_mb:
+                self.peak_swap_cached_mb = swap_cached_mb
         except:
             pass
 
+    # ===================== Collect VM Total Memory =====================
+    def collect_vm_total_memory(self, vms: List[Dict]) -> Dict:
+        """Aggregate total memory consumption of all VMs per sample
+
+        Sums memory_mb across all VMs and per_numa breakdown.
+        Also aggregates swapcache per NUMA node.
+        Stores result in vm_total_memory_history for timeline export.
+
+        Args:
+            vms: List of VM dicts from get_vms_realtime()
+
+        Returns:
+            Dict with total_mb, vm_count, per_numa breakdown, timestamp,
+            plus swapcache_mb and swapcache_per_numa aggregates.
+        """
+        total_mb = sum(vm["memory_mb"] for vm in vms)
+        swapcache_mb = sum(vm.get("memory_swapcache_mb", 0) for vm in vms)
+        per_numa = defaultdict(float)
+        swapcache_per_numa = defaultdict(float)
+        for vm in vms:
+            for node_id, mem in vm.get("memory_per_numa", {}).items():
+                per_numa[node_id] += mem.get("total_mb", 0)
+            for node_id, sc in vm.get("memory_swapcache_per_numa", {}).items():
+                swapcache_per_numa[node_id] += sc
+
+        entry = {
+            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "total_mb": round(total_mb, 2),
+            "vm_count": len(vms),
+            "per_numa": {k: round(v, 2) for k, v in per_numa.items()},
+            "swapcache_mb": round(swapcache_mb, 2),
+            "swapcache_per_numa": {k: round(v, 2) for k, v in swapcache_per_numa.items()},
+        }
+        self.vm_total_memory_history.append(entry)
+        return entry
+
+    def _read_meminfo(self) -> dict:
+        """Read /proc/meminfo and return dict of field -> MB values
+
+        All values in /proc/meminfo are in kB; this method converts to MB.
+        Returns empty dict if file is unavailable.
+        """
+        result = {}
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        key = parts[0].rstrip(":")
+                        value_kb = int(parts[1])
+                        result[key] = round(value_kb / 1024, 2)
+        except (FileNotFoundError, PermissionError):
+            pass
+        return result
+
+    def _read_vmstat(self) -> dict:
+        """Read /proc/vmstat and return dict of field -> raw integer values
+
+        Returns empty dict if file is unavailable.
+        """
+        result = {}
+        try:
+            with open("/proc/vmstat") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        try:
+                            result[parts[0]] = int(parts[1])
+                        except ValueError:
+                            pass
+        except (FileNotFoundError, PermissionError):
+            pass
+        return result
+
     def get_vm_memory_from_numastat(self, pid):
-        """Use numastat -p PID to get process memory (including hugepages)"""
+        """Get process NUMA memory statistics.
+
+        Uses /proc/<pid>/numa_maps (fast, ~0.01s) first.
+        Falls back to numastat -p <pid> (slow, ~0.1-0.5s) if numa_maps fails.
+        """
+        # Fast path: read numa_maps directly (~50x faster than subprocess)
+        result = self.get_vm_memory_from_numa_maps(pid)
+        if result.get("_parsed", False):
+            # numa_maps was successfully read — accept result even if total_mb=0
+            result.pop("_parsed", None)  # remove internal flag before returning
+            return result
+
+        # Slow fallback: subprocess numastat
         result = {"total_mb": 0.0, "huge_mb": 0.0, "private_mb": 0.0, "heap_mb": 0.0, "stack_mb": 0.0, "per_node": {}}
         try:
             output = subprocess.run(["numastat", "-p", str(pid)], capture_output=True, text=True, timeout=5)
@@ -397,13 +610,13 @@ class VMMonitorBase(ABC):
                 line = line.strip()
                 if not line:
                     continue
-                if line.startswith("Node"):
-                    for p in line.split():
-                        if p.startswith("Node"):
-                            try:
-                                node_ids.append(int(p.replace("Node", "")))
-                            except:
-                                pass
+                # Extract node IDs from header line (handles both "Node0" and "Node 0" formats)
+                node_matches = re.findall(r"Node\s*(\d+)", line)
+                if node_matches:
+                    for nid_str in node_matches:
+                        nid = int(nid_str)
+                        if nid not in node_ids:
+                            node_ids.append(nid)
 
             for line in lines:
                 vals = re.findall(r"[\d.]+", line)
@@ -439,6 +652,424 @@ class VMMonitorBase(ABC):
             pass
         return result
 
+    # ===================== VM Memory from numa_maps (Fast Path) =====================
+    def get_vm_memory_from_numa_maps(self, pid: int) -> dict:
+        """Read /proc/<pid>/numa_maps to get per-NUMA process memory statistics.
+
+        ~50x faster than numastat subprocess (0.01s vs 0.1-0.5s per process).
+        Falls back gracefully: returns empty dict on error, triggering numastat fallback.
+
+        Returns:
+            Same structure as get_vm_memory_from_numastat(), plus:
+            - swapcache_mb: total swapcache pages converted to MB
+            - swapcache_per_node: per-node swapcache breakdown
+        """
+        result = {
+            "total_mb": 0.0,
+            "huge_mb": 0.0,
+            "private_mb": 0.0,
+            "heap_mb": 0.0,
+            "stack_mb": 0.0,
+            "per_node": {},
+            "swapcache_mb": 0.0,
+            "swapcache_per_node": {},
+        }
+        numa_maps_path = f"/proc/{pid}/numa_maps"
+        parsed = False  # track whether file was actually read successfully
+        try:
+            with open(numa_maps_path, "r") as f:
+                parsed = True
+                for line in f:
+                    tokens = line.strip().split()
+                    if len(tokens) < 2:
+                        continue
+
+                    # Parse fields from tokens (skip first token = virtual address)
+                    node_pages = {}  # {node_id: page_count}
+                    anon_pages = 0
+                    kernelpagesize_kb = 4  # default page size
+                    is_heap = False
+                    is_stack = False
+                    is_huge = False
+                    swapcache_pages = 0
+
+                    for token in tokens[1:]:
+                        # Boolean markers (no value)
+                        if token == "heap":
+                            is_heap = True
+                            continue
+                        if token == "stack":
+                            is_stack = True
+                            continue
+                        if token == "huge":
+                            is_huge = True
+                            continue
+                        if token == "default":
+                            continue
+
+                        # Policy tokens: bind:N, interleave:N-M, prefer:N
+                        if ":" in token and not token.startswith("file="):
+                            # e.g. "bind:2" or "interleave:0-5"
+                            prefix = token.split(":")[0]
+                            if prefix in ("bind", "interleave", "prefer"):
+                                continue
+
+                        # key=value pairs
+                        if "=" in token:
+                            key, value = token.split("=", 1)
+                            # N<node>=<pages>
+                            node_match = re.match(r"^N(\d+)$", key)
+                            if node_match and value.isdigit():
+                                node_id = int(node_match.group(1))
+                                node_pages[node_id] = int(value)
+                            elif key == "anon" and value.isdigit():
+                                anon_pages = int(value)
+                            elif key == "kernelpagesize_kB" and value.isdigit():
+                                kernelpagesize_kb = int(value)
+                            elif key == "swapcache" and value.isdigit():
+                                swapcache_pages = int(value)
+                            # file, mapped, dirty, active, mapmax — informational, skip
+
+                    # Skip lines with no N<node>= allocations (no physical pages)
+                    if not node_pages:
+                        continue
+
+                    # Detect hugepages via page size > 4kB
+                    if kernelpagesize_kb > 4:
+                        is_huge = True
+
+                    # Convert pages to MB
+                    total_line_pages = sum(node_pages.values())
+                    page_size_mb = kernelpagesize_kb / 1024.0
+
+                    # Accumulate totals
+                    line_total_mb = total_line_pages * page_size_mb
+                    result["total_mb"] += line_total_mb
+                    if is_huge:
+                        result["huge_mb"] += line_total_mb
+                    if is_heap:
+                        result["heap_mb"] += line_total_mb
+                    if is_stack:
+                        result["stack_mb"] += line_total_mb
+
+                    # Accumulate per-node totals
+                    for node_id, pages in node_pages.items():
+                        node_mb = pages * page_size_mb
+                        if node_id not in result["per_node"]:
+                            result["per_node"][node_id] = {
+                                "total_mb": 0.0,
+                                "huge_mb": 0.0,
+                                "heap_mb": 0.0,
+                                "stack_mb": 0.0,
+                                "private_mb": 0.0,
+                            }
+                        result["per_node"][node_id]["total_mb"] += node_mb
+                        if is_huge:
+                            result["per_node"][node_id]["huge_mb"] += node_mb
+                        if is_heap:
+                            result["per_node"][node_id]["heap_mb"] += node_mb
+                        if is_stack:
+                            result["per_node"][node_id]["stack_mb"] += node_mb
+
+                    # Private memory (anon pages) — distribute proportionally across nodes
+                    # anon pages share the same page size as the mapping (kernelpagesize_kB)
+                    if anon_pages > 0 and total_line_pages > 0:
+                        anon_total_mb = anon_pages * page_size_mb
+                        result["private_mb"] += anon_total_mb
+                        for node_id, pages in node_pages.items():
+                            proportion = pages / total_line_pages
+                            result["per_node"][node_id]["private_mb"] += anon_total_mb * proportion
+
+                    # SwapCache — distribute proportionally across nodes
+                    # NOTE: swapcache in numa_maps always counts 4KB base pages regardless
+                    # of kernelpagesize_kB, because the kernel swap cache operates at base
+                    # page granularity. Use base_page_size_mb (4KB) for swapcache conversion.
+                    base_page_size_mb = 4 / 1024.0
+                    if swapcache_pages > 0 and total_line_pages > 0:
+                        swapcache_total_mb = swapcache_pages * base_page_size_mb
+                        result["swapcache_mb"] += swapcache_total_mb
+                        for node_id, pages in node_pages.items():
+                            proportion = pages / total_line_pages
+                            if node_id not in result["swapcache_per_node"]:
+                                result["swapcache_per_node"][node_id] = 0.0
+                            result["swapcache_per_node"][node_id] += swapcache_total_mb * proportion
+
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            return result  # empty + parsed=False → triggers fallback
+        except Exception:
+            return result
+
+        # Mark that numa_maps was successfully parsed (even if total_mb=0)
+        result["_parsed"] = parsed
+
+        # Round all values for consistency
+        result["total_mb"] = round(result["total_mb"], 2)
+        result["huge_mb"] = round(result["huge_mb"], 2)
+        result["private_mb"] = round(result["private_mb"], 2)
+        result["heap_mb"] = round(result["heap_mb"], 2)
+        result["stack_mb"] = round(result["stack_mb"], 2)
+        result["swapcache_mb"] = round(result["swapcache_mb"], 2)
+        for node_id in result["per_node"]:
+            for k in result["per_node"][node_id]:
+                result["per_node"][node_id][k] = round(result["per_node"][node_id][k], 2)
+        for node_id in result["swapcache_per_node"]:
+            result["swapcache_per_node"][node_id] = round(result["swapcache_per_node"][node_id], 2)
+
+        return result
+
+    # ==================== Shared VM Metrics Helpers ====================
+    def _fallback_memory_mb(self, pid: int) -> float:
+        """Try psutil memory_info() as fallback when numa_maps + numastat both fail.
+
+        Attempts PSS first, then RSS. Returns 0.0 if both fail.
+        """
+        try:
+            p = psutil.Process(pid)
+            mem_info = p.memory_info()
+            return round(mem_info.pss / 1024 / 1024, 2)
+        except Exception:
+            try:
+                p = psutil.Process(pid)
+                mem_info = p.memory_info()
+                return round(mem_info.rss / 1024 / 1024, 2)
+            except Exception:
+                return 0.0
+
+    def _extract_numastat_fields(self, numastat_mem: dict) -> dict:
+        """Extract standard VM metric fields from numastat/numa_maps result dict.
+
+        Returns a flat dict with memory_mb, memory_huge_mb, etc.
+        """
+        return {
+            "memory_mb": numastat_mem.get("total_mb", 0.0),
+            "memory_huge_mb": numastat_mem.get("huge_mb", 0.0),
+            "memory_private_mb": numastat_mem.get("private_mb", 0.0),
+            "memory_heap_mb": numastat_mem.get("heap_mb", 0.0),
+            "memory_per_numa": numastat_mem.get("per_node", {}),
+            "memory_swapcache_mb": numastat_mem.get("swapcache_mb", 0.0),
+            "memory_swapcache_per_numa": numastat_mem.get("swapcache_per_node", {}),
+        }
+
+    def _finalize_vm_collection(
+        self, vms: List[Dict], current_pids: set, current_total_mem: float, current_total_cpu: float
+    ):
+        """Common post-processing: update peak trackers, clean dead PIDs from cache."""
+        if current_total_mem > self.peak_total_memory_mb:
+            self.peak_total_memory_mb = current_total_mem
+        if current_total_cpu > self.peak_total_cpu:
+            self.peak_total_cpu = current_total_cpu
+
+        # Clean dead processes from cache
+        dead_pids = [p for p in self.process_cache if p not in current_pids]
+        for p in dead_pids:
+            self.process_cache.pop(p, None)
+
+    # ==================== Parallel VM Metrics Collection ====================
+    def _discover_vm_processes(self) -> List[Dict]:
+        """Phase 1: Discover VM processes via psutil.process_iter (serial).
+
+        Scans all system processes, filters by get_process_names(), and
+        extracts VM IDs. Returns lightweight candidate dicts with no
+        per-VM I/O metrics yet — those are collected in Phase 2.
+
+        Returns:
+            List of dicts with pid, proc_name, cmdline, status, vm_name.
+        """
+        candidates = []
+        process_names = self.get_process_names()
+
+        for proc in psutil.process_iter(["pid", "name", "cmdline", "status"]):
+            try:
+                proc_name = proc.info["name"] or ""
+                if not any(name in proc_name for name in process_names):
+                    continue
+
+                pid = proc.info["pid"]
+                cmdline = " ".join(proc.info["cmdline"] or [])
+                vm_name = self.extract_vm_id(pid, cmdline)
+
+                candidates.append(
+                    {
+                        "pid": pid,
+                        "proc_name": proc_name,
+                        "cmdline": cmdline,
+                        "status": proc.info["status"],
+                        "vm_name": vm_name,
+                    }
+                )
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        return candidates
+
+    def _collect_vm_metrics_serial(self, vm_candidates: List[Dict]) -> List[Dict]:
+        """Phase 2 serial: collect per-VM metrics one by one.
+
+        Used as fallback when VM count is small (<4) to avoid
+        ThreadPoolExecutor overhead. Produces the same return structure
+        as _collect_vm_metrics_parallel().
+
+        Args:
+            vm_candidates: List of dicts from _discover_vm_processes()
+
+        Returns:
+            List of complete VM dicts (same structure as get_vms_realtime()).
+        """
+        vms = []
+        current_pids = set()
+        current_total_mem = 0.0
+        current_total_cpu = 0.0
+
+        for candidate in vm_candidates:
+            pid = candidate["pid"]
+            current_pids.add(pid)
+
+            # NUMA memory via numa_maps fast path + numastat fallback
+            numastat_mem = self.get_vm_memory_from_numastat(pid)
+            fields = self._extract_numastat_fields(numastat_mem)
+
+            # If numa_maps + numastat both fail, fall back to psutil
+            if fields["memory_mb"] <= 0:
+                fields["memory_mb"] = self._fallback_memory_mb(pid)
+
+            current_total_mem += fields["memory_mb"]
+
+            # CPU: seed for new PIDs, delta for cached PIDs
+            if pid not in self.process_cache:
+                try:
+                    p = psutil.Process(pid)
+                    p.cpu_percent()  # seed call — returns 0.0
+                    self.process_cache[pid] = p
+                    cpu = 0.0
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    cpu = 0.0
+            else:
+                try:
+                    cpu = self.process_cache[pid].cpu_percent()
+                except psutil.NoSuchProcess:
+                    self.process_cache.pop(pid, None)
+                    cpu = 0.0
+
+            cpu = round(max(0, min(cpu, 10000)), 2)
+            current_total_cpu += cpu
+
+            vms.append(
+                {
+                    "pid": pid,
+                    "name": candidate["vm_name"],
+                    "cpu_percent": cpu,
+                    **fields,
+                    "status": candidate["status"],
+                }
+            )
+
+        self._finalize_vm_collection(vms, current_pids, current_total_mem, current_total_cpu)
+        return vms
+
+    def _collect_vm_metrics_parallel(self, vm_candidates: List[Dict]) -> List[Dict]:
+        """Phase 2 parallel: collect per-VM metrics using ThreadPoolExecutor.
+
+        Step A (parallel): each thread reads numa_maps and seeds cpu_percent
+        for new PIDs. Step B (serial): transfer seed Process objects to
+        cache and call cpu_percent delta for cached PIDs.
+
+        Args:
+            vm_candidates: List of dicts from _discover_vm_processes()
+
+        Returns:
+            List of complete VM dicts (same structure as get_vms_realtime()).
+        """
+        if not vm_candidates:
+            return []
+
+        # Small VM count: skip thread pool overhead
+        if len(vm_candidates) < 4:
+            return self._collect_vm_metrics_serial(vm_candidates)
+
+        max_workers = min(64, max(4, len(vm_candidates)))
+
+        # Step A: parallel numa_maps reads + seed Process creation for new PIDs
+        # seed_procs maps pid -> psutil.Process for new PIDs (separate from result dict)
+        vm_results = []
+        seed_procs = {}
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {executor.submit(self._collect_single_vm, c): c for c in vm_candidates}
+            for future in as_completed(future_map):
+                try:
+                    vm_result, seed_proc = future.result()
+                    vm_results.append(vm_result)
+                    if seed_proc is not None:
+                        seed_procs[vm_result["pid"]] = seed_proc
+                except Exception:
+                    continue
+
+        # Step B: serial cpu_percent delta calls + cache update
+        current_pids = set()
+        current_total_mem = 0.0
+        current_total_cpu = 0.0
+
+        for vm in vm_results:
+            pid = vm["pid"]
+            current_pids.add(pid)
+            current_total_mem += vm["memory_mb"]
+
+            # Transfer seed Process objects from threads into cache
+            if pid in seed_procs:
+                self.process_cache[pid] = seed_procs[pid]
+                cpu = 0.0  # first sample always 0
+            elif pid in self.process_cache:
+                try:
+                    cpu = self.process_cache[pid].cpu_percent()  # serial delta call
+                except psutil.NoSuchProcess:
+                    self.process_cache.pop(pid, None)
+                    cpu = 0.0
+            else:
+                cpu = 0.0
+
+            cpu = round(max(0, min(cpu, 10000)), 2)
+            current_total_cpu += cpu
+            vm["cpu_percent"] = cpu
+
+        self._finalize_vm_collection(vm_results, current_pids, current_total_mem, current_total_cpu)
+        return vm_results
+
+    def _collect_single_vm(self, candidate: Dict) -> Tuple[Dict, object]:
+        """Collect metrics for a single VM candidate (callable from ThreadPoolExecutor).
+
+        Returns a tuple of (vm_result_dict, seed_process_or_None).
+        seed_process is a psutil.Process object with cpu_percent seeded for new PIDs.
+        """
+        pid = candidate["pid"]
+        seed_proc = None
+
+        # NUMA memory via numa_maps fast path + numastat fallback
+        numastat_mem = self.get_vm_memory_from_numastat(pid)
+        fields = self._extract_numastat_fields(numastat_mem)
+
+        # If numa_maps + numastat both fail, fall back to psutil
+        if fields["memory_mb"] <= 0:
+            fields["memory_mb"] = self._fallback_memory_mb(pid)
+
+        # Seed cpu_percent for new PIDs (fresh Process object in thread)
+        # Read-only check: pid not in self.process_cache is safe under GIL
+        if pid not in self.process_cache:
+            try:
+                seed_proc = psutil.Process(pid)
+                seed_proc.cpu_percent()  # seed call — returns 0.0
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                seed_proc = None
+
+        result = {
+            "pid": pid,
+            "name": candidate["vm_name"],
+            "cpu_percent": 0.0,  # placeholder, filled in Step B
+            **fields,
+            "status": candidate["status"],
+        }
+
+        return result, seed_proc
+
     # ==================== Template Methods ====================
     def collect_sample(self):
         """Collect one sample (full refresh each time)"""
@@ -446,8 +1077,12 @@ class VMMonitorBase(ABC):
         self.collect_numa_cpu()
         self.collect_host_stats()
         self.collect_swap_stats()
+        self.get_numa_nodes_memory()  # Collect NUMA meminfo in same cycle as swap/hugepage
         vms = self.get_vms_realtime()
         self.last_vm_count = len(vms)
+
+        # Aggregate VM total memory
+        self.collect_vm_total_memory(vms)
 
         timestamp = datetime.now()
         sample_data = []
@@ -466,6 +1101,8 @@ class VMMonitorBase(ABC):
                 "memory_private_mb": vm.get("memory_private_mb", 0),
                 "memory_heap_mb": vm.get("memory_heap_mb", 0),
                 "memory_per_numa": vm.get("memory_per_numa", {}),
+                "memory_swapcache_mb": vm.get("memory_swapcache_mb", 0),
+                "memory_swapcache_per_numa": vm.get("memory_swapcache_per_numa", {}),
                 "status": vm["status"],
             }
             sample_data.append(record)
@@ -525,13 +1162,33 @@ class VMMonitorBase(ABC):
         # Swap
         if self.swap_history:
             s = self.swap_history[-1]
-            if s["total_mb"] > 0:
+            cap = s["capacity"]
+            if cap["total_mb"] > 0:
+                cch = s["cache"]
+                act = s["activity"]
+                in_fmt = f"{act['swap_in_rate']:>6.1f}" if act["swap_in_rate"] > 0 else "    -"
+                out_fmt = f"{act['swap_out_rate']:>6.1f}" if act["swap_out_rate"] > 0 else "    -"
                 print(
-                    f"Swap:      Used {s['used_mb']:.0f}/{s['total_mb']:.0f} MB ({s['usage']:.1f}%) | Peak {self.peak_swap_used_mb:.0f} MB",
+                    f"Swap:      {cap['used_mb']:>6.0f}/{cap['total_mb']:>6.0f} MB ({cap['usage_pct']:>5.1f}%)"
+                    f" | Cached {cch['cached_mb']:>6.1f} MB"
+                    f" | In/Out {in_fmt}/{out_fmt} pg/s",
                     flush=True,
                 )
             else:
                 print("Swap:      Not enabled", flush=True)
+
+        # SwapCache per NUMA
+        if self.numa_memory_history:
+            latest_numa = self.numa_memory_history[-1]["nodes"]
+            if latest_numa:
+                sc_parts = []
+                total_sc = 0.0
+                for n in latest_numa:
+                    sc = n.get("swap_cached_mb", 0)
+                    total_sc += sc
+                    sc_parts.append(f"NUMA{n['node']} {sc:.1f} MB")
+                sc_str = " | ".join(sc_parts)
+                print(f"SwapCache: Total {total_sc:.1f} MB | {sc_str}", flush=True)
 
         self.print_numa_real_time()
 
@@ -559,6 +1216,14 @@ class VMMonitorBase(ABC):
 
         print("-" * width, flush=True)
         print(f"Total: {len(sample_data)} virtual machines | Data points: {len(self.data)}", flush=True)
+
+        # VM total memory
+        if self.vm_total_memory_history:
+            vt = self.vm_total_memory_history[-1]
+            numa_parts = [f"NUMA{k}: {v:.0f} MB" for k, v in sorted(vt["per_numa"].items())]
+            numa_str = " | ".join(numa_parts) if numa_parts else "N/A"
+            print(f"VM Total Memory: {vt['total_mb']:.0f} MB ({vt['vm_count']} VMs) | {numa_str}", flush=True)
+
         print("Press Ctrl+C to stop monitoring", flush=True)
 
     def check_stress_process(self, stress_pattern):
@@ -587,6 +1252,7 @@ class VMMonitorBase(ABC):
             duration_seconds: optional max duration (monitor stops after this even if stress still running)
         """
         print(f"Waiting for stress test to start... (Detection method: {check_type}={check_target})")
+        self.interval = interval_seconds
         if duration_seconds:
             print(f"Duration limit: {duration_seconds}s (will stop after this time)")
         stress_started = False
@@ -646,6 +1312,7 @@ class VMMonitorBase(ABC):
         return self.data
 
     def start_monitoring(self, duration_seconds=None, interval_seconds=5):
+        self.interval = interval_seconds
         self.running = True
         start_time = time.time()
 
@@ -698,6 +1365,9 @@ class VMMonitorBase(ABC):
                 "memory_huge_mb",
                 "memory_private_mb",
                 "memory_heap_mb",
+                "memory_per_numa",
+                "memory_swapcache_mb",
+                "memory_swapcache_per_numa",
                 "status",
             ]
             w = csv.DictWriter(f, fieldnames, extrasaction="ignore")
@@ -829,19 +1499,91 @@ class VMMonitorBase(ABC):
                     w.writerow([f"NUMA{node_id} Hugepage Avg Free MB", avg_free])
                     w.writerow([f"NUMA{node_id} Hugepage Avg Usage %", avg_usage])
 
-            swap_avg_mb = (
-                round(sum(s["used_mb"] for s in self.swap_history) / len(self.swap_history), 0)
+            # Swap Capacity
+            swap_avg_used_mb = (
+                round(sum(s["capacity"]["used_mb"] for s in self.swap_history) / len(self.swap_history), 0)
                 if self.swap_history
                 else 0
             )
-            w.writerow(
-                ["Swap Total Capacity MB", round(self.swap_history[0]["total_mb"], 0) if self.swap_history else 0]
-            )
-            w.writerow(["Swap Avg Usage MB", swap_avg_mb])
-            w.writerow(["Swap Peak Usage MB", round(self.peak_swap_used_mb, 0)])
-            swap_total = self.swap_history[0]["total_mb"] if self.swap_history else 0
+            swap_total = self.swap_history[0]["capacity"]["total_mb"] if self.swap_history else 0
             swap_peak_pct = round(self.peak_swap_used_mb / swap_total * 100, 1) if swap_total > 0 else 0
+            w.writerow(["Swap Total Capacity MB", round(swap_total, 0)])
+            w.writerow(["Swap Avg Usage MB", swap_avg_used_mb])
+            w.writerow(["Swap Peak Usage MB", round(self.peak_swap_used_mb, 0)])
             w.writerow(["Swap Peak Usage %", swap_peak_pct])
+
+            # Swap Cache
+            swap_avg_cached_mb = (
+                round(sum(s["cache"]["cached_mb"] for s in self.swap_history) / len(self.swap_history), 2)
+                if self.swap_history
+                else 0
+            )
+            swap_avg_cached_ratio = (
+                round(sum(s["cache"]["cached_ratio_pct"] for s in self.swap_history) / len(self.swap_history), 1)
+                if self.swap_history
+                else 0
+            )
+            w.writerow(["Swap Cached Avg MB", swap_avg_cached_mb])
+            w.writerow(["Swap Cached Peak MB", round(self.peak_swap_cached_mb, 2)])
+            w.writerow(["Swap Cached Avg Ratio %", swap_avg_cached_ratio])
+
+            # Swap Activity
+            swap_avg_in_rate = (
+                round(sum(s["activity"]["swap_in_rate"] for s in self.swap_history) / len(self.swap_history), 2)
+                if self.swap_history
+                else 0
+            )
+            swap_avg_out_rate = (
+                round(sum(s["activity"]["swap_out_rate"] for s in self.swap_history) / len(self.swap_history), 2)
+                if self.swap_history
+                else 0
+            )
+            swap_peak_in_rate = (
+                round(max(s["activity"]["swap_in_rate"] for s in self.swap_history), 2) if self.swap_history else 0
+            )
+            swap_peak_out_rate = (
+                round(max(s["activity"]["swap_out_rate"] for s in self.swap_history), 2) if self.swap_history else 0
+            )
+            swap_total_in = self.swap_history[-1]["activity"]["pswpin_cumulative"] if self.swap_history else 0
+            swap_total_out = self.swap_history[-1]["activity"]["pswpout_cumulative"] if self.swap_history else 0
+            w.writerow(["Swap Avg In Rate (pages/s)", swap_avg_in_rate])
+            w.writerow(["Swap Avg Out Rate (pages/s)", swap_avg_out_rate])
+            w.writerow(["Swap Peak In Rate (pages/s)", swap_peak_in_rate])
+            w.writerow(["Swap Peak Out Rate (pages/s)", swap_peak_out_rate])
+            w.writerow(["Swap Total In Pages", swap_total_in])
+            w.writerow(["Swap Total Out Pages", swap_total_out])
+
+            # SwapCache per NUMA
+            if self.numa_memory_history:
+                sc_summary = defaultdict(list)
+                for entry in self.numa_memory_history:
+                    for n in entry["nodes"]:
+                        sc_summary[n["node"]].append(n.get("swap_cached_mb", 0))
+                w.writerow([])
+                w.writerow(["=== SwapCache per NUMA Node ==="])
+                for node_id in sorted(sc_summary.keys()):
+                    vals = sc_summary[node_id]
+                    avg_sc = round(sum(vals) / len(vals), 2)
+                    peak_sc = round(max(vals), 2)
+                    w.writerow([f"NUMA{node_id} SwapCache Avg MB", avg_sc])
+                    w.writerow([f"NUMA{node_id} SwapCache Peak MB", peak_sc])
+
+            # VM Total Memory
+            if self.vm_total_memory_history:
+                w.writerow([])
+                w.writerow(["=== VM Total Memory ==="])
+                total_vals = [h["total_mb"] for h in self.vm_total_memory_history]
+                avg_total = round(sum(total_vals) / len(total_vals), 2)
+                peak_total = round(max(total_vals), 2)
+                w.writerow(["VM Total Memory Avg MB", avg_total])
+                w.writerow(["VM Total Memory Peak MB", peak_total])
+                all_nodes = set()
+                for h in self.vm_total_memory_history:
+                    all_nodes.update(h["per_numa"].keys())
+                for node_id in sorted(all_nodes):
+                    node_vals = [h["per_numa"].get(node_id, 0) for h in self.vm_total_memory_history]
+                    avg_node = round(sum(node_vals) / len(node_vals), 2)
+                    w.writerow([f"NUMA{node_id} VM Memory Avg MB", avg_node])
 
             w.writerow([])
             w.writerow(["=== Single VM Statistics ==="])
@@ -959,17 +1701,85 @@ class VMMonitorBase(ABC):
                 )
 
         if self.swap_history:
-            swap_avg_mb = (
-                round(sum(s["used_mb"] for s in self.swap_history) / len(self.swap_history), 0)
+            swap_avg_used_mb = (
+                round(sum(s["capacity"]["used_mb"] for s in self.swap_history) / len(self.swap_history), 0)
                 if self.swap_history
                 else 0
             )
-            swap_total_mb = self.swap_history[0]["total_mb"] if self.swap_history else 0
+            swap_total_mb = self.swap_history[0]["capacity"]["total_mb"] if self.swap_history else 0
             swap_peak_pct = round(self.peak_swap_used_mb / swap_total_mb * 100, 1) if swap_total_mb > 0 else 0
+            swap_avg_cached_mb = (
+                round(sum(s["cache"]["cached_mb"] for s in self.swap_history) / len(self.swap_history), 2)
+                if self.swap_history
+                else 0
+            )
+            swap_avg_cached_ratio = (
+                round(sum(s["cache"]["cached_ratio_pct"] for s in self.swap_history) / len(self.swap_history), 1)
+                if self.swap_history
+                else 0
+            )
             print("[Swap Partition]")
-            print(f"  Total Capacity:     {swap_total_mb:.0f} MB")
-            print(f"  Avg Usage:    {swap_avg_mb:.0f} MB")
-            print(f"  Peak Usage:    {self.peak_swap_used_mb:.0f} MB ({swap_peak_pct:.1f}%)")
+            print(f"  Total:   {swap_total_mb:>8.0f} MB")
+            print(
+                f"  Avg Used | {swap_avg_used_mb:>8.0f} MB | Peak {self.peak_swap_used_mb:>8.0f} MB ({swap_peak_pct:>5.1f}%)"
+            )
+            print(
+                f"  Avg Cache| {swap_avg_cached_mb:>8.2f} MB | Peak {self.peak_swap_cached_mb:>8.2f} MB ({swap_avg_cached_ratio:>5.1f}%)"
+            )
+
+            swap_avg_in_rate = (
+                round(sum(s["activity"]["swap_in_rate"] for s in self.swap_history) / len(self.swap_history), 2)
+                if self.swap_history
+                else 0
+            )
+            swap_avg_out_rate = (
+                round(sum(s["activity"]["swap_out_rate"] for s in self.swap_history) / len(self.swap_history), 2)
+                if self.swap_history
+                else 0
+            )
+            swap_peak_in_rate = (
+                round(max(s["activity"]["swap_in_rate"] for s in self.swap_history), 2) if self.swap_history else 0
+            )
+            swap_peak_out_rate = (
+                round(max(s["activity"]["swap_out_rate"] for s in self.swap_history), 2) if self.swap_history else 0
+            )
+            swap_total_in = self.swap_history[-1]["activity"]["pswpin_cumulative"] if self.swap_history else 0
+            swap_total_out = self.swap_history[-1]["activity"]["pswpout_cumulative"] if self.swap_history else 0
+            print("[Swap Activity]")
+            print(
+                f"  Avg In  | {swap_avg_in_rate:>8.2f} pg/s | Peak {swap_peak_in_rate:>8.2f} pg/s | Total {swap_total_in:>10d} pg"
+            )
+            print(
+                f"  Avg Out | {swap_avg_out_rate:>8.2f} pg/s | Peak {swap_peak_out_rate:>8.2f} pg/s | Total {swap_total_out:>10d} pg"
+            )
+
+        # SwapCache per NUMA summary
+        if self.numa_memory_history:
+            print("[SwapCache per NUMA Node]")
+            sc_summary = defaultdict(list)
+            for entry in self.numa_memory_history:
+                for n in entry["nodes"]:
+                    sc_summary[n["node"]].append(n.get("swap_cached_mb", 0))
+            for node_id in sorted(sc_summary.keys()):
+                vals = sc_summary[node_id]
+                avg_sc = round(sum(vals) / len(vals), 2)
+                peak_sc = round(max(vals), 2)
+                print(f"  NUMA {node_id:>2d} | Avg SwapCache {avg_sc:>8.2f} MB | Peak {peak_sc:>8.2f} MB")
+
+        # VM total memory summary
+        if self.vm_total_memory_history:
+            print("[VM Total Memory]")
+            total_vals = [h["total_mb"] for h in self.vm_total_memory_history]
+            avg_total = round(sum(total_vals) / len(total_vals), 2)
+            peak_total = round(max(total_vals), 2)
+            print(f"  Avg Total: {avg_total:.0f} MB | Peak Total: {peak_total:.0f} MB")
+            all_nodes = set()
+            for h in self.vm_total_memory_history:
+                all_nodes.update(h["per_numa"].keys())
+            for node_id in sorted(all_nodes):
+                node_vals = [h["per_numa"].get(node_id, 0) for h in self.vm_total_memory_history]
+                avg_node = round(sum(node_vals) / len(node_vals), 2)
+                print(f"  NUMA {node_id:>2d} | Avg VM Memory {avg_node:>8.0f} MB")
 
         if vm_stats:
             print("\n[TOP10 CPU]")
