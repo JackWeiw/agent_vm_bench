@@ -31,147 +31,211 @@ Optional (Excel): `pandas`, `openpyxl`
 
 ---
 
-## Quick Start
+## Quick Start (E2B Sandbox Bench)
 
-### 1. Terminal Setup
+The complete testing workflow from environment setup to running benchmarks:
 
-```bash
-source ~/.admin-openrc
-unset http_proxy
-unset https_proxy
-```
-
-### 2. Configure Host Network Bridge
+### Step 1: Download Web Pages
 
 ```bash
-# Find bridge interface
-ip a | grep brq
-
-# Add IP to bridge
-ip addr add 192.168.110.10/24 dev brqb3fa561d-67
-```
-
-### 3. Download Warmup Pages
-
-```bash
+# Download all 10 Wikipedia pages (with images)
 bash download_page.sh
+
+# Or download specific pages
+bash download_page.sh -p Weibo,China
 ```
 
-### 4. Start Warmup Web Server
+Pages saved to `web_content/en.wikipedia.org/wiki/`.
+
+### Step 2: Build Docker Image
+
+```bash
+# Build the base image (ARM64)
+cd dockerfile_build
+docker build -t ubuntu-openclaw-chromium:24.04-linuxarm64 .
+
+# Or build for x86
+docker build -f Dockerfile.x86 -t ubuntu-openclaw-chromium:24.04-linuxx86 .
+```
+
+### Step 3: Push to Harbor Registry
+
+```bash
+cd dockerfile_build
+# Set Harbor IP (your E2B + Harbor server)
+HARBOR_IP=71.14.96.192 bash push_to_harbor.sh
+```
+
+Image pushed to `HARBOR_IP:2900/e2b-orchestration/ubuntu-openclaw-chromium:custom`.
+
+### Step 4: Build E2B Template
+
+```bash
+cd dockerfile_build
+# Build template from Harbor image (alias = template name for later use)
+python3 build_e2b.py --server-ip 71.14.96.192 --alias openclaw-browser-v1
+
+# Or with custom Harbor IP and alias
+python3 build_e2b.py --server-ip 71.14.96.192 --harbor-ip 71.14.96.192 --alias my-template
+```
+
+Requires `~/.e2b/config.json` with `accessToken` and `teamApiKey`.
+
+### Step 5: Start Web Server
 
 ```bash
 cd web_content/en.wikipedia.org/wiki
+# Bind to NUMA node 2,3 for memory isolation
 numactl --cpunodebind=2,3 --membind=2,3 python3 -m http.server 8080
+```
+
+### Step 6: Modify Configuration
+
+Edit `config/e2b_bench.yaml` — update the template name and web server URL to match your setup:
+
+```yaml
+sandbox:
+  template: "openclaw-browser-v1"  # ← Your template alias from Step 4
+
+browser:
+  urls:
+    - "http://YOUR_LOCAL_IP:8080/Hubble_Space_Telescope.html"  # ← Your web server
+  warmup_urls:
+    - "http://YOUR_LOCAL_IP:8080/China.html"
+    # ... other pages
+
+e2b_env:
+  E2B_API_URL: "http://71.14.96.192:3000"  # ← Your E2B API server
+```
+
+### Step 7: Create Sandboxes
+
+```bash
+# Create sandboxes only (Phase 0 — left running for later use)
+python -m e2b_bench --config config/e2b_bench.yaml --create-only
+
+# With sandbox ID persistence
+python -m e2b_bench --config config/e2b_bench.yaml --create-only --sandbox-ids-file sandboxs.txt
+```
+
+### Step 8: Run Benchmark
+
+```bash
+# Detect existing sandboxes and benchmark (fixed mode)
+python -m e2b_bench --config config/e2b_bench.yaml --detect
+
+# Round-robin mode (memory migration stress testing)
+python -m e2b_bench --config config/e2b_bench.yaml --detect -bm round_robin -rs 5 -rc 5
+
+# Warmup first, then benchmark
+python -m e2b_bench --config config/e2b_bench.yaml --detect --warmup-only  # Phase 1: warmup
+python -m e2b_bench --config config/e2b_bench.yaml --detect -bm round_robin  # Phase 2: benchmark
+```
+
+### Step 9: Delete Sandboxes
+
+```bash
+cd e2b_bench/scripts
+# Configure .env with your E2B API server IP
+cp .env.example .env
+# Edit .env: set E2B_API_URL=http://YOUR_IP:3000
+
+# Delete all running sandboxes
+bash delete_sandbox.sh
+
+# Or specify custom .env path
+bash delete_sandbox.sh path/to/.env
+```
+
+### Workflow Summary
+
+```text
+download_page.sh → docker build → push_to_harbor.sh → build_e2b.py → http.server
+     ↓                 ↓              ↓                 ↓            ↓
+  Web pages     Docker image    Harbor registry    E2B template    Web server
+                                                                       ↓
+                              config/e2b_bench.yaml (template + URL)
+                                       ↓
+                              --create-only → --detect → benchmark → delete_sandbox.sh
 ```
 
 ---
 
-## vm_bench Package (Modular)
+## E2B Sandbox Bench
 
-The `vm_bench` package is the **recommended** modular approach for VM creation and benchmarking, replacing the original `create_server.py` and `vm_bench_lite.py`.
+Browser automation performance testing in E2B Firecracker microVMs, with memory migration stress testing support.
 
 ### Quick Start
 
 ```bash
 # Install dependencies
-pip install -r vm_bench/requirements.txt
+pip install -r e2b_bench/requirements.txt
 
-# Create VMs only (Phase 0)
-python -m vm_bench --config config/vm_bench.yaml --create-only
+# Full workflow (fixed mode)
+python -m e2b_bench --config config/e2b_bench.yaml
 
-# Detect existing VMs and benchmark
-python -m vm_bench --config config/vm_bench.yaml --detect -bsp 0.5 -t 300
+# Round-robin mode (memory migration stress testing)
+python -m e2b_bench --config config/e2b_bench.yaml \
+    -bm round_robin -rs 5 -rc 5 -ri 5
 
-# Warmup only
-python -m vm_bench --config config/vm_bench.yaml --warmup-only
+# Create sandboxes only (Phase 0)
+python -m e2b_bench --config config/e2b_bench.yaml --create-only
 
-# Full workflow
-python -m vm_bench --config config/vm_bench.yaml
+# Detect existing sandboxes and benchmark
+python -m e2b_bench --config config/e2b_bench.yaml --detect
+
+# Warmup only (multi-tab memory preheating)
+python -m e2b_bench --config config/e2b_bench.yaml --warmup-only
+
+# Batch testing (matrix config)
+python -m e2b_bench --batch --matrix config/e2b_batch_matrix.yaml
+
+# Offline summary from existing results
+python -m e2b_bench --batch --offline --result-dir results/e2b/batch
 ```
 
-### Python API
+### Key Features
 
-```python
-from vm_bench import Config, VMManager, run_benchmark
+| Feature | Description | CLI Flag |
+|---------|-------------|----------|
+| **Fixed Benchmark** | Subset percentage of sandboxes run tasks | `-bp 0.5` |
+| **Round-Robin Mode** | Group rotation with tab switching for swap stress | `-bm round_robin` |
+| **Step-Level Timing** | Separate timing for open_tab, page_load, snapshot, click, screenshot | Automatic in round-robin |
+| **Tail Latency Analysis** | P99/P50 ratio with severity classification | Automatic in reports |
+| **Round Comparison** | Per-round statistics table | Automatic in round-robin reports |
+| **Error Classification** | Auto-classify failures (D-Bus, Gateway, Timeout, etc.) | Automatic in reports |
+| **smap_tool Integration** | Memory migration monitoring | YAML: `smap_tool.enabled` |
+| **vm_monitor Integration** | Performance metrics with stress-file sync | YAML: `vm_monitor.enabled` |
+| **NUMA Binding** | Bind sandbox creation to specific NUMA node | YAML: `sandbox.numa_bind` |
+| **Sandbox ID Persistence** | Save/load IDs for cross-session reuse | `--sandbox-ids-file` |
 
-# Create VMs
-config = Config(total_count=20, start_ip="192.168.110.11", ...)
-manager = VMManager(config, threading.Event())
-vm_states = manager.create_all()
+### Running Modes
 
-# Run benchmark
-result = run_benchmark(config)
-print(result['report'])
-```
+| Mode | Flag | Sandbox Behavior |
+|------|------|------------------|
+| Full Workflow (Fixed) | (default) | Killed after test |
+| Full Workflow (Round-Robin) | `-bm round_robin` | Killed after test |
+| Create-Only | `--create-only` | Left running |
+| Detect Existing | `--detect` | Left running |
+| Warmup-Only | `--warmup-only` | Left running |
 
 ### Files
 
 | File | Description |
 |------|-------------|
-| `vm_bench/config.py` | Configuration management (YAML + CLI) |
-| `vm_bench/vm_manager.py` | VM lifecycle (OpenStack + SSH) |
-| `vm_bench/task_runner.py` | Task execution (QA, Stress, Browser) |
-| `vm_bench/bench.py` | Main orchestration entry point |
-| `config/vm_bench.yaml` | Configuration template |
+| `e2b_bench/bench.py` | Main orchestration, SmapToolManager, VmMonitorManager |
+| `e2b_bench/round_robin.py` | Round-robin task manager (group rotation, cycling) |
+| `e2b_bench/task_runner.py` | WarmupRunner, BrowserTaskRunner, TabOperationRunner |
+| `e2b_bench/stats_collector.py` | Statistics, ErrorClassifier, ReportFormatter |
+| `e2b_bench/batch_scheduler.py` | Batch test orchestration with sandbox reuse |
+| `e2b_bench/config.py` | Configuration (YAML + CLI + defaults priority chain) |
+| `e2b_bench/sandbox_manager.py` | Sandbox lifecycle (create, port check, NUMA bind) |
+| `e2b_bench/metrics_extractor.py` | Extract metrics from vm_monitor + browser reports |
+| `e2b_bench/report_aggregator.py` | Aggregate batch results into styled Excel |
+| `config/e2b_bench.yaml` | Single test configuration template |
+| `config/e2b_batch_matrix.yaml` | Batch test matrix |
 
-See [vm_bench Usage Guide](docs/vm_bench-usage-guide.md) for details.
-
----
-
-## Legacy Scripts
-
-### 6. Resource Monitoring
-
-```bash
-# Basic monitoring (QEMU, default)
-python3 vm_monitor.py -t 300 -i 2
-
-# Firecracker monitoring
-python3 vm_monitor.py --vmm firecracker -t 300 -i 2
-
-# With log collection
-python3 vm_monitor.py -t 300 -i 2 --enable-capture
-
-# Custom output directory
-python3 vm_monitor.py -t 300 --enable-capture --log-dir /data/test_run_1
-
-# Specific NUMA nodes
-python3 vm_monitor.py -t 300 --enable-capture --numa 0,1
-
-# Backward compatible (deprecated)
-python3 qemu_monitor.py -t 300 -i 2
-```
-
-### 7. Run Benchmark
-
-#### Warmup Phase (all VMs)
-
-```bash
-python vm_bench_lite.py -n 100 --start-ip 192.168.110.11 --browser-mode \
-    -wp \
-    --batch-size 20 --batch-interval 5 \
-    --warmup-url "http://192.168.110.10:8080/China.html" \
-    --warmup-url "http://192.168.110.10:8080/Earth.html" \
-    --warmup-loops 1 --warmup-delay 2
-```
-
-#### Benchmark Phase (partial VMs)
-
-```bash
-python vm_bench_lite.py -n 100 --start-ip 192.168.110.11 --browser-mode \
-    -bsp 0.5 \
-    --batch-size 10 --batch-interval 5 \
-    --browser-url "http://192.168.110.10:8080/Weibo.html" \
-    --browser-interval-min 5 --browser-interval-max 15 \
-    -t 160
-```
-
-### 8. Delete VMs
-
-```bash
-openstack server list -c ID -f value | xargs openstack server delete --force
-virsh list --all
-```
+See [E2B Bench Usage Guide](docs/e2b-bench-usage.md) for details.
 
 ---
 
@@ -203,16 +267,6 @@ python -m docker_bench \
     --duration 160
 ```
 
-### Browser Workflow (5 steps = 1 query)
-
-```text
-Step 1: openclaw browser open [URL] --label [NAME]
-Step 2: openclaw browser focus [TAB_ID]
-Step 3: openclaw browser snapshot --limit 200
-Step 4: openclaw browser click e218
-Step 5: openclaw browser screenshot
-```
-
 ### Files
 
 | File | Description |
@@ -222,6 +276,8 @@ Step 5: openclaw browser screenshot
 | `docker_bench/task_runner.py` | Browser task execution |
 | `docker_bench/stats_collector.py` | Statistics collection and reporting |
 | `config/docker_bench.yaml` | Configuration template |
+
+See [Docker Bench Usage Guide](docs/docker-bench-usage.md) for details.
 
 ---
 
