@@ -1,18 +1,23 @@
 # Coding Benchmark Template - E2B Sandbox for AI Coding Agent Memory Stress Testing
 #
-# This Dockerfile creates a Firecracker microVM template containing:
-# - Node.js 24 runtime
-# - React + webpack5 coding benchmark project (40 components)
-# - Pre-installed node_modules (no npm install needed at runtime)
-# - Pre-built initial webpack production build
+# Environment: coding + agent (openclaw), NO browser/Chromium
+#
+# Agent tools included:
+# - openclaw:       AI agent framework (coding agent's primary tool)
+# - llama-server:   Embedding model for agent semantic understanding
+# - openclaw-gateway: Agent gateway service (ports 18789 + 11436)
+#
+# NOT included (use browser template instead):
+# - agent-browser:  Browser automation skill
+# - Chromium:       Web browser
 #
 # Memory pressure model:
 # - Each "npm run build" = full production webpack rebuild (500-800MB peak)
 # - Each round modifies bench-marker.ts → triggers genuine rebuild
 # - Multiple concurrent sandboxes → overlapping build peaks → host memory stress
 #
-# Build: docker build -t ubuntu-coding-bench:24.04-linuxarm64 -f Dockerfile.coding .
-# Push:  HARBOR_IP=X bash push_to_harbor_coding.sh
+# Build:  docker build -t ubuntu-coding-bench:24.04-linuxarm64 -f Dockerfile.coding .
+# Push:   HARBOR_IP=X bash push_to_harbor_coding.sh
 # Template: python3 build_e2b.py --server-ip X --harbor-ip X --alias openclaw-coding-v1 --image e2b-orchestration/ubuntu-coding-bench:custom
 
 FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/ubuntu:24.04-linuxarm64
@@ -28,18 +33,9 @@ ENV https_proxy=${HTTPS_PROXY}
 ENV HTTP_PROXY=${HTTP_PROXY}
 ENV HTTPS_PROXY=${HTTPS_PROXY}
 
-# Install system packages needed for coding environment
-# git: needed for project management and git checkout/reset operations
-# vim: editor for manual sandbox testing
-# build-essential: some npm packages need C compilation (node-gyp)
-RUN apt update && apt install -y \
-    git vim wget xz-utils build-essential \
-    libgomp1 iproute2 net-tools \
-    python3 python3-pip \
-    && apt clean && rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
-
-# Install Node24 (same as browser template)
-RUN cd /usr/local && \
+# Install Node24 and system packages
+RUN apt update && apt install -y wget xz-utils vim libgomp1 iproute2 net-tools supervisor gnupg git && \
+    cd /usr/local && \
     wget --no-check-certificate https://nodejs.org/dist/v24.14.0/node-v24.14.0-linux-arm64.tar.xz && \
     tar -xvf node-v24.14.0-linux-arm64.tar.xz && \
     mv node-v24.14.0-linux-arm64 node24 && \
@@ -47,67 +43,53 @@ RUN cd /usr/local && \
     ln -sf /usr/local/node24/bin/node /usr/local/bin/node && \
     ln -sf /usr/local/node24/bin/npm /usr/local/bin/npm && \
     ln -sf /usr/local/node24/bin/npx /usr/local/bin/npx && \
-    git config --global http.sslVerify false
+    git config --global http.sslVerify false && \
+    apt clean && rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
 
-# Configure npm (use Chinese mirror for faster downloads on ARM64)
+# Install openclaw agent framework (NO agent-browser, NO Chromium)
+# This is the coding agent's primary tool for file operations, build, and test
 RUN npm config set strict-ssl false && \
-    npm config set registry https://registry.npmmirror.com
+    npm config set registry https://registry.npmmirror.com && \
+    npm install -g @larksuiteoapi/node-sdk && \
+    npm install -g @slack/web-api @slack/bolt && \
+    npm install -g openclaw@2026.6.6 --unsafe-perm=true --registry=https://registry.npmmirror.com --strict-ssl=false --verbose && \
+    cd /usr/local/node24/lib/node_modules/openclaw && \
+    npm install @slack/web-api @slack/bolt && \
+    ln -s /usr/local/node24/bin/openclaw /usr/local/bin/openclaw && \
+    mkdir -p /root/.openclaw/skills && \
+    rm -rf /root/.npm /tmp/npm*
 
-# Copy and run the project setup script
-# This generates the React + webpack5 project with 40 components,
-# installs dependencies, runs initial build, and initializes git repo
+# Create openclaw config directory and configuration
+RUN mkdir -p /root/.openclaw/workspace
+COPY openclaw.json /root/.openclaw/openclaw.json
+
+# Download llama-server (embedding model for agent semantic understanding)
+RUN cd /root && \
+    wget --no-check-certificate https://github.com/ggml-org/llama.cpp/releases/download/b9660/llama-b9660-bin-ubuntu-arm64.tar.gz && \
+    tar -zxvf llama-b9660-bin-ubuntu-arm64.tar.gz && \
+    rm -rf llama-b9660-bin-ubuntu-arm64.tar.gz && \
+    wget --no-check-certificate -O bge-small-zh-v1.5-f16.gguf "https://hf-mirror.com/CompendiumLabs/bge-small-zh-v1.5-gguf/resolve/main/bge-small-zh-v1.5-f16.gguf"
+
+# Setup supervisor configuration for llama-server and openclaw gateway
+RUN mkdir -p /etc/supervisor/conf.d && \
+    touch /var/log/llama.log /var/log/openclaw.log
+COPY llama_openclaw.conf /etc/supervisor/conf.d/llama_openclaw.conf
+
+# --- Coding benchmark project setup ---
+# Copy and run the project setup script (generates 40 React components + webpack5)
 COPY setup_coding_project.sh /tmp/setup_coding_project.sh
 RUN bash /tmp/setup_coding_project.sh && rm /tmp/setup_coding_project.sh
 
-# Verify the project works
+# Copy the manual testing helper script
+COPY bench_helper.sh /opt/coding-bench/bench_helper.sh
+RUN chmod +x /opt/coding-bench/bench_helper.sh
+
+# Verify the coding project works
 RUN cd /opt/coding-bench && npm run build && echo "Build verification: SUCCESS"
 
-# Add a simple benchmark helper script for manual testing
-RUN cat > /opt/coding-bench/bench_helper.sh << 'HELPER'
-#!/bin/bash
-# Helper script for manual benchmark testing inside sandbox
-# Usage: bash /opt/coding-bench/bench_helper.sh [round_number]
-
-ROUND="${1:-0}"
-PROJECT="/opt/coding-bench"
-
-echo "=== Coding Bench Helper - Round ${ROUND} ==="
-echo ""
-
-# Step 1: Modify bench-marker.ts
-echo "[Step 1: edit_file] Modifying bench-marker.ts for round ${ROUND}..."
-sed -i "s/export const BENCH_ROUND = .*/export const BENCH_ROUND = ${ROUND};/" ${PROJECT}/src/bench-marker.ts
-echo "  BENCH_ROUND updated to ${ROUND}"
-echo ""
-
-# Step 2: Run production build
-echo "[Step 2: build] Running webpack production build..."
-BUILD_START=$(date +%s%N)
-cd ${PROJECT} && npm run build 2>&1 | tail -5
-BUILD_END=$(date +%s%N)
-BUILD_MS=$(( (BUILD_END - BUILD_START) / 1000000 ))
-echo "  Build completed in ${BUILD_MS}ms"
-echo ""
-
-# Step 3: Run tests
-echo "[Step 3: test] Running jest tests..."
-TEST_START=$(date +%s%N)
-cd ${PROJECT} && npm test 2>&1 | tail -10
-TEST_END=$(date +%s%N)
-TEST_MS=$(( (TEST_END - TEST_START) / 1000000 ))
-echo "  Tests completed in ${TEST_MS}ms"
-echo ""
-
-# Step 4: Memory report
-echo "[Memory Report] Current memory usage:"
-free -m
-echo ""
-echo "=== Round ${ROUND} Complete ==="
-echo "  Build time:  ${BUILD_MS}ms"
-echo "  Test time:   ${TEST_MS}ms"
-HELPER
-
-RUN chmod +x /opt/coding-bench/bench_helper.sh
+# Clear logs for clean image
+RUN > /var/log/llama.log && \
+    > /var/log/openclaw.log
 
 # Unset proxy environment variables after build
 ENV http_proxy= \
@@ -115,5 +97,6 @@ ENV http_proxy= \
     HTTP_PROXY= \
     HTTPS_PROXY=
 
-# Default command: keep sandbox alive (E2B runtime manages the sandbox lifecycle)
-CMD ["sleep", "infinity"]
+# Set the default command to run supervisor
+# This starts llama-server and openclaw-gateway, making port checks work
+CMD ["/usr/bin/supervisord", "-n"]
