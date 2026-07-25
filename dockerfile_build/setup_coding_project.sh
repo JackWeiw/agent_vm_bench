@@ -484,6 +484,8 @@ npm run build 2>&1 | tail -10
 
 echo "Initializing git repository..."
 git init
+git config user.email "bench@coding-bench.local"
+git config user.name "Coding Bench"
 git add -A
 git commit -m "Initial coding-bench project" --no-gpg-sign
 
