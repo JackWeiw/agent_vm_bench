@@ -422,12 +422,6 @@ class TestSnapshot:
     coding_avg_latency: float = 0.0  # Average latency (seconds)
     coding_p99_latency: float = 0.0  # P99 latency (seconds)
 
-    # Coding task statistics (filled when workflow_type == "coding")
-    coding_total: int = 0  # Coding task total count
-    coding_success: int = 0  # Successful task count
-    coding_avg_latency: float = 0.0  # Average latency
-    coding_p99_latency: float = 0.0  # P99 latency
-
 
 @dataclass
 class BatchTask:
