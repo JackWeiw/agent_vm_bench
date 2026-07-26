@@ -1,58 +1,88 @@
-# E2B Coding Benchmark Template - Build & Manual Test Guide
+# E2B Coding Benchmark Template — Build & Manual Test Guide
 
 ## Overview
 
-This template creates an E2B sandbox containing a React + webpack5 project for testing memory capacity sensitivity under AI coding agent scenarios.
+This template creates an E2B sandbox containing **Ant Design Pro** (36k+ GitHub stars, most popular React enterprise dashboard) for testing host memory capacity sensitivity under AI coding agent scenarios.
 
-**Memory pressure model**: Each `npm run build` (webpack5 production) creates a bursty peak of 500-800MB. When multiple sandboxes run concurrent builds, overlapping peaks stress host NUMA memory capacity.
+**Key insight**: Real AI coding agents working on web applications always start a **dev server** for live preview (Devin, OpenHands, Claude Code all do this). The dev server runs persistently (~1-1.5GB), and when the agent triggers a production build to verify changes (~2GB peak), both processes are active simultaneously — creating a **~3GB overlapping memory peak** per sandbox.
+
+## Memory Pressure Model
+
+```
+┌─ Sandbox Memory Timeline ──────────────────────────────────────────┐
+│                                                                     │
+│  dev server (persistent)   ──────────────────────────── 1-1.5GB    │
+│                                                                     │
+│  production build (burst)          ┌──────┐              ~2GB peak │
+│                                    │      │                         │
+│  ──────────────────────────────────┤      ├──────────────          │
+│                                    └──────┘                         │
+│                                                                     │
+│  total peak = dev server + build overlap  →  ~3GB per sandbox      │
+│                                                                     │
+│  50+ concurrent sandboxes → overlapping peaks → host memory stress  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Why this is realistic**:
+
+| Process | Memory | Reason |
+|---------|--------|--------|
+| Dev server (npm run dev) | ~1-1.5GB persistent | Every coding agent starts dev server for live preview — Devin, OpenHands, Claude Code all do this |
+| Production build (npm run build) | ~2GB peak | Agent verifies changes with production build — standard coding workflow |
+| Overlapping peak | ~3GB | Both processes active simultaneously — unavoidable in real agent environments |
+
+**Why NOT language server / source maps**: These are not realistic for agent service scenarios. Language servers (tsserver) are IDE-internal components, not sandbox infrastructure. Source maps in production builds are uncommon. Dev server, however, is a universal coding agent action — customers immediately recognize this as real.
 
 ## Project Structure (inside sandbox)
 
 ```
-/opt/coding-bench/
-├── package.json              # React + webpack5 + jest dependencies
-├── webpack.config.js         # Webpack5 production config (split chunks, minification)
-├── tsconfig.json             # TypeScript config
-├── jest.config.js            # Jest test config
+/opt/coding-bench/                    # Ant Design Pro (git clone)
+├── package.json                      # antd + UmiJS + webpack dependencies
+├── config/
+│   ├── config.ts                     # UmiJS configuration
+│   └── routes.ts                     # Route definitions
 ├── src/
-│   ├── index.tsx             # Entry point
-│   ├── App.tsx               # Main app (imports all 40 components)
-│   ├── bench-marker.ts       # ← Modified each round (BENCH_ROUND constant)
-│   ├── components/           # 40 React TypeScript components
-│   │   ├── Dashboard.tsx     # Each imports BENCH_ROUND from bench-marker
-│   │   ├── Header.tsx
-│   │   ├── ... (40 files)
-│   │   └── TaskBoard.tsx
-│   ├── styles/
-│   │   ├── App.css           # Main stylesheet
-│   │   └── components.css    # Component styles
-│   ├── utils/
-│   │   ├── helpers.ts        # Utility functions
-│   │   ├── api.ts            # API types and endpoints
-│   │   ├── format.ts         # Formatting utilities
-│   ├── __tests__/            # 10 Jest test files
-├── public/
-│   ├── index.html            # HTML template
-├── node_modules/             # Pre-installed (no npm install needed)
-├── dist/                     # Build output (pre-built)
-├── .git/                     # Git repo for checkout/reset
-└── bench_helper.sh           # Manual testing helper script
+│   ├── pages/                        # ← Modified each round (20 real page files)
+│   │   ├── dashboard/analysis/       # Analysis dashboard page
+│   │   ├── dashboard/workplace/      # Workplace dashboard page
+│   │   ├── form/basic-form/          # Basic form page
+│   │   ├── list/table-list/          # ProTable list page
+│   │   ├── user/login/               # Login page
+│   │   └── ... (20 target files)
+│   ├── components/                   # Shared components
+│   └── services/                     # API service layer
+├── node_modules/                     # Pre-installed (no npm install needed)
+├── .git/                             # Git repo for checkout/reset
+├── bench_helper.sh                   # Manual testing helper script
+└── /tmp/
+    ├── dev_server.log                # Dev server output
+    ├── build_output.log              # Build output per round
+    └── test_output.log               # Test output per round
 ```
 
-## Modification Strategy
+## Modification Strategy (per round)
 
-Each benchmark round modifies `bench-marker.ts` to change the `BENCH_ROUND` constant:
+Each benchmark round simulates a coding agent's verification cycle:
 
-```bash
-# Round N: modify bench-marker.ts (regex matches any current value)
-sed -i "s/export const BENCH_ROUND = .*/export const BENCH_ROUND = ${round_id};/" /opt/coding-bench/src/bench-marker.ts
+```
+Step 0: git checkout -- src/         ← Reset (like agent reverting failed changes)
+        Start dev server (if not running) ← Persistent background process
+Step 1: sed -i "1i// Bench Round N"  ← Inject comment (triggers webpack rebuild)
+Step 2: rm -rf dist/ cache/ + npm run build  ← Clean production build
+Step 3: npm test                     ← Verify changes don't break tests
+Step 4: free -m                      ← Memory metrics
 ```
 
-**Why this works**:
-- `npm run build` is webpack5 production mode = **full rebuild every time** (no persistent cache)
-- Regex `export const BENCH_ROUND = .*` matches any current value → no need for git reset
-- 40+ components import `BENCH_ROUND` → modification affects wide rebuild scope
-- Build produces genuinely different output each round (different constant value in bundle)
+**Key design decisions**:
+
+1. **git checkout -- src/ only** — Config files (config/config.ts) are NOT reset, so dev server settings persist across rounds. This is realistic: agents revert source changes but keep infrastructure config.
+
+2. **Comment injection, not code change** — `sed -i "1i// Bench Round N"` is non-breaking (a comment line at the top). This is safer and more representative than replacing functional code, while still triggering webpack's module dependency analysis and full rebuild.
+
+3. **Clean rebuild each round** — `rm -rf dist/ node_modules/.cache/` forces full recompilation (no filesystem cache). This is realistic for ephemeral sandbox environments where no persistent cache exists.
+
+4. **Keep .umi/ intact during rounds** — The dev server depends on `.umi/` generated files. Removing it would destabilize the dev server. We only remove `dist/` and `node_modules/.cache/`.
 
 ## Build Steps
 
@@ -63,7 +93,7 @@ cd dockerfile_build
 docker build -t ubuntu-coding-bench:24.04-linuxarm64 -f Dockerfile.coding .
 ```
 
-This takes ~10-15 minutes (Node.js install + npm install + 40 component generation + initial build).
+This takes ~10-15 minutes (Node.js install + Ant Design Pro clone + npm install + initial build).
 
 ### 2. Push to Harbor
 
@@ -71,7 +101,7 @@ This takes ~10-15 minutes (Node.js install + npm install + 40 component generati
 HARBOR_IP=<your_harbor_ip> bash push_to_harbor_coding.sh
 ```
 
-This adds E2B-required packages (systemd, openssh-server, websocat) and pushes to Harbor.
+This adds E2B-required packages (systemd, openssh-server, websocat) and pushes to Harbor registry.
 
 ### 3. Build E2B Template
 
@@ -85,112 +115,114 @@ python3 build_e2b.py \
     --memory 4096
 ```
 
-**Note**: Memory=4096MB ensures webpack build can complete. Adjust based on memory measurements.
+**Note**: Memory=4096MB ensures dev server + production build can coexist during overlap peaks. The 3GB peak uses 75% of sandbox memory, leaving ~1GB headroom for OS and agent processes.
 
 ### 4. Manual Sandbox Testing
 
-Create a sandbox and test coding operations:
+#### Quick Test (single round)
 
-```python
-from e2b import Sandbox
+```bash
+# Inside sandbox:
+bash /opt/coding-bench/bench_helper.sh 0
+```
 
-# Create sandbox from coding template
-sbx = Sandbox.create("openclaw-coding-v1")
+This runs all 5 steps: start dev server → reset → edit → build → test → memory report.
 
-# Step 1: Check project exists
-result = sbx.commands.run("ls /opt/coding-bench/package.json", timeout=10, user="root")
-print("Project exists:", result.exit_code == 0)
+#### Step-by-step Verification
 
-# Step 2: Check memory baseline
-result = sbx.commands.run("free -m", timeout=5, user="root")
-print("Memory baseline:", result.stdout)
+```bash
+# On host: start monitoring
+watch -n 1 "numastat -p firecracker"
 
-# Step 3: Run initial build and measure
-result = sbx.commands.run(
-    "cd /opt/coding-bench && npm run build",
-    timeout=300, user="root"
-)
-print("Build output:", result.stdout[-200:])
-print("Build exit code:", result.exit_code)
+# Inside sandbox: Step 0 — start dev server
+cd /opt/coding-bench && BROWSER=none npm run dev &
+sleep 20  # Wait for initial compilation
 
-# Step 4: Check memory after build
-result = sbx.commands.run("free -m", timeout=5, user="root")
-print("Memory after build:", result.stdout)
+# Inside sandbox: Step 2 — production build (while dev server is running)
+rm -rf dist/ node_modules/.cache/
+npm run build
 
-# Step 5: Modify bench-marker and rebuild (Round 1)
-result = sbx.commands.run(
-    "sed -i 's/export const BENCH_ROUND = .*/export const BENCH_ROUND = 1;/' /opt/coding-bench/src/bench-marker.ts",
-    timeout=5, user="root"
-)
-print("Modification:", result.exit_code)
+# Watch host numastat for peak memory during build
+```
 
-result = sbx.commands.run(
-    "cd /opt/coding-bench && npm run build",
-    timeout=300, user="root"
-)
-print("Round 1 build:", result.exit_code)
+#### Multi-Round Test
 
-# Step 6: Run tests
-result = sbx.commands.run(
-    "cd /opt/coding-bench && npm test",
-    timeout=120, user="root"
-)
-print("Test results:", result.stdout[-200:])
+```bash
+# Round 0 (starts dev server)
+bash /opt/coding-bench/bench_helper.sh 0
 
-# Step 7: Quick helper script test
-result = sbx.commands.run(
-    "bash /opt/coding-bench/bench_helper.sh 2",
-    timeout=300, user="root"
-)
-print("Helper output:", result.stdout)
+# Round 1 (dev server already running, just modify + build)
+bash /opt/coding-bench/bench_helper.sh 1
 
-# Cleanup
-sbx.kill()
+# Round 2
+bash /opt/coding-bench/bench_helper.sh 2
+
+# Stop dev server
+pkill -f 'umi dev'; pkill -f 'max dev'
+```
+
+#### Partial Test (skip specific steps)
+
+```bash
+# Only start dev server, skip build and test
+bash /opt/coding-bench/bench_helper.sh 0 --no-build --no-test
+
+# Only run build, skip dev server startup (if already started manually)
+bash /opt/coding-bench/bench_helper.sh 0 --no-dev-server
+
+# Only run tests, skip everything else
+bash /opt/coding-bench/bench_helper.sh 0 --no-dev-server --no-build
 ```
 
 ### 5. Memory Measurement Points
 
-Key metrics to observe during manual testing:
-
 | Observation | Command | What to Check |
 |-------------|---------|---------------|
-| Memory baseline | `free -m` | Before build, idle state |
-| Build peak memory | `free -m` (during build) | Peak RSS during webpack |
-| Build duration | Time `npm run build` | Should be 10-30 seconds |
-| Build success | `npm run build` exit code | Should be 0 |
-| Test duration | Time `npm test` | Should be 5-15 seconds |
-| Per-round rebuild | Modify + rebuild | Same duration as initial build |
-| Memory release | `free -m` (after build) | Memory should release back |
+| Baseline (idle) | `numastat -p firecracker` | ~200-300MB (OS + agent + llama-server) |
+| Dev server steady | `numastat -p firecracker` | ~800-1200MB (after initial compilation settles) |
+| Dev server initial | `numastat -p firecracker` during dev start | **~3.5GB peak** (initial full compilation) |
+| Build peak (with dev server) | `numastat -p firecracker` during build | **~2.4-3GB peak** (build overlaps dev server) |
+| Build peak (without dev server) | `numastat -p firecrancer` during build | ~2GB peak (build alone) |
+| Memory release | `numastat -p firecracker` after build | Drops back to dev server steady state |
 
-### 6. Adjusting Project Size
+### 6. Script Options
 
-If build memory peak is too low (< 300MB) or too high (> 2GB), adjust `COMPONENT_COUNT` in `setup_coding_project.sh`:
+```bash
+bash bench_helper.sh [ROUND] [OPTIONS]
 
-| Component Count | Approx. Build Peak Memory | Build Duration |
-|-----------------|--------------------------|----------------|
-| 20 | 300-400MB | 5-10s |
-| 40 | 400-600MB | 10-20s |
-| 80 | 600-800MB | 20-40s |
-| 100 | 800-1000MB | 30-60s |
+Options:
+  --round=N          Round number (default: 0)
+  --no-dev-server    Skip dev server startup
+  --no-build         Skip production build
+  --no-test          Skip test suite
+  --help             Show help
 
-For heavier builds (1-1.5GB), add heavy UI library dependencies to package.json:
-```json
-"@mui/material": "^6.0.0",
-"@mui/icons-material": "^6.0.0",
-"@emotion/react": "^11.13.0",
-"@emotion/styled": "^11.13.0"
+Environment:
+  BENCH_PROJECT_DIR   Project path (default: /opt/coding-bench)
+  BENCH_DEV_WAIT      Dev server startup wait (default: 20)
 ```
-These libraries have hundreds of modules that significantly increase webpack build memory.
+
+Extensibility: `BENCH_PROJECT_DIR` allows the same script to work with different coding projects. `BENCH_DEV_WAIT` allows adjusting dev server startup time for faster/slower machines.
+
+## Credibility Argument for Customers
+
+> **Scenario**: AI coding agent 开发 web 应用的真实工作环境。
+>
+> 每个 coding agent（Devin、OpenHands、Claude Code）在开发 web 应用时都会启动 dev server 进行实时预览——这是标准操作，不是人为构造。dev server 常驻运行（1-1.5GB），当 agent 触发 production build 验证改动时，两个进程同时活跃，单沙箱峰值 ~3GB。
+>
+> 50+ 并发沙箱时，重叠峰值在宿主机产生 150GB+ 内存压力。这完全反映了客户卖 agent 服务时多用户并发使用的真实场景——每个用户都在沙箱里跑 coding agent，每个 agent 都会启动 dev server + 执行构建验证。
+>
+> **不采用不真实手段**: 没有添加语言服务（tsserver 是 IDE 内部组件，不是沙箱基础设施）、没有启用 source maps（生产构建中不常见）、没有人工膨胀依赖。所有内存压力来自真实 coding agent 的真实操作。
 
 ## Next Steps After Manual Testing
 
-Once single sandbox behavior is verified and memory metrics are acceptable:
+Once single sandbox behavior is verified:
 
-1. Record actual build peak memory and duration
-2. Determine optimal sandbox memory configuration (memory_mb in build_e2b.py)
-3. Adjust COMPONENT_COUNT if needed
-4. Proceed to multi-sandbox implementation:
-   - Add coding workflow to e2b_bench package
-   - Create `config/e2b_coding_bench.yaml`
-   - Implement `CodingRoundRunner` for round-robin benchmark
-   - Test with smap_tool + vm_monitor for memory migration metrics
+1. Record actual build peak memory and timing metrics
+2. Confirm dev server + build overlap creates ~3GB peak
+3. Adjust `BENCH_DEV_WAIT` if dev server compilation takes longer/shorter
+4. Proceed to multi-sandbox e2b_bench implementation:
+   - Add `CodingRoundRunner` with 5-step workflow (start_dev → reset → edit → build → test)
+   - Create `config/e2b_coding_bench.yaml` with coding workflow configuration
+   - Integrate with `batch_scheduler.py` for multi-sandbox round-robin benchmark
+   - Add `CodingMetrics` to `schemas.py` for step-level timing collection
