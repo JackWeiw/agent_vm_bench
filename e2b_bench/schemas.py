@@ -1,7 +1,12 @@
 """
 Data Structure Definitions Module
 
-Defines SandboxStatus, CreationMetrics, BrowserMetrics, SandboxState, TestSnapshot
+Defines SandboxStatus, CreationMetrics, BrowserMetrics, CodingMetrics,
+SandboxState, TestSnapshot, BatchTask, TaskGroup.
+
+Step order constants for workflow dispatch:
+- BROWSER_STEP_ORDER: steps in browser round-robin mode
+- CODING_STEP_ORDER: steps in coding round-robin mode
 """
 
 import statistics
@@ -9,6 +14,10 @@ import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
+
+# Step order constants for workflow dispatch
+BROWSER_STEP_ORDER = ["open_tab", "page_load", "snapshot", "click", "screenshot"]
+CODING_STEP_ORDER = ["checkout", "edit", "build", "test", "memory"]
 
 
 class SandboxStatus(Enum):
@@ -180,6 +189,166 @@ class BrowserMetrics:
             return list(self._latencies[start_count:])
 
 
+class CodingMetrics:
+    """Coding task metrics (thread-safe for concurrent access)
+
+    Tracks coding-specific metrics alongside the generic task metrics:
+    - build_success_count: how many production builds succeeded
+    - test_success_count: how many test runs succeeded
+    - step_times: per-step timing for checkout, edit, build, test, memory
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._total_tasks: int = 0
+        self._success_count: int = 0
+        self._failed_count: int = 0
+        self._timeout_count: int = 0
+        self._latencies: List[float] = []
+        self._last_error: str = ""
+        self._step_times: Dict[str, List[float]] = {}
+        # Coding-specific fields
+        self._build_success_count: int = 0
+        self._test_success_count: int = 0
+
+    def add(
+        self,
+        latency: float,
+        success: bool,
+        timeout: bool = False,
+        step_times: Dict[str, float] = None,
+        build_success: bool = False,
+        test_success: bool = False,
+    ) -> None:
+        """Add a coding task result (thread-safe)
+
+        Args:
+            latency: Total latency for the task cycle (seconds)
+            success: Whether the overall task succeeded
+            timeout: Whether the task timed out
+            step_times: Optional dict of step name -> latency in seconds
+            build_success: Whether the build step succeeded
+            test_success: Whether the test step succeeded
+        """
+        with self._lock:
+            self._total_tasks += 1
+            if timeout:
+                self._timeout_count += 1
+                self._failed_count += 1
+            elif success:
+                self._success_count += 1
+                self._latencies.append(latency)
+            else:
+                self._failed_count += 1
+
+            if build_success:
+                self._build_success_count += 1
+            if test_success:
+                self._test_success_count += 1
+
+            # Record step-level times
+            if step_times:
+                for step_name, step_latency in step_times.items():
+                    if step_name not in self._step_times:
+                        self._step_times[step_name] = []
+                    self._step_times[step_name].append(step_latency)
+
+    @property
+    def total_tasks(self) -> int:
+        with self._lock:
+            return self._total_tasks
+
+    @property
+    def success_count(self) -> int:
+        with self._lock:
+            return self._success_count
+
+    @property
+    def failed_count(self) -> int:
+        with self._lock:
+            return self._failed_count
+
+    @property
+    def timeout_count(self) -> int:
+        with self._lock:
+            return self._timeout_count
+
+    @property
+    def latencies(self) -> List[float]:
+        with self._lock:
+            return list(self._latencies)
+
+    @property
+    def last_error(self) -> str:
+        with self._lock:
+            return self._last_error
+
+    @last_error.setter
+    def last_error(self, value: str) -> None:
+        with self._lock:
+            self._last_error = value
+
+    @property
+    def build_success_count(self) -> int:
+        with self._lock:
+            return self._build_success_count
+
+    @property
+    def test_success_count(self) -> int:
+        with self._lock:
+            return self._test_success_count
+
+    @property
+    def avg_latency(self) -> float:
+        """Average latency (seconds)"""
+        with self._lock:
+            return statistics.mean(self._latencies) if self._latencies else 0.0
+
+    @property
+    def p99_latency(self) -> float:
+        """P99 latency (seconds)"""
+        with self._lock:
+            if not self._latencies:
+                return 0.0
+            sorted_lat = sorted(self._latencies)
+            if len(sorted_lat) >= 100:
+                return sorted_lat[int(len(sorted_lat) * 0.99)]
+            return sorted_lat[-1]
+
+    def get_step_stats(self) -> Dict[str, Dict[str, float]]:
+        """Get statistics for each step (avg, p99, count)
+
+        Returns:
+            Dict of step_name -> {"avg": float, "p99": float, "count": int}
+        """
+        with self._lock:
+            result = {}
+            for step_name, times in self._step_times.items():
+                if not times:
+                    continue
+                sorted_times = sorted(times)
+                avg = statistics.mean(times)
+                p99 = sorted_times[-1] if len(sorted_times) < 100 else sorted_times[int(len(sorted_times) * 0.99)]
+                result[step_name] = {
+                    "avg": avg,
+                    "p99": p99,
+                    "count": len(times),
+                }
+            return result
+
+    def get_step_times_copy(self) -> Dict[str, List[float]]:
+        """Get a thread-safe copy of all step times."""
+        with self._lock:
+            return {step_name: list(times) for step_name, times in self._step_times.items()}
+
+    def get_latencies_since(self, start_count: int) -> List[float]:
+        """Get latencies added after a certain count."""
+        with self._lock:
+            if start_count >= len(self._latencies):
+                return []
+            return list(self._latencies[start_count:])
+
+
 @dataclass
 class SandboxState:
     """Sandbox complete state"""
@@ -190,6 +359,7 @@ class SandboxState:
 
     creation_metrics: CreationMetrics = field(default_factory=CreationMetrics)
     browser_metrics: BrowserMetrics = field(default_factory=BrowserMetrics)
+    coding_metrics: CodingMetrics = field(default_factory=CodingMetrics)  # Coding workflow metrics
 
     is_alive: bool = True  # Sandbox alive status
     last_task_time: float = 0.0  # Last task execution time (thread-safe via update_last_task_time)
@@ -244,6 +414,19 @@ class TestSnapshot:
     browser_success: int = 0  # Successful task count
     browser_avg_latency: float = 0.0  # Average latency
     browser_p99_latency: float = 0.0  # P99 latency
+    # Coding task fields (populated when workflow_type="coding")
+    coding_total: int = 0  # Coding task total count
+    coding_success: int = 0  # Coding successful task count
+    coding_build_success: int = 0  # Build step success count
+    coding_test_success: int = 0  # Test step success count
+    coding_avg_latency: float = 0.0  # Average latency (seconds)
+    coding_p99_latency: float = 0.0  # P99 latency (seconds)
+
+    # Coding task statistics (filled when workflow_type == "coding")
+    coding_total: int = 0  # Coding task total count
+    coding_success: int = 0  # Successful task count
+    coding_avg_latency: float = 0.0  # Average latency
+    coding_p99_latency: float = 0.0  # P99 latency
 
 
 @dataclass
@@ -260,6 +443,7 @@ class BatchTask:
     report_file: Optional[str] = None  # bench_report.txt path
     analysis_file: Optional[str] = None  # analysis_report.xlsx path
     browser_metrics: Optional[Dict[str, Any]] = None  # Extracted browser metrics
+    coding_metrics: Optional[Dict[str, Any]] = None  # Extracted coding metrics
     vm_metrics: Optional[Dict[str, Any]] = None  # Extracted vm_monitor metrics
     success: bool = False
     error_msg: Optional[str] = None

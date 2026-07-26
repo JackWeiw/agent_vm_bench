@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from .config import Config
-from .schemas import SandboxState, SandboxStatus, TestSnapshot
+from .schemas import CODING_STEP_ORDER, BROWSER_STEP_ORDER, SandboxState, SandboxStatus, TestSnapshot
 from .utils import calc_p99, calc_percentiles, calc_tail_ratio, classify_tail_latency
 
 
@@ -22,6 +22,7 @@ class ErrorClassifier:
 
     # Error type definitions with patterns (order matters - first match wins)
     ERROR_TYPES = [
+        # Browser errors
         ("Open tab failed", ["open_tab failed"]),
         ("Page load failed", ["page_load failed"]),
         ("Snapshot failed", ["snapshot failed"]),
@@ -30,6 +31,13 @@ class ErrorClassifier:
         ("Chrome start failed", ["failed to start chrome", "chrome_start"]),
         ("D-Bus connection error", ["d-bus", "dbus", "failed to connect to the bus"]),
         ("Gateway connection error", ["gateway", "cdp", "http_unreachable"]),
+        # Coding errors
+        ("Checkout failed", ["checkout failed", "git checkout"]),
+        ("Edit failed", ["edit failed", "sed failed"]),
+        ("Build failed", ["build failed", "npm run build", "webpack"]),
+        ("Test failed", ["test failed", "npm test"]),
+        ("Dev server failed", ["dev server", "umi dev", "npm run dev"]),
+        ("OOM", ["oom", "out of memory", "cannot allocate"]),
         ("Timeout", ["timeout", "timed out"]),
     ]
 
@@ -261,15 +269,97 @@ class ReportFormatter:
 
         return lines
 
+    def format_coding_stats_section(self) -> List[str]:
+        """Format coding task statistics section."""
+        all_latencies: List[float] = []
+        for s in self.sandbox_states.values():
+            all_latencies.extend(s.coding_metrics.latencies)
+
+        total_tasks = sum(s.coding_metrics.total_tasks for s in self.sandbox_states.values())
+        total_success = sum(s.coding_metrics.success_count for s in self.sandbox_states.values())
+        total_failed = sum(s.coding_metrics.failed_count for s in self.sandbox_states.values())
+        total_timeout = sum(s.coding_metrics.timeout_count for s in self.sandbox_states.values())
+        build_success = sum(s.coding_metrics.build_success_count for s in self.sandbox_states.values())
+        test_success = sum(s.coding_metrics.test_success_count for s in self.sandbox_states.values())
+
+        lines = ["\n[Coding Task Statistics]"]
+        lines.append(f"  Total Tasks:   {total_tasks}")
+        lines.append(f"  Success:       {total_success}")
+        lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
+        lines.append(f"  Success Rate:  {total_success / max(1, total_tasks) * 100:.1f}%")
+        lines.append(
+            f"  Build Success: {build_success}/{total_tasks} ({build_success / max(1, total_tasks) * 100:.1f}%)"
+        )
+        lines.append(f"  Test Success:  {test_success}/{total_tasks} ({test_success / max(1, total_tasks) * 100:.1f}%)")
+
+        if all_latencies:
+            avg_ms = statistics.mean(all_latencies) * 1000
+            p99_ms = calc_p99(all_latencies) * 1000
+            lines.append(f"  Avg Latency:   {avg_ms:.1f}ms")
+            lines.append(f"  P99 Latency:   {p99_ms:.1f}ms")
+
+        return lines
+
+    def format_coding_step_timing_table(self) -> List[str]:
+        """Format coding step-level timing as a table."""
+        # Collect all coding step times
+        all_step_times: Dict[str, List[float]] = {}
+        for s in self.sandbox_states.values():
+            step_times_copy = s.coding_metrics.get_step_times_copy()
+            for step_name, times in step_times_copy.items():
+                if step_name not in all_step_times:
+                    all_step_times[step_name] = []
+                all_step_times[step_name].extend(times)
+
+        if not all_step_times:
+            return []
+
+        lines = ["\n[Step-Level Timing (Coding Mode)]"]
+
+        # Build table
+        headers = ["Step", "Count", "Avg(ms)", "P50(ms)", "P95(ms)", "P99(ms)", "Tail"]
+        rows = []
+
+        for step_name in CODING_STEP_ORDER:
+            if step_name in all_step_times and all_step_times[step_name]:
+                times = all_step_times[step_name]
+                stats = calc_percentiles(times)
+                tail_ratio = calc_tail_ratio(times)
+                severity = classify_tail_latency(tail_ratio)
+
+                rows.append(
+                    [
+                        step_name,
+                        str(len(times)),
+                        f"{stats['avg'] * 1000:.1f}",
+                        f"{stats['p50'] * 1000:.1f}",
+                        f"{stats['p95'] * 1000:.1f}",
+                        f"{stats['p99'] * 1000:.1f}",
+                        f"{tail_ratio:.2f}x ({severity})",
+                    ]
+                )
+
+        lines.extend(TableFormatter.format_table(headers, rows))
+        lines.append("\n  Tail Ratio: P99/P50 - indicates long-tail latency severity")
+        lines.append("  < 1.2x: minimal | 1.2-1.5x: moderate | > 1.5x: significant")
+
+        return lines
+
     def format_error_section(self) -> List[str]:
         """Format error details and classification section."""
-        # Collect errors
+        # Collect errors — dispatch based on workflow type
         failed_sandbox_errors = []
         for s in self.sandbox_states.values():
-            if s.browser_metrics.failed_count > 0 and s.browser_metrics.last_error:
-                failed_sandbox_errors.append(
-                    (s.sandbox_id, s.browser_metrics.failed_count, s.browser_metrics.last_error)
-                )
+            if self.config.workflow_type == "coding":
+                if s.coding_metrics.failed_count > 0 and s.coding_metrics.last_error:
+                    failed_sandbox_errors.append(
+                        (s.sandbox_id, s.coding_metrics.failed_count, s.coding_metrics.last_error)
+                    )
+            else:
+                if s.browser_metrics.failed_count > 0 and s.browser_metrics.last_error:
+                    failed_sandbox_errors.append(
+                        (s.sandbox_id, s.browser_metrics.failed_count, s.browser_metrics.last_error)
+                    )
 
         if not failed_sandbox_errors:
             return []
@@ -373,12 +463,19 @@ class ReportFormatter:
         """Calculate final statistics for each round."""
         round_finals: Dict[int, Dict[str, Any]] = {}
 
-        # Get final cumulative values
-        final_browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
-        final_browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
-        final_sandbox_latency_counts = {
-            s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()
-        }
+        # Get final cumulative values — dispatch by workflow type
+        if self.config.workflow_type == "coding":
+            final_task_total = sum(s.coding_metrics.total_tasks for s in self.sandbox_states.values())
+            final_task_success = sum(s.coding_metrics.success_count for s in self.sandbox_states.values())
+            final_sandbox_latency_counts = {
+                s.sandbox_id: len(s.coding_metrics.latencies) for s in self.sandbox_states.values()
+            }
+        else:
+            final_task_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
+            final_task_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
+            final_sandbox_latency_counts = {
+                s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()
+            }
 
         for round_id in sorted(round_start_totals.keys()):
             start_total = round_start_totals[round_id]["total"]
@@ -387,8 +484,8 @@ class ReportFormatter:
 
             # Determine end values
             if round_id == max(round_start_totals.keys()):
-                end_total = final_browser_total
-                end_success = final_browser_success
+                end_total = final_task_total
+                end_success = final_task_success
                 end_sandbox_latency_counts = final_sandbox_latency_counts
             else:
                 next_round = round_id + 1
@@ -397,17 +494,29 @@ class ReportFormatter:
                     end_success = round_start_totals[next_round]["success"]
                     end_sandbox_latency_counts = round_start_totals[next_round]["sandbox_latency_counts"]
                 else:
-                    end_total = final_browser_total
-                    end_success = final_browser_success
+                    end_total = final_task_total
+                    end_success = final_task_success
                     end_sandbox_latency_counts = final_sandbox_latency_counts
 
-            # Extract latencies for this round
+            # Extract latencies for this round — dispatch by workflow type
             round_latencies: List[float] = []
             for s in self.sandbox_states.values():
                 sandbox_id = s.sandbox_id
                 start_count = start_sandbox_latency_counts.get(sandbox_id, 0)
-                end_count = end_sandbox_latency_counts.get(sandbox_id, len(s.browser_metrics.latencies))
-                round_latencies.extend(s.browser_metrics.get_latencies_since(start_count)[: end_count - start_count])
+                end_count = end_sandbox_latency_counts.get(
+                    sandbox_id,
+                    len(
+                        s.coding_metrics.latencies
+                        if self.config.workflow_type == "coding"
+                        else s.browser_metrics.latencies
+                    ),
+                )
+                if self.config.workflow_type == "coding":
+                    round_latencies.extend(s.coding_metrics.get_latencies_since(start_count)[: end_count - start_count])
+                else:
+                    round_latencies.extend(
+                        s.browser_metrics.get_latencies_since(start_count)[: end_count - start_count]
+                    )
 
             tasks = end_total - start_total
             success = end_success - start_success
@@ -464,11 +573,21 @@ class StatsCollector:
         Args:
             round_id: Current round index (None to clear)
         """
-        # Get current cumulative totals before switching rounds
-        browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
-        browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
-        # Track latency count per sandbox for accurate round latency extraction
-        sandbox_latency_counts = {s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()}
+        # Get current cumulative totals before switching rounds — dispatch by workflow type
+        if self.config.workflow_type == "coding":
+            task_total = sum(s.coding_metrics.total_tasks for s in self.sandbox_states.values())
+            task_success = sum(s.coding_metrics.success_count for s in self.sandbox_states.values())
+            # Track latency count per sandbox for accurate round latency extraction
+            sandbox_latency_counts = {
+                s.sandbox_id: len(s.coding_metrics.latencies) for s in self.sandbox_states.values()
+            }
+        else:
+            task_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
+            task_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
+            # Track latency count per sandbox for accurate round latency extraction
+            sandbox_latency_counts = {
+                s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()
+            }
 
         # Switch to new round
         self.current_round = round_id
@@ -482,8 +601,8 @@ class StatsCollector:
             # This prevents overwriting when cycling (round 0 runs again later)
             if round_id not in self._round_start_totals:
                 self._round_start_totals[round_id] = {
-                    "total": browser_total,
-                    "success": browser_success,
+                    "total": task_total,
+                    "success": task_success,
                     "sandbox_latency_counts": sandbox_latency_counts,
                 }
 
@@ -534,45 +653,93 @@ class StatsCollector:
             "total": calc_percentiles(total_times),
         }
 
-        # Browser task statistics (cumulative)
-        browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
-        browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
+        # Browser task statistics (cumulative) — only for browser workflow
+        if self.config.workflow_type == "browser":
+            browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
+            browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
 
-        # Calculate round delta: current cumulative - round start cumulative
-        # This is decoupled from snapshot timing
-        if self.current_round is not None and self.current_round in self._round_start_totals:
-            start_total = self._round_start_totals[self.current_round]["total"]
-            start_success = self._round_start_totals[self.current_round]["success"]
-            round_total = browser_total - start_total
-            round_success = browser_success - start_success
+            # Calculate round delta: current cumulative - round start cumulative
+            # This is decoupled from snapshot timing
+            if self.current_round is not None and self.current_round in self._round_start_totals:
+                start_total = self._round_start_totals[self.current_round]["total"]
+                start_success = self._round_start_totals[self.current_round]["success"]
+                round_total = browser_total - start_total
+                round_success = browser_success - start_success
+            else:
+                round_total = 0
+                round_success = 0
+
+            # Collect recent latency data (last 10 per sandbox)
+            all_latencies: List[float] = []
+            for s in self.sandbox_states.values():
+                all_latencies.extend(s.browser_metrics.latencies[-10:])
+
+            browser_avg = statistics.mean(all_latencies) if all_latencies else 0.0
+            browser_p99 = calc_p99(all_latencies)
+
+            snapshot = TestSnapshot(
+                timestamp=now,
+                elapsed=elapsed,
+                total_sandboxes=len(self.sandbox_states),
+                active_sandboxes=active_count,
+                offline_sandboxes=offline_count,
+                creation_stats=creation_stats,
+                browser_total=browser_total,
+                browser_success=browser_success,
+                browser_avg_latency=browser_avg,
+                browser_p99_latency=browser_p99,
+            )
+
+            # Add per-round fields for round comparison
+            snapshot.round_total = round_total
+            snapshot.round_success = round_success
+        elif self.config.workflow_type == "coding":
+            coding_total = sum(s.coding_metrics.total_tasks for s in self.sandbox_states.values())
+            coding_success = sum(s.coding_metrics.success_count for s in self.sandbox_states.values())
+
+            # Calculate round delta for coding
+            if self.current_round is not None and self.current_round in self._round_start_totals:
+                start_total = self._round_start_totals[self.current_round]["total"]
+                start_success = self._round_start_totals[self.current_round]["success"]
+                round_total = coding_total - start_total
+                round_success = coding_success - start_success
+            else:
+                round_total = 0
+                round_success = 0
+
+            # Collect recent coding latency data
+            all_latencies: List[float] = []
+            for s in self.sandbox_states.values():
+                all_latencies.extend(s.coding_metrics.latencies[-10:])
+
+            coding_avg = statistics.mean(all_latencies) if all_latencies else 0.0
+            coding_p99 = calc_p99(all_latencies)
+
+            snapshot = TestSnapshot(
+                timestamp=now,
+                elapsed=elapsed,
+                total_sandboxes=len(self.sandbox_states),
+                active_sandboxes=active_count,
+                offline_sandboxes=offline_count,
+                creation_stats=creation_stats,
+                coding_total=coding_total,
+                coding_success=coding_success,
+                coding_avg_latency=coding_avg,
+                coding_p99_latency=coding_p99,
+            )
+
+            # Add per-round fields for round comparison
+            snapshot.round_total = round_total
+            snapshot.round_success = round_success
         else:
-            round_total = 0
-            round_success = 0
-
-        # Collect recent latency data (last 10 per sandbox)
-        all_latencies: List[float] = []
-        for s in self.sandbox_states.values():
-            all_latencies.extend(s.browser_metrics.latencies[-10:])
-
-        browser_avg = statistics.mean(all_latencies) if all_latencies else 0.0
-        browser_p99 = calc_p99(all_latencies)
-
-        snapshot = TestSnapshot(
-            timestamp=now,
-            elapsed=elapsed,
-            total_sandboxes=len(self.sandbox_states),
-            active_sandboxes=active_count,
-            offline_sandboxes=offline_count,
-            creation_stats=creation_stats,
-            browser_total=browser_total,
-            browser_success=browser_success,
-            browser_avg_latency=browser_avg,
-            browser_p99_latency=browser_p99,
-        )
-
-        # Add per-round fields for round comparison
-        snapshot.round_total = round_total
-        snapshot.round_success = round_success
+            snapshot = TestSnapshot(
+                timestamp=now,
+                elapsed=elapsed,
+                total_sandboxes=len(self.sandbox_states),
+                active_sandboxes=active_count,
+                offline_sandboxes=offline_count,
+                creation_stats=creation_stats,
+            )
 
         self.snapshots.append(snapshot)
 
@@ -590,21 +757,16 @@ class StatsCollector:
         print(f"{'─' * 70}")
         print(f"  Sandboxes: {snapshot.active_sandboxes:3d} ready / {snapshot.offline_sandboxes:2d} offline")
 
-        if snapshot.creation_stats.get("create") and snapshot.creation_stats["create"]["avg"] > 0:
+        if self.config.workflow_type == "coding":
             print(
-                f"  Create:    avg={snapshot.creation_stats['create']['avg']:.1f}s  "
-                f"p99={snapshot.creation_stats['create']['p99']:.1f}s"
+                f"  Coding:    {snapshot.coding_success:3d}/{snapshot.coding_total:3d}  "
+                f"avg={snapshot.coding_avg_latency:.2f}s  p99={snapshot.coding_p99_latency:.2f}s"
             )
-        if snapshot.creation_stats.get("port_wait") and snapshot.creation_stats["port_wait"]["avg"] > 0:
+        else:
             print(
-                f"  PortWait:  avg={snapshot.creation_stats['port_wait']['avg']:.1f}s  "
-                f"p99={snapshot.creation_stats['port_wait']['p99']:.1f}s"
+                f"  Browser:   {snapshot.browser_success:3d}/{snapshot.browser_total:3d}  "
+                f"avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s"
             )
-
-        print(
-            f"  Browser:   {snapshot.browser_success:3d}/{snapshot.browser_total:3d}  "
-            f"avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s"
-        )
         print(f"{'─' * 70}")
 
     def generate_report(self) -> str:
@@ -652,11 +814,13 @@ class StatsCollector:
             formatter.format_percentile_section("Total Startup Performance", total_times, "sandbox.create + port wait")
         )
 
-        # Browser statistics
-        lines.extend(formatter.format_browser_stats_section())
-
-        # Step-level timing
-        lines.extend(formatter.format_step_timing_table())
+        # Task statistics — dispatch based on workflow type
+        if self.config.workflow_type == "coding":
+            lines.extend(formatter.format_coding_stats_section())
+            lines.extend(formatter.format_coding_step_timing_table())
+        else:
+            lines.extend(formatter.format_browser_stats_section())
+            lines.extend(formatter.format_step_timing_table())
 
         # Error details
         lines.extend(formatter.format_error_section())

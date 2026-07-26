@@ -75,11 +75,53 @@ class Config:
     vm_monitor_log_dir: str = "results/e2b/vm_monitor"
     vm_monitor_stress_file: str = "/dev/shm/e2b_benchmark_lock"
 
+    # Workflow type selection: determines which runners, metrics, and reports to use
+    workflow_type: str = "browser"  # "browser" or "coding"
+
     # Browser task
     browser_urls: List[str] = field(default_factory=lambda: ["http://192.168.110.10:8080/Weibo.html"])
     browser_timeout: int = 200
     browser_interval_min: float = 0.5
     browser_interval_max: float = 3.0
+
+    # Coding task configuration
+    coding_project_dir: str = "/opt/coding-bench"
+    coding_dev_wait: int = 20  # Seconds to wait for dev server startup
+    coding_build_cmd: str = "npm run build"
+    coding_test_cmd: str = "npm test"
+    coding_source_files: List[str] = field(
+        default_factory=lambda: [
+            "src/pages/dashboard/analysis/index.tsx",
+            "src/pages/dashboard/workplace/index.tsx",
+            "src/pages/dashboard/monitor/index.tsx",
+            "src/pages/form/basic-form/index.tsx",
+            "src/pages/form/step-form/index.tsx",
+            "src/pages/form/advanced-form/index.tsx",
+            "src/pages/list/basic-list/index.tsx",
+            "src/pages/list/card-list/index.tsx",
+            "src/pages/list/search/index.tsx",
+            "src/pages/table-list/index.tsx",
+            "src/pages/profile/basic/index.tsx",
+            "src/pages/profile/advanced/index.tsx",
+            "src/pages/result/success/index.tsx",
+            "src/pages/result/fail/index.tsx",
+            "src/pages/exception/403/index.tsx",
+            "src/pages/exception/404/index.tsx",
+            "src/pages/exception/500/index.tsx",
+            "src/pages/user/login/index.tsx",
+            "src/pages/user/register/index.tsx",
+            "src/pages/account/settings/index.tsx",
+            "src/pages/account/center/index.tsx",
+            "src/pages/chatbot/index.tsx",
+        ]
+    )
+    coding_build_timeout: int = 300  # Build command timeout (seconds)
+    coding_test_timeout: int = 120  # Test command timeout (seconds)
+    coding_interval_min: float = 2.0  # Interval between coding tasks in fixed mode
+    coding_interval_max: float = 10.0
+    coding_skip_dev_server: bool = False
+    coding_skip_build: bool = False
+    coding_skip_test: bool = False
 
     # Warmup phase configuration
     warmup_urls: List[str] = field(default_factory=list)  # Warmup page URL list
@@ -111,10 +153,38 @@ class Config:
         create_batch = data.get("create_batch", {})
         task_batch = data.get("task_batch", {})
         browser = data.get("browser", {})
+        coding = data.get("coding", {})
         test = data.get("test", {})
         report = data.get("report", {})
         smap_tool = data.get("smap_tool", {})
         vm_monitor = data.get("vm_monitor", {})
+        # workflow_type is parsed from top-level YAML key, not a section
+
+        # Default source files for Ant Design Pro coding benchmark
+        _default_coding_source_files = [
+            "src/pages/dashboard/analysis/index.tsx",
+            "src/pages/dashboard/workplace/index.tsx",
+            "src/pages/dashboard/monitor/index.tsx",
+            "src/pages/form/basic-form/index.tsx",
+            "src/pages/form/step-form/index.tsx",
+            "src/pages/form/advanced-form/index.tsx",
+            "src/pages/list/basic-list/index.tsx",
+            "src/pages/list/card-list/index.tsx",
+            "src/pages/list/search/index.tsx",
+            "src/pages/table-list/index.tsx",
+            "src/pages/profile/basic/index.tsx",
+            "src/pages/profile/advanced/index.tsx",
+            "src/pages/result/success/index.tsx",
+            "src/pages/result/fail/index.tsx",
+            "src/pages/exception/403/index.tsx",
+            "src/pages/exception/404/index.tsx",
+            "src/pages/exception/500/index.tsx",
+            "src/pages/user/login/index.tsx",
+            "src/pages/user/register/index.tsx",
+            "src/pages/account/settings/index.tsx",
+            "src/pages/account/center/index.tsx",
+            "src/pages/chatbot/index.tsx",
+        ]
 
         return cls(
             e2b_access_token=e2b_env.get("E2B_ACCESS_TOKEN", ""),
@@ -139,15 +209,31 @@ class Config:
             round_count=test.get("round_count"),
             round_size=test.get("round_size", 5),
             round_interval=test.get("round_interval", 5),
+            # Workflow type
+            workflow_type=data.get("workflow", {}).get("type", data.get("workflow_type", "browser")),
+            # Browser task configuration
             browser_urls=browser.get("urls", ["http://192.168.110.10:8080/Weibo.html"]),
             browser_timeout=browser.get("task_timeout", 200),
             browser_interval_min=browser.get("interval_min", 0.5),
             browser_interval_max=browser.get("interval_max", 3.0),
-            # Warmup configuration
+            # Warmup configuration (browser-specific)
             warmup_urls=browser.get("warmup_urls", []),
             warmup_loops=browser.get("warmup_loops", 2),
             warmup_delay=browser.get("warmup_delay", 10),
             warmup_only=browser.get("warmup_only", False),
+            # Coding task configuration
+            coding_project_dir=coding.get("project_dir", "/opt/coding-bench"),
+            coding_dev_wait=coding.get("dev_wait", 20),
+            coding_build_cmd=coding.get("build_cmd", "npm run build"),
+            coding_test_cmd=coding.get("test_cmd", "npm test"),
+            coding_source_files=coding.get("source_files", _default_coding_source_files),
+            coding_build_timeout=coding.get("build_timeout", 300),
+            coding_test_timeout=coding.get("test_timeout", 120),
+            coding_interval_min=coding.get("interval_min", 2.0),
+            coding_interval_max=coding.get("interval_max", 10.0),
+            coding_skip_dev_server=coding.get("skip_dev_server", False),
+            coding_skip_build=coding.get("skip_build", False),
+            coding_skip_test=coding.get("skip_test", False),
             test_duration=test.get("duration", 600),
             stats_interval=test.get("stats_interval", 10),
             output_dir=report.get("output_dir", "results/e2b"),
@@ -231,6 +317,39 @@ class Config:
             round_interval=getattr(args, "round_interval", None)
             if getattr(args, "round_interval", None) is not None
             else yaml_config.round_interval,
+            # Workflow type (CLI override)
+            workflow_type=getattr(args, "workflow_type", None)
+            if getattr(args, "workflow_type", None) is not None
+            else yaml_config.workflow_type,
+            # Coding configuration (CLI override where applicable)
+            coding_project_dir=getattr(args, "coding_project_dir", None)
+            if getattr(args, "coding_project_dir", None) is not None
+            else yaml_config.coding_project_dir,
+            coding_dev_wait=getattr(args, "coding_dev_wait", None)
+            if getattr(args, "coding_dev_wait", None) is not None
+            else yaml_config.coding_dev_wait,
+            coding_build_cmd=yaml_config.coding_build_cmd,  # No CLI override for build/test cmd
+            coding_test_cmd=yaml_config.coding_test_cmd,
+            coding_source_files=getattr(args, "coding_source_file", None)
+            if getattr(args, "coding_source_file", None) is not None
+            else yaml_config.coding_source_files,
+            coding_build_timeout=getattr(args, "coding_build_timeout", None)
+            if getattr(args, "coding_build_timeout", None) is not None
+            else yaml_config.coding_build_timeout,
+            coding_test_timeout=getattr(args, "coding_test_timeout", None)
+            if getattr(args, "coding_test_timeout", None) is not None
+            else yaml_config.coding_test_timeout,
+            coding_interval_min=yaml_config.coding_interval_min,
+            coding_interval_max=yaml_config.coding_interval_max,
+            coding_skip_dev_server=getattr(args, "coding_skip_dev_server", False)
+            if hasattr(args, "coding_skip_dev_server") and args.coding_skip_dev_server
+            else yaml_config.coding_skip_dev_server,
+            coding_skip_build=getattr(args, "coding_skip_build", False)
+            if hasattr(args, "coding_skip_build") and args.coding_skip_build
+            else yaml_config.coding_skip_build,
+            coding_skip_test=getattr(args, "coding_skip_test", False)
+            if hasattr(args, "coding_skip_test") and args.coding_skip_test
+            else yaml_config.coding_skip_test,
             test_duration=args.duration if args.duration is not None else yaml_config.test_duration,
             stats_interval=args.stats_interval if args.stats_interval is not None else yaml_config.stats_interval,
             output_dir=args.output_dir if args.output_dir is not None else yaml_config.output_dir,
@@ -291,6 +410,21 @@ class Config:
             round_interval=getattr(args, "round_interval", None)
             if getattr(args, "round_interval", None) is not None
             else 5,
+            # Workflow type (CLI override)
+            workflow_type=getattr(args, "workflow_type", "browser"),
+            # Coding configuration (CLI defaults)
+            coding_project_dir=getattr(args, "coding_project_dir", "/opt/coding-bench"),
+            coding_dev_wait=getattr(args, "coding_dev_wait", 20),
+            coding_build_cmd="npm run build",
+            coding_test_cmd="npm test",
+            coding_source_files=getattr(args, "coding_source_file", None) or [],
+            coding_build_timeout=getattr(args, "coding_build_timeout", 300),
+            coding_test_timeout=getattr(args, "coding_test_timeout", 120),
+            coding_interval_min=2.0,
+            coding_interval_max=10.0,
+            coding_skip_dev_server=getattr(args, "coding_skip_dev_server", False),
+            coding_skip_build=getattr(args, "coding_skip_build", False),
+            coding_skip_test=getattr(args, "coding_skip_test", False),
             test_duration=args.duration if args.duration is not None else 600,
             stats_interval=args.stats_interval if args.stats_interval is not None else 10,
             output_dir=args.output_dir if args.output_dir is not None else "results/e2b",

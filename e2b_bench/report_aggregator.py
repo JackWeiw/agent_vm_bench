@@ -30,6 +30,31 @@ class ReportAggregator:
             "Browser_screenshot_Avg_ms",
             "Browser_screenshot_P99_ms",
         ],
+        "Coding": [
+            "Coding_Success_Rate",
+            "Coding_Avg_Latency_ms",
+            "Coding_P99_Latency_ms",
+            "Coding_Total_Tasks",
+            "Coding_Build_Success_Rate",
+            "Coding_Test_Success_Rate",
+        ],
+        "Coding_Steps": [
+            "Coding_checkout_Count",
+            "Coding_checkout_Avg_ms",
+            "Coding_checkout_P99_ms",
+            "Coding_edit_Count",
+            "Coding_edit_Avg_ms",
+            "Coding_edit_P99_ms",
+            "Coding_build_Count",
+            "Coding_build_Avg_ms",
+            "Coding_build_P99_ms",
+            "Coding_test_Count",
+            "Coding_test_Avg_ms",
+            "Coding_test_P99_ms",
+            "Coding_memory_Count",
+            "Coding_memory_Avg_ms",
+            "Coding_memory_P99_ms",
+        ],
         "VM_CPU": ["VM_CPU_Mean", "VM_CPU_Max"],
         "DevKit_TopDown": [
             "DevKit_TopDown_Cycles_Avg",
@@ -61,6 +86,8 @@ class ReportAggregator:
         "Basic": "4472C4",  # Blue
         "Browser": "70AD47",  # Green
         "Browser_Steps": "5B9BD5",  # Light Blue (step timing subset)
+        "Coding": "FF9900",  # Amber/Gold
+        "Coding_Steps": "FFCC00",  # Yellow (step timing subset)
         "VM_CPU": "FFC000",  # Orange
         "DevKit_TopDown": "ED7D31",  # Dark Orange
         "DevKit_Memory": "A5A5A5",  # Gray
@@ -250,11 +277,12 @@ class ReportAggregator:
 
     def _get_source_key_from_name(self, display_name: str) -> str:
         """Get source key from display name"""
-        # Reverse mapping
         name_to_key = {
             "Basic": "Basic",
             "Browser": "Browser",
             "Browser Steps": "Browser_Steps",
+            "Coding": "Coding",
+            "Coding Steps": "Coding_Steps",
             "VM CPU": "VM_CPU",
             "DevKit TopDown": "DevKit_TopDown",
             "DevKit Memory": "DevKit_Memory",
@@ -273,6 +301,8 @@ class ReportAggregator:
             "Basic": "Basic",
             "Browser": "Browser",
             "Browser_Steps": "Browser Steps",
+            "Coding": "Coding",
+            "Coding_Steps": "Coding Steps",
             "VM_CPU": "VM CPU",
             "DevKit_TopDown": "DevKit TopDown",
             "DevKit_Memory": "DevKit Memory",
@@ -295,6 +325,8 @@ class ReportAggregator:
         # Infer group from column name prefix
         if col_name.startswith("Browser_"):
             return "Browser"
+        elif col_name.startswith("Coding_"):
+            return "Coding"
         elif col_name.startswith("VM_CPU"):
             return "VM_CPU"
         elif col_name.startswith("DevKit_TopDown"):

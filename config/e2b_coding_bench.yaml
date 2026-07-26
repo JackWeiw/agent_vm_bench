@@ -1,0 +1,97 @@
+# config/e2b_coding_bench.yaml
+# E2B Sandbox Coding Benchmark - Single Test Configuration
+#
+# Workflow type: coding — simulates AI coding agent memory pressure
+#   Dev server (~1.5GB persistent) + production build (~2GB peak)
+#   → overlapping ~3GB peak per sandbox
+#
+# Usage:
+#   python -m e2b_bench -c config/e2b_coding_bench.yaml --create-only   # Create sandboxes
+#   python -m e2b_bench -c config/e2b_coding_bench.yaml --detect        # Run benchmark
+#   python -m e2b_bench -c config/e2b_coding_bench.yaml --detect -bm round_robin  # Round-robin mode
+
+# E2B SDK environment variables (replace with real credentials)
+e2b_env:
+  E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+  E2B_API_KEY: "your_e2b_api_key_here"
+  E2B_DOMAIN: "e2b.app"
+  E2B_API_URL: "http://localhost:3000"
+  E2B_HTTP_SSL: "false"
+
+# Sandbox configuration
+sandbox:
+  template: "openclaw-coding-v1"    # E2B template name (coding template with Ant Design Pro)
+  create_timeout: 86400              # Sandbox creation timeout (seconds)
+  total_count: 10                   # Total sandbox count (start small for manual testing)
+  detect_existing: false             # Detect existing sandboxes instead of creating new ones
+  create_only: false                 # Create sandboxes only without running tasks (Phase 0)
+  sandbox_ids_file: "sandboxs.txt"   # File path to save/load sandbox IDs
+  numa_bind: 2                       # NUMA node to bind sandbox (null/omit = no binding)
+
+# Sandbox creation batch control
+create_batch:
+  size: 10                           # Sandboxes per batch during creation
+  interval: 3                        # Interval between creation batches (seconds)
+
+# Task execution batch control
+task_batch:
+  size: 5                            # Sandboxes to start tasks per batch
+  interval: 5                        # Interval between task batches (seconds)
+
+# Workflow type selection — determines which runners, metrics, and reports to use
+workflow_type: "coding"
+
+# Coding task configuration
+coding:
+  project_dir: "/opt/coding-bench"    # Ant Design Pro project directory inside sandbox
+  dev_wait: 20                         # Seconds to wait for dev server startup
+  build_cmd: "npm run build"           # Production build command
+  test_cmd: "npm test"                 # Test command
+  source_files:                         # Files for round-robin modification (verified paths)
+    - "src/pages/dashboard/analysis/index.tsx"
+    - "src/pages/dashboard/workplace/index.tsx"
+    - "src/pages/dashboard/monitor/index.tsx"
+    - "src/pages/form/basic-form/index.tsx"
+    - "src/pages/form/step-form/index.tsx"
+    - "src/pages/form/advanced-form/index.tsx"
+    - "src/pages/list/basic-list/index.tsx"
+    - "src/pages/list/card-list/index.tsx"
+    - "src/pages/list/search/index.tsx"
+    - "src/pages/table-list/index.tsx"
+    - "src/pages/profile/basic/index.tsx"
+    - "src/pages/profile/advanced/index.tsx"
+    - "src/pages/result/success/index.tsx"
+    - "src/pages/result/fail/index.tsx"
+    - "src/pages/exception/403/index.tsx"
+    - "src/pages/exception/404/index.tsx"
+    - "src/pages/exception/500/index.tsx"
+    - "src/pages/user/login/index.tsx"
+    - "src/pages/user/register/index.tsx"
+    - "src/pages/account/settings/index.tsx"
+    - "src/pages/account/center/index.tsx"
+    - "src/pages/chatbot/index.tsx"
+  build_timeout: 300                    # Build command timeout (seconds)
+  test_timeout: 120                     # Test command timeout (seconds)
+  interval_min: 2.0                     # Min interval between tasks (fixed mode)
+  interval_max: 10.0                    # Max interval between tasks (fixed mode)
+  skip_dev_server: false                # Skip dev server startup (set true for build-only testing)
+  skip_build: false                     # Skip production build
+  skip_test: false                      # Skip test suite
+
+# Test run configuration
+test:
+  duration: 160                         # Test duration (seconds)
+  stats_interval: 10                    # Stats snapshot interval (seconds)
+  benchmark_percent: 1.0                # Percentage of sandboxes for benchmark (1.0 = 100%)
+
+  # Round-robin mode configuration (recommended for coding benchmark)
+  # Each round modifies a different source file + builds + tests
+  benchmark_mode: "round_robin"
+  round_size: 5                         # Sandboxes per round
+  round_count: 5                        # Max rounds (stops when reached or duration exceeded)
+  round_interval: 30                    # Round interval (seconds, longer for build tasks)
+
+# Report configuration
+report:
+  output_dir: "results/e2b/coding"
+  filename_prefix: "e2b_coding_bench"
