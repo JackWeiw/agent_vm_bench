@@ -2,18 +2,20 @@
 #
 # Environment: coding + agent (openclaw), NO browser/Chromium
 #
+# Project: Ant Design Pro (https://github.com/ant-design/ant-design-pro)
+#   - 36k+ GitHub stars, most popular open-source React enterprise dashboard
+#   - Uses antd (60+ UI components) + UmiJS + webpack
+#   - Very representative of what AI coding agents work on
+#   - Pure JS/TS, ARM64 compatible
+#
 # Agent tools included:
 # - openclaw:       AI agent framework (coding agent's primary tool)
 # - llama-server:   Embedding model for agent semantic understanding
 # - openclaw-gateway: Agent gateway service (ports 18789 + 11436)
 #
-# NOT included (use browser template instead):
-# - agent-browser:  Browser automation skill
-# - Chromium:       Web browser
-#
 # Memory pressure model:
-# - Each "npm run build" = full production webpack rebuild (500-800MB peak)
-# - Each round modifies bench-marker.ts → triggers genuine rebuild
+# - Each "npm run build" = full production build via UmiJS/webpack (~2-3GB peak)
+# - Each round modifies a source file → git checkout revert → new modification → rebuild
 # - Multiple concurrent sandboxes → overlapping build peaks → host memory stress
 #
 # Build:  docker build -t ubuntu-coding-bench:24.04-linuxarm64 -f Dockerfile.coding .
@@ -47,7 +49,6 @@ RUN apt update && apt install -y wget xz-utils vim libgomp1 iproute2 net-tools s
     apt clean && rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
 
 # Install openclaw agent framework (NO agent-browser, NO Chromium)
-# This is the coding agent's primary tool for file operations, build, and test
 RUN npm config set strict-ssl false && \
     npm config set registry https://registry.npmmirror.com && \
     npm install -g @larksuiteoapi/node-sdk && \
@@ -75,17 +76,18 @@ RUN mkdir -p /etc/supervisor/conf.d && \
     touch /var/log/llama.log /var/log/openclaw.log
 COPY llama_openclaw.conf /etc/supervisor/conf.d/llama_openclaw.conf
 
-# --- Coding benchmark project setup ---
-# Copy and run the project setup script (generates 40 React components + webpack5)
-COPY setup_coding_project.sh /tmp/setup_coding_project.sh
-RUN bash /tmp/setup_coding_project.sh && rm /tmp/setup_coding_project.sh
+# --- Coding benchmark project: Ant Design Pro (real open-source project) ---
+# Clone, install dependencies, build, and init git for modification tracking
+RUN cd /opt && \
+    git clone --depth 1 https://github.com/ant-design/ant-design-pro.git coding-bench && \
+    cd coding-bench && \
+    npm install --registry=https://registry.npmmirror.com --strict-ssl=false && \
+    npm run build && \
+    echo "Build verification: SUCCESS"
 
-# Copy the manual testing helper script
+# Copy the manual testing helper script (adapted for Ant Design Pro)
 COPY bench_helper.sh /opt/coding-bench/bench_helper.sh
 RUN chmod +x /opt/coding-bench/bench_helper.sh
-
-# Verify the coding project works
-RUN cd /opt/coding-bench && npm run build && echo "Build verification: SUCCESS"
 
 # Clear logs for clean image
 RUN > /var/log/llama.log && \
@@ -98,5 +100,4 @@ ENV http_proxy= \
     HTTPS_PROXY=
 
 # Set the default command to run supervisor
-# This starts llama-server and openclaw-gateway, making port checks work
 CMD ["/usr/bin/supervisord", "-n"]
