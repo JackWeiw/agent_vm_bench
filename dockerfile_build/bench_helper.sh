@@ -25,6 +25,7 @@
 #   bash bench_helper.sh 3                  # Round 3, all steps
 #   bash bench_helper.sh --round=5          # Round 5
 #   bash bench_helper.sh --no-dev-server    # Skip dev server
+#   bash bench_helper.sh --no-build         # Skip production build
 #   bash bench_helper.sh --no-test          # Skip test suite
 #   bash bench_helper.sh --help             # Show help
 #
@@ -37,18 +38,20 @@
 PROJECT_DIR="${BENCH_PROJECT_DIR:-/opt/coding-bench}"
 DEV_WAIT="${BENCH_DEV_WAIT:-20}"
 
-# Source files for round-robin modification (Ant Design Pro real page files)
+# Source files for round-robin modification (verified against Ant Design Pro repo)
 # These are the most common page types in enterprise dashboard apps:
-#   dashboard, form, list, profile, result, exception, user, account, editor
+#   dashboard, form, list, table-list, profile, result, exception, user, account, chatbot
 TARGET_FILES=(
     "src/pages/dashboard/analysis/index.tsx"
     "src/pages/dashboard/workplace/index.tsx"
     "src/pages/dashboard/monitor/index.tsx"
     "src/pages/form/basic-form/index.tsx"
     "src/pages/form/step-form/index.tsx"
-    "src/pages/list/table-list/index.tsx"
+    "src/pages/form/advanced-form/index.tsx"
     "src/pages/list/basic-list/index.tsx"
     "src/pages/list/card-list/index.tsx"
+    "src/pages/list/search/index.tsx"
+    "src/pages/table-list/index.tsx"
     "src/pages/profile/basic/index.tsx"
     "src/pages/profile/advanced/index.tsx"
     "src/pages/result/success/index.tsx"
@@ -60,7 +63,7 @@ TARGET_FILES=(
     "src/pages/user/register/index.tsx"
     "src/pages/account/settings/index.tsx"
     "src/pages/account/center/index.tsx"
-    "src/pages/editor/new-page/index.tsx"
+    "src/pages/chatbot/index.tsx"
 )
 
 # ---- Argument Parsing ----
@@ -130,7 +133,7 @@ echo ""
 echo "[Step 0: setup] Preparing environment..."
 
 # Reset source files to clean state (simulates agent reverting failed changes)
-cd "${PROJECT_DIR}" && git checkout -- src/ 2>/dev/null || true
+cd "${PROJECT_DIR}" && git checkout -- src/ 2>/dev/null || echo "  WARNING: git checkout failed (not a git repo or no src/ changes)"
 echo "  Source files reset (git checkout -- src/)"
 
 # Start dev server if not already running

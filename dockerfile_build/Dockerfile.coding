@@ -85,7 +85,8 @@ RUN cd /opt && \
     cd coding-bench && \
     npm install --registry=https://registry.npmmirror.com --strict-ssl=false && \
     npm run build && \
-    echo "Build verification: SUCCESS"
+    test -d dist && test "$(ls -A dist | wc -l)" -gt 0 && \
+    echo "Build verification: SUCCESS (dist/ has output files)"
 
 # Copy the manual testing helper script (adapted for Ant Design Pro)
 COPY bench_helper.sh /opt/coding-bench/bench_helper.sh

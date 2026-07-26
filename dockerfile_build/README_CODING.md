@@ -43,13 +43,13 @@ This template creates an E2B sandbox containing **Ant Design Pro** (36k+ GitHub 
 │   ├── config.ts                     # UmiJS configuration
 │   └── routes.ts                     # Route definitions
 ├── src/
-│   ├── pages/                        # ← Modified each round (20 real page files)
+│   ├── pages/                        # ← Modified each round (22 real page files)
 │   │   ├── dashboard/analysis/       # Analysis dashboard page
 │   │   ├── dashboard/workplace/      # Workplace dashboard page
 │   │   ├── form/basic-form/          # Basic form page
-│   │   ├── list/table-list/          # ProTable list page
-│   │   ├── user/login/               # Login page
-│   │   └── ... (20 target files)
+│   │   ├── table-list/               # ProTable list page (top-level directory)
+│   │   ├── chatbot/                  # AI chatbot page
+│   │   └── ... (22 target files)
 │   ├── components/                   # Shared components
 │   └── services/                     # API service layer
 ├── node_modules/                     # Pre-installed (no npm install needed)
@@ -182,7 +182,7 @@ bash /opt/coding-bench/bench_helper.sh 0 --no-dev-server --no-build
 | Dev server steady | `numastat -p firecracker` | ~800-1200MB (after initial compilation settles) |
 | Dev server initial | `numastat -p firecracker` during dev start | **~3.5GB peak** (initial full compilation) |
 | Build peak (with dev server) | `numastat -p firecracker` during build | **~2.4-3GB peak** (build overlaps dev server) |
-| Build peak (without dev server) | `numastat -p firecrancer` during build | ~2GB peak (build alone) |
+| Build peak (without dev server) | `numastat -p firecracker` during build | ~2GB peak (build alone) |
 | Memory release | `numastat -p firecracker` after build | Drops back to dev server steady state |
 
 ### 6. Script Options
