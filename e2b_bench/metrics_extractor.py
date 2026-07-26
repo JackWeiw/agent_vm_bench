@@ -381,6 +381,8 @@ class MetricsExtractor:
             print(f"[MetricsExtractor] Error extracting coding metrics: {e}")
 
         return metrics
+
+    def extract_browser_metrics(self, report_file: str) -> Dict[str, Any]:
         """Extract browser metrics from bench_report.txt
 
         Extracts:
