@@ -325,10 +325,13 @@ class MetricsExtractor:
     def extract_coding_metrics(self, report_file: str) -> Dict[str, Any]:
         """Extract coding metrics from bench_report.txt
 
+        Bug #9 fix: scoped to only search within [Coding Task Statistics] section
+        to prevent cross-contamination when both extractors are called.
+
         Extracts:
-        - Overall metrics: Success Rate, Avg/P99 Latency, Total Tasks
+        - Overall metrics: Success Rate, Avg/P99 Latency, Total Tasks (scoped to coding section)
         - Build/Test success rates
-        - Step-level timing: checkout, edit, build, test, memory (avg/p99 in ms)
+        - Step-level timing: checkout, edit, build, test, memory (avg, P50, P95, P99 in ms)
         """
         metrics = {}
         if not report_file or not os.path.exists(report_file):
@@ -338,43 +341,51 @@ class MetricsExtractor:
             with open(report_file, encoding="utf-8") as f:
                 content = f.read()
 
-            # Overall metrics
-            match = re.search(r"Success Rate:\s+([\d.]+)%", content)
+            # Bug #9 fix: scope to coding section only
+            coding_section = self._extract_section(content, "[Coding Task Statistics]")
+            if not coding_section:
+                return metrics  # No coding section found, return empty
+
+            # Overall metrics (search within coding section only)
+            match = re.search(r"Success Rate:\s+([\d.]+)%", coding_section)
             if match:
                 metrics["Coding_Success_Rate"] = float(match.group(1))
 
-            match = re.search(r"Avg Latency:\s+([\d.]+)ms", content)
+            match = re.search(r"Avg Latency:\s+([\d.]+)ms", coding_section)
             if match:
                 metrics["Coding_Avg_Latency_ms"] = float(match.group(1))
 
-            match = re.search(r"P99 Latency:\s+([\d.]+)ms", content)
+            match = re.search(r"P99 Latency:\s+([\d.]+)ms", coding_section)
             if match:
                 metrics["Coding_P99_Latency_ms"] = float(match.group(1))
 
-            match = re.search(r"Total Tasks:\s+(\d+)", content)
+            match = re.search(r"Total Tasks:\s+(\d+)", coding_section)
             if match:
                 metrics["Coding_Total_Tasks"] = int(match.group(1))
 
             # Build/Test success rates
-            match = re.search(r"Build Success:\s+(\d+)/(\d+)\s+\(([\d.]+)%\)", content)
+            match = re.search(r"Build Success:\s+(\d+)/(\d+)\s+\(([\d.]+)%\)", coding_section)
             if match:
                 metrics["Coding_Build_Success_Rate"] = float(match.group(3))
 
-            match = re.search(r"Test Success:\s+(\d+)/(\d+)\s+\(([\d.]+)%\)", content)
+            match = re.search(r"Test Success:\s+(\d+)/(\d+)\s+\(([\d.]+)%\)", coding_section)
             if match:
                 metrics["Coding_Test_Success_Rate"] = float(match.group(3))
 
-            # Step-level timing extraction
-            # Format matches the table from format_coding_step_timing_table:
-            # "  checkout        120      234.5        567.8"
-            coding_step_pattern = r"^\s+(checkout|edit|build|test|memory)\s+(\d+)\s+([\d.]+)\s+([\d.]+)"
-            for match in re.finditer(coding_step_pattern, content, re.MULTILINE):
+            # Bug #3 fix: capture all numeric columns (Avg, P50, P95, P99)
+            # Table format: Step, Count, Avg(ms), P50(ms), P95(ms), P99(ms), Tail
+            coding_step_pattern = r"^\s+(checkout|edit|build|test|memory)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)"
+            for match in re.finditer(coding_step_pattern, coding_section, re.MULTILINE):
                 step_name = match.group(1)
                 count = int(match.group(2))
                 avg_ms = float(match.group(3))
-                p99_ms = float(match.group(4))
+                p50_ms = float(match.group(4))
+                p95_ms = float(match.group(5))
+                p99_ms = float(match.group(6))
                 metrics[f"Coding_{step_name}_Count"] = count
                 metrics[f"Coding_{step_name}_Avg_ms"] = avg_ms
+                metrics[f"Coding_{step_name}_P50_ms"] = p50_ms
+                metrics[f"Coding_{step_name}_P95_ms"] = p95_ms
                 metrics[f"Coding_{step_name}_P99_ms"] = p99_ms
 
         except Exception as e:
@@ -385,9 +396,12 @@ class MetricsExtractor:
     def extract_browser_metrics(self, report_file: str) -> Dict[str, Any]:
         """Extract browser metrics from bench_report.txt
 
+        Bug #9 fix: scoped to only search within [Browser Task Statistics] section
+        to prevent cross-contamination when both extractors are called.
+
         Extracts:
-        - Overall metrics: Success Rate, Avg/P99 Latency, Total Tasks
-        - Step-level timing: open_tab, snapshot, click, screenshot (avg/p99 in ms)
+        - Overall metrics: Success Rate, Avg/P99 Latency, Total Tasks (scoped to browser section)
+        - Step-level timing: open_tab, page_load, snapshot, click, screenshot (avg, P50, P95, P99 in ms)
         """
         metrics = {}
         if not report_file or not os.path.exists(report_file):
@@ -397,36 +411,71 @@ class MetricsExtractor:
             with open(report_file, encoding="utf-8") as f:
                 content = f.read()
 
-            # Overall metrics
-            match = re.search(r"Success Rate:\s+([\d.]+)%", content)
+            # Bug #9 fix: scope to browser section only
+            browser_section = self._extract_section(content, "[Browser Task Statistics]")
+            if not browser_section:
+                return metrics  # No browser section found, return empty
+
+            # Overall metrics (search within browser section only)
+            match = re.search(r"Success Rate:\s+([\d.]+)%", browser_section)
             if match:
                 metrics["Browser_Success_Rate"] = float(match.group(1))
 
-            match = re.search(r"Avg Latency:\s+([\d.]+)ms", content)
+            match = re.search(r"Avg Latency:\s+([\d.]+)ms", browser_section)
             if match:
                 metrics["Browser_Avg_Latency_ms"] = float(match.group(1))
 
-            match = re.search(r"P99 Latency:\s+([\d.]+)ms", content)
+            match = re.search(r"P99 Latency:\s+([\d.]+)ms", browser_section)
             if match:
                 metrics["Browser_P99_Latency_ms"] = float(match.group(1))
 
-            match = re.search(r"Total Tasks:\s+(\d+)", content)
+            match = re.search(r"Total Tasks:\s+(\d+)", browser_section)
             if match:
                 metrics["Browser_Total_Tasks"] = int(match.group(1))
 
-            # Step-level timing extraction
-            # Format from StatsCollector: "  open_tab        120      234.5        567.8"
-            step_pattern = r"^\s+(open_tab|snapshot|click|screenshot)\s+(\d+)\s+([\d.]+)\s+([\d.]+)"
-            for match in re.finditer(step_pattern, content, re.MULTILINE):
+            # Bug #3 fix: capture all numeric columns (Avg, P50, P95, P99)
+            # Table format: Step, Count, Avg(ms), P50(ms), P95(ms), P99(ms), Tail
+            step_pattern = r"^\s+(open_tab|page_load|snapshot|click|screenshot)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)"
+            for match in re.finditer(step_pattern, browser_section, re.MULTILINE):
                 step_name = match.group(1)
                 count = int(match.group(2))
                 avg_ms = float(match.group(3))
-                p99_ms = float(match.group(4))
+                p50_ms = float(match.group(4))
+                p95_ms = float(match.group(5))
+                p99_ms = float(match.group(6))
                 metrics[f"Browser_{step_name}_Count"] = count
                 metrics[f"Browser_{step_name}_Avg_ms"] = avg_ms
+                metrics[f"Browser_{step_name}_P50_ms"] = p50_ms
+                metrics[f"Browser_{step_name}_P95_ms"] = p95_ms
                 metrics[f"Browser_{step_name}_P99_ms"] = p99_ms
 
         except Exception as e:
             print(f"[MetricsExtractor] Error extracting browser metrics: {e}")
 
         return metrics
+
+    def _extract_section(self, content: str, section_header: str) -> str:
+        """Extract content between section header and next section or EOF.
+
+        Args:
+            content: Full report content
+            section_header: Section marker like "[Coding Task Statistics]"
+
+        Returns:
+            Content from the section header to the next section or end of file.
+            Falls back to full content if section header not found (for backward
+            compat with reports that don't use section headers).
+        """
+        # Find start of section
+        start_idx = content.find(section_header)
+        if start_idx == -1:
+            # Fallback: no section header found, use full content
+            # This handles reports that don't use section headers
+            return content
+
+        # Find next section header (starts with "[")
+        remaining = content[start_idx + len(section_header):]
+        next_section = re.search(r"\n\[", remaining)
+        if next_section:
+            return content[start_idx:next_section.start() + start_idx + len(section_header)]
+        return content[start_idx:]

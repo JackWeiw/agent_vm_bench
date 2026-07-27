@@ -590,7 +590,7 @@ def run_benchmark(config: Config) -> dict:
     # Benchmark phase skips warmup - assumes sandboxes already warmed up
     task_manager = TaskManager(config, sandbox_states, stop_event)
 
-    if config.warmup_only and config.warmup_urls:
+    if config.warmup_only and (config.warmup_urls or config.workflow_type == "coding"):
         print("\n[Phase 2] Running warmup phase...")
 
         # Check if wave-based warmup is needed

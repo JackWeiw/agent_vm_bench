@@ -16,6 +16,31 @@ from .config import Config
 from .schemas import CODING_STEP_ORDER, BROWSER_STEP_ORDER, SandboxState, SandboxStatus, TestSnapshot
 from .utils import calc_p99, calc_percentiles, calc_tail_ratio, classify_tail_latency
 
+# Error display order — selected based on workflow_type
+BROWSER_ERROR_DISPLAY = [
+    "Open tab failed",
+    "Page load failed",
+    "Snapshot failed",
+    "Click failed",
+    "Screenshot failed",
+    "Chrome start failed",
+    "D-Bus connection error",
+    "Gateway connection error",
+    "Timeout",
+    "Other",
+]
+
+CODING_ERROR_DISPLAY = [
+    "Checkout failed",
+    "Edit failed",
+    "Build failed",
+    "Test failed",
+    "Dev server failed",
+    "OOM",
+    "Timeout",
+    "Other",
+]
+
 
 class ErrorClassifier:
     """Error type classification for sandbox failures."""
@@ -382,18 +407,10 @@ class ReportFormatter:
         headers = ["Error Type", "Count", "Sandboxes"]
         rows = []
 
-        for error_type in [
-            "Open tab failed",
-            "Page load failed",
-            "Snapshot failed",
-            "Click failed",
-            "Screenshot failed",
-            "Chrome start failed",
-            "D-Bus connection error",
-            "Gateway connection error",
-            "Timeout",
-            "Other",
-        ]:
+        # Bug #6 fix: include coding error types when workflow_type is coding
+        error_display_order = CODING_ERROR_DISPLAY if self.config.workflow_type == "coding" else BROWSER_ERROR_DISPLAY
+
+        for error_type in error_display_order:
             if error_type in error_counts:
                 count = error_counts[error_type]
                 sids = error_sandbox_ids[error_type][:5]
@@ -688,11 +705,9 @@ class StatsCollector:
                 browser_success=browser_success,
                 browser_avg_latency=browser_avg,
                 browser_p99_latency=browser_p99,
+                round_total=round_total,
+                round_success=round_success,
             )
-
-            # Add per-round fields for round comparison
-            snapshot.round_total = round_total
-            snapshot.round_success = round_success
         elif self.config.workflow_type == "coding":
             coding_total = sum(s.coding_metrics.total_tasks for s in self.sandbox_states.values())
             coding_success = sum(s.coding_metrics.success_count for s in self.sandbox_states.values())
@@ -726,11 +741,9 @@ class StatsCollector:
                 coding_success=coding_success,
                 coding_avg_latency=coding_avg,
                 coding_p99_latency=coding_p99,
+                round_total=round_total,
+                round_success=round_success,
             )
-
-            # Add per-round fields for round comparison
-            snapshot.round_total = round_total
-            snapshot.round_success = round_success
         else:
             snapshot = TestSnapshot(
                 timestamp=now,

@@ -594,14 +594,17 @@ def offline_summary(result_base_dir: str, output_path: str = None) -> str:
             "error_msg": None,
         }
 
-        # Extract workflow metrics (try both browser and coding — whichever has data)
+        # Extract workflow metrics (Bug #9 fix: only call relevant extractor)
         if task_info["report_file"]:
-            browser_metrics = metrics_extractor.extract_browser_metrics(task_info["report_file"])
-            coding_metrics = metrics_extractor.extract_coding_metrics(task_info["report_file"])
-            if browser_metrics:
-                metrics.update(browser_metrics)
-            if coding_metrics:
-                metrics.update(coding_metrics)
+            workflow_type = task_info.get("workflow_type", "browser")
+            if workflow_type == "coding":
+                coding_metrics = metrics_extractor.extract_coding_metrics(task_info["report_file"])
+                if coding_metrics:
+                    metrics.update(coding_metrics)
+            else:
+                browser_metrics = metrics_extractor.extract_browser_metrics(task_info["report_file"])
+                if browser_metrics:
+                    metrics.update(browser_metrics)
 
         # Extract vm_monitor metrics
         if task_info["analysis_file"]:

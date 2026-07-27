@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from .schemas import DEFAULT_CODING_SOURCE_FILES
+
 
 @dataclass
 class Config:
@@ -87,33 +89,11 @@ class Config:
     # Coding task configuration
     coding_project_dir: str = "/opt/coding-bench"
     coding_dev_wait: int = 20  # Seconds to wait for dev server startup
+    coding_dev_cmd: str = "npm run dev"  # Dev server startup command (parsed from YAML)
     coding_build_cmd: str = "npm run build"
     coding_test_cmd: str = "npm test"
     coding_source_files: List[str] = field(
-        default_factory=lambda: [
-            "src/pages/dashboard/analysis/index.tsx",
-            "src/pages/dashboard/workplace/index.tsx",
-            "src/pages/dashboard/monitor/index.tsx",
-            "src/pages/form/basic-form/index.tsx",
-            "src/pages/form/step-form/index.tsx",
-            "src/pages/form/advanced-form/index.tsx",
-            "src/pages/list/basic-list/index.tsx",
-            "src/pages/list/card-list/index.tsx",
-            "src/pages/list/search/index.tsx",
-            "src/pages/table-list/index.tsx",
-            "src/pages/profile/basic/index.tsx",
-            "src/pages/profile/advanced/index.tsx",
-            "src/pages/result/success/index.tsx",
-            "src/pages/result/fail/index.tsx",
-            "src/pages/exception/403/index.tsx",
-            "src/pages/exception/404/index.tsx",
-            "src/pages/exception/500/index.tsx",
-            "src/pages/user/login/index.tsx",
-            "src/pages/user/register/index.tsx",
-            "src/pages/account/settings/index.tsx",
-            "src/pages/account/center/index.tsx",
-            "src/pages/chatbot/index.tsx",
-        ]
+        default_factory=lambda: list(DEFAULT_CODING_SOURCE_FILES)
     )
     coding_build_timeout: int = 300  # Build command timeout (seconds)
     coding_test_timeout: int = 120  # Test command timeout (seconds)
@@ -160,32 +140,6 @@ class Config:
         vm_monitor = data.get("vm_monitor", {})
         # workflow_type is parsed from top-level YAML key, not a section
 
-        # Default source files for Ant Design Pro coding benchmark
-        _default_coding_source_files = [
-            "src/pages/dashboard/analysis/index.tsx",
-            "src/pages/dashboard/workplace/index.tsx",
-            "src/pages/dashboard/monitor/index.tsx",
-            "src/pages/form/basic-form/index.tsx",
-            "src/pages/form/step-form/index.tsx",
-            "src/pages/form/advanced-form/index.tsx",
-            "src/pages/list/basic-list/index.tsx",
-            "src/pages/list/card-list/index.tsx",
-            "src/pages/list/search/index.tsx",
-            "src/pages/table-list/index.tsx",
-            "src/pages/profile/basic/index.tsx",
-            "src/pages/profile/advanced/index.tsx",
-            "src/pages/result/success/index.tsx",
-            "src/pages/result/fail/index.tsx",
-            "src/pages/exception/403/index.tsx",
-            "src/pages/exception/404/index.tsx",
-            "src/pages/exception/500/index.tsx",
-            "src/pages/user/login/index.tsx",
-            "src/pages/user/register/index.tsx",
-            "src/pages/account/settings/index.tsx",
-            "src/pages/account/center/index.tsx",
-            "src/pages/chatbot/index.tsx",
-        ]
-
         return cls(
             e2b_access_token=e2b_env.get("E2B_ACCESS_TOKEN", ""),
             e2b_api_key=e2b_env.get("E2B_API_KEY", ""),
@@ -223,10 +177,11 @@ class Config:
             warmup_only=browser.get("warmup_only", False),
             # Coding task configuration
             coding_project_dir=coding.get("project_dir", "/opt/coding-bench"),
+            coding_dev_cmd=coding.get("dev_cmd", "npm run dev"),
             coding_dev_wait=coding.get("dev_wait", 20),
             coding_build_cmd=coding.get("build_cmd", "npm run build"),
             coding_test_cmd=coding.get("test_cmd", "npm test"),
-            coding_source_files=coding.get("source_files", _default_coding_source_files),
+            coding_source_files=coding.get("source_files", DEFAULT_CODING_SOURCE_FILES),
             coding_build_timeout=coding.get("build_timeout", 300),
             coding_test_timeout=coding.get("test_timeout", 120),
             coding_interval_min=coding.get("interval_min", 2.0),
@@ -325,6 +280,7 @@ class Config:
             coding_project_dir=getattr(args, "coding_project_dir", None)
             if getattr(args, "coding_project_dir", None) is not None
             else yaml_config.coding_project_dir,
+            coding_dev_cmd=yaml_config.coding_dev_cmd,  # No CLI override for dev_cmd
             coding_dev_wait=getattr(args, "coding_dev_wait", None)
             if getattr(args, "coding_dev_wait", None) is not None
             else yaml_config.coding_dev_wait,
@@ -414,10 +370,13 @@ class Config:
             workflow_type=getattr(args, "workflow_type", "browser"),
             # Coding configuration (CLI defaults)
             coding_project_dir=getattr(args, "coding_project_dir", "/opt/coding-bench"),
+            coding_dev_cmd="npm run dev",  # Default dev server command
             coding_dev_wait=getattr(args, "coding_dev_wait", 20),
             coding_build_cmd="npm run build",
             coding_test_cmd="npm test",
-            coding_source_files=getattr(args, "coding_source_file", None) or [],
+            coding_source_files=getattr(args, "coding_source_file", None)
+            if getattr(args, "coding_source_file", None) is not None
+            else DEFAULT_CODING_SOURCE_FILES,
             coding_build_timeout=getattr(args, "coding_build_timeout", 300),
             coding_test_timeout=getattr(args, "coding_test_timeout", 120),
             coding_interval_min=2.0,
@@ -479,3 +438,11 @@ class Config:
         Based on benchmark_percent (e.g., 0.5 = 50% of sandboxes)
         """
         return max(1, int(self.total_count * self.benchmark_percent))
+
+    def validate(self) -> None:
+        """Validate config values and raise errors for invalid settings.
+
+        Called after construction to catch configuration mistakes early.
+        """
+        if self.round_size <= 0:
+            raise ValueError(f"round_size must be > 0, got {self.round_size}")

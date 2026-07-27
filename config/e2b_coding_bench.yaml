@@ -44,6 +44,7 @@ workflow_type: "coding"
 # Coding task configuration
 coding:
   project_dir: "/opt/coding-bench"    # Ant Design Pro project directory inside sandbox
+  dev_cmd: "npm run dev"              # Dev server startup command (configurable per project)
   dev_wait: 20                         # Seconds to wait for dev server startup
   build_cmd: "npm run build"           # Production build command
   test_cmd: "npm test"                 # Test command

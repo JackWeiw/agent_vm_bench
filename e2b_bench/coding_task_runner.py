@@ -24,6 +24,7 @@ import time
 from typing import Dict, List, Tuple
 
 from .config import Config
+from .helpers import wait_for_port_ready
 from .schemas import SandboxState, SandboxStatus
 
 
@@ -50,20 +51,11 @@ class CodingWarmupRunner(threading.Thread):
     def run(self) -> None:
         """Execute warmup phase for this sandbox — start dev server + initial build"""
         # Wait for sandbox ports ready
-        while True:
-            if self.state.creation_metrics.status == SandboxStatus.PORT_READY:
-                break
-            if self.state.creation_metrics.status in (
-                SandboxStatus.FAILED,
-                SandboxStatus.PORT_FAILED,
-                SandboxStatus.OFFLINE,
-                SandboxStatus.KILLED,
-            ):
-                print(
-                    f"[Sandbox{self.state.sandbox_id}] Cannot start warmup: {self.state.creation_metrics.status.value}"
-                )
-                return
-            time.sleep(0.5)
+        if not wait_for_port_ready(self.state):
+            print(
+                f"[Sandbox{self.state.sandbox_id}] Cannot start warmup: {self.state.creation_metrics.status.value}"
+            )
+            return
 
         sbx = self.state.sandbox_obj
         if not sbx:
@@ -102,7 +94,7 @@ class CodingWarmupRunner(threading.Thread):
                 else:
                     print(f"[Sandbox{self.state.sandbox_id}] Starting dev server...")
                     sbx.commands.run(
-                        f"cd {project_dir} && BROWSER=none npm run dev > /tmp/dev_server.log 2>&1 &",
+                        f"cd {project_dir} && BROWSER=none {self.config.coding_dev_cmd} > /tmp/dev_server.log 2>&1 &",
                         timeout=10,
                         user="root",
                     )
@@ -164,20 +156,11 @@ class CodingTaskRunner(threading.Thread):
     def run(self) -> None:
         """Task execution main loop"""
         # Wait for sandbox ports ready
-        while not self.stop_event.is_set():
-            if self.state.creation_metrics.status == SandboxStatus.PORT_READY:
-                break
-            if self.state.creation_metrics.status in (
-                SandboxStatus.FAILED,
-                SandboxStatus.PORT_FAILED,
-                SandboxStatus.OFFLINE,
-                SandboxStatus.KILLED,
-            ):
-                print(
-                    f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}"
-                )
-                return
-            time.sleep(0.5)
+        if not wait_for_port_ready(self.state, self.stop_event):
+            print(
+                f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}"
+            )
+            return
 
         # Coding task execution loop
         while not self.stop_event.is_set():
@@ -186,17 +169,16 @@ class CodingTaskRunner(threading.Thread):
                 break
 
             # Execute single coding task
-            success, latency, build_success, test_success = self._run_single_task()
+            success, latency, build_success, test_success, timed_out = self._run_single_task()
 
-            # Update metrics
-            timeout = latency > self.config.coding_build_timeout
+            # Update metrics — timeout is determined by exception handling, not elapsed time
             self.state.coding_metrics.add(
-                latency, success and not timeout, timeout, build_success=build_success, test_success=test_success
+                latency, success and not timed_out, timed_out, build_success=build_success, test_success=test_success
             )
             self.state.update_last_task_time(time.time())
 
             # Error handling
-            if success and not timeout:
+            if success and not timed_out:
                 self.consecutive_errors = 0
             else:
                 self.consecutive_errors += 1
@@ -211,21 +193,21 @@ class CodingTaskRunner(threading.Thread):
 
         print(f"[Sandbox{self.state.sandbox_id}] Coding task runner ended")
 
-    def _run_single_task(self) -> Tuple[bool, float, bool, bool]:
+    def _run_single_task(self) -> Tuple[bool, float, bool, bool, bool]:
         """Execute single coding task cycle
 
-        Returns: (success, latency_seconds, build_success, test_success)
+        Returns: (success, latency_seconds, build_success, test_success, timed_out)
         """
         sbx = self.state.sandbox_obj
         if not sbx:
-            return False, 0.0, False, False
+            return False, 0.0, False, False, False
 
         project_dir = self.config.coding_project_dir
         source_files = self.config.coding_source_files
 
         # Pick target file for this round
         if not source_files:
-            return False, 0.0, False, False
+            return False, 0.0, False, False, False
 
         file_idx = self.state.coding_metrics.total_tasks % len(source_files)
         target_file = source_files[file_idx]
@@ -233,6 +215,7 @@ class CodingTaskRunner(threading.Thread):
         start_time = time.perf_counter()
         build_success = False
         test_success = False
+        timed_out = False
 
         try:
             # Step 1: Checkout — reset source files
@@ -283,16 +266,22 @@ class CodingTaskRunner(threading.Thread):
                 test_success = test_result.exit_code == 0
 
             elapsed = time.perf_counter() - start_time
-            success = build_success and (self.config.coding_skip_test or test_success)
+            # Bug #1 fix: skip_build=True means build_success should be True (skipped = not failed)
+            # success = (skip_build or build_success) and (skip_test or test_success)
+            success = (self.config.coding_skip_build or build_success) and (
+                self.config.coding_skip_test or test_success
+            )
 
-            return success, elapsed, build_success, test_success
+            return success, elapsed, build_success, test_success, timed_out
 
         except Exception as e:
             elapsed = time.perf_counter() - start_time
             error_msg = str(e)
+            # Bug #2 fix: timeout is determined by exception, not elapsed time
+            timed_out = "timed out" in error_msg.lower() or "context deadline exceeded" in error_msg.lower()
             self.state.coding_metrics.last_error = error_msg
             print(f"[Sandbox{self.state.sandbox_id}] Coding task exception: {error_msg[:100]}")
-            return False, elapsed, build_success, test_success
+            return False, elapsed, build_success, test_success, timed_out
 
 
 class CodingRoundRunner(threading.Thread):
@@ -351,11 +340,11 @@ class CodingRoundRunner(threading.Thread):
 
         start_time = time.perf_counter()
 
-        success, step_times, build_success, test_success, failed_step, error_detail = self._execute_steps(
+        success, step_times, build_success, test_success, failed_step, error_detail, timed_out = self._execute_steps(
             sbx, target_file
         )
 
-        elapsed = self._record_metrics(start_time, success, step_times, build_success, test_success, error_detail)
+        elapsed = self._record_metrics(start_time, success, step_times, build_success, test_success, timed_out, error_detail)
 
         if success:
             step_breakdown = ", ".join(f"{k}={v:.2f}s" for k, v in step_times.items() if v > 0)
@@ -363,7 +352,7 @@ class CodingRoundRunner(threading.Thread):
         else:
             self._handle_failure(target_file, failed_step, error_detail)
 
-    def _execute_steps(self, sbx, target_file: str) -> Tuple[bool, Dict[str, float], bool, bool, str, str]:
+    def _execute_steps(self, sbx, target_file: str) -> Tuple[bool, Dict[str, float], bool, bool, str, str, bool]:
         """Execute all steps: checkout -> edit -> build -> test -> memory
 
         Args:
@@ -371,7 +360,7 @@ class CodingRoundRunner(threading.Thread):
             target_file: Source file path relative to project_dir
 
         Returns:
-            Tuple of (success, step_times, build_success, test_success, failed_step, error_detail)
+            Tuple of (success, step_times, build_success, test_success, failed_step, error_detail, timed_out)
         """
         success = True
         step_times = {}
@@ -379,6 +368,7 @@ class CodingRoundRunner(threading.Thread):
         error_detail = ""
         build_success = False
         test_success = False
+        timed_out = False
         project_dir = self.config.coding_project_dir
 
         try:
@@ -395,29 +385,37 @@ class CodingRoundRunner(threading.Thread):
                 failed_step = "edit"
                 error_detail = edit_error
                 success = False
-                return success, step_times, build_success, test_success, failed_step, error_detail
+                return success, step_times, build_success, test_success, failed_step, error_detail, timed_out
 
             # Step 3: Build — production build (memory-intensive)
-            build_success, build_error = self._step_build(sbx, project_dir, step_times)
-            if not build_success:
-                failed_step = "build"
-                error_detail = build_error
-                success = False
-                # Still continue to collect memory metrics
+            # Bug #4 fix: respect coding_skip_build flag, skipped = success
+            if not self.config.coding_skip_build:
+                build_success, build_error = self._step_build(sbx, project_dir, step_times)
+                if not build_success:
+                    failed_step = "build"
+                    error_detail = build_error
+                    success = False
+                    # Still continue to collect memory metrics
+            else:
+                build_success = True  # skipped = not failed
 
-            # Step 4: Test — run test suite (only if build succeeded)
-            if build_success:
+            # Step 4: Test — run test suite (only if build succeeded or skipped)
+            # Bug #4 fix: respect coding_skip_test flag, skipped = success
+            if not self.config.coding_skip_test and build_success:
                 test_success, test_error = self._step_test(sbx, project_dir, step_times)
                 # Test failure is non-fatal for overall round success
+            elif self.config.coding_skip_test:
+                test_success = True  # skipped = not failed
 
             # Step 5: Memory — collect memory snapshot
             self._step_memory(sbx, step_times)
 
         except Exception as e:
             success = False
+            timed_out = "timed out" in str(e).lower() or "context deadline exceeded" in str(e).lower()
             failed_step, error_detail = self._classify_exception(e, step_times)
 
-        return success, step_times, build_success, test_success, failed_step, error_detail
+        return success, step_times, build_success, test_success, failed_step, error_detail, timed_out
 
     def _step_checkout(self, sbx, project_dir: str, step_times: Dict[str, float]) -> Tuple[bool, str]:
         """Step 1: Reset source files via git checkout
@@ -546,18 +544,22 @@ class CodingRoundRunner(threading.Thread):
         step_times: Dict[str, float],
         build_success: bool,
         test_success: bool,
+        timed_out: bool,
         error_detail: str,
     ) -> float:
         """Record metrics for this coding round
 
+        Bug #2 fix: timeout is determined by exception handling, not by
+        comparing total elapsed time against coding_build_timeout.
+
         Returns: elapsed time in seconds
         """
         elapsed = time.perf_counter() - start_time
-        timeout = elapsed > self.config.coding_build_timeout
+        # Bug #2 fix: use timed_out from exception handling, not elapsed > build_timeout
         self.state.coding_metrics.add(
             elapsed,
-            success and not timeout,
-            timeout,
+            success and not timed_out,
+            timed_out,
             step_times=step_times,
             build_success=build_success,
             test_success=test_success,

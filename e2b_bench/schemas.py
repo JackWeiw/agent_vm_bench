@@ -1,12 +1,15 @@
 """
 Data Structure Definitions Module
 
-Defines SandboxStatus, CreationMetrics, BrowserMetrics, CodingMetrics,
-SandboxState, TestSnapshot, BatchTask, TaskGroup.
+Defines SandboxStatus, CreationMetrics, TaskMetricsBase, BrowserMetrics,
+CodingMetrics, SandboxState, TestSnapshot, BatchTask, TaskGroup.
 
 Step order constants for workflow dispatch:
 - BROWSER_STEP_ORDER: steps in browser round-robin mode
 - CODING_STEP_ORDER: steps in coding round-robin mode
+
+Default source files for Ant Design Pro coding benchmark (single definition,
+referenced everywhere — config, runners, YAML templates).
 """
 
 import statistics
@@ -18,6 +21,34 @@ from typing import Any, Dict, List, Optional
 # Step order constants for workflow dispatch
 BROWSER_STEP_ORDER = ["open_tab", "page_load", "snapshot", "click", "screenshot"]
 CODING_STEP_ORDER = ["checkout", "edit", "build", "test", "memory"]
+
+# Default source files for Ant Design Pro coding benchmark
+# Single definition — referenced by Config dataclass default, _from_dict,
+# from_args, YAML templates, and bench_helper.sh
+DEFAULT_CODING_SOURCE_FILES = [
+    "src/pages/dashboard/analysis/index.tsx",
+    "src/pages/dashboard/workplace/index.tsx",
+    "src/pages/dashboard/monitor/index.tsx",
+    "src/pages/form/basic-form/index.tsx",
+    "src/pages/form/step-form/index.tsx",
+    "src/pages/form/advanced-form/index.tsx",
+    "src/pages/list/basic-list/index.tsx",
+    "src/pages/list/card-list/index.tsx",
+    "src/pages/list/search/index.tsx",
+    "src/pages/table-list/index.tsx",
+    "src/pages/profile/basic/index.tsx",
+    "src/pages/profile/advanced/index.tsx",
+    "src/pages/result/success/index.tsx",
+    "src/pages/result/fail/index.tsx",
+    "src/pages/exception/403/index.tsx",
+    "src/pages/exception/404/index.tsx",
+    "src/pages/exception/500/index.tsx",
+    "src/pages/user/login/index.tsx",
+    "src/pages/user/register/index.tsx",
+    "src/pages/account/settings/index.tsx",
+    "src/pages/account/center/index.tsx",
+    "src/pages/chatbot/index.tsx",
+]
 
 
 class SandboxStatus(Enum):
@@ -49,8 +80,22 @@ class CreationMetrics:
     port_check_error: str = ""  # Port check error message
 
 
-class BrowserMetrics:
-    """Browser task metrics (thread-safe for concurrent access)"""
+class TaskMetricsBase:
+    """Base class for workflow task metrics (thread-safe for concurrent access).
+
+    Provides the shared metrics tracking pattern: total/success/failed/timeout
+    counters, latency collection, step-level timing, and percentile calculations.
+    Subclasses override `step_order` and may extend `add()` with workflow-specific
+    parameters (e.g., build_success for coding).
+
+    Extending for a new workflow type:
+        class DatabaseMetrics(TaskMetricsBase):
+            step_order = DATABASE_STEP_ORDER
+            # add build_success/test_success-like fields as needed
+    """
+
+    # Override in subclass to define workflow-specific step names
+    step_order: List[str] = []
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -60,17 +105,16 @@ class BrowserMetrics:
         self._timeout_count: int = 0
         self._latencies: List[float] = []
         self._last_error: str = ""
-        # Step-level timing for tab-switch mode
         self._step_times: Dict[str, List[float]] = {}
 
     def add(self, latency: float, success: bool, timeout: bool = False, step_times: Dict[str, float] = None) -> None:
-        """Add a task result (thread-safe)
+        """Add a task result (thread-safe).
 
         Args:
-            latency: Total latency for the task
+            latency: Total latency for the task (seconds)
             success: Whether the task succeeded
             timeout: Whether the task timed out
-            step_times: Optional dict of step name -> latency (e.g., {"tab_switch": 0.5, "snapshot": 1.2})
+            step_times: Optional dict of step name -> latency in seconds
         """
         with self._lock:
             self._total_tasks += 1
@@ -83,7 +127,6 @@ class BrowserMetrics:
             else:
                 self._failed_count += 1
 
-            # Record step-level times
             if step_times:
                 for step_name, step_latency in step_times.items():
                     if step_name not in self._step_times:
@@ -143,7 +186,7 @@ class BrowserMetrics:
             return sorted_lat[-1]
 
     def get_step_stats(self) -> Dict[str, Dict[str, float]]:
-        """Get statistics for each step (avg, p99)
+        """Get statistics for each step (avg, p99, count).
 
         Returns:
             Dict of step_name -> {"avg": float, "p99": float, "count": int}
@@ -189,24 +232,27 @@ class BrowserMetrics:
             return list(self._latencies[start_count:])
 
 
-class CodingMetrics:
-    """Coding task metrics (thread-safe for concurrent access)
+class BrowserMetrics(TaskMetricsBase):
+    """Browser task metrics — inherits all shared logic from TaskMetricsBase.
 
-    Tracks coding-specific metrics alongside the generic task metrics:
-    - build_success_count: how many production builds succeeded
-    - test_success_count: how many test runs succeeded
-    - step_times: per-step timing for checkout, edit, build, test, memory
+    Step order: open_tab, page_load, snapshot, click, screenshot.
+    No workflow-specific extensions; base add() signature is sufficient.
     """
 
+    step_order = BROWSER_STEP_ORDER
+
+
+class CodingMetrics(TaskMetricsBase):
+    """Coding task metrics — extends TaskMetricsBase with build/test success tracking.
+
+    Step order: checkout, edit, build, test, memory.
+    Adds build_success_count and test_success_count beyond the base counters.
+    """
+
+    step_order = CODING_STEP_ORDER
+
     def __init__(self):
-        self._lock = threading.Lock()
-        self._total_tasks: int = 0
-        self._success_count: int = 0
-        self._failed_count: int = 0
-        self._timeout_count: int = 0
-        self._latencies: List[float] = []
-        self._last_error: str = ""
-        self._step_times: Dict[str, List[float]] = {}
+        super().__init__()
         # Coding-specific fields
         self._build_success_count: int = 0
         self._test_success_count: int = 0
@@ -220,7 +266,9 @@ class CodingMetrics:
         build_success: bool = False,
         test_success: bool = False,
     ) -> None:
-        """Add a coding task result (thread-safe)
+        """Add a coding task result (thread-safe).
+
+        Extends base add() with build/test success tracking.
 
         Args:
             latency: Total latency for the task cycle (seconds)
@@ -230,6 +278,7 @@ class CodingMetrics:
             build_success: Whether the build step succeeded
             test_success: Whether the test step succeeded
         """
+        # Call base add() for the standard counters
         with self._lock:
             self._total_tasks += 1
             if timeout:
@@ -246,47 +295,11 @@ class CodingMetrics:
             if test_success:
                 self._test_success_count += 1
 
-            # Record step-level times
             if step_times:
                 for step_name, step_latency in step_times.items():
                     if step_name not in self._step_times:
                         self._step_times[step_name] = []
                     self._step_times[step_name].append(step_latency)
-
-    @property
-    def total_tasks(self) -> int:
-        with self._lock:
-            return self._total_tasks
-
-    @property
-    def success_count(self) -> int:
-        with self._lock:
-            return self._success_count
-
-    @property
-    def failed_count(self) -> int:
-        with self._lock:
-            return self._failed_count
-
-    @property
-    def timeout_count(self) -> int:
-        with self._lock:
-            return self._timeout_count
-
-    @property
-    def latencies(self) -> List[float]:
-        with self._lock:
-            return list(self._latencies)
-
-    @property
-    def last_error(self) -> str:
-        with self._lock:
-            return self._last_error
-
-    @last_error.setter
-    def last_error(self, value: str) -> None:
-        with self._lock:
-            self._last_error = value
 
     @property
     def build_success_count(self) -> int:
@@ -298,56 +311,6 @@ class CodingMetrics:
         with self._lock:
             return self._test_success_count
 
-    @property
-    def avg_latency(self) -> float:
-        """Average latency (seconds)"""
-        with self._lock:
-            return statistics.mean(self._latencies) if self._latencies else 0.0
-
-    @property
-    def p99_latency(self) -> float:
-        """P99 latency (seconds)"""
-        with self._lock:
-            if not self._latencies:
-                return 0.0
-            sorted_lat = sorted(self._latencies)
-            if len(sorted_lat) >= 100:
-                return sorted_lat[int(len(sorted_lat) * 0.99)]
-            return sorted_lat[-1]
-
-    def get_step_stats(self) -> Dict[str, Dict[str, float]]:
-        """Get statistics for each step (avg, p99, count)
-
-        Returns:
-            Dict of step_name -> {"avg": float, "p99": float, "count": int}
-        """
-        with self._lock:
-            result = {}
-            for step_name, times in self._step_times.items():
-                if not times:
-                    continue
-                sorted_times = sorted(times)
-                avg = statistics.mean(times)
-                p99 = sorted_times[-1] if len(sorted_times) < 100 else sorted_times[int(len(sorted_times) * 0.99)]
-                result[step_name] = {
-                    "avg": avg,
-                    "p99": p99,
-                    "count": len(times),
-                }
-            return result
-
-    def get_step_times_copy(self) -> Dict[str, List[float]]:
-        """Get a thread-safe copy of all step times."""
-        with self._lock:
-            return {step_name: list(times) for step_name, times in self._step_times.items()}
-
-    def get_latencies_since(self, start_count: int) -> List[float]:
-        """Get latencies added after a certain count."""
-        with self._lock:
-            if start_count >= len(self._latencies):
-                return []
-            return list(self._latencies[start_count:])
-
 
 @dataclass
 class SandboxState:
@@ -357,9 +320,11 @@ class SandboxState:
     sandbox_obj: Optional[object] = None  # E2B Sandbox object reference (handle)
     batch_id: int = -1  # Batch ID
 
+    workflow_type: str = "browser"  # Determines which metrics are primary
+
     creation_metrics: CreationMetrics = field(default_factory=CreationMetrics)
     browser_metrics: BrowserMetrics = field(default_factory=BrowserMetrics)
-    coding_metrics: CodingMetrics = field(default_factory=CodingMetrics)  # Coding workflow metrics
+    coding_metrics: CodingMetrics = field(default_factory=CodingMetrics)
 
     is_alive: bool = True  # Sandbox alive status
     last_task_time: float = 0.0  # Last task execution time (thread-safe via update_last_task_time)
@@ -374,10 +339,20 @@ class SandboxState:
 
     def __post_init__(self):
         """Initialize lock after dataclass creation."""
-        # Ensure _lock is a proper lock instance
-        # Note: threading.Lock() returns _thread.lock type, not threading.Lock class
         if not hasattr(self, "_lock") or not hasattr(self._lock, "acquire"):
             object.__setattr__(self, "_lock", threading.Lock())
+
+    @property
+    def task_metrics(self) -> TaskMetricsBase:
+        """Polymorphic metrics access — returns the metrics object for the active workflow.
+
+        For browser workflow, returns browser_metrics.
+        For coding workflow, returns coding_metrics.
+        Enables unified code paths that don't need `if workflow_type == "coding"` dispatch.
+        """
+        if self.workflow_type == "coding":
+            return self.coding_metrics
+        return self.browser_metrics
 
     def update_last_task_time(self, timestamp: float) -> None:
         """Thread-safe update of last_task_time.
@@ -410,17 +385,21 @@ class TestSnapshot:
     creation_stats: Dict[str, any] = field(
         default_factory=dict
     )  # {"create": {...}, "port_wait": {...}, "total": {...}}
-    browser_total: int = 0  # Browser task total count
-    browser_success: int = 0  # Successful task count
-    browser_avg_latency: float = 0.0  # Average latency
-    browser_p99_latency: float = 0.0  # P99 latency
-    # Coding task fields (populated when workflow_type="coding")
-    coding_total: int = 0  # Coding task total count
-    coding_success: int = 0  # Coding successful task count
-    coding_build_success: int = 0  # Build step success count
-    coding_test_success: int = 0  # Test step success count
-    coding_avg_latency: float = 0.0  # Average latency (seconds)
-    coding_p99_latency: float = 0.0  # P99 latency (seconds)
+    # Browser task metrics
+    browser_total: int = 0
+    browser_success: int = 0
+    browser_avg_latency: float = 0.0
+    browser_p99_latency: float = 0.0
+    # Coding task metrics (populated when workflow_type="coding")
+    coding_total: int = 0
+    coding_success: int = 0
+    coding_build_success: int = 0
+    coding_test_success: int = 0
+    coding_avg_latency: float = 0.0
+    coding_p99_latency: float = 0.0
+    # Round comparison fields (proper dataclass fields, not ad-hoc attributes)
+    round_total: int = 0
+    round_success: int = 0
 
 
 @dataclass

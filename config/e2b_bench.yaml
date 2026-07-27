@@ -1,5 +1,8 @@
 # config/e2b_bench.yaml
-# E2B Sandbox Batch Performance Test Configuration Template
+# E2B Sandbox Browser Benchmark Configuration Template
+#
+# This config controls browser workflow only.
+# For coding workflow, use config/e2b_coding_bench.yaml.
 
 # E2B SDK environment variables (replace with real credentials)
 e2b_env:
@@ -9,49 +12,8 @@ e2b_env:
   E2B_API_URL: "http://localhost:3000"
   E2B_HTTP_SSL: "false"
 
-# Workflow type configuration
-# "browser" — opens web pages via agent-browser (default)
-# "coding"  — simulates AI coding agent: dev server + edit + build + test
-workflow:
-  type: "browser"
-
-# Coding task configuration (used when workflow.type = "coding")
-coding:
-  project_dir: "/opt/coding-bench"
-  dev_wait: 20                    # Dev server startup wait (seconds)
-  build_cmd: "npm run build"
-  test_cmd: "npm test"
-  dev_cmd: "npm run dev"
-  build_timeout: 300              # Build timeout (seconds)
-  test_timeout: 120               # Test timeout (seconds)
-  interval_min: 2.0               # Min interval between tasks (fixed mode)
-  interval_max: 10.0              # Max interval between tasks (fixed mode)
-  skip_dev_server: false          # Skip dev server startup
-  skip_build: false               # Skip build step
-  skip_test: false                # Skip test step
-  source_files:
-    - "src/pages/dashboard/analysis/index.tsx"
-    - "src/pages/dashboard/workplace/index.tsx"
-    - "src/pages/dashboard/monitor/index.tsx"
-    - "src/pages/form/basic-form/index.tsx"
-    - "src/pages/form/step-form/index.tsx"
-    - "src/pages/form/advanced-form/index.tsx"
-    - "src/pages/list/basic-list/index.tsx"
-    - "src/pages/list/card-list/index.tsx"
-    - "src/pages/list/search/index.tsx"
-    - "src/pages/table-list/index.tsx"
-    - "src/pages/profile/basic/index.tsx"
-    - "src/pages/profile/advanced/index.tsx"
-    - "src/pages/result/success/index.tsx"
-    - "src/pages/result/fail/index.tsx"
-    - "src/pages/exception/403/index.tsx"
-    - "src/pages/exception/404/index.tsx"
-    - "src/pages/exception/500/index.tsx"
-    - "src/pages/user/login/index.tsx"
-    - "src/pages/user/register/index.tsx"
-    - "src/pages/account/settings/index.tsx"
-    - "src/pages/account/center/index.tsx"
-    - "src/pages/chatbot/index.tsx"
+# Workflow type — browser (default)
+workflow_type: "browser"
 
 # Sandbox configuration
 sandbox:

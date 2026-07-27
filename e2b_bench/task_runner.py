@@ -22,6 +22,7 @@ import time
 from typing import Dict, List, Tuple
 
 from .config import Config
+from .helpers import wait_for_port_ready
 from .schemas import SandboxState, SandboxStatus
 
 
@@ -68,20 +69,11 @@ class WarmupRunner(threading.Thread):
         Each URL is opened exactly once (warmup_loops is ignored for tabs).
         """
         # Wait for sandbox ports ready
-        while True:
-            if self.state.creation_metrics.status == SandboxStatus.PORT_READY:
-                break
-            if self.state.creation_metrics.status in (
-                SandboxStatus.FAILED,
-                SandboxStatus.PORT_FAILED,
-                SandboxStatus.OFFLINE,
-                SandboxStatus.KILLED,
-            ):
-                print(
-                    f"[Sandbox{self.state.sandbox_id}] Cannot start warmup: {self.state.creation_metrics.status.value}"
-                )
-                return
-            time.sleep(0.5)
+        if not wait_for_port_ready(self.state):
+            print(
+                f"[Sandbox{self.state.sandbox_id}] Cannot start warmup: {self.state.creation_metrics.status.value}"
+            )
+            return
 
         sbx = self.state.sandbox_obj
         if not sbx:
@@ -204,20 +196,11 @@ class BrowserTaskRunner(threading.Thread):
     def run(self) -> None:
         """Task execution main loop"""
         # Wait for sandbox ports ready
-        while not self.stop_event.is_set():
-            if self.state.creation_metrics.status == SandboxStatus.PORT_READY:
-                break
-            if self.state.creation_metrics.status in (
-                SandboxStatus.FAILED,
-                SandboxStatus.PORT_FAILED,
-                SandboxStatus.OFFLINE,
-                SandboxStatus.KILLED,
-            ):
-                print(
-                    f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}"
-                )
-                return
-            time.sleep(0.5)
+        if not wait_for_port_ready(self.state, self.stop_event):
+            print(
+                f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}"
+            )
+            return
 
         # Browser task execution loop
         while not self.stop_event.is_set():
@@ -311,7 +294,7 @@ class TaskManager:
         self.config = config
         self.sandbox_states = sandbox_states
         self.stop_event = stop_event
-        self.runners: List[BrowserTaskRunner] = []
+        self.runners: List[threading.Thread] = []
         self.warmup_runners: List[WarmupRunner] = []
 
     def start_warmup(self) -> None:
