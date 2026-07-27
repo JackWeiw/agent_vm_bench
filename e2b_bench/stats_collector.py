@@ -694,6 +694,8 @@ class StatsCollector:
             browser_avg = statistics.mean(all_latencies) if all_latencies else 0.0
             browser_p99 = calc_p99(all_latencies)
 
+            # Build snapshot with per-round fields for round comparison
+            # (round_total/round_success are now proper TestSnapshot fields, not ad-hoc attributes)
             snapshot = TestSnapshot(
                 timestamp=now,
                 elapsed=elapsed,
@@ -730,6 +732,7 @@ class StatsCollector:
             coding_avg = statistics.mean(all_latencies) if all_latencies else 0.0
             coding_p99 = calc_p99(all_latencies)
 
+            # Build snapshot with per-round fields for round comparison
             snapshot = TestSnapshot(
                 timestamp=now,
                 elapsed=elapsed,
