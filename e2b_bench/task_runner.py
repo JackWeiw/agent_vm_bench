@@ -70,9 +70,7 @@ class WarmupRunner(threading.Thread):
         """
         # Wait for sandbox ports ready
         if not wait_for_port_ready(self.state):
-            print(
-                f"[Sandbox{self.state.sandbox_id}] Cannot start warmup: {self.state.creation_metrics.status.value}"
-            )
+            print(f"[Sandbox{self.state.sandbox_id}] Cannot start warmup: {self.state.creation_metrics.status.value}")
             return
 
         sbx = self.state.sandbox_obj
@@ -197,9 +195,7 @@ class BrowserTaskRunner(threading.Thread):
         """Task execution main loop"""
         # Wait for sandbox ports ready
         if not wait_for_port_ready(self.state, self.stop_event):
-            print(
-                f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}"
-            )
+            print(f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}")
             return
 
         # Browser task execution loop

@@ -21,11 +21,99 @@ Classes:
 import random
 import threading
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .config import Config
 from .helpers import wait_for_port_ready
 from .schemas import SandboxState, SandboxStatus
+
+
+def _check_dev_server_running(sbx, project_dir: str) -> bool:
+    """Check if the dev server is actually running inside the sandbox.
+
+    Uses `ps aux | grep` instead of `pgrep -f` because pgrep -f can
+    false-match its own process when executed via E2B commands.run().
+    E2B's command execution mechanism may create a process whose /proc/PID/cmdline
+    contains the full command string, causing pgrep -f to match itself.
+
+    The grep pattern filters out common false-positive sources:
+    - grep itself (ps aux | grep includes the grep command)
+    - pgrep (if any pgrep process happens to be running)
+    - sh -c (E2B commands.run() may use sh -c to execute, and its cmdline
+      could contain the grep pattern string)
+
+    Returns True if a dev server process (npm run dev / umi dev / max dev)
+    is found running, False otherwise.
+    """
+    try:
+        result = sbx.commands.run(
+            # Match processes containing 'npm run dev', 'umi dev', or 'max dev'
+            # Exclude grep/pgrep/sh processes to avoid false-positive from this command itself
+            f"ps aux | grep -E 'npm run dev|umi dev|max dev'" f" | grep -v grep | grep -v pgrep | grep -v 'sh -c'",
+            timeout=10,
+            user="root",
+        )
+        # If there's output (matching lines) and exit_code=0, dev server is running
+        return result.exit_code == 0 and result.stdout.strip() != ""
+    except Exception:
+        return False
+
+
+def _start_dev_server(sbx, project_dir: str, dev_cmd: str, dev_wait: int, sandbox_id: int) -> bool:
+    """Start the dev server as a background process inside the sandbox.
+
+    Uses E2B SDK's background=True parameter instead of shell '&' to ensure
+    the dev server process persists after the commands.run() session ends.
+    Shell '&' backgrounding is unreliable in E2B because commands.run() may
+    clean up the entire shell session (including background children) when
+    it returns, killing the dev server.
+
+    Returns True if dev server appears to be running after startup, False otherwise.
+    """
+    try:
+        # Use E2B's background=True to start dev server as a persistent process
+        # This is the officially recommended way for long-running background processes
+        print(f"[Sandbox{sandbox_id}] Starting dev server via background=True...")
+        sbx.commands.run(
+            f"cd {project_dir} && BROWSER=none {dev_cmd}",
+            timeout=60,  # Give enough time for initial npm process spawn
+            background=True,
+            user="root",
+        )
+
+        # Wait for dev server startup
+        print(f"[Sandbox{sandbox_id}] Waiting {dev_wait}s for dev server...")
+        time.sleep(dev_wait)
+
+        # Verify dev server started (use robust check)
+        if _check_dev_server_running(sbx, project_dir):
+            print(f"[Sandbox{sandbox_id}] Dev server: ready")
+            return True
+        else:
+            print(f"[Sandbox{sandbox_id}] WARNING: Dev server may not be ready yet")
+            return False
+    except Exception as e:
+        # Fallback: if background=True is not supported by this E2B SDK version,
+        # try nohup+disown approach
+        print(f"[Sandbox{sandbox_id}] background=True failed: {e}, trying nohup+disown fallback...")
+        try:
+            sbx.commands.run(
+                f"cd {project_dir} && nohup bash -c 'BROWSER=none {dev_cmd}'" f" > /tmp/dev_server.log 2>&1 & disown",
+                timeout=15,
+                user="root",
+            )
+            print(f"[Sandbox{sandbox_id}] Waiting {dev_wait}s for dev server...")
+            time.sleep(dev_wait)
+
+            if _check_dev_server_running(sbx, project_dir):
+                print(f"[Sandbox{sandbox_id}] Dev server: ready (nohup)")
+                return True
+            else:
+                print(f"[Sandbox{sandbox_id}] WARNING: Dev server may not be ready yet (nohup)")
+                return False
+        except Exception as e2:
+            print(f"[Sandbox{sandbox_id}] Dev server start failed (both methods): {e2}")
+            return False
 
 
 class CodingWarmupRunner(threading.Thread):
@@ -52,9 +140,7 @@ class CodingWarmupRunner(threading.Thread):
         """Execute warmup phase for this sandbox — start dev server + initial build"""
         # Wait for sandbox ports ready
         if not wait_for_port_ready(self.state):
-            print(
-                f"[Sandbox{self.state.sandbox_id}] Cannot start warmup: {self.state.creation_metrics.status.value}"
-            )
+            print(f"[Sandbox{self.state.sandbox_id}] Cannot start warmup: {self.state.creation_metrics.status.value}")
             return
 
         sbx = self.state.sandbox_obj
@@ -86,32 +172,17 @@ class CodingWarmupRunner(threading.Thread):
 
         # 3. Start dev server (if not skipped)
         if not self.config.coding_skip_dev_server:
-            try:
-                # Check if dev server is already running
-                check_result = sbx.commands.run("pgrep -f 'umi dev' || pgrep -f 'max dev'", timeout=10, user="root")
-                if check_result.exit_code == 0 and check_result.stdout.strip():
-                    print(f"[Sandbox{self.state.sandbox_id}] Dev server: already running")
-                else:
-                    print(f"[Sandbox{self.state.sandbox_id}] Starting dev server...")
-                    sbx.commands.run(
-                        f"cd {project_dir} && BROWSER=none {self.config.coding_dev_cmd} > /tmp/dev_server.log 2>&1 &",
-                        timeout=10,
-                        user="root",
-                    )
-                    # Wait for dev server startup
-                    print(f"[Sandbox{self.state.sandbox_id}] Waiting {self.config.coding_dev_wait}s for dev server...")
-                    time.sleep(self.config.coding_dev_wait)
-
-                    # Verify dev server started
-                    verify_result = sbx.commands.run(
-                        "pgrep -f 'umi dev' || pgrep -f 'max dev'", timeout=10, user="root"
-                    )
-                    if verify_result.exit_code == 0 and verify_result.stdout.strip():
-                        print(f"[Sandbox{self.state.sandbox_id}] Dev server: ready")
-                    else:
-                        print(f"[Sandbox{self.state.sandbox_id}] WARNING: Dev server may not be ready yet")
-            except Exception as e:
-                print(f"[Sandbox{self.state.sandbox_id}] Dev server start failed: {e}")
+            dev_server_running = _check_dev_server_running(sbx, project_dir)
+            if dev_server_running:
+                print(f"[Sandbox{self.state.sandbox_id}] Dev server: already running")
+            else:
+                _start_dev_server(
+                    sbx,
+                    project_dir,
+                    self.config.coding_dev_cmd,
+                    self.config.coding_dev_wait,
+                    self.state.sandbox_id,
+                )
 
         # 4. Run initial build (if not skipped)
         if not self.config.coding_skip_build:
@@ -157,9 +228,7 @@ class CodingTaskRunner(threading.Thread):
         """Task execution main loop"""
         # Wait for sandbox ports ready
         if not wait_for_port_ready(self.state, self.stop_event):
-            print(
-                f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}"
-            )
+            print(f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}")
             return
 
         # Coding task execution loop
@@ -218,6 +287,19 @@ class CodingTaskRunner(threading.Thread):
         timed_out = False
 
         try:
+            # Step 0: Ensure dev server is running (for memory pressure overlap)
+            if not self.config.coding_skip_dev_server:
+                dev_running = _check_dev_server_running(sbx, project_dir)
+                if not dev_running:
+                    print(f"[Sandbox{self.state.sandbox_id}] Dev server not running, restarting...")
+                    _start_dev_server(
+                        sbx,
+                        project_dir,
+                        self.config.coding_dev_cmd,
+                        self.config.coding_dev_wait,
+                        self.state.sandbox_id,
+                    )
+
             # Step 1: Checkout — reset source files
             sbx.commands.run(f"cd {project_dir} && git checkout -- src/", timeout=30, user="root")
 
@@ -295,11 +377,12 @@ class CodingRoundRunner(threading.Thread):
     with the running dev server, total sandbox memory reaches ~3GB.
 
     Steps per round (with individual timing):
-      1. checkout — git checkout -- src/ (reset to clean state)
-      2. edit     — sed inject round marker into target file
-      3. build    — npm run build (MEMORY PEAK, overlaps with dev server)
-      4. test     — npm test (verify correctness)
-      5. memory   — free -m (collect memory snapshot)
+      0. ensure_dev — verify dev server is running (restart if crashed)
+      1. checkout   — git checkout -- src/ (reset to clean state)
+      2. edit       — sed inject round marker into target file
+      3. build      — npm run build (MEMORY PEAK, overlaps with dev server)
+      4. test       — npm test (verify correctness)
+      5. memory     — free -m (collect memory snapshot)
 
     Attributes:
         state: Sandbox state for metrics
@@ -344,7 +427,9 @@ class CodingRoundRunner(threading.Thread):
             sbx, target_file
         )
 
-        elapsed = self._record_metrics(start_time, success, step_times, build_success, test_success, timed_out, error_detail)
+        elapsed = self._record_metrics(
+            start_time, success, step_times, build_success, test_success, timed_out, error_detail
+        )
 
         if success:
             step_breakdown = ", ".join(f"{k}={v:.2f}s" for k, v in step_times.items() if v > 0)
@@ -353,7 +438,7 @@ class CodingRoundRunner(threading.Thread):
             self._handle_failure(target_file, failed_step, error_detail)
 
     def _execute_steps(self, sbx, target_file: str) -> Tuple[bool, Dict[str, float], bool, bool, str, str, bool]:
-        """Execute all steps: checkout -> edit -> build -> test -> memory
+        """Execute all steps: ensure_dev_server -> checkout -> edit -> build -> test -> memory
 
         Args:
             sbx: Sandbox object
@@ -372,6 +457,12 @@ class CodingRoundRunner(threading.Thread):
         project_dir = self.config.coding_project_dir
 
         try:
+            # Step 0: Ensure dev server is running (persistent ~1.5GB baseline)
+            # The dev server must be running for the build+dev overlap that creates
+            # ~3GB memory pressure. Without it, peak is only ~2GB.
+            if not self.config.coding_skip_dev_server:
+                self._step_ensure_dev_server(sbx, project_dir, step_times)
+
             # Step 1: Checkout — reset source files to clean state
             checkout_success, checkout_error = self._step_checkout(sbx, project_dir, step_times)
             if not checkout_success:
@@ -416,6 +507,34 @@ class CodingRoundRunner(threading.Thread):
             failed_step, error_detail = self._classify_exception(e, step_times)
 
         return success, step_times, build_success, test_success, failed_step, error_detail, timed_out
+
+    def _step_ensure_dev_server(self, sbx, project_dir: str, step_times: Dict[str, float]) -> None:
+        """Step 0: Ensure dev server is running for memory pressure overlap.
+
+        The dev server (~1.5GB) must overlap with the build step (~2GB) to
+        create ~3GB memory pressure. Without the dev server, peak is only ~2GB.
+
+        Non-fatal: if dev server cannot be started, the round continues without
+        memory overlap (build will still run, just at lower peak).
+        """
+        step_start = time.perf_counter()
+        dev_server_running = _check_dev_server_running(sbx, project_dir)
+        check_elapsed = time.perf_counter() - step_start
+
+        if dev_server_running:
+            step_times["ensure_dev"] = check_elapsed
+            return  # Already running, no action needed
+
+        # Dev server not running — restart it
+        print(f"[Sandbox{self.state.sandbox_id}] Dev server not running, restarting...")
+        _start_dev_server(
+            sbx,
+            project_dir,
+            self.config.coding_dev_cmd,
+            self.config.coding_dev_wait,
+            self.state.sandbox_id,
+        )
+        step_times["ensure_dev"] = time.perf_counter() - step_start
 
     def _step_checkout(self, sbx, project_dir: str, step_times: Dict[str, float]) -> Tuple[bool, str]:
         """Step 1: Reset source files via git checkout
@@ -524,7 +643,9 @@ class CodingRoundRunner(threading.Thread):
         """Classify exception to determine which step failed"""
         error_str = str(e)
         if "context deadline exceeded" in error_str or "timed out" in error_str:
-            if "checkout" not in step_times:
+            if "ensure_dev" not in step_times:
+                return "ensure_dev", "ensure_dev_server timed out"
+            elif "checkout" not in step_times:
                 return "checkout", "checkout timed out"
             elif "edit" not in step_times:
                 return "edit", "edit timed out"

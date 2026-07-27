@@ -92,9 +92,7 @@ class Config:
     coding_dev_cmd: str = "npm run dev"  # Dev server startup command (parsed from YAML)
     coding_build_cmd: str = "npm run build"
     coding_test_cmd: str = "npm test"
-    coding_source_files: List[str] = field(
-        default_factory=lambda: list(DEFAULT_CODING_SOURCE_FILES)
-    )
+    coding_source_files: List[str] = field(default_factory=lambda: list(DEFAULT_CODING_SOURCE_FILES))
     coding_build_timeout: int = 300  # Build command timeout (seconds)
     coding_test_timeout: int = 120  # Test command timeout (seconds)
     coding_interval_min: float = 2.0  # Interval between coding tasks in fixed mode

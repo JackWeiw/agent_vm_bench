@@ -140,7 +140,7 @@ class TestStepOrderConstants(unittest.TestCase):
 
     def test_coding_step_order(self):
         """Test coding step order matches expected steps"""
-        self.assertEqual(CODING_STEP_ORDER, ["checkout", "edit", "build", "test", "memory"])
+        self.assertEqual(CODING_STEP_ORDER, ["ensure_dev", "checkout", "edit", "build", "test", "memory"])
 
     def test_browser_step_order(self):
         """Test browser step order unchanged"""

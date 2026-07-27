@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 
 # Step order constants for workflow dispatch
 BROWSER_STEP_ORDER = ["open_tab", "page_load", "snapshot", "click", "screenshot"]
-CODING_STEP_ORDER = ["checkout", "edit", "build", "test", "memory"]
+CODING_STEP_ORDER = ["ensure_dev", "checkout", "edit", "build", "test", "memory"]
 
 # Default source files for Ant Design Pro coding benchmark
 # Single definition — referenced by Config dataclass default, _from_dict,
@@ -245,7 +245,7 @@ class BrowserMetrics(TaskMetricsBase):
 class CodingMetrics(TaskMetricsBase):
     """Coding task metrics — extends TaskMetricsBase with build/test success tracking.
 
-    Step order: checkout, edit, build, test, memory.
+    Step order: ensure_dev, checkout, edit, build, test, memory.
     Adds build_success_count and test_success_count beyond the base counters.
     """
 

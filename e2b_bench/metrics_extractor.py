@@ -331,7 +331,7 @@ class MetricsExtractor:
         Extracts:
         - Overall metrics: Success Rate, Avg/P99 Latency, Total Tasks (scoped to coding section)
         - Build/Test success rates
-        - Step-level timing: checkout, edit, build, test, memory (avg, P50, P95, P99 in ms)
+        - Step-level timing: ensure_dev, checkout, edit, build, test, memory (avg, P50, P95, P99 in ms)
         """
         metrics = {}
         if not report_file or not os.path.exists(report_file):
@@ -374,7 +374,9 @@ class MetricsExtractor:
 
             # Bug #3 fix: capture all numeric columns (Avg, P50, P95, P99)
             # Table format: Step, Count, Avg(ms), P50(ms), P95(ms), P99(ms), Tail
-            coding_step_pattern = r"^\s+(checkout|edit|build|test|memory)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)"
+            coding_step_pattern = (
+                r"^\s+(ensure_dev|checkout|edit|build|test|memory)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)"
+            )
             for match in re.finditer(coding_step_pattern, coding_section, re.MULTILINE):
                 step_name = match.group(1)
                 count = int(match.group(2))
@@ -474,8 +476,8 @@ class MetricsExtractor:
             return content
 
         # Find next section header (starts with "[")
-        remaining = content[start_idx + len(section_header):]
+        remaining = content[start_idx + len(section_header) :]
         next_section = re.search(r"\n\[", remaining)
         if next_section:
-            return content[start_idx:next_section.start() + start_idx + len(section_header)]
+            return content[start_idx : next_section.start() + start_idx + len(section_header)]
         return content[start_idx:]
