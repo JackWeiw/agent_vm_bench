@@ -7,9 +7,9 @@ batch-creates sandboxes from those snapshots, and generates an
 Excel performance report with statistics.
 
 Usage:
-    python -m e2b_bench.snap.restore --env-file .env
-    python -m e2b_bench.snap.restore --env-file .env --input-json snapshots.json --count 5
-    python -m e2b_bench.snap.restore --env-file .env --keep
+    python -m e2b_bench.scripts.snap_restore --env-file .env
+    python -m e2b_bench.scripts.snap_restore --env-file .env --input-json snapshots.json --count 5
+    python -m e2b_bench.scripts.snap_restore --env-file .env --keep
 """
 
 import argparse
@@ -20,11 +20,14 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List
 
 from e2b import Sandbox
 
-from .common import compute_stats, load_env, write_excel_report
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from e2b_bench.scripts.snap_common import compute_stats, load_env, write_excel_report
 
 # Global list of created sandbox handles for cleanup on signal
 _created_sandboxes: List[Any] = []
@@ -251,13 +254,13 @@ def parse_args() -> argparse.Namespace:
     default_config = os.path.join(os.path.expanduser("~"), ".e2b", "config.json")
 
     parser = argparse.ArgumentParser(
-        description="Batch Sandbox Restore — create sandboxes from snapshot IDs",
+        description="Batch Sandbox Restore -- create sandboxes from snapshot IDs",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m e2b_bench.snap.restore --env-file .env
-  python -m e2b_bench.snap.restore --env-file .env --input-json snapshots.json --count 5
-  python -m e2b_bench.snap.restore --env-file .env --keep --batch-size 3
+  python snap_restore.py --env-file .env
+  python snap_restore.py --env-file .env --input-json snapshots.json --count 5
+  python snap_restore.py --env-file .env --keep --batch-size 3
         """,
     )
     parser.add_argument("--env-file", default=".env", help="Path to .env file (default: .env)")
@@ -344,7 +347,7 @@ def main():
     build_report(results, args.output_xlsx)
 
     print(f"\n{'=' * 60}")
-    print(f"Done — {success_count}/{len(snapshot_ids)} sandboxes restored successfully")
+    print(f"Done -- {success_count}/{len(snapshot_ids)} sandboxes restored successfully")
     print(f"{'=' * 60}")
 
 

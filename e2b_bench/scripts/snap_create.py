@@ -6,8 +6,8 @@ Creates N sandboxes from an E2B template, creates a snapshot for each,
 saves snapshot IDs to a JSON file, and generates an Excel performance report.
 
 Usage:
-    python -m e2b_bench.snap.create --env-file .env --count 5
-    python -m e2b_bench.snap.create --env-file .env --template openclaw-browser-v1 --count 10
+    python -m e2b_bench.scripts.snap_create --env-file .env --count 5
+    python -m e2b_bench.scripts.snap_create --env-file .env --template openclaw-browser-v1 --count 10
 """
 
 import argparse
@@ -18,11 +18,14 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List
 
 from e2b import Sandbox
 
-from .common import compute_stats, load_env, write_excel_report
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from e2b_bench.scripts.snap_common import compute_stats, load_env, write_excel_report
 
 # Global list of created sandbox handles for cleanup on signal
 _created_sandboxes: List[Any] = []
@@ -300,9 +303,9 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m e2b_bench.snap.create --env-file .env --count 5
-  python -m e2b_bench.snap.create --env-file .env --template openclaw-browser-v1 --count 10 --batch-size 5
-  python -m e2b_bench.snap.create --env-file .env --count 3 --output-json my_snapshots.json
+  python snap_create.py --env-file .env --count 5
+  python snap_create.py --env-file .env --template openclaw-browser-v1 --count 10 --batch-size 5
+  python snap_create.py --env-file .env --count 3 --output-json my_snapshots.json
         """,
     )
     parser.add_argument("--env-file", default=".env", help="Path to .env file (default: .env)")
