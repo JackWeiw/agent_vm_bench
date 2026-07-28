@@ -91,6 +91,15 @@ class TestUpdateJsonLedger:
         assert updated["snapshots"][1]["status"] == "delete_failed"
         assert "deleted_at" in updated["snapshots"][1]
 
+    def test_not_found_maps_to_deleted_not_failed(self):
+        """not_found (already gone) is a no-op success — ledger must mark it
+        'deleted' so re-running skips it, not 'delete_failed' which would retry forever."""
+        data = {"snapshots": [{"snapshot_id": "snap1", "status": "success"}]}
+        results = [{"snapshot_id": "snap1", "status": "not_found"}]
+        updated = delete.update_json_ledger(data, results)
+        assert updated["snapshots"][0]["status"] == "deleted"
+        assert "deleted_at" in updated["snapshots"][0]
+
     def test_leaves_unmatched_entries_alone(self):
         data = {"snapshots": [{"snapshot_id": "snap9", "status": "success"}]}
         results = [{"snapshot_id": "snap1", "status": "success"}]

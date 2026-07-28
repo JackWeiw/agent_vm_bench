@@ -101,7 +101,7 @@ def update_json_ledger(data: Dict[str, Any], results: List[Dict[str, Any]]) -> D
     for entry in data.get("snapshots", []):
         snap_id = entry.get("snapshot_id")
         if snap_id in status_map:
-            entry["status"] = "deleted" if status_map[snap_id] == "success" else "delete_failed"
+            entry["status"] = "deleted" if status_map[snap_id] in ("success", "not_found") else "delete_failed"
             entry["deleted_at"] = now
     return data
 
