@@ -319,20 +319,22 @@ def print_summary(summary_data: Dict[str, Dict[str, Any]], title: str) -> None:
     metric_col_w = max(len("metric"), max((len(k) for k in stat_keys), default=0))
     series_col_w = {name: max(len(name), 12) for name in series_names}
 
-    border = "=" * (metric_col_w + sum(series_col_w.values()) + len(series_names) * 3 + 2)
-    print(border)
-    print(f"{title.center(len(border))}")
-    print(border)
-
-    # Header row
+    # Build header row first so borders exactly match content width
     header = f"{'metric':<{metric_col_w}}  "
     hdr_cells = []
     for name in series_names:
         w = series_col_w[name]
         hdr_cells.append(f"{name:>{w}}")
     header += "  ".join(hdr_cells)
+
+    border_len = len(header)
+    border = "=" * border_len
+    print(border)
+    print(f"{title.center(border_len)}")
+    print(border)
+
     print(header)
-    print("-" * len(border))
+    print("-" * border_len)
 
     # Data rows
     for key in stat_keys:
