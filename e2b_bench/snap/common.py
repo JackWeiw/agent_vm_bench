@@ -287,7 +287,9 @@ def write_excel_report(
             for row_idx in range(2, len(snapshots_data) + 2):
                 cell_val = str(snapshots_data[row_idx - 2].get(header, ""))
                 max_len = max(max_len, len(cell_val))
-            ws_snapshots.column_dimensions[ws_snapshots.cell(row=1, column=col_idx).column_letter].width = min(max_len + 2, 40)
+            ws_snapshots.column_dimensions[ws_snapshots.cell(row=1, column=col_idx).column_letter].width = min(
+                max_len + 2, 40
+            )
 
     # Ensure output directory exists
     output_dir = os.path.dirname(output_path)

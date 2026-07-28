@@ -214,14 +214,16 @@ def save_snapshot_json(results: List[Dict[str, Any]], template: str, output_path
     snapshots = []
     for r in results:
         if r["status"] == "success":
-            snapshots.append({
-                "snapshot_id": r["snapshot_id"],
-                "sandbox_id": r["sandbox_id"],
-                "create_elapsed_s": r["create_elapsed_s"],
-                "snapshot_elapsed_s": r["snapshot_elapsed_s"],
-                "total_elapsed_s": r["total_elapsed_s"],
-                "status": r["status"],
-            })
+            snapshots.append(
+                {
+                    "snapshot_id": r["snapshot_id"],
+                    "sandbox_id": r["sandbox_id"],
+                    "create_elapsed_s": r["create_elapsed_s"],
+                    "snapshot_elapsed_s": r["snapshot_elapsed_s"],
+                    "total_elapsed_s": r["total_elapsed_s"],
+                    "status": r["status"],
+                }
+            )
 
     data = {
         "template": template,
@@ -261,7 +263,9 @@ def build_report(results: List[Dict[str, Any]], template: str, output_path: str)
     total_count = len(results)
 
     create_stats = compute_stats(create_times)
-    create_stats["success_rate"] = round(sum(1 for r in results if r["create_elapsed_s"] > 0) / total_count, 4) if total_count > 0 else 0.0
+    create_stats["success_rate"] = (
+        round(sum(1 for r in results if r["create_elapsed_s"] > 0) / total_count, 4) if total_count > 0 else 0.0
+    )
 
     snapshot_stats = compute_stats(snapshot_times)
     snapshot_stats["success_rate"] = round(success_count / total_count, 4) if total_count > 0 else 0.0
@@ -279,14 +283,16 @@ def build_report(results: List[Dict[str, Any]], template: str, output_path: str)
     snapshots_data = []
     for r in results:
         if r["status"] == "success":
-            snapshots_data.append({
-                "snapshot_id": r["snapshot_id"],
-                "sandbox_id": r["sandbox_id"],
-                "template": template,
-                "create_elapsed_s": r["create_elapsed_s"],
-                "snapshot_elapsed_s": r["snapshot_elapsed_s"],
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            })
+            snapshots_data.append(
+                {
+                    "snapshot_id": r["snapshot_id"],
+                    "sandbox_id": r["sandbox_id"],
+                    "template": template,
+                    "create_elapsed_s": r["create_elapsed_s"],
+                    "snapshot_elapsed_s": r["snapshot_elapsed_s"],
+                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            )
 
     write_excel_report(raw_data, summary_data, snapshots_data, output_path, "Batch Snapshot Creation Report")
 
@@ -309,11 +315,21 @@ Examples:
     parser.add_argument("--config", default=default_config, help=f"Path to E2B config JSON (default: {default_config})")
     parser.add_argument("--template", default="3g", help="E2B template name (default: 3g)")
     parser.add_argument("--count", type=int, default=1, help="Number of sandboxes/snapshots to create (default: 1)")
-    parser.add_argument("--batch-size", type=int, default=None, help="Sandboxes per creation batch (default: full concurrent)")
+    parser.add_argument(
+        "--batch-size", type=int, default=None, help="Sandboxes per creation batch (default: full concurrent)"
+    )
     parser.add_argument("--batch-interval", type=int, default=3, help="Seconds between batches (default: 3)")
-    parser.add_argument("--output-json", default="snapshots.json", help="Path to save snapshot IDs JSON (default: snapshots.json)")
-    parser.add_argument("--output-xlsx", default="results/snap/snap_create_report.xlsx", help="Path to save Excel report (default: results/snap/snap_create_report.xlsx)")
-    parser.add_argument("--timeout", type=int, default=86400, help="Sandbox creation timeout in seconds (default: 86400)")
+    parser.add_argument(
+        "--output-json", default="snapshots.json", help="Path to save snapshot IDs JSON (default: snapshots.json)"
+    )
+    parser.add_argument(
+        "--output-xlsx",
+        default="results/snap/snap_create_report.xlsx",
+        help="Path to save Excel report (default: results/snap/snap_create_report.xlsx)",
+    )
+    parser.add_argument(
+        "--timeout", type=int, default=86400, help="Sandbox creation timeout in seconds (default: 86400)"
+    )
     parser.add_argument("--api-key", default=None, help="Override E2B API key (highest priority)")
     parser.add_argument("--access-token", default=None, help="Override E2B access token (highest priority)")
 
@@ -362,7 +378,9 @@ def main():
     success_count = sum(1 for r in results if r["status"] == "success")
     sandbox_failed = sum(1 for r in results if r["status"] == "sandbox_failed")
     snapshot_failed = sum(1 for r in results if r["status"] == "snapshot_failed")
-    print(f"\n[3/5] Results: {success_count} success, {sandbox_failed} sandbox failed, {snapshot_failed} snapshot failed")
+    print(
+        f"\n[3/5] Results: {success_count} success, {sandbox_failed} sandbox failed, {snapshot_failed} snapshot failed"
+    )
     print(f"  Total wall time: {t_total_elapsed:.2f}s")
 
     # Kill all sandboxes

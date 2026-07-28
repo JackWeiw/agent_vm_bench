@@ -236,12 +236,14 @@ def build_report(results: List[Dict[str, Any]], output_path: str) -> None:
     snapshots_data = []
     for r in results:
         if r["status"] == "success":
-            snapshots_data.append({
-                "snapshot_id": r["snapshot_id"],
-                "sandbox_id": r["sandbox_id"],
-                "restore_elapsed_s": r["restore_elapsed_s"],
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            })
+            snapshots_data.append(
+                {
+                    "snapshot_id": r["snapshot_id"],
+                    "sandbox_id": r["sandbox_id"],
+                    "restore_elapsed_s": r["restore_elapsed_s"],
+                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            )
 
     write_excel_report(raw_data, summary_data, snapshots_data, output_path, "Batch Sandbox Restore Report")
 
@@ -262,13 +264,25 @@ Examples:
     )
     parser.add_argument("--env-file", default=".env", help="Path to .env file (default: .env)")
     parser.add_argument("--config", default=default_config, help=f"Path to E2B config JSON (default: {default_config})")
-    parser.add_argument("--input-json", default="snapshots.json", help="Path to snapshot IDs JSON (default: snapshots.json)")
+    parser.add_argument(
+        "--input-json", default="snapshots.json", help="Path to snapshot IDs JSON (default: snapshots.json)"
+    )
     parser.add_argument("--count", type=int, default=None, help="Number of sandboxes to create (default: all in JSON)")
-    parser.add_argument("--batch-size", type=int, default=None, help="Sandboxes per creation batch (default: full concurrent)")
+    parser.add_argument(
+        "--batch-size", type=int, default=None, help="Sandboxes per creation batch (default: full concurrent)"
+    )
     parser.add_argument("--batch-interval", type=int, default=3, help="Seconds between batches (default: 3)")
-    parser.add_argument("--output-xlsx", default="results/snap/snap_restore_report.xlsx", help="Path to save Excel report (default: results/snap/snap_restore_report.xlsx)")
-    parser.add_argument("--timeout", type=int, default=86400, help="Sandbox creation timeout in seconds (default: 86400)")
-    parser.add_argument("--keep", action="store_true", help="Keep sandboxes alive after creation (default: kill after timing)")
+    parser.add_argument(
+        "--output-xlsx",
+        default="results/snap/snap_restore_report.xlsx",
+        help="Path to save Excel report (default: results/snap/snap_restore_report.xlsx)",
+    )
+    parser.add_argument(
+        "--timeout", type=int, default=86400, help="Sandbox creation timeout in seconds (default: 86400)"
+    )
+    parser.add_argument(
+        "--keep", action="store_true", help="Keep sandboxes alive after creation (default: kill after timing)"
+    )
     parser.add_argument("--api-key", default=None, help="Override E2B API key (highest priority)")
     parser.add_argument("--access-token", default=None, help="Override E2B access token (highest priority)")
 
