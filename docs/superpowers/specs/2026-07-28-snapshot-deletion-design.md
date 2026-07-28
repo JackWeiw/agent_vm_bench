@@ -106,7 +106,8 @@ python3 -m e2b_bench.snap.delete -i snapshots.json -n 3
    - `status`: `success` (delete_snapshot returned True), `not_found` (returned False — treat as success/no-op in stats), `failed` (exception).
 6. **Update `snapshots.json`** (only in `--input-json` mode): set each processed entry's `status` to `deleted` / `delete_failed` and `deleted_at` timestamp; write back.
 7. **Excel report** via `common.write_excel_report`: Raw sheet (per-snapshot results), Summary sheet (`delete_snapshot_s` stats + success_rate), Snapshots sheet (snapshot_id, status, deleted_at). Same 3-sheet shape as create/restore.
-8. Print final summary: `X deleted, Y not found, Z failed`.
+8. **Print terminal summary** via the shared `common.print_summary` helper (see Terminal Summary Printing section) — a paste-friendly stats table, in addition to the Excel export.
+9. Print one-line final tally: `X deleted, Y not found, Z failed`.
 
 **Signal handling:** No sandbox handles to clean up (deletion is stateless API calls), so no `_created_sandboxes` list is needed. `Ctrl+C` simply stops in-flight batches; deleted-so-far results are still written to JSON + Excel. Keep the signal handler for consistent UX (flush partial results).
 
@@ -154,18 +155,71 @@ Reuse `common.write_excel_report` and `common.compute_stats`.
 
 Note: this is the first `snap.*` script whose Raw sheet is short on timing columns — `delete_snapshot` is fast and the primary signal is success/fail counts, not latency. Keep the shape for consistency, but `delete_elapsed_s` is secondary.
 
+## Terminal summary printing
+
+In addition to the Excel export, all three `snap.*` scripts (`create`, `restore`, `delete`) print a paste-friendly summary table to the terminal at the end of the run. This is a new shared helper in `common.py` so the format is consistent across commands and easy to paste into a report/chat.
+
+### New `common.print_summary` helper
+
+```python
+def print_summary(summary_data: dict, title: str) -> None:
+    """Print a paste-friendly stats table to the terminal.
+
+    Renders the same summary_data that write_excel_report consumes
+    as a fixed-width table (no external deps beyond stdlib).
+
+    Args:
+        summary_data: {series_name: {stat_key: value, ...}, ...}
+                      (same dict passed to write_excel_report's Summary sheet)
+        title: Header line printed above the table.
+    """
+```
+
+### Format
+
+Fixed-width monospaced table — survives pasting into Markdown/issues/chats without breaking alignment. Example for `snap.create`:
+
+```
+==================== Batch Snapshot Creation Summary ====================
+metric          create_sandbox_s  create_snapshot_s  total_s
+count           10                10                  10
+success_rate    1.0               1.0                 1.0
+avg             12.5342           3.2104              15.7446
+min             8.2013            2.0011              10.2024
+max             18.9921           5.4321              24.4242
+p50             12.1022           3.1500              15.2522
+p90             16.8811           4.9002              21.7813
+p99             18.9012           5.4001              24.3213
+std             3.1022            0.8901              3.9923
+========================================================================
+```
+
+Design choices:
+- **Rows = stat keys, columns = data series** — matches the Excel Summary sheet layout, so the on-screen table and the spreadsheet are identical views.
+- **Fixed column widths** — left-pad metric names, right-pad numbers, all numbers share decimal alignment. No tabs (tabs misalign when pasted).
+- **Wrap in `=====` borders** — visually distinct from the surrounding progress logs, survives paste.
+- **Printed AFTER the Excel is written** — so if Excel generation fails, the terminal still shows the numbers, and the printed numbers match the saved file.
+
+### Application to existing scripts
+
+- `create.py`: after `build_report(...)`, call `print_summary(summary_data, "Batch Snapshot Creation Summary")`. The `summary_data` dict already exists in `build_report` — refactor to return it (or compute once and pass to both `build_report` and `print_summary`) so the two never diverge.
+- `restore.py`: same — `print_summary(summary_data, "Batch Sandbox Restore Summary")`.
+- `delete.py`: `print_summary(summary_data, "Batch Snapshot Deletion Summary")` as flow step 8.
+
+The small refactor in `create.py`/`restore.py` — computing `summary_data` once in `main` and passing it to both `build_report` and `print_summary`, rather than building it privately inside `build_report` — also fixes review finding #1 (success_rate contract split) by centralizing the summary construction. This is a targeted improvement to code we're already touching, not unrelated refactoring.
+
 ## Module structure
 
 ```
 e2b_bench/snap/
-├── __init__.py    # unchanged (add delete to module docstring)
-├── common.py      # unchanged (reuse load_env, compute_stats, write_excel_report)
-├── create.py      # unchanged
-├── restore.py     # unchanged
+├── __init__.py    # update module docstring to mention delete
+├── common.py      # ADD print_summary helper; otherwise unchanged
+├── create.py      # print summary after report (small refactor of summary construction)
+├── restore.py     # print summary after report (small refactor of summary construction)
 └── delete.py      # NEW — batch snapshot deletion
 ```
 
-`delete.py` imports `from .common import load_env, compute_stats, write_excel_report`, matching the relative-import pattern of `create.py`/`restore.py`. No changes to `common.py` for v1.
+`delete.py` imports `from .common import load_env, compute_stats, write_excel_report, print_summary`, matching the relative-import pattern of `create.py`/`restore.py`. The only `common.py` addition is `print_summary`.
 
 ## Out of scope (YAGNI)
 
