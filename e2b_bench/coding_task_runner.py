@@ -10,7 +10,6 @@ Simulates real AI coding agent workflow:
   Step 2: Edit — inject round marker into target file (triggers rebuild)
   Step 3: Build — production build (overlaps with dev server, ~3GB peak)
   Step 4: Test — run test suite (verify correctness)
-  Step 5: Memory — collect memory metrics (free -m)
 
 Classes:
 - CodingWarmupRunner: Starts dev server + initial build during warmup phase
@@ -382,7 +381,6 @@ class CodingRoundRunner(threading.Thread):
       2. edit       — sed inject round marker into target file
       3. build      — npm run build (MEMORY PEAK, overlaps with dev server)
       4. test       — npm test (verify correctness)
-      5. memory     — free -m (collect memory snapshot)
 
     Attributes:
         state: Sandbox state for metrics
@@ -438,7 +436,7 @@ class CodingRoundRunner(threading.Thread):
             self._handle_failure(target_file, failed_step, error_detail)
 
     def _execute_steps(self, sbx, target_file: str) -> Tuple[bool, Dict[str, float], bool, bool, str, str, bool]:
-        """Execute all steps: ensure_dev_server -> checkout -> edit -> build -> test -> memory
+        """Execute all steps: ensure_dev_server -> checkout -> edit -> build -> test
 
         Args:
             sbx: Sandbox object
@@ -497,9 +495,6 @@ class CodingRoundRunner(threading.Thread):
                 # Test failure is non-fatal for overall round success
             elif self.config.coding_skip_test:
                 test_success = True  # skipped = not failed
-
-            # Step 5: Memory — collect memory snapshot
-            self._step_memory(sbx, step_times)
 
         except Exception as e:
             success = False
@@ -629,15 +624,6 @@ class CodingRoundRunner(threading.Thread):
                 error_parts.append(f"stderr={result.stderr[:100]}")
             return False, " | ".join(error_parts)
         return True, ""
-
-    def _step_memory(self, sbx, step_times: Dict[str, float]) -> None:
-        """Step 5: Collect memory snapshot via free -m
-
-        Non-fatal — just records timing, doesn't affect round success.
-        """
-        step_start = time.perf_counter()
-        sbx.commands.run("free -m", timeout=10, user="root")
-        step_times["memory"] = time.perf_counter() - step_start
 
     def _classify_exception(self, e: Exception, step_times: Dict[str, float]) -> Tuple[str, str]:
         """Classify exception to determine which step failed"""
