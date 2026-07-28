@@ -273,7 +273,9 @@ Examples:
     )
     parser.add_argument("--batch-interval", type=int, default=3, help="Seconds between batches (default: 3)")
     parser.add_argument(
-        "--output-xlsx", default=None, help="Excel report path (default: results/snap/snap_delete_<timestamp>.xlsx)"
+        "--output-xlsx",
+        default=None,
+        help="Excel report path (default: results/snap/snap_delete_n<count>_bsz<bsz>_<timestamp>.xlsx)",
     )
     parser.add_argument("--timeout", type=int, default=86400, help="API call timeout in seconds (default: 86400)")
     parser.add_argument("--api-key", default=None, help="Override E2B API key")
@@ -287,7 +289,9 @@ def main() -> None:
 
     if args.output_xlsx is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        args.output_xlsx = f"results/snap/snap_delete_{timestamp}.xlsx"
+        n = "all" if args.all or args.count is None else args.count
+        bsz = args.batch_size if args.batch_size else "full"
+        args.output_xlsx = f"results/snap/snap_delete_n{n}_bsz{bsz}_{timestamp}.xlsx"
 
     print("=" * 60)
     print("Batch Snapshot Deletion")

@@ -49,7 +49,7 @@ python3 -m e2b_bench.snap.create [OPTIONS]
 | `-bs` | `--batch-size` | full concurrent | Sandboxes per creation batch |
 | | `--batch-interval` | `3` | Seconds between batches |
 | `-o` | `--output-json` | `snapshots.json` | Path to save snapshot IDs JSON |
-| | `--output-xlsx` | auto-generated | Excel report path (default: `results/snap/snap_create_<timestamp>.xlsx`) |
+| | `--output-xlsx` | auto-generated | Excel report path (default: `results/snap/snap_create_n<count>_bsz<bsz>_<timestamp>.xlsx`) |
 | | `--timeout` | `86400` | Sandbox creation timeout (seconds) |
 | | `--config` | `~/.e2b/config.json` | Path to E2B config JSON |
 | | `--api-key` | None | Override E2B API key |
@@ -82,7 +82,7 @@ python3 -m e2b_bench.snap.restore [OPTIONS]
 | `-k` | `--keep` | kill after timing | Keep sandboxes alive after creation |
 | `-bs` | `--batch-size` | full concurrent | Sandboxes per creation batch |
 | | `--batch-interval` | `3` | Seconds between batches |
-| | `--output-xlsx` | auto-generated | Excel report path (default: `results/snap/snap_restore_<timestamp>.xlsx`) |
+| | `--output-xlsx` | auto-generated | Excel report path (default: `results/snap/snap_restore_n<count>_bsz<bsz>_<timestamp>.xlsx`) |
 | | `--timeout` | `86400` | Sandbox creation timeout (seconds) |
 | | `--config` | `~/.e2b/config.json` | Path to E2B config JSON |
 | | `--api-key` | None | Override E2B API key |
@@ -119,7 +119,7 @@ Deletes E2B snapshots (which persist after sandbox deletion). Two modes: delete 
 | `-n` | `--count` | None (all) | Limit: delete only first N matching |
 | `-bs` | `--batch-size` | full concurrent | Deletions per batch |
 | | `--batch-interval` | `3` | Seconds between batches |
-| | `--output-xlsx` | auto | Excel report path (default: `results/snap/snap_delete_<timestamp>.xlsx`) |
+| | `--output-xlsx` | auto | Excel report path (default: `results/snap/snap_delete_n<count>_bsz<bsz>_<timestamp>.xlsx`) |
 | | `--timeout` | `86400` | API call timeout (seconds) |
 | | `--api-key` | None | Override E2B API key |
 | | `--access-token` | None | Override E2B access token |
