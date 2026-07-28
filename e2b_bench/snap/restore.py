@@ -24,7 +24,7 @@ from typing import Any, Dict, List
 
 from e2b import Sandbox
 
-from .common import compute_stats, load_env, write_excel_report
+from .common import compute_stats, load_env, print_summary, write_excel_report
 
 # Global list of created sandbox handles for cleanup on signal
 _created_sandboxes: List[Any] = []
@@ -209,17 +209,15 @@ def load_snapshot_ids(input_json: str, count: int = None) -> List[Dict[str, Any]
     return valid
 
 
-def build_report(results: List[Dict[str, Any]], output_path: str) -> None:
-    """Build Excel report from restore results.
+def compute_summary(results: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Compute summary statistics dict from restore results.
 
     Args:
         results: List of result dicts from restore_single_sandbox.
-        output_path: Path to write the Excel file.
-    """
-    # Sheet 1: Raw data
-    raw_data = results
 
-    # Sheet 2: Summary statistics
+    Returns:
+        {series_name: {stat_key: value, ...}} dict.
+    """
     restore_times = [r["restore_elapsed_s"] for r in results if r["status"] == "success"]
     success_count = sum(1 for r in results if r["status"] == "success")
     total_count = len(results)
@@ -227,10 +225,21 @@ def build_report(results: List[Dict[str, Any]], output_path: str) -> None:
     restore_stats = compute_stats(restore_times)
     restore_stats["success_rate"] = round(success_count / total_count, 4) if total_count > 0 else 0.0
 
-    summary_data = {
+    return {
         "restore_sandbox_s": restore_stats,
-        "total_s": restore_stats,  # For restore, total = restore time
+        "total_s": restore_stats,
     }
+
+
+def build_report(results: List[Dict[str, Any]], output_path: str) -> None:
+    """Build Excel report from restore results.
+
+    Args:
+        results: List of result dicts from restore_single_sandbox.
+        output_path: Path to write the Excel file.
+    """
+    raw_data = results
+    summary_data = compute_summary(results)
 
     # Sheet 3: Snapshots (source snapshot -> restored sandbox mapping)
     snapshots_data = []
@@ -364,6 +373,10 @@ def main():
 
     # Build Excel report
     build_report(results, args.output_xlsx)
+
+    summary_data = compute_summary(results)
+    print()
+    print_summary(summary_data, "Batch Sandbox Restore Summary")
 
     print(f"\n{'=' * 60}")
     print(f"Done — {success_count}/{len(snapshot_ids)} sandboxes restored successfully")
