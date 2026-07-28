@@ -305,13 +305,6 @@ def main():
     """Main entry point."""
     args = parse_args()
 
-    # Auto-generate output-xlsx with timestamp if not specified
-    if args.output_xlsx is None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        n = args.count if args.count else "all"
-        bsz = args.batch_size if args.batch_size else "full"
-        args.output_xlsx = f"results/snap/snap_restore_n{n}_bsz{bsz}_{timestamp}.xlsx"
-
     # Register signal handler
     signal.signal(signal.SIGINT, _signal_handler)
 
@@ -344,6 +337,13 @@ def main():
         print(f"  Mode: KEEP (sandboxes will stay alive)")
     else:
         print(f"  Mode: AUTO-KILL (sandboxes will be killed after timing)")
+
+    # Auto-generate output-xlsx after we know the real restore count
+    if args.output_xlsx is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bsz = args.batch_size if args.batch_size else "full"
+        args.output_xlsx = f"results/snap/snap_restore_n{len(snapshot_ids)}_bsz{bsz}_{timestamp}.xlsx"
+    print(f"  Output XLSX: {args.output_xlsx}")
 
     # Create sandboxes from snapshots
     print(f"\n[3/5] Restoring {len(snapshot_ids)} sandboxes from snapshots...")

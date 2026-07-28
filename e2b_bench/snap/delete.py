@@ -287,12 +287,6 @@ def main() -> None:
     """Main entry point."""
     args = parse_args()
 
-    if args.output_xlsx is None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        n = "all" if args.all or args.count is None else args.count
-        bsz = args.batch_size if args.batch_size else "full"
-        args.output_xlsx = f"results/snap/snap_delete_n{n}_bsz{bsz}_{timestamp}.xlsx"
-
     print("=" * 60)
     print("Batch Snapshot Deletion")
     print("=" * 60)
@@ -325,6 +319,14 @@ def main() -> None:
     if not snapshot_ids:
         print("  Nothing to delete. Exiting.")
         sys.exit(0)
+
+    # Auto-generate output-xlsx after we know the real delete count
+    if args.output_xlsx is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        n = "all" if args.all else len(snapshot_ids)
+        bsz = args.batch_size if args.batch_size else "full"
+        args.output_xlsx = f"results/snap/snap_delete_n{n}_bsz{bsz}_{timestamp}.xlsx"
+    print(f"  Output XLSX: {args.output_xlsx}")
 
     # Safety gate
     print(f"\n[3/6] {len(snapshot_ids)} snapshots will be deleted.")
