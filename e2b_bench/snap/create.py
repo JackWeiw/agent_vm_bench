@@ -6,11 +6,10 @@ Creates N sandboxes from an E2B template, creates a snapshot for each,
 saves snapshot IDs to a JSON file, and generates an Excel performance report.
 
 Usage:
-    python3 -m e2b_bench.snap.create --count 5
-    python3 -m e2b_bench.snap.create --template openclaw-browser-v1 --count 10
-    python3 -m e2b_bench.snap.create --count 5 --output-json snapshots.json
+    python3 -m e2b_bench.snap.create -t uu -n 10 -o snapshots.json
+    python3 -m e2b_bench.snap.create -t openclaw-browser-v1 -n 10 -bs 5
     # Then restore from the JSON output:
-    python3 -m e2b_bench.snap.restore --input-json snapshots.json
+    python3 -m e2b_bench.snap.restore -i snapshots.json
 """
 
 import argparse
@@ -310,23 +309,24 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python3 -m e2b_bench.snap.create --count 5
-  python3 -m e2b_bench.snap.create --template openclaw-browser-v1 --count 10 --batch-size 5
-  python3 -m e2b_bench.snap.create --count 3 --output-json my_snapshots.json
+  python3 -m e2b_bench.snap.create -t uu -n 10 -o snapshots.json
+  python3 -m e2b_bench.snap.create -t openclaw-browser-v1 -n 10 -bs 5
   # Then restore from the JSON:
-  python3 -m e2b_bench.snap.restore --input-json my_snapshots.json
+  python3 -m e2b_bench.snap.restore -i snapshots.json
         """,
     )
-    parser.add_argument("--env-file", default=default_env, help=f"Path to .env file (default: {default_env})")
+    parser.add_argument("-e", "--env-file", default=default_env, help=f"Path to .env file (default: {default_env})")
     parser.add_argument("--config", default=default_config, help=f"Path to E2B config JSON (default: {default_config})")
-    parser.add_argument("--template", default="3g", help="E2B template name (default: 3g)")
-    parser.add_argument("--count", type=int, default=1, help="Number of sandboxes/snapshots to create (default: 1)")
+    parser.add_argument("-t", "--template", default="3g", help="E2B template name (default: 3g)")
     parser.add_argument(
-        "--batch-size", type=int, default=None, help="Sandboxes per creation batch (default: full concurrent)"
+        "-n", "--count", type=int, default=1, help="Number of sandboxes/snapshots to create (default: 1)"
+    )
+    parser.add_argument(
+        "-bs", "--batch-size", type=int, default=None, help="Sandboxes per creation batch (default: full concurrent)"
     )
     parser.add_argument("--batch-interval", type=int, default=3, help="Seconds between batches (default: 3)")
     parser.add_argument(
-        "--output-json", default="snapshots.json", help="Path to save snapshot IDs JSON (default: snapshots.json)"
+        "-o", "--output-json", default="snapshots.json", help="Path to save snapshot IDs JSON (default: snapshots.json)"
     )
     parser.add_argument(
         "--output-xlsx",
@@ -404,7 +404,7 @@ def main():
     print(f"{'=' * 60}")
     if success_count > 0:
         print(f"\nNext step — restore sandboxes from snapshots:")
-        print(f"  python3 -m e2b_bench.snap.restore --env-file {args.env_file} --input-json {args.output_json}")
+        print(f"  python3 -m e2b_bench.snap.restore -i {args.output_json}")
 
 
 if __name__ == "__main__":

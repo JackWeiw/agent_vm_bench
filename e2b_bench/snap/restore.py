@@ -7,9 +7,9 @@ batch-creates sandboxes from those snapshots, and generates an
 Excel performance report with statistics.
 
 Usage:
-    python3 -m e2b_bench.snap.restore --input-json snapshots.json
-    python3 -m e2b_bench.snap.restore --input-json snapshots.json --count 5
-    python3 -m e2b_bench.snap.restore --input-json snapshots.json --keep
+    python3 -m e2b_bench.snap.restore -i snapshots.json
+    python3 -m e2b_bench.snap.restore -i snapshots.json -n 5
+    python3 -m e2b_bench.snap.restore -i snapshots.json -k
 """
 
 import argparse
@@ -258,19 +258,21 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python3 -m e2b_bench.snap.restore --input-json snapshots.json
-  python3 -m e2b_bench.snap.restore --input-json snapshots.json --count 5
-  python3 -m e2b_bench.snap.restore --input-json snapshots.json --keep --batch-size 3
+  python3 -m e2b_bench.snap.restore -i snapshots.json
+  python3 -m e2b_bench.snap.restore -i snapshots.json -n 5
+  python3 -m e2b_bench.snap.restore -i snapshots.json -k -bs 3
         """,
     )
-    parser.add_argument("--env-file", default=default_env, help=f"Path to .env file (default: {default_env})")
+    parser.add_argument("-e", "--env-file", default=default_env, help=f"Path to .env file (default: {default_env})")
     parser.add_argument("--config", default=default_config, help=f"Path to E2B config JSON (default: {default_config})")
     parser.add_argument(
-        "--input-json", default="snapshots.json", help="Path to snapshot IDs JSON (default: snapshots.json)"
+        "-i", "--input-json", default="snapshots.json", help="Path to snapshot IDs JSON (default: snapshots.json)"
     )
-    parser.add_argument("--count", type=int, default=None, help="Number of sandboxes to create (default: all in JSON)")
     parser.add_argument(
-        "--batch-size", type=int, default=None, help="Sandboxes per creation batch (default: full concurrent)"
+        "-n", "--count", type=int, default=None, help="Number of sandboxes to create (default: all in JSON)"
+    )
+    parser.add_argument(
+        "-bs", "--batch-size", type=int, default=None, help="Sandboxes per creation batch (default: full concurrent)"
     )
     parser.add_argument("--batch-interval", type=int, default=3, help="Seconds between batches (default: 3)")
     parser.add_argument(
@@ -282,7 +284,7 @@ Examples:
         "--timeout", type=int, default=86400, help="Sandbox creation timeout in seconds (default: 86400)"
     )
     parser.add_argument(
-        "--keep", action="store_true", help="Keep sandboxes alive after creation (default: kill after timing)"
+        "-k", "--keep", action="store_true", help="Keep sandboxes alive after creation (default: kill after timing)"
     )
     parser.add_argument("--api-key", default=None, help="Override E2B API key (highest priority)")
     parser.add_argument("--access-token", default=None, help="Override E2B access token (highest priority)")
