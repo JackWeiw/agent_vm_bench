@@ -6,8 +6,11 @@ Creates N sandboxes from an E2B template, creates a snapshot for each,
 saves snapshot IDs to a JSON file, and generates an Excel performance report.
 
 Usage:
-    python -m e2b_bench.snap.create --env-file .env --count 5
-    python -m e2b_bench.snap.create --env-file .env --template openclaw-browser-v1 --count 10
+    python3 -m e2b_bench.snap.create --count 5
+    python3 -m e2b_bench.snap.create --template openclaw-browser-v1 --count 10
+    python3 -m e2b_bench.snap.create --count 5 --output-json snapshots.json
+    # Then restore from the JSON output:
+    python3 -m e2b_bench.snap.restore --input-json snapshots.json
 """
 
 import argparse
@@ -299,6 +302,7 @@ def build_report(results: List[Dict[str, Any]], template: str, output_path: str)
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
+    default_env = "e2b_bench/scripts/.env"
     default_config = os.path.join(os.path.expanduser("~"), ".e2b", "config.json")
 
     parser = argparse.ArgumentParser(
@@ -306,12 +310,14 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m e2b_bench.snap.create --env-file .env --count 5
-  python -m e2b_bench.snap.create --env-file .env --template openclaw-browser-v1 --count 10 --batch-size 5
-  python -m e2b_bench.snap.create --env-file .env --count 3 --output-json my_snapshots.json
+  python3 -m e2b_bench.snap.create --count 5
+  python3 -m e2b_bench.snap.create --template openclaw-browser-v1 --count 10 --batch-size 5
+  python3 -m e2b_bench.snap.create --count 3 --output-json my_snapshots.json
+  # Then restore from the JSON:
+  python3 -m e2b_bench.snap.restore --input-json my_snapshots.json
         """,
     )
-    parser.add_argument("--env-file", default=".env", help="Path to .env file (default: .env)")
+    parser.add_argument("--env-file", default=default_env, help=f"Path to .env file (default: {default_env})")
     parser.add_argument("--config", default=default_config, help=f"Path to E2B config JSON (default: {default_config})")
     parser.add_argument("--template", default="3g", help="E2B template name (default: 3g)")
     parser.add_argument("--count", type=int, default=1, help="Number of sandboxes/snapshots to create (default: 1)")
@@ -396,6 +402,9 @@ def main():
     print(f"\n{'=' * 60}")
     print(f"Done — {success_count}/{args.count} snapshots created successfully")
     print(f"{'=' * 60}")
+    if success_count > 0:
+        print(f"\nNext step — restore sandboxes from snapshots:")
+        print(f"  python3 -m e2b_bench.snap.restore --env-file {args.env_file} --input-json {args.output_json}")
 
 
 if __name__ == "__main__":

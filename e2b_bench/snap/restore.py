@@ -7,9 +7,9 @@ batch-creates sandboxes from those snapshots, and generates an
 Excel performance report with statistics.
 
 Usage:
-    python -m e2b_bench.snap.restore --env-file .env
-    python -m e2b_bench.snap.restore --env-file .env --input-json snapshots.json --count 5
-    python -m e2b_bench.snap.restore --env-file .env --keep
+    python3 -m e2b_bench.snap.restore --input-json snapshots.json
+    python3 -m e2b_bench.snap.restore --input-json snapshots.json --count 5
+    python3 -m e2b_bench.snap.restore --input-json snapshots.json --keep
 """
 
 import argparse
@@ -250,6 +250,7 @@ def build_report(results: List[Dict[str, Any]], output_path: str) -> None:
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
+    default_env = "e2b_bench/scripts/.env"
     default_config = os.path.join(os.path.expanduser("~"), ".e2b", "config.json")
 
     parser = argparse.ArgumentParser(
@@ -257,12 +258,12 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m e2b_bench.snap.restore --env-file .env
-  python -m e2b_bench.snap.restore --env-file .env --input-json snapshots.json --count 5
-  python -m e2b_bench.snap.restore --env-file .env --keep --batch-size 3
+  python3 -m e2b_bench.snap.restore --input-json snapshots.json
+  python3 -m e2b_bench.snap.restore --input-json snapshots.json --count 5
+  python3 -m e2b_bench.snap.restore --input-json snapshots.json --keep --batch-size 3
         """,
     )
-    parser.add_argument("--env-file", default=".env", help="Path to .env file (default: .env)")
+    parser.add_argument("--env-file", default=default_env, help=f"Path to .env file (default: {default_env})")
     parser.add_argument("--config", default=default_config, help=f"Path to E2B config JSON (default: {default_config})")
     parser.add_argument(
         "--input-json", default="snapshots.json", help="Path to snapshot IDs JSON (default: snapshots.json)"
