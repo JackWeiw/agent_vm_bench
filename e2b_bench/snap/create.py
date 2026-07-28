@@ -24,7 +24,7 @@ from typing import Any, Dict, List
 
 from e2b import Sandbox
 
-from .common import compute_stats, load_env, write_excel_report
+from .common import compute_stats, load_env, print_summary, write_excel_report
 
 # Global list of created sandbox handles for cleanup on signal
 _created_sandboxes: List[Any] = []
@@ -245,18 +245,16 @@ def save_snapshot_json(results: List[Dict[str, Any]], template: str, output_path
     print(f"  Snapshot IDs saved to {output_path} ({len(snapshots)} successful)")
 
 
-def build_report(results: List[Dict[str, Any]], template: str, output_path: str) -> None:
-    """Build Excel report from results.
+def compute_summary(results: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Compute summary statistics dict from creation results.
 
     Args:
         results: List of result dicts from create_single_sandbox.
-        template: Template name.
-        output_path: Path to write the Excel file.
-    """
-    # Sheet 1: Raw data (use results as-is)
-    raw_data = results
 
-    # Sheet 2: Summary statistics
+    Returns:
+        {series_name: {stat_key: value, ...}} dict, same shape used by
+        write_excel_report's Summary sheet and print_summary.
+    """
     create_times = [r["create_elapsed_s"] for r in results if r["create_elapsed_s"] > 0]
     snapshot_times = [r["snapshot_elapsed_s"] for r in results if r["status"] == "success"]
     total_times = [r["total_elapsed_s"] for r in results if r["status"] == "success"]
@@ -275,11 +273,23 @@ def build_report(results: List[Dict[str, Any]], template: str, output_path: str)
     total_stats = compute_stats(total_times)
     total_stats["success_rate"] = round(success_count / total_count, 4) if total_count > 0 else 0.0
 
-    summary_data = {
+    return {
         "create_sandbox_s": create_stats,
         "create_snapshot_s": snapshot_stats,
         "total_s": total_stats,
     }
+
+
+def build_report(results: List[Dict[str, Any]], template: str, output_path: str) -> None:
+    """Build Excel report from results.
+
+    Args:
+        results: List of result dicts from create_single_sandbox.
+        template: Template name.
+        output_path: Path to write the Excel file.
+    """
+    raw_data = results
+    summary_data = compute_summary(results)
 
     # Sheet 3: Snapshots registry (only successful ones)
     snapshots_data = []
@@ -403,6 +413,10 @@ def main():
     print(f"\n[5/5] Saving results...")
     save_snapshot_json(results, args.template, args.output_json)
     build_report(results, args.template, args.output_xlsx)
+
+    summary_data = compute_summary(results)
+    print()
+    print_summary(summary_data, "Batch Snapshot Creation Summary")
 
     print(f"\n{'=' * 60}")
     print(f"Done — {success_count}/{args.count} snapshots created successfully")
