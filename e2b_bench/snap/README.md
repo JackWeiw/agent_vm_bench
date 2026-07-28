@@ -46,7 +46,7 @@ python3 -m e2b_bench.snap.create [OPTIONS]
 | `-bs` | `--batch-size` | full concurrent | Sandboxes per creation batch |
 | | `--batch-interval` | `3` | Seconds between batches |
 | `-o` | `--output-json` | `snapshots.json` | Path to save snapshot IDs JSON |
-| | `--output-xlsx` | `results/snap/snap_create_report.xlsx` | Path to save Excel report |
+| | `--output-xlsx` | auto-generated | Excel report path (default: `results/snap/snap_create_<timestamp>.xlsx`) |
 | | `--timeout` | `86400` | Sandbox creation timeout (seconds) |
 | | `--config` | `~/.e2b/config.json` | Path to E2B config JSON |
 | | `--api-key` | None | Override E2B API key |
@@ -79,7 +79,7 @@ python3 -m e2b_bench.snap.restore [OPTIONS]
 | `-k` | `--keep` | kill after timing | Keep sandboxes alive after creation |
 | `-bs` | `--batch-size` | full concurrent | Sandboxes per creation batch |
 | | `--batch-interval` | `3` | Seconds between batches |
-| | `--output-xlsx` | `results/snap/snap_restore_report.xlsx` | Path to save Excel report |
+| | `--output-xlsx` | auto-generated | Excel report path (default: `results/snap/snap_restore_<timestamp>.xlsx`) |
 | | `--timeout` | `86400` | Sandbox creation timeout (seconds) |
 | | `--config` | `~/.e2b/config.json` | Path to E2B config JSON |
 | | `--api-key` | None | Override E2B API key |

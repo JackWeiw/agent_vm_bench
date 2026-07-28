@@ -330,8 +330,8 @@ Examples:
     )
     parser.add_argument(
         "--output-xlsx",
-        default="results/snap/snap_create_report.xlsx",
-        help="Path to save Excel report (default: results/snap/snap_create_report.xlsx)",
+        default=None,
+        help="Path to save Excel report (default: results/snap/snap_create_<timestamp>.xlsx)",
     )
     parser.add_argument(
         "--timeout", type=int, default=86400, help="Sandbox creation timeout in seconds (default: 86400)"
@@ -345,6 +345,11 @@ Examples:
 def main():
     """Main entry point."""
     args = parse_args()
+
+    # Auto-generate output-xlsx with timestamp if not specified
+    if args.output_xlsx is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        args.output_xlsx = f"results/snap/snap_create_{timestamp}.xlsx"
 
     # Register signal handler
     signal.signal(signal.SIGINT, _signal_handler)
