@@ -10,6 +10,9 @@ python3 -m e2b_bench.snap.create -t uu -n 10 -o snapshots.json
 
 # Step 2: Restore sandboxes from snapshots
 python3 -m e2b_bench.snap.restore -i snapshots.json
+
+# Step 3 (optional): Delete the snapshots when done
+python3 -m e2b_bench.snap.delete -i snapshots.json
 ```
 
 The `create` command will print the `restore` command at the end for convenience.
@@ -98,6 +101,44 @@ python3 -m e2b_bench.snap.restore -i snapshots.json -n 5
 python3 -m e2b_bench.snap.restore -i snapshots.json -k
 ```
 
+### `snap.delete` — Batch Snapshot Deletion
+
+```
+python3 -m e2b_bench.snap.delete [OPTIONS]
+```
+
+Deletes E2B snapshots (which persist after sandbox deletion). Two modes: delete by JSON ledger (default) or delete all snapshots on the server.
+
+| Short | Long | Default | Description |
+|-------|------|---------|-------------|
+| `-e` | `--env-file` | `e2b_bench/scripts/.env` | Path to .env file |
+| | `--config` | `~/.e2b/config.json` | Path to E2B config JSON |
+| `-i` | `--input-json` | `snapshots.json` | Delete snapshots listed in this JSON (default) |
+| | `--all` | False | List and delete ALL snapshots on the server |
+| `-y` | `--yes` | False | Skip confirmation prompt |
+| `-n` | `--count` | None (all) | Limit: delete only first N matching |
+| `-bs` | `--batch-size` | full concurrent | Deletions per batch |
+| | `--batch-interval` | `3` | Seconds between batches |
+| | `--output-xlsx` | auto | Excel report path (default: `results/snap/snap_delete_<timestamp>.xlsx`) |
+| | `--timeout` | `86400` | API call timeout (seconds) |
+| | `--api-key` | None | Override E2B API key |
+| | `--access-token` | None | Override E2B access token |
+
+**Examples:**
+
+```bash
+# Delete snapshots recorded in snapshots.json
+python3 -m e2b_bench.snap.delete -i snapshots.json
+
+# Delete ALL snapshots on the server (will prompt)
+python3 -m e2b_bench.snap.delete --all
+
+# Delete all, no prompt (scripting)
+python3 -m e2b_bench.snap.delete --all --yes
+```
+
+**JSON ledger:** In `--input-json` mode, deleted entries are marked `status: "deleted"` with a `deleted_at` timestamp in place — so the file is safely re-runnable.
+
 ## Output
 
 ### JSON file (`snapshots.json`)
@@ -128,6 +169,8 @@ python3 -m e2b_bench.snap.restore -i snapshots.json -k
 | **Summary** | Statistics: count, success_rate, avg, min, max, p50, p90, p99, std |
 | **Snapshots** | Snapshot ID registry (snapshot_id, sandbox_id, template, timing, timestamp) |
 
+All three scripts also print a paste-friendly summary table to the terminal at the end of the run (same stats as the Summary sheet).
+
 ## Credential Loading Priority
 
 1. CLI args (`--api-key`, `--access-token`) — highest priority, for one-off overrides
@@ -139,9 +182,10 @@ python3 -m e2b_bench.snap.restore -i snapshots.json -k
 ```
 e2b_bench/snap/
 ├── __init__.py    # Package documentation
-├── common.py      # load_env, compute_stats, write_excel_report
+├── common.py      # load_env, compute_stats, write_excel_report, print_summary
 ├── create.py      # Batch sandbox + snapshot creation → JSON + Excel
-└── restore.py     # Load JSON → batch restore → Excel
+├── restore.py     # Load JSON → batch restore → Excel
+└── delete.py      # Batch snapshot deletion (JSON ledger or --all)
 ```
 
 `common.py` provides shared utilities used by both `create.py` and `restore.py` via relative imports (`from .common import ...`).
