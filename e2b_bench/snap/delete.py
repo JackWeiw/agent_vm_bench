@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""
-Batch Snapshot Deletion Script
+"""Batch Snapshot Deletion Script
 
 Deletes E2B snapshots that survive sandbox deletion. Two modes:
   --input-json  (default): delete snapshots recorded in a JSON ledger.
   --all:                   list + delete every snapshot on the server.
+
+Note: This module currently contains the logic layer only. The CLI entry
+point (main, argparse, batch execution) is added in a follow-up task.
 
 Usage:
     python3 -m e2b_bench.snap.delete -i snapshots.json
@@ -13,6 +15,7 @@ Usage:
 """
 
 import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from e2b import Sandbox
@@ -87,10 +90,8 @@ def update_json_ledger(data: Dict[str, Any], results: List[Dict[str, Any]]) -> D
         results: Per-snapshot result dicts from delete_single_snapshot.
 
     Returns:
-        Mutated copy of data with status + deleted_at set per matched entry.
+        The same data dict, mutated in place: matched entries get status + deleted_at set.
     """
-    from datetime import datetime
-
     now = datetime.now().isoformat()
     status_map = {r["snapshot_id"]: r["status"] for r in results}
     for entry in data.get("snapshots", []):

@@ -96,3 +96,51 @@ class TestUpdateJsonLedger:
         results = [{"snapshot_id": "snap1", "status": "success"}]
         updated = delete.update_json_ledger(data, results)
         assert updated["snapshots"][0]["status"] == "success"
+
+
+class TestListAllSnapshotIds:
+    """Tests for list_all_snapshot_ids pagination."""
+
+    class _FakeSnap:
+        def __init__(self, snapshot_id):
+            self.snapshot_id = snapshot_id
+
+    class _FakePaginator:
+        """Fake paginator: pages is a list of lists of _FakeSnap; has_next True until all consumed."""
+
+        def __init__(self, pages):
+            self._pages = pages
+            self._idx = 0
+
+        @property
+        def has_next(self):
+            return self._idx < len(self._pages)
+
+        def next_items(self):
+            page = self._pages[self._idx]
+            self._idx += 1
+            return page
+
+    def test_empty_server_returns_empty(self):
+        with patch.object(delete, "Sandbox") as sbx_cls:
+            sbx_cls._cls_list_snapshots = lambda sandbox_id=None, **opts: self._FakePaginator([])
+            ids = delete.list_all_snapshot_ids()
+        assert ids == []
+
+    def test_single_page(self):
+        pages = [[self._FakeSnap("s1"), self._FakeSnap("s2"), self._FakeSnap("s3")]]
+        with patch.object(delete, "Sandbox") as sbx_cls:
+            sbx_cls._cls_list_snapshots = lambda sandbox_id=None, **opts: self._FakePaginator(pages)
+            ids = delete.list_all_snapshot_ids()
+        assert ids == ["s1", "s2", "s3"]
+
+    def test_multi_page(self):
+        pages = [
+            [self._FakeSnap("s1"), self._FakeSnap("s2")],
+            [self._FakeSnap("s3")],
+            [self._FakeSnap("s4"), self._FakeSnap("s5")],
+        ]
+        with patch.object(delete, "Sandbox") as sbx_cls:
+            sbx_cls._cls_list_snapshots = lambda sandbox_id=None, **opts: self._FakePaginator(pages)
+            ids = delete.list_all_snapshot_ids()
+        assert ids == ["s1", "s2", "s3", "s4", "s5"]
