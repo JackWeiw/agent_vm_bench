@@ -1,7 +1,7 @@
 """
 Data Structure Definitions Module
 
-Defines SandboxStatus, CreationMetrics, BrowserMetrics, SandboxState, TestSnapshot
+Defines SandboxStatus, CreationMetrics, BrowserMetrics, LLMMetrics, SandboxState, TestSnapshot
 """
 
 import statistics
@@ -181,6 +181,45 @@ class BrowserMetrics:
 
 
 @dataclass
+class LLMMetrics:
+    """LLM scenario execution metrics"""
+
+    total_scenarios: int = 0  # Completed scenario count
+    success_count: int = 0  # Success count
+    failed_count: int = 0  # Failed count
+    timeout_count: int = 0  # Timeout count
+    latencies: List[float] = field(default_factory=list)  # Scenario execution latencies
+    last_error: str = ""  # Last error message
+
+    def add_result(self, latency: float, success: bool, timeout: bool = False) -> None:
+        """Add scenario execution result"""
+        self.total_scenarios += 1
+        if timeout:
+            self.timeout_count += 1
+            self.failed_count += 1
+        elif success:
+            self.success_count += 1
+            self.latencies.append(latency)
+        else:
+            self.failed_count += 1
+
+    @property
+    def avg_latency(self) -> float:
+        """Average latency (seconds)"""
+        return statistics.mean(self.latencies) if self.latencies else 0.0
+
+    @property
+    def p99_latency(self) -> float:
+        """P99 latency (seconds)"""
+        if not self.latencies:
+            return 0.0
+        sorted_lat = sorted(self.latencies)
+        if len(sorted_lat) >= 100:
+            return sorted_lat[int(len(sorted_lat) * 0.99)]
+        return sorted_lat[-1]
+
+
+@dataclass
 class SandboxState:
     """Sandbox complete state"""
 
@@ -190,6 +229,7 @@ class SandboxState:
 
     creation_metrics: CreationMetrics = field(default_factory=CreationMetrics)
     browser_metrics: BrowserMetrics = field(default_factory=BrowserMetrics)
+    llm_metrics: LLMMetrics = field(default_factory=LLMMetrics)  # LLM scenario metrics
 
     is_alive: bool = True  # Sandbox alive status
     last_task_time: float = 0.0  # Last task execution time (thread-safe via update_last_task_time)
@@ -240,10 +280,17 @@ class TestSnapshot:
     creation_stats: Dict[str, any] = field(
         default_factory=dict
     )  # {"create": {...}, "port_wait": {...}, "total": {...}}
+    # Browser task metrics
     browser_total: int = 0  # Browser task total count
     browser_success: int = 0  # Successful task count
     browser_avg_latency: float = 0.0  # Average latency
     browser_p99_latency: float = 0.0  # P99 latency
+    # LLM scenario metrics
+    llm_total: int = 0  # LLM scenario total count
+    llm_success: int = 0  # Successful scenario count
+    llm_failed: int = 0  # Failed scenario count
+    llm_avg_latency: float = 0.0  # Average latency
+    llm_p99_latency: float = 0.0  # P99 latency
 
 
 @dataclass

@@ -313,6 +313,60 @@ class ReportFormatter:
         lines.extend(TableFormatter.format_table(headers, rows))
         return lines
 
+    def format_llm_stats_section(self) -> List[str]:
+        """Format LLM scenario statistics section."""
+        all_latencies: List[float] = []
+        for s in self.sandbox_states.values():
+            all_latencies.extend(s.llm_metrics.latencies)
+
+        total_scenarios = sum(s.llm_metrics.total_scenarios for s in self.sandbox_states.values())
+        total_success = sum(s.llm_metrics.success_count for s in self.sandbox_states.values())
+        total_failed = sum(s.llm_metrics.failed_count for s in self.sandbox_states.values())
+        total_timeout = sum(s.llm_metrics.timeout_count for s in self.sandbox_states.values())
+
+        lines = ["\n[LLM Scenario Statistics]"]
+        lines.append(f"  Total Scenarios: {total_scenarios}")
+        lines.append(f"  Success:         {total_success}")
+        lines.append(f"  Failed:          {total_failed} (timeout: {total_timeout})")
+        lines.append(f"  Success Rate:    {total_success / max(1, total_scenarios) * 100:.1f}%")
+
+        if all_latencies:
+            avg_s = statistics.mean(all_latencies)
+            p99_s = calc_p99(all_latencies)
+            lines.append(f"  Avg Latency:     {avg_s:.2f}s")
+            lines.append(f"  P99 Latency:     {p99_s:.2f}s")
+
+        # Collect error details from failed sandboxes
+        failed_sandbox_errors = []
+        for s in self.sandbox_states.values():
+            if s.llm_metrics.failed_count > 0 and s.llm_metrics.last_error:
+                failed_sandbox_errors.append((s.sandbox_id, s.llm_metrics.failed_count, s.llm_metrics.last_error))
+
+        if failed_sandbox_errors:
+            failed_sandbox_errors.sort(key=lambda x: x[1], reverse=True)
+            lines.append("\n[Failed Sandbox Error Details]")
+            lines.append(f"  Total sandboxes with scenario failures: {len(failed_sandbox_errors)}")
+            lines.append("  (Top 10 sandboxes with most failures)")
+            for sid, count, error in failed_sandbox_errors[:10]:
+                error_display = error[:150] if len(error) > 150 else error
+                lines.append(f"  Sandbox{sid}: {count} failures - {error_display}")
+
+            # Error classification for LLM errors
+            lines.append("\n[Error Type Classification]")
+            error_counts, error_sandbox_ids = ErrorClassifier.aggregate(failed_sandbox_errors)
+
+            headers = ["Error Type", "Count", "Sandboxes"]
+            rows = []
+            for error_type, count in sorted(error_counts.items(), key=lambda x: -x[1]):
+                if count > 0:
+                    sids = error_sandbox_ids[error_type][:5]
+                    sids_display = str(sids) + ("..." if len(error_sandbox_ids[error_type]) > 5 else "")
+                    rows.append([error_type, str(count), sids_display])
+
+            lines.extend(TableFormatter.format_table(headers, rows))
+
+        return lines
+
     def format_round_comparison_table(self, round_start_totals: Dict[int, Dict[str, Any]]) -> List[str]:
         """Format round comparison as a table."""
         if not round_start_totals:
@@ -534,45 +588,75 @@ class StatsCollector:
             "total": calc_percentiles(total_times),
         }
 
-        # Browser task statistics (cumulative)
-        browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
-        browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
+        # Build snapshot based on task mode
+        if self.config.task_mode == "llm":
+            # LLM scenario statistics
+            llm_total = sum(s.llm_metrics.total_scenarios for s in self.sandbox_states.values())
+            llm_success = sum(s.llm_metrics.success_count for s in self.sandbox_states.values())
+            llm_failed = sum(s.llm_metrics.failed_count for s in self.sandbox_states.values())
 
-        # Calculate round delta: current cumulative - round start cumulative
-        # This is decoupled from snapshot timing
-        if self.current_round is not None and self.current_round in self._round_start_totals:
-            start_total = self._round_start_totals[self.current_round]["total"]
-            start_success = self._round_start_totals[self.current_round]["success"]
-            round_total = browser_total - start_total
-            round_success = browser_success - start_success
+            # Collect latency data
+            all_latencies: List[float] = []
+            for s in self.sandbox_states.values():
+                all_latencies.extend(s.llm_metrics.latencies)
+
+            llm_avg = statistics.mean(all_latencies) if all_latencies else 0.0
+            llm_p99 = calc_p99(all_latencies)
+
+            snapshot = TestSnapshot(
+                timestamp=now,
+                elapsed=elapsed,
+                total_sandboxes=len(self.sandbox_states),
+                active_sandboxes=active_count,
+                offline_sandboxes=offline_count,
+                creation_stats=creation_stats,
+                # LLM metrics
+                llm_total=llm_total,
+                llm_success=llm_success,
+                llm_failed=llm_failed,
+                llm_avg_latency=llm_avg,
+                llm_p99_latency=llm_p99,
+            )
         else:
-            round_total = 0
-            round_success = 0
+            # Browser task statistics (cumulative)
+            browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
+            browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
 
-        # Collect recent latency data (last 10 per sandbox)
-        all_latencies: List[float] = []
-        for s in self.sandbox_states.values():
-            all_latencies.extend(s.browser_metrics.latencies[-10:])
+            # Calculate round delta: current cumulative - round start cumulative
+            # This is decoupled from snapshot timing
+            if self.current_round is not None and self.current_round in self._round_start_totals:
+                start_total = self._round_start_totals[self.current_round]["total"]
+                start_success = self._round_start_totals[self.current_round]["success"]
+                round_total = browser_total - start_total
+                round_success = browser_success - start_success
+            else:
+                round_total = 0
+                round_success = 0
 
-        browser_avg = statistics.mean(all_latencies) if all_latencies else 0.0
-        browser_p99 = calc_p99(all_latencies)
+            # Collect recent latency data (last 10 per sandbox)
+            all_latencies: List[float] = []
+            for s in self.sandbox_states.values():
+                all_latencies.extend(s.browser_metrics.latencies[-10:])
 
-        snapshot = TestSnapshot(
-            timestamp=now,
-            elapsed=elapsed,
-            total_sandboxes=len(self.sandbox_states),
-            active_sandboxes=active_count,
-            offline_sandboxes=offline_count,
-            creation_stats=creation_stats,
-            browser_total=browser_total,
-            browser_success=browser_success,
-            browser_avg_latency=browser_avg,
-            browser_p99_latency=browser_p99,
-        )
+            browser_avg = statistics.mean(all_latencies) if all_latencies else 0.0
+            browser_p99 = calc_p99(all_latencies)
 
-        # Add per-round fields for round comparison
-        snapshot.round_total = round_total
-        snapshot.round_success = round_success
+            snapshot = TestSnapshot(
+                timestamp=now,
+                elapsed=elapsed,
+                total_sandboxes=len(self.sandbox_states),
+                active_sandboxes=active_count,
+                offline_sandboxes=offline_count,
+                creation_stats=creation_stats,
+                browser_total=browser_total,
+                browser_success=browser_success,
+                browser_avg_latency=browser_avg,
+                browser_p99_latency=browser_p99,
+            )
+
+            # Add per-round fields for round comparison
+            snapshot.round_total = round_total
+            snapshot.round_success = round_success
 
         self.snapshots.append(snapshot)
 
@@ -601,10 +685,17 @@ class StatsCollector:
                 f"p99={snapshot.creation_stats['port_wait']['p99']:.1f}s"
             )
 
-        print(
-            f"  Browser:   {snapshot.browser_success:3d}/{snapshot.browser_total:3d}  "
-            f"avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s"
-        )
+        # Print metrics based on task mode
+        if self.config.task_mode == "llm":
+            print(
+                f"  LLM:       {snapshot.llm_success:3d}/{snapshot.llm_total:3d} success  "
+                f"avg={snapshot.llm_avg_latency:.2f}s  p99={snapshot.llm_p99_latency:.2f}s"
+            )
+        else:
+            print(
+                f"  Browser:   {snapshot.browser_success:3d}/{snapshot.browser_total:3d}  "
+                f"avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s"
+            )
         print(f"{'─' * 70}")
 
     def generate_report(self) -> str:
@@ -615,6 +706,12 @@ class StatsCollector:
 
         # Configuration section
         lines.extend(formatter.format_config_section())
+
+        # Display task mode info
+        if self.config.task_mode == "llm":
+            lines.append("  Task Mode:       LLM Scenario")
+            lines.append(f"  LLM Endpoint:    {self.config.llm.endpoint}")
+            lines.append(f"  Scenario:        {self.config.llm.model}")
 
         # Sandbox status section
         lines.extend(formatter.format_sandbox_status_section())
@@ -652,17 +749,21 @@ class StatsCollector:
             formatter.format_percentile_section("Total Startup Performance", total_times, "sandbox.create + port wait")
         )
 
-        # Browser statistics
-        lines.extend(formatter.format_browser_stats_section())
+        # Task statistics based on mode
+        if self.config.task_mode == "llm":
+            lines.extend(formatter.format_llm_stats_section())
+        else:
+            # Browser statistics
+            lines.extend(formatter.format_browser_stats_section())
 
-        # Step-level timing
-        lines.extend(formatter.format_step_timing_table())
+            # Step-level timing
+            lines.extend(formatter.format_step_timing_table())
 
-        # Error details
-        lines.extend(formatter.format_error_section())
+            # Error details
+            lines.extend(formatter.format_error_section())
 
-        # Round comparison
-        lines.extend(formatter.format_round_comparison_table(self._round_start_totals))
+            # Round comparison
+            lines.extend(formatter.format_round_comparison_table(self._round_start_totals))
 
         lines.append("\n" + "=" * 80)
         return "\n".join(lines)

@@ -1,0 +1,19 @@
+# Scenario Configuration File
+# Defines scenario names and their corresponding prompts
+# Scenario name should match the session filename (without .jsonl extension)
+
+scenarios:
+  # Browser task scenarios
+  browser-scenario-1:
+    prompt: "You are a bank financial advisor Agent. Please help users complete bank financial product queries."
+
+  browser-scenario-2:
+    prompt: "You are an e-commerce customer service Agent. Please help users complete order queries."
+
+  # Office automation scenarios
+  office-scenario-1:
+    prompt: "You are an office assistant Agent. Please help users complete document organization tasks."
+
+# Default scenario (optional)
+# If not specified, the first scenario in the list will be used
+default: "browser-scenario-1"

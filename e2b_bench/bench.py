@@ -10,6 +10,7 @@ Supports multiple modes:
 2. Create-only: create -> port check -> exit (Phase 0)
 3. Detect existing: detect -> warmup -> tasks -> stats
 4. Warmup-only: create/detect -> warmup -> exit
+5. LLM mode: create -> port check -> LLM scenarios -> stats
 """
 
 import argparse
@@ -25,8 +26,10 @@ from pathlib import Path
 from typing import Dict
 
 from .config import Config
+from .llm_runner import check_mockllm_health, LLMTaskManager, OpenClawConfig
 from .round_robin import RoundRobinTaskManager
 from .sandbox_manager import SandboxManager
+from .scenario_loader import find_scenario_file, load_scenarios
 from .schemas import SandboxState, SandboxStatus
 from .stats_collector import StatsCollector
 from .task_runner import TaskManager
@@ -377,7 +380,11 @@ def run_benchmark(config: Config) -> dict:
     print(f"  Template: {config.template}")
 
     # Mode display
-    if config.detect_existing:
+    if config.task_mode == "llm":
+        print("  Task Mode: LLM Scenario")
+        print(f"  LLM Endpoint: {config.llm.endpoint}")
+        print(f"  Scenario: {config.llm.model}")
+    elif config.detect_existing:
         print("  Mode:     Detect existing sandboxes")
     elif config.create_only:
         print("  Mode:     Create-only (Phase 0)")
@@ -708,6 +715,84 @@ def run_benchmark(config: Config) -> dict:
             if state.creation_metrics.status == SandboxStatus.PORT_READY:
                 state.warmup_done = True
 
+    # 5. LLM mode: Health check and scenario loading
+    if config.task_mode == "llm":
+        # Health check MockLLM service
+        if config.llm.health_check:
+            print(f"\n[Phase 3] Checking MockLLM service health: {config.llm.endpoint}")
+            if not check_mockllm_health(config.llm.endpoint):
+                print(f"ERROR: MockLLM service is not healthy at {config.llm.endpoint}")
+                return {"report": "MockLLM service health check failed", "filepath": None}
+            print("MockLLM service is healthy")
+
+        # Load scenario configuration
+        scenario_file = find_scenario_file(config.llm.scenario_file)
+        print(f"\n[Phase 4] Loading scenario config from: {scenario_file}")
+        try:
+            scenario_config = load_scenarios(scenario_file)
+            prompt = scenario_config.get_prompt(config.llm.model)
+            print(f"  Scenario: {config.llm.model}")
+            print(f"  Prompt: {prompt[:100]}...")
+        except FileNotFoundError:
+            print(f"ERROR: Scenario config file not found: {scenario_file}")
+            return {"report": "Scenario config not found", "filepath": None}
+        except ValueError as e:
+            print(f"ERROR: {e}")
+            return {"report": str(e), "filepath": None}
+
+        # Configure OpenClaw in all sandboxes to use MockLLM
+        print(f"\n[Phase 5] Configuring OpenClaw to use MockLLM...")
+        print(f"  Endpoint: {config.llm.endpoint}")
+        print(f"  Model: {config.llm.model}")
+        configured = OpenClawConfig.configure_all(sandbox_states, config.llm.endpoint, config.llm.model, timeout=30)
+        if configured == 0:
+            print("ERROR: Failed to configure any sandbox with MockLLM endpoint")
+            return {"report": "Failed to configure OpenClaw", "filepath": None}
+
+        # Wait for Gateway to hot-reload
+        print("Waiting for Gateway hot-reload...")
+        time.sleep(3)
+
+        # 6. Start statistics collection
+        print("\n[Phase 6] Starting stats collector...")
+        stats_collector = StatsCollector(config, sandbox_states)
+        stats_collector.start()
+
+        # 7. Start LLM scenario execution
+        llm_task_manager = LLMTaskManager(config, sandbox_states, prompt, stop_event)
+        llm_task_manager.start_all()
+
+        # 8. Run for specified duration
+        print(f"\n[Phase 7] Running for {config.test_duration} seconds...")
+        try:
+            time.sleep(config.test_duration)
+        except KeyboardInterrupt:
+            print("\nUser interrupt, stopping...")
+
+        # 9. Stop all components
+        print("\n[Phase 8] Stopping...")
+        stop_event.set()
+        llm_task_manager.wait_all(timeout=5)
+        stats_collector.stop()
+
+        # Only kill if we created the sandboxes (not in detect mode)
+        if not config.detect_existing:
+            sandbox_manager.kill_all()
+        else:
+            print("Sandboxes left running (detect mode - not killing)")
+
+        time.sleep(0.5)  # Allow daemon threads to complete output
+
+        # 10. Generate and save report
+        report = stats_collector.generate_report()
+        print("\n" + report)
+
+        filepath = stats_collector.save_report(report)
+        print(f"\nReport saved to: {filepath}")
+
+        return {"report": report, "filepath": filepath}
+
+    # Browser mode (default)
     # 5. Start statistics collection
     print("\n[Phase 3] Starting stats collector...")
     stats_collector = StatsCollector(config, sandbox_states)
@@ -778,6 +863,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # Configuration file
     parser.add_argument("-c", "--config", type=str, default=None, help="YAML configuration file path")
+
+    # Task mode
+    parser.add_argument(
+        "--task-mode",
+        type=str,
+        choices=["browser", "llm"],
+        default=None,
+        help="Task mode: 'browser' (default) or 'llm'",
+    )
 
     # E2B environment variables
     parser.add_argument("--e2b-access-token", type=str, help="E2B access token")
