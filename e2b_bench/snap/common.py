@@ -298,3 +298,58 @@ def write_excel_report(
 
     wb.save(output_path)
     print(f"  Excel report saved to {output_path}")
+
+
+def print_summary(summary_data: Dict[str, Dict[str, Any]], title: str) -> None:
+    """Print a paste-friendly stats table to the terminal.
+
+    Renders the same summary_data that write_excel_report consumes
+    as a fixed-width table (stdlib only). Rows are stat keys; columns
+    are data series — identical layout to the Excel Summary sheet so
+    on-screen and spreadsheet views match.
+
+    Args:
+        summary_data: {series_name: {stat_key: value, ...}, ...}.
+        title: Header line printed above the table.
+    """
+    stat_keys = ["count", "success_rate", "avg", "min", "max", "p50", "p90", "p99", "std"]
+    series_names = list(summary_data.keys())
+
+    # Column widths: metric name column + one per series
+    metric_col_w = max(len("metric"), max((len(k) for k in stat_keys), default=0))
+    series_col_w = {name: max(len(name), 12) for name in series_names}
+
+    border = "=" * (metric_col_w + sum(series_col_w.values()) + len(series_names) * 3 + 2)
+    print(border)
+    print(f"{title.center(len(border))}")
+    print(border)
+
+    # Header row
+    header = f"{'metric':<{metric_col_w}}  "
+    hdr_cells = []
+    for name in series_names:
+        w = series_col_w[name]
+        hdr_cells.append(f"{name:>{w}}")
+    header += "  ".join(hdr_cells)
+    print(header)
+    print("-" * len(border))
+
+    # Data rows
+    for key in stat_keys:
+        row = f"{key:<{metric_col_w}}  "
+        cells = []
+        for name in series_names:
+            value = summary_data[name].get(key, "")
+            w = series_col_w[name]
+            cells.append(f"{_fmt(value):>{w}}" if value != "" else " " * w)
+        row += "  ".join(cells)
+        print(row)
+
+    print(border)
+
+
+def _fmt(value: Any) -> str:
+    """Format a stat value for terminal display."""
+    if isinstance(value, float):
+        return f"{value:.4f}"
+    return str(value)
