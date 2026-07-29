@@ -2,8 +2,12 @@
 # E2B Sandbox Coding Benchmark - Single Test Configuration
 #
 # Workflow type: coding — simulates AI coding agent memory pressure
-#   Dev server (~1.5GB persistent) + production build (~2GB peak)
+#   Dev server (~1.5GB persistent) + production build (~1GB peak)
 #   → overlapping ~3GB peak per sandbox
+#
+# Project: devias Material Kit React (github.com/devias-io/material-kit-react)
+#   - 5.6k stars, React + MUI + TypeScript (Next.js)
+#   - MUI's wide dep graph keeps dev server RSS ~1.5GB (memory-overcommit carrier)
 #
 # Usage:
 #   python -m e2b_bench -c config/e2b_coding_bench.yaml --create-only   # Create sandboxes
@@ -20,7 +24,7 @@ e2b_env:
 
 # Sandbox configuration
 sandbox:
-  template: "openclaw-coding-v1"    # E2B template name (coding template with Ant Design Pro)
+  template: "openclaw-coding-v1"    # E2B template name (coding template with devias Material Kit React)
   create_timeout: 86400              # Sandbox creation timeout (seconds)
   total_count: 10                   # Total sandbox count (start small for manual testing)
   detect_existing: false             # Detect existing sandboxes instead of creating new ones
@@ -43,34 +47,30 @@ workflow_type: "coding"
 
 # Coding task configuration
 coding:
-  project_dir: "/opt/coding-bench"    # Ant Design Pro project directory inside sandbox
+  project_dir: "/opt/coding-bench"    # devias Material Kit React project directory inside sandbox
   dev_cmd: "npm run dev"              # Dev server startup command (configurable per project)
   dev_wait: 20                         # Seconds to wait for dev server startup
-  build_cmd: "npm run build"           # Production build command
+  build_cmd: "npm run build"           # Production build command (Next.js build)
   test_cmd: "npm test"                 # Test command
-  source_files:                         # Files for round-robin modification (verified paths)
-    - "src/pages/dashboard/analysis/index.tsx"
-    - "src/pages/dashboard/workplace/index.tsx"
-    - "src/pages/dashboard/monitor/index.tsx"
-    - "src/pages/form/basic-form/index.tsx"
-    - "src/pages/form/step-form/index.tsx"
-    - "src/pages/form/advanced-form/index.tsx"
-    - "src/pages/list/basic-list/index.tsx"
-    - "src/pages/list/card-list/index.tsx"
-    - "src/pages/list/search/index.tsx"
-    - "src/pages/table-list/index.tsx"
-    - "src/pages/profile/basic/index.tsx"
-    - "src/pages/profile/advanced/index.tsx"
-    - "src/pages/result/success/index.tsx"
-    - "src/pages/result/fail/index.tsx"
-    - "src/pages/exception/403/index.tsx"
-    - "src/pages/exception/404/index.tsx"
-    - "src/pages/exception/500/index.tsx"
-    - "src/pages/user/login/index.tsx"
-    - "src/pages/user/register/index.tsx"
-    - "src/pages/account/settings/index.tsx"
-    - "src/pages/account/center/index.tsx"
-    - "src/pages/chatbot/index.tsx"
+  source_files:                         # Replacement pairs for round-robin editing (verified against devias repo)
+    - file: "src/config.ts"
+      find: "name: 'Devias Kit'"
+      replace: "name: 'Devias Kit Pro'"
+    - file: "src/paths.ts"
+      find: "customers: '/dashboard/customers'"
+      replace: "customers: '/dashboard/customer-list'"
+    - file: "src/app/layout.tsx"
+      find: '<html lang="en">'
+      replace: '<html lang="en-US">'
+    - file: "src/app/page.tsx"
+      find: "redirect('/dashboard')"
+      replace: "redirect('/dashboard/overview')"
+    - file: "src/app/dashboard/layout.tsx"
+      find: '<html lang="en">'
+      replace: '<html lang="en-US">'
+    - file: "src/app/dashboard/page.tsx"
+      find: "redirect('/dashboard')"
+      replace: "redirect('/dashboard/overview')"
   build_timeout: 300                    # Build command timeout (seconds)
   test_timeout: 120                     # Test command timeout (seconds)
   interval_min: 2.0                     # Min interval between tasks (fixed mode)
@@ -86,7 +86,7 @@ test:
   benchmark_percent: 1.0                # Percentage of sandboxes for benchmark (1.0 = 100%)
 
   # Round-robin mode configuration (recommended for coding benchmark)
-  # Each round modifies a different source file + builds + tests
+  # Each round applies a different replacement pair + builds + tests
   benchmark_mode: "round_robin"
   round_size: 5                         # Sandboxes per round
   round_count: 5                        # Max rounds (stops when reached or duration exceeded)

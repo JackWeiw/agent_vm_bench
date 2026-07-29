@@ -8,9 +8,9 @@
 # (far below the ~3GB target).
 #
 # Dockerfile.coding now uses a real open-source project:
-#   git clone --depth 1 https://github.com/ant-design/ant-design-pro.git
+#   git clone --depth 1 https://github.com/devias-io/material-kit-react.git
 #
-# See README_CODING.md for the current approach (Ant Design Pro + dev server).
+# See README_CODING.md for the current approach (devias Material Kit React + dev server).
 # ============================================================================
 #
 # Setup React + webpack5 + MUI coding benchmark project inside Docker image

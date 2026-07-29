@@ -3,19 +3,20 @@
 # Coding Benchmark Helper — E2B Sandbox Manual Testing
 # ============================================================================
 #
-# Project: Ant Design Pro (https://github.com/ant-design/ant-design-pro)
-#   - 36k+ GitHub stars, most popular React enterprise dashboard
-#   - Uses antd (60+ UI components) + UmiJS + webpack
+# Project: devias Material Kit React (https://github.com/devias-io/material-kit-react)
+#   - 5.6k GitHub stars, popular React + MUI + TypeScript admin dashboard
+#   - Uses MUI (60+ components + 2000+ icons) + Next.js
 #
-# Simulates real AI coding agent workflow:
-#   Step 0: Setup — reset source files + start dev server (persistent live preview)
-#   Step 1: Edit — modify a source file (sed injection, like agent editing code)
-#   Step 2: Build — production build (overlaps with running dev server, ~3GB peak)
-#   Step 3: Test — run test suite (verify correctness)
-#   Step 4: Memory — collect metrics (free -m)
+# Simulates a real AI coding agent workflow:
+#   Step 0: find   — reset source files (git checkout) + verify/locate target file
+#   Step 1: read   — inspect the target file (agent confirming context)
+#   Step 2: edit   — apply a pre-configured find→replace pair (real semantic edit)
+#   Step 3: build  — production build (overlaps with running dev server, ~3GB peak)
+#   Step 4: test   — run test suite (verify correctness)
+#   Step 5: diff   — git diff → patch file (agent's verification artifact)
 #
 # Memory pressure model:
-#   Dev server (~1-1.5GB persistent) + production build (~2GB peak)
+#   Dev server (~1.5GB persistent) + production build (~1GB peak)
 #   → ~3GB overlapping peak when both processes are active.
 #   This reflects real coding agent environments where dev server is always
 #   running while the agent triggers production build verification.
@@ -38,32 +39,16 @@
 PROJECT_DIR="${BENCH_PROJECT_DIR:-/opt/coding-bench}"
 DEV_WAIT="${BENCH_DEV_WAIT:-20}"
 
-# Source files for round-robin modification (verified against Ant Design Pro repo)
-# These are the most common page types in enterprise dashboard apps:
-#   dashboard, form, list, table-list, profile, result, exception, user, account, chatbot
+# Replacement pairs for round-robin editing (verified against the devias repo).
+# Each pair is a real, type-safe string edit that triggers a Next rebuild without
+# breaking compilation. The runner round-robins through the list.
 TARGET_FILES=(
-    "src/pages/dashboard/analysis/index.tsx"
-    "src/pages/dashboard/workplace/index.tsx"
-    "src/pages/dashboard/monitor/index.tsx"
-    "src/pages/form/basic-form/index.tsx"
-    "src/pages/form/step-form/index.tsx"
-    "src/pages/form/advanced-form/index.tsx"
-    "src/pages/list/basic-list/index.tsx"
-    "src/pages/list/card-list/index.tsx"
-    "src/pages/list/search/index.tsx"
-    "src/pages/table-list/index.tsx"
-    "src/pages/profile/basic/index.tsx"
-    "src/pages/profile/advanced/index.tsx"
-    "src/pages/result/success/index.tsx"
-    "src/pages/result/fail/index.tsx"
-    "src/pages/exception/403/index.tsx"
-    "src/pages/exception/404/index.tsx"
-    "src/pages/exception/500/index.tsx"
-    "src/pages/user/login/index.tsx"
-    "src/pages/user/register/index.tsx"
-    "src/pages/account/settings/index.tsx"
-    "src/pages/account/center/index.tsx"
-    "src/pages/chatbot/index.tsx"
+    "src/config.ts|name: 'Devias Kit'|name: 'Devias Kit Pro'"
+    "src/paths.ts|customers: '/dashboard/customers'|customers: '/dashboard/customer-list'"
+    "src/app/layout.tsx|<html lang=\"en\">|<html lang=\"en-US\">"
+    "src/app/page.tsx|redirect('/dashboard')|redirect('/dashboard/overview')"
+    "src/app/dashboard/layout.tsx|<html lang=\"en\">|<html lang=\"en-US\">"
+    "src/app/dashboard/page.tsx|redirect('/dashboard')|redirect('/dashboard/overview')"
 )
 
 # ---- Argument Parsing ----
@@ -79,7 +64,7 @@ for arg in "$@"; do
         --no-build)      SKIP_BUILD=true ;;
         --no-test)       SKIP_TEST=true ;;
         --help|-h)
-            echo "Coding Benchmark Helper — Ant Design Pro"
+            echo "Coding Benchmark Helper — devias Material Kit React"
             echo ""
             echo "Simulates real AI coding agent workflow with dev server + build overlap."
             echo ""
@@ -100,11 +85,12 @@ for arg in "$@"; do
             echo "  BENCH_DEV_WAIT      Dev server startup wait seconds (default: 20)"
             echo ""
             echo "Workflow steps per round:"
-            echo "  0: setup    — git checkout reset + start dev server (if not running)"
-            echo "  1: edit     — inject round marker into source file (triggers rebuild)"
-            echo "  2: build    — npm run build (clean rebuild, overlaps with dev server)"
-            echo "  3: test     — npm test (verify correctness)"
-            echo "  4: memory   — free -m (collect memory metrics)"
+            echo "  0: find    — git checkout reset + verify/locate target file"
+            echo "  1: read    — inspect target file (head -20)"
+            echo "  2: edit    — apply find→replace pair (real semantic edit, triggers rebuild)"
+            echo "  3: build   — npm run build (clean rebuild, overlaps with dev server)"
+            echo "  4: test    — npm test (verify correctness)"
+            echo "  5: diff    — git diff > patch file (verification artifact)"
             exit 0
             ;;
         *)
@@ -120,21 +106,47 @@ done
 
 # ---- Helper Functions ----
 is_dev_server_running() {
-    pgrep -f "umi dev" > /dev/null 2>&1 || pgrep -f "max dev" > /dev/null 2>&1
+    # devias uses 'next dev' (via npm run dev); also match umi/max for other projects
+    ps aux | grep -E 'npm run dev|next dev|umi dev|max dev' | grep -v grep | grep -v pgrep | grep -v 'sh -c' > /dev/null 2>&1
 }
 
 # ---- Banner ----
 echo "============================================"
-echo "  Coding Bench — Ant Design Pro — Round ${ROUND}"
+echo "  Coding Bench — devias Material Kit React — Round ${ROUND}"
 echo "============================================"
 echo ""
 
-# ---- Step 0: Setup — reset + dev server ----
-echo "[Step 0: setup] Preparing environment..."
+# ---- Resolve the replacement pair for this round ----
+PAIR_IDX=$((ROUND % ${#TARGET_FILES[@]}))
+PAIR="${TARGET_FILES[$PAIR_IDX]}"
+TARGET_FILE="${PAIR%%|*}"
+REST="${PAIR#*|}"
+FIND_STR="${REST%%|*}"
+REPLACE_STR="${REST#*|}"
 
-# Reset source files to clean state (simulates agent reverting failed changes)
+# ---- Step 0: find — reset + dev server ----
+echo "[Step 0: find] Preparing environment..."
+
+# Reset source files to clean state (simulates agent reverting previous round's changes)
 cd "${PROJECT_DIR}" && git checkout -- src/ 2>/dev/null || echo "  WARNING: git checkout failed (not a git repo or no src/ changes)"
-echo "  Source files reset (git checkout -- src/)"
+
+# Verify the target file exists; fall back to a located file with a generic comment-marker pair
+if [ ! -f "${PROJECT_DIR}/${TARGET_FILE}" ]; then
+    echo "  WARNING: target not found: ${TARGET_FILE}"
+    FOUND_FILE=$(cd "${PROJECT_DIR}" && find src -name '*.tsx' -o -name '*.ts' 2>/dev/null | head -1)
+    if [ -n "${FOUND_FILE}" ]; then
+        TARGET_FILE="${FOUND_FILE}"
+        FIND_STR="// bench marker"
+        REPLACE_STR="// bench round
+// bench marker"
+        echo "  Falling back to: ${TARGET_FILE} (generic comment-marker pair)"
+    else
+        echo "  ERROR: No target file available for modification" >&2
+        exit 1
+    fi
+else
+    echo "  Target: ${TARGET_FILE}"
+fi
 
 # Start dev server if not already running
 # Dev server provides live preview — every coding agent working on web apps
@@ -158,36 +170,37 @@ else
 fi
 echo ""
 
-# ---- Step 1: Edit — modify source file ----
-FILE_IDX=$((ROUND % ${#TARGET_FILES[@]}))
-TARGET_FILE="${TARGET_FILES[$FILE_IDX]}"
-
-echo "[Step 1: edit] Round ${ROUND} → ${TARGET_FILE}"
-if [ -f "${PROJECT_DIR}/${TARGET_FILE}" ]; then
-    sed -i "1i// Bench Round ${ROUND}" "${PROJECT_DIR}/${TARGET_FILE}"
-    echo "  Injected round marker comment (triggers webpack rebuild)"
-else
-    echo "  File not found: ${TARGET_FILE}"
-    echo "  Fallback: modifying config/config.ts"
-    if [ -f "${PROJECT_DIR}/config/config.ts" ]; then
-        sed -i "1i// Bench Round ${ROUND}" "${PROJECT_DIR}/config/config.ts"
-        echo "  Injected round marker into config"
-    else
-        echo "  ERROR: No target file available for modification" >&2
-        exit 1
-    fi
-fi
+# ---- Step 1: read — inspect target file ----
+echo "[Step 1: read] Inspecting ${TARGET_FILE}..."
+cd "${PROJECT_DIR}" && head -20 "${TARGET_FILE}"
+echo ""
 echo ""
 
-# ---- Step 2: Build — production build (clean rebuild for max memory) ----
+# ---- Step 2: edit — apply find→replace pair ----
+echo "[Step 2: edit] Applying replacement (triggers rebuild)..."
+echo "  find:    ${FIND_STR}"
+echo "  replace: ${REPLACE_STR}"
+# sed with | delimiter; escape | and & in the replacement to be safe
+ESC_REPLACE=$(printf '%s' "${REPLACE_STR}" | sed 's/[&|]/\\&/g')
+cd "${PROJECT_DIR}" && sed -i "s|${FIND_STR}|${ESC_REPLACE}|" "${TARGET_FILE}"
+EDIT_EXIT=$?
+if [ ${EDIT_EXIT} -ne 0 ]; then
+    echo "  ERROR: edit failed (sed exit ${EDIT_EXIT})" >&2
+    exit 1
+fi
+echo "  Edit applied"
+echo ""
+
+# ---- Step 3: build — production build (clean rebuild for max memory) ----
 if [ "${SKIP_BUILD}" = false ]; then
-    echo "[Step 2: build] Production build (clean rebuild + dev server overlap)..."
+    echo "[Step 3: build] Production build (clean rebuild + dev server overlap)..."
     BUILD_START=$(date +%s%N)
 
-    # Remove build output and webpack filesystem cache (forces full recompilation)
-    # NOTE: keep .umi/ intact when dev server is running — it depends on those
-    # generated files. Only remove dist/ and node_modules/.cache/
-    rm -rf "${PROJECT_DIR}/dist/" "${PROJECT_DIR}/node_modules/.cache/"
+    # Remove build output and bundler cache (forces full recompilation).
+    # NOTE: remove .next/ (Next.js) and node_modules/.cache/. Do NOT remove
+    # .next/cache when the dev server is running if it depends on it — but a
+    # clean rebuild here intentionally forces full recompile for memory peak.
+    rm -rf "${PROJECT_DIR}/.next/" "${PROJECT_DIR}/node_modules/.cache/"
 
     cd "${PROJECT_DIR}" && npm run build > /tmp/build_output.log 2>&1
     BUILD_EXIT=$?
@@ -201,15 +214,15 @@ if [ "${SKIP_BUILD}" = false ]; then
         echo "  Build: FAILED (exit ${BUILD_EXIT}, ${BUILD_MS}ms)"
     fi
 else
-    echo "[Step 2: build] Skipped (--no-build)"
+    echo "[Step 3: build] Skipped (--no-build)"
     BUILD_MS=0
     BUILD_EXIT=0
 fi
 echo ""
 
-# ---- Step 3: Test — run test suite ----
+# ---- Step 4: test — run test suite ----
 if [ "${SKIP_TEST}" = false ]; then
-    echo "[Step 3: test] Running test suite..."
+    echo "[Step 4: test] Running test suite..."
     TEST_START=$(date +%s%N)
 
     cd "${PROJECT_DIR}" && npm test > /tmp/test_output.log 2>&1
@@ -220,15 +233,21 @@ if [ "${SKIP_TEST}" = false ]; then
     tail -5 /tmp/test_output.log
     echo "  Test: completed (${TEST_MS}ms, exit ${TEST_EXIT})"
 else
-    echo "[Step 3: test] Skipped (--no-test)"
+    echo "[Step 4: test] Skipped (--no-test)"
     TEST_MS=0
     TEST_EXIT=0
 fi
 echo ""
 
-# ---- Step 4: Memory — collect metrics ----
-echo "[Step 4: memory] Current memory usage:"
-free -m
+# ---- Step 5: diff — produce verification artifact ----
+echo "[Step 5: diff] Producing git patch..."
+DIFF_START=$(date +%s%N)
+cd "${PROJECT_DIR}" && git diff > "/tmp/bench_round_${ROUND}.patch" 2>&1
+DIFF_EXIT=$?
+DIFF_END=$(date +%s%N)
+DIFF_MS=$(( (DIFF_END - DIFF_START) / 1000000 ))
+PATCH_LINES=$(wc -l < "/tmp/bench_round_${ROUND}.patch" 2>/dev/null || echo 0)
+echo "  Patch: /tmp/bench_round_${ROUND}.patch (${PATCH_LINES} lines, ${DIFF_MS}ms)"
 echo ""
 
 # ---- Summary ----
@@ -240,11 +259,13 @@ echo "  Round ${ROUND} Complete"
 echo "============================================"
 echo "  Round:       ${ROUND}"
 echo "  Target:      ${TARGET_FILE}"
+echo "  Edit:        '${FIND_STR}' -> '${REPLACE_STR}'"
 echo "  Build:       ${BUILD_MS}ms (exit: ${BUILD_EXIT})"
 echo "  Test:        ${TEST_MS}ms (exit: ${TEST_EXIT})"
+echo "  Patch:       /tmp/bench_round_${ROUND}.patch (${PATCH_LINES} lines)"
 echo "  Dev server:  ${DEV_STATUS}"
 echo "============================================"
 echo ""
 echo "  Next round:  bash ${PROJECT_DIR}/bench_helper.sh $((ROUND + 1))"
 echo "  Reset only:  cd ${PROJECT_DIR} && git checkout -- src/"
-echo "  Stop dev:    pkill -f 'umi dev'; pkill -f 'max dev'"
+echo "  Stop dev:    pkill -f 'next dev'; pkill -f 'npm run dev'"

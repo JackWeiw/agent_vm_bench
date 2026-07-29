@@ -57,11 +57,13 @@ class ErrorClassifier:
         ("D-Bus connection error", ["d-bus", "dbus", "failed to connect to the bus"]),
         ("Gateway connection error", ["gateway", "cdp", "http_unreachable"]),
         # Coding errors
-        ("Checkout failed", ["checkout failed", "git checkout"]),
+        ("Find failed", ["find failed", "git checkout", "locate failed"]),
+        ("Read failed", ["read failed", "head failed"]),
         ("Edit failed", ["edit failed", "sed failed"]),
-        ("Build failed", ["build failed", "npm run build", "webpack"]),
+        ("Build failed", ["build failed", "npm run build", "next build", "webpack"]),
         ("Test failed", ["test failed", "npm test"]),
-        ("Dev server failed", ["dev server", "umi dev", "npm run dev"]),
+        ("Diff failed", ["diff failed", "git diff"]),
+        ("Dev server failed", ["dev server", "next dev", "npm run dev"]),
         ("OOM", ["oom", "out of memory", "cannot allocate"]),
         ("Timeout", ["timeout", "timed out"]),
     ]

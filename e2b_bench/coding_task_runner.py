@@ -4,12 +4,14 @@ Coding Task Execution Module
 Responsible for coding task execution inside E2B sandboxes, analogous to
 task_runner.py's browser workflow. Each sandbox has an independent thread.
 
-Simulates real AI coding agent workflow:
-  Step 0: Setup — start dev server (persistent live preview, ~1.5GB baseline)
-  Step 1: Checkout — reset source files to clean state (git checkout)
-  Step 2: Edit — inject round marker into target file (triggers rebuild)
-  Step 3: Build — production build (overlaps with dev server, ~3GB peak)
-  Step 4: Test — run test suite (verify correctness)
+Simulates a real AI coding agent workflow (matches observed agent traces:
+locate → inspect → edit → build → test → diff):
+  Step 0: find    — reset source files (git checkout) + verify target file exists
+  Step 1: read    — read the target file to confirm context (agent inspection)
+  Step 2: edit    — apply a pre-configured find→replace pair (real semantic edit, triggers rebuild)
+  Step 3: build   — production build (overlaps with dev server, ~3GB peak)
+  Step 4: test    — run test suite (verify correctness)
+  Step 5: diff    — git diff → patch file (agent's verification artifact)
 
 Classes:
 - CodingWarmupRunner: Starts dev server + initial build during warmup phase
@@ -41,14 +43,15 @@ def _check_dev_server_running(sbx, project_dir: str) -> bool:
     - sh -c (E2B commands.run() may use sh -c to execute, and its cmdline
       could contain the grep pattern string)
 
-    Returns True if a dev server process (npm run dev / umi dev / max dev)
+    Returns True if a dev server process (npm run dev / next dev / umi dev / max dev)
     is found running, False otherwise.
     """
     try:
         result = sbx.commands.run(
-            # Match processes containing 'npm run dev', 'umi dev', or 'max dev'
+            # Match dev server processes: 'npm run dev', 'next dev', 'umi dev', 'max dev'
             # Exclude grep/pgrep/sh processes to avoid false-positive from this command itself
-            f"ps aux | grep -E 'npm run dev|umi dev|max dev'" f" | grep -v grep | grep -v pgrep | grep -v 'sh -c'",
+            f"ps aux | grep -E 'npm run dev|next dev|umi dev|max dev'"
+            f" | grep -v grep | grep -v pgrep | grep -v 'sh -c'",
             timeout=10,
             user="root",
         )
@@ -262,7 +265,7 @@ class CodingTaskRunner(threading.Thread):
         print(f"[Sandbox{self.state.sandbox_id}] Coding task runner ended")
 
     def _run_single_task(self) -> Tuple[bool, float, bool, bool, bool]:
-        """Execute single coding task cycle
+        """Execute single coding task cycle (find → read → edit → build → test → diff)
 
         Returns: (success, latency_seconds, build_success, test_success, timed_out)
         """
@@ -273,17 +276,21 @@ class CodingTaskRunner(threading.Thread):
         project_dir = self.config.coding_project_dir
         source_files = self.config.coding_source_files
 
-        # Pick target file for this round
+        # Pick replacement pair for this round
         if not source_files:
             return False, 0.0, False, False, False
 
-        file_idx = self.state.coding_metrics.total_tasks % len(source_files)
-        target_file = source_files[file_idx]
+        pair_idx = self.state.coding_metrics.total_tasks % len(source_files)
+        pair = source_files[pair_idx]
+        target_file = pair["file"]
+        find_str = pair["find"]
+        replace_str = pair["replace"]
 
         start_time = time.perf_counter()
         build_success = False
         test_success = False
         timed_out = False
+        step_times: Dict[str, float] = {}
 
         try:
             # Step 0: Ensure dev server is running (for memory pressure overlap)
@@ -299,29 +306,46 @@ class CodingTaskRunner(threading.Thread):
                         self.state.sandbox_id,
                     )
 
-            # Step 1: Checkout — reset source files
+            # Step 1: find — reset source files + verify target file exists
+            t0 = time.perf_counter()
             sbx.commands.run(f"cd {project_dir} && git checkout -- src/", timeout=30, user="root")
-
-            # Step 2: Edit — inject round marker into target file
-            round_id = self.state.coding_metrics.total_tasks
-            edit_result = sbx.commands.run(
-                f"cd {project_dir} && sed -i '1i// Bench Round {round_id}' {target_file}",
-                timeout=15,
-                user="root",
-            )
-            if edit_result.exit_code != 0:
-                # Fallback to config file if target file doesn't exist
-                sbx.commands.run(
-                    f"cd {project_dir} && sed -i '1i// Bench Round {round_id}' config/config.ts",
+            # Verify the target file exists (agent would locate the file)
+            exists = sbx.commands.run(f"cd {project_dir} && test -f {target_file} && echo ok", timeout=15, user="root")
+            step_times["find"] = time.perf_counter() - t0
+            if exists.exit_code != 0 or "ok" not in (exists.stdout or ""):
+                # Fallback: if the configured target doesn't exist, locate any source file
+                fallback = sbx.commands.run(
+                    f"cd {project_dir} && find src -name '*.tsx' -o -name '*.ts' | head -1",
                     timeout=15,
                     user="root",
                 )
+                found = (fallback.stdout or "").strip().splitlines()
+                if found:
+                    target_file = found[0]
+                    find_str, replace_str = "// bench marker", "// bench round\n// bench marker"
 
-            # Step 3: Build — production build (memory-intensive)
+            # Step 2: read — inspect the target file (agent confirming context)
+            t1 = time.perf_counter()
+            sbx.commands.run(f"cd {project_dir} && head -20 {target_file}", timeout=15, user="root")
+            step_times["read"] = time.perf_counter() - t1
+
+            # Step 3: edit — apply the find→replace pair (real semantic edit)
+            t2 = time.perf_counter()
+            escaped_replace = replace_str.replace("/", "\\/").replace("&", "\\&")
+            edit_result = sbx.commands.run(
+                f"cd {project_dir} && sed -i 's|{find_str}|{escaped_replace}|' {target_file}",
+                timeout=15,
+                user="root",
+            )
+            step_times["edit"] = time.perf_counter() - t2
+            if edit_result.exit_code != 0:
+                self.state.coding_metrics.last_error = f"edit failed: exit_code={edit_result.exit_code}"
+                return False, time.perf_counter() - start_time, build_success, test_success, timed_out
+
+            # Step 4: build — production build (memory-intensive)
             if not self.config.coding_skip_build:
-                # Clean build output and webpack cache to force full recompilation
                 sbx.commands.run(
-                    f"cd {project_dir} && rm -rf dist/ node_modules/.cache/",
+                    f"cd {project_dir} && rm -rf dist/ .next/ node_modules/.cache/",
                     timeout=15,
                     user="root",
                 )
@@ -337,7 +361,7 @@ class CodingTaskRunner(threading.Thread):
                         error_detail += f", stderr={build_result.stderr[:200]}"
                     self.state.coding_metrics.last_error = error_detail
 
-            # Step 4: Test — run test suite
+            # Step 5: test — run test suite
             if not self.config.coding_skip_test and build_success:
                 test_result = sbx.commands.run(
                     f"cd {project_dir} && {self.config.coding_test_cmd}",
@@ -346,9 +370,17 @@ class CodingTaskRunner(threading.Thread):
                 )
                 test_success = test_result.exit_code == 0
 
+            # Step 6: diff — produce the verification artifact (git diff → patch)
+            t3 = time.perf_counter()
+            sbx.commands.run(
+                f"cd {project_dir} && git diff > /tmp/bench_round_{self.state.coding_metrics.total_tasks}.patch",
+                timeout=15,
+                user="root",
+            )
+            step_times["diff"] = time.perf_counter() - t3
+
             elapsed = time.perf_counter() - start_time
-            # Bug #1 fix: skip_build=True means build_success should be True (skipped = not failed)
-            # success = (skip_build or build_success) and (skip_test or test_success)
+            # skip_build=True means build_success should be True (skipped = not failed)
             success = (self.config.coding_skip_build or build_success) and (
                 self.config.coding_skip_test or test_success
             )
@@ -358,7 +390,7 @@ class CodingTaskRunner(threading.Thread):
         except Exception as e:
             elapsed = time.perf_counter() - start_time
             error_msg = str(e)
-            # Bug #2 fix: timeout is determined by exception, not elapsed time
+            # timeout is determined by exception, not elapsed time
             timed_out = "timed out" in error_msg.lower() or "context deadline exceeded" in error_msg.lower()
             self.state.coding_metrics.last_error = error_msg
             print(f"[Sandbox{self.state.sandbox_id}] Coding task exception: {error_msg[:100]}")
@@ -368,19 +400,18 @@ class CodingTaskRunner(threading.Thread):
 class CodingRoundRunner(threading.Thread):
     """Runner for coding operations in round-robin benchmark mode
 
-    Each round modifies a different source file, then builds and tests.
-    This creates genuine memory pressure because each modification triggers
-    webpack to re-compile affected modules, and the build step peaks at ~2GB.
-
-    The dev server runs persistently (~1.5GB), so when build peaks overlap
-    with the running dev server, total sandbox memory reaches ~3GB.
+    Each round applies a different pre-configured replacement pair (a real,
+    type-safe edit an agent would make), then builds and tests. Each edit
+    triggers the bundler to re-compile affected modules; the build step peaks
+    and overlaps with the running dev server (~1.5GB) → ~3GB per sandbox.
 
     Steps per round (with individual timing):
-      0. ensure_dev — verify dev server is running (restart if crashed)
-      1. checkout   — git checkout -- src/ (reset to clean state)
-      2. edit       — sed inject round marker into target file
-      3. build      — npm run build (MEMORY PEAK, overlaps with dev server)
-      4. test       — npm test (verify correctness)
+      0. find  — git checkout reset + verify/locate the target file
+      1. read  — inspect the target file (agent confirming context)
+      2. edit  — apply the find→replace pair (real semantic edit, triggers rebuild)
+      3. build — npm run build (MEMORY PEAK, overlaps with dev server)
+      4. test  — npm test (verify correctness)
+      5. diff  — git diff → patch file (agent verification artifact)
 
     Attributes:
         state: Sandbox state for metrics
@@ -415,14 +446,14 @@ class CodingRoundRunner(threading.Thread):
             print(f"[Sandbox{self.state.sandbox_id}] No coding source files configured")
             return
 
-        # Pick target file for this round (round-robin through source files)
-        file_idx = self.round_id % len(source_files)
-        target_file = source_files[file_idx]
+        # Pick replacement pair for this round (round-robin through the list)
+        pair_idx = self.round_id % len(source_files)
+        pair = source_files[pair_idx]
 
         start_time = time.perf_counter()
 
         success, step_times, build_success, test_success, failed_step, error_detail, timed_out = self._execute_steps(
-            sbx, target_file
+            sbx, pair
         )
 
         elapsed = self._record_metrics(
@@ -433,14 +464,14 @@ class CodingRoundRunner(threading.Thread):
             step_breakdown = ", ".join(f"{k}={v:.2f}s" for k, v in step_times.items() if v > 0)
             print(f"[Sandbox{self.state.sandbox_id}] Coding round completed in {elapsed:.2f}s ({step_breakdown})")
         else:
-            self._handle_failure(target_file, failed_step, error_detail)
+            self._handle_failure(pair["file"], failed_step, error_detail)
 
-    def _execute_steps(self, sbx, target_file: str) -> Tuple[bool, Dict[str, float], bool, bool, str, str, bool]:
-        """Execute all steps: ensure_dev_server -> checkout -> edit -> build -> test
+    def _execute_steps(self, sbx, pair: Dict[str, str]) -> Tuple[bool, Dict[str, float], bool, bool, str, str, bool]:
+        """Execute all steps: find -> read -> edit -> build -> test -> diff
 
         Args:
             sbx: Sandbox object
-            target_file: Source file path relative to project_dir
+            pair: Replacement pair {"file": str, "find": str, "replace": str}
 
         Returns:
             Tuple of (success, step_times, build_success, test_success, failed_step, error_detail, timed_out)
@@ -453,48 +484,55 @@ class CodingRoundRunner(threading.Thread):
         test_success = False
         timed_out = False
         project_dir = self.config.coding_project_dir
+        target_file = pair["file"]
+        find_str = pair["find"]
+        replace_str = pair["replace"]
 
         try:
-            # Step 0: Ensure dev server is running (persistent ~1.5GB baseline)
-            # The dev server must be running for the build+dev overlap that creates
-            # ~3GB memory pressure. Without it, peak is only ~2GB.
+            # Step 0: find — ensure dev server, reset source files, verify/locate target
             if not self.config.coding_skip_dev_server:
                 self._step_ensure_dev_server(sbx, project_dir, step_times)
 
-            # Step 1: Checkout — reset source files to clean state
-            checkout_success, checkout_error = self._step_checkout(sbx, project_dir, step_times)
-            if not checkout_success:
-                # Checkout failure is not fatal (sandbox may not be a git repo)
-                # Log warning but continue
-                print(f"[Sandbox{self.state.sandbox_id}] checkout warning: {checkout_error}")
+            locate_ok, locate_error, resolved_file, resolved_find, resolved_replace = self._step_find(
+                sbx, project_dir, target_file, find_str, replace_str, step_times
+            )
+            if not locate_ok:
+                # find failure is non-fatal (may not be a git repo / file moved); continue
+                print(f"[Sandbox{self.state.sandbox_id}] find warning: {locate_error}")
+            target_file = resolved_file
+            find_str = resolved_find
+            replace_str = resolved_replace
 
-            # Step 2: Edit — inject round marker into target file
-            edit_success, edit_error = self._step_edit(sbx, project_dir, target_file, step_times)
+            # Step 1: read — inspect the target file
+            self._step_read(sbx, project_dir, target_file, step_times)
+
+            # Step 2: edit — apply the find→replace pair
+            edit_success, edit_error = self._step_edit(sbx, project_dir, target_file, find_str, replace_str, step_times)
             if not edit_success:
                 failed_step = "edit"
                 error_detail = edit_error
                 success = False
                 return success, step_times, build_success, test_success, failed_step, error_detail, timed_out
 
-            # Step 3: Build — production build (memory-intensive)
-            # Bug #4 fix: respect coding_skip_build flag, skipped = success
+            # Step 3: build — production build (memory-intensive)
             if not self.config.coding_skip_build:
                 build_success, build_error = self._step_build(sbx, project_dir, step_times)
                 if not build_success:
                     failed_step = "build"
                     error_detail = build_error
                     success = False
-                    # Still continue to collect memory metrics
             else:
                 build_success = True  # skipped = not failed
 
-            # Step 4: Test — run test suite (only if build succeeded or skipped)
-            # Bug #4 fix: respect coding_skip_test flag, skipped = success
+            # Step 4: test — run test suite (only if build succeeded or skipped)
             if not self.config.coding_skip_test and build_success:
                 test_success, test_error = self._step_test(sbx, project_dir, step_times)
                 # Test failure is non-fatal for overall round success
             elif self.config.coding_skip_test:
                 test_success = True  # skipped = not failed
+
+            # Step 5: diff — produce the verification artifact
+            self._step_diff(sbx, project_dir, step_times)
 
         except Exception as e:
             success = False
@@ -504,20 +542,20 @@ class CodingRoundRunner(threading.Thread):
         return success, step_times, build_success, test_success, failed_step, error_detail, timed_out
 
     def _step_ensure_dev_server(self, sbx, project_dir: str, step_times: Dict[str, float]) -> None:
-        """Step 0: Ensure dev server is running for memory pressure overlap.
+        """Pre-step: Ensure dev server is running for memory pressure overlap.
 
-        The dev server (~1.5GB) must overlap with the build step (~2GB) to
-        create ~3GB memory pressure. Without the dev server, peak is only ~2GB.
-
-        Non-fatal: if dev server cannot be started, the round continues without
-        memory overlap (build will still run, just at lower peak).
+        The dev server (~1.5GB) must overlap with the build step to create ~3GB
+        memory pressure. Non-fatal: if it can't start, the round continues at
+        a lower peak. Timed under the `find` step (it's part of round setup,
+        not a distinct agent action).
         """
         step_start = time.perf_counter()
         dev_server_running = _check_dev_server_running(sbx, project_dir)
         check_elapsed = time.perf_counter() - step_start
 
         if dev_server_running:
-            step_times["ensure_dev"] = check_elapsed
+            step_times.setdefault("find", 0.0)
+            step_times["find"] += check_elapsed
             return  # Already running, no action needed
 
         # Dev server not running — restart it
@@ -529,63 +567,85 @@ class CodingRoundRunner(threading.Thread):
             self.config.coding_dev_wait,
             self.state.sandbox_id,
         )
-        step_times["ensure_dev"] = time.perf_counter() - step_start
+        step_times.setdefault("find", 0.0)
+        step_times["find"] += time.perf_counter() - step_start
 
-    def _step_checkout(self, sbx, project_dir: str, step_times: Dict[str, float]) -> Tuple[bool, str]:
-        """Step 1: Reset source files via git checkout
+    def _step_find(
+        self, sbx, project_dir: str, target_file: str, find_str: str, replace_str: str, step_times: Dict[str, float]
+    ) -> Tuple[bool, str, str, str, str]:
+        """Step 0: Reset source files via git checkout + verify/locate the target file.
 
-        Returns: (success, error_detail) — checkout failure is non-fatal
+        Returns: (success, error_detail, resolved_file, resolved_find, resolved_replace)
+        — checkout/locate failure is non-fatal; on miss it falls back to a located file
+        with a generic comment-marker pair so the round still triggers a rebuild.
         """
         step_start = time.perf_counter()
         result = sbx.commands.run(f"cd {project_dir} && git checkout -- src/", timeout=30, user="root")
-        step_times["checkout"] = time.perf_counter() - step_start
+        # Verify target file exists
+        exists = sbx.commands.run(f"cd {project_dir} && test -f {target_file} && echo ok", timeout=15, user="root")
+        step_times["find"] = step_times.get("find", 0.0) + (time.perf_counter() - step_start)
 
-        if result.exit_code != 0:
-            error_parts = [f"checkout warning: exit_code={result.exit_code}"]
-            if result.stderr:
-                error_parts.append(f"stderr={result.stderr[:100]}")
-            return False, " | ".join(error_parts)
-        return True, ""
+        if exists.exit_code == 0 and "ok" in (exists.stdout or ""):
+            return True, "", target_file, find_str, replace_str
 
-    def _step_edit(self, sbx, project_dir: str, target_file: str, step_times: Dict[str, float]) -> Tuple[bool, str]:
-        """Step 2: Inject round marker into target file via sed
+        # Fallback: locate any source file and use a generic comment-marker pair
+        fallback = sbx.commands.run(
+            f"cd {project_dir} && find src -name '*.tsx' -o -name '*.ts' | head -1",
+            timeout=15,
+            user="root",
+        )
+        found = (fallback.stdout or "").strip().splitlines()
+        if found:
+            return (
+                False,
+                f"target not found, fell back to {found[0]}",
+                found[0],
+                "// bench marker",
+                "// bench round\n// bench marker",
+            )
+        return False, "checkout/locate failed", target_file, find_str, replace_str
+
+    def _step_read(self, sbx, project_dir: str, target_file: str, step_times: Dict[str, float]) -> None:
+        """Step 1: Read the target file (agent confirming context)."""
+        step_start = time.perf_counter()
+        sbx.commands.run(f"cd {project_dir} && head -20 {target_file}", timeout=15, user="root")
+        step_times["read"] = time.perf_counter() - step_start
+
+    def _step_edit(
+        self, sbx, project_dir: str, target_file: str, find_str: str, replace_str: str, step_times: Dict[str, float]
+    ) -> Tuple[bool, str]:
+        """Step 2: Apply the find→replace pair via sed (real semantic edit, triggers rebuild).
 
         Returns: (success, error_detail)
         """
         step_start = time.perf_counter()
+        escaped_replace = replace_str.replace("/", "\\/").replace("&", "\\&")
         result = sbx.commands.run(
-            f"cd {project_dir} && sed -i '1i// Bench Round {self.round_id}' {target_file}",
+            f"cd {project_dir} && sed -i 's|{find_str}|{escaped_replace}|' {target_file}",
             timeout=15,
             user="root",
         )
         step_times["edit"] = time.perf_counter() - step_start
 
         if result.exit_code != 0:
-            # Fallback: try config file if target file doesn't exist
-            fallback_result = sbx.commands.run(
-                f"cd {project_dir} && sed -i '1i// Bench Round {self.round_id}' config/config.ts",
-                timeout=15,
-                user="root",
-            )
-            if fallback_result.exit_code != 0:
-                error_parts = [f"edit failed: exit_code={result.exit_code}"]
-                if result.stderr:
-                    error_parts.append(f"stderr={result.stderr[:100]}")
-                error_parts.append(f"file={target_file}")
-                return False, " | ".join(error_parts)
+            error_parts = [f"edit failed: exit_code={result.exit_code}"]
+            if result.stderr:
+                error_parts.append(f"stderr={result.stderr[:100]}")
+            error_parts.append(f"file={target_file}")
+            return False, " | ".join(error_parts)
         return True, ""
 
     def _step_build(self, sbx, project_dir: str, step_times: Dict[str, float]) -> Tuple[bool, str]:
         """Step 3: Production build (the memory-intensive step)
 
-        Removes dist/ and node_modules/.cache/ first to force full recompilation.
-        Keeps .umi/ intact when dev server is running.
+        Removes dist/, .next/ (Next.js), and node_modules/.cache/ first to force
+        full recompilation.
 
         Returns: (success, error_detail)
         """
-        # Clean build output and webpack cache before building
+        # Clean build output and bundler cache before building
         step_start = time.perf_counter()
-        sbx.commands.run(f"cd {project_dir} && rm -rf dist/ node_modules/.cache/", timeout=15, user="root")
+        sbx.commands.run(f"cd {project_dir} && rm -rf dist/ .next/ node_modules/.cache/", timeout=15, user="root")
 
         # Clean timing — only measure the actual build command
         build_start = time.perf_counter()
@@ -625,20 +685,32 @@ class CodingRoundRunner(threading.Thread):
             return False, " | ".join(error_parts)
         return True, ""
 
+    def _step_diff(self, sbx, project_dir: str, step_times: Dict[str, float]) -> None:
+        """Step 5: Produce the verification artifact (git diff → patch file)."""
+        step_start = time.perf_counter()
+        sbx.commands.run(
+            f"cd {project_dir} && git diff > /tmp/bench_round_{self.round_id}.patch",
+            timeout=15,
+            user="root",
+        )
+        step_times["diff"] = time.perf_counter() - step_start
+
     def _classify_exception(self, e: Exception, step_times: Dict[str, float]) -> Tuple[str, str]:
         """Classify exception to determine which step failed"""
         error_str = str(e)
         if "context deadline exceeded" in error_str or "timed out" in error_str:
-            if "ensure_dev" not in step_times:
-                return "ensure_dev", "ensure_dev_server timed out"
-            elif "checkout" not in step_times:
-                return "checkout", "checkout timed out"
+            if "find" not in step_times:
+                return "find", "find timed out"
+            elif "read" not in step_times:
+                return "read", "read timed out"
             elif "edit" not in step_times:
                 return "edit", "edit timed out"
             elif "build" not in step_times:
                 return "build", f"build timed out after {self.config.coding_build_timeout}s"
             elif "test" not in step_times:
                 return "test", "test timed out"
+            elif "diff" not in step_times:
+                return "diff", "diff timed out"
             else:
                 return "unknown", f"operation timed out: {error_str[:100]}"
         else:
@@ -656,13 +728,12 @@ class CodingRoundRunner(threading.Thread):
     ) -> float:
         """Record metrics for this coding round
 
-        Bug #2 fix: timeout is determined by exception handling, not by
-        comparing total elapsed time against coding_build_timeout.
+        timeout is determined by exception handling, not by comparing total
+        elapsed time against coding_build_timeout.
 
         Returns: elapsed time in seconds
         """
         elapsed = time.perf_counter() - start_time
-        # Bug #2 fix: use timed_out from exception handling, not elapsed > build_timeout
         self.state.coding_metrics.add(
             elapsed,
             success and not timed_out,

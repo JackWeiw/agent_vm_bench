@@ -2,10 +2,11 @@
 #
 # Environment: coding + agent (openclaw), NO browser/Chromium
 #
-# Project: Ant Design Pro (https://github.com/ant-design/ant-design-pro)
-#   - 36k+ GitHub stars, most popular open-source React enterprise dashboard
-#   - Uses antd (60+ UI components) + UmiJS + webpack
-#   - Very representative of what AI coding agents work on
+# Project: devias Material Kit React (https://github.com/devias-io/material-kit-react)
+#   - 5.6k GitHub stars, popular React + MUI + TypeScript admin dashboard
+#   - Uses MUI (60+ components + 2000+ icons) + Next.js
+#   - MUI's wide dependency graph keeps dev server RSS ~1.5GB (memory-overcommit carrier)
+#   - Representative of enterprise React apps AI coding agents work on
 #   - Pure JS/TS, ARM64 compatible
 #
 # Agent tools included:
@@ -14,9 +15,9 @@
 # - openclaw-gateway: Agent gateway service (ports 18789 + 11436)
 #
 # Memory pressure model:
-# - Dev server (npm run dev) runs persistently (~1-1.5GB) — like every coding agent
+# - Dev server (npm run dev) runs persistently (~1.5GB) — like every coding agent
 #   working on web apps starts dev server for live preview (Devin, OpenHands, etc.)
-# - Production build (npm run build) peaks at ~2GB during verification
+# - Production build (npm run build) peaks at ~1GB during verification
 # - Overlapping peak: dev server + build simultaneously active → ~3GB per sandbox
 # - Multiple concurrent sandboxes → overlapping peaks → host memory stress
 #
@@ -78,15 +79,16 @@ RUN mkdir -p /etc/supervisor/conf.d && \
     touch /var/log/llama.log /var/log/openclaw.log
 COPY llama_openclaw.conf /etc/supervisor/conf.d/llama_openclaw.conf
 
-# --- Coding benchmark project: Ant Design Pro (real open-source project) ---
-# Clone, install dependencies, build, and init git for modification tracking
+# --- Coding benchmark project: devias Material Kit React (real open-source project) ---
+# Clone, install dependencies, build, and init git for modification tracking.
+# --legacy-peer-deps handles MUI/Next peer dependency expectations.
 RUN cd /opt && \
-    git clone --depth 1 https://github.com/ant-design/ant-design-pro.git coding-bench && \
+    git clone --depth 1 https://github.com/devias-io/material-kit-react.git coding-bench && \
     cd coding-bench && \
-    npm install --registry=https://registry.npmmirror.com --strict-ssl=false && \
+    npm install --registry=https://registry.npmmirror.com --strict-ssl=false --legacy-peer-deps && \
     npm run build && \
-    test -d dist && test "$(ls -A dist | wc -l)" -gt 0 && \
-    echo "Build verification: SUCCESS (dist/ has output files)"
+    test -d .next && test "$(ls -A .next | wc -l)" -gt 0 && \
+    echo "Build verification: SUCCESS (.next/ has output files)"
 
 # Copy the manual testing helper script (adapted for Ant Design Pro)
 COPY bench_helper.sh /opt/coding-bench/bench_helper.sh

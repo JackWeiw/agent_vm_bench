@@ -46,11 +46,12 @@ class TestCodingMetrics(unittest.TestCase):
         """Test step-level timing recording"""
         m = CodingMetrics()
         step_times = {
-            "checkout": 0.1,
-            "edit": 0.05,
+            "find": 0.1,
+            "read": 0.05,
+            "edit": 0.04,
             "build": 1.2,
             "test": 0.15,
-            "memory": 0.01,
+            "diff": 0.02,
         }
         m.add(1.5, True, step_times=step_times, build_success=True, test_success=True)
 
@@ -117,7 +118,12 @@ class TestCodingConfig(unittest.TestCase):
         self.assertEqual(c.coding_test_cmd, "npm test")
         self.assertEqual(c.coding_build_timeout, 300)
         self.assertEqual(c.coding_test_timeout, 120)
-        self.assertEqual(len(c.coding_source_files), 22)
+        # DEFAULT_CODING_SOURCE_FILES is a list of {file, find, replace} pairs
+        self.assertEqual(len(c.coding_source_files), 6)
+        first = c.coding_source_files[0]
+        self.assertIn("file", first)
+        self.assertIn("find", first)
+        self.assertIn("replace", first)
 
     def test_yaml_coding_config(self):
         """Test loading coding config from YAML file"""
@@ -125,7 +131,7 @@ class TestCodingConfig(unittest.TestCase):
         self.assertEqual(c.workflow_type, "coding")
         self.assertEqual(c.template, "openclaw-coding-v1")
         self.assertEqual(c.coding_project_dir, "/opt/coding-bench")
-        self.assertEqual(len(c.coding_source_files), 22)
+        self.assertEqual(len(c.coding_source_files), 6)
         self.assertEqual(c.benchmark_mode, "round_robin")
 
     def test_yaml_browser_config_unaffected(self):
@@ -140,7 +146,7 @@ class TestStepOrderConstants(unittest.TestCase):
 
     def test_coding_step_order(self):
         """Test coding step order matches expected steps"""
-        self.assertEqual(CODING_STEP_ORDER, ["ensure_dev", "checkout", "edit", "build", "test", "memory"])
+        self.assertEqual(CODING_STEP_ORDER, ["find", "read", "edit", "build", "test", "diff"])
 
     def test_browser_step_order(self):
         """Test browser step order unchanged"""

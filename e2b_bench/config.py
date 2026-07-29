@@ -14,6 +14,43 @@ import yaml
 from .schemas import DEFAULT_CODING_SOURCE_FILES
 
 
+def _normalize_source_files(raw: Any) -> List[Dict[str, str]]:
+    """Normalize coding source files into a list of replacement pairs.
+
+    Accepts:
+    - A list of dicts [{"file": str, "find": str, "replace": str}, ...] (canonical form
+      used by YAML and DEFAULT_CODING_SOURCE_FILES).
+    - A list of bare file-path strings (legacy/CLI raw-file mode). Each is wrapped in a
+      generic comment-marker pair so the old single-file workflow still triggers a rebuild.
+    - A single bare file-path string (CLI --coding-source-file with one value).
+
+    Returns the canonical list of replacement pairs. Filters out entries missing a `file`.
+    """
+    if raw is None:
+        return list(DEFAULT_CODING_SOURCE_FILES)
+
+    if isinstance(raw, str):
+        raw = [raw]
+
+    if not isinstance(raw, list):
+        return list(DEFAULT_CODING_SOURCE_FILES)
+
+    result: List[Dict[str, str]] = []
+    for item in raw:
+        if isinstance(item, dict) and item.get("file"):
+            result.append(
+                {
+                    "file": str(item["file"]),
+                    "find": str(item.get("find", "// bench marker")),
+                    "replace": str(item.get("replace", f"// bench round\n// bench marker")),
+                }
+            )
+        elif isinstance(item, str) and item:
+            # CLI raw-file mode: safe generic comment marker (non-breaking, triggers rebuild)
+            result.append({"file": item, "find": "// bench marker", "replace": "// bench round\n// bench marker"})
+    return result or list(DEFAULT_CODING_SOURCE_FILES)
+
+
 @dataclass
 class Config:
     """Test configuration"""
@@ -92,7 +129,11 @@ class Config:
     coding_dev_cmd: str = "npm run dev"  # Dev server startup command (parsed from YAML)
     coding_build_cmd: str = "npm run build"
     coding_test_cmd: str = "npm test"
-    coding_source_files: List[str] = field(default_factory=lambda: list(DEFAULT_CODING_SOURCE_FILES))
+    # List of replacement pairs: [{"file": str, "find": str, "replace": str}, ...].
+    # Each round applies one pair (round-robin) — a real, type-safe string edit that
+    # triggers a rebuild. A bare file-path string is accepted (CLI raw-file mode) and
+    # normalized to a generic comment-marker pair so the old single-file workflow still works.
+    coding_source_files: List[Dict[str, str]] = field(default_factory=lambda: list(DEFAULT_CODING_SOURCE_FILES))
     coding_build_timeout: int = 300  # Build command timeout (seconds)
     coding_test_timeout: int = 120  # Test command timeout (seconds)
     coding_interval_min: float = 2.0  # Interval between coding tasks in fixed mode
@@ -179,7 +220,7 @@ class Config:
             coding_dev_wait=coding.get("dev_wait", 20),
             coding_build_cmd=coding.get("build_cmd", "npm run build"),
             coding_test_cmd=coding.get("test_cmd", "npm test"),
-            coding_source_files=coding.get("source_files", DEFAULT_CODING_SOURCE_FILES),
+            coding_source_files=_normalize_source_files(coding.get("source_files", DEFAULT_CODING_SOURCE_FILES)),
             coding_build_timeout=coding.get("build_timeout", 300),
             coding_test_timeout=coding.get("test_timeout", 120),
             coding_interval_min=coding.get("interval_min", 2.0),
@@ -284,9 +325,11 @@ class Config:
             else yaml_config.coding_dev_wait,
             coding_build_cmd=yaml_config.coding_build_cmd,  # No CLI override for build/test cmd
             coding_test_cmd=yaml_config.coding_test_cmd,
-            coding_source_files=getattr(args, "coding_source_file", None)
-            if getattr(args, "coding_source_file", None) is not None
-            else yaml_config.coding_source_files,
+            coding_source_files=_normalize_source_files(
+                getattr(args, "coding_source_file", None)
+                if getattr(args, "coding_source_file", None) is not None
+                else yaml_config.coding_source_files
+            ),
             coding_build_timeout=getattr(args, "coding_build_timeout", None)
             if getattr(args, "coding_build_timeout", None) is not None
             else yaml_config.coding_build_timeout,
@@ -372,9 +415,11 @@ class Config:
             coding_dev_wait=getattr(args, "coding_dev_wait", 20),
             coding_build_cmd="npm run build",
             coding_test_cmd="npm test",
-            coding_source_files=getattr(args, "coding_source_file", None)
-            if getattr(args, "coding_source_file", None) is not None
-            else DEFAULT_CODING_SOURCE_FILES,
+            coding_source_files=_normalize_source_files(
+                getattr(args, "coding_source_file", None)
+                if getattr(args, "coding_source_file", None) is not None
+                else DEFAULT_CODING_SOURCE_FILES
+            ),
             coding_build_timeout=getattr(args, "coding_build_timeout", 300),
             coding_test_timeout=getattr(args, "coding_test_timeout", 120),
             coding_interval_min=2.0,

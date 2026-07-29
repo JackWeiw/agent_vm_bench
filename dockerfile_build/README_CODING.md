@@ -2,23 +2,24 @@
 
 ## Overview
 
-This template creates an E2B sandbox containing **Ant Design Pro** (36k+ GitHub stars, most popular React enterprise dashboard) for testing host memory capacity sensitivity under AI coding agent scenarios.
+This template creates an E2B sandbox containing **devias Material Kit React** (5.6k+ GitHub stars, popular React + MUI + TypeScript admin dashboard) for testing host memory capacity sensitivity under AI coding agent scenarios.
 
-**Key insight**: Real AI coding agents working on web applications always start a **dev server** for live preview (Devin, OpenHands, Claude Code all do this). The dev server runs persistently (~1-1.5GB), and when the agent triggers a production build to verify changes (~2GB peak), both processes are active simultaneously — creating a **~3GB overlapping memory peak** per sandbox.
+**Key insight**: Real AI coding agents working on web applications always start a **dev server** for live preview (Devin, OpenHands, Claude Code all do this). The dev server runs persistently (~1.5GB — MUI's wide dependency graph is the memory-overcommit carrier), and when the agent triggers a production build to verify changes (~1GB peak), both processes are active simultaneously — creating a **~3GB overlapping memory peak** per sandbox.
 
 ## Memory Pressure Model
 
 ```
 ┌─ Sandbox Memory Timeline ──────────────────────────────────────────┐
 │                                                                     │
-│  dev server (persistent)   ──────────────────────────── 1-1.5GB    │
+│  dev server (persistent)   ──────────────────────────── ~1.5GB     │
 │                                                                     │
-│  production build (burst)          ┌──────┐              ~2GB peak │
+│  production build (burst)          ┌──────┐              ~1GB peak │
 │                                    │      │                         │
 │  ──────────────────────────────────┤      ├──────────────          │
 │                                    └──────┘                         │
 │                                                                     │
 │  total peak = dev server + build overlap  →  ~3GB per sandbox      │
+│  (+ openclaw/agent processes ~0.5GB → warmup ~2GB / peak ~3GB)      │
 │                                                                     │
 │  50+ concurrent sandboxes → overlapping peaks → host memory stress  │
 └─────────────────────────────────────────────────────────────────────┘
@@ -28,8 +29,8 @@ This template creates an E2B sandbox containing **Ant Design Pro** (36k+ GitHub 
 
 | Process | Memory | Reason |
 |---------|--------|--------|
-| Dev server (npm run dev) | ~1-1.5GB persistent | Every coding agent starts dev server for live preview — Devin, OpenHands, Claude Code all do this |
-| Production build (npm run build) | ~2GB peak | Agent verifies changes with production build — standard coding workflow |
+| Dev server (npm run dev) | ~1.5GB persistent | Every coding agent starts dev server for live preview — Devin, OpenHands, Claude Code all do this. MUI's wide dep graph is what keeps it resident. |
+| Production build (npm run build) | ~1GB peak | Agent verifies changes with production build — standard coding workflow |
 | Overlapping peak | ~3GB | Both processes active simultaneously — unavoidable in real agent environments |
 
 **Why NOT language server / source maps**: These are not realistic for agent service scenarios. Language servers (tsserver) are IDE-internal components, not sandbox infrastructure. Source maps in production builds are uncommon. Dev server, however, is a universal coding agent action — customers immediately recognize this as real.
@@ -37,52 +38,55 @@ This template creates an E2B sandbox containing **Ant Design Pro** (36k+ GitHub 
 ## Project Structure (inside sandbox)
 
 ```
-/opt/coding-bench/                    # Ant Design Pro (git clone)
-├── package.json                      # antd + UmiJS + webpack dependencies
-├── config/
-│   ├── config.ts                     # UmiJS configuration
-│   └── routes.ts                     # Route definitions
+/opt/coding-bench/                    # devias Material Kit React (git clone)
+├── package.json                      # React + MUI + Next.js dependencies
+├── next.config.mjs                   # Next.js configuration
 ├── src/
-│   ├── pages/                        # ← Modified each round (22 real page files)
-│   │   ├── dashboard/analysis/       # Analysis dashboard page
-│   │   ├── dashboard/workplace/      # Workplace dashboard page
-│   │   ├── form/basic-form/          # Basic form page
-│   │   ├── table-list/               # ProTable list page (top-level directory)
-│   │   ├── chatbot/                  # AI chatbot page
-│   │   └── ... (22 target files)
-│   ├── components/                   # Shared components
-│   └── services/                     # API service layer
+│   ├── config.ts                     # ← Site config (round-robin edit target)
+│   ├── paths.ts                      # ← Route paths (round-robin edit target)
+│   ├── app/                           # Next.js app router pages
+│   │   ├── layout.tsx                 # ← Root layout (round-robin edit target)
+│   │   ├── page.tsx                   # ← Home redirect (round-robin edit target)
+│   │   └── dashboard/                 # Dashboard pages + nested layout
+│   ├── components/                    # Shared components (MUI-based)
+│   ├── contexts/                      # React contexts
+│   ├── hooks/                         # Custom hooks
+│   └── lib/                           # Utilities
 ├── node_modules/                     # Pre-installed (no npm install needed)
-├── .git/                             # Git repo for checkout/reset
+├── .next/                            # Next.js build output
+├── .git/                             # Git repo for checkout/reset + diff
 ├── bench_helper.sh                   # Manual testing helper script
 └── /tmp/
     ├── dev_server.log                # Dev server output
     ├── build_output.log              # Build output per round
-    └── test_output.log               # Test output per round
+    ├── test_output.log               # Test output per round
+    └── bench_round_N.patch           # git diff artifact per round
 ```
 
 ## Modification Strategy (per round)
 
-Each benchmark round simulates a coding agent's verification cycle:
+Each benchmark round simulates a real AI coding agent's verification cycle (matches observed agent traces: locate → inspect → edit → build → test → diff):
 
 ```
-Step 0: git checkout -- src/         ← Reset (like agent reverting failed changes)
-        Start dev server (if not running) ← Persistent background process
-Step 1: sed -i "1i// Bench Round N"  ← Inject comment (triggers webpack rebuild)
-Step 2: rm -rf dist/ cache/ + npm run build  ← Clean production build
-Step 3: npm test                     ← Verify changes don't break tests
-Step 4: free -m                      ← Memory metrics
+Step 0: find   — git checkout -- src/ (reset) + verify/locate target file
+Step 1: read   — head -20 target file (agent confirming context)
+Step 2: edit   — apply a pre-configured find→replace pair (real semantic edit, triggers rebuild)
+Step 3: build  — rm -rf .next/ cache/ + npm run build (clean production build)
+Step 4: test   — npm test (verify changes don't break tests)
+Step 5: diff   — git diff > /tmp/bench_round_N.patch (verification artifact)
 ```
 
 **Key design decisions**:
 
-1. **git checkout -- src/ only** — Config files (config/config.ts) are NOT reset, so dev server settings persist across rounds. This is realistic: agents revert source changes but keep infrastructure config.
+1. **git checkout -- src/ only** — Config files (next.config.mjs) are NOT reset, so dev server settings persist across rounds. This is realistic: agents revert source changes but keep infrastructure config.
 
-2. **Comment injection, not code change** — `sed -i "1i// Bench Round N"` is non-breaking (a comment line at the top). This is safer and more representative than replacing functional code, while still triggering webpack's module dependency analysis and full rebuild.
+2. **Real semantic edit, not comment injection** — Each round applies a pre-configured `find→replace` pair (e.g. `name: 'Devias Kit'` → `name: 'Devias Kit Pro'`). The pairs are type-safe string/value swaps that never break compilation, yet still trigger Next's full rebuild — more representative of a real agent edit than a bare comment injection.
 
-3. **Clean rebuild each round** — `rm -rf dist/ node_modules/.cache/` forces full recompilation (no filesystem cache). This is realistic for ephemeral sandbox environments where no persistent cache exists.
+3. **Replacement pairs are pre-configured & verified** — Each `source_files` entry is `{file, find, replace}` verified against the devias repo. Round-robins through the list so every round reliably triggers a rebuild and results are reproducible. A CLI raw-file path falls back to a generic comment-marker pair.
 
-4. **Keep .umi/ intact during rounds** — The dev server depends on `.umi/` generated files. Removing it would destabilize the dev server. We only remove `dist/` and `node_modules/.cache/`.
+4. **Clean rebuild each round** — `rm -rf .next/ node_modules/.cache/` forces full recompilation (no filesystem cache). This is realistic for ephemeral sandbox environments where no persistent cache exists.
+
+5. **No per-round `free -m`** — Memory pressure is observed at the host level via `vm_monitor` / `smap_tool`, not from a per-round `free -m` inside the sandbox (no useful value).
 
 ## Build Steps
 
@@ -93,7 +97,7 @@ cd dockerfile_build
 docker build -t ubuntu-coding-bench:24.04-linuxarm64 -f Dockerfile.coding .
 ```
 
-This takes ~10-15 minutes (Node.js install + Ant Design Pro clone + npm install + initial build).
+This takes ~10-15 minutes (Node.js install + devias clone + npm install + initial build).
 
 ### 2. Push to Harbor
 
@@ -126,7 +130,7 @@ python3 build_e2b.py \
 bash /opt/coding-bench/bench_helper.sh 0
 ```
 
-This runs all 5 steps: start dev server → reset → edit → build → test → memory report.
+This runs all 6 steps: find (dev server) → read → edit → build → test → diff.
 
 #### Step-by-step Verification
 
@@ -138,8 +142,8 @@ watch -n 1 "numastat -p firecracker"
 cd /opt/coding-bench && BROWSER=none npm run dev &
 sleep 20  # Wait for initial compilation
 
-# Inside sandbox: Step 2 — production build (while dev server is running)
-rm -rf dist/ node_modules/.cache/
+# Inside sandbox: Step 3 — production build (while dev server is running)
+rm -rf .next/ node_modules/.cache/
 npm run build
 
 # Watch host numastat for peak memory during build
@@ -158,7 +162,7 @@ bash /opt/coding-bench/bench_helper.sh 1
 bash /opt/coding-bench/bench_helper.sh 2
 
 # Stop dev server
-pkill -f 'umi dev'; pkill -f 'max dev'
+pkill -f 'next dev'; pkill -f 'npm run dev'
 ```
 
 #### Partial Test (skip specific steps)
@@ -222,7 +226,7 @@ Once single sandbox behavior is verified:
 2. Confirm dev server + build overlap creates ~3GB peak
 3. Adjust `BENCH_DEV_WAIT` if dev server compilation takes longer/shorter
 4. Proceed to multi-sandbox e2b_bench implementation:
-   - Add `CodingRoundRunner` with 5-step workflow (start_dev → reset → edit → build → test)
-   - Create `config/e2b_coding_bench.yaml` with coding workflow configuration
+   - `CodingRoundRunner` with 6-step workflow (find → read → edit → build → test → diff)
+   - `config/e2b_coding_bench.yaml` with coding workflow + replacement-pair source files
    - Integrate with `batch_scheduler.py` for multi-sandbox round-robin benchmark
-   - Add `CodingMetrics` to `schemas.py` for step-level timing collection
+   - `CodingMetrics` in `schemas.py` for step-level timing collection
