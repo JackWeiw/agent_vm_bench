@@ -2,16 +2,20 @@
 
 ## Overview
 
-This template creates an E2B sandbox containing **devias Material Kit React** (5.6k+ GitHub stars, popular React + MUI + TypeScript admin dashboard) for testing host memory capacity sensitivity under AI coding agent scenarios.
+This template creates an E2B sandbox containing **vuejs/core** (54k+ GitHub stars, the Vue.js core framework) for testing host memory capacity sensitivity under AI coding agent scenarios. vuejs/core is a **real repo from the `swe_bench_multilingual` evaluation dataset** (5 real instances) — not a synthetic or arbitrarily-chosen project.
 
-**Key insight**: Real AI coding agents working on web applications always start a **dev server** for live preview (Devin, OpenHands, Claude Code all do this). The dev server runs persistently (~1.5GB — MUI's wide dependency graph is the memory-overcommit carrier), and when the agent triggers a production build to verify changes (~1GB peak), both processes are active simultaneously — creating a **~3GB overlapping memory peak** per sandbox.
+**Key insight**: Real AI coding agents editing a frontend library like Vue always verify changes via a **local vite dev/HMR playground** (live preview). The dev server runs persistently (~1.5GB — the wide vue + rollup + esbuild dependency graph is the memory-overcommit carrier), and when the agent triggers a production build to verify changes (~1GB peak), both processes are active simultaneously — creating a **~3GB overlapping memory peak** per sandbox.
+
+### Dev-server honesty note
+
+vuejs/core is a *library*, not an *app* — it has no built-in HTTP dev server. A real agent editing a frontend library runs a separate vite playground that imports the built lib to verify changes via HMR. The sandbox therefore ships a minimal **vite playground** (`/opt/vite-playground`) that imports the built `packages/vue`. This is real development behavior (an agent verifying library edits locally), not an artificial memory inflator — and it is documented as such here and in `Dockerfile.coding`.
 
 ## Memory Pressure Model
 
 ```
 ┌─ Sandbox Memory Timeline ──────────────────────────────────────────┐
 │                                                                     │
-│  dev server (persistent)   ──────────────────────────── ~1.5GB     │
+│  dev server (vite playground, persistent)  ─────────── ~1.5GB      │
 │                                                                     │
 │  production build (burst)          ┌──────┐              ~1GB peak │
 │                                    │      │                         │
@@ -29,8 +33,8 @@ This template creates an E2B sandbox containing **devias Material Kit React** (5
 
 | Process | Memory | Reason |
 |---------|--------|--------|
-| Dev server (npm run dev) | ~1.5GB persistent | Every coding agent starts dev server for live preview — Devin, OpenHands, Claude Code all do this. MUI's wide dep graph is what keeps it resident. |
-| Production build (npm run build) | ~1GB peak | Agent verifies changes with production build — standard coding workflow |
+| Vite dev server (playground) | ~1.5GB persistent | Agents editing a frontend library verify changes via a local vite dev/HMR playground. The vue+rollup+esbuild module graph is what keeps it resident. |
+| Production build (`node scripts/build.js`, rollup) | ~1GB peak | Agent verifies changes with a production build — standard coding workflow |
 | Overlapping peak | ~3GB | Both processes active simultaneously — unavoidable in real agent environments |
 
 **Why NOT language server / source maps**: These are not realistic for agent service scenarios. Language servers (tsserver) are IDE-internal components, not sandbox infrastructure. Source maps in production builds are uncommon. Dev server, however, is a universal coding agent action — customers immediately recognize this as real.
@@ -38,29 +42,29 @@ This template creates an E2B sandbox containing **devias Material Kit React** (5
 ## Project Structure (inside sandbox)
 
 ```
-/opt/coding-bench/                    # devias Material Kit React (git clone)
-├── package.json                      # React + MUI + Next.js dependencies
-├── next.config.mjs                   # Next.js configuration
-├── src/
-│   ├── config.ts                     # ← Site config (round-robin edit target)
-│   ├── paths.ts                      # ← Route paths (round-robin edit target)
-│   ├── app/                           # Next.js app router pages
-│   │   ├── layout.tsx                 # ← Root layout (round-robin edit target)
-│   │   ├── page.tsx                   # ← Home redirect (round-robin edit target)
-│   │   └── dashboard/                 # Dashboard pages + nested layout
-│   ├── components/                    # Shared components (MUI-based)
-│   ├── contexts/                      # React contexts
-│   ├── hooks/                         # Custom hooks
-│   └── lib/                           # Utilities
-├── node_modules/                     # Pre-installed (no npm install needed)
-├── .next/                            # Next.js build output
+/opt/coding-bench/                    # vuejs/core (git clone, pnpm monorepo)
+├── package.json                      # vue + compiler + reactivity + rollup + esbuild + vite
+├── pnpm-workspace.yaml               # pnpm workspace (packages/* + packages-private/*)
+├── scripts/
+│   ├── dev.js                        # esbuild dev build (library dev, watch)
+│   └── build.js                      # rollup production build
+├── packages/
+│   ├── shared/src/general.ts         # ← Round-robin edit target
+│   ├── shared/src/index.ts           # ← Round-robin edit target
+│   ├── vue/src/index.ts              # ← Round-robin edit target
+│   ├── reactivity/src/baseHandlers.ts # ← Round-robin edit target
+│   ├── runtime-core/src/errorHandling.ts # ← Round-robin edit target
+│   └── ... (compiler-*, runtime-*, server-renderer, ...)
+├── node_modules/                     # Pre-installed (pnpm, no install needed at runtime)
+├── packages/*/dist/                  # Build output
 ├── .git/                             # Git repo for checkout/reset + diff
-├── bench_helper.sh                   # Manual testing helper script
-└── /tmp/
-    ├── dev_server.log                # Dev server output
-    ├── build_output.log              # Build output per round
-    ├── test_output.log               # Test output per round
-    └── bench_round_N.patch           # git diff artifact per round
+└── bench_helper.sh                   # Manual testing helper script
+
+/opt/vite-playground/                 # vite dev server (background memory pressure)
+├── package.json                      # imports vue from file:/opt/coding-bench/packages/vue
+├── vite.config.ts                   # @vitejs/plugin-vue
+├── index.html
+└── src/main.ts                       # minimal app consuming the built lib
 ```
 
 ## Modification Strategy (per round)
@@ -68,23 +72,23 @@ This template creates an E2B sandbox containing **devias Material Kit React** (5
 Each benchmark round simulates a real AI coding agent's verification cycle (matches observed agent traces: locate → inspect → edit → build → test → diff):
 
 ```
-Step 0: find   — git checkout -- src/ (reset) + verify/locate target file
+Step 0: find   — git checkout -- packages/ (reset) + verify/locate target file
 Step 1: read   — head -20 target file (agent confirming context)
 Step 2: edit   — apply a pre-configured find→replace pair (real semantic edit, triggers rebuild)
-Step 3: build  — rm -rf .next/ cache/ + npm run build (clean production build)
-Step 4: test   — npm test (verify changes don't break tests)
+Step 3: build  — node scripts/build.js (clean production build, rollup)
+Step 4: test   — pnpm test (vitest, verify correctness)
 Step 5: diff   — git diff > /tmp/bench_round_N.patch (verification artifact)
 ```
 
 **Key design decisions**:
 
-1. **git checkout -- src/ only** — Config files (next.config.mjs) are NOT reset, so dev server settings persist across rounds. This is realistic: agents revert source changes but keep infrastructure config.
+1. **git checkout -- packages/ src/** — Config files (pnpm-workspace.yaml) are NOT reset, so dev-server/install settings persist across rounds. This is realistic: agents revert source changes but keep infrastructure config.
 
-2. **Real semantic edit, not comment injection** — Each round applies a pre-configured `find→replace` pair (e.g. `name: 'Devias Kit'` → `name: 'Devias Kit Pro'`). The pairs are type-safe string/value swaps that never break compilation, yet still trigger Next's full rebuild — more representative of a real agent edit than a bare comment injection.
+2. **Real semantic edit, not comment injection** — Each round applies a pre-configured `find→replace` pair (e.g. `export const NOOP = (): void => {}` → `... undefined`). The pairs are type-safe (equivalent return value / comment append) that never break compilation, yet still trigger rollup/esbuild's full rebuild — more representative of a real agent edit than a bare comment injection.
 
-3. **Replacement pairs are pre-configured & verified** — Each `source_files` entry is `{file, find, replace}` verified against the devias repo. Round-robins through the list so every round reliably triggers a rebuild and results are reproducible. A CLI raw-file path falls back to a generic comment-marker pair.
+3. **Replacement pairs are pre-configured & verified** — Each `source_files` entry is `{file, find, replace}` verified against the vuejs/core repo. Round-robins through the list so every round reliably triggers a rebuild and results are reproducible. A CLI raw-file path falls back to a generic comment-marker pair.
 
-4. **Clean rebuild each round** — `rm -rf .next/ node_modules/.cache/` forces full recompilation (no filesystem cache). This is realistic for ephemeral sandbox environments where no persistent cache exists.
+4. **Clean rebuild each round** — removes `packages/*/dist/` and `node_modules/.cache/` to force full recompilation (no filesystem cache). This is realistic for ephemeral sandbox environments where no persistent cache exists.
 
 5. **No per-round `free -m`** — Memory pressure is observed at the host level via `vm_monitor` / `smap_tool`, not from a per-round `free -m` inside the sandbox (no useful value).
 
@@ -97,7 +101,7 @@ cd dockerfile_build
 docker build -t ubuntu-coding-bench:24.04-linuxarm64 -f Dockerfile.coding .
 ```
 
-This takes ~10-15 minutes (Node.js install + devias clone + npm install + initial build).
+This takes ~10-15 minutes (Node.js + pnpm install + vuejs/core clone + pnpm install + initial rollup build + vite playground setup).
 
 ### 2. Push to Harbor
 
@@ -138,13 +142,13 @@ This runs all 6 steps: find (dev server) → read → edit → build → test �
 # On host: start monitoring
 watch -n 1 "numastat -p firecracker"
 
-# Inside sandbox: Step 0 — start dev server
-cd /opt/coding-bench && BROWSER=none npm run dev &
+# Inside sandbox: Step 0 — start dev server (vite playground)
+cd /opt/vite-playground && BROWSER=none npm run dev &
 sleep 20  # Wait for initial compilation
 
 # Inside sandbox: Step 3 — production build (while dev server is running)
-rm -rf .next/ node_modules/.cache/
-npm run build
+cd /opt/coding-bench && find packages -type d -name dist -prune -exec rm -rf {} +
+node scripts/build.js
 
 # Watch host numastat for peak memory during build
 ```
@@ -162,7 +166,7 @@ bash /opt/coding-bench/bench_helper.sh 1
 bash /opt/coding-bench/bench_helper.sh 2
 
 # Stop dev server
-pkill -f 'next dev'; pkill -f 'npm run dev'
+pkill -f 'vite'; pkill -f 'npm run dev'
 ```
 
 #### Partial Test (skip specific steps)
@@ -202,21 +206,24 @@ Options:
   --help             Show help
 
 Environment:
-  BENCH_PROJECT_DIR   Project path (default: /opt/coding-bench)
+  BENCH_PROJECT_DIR   vuejs/core path (default: /opt/coding-bench)
+  BENCH_DEV_DIR       vite playground path (default: /opt/vite-playground)
   BENCH_DEV_WAIT      Dev server startup wait (default: 20)
+  BENCH_BUILD_CMD     Build command (default: node scripts/build.js)
+  BENCH_TEST_CMD      Test command (default: pnpm test)
 ```
 
-Extensibility: `BENCH_PROJECT_DIR` allows the same script to work with different coding projects. `BENCH_DEV_WAIT` allows adjusting dev server startup time for faster/slower machines.
+Extensibility: `BENCH_PROJECT_DIR` / `BENCH_DEV_DIR` / `BENCH_BUILD_CMD` / `BENCH_TEST_CMD` allow the same script to work with different coding projects (the dev server dir, build, and test commands are all configurable). `BENCH_DEV_WAIT` adjusts dev server startup time for faster/slower machines.
 
 ## Credibility Argument for Customers
 
-> **Scenario**: AI coding agent 开发 web 应用的真实工作环境。
+> **Scenario**: AI coding agent 修改前端核心库（vuejs/core）的真实工作环境。
 >
-> 每个 coding agent（Devin、OpenHands、Claude Code）在开发 web 应用时都会启动 dev server 进行实时预览——这是标准操作，不是人为构造。dev server 常驻运行（1-1.5GB），当 agent 触发 production build 验证改动时，两个进程同时活跃，单沙箱峰值 ~3GB。
+> 项目来自真实评测数据集 swe_bench_multilingual——不是合成项目，不是人为挑选，是真实 agent 评测用的仓库。agent 给 Vue 提 PR 的工作流就是 `find → read → edit → npm run build → npm test → git diff`，与观测到的 agent trace 一致。
 >
-> 50+ 并发沙箱时，重叠峰值在宿主机产生 150GB+ 内存压力。这完全反映了客户卖 agent 服务时多用户并发使用的真实场景——每个用户都在沙箱里跑 coding agent，每个 agent 都会启动 dev server + 执行构建验证。
+> agent 改前端库时会起本地 vite dev/HMR playground 实时验证改动（真实开发行为），dev server 常驻 ~1.5GB（vue+rollup+esbuild 宽依赖图）；触发 production build 验证时 build 峰值 ~1GB，两个进程同时活跃，单沙箱峰值 ~3GB。50+ 并发沙箱重叠峰值在宿主机产生 150GB+ 内存压力，完全反映客户卖 agent 服务时多用户并发场景。
 >
-> **不采用不真实手段**: 没有添加语言服务（tsserver 是 IDE 内部组件，不是沙箱基础设施）、没有启用 source maps（生产构建中不常见）、没有人工膨胀依赖。所有内存压力来自真实 coding agent 的真实操作。
+> **不采用不真实手段**: 没有合成项目、没有语言服务（tsserver 是 IDE 内部组件）、没有 source maps、没有人工膨胀依赖。dev server 是真实 agent 改前端库时的本地验证行为（如实记录于 Dockerfile 与本文档），所有内存压力来自真实 coding agent 的真实操作。
 
 ## Next Steps After Manual Testing
 

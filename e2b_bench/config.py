@@ -125,6 +125,7 @@ class Config:
 
     # Coding task configuration
     coding_project_dir: str = "/opt/coding-bench"
+    coding_dev_dir: str = ""  # Directory to run the dev server in (defaults to project_dir when empty)
     coding_dev_wait: int = 20  # Seconds to wait for dev server startup
     coding_dev_cmd: str = "npm run dev"  # Dev server startup command (parsed from YAML)
     coding_build_cmd: str = "npm run build"
@@ -216,6 +217,7 @@ class Config:
             warmup_only=browser.get("warmup_only", False),
             # Coding task configuration
             coding_project_dir=coding.get("project_dir", "/opt/coding-bench"),
+            coding_dev_dir=coding.get("dev_dir", ""),
             coding_dev_cmd=coding.get("dev_cmd", "npm run dev"),
             coding_dev_wait=coding.get("dev_wait", 20),
             coding_build_cmd=coding.get("build_cmd", "npm run build"),
@@ -320,6 +322,7 @@ class Config:
             if getattr(args, "coding_project_dir", None) is not None
             else yaml_config.coding_project_dir,
             coding_dev_cmd=yaml_config.coding_dev_cmd,  # No CLI override for dev_cmd
+            coding_dev_dir=yaml_config.coding_dev_dir,  # No CLI override for dev_dir
             coding_dev_wait=getattr(args, "coding_dev_wait", None)
             if getattr(args, "coding_dev_wait", None) is not None
             else yaml_config.coding_dev_wait,
@@ -412,6 +415,7 @@ class Config:
             # Coding configuration (CLI defaults)
             coding_project_dir=getattr(args, "coding_project_dir", "/opt/coding-bench"),
             coding_dev_cmd="npm run dev",  # Default dev server command
+            coding_dev_dir="",  # Default: same as project_dir
             coding_dev_wait=getattr(args, "coding_dev_wait", 20),
             coding_build_cmd="npm run build",
             coding_test_cmd="npm test",

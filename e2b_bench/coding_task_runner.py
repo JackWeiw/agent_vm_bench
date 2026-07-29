@@ -43,14 +43,14 @@ def _check_dev_server_running(sbx, project_dir: str) -> bool:
     - sh -c (E2B commands.run() may use sh -c to execute, and its cmdline
       could contain the grep pattern string)
 
-    Returns True if a dev server process (npm run dev / next dev / umi dev / max dev)
+    Returns True if a dev server process (npm run dev / vite / next dev / umi dev / max dev)
     is found running, False otherwise.
     """
     try:
         result = sbx.commands.run(
-            # Match dev server processes: 'npm run dev', 'next dev', 'umi dev', 'max dev'
+            # Match dev server processes: 'npm run dev', 'vite', 'next dev', 'umi dev', 'max dev'
             # Exclude grep/pgrep/sh processes to avoid false-positive from this command itself
-            f"ps aux | grep -E 'npm run dev|next dev|umi dev|max dev'"
+            f"ps aux | grep -E 'npm run dev|vite|next dev|umi dev|max dev'"
             f" | grep -v grep | grep -v pgrep | grep -v 'sh -c'",
             timeout=10,
             user="root",
@@ -153,6 +153,8 @@ class CodingWarmupRunner(threading.Thread):
 
         e2b_sandbox_id = sbx.sandbox_id if hasattr(sbx, "sandbox_id") else "N/A"
         project_dir = self.config.coding_project_dir
+        # Dev server may live in a separate dir (e.g. a vite playground importing the lib)
+        dev_dir = self.config.coding_dev_dir or project_dir
 
         # 1. Verify project exists
         try:
@@ -168,19 +170,19 @@ class CodingWarmupRunner(threading.Thread):
 
         # 2. Reset source files
         try:
-            sbx.commands.run(f"cd {project_dir} && git checkout -- src/", timeout=30, user="root")
+            sbx.commands.run(f"cd {project_dir} && git checkout -- packages/ src/ 2>/dev/null", timeout=30, user="root")
         except Exception:
             print(f"[Sandbox{self.state.sandbox_id}] git checkout failed (may not be a git repo)")
 
         # 3. Start dev server (if not skipped)
         if not self.config.coding_skip_dev_server:
-            dev_server_running = _check_dev_server_running(sbx, project_dir)
+            dev_server_running = _check_dev_server_running(sbx, dev_dir)
             if dev_server_running:
                 print(f"[Sandbox{self.state.sandbox_id}] Dev server: already running")
             else:
                 _start_dev_server(
                     sbx,
-                    project_dir,
+                    dev_dir,
                     self.config.coding_dev_cmd,
                     self.config.coding_dev_wait,
                     self.state.sandbox_id,
@@ -295,12 +297,13 @@ class CodingTaskRunner(threading.Thread):
         try:
             # Step 0: Ensure dev server is running (for memory pressure overlap)
             if not self.config.coding_skip_dev_server:
-                dev_running = _check_dev_server_running(sbx, project_dir)
+                dev_dir = self.config.coding_dev_dir or project_dir
+                dev_running = _check_dev_server_running(sbx, dev_dir)
                 if not dev_running:
                     print(f"[Sandbox{self.state.sandbox_id}] Dev server not running, restarting...")
                     _start_dev_server(
                         sbx,
-                        project_dir,
+                        dev_dir,
                         self.config.coding_dev_cmd,
                         self.config.coding_dev_wait,
                         self.state.sandbox_id,
@@ -308,14 +311,14 @@ class CodingTaskRunner(threading.Thread):
 
             # Step 1: find — reset source files + verify target file exists
             t0 = time.perf_counter()
-            sbx.commands.run(f"cd {project_dir} && git checkout -- src/", timeout=30, user="root")
+            sbx.commands.run(f"cd {project_dir} && git checkout -- packages/ src/ 2>/dev/null", timeout=30, user="root")
             # Verify the target file exists (agent would locate the file)
             exists = sbx.commands.run(f"cd {project_dir} && test -f {target_file} && echo ok", timeout=15, user="root")
             step_times["find"] = time.perf_counter() - t0
             if exists.exit_code != 0 or "ok" not in (exists.stdout or ""):
                 # Fallback: if the configured target doesn't exist, locate any source file
                 fallback = sbx.commands.run(
-                    f"cd {project_dir} && find src -name '*.tsx' -o -name '*.ts' | head -1",
+                    f"cd {project_dir} && find packages src -name '*.ts' -o -name '*.tsx' -o -name '*.js' 2>/dev/null | head -1",
                     timeout=15,
                     user="root",
                 )
@@ -548,9 +551,13 @@ class CodingRoundRunner(threading.Thread):
         memory pressure. Non-fatal: if it can't start, the round continues at
         a lower peak. Timed under the `find` step (it's part of round setup,
         not a distinct agent action).
+
+        Runs the dev server in `coding_dev_dir` when set (e.g. a vite playground
+        importing the target lib), else in `project_dir`.
         """
+        dev_dir = self.config.coding_dev_dir or project_dir
         step_start = time.perf_counter()
-        dev_server_running = _check_dev_server_running(sbx, project_dir)
+        dev_server_running = _check_dev_server_running(sbx, dev_dir)
         check_elapsed = time.perf_counter() - step_start
 
         if dev_server_running:
@@ -562,7 +569,7 @@ class CodingRoundRunner(threading.Thread):
         print(f"[Sandbox{self.state.sandbox_id}] Dev server not running, restarting...")
         _start_dev_server(
             sbx,
-            project_dir,
+            dev_dir,
             self.config.coding_dev_cmd,
             self.config.coding_dev_wait,
             self.state.sandbox_id,
@@ -580,7 +587,9 @@ class CodingRoundRunner(threading.Thread):
         with a generic comment-marker pair so the round still triggers a rebuild.
         """
         step_start = time.perf_counter()
-        result = sbx.commands.run(f"cd {project_dir} && git checkout -- src/", timeout=30, user="root")
+        result = sbx.commands.run(
+            f"cd {project_dir} && git checkout -- packages/ src/ 2>/dev/null", timeout=30, user="root"
+        )
         # Verify target file exists
         exists = sbx.commands.run(f"cd {project_dir} && test -f {target_file} && echo ok", timeout=15, user="root")
         step_times["find"] = step_times.get("find", 0.0) + (time.perf_counter() - step_start)

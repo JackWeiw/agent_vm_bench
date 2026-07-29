@@ -8,14 +8,15 @@ Step order constants for workflow dispatch:
 - BROWSER_STEP_ORDER: steps in browser round-robin mode
 - CODING_STEP_ORDER: steps in coding round-robin mode
 
-Default source files for devias Material Kit React coding benchmark (single
-definition, referenced everywhere — config, runners, YAML templates).
+Default source files for the vuejs/core coding benchmark (single definition,
+referenced everywhere — config, runners, YAML templates).
 
-Each entry is a {file, find, replace} replacement pair: a real, type-safe
-string edit applied to a verified file in the devias repo. The runner
-round-robins through the list, applying one pair per round to trigger a
-rebuild (same role as the old sed comment injection, but a real semantic
-edit an agent would make).
+vuejs/core is a real repo from the swe_bench_multilingual evaluation dataset
+(github.com/vuejs/core, 5 real instances). Each entry is a {file, find, replace}
+replacement pair: a real, type-safe string edit applied to a verified file in
+the vuejs/core repo. The runner round-robins through the list, applying one
+pair per round to trigger a rebuild (same role as the old sed comment
+injection, but a real semantic edit an agent would make).
 """
 
 import statistics
@@ -28,34 +29,47 @@ from typing import Any, Dict, List, Optional
 BROWSER_STEP_ORDER = ["open_tab", "page_load", "snapshot", "click", "screenshot"]
 # Real AI coding agent workflow: locate file (find), inspect it (read), apply a
 # real edit, build, test, then produce the verification artifact (git diff).
-# `git checkout -- src/` reset runs as setup inside the `find` step, not a
-# separate step. `memory` (free -m) was removed — memory pressure is observed at
-# the host level via vm_monitor/smap_tool, not from a per-round free -m.
+# `git checkout -- packages/*/src/` reset runs as setup inside the `find` step,
+# not a separate step. `memory` (free -m) was removed — memory pressure is
+# observed at the host level via vm_monitor/smap_tool, not from a per-round free -m.
 CODING_STEP_ORDER = ["find", "read", "edit", "build", "test", "diff"]
 
-# Default replacement pairs for the devias Material Kit React coding benchmark.
+# Default replacement pairs for the vuejs/core coding benchmark.
 # Single definition — referenced by Config dataclass default, _from_dict,
 # from_args, YAML templates, and bench_helper.sh.
 #
-# Each pair is verified against the devias repo (github.com/devias-io/
-# material-kit-react). The `find` string is a real, type-safe value that exists
-# in the file; `replace` is a safe semantic substitute that does not break
-# compilation (string/attribute/route swaps only), so every round reliably
-# triggers a Next rebuild without risking a broken edit.
+# vuejs/core is a pnpm monorepo (github.com/vuejs/core), part of the
+# swe_bench_multilingual dataset (real evaluation instances, not synthetic).
+# Each pair is verified against the repo. The `find` string is a real value
+# that exists in the file; `replace` is a type-safe substitute (comment append
+# or equivalent return value) that does not break compilation, so every round
+# reliably triggers a rollup/esbuild rebuild without risking a broken edit.
 DEFAULT_CODING_SOURCE_FILES = [
-    {"file": "src/config.ts", "find": "name: 'Devias Kit'", "replace": "name: 'Devias Kit Pro'"},
     {
-        "file": "src/paths.ts",
-        "find": "customers: '/dashboard/customers'",
-        "replace": "customers: '/dashboard/customer-list'",
+        "file": "packages/shared/src/general.ts",
+        "find": "export const NOOP = (): void => {}",
+        "replace": "export const NOOP = (): void => undefined",
     },
-    {"file": "src/app/layout.tsx", "find": '<html lang="en">', "replace": '<html lang="en-US">'},
-    {"file": "src/app/page.tsx", "find": "redirect('/dashboard')", "replace": "redirect('/dashboard/overview')"},
-    {"file": "src/app/dashboard/layout.tsx", "find": '<html lang="en">', "replace": '<html lang="en-US">'},
+    {"file": "packages/shared/src/general.ts", "find": "Always return false.", "replace": "Always returns false."},
     {
-        "file": "src/app/dashboard/page.tsx",
-        "find": "redirect('/dashboard')",
-        "replace": "redirect('/dashboard/overview')",
+        "file": "packages/shared/src/index.ts",
+        "find": "export * from './general'",
+        "replace": "export * from './general' // bench round",
+    },
+    {
+        "file": "packages/vue/src/index.ts",
+        "find": '// This entry is the "full-build"',
+        "replace": '// This entry is the "full-build" (bench)',
+    },
+    {
+        "file": "packages/reactivity/src/baseHandlers.ts",
+        "find": "export const mutableHandlers: ProxyHandler<object> =",
+        "replace": "export const mutableHandlers: ProxyHandler<object> = // bench",
+    },
+    {
+        "file": "packages/runtime-core/src/errorHandling.ts",
+        "find": "import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared'",
+        "replace": "import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared' // bench",
     },
 ]
 

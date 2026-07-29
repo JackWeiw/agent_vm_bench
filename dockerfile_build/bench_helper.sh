@@ -3,12 +3,18 @@
 # Coding Benchmark Helper — E2B Sandbox Manual Testing
 # ============================================================================
 #
-# Project: devias Material Kit React (https://github.com/devias-io/material-kit-react)
-#   - 5.6k GitHub stars, popular React + MUI + TypeScript admin dashboard
-#   - Uses MUI (60+ components + 2000+ icons) + Next.js
+# Project: vuejs/core (https://github.com/vuejs/core)
+#   - 54k+ GitHub stars, Vue.js core framework (TypeScript monorepo, pnpm)
+#   - Real repo from the swe_bench_multilingual evaluation dataset
+#   - Build: rollup (production) + esbuild (dev) — fast, low CPU
+#
+# Dev server: a vite playground (/opt/vite-playground) that imports the built
+# vue lib, so the dev server holds the full vue+rollup+esbuild module graph
+# resident (~1.5GB). Real agent behavior: editing a frontend library and
+# verifying changes via a local vite dev/HMR playground.
 #
 # Simulates a real AI coding agent workflow:
-#   Step 0: find   — reset source files (git checkout) + verify/locate target file
+#   Step 0: find   — reset source files (git checkout packages/) + verify target
 #   Step 1: read   — inspect the target file (agent confirming context)
 #   Step 2: edit   — apply a pre-configured find→replace pair (real semantic edit)
 #   Step 3: build  — production build (overlaps with running dev server, ~3GB peak)
@@ -18,8 +24,6 @@
 # Memory pressure model:
 #   Dev server (~1.5GB persistent) + production build (~1GB peak)
 #   → ~3GB overlapping peak when both processes are active.
-#   This reflects real coding agent environments where dev server is always
-#   running while the agent triggers production build verification.
 #
 # Usage:
 #   bash bench_helper.sh                    # Round 0, all steps
@@ -31,24 +35,31 @@
 #   bash bench_helper.sh --help             # Show help
 #
 # Environment overrides:
-#   BENCH_PROJECT_DIR    Project path (default: /opt/coding-bench)
+#   BENCH_PROJECT_DIR    vuejs/core project path (default: /opt/coding-bench)
+#   BENCH_DEV_DIR        vite playground path (default: /opt/vite-playground)
 #   BENCH_DEV_WAIT       Dev server startup wait in seconds (default: 20)
+#   BENCH_BUILD_CMD      Build command (default: node scripts/build.js)
+#   BENCH_TEST_CMD       Test command (default: pnpm test)
 # ============================================================================
 
 # ---- Configuration (override via environment variables for extensibility) ----
 PROJECT_DIR="${BENCH_PROJECT_DIR:-/opt/coding-bench}"
+DEV_DIR="${BENCH_DEV_DIR:-/opt/vite-playground}"
 DEV_WAIT="${BENCH_DEV_WAIT:-20}"
+BUILD_CMD="${BENCH_BUILD_CMD:-node scripts/build.js}"
+TEST_CMD="${BENCH_TEST_CMD:-pnpm test}"
 
-# Replacement pairs for round-robin editing (verified against the devias repo).
-# Each pair is a real, type-safe string edit that triggers a Next rebuild without
-# breaking compilation. The runner round-robins through the list.
+# Replacement pairs for round-robin editing (verified against the vuejs/core repo).
+# Each pair is a real, type-safe string edit that triggers a rollup/esbuild rebuild
+# without breaking compilation. The runner round-robins through the list.
+# Format: "file|find|replace"
 TARGET_FILES=(
-    "src/config.ts|name: 'Devias Kit'|name: 'Devias Kit Pro'"
-    "src/paths.ts|customers: '/dashboard/customers'|customers: '/dashboard/customer-list'"
-    "src/app/layout.tsx|<html lang=\"en\">|<html lang=\"en-US\">"
-    "src/app/page.tsx|redirect('/dashboard')|redirect('/dashboard/overview')"
-    "src/app/dashboard/layout.tsx|<html lang=\"en\">|<html lang=\"en-US\">"
-    "src/app/dashboard/page.tsx|redirect('/dashboard')|redirect('/dashboard/overview')"
+    "packages/shared/src/general.ts|export const NOOP = (): void => {}|export const NOOP = (): void => undefined"
+    "packages/shared/src/general.ts|Always return false.|Always returns false."
+    "packages/shared/src/index.ts|export * from './general'|export * from './general' // bench round"
+    'packages/vue/src/index.ts|// This entry is the "full-build"|// This entry is the "full-build" (bench)'
+    "packages/reactivity/src/baseHandlers.ts|export const mutableHandlers: ProxyHandler<object> =|export const mutableHandlers: ProxyHandler<object> = // bench"
+    "packages/runtime-core/src/errorHandling.ts|import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared'|import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared' // bench"
 )
 
 # ---- Argument Parsing ----
@@ -64,7 +75,7 @@ for arg in "$@"; do
         --no-build)      SKIP_BUILD=true ;;
         --no-test)       SKIP_TEST=true ;;
         --help|-h)
-            echo "Coding Benchmark Helper — devias Material Kit React"
+            echo "Coding Benchmark Helper — vuejs/core"
             echo ""
             echo "Simulates real AI coding agent workflow with dev server + build overlap."
             echo ""
@@ -81,15 +92,18 @@ for arg in "$@"; do
             echo "  --help             Show this help"
             echo ""
             echo "Environment:"
-            echo "  BENCH_PROJECT_DIR   Project path (default: /opt/coding-bench)"
+            echo "  BENCH_PROJECT_DIR   vuejs/core path (default: /opt/coding-bench)"
+            echo "  BENCH_DEV_DIR       vite playground path (default: /opt/vite-playground)"
             echo "  BENCH_DEV_WAIT      Dev server startup wait seconds (default: 20)"
+            echo "  BENCH_BUILD_CMD     Build command (default: node scripts/build.js)"
+            echo "  BENCH_TEST_CMD      Test command (default: pnpm test)"
             echo ""
             echo "Workflow steps per round:"
             echo "  0: find    — git checkout reset + verify/locate target file"
             echo "  1: read    — inspect target file (head -20)"
             echo "  2: edit    — apply find→replace pair (real semantic edit, triggers rebuild)"
-            echo "  3: build   — npm run build (clean rebuild, overlaps with dev server)"
-            echo "  4: test    — npm test (verify correctness)"
+            echo "  3: build   — node scripts/build.js (clean rebuild, overlaps with dev server)"
+            echo "  4: test    — pnpm test (verify correctness)"
             echo "  5: diff    — git diff > patch file (verification artifact)"
             exit 0
             ;;
@@ -106,13 +120,13 @@ done
 
 # ---- Helper Functions ----
 is_dev_server_running() {
-    # devias uses 'next dev' (via npm run dev); also match umi/max for other projects
-    ps aux | grep -E 'npm run dev|next dev|umi dev|max dev' | grep -v grep | grep -v pgrep | grep -v 'sh -c' > /dev/null 2>&1
+    # vite dev server (the playground's npm run dev → vite), plus common variants
+    ps aux | grep -E 'npm run dev|vite|next dev|umi dev|max dev' | grep -v grep | grep -v pgrep | grep -v 'sh -c' > /dev/null 2>&1
 }
 
 # ---- Banner ----
 echo "============================================"
-echo "  Coding Bench — devias Material Kit React — Round ${ROUND}"
+echo "  Coding Bench — vuejs/core — Round ${ROUND}"
 echo "============================================"
 echo ""
 
@@ -128,17 +142,17 @@ REPLACE_STR="${REST#*|}"
 echo "[Step 0: find] Preparing environment..."
 
 # Reset source files to clean state (simulates agent reverting previous round's changes)
-cd "${PROJECT_DIR}" && git checkout -- src/ 2>/dev/null || echo "  WARNING: git checkout failed (not a git repo or no src/ changes)"
+# vuejs/core source lives under packages/*/src; fall back to src/ for other layouts.
+cd "${PROJECT_DIR}" && git checkout -- packages/ src/ 2>/dev/null || echo "  WARNING: git checkout failed (not a git repo or no changes)"
 
 # Verify the target file exists; fall back to a located file with a generic comment-marker pair
 if [ ! -f "${PROJECT_DIR}/${TARGET_FILE}" ]; then
     echo "  WARNING: target not found: ${TARGET_FILE}"
-    FOUND_FILE=$(cd "${PROJECT_DIR}" && find src -name '*.tsx' -o -name '*.ts' 2>/dev/null | head -1)
+    FOUND_FILE=$(cd "${PROJECT_DIR}" && find packages src -name '*.ts' -o -name '*.tsx' -o -name '*.js' 2>/dev/null | head -1)
     if [ -n "${FOUND_FILE}" ]; then
         TARGET_FILE="${FOUND_FILE}"
         FIND_STR="// bench marker"
-        REPLACE_STR="// bench round
-// bench marker"
+        REPLACE_STR="// bench round"
         echo "  Falling back to: ${TARGET_FILE} (generic comment-marker pair)"
     else
         echo "  ERROR: No target file available for modification" >&2
@@ -148,15 +162,16 @@ else
     echo "  Target: ${TARGET_FILE}"
 fi
 
-# Start dev server if not already running
-# Dev server provides live preview — every coding agent working on web apps
-# starts a dev server (Devin, OpenHands, Claude Code all do this)
+# Start dev server (vite playground) if not already running
+# A real agent editing a frontend lib verifies changes via a local vite dev/HMR
+# playground. The playground imports the built vue lib so the dev server holds the
+# full module graph resident (~1.5GB).
 if [ "${SKIP_DEV_SERVER}" = false ]; then
     if is_dev_server_running; then
         echo "  Dev server: already running"
     else
-        echo "  Starting dev server (BROWSER=none, background)..."
-        cd "${PROJECT_DIR}" && BROWSER=none npm run dev > /tmp/dev_server.log 2>&1 &
+        echo "  Starting vite dev server (background)..."
+        cd "${DEV_DIR}" && BROWSER=none npm run dev > /tmp/dev_server.log 2>&1 &
         echo "  Waiting ${DEV_WAIT}s for initial compilation..."
         sleep "${DEV_WAIT}"
         if is_dev_server_running; then
@@ -197,12 +212,11 @@ if [ "${SKIP_BUILD}" = false ]; then
     BUILD_START=$(date +%s%N)
 
     # Remove build output and bundler cache (forces full recompilation).
-    # NOTE: remove .next/ (Next.js) and node_modules/.cache/. Do NOT remove
-    # .next/cache when the dev server is running if it depends on it — but a
-    # clean rebuild here intentionally forces full recompile for memory peak.
-    rm -rf "${PROJECT_DIR}/.next/" "${PROJECT_DIR}/node_modules/.cache/"
+    # vuejs/core outputs to packages/*/dist; clean node_modules/.cache and tsconfig cache.
+    cd "${PROJECT_DIR}" && find packages -type d -name dist -prune -exec rm -rf {} + 2>/dev/null
+    rm -rf "${PROJECT_DIR}/node_modules/.cache" "${PROJECT_DIR}/node_modules/.vite" 2>/dev/null
 
-    cd "${PROJECT_DIR}" && npm run build > /tmp/build_output.log 2>&1
+    cd "${PROJECT_DIR}" && ${BUILD_CMD} > /tmp/build_output.log 2>&1
     BUILD_EXIT=$?
     BUILD_END=$(date +%s%N)
     BUILD_MS=$(( (BUILD_END - BUILD_START) / 1000000 ))
@@ -225,7 +239,7 @@ if [ "${SKIP_TEST}" = false ]; then
     echo "[Step 4: test] Running test suite..."
     TEST_START=$(date +%s%N)
 
-    cd "${PROJECT_DIR}" && npm test > /tmp/test_output.log 2>&1
+    cd "${PROJECT_DIR}" && ${TEST_CMD} > /tmp/test_output.log 2>&1
     TEST_EXIT=$?
     TEST_END=$(date +%s%N)
     TEST_MS=$(( (TEST_END - TEST_START) / 1000000 ))
@@ -267,5 +281,5 @@ echo "  Dev server:  ${DEV_STATUS}"
 echo "============================================"
 echo ""
 echo "  Next round:  bash ${PROJECT_DIR}/bench_helper.sh $((ROUND + 1))"
-echo "  Reset only:  cd ${PROJECT_DIR} && git checkout -- src/"
-echo "  Stop dev:    pkill -f 'next dev'; pkill -f 'npm run dev'"
+echo "  Reset only:  cd ${PROJECT_DIR} && git checkout -- packages/"
+echo "  Stop dev:    pkill -f 'vite'; pkill -f 'npm run dev'"

@@ -1,5 +1,6 @@
 """Unit tests for CodingMetrics, coding config, and workflow dispatch"""
 
+import threading
 import unittest
 from e2b_bench.config import Config
 from e2b_bench.schemas import CodingMetrics, CODING_STEP_ORDER, BROWSER_STEP_ORDER, SandboxState
@@ -134,6 +135,30 @@ class TestCodingConfig(unittest.TestCase):
         self.assertEqual(len(c.coding_source_files), 6)
         self.assertEqual(c.benchmark_mode, "round_robin")
 
+    def test_yaml_coding_dev_dir_loaded(self):
+        """YAML configures a separate dev-server dir (vite playground)"""
+        c = Config.load_from_yaml("config/e2b_coding_bench.yaml")
+        self.assertEqual(c.coding_dev_dir, "/opt/vite-playground")
+        # build/test commands are vuejs/core-specific
+        self.assertEqual(c.coding_build_cmd, "node scripts/build.js")
+        self.assertEqual(c.coding_test_cmd, "pnpm test")
+
+    def test_yaml_coding_source_files_are_vuejs_pairs(self):
+        """YAML source_files are verified vuejs/core paths with find/replace"""
+        c = Config.load_from_yaml("config/e2b_coding_bench.yaml")
+        files = [p["file"] for p in c.coding_source_files]
+        # All targets are real vuejs/core paths under packages/
+        self.assertTrue(all(f.startswith("packages/") for f in files), files)
+        # Each pair carries a non-empty find and replace
+        for p in c.coding_source_files:
+            self.assertTrue(p["find"])
+            self.assertTrue(p["replace"])
+
+    def test_default_dev_dir_is_empty(self):
+        """Default dev_dir is empty (falls back to project_dir at runtime)"""
+        c = Config(workflow_type="coding")
+        self.assertEqual(c.coding_dev_dir, "")
+
     def test_yaml_browser_config_unaffected(self):
         """Test that browser config loading still works"""
         c = Config.load_from_yaml("config/e2b_bench.yaml")
@@ -167,6 +192,76 @@ class TestSandboxStateCodingMetrics(unittest.TestCase):
         state = SandboxState(sandbox_id=1)
         self.assertIsNotNone(state.browser_metrics)
         self.assertEqual(state.browser_metrics.total_tasks, 0)
+
+
+class _FakeResult:
+    def __init__(self, exit_code=0, stdout="", stderr=""):
+        self.exit_code = exit_code
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class _FakeCommands:
+    """Captures commands.run() invocations for dev-server behavior tests."""
+
+    def __init__(self):
+        self.calls = []  # list of (cmd, kwargs)
+
+    def run(self, cmd, timeout=None, user=None, background=False):
+        self.calls.append((cmd, {"timeout": timeout, "background": background}))
+        # Dev server start (background=True) succeeds; checks return no match
+        return _FakeResult(exit_code=0, stdout="", stderr="")
+
+
+class _FakeSbx:
+    def __init__(self):
+        self.sandbox_id = "fake"
+        self.commands = _FakeCommands()
+
+
+class TestCodingDevServerDir(unittest.TestCase):
+    """Verify the dev server starts in coding_dev_dir (vite playground), not project_dir."""
+
+    def _make_runner(self, config):
+        from e2b_bench.coding_task_runner import CodingRoundRunner
+        from e2b_bench.schemas import SandboxState
+
+        state = SandboxState(sandbox_id=1, workflow_type="coding")
+        return CodingRoundRunner(state=state, config=config, stop_event=threading.Event(), round_id=0)
+
+    def test_dev_dir_used_when_set(self):
+        """When coding_dev_dir is set, ensure_dev_server cd's into it."""
+        config = Config(
+            workflow_type="coding",
+            coding_project_dir="/opt/coding-bench",
+            coding_dev_dir="/opt/vite-playground",
+            coding_dev_wait=0,
+        )
+        runner = self._make_runner(config)
+        sbx = _FakeSbx()
+        runner._step_ensure_dev_server(sbx, "/opt/coding-bench", step_times={})
+        # The dev-server START command (background) must target the vite playground dir.
+        # Filter out the detection probe (ps aux | grep ...) by requiring "BROWSER=none".
+        start_cmds = [c for c, kw in sbx.commands.calls if "BROWSER=none" in c]
+        self.assertTrue(start_cmds, "expected a dev-server start command")
+        self.assertIn("/opt/vite-playground", start_cmds[0])
+        self.assertNotIn("/opt/coding-bench", start_cmds[0])
+
+    def test_falls_back_to_project_dir_when_dev_dir_empty(self):
+        """When coding_dev_dir is empty, dev server starts in project_dir."""
+        config = Config(
+            workflow_type="coding",
+            coding_project_dir="/opt/coding-bench",
+            coding_dev_dir="",
+            coding_dev_wait=0,
+        )
+        runner = self._make_runner(config)
+        sbx = _FakeSbx()
+        runner._step_ensure_dev_server(sbx, "/opt/coding-bench", step_times={})
+        start_cmds = [c for c, kw in sbx.commands.calls if "BROWSER=none" in c]
+        self.assertTrue(start_cmds)
+        self.assertIn("/opt/coding-bench", start_cmds[0])
+        self.assertNotIn("/opt/vite-playground", start_cmds[0])
 
 
 if __name__ == "__main__":
