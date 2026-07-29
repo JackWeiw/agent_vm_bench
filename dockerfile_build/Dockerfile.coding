@@ -39,6 +39,8 @@ ENV http_proxy=${HTTP_PROXY}
 ENV https_proxy=${HTTPS_PROXY}
 ENV HTTP_PROXY=${HTTP_PROXY}
 ENV HTTPS_PROXY=${HTTPS_PROXY}
+# corepack/pnpm download via the npmmirror (China network), honored across layers
+ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com
 
 # Install Node24 and system packages
 RUN apt update && apt install -y wget xz-utils vim libgomp1 iproute2 net-tools supervisor gnupg git && \
@@ -50,12 +52,14 @@ RUN apt update && apt install -y wget xz-utils vim libgomp1 iproute2 net-tools s
     ln -sf /usr/local/node24/bin/node /usr/local/bin/node && \
     ln -sf /usr/local/node24/bin/npm /usr/local/bin/npm && \
     ln -sf /usr/local/node24/bin/npx /usr/local/bin/npx && \
-    # Install pnpm (vuejs/core uses pnpm@11 via packageManager; corepack honors it)
-    npm config set strict-ssl false && \
-    npm config set registry https://registry.npmmirror.com && \
-    npm install -g pnpm@9 --registry=https://registry.npmmirror.com --strict-ssl=false && \
-    ln -sf /usr/local/node24/bin/pnpm /usr/local/bin/pnpm && \
+    # Enable corepack and activate the pnpm version declared in vuejs/core's
+    # packageManager field (pnpm@11.13.0) — corepack honors it automatically,
+    # so this stays correct even if vue bumps the pnpm version upstream.
+    # COREPACK_NPM_REGISTRY is set above (ENV) so downloads use npmmirror.
     ln -sf /usr/local/node24/bin/corepack /usr/local/bin/corepack && \
+    corepack enable && \
+    corepack prepare pnpm@11.13.0 --activate && \
+    ln -sf /usr/local/node24/bin/pnpm /usr/local/bin/pnpm && \
     git config --global http.sslVerify false && \
     apt clean && rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
 
