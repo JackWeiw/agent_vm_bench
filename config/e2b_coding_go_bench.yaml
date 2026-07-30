@@ -1,0 +1,83 @@
+# config/e2b_coding_go_bench.yaml
+# E2B Sandbox Coding Benchmark (Go) - Single Test Configuration
+#
+# Workflow type: coding — simulates AI coding agent memory pressure (Go)
+#   Trace-faithful loop (verified against a captured openclaw gohugoio/hugo
+#   trajectory): find -> read -> edit -> verify (go run) -> git diff.
+#   No resident dev server, no `go build ./...`, no `go test ./...` —
+#   verification is a transient `go run /tmp/bench_verify.go` (Go compiler +
+#   execute). N sandboxes' verify peaks overlapping -> host memory overcommit.
+#
+# Project: gohugoio/hugo (github.com/gohugoio/hugo)
+#   - 70k+ stars, Go static-site generator (large popular Go monorepo)
+#   - Real repo from the swe_bench_multilingual dataset (gohugoio__hugo-12768:
+#     GitHub Alert case-insensitivity)
+#   - Cloned at the instance base_commit; module graph pre-downloaded via CN
+#     goproxy at image build.
+#
+# Usage:
+#   python -m e2b_bench -c config/e2b_coding_go_bench.yaml --create-only
+#   python -m e2b_bench -c config/e2b_coding_go_bench.yaml --detect
+#   python -m e2b_bench -c config/e2b_coding_go_bench.yaml --detect -bm round_robin
+
+# E2B SDK environment variables (replace with real credentials)
+e2b_env:
+  E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+  E2B_API_KEY: "your_e2b_api_key_here"
+  E2B_DOMAIN: "e2b.app"
+  E2B_API_URL: "http://localhost:3000"
+  E2B_HTTP_SSL: "false"
+
+# Sandbox configuration
+sandbox:
+  template: "openclaw-coding-go-v1"    # E2B template name (Go coding template with gohugoio/hugo)
+  create_timeout: 86400              # Sandbox creation timeout (seconds)
+  total_count: 10                   # Total sandbox count (start small for manual testing)
+  detect_existing: false             # Detect existing sandboxes instead of creating new ones
+  create_only: false                 # Create sandboxes only without running tasks (Phase 0)
+  sandbox_ids_file: "sandboxs_go.txt"   # File path to save/load sandbox IDs
+  numa_bind: 2                       # NUMA node to bind sandbox (null/omit = no binding)
+
+# Sandbox creation batch control
+create_batch:
+  size: 10                           # Sandboxes per batch during creation
+  interval: 3                        # Interval between creation batches (seconds)
+
+# Task execution batch control
+task_batch:
+  size: 5                            # Sandboxes to start tasks per batch
+  interval: 5                        # Interval between task batches (seconds)
+
+# Workflow type selection — determines which runners, metrics, and reports to use
+workflow_type: "coding"
+
+# Coding task configuration (Go language)
+coding:
+  language: "go"                       # Coding language (selects the go verify profile)
+  project_dir: "/opt/coding-bench"    # gohugoio/hugo project directory inside sandbox
+  verify_cmd: "go run /tmp/bench_verify.go"  # Verify run command (writes ad-hoc test + runs it)
+  verify_timeout: 120                 # Verify command timeout (seconds)
+  source_files:                         # Replacement pairs for round-robin editing (verified against gohugoio/hugo at base_commit 83235262)
+    - file: "markup/goldmark/blockquotes/blockquotes.go"
+      find: "var gitHubAlertRe = regexp.MustCompile(`^<p>\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\\]`)"
+      replace: "var gitHubAlertRe = regexp.MustCompile(`(?i)^<p>\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\\]`)"
+  interval_min: 2.0                     # Min interval between tasks (fixed mode)
+  interval_max: 10.0                    # Max interval between tasks (fixed mode)
+  skip_verify: false                    # Skip the verify step (set true for edit-only testing)
+
+# Test run configuration
+test:
+  duration: 160                         # Test duration (seconds)
+  stats_interval: 10                    # Stats snapshot interval (seconds)
+  benchmark_percent: 1.0                # Percentage of sandboxes for benchmark (1.0 = 100%)
+
+  # Round-robin mode configuration (recommended for coding benchmark)
+  benchmark_mode: "round_robin"
+  round_size: 5                         # Sandboxes per round
+  round_count: 5                        # Max rounds (stops when reached or duration exceeded)
+  round_interval: 30                    # Round interval (seconds, longer for verify tasks)
+
+# Report configuration
+report:
+  output_dir: "results/e2b/coding_go"
+  filename_prefix: "e2b_coding_go_bench"

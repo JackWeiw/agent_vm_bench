@@ -363,19 +363,15 @@ class MetricsExtractor:
             if match:
                 metrics["Coding_Total_Tasks"] = int(match.group(1))
 
-            # Build/Test success rates
-            match = re.search(r"Build Success:\s+(\d+)/(\d+)\s+\(([\d.]+)%\)", coding_section)
+            # Verify success rate (the trace-faithful verify step: write temp test + run)
+            match = re.search(r"Verify Success:\s+(\d+)/(\d+)\s+\(([\d.]+)%\)", coding_section)
             if match:
-                metrics["Coding_Build_Success_Rate"] = float(match.group(3))
-
-            match = re.search(r"Test Success:\s+(\d+)/(\d+)\s+\(([\d.]+)%\)", coding_section)
-            if match:
-                metrics["Coding_Test_Success_Rate"] = float(match.group(3))
+                metrics["Coding_Verify_Success_Rate"] = float(match.group(3))
 
             # Bug #3 fix: capture all numeric columns (Avg, P50, P95, P99)
             # Table format: Step, Count, Avg(ms), P50(ms), P95(ms), P99(ms), Tail
             coding_step_pattern = (
-                r"^\s+(find|read|edit|build|test|diff)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)"
+                r"^\s+(find|read|edit|verify|diff)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)"
             )
             for match in re.finditer(coding_step_pattern, coding_section, re.MULTILINE):
                 step_name = match.group(1)

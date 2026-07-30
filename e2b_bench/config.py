@@ -11,7 +11,81 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from .schemas import DEFAULT_CODING_SOURCE_FILES
+from .schemas import (
+    DEFAULT_CODING_GO_SOURCE_FILES,
+    DEFAULT_CODING_SOURCE_FILES,
+    DEFAULT_CODING_VERIFY_SCRIPT_GO,
+    DEFAULT_CODING_VERIFY_SCRIPT_JS,
+)
+
+
+@dataclass(frozen=True)
+class CodingLanguageProfile:
+    """Per-language profile for the coding verify step.
+
+    The coding workflow loop (find -> read -> edit -> verify -> diff) is identical
+    across languages; only the verify mechanics differ. This profile captures
+    those differences as data, so adding a new language (e.g. cpp) is a new
+    registry entry - no runner code changes.
+
+    Fields:
+        temp_test_path: where the ad-hoc test file is written (/tmp/...).
+        heredoc_eof: heredoc terminator string ("EOF"/"GOEOF").
+        run_cmd: the verify run command (npx tsx ... / go run ...).
+        source_find_names: list of -name patterns for the find fallback
+            (["*.ts","*.tsx","*.js"] for js, ["*.go"] for go).
+        checkout_paths: paths reset by `git checkout --` in the find step.
+        default_verify_script: shared default body for pairs without their own.
+    """
+
+    temp_test_path: str
+    heredoc_eof: str
+    run_cmd: str
+    source_find_names: tuple = ()
+    checkout_paths: str = ""
+    default_verify_script: str = ""
+
+
+def _find_name_clause(names: tuple) -> str:
+    """Build a `find -name` clause: `\\( -name '*.ts' -o -name '*.go' \\)`."""
+    if not names:
+        return "-name '*.ts'"
+    inner = " -o ".join(f"-name '{n}'" for n in names)
+    return f"\\( {inner} \\)" if len(names) > 1 else f"-name '{names[0]}'"
+
+
+# Extensible language registry. To add a language (cpp, rust, ...): add one
+# entry here + its DEFAULT_CODING_*_SOURCE_FILES + default verify script in
+# schemas.py. The runner reads the active profile via coding_language.
+CODING_LANGUAGE_PROFILES: Dict[str, CodingLanguageProfile] = {
+    "js": CodingLanguageProfile(
+        temp_test_path="/tmp/bench_verify.mjs",
+        heredoc_eof="EOF",
+        run_cmd="npx tsx /tmp/bench_verify.mjs",
+        source_find_names=("*.ts", "*.tsx", "*.js"),
+        checkout_paths="packages/ src/",
+        default_verify_script=DEFAULT_CODING_VERIFY_SCRIPT_JS,
+    ),
+    "go": CodingLanguageProfile(
+        temp_test_path="/tmp/bench_verify.go",
+        heredoc_eof="GOEOF",
+        run_cmd="go run /tmp/bench_verify.go",
+        source_find_names=("*.go",),
+        checkout_paths="markup/",
+        default_verify_script=DEFAULT_CODING_VERIFY_SCRIPT_GO,
+    ),
+}
+
+# Maps a language to its default replacement-pair list (DEFAULT_CODING_*_SOURCE_FILES).
+CODING_LANGUAGE_DEFAULT_SOURCE_FILES: Dict[str, list] = {
+    "js": DEFAULT_CODING_SOURCE_FILES,
+    "go": DEFAULT_CODING_GO_SOURCE_FILES,
+}
+
+
+def get_coding_profile(language: str) -> CodingLanguageProfile:
+    """Return the CodingLanguageProfile for `language`, falling back to js."""
+    return CODING_LANGUAGE_PROFILES.get(language, CODING_LANGUAGE_PROFILES["js"])
 
 
 def _normalize_source_files(raw: Any) -> List[Dict[str, str]]:
@@ -38,13 +112,16 @@ def _normalize_source_files(raw: Any) -> List[Dict[str, str]]:
     result: List[Dict[str, str]] = []
     for item in raw:
         if isinstance(item, dict) and item.get("file"):
-            result.append(
-                {
-                    "file": str(item["file"]),
-                    "find": str(item.get("find", "// bench marker")),
-                    "replace": str(item.get("replace", f"// bench round\n// bench marker")),
-                }
-            )
+            pair = {
+                "file": str(item["file"]),
+                "find": str(item.get("find", "// bench marker")),
+                "replace": str(item.get("replace", f"// bench round\n// bench marker")),
+            }
+            # Preserve an optional per-pair verify_script body (ad-hoc test for the
+            # verify step). Pairs without it fall back to the shared default later.
+            if item.get("verify_script"):
+                pair["verify_script"] = str(item["verify_script"])
+            result.append(pair)
         elif isinstance(item, str) and item:
             # CLI raw-file mode: safe generic comment marker (non-breaking, triggers rebuild)
             result.append({"file": item, "find": "// bench marker", "replace": "// bench round\n// bench marker"})
@@ -125,23 +202,27 @@ class Config:
 
     # Coding task configuration
     coding_project_dir: str = "/opt/coding-bench"
-    coding_dev_dir: str = ""  # Directory to run the dev server in (defaults to project_dir when empty)
-    coding_dev_wait: int = 20  # Seconds to wait for dev server startup
-    coding_dev_cmd: str = "npm run dev"  # Dev server startup command (parsed from YAML)
-    coding_build_cmd: str = "npm run build"
-    coding_test_cmd: str = "npm test"
-    # List of replacement pairs: [{"file": str, "find": str, "replace": str}, ...].
-    # Each round applies one pair (round-robin) — a real, type-safe string edit that
-    # triggers a rebuild. A bare file-path string is accepted (CLI raw-file mode) and
-    # normalized to a generic comment-marker pair so the old single-file workflow still works.
+    # Coding language - selects a CodingLanguageProfile (js/go/future cpp) which
+    # drives the verify step (temp test path, heredoc terminator, run command,
+    # source glob, checkout paths). Extensible: adding a language = one registry
+    # entry, no runner code changes. See CODING_LANGUAGE_PROFILES below.
+    coding_language: str = "js"
+    # Verify step: write an ad-hoc test file to /tmp (heredoc) then run it. The
+    # run command comes from the active language profile (npx tsx for js,
+    # go run for go). Mirrors the real openclaw trace's combined write+run.
+    coding_verify_cmd: str = "npx tsx /tmp/bench_verify.mjs"
+    coding_verify_timeout: int = 120  # Verify command timeout (seconds)
+    coding_skip_verify: bool = False  # Skip the verify step (build-only / dry-run)
+    # List of replacement pairs: [{"file": str, "find": str, "replace": str,
+    # "verify_script": str(optional)}, ...]. Each round applies one pair
+    # (round-robin) - a real, type-safe string edit. `verify_script` is the body
+    # of the ad-hoc test (between heredoc markers); pairs without it fall back
+    # to the shared default verify script for the language. A bare file-path
+    # string is accepted (CLI raw-file mode) and normalized to a generic
+    # comment-marker pair so the single-file workflow still works.
     coding_source_files: List[Dict[str, str]] = field(default_factory=lambda: list(DEFAULT_CODING_SOURCE_FILES))
-    coding_build_timeout: int = 300  # Build command timeout (seconds)
-    coding_test_timeout: int = 120  # Test command timeout (seconds)
     coding_interval_min: float = 2.0  # Interval between coding tasks in fixed mode
     coding_interval_max: float = 10.0
-    coding_skip_dev_server: bool = False
-    coding_skip_build: bool = False
-    coding_skip_test: bool = False
 
     # Warmup phase configuration
     warmup_urls: List[str] = field(default_factory=list)  # Warmup page URL list
@@ -217,19 +298,23 @@ class Config:
             warmup_only=browser.get("warmup_only", False),
             # Coding task configuration
             coding_project_dir=coding.get("project_dir", "/opt/coding-bench"),
-            coding_dev_dir=coding.get("dev_dir", ""),
-            coding_dev_cmd=coding.get("dev_cmd", "npm run dev"),
-            coding_dev_wait=coding.get("dev_wait", 20),
-            coding_build_cmd=coding.get("build_cmd", "npm run build"),
-            coding_test_cmd=coding.get("test_cmd", "npm test"),
-            coding_source_files=_normalize_source_files(coding.get("source_files", DEFAULT_CODING_SOURCE_FILES)),
-            coding_build_timeout=coding.get("build_timeout", 300),
-            coding_test_timeout=coding.get("test_timeout", 120),
+            coding_language=coding.get("language", "js"),
+            coding_verify_cmd=coding.get(
+                "verify_cmd",
+                # Default verify command from the active language profile (npx tsx
+                # for js, go run for go) when YAML doesn't override it.
+                get_coding_profile(coding.get("language", "js")).run_cmd,
+            ),
+            coding_verify_timeout=coding.get("verify_timeout", 120),
+            coding_skip_verify=coding.get("skip_verify", False),
+            coding_source_files=_normalize_source_files(
+                coding.get(
+                    "source_files",
+                    CODING_LANGUAGE_DEFAULT_SOURCE_FILES.get(coding.get("language", "js"), DEFAULT_CODING_SOURCE_FILES),
+                )
+            ),
             coding_interval_min=coding.get("interval_min", 2.0),
             coding_interval_max=coding.get("interval_max", 10.0),
-            coding_skip_dev_server=coding.get("skip_dev_server", False),
-            coding_skip_build=coding.get("skip_build", False),
-            coding_skip_test=coding.get("skip_test", False),
             test_duration=test.get("duration", 600),
             stats_interval=test.get("stats_interval", 10),
             output_dir=report.get("output_dir", "results/e2b"),
@@ -321,35 +406,23 @@ class Config:
             coding_project_dir=getattr(args, "coding_project_dir", None)
             if getattr(args, "coding_project_dir", None) is not None
             else yaml_config.coding_project_dir,
-            coding_dev_cmd=yaml_config.coding_dev_cmd,  # No CLI override for dev_cmd
-            coding_dev_dir=yaml_config.coding_dev_dir,  # No CLI override for dev_dir
-            coding_dev_wait=getattr(args, "coding_dev_wait", None)
-            if getattr(args, "coding_dev_wait", None) is not None
-            else yaml_config.coding_dev_wait,
-            coding_build_cmd=yaml_config.coding_build_cmd,  # No CLI override for build/test cmd
-            coding_test_cmd=yaml_config.coding_test_cmd,
+            coding_language=getattr(args, "coding_language", None)
+            if getattr(args, "coding_language", None) is not None
+            else yaml_config.coding_language,
+            coding_verify_cmd=yaml_config.coding_verify_cmd,  # from language profile / YAML
+            coding_verify_timeout=getattr(args, "coding_verify_timeout", None)
+            if getattr(args, "coding_verify_timeout", None) is not None
+            else yaml_config.coding_verify_timeout,
             coding_source_files=_normalize_source_files(
                 getattr(args, "coding_source_file", None)
                 if getattr(args, "coding_source_file", None) is not None
                 else yaml_config.coding_source_files
             ),
-            coding_build_timeout=getattr(args, "coding_build_timeout", None)
-            if getattr(args, "coding_build_timeout", None) is not None
-            else yaml_config.coding_build_timeout,
-            coding_test_timeout=getattr(args, "coding_test_timeout", None)
-            if getattr(args, "coding_test_timeout", None) is not None
-            else yaml_config.coding_test_timeout,
             coding_interval_min=yaml_config.coding_interval_min,
             coding_interval_max=yaml_config.coding_interval_max,
-            coding_skip_dev_server=getattr(args, "coding_skip_dev_server", False)
-            if hasattr(args, "coding_skip_dev_server") and args.coding_skip_dev_server
-            else yaml_config.coding_skip_dev_server,
-            coding_skip_build=getattr(args, "coding_skip_build", False)
-            if hasattr(args, "coding_skip_build") and args.coding_skip_build
-            else yaml_config.coding_skip_build,
-            coding_skip_test=getattr(args, "coding_skip_test", False)
-            if hasattr(args, "coding_skip_test") and args.coding_skip_test
-            else yaml_config.coding_skip_test,
+            coding_skip_verify=getattr(args, "coding_skip_verify", False)
+            if hasattr(args, "coding_skip_verify") and args.coding_skip_verify
+            else yaml_config.coding_skip_verify,
             test_duration=args.duration if args.duration is not None else yaml_config.test_duration,
             stats_interval=args.stats_interval if args.stats_interval is not None else yaml_config.stats_interval,
             output_dir=args.output_dir if args.output_dir is not None else yaml_config.output_dir,
@@ -414,23 +487,19 @@ class Config:
             workflow_type=getattr(args, "workflow_type", "browser"),
             # Coding configuration (CLI defaults)
             coding_project_dir=getattr(args, "coding_project_dir", "/opt/coding-bench"),
-            coding_dev_cmd="npm run dev",  # Default dev server command
-            coding_dev_dir="",  # Default: same as project_dir
-            coding_dev_wait=getattr(args, "coding_dev_wait", 20),
-            coding_build_cmd="npm run build",
-            coding_test_cmd="npm test",
+            coding_language=getattr(args, "coding_language", "js"),
+            coding_verify_cmd=get_coding_profile(getattr(args, "coding_language", "js")).run_cmd,
+            coding_verify_timeout=getattr(args, "coding_verify_timeout", 120),
+            coding_skip_verify=getattr(args, "coding_skip_verify", False),
             coding_source_files=_normalize_source_files(
                 getattr(args, "coding_source_file", None)
                 if getattr(args, "coding_source_file", None) is not None
-                else DEFAULT_CODING_SOURCE_FILES
+                else CODING_LANGUAGE_DEFAULT_SOURCE_FILES.get(
+                    getattr(args, "coding_language", "js"), DEFAULT_CODING_SOURCE_FILES
+                )
             ),
-            coding_build_timeout=getattr(args, "coding_build_timeout", 300),
-            coding_test_timeout=getattr(args, "coding_test_timeout", 120),
             coding_interval_min=2.0,
             coding_interval_max=10.0,
-            coding_skip_dev_server=getattr(args, "coding_skip_dev_server", False),
-            coding_skip_build=getattr(args, "coding_skip_build", False),
-            coding_skip_test=getattr(args, "coding_skip_test", False),
             test_duration=args.duration if args.duration is not None else 600,
             stats_interval=args.stats_interval if args.stats_interval is not None else 10,
             output_dir=args.output_dir if args.output_dir is not None else "results/e2b",

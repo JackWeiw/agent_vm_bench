@@ -1,0 +1,82 @@
+# Coding Benchmark Template (Go) - E2B Sandbox for AI Coding Agent Memory Stress Testing
+#
+# Environment: Pure Go coding benchmark (NO browser/Chromium, NO agent tools,
+# NO resident dev server, NO production build step)
+#
+# Project: gohugoio/hugo (https://github.com/gohugoio/hugo)
+#   - 70k+ GitHub stars, Go static-site generator (large popular Go monorepo)
+#   - Real repo from the swe_bench_multilingual evaluation dataset
+#     (instance gohugoio__hugo-12768: GitHub Alert case-insensitivity)
+#   - Cloned at the instance base_commit so edits target the real source state.
+#   - Toolchain: Go (the toolchain an agent touches); stdlib-only verify scripts.
+#   - Pure Go, ARM64 compatible
+#
+# Trace-faithful loop (verified against a captured openclaw agent trajectory on
+# gohugoio/hugo): find -> read -> edit -> verify (write ad-hoc
+# /tmp/test_*.go + `go run`) -> git diff. The agent NEVER runs `go build ./...`
+# or `go test ./...`; verification is a transient `go run /tmp/test_alert.go`
+# process (Go compiler + execute, transient peak). Memory pressure comes from
+# N concurrent sandboxes' transient verify peaks overlapping.
+#
+# Go modules are pre-downloaded at build time via the CN goproxy mirror, so
+# runtime `go run` never hits the network.
+#
+# Build:  docker build -t ubuntu-coding-go-bench:24.04-linuxarm64 -f Dockerfile.coding-go .
+# Push:   HARBOR_IP=X bash push_to_harbor_coding_go.sh
+# Template: python3 build_e2b.py --server-ip X --harbor-ip X --alias openclaw-coding-go-v1 --image e2b-orchestration/ubuntu-coding-go-bench:custom
+
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/ubuntu:24.04-linuxarm64
+
+# Set environment variables to avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Configure proxy (empty by default, set via --build-arg if needed)
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ENV http_proxy=${HTTP_PROXY}
+ENV https_proxy=${HTTPS_PROXY}
+ENV HTTP_PROXY=${HTTP_PROXY}
+ENV HTTPS_PROXY=${HTTPS_PROXY}
+
+# Install Go toolchain (ARM64) and system packages
+# Hugo base_commit: 83235262d06a060bd22c168b3413903667b8aeb6 (instance
+# gohugoio__hugo-12768). Clone at that commit (shallow needs the commit fetch).
+RUN apt update && apt install -y wget xz-utils vim libgomp1 iproute2 net-tools gnupg git ca-certificates && \
+    cd /usr/local && \
+    wget --no-check-certificate https://go.dev/dl/go1.23.4.linux-arm64.tar.gz && \
+    tar -xzf go1.23.4.linux-arm64.tar.gz && \
+    rm -f go1.23.4.linux-arm64.tar.gz && \
+    ln -sf /usr/local/go/bin/go /usr/local/bin/go && \
+    ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt && \
+    go version && \
+    # CN Go proxy mirror — runtime `go run` resolves modules offline (build-time fetch)
+    go env -w GOPROXY=https://goproxy.cn,direct && \
+    go env -w GOSUMDB=sum.golang.google.cn && \
+    go env -w GO111MODULE=on && \
+    git config --global http.sslVerify false && \
+    apt clean && rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
+
+# --- Coding benchmark project: gohugoio/hugo (real swe_bench_multilingual repo) ---
+# Clone at the instance base_commit, then pre-download the full module graph so
+# runtime `go run /tmp/bench_verify.go` resolves the module root instantly and
+# any future pair importing hugo packages also works offline. Build cost is paid
+# once at image build, not per sandbox.
+RUN cd /opt && \
+    git clone https://github.com/gohugoio/hugo.git coding-bench && \
+    cd coding-bench && \
+    git checkout 83235262d06a060bd22c168b3413903667b8aeb6 && \
+    go mod download && \
+    echo "Module graph downloaded: $(find $(go env GOMODCACHE) -maxdepth 1 -type d | wc -l) module dirs"
+
+# Copy the manual testing helper script
+COPY bench_helper_go.sh /opt/coding-bench/bench_helper_go.sh
+RUN chmod +x /opt/coding-bench/bench_helper_go.sh
+
+# Unset proxy environment variables after build
+ENV http_proxy= \
+    https_proxy= \
+    HTTP_PROXY= \
+    HTTPS_PROXY=
+
+# Default command: keep container running for sandbox access
+CMD ["sleep", "infinity"]

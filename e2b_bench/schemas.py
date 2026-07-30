@@ -9,14 +9,15 @@ Step order constants for workflow dispatch:
 - CODING_STEP_ORDER: steps in coding round-robin mode
 
 Default source files for the vuejs/core coding benchmark (single definition,
-referenced everywhere — config, runners, YAML templates).
+referenced everywhere - config, runners, YAML templates).
 
 vuejs/core is a real repo from the swe_bench_multilingual evaluation dataset
-(github.com/vuejs/core, 5 real instances). Each entry is a {file, find, replace}
-replacement pair: a real, type-safe string edit applied to a verified file in
-the vuejs/core repo. The runner round-robins through the list, applying one
-pair per round to trigger a rebuild (same role as the old sed comment
-injection, but a real semantic edit an agent would make).
+(github.com/vuejs/core, 5 real instances). Each entry is a {file, find, replace,
+verify_script} replacement pair: a real, type-safe string edit applied to a
+verified file in the vuejs/core repo, plus an ad-hoc verify script body. The
+runner round-robins through the list, applying one pair per round then verifying
+the edit by writing the script to /tmp and running it via `npx tsx` (the exact
+verification a real openclaw agent used on this repo).
 """
 
 import statistics
@@ -27,30 +28,56 @@ from typing import Any, Dict, List, Optional
 
 # Step order constants for workflow dispatch
 BROWSER_STEP_ORDER = ["open_tab", "page_load", "snapshot", "click", "screenshot"]
-# Real AI coding agent workflow: locate file (find), inspect it (read), apply a
-# real edit, build, test, then produce the verification artifact (git diff).
-# `git checkout -- packages/*/src/` reset runs as setup inside the `find` step,
-# not a separate step. `memory` (free -m) was removed — memory pressure is
-# observed at the host level via vm_monitor/smap_tool, not from a per-round free -m.
-CODING_STEP_ORDER = ["find", "read", "edit", "build", "test", "diff"]
+# Real AI coding agent workflow (verified against captured openclaw trajectories
+# on vuejs/core and gohugoio/hugo): locate file (find), inspect it (read), apply a
+# real edit, verify the edit by writing an ad-hoc test file and running it (verify),
+# then produce the verification artifact (git diff). `git checkout --` reset runs as
+# setup inside the `find` step, not a separate step. The `verify` step mirrors the
+# trace: the agent writes /tmp/test_*.mjs (or .go) then runs `npx tsx` / `go run`.
+# No production build, no full test suite, no resident dev server - none appear in
+# the real traces. Memory pressure comes from N concurrent sandboxes' transient
+# verify peaks overlapping, observed at host level via vm_monitor/smap_tool.
+CODING_STEP_ORDER = ["find", "read", "edit", "verify", "diff"]
 
 # Default replacement pairs for the vuejs/core coding benchmark.
-# Single definition — referenced by Config dataclass default, _from_dict,
+# Single definition - referenced by Config dataclass default, _from_dict,
 # from_args, YAML templates, and bench_helper.sh.
 #
 # vuejs/core is a pnpm monorepo (github.com/vuejs/core), part of the
 # swe_bench_multilingual dataset (real evaluation instances, not synthetic).
 # Each pair is verified against the repo. The `find` string is a real value
 # that exists in the file; `replace` is a type-safe substitute (comment append
-# or equivalent return value) that does not break compilation, so every round
-# reliably triggers a rollup/esbuild rebuild without risking a broken edit.
+# or equivalent return value) that does not break compilation.
+#
+# Each pair may carry an optional `verify_script` - the body of an ad-hoc
+# /tmp/bench_verify.mjs that exercises the edited symbol (mirrors the real
+# openclaw trace: agent writes a focused .mjs importing the raw .ts source,
+# runs it via `npx tsx`). Pairs without `verify_script` fall back to a shared
+# default body (import the edited package's index.ts + sanity-call the symbol +
+# print "All tests passed!"). The default loads the full TS module graph -> real
+# transient memory peak; it never asserts complex logic so a round never dies
+# from a broken assertion.
 DEFAULT_CODING_SOURCE_FILES = [
     {
         "file": "packages/shared/src/general.ts",
         "find": "export const NOOP = (): void => {}",
         "replace": "export const NOOP = (): void => undefined",
+        # Import @vue/shared raw .ts, sanity-call NOOP (the edited symbol).
+        "verify_script": (
+            "globalThis.__DEV__ = true\n"
+            "globalThis.__BROWSER__ = false\n"
+            "import('/opt/coding-bench/packages/shared/src/index.ts').then(m => {\n"
+            "  if (typeof m.NOOP !== 'function') throw new Error('NOOP not a function')\n"
+            "  m.NOOP()\n"
+            "  console.log('All tests passed!')\n"
+            "})\n"
+        ),
     },
-    {"file": "packages/shared/src/general.ts", "find": "Always return false.", "replace": "Always returns false."},
+    {
+        "file": "packages/shared/src/general.ts",
+        "find": "Always return false.",
+        "replace": "Always returns false.",
+    },
     {
         "file": "packages/shared/src/index.ts",
         "find": "export * from './general'",
@@ -72,6 +99,108 @@ DEFAULT_CODING_SOURCE_FILES = [
         "replace": "import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared' // bench",
     },
 ]
+
+
+# Shared default verify-script body for pairs that don't carry their own
+# `verify_script`. Imports the edited package's raw .ts index + sanity-calls a
+# top-level export + prints "All tests passed!". Loads the full TS module graph
+# (esbuild transpile + node execute) -> real transient memory peak. Never asserts
+# complex logic, so a round never dies from a broken assertion. `{pkg}` is the
+# packages/<name> dir of the edited file, substituted by the runner.
+DEFAULT_CODING_VERIFY_SCRIPT_JS = (
+    "globalThis.__DEV__ = true\n"
+    "globalThis.__BROWSER__ = false\n"
+    "import('{pkg}/src/index.ts').then(m => {\n"
+    "  const exp = Object.keys(m)[0]\n"
+    "  if (exp && typeof m[exp] === 'undefined') throw new Error(exp + ' undefined')\n"
+    "  console.log('All tests passed!')\n"
+    "})\n"
+)
+
+
+# Default replacement pairs for the gohugoio/hugo coding benchmark (Go language).
+# Real swe_bench_multilingual instance gohugoio__hugo-12768 (GitHub Alert
+# case-insensitivity). Each pair is verified against the repo at its base
+# commit. The first pair mirrors the gold patch (adds (?i) to the alert regex);
+# its `verify_script` is a standalone `package main` exercising case-insensitive
+# alert matching - the exact shape of the ad-hoc /tmp/test_alert.go the real
+# openclaw agent wrote and ran via `go run`.
+DEFAULT_CODING_GO_SOURCE_FILES = [
+    {
+        "file": "markup/goldmark/blockquotes/blockquotes.go",
+        "find": "var gitHubAlertRe = regexp.MustCompile(`^<p>\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\\]`)",
+        "replace": "var gitHubAlertRe = regexp.MustCompile(`(?i)^<p>\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\\]`)",
+        "verify_script": (
+            "package main\n"
+            "\n"
+            "import (\n"
+            '\t"fmt"\n'
+            '\t"regexp"\n'
+            ")\n"
+            "\n"
+            "var gitHubAlertRe = regexp.MustCompile(`(?i)^<p>\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\\]`)\n"
+            "\n"
+            "func main() {\n"
+            "\tcases := []struct{ in string; want bool }{\n"
+            "\t\t{`<p>[!NOTE]`, true},\n"
+            "\t\t{`<p>[!note]`, true},\n"
+            "\t\t{`<p>[!Tip]`, true},\n"
+            "\t\t{`<p>[!warning]`, true},\n"
+            "\t\t{`<p>[!X]`, false},\n"
+            "\t}\n"
+            "\tok := true\n"
+            "\tfor _, c := range cases {\n"
+            "\t\tif gitHubAlertRe.MatchString(c.in) != c.want {\n"
+            "\t\t\tok = false\n"
+            "\t\t}\n"
+            "\t}\n"
+            "\tif ok {\n"
+            '\t\tfmt.Println("All tests passed!")\n'
+            "\t} else {\n"
+            '\t\tfmt.Println("Some tests failed!")\n'
+            "\t}\n"
+            "}\n"
+        ),
+    },
+    # Additional safe comment-append edits across hugo markup source - each
+    # triggers a `go run` verify peak without risking a broken edit. Pairs
+    # without verify_script fall back to the shared Go default (compiles +
+    # runs a no-op main, asserts "All tests passed!").
+    {
+        "file": "markup/goldmark/blockquotes/blockquotes.go",
+        "find": "// resolveGitHubAlert returns one of note, tip, warning, important or caution.",
+        "replace": "// resolveGitHubAlert returns one of note, tip, warning, important or caution. // bench",
+    },
+    {
+        "file": "markup/goldmark/blockquotes/blockquotes.go",
+        "find": "// An empty string if no match.",
+        "replace": "// An empty string if no match. // bench",
+    },
+    {
+        "file": "markup/goldmark/blockquotes/blockquotes.go",
+        "find": "// https://docs.github.com/en/get-started/writing-on-github",
+        "replace": "// https://docs.github.com/en/get-started/writing-on-github // bench",
+    },
+    {
+        "file": "markup/goldmark/blockquotes/blockquotes.go",
+        "find": "// Five types:",
+        "replace": "// Five types: // bench",
+    },
+    {
+        "file": "markup/goldmark/blockquotes/blockquotes.go",
+        "find": "// [!NOTE], [!TIP], [!WARNING], [!IMPORTANT], [!CAUTION]",
+        "replace": "// [!NOTE], [!TIP], [!WARNING], [!IMPORTANT], [!CAUTION] // bench",
+    },
+]
+
+
+# Shared default verify-script body for Go pairs without their own verify_script.
+# A standalone `package main` that compiles + runs (real Go compiler peak) and
+# prints "All tests passed!". Imports only stdlib so it compiles without the
+# hugo module graph, but still loads the compiler/types for the imported packages.
+DEFAULT_CODING_VERIFY_SCRIPT_GO = (
+    "package main\n" "\n" 'import "fmt"\n' "\n" "func main() {\n" '\tfmt.Println("All tests passed!")\n' "}\n"
+)
 
 
 class SandboxStatus(Enum):
@@ -109,7 +238,7 @@ class TaskMetricsBase:
     Provides the shared metrics tracking pattern: total/success/failed/timeout
     counters, latency collection, step-level timing, and percentile calculations.
     Subclasses override `step_order` and may extend `add()` with workflow-specific
-    parameters (e.g., build_success for coding).
+    parameters (e.g., verify_success for coding).
 
     Extending for a new workflow type:
         class DatabaseMetrics(TaskMetricsBase):
@@ -256,7 +385,7 @@ class TaskMetricsBase:
 
 
 class BrowserMetrics(TaskMetricsBase):
-    """Browser task metrics — inherits all shared logic from TaskMetricsBase.
+    """Browser task metrics - inherits all shared logic from TaskMetricsBase.
 
     Step order: open_tab, page_load, snapshot, click, screenshot.
     No workflow-specific extensions; base add() signature is sufficient.
@@ -266,10 +395,13 @@ class BrowserMetrics(TaskMetricsBase):
 
 
 class CodingMetrics(TaskMetricsBase):
-    """Coding task metrics — extends TaskMetricsBase with build/test success tracking.
+    """Coding task metrics - extends TaskMetricsBase with verify-success tracking.
 
-    Step order: find, read, edit, build, test, diff.
-    Adds build_success_count and test_success_count beyond the base counters.
+    Step order: find, read, edit, verify, diff.
+    Adds verify_success_count beyond the base counters. The `verify` step
+    mirrors the real agent trace: write an ad-hoc test file to /tmp + run it
+    (npx tsx for js, go run for go). verify_success tracks whether that step
+    passed (transient compile+run peak succeeded).
     """
 
     step_order = CODING_STEP_ORDER
@@ -277,8 +409,7 @@ class CodingMetrics(TaskMetricsBase):
     def __init__(self):
         super().__init__()
         # Coding-specific fields
-        self._build_success_count: int = 0
-        self._test_success_count: int = 0
+        self._verify_success_count: int = 0
 
     def add(
         self,
@@ -286,20 +417,18 @@ class CodingMetrics(TaskMetricsBase):
         success: bool,
         timeout: bool = False,
         step_times: Dict[str, float] = None,
-        build_success: bool = False,
-        test_success: bool = False,
+        verify_success: bool = False,
     ) -> None:
         """Add a coding task result (thread-safe).
 
-        Extends base add() with build/test success tracking.
+        Extends base add() with verify-success tracking.
 
         Args:
             latency: Total latency for the task cycle (seconds)
             success: Whether the overall task succeeded
             timeout: Whether the task timed out
             step_times: Optional dict of step name -> latency in seconds
-            build_success: Whether the build step succeeded
-            test_success: Whether the test step succeeded
+            verify_success: Whether the verify step (write temp test + run) succeeded
         """
         # Call base add() for the standard counters
         with self._lock:
@@ -313,10 +442,8 @@ class CodingMetrics(TaskMetricsBase):
             else:
                 self._failed_count += 1
 
-            if build_success:
-                self._build_success_count += 1
-            if test_success:
-                self._test_success_count += 1
+            if verify_success:
+                self._verify_success_count += 1
 
             if step_times:
                 for step_name, step_latency in step_times.items():
@@ -325,14 +452,9 @@ class CodingMetrics(TaskMetricsBase):
                     self._step_times[step_name].append(step_latency)
 
     @property
-    def build_success_count(self) -> int:
+    def verify_success_count(self) -> int:
         with self._lock:
-            return self._build_success_count
-
-    @property
-    def test_success_count(self) -> int:
-        with self._lock:
-            return self._test_success_count
+            return self._verify_success_count
 
 
 @dataclass
@@ -367,7 +489,7 @@ class SandboxState:
 
     @property
     def task_metrics(self) -> TaskMetricsBase:
-        """Polymorphic metrics access — returns the metrics object for the active workflow.
+        """Polymorphic metrics access - returns the metrics object for the active workflow.
 
         For browser workflow, returns browser_metrics.
         For coding workflow, returns coding_metrics.
@@ -416,8 +538,7 @@ class TestSnapshot:
     # Coding task metrics (populated when workflow_type="coding")
     coding_total: int = 0
     coding_success: int = 0
-    coding_build_success: int = 0
-    coding_test_success: int = 0
+    coding_verify_success: int = 0
     coding_avg_latency: float = 0.0
     coding_p99_latency: float = 0.0
     # Round comparison fields (proper dataclass fields, not ad-hoc attributes)

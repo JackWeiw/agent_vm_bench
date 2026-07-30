@@ -182,7 +182,8 @@ class GroupRunner:
                 "browser_urls": self.config.browser_urls if self.config.workflow_type == "browser" else [],
                 "warmup_urls": self.config.warmup_urls if self.config.warmup_urls else [],
                 "coding_project_dir": self.config.coding_project_dir if self.config.workflow_type == "coding" else None,
-                "coding_build_cmd": self.config.coding_build_cmd if self.config.workflow_type == "coding" else None,
+                "coding_language": self.config.coding_language if self.config.workflow_type == "coding" else None,
+                "coding_verify_cmd": self.config.coding_verify_cmd if self.config.workflow_type == "coding" else None,
             }
             config_file = task_result_dir / f"config_{task.task_id}.yaml"
             with open(config_file, "w", encoding="utf-8") as f:

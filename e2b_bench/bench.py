@@ -391,11 +391,11 @@ def run_benchmark(config: Config) -> dict:
 
     # Workflow-specific display
     if config.workflow_type == "coding":
-        print(f"  Project:  {config.coding_project_dir}")
-        print(f"  Build cmd: {config.coding_build_cmd}")
-        print(f"  Test cmd:  {config.coding_test_cmd}")
+        print(f"  Project:    {config.coding_project_dir}")
+        print(f"  Language:   {config.coding_language}")
+        print(f"  Verify cmd: {config.coding_verify_cmd}")
         print(f"  Source files: {len(config.coding_source_files)} files for round-robin")
-        print(f"  Dev server: {'enabled' if not config.coding_skip_dev_server else 'skipped'}")
+        print(f"  Verify:     {'enabled' if not config.coding_skip_verify else 'skipped'}")
 
     # Batch config display
     if config.create_batch_size:
@@ -835,15 +835,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # Coding task configuration
     parser.add_argument("--coding-project-dir", type=str, help="Project directory inside sandbox")
-    parser.add_argument("--coding-dev-wait", type=int, help="Dev server startup wait seconds")
-    parser.add_argument("--coding-build-timeout", type=int, help="Build command timeout seconds")
-    parser.add_argument("--coding-test-timeout", type=int, help="Test command timeout seconds")
+    parser.add_argument("--coding-language", type=str, help="Coding language (js/go)")
+    parser.add_argument("--coding-verify-timeout", type=int, help="Verify command timeout seconds")
     parser.add_argument(
         "--coding-source-file", type=str, action="append", help="Source file for modification (can specify multiple)"
     )
-    parser.add_argument("--coding-skip-dev-server", action="store_true", help="Skip dev server startup")
-    parser.add_argument("--coding-skip-build", action="store_true", help="Skip production build")
-    parser.add_argument("--coding-skip-test", action="store_true", help="Skip test suite")
+    parser.add_argument("--coding-skip-verify", action="store_true", help="Skip the verify step")
 
     # Warmup configuration
     parser.add_argument("-w", "--warmup-url", type=str, action="append", help="Warmup page URL (can specify multiple)")

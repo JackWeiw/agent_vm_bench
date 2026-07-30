@@ -2,7 +2,7 @@
 
 import threading
 import unittest
-from e2b_bench.config import Config
+from e2b_bench.config import Config, CODING_LANGUAGE_PROFILES, _find_name_clause, get_coding_profile
 from e2b_bench.schemas import CodingMetrics, CODING_STEP_ORDER, BROWSER_STEP_ORDER, SandboxState
 
 
@@ -12,36 +12,36 @@ class TestCodingMetrics(unittest.TestCase):
     def test_basic_add(self):
         """Test basic metrics recording"""
         m = CodingMetrics()
-        m.add(1.5, True, step_times={"build": 1.2}, build_success=True, test_success=True)
+        m.add(1.5, True, step_times={"verify": 1.2}, verify_success=True)
         self.assertEqual(m.total_tasks, 1)
         self.assertEqual(m.success_count, 1)
         self.assertEqual(m.failed_count, 0)
-        self.assertEqual(m.build_success_count, 1)
-        self.assertEqual(m.test_success_count, 1)
+        self.assertEqual(m.verify_success_count, 1)
         self.assertAlmostEqual(m.avg_latency, 1.5)
 
     def test_failed_task(self):
         """Test recording a failed task"""
         m = CodingMetrics()
-        m.add(3.0, False, build_success=False)
+        m.add(3.0, False, verify_success=False)
         self.assertEqual(m.total_tasks, 1)
         self.assertEqual(m.success_count, 0)
         self.assertEqual(m.failed_count, 1)
-        self.assertEqual(m.build_success_count, 0)
+        self.assertEqual(m.verify_success_count, 0)
 
     def test_timeout_task(self):
         """Test recording a timed-out task"""
         m = CodingMetrics()
-        m.add(5.0, False, timeout=True, build_success=False)
+        m.add(5.0, False, timeout=True, verify_success=False)
         self.assertEqual(m.timeout_count, 1)
         self.assertEqual(m.failed_count, 1)
 
-    def test_mixed_build_test_success(self):
-        """Test build succeeded but test failed"""
+    def test_verify_success_tracking(self):
+        """Test verify success/failure counters"""
         m = CodingMetrics()
-        m.add(2.0, False, build_success=True, test_success=False)
-        self.assertEqual(m.build_success_count, 1)
-        self.assertEqual(m.test_success_count, 0)
+        m.add(2.0, True, verify_success=True)
+        m.add(2.0, False, verify_success=False)
+        self.assertEqual(m.verify_success_count, 1)
+        self.assertEqual(m.failed_count, 1)
 
     def test_step_times(self):
         """Test step-level timing recording"""
@@ -50,22 +50,21 @@ class TestCodingMetrics(unittest.TestCase):
             "find": 0.1,
             "read": 0.05,
             "edit": 0.04,
-            "build": 1.2,
-            "test": 0.15,
+            "verify": 1.2,
             "diff": 0.02,
         }
-        m.add(1.5, True, step_times=step_times, build_success=True, test_success=True)
+        m.add(1.5, True, step_times=step_times, verify_success=True)
 
         stats = m.get_step_stats()
         self.assertEqual(set(stats.keys()), set(step_times.keys()))
-        self.assertAlmostEqual(stats["build"]["avg"], 1.2)
-        self.assertEqual(stats["build"]["count"], 1)
+        self.assertAlmostEqual(stats["verify"]["avg"], 1.2)
+        self.assertEqual(stats["verify"]["count"], 1)
 
     def test_multiple_tasks_p99(self):
         """Test p99 latency with multiple tasks"""
         m = CodingMetrics()
         for i in range(10):
-            m.add(float(i), True, build_success=True, test_success=True)
+            m.add(float(i), True, verify_success=True)
         self.assertEqual(m.total_tasks, 10)
         self.assertEqual(m.success_count, 10)
         # p99 with <100 samples = max
@@ -74,9 +73,9 @@ class TestCodingMetrics(unittest.TestCase):
     def test_get_latencies_since(self):
         """Test get_latencies_since for round delta calculation"""
         m = CodingMetrics()
-        m.add(1.0, True, build_success=True, test_success=True)
-        m.add(2.0, True, build_success=True, test_success=True)
-        m.add(3.0, True, build_success=True, test_success=True)
+        m.add(1.0, True, verify_success=True)
+        m.add(2.0, True, verify_success=True)
+        m.add(3.0, True, verify_success=True)
 
         # Get latencies after count 1
         since = m.get_latencies_since(1)
@@ -93,8 +92,8 @@ class TestCodingMetrics(unittest.TestCase):
         m = CodingMetrics()
         self.assertEqual(m.last_error, "")
         m.add(1.0, False)
-        m.last_error = "build failed: exit_code=1"
-        self.assertEqual(m.last_error, "build failed: exit_code=1")
+        m.last_error = "verify failed: exit_code=1"
+        self.assertEqual(m.last_error, "verify failed: exit_code=1")
 
 
 class TestCodingConfig(unittest.TestCase):
@@ -114,11 +113,10 @@ class TestCodingConfig(unittest.TestCase):
         """Test coding config default values"""
         c = Config(workflow_type="coding")
         self.assertEqual(c.coding_project_dir, "/opt/coding-bench")
-        self.assertEqual(c.coding_dev_wait, 20)
-        self.assertEqual(c.coding_build_cmd, "npm run build")
-        self.assertEqual(c.coding_test_cmd, "npm test")
-        self.assertEqual(c.coding_build_timeout, 300)
-        self.assertEqual(c.coding_test_timeout, 120)
+        self.assertEqual(c.coding_language, "js")
+        self.assertEqual(c.coding_verify_cmd, "npx tsx /tmp/bench_verify.mjs")
+        self.assertEqual(c.coding_verify_timeout, 120)
+        self.assertEqual(c.coding_skip_verify, False)
         # DEFAULT_CODING_SOURCE_FILES is a list of {file, find, replace} pairs
         self.assertEqual(len(c.coding_source_files), 6)
         first = c.coding_source_files[0]
@@ -135,13 +133,13 @@ class TestCodingConfig(unittest.TestCase):
         self.assertEqual(len(c.coding_source_files), 6)
         self.assertEqual(c.benchmark_mode, "round_robin")
 
-    def test_yaml_coding_dev_dir_loaded(self):
-        """YAML configures a separate dev-server dir (vite playground)"""
+    def test_yaml_coding_language_and_verify_cmd(self):
+        """YAML configures the language and the verify command (npx tsx)"""
         c = Config.load_from_yaml("config/e2b_coding_bench.yaml")
-        self.assertEqual(c.coding_dev_dir, "/opt/vite-playground")
-        # build/test commands are vuejs/core-specific
-        self.assertEqual(c.coding_build_cmd, "node scripts/build.js")
-        self.assertEqual(c.coding_test_cmd, "pnpm test")
+        self.assertEqual(c.coding_language, "js")
+        self.assertEqual(c.coding_verify_cmd, "npx tsx /tmp/bench_verify.mjs")
+        self.assertEqual(c.coding_verify_timeout, 120)
+        self.assertEqual(c.coding_skip_verify, False)
 
     def test_yaml_coding_source_files_are_vuejs_pairs(self):
         """YAML source_files are verified vuejs/core paths with find/replace"""
@@ -154,11 +152,6 @@ class TestCodingConfig(unittest.TestCase):
             self.assertTrue(p["find"])
             self.assertTrue(p["replace"])
 
-    def test_default_dev_dir_is_empty(self):
-        """Default dev_dir is empty (falls back to project_dir at runtime)"""
-        c = Config(workflow_type="coding")
-        self.assertEqual(c.coding_dev_dir, "")
-
     def test_yaml_browser_config_unaffected(self):
         """Test that browser config loading still works"""
         c = Config.load_from_yaml("config/e2b_bench.yaml")
@@ -170,8 +163,8 @@ class TestStepOrderConstants(unittest.TestCase):
     """Test step order constants"""
 
     def test_coding_step_order(self):
-        """Test coding step order matches expected steps"""
-        self.assertEqual(CODING_STEP_ORDER, ["find", "read", "edit", "build", "test", "diff"])
+        """Test coding step order matches the trace-faithful steps"""
+        self.assertEqual(CODING_STEP_ORDER, ["find", "read", "edit", "verify", "diff"])
 
     def test_browser_step_order(self):
         """Test browser step order unchanged"""
@@ -194,6 +187,44 @@ class TestSandboxStateCodingMetrics(unittest.TestCase):
         self.assertEqual(state.browser_metrics.total_tasks, 0)
 
 
+class TestCodingLanguageProfiles(unittest.TestCase):
+    """Test the language-profile registry (extensible: js/go, future cpp)."""
+
+    def test_js_profile(self):
+        """js profile: npx tsx verify, EOF heredoc, ts/tsx/js glob."""
+        p = get_coding_profile("js")
+        self.assertEqual(p.temp_test_path, "/tmp/bench_verify.mjs")
+        self.assertEqual(p.heredoc_eof, "EOF")
+        self.assertEqual(p.run_cmd, "npx tsx /tmp/bench_verify.mjs")
+        self.assertIn("*.ts", p.source_find_names)
+
+    def test_go_profile(self):
+        """go profile: go run verify, GOEOF heredoc, *.go glob."""
+        p = get_coding_profile("go")
+        self.assertEqual(p.temp_test_path, "/tmp/bench_verify.go")
+        self.assertEqual(p.heredoc_eof, "GOEOF")
+        self.assertEqual(p.run_cmd, "go run /tmp/bench_verify.go")
+        self.assertIn("*.go", p.source_find_names)
+
+    def test_unknown_language_falls_back_to_js(self):
+        """An unregistered language falls back to the js profile."""
+        p = get_coding_profile("rust-not-yet")
+        self.assertEqual(p.run_cmd, "npx tsx /tmp/bench_verify.mjs")
+
+    def test_find_name_clause_single(self):
+        """Single -name pattern is emitted bare."""
+        self.assertEqual(_find_name_clause(("*.go",)), "-name '*.go'")
+
+    def test_find_name_clause_multi(self):
+        """Multiple patterns are grouped with -o inside \\( ... \\)."""
+        clause = _find_name_clause(("*.ts", "*.tsx", "*.js"))
+        self.assertIn("\\(", clause)
+        self.assertIn("\\)", clause)
+        self.assertIn("-name '*.ts'", clause)
+        self.assertIn("-name '*.tsx'", clause)
+        self.assertIn("-name '*.js'", clause)
+
+
 class _FakeResult:
     def __init__(self, exit_code=0, stdout="", stderr=""):
         self.exit_code = exit_code
@@ -202,66 +233,123 @@ class _FakeResult:
 
 
 class _FakeCommands:
-    """Captures commands.run() invocations for dev-server behavior tests."""
+    """Captures commands.run() invocations for verify behavior tests."""
 
-    def __init__(self):
+    def __init__(self, result=None):
         self.calls = []  # list of (cmd, kwargs)
+        self._result = result or _FakeResult(exit_code=0, stdout="All tests passed!", stderr="")
 
     def run(self, cmd, timeout=None, user=None, background=False):
         self.calls.append((cmd, {"timeout": timeout, "background": background}))
-        # Dev server start (background=True) succeeds; checks return no match
-        return _FakeResult(exit_code=0, stdout="", stderr="")
+        return self._result
 
 
 class _FakeSbx:
-    def __init__(self):
+    def __init__(self, result=None):
         self.sandbox_id = "fake"
-        self.commands = _FakeCommands()
+        self.commands = _FakeCommands(result=result)
 
 
-class TestCodingDevServerDir(unittest.TestCase):
-    """Verify the dev server starts in coding_dev_dir (vite playground), not project_dir."""
+class TestStepVerify(unittest.TestCase):
+    """Verify the trace-faithful _step_verify (write temp test file + run)."""
 
     def _make_runner(self, config):
         from e2b_bench.coding_task_runner import CodingRoundRunner
-        from e2b_bench.schemas import SandboxState
 
         state = SandboxState(sandbox_id=1, workflow_type="coding")
         return CodingRoundRunner(state=state, config=config, stop_event=threading.Event(), round_id=0)
 
-    def test_dev_dir_used_when_set(self):
-        """When coding_dev_dir is set, ensure_dev_server cd's into it."""
-        config = Config(
-            workflow_type="coding",
-            coding_project_dir="/opt/coding-bench",
-            coding_dev_dir="/opt/vite-playground",
-            coding_dev_wait=0,
-        )
+    def test_verify_writes_temp_file_and_runs_npx_tsx(self):
+        """_step_verify writes /tmp/bench_verify.mjs and runs npx tsx in one command."""
+        config = Config(workflow_type="coding", coding_language="js")
         runner = self._make_runner(config)
         sbx = _FakeSbx()
-        runner._step_ensure_dev_server(sbx, "/opt/coding-bench", step_times={})
-        # The dev-server START command (background) must target the vite playground dir.
-        # Filter out the detection probe (ps aux | grep ...) by requiring "BROWSER=none".
-        start_cmds = [c for c, kw in sbx.commands.calls if "BROWSER=none" in c]
-        self.assertTrue(start_cmds, "expected a dev-server start command")
-        self.assertIn("/opt/vite-playground", start_cmds[0])
-        self.assertNotIn("/opt/coding-bench", start_cmds[0])
+        pair = {
+            "file": "packages/shared/src/general.ts",
+            "find": "x",
+            "replace": "y",
+            "verify_script": "console.log('All tests passed!')",
+        }
+        ok, err = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
+        self.assertTrue(ok, err)
+        # The single combined write+run command must contain both the heredoc
+        # write and the npx tsx run (mirrors the trace's combined write+run).
+        self.assertEqual(len(sbx.commands.calls), 1)
+        cmd = sbx.commands.calls[0][0]
+        self.assertIn("cat > /tmp/bench_verify.mjs", cmd)
+        self.assertIn("npx tsx /tmp/bench_verify.mjs", cmd)
+        self.assertIn("console.log('All tests passed!')", cmd)
 
-    def test_falls_back_to_project_dir_when_dev_dir_empty(self):
-        """When coding_dev_dir is empty, dev server starts in project_dir."""
-        config = Config(
-            workflow_type="coding",
-            coding_project_dir="/opt/coding-bench",
-            coding_dev_dir="",
-            coding_dev_wait=0,
-        )
+    def test_verify_go_profile_uses_go_run(self):
+        """go language: _step_verify writes .go and runs `go run`."""
+        config = Config(workflow_type="coding", coding_language="go", coding_verify_cmd="go run /tmp/bench_verify.go")
         runner = self._make_runner(config)
         sbx = _FakeSbx()
-        runner._step_ensure_dev_server(sbx, "/opt/coding-bench", step_times={})
-        start_cmds = [c for c, kw in sbx.commands.calls if "BROWSER=none" in c]
-        self.assertTrue(start_cmds)
-        self.assertIn("/opt/coding-bench", start_cmds[0])
-        self.assertNotIn("/opt/vite-playground", start_cmds[0])
+        pair = {"file": "markup/x.go", "find": "x", "replace": "y", "verify_script": "package main\nfunc main(){}"}
+        ok, _ = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
+        self.assertTrue(ok)
+        cmd = sbx.commands.calls[0][0]
+        self.assertIn("cat > /tmp/bench_verify.go", cmd)
+        self.assertIn("GOEOF", cmd)
+        self.assertIn("go run /tmp/bench_verify.go", cmd)
+
+    def test_verify_failure_returned(self):
+        """A non-zero exit code from the verify run is reported as failure."""
+        config = Config(workflow_type="coding", coding_language="js")
+        runner = self._make_runner(config)
+        sbx = _FakeSbx(result=_FakeResult(exit_code=1, stdout="", stderr="boom"))
+        pair = {
+            "file": "packages/shared/src/general.ts",
+            "find": "x",
+            "replace": "y",
+            "verify_script": "console.log('x')",
+        }
+        ok, err = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
+        self.assertFalse(ok)
+        self.assertIn("verify failed", err)
+        self.assertIn("exit_code=1", err)
+
+    def test_verify_uses_shared_default_when_pair_has_no_script(self):
+        """A pair without verify_script falls back to the shared default body."""
+        config = Config(workflow_type="coding", coding_language="js")
+        runner = self._make_runner(config)
+        sbx = _FakeSbx()
+        pair = {"file": "packages/reactivity/src/baseHandlers.ts", "find": "x", "replace": "y"}
+        ok, _ = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
+        self.assertTrue(ok)
+        cmd = sbx.commands.calls[0][0]
+        # Shared default imports the edited package's index.ts (with {pkg} substituted)
+        self.assertIn("packages/reactivity/src/index.ts", cmd)
+
+
+class TestStepFindLanguageAware(unittest.TestCase):
+    """_step_find uses the language profile's checkout_paths + find glob."""
+
+    def _make_runner(self, config):
+        from e2b_bench.coding_task_runner import CodingRoundRunner
+
+        state = SandboxState(sandbox_id=1, workflow_type="coding")
+        return CodingRoundRunner(state=state, config=config, stop_event=threading.Event(), round_id=0)
+
+    def test_js_find_uses_packages_checkout(self):
+        """js find resets packages/ src/ and locates *.ts/*.tsx/*.js on miss."""
+        config = Config(workflow_type="coding", coding_language="js")
+        runner = self._make_runner(config)
+        sbx = _FakeSbx(result=_FakeResult(exit_code=1, stdout="", stderr=""))  # file not found
+        runner._step_find(sbx, "/opt/coding-bench", "packages/shared/src/missing.ts", "x", "y", step_times={})
+        cmds = [c for c, _ in sbx.commands.calls]
+        self.assertTrue(any("git checkout -- packages/ src/" in c for c in cmds))
+        self.assertTrue(any("\\( -name '*.ts'" in c for c in cmds))
+
+    def test_go_find_uses_markup_checkout(self):
+        """go find resets markup/ and locates *.go on miss."""
+        config = Config(workflow_type="coding", coding_language="go", coding_verify_cmd="go run /tmp/bench_verify.go")
+        runner = self._make_runner(config)
+        sbx = _FakeSbx(result=_FakeResult(exit_code=1, stdout="", stderr=""))  # file not found
+        runner._step_find(sbx, "/opt/coding-bench", "markup/missing.go", "x", "y", step_times={})
+        cmds = [c for c, _ in sbx.commands.calls]
+        self.assertTrue(any("git checkout -- markup/" in c for c in cmds))
+        self.assertTrue(any("-name '*.go'" in c for c in cmds))
 
 
 if __name__ == "__main__":

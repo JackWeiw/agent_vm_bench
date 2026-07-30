@@ -1,87 +1,74 @@
 #!/bin/bash
 # ============================================================================
-# Coding Benchmark Helper — E2B Sandbox Manual Testing (vuejs/core, JS)
+# Coding Benchmark Helper (Go) — E2B Sandbox Manual Testing (gohugoio/hugo)
 # ============================================================================
 #
 # Trace-faithful loop (verified against a captured openclaw agent trajectory on
-# vuejs/core): find -> read -> edit -> verify (write ad-hoc /tmp/test_*.mjs +
-# `npx tsx`) -> git diff. The agent NEVER runs a production build or a resident
-# dev server; verification is a transient `npx tsx` process loading the TS
-# module graph (esbuild transpile + node execute) = the memory peak.
+# gohugoio/hugo issue #12768 GitHub Alert case-insensitivity): find -> read ->
+# edit -> verify (write ad-hoc /tmp/bench_verify.go + `go run`) -> git diff.
+# The agent NEVER runs `go build ./...` or `go test ./...`; verification is a
+# transient `go run /tmp/test_alert.go` (Go compiler + execute, memory peak).
 #
 # Simulates a real AI coding agent workflow:
-#   Step 0: find   — reset source files (git checkout) + verify target
+#   Step 0: find   — reset source files (git checkout) + locate target
 #   Step 1: read   — inspect the target file (agent confirming context)
 #   Step 2: edit   — apply a pre-configured find->replace pair (real semantic edit)
-#   Step 3: verify — write an ad-hoc /tmp/bench_verify.mjs + `npx tsx` run it
+#   Step 3: verify — write an ad-hoc /tmp/bench_verify.go + `go run` it
 #   Step 4: diff   — git diff -> patch file (agent's verification artifact)
 #
 # Memory pressure model:
-#   Each verify run loads the vue+compiler+reactivity TS module graph transiently
-#   (esbuild transpile + node execute). N sandboxes' staggered verify peaks
-#   overlapping -> host memory overcommit. No resident process.
+#   Each verify run compiles + executes a `package main` (Go compiler loads
+#   imported package types). N sandboxes' staggered verify peaks overlapping
+#   -> host memory overcommit. No resident process.
 #
 # Usage:
-#   bash bench_helper.sh                    # Round 0, all steps
-#   bash bench_helper.sh 3                  # Round 3, all steps
-#   bash bench_helper.sh --round=5          # Round 5
-#   bash bench_helper.sh --no-verify        # Skip verify step
-#   bash bench_helper.sh --help             # Show help
+#   bash bench_helper_go.sh                    # Round 0, all steps
+#   bash bench_helper_go.sh 3                  # Round 3, all steps
+#   bash bench_helper_go.sh --round=5          # Round 5
+#   bash bench_helper_go.sh --no-verify        # Skip verify step
+#   bash bench_helper_go.sh --help             # Show help
 #
 # Environment overrides:
-#   BENCH_PROJECT_DIR    vuejs/core project path (default: /opt/coding-bench)
-#   BENCH_VERIFY_CMD     Verify run command (default: npx tsx /tmp/bench_verify.mjs)
+#   BENCH_PROJECT_DIR    hugo project path (default: /opt/coding-bench)
+#   BENCH_VERIFY_CMD     Verify run command (default: go run /tmp/bench_verify.go)
 #   BENCH_VERIFY_TIMEOUT Verify timeout seconds (default: 120)
 # ============================================================================
 
 # ---- Configuration (override via environment variables for extensibility) ----
 PROJECT_DIR="${BENCH_PROJECT_DIR:-/opt/coding-bench}"
-VERIFY_CMD="${BENCH_VERIFY_CMD:-npx tsx /tmp/bench_verify.mjs}"
+VERIFY_CMD="${BENCH_VERIFY_CMD:-go run /tmp/bench_verify.go}"
 VERIFY_TIMEOUT="${BENCH_VERIFY_TIMEOUT:-120}"
-TEMP_TEST_PATH="/tmp/bench_verify.mjs"
-HEREDOC_EOF="EOF"
+TEMP_TEST_PATH="/tmp/bench_verify.go"
 
-# Replacement pairs for round-robin editing (verified against the vuejs/core repo).
-# Each pair is a real, type-safe string edit. The 3rd field is an optional
-# verify_script body (the ad-hoc test exercising the edited symbol); empty =
-# shared default (import edited package index.ts + sanity-call symbol).
+# Replacement pairs for round-robin editing (verified against gohugoio/hugo at
+# base_commit 83235262). Each pair is a real, type-safe edit to the GitHub Alert
+# regex path. The 3rd field is an optional verify_script body (a standalone
+# `package main` exercising the edited behavior); empty = shared default (compiles
+# + runs a no-op main, prints "All tests passed!" -> real Go compiler peak).
 # Format: "file|find|replace|verify_script"
+#
+# NOTE: verify_script uses a literal \n between lines (sed-decoded below) because
+# bash arrays can't carry real newlines cleanly across the | delimiter here.
 TARGET_FILES=(
-    "packages/shared/src/general.ts|export const NOOP = (): void => {}|export const NOOP = (): void => undefined|globalThis.__DEV__ = true
-globalThis.__BROWSER__ = false
-import('/opt/coding-bench/packages/shared/src/index.ts').then(m => {
-  if (typeof m.NOOP !== 'function') throw new Error('NOOP not a function')
-  m.NOOP()
-  console.log('All tests passed!')
-})"
-    "packages/shared/src/general.ts|Always return false.|Always returns false.||"
-    "packages/shared/src/index.ts|export * from './general'|export * from './general' // bench round||"
-    'packages/vue/src/index.ts|// This entry is the "full-build"|// This entry is the "full-build" (bench)||'
-    "packages/reactivity/src/baseHandlers.ts|export const mutableHandlers: ProxyHandler<object> =|export const mutableHandlers: ProxyHandler<object> = // bench||"
-    "packages/runtime-core/src/errorHandling.ts|import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared'|import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared' // bench||"
+    "markup/goldmark/blockquotes/blockquotes.go|var gitHubAlertRe = regexp.MustCompile(\`^<p>\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\\]\`)|var gitHubAlertRe = regexp.MustCompile(\`(?i)^<p>\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\\]\`)|package main\n\nimport (\n\t\"fmt\"\n\t\"regexp\"\n)\n\nvar gitHubAlertRe = regexp.MustCompile(\`(?i)^<p>\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\\]\`)\n\nfunc main() {\n\tcases := []struct{ in string; want bool }{\n\t\t{\`<p>[!NOTE]\`, true},\n\t\t{\`<p>[!note]\`, true},\n\t\t{\`<p>[!Tip]\`, true},\n\t\t{\`<p>[!warning]\`, true},\n\t\t{\`<p>[!X]\`, false},\n\t}\n\tok := true\n\tfor _, c := range cases {\n\t\tif gitHubAlertRe.MatchString(c.in) != c.want { ok = false }\n\t}\n\tif ok { fmt.Println(\"All tests passed!\") } else { fmt.Println(\"Some tests failed!\") }\n}"
+    "markup/goldmark/blockquotes/blockquotes.go|// resolveGitHubAlert returns one of note, tip, warning, important or caution.|// resolveGitHubAlert returns one of note, tip, warning, important or caution. // bench||"
+    "markup/goldmark/blockquotes/blockquotes.go|// An empty string if no match.|// An empty string if no match. // bench||"
+    "markup/goldmark/blockquotes/blockquotes.go|// https://docs.github.com/en/get-started/writing-on-github|// https://docs.github.com/en/get-started/writing-on-github // bench||"
+    "markup/goldmark/blockquotes/blockquotes.go|// Five types:|// Five types: // bench||"
+    "markup/goldmark/blockquotes/blockquotes.go|// [!NOTE], [!TIP], [!WARNING], [!IMPORTANT], [!CAUTION]|// [!NOTE], [!TIP], [!WARNING], [!IMPORTANT], [!CAUTION] // bench||"
 )
 
-# Shared default verify script body (used when a pair's verify_script is empty).
-# Imports the edited package's raw .ts index + sanity-calls a top-level export
-# + prints "All tests passed!". Loads the full TS module graph -> real peak.
-default_verify_script() {
-    local target="$1"
-    # Derive packages/<name> from the edited file path
-    local pkg="/opt/coding-bench/packages/vue"
-    if [[ "$target" == packages/*/src/* ]]; then
-        pkg="/opt/coding-bench/${target%%/src/*}"
-    fi
-    cat <<'DEFAULT'
-globalThis.__DEV__ = true
-globalThis.__BROWSER__ = false
-import('PKG_PLACEHOLDER/src/index.ts').then(m => {
-  const exp = Object.keys(m)[0]
-  if (exp && typeof m[exp] === 'undefined') throw new Error(exp + ' undefined')
-  console.log('All tests passed!')
-})
-DEFAULT
-    # Note: PKG_PLACEHOLDER is substituted below.
-}
+# Shared default verify script (used when a pair's verify_script is empty).
+# A standalone `package main` that compiles + runs (real Go compiler peak) and
+# prints "All tests passed!". Imports only stdlib so it compiles without the
+# hugo module graph, but still loads the compiler/types for imported packages.
+default_verify_script='package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("All tests passed!")
+}'
 
 # ---- Argument Parsing ----
 ROUND=0
@@ -92,11 +79,11 @@ for arg in "$@"; do
         --round=*)       ROUND="${arg#--round=}" ;;
         --no-verify)     SKIP_VERIFY=true ;;
         --help|-h)
-            echo "Coding Benchmark Helper - vuejs/core (trace-faithful)"
+            echo "Coding Benchmark Helper (Go) - gohugoio/hugo (trace-faithful)"
             echo ""
-            echo "Loop: find -> read -> edit -> verify (npx tsx) -> git diff"
+            echo "Loop: find -> read -> edit -> verify (go run) -> git diff"
             echo ""
-            echo "Usage: bash bench_helper.sh [ROUND] [OPTIONS]"
+            echo "Usage: bash bench_helper_go.sh [ROUND] [OPTIONS]"
             echo ""
             echo "Positional:"
             echo "  ROUND           Round number (default: 0)"
@@ -107,15 +94,15 @@ for arg in "$@"; do
             echo "  --help          Show this help"
             echo ""
             echo "Environment:"
-            echo "  BENCH_PROJECT_DIR     vuejs/core path (default: /opt/coding-bench)"
-            echo "  BENCH_VERIFY_CMD     Verify run command (default: npx tsx /tmp/bench_verify.mjs)"
+            echo "  BENCH_PROJECT_DIR     hugo path (default: /opt/coding-bench)"
+            echo "  BENCH_VERIFY_CMD     Verify run command (default: go run /tmp/bench_verify.go)"
             echo "  BENCH_VERIFY_TIMEOUT Verify timeout seconds (default: 120)"
             echo ""
             echo "Workflow steps per round:"
             echo "  0: find    - git checkout reset + verify/locate target file"
             echo "  1: read    - inspect target file (head -20)"
             echo "  2: edit    - apply find->replace pair (real semantic edit)"
-            echo "  3: verify  - write /tmp/bench_verify.mjs + npx tsx run (memory peak)"
+            echo "  3: verify  - write /tmp/bench_verify.go + go run (memory peak)"
             echo "  4: diff    - git diff > patch file (verification artifact)"
             exit 0
             ;;
@@ -132,7 +119,7 @@ done
 
 # ---- Banner ----
 echo "============================================"
-echo "  Coding Bench - vuejs/core - Round ${ROUND}"
+echo "  Coding Bench (Go) - gohugoio/hugo - Round ${ROUND}"
 echo "============================================"
 echo ""
 
@@ -149,13 +136,13 @@ VERIFY_SCRIPT="${REST#*|}"
 # ---- Step 0: find — reset + locate target ----
 echo "[Step 0: find] Preparing environment..."
 
-# Reset source files to clean state (simulates agent reverting previous round's changes)
-cd "${PROJECT_DIR}" && git checkout -- packages/ src/ 2>/dev/null || echo "  WARNING: git checkout failed (not a git repo or no changes)"
+# Reset source files (hugo edits live under markup/)
+cd "${PROJECT_DIR}" && git checkout -- markup/ 2>/dev/null || echo "  WARNING: git checkout failed (not a git repo or no changes)"
 
-# Verify the target file exists; fall back to a located file with a generic comment-marker pair
+# Verify the target file exists; fall back to a located .go file with a generic comment-marker pair
 if [ ! -f "${PROJECT_DIR}/${TARGET_FILE}" ]; then
     echo "  WARNING: target not found: ${TARGET_FILE}"
-    FOUND_FILE=$(cd "${PROJECT_DIR}" && find packages src \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' \) 2>/dev/null | head -1)
+    FOUND_FILE=$(cd "${PROJECT_DIR}" && find . -name '*.go' 2>/dev/null | head -1)
     if [ -n "${FOUND_FILE}" ]; then
         TARGET_FILE="${FOUND_FILE}"
         FIND_STR="// bench marker"
@@ -192,28 +179,22 @@ fi
 echo "  Edit applied"
 echo ""
 
-# ---- Step 3: verify — write ad-hoc test file + run via npx tsx ----
+# ---- Step 3: verify — write ad-hoc test file + run via go run ----
 if [ "${SKIP_VERIFY}" = false ]; then
-    echo "[Step 3: verify] Writing ad-hoc test + running npx tsx (memory peak)..."
+    echo "[Step 3: verify] Writing ad-hoc test + running go run (memory peak)..."
     VERIFY_START=$(date +%s%N)
 
-    # Resolve the script body: pair-specific, else shared default (with pkg substitution)
+    # Resolve the script body: pair-specific (decode \n to real newlines), else shared default
     if [ -n "${VERIFY_SCRIPT}" ]; then
-        SCRIPT_BODY="${VERIFY_SCRIPT}"
+        SCRIPT_BODY=$(printf '%b' "${VERIFY_SCRIPT}")
     else
-        # Derive packages/<name> for the {pkg} placeholder
-        PKG="/opt/coding-bench/packages/vue"
-        if [[ "${TARGET_FILE}" == packages/*/src/* ]]; then
-            PKG="/opt/coding-bench/${TARGET_FILE%%/src/*}"
-        fi
-        SCRIPT_BODY=$(default_verify_script "${TARGET_FILE}" | sed "s|PKG_PLACEHOLDER|${PKG}|")
+        SCRIPT_BODY="${default_verify_script}"
     fi
 
-    # Write the temp test file (printf handles multi-line script bodies safely;
-    # avoids heredoc quoting pitfalls with dynamic delimiters).
+    # Write the temp test file (printf handles multi-line script bodies safely).
     printf '%s\n' "${SCRIPT_BODY}" > "${TEMP_TEST_PATH}"
 
-    # Run the ad-hoc test via npx tsx (transient: esbuild transpile + node execute).
+    # Run the ad-hoc test via `go run` (transient: Go compiler + execute).
     cd "${PROJECT_DIR}" && timeout "${VERIFY_TIMEOUT}" ${VERIFY_CMD} > /tmp/verify_output.log 2>&1
     VERIFY_EXIT=$?
     VERIFY_END=$(date +%s%N)
@@ -254,5 +235,5 @@ echo "  Verify:      ${VERIFY_MS}ms (exit: ${VERIFY_EXIT})"
 echo "  Patch:       /tmp/bench_round_${ROUND}.patch (${PATCH_LINES} lines)"
 echo "============================================"
 echo ""
-echo "  Next round:  bash ${PROJECT_DIR}/bench_helper.sh $((ROUND + 1))"
-echo "  Reset only:  cd ${PROJECT_DIR} && git checkout -- packages/"
+echo "  Next round:  bash ${PROJECT_DIR}/bench_helper_go.sh $((ROUND + 1))"
+echo "  Reset only:  cd ${PROJECT_DIR} && git checkout -- markup/"

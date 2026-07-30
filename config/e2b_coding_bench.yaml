@@ -2,15 +2,16 @@
 # E2B Sandbox Coding Benchmark - Single Test Configuration
 #
 # Workflow type: coding — simulates AI coding agent memory pressure
-#   Dev server (~1.5GB persistent) + production build (~1GB peak)
-#   → overlapping ~3GB peak per sandbox
+#   Trace-faithful loop (verified against a captured openclaw vuejs/core
+#   trajectory): find -> read -> edit -> verify (npx tsx) -> git diff.
+#   No resident dev server, no production build — verification is a transient
+#   `npx tsx` process loading the TS module graph. N sandboxes' verify peaks
+#   overlapping -> host memory overcommit.
 #
 # Project: vuejs/core (github.com/vuejs/core)
 #   - 54k stars, Vue.js core framework (TypeScript monorepo, pnpm)
 #   - Real repo from the swe_bench_multilingual evaluation dataset
-#   - Build: rollup (production) + esbuild (dev) — fast, low CPU
-#   - Dev server: a vite playground (/opt/vite-playground) importing the built
-#     vue lib, holding the full module graph resident (~1.5GB)
+#   - Toolchain: rollup + esbuild + tsx (the devDeps an agent touches)
 #
 # Usage:
 #   python -m e2b_bench -c config/e2b_coding_bench.yaml --create-only   # Create sandboxes
@@ -50,12 +51,10 @@ workflow_type: "coding"
 
 # Coding task configuration
 coding:
+  language: "js"                       # Coding language (selects verify profile: js/go)
   project_dir: "/opt/coding-bench"    # vuejs/core project directory inside sandbox
-  dev_dir: "/opt/vite-playground"     # Directory to run the dev server in (vite playground)
-  dev_cmd: "npm run dev"              # Dev server startup command (vite, via the playground)
-  dev_wait: 20                         # Seconds to wait for dev server startup
-  build_cmd: "node scripts/build.js"  # Production build command (rollup, in project_dir)
-  test_cmd: "pnpm test"                # Test command (vitest, in project_dir)
+  verify_cmd: "npx tsx /tmp/bench_verify.mjs"  # Verify run command (writes ad-hoc test + runs it)
+  verify_timeout: 120                 # Verify command timeout (seconds)
   source_files:                         # Replacement pairs for round-robin editing (verified against vuejs/core repo)
     - file: "packages/shared/src/general.ts"
       find: "export const NOOP = (): void => {}"
@@ -75,13 +74,9 @@ coding:
     - file: "packages/runtime-core/src/errorHandling.ts"
       find: "import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared'"
       replace: "import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared' // bench"
-  build_timeout: 300                    # Build command timeout (seconds)
-  test_timeout: 120                     # Test command timeout (seconds)
   interval_min: 2.0                     # Min interval between tasks (fixed mode)
   interval_max: 10.0                    # Max interval between tasks (fixed mode)
-  skip_dev_server: false                # Skip dev server startup (set true for build-only testing)
-  skip_build: false                     # Skip production build
-  skip_test: false                      # Skip test suite
+  skip_verify: false                    # Skip the verify step (set true for edit-only testing)
 
 # Test run configuration
 test:

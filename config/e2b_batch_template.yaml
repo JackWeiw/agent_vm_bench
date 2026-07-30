@@ -13,18 +13,13 @@ workflow_type: "browser"
 
 # Coding task configuration (used when workflow_type = "coding")
 coding:
+  language: "js"
   project_dir: "/opt/coding-bench"
-  dev_cmd: "npm run dev"
-  dev_wait: 20
-  build_cmd: "npm run build"
-  test_cmd: "npm test"
-  build_timeout: 300
-  test_timeout: 120
+  verify_cmd: "npx tsx /tmp/bench_verify.mjs"
+  verify_timeout: 120
   interval_min: 2.0
   interval_max: 10.0
-  skip_dev_server: false
-  skip_build: false
-  skip_test: false
+  skip_verify: false
 
 sandbox:
   template: "openclaw-browser-v1"

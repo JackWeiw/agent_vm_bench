@@ -1,22 +1,25 @@
 # Coding Benchmark Template - E2B Sandbox for AI Coding Agent Memory Stress Testing
 #
-# Environment: Pure coding benchmark (NO browser/Chromium, NO agent tools)
+# Environment: Pure coding benchmark (NO browser/Chromium, NO agent tools, NO
+# resident dev server, NO production build step)
 #
 # Project: vuejs/core (https://github.com/vuejs/core)
 #   - 54k+ GitHub stars, Vue.js core framework (TypeScript monorepo, pnpm)
 #   - Real repo from the swe_bench_multilingual evaluation dataset (5 instances)
-#   - Build: rollup (production) + esbuild (dev) — fast, low CPU
-#   - 52 devDependencies (vue + compiler + reactivity + vite + rollup + esbuild)
+#   - Toolchain: rollup + esbuild + tsx (the devDependencies an agent touches)
 #   - Pure JS/TS, ARM64 compatible
 #
-# Memory pressure model:
-# - A persistent vite dev server runs in the background (~1.5GB) — agents
-#   editing a frontend library like Vue run a local vite dev/HMR playground to
-#   verify changes live (real development behavior). The wide vue+rollup+esbuild
-#   dependency graph is what keeps it resident — the memory-overcommit carrier.
-# - Production build (node scripts/build.js) peaks at ~1GB during verification.
-# - Overlapping peak: dev server + build simultaneously active → ~3GB per sandbox.
-# - Multiple concurrent sandboxes → overlapping peaks → host memory stress.
+# Trace-faithful loop (verified against a captured openclaw agent trajectory on
+# vuejs/core): find -> read -> edit -> verify (write ad-hoc /tmp/test_*.mjs +
+# `npx tsx`) -> git diff. The agent NEVER runs a production build or a resident
+# dev server; verification is a transient `npx tsx` process loading the TS
+# module graph (esbuild transpile + node execute). Memory pressure comes from
+# N concurrent sandboxes' transient verify peaks overlapping.
+#
+# No build-time `node scripts/build.js` and no `node_modules/.bin` PATH patch:
+# the runtime verify uses only `npx` (symlinked at /usr/local/bin/npx), which
+# resolves tsx from node_modules/.bin internally. This removes the
+# `spawn rollup ENOENT` failure class entirely.
 #
 # Build:  docker build -t ubuntu-coding-bench:24.04-linuxarm64 -f Dockerfile.coding .
 # Push:   HARBOR_IP=X bash push_to_harbor_coding.sh
@@ -63,65 +66,30 @@ RUN apt update && apt install -y wget xz-utils vim libgomp1 iproute2 net-tools g
     apt clean && rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
 
 # --- Coding benchmark project: vuejs/core (real swe_bench_multilingual repo) ---
-# Clone, install dependencies, build, and init git for modification tracking.
-# vuejs/core is a pnpm monorepo. pnpm@11 is declared via packageManager; corepack
-# or the global pnpm installs against npmmirror. Build uses `node scripts/build.js`
-# (rollup). The dev server is a separate vite playground consuming the built lib.
-# PUPPETEER_SKIP_DOWNLOAD=1 skips puppeteer's browser download (not needed for build).
+# Clone + install dependencies. No production build, no vite playground: the
+# runtime verify step uses `npx tsx` against the raw .ts source (exactly what
+# the captured openclaw agent did), which resolves tsx/esbuild from
+# node_modules/.bin internally. tsx/rollup/esbuild devDeps are the real surface.
+# PUPPETEER_SKIP_DOWNLOAD=1 skips puppeteer's browser download (not needed).
 RUN cd /opt && \
     git clone --depth 1 https://github.com/vuejs/core.git coding-bench && \
     cd coding-bench && \
-    # pnpm install against the mirror; rollup must be in PATH for build.js
+    # pnpm install against the mirror (no build, no PATH patch needed at runtime)
     pnpm config set registry https://registry.npmmirror.com && \
     pnpm config set strict-ssl false && \
     PUPPETEER_SKIP_DOWNLOAD=1 pnpm install --frozen-lockfile=false && \
-    # Add pnpm bin to PATH so rollup can be found by scripts/build.js
-    export PATH="$(pnpm bin):$PATH" && \
-    node scripts/build.js && \
-    test -d packages/vue/dist && \
-    echo "Build verification: SUCCESS (packages/vue/dist has output)"
-
-# --- Vite dev-server playground (background memory pressure) ---
-# A real agent editing a frontend library like Vue runs a local vite dev/HMR
-# playground to verify changes live. This minimal app imports the built lib so
-# the vite dev server holds the full vue + rollup + esbuild module graph resident
-# (~1.5GB) — the memory-overcommit carrier. `npm run dev` here starts it.
-RUN mkdir -p /opt/vite-playground/src && cd /opt/vite-playground && \
-    printf '%s\n' \
-      '{' \
-      '  "name": "vite-playground",' \
-      '  "version": "1.0.0",' \
-      '  "private": true,' \
-      '  "scripts": { "dev": "vite --port 5173 --host" },' \
-      '  "dependencies": { "vue": "file:/opt/coding-bench/packages/vue" },' \
-      '  "devDependencies": { "vite": "^6.0.0", "@vitejs/plugin-vue": "^5.0.0" }' \
-      '}' > package.json && \
-    printf '%s\n' \
-      '<!DOCTYPE html>' \
-      '<html lang="en"><head><meta charset="UTF-8"><title>Bench</title></head>' \
-      '<body><div id="app"></div><script type="module" src="/src/main.ts"></script></body>' \
-      '</html>' > index.html && \
-    printf '%s\n' \
-      "import { createApp } from 'vue'" \
-      "createApp({ template: '<div>bench</div>' }).mount('#app')" > src/main.ts && \
-    printf '%s\n' \
-      "import { defineConfig } from 'vite'" \
-      "import vue from '@vitejs/plugin-vue'" \
-      "export default defineConfig({ plugins: [vue()] })" > vite.config.ts && \
-    npm install --registry=https://registry.npmmirror.com --strict-ssl=false && \
-    echo "Vite playground ready"
+    test -d node_modules/tsx && \
+    echo "Install verification: SUCCESS (tsx available for npx tsx verify)"
 
 # Copy the manual testing helper script
 COPY bench_helper.sh /opt/coding-bench/bench_helper.sh
 RUN chmod +x /opt/coding-bench/bench_helper.sh
 
 # Unset proxy environment variables after build
-# Set BROWSER=none to prevent npm scripts from trying to open browser (no display in sandbox)
 ENV http_proxy= \
     https_proxy= \
     HTTP_PROXY= \
-    HTTPS_PROXY= \
-    BROWSER=none
+    HTTPS_PROXY=
 
 # Default command: keep container running for sandbox access
 CMD ["sleep", "infinity"]

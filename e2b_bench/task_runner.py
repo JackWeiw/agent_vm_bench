@@ -315,14 +315,14 @@ class TaskManager:
         if self.config.workflow_type == "coding":
             from .coding_task_runner import CodingWarmupRunner
 
-            # Coding warmup: start dev server (no warmup_urls needed)
-            if not self.config.coding_skip_dev_server or not self.config.coding_skip_build:
+            # Coding warmup: one initial verify (no resident dev server, no build)
+            if not self.config.coding_skip_verify:
                 print(f"\n{'=' * 60}")
                 print("Coding Warmup Phase Starting")
                 print(f"  Total: {len(ready_states)} sandboxes")
                 print(f"  Project: {self.config.coding_project_dir}")
-                print(f"  Dev server: {'enabled' if not self.config.coding_skip_dev_server else 'skipped'}")
-                print(f"  Initial build: {'enabled' if not self.config.coding_skip_build else 'skipped'}")
+                print(f"  Language: {self.config.coding_language}")
+                print(f"  Initial verify: {'enabled' if not self.config.coding_skip_verify else 'skipped'}")
                 print(f"{'=' * 60}")
 
                 for state in ready_states:

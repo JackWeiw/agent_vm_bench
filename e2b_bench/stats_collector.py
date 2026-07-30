@@ -33,9 +33,7 @@ BROWSER_ERROR_DISPLAY = [
 CODING_ERROR_DISPLAY = [
     "Checkout failed",
     "Edit failed",
-    "Build failed",
-    "Test failed",
-    "Dev server failed",
+    "Verify failed",
     "OOM",
     "Timeout",
     "Other",
@@ -60,10 +58,8 @@ class ErrorClassifier:
         ("Find failed", ["find failed", "git checkout", "locate failed"]),
         ("Read failed", ["read failed", "head failed"]),
         ("Edit failed", ["edit failed", "sed failed"]),
-        ("Build failed", ["build failed", "npm run build", "next build", "webpack"]),
-        ("Test failed", ["test failed", "npm test"]),
+        ("Verify failed", ["verify failed", "npx tsx", "go run", "exit code"]),
         ("Diff failed", ["diff failed", "git diff"]),
-        ("Dev server failed", ["dev server", "next dev", "npm run dev"]),
         ("OOM", ["oom", "out of memory", "cannot allocate"]),
         ("Timeout", ["timeout", "timed out"]),
     ]
@@ -311,8 +307,7 @@ class ReportFormatter:
         total_success = sum(s.coding_metrics.success_count for s in self.sandbox_states.values())
         total_failed = sum(s.coding_metrics.failed_count for s in self.sandbox_states.values())
         total_timeout = sum(s.coding_metrics.timeout_count for s in self.sandbox_states.values())
-        build_success = sum(s.coding_metrics.build_success_count for s in self.sandbox_states.values())
-        test_success = sum(s.coding_metrics.test_success_count for s in self.sandbox_states.values())
+        verify_success = sum(s.coding_metrics.verify_success_count for s in self.sandbox_states.values())
 
         lines = ["\n[Coding Task Statistics]"]
         lines.append(f"  Total Tasks:   {total_tasks}")
@@ -320,9 +315,8 @@ class ReportFormatter:
         lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
         lines.append(f"  Success Rate:  {total_success / max(1, total_tasks) * 100:.1f}%")
         lines.append(
-            f"  Build Success: {build_success}/{total_tasks} ({build_success / max(1, total_tasks) * 100:.1f}%)"
+            f"  Verify Success: {verify_success}/{total_tasks} ({verify_success / max(1, total_tasks) * 100:.1f}%)"
         )
-        lines.append(f"  Test Success:  {test_success}/{total_tasks} ({test_success / max(1, total_tasks) * 100:.1f}%)")
 
         if all_latencies:
             avg_ms = statistics.mean(all_latencies) * 1000
@@ -720,6 +714,7 @@ class StatsCollector:
         elif self.config.workflow_type == "coding":
             coding_total = sum(s.coding_metrics.total_tasks for s in self.sandbox_states.values())
             coding_success = sum(s.coding_metrics.success_count for s in self.sandbox_states.values())
+            coding_verify_success = sum(s.coding_metrics.verify_success_count for s in self.sandbox_states.values())
 
             # Calculate round delta for coding
             if self.current_round is not None and self.current_round in self._round_start_totals:
@@ -749,6 +744,7 @@ class StatsCollector:
                 creation_stats=creation_stats,
                 coding_total=coding_total,
                 coding_success=coding_success,
+                coding_verify_success=coding_verify_success,
                 coding_avg_latency=coding_avg,
                 coding_p99_latency=coding_p99,
                 round_total=round_total,
@@ -838,9 +834,7 @@ class StatsCollector:
 
         total_times = [s.creation_metrics.total_elapsed for s in ready_states if s.creation_metrics.total_elapsed > 0]
         total_desc = (
-            "sandbox.create + ready check"
-            if self.config.workflow_type == "coding"
-            else "sandbox.create + port wait"
+            "sandbox.create + ready check" if self.config.workflow_type == "coding" else "sandbox.create + port wait"
         )
         lines.extend(formatter.format_percentile_section("Total Startup Performance", total_times, total_desc))
 
