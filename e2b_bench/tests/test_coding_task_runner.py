@@ -370,15 +370,22 @@ class TestBuildEditCommand(unittest.TestCase):
         replace = "var gitHubAlertRe = regexp.MustCompile(`(?i)^<p>\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\\]`)"
         cmd = _build_edit_command("/opt/coding-bench", "markup/goldmark/blockquotes/blockquotes.go", find, replace)
 
-        self.assertIn("python3 -c", cmd)
+        # Script is fed via a quoted heredoc + `python3 -` (NOT python3 -c "..."):
+        # -c embedded the script in a JSON/shell double-quoted arg whose `\\n`/`\\"`
+        # broke across E2B's commands.run serialization (SyntaxError line 1).
+        self.assertIn("python3 - ", cmd)
+        self.assertIn("<<'PYEOF'", cmd)
+        self.assertNotIn("python3 -c", cmd)
         self.assertNotIn("|" + find, cmd)  # find is NOT inlined raw (base64 instead)
-        # base64 round-trips back to the exact find/replace (proves no escaping loss)
-        parts = cmd.split()
+        self.assertNotIn("sed -i", cmd)
+        # base64 round-trips back to the exact find/replace (proves no escaping loss).
+        # The argv tokens are the 3 space-separated tokens on the prelude line
+        # (before the heredoc body).
+        prelude = cmd.split("<<'PYEOF'")[0]
+        parts = prelude.split()
         self.assertEqual(base64.b64decode(parts[-3]).decode(), find)
         self.assertEqual(base64.b64decode(parts[-2]).decode(), replace)
         self.assertEqual(parts[-1], "markup/goldmark/blockquotes/blockquotes.go")
-        # No sed, no raw pipe-delimited substitution
-        self.assertNotIn("sed -i", cmd)
 
     def test_vuejs_pair_with_dot_and_parens(self):
         """vuejs/core pairs carry `.` and `()` - sed treated them as regex; literal replace is inert."""
@@ -388,24 +395,27 @@ class TestBuildEditCommand(unittest.TestCase):
         find = "export const NOOP = (): void => {}"
         replace = "export const NOOP = (): void => undefined"
         cmd = _build_edit_command("/opt/coding-bench", "packages/shared/src/general.ts", find, replace)
-        parts = cmd.split()
+        self.assertIn("python3 - ", cmd)
+        self.assertNotIn("sed -i", cmd)
+        prelude = cmd.split("<<'PYEOF'")[0]
+        parts = prelude.split()
         self.assertEqual(base64.b64decode(parts[-3]).decode(), find)
         self.assertEqual(base64.b64decode(parts[-2]).decode(), replace)
-        self.assertNotIn("sed -i", cmd)
 
     def test_find_absent_exits_2(self):
         """The script exits 2 when the find string is absent (no-op edit surfaced, not silent success)."""
         from e2b_bench.coding_task_runner import _build_edit_command
 
         cmd = _build_edit_command("/opt/coding-bench", "x.ts", "needle", "replacement")
-        self.assertIn("if f not in s: sys.exit(2)", cmd)
+        self.assertIn("if f not in s:", cmd)
+        self.assertIn("sys.exit(2)", cmd)
 
     def test_replaces_first_occurrence_only(self):
         """str.replace(f, r, 1) - only the first occurrence, matching a real agent's one-line edit."""
         from e2b_bench.coding_task_runner import _build_edit_command
 
         cmd = _build_edit_command("/opt/coding-bench", "x.ts", "needle", "replacement")
-        self.assertIn("s.replace(f,r,1)", cmd)
+        self.assertIn("s.replace(f, r, 1)", cmd)
 
 
 class TestStepEdit(unittest.TestCase):
@@ -424,9 +434,12 @@ class TestStepEdit(unittest.TestCase):
         ok, err = runner._step_edit(sbx, "/opt/coding-bench", "markup/x.go", "find", "replace", step_times={})
         self.assertTrue(ok)
         self.assertEqual(err, "")
-        # Command went through the literal-replace path, not sed
-        self.assertIn("python3 -c", sbx.commands.calls[0][0])
-        self.assertNotIn("sed -i", sbx.commands.calls[0][0])
+        # Command went through the literal-replace heredoc path, not sed / -c
+        cmd = sbx.commands.calls[0][0]
+        self.assertIn("python3 - ", cmd)
+        self.assertIn("<<'PYEOF'", cmd)
+        self.assertNotIn("sed -i", cmd)
+        self.assertNotIn("python3 -c", cmd)
 
     def test_edit_find_absent_is_failure(self):
         """Exit 2 (find absent) is a failure with a clear error, not a silent verify-pass."""

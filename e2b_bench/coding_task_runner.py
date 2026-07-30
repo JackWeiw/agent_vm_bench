@@ -28,7 +28,6 @@ Classes:
 """
 
 import base64
-import json
 import random
 import threading
 import time
@@ -47,8 +46,9 @@ def _build_edit_command(project_dir: str, target_file: str, find_str: str, repla
     with sed's `|` delimiter ("sed: -e expression #1, char 60"). Worse, sed
     treats find as a regex, so `.`, `*`, `[`, `]`, `(`, `)`, `^`, `$` and
     backslash in any find string (the vuejs/core pairs have `.` and `()`
-    everywhere) are interpreted as metacharacters, not literals - those pairs only matched by luck. A real
-    agent edits a specific line literally, not via sed regex.
+    everywhere) are interpreted as metacharacters, not literals - those pairs
+    only matched by luck. A real agent edits a specific line literally, not
+    via sed regex.
 
     So this invokes `python3` (present in the ubuntu base image of both coding
     images) to do a literal `str.replace` of the FIRST occurrence and write the
@@ -56,19 +56,30 @@ def _build_edit_command(project_dir: str, target_file: str, find_str: str, repla
     - backticks, `|`, `$`, backslashes, quotes, newlines are all inert. Exit
     code 2 if the find string is absent (a no-op edit is surfaced as an
     explicit failure, not a silent sed success that would fake a verify pass).
+
+    The script is fed to python3 via a quoted heredoc (`<< 'PYEOF' ... PYEOF`)
+    and `python3 -` (read from stdin), NOT via `python3 -c "..."`. An earlier
+    `python3 -c` form passed the script through a JSON-encoded double-quoted
+    shell argument; the `\\n` / `\\"` it embedded survived python's own parsing
+    but broke when E2B's commands.run serialization re-quoted it, producing
+    `SyntaxError: File "<string>", line 1`. A quoted heredoc is passed
+    verbatim (no shell expansion, no escape re-interpretation) - the same
+    mechanism `_run_verify` uses successfully for the verify-step script body.
     """
     find_b64 = base64.b64encode(find_str.encode()).decode()
     repl_b64 = base64.b64encode(replace_str.encode()).decode()
-    script = (
-        "import base64,sys\n"
-        "f=base64.b64decode(sys.argv[1]).decode()\n"
-        "r=base64.b64decode(sys.argv[2]).decode()\n"
-        "p=sys.argv[3]\n"
-        "s=open(p,encoding='utf-8').read()\n"
-        "if f not in s: sys.exit(2)\n"
-        "open(p,'w',encoding='utf-8').write(s.replace(f,r,1))\n"
+    return (
+        f"cd {project_dir} && python3 - {find_b64} {repl_b64} {target_file} <<'PYEOF'\n"
+        "import base64, sys\n"
+        "f = base64.b64decode(sys.argv[1]).decode()\n"
+        "r = base64.b64decode(sys.argv[2]).decode()\n"
+        "p = sys.argv[3]\n"
+        "s = open(p, encoding='utf-8').read()\n"
+        "if f not in s:\n"
+        "    sys.exit(2)\n"
+        "open(p, 'w', encoding='utf-8').write(s.replace(f, r, 1))\n"
+        "PYEOF"
     )
-    return f"cd {project_dir} && python3 -c {json.dumps(script)} " f"{find_b64} {repl_b64} {target_file}"
 
 
 def _run_verify(sbx, project_dir: str, config: Config, pair: Dict[str, str]) -> Tuple[bool, str]:
