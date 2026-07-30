@@ -100,12 +100,30 @@ RUN cd /opt && \
     pnpm config set registry https://registry.npmmirror.com && \
     pnpm config set strict-ssl false && \
     PUPPETEER_SKIP_DOWNLOAD=1 pnpm install --frozen-lockfile=false --ignore-scripts && \
-    # Verify the runtime verify command actually resolves tsx (what _run_verify
-    # invokes). npx tsx --version resolves from .bin/pnpm store regardless of
-    # hoisting - a path-based `test -d node_modules/tsx` is fragile (pnpm may
-    # not hoist it to the top level), and the real question is "can npx run tsx".
-    npx tsx --version || (echo "ERROR: npx tsx unavailable after install" && exit 1) && \
-    echo "Install verification: SUCCESS (npx tsx available for verify)"
+    # tsx must resolve LOCALLY at runtime: the sandbox has NO network proxy, so
+    # `npx tsx` that falls back to `npm install tsx` (npx's behavior when no local
+    # tsx is found) hangs until timeout. The real openclaw agent's `npx tsx` never
+    # installed because tsx was a local devDep of vuejs/core's node_modules. We
+    # reproduce that: ensure node_modules/.bin/tsx exists (pnpm symlinks tsx's bin
+    # to top-level .bin because it's a devDep; if a future pnpm/vuejs hoisting
+    # change doesn't, symlink it from the .pnpm store so npx resolves locally).
+    if [ ! -e node_modules/.bin/tsx ]; then \
+        TSX_BIN=$(find "$(pwd)/node_modules/.pnpm" -path '*/tsx/dist/cli.mjs' 2>/dev/null | head -1); \
+        if [ -n "$TSX_BIN" ]; then \
+            mkdir -p node_modules/.bin && \
+            ln -sf "$TSX_BIN" node_modules/.bin/tsx && \
+            chmod +x node_modules/.bin/tsx; \
+        fi; \
+    fi && \
+    ls -la node_modules/.bin/tsx && \
+    # Offline-verify npx resolves tsx locally (no network). The earlier
+    # `npx tsx --version` was a FALSE POSITIVE: it ran during build WITH the
+    # proxy, so npx's "install tsx?" prompt succeeded over the network and hid
+    # the fact that no local tsx existed. --no-install forces local resolution;
+    # if it can't, fail the build here (not at sandbox runtime 150s in).
+    cd /opt/coding-bench && npx --no-install tsx --version \
+        || (echo "ERROR: npx tsx does not resolve locally (offline); runtime sandbox would hang" && exit 1) && \
+    echo "Install verification: SUCCESS (npx tsx resolves locally, no network needed)"
 
 # Copy the manual testing helper script
 COPY bench_helper.sh /opt/coding-bench/bench_helper.sh
