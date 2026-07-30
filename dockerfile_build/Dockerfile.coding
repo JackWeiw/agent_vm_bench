@@ -100,27 +100,27 @@ RUN cd /opt && \
     pnpm config set registry https://registry.npmmirror.com && \
     pnpm config set strict-ssl false && \
     PUPPETEER_SKIP_DOWNLOAD=1 pnpm install --frozen-lockfile=false --ignore-scripts && \
-    # tsx must resolve LOCALLY at runtime: the sandbox has NO network proxy, so
-    # `npx tsx` that falls back to `npm install tsx` (npx's behavior when no local
-    # tsx is found) hangs until timeout. The real openclaw agent's `npx tsx` never
-    # installed because tsx was a local devDep of vuejs/core's node_modules. We
-    # reproduce that: ensure node_modules/.bin/tsx exists (pnpm symlinks tsx's bin
-    # to top-level .bin because it's a devDep; if a future pnpm/vuejs hoisting
-    # change doesn't, symlink it from the .pnpm store so npx resolves locally).
-    if [ ! -e node_modules/.bin/tsx ]; then \
-        TSX_BIN=$(find "$(pwd)/node_modules/.pnpm" -path '*/tsx/dist/cli.mjs' 2>/dev/null | head -1); \
-        if [ -n "$TSX_BIN" ]; then \
-            mkdir -p node_modules/.bin && \
-            ln -sf "$TSX_BIN" node_modules/.bin/tsx && \
-            chmod +x node_modules/.bin/tsx; \
-        fi; \
-    fi && \
-    ls -la node_modules/.bin/tsx && \
+    # Install tsx@4.23.1 GLOBALLY so `npx tsx` resolves locally at sandbox runtime.
+    #
+    # tsx is NOT a vuejs/core dependency (not in root or any workspace package.json),
+    # so pnpm install never installs it. The real openclaw agent's `npx tsx /tmp/test.mjs`
+    # worked because npx prompted "Need to install tsx@4.23.1" and installed it over the
+    # network on first use (the trace contains "tsx@4.23.1"). Our sandbox has NO proxy,
+    # so that same prompt hangs until the 150s verify timeout.
+    #
+    # Pre-installing tsx globally reproduces the END STATE the agent reaches after its
+    # first npx-install: `npx tsx` resolves locally, no network. The verify behavior is
+    # identical (npx tsx running a transient .mjs). Version pinned to 4.23.1 to match
+    # the trace exactly.
+    npm config set strict-ssl false && \
+    npm config set registry https://registry.npmmirror.com && \
+    npm install -g tsx@4.23.1 --registry=https://registry.npmmirror.com --strict-ssl=false && \
+    ln -sf "$(npm root -g)/tsx/dist/cli.mjs" /usr/local/bin/tsx 2>/dev/null || true && \
     # Offline-verify npx resolves tsx locally (no network). The earlier
-    # `npx tsx --version` was a FALSE POSITIVE: it ran during build WITH the
-    # proxy, so npx's "install tsx?" prompt succeeded over the network and hid
-    # the fact that no local tsx existed. --no-install forces local resolution;
-    # if it can't, fail the build here (not at sandbox runtime 150s in).
+    # `npx tsx --version` was a FALSE POSITIVE: it ran during build WITH the proxy, so
+    # npx's "install tsx?" prompt succeeded over the network and hid that no local tsx
+    # existed. --no-install forces local resolution; build fails here if npx would go
+    # online, surfacing the problem at build time not sandbox runtime 150s in.
     cd /opt/coding-bench && npx --no-install tsx --version \
         || (echo "ERROR: npx tsx does not resolve locally (offline); runtime sandbox would hang" && exit 1) && \
     echo "Install verification: SUCCESS (npx tsx resolves locally, no network needed)"
