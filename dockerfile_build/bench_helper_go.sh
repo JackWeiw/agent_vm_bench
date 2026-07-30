@@ -164,16 +164,29 @@ cd "${PROJECT_DIR}" && head -20 "${TARGET_FILE}"
 echo ""
 echo ""
 
-# ---- Step 2: edit — apply find→replace pair ----
+# ---- Step 2: edit — apply find->replace pair (literal, via python3) ----
 echo "[Step 2: edit] Applying replacement..."
 echo "  find:    ${FIND_STR}"
 echo "  replace: ${REPLACE_STR}"
-# sed with | delimiter; escape | and & in the replacement to be safe
-ESC_REPLACE=$(printf '%s' "${REPLACE_STR}" | sed 's/[&|]/\\&/g')
-cd "${PROJECT_DIR}" && sed -i "s|${FIND_STR}|${ESC_REPLACE}|" "${TARGET_FILE}"
+# Literal str.replace (not sed regex): Go source pairs contain regex
+# metacharacters (|, [, ], backticks) that break `sed 's|...|...|'`. find/replace
+# are passed to python3 as base64 so quoting is inert; exit 2 if the find string
+# is absent (no-op edit surfaced, not a silent fake verify pass).
+FIND_B64=$(printf '%s' "${FIND_STR}" | base64 -w0)
+REPL_B64=$(printf '%s' "${REPLACE_STR}" | base64 -w0)
+cd "${PROJECT_DIR}" && python3 - "$FIND_B64" "$REPL_B64" "$TARGET_FILE" <<'PYEOF'
+import base64, sys
+f = base64.b64decode(sys.argv[1]).decode()
+r = base64.b64decode(sys.argv[2]).decode()
+p = sys.argv[3]
+s = open(p, encoding='utf-8').read()
+if f not in s:
+    sys.exit(2)
+open(p, 'w', encoding='utf-8').write(s.replace(f, r, 1))
+PYEOF
 EDIT_EXIT=$?
 if [ ${EDIT_EXIT} -ne 0 ]; then
-    echo "  ERROR: edit failed (sed exit ${EDIT_EXIT})" >&2
+    echo "  ERROR: edit failed (exit ${EDIT_EXIT}; 2 = find string absent)" >&2
     exit 1
 fi
 echo "  Edit applied"

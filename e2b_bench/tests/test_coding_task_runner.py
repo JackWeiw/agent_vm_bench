@@ -352,5 +352,91 @@ class TestStepFindLanguageAware(unittest.TestCase):
         self.assertTrue(any("-name '*.go'" in c for c in cmds))
 
 
+class TestBuildEditCommand(unittest.TestCase):
+    """The literal find->replace command is robust to regex metacharacters.
+
+    Guards against the sed regression: `sed -i 's|find|replace|'` broke when the
+    find string contained `|` (hugo pair) and silently mis-matched on `. () *`
+    (vuejs pairs). _build_edit_command carries find/replace as base64 and does
+    a literal str.replace, so no metacharacter can break quoting or matching.
+    """
+
+    def test_hugo_pair_with_pipe_and_brackets(self):
+        """The hugo pair's find holds `|`, `[`, `]`, backticks - must not break the command."""
+        import base64
+        from e2b_bench.coding_task_runner import _build_edit_command
+
+        find = "var gitHubAlertRe = regexp.MustCompile(`^<p>\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\\]`)"
+        replace = "var gitHubAlertRe = regexp.MustCompile(`(?i)^<p>\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\\]`)"
+        cmd = _build_edit_command("/opt/coding-bench", "markup/goldmark/blockquotes/blockquotes.go", find, replace)
+
+        self.assertIn("python3 -c", cmd)
+        self.assertNotIn("|" + find, cmd)  # find is NOT inlined raw (base64 instead)
+        # base64 round-trips back to the exact find/replace (proves no escaping loss)
+        parts = cmd.split()
+        self.assertEqual(base64.b64decode(parts[-3]).decode(), find)
+        self.assertEqual(base64.b64decode(parts[-2]).decode(), replace)
+        self.assertEqual(parts[-1], "markup/goldmark/blockquotes/blockquotes.go")
+        # No sed, no raw pipe-delimited substitution
+        self.assertNotIn("sed -i", cmd)
+
+    def test_vuejs_pair_with_dot_and_parens(self):
+        """vuejs/core pairs carry `.` and `()` - sed treated them as regex; literal replace is inert."""
+        import base64
+        from e2b_bench.coding_task_runner import _build_edit_command
+
+        find = "export const NOOP = (): void => {}"
+        replace = "export const NOOP = (): void => undefined"
+        cmd = _build_edit_command("/opt/coding-bench", "packages/shared/src/general.ts", find, replace)
+        parts = cmd.split()
+        self.assertEqual(base64.b64decode(parts[-3]).decode(), find)
+        self.assertEqual(base64.b64decode(parts[-2]).decode(), replace)
+        self.assertNotIn("sed -i", cmd)
+
+    def test_find_absent_exits_2(self):
+        """The script exits 2 when the find string is absent (no-op edit surfaced, not silent success)."""
+        from e2b_bench.coding_task_runner import _build_edit_command
+
+        cmd = _build_edit_command("/opt/coding-bench", "x.ts", "needle", "replacement")
+        self.assertIn("if f not in s: sys.exit(2)", cmd)
+
+    def test_replaces_first_occurrence_only(self):
+        """str.replace(f, r, 1) - only the first occurrence, matching a real agent's one-line edit."""
+        from e2b_bench.coding_task_runner import _build_edit_command
+
+        cmd = _build_edit_command("/opt/coding-bench", "x.ts", "needle", "replacement")
+        self.assertIn("s.replace(f,r,1)", cmd)
+
+
+class TestStepEdit(unittest.TestCase):
+    """_step_edit uses _build_edit_command and surfaces exit 2 as a failure."""
+
+    def _make_runner(self, config):
+        from e2b_bench.coding_task_runner import CodingRoundRunner
+
+        state = SandboxState(sandbox_id=1, workflow_type="coding")
+        return CodingRoundRunner(state=state, config=config, stop_event=threading.Event(), round_id=0)
+
+    def test_edit_success(self):
+        config = Config(workflow_type="coding", coding_language="go", coding_verify_cmd="go run /tmp/bench_verify.go")
+        runner = self._make_runner(config)
+        sbx = _FakeSbx(result=_FakeResult(exit_code=0, stdout="", stderr=""))
+        ok, err = runner._step_edit(sbx, "/opt/coding-bench", "markup/x.go", "find", "replace", step_times={})
+        self.assertTrue(ok)
+        self.assertEqual(err, "")
+        # Command went through the literal-replace path, not sed
+        self.assertIn("python3 -c", sbx.commands.calls[0][0])
+        self.assertNotIn("sed -i", sbx.commands.calls[0][0])
+
+    def test_edit_find_absent_is_failure(self):
+        """Exit 2 (find absent) is a failure with a clear error, not a silent verify-pass."""
+        config = Config(workflow_type="coding", coding_language="go", coding_verify_cmd="go run /tmp/bench_verify.go")
+        runner = self._make_runner(config)
+        sbx = _FakeSbx(result=_FakeResult(exit_code=2, stdout="", stderr=""))
+        ok, err = runner._step_edit(sbx, "/opt/coding-bench", "markup/x.go", "find", "replace", step_times={})
+        self.assertFalse(ok)
+        self.assertIn("exit_code=2", err)
+
+
 if __name__ == "__main__":
     unittest.main()

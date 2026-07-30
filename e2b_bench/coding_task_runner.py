@@ -27,6 +27,8 @@ Classes:
 - CodingRoundRunner: Executes one round of coding operations in round-robin mode
 """
 
+import base64
+import json
 import random
 import threading
 import time
@@ -35,6 +37,38 @@ from typing import Dict, List, Optional, Tuple
 from .config import Config, _find_name_clause, get_coding_profile
 from .helpers import wait_for_port_ready
 from .schemas import SandboxState, SandboxStatus
+
+
+def _build_edit_command(project_dir: str, target_file: str, find_str: str, replace_str: str) -> str:
+    """Build a robust literal find->replace edit command.
+
+    The earlier `sed -i 's|find|replace|'` broke on pairs whose source contains
+    regex metacharacters: the hugo pair's find string holds `|`, which collides
+    with sed's `|` delimiter ("sed: -e expression #1, char 60"). Worse, sed
+    treats find as a regex, so `.`, `*`, `[`, `]`, `(`, `)`, `^`, `$` and
+    backslash in any find string (the vuejs/core pairs have `.` and `()`
+    everywhere) are interpreted as metacharacters, not literals - those pairs only matched by luck. A real
+    agent edits a specific line literally, not via sed regex.
+
+    So this invokes `python3` (present in the ubuntu base image of both coding
+    images) to do a literal `str.replace` of the FIRST occurrence and write the
+    file back. find/replace are carried as base64 so no quoting can break them
+    - backticks, `|`, `$`, backslashes, quotes, newlines are all inert. Exit
+    code 2 if the find string is absent (a no-op edit is surfaced as an
+    explicit failure, not a silent sed success that would fake a verify pass).
+    """
+    find_b64 = base64.b64encode(find_str.encode()).decode()
+    repl_b64 = base64.b64encode(replace_str.encode()).decode()
+    script = (
+        "import base64,sys\n"
+        "f=base64.b64decode(sys.argv[1]).decode()\n"
+        "r=base64.b64decode(sys.argv[2]).decode()\n"
+        "p=sys.argv[3]\n"
+        "s=open(p,encoding='utf-8').read()\n"
+        "if f not in s: sys.exit(2)\n"
+        "open(p,'w',encoding='utf-8').write(s.replace(f,r,1))\n"
+    )
+    return f"cd {project_dir} && python3 -c {json.dumps(script)} " f"{find_b64} {repl_b64} {target_file}"
 
 
 def _run_verify(sbx, project_dir: str, config: Config, pair: Dict[str, str]) -> Tuple[bool, str]:
@@ -500,14 +534,18 @@ class CodingRoundRunner(threading.Thread):
     def _step_edit(
         self, sbx, project_dir: str, target_file: str, find_str: str, replace_str: str, step_times: Dict[str, float]
     ) -> Tuple[bool, str]:
-        """Step 2: Apply the find->replace pair via sed (real semantic edit, triggers rebuild).
+        """Step 2: Apply the find->replace pair via literal string replace (real semantic edit).
 
-        Returns: (success, error_detail)
+        Uses python3 str.replace (see _build_edit_command) - literal, not sed
+        regex - so regex metacharacters in the find/replace strings are inert.
+        Triggers the rebuild that the verify step then exercises.
+
+        Returns: (success, error_detail). Exit code 2 = find string absent
+        (no-op edit surfaced as a failure, not a silent fake verify pass).
         """
         step_start = time.perf_counter()
-        escaped_replace = replace_str.replace("/", "\\/").replace("&", "\\&")
         result = sbx.commands.run(
-            f"cd {project_dir} && sed -i 's|{find_str}|{escaped_replace}|' {target_file}",
+            _build_edit_command(project_dir, target_file, find_str, replace_str),
             timeout=15,
             user="root",
         )
