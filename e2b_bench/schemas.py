@@ -409,7 +409,8 @@ class CodingMetrics(TaskMetricsBase):
     def __init__(self):
         super().__init__()
         # Coding-specific fields
-        self._verify_success_count: int = 0
+        self._verify_success_count: int = 0  # pairs with a real-assertion verify_script that passed
+        self._compile_only_count: int = 0  # pairs marked verify: compile_only that compiled+ran
 
     def add(
         self,
@@ -418,6 +419,7 @@ class CodingMetrics(TaskMetricsBase):
         timeout: bool = False,
         step_times: Dict[str, float] = None,
         verify_success: bool = False,
+        compile_only: bool = False,
     ) -> None:
         """Add a coding task result (thread-safe).
 
@@ -429,6 +431,10 @@ class CodingMetrics(TaskMetricsBase):
             timeout: Whether the task timed out
             step_times: Optional dict of step name -> latency in seconds
             verify_success: Whether the verify step (write temp test + run) succeeded
+            compile_only: True if this pair was verify: compile_only (no real
+                assertion - only compile/run was checked). verify_success and
+                compile_only are mutually exclusive; reported separately so a
+                compile-only pass is never mistaken for an assertion pass.
         """
         # Call base add() for the standard counters
         with self._lock:
@@ -444,6 +450,8 @@ class CodingMetrics(TaskMetricsBase):
 
             if verify_success:
                 self._verify_success_count += 1
+            if compile_only:
+                self._compile_only_count += 1
 
             if step_times:
                 for step_name, step_latency in step_times.items():
@@ -455,6 +463,11 @@ class CodingMetrics(TaskMetricsBase):
     def verify_success_count(self) -> int:
         with self._lock:
             return self._verify_success_count
+
+    @property
+    def compile_only_count(self) -> int:
+        with self._lock:
+            return self._compile_only_count
 
 
 @dataclass
@@ -538,7 +551,8 @@ class TestSnapshot:
     # Coding task metrics (populated when workflow_type="coding")
     coding_total: int = 0
     coding_success: int = 0
-    coding_verify_success: int = 0
+    coding_verify_success: int = 0  # pairs with a real-assertion verify_script that passed
+    coding_compile_only: int = 0  # pairs marked verify: compile_only that compiled+ran (no assertion)
     coding_avg_latency: float = 0.0
     coding_p99_latency: float = 0.0
     # Round comparison fields (proper dataclass fields, not ad-hoc attributes)

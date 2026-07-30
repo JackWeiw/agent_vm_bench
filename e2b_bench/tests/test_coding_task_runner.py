@@ -43,6 +43,16 @@ class TestCodingMetrics(unittest.TestCase):
         self.assertEqual(m.verify_success_count, 1)
         self.assertEqual(m.failed_count, 1)
 
+    def test_compile_only_tracked_separately(self):
+        """compile_only passes are counted separately from real-assertion verify passes."""
+        m = CodingMetrics()
+        m.add(1.0, True, verify_success=True)  # real-assertion pass
+        m.add(1.0, True, compile_only=True)  # compile-only pass (no assertion)
+        m.add(1.0, True, verify_success=True, compile_only=False)
+        self.assertEqual(m.verify_success_count, 2)  # assertion passes only
+        self.assertEqual(m.compile_only_count, 1)  # compile-only passes only
+        self.assertEqual(m.success_count, 3)  # both still count as task success
+
     def test_step_times(self):
         """Test step-level timing recording"""
         m = CodingMetrics()
@@ -270,8 +280,9 @@ class TestStepVerify(unittest.TestCase):
             "replace": "y",
             "verify_script": "console.log('All tests passed!')",
         }
-        ok, err = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
+        ok, err, compile_only = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
         self.assertTrue(ok, err)
+        self.assertFalse(compile_only)  # verify_script path is a real assertion, not compile-only
         # The single combined write+run command must contain both the heredoc
         # write and the npx tsx run (mirrors the trace's combined write+run).
         self.assertEqual(len(sbx.commands.calls), 1)
@@ -286,8 +297,9 @@ class TestStepVerify(unittest.TestCase):
         runner = self._make_runner(config)
         sbx = _FakeSbx()
         pair = {"file": "markup/x.go", "find": "x", "replace": "y", "verify_script": "package main\nfunc main(){}"}
-        ok, _ = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
+        ok, _err, compile_only = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
         self.assertTrue(ok)
+        self.assertFalse(compile_only)
         cmd = sbx.commands.calls[0][0]
         self.assertIn("cat > /tmp/bench_verify.go", cmd)
         self.assertIn("GOEOF", cmd)
@@ -304,22 +316,42 @@ class TestStepVerify(unittest.TestCase):
             "replace": "y",
             "verify_script": "console.log('x')",
         }
-        ok, err = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
+        ok, err, _compile_only = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
         self.assertFalse(ok)
         self.assertIn("verify failed", err)
         self.assertIn("exit_code=1", err)
 
-    def test_verify_uses_shared_default_when_pair_has_no_script(self):
-        """A pair without verify_script falls back to the shared default body."""
+    def test_verify_compile_only_uses_shared_default(self):
+        """A pair marked verify: compile_only uses the shared no-op default main (no assertion)."""
+        config = Config(workflow_type="coding", coding_language="js")
+        runner = self._make_runner(config)
+        sbx = _FakeSbx()
+        pair = {
+            "file": "packages/reactivity/src/baseHandlers.ts",
+            "find": "x",
+            "replace": "y",
+            "verify": "compile_only",
+        }
+        ok, _err, compile_only = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
+        self.assertTrue(ok)
+        self.assertTrue(compile_only)  # honestly labeled compile-only
+        cmd = sbx.commands.calls[0][0]
+        # Shared default imports the edited package's index.ts (with {pkg} substituted)
+        self.assertIn("packages/reactivity/src/index.ts", cmd)
+
+    def test_verify_no_script_no_compile_only_is_failure(self):
+        """A pair with neither verify_script nor verify: compile_only fails verify (no fake pass)."""
         config = Config(workflow_type="coding", coding_language="js")
         runner = self._make_runner(config)
         sbx = _FakeSbx()
         pair = {"file": "packages/reactivity/src/baseHandlers.ts", "find": "x", "replace": "y"}
-        ok, _ = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
-        self.assertTrue(ok)
-        cmd = sbx.commands.calls[0][0]
-        # Shared default imports the edited package's index.ts (with {pkg} substituted)
-        self.assertIn("packages/reactivity/src/index.ts", cmd)
+        ok, err, compile_only = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
+        self.assertFalse(ok)
+        self.assertFalse(compile_only)
+        self.assertIn("no verify_script", err)
+        self.assertIn("compile_only", err)
+        # No command was run (failure returned before issuing a sandbox command)
+        self.assertEqual(len(sbx.commands.calls), 0)
 
 
 class TestStepFindLanguageAware(unittest.TestCase):

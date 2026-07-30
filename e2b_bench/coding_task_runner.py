@@ -82,7 +82,7 @@ def _build_edit_command(project_dir: str, target_file: str, find_str: str, repla
     )
 
 
-def _run_verify(sbx, project_dir: str, config: Config, pair: Dict[str, str]) -> Tuple[bool, str]:
+def _run_verify(sbx, project_dir: str, config: Config, pair: Dict[str, str]) -> Tuple[bool, str, bool]:
     """Write an ad-hoc test file to /tmp + run it - the trace-faithful verify step.
 
     Mirrors the real openclaw agent: `cat > /tmp/test_*.mjs << 'EOF' ... EOF` then
@@ -91,14 +91,35 @@ def _run_verify(sbx, project_dir: str, config: Config, pair: Dict[str, str]) -> 
     (newline-joined), exactly as the agent did - splitting them would diverge
     from the trace.
 
-    The script body is the pair's `verify_script` if present, else the shared
-    default for the active language (loads the module graph -> real transient peak).
+    A pair MUST declare how it verifies, so a compile-only pass is never mistaken
+    for an assertion pass:
+      - `verify_script`: a real ad-hoc test asserting the edited behavior (the
+        gold-standard, trace-faithful verify). Reported as Verify Success.
+      - `verify: compile_only`: the edit is a comment/format change with no
+        assertable semantics; verify just compiles+runs (the no-op default main),
+        honestly labeled. Reported separately as Compile-Only.
+    A pair with neither is an explicit verify FAILURE (refuses to fake a pass).
 
-    Returns: (success, error_detail)
+    Returns: (success, error_detail, compile_only) - compile_only is True only
+    when this pass was a compile-only check (success True implies it compiled).
     """
     profile = get_coding_profile(config.coding_language)
-    # Pair-specific script wins; else shared default for the language.
-    script_body = pair.get("verify_script") or profile.default_verify_script
+    compile_only = str(pair.get("verify", "")).lower() == "compile_only"
+    if compile_only:
+        # Honest label: only compile+run is checked, no assertion. Uses the
+        # shared no-op default main (compiles + prints "All tests passed!").
+        script_body = profile.default_verify_script
+    else:
+        # A real-assertion ad-hoc test the agent would write. Required - a
+        # no-op default would fake a verify pass (compile success != behavior
+        # correct), which a strong reviewer catches.
+        script_body = pair.get("verify_script")
+        if not script_body:
+            return (
+                False,
+                "verify failed: pair has no verify_script and no verify: compile_only (refusing no-op default fake pass)",
+                False,
+            )
     # For the js shared default, substitute the edited package dir into {pkg}.
     if "{pkg}" in script_body:
         # Derive packages/<name> from the edited file path (e.g.
@@ -124,8 +145,8 @@ def _run_verify(sbx, project_dir: str, config: Config, pair: Dict[str, str]) -> 
             error_parts.append(f"stderr={result.stderr[:200]}")
         if result.stdout:
             error_parts.append(f"stdout={result.stdout[:200]}")
-        return False, " | ".join(error_parts)
-    return True, ""
+        return False, " | ".join(error_parts), False
+    return True, "", compile_only
 
 
 class CodingWarmupRunner(threading.Thread):
@@ -191,9 +212,10 @@ class CodingWarmupRunner(threading.Thread):
         if not self.config.coding_skip_verify:
             try:
                 print(f"[Sandbox{self.state.sandbox_id}] Running initial verify...")
-                # Use the first configured pair's verify_script (or shared default).
+                # Use the first configured pair's verify (verify_script or
+                # verify: compile_only - the pair must declare how it verifies).
                 pair = self.config.coding_source_files[0] if self.config.coding_source_files else {}
-                ok, err = _run_verify(sbx, project_dir, self.config, pair)
+                ok, err, _compile_only = _run_verify(sbx, project_dir, self.config, pair)
                 if ok:
                     print(f"[Sandbox{self.state.sandbox_id}] Initial verify: success")
                 else:
@@ -239,10 +261,16 @@ class CodingTaskRunner(threading.Thread):
                 break
 
             # Execute single coding task
-            success, latency, verify_success, timed_out = self._run_single_task()
+            success, latency, verify_success, compile_only, timed_out = self._run_single_task()
 
             # Update metrics - timeout is determined by exception handling, not elapsed time
-            self.state.coding_metrics.add(latency, success and not timed_out, timed_out, verify_success=verify_success)
+            self.state.coding_metrics.add(
+                latency,
+                success and not timed_out,
+                timed_out,
+                verify_success=verify_success,
+                compile_only=compile_only,
+            )
             self.state.update_last_task_time(time.time())
 
             # Error handling
@@ -261,14 +289,14 @@ class CodingTaskRunner(threading.Thread):
 
         print(f"[Sandbox{self.state.sandbox_id}] Coding task runner ended")
 
-    def _run_single_task(self) -> Tuple[bool, float, bool, bool]:
+    def _run_single_task(self) -> Tuple[bool, float, bool, bool, bool]:
         """Execute single coding task cycle (find -> read -> edit -> verify -> diff)
 
-        Returns: (success, latency_seconds, verify_success, timed_out)
+        Returns: (success, latency_seconds, verify_success, compile_only, timed_out)
         """
         sbx = self.state.sandbox_obj
         if not sbx:
-            return False, 0.0, False, False
+            return False, 0.0, False, False, False
 
         project_dir = self.config.coding_project_dir
         source_files = self.config.coding_source_files
@@ -276,7 +304,7 @@ class CodingTaskRunner(threading.Thread):
 
         # Pick replacement pair for this round
         if not source_files:
-            return False, 0.0, False, False
+            return False, 0.0, False, False, False
 
         pair_idx = self.state.coding_metrics.total_tasks % len(source_files)
         pair = source_files[pair_idx]
@@ -286,6 +314,7 @@ class CodingTaskRunner(threading.Thread):
 
         start_time = time.perf_counter()
         verify_success = False
+        compile_only = False
         timed_out = False
         step_times: Dict[str, float] = {}
 
@@ -317,23 +346,22 @@ class CodingTaskRunner(threading.Thread):
             sbx.commands.run(f"cd {project_dir} && head -20 {target_file}", timeout=15, user="root")
             step_times["read"] = time.perf_counter() - t1
 
-            # Step 3: edit - apply the find->replace pair (real semantic edit)
+            # Step 3: edit - apply the find->replace pair (literal str.replace via python3)
             t2 = time.perf_counter()
-            escaped_replace = replace_str.replace("/", "\\/").replace("&", "\\&")
             edit_result = sbx.commands.run(
-                f"cd {project_dir} && sed -i 's|{find_str}|{escaped_replace}|' {target_file}",
+                _build_edit_command(project_dir, target_file, find_str, replace_str),
                 timeout=15,
                 user="root",
             )
             step_times["edit"] = time.perf_counter() - t2
             if edit_result.exit_code != 0:
                 self.state.coding_metrics.last_error = f"edit failed: exit_code={edit_result.exit_code}"
-                return False, time.perf_counter() - start_time, verify_success, timed_out
+                return False, time.perf_counter() - start_time, verify_success, compile_only, timed_out
 
             # Step 4: verify - write ad-hoc test file + run it (npx tsx / go run)
             if not self.config.coding_skip_verify:
                 t3 = time.perf_counter()
-                verify_success, err = _run_verify(sbx, project_dir, self.config, pair)
+                verify_success, err, compile_only = _run_verify(sbx, project_dir, self.config, pair)
                 step_times["verify"] = time.perf_counter() - t3
                 if not verify_success:
                     self.state.coding_metrics.last_error = err
@@ -352,7 +380,7 @@ class CodingTaskRunner(threading.Thread):
             elapsed = time.perf_counter() - start_time
             success = self.config.coding_skip_verify or verify_success
 
-            return success, elapsed, verify_success, timed_out
+            return success, elapsed, verify_success, compile_only, timed_out
 
         except Exception as e:
             elapsed = time.perf_counter() - start_time
@@ -361,7 +389,7 @@ class CodingTaskRunner(threading.Thread):
             timed_out = "timed out" in error_msg.lower() or "context deadline exceeded" in error_msg.lower()
             self.state.coding_metrics.last_error = error_msg
             print(f"[Sandbox{self.state.sandbox_id}] Coding task exception: {error_msg[:100]}")
-            return False, elapsed, verify_success, timed_out
+            return False, elapsed, verify_success, compile_only, timed_out
 
 
 class CodingRoundRunner(threading.Thread):
@@ -419,9 +447,13 @@ class CodingRoundRunner(threading.Thread):
 
         start_time = time.perf_counter()
 
-        success, step_times, verify_success, failed_step, error_detail, timed_out = self._execute_steps(sbx, pair)
+        success, step_times, verify_success, compile_only, failed_step, error_detail, timed_out = self._execute_steps(
+            sbx, pair
+        )
 
-        elapsed = self._record_metrics(start_time, success, step_times, verify_success, timed_out, error_detail)
+        elapsed = self._record_metrics(
+            start_time, success, step_times, verify_success, compile_only, timed_out, error_detail
+        )
 
         if success:
             step_breakdown = ", ".join(f"{k}={v:.2f}s" for k, v in step_times.items() if v > 0)
@@ -429,22 +461,25 @@ class CodingRoundRunner(threading.Thread):
         else:
             self._handle_failure(pair["file"], failed_step, error_detail)
 
-    def _execute_steps(self, sbx, pair: Dict[str, str]) -> Tuple[bool, Dict[str, float], bool, str, str, bool]:
+    def _execute_steps(self, sbx, pair: Dict[str, str]) -> Tuple[bool, Dict[str, float], bool, str, str, bool, bool]:
         """Execute all steps: find -> read -> edit -> verify -> diff
 
         Args:
             sbx: Sandbox object
             pair: Replacement pair {"file": str, "find": str, "replace": str,
-            "verify_script": str(optional)}
+            "verify_script": str(optional), "verify": str(optional)}
 
         Returns:
-            Tuple of (success, step_times, verify_success, failed_step, error_detail, timed_out)
+            Tuple of (success, step_times, verify_success, compile_only,
+            failed_step, error_detail, timed_out). compile_only is True only
+            when verify passed via a compile-only check (no assertion).
         """
         success = True
         step_times = {}
         failed_step = None
         error_detail = ""
         verify_success = False
+        compile_only = False
         timed_out = False
         project_dir = self.config.coding_project_dir
         target_file = pair["file"]
@@ -474,11 +509,11 @@ class CodingRoundRunner(threading.Thread):
                 failed_step = "edit"
                 error_detail = edit_error
                 success = False
-                return success, step_times, verify_success, failed_step, error_detail, timed_out
+                return success, step_times, verify_success, compile_only, failed_step, error_detail, timed_out
 
             # Step 3: verify - write ad-hoc test file + run it (npx tsx / go run)
             if not self.config.coding_skip_verify:
-                verify_success, verify_error = self._step_verify(sbx, project_dir, pair, step_times)
+                verify_success, verify_error, compile_only = self._step_verify(sbx, project_dir, pair, step_times)
                 if not verify_success:
                     failed_step = "verify"
                     error_detail = verify_error
@@ -494,7 +529,7 @@ class CodingRoundRunner(threading.Thread):
             timed_out = "timed out" in str(e).lower() or "context deadline exceeded" in str(e).lower()
             failed_step, error_detail = self._classify_exception(e, step_times)
 
-        return success, step_times, verify_success, failed_step, error_detail, timed_out
+        return success, step_times, verify_success, compile_only, failed_step, error_detail, timed_out
 
     def _step_find(
         self, sbx, project_dir: str, target_file: str, find_str: str, replace_str: str, step_times: Dict[str, float]
@@ -572,22 +607,21 @@ class CodingRoundRunner(threading.Thread):
 
     def _step_verify(
         self, sbx, project_dir: str, pair: Dict[str, str], step_times: Dict[str, float]
-    ) -> Tuple[bool, str]:
+    ) -> Tuple[bool, str, bool]:
         """Step 3: Write an ad-hoc test file to /tmp + run it (the trace-faithful verify).
 
         Mirrors the real openclaw agent: `cat > /tmp/test_*.mjs << 'EOF' ... EOF`
         then `npx tsx` (js), or `cat > /tmp/test_*.go << 'GOEOF' ... GOEOF` then
-        `go run` (go). The write+run is a single command (newline-joined). The
-        script body is the pair's `verify_script` or the shared default for the
-        language. This is the transient memory peak (esbuild transpile / Go
-        compiler + execute, loading the module graph).
+        `go run` (go). The write+run is a single command (newline-joined). This
+        is the transient memory peak (esbuild transpile / Go compiler + execute).
 
-        Returns: (success, error_detail)
+        Returns: (success, error_detail, compile_only) - compile_only True means
+        the pass was a compile-only check (no assertion), reported separately.
         """
         step_start = time.perf_counter()
-        ok, err = _run_verify(sbx, project_dir, self.config, pair)
+        ok, err, compile_only = _run_verify(sbx, project_dir, self.config, pair)
         step_times["verify"] = time.perf_counter() - step_start
-        return ok, err
+        return ok, err, compile_only
 
     def _step_diff(self, sbx, project_dir: str, step_times: Dict[str, float]) -> None:
         """Step 5: Produce the verification artifact (git diff -> patch file)."""
@@ -624,6 +658,7 @@ class CodingRoundRunner(threading.Thread):
         success: bool,
         step_times: Dict[str, float],
         verify_success: bool,
+        compile_only: bool,
         timed_out: bool,
         error_detail: str,
     ) -> float:
@@ -641,6 +676,7 @@ class CodingRoundRunner(threading.Thread):
             timed_out,
             step_times=step_times,
             verify_success=verify_success,
+            compile_only=compile_only,
         )
         self.state.update_last_task_time(time.time())
 

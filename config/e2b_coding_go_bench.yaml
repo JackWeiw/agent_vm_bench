@@ -63,6 +63,41 @@ coding:
     - file: "markup/goldmark/blockquotes/blockquotes.go"
       find: "var gitHubAlertRe = regexp.MustCompile(`^<p>\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\\]`)"
       replace: "var gitHubAlertRe = regexp.MustCompile(`(?i)^<p>\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\\]`)"
+      # Ad-hoc verify script: a standalone `package main` exercising the edited
+      # case-insensitive alert regex (mirrors the real openclaw agent's
+      # /tmp/test_alert.go). Asserts match/no-match on NOTE/note/Tip/warning/X,
+      # prints "All tests passed!" only if all cases hold. Every pair MUST carry
+      # a verify_script - a no-op default would fake a verify pass.
+      verify_script: |
+        package main
+
+        import (
+        	"fmt"
+        	"regexp"
+        )
+
+        var gitHubAlertRe = regexp.MustCompile(`(?i)^<p>\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\]`)
+
+        func main() {
+        	cases := []struct{ in string; want bool }{
+        		{`<p>[!NOTE]`, true},
+        		{`<p>[!note]`, true},
+        		{`<p>[!Tip]`, true},
+        		{`<p>[!warning]`, true},
+        		{`<p>[!X]`, false},
+        	}
+        	ok := true
+        	for _, c := range cases {
+        		if gitHubAlertRe.MatchString(c.in) != c.want {
+        			ok = false
+        		}
+        	}
+        	if ok {
+        		fmt.Println("All tests passed!")
+        	} else {
+        		fmt.Println("Some tests failed!")
+        	}
+        }
   interval_min: 2.0                     # Min interval between tasks (fixed mode)
   interval_max: 10.0                    # Max interval between tasks (fixed mode)
   skip_verify: false                    # Skip the verify step (set true for edit-only testing)

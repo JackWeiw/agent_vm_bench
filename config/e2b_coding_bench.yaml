@@ -56,24 +56,35 @@ coding:
   verify_cmd: "npx tsx /tmp/bench_verify.mjs"  # Verify run command (writes ad-hoc test + runs it)
   verify_timeout: 120                 # Verify command timeout (seconds)
   source_files:                         # Replacement pairs for round-robin editing (verified against vuejs/core repo)
+    # Each pair declares how it verifies:
+    #   verify_script - a real ad-hoc test asserting the edited behavior (gold standard)
+    #   verify: compile_only - the edit is cosmetic (comment/annotation), no assertable
+    #     semantics, so verify just compiles+runs an ad-hoc main (honestly labeled,
+    #     never reported as an assertion pass). A pair with neither is a hard verify FAILURE.
     - file: "packages/shared/src/general.ts"
       find: "export const NOOP = (): void => {}"
       replace: "export const NOOP = (): void => undefined"
+      verify: compile_only          # edit breaks NOOP semantics; compile-only (no false assertion)
     - file: "packages/shared/src/general.ts"
       find: "Always return false."
       replace: "Always returns false."
+      verify: compile_only          # comment-only edit, no assertable semantics
     - file: "packages/shared/src/index.ts"
       find: "export * from './general'"
       replace: "export * from './general' // bench round"
+      verify: compile_only          # comment annotation
     - file: "packages/vue/src/index.ts"
       find: '// This entry is the "full-build"'
       replace: '// This entry is the "full-build" (bench)'
+      verify: compile_only          # comment annotation
     - file: "packages/reactivity/src/baseHandlers.ts"
       find: "export const mutableHandlers: ProxyHandler<object> ="
       replace: "export const mutableHandlers: ProxyHandler<object> = // bench"
+      verify: compile_only          # comment annotation
     - file: "packages/runtime-core/src/errorHandling.ts"
       find: "import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared'"
       replace: "import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared' // bench"
+      verify: compile_only          # comment annotation
   interval_min: 2.0                     # Min interval between tasks (fixed mode)
   interval_max: 10.0                    # Max interval between tasks (fixed mode)
   skip_verify: false                    # Skip the verify step (set true for edit-only testing)

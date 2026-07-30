@@ -308,14 +308,20 @@ class ReportFormatter:
         total_failed = sum(s.coding_metrics.failed_count for s in self.sandbox_states.values())
         total_timeout = sum(s.coding_metrics.timeout_count for s in self.sandbox_states.values())
         verify_success = sum(s.coding_metrics.verify_success_count for s in self.sandbox_states.values())
+        compile_only = sum(s.coding_metrics.compile_only_count for s in self.sandbox_states.values())
 
         lines = ["\n[Coding Task Statistics]"]
         lines.append(f"  Total Tasks:   {total_tasks}")
         lines.append(f"  Success:       {total_success}")
         lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
         lines.append(f"  Success Rate:  {total_success / max(1, total_tasks) * 100:.1f}%")
+        # Verify is split: real-assertion passes vs compile-only passes (no
+        # assertion). Kept separate so a compile-only pass is never read as an
+        # assertion pass - the distinction a strong reviewer checks.
         lines.append(
-            f"  Verify Success: {verify_success}/{total_tasks} ({verify_success / max(1, total_tasks) * 100:.1f}%)"
+            f"  Verify Success: {verify_success}/{total_tasks} "
+            f"({verify_success / max(1, total_tasks) * 100:.1f}%) "
+            f"[assert: {verify_success}, compile-only: {compile_only}]"
         )
 
         if all_latencies:
@@ -715,6 +721,7 @@ class StatsCollector:
             coding_total = sum(s.coding_metrics.total_tasks for s in self.sandbox_states.values())
             coding_success = sum(s.coding_metrics.success_count for s in self.sandbox_states.values())
             coding_verify_success = sum(s.coding_metrics.verify_success_count for s in self.sandbox_states.values())
+            coding_compile_only = sum(s.coding_metrics.compile_only_count for s in self.sandbox_states.values())
 
             # Calculate round delta for coding
             if self.current_round is not None and self.current_round in self._round_start_totals:
@@ -745,6 +752,7 @@ class StatsCollector:
                 coding_total=coding_total,
                 coding_success=coding_success,
                 coding_verify_success=coding_verify_success,
+                coding_compile_only=coding_compile_only,
                 coding_avg_latency=coding_avg,
                 coding_p99_latency=coding_p99,
                 round_total=round_total,

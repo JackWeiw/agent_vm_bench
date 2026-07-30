@@ -118,9 +118,13 @@ def _normalize_source_files(raw: Any) -> List[Dict[str, str]]:
                 "replace": str(item.get("replace", f"// bench round\n// bench marker")),
             }
             # Preserve an optional per-pair verify_script body (ad-hoc test for the
-            # verify step). Pairs without it fall back to the shared default later.
+            # verify step) and the optional `verify: compile_only` flag (a pair
+            # with no assertable semantics, honestly compile-only). A pair with
+            # neither verify_script nor verify: compile_only fails verify hard.
             if item.get("verify_script"):
                 pair["verify_script"] = str(item["verify_script"])
+            if item.get("verify"):
+                pair["verify"] = str(item["verify"])
             result.append(pair)
         elif isinstance(item, str) and item:
             # CLI raw-file mode: safe generic comment marker (non-breaking, triggers rebuild)
