@@ -100,13 +100,14 @@ COPY llama_openclaw.conf /etc/supervisor/conf.d/llama_openclaw.conf
 # vuejs/core is a pnpm monorepo. pnpm@11 is declared via packageManager; corepack
 # or the global pnpm installs against npmmirror. Build uses `node scripts/build.js`
 # (rollup). The dev server is a separate vite playground consuming the built lib.
+# PUPPETEER_SKIP_DOWNLOAD=1 skips puppeteer's browser download (not needed for build).
 RUN cd /opt && \
     git clone --depth 1 https://github.com/vuejs/core.git coding-bench && \
     cd coding-bench && \
     # pnpm install against the mirror; rollup must be in PATH for build.js
     pnpm config set registry https://registry.npmmirror.com && \
     pnpm config set strict-ssl false && \
-    pnpm install --frozen-lockfile=false && \
+    PUPPETEER_SKIP_DOWNLOAD=1 pnpm install --frozen-lockfile=false && \
     node scripts/build.js && \
     test -d packages/vue/dist && \
     echo "Build verification: SUCCESS (packages/vue/dist has output)"
