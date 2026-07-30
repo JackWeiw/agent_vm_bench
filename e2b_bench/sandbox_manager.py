@@ -450,6 +450,9 @@ class SandboxManager:
             return {"success": False, "wait_elapsed": 0.0, "error": "No sandbox handle"}
 
         start_time = time.time()
+        # Print each distinct error once so a stuck ready-check surfaces the real
+        # cause instead of looping silently for READY_CHECK_MAX_WAIT (300s).
+        seen_errors: set = set()
 
         while time.time() - start_time < READY_CHECK_MAX_WAIT:
             if self.stop_event.is_set():
@@ -466,7 +469,12 @@ class SandboxManager:
                     )
                     return {"success": True, "wait_elapsed": wait_elapsed, "error": ""}
             except Exception as e:
-                pass  # Continue waiting
+                err_key = (type(e).__name__, str(e)[:80])
+                if err_key not in seen_errors:
+                    seen_errors.add(err_key)
+                    print(
+                        f"[Sandbox{state.sandbox_id}] uname check error: {type(e).__name__}: {str(e)[:120]}"
+                    )
 
             time.sleep(READY_CHECK_INTERVAL)
 
