@@ -51,21 +51,22 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 #   - git:      http.sslVerify=false
 #   - go:       GOINSECURE=skip-verify (for go mod download)
 #
-# The Go tarball is fetched from golang.google.cn (Google's official China
-# mirror, same URL shape as go.dev/dl but reachable from CN with no network
-# restriction and NO redirect to dl.google.com - that hop is what crawled at
-# <6KB/s through the proxy). It is public, no auth. We previously tried the
-# Huawei Cloud mirror but it requires account login. go.dev/dl is kept as a
-# fallback in case golang.google.cn is unreachable.
+# The Go tarball is fetched from mirrors.aliyun.com - it serves the gzip
+# directly (HTTP 206, magic bytes 1f 8b), NO 302 redirect, NO auth (unlike
+# the Huawei Cloud mirror which requires account login). golang.google.cn
+# and USTC both 302-redirect to dl.google.com (the hop that crawled at
+# <6KB/s through the proxy and, with curl's default no-follow, produced a
+# 75-byte HTML body that broke `tar -xzf` with "not in gzip format"). The
+# fallback uses -L so it follows that redirect if aliyun is unreachable.
 RUN apt update && \
     apt install -y --no-install-recommends curl xz-utils vim libgomp1 iproute2 net-tools gnupg git && \
     cd /usr/local && \
-    ( curl -k --connect-timeout 30 --retry 3 --retry-delay 3 \
+    ( curl -kL --connect-timeout 30 --retry 3 --retry-delay 3 \
         -o go1.23.4.linux-arm64.tar.gz \
-        https://golang.google.cn/dl/go1.23.4.linux-arm64.tar.gz || \
-      curl -k --connect-timeout 30 --retry 5 --retry-delay 3 \
+        https://mirrors.aliyun.com/golang/go1.23.4.linux-arm64.tar.gz || \
+      curl -kL --connect-timeout 30 --retry 5 --retry-delay 3 \
         -o go1.23.4.linux-arm64.tar.gz \
-        https://go.dev/dl/go1.23.4.linux-arm64.tar.gz ) && \
+        https://golang.google.cn/dl/go1.23.4.linux-arm64.tar.gz ) && \
     tar -xzf go1.23.4.linux-arm64.tar.gz && \
     rm -f go1.23.4.linux-arm64.tar.gz && \
     ln -sf /usr/local/go/bin/go /usr/local/bin/go && \
