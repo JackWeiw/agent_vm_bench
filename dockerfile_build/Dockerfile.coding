@@ -93,12 +93,19 @@ RUN apt update && apt install -y curl xz-utils vim libgomp1 iproute2 net-tools g
 RUN cd /opt && \
     git clone --depth 1 https://github.com/vuejs/core.git coding-bench && \
     cd coding-bench && \
-    # pnpm install against the mirror (no build, no PATH patch needed at runtime)
+    # pnpm install against the mirror (no build, no PATH patch needed at runtime).
+    # --ignore-scripts skips vuejs/core's postinstall (simple-git-hooks sets
+    # pre-commit/commit-msg hooks we never use in a bench image); that postinstall
+    # is build-time noise, not part of the runtime verify surface.
     pnpm config set registry https://registry.npmmirror.com && \
     pnpm config set strict-ssl false && \
-    PUPPETEER_SKIP_DOWNLOAD=1 pnpm install --frozen-lockfile=false && \
-    test -d node_modules/tsx && \
-    echo "Install verification: SUCCESS (tsx available for npx tsx verify)"
+    PUPPETEER_SKIP_DOWNLOAD=1 pnpm install --frozen-lockfile=false --ignore-scripts && \
+    # Verify the runtime verify command actually resolves tsx (what _run_verify
+    # invokes). npx tsx --version resolves from .bin/pnpm store regardless of
+    # hoisting - a path-based `test -d node_modules/tsx` is fragile (pnpm may
+    # not hoist it to the top level), and the real question is "can npx run tsx".
+    npx tsx --version || (echo "ERROR: npx tsx unavailable after install" && exit 1) && \
+    echo "Install verification: SUCCESS (npx tsx available for verify)"
 
 # Copy the manual testing helper script
 COPY bench_helper.sh /opt/coding-bench/bench_helper.sh
