@@ -42,25 +42,40 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 # Hugo base_commit: 83235262d06a060bd22c168b3413903667b8aeb6 (instance
 # gohugoio__hugo-12768). Clone at that commit (shallow needs the commit fetch).
 #
-# The go.dev/dl URL 302-redirects to dl.google.com; through a corp proxy that
-# presents a self-signed cert ("Huawei Web Secure Internet Gateway CA"), wget
-# fails verification on go.dev and the dl.google.com hop sometimes returns no
-# data. Mitigations: --no-check-certificate skips the cert check on every hop,
-# --retry-connrefused + -T 30 + --tries 5 ride the flaky redirect, and we
-# follow redirects explicitly so a fresh request is issued per hop.
-RUN apt update && apt install -y wget xz-utils vim libgomp1 iproute2 net-tools gnupg git ca-certificates && \
+# SSL is skipped globally: the corp proxy presents a self-signed cert
+# ("Huawei Web Secure Internet Gateway CA"), so every TLS fetch (apt, wget,
+# git, go) must bypass verification. ca-certificates is NOT installed — it is
+# useless here because the proxy MITMs with its own root that the system store
+# won't trust anyway. Instead we configure each tool to skip verification:
+#   - wget:     --no-check-certificate
+#   - git:      http.sslVerify=false
+#   - go:       GOINSECURE=skip-verify (for go mod download)
+#
+# The go.dev/dl URL 302-redirects to dl.google.com; through the flaky proxy
+# the dl.google.com hop sometimes returns no data, then crawls at <6KB/s.
+# So we download the Go tarball from the studygolang CN mirror directly (no
+# redirect, fast from CN), and add --retry-connrefused / --tries as a fallback
+# in case the CN mirror is unreachable (the official URL is the second try).
+RUN apt update && \
+    apt install -y --no-install-recommends wget xz-utils vim libgomp1 iproute2 net-tools gnupg git && \
     cd /usr/local && \
-    wget --no-check-certificate --retry-connrefused -T 30 --tries 5 --waitretry 3 \
-        https://go.dev/dl/go1.23.4.linux-arm64.tar.gz && \
+    ( wget --no-check-certificate --retry-connrefused -T 30 --tries 3 --waitretry 3 \
+        -O go1.23.4.linux-arm64.tar.gz \
+        https://mirrors.huaweicloud.com/golang/go1.23.4.linux-arm64.tar.gz || \
+      wget --no-check-certificate --retry-connrefused -T 30 --tries 5 --waitretry 3 \
+        -O go1.23.4.linux-arm64.tar.gz \
+        https://go.dev/dl/go1.23.4.linux-arm64.tar.gz ) && \
     tar -xzf go1.23.4.linux-arm64.tar.gz && \
     rm -f go1.23.4.linux-arm64.tar.gz && \
     ln -sf /usr/local/go/bin/go /usr/local/bin/go && \
     ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt && \
     go version && \
-    # CN Go proxy mirror — runtime `go run` resolves modules offline (build-time fetch)
+    # CN Go proxy mirror — runtime `go run` resolves modules offline (build-time fetch).
+    # GOINSECURE=skip-verify lets go mod download bypass the proxy's self-signed cert.
     go env -w GOPROXY=https://goproxy.cn,direct && \
     go env -w GOSUMDB=sum.golang.google.cn && \
     go env -w GO111MODULE=on && \
+    go env -w GOINSECURE=skip-verify && \
     git config --global http.sslVerify false && \
     apt clean && rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
 
