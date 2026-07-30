@@ -43,11 +43,11 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 # gohugoio__hugo-12768). Clone at that commit (shallow needs the commit fetch).
 #
 # SSL is skipped globally: the corp proxy presents a self-signed cert
-# ("Huawei Web Secure Internet Gateway CA"), so every TLS fetch (apt, wget,
-# git, go) must bypass verification. ca-certificates is NOT installed - it is
+# ("Huawei Web Secure Internet Gateway CA"), so every TLS fetch (curl, git,
+# go) must bypass verification. ca-certificates is NOT installed - it is
 # useless here because the proxy MITMs with its own root that the system store
 # won't trust anyway. Instead we configure each tool to skip verification:
-#   - wget:     --no-check-certificate
+#   - curl:     -k (insecure)
 #   - git:      http.sslVerify=false
 #   - go:       GOINSECURE=skip-verify (for go mod download)
 #
@@ -56,16 +56,15 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 # restriction and NO redirect to dl.google.com - that hop is what crawled at
 # <6KB/s through the proxy). It is public, no auth. We previously tried the
 # Huawei Cloud mirror but it requires account login. go.dev/dl is kept as a
-# fallback in case golang.google.cn is unreachable (--retry-connrefused rides
-# the occasional "no data" hop there).
+# fallback in case golang.google.cn is unreachable.
 RUN apt update && \
-    apt install -y --no-install-recommends wget xz-utils vim libgomp1 iproute2 net-tools gnupg git && \
+    apt install -y --no-install-recommends curl xz-utils vim libgomp1 iproute2 net-tools gnupg git && \
     cd /usr/local && \
-    ( wget --no-check-certificate --retry-connrefused -T 30 --tries 3 --waitretry 3 \
-        -O go1.23.4.linux-arm64.tar.gz \
+    ( curl -k --connect-timeout 30 --retry 3 --retry-delay 3 \
+        -o go1.23.4.linux-arm64.tar.gz \
         https://golang.google.cn/dl/go1.23.4.linux-arm64.tar.gz || \
-      wget --no-check-certificate --retry-connrefused -T 30 --tries 5 --waitretry 3 \
-        -O go1.23.4.linux-arm64.tar.gz \
+      curl -k --connect-timeout 30 --retry 5 --retry-delay 3 \
+        -o go1.23.4.linux-arm64.tar.gz \
         https://go.dev/dl/go1.23.4.linux-arm64.tar.gz ) && \
     tar -xzf go1.23.4.linux-arm64.tar.gz && \
     rm -f go1.23.4.linux-arm64.tar.gz && \
