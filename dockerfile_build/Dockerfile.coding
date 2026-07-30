@@ -108,6 +108,8 @@ RUN cd /opt && \
     pnpm config set registry https://registry.npmmirror.com && \
     pnpm config set strict-ssl false && \
     PUPPETEER_SKIP_DOWNLOAD=1 pnpm install --frozen-lockfile=false && \
+    # Add pnpm bin to PATH so rollup can be found by scripts/build.js
+    export PATH="$(pnpm bin):$PATH" && \
     node scripts/build.js && \
     test -d packages/vue/dist && \
     echo "Build verification: SUCCESS (packages/vue/dist has output)"
