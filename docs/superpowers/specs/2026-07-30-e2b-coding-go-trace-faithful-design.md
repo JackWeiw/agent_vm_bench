@@ -92,15 +92,11 @@ Why `go run` of a standalone temp file (not `go test ./...` or `go build ./...`)
 ## Decision 3 — Project & image: gohugoio/hugo + Go toolchain (with CN mirrors)
 
 - **Repo**: `github.com/gohugoio/hugo` (real `swe_bench_multilingual` instance `gohugoio__hugo-12768`, large popular Go project, ~70k+ stars).
-- **Image**: a new `Dockerfile.coding-go` extending the base ubuntu:24.04-linuxarm64 with the Go toolchain (ARM64 Go tarball), git. Clone hugo at the instance `base_commit` shallowly. No Node/pnpm. `CMD ["sleep","infinity"]`.
-- **CN Go proxy** (build-time, so runtime `go run` never hits the network):
-
-  ```dockerfile
-  RUN go env -w GOPROXY=https://goproxy.cn,direct && \
-      go env -w GOSUMDB=sum.golang.google.cn && \
-      go env -w GO111MODULE=on
-  ```
-- **Pre-install full module graph** at image build: `cd /opt/coding-bench && go mod download`. This pulls hugo's entire dependency graph into the module cache at build time. The verify temp file imports only stdlib so it would compile without this, but pre-downloading means `go run` from inside the project dir resolves the module root instantly and any future pair that imports hugo packages also works offline. Build cost is paid once at image build, not per sandbox.
+- **Image**: a new `Dockerfile.coding-go` extending the base ubuntu:24.04-linuxarm64 with the Go toolchain (ARM64 Go tarball), git. Clone hugo at the instance `base_commit`. No Node/pnpm. `CMD ["sleep","infinity"]`.
+- **No module graph pre-download, no Go proxy config.** An earlier draft pre-downloaded the full hugo module graph (`go mod download`) via a CN proxy (`GOPROXY=https://goproxy.cn,direct`, `GOSUMDB`). That was dropped for two reasons:
+  1. **Not trace-faithful.** The captured openclaw agent on hugo never ran `go mod download` — its verify step was a transient `go run /tmp/test_*.go` whose ad-hoc script imports only the Go stdlib (no hugo packages). Pre-fetching the whole dependency tree is a step the agent never takes; keeping it would misrepresent the workload to a strong reviewer.
+  2. **Fragile behind the corp proxy.** The corp network presents a self-signed-cert MITM proxy. The hugo dependency tree pulls `cloud.google.com/go` etc., whose proxy/checksum TLS the MITM breaks — `go mod download` blew up with `invalid proxy URL scheme (must be https, http, file): insecure+https://goproxy.cn` (the `insecure+https://` prefix is *not* valid GOPROXY syntax; TLS-skip for a module proxy host is `GOINSECURE` only, and even then the checksum DB path stays broken). Removing the fetch removes the failure.
+  Because every verify script imports only stdlib, `go run /tmp/bench_verify.go` from inside the project dir compiles against the Go toolchain alone — it needs none of the hugo module graph, so the graph's absence changes nothing at runtime. If a future pair *does* import a hugo package, that pair's verify step is the right place to handle its module needs, not the image build.
 
 ## Decision 4 — Edit mechanism: replacement pairs (Go-flavored)
 
@@ -168,7 +164,7 @@ New `Config` field: `coding_language: str = "js"`. The JS redesign's removed fie
 | `e2b_bench/coding_task_runner.py` | (After the JS redesign lands) verify step dispatches on `coding_language`: js = `npx tsx`, go = `go run`. Heredoc write of temp test file is part of verify. `find` step's fallback `find -name` glob uses `*.go` when `coding_language == "go"`. |
 | `e2b_bench/schemas.py` | Add `DEFAULT_CODING_GO_SOURCE_FILES` (verified hugo pairs with `verify_script`). `CODING_STEP_ORDER` unchanged (shared). |
 | `e2b_bench/config.py` | Add `coding_language: str = "js"`; default source-file list chosen by language; YAML + CLI parsing. |
-| `dockerfile_build/Dockerfile.coding-go` | **New.** ubuntu:24.04-linuxarm64 + Go ARM64 toolchain + git + clone hugo at base_commit + `go mod download`. `CMD ["sleep","infinity"]`. |
+| `dockerfile_build/Dockerfile.coding-go` | **New.** ubuntu:24.04-linuxarm64 + Go ARM64 toolchain + git + clone hugo at base_commit (module graph intentionally not pre-downloaded — see Decision 3). `CMD ["sleep","infinity"]`. |
 | `dockerfile_build/push_to_harbor_coding_go.sh` | **New.** Mirror of `push_to_harbor_coding.sh` for the go image. |
 | `dockerfile_build/bench_helper_go.sh` | **New.** Go step sequence `find → read → edit → verify (cat+go run) → diff`; hugo replacement pairs. |
 | `dockerfile_build/README_CODING_GO.md` | **New.** Memory model, step sequence, trace source, build/push instructions. |

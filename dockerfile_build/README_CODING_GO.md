@@ -58,14 +58,15 @@ Round:     find  read  edit  verify(peak)  diff
 - **Repo**: `github.com/gohugoio/hugo` cloned at the instance base_commit
   `83235262d06a060bd22c168b3413903667b8aeb6` (`gohugoio__hugo-12768`).
 - **Image**: `Dockerfile.coding-go` — ubuntu:24.04-linuxarm64 + Go ARM64
-  toolchain + git. Go modules pre-downloaded via the CN goproxy mirror
-  (`GOPROXY=insecure+https://goproxy.cn,direct`, `GOSUMDB=off`,
-  `GO111MODULE=on`, `GOINSECURE=goproxy.cn`) so runtime `go run` never hits
-  the network. The `insecure+https://` prefix + `GOINSECURE` bypass the corp
-  proxy's self-signed cert for `go mod download`.
-- The verify temp file imports only stdlib, so it compiles without the hugo
-  module graph — but the graph is pre-downloaded so any future pair that
-  imports hugo packages also works offline.
+  toolchain + git. The hugo module graph is intentionally **not**
+  pre-downloaded. The captured agent never ran `go mod download`, and every
+  verify script imports only the Go stdlib, so `go run /tmp/bench_verify.go`
+  compiles against the toolchain alone — no module fetch needed at runtime.
+  Pre-fetching the tree would be non-faithful and also breaks behind this
+  corp network's self-signed-cert proxy (the hugo deps pull
+  `cloud.google.com/go` etc., whose TLS the MITM breaks).
+- If a future pair imports a hugo package, that pair's verify step is where
+  its module needs are handled — not the image build.
 
 ## Language extensibility
 

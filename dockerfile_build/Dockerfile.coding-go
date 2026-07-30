@@ -18,8 +18,14 @@
 # process (Go compiler + execute, transient peak). Memory pressure comes from
 # N concurrent sandboxes' transient verify peaks overlapping.
 #
-# Go modules are pre-downloaded at build time via the CN goproxy mirror, so
-# runtime `go run` never hits the network.
+# Go modules are NOT pre-downloaded. A real openclaw agent on hugo never runs
+# `go mod download` - the agent's verify step is a transient `go run
+# /tmp/test_*.go` whose ad-hoc script imports only the Go stdlib (no hugo
+# packages), so it compiles without the hugo module graph. Pre-fetching the
+# full module graph would be (a) NOT trace-faithful and (b) fragile behind
+# this corp network's self-signed-cert proxy (the hugo dependency tree pulls
+# cloud.google.com/go etc., whose checksum/proxy TLS the proxy MITMs).
+# Stays honest to the trace and avoids the network failure entirely.
 #
 # Build:  docker build -t ubuntu-coding-go-bench:24.04-linuxarm64 -f Dockerfile.coding-go .
 # Push:   HARBOR_IP=X bash push_to_harbor_coding_go.sh
@@ -43,13 +49,15 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 # gohugoio__hugo-12768). Clone at that commit (shallow needs the commit fetch).
 #
 # SSL is skipped globally: the corp proxy presents a self-signed cert
-# ("Huawei Web Secure Internet Gateway CA"), so every TLS fetch (curl, git,
-# go) must bypass verification. ca-certificates is NOT installed - it is
+# ("Huawei Web Secure Internet Gateway CA"), so every TLS fetch (curl, git)
+# must bypass verification. ca-certificates is NOT installed - it is
 # useless here because the proxy MITMs with its own root that the system store
 # won't trust anyway. Instead we configure each tool to skip verification:
 #   - curl:     -k (insecure)
 #   - git:      http.sslVerify=false
-#   - go:       GOPROXY=insecure+https://... + GOINSECURE=<host> (for go mod download)
+# Go itself needs no TLS config: the image never runs `go mod download`
+# (see header comment) - runtime `go run` of a stdlib-only verify script
+# compiles against the toolchain alone and never talks to a module proxy.
 #
 # The Go tarball is fetched from mirrors.aliyun.com - it serves the gzip
 # directly (HTTP 206, magic bytes 1f 8b), NO 302 redirect, NO auth (unlike
@@ -72,33 +80,18 @@ RUN apt update && \
     ln -sf /usr/local/go/bin/go /usr/local/bin/go && \
     ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt && \
     go version && \
-    # CN Go proxy mirror - runtime `go run` resolves modules offline (build-time fetch).
-    # The corp proxy presents a self-signed cert, so go's TLS verification fails
-    # against goproxy.cn ("x509: certificate signed by unknown authority"). Two
-    # belt-and-suspenders fixes: the `insecure+https://` prefix on GOPROXY tells
-    # go to skip TLS verify for that proxy host, and GOINSECURE lists the host
-    # pattern (GOINSECURE takes host globs like `goproxy.cn`, NOT a "skip-verify"
-    # flag - my earlier `GOINSECURE=skip-verify` was a no-op, which is why
-    # `go mod download` blew up on TLS). GOSUMDB is set off so the checksum DB
-    # (also behind the self-signed proxy) isn't queried.
-    go env -w GOPROXY=insecure+https://goproxy.cn,direct && \
-    go env -w GOSUMDB=off && \
-    go env -w GO111MODULE=on && \
-    go env -w GOINSECURE=goproxy.cn && \
     git config --global http.sslVerify false && \
     apt clean && rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
 
 # --- Coding benchmark project: gohugoio/hugo (real swe_bench_multilingual repo) ---
-# Clone at the instance base_commit, then pre-download the full module graph so
-# runtime `go run /tmp/bench_verify.go` resolves the module root instantly and
-# any future pair importing hugo packages also works offline. Build cost is paid
-# once at image build, not per sandbox.
+# Clone at the instance base_commit. The hugo module graph is intentionally NOT
+# downloaded (see header comment): our verify scripts import only the Go stdlib,
+# so `go run /tmp/bench_verify.go` compiles without it - matching the real
+# agent trajectory, which also never fetched the full dependency tree.
 RUN cd /opt && \
     git clone https://github.com/gohugoio/hugo.git coding-bench && \
     cd coding-bench && \
-    git checkout 83235262d06a060bd22c168b3413903667b8aeb6 && \
-    go mod download && \
-    echo "Module graph downloaded: $(find $(go env GOMODCACHE) -maxdepth 1 -type d | wc -l) module dirs"
+    git checkout 83235262d06a060bd22c168b3413903667b8aeb6
 
 # Copy the manual testing helper script
 COPY bench_helper_go.sh /opt/coding-bench/bench_helper_go.sh
