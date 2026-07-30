@@ -189,19 +189,24 @@ class ReportFormatter:
         ]
         offline_states = [s for s in self.sandbox_states.values() if not s.is_alive]
 
+        # Use workflow-specific labels
+        ready_label = "Command Ready" if self.config.workflow_type == "coding" else "Ports Ready"
+        check_failed_label = "Ready Check Failed" if self.config.workflow_type == "coding" else "Port Check Failed"
+        failed_ids_label = "Ready Failed IDs" if self.config.workflow_type == "coding" else "Port Failed IDs"
+
         lines = ["\n[Sandbox Status]"]
         lines.append(
             f"  Created (API):       {len([s for s in self.sandbox_states.values() if s.creation_metrics.status not in (SandboxStatus.PENDING, SandboxStatus.CREATING)])} / {len(self.sandbox_states)}"
         )
-        lines.append(f"  Ports Ready:         {len(ready_states)} / {len(self.sandbox_states)}")
+        lines.append(f"  {ready_label}:         {len(ready_states)} / {len(self.sandbox_states)}")
         lines.append(f"  Create Failed:       {len(failed_states)}")
-        lines.append(f"  Port Check Failed:   {len(port_failed_states)}")
+        lines.append(f"  {check_failed_label}:   {len(port_failed_states)}")
         lines.append(f"  Offline (runtime):   {len(offline_states)}")
 
         if failed_states:
             lines.append(f"  Create Failed IDs:   {[s.sandbox_id for s in failed_states[:10]]}")
         if port_failed_states:
-            lines.append(f"  Port Failed IDs:     {[s.sandbox_id for s in port_failed_states[:10]]}")
+            lines.append(f"  {failed_ids_label}:     {[s.sandbox_id for s in port_failed_states[:10]]}")
         if offline_states:
             lines.append(f"  Offline IDs:         {[s.sandbox_id for s in offline_states[:10]]}")
 
@@ -810,27 +815,34 @@ class StatsCollector:
             if s.creation_metrics.create_elapsed > 0
             and s.creation_metrics.status not in (SandboxStatus.FAILED, SandboxStatus.PENDING, SandboxStatus.CREATING)
         ]
-        lines.extend(
-            formatter.format_percentile_section(
-                "Sandbox.create Performance", create_times, "sandbox.create API call time, excluding port wait"
-            )
+        create_desc = (
+            "sandbox.create API call time, excluding ready check"
+            if self.config.workflow_type == "coding"
+            else "sandbox.create API call time, excluding port wait"
         )
+        lines.extend(formatter.format_percentile_section("Sandbox.create Performance", create_times, create_desc))
 
         port_wait_times = [
             s.creation_metrics.port_wait_elapsed for s in ready_states if s.creation_metrics.port_wait_elapsed > 0
         ]
-        lines.extend(
-            formatter.format_percentile_section(
-                "Port Check Wait Performance",
-                port_wait_times,
-                "Waiting for 18789 openclaw-gateway + 11436 llama-server ports",
-            )
-        )
+
+        # Use workflow-specific labels for ready check performance
+        if self.config.workflow_type == "coding":
+            ready_check_title = "Ready Check Wait Performance"
+            ready_check_desc = "Waiting for 'uname -a' command response"
+        else:
+            ready_check_title = "Port Check Wait Performance"
+            ready_check_desc = "Waiting for 18789 openclaw-gateway + 11436 llama-server ports"
+
+        lines.extend(formatter.format_percentile_section(ready_check_title, port_wait_times, ready_check_desc))
 
         total_times = [s.creation_metrics.total_elapsed for s in ready_states if s.creation_metrics.total_elapsed > 0]
-        lines.extend(
-            formatter.format_percentile_section("Total Startup Performance", total_times, "sandbox.create + port wait")
+        total_desc = (
+            "sandbox.create + ready check"
+            if self.config.workflow_type == "coding"
+            else "sandbox.create + port wait"
         )
+        lines.extend(formatter.format_percentile_section("Total Startup Performance", total_times, total_desc))
 
         # Task statistics — dispatch based on workflow type
         if self.config.workflow_type == "coding":
