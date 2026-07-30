@@ -59,8 +59,10 @@ Round:     find  read  edit  verify(peak)  diff
   `83235262d06a060bd22c168b3413903667b8aeb6` (`gohugoio__hugo-12768`).
 - **Image**: `Dockerfile.coding-go` — ubuntu:24.04-linuxarm64 + Go ARM64
   toolchain + git. Go modules pre-downloaded via the CN goproxy mirror
-  (`GOPROXY=https://goproxy.cn,direct`, `GOSUMDB=sum.golang.google.cn`,
-  `GO111MODULE=on`) so runtime `go run` never hits the network.
+  (`GOPROXY=insecure+https://goproxy.cn,direct`, `GOSUMDB=off`,
+  `GO111MODULE=on`, `GOINSECURE=goproxy.cn`) so runtime `go run` never hits
+  the network. The `insecure+https://` prefix + `GOINSECURE` bypass the corp
+  proxy's self-signed cert for `go mod download`.
 - The verify temp file imports only stdlib, so it compiles without the hugo
   module graph — but the graph is pre-downloaded so any future pair that
   imports hugo packages also works offline.

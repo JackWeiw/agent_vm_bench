@@ -49,7 +49,7 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 # won't trust anyway. Instead we configure each tool to skip verification:
 #   - curl:     -k (insecure)
 #   - git:      http.sslVerify=false
-#   - go:       GOINSECURE=skip-verify (for go mod download)
+#   - go:       GOPROXY=insecure+https://... + GOINSECURE=<host> (for go mod download)
 #
 # The Go tarball is fetched from mirrors.aliyun.com - it serves the gzip
 # directly (HTTP 206, magic bytes 1f 8b), NO 302 redirect, NO auth (unlike
@@ -73,11 +73,18 @@ RUN apt update && \
     ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt && \
     go version && \
     # CN Go proxy mirror - runtime `go run` resolves modules offline (build-time fetch).
-    # GOINSECURE=skip-verify lets go mod download bypass the proxy's self-signed cert.
-    go env -w GOPROXY=https://goproxy.cn,direct && \
-    go env -w GOSUMDB=sum.golang.google.cn && \
+    # The corp proxy presents a self-signed cert, so go's TLS verification fails
+    # against goproxy.cn ("x509: certificate signed by unknown authority"). Two
+    # belt-and-suspenders fixes: the `insecure+https://` prefix on GOPROXY tells
+    # go to skip TLS verify for that proxy host, and GOINSECURE lists the host
+    # pattern (GOINSECURE takes host globs like `goproxy.cn`, NOT a "skip-verify"
+    # flag - my earlier `GOINSECURE=skip-verify` was a no-op, which is why
+    # `go mod download` blew up on TLS). GOSUMDB is set off so the checksum DB
+    # (also behind the self-signed proxy) isn't queried.
+    go env -w GOPROXY=insecure+https://goproxy.cn,direct && \
+    go env -w GOSUMDB=off && \
     go env -w GO111MODULE=on && \
-    go env -w GOINSECURE=skip-verify && \
+    go env -w GOINSECURE=goproxy.cn && \
     git config --global http.sslVerify false && \
     apt clean && rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
 
