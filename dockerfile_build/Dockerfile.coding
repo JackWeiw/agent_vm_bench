@@ -103,10 +103,10 @@ COPY llama_openclaw.conf /etc/supervisor/conf.d/llama_openclaw.conf
 RUN cd /opt && \
     git clone --depth 1 https://github.com/vuejs/core.git coding-bench && \
     cd coding-bench && \
-    # pnpm install against the mirror; --ignore-scripts avoids postinstall hooks
+    # pnpm install against the mirror; rollup must be in PATH for build.js
     pnpm config set registry https://registry.npmmirror.com && \
     pnpm config set strict-ssl false && \
-    pnpm install --frozen-lockfile=false --ignore-scripts && \
+    pnpm install --frozen-lockfile=false && \
     node scripts/build.js && \
     test -d packages/vue/dist && \
     echo "Build verification: SUCCESS (packages/vue/dist has output)"
