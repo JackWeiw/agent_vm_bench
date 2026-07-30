@@ -3,7 +3,10 @@ Sandbox Management Module
 
 Responsible for E2B sandbox creation, health check, batch control and termination
 Preserves sandbox handle for subsequent task execution
-Supports port check (18789 openclaw-gateway + 11436 llama-server)
+
+Ready detection strategy:
+- Browser workflow: Check ports 18789 (openclaw-gateway) + 11436 (llama-server)
+- Coding workflow: Execute 'uname -a' command and check for successful response
 """
 
 import os
@@ -80,17 +83,17 @@ except ImportError:
 from .config import Config
 from .schemas import SandboxState, SandboxStatus
 
-# Required ports to check
-REQUIRED_PORTS = [
+# Required ports to check for browser workflow
+BROWSER_REQUIRED_PORTS = [
     (18789, "openclaw-gateway"),
     (11436, "llama-server"),
 ]
 
-# Port check maximum wait time (seconds)
-PORT_CHECK_MAX_WAIT = 300
+# Ready check maximum wait time (seconds)
+READY_CHECK_MAX_WAIT = 300
 
-# Port check interval (seconds)
-PORT_CHECK_INTERVAL = 5
+# Ready check interval (seconds)
+READY_CHECK_INTERVAL = 5
 
 
 class SandboxManager:
@@ -165,16 +168,16 @@ class SandboxManager:
                 state.creation_metrics.status = SandboxStatus.CREATED
                 print(f"[Sandbox{sandbox_id}] Connected successfully")
 
-                # Check port readiness
-                port_result = self._check_ports(state)
-                if port_result["success"]:
+                # Check sandbox readiness
+                ready_result = self._check_ready(state)
+                if ready_result["success"]:
                     state.creation_metrics.status = SandboxStatus.PORT_READY
-                    state.creation_metrics.port_wait_elapsed = port_result["wait_elapsed"]
-                    print(f"[Sandbox{sandbox_id}] Ports ready in {port_result['wait_elapsed']:.1f}s")
+                    state.creation_metrics.port_wait_elapsed = ready_result["wait_elapsed"]
+                    print(f"[Sandbox{sandbox_id}] Ready in {ready_result['wait_elapsed']:.1f}s")
                 else:
                     state.creation_metrics.status = SandboxStatus.PORT_FAILED
-                    state.creation_metrics.port_check_error = port_result["error"]
-                    print(f"[Sandbox{sandbox_id}] Port check failed: {port_result['error'][:50]}")
+                    state.creation_metrics.port_check_error = ready_result["error"]
+                    print(f"[Sandbox{sandbox_id}] Ready check failed: {ready_result['error'][:50]}")
 
             except Exception as e:
                 state.creation_metrics.status = SandboxStatus.FAILED
@@ -277,16 +280,16 @@ class SandboxManager:
                 state.creation_metrics.status = SandboxStatus.CREATED
                 print(f"[Sandbox{sandbox_id}] Connected successfully")
 
-                # Check port readiness
-                port_result = self._check_ports(state)
-                if port_result["success"]:
+                # Check sandbox readiness
+                ready_result = self._check_ready(state)
+                if ready_result["success"]:
                     state.creation_metrics.status = SandboxStatus.PORT_READY
-                    state.creation_metrics.port_wait_elapsed = port_result["wait_elapsed"]
-                    print(f"[Sandbox{sandbox_id}] Ports ready in {port_result['wait_elapsed']:.1f}s")
+                    state.creation_metrics.port_wait_elapsed = ready_result["wait_elapsed"]
+                    print(f"[Sandbox{sandbox_id}] Ready in {ready_result['wait_elapsed']:.1f}s")
                 else:
                     state.creation_metrics.status = SandboxStatus.PORT_FAILED
-                    state.creation_metrics.port_check_error = port_result["error"]
-                    print(f"[Sandbox{sandbox_id}] Port check failed: {port_result['error'][:50]}")
+                    state.creation_metrics.port_check_error = ready_result["error"]
+                    print(f"[Sandbox{sandbox_id}] Ready check failed: {ready_result['error'][:50]}")
 
             except Exception as e:
                 state.creation_metrics.status = SandboxStatus.FAILED
@@ -350,24 +353,24 @@ class SandboxManager:
                 try:
                     result = future.result()
                     if result["success"]:
-                        # sandbox.create succeeded, start port check
-                        print(f"[Sandbox{sandbox_id}] Created in {result['create_elapsed']:.1f}s, checking ports...")
+                        # sandbox.create succeeded, start ready check
+                        print(f"[Sandbox{sandbox_id}] Created in {result['create_elapsed']:.1f}s, checking ready...")
 
-                        # Port check
-                        port_result = self._check_ports(state)
-                        if port_result["success"]:
+                        # Ready check
+                        ready_result = self._check_ready(state)
+                        if ready_result["success"]:
                             state.creation_metrics.status = SandboxStatus.PORT_READY
-                            state.creation_metrics.port_wait_elapsed = port_result["wait_elapsed"]
+                            state.creation_metrics.port_wait_elapsed = ready_result["wait_elapsed"]
                             state.creation_metrics.total_elapsed = (
-                                result["create_elapsed"] + port_result["wait_elapsed"]
+                                result["create_elapsed"] + ready_result["wait_elapsed"]
                             )
                             print(
-                                f"[Sandbox{sandbox_id}] Ports ready in {port_result['wait_elapsed']:.1f}s, total {state.creation_metrics.total_elapsed:.1f}s"
+                                f"[Sandbox{sandbox_id}] Ready in {ready_result['wait_elapsed']:.1f}s, total {state.creation_metrics.total_elapsed:.1f}s"
                             )
                         else:
                             state.creation_metrics.status = SandboxStatus.PORT_FAILED
-                            state.creation_metrics.port_check_error = port_result["error"]
-                            print(f"[Sandbox{sandbox_id}] Port check failed: {port_result['error'][:50]}")
+                            state.creation_metrics.port_check_error = ready_result["error"]
+                            print(f"[Sandbox{sandbox_id}] Ready check failed: {ready_result['error'][:50]}")
                     else:
                         state.creation_metrics.status = SandboxStatus.FAILED
                         state.creation_metrics.error_msg = result["error"]
@@ -421,8 +424,55 @@ class SandboxManager:
             state.creation_metrics.create_ready_time = time.time()
             return {"success": False, "create_elapsed": 0.0, "error": str(e)}
 
+    def _check_ready(self, state: SandboxState) -> Dict[str, any]:
+        """Check if sandbox is ready based on workflow type.
+
+        - Browser workflow: Check ports 18789 + 11436
+        - Coding workflow: Execute 'uname -a' command
+
+        Returns: {'success': bool, 'wait_elapsed': float, 'error': str}
+        """
+        if self.config.workflow_type == "coding":
+            return self._check_command_ready(state)
+        else:
+            # Default: browser workflow
+            return self._check_ports(state)
+
+    def _check_command_ready(self, state: SandboxState) -> Dict[str, any]:
+        """Check if sandbox is ready by executing a simple command.
+
+        For coding workflow, sandbox is ready when it can execute 'uname -a'.
+
+        Returns: {'success': bool, 'wait_elapsed': float, 'error': str}
+        """
+        sbx = state.sandbox_obj
+        if not sbx:
+            return {"success": False, "wait_elapsed": 0.0, "error": "No sandbox handle"}
+
+        start_time = time.time()
+
+        while time.time() - start_time < READY_CHECK_MAX_WAIT:
+            if self.stop_event.is_set():
+                return {"success": False, "wait_elapsed": time.time() - start_time, "error": "Stop event"}
+
+            try:
+                result = sbx.commands.run("uname -a", timeout=10, user="root")
+
+                if result.exit_code == 0 and result.stdout.strip():
+                    wait_elapsed = time.time() - start_time
+                    state.creation_metrics.port_ready_time = time.time()
+                    print(f"[Sandbox{state.sandbox_id}] Command ready in {wait_elapsed:.1f}s: {result.stdout.strip()[:50]}")
+                    return {"success": True, "wait_elapsed": wait_elapsed, "error": ""}
+            except Exception as e:
+                pass  # Continue waiting
+
+            time.sleep(READY_CHECK_INTERVAL)
+
+        wait_elapsed = time.time() - start_time
+        return {"success": False, "wait_elapsed": wait_elapsed, "error": "Timeout waiting for command response"}
+
     def _check_ports(self, state: SandboxState) -> Dict[str, any]:
-        """Check if sandbox ports are ready
+        """Check if sandbox ports are ready (browser workflow).
 
         Check 18789 (openclaw-gateway) and 11436 (llama-server)
 
@@ -435,11 +485,11 @@ class SandboxManager:
         start_time = time.time()
         ready_ports = set()
 
-        while time.time() - start_time < PORT_CHECK_MAX_WAIT:
+        while time.time() - start_time < READY_CHECK_MAX_WAIT:
             if self.stop_event.is_set():
                 return {"success": False, "wait_elapsed": time.time() - start_time, "error": "Stop event"}
 
-            for port, name in REQUIRED_PORTS:
+            for port, name in BROWSER_REQUIRED_PORTS:
                 if port in ready_ports:
                     continue
 
@@ -453,15 +503,15 @@ class SandboxManager:
                 except Exception:
                     pass  # Continue checking other ports
 
-            if len(ready_ports) == len(REQUIRED_PORTS):
+            if len(ready_ports) == len(BROWSER_REQUIRED_PORTS):
                 wait_elapsed = time.time() - start_time
                 state.creation_metrics.port_ready_time = time.time()
                 return {"success": True, "wait_elapsed": wait_elapsed, "error": ""}
 
-            time.sleep(PORT_CHECK_INTERVAL)
+            time.sleep(READY_CHECK_INTERVAL)
 
         # Timeout, return missing ports info
-        missing_ports = [f"{p}:{n}" for p, n in REQUIRED_PORTS if p not in ready_ports]
+        missing_ports = [f"{p}:{n}" for p, n in BROWSER_REQUIRED_PORTS if p not in ready_ports]
         wait_elapsed = time.time() - start_time
         return {"success": False, "wait_elapsed": wait_elapsed, "error": f"Timeout waiting for ports: {missing_ports}"}
 
