@@ -461,7 +461,9 @@ class SandboxManager:
                 if result.exit_code == 0 and result.stdout.strip():
                     wait_elapsed = time.time() - start_time
                     state.creation_metrics.port_ready_time = time.time()
-                    print(f"[Sandbox{state.sandbox_id}] Command ready in {wait_elapsed:.1f}s: {result.stdout.strip()[:50]}")
+                    print(
+                        f"[Sandbox{state.sandbox_id}] Command ready in {wait_elapsed:.1f}s: {result.stdout.strip()[:50]}"
+                    )
                     return {"success": True, "wait_elapsed": wait_elapsed, "error": ""}
             except Exception as e:
                 pass  # Continue waiting

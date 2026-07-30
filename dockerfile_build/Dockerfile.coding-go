@@ -41,9 +41,17 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 # Install Go toolchain (ARM64) and system packages
 # Hugo base_commit: 83235262d06a060bd22c168b3413903667b8aeb6 (instance
 # gohugoio__hugo-12768). Clone at that commit (shallow needs the commit fetch).
+#
+# The go.dev/dl URL 302-redirects to dl.google.com; through a corp proxy that
+# presents a self-signed cert ("Huawei Web Secure Internet Gateway CA"), wget
+# fails verification on go.dev and the dl.google.com hop sometimes returns no
+# data. Mitigations: --no-check-certificate skips the cert check on every hop,
+# --retry-connrefused + -T 30 + --tries 5 ride the flaky redirect, and we
+# follow redirects explicitly so a fresh request is issued per hop.
 RUN apt update && apt install -y wget xz-utils vim libgomp1 iproute2 net-tools gnupg git ca-certificates && \
     cd /usr/local && \
-    wget --no-check-certificate https://go.dev/dl/go1.23.4.linux-arm64.tar.gz && \
+    wget --no-check-certificate --retry-connrefused -T 30 --tries 5 --waitretry 3 \
+        https://go.dev/dl/go1.23.4.linux-arm64.tar.gz && \
     tar -xzf go1.23.4.linux-arm64.tar.gz && \
     rm -f go1.23.4.linux-arm64.tar.gz && \
     ln -sf /usr/local/go/bin/go /usr/local/bin/go && \

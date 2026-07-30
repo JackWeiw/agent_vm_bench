@@ -355,9 +355,10 @@ class TestCheckCommandReady:
         state.sandbox_obj = mock_sandbox
 
         # Patch READY_CHECK_MAX_WAIT to make test fast
-        with patch("e2b_bench.sandbox_manager.READY_CHECK_MAX_WAIT", 0.1):
-            with patch("e2b_bench.sandbox_manager.READY_CHECK_INTERVAL", 0.05):
-                result = manager._check_command_ready(state)
+        with patch("e2b_bench.sandbox_manager.READY_CHECK_MAX_WAIT", 0.1), patch(
+            "e2b_bench.sandbox_manager.READY_CHECK_INTERVAL", 0.05
+        ):
+            result = manager._check_command_ready(state)
 
         assert result["success"] is False
         assert "Timeout" in result["error"]
@@ -373,9 +374,10 @@ class TestCheckCommandReady:
         mock_sandbox.commands.run.return_value = Mock(exit_code=1, stdout="")
         state.sandbox_obj = mock_sandbox
 
-        with patch("e2b_bench.sandbox_manager.READY_CHECK_MAX_WAIT", 0.1):
-            with patch("e2b_bench.sandbox_manager.READY_CHECK_INTERVAL", 0.05):
-                result = manager._check_command_ready(state)
+        with patch("e2b_bench.sandbox_manager.READY_CHECK_MAX_WAIT", 0.1), patch(
+            "e2b_bench.sandbox_manager.READY_CHECK_INTERVAL", 0.05
+        ):
+            result = manager._check_command_ready(state)
 
         assert result["success"] is False
         assert "Timeout" in result["error"]
@@ -443,9 +445,7 @@ class TestCheckPorts:
         state = SandboxState(sandbox_id=1)
         mock_sandbox = Mock()
         # Both ports are listening
-        mock_sandbox.commands.run.return_value = Mock(
-            exit_code=0, stdout="LISTEN 0 0 0.0.0.0:18789"
-        )
+        mock_sandbox.commands.run.return_value = Mock(exit_code=0, stdout="LISTEN 0 0 0.0.0.0:18789")
         state.sandbox_obj = mock_sandbox
 
         result = manager._check_ports(state)
@@ -462,14 +462,13 @@ class TestCheckPorts:
         state = SandboxState(sandbox_id=1)
         mock_sandbox = Mock()
         # Port not listening
-        mock_sandbox.commands.run.return_value = Mock(
-            exit_code=0, stdout="PORT_NOT_LISTENING"
-        )
+        mock_sandbox.commands.run.return_value = Mock(exit_code=0, stdout="PORT_NOT_LISTENING")
         state.sandbox_obj = mock_sandbox
 
-        with patch("e2b_bench.sandbox_manager.READY_CHECK_MAX_WAIT", 0.1):
-            with patch("e2b_bench.sandbox_manager.READY_CHECK_INTERVAL", 0.05):
-                result = manager._check_ports(state)
+        with patch("e2b_bench.sandbox_manager.READY_CHECK_MAX_WAIT", 0.1), patch(
+            "e2b_bench.sandbox_manager.READY_CHECK_INTERVAL", 0.05
+        ):
+            result = manager._check_ports(state)
 
         assert result["success"] is False
         assert "Timeout" in result["error"]
