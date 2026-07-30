@@ -107,9 +107,28 @@ DEFAULT_CODING_SOURCE_FILES = [
 # (esbuild transpile + node execute) -> real transient memory peak. Never asserts
 # complex logic, so a round never dies from a broken assertion. `{pkg}` is the
 # packages/<name> dir of the edited file, substituted by the runner.
+#
+# The globalThis injections are VERBATIM the set the real openclaw agent injected
+# at the top of its verify scripts in the captured vuejs/core trajectory
+# (extracted from swe_bench_multilingual trace): __DEV__, __BROWSER__, __COMPAT__,
+# __ESM_BUNDLER__, __FEATURE_OPTIONS_API__, __FEATURE_PROD_DEVTOOLS__,
+# __FEATURE_SUSPENSE__, __RUNTIME_COMPILE__. vuejs/core's source references these
+# build-time globals (esbuild `define` in a real build); a bare `npx tsx` run has
+# them undefined, so the agent (and we) inject them at the top of the ad-hoc
+# test. NOTE: __TEST__ is intentionally NOT injected - the agent didn't either -
+# so pairs whose package graph reaches runtime-core/src/compat/compatConfig.ts
+# (which references __TEST__) CANNOT use this default; they must carry their own
+# verify_script importing a __TEST__-free lightweight entry (see the vue and
+# runtime-core pairs in e2b_coding_bench.yaml).
 DEFAULT_CODING_VERIFY_SCRIPT_JS = (
     "globalThis.__DEV__ = true\n"
     "globalThis.__BROWSER__ = false\n"
+    "globalThis.__COMPAT__ = false\n"
+    "globalThis.__ESM_BUNDLER__ = true\n"
+    "globalThis.__FEATURE_OPTIONS_API__ = true\n"
+    "globalThis.__FEATURE_PROD_DEVTOOLS__ = false\n"
+    "globalThis.__FEATURE_SUSPENSE__ = true\n"
+    "globalThis.__RUNTIME_COMPILE__ = true\n"
     "import('{pkg}/src/index.ts').then(m => {\n"
     "  const exp = Object.keys(m)[0]\n"
     "  if (exp && typeof m[exp] === 'undefined') throw new Error(exp + ' undefined')\n"

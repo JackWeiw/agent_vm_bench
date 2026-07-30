@@ -339,6 +339,64 @@ class TestStepVerify(unittest.TestCase):
         # Shared default imports the edited package's index.ts (with {pkg} substituted)
         self.assertIn("packages/reactivity/src/index.ts", cmd)
 
+    def test_default_script_injects_agent_global_set(self):
+        """Default verify script injects the verbatim global set from the captured
+        openclaw trajectory (8 globals), and intentionally NOT __TEST__ (the agent
+        didn't either; pairs reaching compat/compatConfig.ts need their own
+        verify_script importing a __TEST__-free entry)."""
+        config = Config(workflow_type="coding", coding_language="js")
+        runner = self._make_runner(config)
+        sbx = _FakeSbx()
+        pair = {
+            "file": "packages/reactivity/src/baseHandlers.ts",
+            "find": "x",
+            "replace": "y",
+            "verify": "compile_only",
+        }
+        runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
+        cmd = sbx.commands.calls[0][0]
+        for g in (
+            "__DEV__",
+            "__BROWSER__",
+            "__COMPAT__",
+            "__ESM_BUNDLER__",
+            "__FEATURE_OPTIONS_API__",
+            "__FEATURE_PROD_DEVTOOLS__",
+            "__FEATURE_SUSPENSE__",
+            "__RUNTIME_COMPILE__",
+        ):
+            self.assertIn(f"globalThis.{g}", cmd, f"agent global {g} must be injected")
+        self.assertNotIn("globalThis.__TEST__", cmd, "__TEST__ must NOT be injected")
+
+    def test_vue_pair_verify_script_imports_shared_not_vue_main(self):
+        """The vue main-entry pair carries its own verify_script importing the
+        __TEST__-free shared entry (NOT packages/vue/src/index.ts, whose graph
+        reaches compat/compatConfig.ts -> ReferenceError: __TEST__ is not defined).
+        It is a real assertion (NOOP is a function), so compile_only is False."""
+        config = Config(workflow_type="coding", coding_language="js")
+        runner = self._make_runner(config)
+        sbx = _FakeSbx()
+        pair = {
+            "file": "packages/vue/src/index.ts",
+            "find": "// x",
+            "replace": "// x bench",
+            "verify_script": (
+                "globalThis.__DEV__ = true\n"
+                "import('/opt/coding-bench/packages/shared/src/index.ts').then(m => {\n"
+                "  if (typeof m.NOOP !== 'function') throw new Error('NOOP not a function')\n"
+                "  m.NOOP()\n"
+                "  console.log('All tests passed!')\n"
+                "})\n"
+            ),
+        }
+        ok, _err, compile_only = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
+        self.assertTrue(ok)
+        self.assertFalse(compile_only)  # real assertion, not compile-only
+        cmd = sbx.commands.calls[0][0]
+        # Imports the __TEST__-free shared entry, NOT the vue main entry
+        self.assertIn("packages/shared/src/index.ts", cmd)
+        self.assertNotIn("packages/vue/src/index.ts", cmd)
+
     def test_verify_no_script_no_compile_only_is_failure(self):
         """A pair with neither verify_script nor verify: compile_only fails verify (no fake pass)."""
         config = Config(workflow_type="coding", coding_language="js")

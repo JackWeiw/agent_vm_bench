@@ -47,13 +47,7 @@ HEREDOC_EOF="EOF"
 # shared default (import edited package index.ts + sanity-call symbol).
 # Format: "file|find|replace|verify_script"
 TARGET_FILES=(
-    "packages/shared/src/general.ts|export const NOOP = (): void => {}|export const NOOP = (): void => undefined|globalThis.__DEV__ = true
-globalThis.__BROWSER__ = false
-import('/opt/coding-bench/packages/shared/src/index.ts').then(m => {
-  if (typeof m.NOOP !== 'function') throw new Error('NOOP not a function')
-  m.NOOP()
-  console.log('All tests passed!')
-})"
+    "packages/shared/src/general.ts|export const NOOP = (): void => {}|export const NOOP = (): void => undefined||"
     "packages/shared/src/general.ts|Always return false.|Always returns false.||"
     "packages/shared/src/index.ts|export * from './general'|export * from './general' // bench round||"
     'packages/vue/src/index.ts|// This entry is the "full-build"|// This entry is the "full-build" (bench)||'
@@ -64,6 +58,17 @@ import('/opt/coding-bench/packages/shared/src/index.ts').then(m => {
 # Shared default verify script body (used when a pair's verify_script is empty).
 # Imports the edited package's raw .ts index + sanity-calls a top-level export
 # + prints "All tests passed!". Loads the full TS module graph -> real peak.
+#
+# The injected globals are VERBATIM the set the real openclaw agent injected at
+# the top of its verify scripts in the captured vuejs/core trajectory
+# (swe_bench_multilingual): __DEV__, __BROWSER__, __COMPAT__, __ESM_BUNDLER__,
+# __FEATURE_OPTIONS_API__, __FEATURE_PROD_DEVTOOLS__, __FEATURE_SUSPENSE__,
+# __RUNTIME_COMPILE__. __TEST__ is intentionally NOT injected (the agent didn't
+# either). The vue and runtime-core packages' graphs reach
+# runtime-core/src/compat/compatConfig.ts which references __TEST__ -> would
+# ReferenceError. For those packages, import the __TEST__-free shared entry +
+# assert NOOP is a function instead (the agent likewise imported a lightweight
+# reachable entry - compiler-core's baseParse - never the vue main entry).
 default_verify_script() {
     local target="$1"
     # Derive packages/<name> from the edited file path
@@ -71,16 +76,42 @@ default_verify_script() {
     if [[ "$target" == packages/*/src/* ]]; then
         pkg="/opt/coding-bench/${target%%/src/*}"
     fi
-    cat <<'DEFAULT'
+    local pkg_name="${pkg##*/}"
+    if [[ "$pkg_name" == "vue" || "$pkg_name" == "runtime-core" || "$pkg_name" == "runtime-dom" || "$pkg_name" == "compiler-dom" || "$pkg_name" == "compiler-sfc" ]]; then
+        # __TEST__-reachable package: import the shared entry + assert a real export.
+        cat <<DEFAULT
 globalThis.__DEV__ = true
 globalThis.__BROWSER__ = false
+globalThis.__COMPAT__ = false
+globalThis.__ESM_BUNDLER__ = true
+globalThis.__FEATURE_OPTIONS_API__ = true
+globalThis.__FEATURE_PROD_DEVTOOLS__ = false
+globalThis.__FEATURE_SUSPENSE__ = true
+globalThis.__RUNTIME_COMPILE__ = true
+import('/opt/coding-bench/packages/shared/src/index.ts').then(m => {
+  if (typeof m.NOOP !== 'function') throw new Error('NOOP not a function')
+  m.NOOP()
+  console.log('All tests passed!')
+})
+DEFAULT
+    else
+        # Lightweight package (shared/reactivity): import its own index + sanity-call.
+        cat <<DEFAULT
+globalThis.__DEV__ = true
+globalThis.__BROWSER__ = false
+globalThis.__COMPAT__ = false
+globalThis.__ESM_BUNDLER__ = true
+globalThis.__FEATURE_OPTIONS_API__ = true
+globalThis.__FEATURE_PROD_DEVTOOLS__ = false
+globalThis.__FEATURE_SUSPENSE__ = true
+globalThis.__RUNTIME_COMPILE__ = true
 import('PKG_PLACEHOLDER/src/index.ts').then(m => {
   const exp = Object.keys(m)[0]
   if (exp && typeof m[exp] === 'undefined') throw new Error(exp + ' undefined')
   console.log('All tests passed!')
 })
 DEFAULT
-    # Note: PKG_PLACEHOLDER is substituted below.
+    fi
 }
 
 # ---- Argument Parsing ----
