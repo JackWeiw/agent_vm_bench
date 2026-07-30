@@ -364,13 +364,14 @@ class TestStepFindLanguageAware(unittest.TestCase):
         return CodingRoundRunner(state=state, config=config, stop_event=threading.Event(), round_id=0)
 
     def test_js_find_uses_packages_checkout(self):
-        """js find resets packages/ src/ and locates *.ts/*.tsx/*.js on miss."""
+        """js find resets packages/ (vuejs/core has no top-level src/) and locates *.ts/*.tsx/*.js on miss."""
         config = Config(workflow_type="coding", coding_language="js")
         runner = self._make_runner(config)
         sbx = _FakeSbx(result=_FakeResult(exit_code=1, stdout="", stderr=""))  # file not found
         runner._step_find(sbx, "/opt/coding-bench", "packages/shared/src/missing.ts", "x", "y", step_times={})
         cmds = [c for c, _ in sbx.commands.calls]
-        self.assertTrue(any("git checkout -- packages/ src/" in c for c in cmds))
+        self.assertTrue(any("git checkout -- packages/" in c for c in cmds))
+        self.assertFalse(any("git checkout -- packages/ src/" in c for c in cmds))
         self.assertTrue(any("\\( -name '*.ts'" in c for c in cmds))
 
     def test_go_find_uses_markup_checkout(self):

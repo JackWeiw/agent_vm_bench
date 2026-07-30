@@ -199,13 +199,18 @@ class CodingWarmupRunner(threading.Thread):
         # 2. Reset source files
         profile = get_coding_profile(self.config.coding_language)
         try:
-            sbx.commands.run(
-                f"cd {project_dir} && git checkout -- {profile.checkout_paths} 2>/dev/null",
+            result = sbx.commands.run(
+                f"cd {project_dir} && git checkout -- {profile.checkout_paths}",
                 timeout=30,
                 user="root",
             )
-        except Exception:
-            print(f"[Sandbox{self.state.sandbox_id}] git checkout failed (may not be a git repo)")
+            if result.exit_code != 0:
+                print(
+                    f"[Sandbox{self.state.sandbox_id}] git checkout non-zero (exit {result.exit_code}): "
+                    f"{(result.stderr or '').strip()[:120]}"
+                )
+        except Exception as e:
+            print(f"[Sandbox{self.state.sandbox_id}] git checkout failed: {e}")
 
         # 3. Run one initial verify (warms esbuild/node or Go compiler caches,
         #    confirms project health). No resident dev server - none in the trace.
@@ -322,7 +327,7 @@ class CodingTaskRunner(threading.Thread):
             # Step 1: find - reset source files + verify target file exists
             t0 = time.perf_counter()
             sbx.commands.run(
-                f"cd {project_dir} && git checkout -- {profile.checkout_paths} 2>/dev/null",
+                f"cd {project_dir} && git checkout -- {profile.checkout_paths} || true",
                 timeout=30,
                 user="root",
             )
@@ -332,7 +337,7 @@ class CodingTaskRunner(threading.Thread):
             if exists.exit_code != 0 or "ok" not in (exists.stdout or ""):
                 # Fallback: if the configured target doesn't exist, locate any source file
                 fallback = sbx.commands.run(
-                    f"cd {project_dir} && find packages src {_find_name_clause(profile.source_find_names)} 2>/dev/null | head -1",
+                    f"cd {project_dir} && find packages {_find_name_clause(profile.source_find_names)} 2>/dev/null | head -1",
                     timeout=15,
                     user="root",
                 )
@@ -543,7 +548,7 @@ class CodingRoundRunner(threading.Thread):
         profile = get_coding_profile(self.config.coding_language)
         step_start = time.perf_counter()
         result = sbx.commands.run(
-            f"cd {project_dir} && git checkout -- {profile.checkout_paths} 2>/dev/null",
+            f"cd {project_dir} && git checkout -- {profile.checkout_paths} || true",
             timeout=30,
             user="root",
         )
@@ -556,7 +561,7 @@ class CodingRoundRunner(threading.Thread):
 
         # Fallback: locate any source file and use a generic comment-marker pair
         fallback = sbx.commands.run(
-            f"cd {project_dir} && find packages src {_find_name_clause(profile.source_find_names)} 2>/dev/null | head -1",
+            f"cd {project_dir} && find packages {_find_name_clause(profile.source_find_names)} 2>/dev/null | head -1",
             timeout=15,
             user="root",
         )

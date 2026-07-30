@@ -63,7 +63,12 @@ CODING_LANGUAGE_PROFILES: Dict[str, CodingLanguageProfile] = {
         heredoc_eof="EOF",
         run_cmd="npx tsx /tmp/bench_verify.mjs",
         source_find_names=("*.ts", "*.tsx", "*.js"),
-        checkout_paths="packages/ src/",
+        # vuejs/core is a pnpm monorepo: all source lives under packages/<name>/src/,
+        # there is NO top-level src/ directory. `git checkout -- packages/ src/` made git
+        # emit "pathspec 'src/' did not match any tree entries" (stderr swallowed by 2>/dev/null
+        # in the find step -> the misleading "may not be a git repo" warning). packages/ alone
+        # covers every edited file.
+        checkout_paths="packages/",
         default_verify_script=DEFAULT_CODING_VERIFY_SCRIPT_JS,
     ),
     "go": CodingLanguageProfile(
