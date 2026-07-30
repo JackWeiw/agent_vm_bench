@@ -142,9 +142,9 @@ def _run_verify(sbx, project_dir: str, config: Config, pair: Dict[str, str]) -> 
     if result.exit_code != 0:
         error_parts = [f"verify failed: exit_code={result.exit_code}"]
         if result.stderr:
-            error_parts.append(f"stderr={result.stderr[:200]}")
+            error_parts.append(f"stderr={result.stderr[:800]}")
         if result.stdout:
-            error_parts.append(f"stdout={result.stdout[:200]}")
+            error_parts.append(f"stdout={result.stdout[:800]}")
         return False, " | ".join(error_parts), False
     return True, "", compile_only
 
@@ -653,9 +653,9 @@ class CodingRoundRunner(threading.Thread):
             elif "diff" not in step_times:
                 return "diff", "diff timed out"
             else:
-                return "unknown", f"operation timed out: {error_str[:100]}"
+                return "unknown", f"operation timed out: {error_str[:400]}"
         else:
-            return "exception", f"exception: {error_str[:100]}"
+            return "exception", f"exception: {error_str[:800]}"
 
     def _record_metrics(
         self,
@@ -692,7 +692,7 @@ class CodingRoundRunner(threading.Thread):
 
     def _handle_failure(self, target_file: str, failed_step: str, error_detail: str) -> None:
         """Handle failure after metrics are recorded"""
-        print(f"[Sandbox{self.state.sandbox_id}] File '{target_file}' failed at {failed_step}: {error_detail[:80]}")
+        print(f"[Sandbox{self.state.sandbox_id}] File '{target_file}' failed at {failed_step}: {error_detail[:600]}")
         self.consecutive_errors += 1
         if self.consecutive_errors >= 3:
             self.state.is_alive = False
