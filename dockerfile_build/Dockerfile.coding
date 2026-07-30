@@ -39,9 +39,24 @@ ENV HTTP_PROXY=${HTTP_PROXY}
 ENV HTTPS_PROXY=${HTTPS_PROXY}
 
 # Install Node24 and system packages
-RUN apt update && apt install -y wget xz-utils vim libgomp1 iproute2 net-tools gnupg git && \
+#
+# The corp proxy presents a self-signed cert ("Huawei Web Secure Internet Gateway
+# CA"), so every TLS fetch must bypass verification. ca-certificates is NOT
+# installed - it is useless here (the proxy MITMs with its own root the system
+# store won't trust). curl -k skips TLS verify for each fetch.
+#
+# The node tarball is fetched from mirrors.aliyun.com/nodejs-release - it serves
+# the .tar.xz directly (no 302 redirect, no auth). nodejs.org and npmmirror both
+# 302-redirect, the hop that crawled at <6KB/s through the proxy and, with
+# wget's default no-follow, produced a truncated/corrupt body that broke
+# `tar -xvf` with "TAR_BAD_ARCHIVE: Unrecognized archive format" + checksum
+# failures. curl -kL follows the redirect if aliyun is unreachable. Same fix the
+# Go image (Dockerfile.coding-go) uses for its Go toolchain tarball.
+RUN apt update && apt install -y curl xz-utils vim libgomp1 iproute2 net-tools gnupg git && \
     cd /usr/local && \
-    wget --no-check-certificate https://nodejs.org/dist/v24.14.0/node-v24.14.0-linux-arm64.tar.xz && \
+    curl -kL --connect-timeout 30 --retry 3 --retry-delay 3 \
+        -o node-v24.14.0-linux-arm64.tar.xz \
+        https://mirrors.aliyun.com/nodejs-release/v24.14.0/node-v24.14.0-linux-arm64.tar.xz && \
     tar -xvf node-v24.14.0-linux-arm64.tar.xz && \
     mv node-v24.14.0-linux-arm64 node24 && \
     rm -rf node-v24.14.0-linux-arm64.tar.xz && \
@@ -51,10 +66,14 @@ RUN apt update && apt install -y wget xz-utils vim libgomp1 iproute2 net-tools g
     # Install pnpm@11.13.0 (matches vuejs/core packageManager) via its mirrored
     # tarball. corepack's metadata fetch against npmmirror fails (pnpm uses a
     # special publish mechanism; npmjs has no tarball, npmmirror mirrors one at
-    # /pnpm/-/pnpm-<ver>.tgz). wget the tarball + npm i -g sidesteps corepack.
+    # /pnpm/-/pnpm-<ver>.tgz). curl the tarball + npm i -g sidesteps corepack.
+    # The npmmirror tarball URL is a 302 redirect - curl -kL follows it (wget's
+    # default no-follow grabbed the 302 HTML body and broke the install).
     npm config set strict-ssl false && \
     npm config set registry https://registry.npmmirror.com && \
-    wget --no-check-certificate -O /tmp/pnpm.tgz https://registry.npmmirror.com/pnpm/-/pnpm-11.13.0.tgz && \
+    curl -kL --connect-timeout 30 --retry 3 --retry-delay 3 \
+        -o /tmp/pnpm.tgz \
+        https://registry.npmmirror.com/pnpm/-/pnpm-11.13.0.tgz && \
     npm install -g /tmp/pnpm.tgz --registry=https://registry.npmmirror.com --strict-ssl=false && \
     rm -f /tmp/pnpm.tgz && \
     ln -sf /usr/local/node24/bin/pnpm /usr/local/bin/pnpm && \
