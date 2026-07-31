@@ -841,6 +841,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--coding-source-file", type=str, action="append", help="Source file for modification (can specify multiple)"
     )
     parser.add_argument("--coding-skip-verify", action="store_true", help="Skip the verify step")
+    parser.add_argument(
+        "--coding-verify-repeat",
+        type=int,
+        default=None,
+        help="ts only: number of independent npx tsx processes per verify step (default 3; go ignores this)",
+    )
 
     # Warmup configuration
     parser.add_argument("-w", "--warmup-url", type=str, action="append", help="Warmup page URL (can specify multiple)")

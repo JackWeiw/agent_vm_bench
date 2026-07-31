@@ -183,6 +183,24 @@ class TestCodingConfig(unittest.TestCase):
         c = Config.load_from_yaml("config/e2b/coding_go_bench.yaml")
         self.assertEqual(c.coding_verify_repeat, 1)
 
+    def test_cli_coding_verify_repeat_override(self):
+        """CLI --coding-verify-repeat overrides yaml (merge_with_args)."""
+        from e2b_bench.bench import build_arg_parser
+
+        yaml_cfg = Config(workflow_type="coding")  # default repeat=3
+        args = build_arg_parser().parse_args(["--coding-verify-repeat", "5"])
+        merged = Config.merge_with_args(yaml_cfg, args)
+        self.assertEqual(merged.coding_verify_repeat, 5)
+
+    def test_cli_coding_verify_repeat_none_keeps_yaml(self):
+        """CLI flag absent (None) keeps the yaml value."""
+        from e2b_bench.bench import build_arg_parser
+
+        yaml_cfg = Config(workflow_type="coding", coding_verify_repeat=4)
+        args = build_arg_parser().parse_args([])  # no --coding-verify-repeat
+        merged = Config.merge_with_args(yaml_cfg, args)
+        self.assertEqual(merged.coding_verify_repeat, 4)
+
 
 class TestStepOrderConstants(unittest.TestCase):
     """Test step order constants"""
