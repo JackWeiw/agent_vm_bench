@@ -131,14 +131,6 @@ def _run_verify(
                 "verify failed: pair has no verify_script and no verify: compile_only (refusing no-op default fake pass)",
                 False,
             )
-    # For the js shared default, substitute the edited package dir into {pkg}.
-    if "{pkg}" in script_body:
-        # Derive packages/<name> from the edited file path (e.g.
-        # packages/reactivity/src/baseHandlers.ts -> packages/reactivity).
-        edited = pair.get("file", "")
-        pkg = "/opt/coding-bench/" + edited.split("/src/")[0] if "/src/" in edited else "/opt/coding-bench/packages/vue"
-        script_body = script_body.replace("{pkg}", pkg)
-
     # Optional pre-verify cache clear (go only). Run as a SEPARATE command so its
     # time is measured apart from the write+run - the write+run itself stays a
     # single newline-joined command to match the trace's combined write+run.

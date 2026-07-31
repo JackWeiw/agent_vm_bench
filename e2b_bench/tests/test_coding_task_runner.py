@@ -347,7 +347,9 @@ class TestStepVerify(unittest.TestCase):
         self.assertIn("exit_code=1", err)
 
     def test_verify_compile_only_uses_shared_default(self):
-        """A pair marked verify: compile_only uses the shared no-op default main (no assertion)."""
+        """A pair marked verify: compile_only uses the shared default (compiler-core
+        + baseParse, no assertion) - the trace-faithful heaviest entry that runs
+        under bare npx tsx without hitting __TEST__."""
         config = Config(workflow_type="coding", coding_language="js")
         runner = self._make_runner(config)
         sbx = _FakeSbx()
@@ -361,8 +363,10 @@ class TestStepVerify(unittest.TestCase):
         self.assertTrue(ok)
         self.assertTrue(compile_only)  # honestly labeled compile-only
         cmd = sbx.commands.calls[0][0]
-        # Shared default imports the edited package's index.ts (with {pkg} substituted)
-        self.assertIn("packages/reactivity/src/index.ts", cmd)
+        # Default imports compiler-core (the agent's verify entry, the heaviest
+        # trace-faithful entry that avoids the __TEST__ reference path).
+        self.assertIn("packages/compiler-core/src/index.ts", cmd)
+        self.assertIn("baseParse", cmd)
 
     def test_default_script_injects_agent_global_set(self):
         """Default verify script injects the verbatim global set from the captured
@@ -393,11 +397,12 @@ class TestStepVerify(unittest.TestCase):
             self.assertIn(f"globalThis.{g}", cmd, f"agent global {g} must be injected")
         self.assertNotIn("globalThis.__TEST__", cmd, "__TEST__ must NOT be injected")
 
-    def test_vue_pair_verify_script_imports_shared_not_vue_main(self):
-        """The vue main-entry pair carries its own verify_script importing the
-        __TEST__-free shared entry (NOT packages/vue/src/index.ts, whose graph
-        reaches compat/compatConfig.ts -> ReferenceError: __TEST__ is not defined).
-        It is a real assertion (NOOP is a function), so compile_only is False."""
+    def test_vue_pair_verify_script_uses_compiler_core_baseParse(self):
+        """The vue main-entry pair carries its own verify_script importing compiler-core
+        (the agent's verify entry) and running baseParse - NOT packages/vue/src/index.ts,
+        whose graph reaches compiler-dom/src/errors.ts -> ReferenceError: __TEST__ is not
+        defined (a build global intentionally not injected). It is a real assertion
+        (parsed tag check), so compile_only is False."""
         config = Config(workflow_type="coding", coding_language="js")
         runner = self._make_runner(config)
         sbx = _FakeSbx()
@@ -407,9 +412,9 @@ class TestStepVerify(unittest.TestCase):
             "replace": "// x bench",
             "verify_script": (
                 "globalThis.__DEV__ = true\n"
-                "import('/opt/coding-bench/packages/shared/src/index.ts').then(m => {\n"
-                "  if (typeof m.NOOP !== 'function') throw new Error('NOOP not a function')\n"
-                "  m.NOOP()\n"
+                "import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {\n"
+                "  const ast = m.baseParse('<div>hi</div>', { parseMode: 'html' })\n"
+                "  if (ast.children[0].tag !== 'div') throw new Error('expected div')\n"
                 "  console.log('All tests passed!')\n"
                 "})\n"
             ),
@@ -418,8 +423,9 @@ class TestStepVerify(unittest.TestCase):
         self.assertTrue(ok)
         self.assertFalse(compile_only)  # real assertion, not compile-only
         cmd = sbx.commands.calls[0][0]
-        # Imports the __TEST__-free shared entry, NOT the vue main entry
-        self.assertIn("packages/shared/src/index.ts", cmd)
+        # Imports the __TEST__-free compiler-core parser, NOT the vue main entry
+        self.assertIn("packages/compiler-core/src/index.ts", cmd)
+        self.assertIn("baseParse", cmd)
         self.assertNotIn("packages/vue/src/index.ts", cmd)
 
     def test_verify_no_script_no_compile_only_is_failure(self):

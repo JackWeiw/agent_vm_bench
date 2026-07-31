@@ -56,30 +56,26 @@ TARGET_FILES=(
 )
 
 # Shared default verify script body (used when a pair's verify_script is empty).
-# Imports the edited package's raw .ts index + sanity-calls a top-level export
-# + prints "All tests passed!". Loads the full TS module graph -> real peak.
+# Imports compiler-core (the real openclaw agent's verify entry - its captured
+# vuejs/core trace imports only compiler-core's baseParse/parse) + runs baseParse
+# + prints "All tests passed!". Loads the parser+AST module graph -> real peak.
+#
+# Why compiler-core (not the edited package's own index): it's the heaviest
+# trace-faithful entry that runs under a bare `npx tsx` without hitting the
+# __TEST__ build global. The vue/runtime-core/compiler-dom/compiler-sfc graphs
+# all reach compiler-dom/src/errors.ts (references __TEST__) and crash on a real
+# call; compiler-core alone (the parser) avoids that path. ~467ms user steady
+# vs ~299ms for the lightweight shared package - a real transient CPU peak.
 #
 # The injected globals are VERBATIM the set the real openclaw agent injected at
 # the top of its verify scripts in the captured vuejs/core trajectory
 # (swe_bench_multilingual): __DEV__, __BROWSER__, __COMPAT__, __ESM_BUNDLER__,
 # __FEATURE_OPTIONS_API__, __FEATURE_PROD_DEVTOOLS__, __FEATURE_SUSPENSE__,
 # __RUNTIME_COMPILE__. __TEST__ is intentionally NOT injected (the agent didn't
-# either). The vue and runtime-core packages' graphs reach
-# runtime-core/src/compat/compatConfig.ts which references __TEST__ -> would
-# ReferenceError. For those packages, import the __TEST__-free shared entry +
-# assert NOOP is a function instead (the agent likewise imported a lightweight
-# reachable entry - compiler-core's baseParse - never the vue main entry).
+# either). compiler-core's entry exports baseParse (parse is an alias not
+# re-exported in this version -> m.parse is undefined; use baseParse).
 default_verify_script() {
-    local target="$1"
-    # Derive packages/<name> from the edited file path
-    local pkg="/opt/coding-bench/packages/vue"
-    if [[ "$target" == packages/*/src/* ]]; then
-        pkg="/opt/coding-bench/${target%%/src/*}"
-    fi
-    local pkg_name="${pkg##*/}"
-    if [[ "$pkg_name" == "vue" || "$pkg_name" == "runtime-core" || "$pkg_name" == "runtime-dom" || "$pkg_name" == "compiler-dom" || "$pkg_name" == "compiler-sfc" ]]; then
-        # __TEST__-reachable package: import the shared entry + assert a real export.
-        cat <<DEFAULT
+    cat <<DEFAULT
 globalThis.__DEV__ = true
 globalThis.__BROWSER__ = false
 globalThis.__COMPAT__ = false
@@ -88,30 +84,12 @@ globalThis.__FEATURE_OPTIONS_API__ = true
 globalThis.__FEATURE_PROD_DEVTOOLS__ = false
 globalThis.__FEATURE_SUSPENSE__ = true
 globalThis.__RUNTIME_COMPILE__ = true
-import('/opt/coding-bench/packages/shared/src/index.ts').then(m => {
-  if (typeof m.NOOP !== 'function') throw new Error('NOOP not a function')
-  m.NOOP()
+import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {
+  const ast = m.baseParse('<div id="x">hello</div>', { parseMode: 'html' })
+  if (ast.children[0].tag !== 'div') throw new Error('expected div')
   console.log('All tests passed!')
 })
 DEFAULT
-    else
-        # Lightweight package (shared/reactivity): import its own index + sanity-call.
-        cat <<DEFAULT
-globalThis.__DEV__ = true
-globalThis.__BROWSER__ = false
-globalThis.__COMPAT__ = false
-globalThis.__ESM_BUNDLER__ = true
-globalThis.__FEATURE_OPTIONS_API__ = true
-globalThis.__FEATURE_PROD_DEVTOOLS__ = false
-globalThis.__FEATURE_SUSPENSE__ = true
-globalThis.__RUNTIME_COMPILE__ = true
-import('PKG_PLACEHOLDER/src/index.ts').then(m => {
-  const exp = Object.keys(m)[0]
-  if (exp && typeof m[exp] === 'undefined') throw new Error(exp + ' undefined')
-  console.log('All tests passed!')
-})
-DEFAULT
-    fi
 }
 
 # ---- Argument Parsing ----
@@ -242,16 +220,13 @@ if [ "${SKIP_VERIFY}" = false ]; then
     echo "[Step 3: verify] Writing ad-hoc test + running npx tsx (memory peak)..."
     VERIFY_START=$(date +%s%N)
 
-    # Resolve the script body: pair-specific, else shared default (with pkg substitution)
+    # Resolve the script body: pair-specific, else shared default (compiler-core).
+    # The default always imports compiler-core (the agent's verify entry),
+    # independent of which package was edited, so no per-pkg substitution.
     if [ -n "${VERIFY_SCRIPT}" ]; then
         SCRIPT_BODY="${VERIFY_SCRIPT}"
     else
-        # Derive packages/<name> for the {pkg} placeholder
-        PKG="/opt/coding-bench/packages/vue"
-        if [[ "${TARGET_FILE}" == packages/*/src/* ]]; then
-            PKG="/opt/coding-bench/${TARGET_FILE%%/src/*}"
-        fi
-        SCRIPT_BODY=$(default_verify_script "${TARGET_FILE}" | sed "s|PKG_PLACEHOLDER|${PKG}|")
+        SCRIPT_BODY=$(default_verify_script)
     fi
 
     # Write the temp test file (printf handles multi-line script bodies safely;

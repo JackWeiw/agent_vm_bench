@@ -53,22 +53,41 @@ CODING_STEP_ORDER = ["find", "read", "edit", "verify", "diff"]
 # /tmp/bench_verify.mjs that exercises the edited symbol (mirrors the real
 # openclaw trace: agent writes a focused .mjs importing the raw .ts source,
 # runs it via `npx tsx`). Pairs without `verify_script` fall back to a shared
-# default body (import the edited package's index.ts + sanity-call the symbol +
-# print "All tests passed!"). The default loads the full TS module graph -> real
-# transient memory peak; it never asserts complex logic so a round never dies
-# from a broken assertion.
+# default body (import compiler-core + run baseParse + print "All tests
+# passed!"). The default loads the full TS module graph -> real transient
+# memory peak; it never asserts complex logic so a round never dies from a
+# broken assertion.
+#
+# Why compiler-core (not the edited package's own index): the real openclaw
+# agent on vuejs/core imported compiler-core's baseParse/parse to verify edits
+# (its captured trace imports only compiler-core). compiler-core is the
+# heaviest trace-faithful entry that runs under a bare `npx tsx` without
+# hitting the __TEST__ build global - the vue/runtime-core/compiler-dom/
+# compiler-sfc package graphs all reach compiler-dom/src/errors.ts which
+# references __TEST__ (intentionally not injected, see below) and crash on a
+# real call. compiler-core alone (parser) avoids that path while still loading
+# the parser+AST module graph = a real transient CPU/memory peak (~467ms user
+# steady vs ~299ms for the lightweight shared package). Each pair carries a
+# different template/assertion so consecutive rounds don't repeat identical
+# bytes (mirrors the agent rewriting its ad-hoc test per verify).
 DEFAULT_CODING_SOURCE_FILES = [
     {
         "file": "packages/shared/src/general.ts",
         "find": "export const NOOP = (): void => {}",
         "replace": "export const NOOP = (): void => undefined",
-        # Import @vue/shared raw .ts, sanity-call NOOP (the edited symbol).
+        # v1: basic div + interpolation
         "verify_script": (
             "globalThis.__DEV__ = true\n"
             "globalThis.__BROWSER__ = false\n"
-            "import('/opt/coding-bench/packages/shared/src/index.ts').then(m => {\n"
-            "  if (typeof m.NOOP !== 'function') throw new Error('NOOP not a function')\n"
-            "  m.NOOP()\n"
+            "globalThis.__COMPAT__ = false\n"
+            "globalThis.__ESM_BUNDLER__ = true\n"
+            "globalThis.__FEATURE_OPTIONS_API__ = true\n"
+            "globalThis.__FEATURE_PROD_DEVTOOLS__ = false\n"
+            "globalThis.__FEATURE_SUSPENSE__ = true\n"
+            "globalThis.__RUNTIME_COMPILE__ = true\n"
+            "import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {\n"
+            "  const ast = m.baseParse('<div id=\"x\">{{ msg }}</div>', { parseMode: 'html' })\n"
+            "  if (ast.children[0].tag !== 'div') throw new Error('expected div')\n"
             "  console.log('All tests passed!')\n"
             "})\n"
         ),
@@ -77,36 +96,120 @@ DEFAULT_CODING_SOURCE_FILES = [
         "file": "packages/shared/src/general.ts",
         "find": "Always return false.",
         "replace": "Always returns false.",
+        # v2: v-pre textarea (the real agent's issue scenario)
+        "verify_script": (
+            "globalThis.__DEV__ = true\n"
+            "globalThis.__BROWSER__ = false\n"
+            "globalThis.__COMPAT__ = false\n"
+            "globalThis.__ESM_BUNDLER__ = true\n"
+            "globalThis.__FEATURE_OPTIONS_API__ = true\n"
+            "globalThis.__FEATURE_PROD_DEVTOOLS__ = false\n"
+            "globalThis.__FEATURE_SUSPENSE__ = true\n"
+            "globalThis.__RUNTIME_COMPILE__ = true\n"
+            "import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {\n"
+            "  const ast = m.baseParse('<textarea v-pre>{{ not interpolated }}</textarea>', { parseMode: 'html' })\n"
+            "  if (ast.children[0].tag !== 'textarea') throw new Error('expected textarea')\n"
+            "  console.log('All tests passed!')\n"
+            "})\n"
+        ),
     },
     {
         "file": "packages/shared/src/index.ts",
         "find": "export * from './general'",
         "replace": "export * from './general' // bench round",
+        # v3: v-for list
+        "verify_script": (
+            "globalThis.__DEV__ = true\n"
+            "globalThis.__BROWSER__ = false\n"
+            "globalThis.__COMPAT__ = false\n"
+            "globalThis.__ESM_BUNDLER__ = true\n"
+            "globalThis.__FEATURE_OPTIONS_API__ = true\n"
+            "globalThis.__FEATURE_PROD_DEVTOOLS__ = false\n"
+            "globalThis.__FEATURE_SUSPENSE__ = true\n"
+            "globalThis.__RUNTIME_COMPILE__ = true\n"
+            "import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {\n"
+            "  const ast = m.baseParse('<ul><li v-for=\"i in list\">{{ i }}</li></ul>', { parseMode: 'html' })\n"
+            "  if (ast.children[0].tag !== 'ul') throw new Error('expected ul')\n"
+            "  console.log('All tests passed!')\n"
+            "})\n"
+        ),
     },
     {
         "file": "packages/vue/src/index.ts",
         "find": '// This entry is the "full-build"',
         "replace": '// This entry is the "full-build" (bench)',
+        # v4: nested v-if/v-else
+        "verify_script": (
+            "globalThis.__DEV__ = true\n"
+            "globalThis.__BROWSER__ = false\n"
+            "globalThis.__COMPAT__ = false\n"
+            "globalThis.__ESM_BUNDLER__ = true\n"
+            "globalThis.__FEATURE_OPTIONS_API__ = true\n"
+            "globalThis.__FEATURE_PROD_DEVTOOLS__ = false\n"
+            "globalThis.__FEATURE_SUSPENSE__ = true\n"
+            "globalThis.__RUNTIME_COMPILE__ = true\n"
+            "import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {\n"
+            "  const ast = m.baseParse('<div><span v-if=\"ok\">yes</span><span v-else>no</span></div>', { parseMode: 'html' })\n"
+            "  if (ast.children[0].children.length < 2) throw new Error('expected 2 spans')\n"
+            "  console.log('All tests passed!')\n"
+            "})\n"
+        ),
     },
     {
         "file": "packages/reactivity/src/baseHandlers.ts",
         "find": "export const mutableHandlers: ProxyHandler<object> =",
         "replace": "export const mutableHandlers: ProxyHandler<object> = // bench",
+        # v5: multi-root fragment
+        "verify_script": (
+            "globalThis.__DEV__ = true\n"
+            "globalThis.__BROWSER__ = false\n"
+            "globalThis.__COMPAT__ = false\n"
+            "globalThis.__ESM_BUNDLER__ = true\n"
+            "globalThis.__FEATURE_OPTIONS_API__ = true\n"
+            "globalThis.__FEATURE_PROD_DEVTOOLS__ = false\n"
+            "globalThis.__FEATURE_SUSPENSE__ = true\n"
+            "globalThis.__RUNTIME_COMPILE__ = true\n"
+            "import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {\n"
+            "  const ast = m.baseParse('<div>a</div><div>b</div>', { parseMode: 'html' })\n"
+            "  if (ast.children.length < 2) throw new Error('expected 2 roots')\n"
+            "  console.log('All tests passed!')\n"
+            "})\n"
+        ),
     },
     {
         "file": "packages/runtime-core/src/errorHandling.ts",
         "find": "import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared'",
         "replace": "import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared' // bench",
+        # v6: baseParse + complex expression (props) - the agent's baseParse entry
+        "verify_script": (
+            "globalThis.__DEV__ = true\n"
+            "globalThis.__BROWSER__ = false\n"
+            "globalThis.__COMPAT__ = false\n"
+            "globalThis.__ESM_BUNDLER__ = true\n"
+            "globalThis.__FEATURE_OPTIONS_API__ = true\n"
+            "globalThis.__FEATURE_PROD_DEVTOOLS__ = false\n"
+            "globalThis.__FEATURE_SUSPENSE__ = true\n"
+            "globalThis.__RUNTIME_COMPILE__ = true\n"
+            "import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {\n"
+            "  const parse = m.baseParse\n"
+            "  const ast = parse('<div :class=\"cls + extra\" @click=\"onClick\">text</div>', { parseMode: 'html' })\n"
+            "  const div = ast.children[0]\n"
+            "  if (!div.props || !div.props.length) throw new Error('expected props')\n"
+            "  console.log('All tests passed!')\n"
+            "})\n"
+        ),
     },
 ]
 
 
 # Shared default verify-script body for pairs that don't carry their own
-# `verify_script`. Imports the edited package's raw .ts index + sanity-calls a
-# top-level export + prints "All tests passed!". Loads the full TS module graph
-# (esbuild transpile + node execute) -> real transient memory peak. Never asserts
-# complex logic, so a round never dies from a broken assertion. `{pkg}` is the
-# packages/<name> dir of the edited file, substituted by the runner.
+# `verify_script`. Imports compiler-core (the real agent's verify entry, the
+# heaviest trace-faithful entry that runs under bare npx tsx - see
+# DEFAULT_CODING_SOURCE_FILES header) + runs baseParse + prints "All tests
+# passed!". Loads the parser+AST module graph (esbuild transpile + node
+# execute) -> real transient memory peak. `{pkg}` is no longer used (the
+# default always imports compiler-core regardless of which file was edited)
+# but kept for back-compat with any external caller; it's ignored if absent.
 #
 # The globalThis injections are VERBATIM the set the real openclaw agent injected
 # at the top of its verify scripts in the captured vuejs/core trajectory
@@ -115,11 +218,11 @@ DEFAULT_CODING_SOURCE_FILES = [
 # __FEATURE_SUSPENSE__, __RUNTIME_COMPILE__. vuejs/core's source references these
 # build-time globals (esbuild `define` in a real build); a bare `npx tsx` run has
 # them undefined, so the agent (and we) inject them at the top of the ad-hoc
-# test. NOTE: __TEST__ is intentionally NOT injected - the agent didn't either -
-# so pairs whose package graph reaches runtime-core/src/compat/compatConfig.ts
-# (which references __TEST__) CANNOT use this default; they must carry their own
-# verify_script importing a __TEST__-free lightweight entry (see the vue and
-# runtime-core pairs in e2b_coding_bench.yaml).
+# test. NOTE: __TEST__ is intentionally NOT injected - the agent didn't either.
+# compiler-core alone (the parser) avoids the __TEST__ reference path (in
+# compiler-dom/src/errors.ts); the vue/runtime-core/compiler-dom/compiler-sfc
+# graphs reach it and crash on a real call, so those pairs use this
+# compiler-core-based default rather than their own package's index.
 DEFAULT_CODING_VERIFY_SCRIPT_JS = (
     "globalThis.__DEV__ = true\n"
     "globalThis.__BROWSER__ = false\n"
@@ -129,9 +232,9 @@ DEFAULT_CODING_VERIFY_SCRIPT_JS = (
     "globalThis.__FEATURE_PROD_DEVTOOLS__ = false\n"
     "globalThis.__FEATURE_SUSPENSE__ = true\n"
     "globalThis.__RUNTIME_COMPILE__ = true\n"
-    "import('{pkg}/src/index.ts').then(m => {\n"
-    "  const exp = Object.keys(m)[0]\n"
-    "  if (exp && typeof m[exp] === 'undefined') throw new Error(exp + ' undefined')\n"
+    "import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {\n"
+    "  const ast = m.baseParse('<div id=\"x\">hello</div>', { parseMode: 'html' })\n"
+    "  if (ast.children[0].tag !== 'div') throw new Error('expected div')\n"
     "  console.log('All tests passed!')\n"
     "})\n"
 )

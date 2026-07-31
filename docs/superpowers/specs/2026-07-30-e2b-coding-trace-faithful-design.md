@@ -122,7 +122,9 @@ Why `npx tsx` and not `node`:
 
 ### Verification scripts
 
-Each `source_file` pair gains an optional `verify_script` field — a small `.mjs` body that exercises the edited symbol. A shared default verify script (compiles + imports the edited package's `index.ts`, asserts no throw) covers pairs without a specific script. This mirrors the trace's "agent writes a focused test for the thing it changed."
+Each `source_file` pair gains an optional `verify_script` field — a small `.mjs` body that exercises the edited symbol. A shared default verify script covers pairs without a specific script. This mirrors the trace's "agent writes a focused test for the thing it changed."
+
+**Resolved entry (implementation):** the default (and every pair's `verify_script`) imports **`compiler-core`** and runs `baseParse` — the agent's actual verify entry (its trace imports only `compiler-core`'s `baseParse`/`parse`). `compiler-core` is the heaviest trace-faithful entry that runs under a bare `npx tsx` without hitting the `__TEST__` build global: the vue/runtime-core/compiler-dom/compiler-sfc graphs all reach `compiler-dom/src/errors.ts` (references `__TEST__`) and crash on a real call; the parser alone avoids that path (~467ms user steady vs ~299ms for the lightweight `shared` package). Each pair's template/assertion differs so consecutive rounds don't repeat identical bytes (mirrors the agent rewriting its ad-hoc test per verify). `__TEST__` is intentionally NOT injected — the agent didn't either.
 
 ## Decision 3 — Vite playground dev server: removed entirely
 
