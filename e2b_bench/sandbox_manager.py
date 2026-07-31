@@ -472,9 +472,7 @@ class SandboxManager:
                 err_key = (type(e).__name__, str(e)[:80])
                 if err_key not in seen_errors:
                     seen_errors.add(err_key)
-                    print(
-                        f"[Sandbox{state.sandbox_id}] uname check error: {type(e).__name__}: {str(e)[:120]}"
-                    )
+                    print(f"[Sandbox{state.sandbox_id}] uname check error: {type(e).__name__}: {str(e)[:120]}")
 
             time.sleep(READY_CHECK_INTERVAL)
 
