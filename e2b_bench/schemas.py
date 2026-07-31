@@ -522,7 +522,7 @@ class CodingMetrics(TaskMetricsBase):
     Step order: find, read, edit, verify, diff.
     Adds verify_success_count beyond the base counters. The `verify` step
     mirrors the real agent trace: write an ad-hoc test file to /tmp + run it
-    (npx tsx for js, go run for go). verify_success tracks whether that step
+    (npx tsx for ts, go run for go). verify_success tracks whether that step
     passed (transient compile+run peak succeeded).
     """
 

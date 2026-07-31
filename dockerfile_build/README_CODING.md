@@ -156,9 +156,11 @@ bash bench_helper.sh [ROUND] [OPTIONS]
 
 ## Language extensibility
 
-JS is a value of `coding.language` (`"js"`), not a hard-coded workflow. The
+`ts` is a value of `coding.language` (`"ts"`), not a hard-coded workflow. The
 coding loop is shared across languages; only the verify mechanics differ,
 captured as data in a `CodingLanguageProfile` registry (`e2b_bench/config.py`).
 A Go variant (`gohugoio/hugo`, `go run` verify) ships alongside this one — see
 [README_CODING_GO.md](README_CODING_GO.md). Adding C++ later = one registry
-entry + its default verify script.
+entry + its default verify script. (The profile is keyed `ts` because
+vuejs/core's source is TypeScript; the verify scripts import `.ts` source and
+run via `npx tsx`, which transpiles TS on the fly.)

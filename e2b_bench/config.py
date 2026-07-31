@@ -33,7 +33,7 @@ class CodingLanguageProfile:
         heredoc_eof: heredoc terminator string ("EOF"/"GOEOF").
         run_cmd: the verify run command (npx tsx ... / go run ...).
         source_find_names: list of -name patterns for the find fallback
-            (["*.ts","*.tsx","*.js"] for js, ["*.go"] for go).
+            (["*.ts","*.tsx","*.js"] for ts, ["*.go"] for go).
         source_find_root: directory the find fallback searches under
             ("packages" for the vuejs/core monorepo, "." for hugo whose
             source is spread across markup/, hugofs/, ...). Keeps the fallback
@@ -51,7 +51,7 @@ class CodingLanguageProfile:
             re-runs `go run`, i.e. each verify is effectively a fresh compile.
             Clearing the cache before each sandbox verify reproduces that
             per-verify cold-compile pressure (the behavior the customer needs
-            to see), even though the literal trace shows no `go clean`. js/tsx
+            to see), even though the literal trace shows no `go clean`. ts/tsx
             has no equivalent persistent cache (esbuild re-transpiles every
             run), so it stays empty.
     """
@@ -78,7 +78,7 @@ def _find_name_clause(names: tuple) -> str:
 # entry here + its DEFAULT_CODING_*_SOURCE_FILES + default verify script in
 # schemas.py. The runner reads the active profile via coding_language.
 CODING_LANGUAGE_PROFILES: Dict[str, CodingLanguageProfile] = {
-    "js": CodingLanguageProfile(
+    "ts": CodingLanguageProfile(
         temp_test_path="/tmp/bench_verify.mjs",
         heredoc_eof="EOF",
         run_cmd="npx tsx /tmp/bench_verify.mjs",
@@ -111,14 +111,14 @@ CODING_LANGUAGE_PROFILES: Dict[str, CodingLanguageProfile] = {
 
 # Maps a language to its default replacement-pair list (DEFAULT_CODING_*_SOURCE_FILES).
 CODING_LANGUAGE_DEFAULT_SOURCE_FILES: Dict[str, list] = {
-    "js": DEFAULT_CODING_SOURCE_FILES,
+    "ts": DEFAULT_CODING_SOURCE_FILES,
     "go": DEFAULT_CODING_GO_SOURCE_FILES,
 }
 
 
 def get_coding_profile(language: str) -> CodingLanguageProfile:
-    """Return the CodingLanguageProfile for `language`, falling back to js."""
-    return CODING_LANGUAGE_PROFILES.get(language, CODING_LANGUAGE_PROFILES["js"])
+    """Return the CodingLanguageProfile for `language`, falling back to ts."""
+    return CODING_LANGUAGE_PROFILES.get(language, CODING_LANGUAGE_PROFILES["ts"])
 
 
 def _normalize_source_files(raw: Any) -> List[Dict[str, str]]:
@@ -239,13 +239,13 @@ class Config:
 
     # Coding task configuration
     coding_project_dir: str = "/opt/coding-bench"
-    # Coding language - selects a CodingLanguageProfile (js/go/future cpp) which
+    # Coding language - selects a CodingLanguageProfile (ts/go/future cpp) which
     # drives the verify step (temp test path, heredoc terminator, run command,
     # source glob, checkout paths). Extensible: adding a language = one registry
     # entry, no runner code changes. See CODING_LANGUAGE_PROFILES below.
-    coding_language: str = "js"
+    coding_language: str = "ts"
     # Verify step: write an ad-hoc test file to /tmp (heredoc) then run it. The
-    # run command comes from the active language profile (npx tsx for js,
+    # run command comes from the active language profile (npx tsx for ts,
     # go run for go). Mirrors the real openclaw trace's combined write+run.
     coding_verify_cmd: str = "npx tsx /tmp/bench_verify.mjs"
     coding_verify_timeout: int = 120  # Verify command timeout (seconds)
@@ -330,19 +330,19 @@ class Config:
             warmup_delay=browser.get("warmup_delay", 10),
             warmup_only=browser.get("warmup_only", False),
             coding_project_dir=coding.get("project_dir", "/opt/coding-bench"),
-            coding_language=coding.get("language", "js"),
+            coding_language=coding.get("language", "ts"),
             coding_verify_cmd=coding.get(
                 "verify_cmd",
                 # Default verify command from the active language profile (npx tsx
-                # for js, go run for go) when YAML doesn't override it.
-                get_coding_profile(coding.get("language", "js")).run_cmd,
+                # for ts, go run for go) when YAML doesn't override it.
+                get_coding_profile(coding.get("language", "ts")).run_cmd,
             ),
             coding_verify_timeout=coding.get("verify_timeout", 120),
             coding_skip_verify=coding.get("skip_verify", False),
             coding_source_files=_normalize_source_files(
                 coding.get(
                     "source_files",
-                    CODING_LANGUAGE_DEFAULT_SOURCE_FILES.get(coding.get("language", "js"), DEFAULT_CODING_SOURCE_FILES),
+                    CODING_LANGUAGE_DEFAULT_SOURCE_FILES.get(coding.get("language", "ts"), DEFAULT_CODING_SOURCE_FILES),
                 )
             ),
             coding_interval_min=coding.get("interval_min", 2.0),
@@ -510,15 +510,15 @@ class Config:
             else 5,
             workflow_type=getattr(args, "workflow_type", "browser"),
             coding_project_dir=getattr(args, "coding_project_dir", "/opt/coding-bench"),
-            coding_language=getattr(args, "coding_language", "js"),
-            coding_verify_cmd=get_coding_profile(getattr(args, "coding_language", "js")).run_cmd,
+            coding_language=getattr(args, "coding_language", "ts"),
+            coding_verify_cmd=get_coding_profile(getattr(args, "coding_language", "ts")).run_cmd,
             coding_verify_timeout=getattr(args, "coding_verify_timeout", 120),
             coding_skip_verify=getattr(args, "coding_skip_verify", False),
             coding_source_files=_normalize_source_files(
                 getattr(args, "coding_source_file", None)
                 if getattr(args, "coding_source_file", None) is not None
                 else CODING_LANGUAGE_DEFAULT_SOURCE_FILES.get(
-                    getattr(args, "coding_language", "js"), DEFAULT_CODING_SOURCE_FILES
+                    getattr(args, "coding_language", "ts"), DEFAULT_CODING_SOURCE_FILES
                 )
             ),
             coding_interval_min=2.0,

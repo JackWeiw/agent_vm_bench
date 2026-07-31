@@ -93,7 +93,7 @@ languages; only the verify mechanics differ, captured as data in a
 `CodingLanguageProfile` registry (`e2b_bench/config.py`). Adding C++ later =
 one registry entry + its default verify script — no runner code changes.
 
-| Profile field | js (vuejs/core) | go (hugo) |
+| Profile field | ts (vuejs/core) | go (hugo) |
 |---------------|-----------------|-----------|
 | `temp_test_path` | `/tmp/bench_verify.mjs` | `/tmp/bench_verify.go` |
 | `heredoc_eof` | `EOF` | `GOEOF` |

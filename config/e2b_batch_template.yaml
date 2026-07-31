@@ -13,7 +13,7 @@ workflow_type: "browser"
 
 # Coding task configuration (used when workflow_type = "coding")
 coding:
-  language: "js"
+  language: "ts"
   project_dir: "/opt/coding-bench"
   verify_cmd: "npx tsx /tmp/bench_verify.mjs"
   verify_timeout: 120

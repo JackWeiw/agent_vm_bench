@@ -51,7 +51,7 @@ workflow_type: "coding"
 
 # Coding task configuration
 coding:
-  language: "js"                       # Coding language (selects verify profile: js/go)
+  language: "ts"                       # Coding language (selects verify profile: ts/go)
   project_dir: "/opt/coding-bench"    # vuejs/core project directory inside sandbox
   verify_cmd: "npx tsx /tmp/bench_verify.mjs"  # Verify run command (writes ad-hoc test + runs it)
   verify_timeout: 120                 # Verify command timeout (seconds)

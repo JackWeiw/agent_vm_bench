@@ -835,7 +835,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # Coding task configuration
     parser.add_argument("--coding-project-dir", type=str, help="Project directory inside sandbox")
-    parser.add_argument("--coding-language", type=str, help="Coding language (js/go)")
+    parser.add_argument("--coding-language", type=str, help="Coding language (ts/go)")
     parser.add_argument("--coding-verify-timeout", type=int, help="Verify command timeout seconds")
     parser.add_argument(
         "--coding-source-file", type=str, action="append", help="Source file for modification (can specify multiple)"

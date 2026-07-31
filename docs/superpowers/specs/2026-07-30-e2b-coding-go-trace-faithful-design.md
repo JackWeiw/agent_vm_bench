@@ -117,13 +117,13 @@ Each pair's `verify_script` is the body of the standalone `package main` (betwee
 
 The Go loop has the **same shape** as the JS loop (`find → read → edit → verify → diff`); only the verify commands, toolchain, and file globs differ. Because **future languages (C++, …) will be added**, the language dispatch is a **data-driven profile table**, not a chain of `if language == ...`:
 
-- Add `coding_language: str = "js"` to `Config` (values: `js` | `go` | future `cpp` | …).
+- Add `coding_language: str = "ts"` to `Config` (values: `ts` | `go` | future `cpp` | …).
 - Define a `CodingLanguageProfile` (a small dataclass / dict registry) keyed by language, holding:
-  - `temp_test_path` — where the ad-hoc test is written (`/tmp/bench_verify.mjs` for js, `/tmp/bench_verify.go` for go)
-  - `heredoc_eof` — heredoc terminator (`EOF` for js, `GOEOF` for go)
-  - `run_cmd` — the verify run command (`npx tsx /tmp/bench_verify.mjs` for js, `go run /tmp/bench_verify.go` for go)
-  - `source_glob` — the find fallback glob (`*.ts *.tsx *.js` for js, `*.go` for go)
-  - `checkout_paths` — what `git checkout --` resets (`packages/ src/` for js, the relevant hugo path for go)
+  - `temp_test_path` — where the ad-hoc test is written (`/tmp/bench_verify.mjs` for ts, `/tmp/bench_verify.go` for go)
+  - `heredoc_eof` — heredoc terminator (`EOF` for ts, `GOEOF` for go)
+  - `run_cmd` — the verify run command (`npx tsx /tmp/bench_verify.mjs` for ts, `go run /tmp/bench_verify.go` for go)
+  - `source_glob` — the find fallback glob (`*.ts *.tsx *.js` for ts, `*.go` for go)
+  - `checkout_paths` — what `git checkout --` resets (`packages/` for ts, the relevant hugo path for go)
 - The verify step reads the active profile from `coding_language` and builds the write+run command from the profile fields. **Adding C++ later = adding one profile entry + its `verify_cmd`** — no runner code changes, no new `workflow_type`.
 - `CODING_STEP_ORDER` stays `[find, read, edit, verify, diff]` for all languages — step keys are language-agnostic, so `metrics_extractor.py` / `stats_collector.py` need no per-language changes.
 - `DEFAULT_CODING_SOURCE_FILES` (js/vue) and `DEFAULT_CODING_GO_SOURCE_FILES` (go/hugo) are both defined; `Config` picks the default list from `coding_language` (registry maps language → default source-file list).
@@ -155,15 +155,15 @@ coding:
   interval_max: 10.0
 ```
 
-New `Config` field: `coding_language: str = "js"`. The JS redesign's removed fields (`coding_dev_*`, `coding_build_*`, `coding_test_*`) stay removed for both languages.
+New `Config` field: `coding_language: str = "ts"`. The JS redesign's removed fields (`coding_dev_*`, `coding_build_*`, `coding_test_*`) stay removed for both languages.
 
 ## Files to change / add
 
 | File | Change |
 |------|--------|
-| `e2b_bench/coding_task_runner.py` | (After the JS redesign lands) verify step dispatches on `coding_language`: js = `npx tsx`, go = `go run`. Heredoc write of temp test file is part of verify. `find` step's fallback `find -name` glob uses `*.go` when `coding_language == "go"`. |
+| `e2b_bench/coding_task_runner.py` | (After the JS redesign lands) verify step dispatches on `coding_language`: ts = `npx tsx`, go = `go run`. Heredoc write of temp test file is part of verify. `find` step's fallback `find -name` glob uses `*.go` when `coding_language == "go"`. |
 | `e2b_bench/schemas.py` | Add `DEFAULT_CODING_GO_SOURCE_FILES` (verified hugo pairs with `verify_script`). `CODING_STEP_ORDER` unchanged (shared). |
-| `e2b_bench/config.py` | Add `coding_language: str = "js"`; default source-file list chosen by language; YAML + CLI parsing. |
+| `e2b_bench/config.py` | Add `coding_language: str = "ts"`; default source-file list chosen by language; YAML + CLI parsing. |
 | `dockerfile_build/Dockerfile.coding-go` | **New.** ubuntu:24.04-linuxarm64 + Go ARM64 toolchain + git + clone hugo at base_commit (module graph intentionally not pre-downloaded — see Decision 3). `CMD ["sleep","infinity"]`. |
 | `dockerfile_build/push_to_harbor_coding_go.sh` | **New.** Mirror of `push_to_harbor_coding.sh` for the go image. |
 | `dockerfile_build/bench_helper_go.sh` | **New.** Go step sequence `find → read → edit → verify (cat+go run) → diff`; hugo replacement pairs. |

@@ -10,7 +10,7 @@ trajectories on vuejs/core and gohugoio/hugo - locate -> inspect -> edit -> veri
   Step 0: find    - reset source files (git checkout) + verify target file exists
   Step 1: read    - read the target file to confirm context (agent inspection)
   Step 2: edit    - apply a pre-configured find->replace pair (real semantic edit)
-  Step 3: verify  - write an ad-hoc test file to /tmp + run it (npx tsx for js,
+  Step 3: verify  - write an ad-hoc test file to /tmp + run it (npx tsx for ts,
                     go run for go). Mirrors the trace's combined write+run. This
                     is the transient memory peak (esbuild transpile / Go compile
                     + execute, loading the module graph).
@@ -88,7 +88,7 @@ def _run_verify(
     """Write an ad-hoc test file to /tmp + run it - the trace-faithful verify step.
 
     Mirrors the real openclaw agent: `cat > /tmp/test_*.mjs << 'EOF' ... EOF` then
-    `npx tsx /tmp/test_*.mjs` (js), or `cat > /tmp/test_*.go << 'GOEOF' ... GOEOF`
+    `npx tsx /tmp/test_*.mjs` (ts), or `cat > /tmp/test_*.go << 'GOEOF' ... GOEOF`
     then `go run /tmp/bench_verify.go` (go). The write and run are a SINGLE command
     (newline-joined), exactly as the agent did - splitting them would diverge
     from the trace.
@@ -602,7 +602,7 @@ class CodingRoundRunner(threading.Thread):
         """Step 3: Write an ad-hoc test file to /tmp + run it (the trace-faithful verify).
 
         Mirrors the real openclaw agent: `cat > /tmp/test_*.mjs << 'EOF' ... EOF`
-        then `npx tsx` (js), or `cat > /tmp/test_*.go << 'GOEOF' ... GOEOF` then
+        then `npx tsx` (ts), or `cat > /tmp/test_*.go << 'GOEOF' ... GOEOF` then
         `go run` (go). The write+run is a single command (newline-joined). This
         is the transient memory peak (esbuild transpile / Go compiler + execute).
 

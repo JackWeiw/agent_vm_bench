@@ -123,7 +123,7 @@ class TestCodingConfig(unittest.TestCase):
         """Test coding config default values"""
         c = Config(workflow_type="coding")
         self.assertEqual(c.coding_project_dir, "/opt/coding-bench")
-        self.assertEqual(c.coding_language, "js")
+        self.assertEqual(c.coding_language, "ts")
         self.assertEqual(c.coding_verify_cmd, "npx tsx /tmp/bench_verify.mjs")
         self.assertEqual(c.coding_verify_timeout, 120)
         self.assertEqual(c.coding_skip_verify, False)
@@ -146,7 +146,7 @@ class TestCodingConfig(unittest.TestCase):
     def test_yaml_coding_language_and_verify_cmd(self):
         """YAML configures the language and the verify command (npx tsx)"""
         c = Config.load_from_yaml("config/e2b_coding_bench.yaml")
-        self.assertEqual(c.coding_language, "js")
+        self.assertEqual(c.coding_language, "ts")
         self.assertEqual(c.coding_verify_cmd, "npx tsx /tmp/bench_verify.mjs")
         self.assertEqual(c.coding_verify_timeout, 120)
         self.assertEqual(c.coding_skip_verify, False)
@@ -198,16 +198,16 @@ class TestSandboxStateCodingMetrics(unittest.TestCase):
 
 
 class TestCodingLanguageProfiles(unittest.TestCase):
-    """Test the language-profile registry (extensible: js/go, future cpp)."""
+    """Test the language-profile registry (extensible: ts/go, future cpp)."""
 
-    def test_js_profile(self):
-        """js profile: npx tsx verify, EOF heredoc, ts/tsx/js glob."""
-        p = get_coding_profile("js")
+    def test_ts_profile(self):
+        """ts profile: npx tsx verify, EOF heredoc, ts/tsx/js glob."""
+        p = get_coding_profile("ts")
         self.assertEqual(p.temp_test_path, "/tmp/bench_verify.mjs")
         self.assertEqual(p.heredoc_eof, "EOF")
         self.assertEqual(p.run_cmd, "npx tsx /tmp/bench_verify.mjs")
         self.assertIn("*.ts", p.source_find_names)
-        # js/tsx has no persistent compile cache (esbuild re-transpiles every
+        # ts/tsx has no persistent compile cache (esbuild re-transpiles every
         # run), so no pre-verify cache clear.
         self.assertEqual(p.pre_verify_cmd, "")
 
@@ -223,8 +223,8 @@ class TestCodingLanguageProfiles(unittest.TestCase):
         # ad-hoc test and recompiles per verify, so per-verify is cold).
         self.assertEqual(p.pre_verify_cmd, "go clean -cache")
 
-    def test_unknown_language_falls_back_to_js(self):
-        """An unregistered language falls back to the js profile."""
+    def test_unknown_language_falls_back_to_ts(self):
+        """An unregistered language falls back to the ts profile."""
         p = get_coding_profile("rust-not-yet")
         self.assertEqual(p.run_cmd, "npx tsx /tmp/bench_verify.mjs")
 
@@ -278,7 +278,7 @@ class TestStepVerify(unittest.TestCase):
 
     def test_verify_writes_temp_file_and_runs_npx_tsx(self):
         """_step_verify writes /tmp/bench_verify.mjs and runs npx tsx in one command."""
-        config = Config(workflow_type="coding", coding_language="js")
+        config = Config(workflow_type="coding", coding_language="ts")
         runner = self._make_runner(config)
         sbx = _FakeSbx()
         pair = {
@@ -297,7 +297,7 @@ class TestStepVerify(unittest.TestCase):
         self.assertIn("cat > /tmp/bench_verify.mjs", cmd)
         self.assertIn("npx tsx /tmp/bench_verify.mjs", cmd)
         self.assertIn("console.log('All tests passed!')", cmd)
-        # js has no pre-verify cache clear (tsx/esbuild re-transpiles every run).
+        # ts has no pre-verify cache clear (tsx/esbuild re-transpiles every run).
         self.assertNotIn("go clean", cmd)
 
     def test_verify_go_profile_uses_go_run(self):
@@ -332,7 +332,7 @@ class TestStepVerify(unittest.TestCase):
 
     def test_verify_failure_returned(self):
         """A non-zero exit code from the verify run is reported as failure."""
-        config = Config(workflow_type="coding", coding_language="js")
+        config = Config(workflow_type="coding", coding_language="ts")
         runner = self._make_runner(config)
         sbx = _FakeSbx(result=_FakeResult(exit_code=1, stdout="", stderr="boom"))
         pair = {
@@ -350,7 +350,7 @@ class TestStepVerify(unittest.TestCase):
         """A pair marked verify: compile_only uses the shared default (compiler-core
         + baseParse, no assertion) - the trace-faithful heaviest entry that runs
         under bare npx tsx without hitting __TEST__."""
-        config = Config(workflow_type="coding", coding_language="js")
+        config = Config(workflow_type="coding", coding_language="ts")
         runner = self._make_runner(config)
         sbx = _FakeSbx()
         pair = {
@@ -373,7 +373,7 @@ class TestStepVerify(unittest.TestCase):
         openclaw trajectory (8 globals), and intentionally NOT __TEST__ (the agent
         didn't either; pairs reaching compat/compatConfig.ts need their own
         verify_script importing a __TEST__-free entry)."""
-        config = Config(workflow_type="coding", coding_language="js")
+        config = Config(workflow_type="coding", coding_language="ts")
         runner = self._make_runner(config)
         sbx = _FakeSbx()
         pair = {
@@ -403,7 +403,7 @@ class TestStepVerify(unittest.TestCase):
         whose graph reaches compiler-dom/src/errors.ts -> ReferenceError: __TEST__ is not
         defined (a build global intentionally not injected). It is a real assertion
         (parsed tag check), so compile_only is False."""
-        config = Config(workflow_type="coding", coding_language="js")
+        config = Config(workflow_type="coding", coding_language="ts")
         runner = self._make_runner(config)
         sbx = _FakeSbx()
         pair = {
@@ -432,7 +432,7 @@ class TestStepVerify(unittest.TestCase):
         """A pair with no verify_script and no verify: compile_only falls back to the
         shared default verify script (the documented Go comment-append behavior) and is
         honestly labeled compile-only - never fakes a Verify Success."""
-        config = Config(workflow_type="coding", coding_language="js")
+        config = Config(workflow_type="coding", coding_language="ts")
         runner = self._make_runner(config)
         sbx = _FakeSbx()
         pair = {"file": "packages/reactivity/src/baseHandlers.ts", "find": "x", "replace": "y"}
@@ -456,9 +456,9 @@ class TestStepFindLanguageAware(unittest.TestCase):
         state = SandboxState(sandbox_id=1, workflow_type="coding")
         return CodingRoundRunner(state=state, config=config, stop_event=threading.Event(), round_id=0)
 
-    def test_js_find_uses_packages_checkout(self):
-        """js find resets packages/ (vuejs/core has no top-level src/) and locates *.ts/*.tsx/*.js on miss."""
-        config = Config(workflow_type="coding", coding_language="js")
+    def test_ts_find_uses_packages_checkout(self):
+        """ts find resets packages/ (vuejs/core has no top-level src/) and locates *.ts/*.tsx/*.js on miss."""
+        config = Config(workflow_type="coding", coding_language="ts")
         runner = self._make_runner(config)
         sbx = _FakeSbx(result=_FakeResult(exit_code=1, stdout="", stderr=""))  # file not found
         runner._step_find(sbx, "/opt/coding-bench", "packages/shared/src/missing.ts", "x", "y", step_times={})
