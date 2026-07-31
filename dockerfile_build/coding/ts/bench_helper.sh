@@ -32,6 +32,7 @@
 #   BENCH_PROJECT_DIR    vuejs/core project path (default: /opt/coding-bench)
 #   BENCH_VERIFY_CMD     Verify run command (default: npx tsx /tmp/bench_verify.mjs)
 #   BENCH_VERIFY_TIMEOUT Verify timeout seconds (default: 120)
+#   BENCH_VERIFY_REPEAT  ts only: N independent npx tsx processes per verify (default: 3)
 # ============================================================================
 
 # ---- Configuration (override via environment variables for extensibility) ----
@@ -41,41 +42,37 @@ VERIFY_TIMEOUT="${BENCH_VERIFY_TIMEOUT:-120}"
 TEMP_TEST_PATH="/tmp/bench_verify.mjs"
 HEREDOC_EOF="EOF"
 
-# Replacement pairs for round-robin editing (verified against the vuejs/core repo).
-# Each pair is a real, type-safe string edit. The 3rd field is an optional
-# verify_script body (the ad-hoc test exercising the edited symbol); empty =
-# shared default (import edited package index.ts + sanity-call symbol).
-# Format: "file|find|replace|verify_script"
-TARGET_FILES=(
-    "packages/shared/src/general.ts|export const NOOP = (): void => {}|export const NOOP = (): void => undefined||"
-    "packages/shared/src/general.ts|Always return false.|Always returns false.||"
-    "packages/shared/src/index.ts|export * from './general'|export * from './general' // bench round||"
-    'packages/vue/src/index.ts|// This entry is the "full-build"|// This entry is the "full-build" (bench)||'
-    "packages/reactivity/src/baseHandlers.ts|export const mutableHandlers: ProxyHandler<object> =|export const mutableHandlers: ProxyHandler<object> = // bench||"
-    "packages/runtime-core/src/errorHandling.ts|import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared'|import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared' // bench||"
+# ts multi-process verify: N independent npx tsx processes per verify step (raises
+# steady-state CPU, the only faithful lever - see the runner _run_verify). Go has
+# no equivalent (its go clean -cache cold-compile is already real load).
+VERIFY_REPEAT="${BENCH_VERIFY_REPEAT:-3}"
+
+# Shared template pool (mirrors e2b_bench/schemas.py DEFAULT_VERIFY_TEMPLATES).
+# Each entry: a template (HTML passed to baseParse) + its JS assertion. Offset by
+# ROUND so consecutive rounds pick different N-subsets (mirrors the agent
+# rewriting its ad-hoc test per verify).
+declare -a POOL_TEMPLATES=(
+    '<div id="x">{{ msg }}</div>'
+    '<textarea v-pre>{{ not interpolated }}</textarea>'
+    '<ul><li v-for="i in list">{{ i }}</li></ul>'
+    '<div><span v-if="ok">yes</span><span v-else>no</span></div>'
+    '<div>a</div><div>b</div>'
+    '<div :class="cls + extra" @click="onClick">text</div>'
+)
+declare -a POOL_ASSERTS=(
+    "if (ast.children[0].tag !== 'div') throw new Error('expected div')"
+    "if (ast.children[0].tag !== 'textarea') throw new Error('expected textarea')"
+    "if (ast.children[0].tag !== 'ul') throw new Error('expected ul')"
+    "if (ast.children[0].children.length < 2) throw new Error('expected 2 spans')"
+    "if (ast.children.length < 2) throw new Error('expected 2 roots')"
+    "const div = ast.children[0]; if (!div.props || !div.props.length) throw new Error('expected props')"
 )
 
-# Shared default verify script body (used when a pair's verify_script is empty).
-# Imports compiler-core (the real openclaw agent's verify entry - its captured
-# vuejs/core trace imports only compiler-core's baseParse/parse) + runs baseParse
-# + prints "All tests passed!". Loads the parser+AST module graph -> real peak.
-#
-# Why compiler-core (not the edited package's own index): it's the heaviest
-# trace-faithful entry that runs under a bare `npx tsx` without hitting the
-# __TEST__ build global. The vue/runtime-core/compiler-dom/compiler-sfc graphs
-# all reach compiler-dom/src/errors.ts (references __TEST__) and crash on a real
-# call; compiler-core alone (the parser) avoids that path. ~467ms user steady
-# vs ~299ms for the lightweight shared package - a real transient CPU peak.
-#
-# The injected globals are VERBATIM the set the real openclaw agent injected at
-# the top of its verify scripts in the captured vuejs/core trajectory
-# (swe_bench_multilingual): __DEV__, __BROWSER__, __COMPAT__, __ESM_BUNDLER__,
-# __FEATURE_OPTIONS_API__, __FEATURE_PROD_DEVTOOLS__, __FEATURE_SUSPENSE__,
-# __RUNTIME_COMPILE__. __TEST__ is intentionally NOT injected (the agent didn't
-# either). compiler-core's entry exports baseParse (parse is an alias not
-# re-exported in this version -> m.parse is undefined; use baseParse).
-default_verify_script() {
-    cat <<DEFAULT
+# Stamp a pool entry (by index) into a full .mjs body: 8 agent globals + compiler-core
+# import + baseParse(template) + assert + print. Mirrors _stamp_verify_body.
+stamp_body() {
+    local idx="$1"
+    cat <<BODY
 globalThis.__DEV__ = true
 globalThis.__BROWSER__ = false
 globalThis.__COMPAT__ = false
@@ -85,12 +82,25 @@ globalThis.__FEATURE_PROD_DEVTOOLS__ = false
 globalThis.__FEATURE_SUSPENSE__ = true
 globalThis.__RUNTIME_COMPILE__ = true
 import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {
-  const ast = m.baseParse('<div id="x">hello</div>', { parseMode: 'html' })
-  if (ast.children[0].tag !== 'div') throw new Error('expected div')
+  const ast = m.baseParse('${POOL_TEMPLATES[$idx]}', { parseMode: 'html' })
+  ${POOL_ASSERTS[$idx]}
   console.log('All tests passed!')
 })
-DEFAULT
+BODY
 }
+
+# Replacement pairs for round-robin editing (verified against the vuejs/core repo).
+# Each pair is a real, type-safe string edit. The verify workload comes from the
+# shared POOL_TEMPLATES pool below (mirrors the runner), not a per-pair script.
+# Format: "file|find|replace"
+TARGET_FILES=(
+    "packages/shared/src/general.ts|export const NOOP = (): void => {}|export const NOOP = (): void => undefined"
+    "packages/shared/src/general.ts|Always return false.|Always returns false."
+    "packages/shared/src/index.ts|export * from './general'|export * from './general' // bench round"
+    'packages/vue/src/index.ts|// This entry is the "full-build"|// This entry is the "full-build" (bench)'
+    "packages/reactivity/src/baseHandlers.ts|export const mutableHandlers: ProxyHandler<object> =|export const mutableHandlers: ProxyHandler<object> = // bench"
+    "packages/runtime-core/src/errorHandling.ts|import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared'|import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared' // bench"
+)
 
 # ---- Argument Parsing ----
 ROUND=0
@@ -116,15 +126,16 @@ for arg in "$@"; do
             echo "  --help          Show this help"
             echo ""
             echo "Environment:"
-            echo "  BENCH_PROJECT_DIR     vuejs/core path (default: /opt/coding-bench)"
-            echo "  BENCH_VERIFY_CMD     Verify run command (default: npx tsx /tmp/bench_verify.mjs)"
-            echo "  BENCH_VERIFY_TIMEOUT Verify timeout seconds (default: 120)"
+            echo "  BENCH_PROJECT_DIR      vuejs/core path (default: /opt/coding-bench)"
+            echo "  BENCH_VERIFY_CMD       Verify run command (default: npx tsx /tmp/bench_verify.mjs)"
+            echo "  BENCH_VERIFY_TIMEOUT   Verify timeout seconds (default: 120)"
+            echo "  BENCH_VERIFY_REPEAT    ts only: N independent npx tsx processes per verify (default: 3)"
             echo ""
             echo "Workflow steps per round:"
             echo "  0: find    - git checkout reset + verify/locate target file"
             echo "  1: read    - inspect target file (head -20)"
             echo "  2: edit    - apply find->replace pair (real semantic edit)"
-            echo "  3: verify  - write /tmp/bench_verify.mjs + npx tsx run (memory peak)"
+            echo "  3: verify  - write N /tmp/bench_verify_{i}.mjs + npx tsx xN (memory peak)"
             echo "  4: diff    - git diff > patch file (verification artifact)"
             exit 0
             ;;
@@ -153,7 +164,6 @@ REST="${PAIR#*|}"
 FIND_STR="${REST%%|*}"
 REST="${REST#*|}"
 REPLACE_STR="${REST%%|*}"
-VERIFY_SCRIPT="${REST#*|}"
 
 # ---- Step 0: find — reset + locate target ----
 echo "[Step 0: find] Preparing environment..."
@@ -169,7 +179,6 @@ if [ ! -f "${PROJECT_DIR}/${TARGET_FILE}" ]; then
         TARGET_FILE="${FOUND_FILE}"
         FIND_STR="// bench marker"
         REPLACE_STR="// bench round"
-        VERIFY_SCRIPT=""
         echo "  Falling back to: ${TARGET_FILE} (generic comment-marker pair)"
     else
         echo "  ERROR: No target file available for modification" >&2
@@ -214,33 +223,32 @@ fi
 echo "  Edit applied"
 echo ""
 
-# ---- Step 3: verify — write ad-hoc test file + run via npx tsx ----
+# ---- Step 3: verify — write N ad-hoc test files + run N npx tsx (memory peak) ----
 if [ "${SKIP_VERIFY}" = false ]; then
-    echo "[Step 3: verify] Writing ad-hoc test + running npx tsx (memory peak)..."
+    echo "[Step 3: verify] Writing ${VERIFY_REPEAT} ad-hoc tests + running npx tsx x${VERIFY_REPEAT} (memory peak)..."
     VERIFY_START=$(date +%s%N)
 
-    # Resolve the script body: pair-specific, else shared default (compiler-core).
-    # The default always imports compiler-core (the agent's verify entry),
-    # independent of which package was edited, so no per-pkg substitution.
-    if [ -n "${VERIFY_SCRIPT}" ]; then
-        SCRIPT_BODY="${VERIFY_SCRIPT}"
-    else
-        SCRIPT_BODY=$(default_verify_script)
-    fi
-
-    # Write the temp test file (printf handles multi-line script bodies safely;
-    # avoids heredoc quoting pitfalls with dynamic delimiters).
-    printf '%s\n' "${SCRIPT_BODY}" > "${TEMP_TEST_PATH}"
-
-    # Run the ad-hoc test via npx tsx (transient: esbuild transpile + node execute).
-    cd "${PROJECT_DIR}" && timeout "${VERIFY_TIMEOUT}" ${VERIFY_CMD} > /tmp/verify_output.log 2>&1
+    # N independent npx tsx processes, each stamped from a distinct pool template
+    # (offset by ROUND so consecutive rounds differ). Chained with && (fail-fast),
+    # mirroring the runner's one-command N-chain.
+    POOL_LEN=${#POOL_TEMPLATES[@]}
+    OFFSET=$((ROUND % POOL_LEN))
+    CHAIN_CMD="cd \"${PROJECT_DIR}\""
+    for i in $(seq 0 $((VERIFY_REPEAT - 1))); do
+        IDX=$(( (OFFSET + i) % POOL_LEN ))
+        BODY=$(stamp_body "${IDX}")
+        FILE_I="/tmp/bench_verify_${i}.mjs"
+        # printf the body to the temp file, then run it; chain with && (fail-fast).
+        CHAIN_CMD="${CHAIN_CMD} && printf '%s\n' \"${BODY}\" > \"${FILE_I}\" && npx tsx \"${FILE_I}\""
+    done
+    eval "timeout \"${VERIFY_TIMEOUT}\" bash -c '${CHAIN_CMD}'" > /tmp/verify_output.log 2>&1
     VERIFY_EXIT=$?
     VERIFY_END=$(date +%s%N)
     VERIFY_MS=$(( (VERIFY_END - VERIFY_START) / 1000000 ))
 
     tail -8 /tmp/verify_output.log
     if [ ${VERIFY_EXIT} -eq 0 ]; then
-        echo "  Verify: SUCCESS (${VERIFY_MS}ms)"
+        echo "  Verify: SUCCESS (${VERIFY_MS}ms, ${VERIFY_REPEAT} processes)"
     else
         echo "  Verify: FAILED (exit ${VERIFY_EXIT}, ${VERIFY_MS}ms)"
     fi
