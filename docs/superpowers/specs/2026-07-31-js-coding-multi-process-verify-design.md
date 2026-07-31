@@ -1,8 +1,10 @@
-# E2B Coding (JS) — Raise Steady-State CPU via Multi-Process Verify
+# E2B Coding (TS) — Raise Steady-State CPU via Multi-Process Verify
 
 ## Context
 
-The e2b coding benchmark's JS (vuejs/core) verify shows a per-firecracker CPU peak of ~58% on the first verify in a sandbox, collapsing to ~28% on every later verify. The customer wants the steady state raised (toward ~40%). This spec is the design for doing so without fabricating load.
+The e2b coding benchmark's TS (vuejs/core — 96% TypeScript) verify shows a per-firecracker CPU peak of ~58% on the first verify in a sandbox, collapsing to ~28% on every later verify. The customer wants the steady state raised (toward ~40%). This spec is the design for doing so without fabricating load.
+
+> The language key is **`ts`** throughout (the prior `js` key was renamed to `ts` on main — vuejs/core is a TS project; `CODING_LANGUAGE_PROFILES`, `CODING_LANGUAGE_DEFAULT_SOURCE_FILES`, the dataclass default `coding_language="ts"`, and `config/e2b/coding_bench.yaml` all use `"ts"`). The Go profile (`"go"`) is unchanged.
 
 ## Ground truth — why 58%→28% happens (measured)
 
@@ -32,36 +34,36 @@ Default 3 targets ~40-50%, leaving margin. `verify_timeout` (120s) is never appr
 
 ### Implementation shape (single commands.run, N write+run chained)
 
-Each pair keeps its own `verify_script` body (one template). To run N independent processes, the runner generates N **distinct** verify files (`/tmp/bench_verify_{i}.mjs`, i=0..N-1), each carrying a different template so consecutive processes don't repeat identical bytes (mirrors the agent rewriting its test between verifies), then chains them in **one** `commands.run`:
+The runner maintains a **shared, ordered template pool** `DEFAULT_VERIFY_TEMPLATES` (6-8 distinct templates + per-template assertions, all the compiler-core `baseParse` cases already sandbox-verified — div/interpolation, v-pre textarea, v-for, v-if/v-else, multi-root fragment, baseParse+props). For a verify step with `verify_repeat=N`, the runner takes N templates from the pool — offset by `round_id % pool_len` so different rounds pick different N-subsets (avoids every round repeating the identical N bytes, mirroring the agent rewriting its test between verifies) — emits N distinct bodies (8-global header + `import compiler-core + baseParse(template)`), writes each to `/tmp/bench_verify_{i}.mjs`, and chains them in **one** `commands.run`:
 
-```
+```bash
 cd {project} && \
   cat > /tmp/bench_verify_0.mjs << 'EOF' <body_0> EOF && npx tsx /tmp/bench_verify_0.mjs && \
   cat > /tmp/bench_verify_1.mjs << 'EOF' <body_1> EOF && npx tsx /tmp/bench_verify_1.mjs && \
   ... (N total)
 ```
 
-Rationale for one `commands.run` (not N separate calls): the agent's verify is a single combined write+run; N chained write+runs in one command preserves that "one verify step = one continuous verification action" shape and keeps it as **one** verify step in metrics (verify success is "all N passed", not "N separate passes"). The N templates come from the pair's verify_script (pair 0 uses templates for variant v0, but to get N distinct bodies, the pair declares a small ordered template list and the runner emits one body per template, all importing compiler-core + baseParse). Fail-fast: `&&` chains so the first non-zero exit stops the rest and reports that failure's stderr.
+Rationale for one `commands.run` (not N separate calls): the agent's verify is a single combined write+run; N chained write+runs in one command preserves that "one verify step = one continuous verification action" shape and keeps it as **one** verify step in metrics (verify success is "all N passed", not "N separate passes"). Fail-fast: `&&` chains so the first non-zero exit stops the rest and reports that failure's stderr.
 
-### Where templates come from
+### Why a shared template pool (not per-pair `verify_templates`)
 
-Each pair already carries a different `verify_script` (6 distinct templates across pairs, see `DEFAULT_CODING_SOURCE_FILES` / `e2b_coding_bench.yaml`). For N>1 within a single pair, the pair additionally carries a `verify_templates` list (ordered) of N templates; the runner substitutes each into the shared script skeleton (the 8-global header + `import compiler-core + baseParse(template)`). Pairs without `verify_templates` repeat their single template N times (still multi-process, still raises CPU; identical bytes within a step is acceptable since the agent itself repeats identical verifies).
+Separation of concerns, single source of truth: pairs own the *edit semantics* (`{file, find, replace}` — what the agent changed), the pool owns the *verify workload* (what templates stress the parser). The bench's verify was never assertion-tied to the edited symbol anyway — edits are comment/format changes and verify is a generic "project compiles + parser runs" health check, exactly as the real agent verifies project health by running its ad-hoc test. Decoupling means pair count, template count, and N all vary independently; maintenance touches one pool. Per-pair `verify_templates` would bloat yaml 6× and duplicate the same v-for/v-if templates across pairs.
 
 ## Components touched
 
 | File | Change |
 |------|--------|
-| `e2b_bench/config.py` | Add `coding_verify_repeat: int = 3` dataclass field; `_from_dict` reads `verify_repeat`; `from_args` (both paths) wires CLI/yaml; add CLI `--coding-verify-repeat`. |
-| `e2b_bench/schemas.py` | `DEFAULT_CODING_SOURCE_FILES` pairs gain optional `verify_templates` list (N templates); default verify skeleton helper that takes a template and emits a full body (8 globals + compiler-core baseParse). `DEFAULT_CODING_VERIFY_SCRIPT_JS` stays as the single-template default. |
-| `e2b_bench/coding_task_runner.py` | `_run_verify`: build N bodies (one per template in the pair's `verify_templates`, or the single template repeated N times if absent), write to `/tmp/bench_verify_{i}.mjs`, chain N `cat>npx tsx` in one `commands.run`. Single timeout (wall); with N=3 ~1.5s ≪ `verify_timeout` 120s, never approached. Verify success = all N exit 0 (chained `&&`, fail-fast on first non-zero). |
-| `config/e2b_coding_bench.yaml` | Add `coding.verify_repeat: 3`; each pair's `verify_script` (single body) is replaced by a `verify_templates` list (the existing template + variants, so N processes carry N distinct templates). |
-| `config/e2b_coding_go_bench.yaml` | (Optional, symmetric) Go has no per-process startup cost issue like tsx (go run cold-compile is already heavy via `go clean -cache`), so Go does **not** need repeat. Leave default 1 for go (or reuse the same field; go's `npx`-equivalent startup is the compile itself). Decision: Go stays N=1 — its load is already real cold-compile. |
-| `dockerfile_build/bench_helper.sh` | Manual helper: loop N `npx tsx` calls with N distinct templates, mirroring the runner. Add a `BENCH_VERIFY_REPEAT` env override (default 3). |
-| `e2b_bench/tests/test_coding_task_runner.py` | Assert `_run_verify` emits N chained write+run in one command; `verify_repeat` config plumbing; go path unaffected (N=1 → single call, no chain). |
+| `e2b_bench/schemas.py` | Add `DEFAULT_VERIFY_TEMPLATES` (ordered list of `{template, assert}` — the 6 sandbox-verified compiler-core baseParse cases). `DEFAULT_CODING_SOURCE_FILES` pairs drop `verify_script` (edits are comment/format; verify uses the shared pool, not a per-pair script). `DEFAULT_CODING_VERIFY_SCRIPT_JS` repurposed as the single-template skeleton (8 globals + compiler-core baseParse) the runner stamps each pool template into. |
+| `e2b_bench/config.py` | Add `coding_verify_repeat: int = 3` dataclass field; `_from_dict` reads `coding.verify_repeat` (yaml `verify_repeat`); `from_args` (both paths) wire CLI/yaml; add CLI `--coding-verify-repeat`. |
+| `e2b_bench/coding_task_runner.py` | `_run_verify`: pick N templates from `DEFAULT_VERIFY_TEMPLATES` offset by `round_id % len`, stamp each into the skeleton → N bodies, write `/tmp/bench_verify_{i}.mjs`, chain N `cat>npx tsx` in one `commands.run` (`&&` fail-fast). Single wall timeout (N=3 ~1.5s ≪ `verify_timeout` 120s). Verify success = all N exit 0. `compile_only` label preserved (metrics), does not change the N-process run. Go path: `coding_verify_repeat` default 1 → single process, no chaining (go's cold-compile is already heavy). |
+| `config/e2b/coding_bench.yaml` | Add `coding.verify_repeat: 3` (yaml-configurable; CLI `--coding-verify-repeat` overrides). Pairs simplify to `{file, find, replace}` (+ optional `verify: compile_only` label). |
+| `config/e2b/coding_go_bench.yaml` | Optionally add `coding.verify_repeat: 1` for explicitness (go stays N=1 — its `go run` cold-compile is already real load). |
+| `dockerfile_build/bench_helper.sh` | Manual helper: loop N `npx tsx` calls, each with a distinct pool template (offset by round), mirroring the runner. Add `BENCH_VERIFY_REPEAT` env override (default 3). |
+| `e2b_bench/tests/test_coding_task_runner.py` | Assert `_run_verify` emits N chained write+run in one command; templates offset by round; `verify_repeat` config plumbing (yaml + CLI); go path unaffected (N=1 → single call, no chain); pairs no longer require `verify_script`. |
 
 ## Go note (out of scope for repeat)
 
-Go's verify already runs a real cold-compile per round (`go clean -cache` before each `go run`, see the go design doc). Go does **not** benefit from multi-process repeat the way JS does — its per-verify cost is the genuine compile, already heavy. Go keeps `verify_repeat` default 1.
+Go's verify already runs a real cold-compile per round (`go clean -cache` before each `go run`, see the go design doc). Go does **not** benefit from multi-process repeat the way TS does — its per-verify cost is the genuine compile, already heavy. Go keeps `verify_repeat` default 1.
 
 ## Verification
 
