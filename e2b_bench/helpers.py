@@ -40,7 +40,6 @@ def wait_for_port_ready(
     )
 
     while True:
-        # Check stop event first (for benchmark termination)
         if stop_event and stop_event.is_set():
             return False
 

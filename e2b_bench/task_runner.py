@@ -301,7 +301,7 @@ class TaskManager:
 
         Dispatches based on workflow_type:
         - "browser": uses WarmupRunner (opens browser tabs)
-        - "coding": uses CodingWarmupRunner (starts dev server + initial build)
+        - "coding": uses CodingWarmupRunner (one initial verify, no resident process)
         """
         ready_states = [
             s for s in self.sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY
@@ -315,7 +315,7 @@ class TaskManager:
         if self.config.workflow_type == "coding":
             from .coding_task_runner import CodingWarmupRunner
 
-            # Coding warmup: one initial verify (no resident dev server, no build)
+            # Coding warmup: one initial verify (no resident process)
             if not self.config.coding_skip_verify:
                 print(f"\n{'=' * 60}")
                 print("Coding Warmup Phase Starting")
@@ -330,7 +330,7 @@ class TaskManager:
                     self.warmup_runners.append(runner)
                     runner.start()
             else:
-                print("Coding warmup skipped (dev server and build both disabled)")
+                print("Coding warmup skipped (initial verify disabled)")
                 for state in ready_states:
                     state.warmup_done = True
         else:

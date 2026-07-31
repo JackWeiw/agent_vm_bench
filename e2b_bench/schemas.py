@@ -530,9 +530,9 @@ class CodingMetrics(TaskMetricsBase):
 
     def __init__(self):
         super().__init__()
-        # Coding-specific fields
         self._verify_success_count: int = 0  # pairs with a real-assertion verify_script that passed
-        self._compile_only_count: int = 0  # pairs marked verify: compile_only that compiled+ran
+        self._compile_only_count: int = 0  # pairs marked verify: compile_only (or the no-script
+        #                                  # fallback) that compiled+ran without an assertion
 
     def add(
         self,
@@ -545,7 +545,11 @@ class CodingMetrics(TaskMetricsBase):
     ) -> None:
         """Add a coding task result (thread-safe).
 
-        Extends base add() with verify-success tracking.
+        Extends the base counters (total/success/failed/timeout/latencies/
+        step_times) with verify-success tracking. The base counters are
+        inlined here (not via super().add()) so both run under a single
+        Lock acquisition - threading.Lock is non-reentrant, so calling
+        super().add() while already holding self._lock would deadlock.
 
         Args:
             latency: Total latency for the task cycle (seconds)
@@ -553,12 +557,11 @@ class CodingMetrics(TaskMetricsBase):
             timeout: Whether the task timed out
             step_times: Optional dict of step name -> latency in seconds
             verify_success: Whether the verify step (write temp test + run) succeeded
-            compile_only: True if this pair was verify: compile_only (no real
+            compile_only: True if this pair ran via the shared default (no per-pair
                 assertion - only compile/run was checked). verify_success and
                 compile_only are mutually exclusive; reported separately so a
                 compile-only pass is never mistaken for an assertion pass.
         """
-        # Call base add() for the standard counters
         with self._lock:
             self._total_tasks += 1
             if timeout:

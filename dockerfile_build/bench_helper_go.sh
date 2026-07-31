@@ -149,7 +149,6 @@ echo "[Step 0: find] Preparing environment..."
 # Reset source files (hugo edits live under markup/)
 cd "${PROJECT_DIR}" && git checkout -- markup/ 2>/dev/null || echo "  WARNING: git checkout failed (not a git repo or no changes)"
 
-# Verify the target file exists; fall back to a located .go file with a generic comment-marker pair
 if [ ! -f "${PROJECT_DIR}/${TARGET_FILE}" ]; then
     echo "  WARNING: target not found: ${TARGET_FILE}"
     FOUND_FILE=$(cd "${PROJECT_DIR}" && find . -name '*.go' 2>/dev/null | head -1)

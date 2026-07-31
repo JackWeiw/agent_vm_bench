@@ -363,13 +363,11 @@ class MetricsExtractor:
             if match:
                 metrics["Coding_Total_Tasks"] = int(match.group(1))
 
-            # Verify success rate (the trace-faithful verify step: write temp test + run)
+            # Verify success rate (write temp test + run - the trace-faithful verify step)
             match = re.search(r"Verify Success:\s+(\d+)/(\d+)\s+\(([\d.]+)%\)", coding_section)
             if match:
                 metrics["Coding_Verify_Success_Rate"] = float(match.group(3))
 
-            # Bug #3 fix: capture all numeric columns (Avg, P50, P95, P99)
-            # Table format: Step, Count, Avg(ms), P50(ms), P95(ms), P99(ms), Tail
             coding_step_pattern = (
                 r"^\s+(find|read|edit|verify|diff)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)"
             )
@@ -431,8 +429,6 @@ class MetricsExtractor:
             if match:
                 metrics["Browser_Total_Tasks"] = int(match.group(1))
 
-            # Bug #3 fix: capture all numeric columns (Avg, P50, P95, P99)
-            # Table format: Step, Count, Avg(ms), P50(ms), P95(ms), P99(ms), Tail
             step_pattern = r"^\s+(open_tab|page_load|snapshot|click|screenshot)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)"
             for match in re.finditer(step_pattern, browser_section, re.MULTILINE):
                 step_name = match.group(1)
@@ -464,14 +460,11 @@ class MetricsExtractor:
             Falls back to full content if section header not found (for backward
             compat with reports that don't use section headers).
         """
-        # Find start of section
         start_idx = content.find(section_header)
         if start_idx == -1:
-            # Fallback: no section header found, use full content
-            # This handles reports that don't use section headers
+            # No section header found - use full content (for reports without headers)
             return content
 
-        # Find next section header (starts with "[")
         remaining = content[start_idx + len(section_header) :]
         next_section = re.search(r"\n\[", remaining)
         if next_section:

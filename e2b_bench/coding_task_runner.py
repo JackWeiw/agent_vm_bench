@@ -93,44 +93,38 @@ def _run_verify(
     (newline-joined), exactly as the agent did - splitting them would diverge
     from the trace.
 
-    A pair MUST declare how it verifies, so a compile-only pass is never mistaken
+    A pair declares how it verifies, so a compile-only pass is never mistaken
     for an assertion pass:
       - `verify_script`: a real ad-hoc test asserting the edited behavior (the
         gold-standard, trace-faithful verify). Reported as Verify Success.
       - `verify: compile_only`: the edit is a comment/format change with no
         assertable semantics; verify just compiles+runs (the no-op default main),
         honestly labeled. Reported separately as Compile-Only.
-    A pair with neither is an explicit verify FAILURE (refuses to fake a pass).
+      - Neither: fall back to the shared default verify script (`profile
+        .default_verify_script`) and treat it as a compile-only pass. This is
+        the documented behavior for the Go comment-append pairs, which carry
+        no assertable semantics but must still produce a real Go compile peak.
+
+    Returns: (success, error_detail, compile_only) - compile_only is True when
+    this pass used the shared default (no per-pair assertion), including the
+    fallback case above.
 
     Timing: if `step_times` is given, the optional pre-verify cache clear
     (go only, `pre_verify_cmd`) is timed into `step_times["verify_clean"]`,
     separate from the write+run timed into `step_times["verify"]`.
     `verify_clean` is intentionally NOT in CODING_STEP_ORDER - the real trace
-    has no cache-clear step, so it never appears in the step timing table; only
-    the write+run lands in the `verify` column. This keeps the `verify` number
-    clean (compile pressure, not cleanup overhead) without polluting the
-    trace-faithful step order.
-
-    Returns: (success, error_detail, compile_only) - compile_only is True only
-    when this pass was a compile-only check (success True implies it compiled).
+    has no cache-clear step, so it never appears in the step timing table.
     """
     profile = get_coding_profile(config.coding_language)
     compile_only = str(pair.get("verify", "")).lower() == "compile_only"
-    if compile_only:
-        # Honest label: only compile+run is checked, no assertion. Uses the
-        # shared no-op default main (compiles + prints "All tests passed!").
+    script_body = pair.get("verify_script")
+    if not script_body:
+        # No per-pair assertion: use the shared no-op default main (compiles +
+        # runs, prints "All tests passed!"). Honest label: only compile+run is
+        # checked, no assertion - so it's reported as Compile-Only, not Verify
+        # Success. Reaches the same path as an explicit `verify: compile_only`.
         script_body = profile.default_verify_script
-    else:
-        # A real-assertion ad-hoc test the agent would write. Required - a
-        # no-op default would fake a verify pass (compile success != behavior
-        # correct), which a strong reviewer catches.
-        script_body = pair.get("verify_script")
-        if not script_body:
-            return (
-                False,
-                "verify failed: pair has no verify_script and no verify: compile_only (refusing no-op default fake pass)",
-                False,
-            )
+        compile_only = True
     # Optional pre-verify cache clear (go only). Run as a SEPARATE command so its
     # time is measured apart from the write+run - the write+run itself stays a
     # single newline-joined command to match the trace's combined write+run.
@@ -188,7 +182,6 @@ class CodingWarmupRunner(threading.Thread):
 
     def run(self) -> None:
         """Execute warmup phase for this sandbox - one initial verify (no resident process)."""
-        # Wait for sandbox ready (coding workflow: command-based ready check)
         if not wait_for_port_ready(self.state):
             print(f"[Sandbox{self.state.sandbox_id}] Cannot start warmup: {self.state.creation_metrics.status.value}")
             return
@@ -202,7 +195,6 @@ class CodingWarmupRunner(threading.Thread):
         e2b_sandbox_id = sbx.sandbox_id if hasattr(sbx, "sandbox_id") else "N/A"
         project_dir = self.config.coding_project_dir
 
-        # 1. Verify project exists (js: package.json, go: go.mod)
         project_marker = "go.mod" if self.config.coding_language == "go" else "package.json"
         try:
             result = sbx.commands.run(f"ls {project_dir}/{project_marker}", timeout=30, user="root")
@@ -215,7 +207,6 @@ class CodingWarmupRunner(threading.Thread):
             self.state.warmup_done = True
             return
 
-        # 2. Reset source files
         profile = get_coding_profile(self.config.coding_language)
         try:
             result = sbx.commands.run(
@@ -231,13 +222,11 @@ class CodingWarmupRunner(threading.Thread):
         except Exception as e:
             print(f"[Sandbox{self.state.sandbox_id}] git checkout failed: {e}")
 
-        # 3. Run one initial verify (warms esbuild/node or Go compiler caches,
-        #    confirms project health). No resident dev server - none in the trace.
+        # One initial verify warms esbuild/node or Go compiler caches and confirms
+        # project health. No resident dev server - none in the trace.
         if not self.config.coding_skip_verify:
             try:
                 print(f"[Sandbox{self.state.sandbox_id}] Running initial verify...")
-                # Use the first configured pair's verify (verify_script or
-                # verify: compile_only - the pair must declare how it verifies).
                 pair = self.config.coding_source_files[0] if self.config.coding_source_files else {}
                 ok, err, _compile_only = _run_verify(sbx, project_dir, self.config, pair)
                 if ok:
@@ -247,7 +236,6 @@ class CodingWarmupRunner(threading.Thread):
             except Exception as e:
                 print(f"[Sandbox{self.state.sandbox_id}] Initial verify exception: {e}")
 
-        # Mark warmup complete
         self.state.warmup_done = True
         print(f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Coding warmup completed")
 
@@ -255,8 +243,9 @@ class CodingWarmupRunner(threading.Thread):
 class CodingTaskRunner(threading.Thread):
     """Coding task runner for fixed mode - one independent thread per sandbox
 
-    Each iteration: checkout -> edit -> build -> test -> memory collection.
-    Runs continuously until stop_event is set or sandbox goes offline.
+    Each iteration: find -> read -> edit -> verify -> diff (one replacement
+    pair per cycle). Runs continuously until stop_event is set or sandbox
+    goes offline.
     """
 
     def __init__(
@@ -273,21 +262,17 @@ class CodingTaskRunner(threading.Thread):
 
     def run(self) -> None:
         """Task execution main loop"""
-        # Wait for sandbox ports ready
         if not wait_for_port_ready(self.state, self.stop_event):
             print(f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}")
             return
 
-        # Coding task execution loop
         while not self.stop_event.is_set():
             if not self.state.is_alive:
                 print(f"[Sandbox{self.state.sandbox_id}] Sandbox offline, stopping tasks")
                 break
 
-            # Execute single coding task
             success, latency, verify_success, compile_only, timed_out = self._run_single_task()
 
-            # Update metrics - timeout is determined by exception handling, not elapsed time
             self.state.coding_metrics.add(
                 latency,
                 success and not timed_out,
@@ -297,7 +282,6 @@ class CodingTaskRunner(threading.Thread):
             )
             self.state.update_last_task_time(time.time())
 
-            # Error handling
             if success and not timed_out:
                 self.consecutive_errors = 0
             else:
@@ -307,7 +291,6 @@ class CodingTaskRunner(threading.Thread):
                     print(f"[Sandbox{self.state.sandbox_id}] Marked offline (3 consecutive failures)")
                     break
 
-            # Random interval to avoid request spike
             sleep_time = random.uniform(self.config.coding_interval_min, self.config.coding_interval_max)
             time.sleep(sleep_time)
 
@@ -326,7 +309,6 @@ class CodingTaskRunner(threading.Thread):
         source_files = self.config.coding_source_files
         profile = get_coding_profile(self.config.coding_language)
 
-        # Pick replacement pair for this round
         if not source_files:
             return False, 0.0, False, False, False
 
@@ -343,20 +325,19 @@ class CodingTaskRunner(threading.Thread):
         step_times: Dict[str, float] = {}
 
         try:
-            # Step 1: find - reset source files + verify target file exists
             t0 = time.perf_counter()
             sbx.commands.run(
                 f"cd {project_dir} && git checkout -- {profile.checkout_paths} || true",
                 timeout=30,
                 user="root",
             )
-            # Verify the target file exists (agent would locate the file)
             exists = sbx.commands.run(f"cd {project_dir} && test -f {target_file} && echo ok", timeout=15, user="root")
             step_times["find"] = time.perf_counter() - t0
             if exists.exit_code != 0 or "ok" not in (exists.stdout or ""):
-                # Fallback: if the configured target doesn't exist, locate any source file
+                # Configured target missing - locate any source file and use a
+                # generic comment-marker pair so the round still produces a verify peak.
                 fallback = sbx.commands.run(
-                    f"cd {project_dir} && find packages {_find_name_clause(profile.source_find_names)} 2>/dev/null | head -1",
+                    f"cd {project_dir} && find {profile.source_find_root} {_find_name_clause(profile.source_find_names)} 2>/dev/null | head -1",
                     timeout=15,
                     user="root",
                 )
@@ -365,12 +346,10 @@ class CodingTaskRunner(threading.Thread):
                     target_file = found[0]
                     find_str, replace_str = "// bench marker", "// bench round\n// bench marker"
 
-            # Step 2: read - inspect the target file (agent confirming context)
             t1 = time.perf_counter()
             sbx.commands.run(f"cd {project_dir} && head -20 {target_file}", timeout=15, user="root")
             step_times["read"] = time.perf_counter() - t1
 
-            # Step 3: edit - apply the find->replace pair (literal str.replace via python3)
             t2 = time.perf_counter()
             edit_result = sbx.commands.run(
                 _build_edit_command(project_dir, target_file, find_str, replace_str),
@@ -382,7 +361,6 @@ class CodingTaskRunner(threading.Thread):
                 self.state.coding_metrics.last_error = f"edit failed: exit_code={edit_result.exit_code}"
                 return False, time.perf_counter() - start_time, verify_success, compile_only, timed_out
 
-            # Step 4: verify - write ad-hoc test file + run it (npx tsx / go run)
             if not self.config.coding_skip_verify:
                 t3 = time.perf_counter()
                 verify_success, err, compile_only = _run_verify(sbx, project_dir, self.config, pair)
@@ -392,7 +370,6 @@ class CodingTaskRunner(threading.Thread):
             else:
                 verify_success = True  # skipped = not failed
 
-            # Step 5: diff - produce the verification artifact (git diff -> patch)
             t4 = time.perf_counter()
             sbx.commands.run(
                 f"cd {project_dir} && git diff > /tmp/bench_round_{self.state.coding_metrics.total_tasks}.patch",
@@ -409,7 +386,6 @@ class CodingTaskRunner(threading.Thread):
         except Exception as e:
             elapsed = time.perf_counter() - start_time
             error_msg = str(e)
-            # timeout is determined by exception, not elapsed time
             timed_out = "timed out" in error_msg.lower() or "context deadline exceeded" in error_msg.lower()
             self.state.coding_metrics.last_error = error_msg
             print(f"[Sandbox{self.state.sandbox_id}] Coding task exception: {error_msg[:100]}")
@@ -420,17 +396,19 @@ class CodingRoundRunner(threading.Thread):
     """Runner for coding operations in round-robin benchmark mode
 
     Each round applies a different pre-configured replacement pair (a real,
-    type-safe edit an agent would make), then builds and tests. Each edit
-    triggers the bundler to re-compile affected modules; the build step peaks
-    and overlaps with the running dev server (~1.5GB) -> ~3GB per sandbox.
+    type-safe edit an agent would make), then verifies it by writing an ad-hoc
+    test file to /tmp and running it (npx tsx / go run). This transient verify
+    peak - not a production build - is the memory/CPU pressure source.
 
     Steps per round (with individual timing):
-      0. find  - git checkout reset + verify/locate the target file
-      1. read  - inspect the target file (agent confirming context)
-      2. edit  - apply the find->replace pair (real semantic edit, triggers rebuild)
-      3. build - npm run build (MEMORY PEAK, overlaps with dev server)
-      4. test  - npm test (verify correctness)
-      5. diff  - git diff -> patch file (agent verification artifact)
+      0. find    - git checkout reset + verify/locate the target file
+      1. read    - inspect the target file (agent confirming context)
+      2. edit    - apply the find->replace pair (real semantic edit)
+      3. verify  - write ad-hoc test file + run it (MEMORY PEAK)
+      4. diff    - git diff -> patch file (agent verification artifact)
+
+    No production build, no full test suite, no resident dev server - none
+    appear in the real openclaw traces.
 
     Attributes:
         state: Sandbox state for metrics
@@ -465,7 +443,6 @@ class CodingRoundRunner(threading.Thread):
             print(f"[Sandbox{self.state.sandbox_id}] No coding source files configured")
             return
 
-        # Pick replacement pair for this round (round-robin through the list)
         pair_idx = self.round_id % len(source_files)
         pair = source_files[pair_idx]
 
@@ -511,23 +488,18 @@ class CodingRoundRunner(threading.Thread):
         replace_str = pair["replace"]
 
         try:
-            # Step 0: find - reset source files, verify/locate target
             locate_ok, locate_error, resolved_file, resolved_find, resolved_replace = self._step_find(
                 sbx, project_dir, target_file, find_str, replace_str, step_times
             )
             if not locate_ok:
-                # find failure is non-fatal (may not be a git repo / file moved); continue
                 print(f"[Sandbox{self.state.sandbox_id}] find warning: {locate_error}")
             target_file = resolved_file
             find_str = resolved_find
             replace_str = resolved_replace
-            # _step_find may mutate `pair`'s resolved values for verify substitution
             pair = {**pair, "file": target_file}
 
-            # Step 1: read - inspect the target file
             self._step_read(sbx, project_dir, target_file, step_times)
 
-            # Step 2: edit - apply the find->replace pair
             edit_success, edit_error = self._step_edit(sbx, project_dir, target_file, find_str, replace_str, step_times)
             if not edit_success:
                 failed_step = "edit"
@@ -535,7 +507,6 @@ class CodingRoundRunner(threading.Thread):
                 success = False
                 return success, step_times, verify_success, compile_only, failed_step, error_detail, timed_out
 
-            # Step 3: verify - write ad-hoc test file + run it (npx tsx / go run)
             if not self.config.coding_skip_verify:
                 verify_success, verify_error, compile_only = self._step_verify(sbx, project_dir, pair, step_times)
                 if not verify_success:
@@ -545,7 +516,6 @@ class CodingRoundRunner(threading.Thread):
             else:
                 verify_success = True  # skipped = not failed
 
-            # Step 4: diff - produce the verification artifact
             self._step_diff(sbx, project_dir, step_times)
 
         except Exception as e:
@@ -571,16 +541,14 @@ class CodingRoundRunner(threading.Thread):
             timeout=30,
             user="root",
         )
-        # Verify target file exists
         exists = sbx.commands.run(f"cd {project_dir} && test -f {target_file} && echo ok", timeout=15, user="root")
         step_times["find"] = step_times.get("find", 0.0) + (time.perf_counter() - step_start)
 
         if exists.exit_code == 0 and "ok" in (exists.stdout or ""):
             return True, "", target_file, find_str, replace_str
 
-        # Fallback: locate any source file and use a generic comment-marker pair
         fallback = sbx.commands.run(
-            f"cd {project_dir} && find packages {_find_name_clause(profile.source_find_names)} 2>/dev/null | head -1",
+            f"cd {project_dir} && find {profile.source_find_root} {_find_name_clause(profile.source_find_names)} 2>/dev/null | head -1",
             timeout=15,
             user="root",
         )
@@ -608,7 +576,6 @@ class CodingRoundRunner(threading.Thread):
 
         Uses python3 str.replace (see _build_edit_command) - literal, not sed
         regex - so regex metacharacters in the find/replace strings are inert.
-        Triggers the rebuild that the verify step then exercises.
 
         Returns: (success, error_detail). Exit code 2 = find string absent
         (no-op edit surfaced as a failure, not a silent fake verify pass).

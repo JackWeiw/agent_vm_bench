@@ -487,7 +487,6 @@ class ReportFormatter:
         """Calculate final statistics for each round."""
         round_finals: Dict[int, Dict[str, Any]] = {}
 
-        # Get final cumulative values — dispatch by workflow type
         if self.config.workflow_type == "coding":
             final_task_total = sum(s.coding_metrics.total_tasks for s in self.sandbox_states.values())
             final_task_success = sum(s.coding_metrics.success_count for s in self.sandbox_states.values())
@@ -522,7 +521,6 @@ class ReportFormatter:
                     end_success = final_task_success
                     end_sandbox_latency_counts = final_sandbox_latency_counts
 
-            # Extract latencies for this round — dispatch by workflow type
             round_latencies: List[float] = []
             for s in self.sandbox_states.values():
                 sandbox_id = s.sandbox_id
@@ -597,18 +595,16 @@ class StatsCollector:
         Args:
             round_id: Current round index (None to clear)
         """
-        # Get current cumulative totals before switching rounds — dispatch by workflow type
+        # Get current cumulative totals before switching rounds
         if self.config.workflow_type == "coding":
             task_total = sum(s.coding_metrics.total_tasks for s in self.sandbox_states.values())
             task_success = sum(s.coding_metrics.success_count for s in self.sandbox_states.values())
-            # Track latency count per sandbox for accurate round latency extraction
             sandbox_latency_counts = {
                 s.sandbox_id: len(s.coding_metrics.latencies) for s in self.sandbox_states.values()
             }
         else:
             task_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
             task_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
-            # Track latency count per sandbox for accurate round latency extraction
             sandbox_latency_counts = {
                 s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()
             }
@@ -682,8 +678,6 @@ class StatsCollector:
             browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
             browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
 
-            # Calculate round delta: current cumulative - round start cumulative
-            # This is decoupled from snapshot timing
             if self.current_round is not None and self.current_round in self._round_start_totals:
                 start_total = self._round_start_totals[self.current_round]["total"]
                 start_success = self._round_start_totals[self.current_round]["success"]
@@ -701,8 +695,6 @@ class StatsCollector:
             browser_avg = statistics.mean(all_latencies) if all_latencies else 0.0
             browser_p99 = calc_p99(all_latencies)
 
-            # Build snapshot with per-round fields for round comparison
-            # (round_total/round_success are now proper TestSnapshot fields, not ad-hoc attributes)
             snapshot = TestSnapshot(
                 timestamp=now,
                 elapsed=elapsed,
@@ -723,7 +715,6 @@ class StatsCollector:
             coding_verify_success = sum(s.coding_metrics.verify_success_count for s in self.sandbox_states.values())
             coding_compile_only = sum(s.coding_metrics.compile_only_count for s in self.sandbox_states.values())
 
-            # Calculate round delta for coding
             if self.current_round is not None and self.current_round in self._round_start_totals:
                 start_total = self._round_start_totals[self.current_round]["total"]
                 start_success = self._round_start_totals[self.current_round]["success"]
@@ -733,7 +724,6 @@ class StatsCollector:
                 round_total = 0
                 round_success = 0
 
-            # Collect recent coding latency data
             all_latencies: List[float] = []
             for s in self.sandbox_states.values():
                 all_latencies.extend(s.coding_metrics.latencies[-10:])
@@ -741,7 +731,6 @@ class StatsCollector:
             coding_avg = statistics.mean(all_latencies) if all_latencies else 0.0
             coding_p99 = calc_p99(all_latencies)
 
-            # Build snapshot with per-round fields for round comparison
             snapshot = TestSnapshot(
                 timestamp=now,
                 elapsed=elapsed,

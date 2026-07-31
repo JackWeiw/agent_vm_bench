@@ -34,6 +34,10 @@ class CodingLanguageProfile:
         run_cmd: the verify run command (npx tsx ... / go run ...).
         source_find_names: list of -name patterns for the find fallback
             (["*.ts","*.tsx","*.js"] for js, ["*.go"] for go).
+        source_find_root: directory the find fallback searches under
+            ("packages" for the vuejs/core monorepo, "." for hugo whose
+            source is spread across markup/, hugofs/, ...). Keeps the fallback
+            language-aware instead of hardcoding "packages".
         checkout_paths: paths reset by `git checkout --` in the find step.
         default_verify_script: shared default body for pairs without their own.
         pre_verify_cmd: optional command run before the verify write+run (empty
@@ -56,6 +60,7 @@ class CodingLanguageProfile:
     heredoc_eof: str
     run_cmd: str
     source_find_names: tuple = ()
+    source_find_root: str = "packages"
     checkout_paths: str = ""
     default_verify_script: str = ""
     pre_verify_cmd: str = ""
@@ -78,6 +83,7 @@ CODING_LANGUAGE_PROFILES: Dict[str, CodingLanguageProfile] = {
         heredoc_eof="EOF",
         run_cmd="npx tsx /tmp/bench_verify.mjs",
         source_find_names=("*.ts", "*.tsx", "*.js"),
+        source_find_root="packages",
         # vuejs/core is a pnpm monorepo: all source lives under packages/<name>/src/,
         # there is NO top-level src/ directory. `git checkout -- packages/ src/` made git
         # emit "pathspec 'src/' did not match any tree entries" (stderr swallowed by 2>/dev/null
@@ -91,6 +97,7 @@ CODING_LANGUAGE_PROFILES: Dict[str, CodingLanguageProfile] = {
         heredoc_eof="GOEOF",
         run_cmd="go run /tmp/bench_verify.go",
         source_find_names=("*.go",),
+        source_find_root=".",
         checkout_paths="markup/",
         default_verify_script=DEFAULT_CODING_VERIFY_SCRIPT_GO,
         # Force a cold compile every verify (see pre_verify_cmd docstring): the
@@ -309,24 +316,19 @@ class Config:
             task_batch_size=task_batch.get("size") if task_batch else None,
             task_batch_interval=task_batch.get("interval") if task_batch else None,
             benchmark_percent=test.get("benchmark_percent", 1.0),
-            # Round-robin mode configuration
             benchmark_mode=test.get("benchmark_mode", "fixed"),
             round_count=test.get("round_count"),
             round_size=test.get("round_size", 5),
             round_interval=test.get("round_interval", 5),
-            # Workflow type
             workflow_type=data.get("workflow", {}).get("type", data.get("workflow_type", "browser")),
-            # Browser task configuration
             browser_urls=browser.get("urls", ["http://192.168.110.10:8080/Weibo.html"]),
             browser_timeout=browser.get("task_timeout", 200),
             browser_interval_min=browser.get("interval_min", 0.5),
             browser_interval_max=browser.get("interval_max", 3.0),
-            # Warmup configuration (browser-specific)
             warmup_urls=browser.get("warmup_urls", []),
             warmup_loops=browser.get("warmup_loops", 2),
             warmup_delay=browser.get("warmup_delay", 10),
             warmup_only=browser.get("warmup_only", False),
-            # Coding task configuration
             coding_project_dir=coding.get("project_dir", "/opt/coding-bench"),
             coding_language=coding.get("language", "js"),
             coding_verify_cmd=coding.get(
@@ -349,14 +351,12 @@ class Config:
             stats_interval=test.get("stats_interval", 10),
             output_dir=report.get("output_dir", "results/e2b"),
             filename_prefix=report.get("filename_prefix", "e2b_bench"),
-            # smap_tool configuration
             smap_tool_enabled=smap_tool.get("enabled", False),
             smap_tool_path=smap_tool.get("path", ""),
             smap_tool_swap_size=smap_tool.get("swap_size", 81920),
             smap_tool_ratio=smap_tool.get("ratio", 15),
             smap_tool_src_nid=smap_tool.get("src_nid", 2),
             smap_tool_dest_nid=smap_tool.get("dest_nid", 5),
-            # vm_monitor configuration
             vm_monitor_enabled=vm_monitor.get("enabled", False),
             vm_monitor_vmm_type=vm_monitor.get("vmm_type", "firecracker"),
             vm_monitor_duration=vm_monitor.get("duration", 600),
@@ -405,7 +405,6 @@ class Config:
             browser_interval_max=args.browser_interval_max
             if args.browser_interval_max is not None
             else yaml_config.browser_interval_max,
-            # Warmup configuration
             warmup_urls=args.warmup_url if args.warmup_url is not None else yaml_config.warmup_urls,
             warmup_loops=args.warmup_loops if args.warmup_loops is not None else yaml_config.warmup_loops,
             warmup_delay=args.warmup_delay if args.warmup_delay is not None else yaml_config.warmup_delay,
@@ -415,7 +414,6 @@ class Config:
             benchmark_percent=args.benchmark_percent
             if args.benchmark_percent is not None
             else yaml_config.benchmark_percent,
-            # Round-robin mode configuration (CLI takes priority over YAML)
             benchmark_mode=getattr(args, "benchmark_mode", None)
             if getattr(args, "benchmark_mode", None) is not None
             else yaml_config.benchmark_mode,
@@ -428,11 +426,9 @@ class Config:
             round_interval=getattr(args, "round_interval", None)
             if getattr(args, "round_interval", None) is not None
             else yaml_config.round_interval,
-            # Workflow type (CLI override)
             workflow_type=getattr(args, "workflow_type", None)
             if getattr(args, "workflow_type", None) is not None
             else yaml_config.workflow_type,
-            # Coding configuration (CLI override where applicable)
             coding_project_dir=getattr(args, "coding_project_dir", None)
             if getattr(args, "coding_project_dir", None) is not None
             else yaml_config.coding_project_dir,
@@ -504,7 +500,6 @@ class Config:
             warmup_delay=args.warmup_delay if args.warmup_delay is not None else 10,
             warmup_only=args.warmup_only if hasattr(args, "warmup_only") and args.warmup_only else False,
             benchmark_percent=args.benchmark_percent if args.benchmark_percent is not None else 1.0,
-            # Round-robin mode configuration
             benchmark_mode=getattr(args, "benchmark_mode", None)
             if getattr(args, "benchmark_mode", None) is not None
             else "fixed",
@@ -513,9 +508,7 @@ class Config:
             round_interval=getattr(args, "round_interval", None)
             if getattr(args, "round_interval", None) is not None
             else 5,
-            # Workflow type (CLI override)
             workflow_type=getattr(args, "workflow_type", "browser"),
-            # Coding configuration (CLI defaults)
             coding_project_dir=getattr(args, "coding_project_dir", "/opt/coding-bench"),
             coding_language=getattr(args, "coding_language", "js"),
             coding_verify_cmd=get_coding_profile(getattr(args, "coding_language", "js")).run_cmd,

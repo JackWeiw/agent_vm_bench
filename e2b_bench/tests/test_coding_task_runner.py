@@ -428,19 +428,23 @@ class TestStepVerify(unittest.TestCase):
         self.assertIn("baseParse", cmd)
         self.assertNotIn("packages/vue/src/index.ts", cmd)
 
-    def test_verify_no_script_no_compile_only_is_failure(self):
-        """A pair with neither verify_script nor verify: compile_only fails verify (no fake pass)."""
+    def test_verify_no_script_falls_back_to_shared_default(self):
+        """A pair with no verify_script and no verify: compile_only falls back to the
+        shared default verify script (the documented Go comment-append behavior) and is
+        honestly labeled compile-only - never fakes a Verify Success."""
         config = Config(workflow_type="coding", coding_language="js")
         runner = self._make_runner(config)
         sbx = _FakeSbx()
         pair = {"file": "packages/reactivity/src/baseHandlers.ts", "find": "x", "replace": "y"}
         ok, err, compile_only = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
-        self.assertFalse(ok)
-        self.assertFalse(compile_only)
-        self.assertIn("no verify_script", err)
-        self.assertIn("compile_only", err)
-        # No command was run (failure returned before issuing a sandbox command)
-        self.assertEqual(len(sbx.commands.calls), 0)
+        self.assertTrue(ok, err)
+        # No per-pair assertion => reported as compile-only, not verify success.
+        self.assertTrue(compile_only)
+        # The shared default verify script was written + run (single command).
+        self.assertEqual(len(sbx.commands.calls), 1)
+        cmd = sbx.commands.calls[0][0]
+        self.assertIn("cat > /tmp/bench_verify.mjs", cmd)
+        self.assertIn("npx tsx /tmp/bench_verify.mjs", cmd)
 
 
 class TestStepFindLanguageAware(unittest.TestCase):

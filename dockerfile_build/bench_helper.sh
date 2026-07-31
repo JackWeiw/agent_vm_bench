@@ -158,11 +158,10 @@ VERIFY_SCRIPT="${REST#*|}"
 # ---- Step 0: find — reset + locate target ----
 echo "[Step 0: find] Preparing environment..."
 
-# Reset source files to clean state (simulates agent reverting previous round's changes)
+# Reset source files to a clean state.
 # vuejs/core is a pnpm monorepo with no top-level src/ - packages/ alone covers all edits.
 cd "${PROJECT_DIR}" && git checkout -- packages/ 2>/dev/null || echo "  WARNING: git checkout failed (not a git repo or no changes)"
 
-# Verify the target file exists; fall back to a located file with a generic comment-marker pair
 if [ ! -f "${PROJECT_DIR}/${TARGET_FILE}" ]; then
     echo "  WARNING: target not found: ${TARGET_FILE}"
     FOUND_FILE=$(cd "${PROJECT_DIR}" && find packages \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' \) 2>/dev/null | head -1)
