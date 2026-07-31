@@ -519,6 +519,18 @@ class TestVerifyTemplatePool(unittest.TestCase):
         self.assertIn("baseParse", DEFAULT_CODING_VERIFY_SCRIPT_JS)
         self.assertNotIn("globalThis.__TEST__", DEFAULT_CODING_VERIFY_SCRIPT_JS)
 
+    def test_default_pairs_carry_no_verify_script(self):
+        """Pairs own edit semantics only ({file, find, replace}); verify workload
+        comes from the shared pool, so no pair carries a verify_script anymore."""
+        from e2b_bench.schemas import DEFAULT_CODING_SOURCE_FILES
+
+        self.assertGreaterEqual(len(DEFAULT_CODING_SOURCE_FILES), 6)
+        for pair in DEFAULT_CODING_SOURCE_FILES:
+            self.assertIn("file", pair)
+            self.assertIn("find", pair)
+            self.assertIn("replace", pair)
+            self.assertNotIn("verify_script", pair, "pairs must not carry verify_script (pool owns verify)")
+
 
 class TestBuildEditCommand(unittest.TestCase):
     """The literal find->replace command is robust to regex metacharacters.
