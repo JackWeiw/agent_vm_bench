@@ -2,7 +2,7 @@
 # Script to prepare and push the coding benchmark image for E2B template
 # Based on push_to_harbor.sh but using coding-bench image name
 #
-# Usage: HARBOR_IP=X bash push_to_harbor_coding_go.sh
+# Usage: HARBOR_IP=X bash push_to_harbor.sh
 
 set -e
 

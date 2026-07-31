@@ -9,7 +9,7 @@ Orchestrates multiple test runs with different parameter combinations:
 4. Generate summary report comparing all test results
 
 Usage:
-    python batch_test_scheduler.py --config config/batch_config.yaml
+    python batch_test_scheduler.py --config config/openstack/batch_config.yaml
 """
 
 import argparse

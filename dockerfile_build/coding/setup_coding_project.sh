@@ -21,7 +21,7 @@
 # forcing webpack to process hundreds of internal modules.
 # @mui/icons-material adds ~2000+ icon modules to the barrel analysis.
 #
-# Usage: Called from Dockerfile.coding during docker build
+# Usage: Called from coding/ts/Dockerfile during docker build
 # Result: /opt/coding-bench/ with pre-installed node_modules and initial build
 
 set -e

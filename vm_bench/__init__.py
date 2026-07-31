@@ -12,14 +12,14 @@ Features:
 
 Usage Examples:
     # Create VMs only (Phase 0)
-    python -m vm_bench --config config/vm_bench.yaml --create-only
+    python -m vm_bench --config config/openstack/vm_bench.yaml --create-only
 
     # Full workflow: Create + Connect + Benchmark
-    python -m vm_bench --config config/vm_bench.yaml
+    python -m vm_bench --config config/openstack/vm_bench.yaml
 
     # Browser benchmark with warmup
-    python -m vm_bench --config config/vm_bench.yaml --warmup-only
-    python -m vm_bench --config config/vm_bench.yaml -bp 0.5 -t 300
+    python -m vm_bench --config config/openstack/vm_bench.yaml --warmup-only
+    python -m vm_bench --config config/openstack/vm_bench.yaml -bp 0.5 -t 300
 """
 
 from .bench import main, run_benchmark
