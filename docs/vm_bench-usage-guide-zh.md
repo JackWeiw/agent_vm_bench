@@ -22,7 +22,7 @@ from vm_bench.schemas import VMStatus, VMState
 ### 命令行入口
 
 ```bash
-python -m vm_bench --config config/vm_bench.yaml
+python -m vm_bench --config config/openstack/vm_bench.yaml
 ```
 
 ---
@@ -34,7 +34,7 @@ python -m vm_bench --config config/vm_bench.yaml
 推荐使用 YAML 配置文件：
 
 ```yaml
-# config/vm_bench.yaml
+# config/openstack/vm_bench.yaml
 
 # OpenStack 环境
 openstack:
@@ -99,7 +99,7 @@ CLI 覆盖示例：
 
 ```bash
 # YAML 配置 total_count=80，CLI 覆盖为 10
-python -m vm_bench --config config/vm_bench.yaml -n 10 -t 300
+python -m vm_bench --config config/openstack/vm_bench.yaml -n 10 -t 300
 ```
 
 ---
@@ -112,7 +112,7 @@ python -m vm_bench --config config/vm_bench.yaml -n 10 -t 300
 
 ```bash
 # 使用 YAML 配置
-python -m vm_bench --config config/vm_bench.yaml --create-only
+python -m vm_bench --config config/openstack/vm_bench.yaml --create-only
 
 # 纯 CLI 模式
 python -m vm_bench --create-only \
@@ -153,7 +153,7 @@ python -m vm_bench --detect \
 
 ```bash
 python -m vm_bench --warmup-only \
-    --config config/vm_bench.yaml \
+    --config config/openstack/vm_bench.yaml \
     -n 50
 ```
 
@@ -174,7 +174,7 @@ python -m vm_bench --detect --warmup-only \
 创建 VM、连接、预热、压测：
 
 ```bash
-python -m vm_bench --config config/vm_bench.yaml
+python -m vm_bench --config config/openstack/vm_bench.yaml
 ```
 
 ### 6. 检测 + 压测
@@ -183,7 +183,7 @@ python -m vm_bench --config config/vm_bench.yaml
 
 ```bash
 python -m vm_bench --detect \
-    --config config/vm_bench.yaml \
+    --config config/openstack/vm_bench.yaml \
     -bsp 0.5 \
     -t 300
 ```
@@ -291,7 +291,7 @@ python -m vm_bench --detect \
 from vm_bench import Config
 
 # 从 YAML 文件加载
-config = Config.load_from_yaml('config/vm_bench.yaml')
+config = Config.load_from_yaml('config/openstack/vm_bench.yaml')
 
 # 用 CLI 参数覆盖
 from vm_bench.bench import build_arg_parser
@@ -360,13 +360,13 @@ print(result['report'])
 
 ```bash
 # 阶段 0：创建 VM
-python -m vm_bench --create-only -n 100 --config config/vm_bench.yaml
+python -m vm_bench --create-only -n 100 --config config/openstack/vm_bench.yaml
 
 # 阶段 1a：预热（全部 100 个 VM）
-python -m vm_bench --detect --warmup-only -n 100 --config config/vm_bench.yaml
+python -m vm_bench --detect --warmup-only -n 100 --config config/openstack/vm_bench.yaml
 
 # 阶段 1b：压测（50% VM，即 50 个）
-python -m vm_bench --detect -bsp 0.5 -t 300 --config config/vm_bench.yaml
+python -m vm_bench --detect -bsp 0.5 -t 300 --config config/openstack/vm_bench.yaml
 ```
 
 ### 与 auto_vm_test.py 集成
@@ -374,7 +374,7 @@ python -m vm_bench --detect -bsp 0.5 -t 300 --config config/vm_bench.yaml
 `auto_vm_test.py` 现已内部使用 `vm_bench` 模块：
 
 ```bash
-python auto_vm_test.py --config config/test_config.yaml
+python auto_vm_test.py --config config/openstack/test_config_template.yaml
 ```
 
 流程：
@@ -504,7 +504,7 @@ python -c "from vm_bench import Config, VMManager; print('OK')"
 
 ## 相关文档
 
-- [配置参考](config/vm_bench.yaml)
+- [配置参考](config/openstack/vm_bench.yaml)
 - [测试套件](vm_bench/tests/)
 - [原使用指南](usage-guide.md)（旧版脚本）
 

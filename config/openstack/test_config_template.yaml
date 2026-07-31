@@ -7,7 +7,7 @@
 #   This template is used by batch_test_scheduler.py to generate test configs.
 #   Do not use directly - use batch scheduler instead:
 #
-#   python batch_test_scheduler.py --config config/batch_config.yaml
+#   python batch_test_scheduler.py --config config/openstack/batch_config.yaml
 #
 # For single test runs, create a derived config file with actual values.
 

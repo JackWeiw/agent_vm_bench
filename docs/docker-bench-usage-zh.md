@@ -73,10 +73,10 @@ Step 4: agent-browser screenshot
 
 ### 1. 准备 Docker 镜像
 
-参考 [dockerfile_build](../dockerfile_build/README.md) 制作镜像，确保已安装 agent-browser：
+参考 [dockerfile_build/browser](../dockerfile_build/browser/README.md) 制作镜像，确保已安装 agent-browser：
 
 ```bash
-cd dockerfile_build
+cd dockerfile_build/browser
 docker build -t ubuntu-openclaw-chromium:arm64 .
 
 # 或 x86_64 架构
@@ -98,7 +98,7 @@ pip install -r docker_bench/requirements.txt
 
 ### 3. 配置测试参数
 
-编辑 `config/docker_bench.yaml`：
+编辑 `config/docker/docker_bench.yaml`：
 
 ```yaml
 docker:
@@ -129,10 +129,10 @@ test:
 
 ```bash
 # 使用配置文件
-python -m docker_bench --config config/docker_bench.yaml
+python -m docker_bench --config config/docker/docker_bench.yaml
 
 # 命令行参数覆盖
-python -m docker_bench --config config/docker_bench.yaml --total 20 --duration 300
+python -m docker_bench --config config/docker/docker_bench.yaml --total 20 --duration 300
 
 # 完全命令行模式（无配置文件）
 python -m docker_bench \
@@ -149,10 +149,10 @@ python -m docker_bench \
 只创建容器，不执行任务。容器保持运行供后续使用：
 
 ```bash
-python -m docker_bench --config config/docker_bench.yaml --create-only
+python -m docker_bench --config config/docker/docker_bench.yaml --create-only
 
 # 配合创建批量控制
-python -m docker_bench --config config/docker_bench.yaml \
+python -m docker_bench --config config/docker/docker_bench.yaml \
     --create-only \
     --create-batch-size 5 \
     --create-batch-interval 10
@@ -163,10 +163,10 @@ python -m docker_bench --config config/docker_bench.yaml \
 检测当前运行的容器并在其上执行压测：
 
 ```bash
-python -m docker_bench --config config/docker_bench.yaml --detect
+python -m docker_bench --config config/docker/docker_bench.yaml --detect
 
 # 配合压测批量控制
-python -m docker_bench --config config/docker_bench.yaml \
+python -m docker_bench --config config/docker/docker_bench.yaml \
     --detect \
     --task-batch-size 5 \
     --task-batch-interval 5
@@ -445,5 +445,5 @@ browser:
 ## 相关文档
 
 - [E2B Bench 使用指南](e2b-bench-usage-zh.md) - E2B 沙箱性能测试
-- [设计文档](../dockerfile_build/README.md) - Docker 镜像构建
+- [设计文档](../dockerfile_build/browser/README.md) - Docker 镜像构建
 - [agent-browser 官方文档](https://github.com/nickfla1/agent-browser) - agent-browser CLI 参考

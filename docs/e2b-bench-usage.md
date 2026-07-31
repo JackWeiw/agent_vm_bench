@@ -11,7 +11,7 @@ download_page.sh → docker build → push_to_harbor.sh → build_e2b.py → htt
      ↓                 ↓              ↓                 ↓            ↓
   Web pages     Docker image    Harbor registry    E2B template    Web server
                                                                        ↓
-                              config/e2b_bench.yaml (template + URL)
+                              config/e2b/bench.yaml (template + URL)
                                        ↓
                               --create-only → --detect → benchmark → delete_sandbox.sh
 ```
@@ -35,7 +35,7 @@ Pages saved to `web_content/en.wikipedia.org/wiki/`. Each page includes HTML and
 Build the base Docker image containing openclaw, agent-browser, Chromium, llama-server, and supervisor:
 
 ```bash
-cd dockerfile_build
+cd dockerfile_build/browser
 
 # Build for ARM64 (default)
 docker build -t ubuntu-openclaw-chromium:24.04-linuxarm64 .
@@ -56,7 +56,7 @@ The Dockerfile installs:
 Push the built image to your Harbor registry (required for E2B template build):
 
 ```bash
-cd dockerfile_build
+cd dockerfile_build/browser
 
 # Set Harbor IP to your E2B/Harbor server
 HARBOR_IP=71.14.96.192 bash push_to_harbor.sh
@@ -75,7 +75,7 @@ Harbor access: `http://HARBOR_IP:2900/` (admin/Harbor12345)
 Build an E2B template from the Harbor image. This creates the Firecracker microVM template used by sandbox.create():
 
 ```bash
-cd dockerfile_build
+cd dockerfile_build/browser
 
 # Build template (alias = template name for config)
 python3 build_e2b.py --server-ip 71.14.96.192 --alias openclaw-browser-v1
@@ -115,7 +115,7 @@ Available pages: `http://YOUR_IP:8080/China.html`, `http://YOUR_IP:8080/Hubble_S
 
 ### Step 6: Modify Configuration
 
-Edit `config/e2b_bench.yaml` to match your environment:
+Edit `config/e2b/bench.yaml` to match your environment:
 
 ```yaml
 e2b_env:
@@ -152,10 +152,10 @@ test:
 Create sandboxes without running tasks (Phase 0). Sandboxes are left running for later benchmark use:
 
 ```bash
-python -m e2b_bench --config config/e2b_bench.yaml --create-only
+python -m e2b_bench --config config/e2b/bench.yaml --create-only
 
 # Save sandbox IDs for cross-session reuse
-python -m e2b_bench --config config/e2b_bench.yaml --create-only --sandbox-ids-file sandboxs.txt
+python -m e2b_bench --config config/e2b/bench.yaml --create-only --sandbox-ids-file sandboxs.txt
 ```
 
 ### Step 8: Run Benchmark
@@ -164,17 +164,17 @@ Detect existing sandboxes and run the benchmark:
 
 ```bash
 # Fixed mode (all sandboxes run tasks concurrently)
-python -m e2b_bench --config config/e2b_bench.yaml --detect
+python -m e2b_bench --config config/e2b/bench.yaml --detect
 
 # Round-robin mode (group rotation for memory migration testing)
-python -m e2b_bench --config config/e2b_bench.yaml --detect -bm round_robin -rs 5 -rc 5
+python -m e2b_bench --config config/e2b/bench.yaml --detect -bm round_robin -rs 5 -rc 5
 
 # Multi-phase approach: warmup first, then benchmark
-python -m e2b_bench --config config/e2b_bench.yaml --detect --warmup-only  # Warmup phase
-python -m e2b_bench --config config/e2b_bench.yaml --detect                # Benchmark phase
+python -m e2b_bench --config config/e2b/bench.yaml --detect --warmup-only  # Warmup phase
+python -m e2b_bench --config config/e2b/bench.yaml --detect                # Benchmark phase
 
 # With sandbox ID file
-python -m e2b_bench --config config/e2b_bench.yaml --detect --sandbox-ids-file sandboxs.txt
+python -m e2b_bench --config config/e2b/bench.yaml --detect --sandbox-ids-file sandboxs.txt
 ```
 
 ### Step 9: Delete Sandboxes
@@ -257,7 +257,7 @@ Dependencies: `e2b>=0.15.0`, `PyYAML>=6.0`
 
 ### 2. Configure Credentials
 
-Edit `config/e2b_bench.yaml`:
+Edit `config/e2b/bench.yaml`:
 
 ```yaml
 e2b_env:
@@ -352,10 +352,10 @@ Create sandboxes, warmup, run tasks on subset, generate report:
 
 ```bash
 # Using config file
-python -m e2b_bench --config config/e2b_bench.yaml
+python -m e2b_bench --config config/e2b/bench.yaml
 
 # With CLI overrides
-python -m e2b_bench --config config/e2b_bench.yaml --total 50 --duration 300 -bp 0.5
+python -m e2b_bench --config config/e2b/bench.yaml --total 50 --duration 300 -bp 0.5
 
 # Full CLI mode (no config file)
 python -m e2b_bench \
@@ -371,15 +371,15 @@ Rotate sandbox groups across rounds, each round opens a new tab to trigger memor
 
 ```bash
 # Round-robin with 5 sandboxes per round, 5 rounds total
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     -bm round_robin -rs 5 -rc 5 -ri 5
 
 # Round-robin with unlimited rounds until duration reached
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     -bm round_robin -rs 5 -ri 5 --duration 600
 
 # Round-robin with smap_tool for memory migration monitoring
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     -bm round_robin -rs 5 -rc 10 \
     --warmup-url http://server/page1.html
 ```
@@ -389,16 +389,16 @@ python -m e2b_bench --config config/e2b_bench.yaml \
 Create sandboxes only, without running tasks. Sandboxes stay running for later use:
 
 ```bash
-python -m e2b_bench --config config/e2b_bench.yaml --create-only
+python -m e2b_bench --config config/e2b/bench.yaml --create-only
 
 # With creation batch control and NUMA binding
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     --create-only \
     --create-batch-size 20 \
     --create-batch-interval 30
 
 # Save sandbox IDs for later reuse
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     --create-only --sandbox-ids-file sandboxs.txt
 ```
 
@@ -408,14 +408,14 @@ Detect existing running sandboxes (from IDs file or API) and run benchmark on th
 
 ```bash
 # Detect all running sandboxes
-python -m e2b_bench --config config/e2b_bench.yaml --detect
+python -m e2b_bench --config config/e2b/bench.yaml --detect
 
 # Detect from saved IDs file
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     --detect --sandbox-ids-file sandboxs.txt
 
 # With task batch control
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     --detect \
     --task-batch-size 10 \
     --task-batch-interval 5
@@ -426,10 +426,10 @@ python -m e2b_bench --config config/e2b_bench.yaml \
 Run warmup phase only to preheat browser memory, then exit. Sandboxes stay running for later benchmark:
 
 ```bash
-python -m e2b_bench --config config/e2b_bench.yaml --warmup-only
+python -m e2b_bench --config config/e2b/bench.yaml --warmup-only
 
 # With custom warmup pages
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     --warmup-only \
     --warmup-url http://192.168.110.10:8080/page1.html \
     --warmup-url http://192.168.110.10:8080/page2.html \
@@ -437,7 +437,7 @@ python -m e2b_bench --config config/e2b_bench.yaml \
     --warmup-delay 5
 
 # Large-scale warmup (> 100 sandboxes creates in waves)
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     --warmup-only --total 200
 ```
 
@@ -446,7 +446,7 @@ python -m e2b_bench --config config/e2b_bench.yaml \
 Create sandboxes, warmup (opens N tabs), then round-robin benchmark (each round opens a new tab):
 
 ```bash
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     --warmup-url http://192.168.110.10:8080/page1.html \
     -bm round_robin -rs 5 -rc 5 --duration 600
 ```
@@ -667,7 +667,7 @@ Batch mode runs multiple test scenarios defined by a matrix config, reusing sand
 
 ```bash
 # Online mode: run batch tests
-python -m e2b_bench --batch --matrix config/e2b_batch_matrix.yaml
+python -m e2b_bench --batch --matrix config/e2b/batch_matrix.yaml
 
 # Offline mode: generate summary from existing results
 python -m e2b_bench --batch --offline --result-dir results/e2b/batch
@@ -675,7 +675,7 @@ python -m e2b_bench --batch --offline --result-dir results/e2b/batch
 
 ### Matrix Configuration
 
-Edit `config/e2b_batch_matrix.yaml`:
+Edit `config/e2b/batch_matrix.yaml`:
 
 ```yaml
 test_matrix:
@@ -688,7 +688,7 @@ reuse_strategy:
   reuse_smap_tool: true    # Reuse smap_tool within same group
 
 result:
-  template_path: "config/e2b_batch_template.yaml"
+  template_path: "config/e2b/batch_template.yaml"
   output_dir: "results/e2b/batch"
 ```
 

@@ -32,11 +32,11 @@
 #   cold-compile pressure (the behavior the customer needs to measure).
 #
 # Usage:
-#   bash bench_helper_go.sh                    # Round 0, all steps
-#   bash bench_helper_go.sh 3                  # Round 3, all steps
-#   bash bench_helper_go.sh --round=5          # Round 5
-#   bash bench_helper_go.sh --no-verify        # Skip verify step
-#   bash bench_helper_go.sh --help             # Show help
+#   bash bench_helper.sh                    # Round 0, all steps
+#   bash bench_helper.sh 3                  # Round 3, all steps
+#   bash bench_helper.sh --round=5          # Round 5
+#   bash bench_helper.sh --no-verify        # Skip verify step
+#   bash bench_helper.sh --help             # Show help
 #
 # Environment overrides:
 #   BENCH_PROJECT_DIR    hugo project path (default: /opt/coding-bench)
@@ -93,7 +93,7 @@ for arg in "$@"; do
             echo ""
             echo "Loop: find -> read -> edit -> verify (go run) -> git diff"
             echo ""
-            echo "Usage: bash bench_helper_go.sh [ROUND] [OPTIONS]"
+            echo "Usage: bash bench_helper.sh [ROUND] [OPTIONS]"
             echo ""
             echo "Positional:"
             echo "  ROUND           Round number (default: 0)"
@@ -261,5 +261,5 @@ echo "  Verify:      ${VERIFY_MS}ms (exit: ${VERIFY_EXIT})"
 echo "  Patch:       /tmp/bench_round_${ROUND}.patch (${PATCH_LINES} lines)"
 echo "============================================"
 echo ""
-echo "  Next round:  bash ${PROJECT_DIR}/bench_helper_go.sh $((ROUND + 1))"
+echo "  Next round:  bash ${PROJECT_DIR}/bench_helper.sh $((ROUND + 1))"
 echo "  Reset only:  cd ${PROJECT_DIR} && git checkout -- markup/"

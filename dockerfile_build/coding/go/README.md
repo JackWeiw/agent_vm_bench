@@ -74,7 +74,7 @@ Round:     find  read  edit  verify(peak)  diff
 
 - **Repo**: `github.com/gohugoio/hugo` cloned at the instance base_commit
   `83235262d06a060bd22c168b3413903667b8aeb6` (`gohugoio__hugo-12768`).
-- **Image**: `Dockerfile.coding-go` — ubuntu:24.04-linuxarm64 + Go ARM64
+- **Image**: `Dockerfile` — ubuntu:24.04-linuxarm64 + Go ARM64
   toolchain + git. The hugo module graph is intentionally **not**
   pre-downloaded. The captured agent never ran `go mod download`, and every
   verify script imports only the Go stdlib, so `go run /tmp/bench_verify.go`
@@ -105,13 +105,13 @@ one registry entry + its default verify script — no runner code changes.
 ## Build & push
 
 ```bash
-cd dockerfile_build
+cd dockerfile_build/coding/go
 
 # Build the Go coding image
-docker build -t ubuntu-coding-go-bench:24.04-linuxarm64 -f Dockerfile.coding-go .
+docker build -t ubuntu-coding-go-bench:24.04-linuxarm64 -f Dockerfile .
 
 # Push to Harbor + install E2B-required system packages
-HARBOR_IP=X bash push_to_harbor_coding_go.sh
+HARBOR_IP=X bash push_to_harbor.sh
 
 # Build the E2B template (alias is free-form; no code registration needed)
 python3 build_e2b.py --server-ip X --harbor-ip X \
@@ -124,9 +124,9 @@ python3 build_e2b.py --server-ip X --harbor-ip X \
 
 ```bash
 # Inside a running sandbox (or via sbx.commands.run from the runner):
-bash /opt/coding-bench/bench_helper_go.sh           # Round 0, all steps
-bash /opt/coding-bench/bench_helper_go.sh 3         # Round 3
-bash /opt/coding-bench/bench_helper_go.sh --no-verify   # edit+diff only
+bash /opt/coding-bench/bench_helper.sh           # Round 0, all steps
+bash /opt/coding-bench/bench_helper.sh 3         # Round 3
+bash /opt/coding-bench/bench_helper.sh --no-verify   # edit+diff only
 ```
 
 The helper writes `/tmp/bench_verify.go`, runs `go run /tmp/bench_verify.go`,
@@ -136,10 +136,10 @@ captures timing, and produces `/tmp/bench_round_N.patch`.
 
 ```bash
 # Create sandboxes
-python -m e2b_bench -c config/e2b_coding_go_bench.yaml --create-only
+python -m e2b_bench -c config/e2b/coding_go_bench.yaml --create-only
 
 # Run (round-robin recommended)
-python -m e2b_bench -c config/e2b_coding_go_bench.yaml --detect -bm round_robin
+python -m e2b_bench -c config/e2b/coding_go_bench.yaml --detect -bm round_robin
 
 # Delete sandboxes
 cd e2b_bench/scripts && bash delete_sandbox.sh

@@ -1,8 +1,8 @@
-# config/e2b_bench.yaml
+# config/e2b/bench.yaml
 # E2B Sandbox Browser Benchmark Configuration Template
 #
 # This config controls browser workflow only.
-# For coding workflow, use config/e2b_coding_bench.yaml.
+# For coding workflow, use config/e2b/coding_bench.yaml.
 
 # E2B SDK environment variables (replace with real credentials)
 e2b_env:

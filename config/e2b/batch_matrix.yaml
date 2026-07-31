@@ -13,5 +13,5 @@ reuse_strategy:
 
 # Result Configuration
 result:
-  template_path: "config/e2b_batch_template.yaml"  # Config template file (relative path from project root)
+  template_path: "config/e2b/batch_template.yaml"  # Config template file (relative path from project root)
   output_dir: "results/e2b/batch"                  # Output directory for all test results

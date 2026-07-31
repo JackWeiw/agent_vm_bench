@@ -94,8 +94,8 @@ RUN cd /opt && \
     git checkout 83235262d06a060bd22c168b3413903667b8aeb6
 
 # Copy the manual testing helper script
-COPY bench_helper_go.sh /opt/coding-bench/bench_helper_go.sh
-RUN chmod +x /opt/coding-bench/bench_helper_go.sh
+COPY bench_helper.sh /opt/coding-bench/bench_helper.sh
+RUN chmod +x /opt/coding-bench/bench_helper.sh
 
 # Unset proxy environment variables after build
 ENV http_proxy= \

@@ -83,7 +83,7 @@ download_page.sh → docker build → push_to_harbor.sh → build_e2b.py → htt
      ↓                 ↓              ↓                 ↓            ↓
   Web pages     Docker image    Harbor registry    E2B template    Web server
                                                                        ↓
-                              config/e2b_bench.yaml (template + URL)
+                              config/e2b/bench.yaml (template + URL)
                                        ↓
                               --create-only → --detect → benchmark → delete_sandbox.sh
 ```
@@ -91,16 +91,16 @@ download_page.sh → docker build → push_to_harbor.sh → build_e2b.py → htt
 ### Prerequisite Steps
 
 1. **Download pages**: `bash download_page.sh` → saves to `web_content/`
-2. **Build image**: `cd dockerfile_build && docker build -t ubuntu-openclaw-chromium:24.04-linuxarm64 .`
-3. **Push to Harbor**: `HARBOR_IP=X bash push_to_harbor.sh` → pushes to Harbor registry
-4. **Build E2B template**: `python3 build_e2b.py --server-ip X --alias openclaw-browser-v1` → requires `~/.e2b/config.json`
+2. **Build image**: `cd dockerfile_build/browser && docker build -t ubuntu-openclaw-chromium:24.04-linuxarm64 .`
+3. **Push to Harbor**: `HARBOR_IP=X bash dockerfile_build/browser/push_to_harbor.sh` → pushes to Harbor registry
+4. **Build E2B template**: `python3 dockerfile_build/browser/build_e2b.py --server-ip X --alias openclaw-browser-v1` → requires `~/.e2b/config.json`
 5. **Start web server**: `cd web_content/en.wikipedia.org/wiki && numactl --cpunodebind=2,3 --membind=2,3 python3 -m http.server 8080`
-6. **Modify config**: Edit `config/e2b_bench.yaml` with template name, local IP URLs, E2B API URL
+6. **Modify config**: Edit `config/e2b/bench.yaml` with template name, local IP URLs, E2B API URL
 
 ### Testing Steps
 
-7. **Create sandboxes**: `python -m e2b_bench --config config/e2b_bench.yaml --create-only`
-8. **Run benchmark**: `python -m e2b_bench --config config/e2b_bench.yaml --detect` (fixed or `-bm round_robin`)
+7. **Create sandboxes**: `python -m e2b_bench --config config/e2b/bench.yaml --create-only`
+8. **Run benchmark**: `python -m e2b_bench --config config/e2b/bench.yaml --detect` (fixed or `-bm round_robin`)
 9. **Delete sandboxes**: `cd e2b_bench/scripts && bash delete_sandbox.sh`
 
 ## Entry Points
@@ -264,13 +264,20 @@ results/
 
 ```
 config/
-├── batch_config.yaml            # OpenStack batch test matrix
-├── test_config_template.yaml    # OpenStack single test template
-├── e2b_bench.yaml               # E2B single test config
-├── e2b_batch_matrix.yaml        # E2B batch test matrix
-├── e2b_batch_template.yaml      # E2B batch template
-├── docker_bench.yaml            # Docker test config
-└── getfre_config.yaml           # getfre frequency monitor config
+├── openstack/
+│   ├── batch_config.yaml            # OpenStack batch test matrix
+│   ├── test_config_template.yaml    # OpenStack single test template
+│   └── vm_bench.yaml                # OpenStack VM benchmark config
+├── e2b/
+│   ├── bench.yaml                   # E2B browser single test config
+│   ├── batch_matrix.yaml            # E2B batch test matrix
+│   ├── batch_template.yaml          # E2B batch template
+│   ├── coding_bench.yaml            # E2B coding (TS) single test config
+│   └── coding_go_bench.yaml        # E2B coding (Go) single test config
+├── docker/
+│   └── docker_bench.yaml            # Docker test config
+└── tools/
+    └── getfre_config.yaml           # getfre frequency monitor config
 ```
 
 ## Known Issues / Limitations

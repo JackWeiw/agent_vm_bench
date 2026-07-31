@@ -78,16 +78,16 @@ numactl --cpunodebind=2,3 --membind=2,3 python3 -m http.server 8080
 pip install -r vm_bench/requirements.txt
 
 # 仅创建 VM（阶段 0）
-python -m vm_bench --config config/vm_bench.yaml --create-only
+python -m vm_bench --config config/openstack/vm_bench.yaml --create-only
 
 # 检测已有 VM 并压测
-python -m vm_bench --config config/vm_bench.yaml --detect -bsp 0.5 -t 300
+python -m vm_bench --config config/openstack/vm_bench.yaml --detect -bsp 0.5 -t 300
 
 # 仅预热
-python -m vm_bench --config config/vm_bench.yaml --warmup-only
+python -m vm_bench --config config/openstack/vm_bench.yaml --warmup-only
 
 # 完整流程
-python -m vm_bench --config config/vm_bench.yaml
+python -m vm_bench --config config/openstack/vm_bench.yaml
 ```
 
 ### Python API
@@ -113,7 +113,7 @@ print(result['report'])
 | `vm_bench/vm_manager.py` | VM 生命周期（OpenStack + SSH） |
 | `vm_bench/task_runner.py` | 任务执行（QA、Stress、Browser） |
 | `vm_bench/bench.py` | 主编排入口 |
-| `config/vm_bench.yaml` | 配置模板 |
+| `config/openstack/vm_bench.yaml` | 配置模板 |
 
 详见 [vm_bench 使用指南](docs/vm_bench-usage-guide-zh.md)。
 
@@ -182,10 +182,10 @@ virsh list --all
 
 ```bash
 # 预览任务
-python3 batch_test_scheduler.py --config config/batch_config.yaml --dry-run
+python3 batch_test_scheduler.py --config config/openstack/batch_config.yaml --dry-run
 
 # 执行批量测试
-python3 batch_test_scheduler.py --config config/batch_config.yaml
+python3 batch_test_scheduler.py --config config/openstack/batch_config.yaml
 
 # 离线汇总（从已有结果）
 python3 batch_test_scheduler.py --offline --result-dir results
@@ -194,7 +194,7 @@ python3 batch_test_scheduler.py --offline --result-dir results
 ### 单次测试
 
 ```bash
-python3 auto_vm_test.py --config config/test_config.yaml
+python3 auto_vm_test.py --config config/openstack/test_config_template.yaml
 ```
 
 ### 结果目录结构

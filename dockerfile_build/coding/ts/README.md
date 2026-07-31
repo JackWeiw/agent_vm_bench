@@ -101,8 +101,8 @@ Step 4: diff    — git diff > /tmp/bench_round_N.patch (verification artifact)
 ### 1. Build Docker Image
 
 ```bash
-cd dockerfile_build
-docker build -t ubuntu-coding-bench:24.04-linuxarm64 -f Dockerfile.coding .
+cd dockerfile_build/coding/ts
+docker build -t ubuntu-coding-bench:24.04-linuxarm64 -f Dockerfile .
 ```
 
 This clones vuejs/core and runs `pnpm install` (with `PUPPETEER_SKIP_DOWNLOAD=1`).
@@ -111,7 +111,7 @@ No production build, no vite playground.
 ### 2. Push to Harbor
 
 ```bash
-HARBOR_IP=<your_harbor_ip> bash push_to_harbor_coding.sh
+HARBOR_IP=<your_harbor_ip> bash push_to_harbor.sh
 ```
 
 This adds E2B-required packages (systemd, openssh-server, websocat) and pushes to Harbor registry.
@@ -160,7 +160,7 @@ bash bench_helper.sh [ROUND] [OPTIONS]
 coding loop is shared across languages; only the verify mechanics differ,
 captured as data in a `CodingLanguageProfile` registry (`e2b_bench/config.py`).
 A Go variant (`gohugoio/hugo`, `go run` verify) ships alongside this one — see
-[README_CODING_GO.md](README_CODING_GO.md). Adding C++ later = one registry
+[Go README](../go/README.md). Adding C++ later = one registry
 entry + its default verify script. (The profile is keyed `ts` because
 vuejs/core's source is TypeScript; the verify scripts import `.ts` source and
 run via `npx tsx`, which transpiles TS on the fly.)

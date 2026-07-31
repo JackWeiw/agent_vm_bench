@@ -20,14 +20,14 @@ This directory contains all files needed to build the `ubuntu-openclaw-chromium:
 **ARM64:**
 
 ```bash
-cd dockerfile_build
+cd dockerfile_build/browser
 docker build -t ubuntu-openclaw-chromium:24.04-linuxarm64 .
 ```
 
 **x86_64:**
 
 ```bash
-cd dockerfile_build
+cd dockerfile_build/browser
 docker build -f Dockerfile.x86 -t ubuntu-openclaw-chromium:24.04-x86_64 .
 ```
 

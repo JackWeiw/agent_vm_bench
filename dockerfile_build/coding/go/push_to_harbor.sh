@@ -2,7 +2,7 @@
 # Script to prepare and push the coding benchmark image for E2B template
 # Based on push_to_harbor.sh but using coding-bench image name
 #
-# Usage: HARBOR_IP=X bash push_to_harbor_coding_go.sh
+# Usage: HARBOR_IP=X bash push_to_harbor.sh
 
 set -e
 
@@ -29,7 +29,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 check_base_image() {
     if ! docker images "${BASE_IMAGE}" --format "{{.Repository}}" | grep -q "ubuntu-coding-go-bench"; then
         log_error "Base image ${BASE_IMAGE} not found!"
-        log_info "Please build it first: cd dockerfile_build && docker build -t ${BASE_IMAGE} -f Dockerfile.coding-go ."
+        log_info "Please build it first: cd dockerfile_build/coding/go && docker build -t ${BASE_IMAGE} -f Dockerfile ."
         exit 1
     fi
     log_info "Base image found: ${BASE_IMAGE}"

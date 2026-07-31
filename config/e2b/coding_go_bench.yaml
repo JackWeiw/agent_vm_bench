@@ -1,4 +1,4 @@
-# config/e2b_coding_go_bench.yaml
+# config/e2b/coding_go_bench.yaml
 # E2B Sandbox Coding Benchmark (Go) - Single Test Configuration
 #
 # Workflow type: coding — simulates AI coding agent memory pressure (Go)
@@ -18,9 +18,9 @@
 #     agent trajectory, which also never ran `go mod download`).
 #
 # Usage:
-#   python -m e2b_bench -c config/e2b_coding_go_bench.yaml --create-only
-#   python -m e2b_bench -c config/e2b_coding_go_bench.yaml --detect
-#   python -m e2b_bench -c config/e2b_coding_go_bench.yaml --detect -bm round_robin
+#   python -m e2b_bench -c config/e2b/coding_go_bench.yaml --create-only
+#   python -m e2b_bench -c config/e2b/coding_go_bench.yaml --detect
+#   python -m e2b_bench -c config/e2b/coding_go_bench.yaml --detect -bm round_robin
 
 # E2B SDK environment variables (replace with real credentials)
 e2b_env:

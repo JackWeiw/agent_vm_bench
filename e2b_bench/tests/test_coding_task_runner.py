@@ -136,7 +136,7 @@ class TestCodingConfig(unittest.TestCase):
 
     def test_yaml_coding_config(self):
         """Test loading coding config from YAML file"""
-        c = Config.load_from_yaml("config/e2b_coding_bench.yaml")
+        c = Config.load_from_yaml("config/e2b/coding_bench.yaml")
         self.assertEqual(c.workflow_type, "coding")
         self.assertEqual(c.template, "openclaw-coding-v1")
         self.assertEqual(c.coding_project_dir, "/opt/coding-bench")
@@ -145,7 +145,7 @@ class TestCodingConfig(unittest.TestCase):
 
     def test_yaml_coding_language_and_verify_cmd(self):
         """YAML configures the language and the verify command (npx tsx)"""
-        c = Config.load_from_yaml("config/e2b_coding_bench.yaml")
+        c = Config.load_from_yaml("config/e2b/coding_bench.yaml")
         self.assertEqual(c.coding_language, "ts")
         self.assertEqual(c.coding_verify_cmd, "npx tsx /tmp/bench_verify.mjs")
         self.assertEqual(c.coding_verify_timeout, 120)
@@ -153,7 +153,7 @@ class TestCodingConfig(unittest.TestCase):
 
     def test_yaml_coding_source_files_are_vuejs_pairs(self):
         """YAML source_files are verified vuejs/core paths with find/replace"""
-        c = Config.load_from_yaml("config/e2b_coding_bench.yaml")
+        c = Config.load_from_yaml("config/e2b/coding_bench.yaml")
         files = [p["file"] for p in c.coding_source_files]
         # All targets are real vuejs/core paths under packages/
         self.assertTrue(all(f.startswith("packages/") for f in files), files)
@@ -164,7 +164,7 @@ class TestCodingConfig(unittest.TestCase):
 
     def test_yaml_browser_config_unaffected(self):
         """Test that browser config loading still works"""
-        c = Config.load_from_yaml("config/e2b_bench.yaml")
+        c = Config.load_from_yaml("config/e2b/bench.yaml")
         self.assertEqual(c.workflow_type, "browser")
         self.assertEqual(c.template, "openclaw-browser-v1")
 

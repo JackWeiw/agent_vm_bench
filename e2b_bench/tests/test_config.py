@@ -457,7 +457,7 @@ test:
         """Test that the actual e2b_bench.yaml loads round_robin correctly"""
         import os.path
 
-        yaml_path = "config/e2b_bench.yaml"
+        yaml_path = "config/e2b/bench.yaml"
         if os.path.exists(yaml_path):
             config = Config.load_from_yaml(yaml_path)
             # The config file should have benchmark_mode: "round_robin"
