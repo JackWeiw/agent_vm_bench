@@ -11,7 +11,7 @@ download_page.sh → docker build → push_to_harbor.sh → build_e2b.py → htt
      ↓                 ↓              ↓                 ↓            ↓
   网页页面       Docker镜像     Harbor仓库        E2B模板       Web服务器
                                                                      ↓
-                            config/e2b_bench.yaml (模板名 + URL)
+                            config/e2b/bench.yaml (模板名 + URL)
                                      ↓
                             --create-only → --detect → 压测 → delete_sandbox.sh
 ```
@@ -35,7 +35,7 @@ bash download_page.sh -p Weibo,China
 构建包含openclaw、agent-browser、Chromium、llama-server和supervisor的基础Docker镜像：
 
 ```bash
-cd dockerfile_build
+cd dockerfile_build/browser
 
 # 构建ARM64镜像（默认）
 docker build -t ubuntu-openclaw-chromium:24.04-linuxarm64 .
@@ -56,7 +56,7 @@ Dockerfile安装内容：
 推送构建好的镜像到Harbor仓库（E2B模板构建需要）：
 
 ```bash
-cd dockerfile_build
+cd dockerfile_build/browser
 
 # 设置Harbor IP为你的E2B/Harbor服务器地址
 HARBOR_IP=71.14.96.192 bash push_to_harbor.sh
@@ -75,7 +75,7 @@ Harbor访问地址：`http://HARBOR_IP:2900/`（admin/Harbor12345）
 从Harbor镜像构建E2B模板，创建用于sandbox.create()的Firecracker microVM模板：
 
 ```bash
-cd dockerfile_build
+cd dockerfile_build/browser
 
 # 构建模板（alias = 配置中使用的模板名称）
 python3 build_e2b.py --server-ip 71.14.96.192 --alias openclaw-browser-v1
@@ -115,7 +115,7 @@ numactl --cpunodebind=2,3 --membind=2,3 python3 -m http.server 8080
 
 ### 第6步：修改配置
 
-编辑 `config/e2b_bench.yaml` 使其匹配你的环境：
+编辑 `config/e2b/bench.yaml` 使其匹配你的环境：
 
 ```yaml
 e2b_env:
@@ -152,10 +152,10 @@ test:
 仅创建沙箱不执行任务（Phase 0），沙箱保持运行供后续压测使用：
 
 ```bash
-python -m e2b_bench --config config/e2b_bench.yaml --create-only
+python -m e2b_bench --config config/e2b/bench.yaml --create-only
 
 # 保存沙箱ID供跨会话复用
-python -m e2b_bench --config config/e2b_bench.yaml --create-only --sandbox-ids-file sandboxs.txt
+python -m e2b_bench --config config/e2b/bench.yaml --create-only --sandbox-ids-file sandboxs.txt
 ```
 
 ### 第8步：运行压测
@@ -164,17 +164,17 @@ python -m e2b_bench --config config/e2b_bench.yaml --create-only --sandbox-ids-f
 
 ```bash
 # 固定模式（所有沙箱并发执行任务）
-python -m e2b_bench --config config/e2b_bench.yaml --detect
+python -m e2b_bench --config config/e2b/bench.yaml --detect
 
 # 轮转模式（分组轮换，用于内存迁移压力测试）
-python -m e2b_bench --config config/e2b_bench.yaml --detect -bm round_robin -rs 5 -rc 5
+python -m e2b_bench --config config/e2b/bench.yaml --detect -bm round_robin -rs 5 -rc 5
 
 # 多阶段方式：先预热，再压测
-python -m e2b_bench --config config/e2b_bench.yaml --detect --warmup-only  # 预热阶段
-python -m e2b_bench --config config/e2b_bench.yaml --detect                # 压测阶段
+python -m e2b_bench --config config/e2b/bench.yaml --detect --warmup-only  # 预热阶段
+python -m e2b_bench --config config/e2b/bench.yaml --detect                # 压测阶段
 
 # 使用沙箱ID文件
-python -m e2b_bench --config config/e2b_bench.yaml --detect --sandbox-ids-file sandboxs.txt
+python -m e2b_bench --config config/e2b/bench.yaml --detect --sandbox-ids-file sandboxs.txt
 ```
 
 ### 第9步：删除沙箱
@@ -257,7 +257,7 @@ pip install -r e2b_bench/requirements.txt
 
 ### 2. 配置凭证
 
-编辑 `config/e2b_bench.yaml`：
+编辑 `config/e2b/bench.yaml`：
 
 ```yaml
 e2b_env:
@@ -352,10 +352,10 @@ report:
 
 ```bash
 # 使用配置文件
-python -m e2b_bench --config config/e2b_bench.yaml
+python -m e2b_bench --config config/e2b/bench.yaml
 
 # 命令行参数覆盖
-python -m e2b_bench --config config/e2b_bench.yaml --total 50 --duration 300 -bp 0.5
+python -m e2b_bench --config config/e2b/bench.yaml --total 50 --duration 300 -bp 0.5
 
 # 完全命令行模式（无配置文件）
 python -m e2b_bench \
@@ -371,15 +371,15 @@ python -m e2b_bench \
 
 ```bash
 # 轮转模式：每轮5个沙箱，共5轮
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     -bm round_robin -rs 5 -rc 5 -ri 5
 
 # 轮转模式：不限轮数，直到duration结束
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     -bm round_robin -rs 5 -ri 5 --duration 600
 
 # 轮转模式配合smap_tool内存迁移监控
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     -bm round_robin -rs 5 -rc 10 \
     --warmup-url http://server/page1.html
 ```
@@ -389,16 +389,16 @@ python -m e2b_bench --config config/e2b_bench.yaml \
 只创建沙箱，不执行任务。沙箱保持运行供后续使用：
 
 ```bash
-python -m e2b_bench --config config/e2b_bench.yaml --create-only
+python -m e2b_bench --config config/e2b/bench.yaml --create-only
 
 # 配合创建批量控制和NUMA绑定
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     --create-only \
     --create-batch-size 20 \
     --create-batch-interval 30
 
 # 保存沙箱ID供后续复用
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     --create-only --sandbox-ids-file sandboxs.txt
 ```
 
@@ -408,14 +408,14 @@ python -m e2b_bench --config config/e2b_bench.yaml \
 
 ```bash
 # 检测所有运行中的沙箱
-python -m e2b_bench --config config/e2b_bench.yaml --detect
+python -m e2b_bench --config config/e2b/bench.yaml --detect
 
 # 从保存的ID文件检测
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     --detect --sandbox-ids-file sandboxs.txt
 
 # 配合压测批量控制
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     --detect \
     --task-batch-size 10 \
     --task-batch-interval 5
@@ -426,10 +426,10 @@ python -m e2b_bench --config config/e2b_bench.yaml \
 只运行预热阶段预热浏览器内存，然后退出。沙箱保持运行供后续压测：
 
 ```bash
-python -m e2b_bench --config config/e2b_bench.yaml --warmup-only
+python -m e2b_bench --config config/e2b/bench.yaml --warmup-only
 
 # 配合自定义预热页面
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     --warmup-only \
     --warmup-url http://192.168.110.10:8080/page1.html \
     --warmup-url http://192.168.110.10:8080/page2.html \
@@ -437,7 +437,7 @@ python -m e2b_bench --config config/e2b_bench.yaml \
     --warmup-delay 5
 
 # 大规模预热（> 100沙箱会分波创建）
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     --warmup-only --total 200
 ```
 
@@ -446,7 +446,7 @@ python -m e2b_bench --config config/e2b_bench.yaml \
 创建沙箱、预热（打开N个标签页），然后轮转压测（每轮打开新标签页）：
 
 ```bash
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     --warmup-url http://192.168.110.10:8080/page1.html \
     -bm round_robin -rs 5 -rc 5 --duration 600
 ```
@@ -667,7 +667,7 @@ vm_monitor:
 
 ```bash
 # 在线模式：运行批量测试
-python -m e2b_bench --batch --matrix config/e2b_batch_matrix.yaml
+python -m e2b_bench --batch --matrix config/e2b/batch_matrix.yaml
 
 # 离线模式：从已有结果生成摘要
 python -m e2b_bench --batch --offline --result-dir results/e2b/batch
@@ -675,7 +675,7 @@ python -m e2b_bench --batch --offline --result-dir results/e2b/batch
 
 ### 矩阵配置
 
-编辑 `config/e2b_batch_matrix.yaml`：
+编辑 `config/e2b/batch_matrix.yaml`：
 
 ```yaml
 test_matrix:
@@ -688,7 +688,7 @@ reuse_strategy:
   reuse_smap_tool: true    # 同组内复用smap_tool
 
 result:
-  template_path: "config/e2b_batch_template.yaml"
+  template_path: "config/e2b/batch_template.yaml"
   output_dir: "results/e2b/batch"
 ```
 

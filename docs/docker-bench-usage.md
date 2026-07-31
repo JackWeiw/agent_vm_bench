@@ -73,10 +73,10 @@ Post: agent-browser close --all (close browser session when test ends)
 
 ### 1. Prepare Docker Image
 
-Reference [dockerfile_build](../dockerfile_build/README.md) to build image, ensure agent-browser is installed:
+Reference [dockerfile_build/browser](../dockerfile_build/browser/README.md) to build image, ensure agent-browser is installed:
 
 ```bash
-cd dockerfile_build
+cd dockerfile_build/browser
 docker build -t ubuntu-openclaw-chromium:arm64 .
 
 # Or for x86_64 architecture
@@ -98,7 +98,7 @@ Dependencies: `docker>=6.0.0`, `PyYAML>=6.0`
 
 ### 3. Configure Test Parameters
 
-Edit `config/docker_bench.yaml`:
+Edit `config/docker/docker_bench.yaml`:
 
 ```yaml
 docker:
@@ -129,10 +129,10 @@ Create containers, check ports, execute tasks, generate report:
 
 ```bash
 # Use config file
-python -m docker_bench --config config/docker_bench.yaml
+python -m docker_bench --config config/docker/docker_bench.yaml
 
 # Override with CLI arguments
-python -m docker_bench --config config/docker_bench.yaml --total 20 --duration 300
+python -m docker_bench --config config/docker/docker_bench.yaml --total 20 --duration 300
 
 # Full CLI mode (no config file)
 python -m docker_bench \
@@ -149,10 +149,10 @@ python -m docker_bench \
 Only create containers, no task execution. Containers stay running for later use:
 
 ```bash
-python -m docker_bench --config config/docker_bench.yaml --create-only
+python -m docker_bench --config config/docker/docker_bench.yaml --create-only
 
 # With create batch control
-python -m docker_bench --config config/docker_bench.yaml \
+python -m docker_bench --config config/docker/docker_bench.yaml \
     --create-only \
     --create-batch-size 5 \
     --create-batch-interval 10
@@ -163,10 +163,10 @@ python -m docker_bench --config config/docker_bench.yaml \
 Detect currently running containers and execute benchmark on them:
 
 ```bash
-python -m docker_bench --config config/docker_bench.yaml --detect
+python -m docker_bench --config config/docker/docker_bench.yaml --detect
 
 # With task batch control
-python -m docker_bench --config config/docker_bench.yaml \
+python -m docker_bench --config config/docker/docker_bench.yaml \
     --detect \
     --task-batch-size 5 \
     --task-batch-interval 5
@@ -298,5 +298,5 @@ When using the same configuration (container count, CPU/Memory, test duration) o
 ## Related Documentation
 
 - [E2B Bench Usage Guide](e2b-bench-usage.md) - E2B sandbox performance testing
-- [Dockerfile Build Guide](../dockerfile_build/README.md) - Docker image build
+- [Dockerfile Build Guide](../dockerfile_build/browser/README.md) - Docker image build
 - [agent-browser Official Docs](https://github.com/nickfla1/agent-browser) - agent-browser CLI reference

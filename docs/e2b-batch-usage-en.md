@@ -6,7 +6,7 @@
 
 ### 1. Prepare Configuration Files
 
-#### Test Matrix Configuration (`config/e2b_batch_matrix.yaml`)
+#### Test Matrix Configuration (`config/e2b/batch_matrix.yaml`)
 
 Define variable parameter dimensions and result configuration:
 
@@ -22,11 +22,11 @@ reuse_strategy:
 
 # Result Configuration
 result:
-  template_path: "config/e2b_batch_template.yaml"  # Template config path
+  template_path: "config/e2b/batch_template.yaml"  # Template config path
   output_dir: "results/e2b/batch"                  # Output directory
 ```
 
-#### Template Configuration (`config/e2b_batch_template.yaml`)
+#### Template Configuration (`config/e2b/batch_template.yaml`)
 
 Define fixed parameters (E2B credentials, browser URLs, smap_tool/vm_monitor configs):
 
@@ -58,14 +58,14 @@ vm_monitor:
 
 ```bash
 # Single benchmark test
-python -m e2b_bench --config config/e2b_bench.yaml
+python -m e2b_bench --config config/e2b/bench.yaml
 
 # Batch test (all configs from matrix file)
-python -m e2b_bench --batch --matrix config/e2b_batch_matrix.yaml
+python -m e2b_bench --batch --matrix config/e2b/batch_matrix.yaml
 
 # Batch test (continue on failure)
 python -m e2b_bench --batch \
-    --matrix config/e2b_batch_matrix.yaml \
+    --matrix config/e2b/batch_matrix.yaml \
     --continue-on-failure
 
 # Offline summary (generate report from existing results)

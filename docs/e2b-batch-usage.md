@@ -6,7 +6,7 @@
 
 ### 1. 准备配置文件
 
-#### 测试矩阵配置 (`config/e2b_batch_matrix.yaml`)
+#### 测试矩阵配置 (`config/e2b/batch_matrix.yaml`)
 
 定义可变参数维度和结果配置：
 
@@ -22,11 +22,11 @@ reuse_strategy:
 
 # Result Configuration
 result:
-  template_path: "config/e2b_batch_template.yaml"  # 模板配置文件路径
+  template_path: "config/e2b/batch_template.yaml"  # 模板配置文件路径
   output_dir: "results/e2b/batch"                  # 结果输出目录
 ```
 
-#### 模板配置 (`config/e2b_batch_template.yaml`)
+#### 模板配置 (`config/e2b/batch_template.yaml`)
 
 定义固定参数（E2B 凭证、浏览器 URL、smap_tool/vm_monitor 配置等）：
 
@@ -58,14 +58,14 @@ vm_monitor:
 
 ```bash
 # 单次基准测试
-python -m e2b_bench --config config/e2b_bench.yaml
+python -m e2b_bench --config config/e2b/bench.yaml
 
 # 批量测试（所有配置从 matrix 文件读取）
-python -m e2b_bench --batch --matrix config/e2b_batch_matrix.yaml
+python -m e2b_bench --batch --matrix config/e2b/batch_matrix.yaml
 
 # 批量测试（失败后继续执行）
 python -m e2b_bench --batch \
-    --matrix config/e2b_batch_matrix.yaml \
+    --matrix config/e2b/batch_matrix.yaml \
     --continue-on-failure
 
 # 离线汇总（从已有结果生成报告）

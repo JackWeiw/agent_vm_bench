@@ -22,7 +22,7 @@ from vm_bench.schemas import VMStatus, VMState
 ### CLI Entry Point
 
 ```bash
-python -m vm_bench --config config/vm_bench.yaml
+python -m vm_bench --config config/openstack/vm_bench.yaml
 ```
 
 ---
@@ -34,7 +34,7 @@ python -m vm_bench --config config/vm_bench.yaml
 The recommended way to use `vm_bench` is via YAML configuration:
 
 ```yaml
-# config/vm_bench.yaml
+# config/openstack/vm_bench.yaml
 
 # OpenStack environment
 openstack:
@@ -99,7 +99,7 @@ Example of CLI override:
 
 ```bash
 # YAML has total_count=80, CLI overrides to 10
-python -m vm_bench --config config/vm_bench.yaml -n 10 -t 300
+python -m vm_bench --config config/openstack/vm_bench.yaml -n 10 -t 300
 ```
 
 ---
@@ -112,7 +112,7 @@ Create VMs via OpenStack and exit without benchmark:
 
 ```bash
 # Using YAML config
-python -m vm_bench --config config/vm_bench.yaml --create-only
+python -m vm_bench --config config/openstack/vm_bench.yaml --create-only
 
 # Pure CLI mode
 python -m vm_bench --create-only \
@@ -153,7 +153,7 @@ Execute warmup phase only:
 
 ```bash
 python -m vm_bench --warmup-only \
-    --config config/vm_bench.yaml \
+    --config config/openstack/vm_bench.yaml \
     -n 50
 ```
 
@@ -174,7 +174,7 @@ python -m vm_bench --detect --warmup-only \
 Create VMs, connect, warmup, and benchmark:
 
 ```bash
-python -m vm_bench --config config/vm_bench.yaml
+python -m vm_bench --config config/openstack/vm_bench.yaml
 ```
 
 ### 6. Detect + Benchmark
@@ -183,7 +183,7 @@ Skip creation, connect existing VMs and benchmark:
 
 ```bash
 python -m vm_bench --detect \
-    --config config/vm_bench.yaml \
+    --config config/openstack/vm_bench.yaml \
     -bsp 0.5 \
     -t 300
 ```
@@ -291,7 +291,7 @@ python -m vm_bench --detect \
 from vm_bench import Config
 
 # From YAML file
-config = Config.load_from_yaml('config/vm_bench.yaml')
+config = Config.load_from_yaml('config/openstack/vm_bench.yaml')
 
 # Override with CLI arguments
 from vm_bench.bench import build_arg_parser
@@ -360,13 +360,13 @@ print(result['report'])
 
 ```bash
 # Phase 0: Create VMs
-python -m vm_bench --create-only -n 100 --config config/vm_bench.yaml
+python -m vm_bench --create-only -n 100 --config config/openstack/vm_bench.yaml
 
 # Phase 1a: Warmup (all 100 VMs)
-python -m vm_bench --detect --warmup-only -n 100 --config config/vm_bench.yaml
+python -m vm_bench --detect --warmup-only -n 100 --config config/openstack/vm_bench.yaml
 
 # Phase 1b: Benchmark (50% VMs, 50 VMs)
-python -m vm_bench --detect -bsp 0.5 -t 300 --config config/vm_bench.yaml
+python -m vm_bench --detect -bsp 0.5 -t 300 --config config/openstack/vm_bench.yaml
 ```
 
 ### Integration with auto_vm_test.py
@@ -374,7 +374,7 @@ python -m vm_bench --detect -bsp 0.5 -t 300 --config config/vm_bench.yaml
 The `auto_vm_test.py` script now uses the `vm_bench` module internally:
 
 ```bash
-python auto_vm_test.py --config config/test_config.yaml
+python auto_vm_test.py --config config/openstack/test_config_template.yaml
 ```
 
 Flow:
@@ -504,6 +504,6 @@ python -c "from vm_bench import Config, VMManager; print('OK')"
 
 ## See Also
 
-- [Configuration Reference](config/vm_bench.yaml)
+- [Configuration Reference](config/openstack/vm_bench.yaml)
 - [Test Suite](vm_bench/tests/)
 - [Original Usage Guide](usage-guide.md) (for legacy scripts)
