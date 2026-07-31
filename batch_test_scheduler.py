@@ -1318,7 +1318,7 @@ def offline_summary(result_base_dir: str, output_path: str = None):
 
 def main():
     parser = argparse.ArgumentParser(description="Multi-VM Agent Batch Test Scheduler")
-    parser.add_argument("--config", default="config/batch_config.yaml", help="Batch config YAML file")
+    parser.add_argument("--config", default="config/openstack/batch_config.yaml", help="Batch config YAML file")
     parser.add_argument("--dry-run", action="store_true", help="Print tasks without executing")
     parser.add_argument("--offline", action="store_true", help="Generate summary from existing results (offline mode)")
     parser.add_argument("--result-dir", help="Result directory for offline mode (default: from config)")

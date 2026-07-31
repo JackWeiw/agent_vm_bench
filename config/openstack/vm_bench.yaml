@@ -1,4 +1,4 @@
-# config/vm_bench.yaml
+# config/openstack/vm_bench.yaml
 # VM Bench - OpenStack VM Batch Performance Test Configuration Template
 
 # OpenStack environment (from ~/.admin-openrc)

@@ -2,7 +2,7 @@
 # Core Frequency Collection Configuration
 # ========================================
 # Usage: Set GETFRE_CONFIG_PATH in .env file to this config path
-# Example: GETFRE_CONFIG_PATH=config/getfre_config.yaml
+# Example: GETFRE_CONFIG_PATH=config/tools/getfre_config.yaml
 
 # Path to getfre executable
 # This can also be overridden via GETFRE_PATH in .env file

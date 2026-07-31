@@ -124,9 +124,9 @@ python3 build_e2b.py --server-ip X --harbor-ip X \
 
 ```bash
 # Inside a running sandbox (or via sbx.commands.run from the runner):
-bash /opt/coding-bench/bench_helper_go.sh           # Round 0, all steps
-bash /opt/coding-bench/bench_helper_go.sh 3         # Round 3
-bash /opt/coding-bench/bench_helper_go.sh --no-verify   # edit+diff only
+bash /opt/coding-bench/bench_helper.sh           # Round 0, all steps
+bash /opt/coding-bench/bench_helper.sh 3         # Round 3
+bash /opt/coding-bench/bench_helper.sh --no-verify   # edit+diff only
 ```
 
 The helper writes `/tmp/bench_verify.go`, runs `go run /tmp/bench_verify.go`,

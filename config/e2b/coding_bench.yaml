@@ -1,4 +1,4 @@
-# config/e2b_coding_bench.yaml
+# config/e2b/coding_bench.yaml
 # E2B Sandbox Coding Benchmark - Single Test Configuration
 #
 # Workflow type: coding — simulates AI coding agent memory pressure
@@ -14,9 +14,9 @@
 #   - Toolchain: rollup + esbuild + tsx (the devDeps an agent touches)
 #
 # Usage:
-#   python -m e2b_bench -c config/e2b_coding_bench.yaml --create-only   # Create sandboxes
-#   python -m e2b_bench -c config/e2b_coding_bench.yaml --detect        # Run benchmark
-#   python -m e2b_bench -c config/e2b_coding_bench.yaml --detect -bm round_robin  # Round-robin mode
+#   python -m e2b_bench -c config/e2b/coding_bench.yaml --create-only   # Create sandboxes
+#   python -m e2b_bench -c config/e2b/coding_bench.yaml --detect        # Run benchmark
+#   python -m e2b_bench -c config/e2b/coding_bench.yaml --detect -bm round_robin  # Round-robin mode
 
 # E2B SDK environment variables (replace with real credentials)
 e2b_env:

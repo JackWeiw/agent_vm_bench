@@ -323,7 +323,7 @@ class BatchScheduler:
 
         # Get result config from matrix (template_path and output_dir are required)
         result_config = self.matrix_config.get("result", {})
-        self.template_path = result_config.get("template_path", "config/e2b_batch_template.yaml")
+        self.template_path = result_config.get("template_path", "config/e2b/batch_template.yaml")
         self.output_dir = result_config.get("output_dir", "results/e2b/batch")
 
         # Load template configuration
