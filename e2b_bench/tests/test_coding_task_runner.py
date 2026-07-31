@@ -478,6 +478,48 @@ class TestStepFindLanguageAware(unittest.TestCase):
         self.assertTrue(any("-name '*.go'" in c for c in cmds))
 
 
+class TestVerifyTemplatePool(unittest.TestCase):
+    """The shared DEFAULT_VERIFY_TEMPLATES pool drives multi-process verify."""
+
+    def test_pool_is_ordered_list_of_dicts(self):
+        """DEFAULT_VERIFY_TEMPLATES is a non-empty ordered list of {template, assert} dicts."""
+        from e2b_bench.schemas import DEFAULT_VERIFY_TEMPLATES
+
+        self.assertIsInstance(DEFAULT_VERIFY_TEMPLATES, list)
+        self.assertGreaterEqual(len(DEFAULT_VERIFY_TEMPLATES), 6)
+        for entry in DEFAULT_VERIFY_TEMPLATES:
+            self.assertIn("template", entry)
+            self.assertIn("assert", entry)
+            self.assertTrue(entry["template"])
+            self.assertTrue(entry["assert"])
+
+    def test_pool_templates_are_distinct(self):
+        """Pool templates differ so consecutive rounds don't repeat identical bytes."""
+        from e2b_bench.schemas import DEFAULT_VERIFY_TEMPLATES
+
+        templates = [e["template"] for e in DEFAULT_VERIFY_TEMPLATES]
+        self.assertEqual(len(set(templates)), len(templates), "pool templates must be distinct")
+
+    def test_skeleton_has_global_header_and_compiler_core_import(self):
+        """The single-template skeleton has the 8 verbatim agent globals + compiler-core import."""
+        from e2b_bench.schemas import DEFAULT_CODING_VERIFY_SCRIPT_JS
+
+        for g in (
+            "__DEV__",
+            "__BROWSER__",
+            "__COMPAT__",
+            "__ESM_BUNDLER__",
+            "__FEATURE_OPTIONS_API__",
+            "__FEATURE_PROD_DEVTOOLS__",
+            "__FEATURE_SUSPENSE__",
+            "__RUNTIME_COMPILE__",
+        ):
+            self.assertIn(f"globalThis.{g}", DEFAULT_CODING_VERIFY_SCRIPT_JS)
+        self.assertIn("compiler-core/src/index.ts", DEFAULT_CODING_VERIFY_SCRIPT_JS)
+        self.assertIn("baseParse", DEFAULT_CODING_VERIFY_SCRIPT_JS)
+        self.assertNotIn("globalThis.__TEST__", DEFAULT_CODING_VERIFY_SCRIPT_JS)
+
+
 class TestBuildEditCommand(unittest.TestCase):
     """The literal find->replace command is robust to regex metacharacters.
 
