@@ -111,8 +111,8 @@ test:
   # Round-robin mode configuration (recommended for coding benchmark)
   benchmark_mode: "round_robin"
   round_size: 5                         # Sandboxes per round
-  round_count: 5                        # Max rounds (stops when reached or duration exceeded)
-  round_interval: 30                    # Round interval (seconds, longer for verify tasks)
+  round_count: 20                       # Max rounds (stops when reached or duration exceeded)
+  round_interval: 3                     # Round interval (seconds)
 
 # Report configuration
 report:
