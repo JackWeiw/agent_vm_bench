@@ -150,12 +150,9 @@ def _normalize_source_files(raw: Any) -> List[Dict[str, str]]:
                 "find": str(item.get("find", "// bench marker")),
                 "replace": str(item.get("replace", f"// bench round\n// bench marker")),
             }
-            # Preserve an optional per-pair verify_script body (ad-hoc test for the
-            # verify step) and the optional `verify: compile_only` flag (a pair
-            # with no assertable semantics, honestly compile-only). A pair with
-            # neither verify_script nor verify: compile_only fails verify hard.
-            if item.get("verify_script"):
-                pair["verify_script"] = str(item["verify_script"])
+            # Preserve the optional `verify: compile_only` flag (a pair with no
+            # assertable semantics, honestly compile-only). verify_script is gone -
+            # the verify workload comes from the shared DEFAULT_VERIFY_TEMPLATES pool.
             if item.get("verify"):
                 pair["verify"] = str(item["verify"])
             result.append(pair)
@@ -250,6 +247,15 @@ class Config:
     coding_verify_cmd: str = "npx tsx /tmp/bench_verify.mjs"
     coding_verify_timeout: int = 120  # Verify command timeout (seconds)
     coding_skip_verify: bool = False  # Skip the verify step (build-only / dry-run)
+    # Multi-process verify (ts only): number of independent `npx tsx` processes
+    # spun up serially per verify step. Each pays the fixed ~0.47s startup cost
+    # (node + esbuild transpile + module graph load) - the only lever proven to
+    # raise single-firecracker steady-state CPU while staying trace-faithful
+    # (the real agent repeatedly spawns independent npx tsx verifies per issue).
+    # N=3 -> ~1.5s/verify -> ~50% peak at round_interval=3s. Go stays N=1 (its
+    # go clean -cache cold-compile is already real load). Configurable via
+    # coding.verify_repeat (yaml) or --coding-verify-repeat (CLI).
+    coding_verify_repeat: int = 3
     # List of replacement pairs: [{"file": str, "find": str, "replace": str,
     # "verify_script": str(optional)}, ...]. Each round applies one pair
     # (round-robin) - a real, type-safe string edit. `verify_script` is the body
@@ -339,6 +345,7 @@ class Config:
             ),
             coding_verify_timeout=coding.get("verify_timeout", 120),
             coding_skip_verify=coding.get("skip_verify", False),
+            coding_verify_repeat=coding.get("verify_repeat", 3),
             coding_source_files=_normalize_source_files(
                 coding.get(
                     "source_files",
@@ -449,6 +456,9 @@ class Config:
             coding_skip_verify=getattr(args, "coding_skip_verify", False)
             if hasattr(args, "coding_skip_verify") and args.coding_skip_verify
             else yaml_config.coding_skip_verify,
+            coding_verify_repeat=getattr(args, "coding_verify_repeat", None)
+            if getattr(args, "coding_verify_repeat", None) is not None
+            else yaml_config.coding_verify_repeat,
             test_duration=args.duration if args.duration is not None else yaml_config.test_duration,
             stats_interval=args.stats_interval if args.stats_interval is not None else yaml_config.stats_interval,
             output_dir=args.output_dir if args.output_dir is not None else yaml_config.output_dir,
@@ -514,6 +524,7 @@ class Config:
             coding_verify_cmd=get_coding_profile(getattr(args, "coding_language", "ts")).run_cmd,
             coding_verify_timeout=getattr(args, "coding_verify_timeout", 120),
             coding_skip_verify=getattr(args, "coding_skip_verify", False),
+            coding_verify_repeat=getattr(args, "coding_verify_repeat", 3),
             coding_source_files=_normalize_source_files(
                 getattr(args, "coding_source_file", None)
                 if getattr(args, "coding_source_file", None) is not None

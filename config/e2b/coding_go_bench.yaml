@@ -59,6 +59,7 @@ coding:
   project_dir: "/opt/coding-bench"    # gohugoio/hugo project directory inside sandbox
   verify_cmd: "go run /tmp/bench_verify.go"  # Verify run command (writes ad-hoc test + runs it)
   verify_timeout: 120                 # Verify command timeout (seconds)
+  verify_repeat: 1                    # go stays N=1 (go clean -cache cold-compile is already real load)
   source_files:                         # Replacement pairs for round-robin editing (verified against gohugoio/hugo at base_commit 83235262)
     - file: "markup/goldmark/blockquotes/blockquotes.go"
       find: "var gitHubAlertRe = regexp.MustCompile(`^<p>\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\\]`)"
