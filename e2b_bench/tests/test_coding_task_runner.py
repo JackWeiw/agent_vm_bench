@@ -301,23 +301,34 @@ class TestStepVerify(unittest.TestCase):
         self.assertNotIn("go clean", cmd)
 
     def test_verify_go_profile_uses_go_run(self):
-        """go language: _step_verify writes .go and runs `go run`, with a cold-compile cache clear first."""
+        """go language: _step_verify runs `go clean -cache` then writes .go + `go run`, timed separately."""
         config = Config(workflow_type="coding", coding_language="go", coding_verify_cmd="go run /tmp/bench_verify.go")
         runner = self._make_runner(config)
         sbx = _FakeSbx()
         pair = {"file": "markup/x.go", "find": "x", "replace": "y", "verify_script": "package main\nfunc main(){}"}
-        ok, _err, compile_only = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
+        step_times: dict = {}
+        ok, _err, compile_only = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times=step_times)
         self.assertTrue(ok)
         self.assertFalse(compile_only)
-        cmd = sbx.commands.calls[0][0]
-        self.assertIn("cat > /tmp/bench_verify.go", cmd)
-        self.assertIn("GOEOF", cmd)
-        self.assertIn("go run /tmp/bench_verify.go", cmd)
-        # Cold-compile guarantee: `go clean -cache` runs before the verify so
-        # every verify is a real cold-compile (not a GOCACHE hit). It must
-        # appear in the combined command before the heredoc write.
-        self.assertIn("go clean -cache", cmd)
-        self.assertLess(cmd.index("go clean -cache"), cmd.index("cat > /tmp/bench_verify.go"))
+        # Two commands: the cache clear (call 0) then the write+run (call 1).
+        # The write+run stays a single newline-joined command (trace-faithful);
+        # only the cache clear is split out so its time is measured apart.
+        self.assertEqual(len(sbx.commands.calls), 2)
+        clean_cmd = sbx.commands.calls[0][0]
+        verify_cmd = sbx.commands.calls[1][0]
+        self.assertIn("go clean -cache", clean_cmd)
+        self.assertIn("cat > /tmp/bench_verify.go", verify_cmd)
+        self.assertIn("GOEOF", verify_cmd)
+        self.assertIn("go run /tmp/bench_verify.go", verify_cmd)
+        # The cache-clear time lands in its own key, NOT in the `verify` key, so
+        # the `verify` number is clean compile pressure (not cleanup overhead).
+        self.assertIn("verify_clean", step_times)
+        self.assertIn("verify", step_times)
+        # verify_clean must NOT be a CODING_STEP_ORDER member - the real trace
+        # has no cache-clear step, so it never appears in the step timing table.
+        from e2b_bench.schemas import CODING_STEP_ORDER
+
+        self.assertNotIn("verify_clean", CODING_STEP_ORDER)
 
     def test_verify_failure_returned(self):
         """A non-zero exit code from the verify run is reported as failure."""

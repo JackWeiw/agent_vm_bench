@@ -42,6 +42,14 @@ per-verify cold pressure; it is surfaced explicitly so a reviewer does not
 mistake cache hits for agent behavior. JS/tsx needs no equivalent (esbuild
 re-transpiles every run).
 
+The clear runs as a **separate** `commands.run` so its time is measured apart
+from the write+run: it lands in `step_times["verify_clean"]`, which is
+intentionally not in `CODING_STEP_ORDER`, so it never appears in the step timing
+table or Excel step columns (both iterate `CODING_STEP_ORDER`). Only the
+write+run lands in the `verify` column — a clean compile-pressure number, not
+compile+cleanup. The trace-faithful loop `find → read → edit → verify → diff`
+is unchanged; the clear is a timing device, not an added step.
+
 ## Memory pressure model
 
 ```

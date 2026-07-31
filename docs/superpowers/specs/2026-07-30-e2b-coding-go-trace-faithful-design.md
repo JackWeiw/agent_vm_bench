@@ -197,6 +197,8 @@ The captured trace shows the agent running only `go run /tmp/test_alert.go`, nev
 
 This is a behavior-faithful, not literally-literal, choice — the same honesty stance as the rest of this design. It is surfaced explicitly so a reviewer sees it rather than inferring cache hits are real agent behavior. JS/tsx needs no equivalent: esbuild re-transpiles every run, so `npx tsx` is already cold per verify. The mechanism is data-driven via a `pre_verify_cmd` field on `CodingLanguageProfile` (set only for go), so the runner stays generic and adding another cached-compile language later is one profile entry.
 
+The cache clear is run as a **separate** `commands.run`, not folded into the write+run command, so its time is measured apart. It lands in `step_times["verify_clean"]`, which is intentionally **not** in `CODING_STEP_ORDER` — the real trace has no cache-clear step, so `verify_clean` never appears in the step timing table or the Excel step columns (both iterate `CODING_STEP_ORDER`). Only the write+run lands in the `verify` column, keeping that number a clean compile-pressure measurement rather than compile+cleanup. This separation is purely a timing-fidelity device; it does not add a step to the trace-faithful loop (`find → read → edit → verify → diff` is unchanged).
+
 ## Implementation order
 
 1. **JS redesign first** (companion doc) — simplify runner to `find → read → edit → verify → diff`, remove dev-server/build/test. This is the foundation Go reuses.

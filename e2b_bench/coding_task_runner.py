@@ -82,12 +82,14 @@ def _build_edit_command(project_dir: str, target_file: str, find_str: str, repla
     )
 
 
-def _run_verify(sbx, project_dir: str, config: Config, pair: Dict[str, str]) -> Tuple[bool, str, bool]:
+def _run_verify(
+    sbx, project_dir: str, config: Config, pair: Dict[str, str], step_times: Optional[Dict[str, float]] = None
+) -> Tuple[bool, str, bool]:
     """Write an ad-hoc test file to /tmp + run it - the trace-faithful verify step.
 
     Mirrors the real openclaw agent: `cat > /tmp/test_*.mjs << 'EOF' ... EOF` then
     `npx tsx /tmp/test_*.mjs` (js), or `cat > /tmp/test_*.go << 'GOEOF' ... GOEOF`
-    then `go run /tmp/test_*.go` (go). The write and run are a SINGLE command
+    then `go run /tmp/bench_verify.go` (go). The write and run are a SINGLE command
     (newline-joined), exactly as the agent did - splitting them would diverge
     from the trace.
 
@@ -99,6 +101,15 @@ def _run_verify(sbx, project_dir: str, config: Config, pair: Dict[str, str]) -> 
         assertable semantics; verify just compiles+runs (the no-op default main),
         honestly labeled. Reported separately as Compile-Only.
     A pair with neither is an explicit verify FAILURE (refuses to fake a pass).
+
+    Timing: if `step_times` is given, the optional pre-verify cache clear
+    (go only, `pre_verify_cmd`) is timed into `step_times["verify_clean"]`,
+    separate from the write+run timed into `step_times["verify"]`.
+    `verify_clean` is intentionally NOT in CODING_STEP_ORDER - the real trace
+    has no cache-clear step, so it never appears in the step timing table; only
+    the write+run lands in the `verify` column. This keeps the `verify` number
+    clean (compile pressure, not cleanup overhead) without polluting the
+    trace-faithful step order.
 
     Returns: (success, error_detail, compile_only) - compile_only is True only
     when this pass was a compile-only check (success True implies it compiled).
@@ -128,19 +139,33 @@ def _run_verify(sbx, project_dir: str, config: Config, pair: Dict[str, str]) -> 
         pkg = "/opt/coding-bench/" + edited.split("/src/")[0] if "/src/" in edited else "/opt/coding-bench/packages/vue"
         script_body = script_body.replace("{pkg}", pkg)
 
+    # Optional pre-verify cache clear (go only). Run as a SEPARATE command so its
+    # time is measured apart from the write+run - the write+run itself stays a
+    # single newline-joined command to match the trace's combined write+run.
+    if profile.pre_verify_cmd:
+        clean_start = time.perf_counter()
+        clean_res = sbx.commands.run(profile.pre_verify_cmd, timeout=60, user="root")
+        if step_times is not None:
+            step_times["verify_clean"] = time.perf_counter() - clean_start
+        # `go clean -cache` exit code is irrelevant to verify success (a stale
+        # cache clear failure mustn't fake a verify pass); log and proceed.
+        if clean_res.exit_code != 0 and clean_res.stderr:
+            print(f"[verify_clean] pre-verify cmd non-zero: {(clean_res.stderr or '').strip()[:120]}")
+
     eof = profile.heredoc_eof
-    # Single command: (optional pre-verify cache clear for go), cd project,
-    # heredoc-write the temp test file, then run it. The write+run are
-    # newline-joined (not separate commands) to match the trace.
-    pre = f"{profile.pre_verify_cmd} && " if profile.pre_verify_cmd else ""
+    # Single command: cd project, heredoc-write the temp test file, then run it.
+    # The write+run are newline-joined (not separate commands) to match the trace.
     cmd = (
-        f"{pre}cd {project_dir} && "
+        f"cd {project_dir} && "
         f"cat > {profile.temp_test_path} << '{eof}'\n"
         f"{script_body}"
         f"{eof}\n"
         f"{config.coding_verify_cmd}"
     )
+    run_start = time.perf_counter()
     result = sbx.commands.run(cmd, timeout=config.coding_verify_timeout + 30, user="root")
+    if step_times is not None:
+        step_times["verify"] = time.perf_counter() - run_start
     if result.exit_code != 0:
         error_parts = [f"verify failed: exit_code={result.exit_code}"]
         if result.stderr:
@@ -622,13 +647,15 @@ class CodingRoundRunner(threading.Thread):
         `go run` (go). The write+run is a single command (newline-joined). This
         is the transient memory peak (esbuild transpile / Go compiler + execute).
 
+        Timing is handled inside `_run_verify`: it fills `step_times["verify"]`
+        (write+run only) and, for go, `step_times["verify_clean"]` (the
+        `go clean -cache` overhead, kept out of CODING_STEP_ORDER so it never
+        appears in the step table - the real trace has no cache-clear step).
+
         Returns: (success, error_detail, compile_only) - compile_only True means
         the pass was a compile-only check (no assertion), reported separately.
         """
-        step_start = time.perf_counter()
-        ok, err, compile_only = _run_verify(sbx, project_dir, self.config, pair)
-        step_times["verify"] = time.perf_counter() - step_start
-        return ok, err, compile_only
+        return _run_verify(sbx, project_dir, self.config, pair, step_times=step_times)
 
     def _step_diff(self, sbx, project_dir: str, step_times: Dict[str, float]) -> None:
         """Step 5: Produce the verification artifact (git diff -> patch file)."""
