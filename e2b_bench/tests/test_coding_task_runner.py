@@ -168,6 +168,21 @@ class TestCodingConfig(unittest.TestCase):
         self.assertEqual(c.workflow_type, "browser")
         self.assertEqual(c.template, "openclaw-browser-v1")
 
+    def test_coding_verify_repeat_default(self):
+        """Default verify_repeat is 3 (ts path: N independent npx tsx processes per verify)."""
+        c = Config(workflow_type="coding")
+        self.assertEqual(c.coding_verify_repeat, 3)
+
+    def test_yaml_coding_verify_repeat_loaded(self):
+        """YAML coding.verify_repeat is loaded (coding_bench.yaml sets 3)."""
+        c = Config.load_from_yaml("config/e2b/coding_bench.yaml")
+        self.assertEqual(c.coding_verify_repeat, 3)
+
+    def test_yaml_go_verify_repeat_is_one(self):
+        """Go config sets verify_repeat: 1 (go cold-compile is already real load)."""
+        c = Config.load_from_yaml("config/e2b/coding_go_bench.yaml")
+        self.assertEqual(c.coding_verify_repeat, 1)
+
 
 class TestStepOrderConstants(unittest.TestCase):
     """Test step order constants"""
