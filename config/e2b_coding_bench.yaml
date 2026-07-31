@@ -1,0 +1,208 @@
+# config/e2b_coding_bench.yaml
+# E2B Sandbox Coding Benchmark - Single Test Configuration
+#
+# Workflow type: coding — simulates AI coding agent memory pressure
+#   Trace-faithful loop (verified against a captured openclaw vuejs/core
+#   trajectory): find -> read -> edit -> verify (npx tsx) -> git diff.
+#   No resident dev server, no production build — verification is a transient
+#   `npx tsx` process loading the TS module graph. N sandboxes' verify peaks
+#   overlapping -> host memory overcommit.
+#
+# Project: vuejs/core (github.com/vuejs/core)
+#   - 54k stars, Vue.js core framework (TypeScript monorepo, pnpm)
+#   - Real repo from the swe_bench_multilingual evaluation dataset
+#   - Toolchain: rollup + esbuild + tsx (the devDeps an agent touches)
+#
+# Usage:
+#   python -m e2b_bench -c config/e2b_coding_bench.yaml --create-only   # Create sandboxes
+#   python -m e2b_bench -c config/e2b_coding_bench.yaml --detect        # Run benchmark
+#   python -m e2b_bench -c config/e2b_coding_bench.yaml --detect -bm round_robin  # Round-robin mode
+
+# E2B SDK environment variables (replace with real credentials)
+e2b_env:
+  E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+  E2B_API_KEY: "your_e2b_api_key_here"
+  E2B_DOMAIN: "e2b.app"
+  E2B_API_URL: "http://localhost:3000"
+  E2B_HTTP_SSL: "false"
+
+# Sandbox configuration
+sandbox:
+  template: "openclaw-coding-v1"    # E2B template name (coding template with vuejs/core)
+  create_timeout: 86400              # Sandbox creation timeout (seconds)
+  total_count: 10                   # Total sandbox count (start small for manual testing)
+  detect_existing: false             # Detect existing sandboxes instead of creating new ones
+  create_only: false                 # Create sandboxes only without running tasks (Phase 0)
+  sandbox_ids_file: "sandboxs.txt"   # File path to save/load sandbox IDs
+  numa_bind: 2                       # NUMA node to bind sandbox (null/omit = no binding)
+
+# Sandbox creation batch control
+create_batch:
+  size: 10                           # Sandboxes per batch during creation
+  interval: 3                        # Interval between creation batches (seconds)
+
+# Task execution batch control
+task_batch:
+  size: 5                            # Sandboxes to start tasks per batch
+  interval: 5                        # Interval between task batches (seconds)
+
+# Workflow type selection — determines which runners, metrics, and reports to use
+workflow_type: "coding"
+
+# Coding task configuration
+coding:
+  language: "ts"                       # Coding language (selects verify profile: ts/go)
+  project_dir: "/opt/coding-bench"    # vuejs/core project directory inside sandbox
+  verify_cmd: "npx tsx /tmp/bench_verify.mjs"  # Verify run command (writes ad-hoc test + runs it)
+  verify_timeout: 120                 # Verify command timeout (seconds)
+  source_files:                         # Replacement pairs for round-robin editing (verified against vuejs/core repo)
+    # Each pair declares how it verifies:
+    #   verify_script - a real ad-hoc test asserting the edited behavior (gold standard)
+    #   verify: compile_only - the edit is cosmetic (comment/annotation), no assertable
+    #     semantics, so verify just compiles+runs an ad-hoc main (honestly labeled,
+    #     never reported as an assertion pass). A pair with neither is a hard verify FAILURE.
+    #
+    # All pairs import compiler-core (the real openclaw agent's verify entry - its
+    # captured vuejs/core trace imports only compiler-core's baseParse/parse) and run
+    # baseParse on a DIFFERENT template per pair. compiler-core is the heaviest
+    # trace-faithful entry that runs under a bare `npx tsx` without hitting the
+    # __TEST__ build global: the vue/runtime-core/compiler-dom/compiler-sfc package
+    # graphs all reach compiler-dom/src/errors.ts (which references __TEST__) and
+    # crash on a real call. compiler-core alone (the parser) avoids that path while
+    # loading the parser+AST module graph = a real transient CPU/memory peak (~467ms
+    # user steady vs ~299ms for the lightweight shared package). Each pair's
+    # template/assertion differs so consecutive rounds don't repeat identical bytes
+    # (mirrors the agent rewriting its ad-hoc test per verify).
+    - file: "packages/shared/src/general.ts"
+      find: "export const NOOP = (): void => {}"
+      replace: "export const NOOP = (): void => undefined"
+      # v1: basic div + interpolation
+      verify_script: |
+        globalThis.__DEV__ = true
+        globalThis.__BROWSER__ = false
+        globalThis.__COMPAT__ = false
+        globalThis.__ESM_BUNDLER__ = true
+        globalThis.__FEATURE_OPTIONS_API__ = true
+        globalThis.__FEATURE_PROD_DEVTOOLS__ = false
+        globalThis.__FEATURE_SUSPENSE__ = true
+        globalThis.__RUNTIME_COMPILE__ = true
+        import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {
+          const ast = m.baseParse('<div id="x">{{ msg }}</div>', { parseMode: 'html' })
+          if (ast.children[0].tag !== 'div') throw new Error('expected div')
+          console.log('All tests passed!')
+        })
+    - file: "packages/shared/src/general.ts"
+      find: "Always return false."
+      replace: "Always returns false."
+      # v2: v-pre textarea (the real agent's issue scenario)
+      verify_script: |
+        globalThis.__DEV__ = true
+        globalThis.__BROWSER__ = false
+        globalThis.__COMPAT__ = false
+        globalThis.__ESM_BUNDLER__ = true
+        globalThis.__FEATURE_OPTIONS_API__ = true
+        globalThis.__FEATURE_PROD_DEVTOOLS__ = false
+        globalThis.__FEATURE_SUSPENSE__ = true
+        globalThis.__RUNTIME_COMPILE__ = true
+        import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {
+          const ast = m.baseParse('<textarea v-pre>{{ not interpolated }}</textarea>', { parseMode: 'html' })
+          if (ast.children[0].tag !== 'textarea') throw new Error('expected textarea')
+          console.log('All tests passed!')
+        })
+    - file: "packages/shared/src/index.ts"
+      find: "export * from './general'"
+      replace: "export * from './general' // bench round"
+      # v3: v-for list
+      verify_script: |
+        globalThis.__DEV__ = true
+        globalThis.__BROWSER__ = false
+        globalThis.__COMPAT__ = false
+        globalThis.__ESM_BUNDLER__ = true
+        globalThis.__FEATURE_OPTIONS_API__ = true
+        globalThis.__FEATURE_PROD_DEVTOOLS__ = false
+        globalThis.__FEATURE_SUSPENSE__ = true
+        globalThis.__RUNTIME_COMPILE__ = true
+        import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {
+          const ast = m.baseParse('<ul><li v-for="i in list">{{ i }}</li></ul>', { parseMode: 'html' })
+          if (ast.children[0].tag !== 'ul') throw new Error('expected ul')
+          console.log('All tests passed!')
+        })
+    - file: "packages/vue/src/index.ts"
+      find: '// This entry is the "full-build"'
+      replace: '// This entry is the "full-build" (bench)'
+      # v4: nested v-if/v-else. NOT packages/vue/src/index.ts (its graph reaches
+      # compiler-dom/src/errors.ts -> __TEST__ crash); use compiler-core instead.
+      verify_script: |
+        globalThis.__DEV__ = true
+        globalThis.__BROWSER__ = false
+        globalThis.__COMPAT__ = false
+        globalThis.__ESM_BUNDLER__ = true
+        globalThis.__FEATURE_OPTIONS_API__ = true
+        globalThis.__FEATURE_PROD_DEVTOOLS__ = false
+        globalThis.__FEATURE_SUSPENSE__ = true
+        globalThis.__RUNTIME_COMPILE__ = true
+        import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {
+          const ast = m.baseParse('<div><span v-if="ok">yes</span><span v-else>no</span></div>', { parseMode: 'html' })
+          if (ast.children[0].children.length < 2) throw new Error('expected 2 spans')
+          console.log('All tests passed!')
+        })
+    - file: "packages/reactivity/src/baseHandlers.ts"
+      find: "export const mutableHandlers: ProxyHandler<object> ="
+      replace: "export const mutableHandlers: ProxyHandler<object> = // bench"
+      # v5: multi-root fragment
+      verify_script: |
+        globalThis.__DEV__ = true
+        globalThis.__BROWSER__ = false
+        globalThis.__COMPAT__ = false
+        globalThis.__ESM_BUNDLER__ = true
+        globalThis.__FEATURE_OPTIONS_API__ = true
+        globalThis.__FEATURE_PROD_DEVTOOLS__ = false
+        globalThis.__FEATURE_SUSPENSE__ = true
+        globalThis.__RUNTIME_COMPILE__ = true
+        import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {
+          const ast = m.baseParse('<div>a</div><div>b</div>', { parseMode: 'html' })
+          if (ast.children.length < 2) throw new Error('expected 2 roots')
+          console.log('All tests passed!')
+        })
+    - file: "packages/runtime-core/src/errorHandling.ts"
+      find: "import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared'"
+      replace: "import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared' // bench"
+      # v6: baseParse + complex expression (props) - the agent's baseParse entry.
+      # NOT packages/runtime-core/src/index.ts (graph reaches __TEST__).
+      verify_script: |
+        globalThis.__DEV__ = true
+        globalThis.__BROWSER__ = false
+        globalThis.__COMPAT__ = false
+        globalThis.__ESM_BUNDLER__ = true
+        globalThis.__FEATURE_OPTIONS_API__ = true
+        globalThis.__FEATURE_PROD_DEVTOOLS__ = false
+        globalThis.__FEATURE_SUSPENSE__ = true
+        globalThis.__RUNTIME_COMPILE__ = true
+        import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {
+          const parse = m.baseParse
+          const ast = parse('<div :class="cls + extra" @click="onClick">text</div>', { parseMode: 'html' })
+          const div = ast.children[0]
+          if (!div.props || !div.props.length) throw new Error('expected props')
+          console.log('All tests passed!')
+        })
+  interval_min: 2.0                     # Min interval between tasks (fixed mode)
+  interval_max: 10.0                    # Max interval between tasks (fixed mode)
+  skip_verify: false                    # Skip the verify step (set true for edit-only testing)
+
+# Test run configuration
+test:
+  duration: 160                         # Test duration (seconds)
+  stats_interval: 10                    # Stats snapshot interval (seconds)
+  benchmark_percent: 1.0                # Percentage of sandboxes for benchmark (1.0 = 100%)
+
+  # Round-robin mode configuration (recommended for coding benchmark)
+  # Each round applies a different replacement pair + builds + tests
+  benchmark_mode: "round_robin"
+  round_size: 5                         # Sandboxes per round
+  round_count: 20                       # Max rounds (stops when reached or duration exceeded)
+  round_interval: 3                     # Round interval (seconds)
+
+# Report configuration
+report:
+  output_dir: "results/e2b/coding"
+  filename_prefix: "e2b_coding_bench"

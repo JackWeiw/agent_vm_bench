@@ -11,6 +11,159 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from .schemas import (
+    DEFAULT_CODING_GO_SOURCE_FILES,
+    DEFAULT_CODING_SOURCE_FILES,
+    DEFAULT_CODING_VERIFY_SCRIPT_GO,
+    DEFAULT_CODING_VERIFY_SCRIPT_JS,
+)
+
+
+@dataclass(frozen=True)
+class CodingLanguageProfile:
+    """Per-language profile for the coding verify step.
+
+    The coding workflow loop (find -> read -> edit -> verify -> diff) is identical
+    across languages; only the verify mechanics differ. This profile captures
+    those differences as data, so adding a new language (e.g. cpp) is a new
+    registry entry - no runner code changes.
+
+    Fields:
+        temp_test_path: where the ad-hoc test file is written (/tmp/...).
+        heredoc_eof: heredoc terminator string ("EOF"/"GOEOF").
+        run_cmd: the verify run command (npx tsx ... / go run ...).
+        source_find_names: list of -name patterns for the find fallback
+            (["*.ts","*.tsx","*.js"] for ts, ["*.go"] for go).
+        source_find_root: directory the find fallback searches under
+            ("packages" for the vuejs/core monorepo, "." for hugo whose
+            source is spread across markup/, hugofs/, ...). Keeps the fallback
+            language-aware instead of hardcoding "packages".
+        checkout_paths: paths reset by `git checkout --` in the find step.
+        default_verify_script: shared default body for pairs without their own.
+        pre_verify_cmd: optional command run before the verify write+run (empty
+            for languages with no persistent compile cache). Set for go to
+            `go clean -cache` so every verify is a real cold-compile: the Go
+            toolchain caches compiled stdlib/packages under GOCACHE, so the
+            first `go run` pays the full compile (40% CPU) and every later run
+            hits cache (10%) - which would NOT reflect the real agent's CPU
+            shape. The real openclaw agent never runs `go clean`, but within a
+            single issue it repeatedly rewrites its ad-hoc /tmp/test_*.go and
+            re-runs `go run`, i.e. each verify is effectively a fresh compile.
+            Clearing the cache before each sandbox verify reproduces that
+            per-verify cold-compile pressure (the behavior the customer needs
+            to see), even though the literal trace shows no `go clean`. ts/tsx
+            has no equivalent persistent cache (esbuild re-transpiles every
+            run), so it stays empty.
+    """
+
+    temp_test_path: str
+    heredoc_eof: str
+    run_cmd: str
+    source_find_names: tuple = ()
+    source_find_root: str = "packages"
+    checkout_paths: str = ""
+    default_verify_script: str = ""
+    pre_verify_cmd: str = ""
+
+
+def _find_name_clause(names: tuple) -> str:
+    """Build a `find -name` clause: `\\( -name '*.ts' -o -name '*.go' \\)`."""
+    if not names:
+        return "-name '*.ts'"
+    inner = " -o ".join(f"-name '{n}'" for n in names)
+    return f"\\( {inner} \\)" if len(names) > 1 else f"-name '{names[0]}'"
+
+
+# Extensible language registry. To add a language (cpp, rust, ...): add one
+# entry here + its DEFAULT_CODING_*_SOURCE_FILES + default verify script in
+# schemas.py. The runner reads the active profile via coding_language.
+CODING_LANGUAGE_PROFILES: Dict[str, CodingLanguageProfile] = {
+    "ts": CodingLanguageProfile(
+        temp_test_path="/tmp/bench_verify.mjs",
+        heredoc_eof="EOF",
+        run_cmd="npx tsx /tmp/bench_verify.mjs",
+        source_find_names=("*.ts", "*.tsx", "*.js"),
+        source_find_root="packages",
+        # vuejs/core is a pnpm monorepo: all source lives under packages/<name>/src/,
+        # there is NO top-level src/ directory. `git checkout -- packages/ src/` made git
+        # emit "pathspec 'src/' did not match any tree entries" (stderr swallowed by 2>/dev/null
+        # in the find step -> the misleading "may not be a git repo" warning). packages/ alone
+        # covers every edited file.
+        checkout_paths="packages/",
+        default_verify_script=DEFAULT_CODING_VERIFY_SCRIPT_JS,
+    ),
+    "go": CodingLanguageProfile(
+        temp_test_path="/tmp/bench_verify.go",
+        heredoc_eof="GOEOF",
+        run_cmd="go run /tmp/bench_verify.go",
+        source_find_names=("*.go",),
+        source_find_root=".",
+        checkout_paths="markup/",
+        default_verify_script=DEFAULT_CODING_VERIFY_SCRIPT_GO,
+        # Force a cold compile every verify (see pre_verify_cmd docstring): the
+        # Go toolchain's GOCACHE makes the first `go run` 40% CPU and every later
+        # one ~10% (cache hit). The real agent rewrites+recompiles its ad-hoc
+        # test per verify, so per-verify is cold. Clearing the cache reproduces
+        # that cold-compile CPU pressure the customer needs to measure.
+        pre_verify_cmd="go clean -cache",
+    ),
+}
+
+# Maps a language to its default replacement-pair list (DEFAULT_CODING_*_SOURCE_FILES).
+CODING_LANGUAGE_DEFAULT_SOURCE_FILES: Dict[str, list] = {
+    "ts": DEFAULT_CODING_SOURCE_FILES,
+    "go": DEFAULT_CODING_GO_SOURCE_FILES,
+}
+
+
+def get_coding_profile(language: str) -> CodingLanguageProfile:
+    """Return the CodingLanguageProfile for `language`, falling back to ts."""
+    return CODING_LANGUAGE_PROFILES.get(language, CODING_LANGUAGE_PROFILES["ts"])
+
+
+def _normalize_source_files(raw: Any) -> List[Dict[str, str]]:
+    """Normalize coding source files into a list of replacement pairs.
+
+    Accepts:
+    - A list of dicts [{"file": str, "find": str, "replace": str}, ...] (canonical form
+      used by YAML and DEFAULT_CODING_SOURCE_FILES).
+    - A list of bare file-path strings (legacy/CLI raw-file mode). Each is wrapped in a
+      generic comment-marker pair so the old single-file workflow still triggers a rebuild.
+    - A single bare file-path string (CLI --coding-source-file with one value).
+
+    Returns the canonical list of replacement pairs. Filters out entries missing a `file`.
+    """
+    if raw is None:
+        return list(DEFAULT_CODING_SOURCE_FILES)
+
+    if isinstance(raw, str):
+        raw = [raw]
+
+    if not isinstance(raw, list):
+        return list(DEFAULT_CODING_SOURCE_FILES)
+
+    result: List[Dict[str, str]] = []
+    for item in raw:
+        if isinstance(item, dict) and item.get("file"):
+            pair = {
+                "file": str(item["file"]),
+                "find": str(item.get("find", "// bench marker")),
+                "replace": str(item.get("replace", f"// bench round\n// bench marker")),
+            }
+            # Preserve an optional per-pair verify_script body (ad-hoc test for the
+            # verify step) and the optional `verify: compile_only` flag (a pair
+            # with no assertable semantics, honestly compile-only). A pair with
+            # neither verify_script nor verify: compile_only fails verify hard.
+            if item.get("verify_script"):
+                pair["verify_script"] = str(item["verify_script"])
+            if item.get("verify"):
+                pair["verify"] = str(item["verify"])
+            result.append(pair)
+        elif isinstance(item, str) and item:
+            # CLI raw-file mode: safe generic comment marker (non-breaking, triggers rebuild)
+            result.append({"file": item, "find": "// bench marker", "replace": "// bench round\n// bench marker"})
+    return result or list(DEFAULT_CODING_SOURCE_FILES)
+
 
 @dataclass
 class Config:
@@ -75,11 +228,38 @@ class Config:
     vm_monitor_log_dir: str = "results/e2b/vm_monitor"
     vm_monitor_stress_file: str = "/dev/shm/e2b_benchmark_lock"
 
+    # Workflow type selection: determines which runners, metrics, and reports to use
+    workflow_type: str = "browser"  # "browser" or "coding"
+
     # Browser task
     browser_urls: List[str] = field(default_factory=lambda: ["http://192.168.110.10:8080/Weibo.html"])
     browser_timeout: int = 200
     browser_interval_min: float = 0.5
     browser_interval_max: float = 3.0
+
+    # Coding task configuration
+    coding_project_dir: str = "/opt/coding-bench"
+    # Coding language - selects a CodingLanguageProfile (ts/go/future cpp) which
+    # drives the verify step (temp test path, heredoc terminator, run command,
+    # source glob, checkout paths). Extensible: adding a language = one registry
+    # entry, no runner code changes. See CODING_LANGUAGE_PROFILES below.
+    coding_language: str = "ts"
+    # Verify step: write an ad-hoc test file to /tmp (heredoc) then run it. The
+    # run command comes from the active language profile (npx tsx for ts,
+    # go run for go). Mirrors the real openclaw trace's combined write+run.
+    coding_verify_cmd: str = "npx tsx /tmp/bench_verify.mjs"
+    coding_verify_timeout: int = 120  # Verify command timeout (seconds)
+    coding_skip_verify: bool = False  # Skip the verify step (build-only / dry-run)
+    # List of replacement pairs: [{"file": str, "find": str, "replace": str,
+    # "verify_script": str(optional)}, ...]. Each round applies one pair
+    # (round-robin) - a real, type-safe string edit. `verify_script` is the body
+    # of the ad-hoc test (between heredoc markers); pairs without it fall back
+    # to the shared default verify script for the language. A bare file-path
+    # string is accepted (CLI raw-file mode) and normalized to a generic
+    # comment-marker pair so the single-file workflow still works.
+    coding_source_files: List[Dict[str, str]] = field(default_factory=lambda: list(DEFAULT_CODING_SOURCE_FILES))
+    coding_interval_min: float = 2.0  # Interval between coding tasks in fixed mode
+    coding_interval_max: float = 10.0
 
     # Warmup phase configuration
     warmup_urls: List[str] = field(default_factory=list)  # Warmup page URL list
@@ -111,10 +291,12 @@ class Config:
         create_batch = data.get("create_batch", {})
         task_batch = data.get("task_batch", {})
         browser = data.get("browser", {})
+        coding = data.get("coding", {})
         test = data.get("test", {})
         report = data.get("report", {})
         smap_tool = data.get("smap_tool", {})
         vm_monitor = data.get("vm_monitor", {})
+        # workflow_type is parsed from top-level YAML key, not a section
 
         return cls(
             e2b_access_token=e2b_env.get("E2B_ACCESS_TOKEN", ""),
@@ -134,32 +316,47 @@ class Config:
             task_batch_size=task_batch.get("size") if task_batch else None,
             task_batch_interval=task_batch.get("interval") if task_batch else None,
             benchmark_percent=test.get("benchmark_percent", 1.0),
-            # Round-robin mode configuration
             benchmark_mode=test.get("benchmark_mode", "fixed"),
             round_count=test.get("round_count"),
             round_size=test.get("round_size", 5),
             round_interval=test.get("round_interval", 5),
+            workflow_type=data.get("workflow", {}).get("type", data.get("workflow_type", "browser")),
             browser_urls=browser.get("urls", ["http://192.168.110.10:8080/Weibo.html"]),
             browser_timeout=browser.get("task_timeout", 200),
             browser_interval_min=browser.get("interval_min", 0.5),
             browser_interval_max=browser.get("interval_max", 3.0),
-            # Warmup configuration
             warmup_urls=browser.get("warmup_urls", []),
             warmup_loops=browser.get("warmup_loops", 2),
             warmup_delay=browser.get("warmup_delay", 10),
             warmup_only=browser.get("warmup_only", False),
+            coding_project_dir=coding.get("project_dir", "/opt/coding-bench"),
+            coding_language=coding.get("language", "ts"),
+            coding_verify_cmd=coding.get(
+                "verify_cmd",
+                # Default verify command from the active language profile (npx tsx
+                # for ts, go run for go) when YAML doesn't override it.
+                get_coding_profile(coding.get("language", "ts")).run_cmd,
+            ),
+            coding_verify_timeout=coding.get("verify_timeout", 120),
+            coding_skip_verify=coding.get("skip_verify", False),
+            coding_source_files=_normalize_source_files(
+                coding.get(
+                    "source_files",
+                    CODING_LANGUAGE_DEFAULT_SOURCE_FILES.get(coding.get("language", "ts"), DEFAULT_CODING_SOURCE_FILES),
+                )
+            ),
+            coding_interval_min=coding.get("interval_min", 2.0),
+            coding_interval_max=coding.get("interval_max", 10.0),
             test_duration=test.get("duration", 600),
             stats_interval=test.get("stats_interval", 10),
             output_dir=report.get("output_dir", "results/e2b"),
             filename_prefix=report.get("filename_prefix", "e2b_bench"),
-            # smap_tool configuration
             smap_tool_enabled=smap_tool.get("enabled", False),
             smap_tool_path=smap_tool.get("path", ""),
             smap_tool_swap_size=smap_tool.get("swap_size", 81920),
             smap_tool_ratio=smap_tool.get("ratio", 15),
             smap_tool_src_nid=smap_tool.get("src_nid", 2),
             smap_tool_dest_nid=smap_tool.get("dest_nid", 5),
-            # vm_monitor configuration
             vm_monitor_enabled=vm_monitor.get("enabled", False),
             vm_monitor_vmm_type=vm_monitor.get("vmm_type", "firecracker"),
             vm_monitor_duration=vm_monitor.get("duration", 600),
@@ -208,7 +405,6 @@ class Config:
             browser_interval_max=args.browser_interval_max
             if args.browser_interval_max is not None
             else yaml_config.browser_interval_max,
-            # Warmup configuration
             warmup_urls=args.warmup_url if args.warmup_url is not None else yaml_config.warmup_urls,
             warmup_loops=args.warmup_loops if args.warmup_loops is not None else yaml_config.warmup_loops,
             warmup_delay=args.warmup_delay if args.warmup_delay is not None else yaml_config.warmup_delay,
@@ -218,7 +414,6 @@ class Config:
             benchmark_percent=args.benchmark_percent
             if args.benchmark_percent is not None
             else yaml_config.benchmark_percent,
-            # Round-robin mode configuration (CLI takes priority over YAML)
             benchmark_mode=getattr(args, "benchmark_mode", None)
             if getattr(args, "benchmark_mode", None) is not None
             else yaml_config.benchmark_mode,
@@ -231,6 +426,29 @@ class Config:
             round_interval=getattr(args, "round_interval", None)
             if getattr(args, "round_interval", None) is not None
             else yaml_config.round_interval,
+            workflow_type=getattr(args, "workflow_type", None)
+            if getattr(args, "workflow_type", None) is not None
+            else yaml_config.workflow_type,
+            coding_project_dir=getattr(args, "coding_project_dir", None)
+            if getattr(args, "coding_project_dir", None) is not None
+            else yaml_config.coding_project_dir,
+            coding_language=getattr(args, "coding_language", None)
+            if getattr(args, "coding_language", None) is not None
+            else yaml_config.coding_language,
+            coding_verify_cmd=yaml_config.coding_verify_cmd,  # from language profile / YAML
+            coding_verify_timeout=getattr(args, "coding_verify_timeout", None)
+            if getattr(args, "coding_verify_timeout", None) is not None
+            else yaml_config.coding_verify_timeout,
+            coding_source_files=_normalize_source_files(
+                getattr(args, "coding_source_file", None)
+                if getattr(args, "coding_source_file", None) is not None
+                else yaml_config.coding_source_files
+            ),
+            coding_interval_min=yaml_config.coding_interval_min,
+            coding_interval_max=yaml_config.coding_interval_max,
+            coding_skip_verify=getattr(args, "coding_skip_verify", False)
+            if hasattr(args, "coding_skip_verify") and args.coding_skip_verify
+            else yaml_config.coding_skip_verify,
             test_duration=args.duration if args.duration is not None else yaml_config.test_duration,
             stats_interval=args.stats_interval if args.stats_interval is not None else yaml_config.stats_interval,
             output_dir=args.output_dir if args.output_dir is not None else yaml_config.output_dir,
@@ -282,7 +500,6 @@ class Config:
             warmup_delay=args.warmup_delay if args.warmup_delay is not None else 10,
             warmup_only=args.warmup_only if hasattr(args, "warmup_only") and args.warmup_only else False,
             benchmark_percent=args.benchmark_percent if args.benchmark_percent is not None else 1.0,
-            # Round-robin mode configuration
             benchmark_mode=getattr(args, "benchmark_mode", None)
             if getattr(args, "benchmark_mode", None) is not None
             else "fixed",
@@ -291,6 +508,21 @@ class Config:
             round_interval=getattr(args, "round_interval", None)
             if getattr(args, "round_interval", None) is not None
             else 5,
+            workflow_type=getattr(args, "workflow_type", "browser"),
+            coding_project_dir=getattr(args, "coding_project_dir", "/opt/coding-bench"),
+            coding_language=getattr(args, "coding_language", "ts"),
+            coding_verify_cmd=get_coding_profile(getattr(args, "coding_language", "ts")).run_cmd,
+            coding_verify_timeout=getattr(args, "coding_verify_timeout", 120),
+            coding_skip_verify=getattr(args, "coding_skip_verify", False),
+            coding_source_files=_normalize_source_files(
+                getattr(args, "coding_source_file", None)
+                if getattr(args, "coding_source_file", None) is not None
+                else CODING_LANGUAGE_DEFAULT_SOURCE_FILES.get(
+                    getattr(args, "coding_language", "ts"), DEFAULT_CODING_SOURCE_FILES
+                )
+            ),
+            coding_interval_min=2.0,
+            coding_interval_max=10.0,
             test_duration=args.duration if args.duration is not None else 600,
             stats_interval=args.stats_interval if args.stats_interval is not None else 10,
             output_dir=args.output_dir if args.output_dir is not None else "results/e2b",
@@ -345,3 +577,11 @@ class Config:
         Based on benchmark_percent (e.g., 0.5 = 50% of sandboxes)
         """
         return max(1, int(self.total_count * self.benchmark_percent))
+
+    def validate(self) -> None:
+        """Validate config values and raise errors for invalid settings.
+
+        Called after construction to catch configuration mistakes early.
+        """
+        if self.round_size <= 0:
+            raise ValueError(f"round_size must be > 0, got {self.round_size}")

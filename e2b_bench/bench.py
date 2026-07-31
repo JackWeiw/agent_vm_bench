@@ -375,6 +375,7 @@ def run_benchmark(config: Config) -> dict:
     print("E2B Sandbox Bench - Batch Performance Test")
     print("=" * 80)
     print(f"  Template: {config.template}")
+    print(f"  Workflow:  {config.workflow_type}")
 
     # Mode display
     if config.detect_existing:
@@ -387,6 +388,14 @@ def run_benchmark(config: Config) -> dict:
         print("  Mode:     Full workflow")
 
     print(f"  Total:    {config.total_count} sandboxes")
+
+    # Workflow-specific display
+    if config.workflow_type == "coding":
+        print(f"  Project:    {config.coding_project_dir}")
+        print(f"  Language:   {config.coding_language}")
+        print(f"  Verify cmd: {config.coding_verify_cmd}")
+        print(f"  Source files: {len(config.coding_source_files)} files for round-robin")
+        print(f"  Verify:     {'enabled' if not config.coding_skip_verify else 'skipped'}")
 
     # Batch config display
     if config.create_batch_size:
@@ -581,7 +590,7 @@ def run_benchmark(config: Config) -> dict:
     # Benchmark phase skips warmup - assumes sandboxes already warmed up
     task_manager = TaskManager(config, sandbox_states, stop_event)
 
-    if config.warmup_only and config.warmup_urls:
+    if config.warmup_only and (config.warmup_urls or config.workflow_type == "coding"):
         print("\n[Phase 2] Running warmup phase...")
 
         # Check if wave-based warmup is needed
@@ -717,7 +726,8 @@ def run_benchmark(config: Config) -> dict:
     if config.benchmark_mode == "round_robin":
         # Round-robin mode: rotate sandbox groups across rounds
         benchmark_count = max(1, int(ready_count * config.benchmark_percent))
-        print(f"\n[Phase 4] Starting round-robin browser tasks...")
+        workflow_label = config.workflow_type.capitalize()
+        print(f"\n[Phase 4] Starting round-robin {workflow_label} tasks...")
         print(f"  Mode: round_robin")
         print(f"  Round size: {config.round_size} sandboxes per round")
         if config.round_count:
@@ -733,12 +743,13 @@ def run_benchmark(config: Config) -> dict:
     else:
         # Fixed mode (original behavior)
         benchmark_count = max(1, int(ready_count * config.benchmark_percent))
+        workflow_label = config.workflow_type.capitalize()
         if config.benchmark_percent < 1.0:
             print(
-                f"\n[Phase 4] Starting browser tasks on {benchmark_count}/{ready_count} sandboxes ({config.benchmark_percent * 100:.0f}%)..."
+                f"\n[Phase 4] Starting {workflow_label} tasks on {benchmark_count}/{ready_count} sandboxes ({config.benchmark_percent * 100:.0f}%)..."
             )
         else:
-            print("\n[Phase 4] Starting browser tasks...")
+            print(f"\n[Phase 4] Starting {workflow_label} tasks...")
         task_manager.start_all()
 
         # 7. Run for specified duration
@@ -808,11 +819,28 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--task-batch-interval", type=int, help="Task batch interval seconds")
 
+    # Workflow type selection
+    parser.add_argument(
+        "--workflow-type",
+        choices=["browser", "coding"],
+        default=None,
+        help="Workflow type: 'browser' (default) or 'coding'",
+    )
+
     # Browser task
     parser.add_argument("--browser-url", type=str, action="append", help="Browser URL (can specify multiple)")
     parser.add_argument("--browser-timeout", type=int, help="Browser task timeout")
     parser.add_argument("--browser-interval-min", type=float, help="Task interval minimum")
     parser.add_argument("--browser-interval-max", type=float, help="Task interval maximum")
+
+    # Coding task configuration
+    parser.add_argument("--coding-project-dir", type=str, help="Project directory inside sandbox")
+    parser.add_argument("--coding-language", type=str, help="Coding language (ts/go)")
+    parser.add_argument("--coding-verify-timeout", type=int, help="Verify command timeout seconds")
+    parser.add_argument(
+        "--coding-source-file", type=str, action="append", help="Source file for modification (can specify multiple)"
+    )
+    parser.add_argument("--coding-skip-verify", action="store_true", help="Skip the verify step")
 
     # Warmup configuration
     parser.add_argument("-w", "--warmup-url", type=str, action="append", help="Warmup page URL (can specify multiple)")

@@ -19,16 +19,58 @@ class ReportAggregator:
         "Browser_Steps": [
             "Browser_open_tab_Count",
             "Browser_open_tab_Avg_ms",
+            "Browser_open_tab_P50_ms",
+            "Browser_open_tab_P95_ms",
             "Browser_open_tab_P99_ms",
             "Browser_snapshot_Count",
             "Browser_snapshot_Avg_ms",
+            "Browser_snapshot_P50_ms",
+            "Browser_snapshot_P95_ms",
             "Browser_snapshot_P99_ms",
             "Browser_click_Count",
             "Browser_click_Avg_ms",
+            "Browser_click_P50_ms",
+            "Browser_click_P95_ms",
             "Browser_click_P99_ms",
             "Browser_screenshot_Count",
             "Browser_screenshot_Avg_ms",
+            "Browser_screenshot_P50_ms",
+            "Browser_screenshot_P95_ms",
             "Browser_screenshot_P99_ms",
+        ],
+        "Coding": [
+            "Coding_Success_Rate",
+            "Coding_Avg_Latency_ms",
+            "Coding_P99_Latency_ms",
+            "Coding_Total_Tasks",
+            "Coding_Verify_Success_Rate",
+        ],
+        "Coding_Steps": [
+            "Coding_find_Count",
+            "Coding_find_Avg_ms",
+            "Coding_find_P50_ms",
+            "Coding_find_P95_ms",
+            "Coding_find_P99_ms",
+            "Coding_read_Count",
+            "Coding_read_Avg_ms",
+            "Coding_read_P50_ms",
+            "Coding_read_P95_ms",
+            "Coding_read_P99_ms",
+            "Coding_edit_Count",
+            "Coding_edit_Avg_ms",
+            "Coding_edit_P50_ms",
+            "Coding_edit_P95_ms",
+            "Coding_edit_P99_ms",
+            "Coding_verify_Count",
+            "Coding_verify_Avg_ms",
+            "Coding_verify_P50_ms",
+            "Coding_verify_P95_ms",
+            "Coding_verify_P99_ms",
+            "Coding_diff_Count",
+            "Coding_diff_Avg_ms",
+            "Coding_diff_P50_ms",
+            "Coding_diff_P95_ms",
+            "Coding_diff_P99_ms",
         ],
         "VM_CPU": ["VM_CPU_Mean", "VM_CPU_Max"],
         "DevKit_TopDown": [
@@ -61,6 +103,8 @@ class ReportAggregator:
         "Basic": "4472C4",  # Blue
         "Browser": "70AD47",  # Green
         "Browser_Steps": "5B9BD5",  # Light Blue (step timing subset)
+        "Coding": "FF9900",  # Amber/Gold
+        "Coding_Steps": "FFCC00",  # Yellow (step timing subset)
         "VM_CPU": "FFC000",  # Orange
         "DevKit_TopDown": "ED7D31",  # Dark Orange
         "DevKit_Memory": "A5A5A5",  # Gray
@@ -250,11 +294,12 @@ class ReportAggregator:
 
     def _get_source_key_from_name(self, display_name: str) -> str:
         """Get source key from display name"""
-        # Reverse mapping
         name_to_key = {
             "Basic": "Basic",
             "Browser": "Browser",
             "Browser Steps": "Browser_Steps",
+            "Coding": "Coding",
+            "Coding Steps": "Coding_Steps",
             "VM CPU": "VM_CPU",
             "DevKit TopDown": "DevKit_TopDown",
             "DevKit Memory": "DevKit_Memory",
@@ -273,6 +318,8 @@ class ReportAggregator:
             "Basic": "Basic",
             "Browser": "Browser",
             "Browser_Steps": "Browser Steps",
+            "Coding": "Coding",
+            "Coding_Steps": "Coding Steps",
             "VM_CPU": "VM CPU",
             "DevKit_TopDown": "DevKit TopDown",
             "DevKit_Memory": "DevKit Memory",
@@ -295,6 +342,8 @@ class ReportAggregator:
         # Infer group from column name prefix
         if col_name.startswith("Browser_"):
             return "Browser"
+        elif col_name.startswith("Coding_"):
+            return "Coding"
         elif col_name.startswith("VM_CPU"):
             return "VM_CPU"
         elif col_name.startswith("DevKit_TopDown"):

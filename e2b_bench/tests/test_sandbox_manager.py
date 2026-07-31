@@ -269,3 +269,236 @@ class TestNumaBinding:
             assert result["success"] is False
             assert "Connection failed" in result["error"]
             assert state.creation_metrics.status == SandboxStatus.CREATING
+
+
+class TestCheckReady:
+    """Tests for _check_ready method with workflow-specific behavior"""
+
+    def test_check_ready_coding_workflow(self):
+        """Coding workflow uses _check_command_ready"""
+        config = Config(workflow_type="coding")
+        stop_event = Event()
+        manager = SandboxManager(config, stop_event)
+
+        state = SandboxState(sandbox_id=1)
+        mock_sandbox = Mock()
+        mock_sandbox.commands.run.return_value = Mock(exit_code=0, stdout="Linux sandbox 5.15.0")
+        state.sandbox_obj = mock_sandbox
+
+        result = manager._check_ready(state)
+
+        assert result["success"] is True
+        assert result["wait_elapsed"] >= 0
+        mock_sandbox.commands.run.assert_called_with("uname -a", timeout=10, user="root")
+
+    def test_check_ready_browser_workflow(self):
+        """Browser workflow uses _check_ports"""
+        config = Config(workflow_type="browser")
+        stop_event = Event()
+        manager = SandboxManager(config, stop_event)
+
+        state = SandboxState(sandbox_id=1)
+        mock_sandbox = Mock()
+        # Mock successful port check for both ports
+        mock_sandbox.commands.run.return_value = Mock(exit_code=0, stdout="LISTEN 0 0 0.0.0.0:18789")
+        state.sandbox_obj = mock_sandbox
+
+        result = manager._check_ready(state)
+
+        assert result["success"] is True
+        assert result["wait_elapsed"] >= 0
+
+    def test_check_ready_default_workflow_is_browser(self):
+        """Default workflow (unspecified) uses _check_ports"""
+        config = Config()  # Default workflow_type is "browser"
+        stop_event = Event()
+        manager = SandboxManager(config, stop_event)
+
+        state = SandboxState(sandbox_id=1)
+        mock_sandbox = Mock()
+        mock_sandbox.commands.run.return_value = Mock(exit_code=0, stdout="LISTEN 0 0 0.0.0.0:18789")
+        state.sandbox_obj = mock_sandbox
+
+        result = manager._check_ready(state)
+
+        assert result["success"] is True
+
+
+class TestCheckCommandReady:
+    """Tests for _check_command_ready method (coding workflow)"""
+
+    def test_command_ready_success_immediate(self):
+        """Sandbox is ready when uname -a returns immediately"""
+        config = Config(workflow_type="coding")
+        stop_event = Event()
+        manager = SandboxManager(config, stop_event)
+
+        state = SandboxState(sandbox_id=1)
+        mock_sandbox = Mock()
+        mock_sandbox.commands.run.return_value = Mock(exit_code=0, stdout="Linux sandbox 5.15.0")
+        state.sandbox_obj = mock_sandbox
+
+        result = manager._check_command_ready(state)
+
+        assert result["success"] is True
+        assert result["error"] == ""
+
+    def test_command_ready_empty_stdout_fails(self):
+        """Empty stdout should fail the check (after timeout)"""
+        config = Config(workflow_type="coding")
+        stop_event = Event()
+        manager = SandboxManager(config, stop_event)
+
+        state = SandboxState(sandbox_id=1)
+        mock_sandbox = Mock()
+        mock_sandbox.commands.run.return_value = Mock(exit_code=0, stdout="")
+        state.sandbox_obj = mock_sandbox
+
+        # Patch READY_CHECK_MAX_WAIT to make test fast
+        with patch("e2b_bench.sandbox_manager.READY_CHECK_MAX_WAIT", 0.1), patch(
+            "e2b_bench.sandbox_manager.READY_CHECK_INTERVAL", 0.05
+        ):
+            result = manager._check_command_ready(state)
+
+        assert result["success"] is False
+        assert "Timeout" in result["error"]
+
+    def test_command_ready_nonzero_exit_fails(self):
+        """Non-zero exit code should fail the check (after timeout)"""
+        config = Config(workflow_type="coding")
+        stop_event = Event()
+        manager = SandboxManager(config, stop_event)
+
+        state = SandboxState(sandbox_id=1)
+        mock_sandbox = Mock()
+        mock_sandbox.commands.run.return_value = Mock(exit_code=1, stdout="")
+        state.sandbox_obj = mock_sandbox
+
+        with patch("e2b_bench.sandbox_manager.READY_CHECK_MAX_WAIT", 0.1), patch(
+            "e2b_bench.sandbox_manager.READY_CHECK_INTERVAL", 0.05
+        ):
+            result = manager._check_command_ready(state)
+
+        assert result["success"] is False
+        assert "Timeout" in result["error"]
+
+    def test_command_ready_no_sandbox_handle(self):
+        """No sandbox handle should return failure"""
+        config = Config(workflow_type="coding")
+        stop_event = Event()
+        manager = SandboxManager(config, stop_event)
+
+        state = SandboxState(sandbox_id=1)
+        state.sandbox_obj = None
+
+        result = manager._check_command_ready(state)
+
+        assert result["success"] is False
+        assert "No sandbox handle" in result["error"]
+
+    def test_command_ready_stop_event_interrupts(self):
+        """Stop event should interrupt the check"""
+        config = Config(workflow_type="coding")
+        stop_event = Event()
+        stop_event.set()  # Already stopped
+        manager = SandboxManager(config, stop_event)
+
+        state = SandboxState(sandbox_id=1)
+        mock_sandbox = Mock()
+        state.sandbox_obj = mock_sandbox
+
+        result = manager._check_command_ready(state)
+
+        assert result["success"] is False
+        assert "Stop event" in result["error"]
+
+    def test_command_ready_exception_continues_waiting(self):
+        """Exception during command execution should not immediately fail"""
+        config = Config(workflow_type="coding")
+        stop_event = Event()
+        manager = SandboxManager(config, stop_event)
+
+        state = SandboxState(sandbox_id=1)
+        mock_sandbox = Mock()
+        # First call raises exception, second succeeds
+        mock_sandbox.commands.run.side_effect = [
+            Exception("Connection error"),
+            Mock(exit_code=0, stdout="Linux sandbox 5.15.0"),
+        ]
+        state.sandbox_obj = mock_sandbox
+
+        result = manager._check_command_ready(state)
+
+        # Should succeed after retry
+        assert result["success"] is True
+
+
+class TestCheckPorts:
+    """Tests for _check_ports method (browser workflow)"""
+
+    def test_ports_ready_both_ports_listening(self):
+        """Both ports listening should succeed"""
+        config = Config(workflow_type="browser")
+        stop_event = Event()
+        manager = SandboxManager(config, stop_event)
+
+        state = SandboxState(sandbox_id=1)
+        mock_sandbox = Mock()
+        # Both ports are listening
+        mock_sandbox.commands.run.return_value = Mock(exit_code=0, stdout="LISTEN 0 0 0.0.0.0:18789")
+        state.sandbox_obj = mock_sandbox
+
+        result = manager._check_ports(state)
+
+        assert result["success"] is True
+        assert result["error"] == ""
+
+    def test_ports_ready_missing_port_fails(self):
+        """Missing port should fail the check (after timeout)"""
+        config = Config(workflow_type="browser")
+        stop_event = Event()
+        manager = SandboxManager(config, stop_event)
+
+        state = SandboxState(sandbox_id=1)
+        mock_sandbox = Mock()
+        # Port not listening
+        mock_sandbox.commands.run.return_value = Mock(exit_code=0, stdout="PORT_NOT_LISTENING")
+        state.sandbox_obj = mock_sandbox
+
+        with patch("e2b_bench.sandbox_manager.READY_CHECK_MAX_WAIT", 0.1), patch(
+            "e2b_bench.sandbox_manager.READY_CHECK_INTERVAL", 0.05
+        ):
+            result = manager._check_ports(state)
+
+        assert result["success"] is False
+        assert "Timeout" in result["error"]
+
+    def test_ports_ready_no_sandbox_handle(self):
+        """No sandbox handle should return failure"""
+        config = Config(workflow_type="browser")
+        stop_event = Event()
+        manager = SandboxManager(config, stop_event)
+
+        state = SandboxState(sandbox_id=1)
+        state.sandbox_obj = None
+
+        result = manager._check_ports(state)
+
+        assert result["success"] is False
+        assert "No sandbox handle" in result["error"]
+
+    def test_ports_ready_stop_event_interrupts(self):
+        """Stop event should interrupt the check"""
+        config = Config(workflow_type="browser")
+        stop_event = Event()
+        stop_event.set()  # Already stopped
+        manager = SandboxManager(config, stop_event)
+
+        state = SandboxState(sandbox_id=1)
+        mock_sandbox = Mock()
+        state.sandbox_obj = mock_sandbox
+
+        result = manager._check_ports(state)
+
+        assert result["success"] is False
+        assert "Stop event" in result["error"]

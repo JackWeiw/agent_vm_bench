@@ -114,8 +114,8 @@ class GroupRunner:
                 if not success:
                     self._log("  WARN: smap_tool failed to start")
 
-            # 3. Warmup (shared, once)
-            if self.config.warmup_urls:
+            # 3. Warmup (shared, once — browser needs warmup_urls, coding always warms up for dev server)
+            if self.config.warmup_urls or self.config.workflow_type == "coding":
                 print("\n[Phase 2] Running warmup...")
                 task_manager = TaskManager(self._get_group_config(), self.sandbox_states, self.stop_event)
                 task_manager.start_warmup()
@@ -175,11 +175,15 @@ class GroupRunner:
                 "total_count": task.total_count,
                 "benchmark_percent": task.benchmark_percent,
                 "ratio": task.ratio,
+                "workflow_type": self.config.workflow_type,
                 "smap_tool_enabled": self.config.smap_tool_enabled,
                 "smap_tool_ratio": task.ratio if self.config.smap_tool_enabled else None,
                 "test_duration": self.config.test_duration,
-                "browser_urls": self.config.browser_urls,
+                "browser_urls": self.config.browser_urls if self.config.workflow_type == "browser" else [],
                 "warmup_urls": self.config.warmup_urls if self.config.warmup_urls else [],
+                "coding_project_dir": self.config.coding_project_dir if self.config.workflow_type == "coding" else None,
+                "coding_language": self.config.coding_language if self.config.workflow_type == "coding" else None,
+                "coding_verify_cmd": self.config.coding_verify_cmd if self.config.workflow_type == "coding" else None,
             }
             config_file = task_result_dir / f"config_{task.task_id}.yaml"
             with open(config_file, "w", encoding="utf-8") as f:
@@ -210,7 +214,7 @@ class GroupRunner:
                 task_log("  vm_monitor sampling triggered")
 
             # Start browser tasks
-            task_log(f"  Starting browser tasks (benchmark_percent={task.benchmark_percent})...")
+            task_log(f"  Starting {task_config.workflow_type} tasks (benchmark_percent={task.benchmark_percent})...")
             stats_collector.start()
             task_manager.start_all()
 
@@ -398,11 +402,16 @@ class BatchScheduler:
                 "error_msg": task.error_msg,
             }
 
-            # Extract browser metrics
+            # Extract workflow metrics
             if task.report_file:
-                browser_metrics = self.metrics_extractor.extract_browser_metrics(task.report_file)
-                metrics.update(browser_metrics)
-                task.browser_metrics = browser_metrics
+                if self.template_config.workflow_type == "coding":
+                    coding_metrics = self.metrics_extractor.extract_coding_metrics(task.report_file)
+                    metrics.update(coding_metrics)
+                    task.coding_metrics = coding_metrics
+                else:
+                    browser_metrics = self.metrics_extractor.extract_browser_metrics(task.report_file)
+                    metrics.update(browser_metrics)
+                    task.browser_metrics = browser_metrics
 
             # Extract vm_monitor metrics
             if task.analysis_file:
@@ -586,10 +595,17 @@ def offline_summary(result_base_dir: str, output_path: str = None) -> str:
             "error_msg": None,
         }
 
-        # Extract browser metrics
+        # Extract workflow metrics (Bug #9 fix: only call relevant extractor)
         if task_info["report_file"]:
-            browser_metrics = metrics_extractor.extract_browser_metrics(task_info["report_file"])
-            metrics.update(browser_metrics)
+            workflow_type = task_info.get("workflow_type", "browser")
+            if workflow_type == "coding":
+                coding_metrics = metrics_extractor.extract_coding_metrics(task_info["report_file"])
+                if coding_metrics:
+                    metrics.update(coding_metrics)
+            else:
+                browser_metrics = metrics_extractor.extract_browser_metrics(task_info["report_file"])
+                if browser_metrics:
+                    metrics.update(browser_metrics)
 
         # Extract vm_monitor metrics
         if task_info["analysis_file"]:

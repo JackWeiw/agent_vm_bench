@@ -4,11 +4,9 @@ Round-Robin Task Manager Module
 Manages round-robin sandbox rotation for memory migration stress testing.
 Each round activates a different subset of sandboxes to ensure even memory access distribution.
 
-Benchmark mode:
-- Warmup phase: Opens multiple tabs per sandbox via WarmupRunner (memory allocation)
-- Benchmark phase: Each round opens a NEW tab and executes operations
-- Operations: new tab -> snapshot -> click -> screenshot
-- Creates continuous memory allocation during benchmark
+Supports both browser and coding workflow types:
+- Browser: each round opens a NEW tab and executes browser operations
+- Coding: each round modifies a source file, builds, and tests (memory peak)
 """
 
 import threading
@@ -16,7 +14,7 @@ import time
 from typing import Dict, List, Optional
 
 from .config import Config
-from .schemas import SandboxState, SandboxStatus
+from .schemas import CODING_STEP_ORDER, BROWSER_STEP_ORDER, SandboxState, SandboxStatus
 from .stats_collector import StatsCollector
 from .task_runner import TabOperationRunner
 
@@ -223,9 +221,14 @@ class RoundRobinTaskManager:
 
         # Initialize Round 0 baseline if this is the first round
         if round_id == 0 and 0 not in self.stats_collector._round_start_totals:
-            sandbox_latency_counts = {
-                s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()
-            }
+            if self.config.workflow_type == "coding":
+                sandbox_latency_counts = {
+                    s.sandbox_id: len(s.coding_metrics.latencies) for s in self.sandbox_states.values()
+                }
+            else:
+                sandbox_latency_counts = {
+                    s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()
+                }
             self.stats_collector._round_start_totals[0] = {
                 "total": 0,
                 "success": 0,
@@ -235,12 +238,20 @@ class RoundRobinTaskManager:
         # Create round-specific stop event
         self.round_stop_event = threading.Event()
 
-        # Start runners for current round
+        # Start runners for current round — dispatch based on workflow type
         self.active_runners = []
-        for state in current_states:
-            runner = TabOperationRunner(state, self.config, self.round_stop_event, round_id)
-            self.active_runners.append(runner)
-            runner.start()
+        if self.config.workflow_type == "coding":
+            from .coding_task_runner import CodingRoundRunner
+
+            for state in current_states:
+                runner = CodingRoundRunner(state, self.config, self.round_stop_event, round_id)
+                self.active_runners.append(runner)
+                runner.start()
+        else:
+            for state in current_states:
+                runner = TabOperationRunner(state, self.config, self.round_stop_event, round_id)
+                self.active_runners.append(runner)
+                runner.start()
 
         self.current_round = round_id
 
@@ -262,17 +273,25 @@ class RoundRobinTaskManager:
         # Record baseline for NEXT round AFTER current round's tasks are complete.
         # This includes the last round — we record a "post-last" baseline so that
         # _calculate_round_finals can use it as the end boundary for the final round,
-        # avoiding dependency on final_browser_total which may be stale.
+        # avoiding dependency on stale totals.
         next_round = self.current_round + 1
         if next_round not in self.stats_collector._round_start_totals:
-            browser_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
-            browser_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
-            sandbox_latency_counts = {
-                s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()
-            }
+            # Dispatch metrics tracking based on workflow type
+            if self.config.workflow_type == "coding":
+                task_total = sum(s.coding_metrics.total_tasks for s in self.sandbox_states.values())
+                task_success = sum(s.coding_metrics.success_count for s in self.sandbox_states.values())
+                sandbox_latency_counts = {
+                    s.sandbox_id: len(s.coding_metrics.latencies) for s in self.sandbox_states.values()
+                }
+            else:
+                task_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
+                task_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
+                sandbox_latency_counts = {
+                    s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()
+                }
             self.stats_collector._round_start_totals[next_round] = {
-                "total": browser_total,
-                "success": browser_success,
+                "total": task_total,
+                "success": task_success,
                 "sandbox_latency_counts": sandbox_latency_counts,
             }
 
@@ -280,7 +299,11 @@ class RoundRobinTaskManager:
         step_totals = {}
         for runner in self.active_runners:
             state = runner.state
-            metrics = state.browser_metrics
+            # Select metrics object based on workflow type
+            if self.config.workflow_type == "coding":
+                metrics = state.coding_metrics
+            else:
+                metrics = state.browser_metrics
             step_stats = metrics.get_step_stats()
             for step_name, stats in step_stats.items():
                 if step_name not in step_totals:
@@ -294,7 +317,8 @@ class RoundRobinTaskManager:
         runner_count = len(self.active_runners)
         if runner_count > 0 and step_totals:
             avg_parts = []
-            for step_name in ["open_tab", "page_load", "snapshot", "click", "screenshot"]:
+            step_order = CODING_STEP_ORDER if self.config.workflow_type == "coding" else BROWSER_STEP_ORDER
+            for step_name in step_order:
                 if step_name in step_totals:
                     avg_ms = (step_totals[step_name]["total"] / max(1, step_totals[step_name]["count"])) * 1000
                     avg_parts.append(f"{step_name}={avg_ms:.0f}ms")

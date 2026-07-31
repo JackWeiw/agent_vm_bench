@@ -1,17 +1,18 @@
 """
 Task Execution Module
 
-Responsible for browser task execution, result collection and exception handling
-Each sandbox has an independent thread
-Supports task batch control for gradual task execution start
-Supports warmup phase for memory preheating
-Supports agent-browser operations for benchmark mode
+Responsible for task execution, result collection and exception handling.
+Each sandbox has an independent thread.
+Supports task batch control for gradual task execution start.
+Supports warmup phase for memory preheating.
+Supports agent-browser operations for browser benchmark mode.
+Supports coding operations for coding benchmark mode.
 
 Classes:
-- WarmupRunner: Opens multiple tabs during warmup phase (memory allocation)
+- WarmupRunner: Opens multiple tabs during warmup phase (browser)
 - BrowserTaskRunner: Executes browser tasks in fixed mode
 - TabOperationRunner: Opens new tab and executes operations in round-robin mode
-- TaskManager: Manages warmup and task execution threads
+- TaskManager: Manages warmup and task execution threads (workflow-aware dispatch)
 """
 
 import random
@@ -21,6 +22,7 @@ import time
 from typing import Dict, List, Tuple
 
 from .config import Config
+from .helpers import wait_for_port_ready
 from .schemas import SandboxState, SandboxStatus
 
 
@@ -67,20 +69,9 @@ class WarmupRunner(threading.Thread):
         Each URL is opened exactly once (warmup_loops is ignored for tabs).
         """
         # Wait for sandbox ports ready
-        while True:
-            if self.state.creation_metrics.status == SandboxStatus.PORT_READY:
-                break
-            if self.state.creation_metrics.status in (
-                SandboxStatus.FAILED,
-                SandboxStatus.PORT_FAILED,
-                SandboxStatus.OFFLINE,
-                SandboxStatus.KILLED,
-            ):
-                print(
-                    f"[Sandbox{self.state.sandbox_id}] Cannot start warmup: {self.state.creation_metrics.status.value}"
-                )
-                return
-            time.sleep(0.5)
+        if not wait_for_port_ready(self.state):
+            print(f"[Sandbox{self.state.sandbox_id}] Cannot start warmup: {self.state.creation_metrics.status.value}")
+            return
 
         sbx = self.state.sandbox_obj
         if not sbx:
@@ -203,20 +194,9 @@ class BrowserTaskRunner(threading.Thread):
     def run(self) -> None:
         """Task execution main loop"""
         # Wait for sandbox ports ready
-        while not self.stop_event.is_set():
-            if self.state.creation_metrics.status == SandboxStatus.PORT_READY:
-                break
-            if self.state.creation_metrics.status in (
-                SandboxStatus.FAILED,
-                SandboxStatus.PORT_FAILED,
-                SandboxStatus.OFFLINE,
-                SandboxStatus.KILLED,
-            ):
-                print(
-                    f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}"
-                )
-                return
-            time.sleep(0.5)
+        if not wait_for_port_ready(self.state, self.stop_event):
+            print(f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}")
+            return
 
         # Browser task execution loop
         while not self.stop_event.is_set():
@@ -310,7 +290,7 @@ class TaskManager:
         self.config = config
         self.sandbox_states = sandbox_states
         self.stop_event = stop_event
-        self.runners: List[BrowserTaskRunner] = []
+        self.runners: List[threading.Thread] = []
         self.warmup_runners: List[WarmupRunner] = []
 
     def start_warmup(self) -> None:
@@ -318,6 +298,10 @@ class TaskManager:
 
         Warmup phase runs before benchmark to preheat memory.
         After warmup, sandboxes are ready for actual benchmark.
+
+        Dispatches based on workflow_type:
+        - "browser": uses WarmupRunner (opens browser tabs)
+        - "coding": uses CodingWarmupRunner (one initial verify, no resident process)
         """
         ready_states = [
             s for s in self.sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY
@@ -327,24 +311,48 @@ class TaskManager:
             print("No sandboxes ready for warmup")
             return
 
-        if not self.config.warmup_urls:
-            print("No warmup URLs configured, skipping warmup")
+        # Select warmup runner based on workflow type
+        if self.config.workflow_type == "coding":
+            from .coding_task_runner import CodingWarmupRunner
+
+            # Coding warmup: one initial verify (no resident process)
+            if not self.config.coding_skip_verify:
+                print(f"\n{'=' * 60}")
+                print("Coding Warmup Phase Starting")
+                print(f"  Total: {len(ready_states)} sandboxes")
+                print(f"  Project: {self.config.coding_project_dir}")
+                print(f"  Language: {self.config.coding_language}")
+                print(f"  Initial verify: {'enabled' if not self.config.coding_skip_verify else 'skipped'}")
+                print(f"{'=' * 60}")
+
+                for state in ready_states:
+                    runner = CodingWarmupRunner(state, self.config)
+                    self.warmup_runners.append(runner)
+                    runner.start()
+            else:
+                print("Coding warmup skipped (initial verify disabled)")
+                for state in ready_states:
+                    state.warmup_done = True
+        else:
+            # Browser warmup: uses warmup_urls to open tabs
+            if not self.config.warmup_urls:
+                print("No warmup URLs configured, skipping warmup")
+                for state in ready_states:
+                    state.warmup_done = True
+                return
+
+            print(f"\n{'=' * 60}")
+            print("Warmup Phase Starting")
+            print(f"  Total: {len(ready_states)} sandboxes")
+            print(f"  Warmup pages: {len(self.config.warmup_urls)}")
+            print(f"  Loop count: {self.config.warmup_loops}")
+            print(f"  Page delay: {self.config.warmup_delay}s")
+            print(f"{'=' * 60}")
+
             for state in ready_states:
-                state.warmup_done = True
-            return
-
-        print(f"\n{'=' * 60}")
-        print("Warmup Phase Starting")
-        print(f"  Total: {len(ready_states)} sandboxes")
-        print(f"  Warmup pages: {len(self.config.warmup_urls)}")
-        print(f"  Loop count: {self.config.warmup_loops}")
-        print(f"  Page delay: {self.config.warmup_delay}s")
-        print(f"{'=' * 60}")
-
-        for state in ready_states:
-            runner = WarmupRunner(state, self.config)
-            self.warmup_runners.append(runner)
-            runner.start()
+                runner = WarmupRunner(state, self.config)
+                self.warmup_runners.append(runner)
+                runner.start()
 
     def wait_warmup(self, timeout: float = 300.0) -> Tuple[int, int]:
         """Wait for all warmup runners to complete
@@ -378,7 +386,12 @@ class TaskManager:
             runner.join(timeout=2)
 
         completed = sum(1 for s in self.sandbox_states.values() if s.warmup_done)
-        failed = sum(1 for s in self.sandbox_states.values() if s.warmup_done and s.browser_metrics.failed_count > 0)
+        if self.config.workflow_type == "coding":
+            failed = sum(1 for s in self.sandbox_states.values() if s.warmup_done and s.coding_metrics.failed_count > 0)
+        else:
+            failed = sum(
+                1 for s in self.sandbox_states.values() if s.warmup_done and s.browser_metrics.failed_count > 0
+            )
 
         return completed, failed
 
@@ -427,8 +440,10 @@ class TaskManager:
         batch_size = self.config.task_batch_size
         batch_count = (total + batch_size - 1) // batch_size
 
+        workflow_label = self.config.workflow_type.capitalize()
+
         print(f"\n{'=' * 60}")
-        print("Batched Task Execution Start")
+        print(f"Batched {workflow_label} Task Execution Start")
         print(f"  Total: {total} sandboxes")
         print(f"  Batches: {batch_count} x {batch_size}")
         print(f"  Interval: {self.config.task_batch_interval}s")
@@ -445,9 +460,9 @@ class TaskManager:
 
             print(f"\n[TaskBatch {batch_id}/{batch_count - 1}] Starting tasks for sandboxes {start_idx + 1}-{end_idx}")
 
-            # Start task runners for current batch
+            # Select runner based on workflow type
             for state in batch_states:
-                runner = BrowserTaskRunner(state, self.config, self.stop_event)
+                runner = self._create_task_runner(state)
                 self.runners.append(runner)
                 runner.start()
 
@@ -460,17 +475,35 @@ class TaskManager:
 
     def _start_concurrent(self, ready_states: List[SandboxState]) -> None:
         """Full concurrent task execution start"""
+        workflow_label = self.config.workflow_type.capitalize()
+
         print(f"\n{'=' * 60}")
-        print("Concurrent Task Execution Start")
+        print(f"Concurrent {workflow_label} Task Execution Start")
         print(f"  Total: {len(ready_states)} sandboxes (full concurrent)")
         print(f"{'=' * 60}")
 
         for state in ready_states:
-            runner = BrowserTaskRunner(state, self.config, self.stop_event)
+            runner = self._create_task_runner(state)
             self.runners.append(runner)
             runner.start()
 
         print(f"\nStarted {len(self.runners)} task runners")
+
+    def _create_task_runner(self, state: SandboxState) -> threading.Thread:
+        """Create task runner based on workflow type
+
+        Args:
+            state: Sandbox state for the runner
+
+        Returns:
+            Task runner thread (BrowserTaskRunner or CodingTaskRunner)
+        """
+        if self.config.workflow_type == "coding":
+            from .coding_task_runner import CodingTaskRunner
+
+            return CodingTaskRunner(state, self.config, self.stop_event)
+        else:
+            return BrowserTaskRunner(state, self.config, self.stop_event)
 
     def wait_all(self, timeout: float = 5.0) -> None:
         """Wait for all task threads to end"""

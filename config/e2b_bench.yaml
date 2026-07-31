@@ -1,5 +1,8 @@
 # config/e2b_bench.yaml
-# E2B Sandbox Batch Performance Test Configuration Template
+# E2B Sandbox Browser Benchmark Configuration Template
+#
+# This config controls browser workflow only.
+# For coding workflow, use config/e2b_coding_bench.yaml.
 
 # E2B SDK environment variables (replace with real credentials)
 e2b_env:
@@ -8,6 +11,9 @@ e2b_env:
   E2B_DOMAIN: "e2b.app"
   E2B_API_URL: "http://localhost:3000"
   E2B_HTTP_SSL: "false"
+
+# Workflow type — browser (default)
+workflow_type: "browser"
 
 # Sandbox configuration
 sandbox:

@@ -1,0 +1,107 @@
+# Coding Benchmark Template (Go) - E2B Sandbox for AI Coding Agent Memory Stress Testing
+#
+# Environment: Pure Go coding benchmark (NO browser/Chromium, NO agent tools,
+# NO resident dev server, NO production build step)
+#
+# Project: gohugoio/hugo (https://github.com/gohugoio/hugo)
+#   - 70k+ GitHub stars, Go static-site generator (large popular Go monorepo)
+#   - Real repo from the swe_bench_multilingual evaluation dataset
+#     (instance gohugoio__hugo-12768: GitHub Alert case-insensitivity)
+#   - Cloned at the instance base_commit so edits target the real source state.
+#   - Toolchain: Go (the toolchain an agent touches); stdlib-only verify scripts.
+#   - Pure Go, ARM64 compatible
+#
+# Trace-faithful loop (verified against a captured openclaw agent trajectory on
+# gohugoio/hugo): find -> read -> edit -> verify (write ad-hoc
+# /tmp/test_*.go + `go run`) -> git diff. The agent NEVER runs `go build ./...`
+# or `go test ./...`; verification is a transient `go run /tmp/test_alert.go`
+# process (Go compiler + execute, transient peak). Memory pressure comes from
+# N concurrent sandboxes' transient verify peaks overlapping.
+#
+# Go modules are NOT pre-downloaded. A real openclaw agent on hugo never runs
+# `go mod download` - the agent's verify step is a transient `go run
+# /tmp/test_*.go` whose ad-hoc script imports only the Go stdlib (no hugo
+# packages), so it compiles without the hugo module graph. Pre-fetching the
+# full module graph would be (a) NOT trace-faithful and (b) fragile behind
+# this corp network's self-signed-cert proxy (the hugo dependency tree pulls
+# cloud.google.com/go etc., whose checksum/proxy TLS the proxy MITMs).
+# Stays honest to the trace and avoids the network failure entirely.
+#
+# Build:  docker build -t ubuntu-coding-go-bench:24.04-linuxarm64 -f Dockerfile.coding-go .
+# Push:   HARBOR_IP=X bash push_to_harbor_coding_go.sh
+# Template: python3 build_e2b.py --server-ip X --harbor-ip X --alias openclaw-coding-go-v1 --image e2b-orchestration/ubuntu-coding-go-bench:custom
+
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/ubuntu:24.04-linuxarm64
+
+# Set environment variables to avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Configure proxy (empty by default, set via --build-arg if needed)
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ENV http_proxy=${HTTP_PROXY}
+ENV https_proxy=${HTTPS_PROXY}
+ENV HTTP_PROXY=${HTTP_PROXY}
+ENV HTTPS_PROXY=${HTTPS_PROXY}
+
+# Install Go toolchain (ARM64) and system packages
+# Hugo base_commit: 83235262d06a060bd22c168b3413903667b8aeb6 (instance
+# gohugoio__hugo-12768). Clone at that commit (shallow needs the commit fetch).
+#
+# SSL is skipped globally: the corp proxy presents a self-signed cert
+# ("Huawei Web Secure Internet Gateway CA"), so every TLS fetch (curl, git)
+# must bypass verification. ca-certificates is NOT installed - it is
+# useless here because the proxy MITMs with its own root that the system store
+# won't trust anyway. Instead we configure each tool to skip verification:
+#   - curl:     -k (insecure)
+#   - git:      http.sslVerify=false
+# Go itself needs no TLS config: the image never runs `go mod download`
+# (see header comment) - runtime `go run` of a stdlib-only verify script
+# compiles against the toolchain alone and never talks to a module proxy.
+#
+# The Go tarball is fetched from mirrors.aliyun.com - it serves the gzip
+# directly (HTTP 206, magic bytes 1f 8b), NO 302 redirect, NO auth (unlike
+# the Huawei Cloud mirror which requires account login). golang.google.cn
+# and USTC both 302-redirect to dl.google.com (the hop that crawled at
+# <6KB/s through the proxy and, with curl's default no-follow, produced a
+# 75-byte HTML body that broke `tar -xzf` with "not in gzip format"). The
+# fallback uses -L so it follows that redirect if aliyun is unreachable.
+RUN apt update && \
+    apt install -y --no-install-recommends curl xz-utils vim libgomp1 iproute2 net-tools gnupg git && \
+    cd /usr/local && \
+    ( curl -kL --connect-timeout 30 --retry 3 --retry-delay 3 \
+        -o go1.23.4.linux-arm64.tar.gz \
+        https://mirrors.aliyun.com/golang/go1.23.4.linux-arm64.tar.gz || \
+      curl -kL --connect-timeout 30 --retry 5 --retry-delay 3 \
+        -o go1.23.4.linux-arm64.tar.gz \
+        https://golang.google.cn/dl/go1.23.4.linux-arm64.tar.gz ) && \
+    tar -xzf go1.23.4.linux-arm64.tar.gz && \
+    rm -f go1.23.4.linux-arm64.tar.gz && \
+    ln -sf /usr/local/go/bin/go /usr/local/bin/go && \
+    ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt && \
+    go version && \
+    git config --global http.sslVerify false && \
+    apt clean && rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
+
+# --- Coding benchmark project: gohugoio/hugo (real swe_bench_multilingual repo) ---
+# Clone at the instance base_commit. The hugo module graph is intentionally NOT
+# downloaded (see header comment): our verify scripts import only the Go stdlib,
+# so `go run /tmp/bench_verify.go` compiles without it - matching the real
+# agent trajectory, which also never fetched the full dependency tree.
+RUN cd /opt && \
+    git clone https://github.com/gohugoio/hugo.git coding-bench && \
+    cd coding-bench && \
+    git checkout 83235262d06a060bd22c168b3413903667b8aeb6
+
+# Copy the manual testing helper script
+COPY bench_helper_go.sh /opt/coding-bench/bench_helper_go.sh
+RUN chmod +x /opt/coding-bench/bench_helper_go.sh
+
+# Unset proxy environment variables after build
+ENV http_proxy= \
+    https_proxy= \
+    HTTP_PROXY= \
+    HTTPS_PROXY=
+
+# Default command: keep container running for sandbox access
+CMD ["sleep", "infinity"]
