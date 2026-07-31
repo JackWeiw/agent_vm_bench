@@ -283,51 +283,89 @@ class _FakeSbx:
 
 
 class TestStepVerify(unittest.TestCase):
-    """Verify the trace-faithful _step_verify (write temp test file + run)."""
+    """Verify the trace-faithful multi-process _step_verify."""
 
-    def _make_runner(self, config):
+    def _make_runner(self, config, round_id=0):
         from e2b_bench.coding_task_runner import CodingRoundRunner
 
         state = SandboxState(sandbox_id=1, workflow_type="coding")
-        return CodingRoundRunner(state=state, config=config, stop_event=threading.Event(), round_id=0)
+        return CodingRoundRunner(state=state, config=config, stop_event=threading.Event(), round_id=round_id)
 
-    def test_verify_writes_temp_file_and_runs_npx_tsx(self):
-        """_step_verify writes /tmp/bench_verify.mjs and runs npx tsx in one command."""
-        config = Config(workflow_type="coding", coding_language="ts")
-        runner = self._make_runner(config)
+    def test_ts_verify_chains_n_write_run_in_one_command(self):
+        """ts verify with repeat=3 emits ONE commands.run chaining 3 cat>npx tsx pairs (&& fail-fast)."""
+        config = Config(workflow_type="coding", coding_language="ts", coding_verify_repeat=3)
+        runner = self._make_runner(config, round_id=0)
         sbx = _FakeSbx()
-        pair = {
-            "file": "packages/shared/src/general.ts",
-            "find": "x",
-            "replace": "y",
-            "verify_script": "console.log('All tests passed!')",
-        }
+        pair = {"file": "packages/shared/src/general.ts", "find": "x", "replace": "y"}
         ok, err, compile_only = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
         self.assertTrue(ok, err)
-        self.assertFalse(compile_only)  # verify_script path is a real assertion, not compile-only
-        # The single combined write+run command must contain both the heredoc
-        # write and the npx tsx run (mirrors the trace's combined write+run).
+        self.assertFalse(compile_only)  # pool entries have real assertions, not compile-only
+        # ONE commands.run call carrying all 3 chained write+run pairs.
         self.assertEqual(len(sbx.commands.calls), 1)
         cmd = sbx.commands.calls[0][0]
-        self.assertIn("cat > /tmp/bench_verify.mjs", cmd)
-        self.assertIn("npx tsx /tmp/bench_verify.mjs", cmd)
-        self.assertIn("console.log('All tests passed!')", cmd)
-        # ts has no pre-verify cache clear (tsx/esbuild re-transpiles every run).
+        self.assertEqual(cmd.count("cat > /tmp/bench_verify_"), 3)
+        self.assertEqual(cmd.count("npx tsx /tmp/bench_verify_"), 3)
+        # Distinct temp files (0/1/2), && fail-fast chaining.
+        self.assertIn("/tmp/bench_verify_0.mjs", cmd)
+        self.assertIn("/tmp/bench_verify_1.mjs", cmd)
+        self.assertIn("/tmp/bench_verify_2.mjs", cmd)
+        self.assertIn("&&", cmd)
+        # Each body imports compiler-core + baseParse (the agent's verify entry).
+        self.assertEqual(cmd.count("compiler-core/src/index.ts"), 3)
+        self.assertEqual(cmd.count("baseParse"), 3)
+        # ts has no pre-verify cache clear.
         self.assertNotIn("go clean", cmd)
 
-    def test_verify_go_profile_uses_go_run(self):
-        """go language: _step_verify runs `go clean -cache` then writes .go + `go run`, timed separately."""
-        config = Config(workflow_type="coding", coding_language="go", coding_verify_cmd="go run /tmp/bench_verify.go")
-        runner = self._make_runner(config)
+    def test_ts_verify_repeat_one_is_single_process(self):
+        """ts verify with repeat=1 emits one cat>npx tsx pair (no chain)."""
+        config = Config(workflow_type="coding", coding_language="ts", coding_verify_repeat=1)
+        runner = self._make_runner(config, round_id=0)
+        sbx = _FakeSbx()
+        pair = {"file": "packages/shared/src/general.ts", "find": "x", "replace": "y"}
+        ok, _err, _co = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
+        self.assertTrue(ok)
+        self.assertEqual(len(sbx.commands.calls), 1)
+        cmd = sbx.commands.calls[0][0]
+        self.assertEqual(cmd.count("cat > /tmp/bench_verify_"), 1)
+
+    def test_ts_verify_templates_offset_by_round(self):
+        """Round N picks a different N-subset of the pool (offset by round_id % pool_len)
+        so consecutive rounds don't repeat identical bytes."""
+        from e2b_bench.schemas import DEFAULT_VERIFY_TEMPLATES
+
+        config = Config(workflow_type="coding", coding_language="ts", coding_verify_repeat=2)
+        runner0 = self._make_runner(config, round_id=0)
+        runner1 = self._make_runner(config, round_id=1)
+        pair = {"file": "packages/shared/src/general.ts", "find": "x", "replace": "y"}
+        sbx0 = _FakeSbx()
+        sbx1 = _FakeSbx()
+        runner0._step_verify(sbx0, "/opt/coding-bench", pair, step_times={})
+        runner1._step_verify(sbx1, "/opt/coding-bench", pair, step_times={})
+        cmd0 = sbx0.commands.calls[0][0]
+        cmd1 = sbx1.commands.calls[0][0]
+        # Round 0 uses templates [0,1]; round 1 uses [1,2]. Different bytes.
+        self.assertIn(DEFAULT_VERIFY_TEMPLATES[0]["template"], cmd0)
+        self.assertNotIn(DEFAULT_VERIFY_TEMPLATES[2]["template"], cmd0)
+        self.assertIn(DEFAULT_VERIFY_TEMPLATES[1]["template"], cmd1)
+        self.assertNotIn(DEFAULT_VERIFY_TEMPLATES[0]["template"], cmd1)
+
+    def test_go_verify_unchanged_single_process(self):
+        """go verify: go clean -cache then ONE write+go run (no N-chain; go stays N=1
+        regardless of coding_verify_repeat - its cold-compile is already real load)."""
+        config = Config(
+            workflow_type="coding",
+            coding_language="go",
+            coding_verify_cmd="go run /tmp/bench_verify.go",
+            coding_verify_repeat=3,
+        )
+        runner = self._make_runner(config, round_id=0)
         sbx = _FakeSbx()
         pair = {"file": "markup/x.go", "find": "x", "replace": "y", "verify_script": "package main\nfunc main(){}"}
         step_times: dict = {}
         ok, _err, compile_only = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times=step_times)
         self.assertTrue(ok)
         self.assertFalse(compile_only)
-        # Two commands: the cache clear (call 0) then the write+run (call 1).
-        # The write+run stays a single newline-joined command (trace-faithful);
-        # only the cache clear is split out so its time is measured apart.
+        # Two commands: cache clear (call 0) then ONE write+go run (call 1) - no chain.
         self.assertEqual(len(sbx.commands.calls), 2)
         clean_cmd = sbx.commands.calls[0][0]
         verify_cmd = sbx.commands.calls[1][0]
@@ -335,38 +373,31 @@ class TestStepVerify(unittest.TestCase):
         self.assertIn("cat > /tmp/bench_verify.go", verify_cmd)
         self.assertIn("GOEOF", verify_cmd)
         self.assertIn("go run /tmp/bench_verify.go", verify_cmd)
-        # The cache-clear time lands in its own key, NOT in the `verify` key, so
-        # the `verify` number is clean compile pressure (not cleanup overhead).
+        # Only ONE go run (go ignores coding_verify_repeat).
+        self.assertEqual(verify_cmd.count("go run"), 1)
         self.assertIn("verify_clean", step_times)
         self.assertIn("verify", step_times)
-        # verify_clean must NOT be a CODING_STEP_ORDER member - the real trace
-        # has no cache-clear step, so it never appears in the step timing table.
         from e2b_bench.schemas import CODING_STEP_ORDER
 
         self.assertNotIn("verify_clean", CODING_STEP_ORDER)
 
     def test_verify_failure_returned(self):
-        """A non-zero exit code from the verify run is reported as failure."""
-        config = Config(workflow_type="coding", coding_language="ts")
-        runner = self._make_runner(config)
+        """A non-zero exit code from the chained verify run is reported as failure."""
+        config = Config(workflow_type="coding", coding_language="ts", coding_verify_repeat=3)
+        runner = self._make_runner(config, round_id=0)
         sbx = _FakeSbx(result=_FakeResult(exit_code=1, stdout="", stderr="boom"))
-        pair = {
-            "file": "packages/shared/src/general.ts",
-            "find": "x",
-            "replace": "y",
-            "verify_script": "console.log('x')",
-        }
-        ok, err, _compile_only = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
+        pair = {"file": "packages/shared/src/general.ts", "find": "x", "replace": "y"}
+        ok, err, _co = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
         self.assertFalse(ok)
         self.assertIn("verify failed", err)
         self.assertIn("exit_code=1", err)
 
-    def test_verify_compile_only_uses_shared_default(self):
-        """A pair marked verify: compile_only uses the shared default (compiler-core
-        + baseParse, no assertion) - the trace-faithful heaviest entry that runs
-        under bare npx tsx without hitting __TEST__."""
-        config = Config(workflow_type="coding", coding_language="ts")
-        runner = self._make_runner(config)
+    def test_verify_compile_only_label_preserved(self):
+        """A pair marked verify: compile_only still runs the N-chain but is labeled
+        compile_only (the pool's assertions are generic health checks, not tied to the
+        edited symbol - honestly labeled when the pair declares no assertable semantics)."""
+        config = Config(workflow_type="coding", coding_language="ts", coding_verify_repeat=3)
+        runner = self._make_runner(config, round_id=0)
         sbx = _FakeSbx()
         pair = {
             "file": "packages/reactivity/src/baseHandlers.ts",
@@ -376,90 +407,9 @@ class TestStepVerify(unittest.TestCase):
         }
         ok, _err, compile_only = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
         self.assertTrue(ok)
-        self.assertTrue(compile_only)  # honestly labeled compile-only
-        cmd = sbx.commands.calls[0][0]
-        # Default imports compiler-core (the agent's verify entry, the heaviest
-        # trace-faithful entry that avoids the __TEST__ reference path).
-        self.assertIn("packages/compiler-core/src/index.ts", cmd)
-        self.assertIn("baseParse", cmd)
-
-    def test_default_script_injects_agent_global_set(self):
-        """Default verify script injects the verbatim global set from the captured
-        openclaw trajectory (8 globals), and intentionally NOT __TEST__ (the agent
-        didn't either; pairs reaching compat/compatConfig.ts need their own
-        verify_script importing a __TEST__-free entry)."""
-        config = Config(workflow_type="coding", coding_language="ts")
-        runner = self._make_runner(config)
-        sbx = _FakeSbx()
-        pair = {
-            "file": "packages/reactivity/src/baseHandlers.ts",
-            "find": "x",
-            "replace": "y",
-            "verify": "compile_only",
-        }
-        runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
-        cmd = sbx.commands.calls[0][0]
-        for g in (
-            "__DEV__",
-            "__BROWSER__",
-            "__COMPAT__",
-            "__ESM_BUNDLER__",
-            "__FEATURE_OPTIONS_API__",
-            "__FEATURE_PROD_DEVTOOLS__",
-            "__FEATURE_SUSPENSE__",
-            "__RUNTIME_COMPILE__",
-        ):
-            self.assertIn(f"globalThis.{g}", cmd, f"agent global {g} must be injected")
-        self.assertNotIn("globalThis.__TEST__", cmd, "__TEST__ must NOT be injected")
-
-    def test_vue_pair_verify_script_uses_compiler_core_baseParse(self):
-        """The vue main-entry pair carries its own verify_script importing compiler-core
-        (the agent's verify entry) and running baseParse - NOT packages/vue/src/index.ts,
-        whose graph reaches compiler-dom/src/errors.ts -> ReferenceError: __TEST__ is not
-        defined (a build global intentionally not injected). It is a real assertion
-        (parsed tag check), so compile_only is False."""
-        config = Config(workflow_type="coding", coding_language="ts")
-        runner = self._make_runner(config)
-        sbx = _FakeSbx()
-        pair = {
-            "file": "packages/vue/src/index.ts",
-            "find": "// x",
-            "replace": "// x bench",
-            "verify_script": (
-                "globalThis.__DEV__ = true\n"
-                "import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {\n"
-                "  const ast = m.baseParse('<div>hi</div>', { parseMode: 'html' })\n"
-                "  if (ast.children[0].tag !== 'div') throw new Error('expected div')\n"
-                "  console.log('All tests passed!')\n"
-                "})\n"
-            ),
-        }
-        ok, _err, compile_only = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
-        self.assertTrue(ok)
-        self.assertFalse(compile_only)  # real assertion, not compile-only
-        cmd = sbx.commands.calls[0][0]
-        # Imports the __TEST__-free compiler-core parser, NOT the vue main entry
-        self.assertIn("packages/compiler-core/src/index.ts", cmd)
-        self.assertIn("baseParse", cmd)
-        self.assertNotIn("packages/vue/src/index.ts", cmd)
-
-    def test_verify_no_script_falls_back_to_shared_default(self):
-        """A pair with no verify_script and no verify: compile_only falls back to the
-        shared default verify script (the documented Go comment-append behavior) and is
-        honestly labeled compile-only - never fakes a Verify Success."""
-        config = Config(workflow_type="coding", coding_language="ts")
-        runner = self._make_runner(config)
-        sbx = _FakeSbx()
-        pair = {"file": "packages/reactivity/src/baseHandlers.ts", "find": "x", "replace": "y"}
-        ok, err, compile_only = runner._step_verify(sbx, "/opt/coding-bench", pair, step_times={})
-        self.assertTrue(ok, err)
-        # No per-pair assertion => reported as compile-only, not verify success.
         self.assertTrue(compile_only)
-        # The shared default verify script was written + run (single command).
-        self.assertEqual(len(sbx.commands.calls), 1)
         cmd = sbx.commands.calls[0][0]
-        self.assertIn("cat > /tmp/bench_verify.mjs", cmd)
-        self.assertIn("npx tsx /tmp/bench_verify.mjs", cmd)
+        self.assertEqual(cmd.count("cat > /tmp/bench_verify_"), 3)
 
 
 class TestStepFindLanguageAware(unittest.TestCase):
