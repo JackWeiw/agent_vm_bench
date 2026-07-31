@@ -53,7 +53,7 @@ Pages saved to `web_content/en.wikipedia.org/wiki/`.
 
 ```bash
 # Build the base image (ARM64)
-cd dockerfile_build
+cd dockerfile_build/browser
 docker build -t ubuntu-openclaw-chromium:24.04-linuxarm64 .
 
 # Or build for x86
@@ -63,7 +63,7 @@ docker build -f Dockerfile.x86 -t ubuntu-openclaw-chromium:24.04-linuxx86 .
 ### Step 3: Push to Harbor Registry
 
 ```bash
-cd dockerfile_build
+cd dockerfile_build/browser
 # Set Harbor IP (your E2B + Harbor server)
 HARBOR_IP=71.14.96.192 bash push_to_harbor.sh
 ```
@@ -73,7 +73,7 @@ Image pushed to `HARBOR_IP:2900/e2b-orchestration/ubuntu-openclaw-chromium:custo
 ### Step 4: Build E2B Template
 
 ```bash
-cd dockerfile_build
+cd dockerfile_build/browser
 # Build template from Harbor image (alias = template name for later use)
 python3 build_e2b.py --server-ip 71.14.96.192 --alias openclaw-browser-v1
 
@@ -93,7 +93,7 @@ numactl --cpunodebind=2,3 --membind=2,3 python3 -m http.server 8080
 
 ### Step 6: Modify Configuration
 
-Edit `config/e2b_bench.yaml` — update the template name and web server URL to match your setup:
+Edit `config/e2b/bench.yaml` — update the template name and web server URL to match your setup:
 
 ```yaml
 sandbox:
@@ -114,24 +114,24 @@ e2b_env:
 
 ```bash
 # Create sandboxes only (Phase 0 — left running for later use)
-python -m e2b_bench --config config/e2b_bench.yaml --create-only
+python -m e2b_bench --config config/e2b/bench.yaml --create-only
 
 # With sandbox ID persistence
-python -m e2b_bench --config config/e2b_bench.yaml --create-only --sandbox-ids-file sandboxs.txt
+python -m e2b_bench --config config/e2b/bench.yaml --create-only --sandbox-ids-file sandboxs.txt
 ```
 
 ### Step 8: Run Benchmark
 
 ```bash
 # Detect existing sandboxes and benchmark (fixed mode)
-python -m e2b_bench --config config/e2b_bench.yaml --detect
+python -m e2b_bench --config config/e2b/bench.yaml --detect
 
 # Round-robin mode (memory migration stress testing)
-python -m e2b_bench --config config/e2b_bench.yaml --detect -bm round_robin -rs 5 -rc 5
+python -m e2b_bench --config config/e2b/bench.yaml --detect -bm round_robin -rs 5 -rc 5
 
 # Warmup first, then benchmark
-python -m e2b_bench --config config/e2b_bench.yaml --detect --warmup-only  # Phase 1: warmup
-python -m e2b_bench --config config/e2b_bench.yaml --detect -bm round_robin  # Phase 2: benchmark
+python -m e2b_bench --config config/e2b/bench.yaml --detect --warmup-only  # Phase 1: warmup
+python -m e2b_bench --config config/e2b/bench.yaml --detect -bm round_robin  # Phase 2: benchmark
 ```
 
 ### Step 9: Delete Sandboxes
@@ -156,7 +156,7 @@ download_page.sh → docker build → push_to_harbor.sh → build_e2b.py → htt
      ↓                 ↓              ↓                 ↓            ↓
   Web pages     Docker image    Harbor registry    E2B template    Web server
                                                                        ↓
-                              config/e2b_bench.yaml (template + URL)
+                              config/e2b/bench.yaml (template + URL)
                                        ↓
                               --create-only → --detect → benchmark → delete_sandbox.sh
 ```
@@ -174,23 +174,23 @@ Browser automation performance testing in E2B Firecracker microVMs, with memory 
 pip install -r e2b_bench/requirements.txt
 
 # Full workflow (fixed mode)
-python -m e2b_bench --config config/e2b_bench.yaml
+python -m e2b_bench --config config/e2b/bench.yaml
 
 # Round-robin mode (memory migration stress testing)
-python -m e2b_bench --config config/e2b_bench.yaml \
+python -m e2b_bench --config config/e2b/bench.yaml \
     -bm round_robin -rs 5 -rc 5 -ri 5
 
 # Create sandboxes only (Phase 0)
-python -m e2b_bench --config config/e2b_bench.yaml --create-only
+python -m e2b_bench --config config/e2b/bench.yaml --create-only
 
 # Detect existing sandboxes and benchmark
-python -m e2b_bench --config config/e2b_bench.yaml --detect
+python -m e2b_bench --config config/e2b/bench.yaml --detect
 
 # Warmup only (multi-tab memory preheating)
-python -m e2b_bench --config config/e2b_bench.yaml --warmup-only
+python -m e2b_bench --config config/e2b/bench.yaml --warmup-only
 
 # Batch testing (matrix config)
-python -m e2b_bench --batch --matrix config/e2b_batch_matrix.yaml
+python -m e2b_bench --batch --matrix config/e2b/batch_matrix.yaml
 
 # Offline summary from existing results
 python -m e2b_bench --batch --offline --result-dir results/e2b/batch
@@ -234,8 +234,8 @@ python -m e2b_bench --batch --offline --result-dir results/e2b/batch
 | `e2b_bench/sandbox_manager.py` | Sandbox lifecycle (create, port check, NUMA bind) |
 | `e2b_bench/metrics_extractor.py` | Extract metrics from vm_monitor + browser reports |
 | `e2b_bench/report_aggregator.py` | Aggregate batch results into styled Excel |
-| `config/e2b_bench.yaml` | Single test configuration template |
-| `config/e2b_batch_matrix.yaml` | Batch test matrix |
+| `config/e2b/bench.yaml` | Single test configuration template |
+| `config/e2b/batch_matrix.yaml` | Batch test matrix |
 
 See [E2B Bench Usage Guide](docs/e2b-bench-usage.md) for details.
 
@@ -252,13 +252,13 @@ Browser automation performance testing in Docker containers.
 pip install -r docker_bench/requirements.txt
 
 # Run with config file
-python -m docker_bench --config config/docker_bench.yaml
+python -m docker_bench --config config/docker/docker_bench.yaml
 
 # Create containers only (Phase 0)
-python -m docker_bench --config config/docker_bench.yaml --create-only
+python -m docker_bench --config config/docker/docker_bench.yaml --create-only
 
 # Detect existing containers and benchmark
-python -m docker_bench --config config/docker_bench.yaml --detect
+python -m docker_bench --config config/docker/docker_bench.yaml --detect
 
 # Full CLI mode
 python -m docker_bench \
@@ -277,7 +277,7 @@ python -m docker_bench \
 | `docker_bench/container_manager.py` | Container lifecycle management |
 | `docker_bench/task_runner.py` | Browser task execution |
 | `docker_bench/stats_collector.py` | Statistics collection and reporting |
-| `config/docker_bench.yaml` | Configuration template |
+| `config/docker/docker_bench.yaml` | Configuration template |
 
 See [Docker Bench Usage Guide](docs/docker-bench-usage.md) for details.
 
@@ -289,10 +289,10 @@ See [Docker Bench Usage Guide](docs/docker-bench-usage.md) for details.
 
 ```bash
 # Preview tasks
-python3 batch_test_scheduler.py --config config/batch_config.yaml --dry-run
+python3 batch_test_scheduler.py --config config/openstack/batch_config.yaml --dry-run
 
 # Execute batch
-python3 batch_test_scheduler.py --config config/batch_config.yaml
+python3 batch_test_scheduler.py --config config/openstack/batch_config.yaml
 
 # Offline summary from existing results
 python3 batch_test_scheduler.py --offline --result-dir results
@@ -301,7 +301,7 @@ python3 batch_test_scheduler.py --offline --result-dir results
 ### Single Test
 
 ```bash
-python3 auto_vm_test.py --config config/test_config.yaml
+python3 auto_vm_test.py --config config/openstack/test_config_template.yaml
 ```
 
 ### Result Structure
