@@ -189,6 +189,14 @@ Round:     find  read  edit  verify(peak)  diff
 
 Customer-credibility: every step appears verbatim in a captured openclaw hugo trajectory. `go run` of a self-written temp test is the exact verification the agent used.
 
+## Decision 5 — Cold-compile guarantee: `go clean -cache` before every verify
+
+A wrinkle the Go toolchain introduces that JS/tsx does not: `go run` caches its compiled artifacts under `GOCACHE`. The first verify pays the full compile (~40% CPU); every later `go run` of an equivalent temp file hits that cache (~10% CPU). Left alone, round 0+ would show real compile pressure and rounds 1+ would collapse to cache hits — **not** the per-verify CPU shape a strong reviewer expects of a coding agent.
+
+The captured trace shows the agent running only `go run /tmp/test_alert.go`, never `go clean`. So the literal trace has no cache clear. But the trace is a *single captured verify*. In a real agent session on a hard issue, the agent rewrites its ad-hoc `/tmp/test_*.go` and re-runs `go run` repeatedly — each re-run is effectively a fresh compile (the temp file's import set is stable stdlib, but the agent's iteration is what the customer is benchmarking the *host* against). To reproduce that per-verify cold-compile pressure in the sandbox's round-robin, `go clean -cache` runs before every `go run` (warmup and every round).
+
+This is a behavior-faithful, not literally-literal, choice — the same honesty stance as the rest of this design. It is surfaced explicitly so a reviewer sees it rather than inferring cache hits are real agent behavior. JS/tsx needs no equivalent: esbuild re-transpiles every run, so `npx tsx` is already cold per verify. The mechanism is data-driven via a `pre_verify_cmd` field on `CodingLanguageProfile` (set only for go), so the runner stays generic and adding another cached-compile language later is one profile entry.
+
 ## Implementation order
 
 1. **JS redesign first** (companion doc) — simplify runner to `find → read → edit → verify → diff`, remove dev-server/build/test. This is the foundation Go reuses.

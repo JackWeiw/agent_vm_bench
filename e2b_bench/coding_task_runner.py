@@ -129,10 +129,12 @@ def _run_verify(sbx, project_dir: str, config: Config, pair: Dict[str, str]) -> 
         script_body = script_body.replace("{pkg}", pkg)
 
     eof = profile.heredoc_eof
-    # Single command: cd project, heredoc-write the temp test file, then run it.
-    # The write+run are newline-joined (not separate commands) to match the trace.
+    # Single command: (optional pre-verify cache clear for go), cd project,
+    # heredoc-write the temp test file, then run it. The write+run are
+    # newline-joined (not separate commands) to match the trace.
+    pre = f"{profile.pre_verify_cmd} && " if profile.pre_verify_cmd else ""
     cmd = (
-        f"cd {project_dir} && "
+        f"{pre}cd {project_dir} && "
         f"cat > {profile.temp_test_path} << '{eof}'\n"
         f"{script_body}"
         f"{eof}\n"

@@ -21,6 +21,16 @@
 #   imported package types). N sandboxes' staggered verify peaks overlapping
 #   -> host memory overcommit. No resident process.
 #
+# Cold-compile guarantee:
+#   `go clean -cache` runs before every `go run`. The Go toolchain caches
+#   compiled stdlib/packages under GOCACHE, so the first `go run` pays the full
+#   compile (~40% CPU) and every later run hits cache (~10%) - which would NOT
+#   reflect the real agent's per-verify CPU shape. The real openclaw agent never
+#   runs `go clean`, but within a single issue it repeatedly rewrites its ad-hoc
+#   /tmp/test_*.go and re-runs `go run`, i.e. each verify is effectively a fresh
+#   compile. Clearing the cache before each verify reproduces that per-verify
+#   cold-compile pressure (the behavior the customer needs to measure).
+#
 # Usage:
 #   bash bench_helper_go.sh                    # Round 0, all steps
 #   bash bench_helper_go.sh 3                  # Round 3, all steps
@@ -208,6 +218,10 @@ if [ "${SKIP_VERIFY}" = false ]; then
     printf '%s\n' "${SCRIPT_BODY}" > "${TEMP_TEST_PATH}"
 
     # Run the ad-hoc test via `go run` (transient: Go compiler + execute).
+    # Clear GOCACHE first so every verify is a real cold-compile (see header
+    # cold-compile guarantee) - otherwise the 2nd+ run hits cache (~10% CPU
+    # instead of ~40%), masking the real per-verify CPU pressure.
+    go clean -cache 2>/dev/null || true
     cd "${PROJECT_DIR}" && timeout "${VERIFY_TIMEOUT}" ${VERIFY_CMD} > /tmp/verify_output.log 2>&1
     VERIFY_EXIT=$?
     VERIFY_END=$(date +%s%N)

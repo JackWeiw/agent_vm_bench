@@ -207,6 +207,9 @@ class TestCodingLanguageProfiles(unittest.TestCase):
         self.assertEqual(p.heredoc_eof, "EOF")
         self.assertEqual(p.run_cmd, "npx tsx /tmp/bench_verify.mjs")
         self.assertIn("*.ts", p.source_find_names)
+        # js/tsx has no persistent compile cache (esbuild re-transpiles every
+        # run), so no pre-verify cache clear.
+        self.assertEqual(p.pre_verify_cmd, "")
 
     def test_go_profile(self):
         """go profile: go run verify, GOEOF heredoc, *.go glob."""
@@ -215,6 +218,10 @@ class TestCodingLanguageProfiles(unittest.TestCase):
         self.assertEqual(p.heredoc_eof, "GOEOF")
         self.assertEqual(p.run_cmd, "go run /tmp/bench_verify.go")
         self.assertIn("*.go", p.source_find_names)
+        # go caches compiled stdlib/packages under GOCACHE; clearing it before
+        # every verify forces a real cold-compile (the real agent rewrites its
+        # ad-hoc test and recompiles per verify, so per-verify is cold).
+        self.assertEqual(p.pre_verify_cmd, "go clean -cache")
 
     def test_unknown_language_falls_back_to_js(self):
         """An unregistered language falls back to the js profile."""
@@ -290,9 +297,11 @@ class TestStepVerify(unittest.TestCase):
         self.assertIn("cat > /tmp/bench_verify.mjs", cmd)
         self.assertIn("npx tsx /tmp/bench_verify.mjs", cmd)
         self.assertIn("console.log('All tests passed!')", cmd)
+        # js has no pre-verify cache clear (tsx/esbuild re-transpiles every run).
+        self.assertNotIn("go clean", cmd)
 
     def test_verify_go_profile_uses_go_run(self):
-        """go language: _step_verify writes .go and runs `go run`."""
+        """go language: _step_verify writes .go and runs `go run`, with a cold-compile cache clear first."""
         config = Config(workflow_type="coding", coding_language="go", coding_verify_cmd="go run /tmp/bench_verify.go")
         runner = self._make_runner(config)
         sbx = _FakeSbx()
@@ -304,6 +313,11 @@ class TestStepVerify(unittest.TestCase):
         self.assertIn("cat > /tmp/bench_verify.go", cmd)
         self.assertIn("GOEOF", cmd)
         self.assertIn("go run /tmp/bench_verify.go", cmd)
+        # Cold-compile guarantee: `go clean -cache` runs before the verify so
+        # every verify is a real cold-compile (not a GOCACHE hit). It must
+        # appear in the combined command before the heredoc write.
+        self.assertIn("go clean -cache", cmd)
+        self.assertLess(cmd.index("go clean -cache"), cmd.index("cat > /tmp/bench_verify.go"))
 
     def test_verify_failure_returned(self):
         """A non-zero exit code from the verify run is reported as failure."""

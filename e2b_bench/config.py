@@ -36,6 +36,20 @@ class CodingLanguageProfile:
             (["*.ts","*.tsx","*.js"] for js, ["*.go"] for go).
         checkout_paths: paths reset by `git checkout --` in the find step.
         default_verify_script: shared default body for pairs without their own.
+        pre_verify_cmd: optional command run before the verify write+run (empty
+            for languages with no persistent compile cache). Set for go to
+            `go clean -cache` so every verify is a real cold-compile: the Go
+            toolchain caches compiled stdlib/packages under GOCACHE, so the
+            first `go run` pays the full compile (40% CPU) and every later run
+            hits cache (10%) - which would NOT reflect the real agent's CPU
+            shape. The real openclaw agent never runs `go clean`, but within a
+            single issue it repeatedly rewrites its ad-hoc /tmp/test_*.go and
+            re-runs `go run`, i.e. each verify is effectively a fresh compile.
+            Clearing the cache before each sandbox verify reproduces that
+            per-verify cold-compile pressure (the behavior the customer needs
+            to see), even though the literal trace shows no `go clean`. js/tsx
+            has no equivalent persistent cache (esbuild re-transpiles every
+            run), so it stays empty.
     """
 
     temp_test_path: str
@@ -44,6 +58,7 @@ class CodingLanguageProfile:
     source_find_names: tuple = ()
     checkout_paths: str = ""
     default_verify_script: str = ""
+    pre_verify_cmd: str = ""
 
 
 def _find_name_clause(names: tuple) -> str:
@@ -78,6 +93,12 @@ CODING_LANGUAGE_PROFILES: Dict[str, CodingLanguageProfile] = {
         source_find_names=("*.go",),
         checkout_paths="markup/",
         default_verify_script=DEFAULT_CODING_VERIFY_SCRIPT_GO,
+        # Force a cold compile every verify (see pre_verify_cmd docstring): the
+        # Go toolchain's GOCACHE makes the first `go run` 40% CPU and every later
+        # one ~10% (cache hit). The real agent rewrites+recompiles its ad-hoc
+        # test per verify, so per-verify is cold. Clearing the cache reproduces
+        # that cold-compile CPU pressure the customer needs to measure.
+        pre_verify_cmd="go clean -cache",
     ),
 }
 

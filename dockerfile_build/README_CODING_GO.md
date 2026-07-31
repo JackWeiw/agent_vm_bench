@@ -33,6 +33,15 @@ The Python runner (`e2b_bench/coding_task_runner.py::_run_verify`) mirrors the
 trace's combined write+run as a **single** `commands.run`:
 `cd <project> && cat > /tmp/bench_verify.go << 'GOEOF' <body> GOEOF\n go run /tmp/bench_verify.go`.
 
+A `go clean -cache` runs before every `go run` (warmup and every round). The Go
+toolchain caches compiled stdlib/packages under `GOCACHE`, so without the clear
+the first verify is ~40% CPU and every later run is a cache hit (~10%) — not the
+per-verify cold-compile shape of a real coding agent (which rewrites and
+recompiles its ad-hoc test per verify). The cache clear reproduces that real
+per-verify cold pressure; it is surfaced explicitly so a reviewer does not
+mistake cache hits for agent behavior. JS/tsx needs no equivalent (esbuild
+re-transpiles every run).
+
 ## Memory pressure model
 
 ```
@@ -82,7 +91,8 @@ one registry entry + its default verify script — no runner code changes.
 | `heredoc_eof` | `EOF` | `GOEOF` |
 | `run_cmd` | `npx tsx /tmp/bench_verify.mjs` | `go run /tmp/bench_verify.go` |
 | `source_find_names` | `*.ts *.tsx *.js` | `*.go` |
-| `checkout_paths` | `packages/ src/` | `markup/` |
+| `checkout_paths` | `packages/` | `markup/` |
+| `pre_verify_cmd` | _(empty — esbuild re-transpiles every run)_ | `go clean -cache` |
 
 ## Build & push
 
