@@ -7,6 +7,7 @@ Preserves sandbox handle for subsequent task execution
 Ready detection strategy:
 - Browser workflow: Check ports 18789 (openclaw-gateway) + 11436 (llama-server)
 - Coding workflow: Execute 'uname -a' command and check for successful response
+- Document workflow: Execute the image asset/dependency validator
 """
 
 import os
@@ -101,6 +102,7 @@ class SandboxManager:
 
     def __init__(self, config: Config, stop_event: Event):
         self.config = config
+        self.config.validate()
         self.stop_event = stop_event
         self.sandbox_states: Dict[int, SandboxState] = {}
 
@@ -156,7 +158,7 @@ class SandboxManager:
             sandbox_id = i + 1
             e2b_sandbox_id = listed_sandbox.sandbox_id if hasattr(listed_sandbox, "sandbox_id") else str(listed_sandbox)
 
-            state = SandboxState(sandbox_id=sandbox_id)
+            state = SandboxState(sandbox_id=sandbox_id, workflow_type=self.config.workflow_type)
             self.sandbox_states[sandbox_id] = state
 
             print(f"\n[Sandbox{sandbox_id}] Connecting to E2B:{e2b_sandbox_id}...")
@@ -268,7 +270,7 @@ class SandboxManager:
             sandbox_id = i + 1
             e2b_sandbox_id = listed_sandbox.sandbox_id if hasattr(listed_sandbox, "sandbox_id") else str(listed_sandbox)
 
-            state = SandboxState(sandbox_id=sandbox_id)
+            state = SandboxState(sandbox_id=sandbox_id, workflow_type=self.config.workflow_type)
             self.sandbox_states[sandbox_id] = state
 
             print(f"\n[Sandbox{sandbox_id}] Connecting to E2B:{e2b_sandbox_id}...")
@@ -341,7 +343,11 @@ class SandboxManager:
 
             for i in range(start, end):
                 sandbox_id = i + 1
-                state = SandboxState(sandbox_id=sandbox_id, batch_id=batch_id)
+                state = SandboxState(
+                    sandbox_id=sandbox_id,
+                    batch_id=batch_id,
+                    workflow_type=self.config.workflow_type,
+                )
                 self.sandbox_states[sandbox_id] = state
                 future = executor.submit(self._create_single, state)
                 futures[future] = sandbox_id
@@ -429,14 +435,45 @@ class SandboxManager:
 
         - Browser workflow: Check ports 18789 + 11436
         - Coding workflow: Execute 'uname -a' command
+        - Document workflow: Execute document-bench-validate
 
         Returns: {'success': bool, 'wait_elapsed': float, 'error': str}
         """
         if self.config.workflow_type == "coding":
             return self._check_command_ready(state)
-        else:
-            # Default: browser workflow
+        if self.config.workflow_type == "document":
+            return self._check_document_ready(state)
+        if self.config.workflow_type == "browser":
             return self._check_ports(state)
+        raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
+
+    def _check_document_ready(self, state: SandboxState) -> Dict[str, any]:
+        """Validate immutable document runtime inputs without checking browser ports."""
+        sbx = state.sandbox_obj
+        if not sbx:
+            return {"success": False, "wait_elapsed": 0.0, "error": "No sandbox handle"}
+        if self.stop_event.is_set():
+            return {"success": False, "wait_elapsed": 0.0, "error": "Stop event"}
+
+        started = time.time()
+        try:
+            result = sbx.commands.run("document-bench-validate >/dev/null", timeout=60, user="root")
+        except Exception as exc:
+            return {
+                "success": False,
+                "wait_elapsed": time.time() - started,
+                "error": f"Document runtime validation failed: {exc}",
+            }
+        elapsed = time.time() - started
+        if result.exit_code == 0:
+            state.creation_metrics.port_ready_time = time.time()
+            return {"success": True, "wait_elapsed": elapsed, "error": ""}
+        detail = (getattr(result, "stderr", "") or getattr(result, "stdout", "") or "no output").strip()
+        return {
+            "success": False,
+            "wait_elapsed": elapsed,
+            "error": f"Document runtime validation failed: {detail[:200]}",
+        }
 
     def _check_command_ready(self, state: SandboxState) -> Dict[str, any]:
         """Check if sandbox is ready by executing a simple command.

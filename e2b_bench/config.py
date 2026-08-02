@@ -19,6 +19,25 @@ from .schemas import (
 )
 
 
+DOCUMENT_SCENE_LAYOUTS: Dict[str, Dict[str, str]] = {
+    "pdf": {
+        "seed_dir": "/opt/document-bench/pdf",
+        "workspace_dir": "/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01",
+    },
+    "xlsx": {
+        "seed_dir": "/opt/document-bench/xlsx",
+        "workspace_dir": "/root/.openclaw/workspace/tool-modeling/SUB-MEM-OFFICE-01",
+    },
+}
+
+
+def document_scene_layout(case_kind: str) -> Dict[str, str]:
+    try:
+        return DOCUMENT_SCENE_LAYOUTS[case_kind]
+    except KeyError:
+        raise ValueError("document.case_kind must be 'pdf' or 'xlsx'")
+
+
 @dataclass(frozen=True)
 class CodingLanguageProfile:
     """Per-language profile for the coding verify step.
@@ -226,7 +245,7 @@ class Config:
     vm_monitor_stress_file: str = "/dev/shm/e2b_benchmark_lock"
 
     # Workflow type selection: determines which runners, metrics, and reports to use
-    workflow_type: str = "browser"  # "browser" or "coding"
+    workflow_type: str = "browser"  # "browser", "coding", or "document"
 
     # Browser task
     browser_urls: List[str] = field(default_factory=lambda: ["http://192.168.110.10:8080/Weibo.html"])
@@ -267,6 +286,15 @@ class Config:
     coding_interval_min: float = 2.0  # Interval between coding tasks in fixed mode
     coding_interval_max: float = 10.0
 
+    # PDF/XLSX document task configuration. Recipe and sandbox paths are fixed
+    # by case_kind and intentionally are not Config fields.
+    document_case_kind: str = "xlsx"
+    document_operation_timeout: int = 900
+    document_recalc_timeout: int = 600
+    document_task_timeout: int = 1800
+    document_interval_min: float = 3.0
+    document_interval_max: float = 10.0
+
     # Warmup phase configuration
     warmup_urls: List[str] = field(default_factory=list)  # Warmup page URL list
     warmup_loops: int = 2  # Warmup loop count
@@ -298,6 +326,16 @@ class Config:
         task_batch = data.get("task_batch", {})
         browser = data.get("browser", {})
         coding = data.get("coding", {})
+        document = data.get("document", {})
+        forbidden_document_options = {
+            "operations_file",
+            "max_repair_attempts",
+            "workspace_dir",
+            "seed_dir",
+        } & set(document)
+        if forbidden_document_options:
+            options = ", ".join(sorted(forbidden_document_options))
+            raise ValueError(f"document options are fixed by case_kind and must be removed: {options}")
         test = data.get("test", {})
         report = data.get("report", {})
         smap_tool = data.get("smap_tool", {})
@@ -354,6 +392,12 @@ class Config:
             ),
             coding_interval_min=coding.get("interval_min", 2.0),
             coding_interval_max=coding.get("interval_max", 10.0),
+            document_case_kind=document.get("case_kind", "xlsx"),
+            document_operation_timeout=document.get("operation_timeout", 900),
+            document_recalc_timeout=document.get("recalc_timeout", 600),
+            document_task_timeout=document.get("task_timeout", 1800),
+            document_interval_min=document.get("interval_min", 3.0),
+            document_interval_max=document.get("interval_max", 10.0),
             test_duration=test.get("duration", 600),
             stats_interval=test.get("stats_interval", 10),
             output_dir=report.get("output_dir", "results/e2b"),
@@ -459,6 +503,20 @@ class Config:
             coding_verify_repeat=getattr(args, "coding_verify_repeat", None)
             if getattr(args, "coding_verify_repeat", None) is not None
             else yaml_config.coding_verify_repeat,
+            document_case_kind=getattr(args, "document_case_kind", None)
+            if getattr(args, "document_case_kind", None) is not None
+            else yaml_config.document_case_kind,
+            document_operation_timeout=getattr(args, "document_operation_timeout", None)
+            if getattr(args, "document_operation_timeout", None) is not None
+            else yaml_config.document_operation_timeout,
+            document_recalc_timeout=getattr(args, "document_recalc_timeout", None)
+            if getattr(args, "document_recalc_timeout", None) is not None
+            else yaml_config.document_recalc_timeout,
+            document_task_timeout=getattr(args, "document_task_timeout", None)
+            if getattr(args, "document_task_timeout", None) is not None
+            else yaml_config.document_task_timeout,
+            document_interval_min=yaml_config.document_interval_min,
+            document_interval_max=yaml_config.document_interval_max,
             test_duration=args.duration if args.duration is not None else yaml_config.test_duration,
             stats_interval=args.stats_interval if args.stats_interval is not None else yaml_config.stats_interval,
             output_dir=args.output_dir if args.output_dir is not None else yaml_config.output_dir,
@@ -518,7 +576,7 @@ class Config:
             round_interval=getattr(args, "round_interval", None)
             if getattr(args, "round_interval", None) is not None
             else 5,
-            workflow_type=getattr(args, "workflow_type", "browser"),
+            workflow_type=getattr(args, "workflow_type", None) or "browser",
             coding_project_dir=getattr(args, "coding_project_dir", "/opt/coding-bench"),
             coding_language=getattr(args, "coding_language", "ts"),
             coding_verify_cmd=get_coding_profile(getattr(args, "coding_language", "ts")).run_cmd,
@@ -534,6 +592,12 @@ class Config:
             ),
             coding_interval_min=2.0,
             coding_interval_max=10.0,
+            document_case_kind=getattr(args, "document_case_kind", None) or "xlsx",
+            document_operation_timeout=getattr(args, "document_operation_timeout", None) or 900,
+            document_recalc_timeout=getattr(args, "document_recalc_timeout", None) or 600,
+            document_task_timeout=getattr(args, "document_task_timeout", None) or 1800,
+            document_interval_min=3.0,
+            document_interval_max=10.0,
             test_duration=args.duration if args.duration is not None else 600,
             stats_interval=args.stats_interval if args.stats_interval is not None else 10,
             output_dir=args.output_dir if args.output_dir is not None else "results/e2b",
@@ -589,10 +653,35 @@ class Config:
         """
         return max(1, int(self.total_count * self.benchmark_percent))
 
+    @property
+    def document_seed_dir(self) -> str:
+        return document_scene_layout(self.document_case_kind)["seed_dir"]
+
+    @property
+    def document_workspace_dir(self) -> str:
+        return document_scene_layout(self.document_case_kind)["workspace_dir"]
+
     def validate(self) -> None:
         """Validate config values and raise errors for invalid settings.
 
         Called after construction to catch configuration mistakes early.
         """
+        if self.workflow_type not in {"browser", "coding", "document"}:
+            raise ValueError(f"Unsupported workflow_type: {self.workflow_type}")
         if self.round_size <= 0:
             raise ValueError(f"round_size must be > 0, got {self.round_size}")
+        if self.workflow_type == "document":
+            document_scene_layout(self.document_case_kind)
+            if self.document_operation_timeout <= 0:
+                raise ValueError("document.operation_timeout must be > 0")
+            if self.document_recalc_timeout <= 0:
+                raise ValueError("document.recalc_timeout must be > 0")
+            if (
+                self.document_case_kind == "xlsx"
+                and self.document_recalc_timeout >= self.document_operation_timeout
+            ):
+                raise ValueError("document.recalc_timeout must be lower than operation_timeout")
+            if self.document_task_timeout <= self.document_operation_timeout:
+                raise ValueError("document.task_timeout must be greater than operation_timeout")
+            if self.document_interval_min < 0 or self.document_interval_max < self.document_interval_min:
+                raise ValueError("document interval must satisfy 0 <= interval_min <= interval_max")

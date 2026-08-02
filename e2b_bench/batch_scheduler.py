@@ -13,7 +13,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -89,7 +89,13 @@ class GroupRunner:
         try:
             # 1. Create sandboxes
             self.stop_event = threading.Event()
-            self.sandbox_manager = SandboxManager(self._get_group_config(), self.stop_event)
+            group_config = self._get_group_config()
+            group_config.validate()
+            if group_config.workflow_type == "document":
+                from .document_task_runner import preflight_document
+
+                preflight_document(group_config)
+            self.sandbox_manager = SandboxManager(group_config, self.stop_event)
 
             print(f"\n[Phase 1] Creating {self.group.total_count} sandboxes...")
             self.sandbox_states = self.sandbox_manager.create_all()
@@ -115,11 +121,13 @@ class GroupRunner:
                     self._log("  WARN: smap_tool failed to start")
 
             # 3. Warmup (shared, once — browser needs warmup_urls, coding always warms up for dev server)
-            if self.config.warmup_urls or self.config.workflow_type == "coding":
+            if self.config.warmup_urls or self.config.workflow_type in {"coding", "document"}:
                 print("\n[Phase 2] Running warmup...")
                 task_manager = TaskManager(self._get_group_config(), self.sandbox_states, self.stop_event)
                 task_manager.start_warmup()
-                task_manager.wait_warmup()
+                _completed, failed = task_manager.wait_warmup()
+                if self.config.workflow_type == "document" and failed:
+                    raise RuntimeError(f"document warmup failed in {failed} sandbox(es)")
                 self._log("  Warmup completed")
 
             # 4. Run each task with different benchmark_percent
@@ -130,18 +138,50 @@ class GroupRunner:
 
                 self._run_single_task(task, idx)
                 results.append(task)
+                if self.config.workflow_type == "document" and not task.success:
+                    for remaining in self.group.tasks[idx + 1 :]:
+                        remaining.success = False
+                        remaining.error_msg = "Skipped after a failed document task"
+                        results.append(remaining)
+                    break
 
         except Exception as e:
             self._log(f"  ERROR: Group execution failed: {e}")
+            recorded = {id(task) for task in results}
             for task in self.group.tasks:
                 task.success = False
                 task.error_msg = str(e)
+                if id(task) not in recorded:
+                    results.append(task)
 
         finally:
             # 5. Cleanup
             self._cleanup()
 
         return results
+
+    @staticmethod
+    def _document_metric_totals(sandbox_states: Dict[int, SandboxState]) -> Tuple[int, int]:
+        """Return cumulative Document task and failure counts for delta tracking."""
+        return (
+            sum(state.document_metrics.total_tasks for state in sandbox_states.values()),
+            sum(state.document_metrics.failed_count for state in sandbox_states.values()),
+        )
+
+    @staticmethod
+    def _evaluate_document_task_delta(
+        baseline: Tuple[int, int], current: Tuple[int, int]
+    ) -> Tuple[bool, Optional[str]]:
+        """Evaluate only the Document results produced by the current BatchTask."""
+        total_delta = current[0] - baseline[0]
+        failed_delta = current[1] - baseline[1]
+        if total_delta < 0 or failed_delta < 0:
+            return False, "Document metric counters decreased during the batch task"
+        if total_delta == 0:
+            return False, "Document batch task completed without executing any document tasks"
+        if failed_delta > 0:
+            return False, f"Document batch task recorded {failed_delta}/{total_delta} failed document tasks"
+        return True, None
 
     def _run_single_task(self, task: BatchTask, task_idx: int) -> None:
         """Run a single benchmark task (modifies task in-place)"""
@@ -165,6 +205,10 @@ class GroupRunner:
         task_log(f"Starting task: {task.task_id}")
         task_log(f"  Result directory: {task_result_dir}")
 
+        stop_event = None
+        stats_collector = None
+        vm_monitor = None
+        document_baseline = None
         try:
             # Update config for this task
             task_config = self._get_task_config(task)
@@ -184,6 +228,24 @@ class GroupRunner:
                 "coding_project_dir": self.config.coding_project_dir if self.config.workflow_type == "coding" else None,
                 "coding_language": self.config.coding_language if self.config.workflow_type == "coding" else None,
                 "coding_verify_cmd": self.config.coding_verify_cmd if self.config.workflow_type == "coding" else None,
+                "document_case_kind": self.config.document_case_kind
+                if self.config.workflow_type == "document"
+                else None,
+                "document_operation_timeout": self.config.document_operation_timeout
+                if self.config.workflow_type == "document"
+                else None,
+                "document_recalc_timeout": self.config.document_recalc_timeout
+                if self.config.workflow_type == "document"
+                else None,
+                "document_task_timeout": self.config.document_task_timeout
+                if self.config.workflow_type == "document"
+                else None,
+                "document_interval_min": self.config.document_interval_min
+                if self.config.workflow_type == "document"
+                else None,
+                "document_interval_max": self.config.document_interval_max
+                if self.config.workflow_type == "document"
+                else None,
             }
             config_file = task_result_dir / f"config_{task.task_id}.yaml"
             with open(config_file, "w", encoding="utf-8") as f:
@@ -191,7 +253,6 @@ class GroupRunner:
             task_log(f"  Task config saved to: {config_file}")
 
             # Start vm_monitor (logs to task_result_dir/vm_monitor/)
-            vm_monitor = None
             if self.config.vm_monitor_enabled:
                 vm_monitor_log_dir = str(task_result_dir / "vm_monitor")
                 vm_monitor = VmMonitorManager(task_config, log_dir=vm_monitor_log_dir)
@@ -207,6 +268,8 @@ class GroupRunner:
 
             # Start task manager
             task_manager = TaskManager(task_config, self.sandbox_states, stop_event)
+            if task_config.workflow_type == "document":
+                document_baseline = self._document_metric_totals(self.sandbox_states)
 
             # Trigger vm_monitor sampling
             if vm_monitor:
@@ -233,6 +296,8 @@ class GroupRunner:
             # Stop
             stop_event.set()
             task_manager.wait_all(timeout=5)
+            if task_config.workflow_type == "document":
+                stats_collector._take_snapshot()
             stats_collector.stop()
             task_log("  Benchmark stopped")
 
@@ -258,11 +323,35 @@ class GroupRunner:
                 vm_monitor.stop()
                 task_log("  vm_monitor stopped")
 
-            # Mark success
-            task.success = True
-            task_log("  Task completed successfully")
+            # Mark success. Document runners report business failures through
+            # metrics rather than exceptions, so evaluate this task's metric
+            # delta instead of treating report generation as success.
+            if task_config.workflow_type == "document":
+                if document_baseline is None:
+                    raise RuntimeError("Document metric baseline was not initialized")
+                document_current = self._document_metric_totals(self.sandbox_states)
+                task.success, task.error_msg = self._evaluate_document_task_delta(
+                    document_baseline, document_current
+                )
+                if task.success:
+                    task_log("  Task completed successfully")
+                else:
+                    task_log(f"  ERROR: Task failed: {task.error_msg}")
+            else:
+                task.success = True
+                task.error_msg = None
+                task_log("  Task completed successfully")
 
         except Exception as e:
+            if stop_event is not None:
+                stop_event.set()
+            if stats_collector is not None:
+                stats_collector.stop()
+            if vm_monitor is not None:
+                try:
+                    vm_monitor.stop()
+                except Exception as cleanup_error:
+                    task_log(f"  WARN: vm_monitor cleanup failed: {cleanup_error}")
             task.success = False
             task.error_msg = str(e)
             task_log(f"  ERROR: Task failed: {e}")
@@ -328,6 +417,11 @@ class BatchScheduler:
 
         # Load template configuration
         self.template_config = Config.load_from_yaml(self.template_path)
+        self.template_config.validate()
+        if self.template_config.workflow_type == "document":
+            from .document_task_runner import preflight_document
+
+            preflight_document(self.template_config)
 
         # Apply output_dir to template config
         self.template_config.output_dir = self.output_dir
@@ -382,7 +476,7 @@ class BatchScheduler:
 
             # Check for failures
             failed = [t for t in results if not t.success]
-            if failed and not continue_on_failure:
+            if failed and (not continue_on_failure or self.template_config.workflow_type == "document"):
                 print("\nGroup failed, stopping (continue_on_failure=False)")
                 break
 
@@ -408,10 +502,16 @@ class BatchScheduler:
                     coding_metrics = self.metrics_extractor.extract_coding_metrics(task.report_file)
                     metrics.update(coding_metrics)
                     task.coding_metrics = coding_metrics
-                else:
+                elif self.template_config.workflow_type == "document":
+                    document_metrics = self.metrics_extractor.extract_document_metrics(task.report_file)
+                    metrics.update(document_metrics)
+                    task.document_metrics = document_metrics
+                elif self.template_config.workflow_type == "browser":
                     browser_metrics = self.metrics_extractor.extract_browser_metrics(task.report_file)
                     metrics.update(browser_metrics)
                     task.browser_metrics = browser_metrics
+                else:
+                    raise ValueError(f"Unsupported workflow_type: {self.template_config.workflow_type}")
 
             # Extract vm_monitor metrics
             if task.analysis_file:
@@ -540,6 +640,14 @@ def _extract_task_info(
 
     print(f"  Found: {task_id} (tc={total_count}, ratio={ratio}, bp={benchmark_percent})")
 
+    workflow_type = "browser"
+    if config_file:
+        try:
+            with open(config_file, encoding="utf-8") as handle:
+                workflow_type = (yaml.safe_load(handle) or {}).get("workflow_type", "browser")
+        except (OSError, yaml.YAMLError):
+            workflow_type = "browser"
+
     return {
         "task_id": task_id,
         "total_count": total_count,
@@ -550,6 +658,7 @@ def _extract_task_info(
         "analysis_file": analysis_file if has_analysis else None,
         "report_file": report_file if has_report else None,
         "success": success,
+        "workflow_type": workflow_type,
     }
 
 
@@ -602,10 +711,16 @@ def offline_summary(result_base_dir: str, output_path: str = None) -> str:
                 coding_metrics = metrics_extractor.extract_coding_metrics(task_info["report_file"])
                 if coding_metrics:
                     metrics.update(coding_metrics)
-            else:
+            elif workflow_type == "document":
+                document_metrics = metrics_extractor.extract_document_metrics(task_info["report_file"])
+                if document_metrics:
+                    metrics.update(document_metrics)
+            elif workflow_type == "browser":
                 browser_metrics = metrics_extractor.extract_browser_metrics(task_info["report_file"])
                 if browser_metrics:
                     metrics.update(browser_metrics)
+            else:
+                raise ValueError(f"Unsupported workflow_type: {workflow_type}")
 
         # Extract vm_monitor metrics
         if task_info["analysis_file"]:

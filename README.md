@@ -358,3 +358,36 @@ qemu_monitor.start_monitoring(duration_seconds=60, interval_seconds=3)
 fc_monitor = FirecrackerMonitor()
 fc_monitor.start_monitoring(duration_seconds=60, interval_seconds=3)
 ```
+
+## PDF/XLSX document benchmarks
+
+The two document cases share the `openclaw-document-v1` E2B template and the
+image under `dockerfile_build/document/`:
+
+The tokens, API key, and `http://localhost:3000` in
+`config/e2b/pdf_bench.yaml` and `config/e2b/xlsx_bench.yaml` are placeholders.
+For a remote E2B server, either edit a local YAML copy or override the connection
+settings on the CLI. The following Bash example reads secrets without echoing
+them to the terminal:
+
+```bash
+read -rsp "E2B access token: " DOCUMENT_E2B_ACCESS_TOKEN
+echo
+read -rsp "E2B API key: " DOCUMENT_E2B_API_KEY
+echo
+read -rp "E2B API URL (for example http://SERVER_IP:3000): " DOCUMENT_E2B_API_URL
+
+DOCUMENT_E2B_ARGS=(
+  --e2b-access-token "${DOCUMENT_E2B_ACCESS_TOKEN}"
+  --e2b-api-key "${DOCUMENT_E2B_API_KEY}"
+  --e2b-api-url "${DOCUMENT_E2B_API_URL}"
+  --e2b-http-ssl false
+  --e2b-domain e2b.app
+)
+
+# Run either or both cases as needed.
+python -m e2b_bench -c config/e2b/pdf_bench.yaml "${DOCUMENT_E2B_ARGS[@]}"
+python -m e2b_bench -c config/e2b/xlsx_bench.yaml "${DOCUMENT_E2B_ARGS[@]}"
+
+unset DOCUMENT_E2B_ACCESS_TOKEN DOCUMENT_E2B_API_KEY DOCUMENT_E2B_API_URL DOCUMENT_E2B_ARGS
+```

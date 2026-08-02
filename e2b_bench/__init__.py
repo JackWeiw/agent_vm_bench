@@ -16,6 +16,7 @@ from .report_aggregator import ReportAggregator
 from .schemas import (
     BatchTask,
     CodingMetrics,
+    DocumentMetrics,
     DEFAULT_CODING_SOURCE_FILES,
     SandboxState,
     SandboxStatus,
@@ -24,6 +25,7 @@ from .schemas import (
     BrowserMetrics,
 )
 from .coding_task_runner import CodingRoundRunner, CodingTaskRunner, CodingWarmupRunner
+from .document_task_runner import DocumentRoundRunner, DocumentTaskRunner, DocumentWarmupRunner
 from .task_generator import TaskGenerator, load_matrix_config
 from .helpers import wait_for_port_ready
 
@@ -36,6 +38,7 @@ __all__ = [
     "TaskMetricsBase",
     "BrowserMetrics",
     "CodingMetrics",
+    "DocumentMetrics",
     "DEFAULT_CODING_SOURCE_FILES",
     "wait_for_port_ready",
     "run_benchmark",
@@ -47,6 +50,9 @@ __all__ = [
     "CodingWarmupRunner",
     "CodingTaskRunner",
     "CodingRoundRunner",
+    "DocumentWarmupRunner",
+    "DocumentTaskRunner",
+    "DocumentRoundRunner",
     "load_matrix_config",
     "MetricsExtractor",
     "ReportAggregator",

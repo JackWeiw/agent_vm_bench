@@ -35,6 +35,14 @@ from .task_runner import TaskManager
 WARMUP_WAVE_SIZE = 100
 
 
+def _workflow_has_warmup(config: Config) -> bool:
+    if config.workflow_type == "browser":
+        return bool(config.warmup_urls)
+    if config.workflow_type in {"coding", "document"}:
+        return True
+    raise ValueError(f"Unsupported workflow_type: {config.workflow_type}")
+
+
 class SmapToolManager:
     """Manage smap_tool process lifecycle for memory migration monitoring"""
 
@@ -368,6 +376,14 @@ def run_benchmark(config: Config) -> dict:
     Returns:
         {'report': str, 'filepath': str}
     """
+    # Validate all host-side Document inputs before constructing a manager or
+    # connecting to any Sandbox.
+    config.validate()
+    if config.workflow_type == "document":
+        from .document_task_runner import preflight_document
+
+        preflight_document(config)
+
     # 1. Setup E2B environment variables
     config.setup_e2b_env()
 
@@ -396,6 +412,15 @@ def run_benchmark(config: Config) -> dict:
         print(f"  Verify cmd: {config.coding_verify_cmd}")
         print(f"  Source files: {len(config.coding_source_files)} files for round-robin")
         print(f"  Verify:     {'enabled' if not config.coding_skip_verify else 'skipped'}")
+    elif config.workflow_type == "document":
+        print(f"  Case:       {config.document_case_kind.upper()}")
+        print(f"  Workspace:  {config.document_workspace_dir}")
+        print(
+            f"  Timeouts:   operation={config.document_operation_timeout}s, "
+            f"recalc={config.document_recalc_timeout}s, task={config.document_task_timeout}s"
+        )
+    elif config.workflow_type != "browser":
+        raise ValueError(f"Unsupported workflow_type: {config.workflow_type}")
 
     # Batch config display
     if config.create_batch_size:
@@ -590,7 +615,7 @@ def run_benchmark(config: Config) -> dict:
     # Benchmark phase skips warmup - assumes sandboxes already warmed up
     task_manager = TaskManager(config, sandbox_states, stop_event)
 
-    if config.warmup_only and (config.warmup_urls or config.workflow_type == "coding"):
+    if config.warmup_only and _workflow_has_warmup(config):
         print("\n[Phase 2] Running warmup phase...")
 
         # Check if wave-based warmup is needed
@@ -739,7 +764,15 @@ def run_benchmark(config: Config) -> dict:
         print(f"  Total sandboxes: {ready_count}")
 
         round_robin_manager = RoundRobinTaskManager(config, sandbox_states, stop_event, stats_collector)
-        round_robin_manager.run()
+        try:
+            round_robin_manager.run()
+        except Exception:
+            if config.workflow_type == "document":
+                stop_event.set()
+                stats_collector.stop()
+                if not config.detect_existing:
+                    sandbox_manager.kill_all()
+            raise
     else:
         # Fixed mode (original behavior)
         benchmark_count = max(1, int(ready_count * config.benchmark_percent))
@@ -762,7 +795,15 @@ def run_benchmark(config: Config) -> dict:
     # 8. Stop all components
     print("\n[Phase 6] Stopping...")
     stop_event.set()
-    task_manager.wait_all(timeout=5)
+    try:
+        task_manager.wait_all(timeout=5)
+    except Exception:
+        stats_collector.stop()
+        if not config.detect_existing:
+            sandbox_manager.kill_all()
+        raise
+    if config.workflow_type == "document":
+        stats_collector._take_snapshot()
     stats_collector.stop()
 
     # Only kill if we created the sandboxes (not in detect mode)
@@ -822,9 +863,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # Workflow type selection
     parser.add_argument(
         "--workflow-type",
-        choices=["browser", "coding"],
+        choices=["browser", "coding", "document"],
         default=None,
-        help="Workflow type: 'browser' (default) or 'coding'",
+        help="Workflow type: 'browser' (default), 'coding', or 'document'",
     )
 
     # Browser task
@@ -847,6 +888,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="ts only: number of independent npx tsx processes per verify step (default 3; go ignores this)",
     )
+
+    # Document configuration. Recipe, seed and workspace paths are fixed by case kind.
+    parser.add_argument("--document-case-kind", choices=["pdf", "xlsx"], help="Document scene kind")
+    parser.add_argument("--document-operation-timeout", type=int, help="Document operation timeout seconds")
+    parser.add_argument("--document-recalc-timeout", type=int, help="LibreOffice recalculation timeout seconds")
+    parser.add_argument("--document-task-timeout", type=int, help="Complete document task timeout seconds")
 
     # Warmup configuration
     parser.add_argument("-w", "--warmup-url", type=str, action="append", help="Warmup page URL (can specify multiple)")
