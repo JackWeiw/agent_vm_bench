@@ -10,6 +10,7 @@ Ready detection strategy:
 - Document workflow: Execute the image asset/dependency validator
 """
 
+import math
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -448,31 +449,80 @@ class SandboxManager:
         raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
     def _check_document_ready(self, state: SandboxState) -> Dict[str, any]:
-        """Validate immutable document runtime inputs without checking browser ports."""
+        """Validate the document runtime, retrying transient command API failures.
+
+        A completed command with a non-zero exit code is a semantic image
+        validation failure and is returned immediately.  Exceptions raised
+        before a command result is available can occur while a newly-created
+        sandbox command service is still coming online, so those are retried
+        within the shared ready-check deadline.
+        """
         sbx = state.sandbox_obj
         if not sbx:
             return {"success": False, "wait_elapsed": 0.0, "error": "No sandbox handle"}
         if self.stop_event.is_set():
             return {"success": False, "wait_elapsed": 0.0, "error": "Stop event"}
 
-        started = time.time()
-        try:
-            result = sbx.commands.run("document-bench-validate >/dev/null", timeout=60, user="root")
-        except Exception as exc:
+        started = time.monotonic()
+        last_error = "document command service did not become ready"
+        seen_errors = set()
+
+        while time.monotonic() - started < READY_CHECK_MAX_WAIT:
+            if self.stop_event.is_set():
+                return {
+                    "success": False,
+                    "wait_elapsed": time.monotonic() - started,
+                    "error": "Stop event",
+                }
+
+            remaining = READY_CHECK_MAX_WAIT - (time.monotonic() - started)
+            command_timeout = max(1, min(60, math.ceil(remaining)))
+            try:
+                result = sbx.commands.run(
+                    "document-bench-validate >/dev/null",
+                    timeout=command_timeout,
+                    user="root",
+                )
+            except Exception as exc:
+                last_error = str(exc)
+                error_key = (type(exc).__name__, last_error[:80])
+                if error_key not in seen_errors:
+                    seen_errors.add(error_key)
+                    print(
+                        f"[Sandbox{state.sandbox_id}] Document ready check error: "
+                        f"{type(exc).__name__}: {last_error[:120]}"
+                    )
+                remaining = READY_CHECK_MAX_WAIT - (time.monotonic() - started)
+                if remaining <= 0:
+                    break
+                if self.stop_event.wait(min(READY_CHECK_INTERVAL, remaining)):
+                    return {
+                        "success": False,
+                        "wait_elapsed": time.monotonic() - started,
+                        "error": "Stop event",
+                    }
+                continue
+
+            elapsed = time.monotonic() - started
+            if result.exit_code == 0:
+                state.creation_metrics.port_ready_time = time.time()
+                return {"success": True, "wait_elapsed": elapsed, "error": ""}
+
+            # The validator ran, so this is an image/asset failure rather than
+            # transient command-service startup. Retrying would only hide the
+            # actionable validator output and delay failure reporting.
+            detail = (getattr(result, "stderr", "") or getattr(result, "stdout", "") or "no output").strip()
             return {
                 "success": False,
-                "wait_elapsed": time.time() - started,
-                "error": f"Document runtime validation failed: {exc}",
+                "wait_elapsed": elapsed,
+                "error": f"Document runtime validation failed: {detail[:200]}",
             }
-        elapsed = time.time() - started
-        if result.exit_code == 0:
-            state.creation_metrics.port_ready_time = time.time()
-            return {"success": True, "wait_elapsed": elapsed, "error": ""}
-        detail = (getattr(result, "stderr", "") or getattr(result, "stdout", "") or "no output").strip()
+
+        elapsed = time.monotonic() - started
         return {
             "success": False,
             "wait_elapsed": elapsed,
-            "error": f"Document runtime validation failed: {detail[:200]}",
+            "error": f"Timeout waiting for document runtime validation: {last_error[:200]}",
         }
 
     def _check_command_ready(self, state: SandboxState) -> Dict[str, any]:

@@ -337,6 +337,39 @@ class TestCheckReady:
             "document-bench-validate >/dev/null", timeout=60, user="root"
         )
 
+    def test_check_ready_document_retries_transient_command_error(self):
+        config = Config(workflow_type="document", document_case_kind="xlsx")
+        manager = SandboxManager(config, Event())
+        state = SandboxState(sandbox_id=1, workflow_type="document")
+        state.sandbox_obj = Mock()
+        state.sandbox_obj.commands.run.side_effect = [
+            RuntimeError("command service unavailable"),
+            Mock(exit_code=0, stdout="", stderr=""),
+        ]
+
+        with patch("e2b_bench.sandbox_manager.READY_CHECK_INTERVAL", 0):
+            result = manager._check_document_ready(state)
+
+        assert result["success"] is True
+        assert state.sandbox_obj.commands.run.call_count == 2
+
+    def test_check_ready_document_does_not_retry_validator_failure(self):
+        config = Config(workflow_type="document", document_case_kind="pdf")
+        manager = SandboxManager(config, Event())
+        state = SandboxState(sandbox_id=1, workflow_type="document")
+        state.sandbox_obj = Mock()
+        state.sandbox_obj.commands.run.return_value = Mock(
+            exit_code=1,
+            stdout="",
+            stderr="missing document assets",
+        )
+
+        result = manager._check_document_ready(state)
+
+        assert result["success"] is False
+        assert "missing document assets" in result["error"]
+        state.sandbox_obj.commands.run.assert_called_once()
+
     def test_check_ready_rejects_unknown_workflow(self):
         with pytest.raises(ValueError, match="Unsupported workflow_type"):
             SandboxManager(Config(workflow_type="unknown"), Event())
