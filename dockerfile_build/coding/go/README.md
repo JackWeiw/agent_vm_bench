@@ -109,9 +109,13 @@ cd dockerfile_build/coding/go
 
 # Build the Go coding image
 docker build -t ubuntu-coding-go-bench:24.04-linuxarm64 -f Dockerfile .
+# x86_64 build
+docker build -t ubuntu-coding-go-bench:24.04-x86_64 -f Dockerfile.x86 .
 
 # Push to Harbor + install E2B-required system packages
 HARBOR_IP=X bash push_to_harbor.sh
+# For x86_64, set ARCH=x86 (default is arm)
+ARCH=x86 HARBOR_IP=X bash push_to_harbor.sh
 
 # Build the E2B template (alias is free-form; no code registration needed)
 python3 ../../build_e2b.py --server-ip X --harbor-ip X \

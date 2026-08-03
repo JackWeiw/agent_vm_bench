@@ -67,6 +67,11 @@ Or run directly with parameters:
 PROXY=http://your-proxy:8888 HARBOR_IP=192.168.1.100 ./push_to_harbor.sh
 ```
 
+For x86_64, set `ARCH=x86` (the default is `arm`):
+```bash
+ARCH=x86 HARBOR_IP=192.168.1.100 ./push_to_harbor.sh
+```
+
 ### Step 3: Build E2B Template
 
 The shared `build_e2b.py` lives one directory up (it is shared with the `coding/` flows):

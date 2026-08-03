@@ -1,12 +1,37 @@
 #!/bin/bash
 # Script to prepare and push the base image for E2B template
 # This script installs necessary components and pushes to Harbor registry
+#
+# Usage: HARBOR_IP=X bash push_to_harbor.sh                 # arm (default)
+#        ARCH=x86 HARBOR_IP=X bash push_to_harbor.sh        # x86_64
 
 set -e
 
 # Configuration - modify these values
 PROXY="${PROXY:-http://90.255.211.160:8888}"  # Proxy server address
 HARBOR_IP="${HARBOR_IP:-localhost}"           # Harbor registry IP address
+
+# Architecture: "arm" (default) builds from Dockerfile (linuxarm64 tag);
+#               "x86"   builds from Dockerfile.x86 (x86_64 tag).
+ARCH="${ARCH:-arm}"
+case "${ARCH}" in
+    arm)
+        TAG_SUFFIX="linuxarm64"
+        DOCKERFILE="Dockerfile"
+        WEBSOCAT_ASSET="websocat.aarch64-unknown-linux-musl" ;;
+    x86)
+        TAG_SUFFIX="x86_64"
+        DOCKERFILE="Dockerfile.x86"
+        WEBSOCAT_ASSET="websocat.x86_64-unknown-linux-musl" ;;
+    *)
+        echo "ERROR: ARCH must be 'arm' or 'x86', got: ${ARCH}" >&2
+        exit 1 ;;
+esac
+
+# Image names (the Harbor-side tag is arch-neutral — overwritten per build)
+BASE_IMAGE="ubuntu-openclaw-chromium:24.04-${TAG_SUFFIX}"
+CUSTOM_IMAGE="ubuntu-openclaw-chromium:custom"
+HARBOR_IMAGE="e2b-orchestration/ubuntu-openclaw-chromium:custom"
 
 # Color output (requires echo -e to interpret escape sequences)
 RED='\033[0;31m'
@@ -28,12 +53,12 @@ log_error() {
 
 # Check if base image exists
 check_base_image() {
-    if ! docker images ubuntu-openclaw-chromium:24.04-linuxarm64 --format "{{.Repository}}" | grep -q "ubuntu-openclaw-chromium"; then
-        log_error "Base image ubuntu-openclaw-chromium:24.04-linuxarm64 not found!"
-        log_info "Please build it first with: cd dockerfile_build/browser && docker build -t ubuntu-openclaw-chromium:24.04-linuxarm64 ."
+    if ! docker images "${BASE_IMAGE}" --format "{{.Repository}}" | grep -q "ubuntu-openclaw-chromium"; then
+        log_error "Base image ${BASE_IMAGE} not found!"
+        log_info "Please build it first with: cd dockerfile_build/browser && docker build -t ${BASE_IMAGE} -f ${DOCKERFILE} ."
         exit 1
     fi
-    log_info "Base image found: ubuntu-openclaw-chromium:24.04-linuxarm64"
+    log_info "Base image found: ${BASE_IMAGE}"
 }
 
 # Clean up any existing temp container
@@ -45,7 +70,7 @@ cleanup_temp_container() {
 # Start temporary container
 start_temp_container() {
     log_info "Starting temporary container..."
-    docker run -d --name temp-image ubuntu-openclaw-chromium:24.04-linuxarm64
+    docker run -d --name temp-image "${BASE_IMAGE}"
     log_info "Container started successfully"
 }
 
@@ -76,7 +101,7 @@ install_components() {
         "export http_proxy=${PROXY}; \
          export https_proxy=\$http_proxy; \
          wget --no-check-certificate -O /usr/local/bin/websocat \
-         http://github.com/vi/websocat/releases/latest/download/websocat.aarch64-unknown-linux-musl && \
+         http://github.com/vi/websocat/releases/latest/download/${WEBSOCAT_ASSET} && \
          chmod a+x /usr/local/bin/websocat && \
          /usr/local/bin/websocat --version"
 
@@ -92,8 +117,8 @@ export_container() {
     log_info "Stopping and exporting container..."
     docker stop temp-image
 
-    log_info "Importing as new image ubuntu-openclaw-chromium:custom..."
-    docker export temp-image | docker import - ubuntu-openclaw-chromium:custom
+    log_info "Importing as new image ${CUSTOM_IMAGE}..."
+    docker export temp-image | docker import - "${CUSTOM_IMAGE}"
 
     log_info "Cleaning up temporary container..."
     docker rm -f temp-image
@@ -104,9 +129,9 @@ push_to_harbor() {
     log_info "Tagging and pushing to Harbor registry..."
     log_info "Harbor IP: ${HARBOR_IP}"
 
-    IMAGE_NAME="${HARBOR_IP}:2900/e2b-orchestration/ubuntu-openclaw-chromium:custom"
+    IMAGE_NAME="${HARBOR_IP}:2900/${HARBOR_IMAGE}"
 
-    docker tag ubuntu-openclaw-chromium:custom "${IMAGE_NAME}"
+    docker tag "${CUSTOM_IMAGE}" "${IMAGE_NAME}"
 
     log_info "Pushing image to Harbor: ${IMAGE_NAME}"
     docker push "${IMAGE_NAME}"
