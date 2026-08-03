@@ -73,8 +73,7 @@ def collect_features(workbook_path: Path) -> dict[str, Any]:
             "formulas": formulas,
             "scenario_default": executive["B12"].value,
             "scenario_dropdown_ranges": [
-                str(validation.sqref)
-                for validation in executive.data_validations.dataValidation
+                str(validation.sqref) for validation in executive.data_validations.dataValidation
             ],
             "charts": charts,
             "chart_count": sum(len(items) for items in charts.values()),

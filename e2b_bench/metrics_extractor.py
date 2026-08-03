@@ -483,8 +483,7 @@ class MetricsExtractor:
             )
             if timing:
                 step_pattern = (
-                    r"^\s*((?:XLSX|PDF)-K\d{2}(?:-[a-z0-9_]+)?)\s+"
-                    r"(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)"
+                    r"^\s*((?:XLSX|PDF)-K\d{2}(?:-[a-z0-9_]+)?)\s+" r"(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)"
                 )
                 for match in re.finditer(step_pattern, timing.group(1), re.MULTILINE):
                     step = normalize_document_step_id(match.group(1))

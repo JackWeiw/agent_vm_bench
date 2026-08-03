@@ -80,10 +80,7 @@ def count_formulas(workbook: Any) -> int:
         if sheet.title == "Raw_Sample":
             continue
         for row in sheet.iter_rows():
-            total += sum(
-                isinstance(cell.value, str) and cell.value.startswith("=")
-                for cell in row
-            )
+            total += sum(isinstance(cell.value, str) and cell.value.startswith("=") for cell in row)
     return total
 
 
@@ -107,8 +104,7 @@ def verify_formula_workbook(
             checks,
             failures,
             "raw_sample_preserved",
-            workbook["Raw_Sample"].max_row >= 100_001
-            and workbook["Raw_Sample"].max_column >= 25,
+            workbook["Raw_Sample"].max_row >= 100_001 and workbook["Raw_Sample"].max_column >= 25,
             {
                 "rows": workbook["Raw_Sample"].max_row,
                 "columns": workbook["Raw_Sample"].max_column,
@@ -123,10 +119,7 @@ def verify_formula_workbook(
             all(isinstance(value, str) and value.startswith("=") for value in formulas.values()),
             formulas,
         )
-        cross_sheet = {
-            cell: executive[cell].value
-            for cell in ("B5", "B6", "B7", "B8")
-        }
+        cross_sheet = {cell: executive[cell].value for cell in ("B5", "B6", "B7", "B8")}
         add_check(
             checks,
             failures,
@@ -181,12 +174,7 @@ def verify_formula_workbook(
             len(executive.conditional_formatting) >= 2,
             len(executive.conditional_formatting),
         )
-        comment_cells = [
-            cell.coordinate
-            for row in executive.iter_rows()
-            for cell in row
-            if cell.comment is not None
-        ]
+        comment_cells = [cell.coordinate for row in executive.iter_rows() for cell in row if cell.comment is not None]
         add_check(
             checks,
             failures,
@@ -239,8 +227,7 @@ def verify_cached_values(
         values = {cell: executive[cell].value for cell in FORMULA_CELLS}
         numeric_cells = ("B5", "B6", "B7", "B8", "B13", "B14", "B15", "B16")
         numeric_ok = all(
-            isinstance(values[cell], (int, float)) and math.isfinite(float(values[cell]))
-            for cell in numeric_cells
+            isinstance(values[cell], (int, float)) and math.isfinite(float(values[cell])) for cell in numeric_cells
         )
         add_check(checks, failures, "cached_numeric_values", numeric_ok, values)
         add_check(

@@ -56,10 +56,12 @@ def test_document_configs_are_isolated_and_loadable():
 @pytest.mark.parametrize("forbidden", ["operations_file", "max_repair_attempts"])
 def test_document_yaml_rejects_host_recipe_overrides(forbidden):
     with pytest.raises(ValueError, match="fixed by case_kind"):
-        Config._from_dict({
-            "workflow_type": "document",
-            "document": {"case_kind": "pdf", forbidden: "forbidden"},
-        })
+        Config._from_dict(
+            {
+                "workflow_type": "document",
+                "document": {"case_kind": "pdf", forbidden: "forbidden"},
+            }
+        )
 
 
 def test_document_derived_paths_do_not_enter_config_dict():

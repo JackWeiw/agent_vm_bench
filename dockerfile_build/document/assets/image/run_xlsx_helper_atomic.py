@@ -50,9 +50,7 @@ def main() -> int:
         raise FileNotFoundError(f"input report does not exist: {report}")
 
     report.parent.mkdir(parents=True, exist_ok=True)
-    report_fd, temporary_name = tempfile.mkstemp(
-        prefix=f".{report.stem}.", suffix=report.suffix, dir=report.parent
-    )
+    report_fd, temporary_name = tempfile.mkstemp(prefix=f".{report.stem}.", suffix=report.suffix, dir=report.parent)
     os.close(report_fd)
     temporary_report = Path(temporary_name)
     temporary_helper: Path | None = None

@@ -42,7 +42,7 @@ def get_document_operations_path(case_kind: str) -> Path:
     try:
         return REPO_ROOT / DOCUMENT_OPERATIONS_FILES[case_kind]
     except KeyError:
-        raise SceneRecipeError("document case_kind must be 'pdf' or 'xlsx'")
+        raise SceneRecipeError("document case_kind must be 'pdf' or 'xlsx'") from None
 
 
 def load_scene_recipe(expected_case_kind: str) -> Dict[str, Any]:
@@ -55,9 +55,7 @@ def load_scene_recipe(expected_case_kind: str) -> Dict[str, Any]:
     if recipe.get("schema_version") != "scene-key-operations-v2":
         raise SceneRecipeError(f"unsupported recipe schema in {recipe_path}")
     if recipe.get("case_kind") != expected_case_kind:
-        raise SceneRecipeError(
-            f"recipe case_kind={recipe.get('case_kind')!r}, expected {expected_case_kind!r}"
-        )
+        raise SceneRecipeError(f"recipe case_kind={recipe.get('case_kind')!r}, expected {expected_case_kind!r}")
 
     operations = recipe.get("key_operations")
     if not isinstance(operations, list) or not operations:
@@ -134,9 +132,7 @@ class DocumentOperationExecutor:
 
     def _check_cancelled(self) -> None:
         if self.deadline is not None and time.monotonic() >= self.deadline:
-            raise DocumentTaskTimeout(
-                f"document task exceeded {self.config.document_task_timeout} seconds"
-            )
+            raise DocumentTaskTimeout(f"document task exceeded {self.config.document_task_timeout} seconds")
 
     def _command_timeout(self, maximum: int) -> int:
         self._check_cancelled()
@@ -189,7 +185,11 @@ class DocumentOperationExecutor:
             return verified, time.perf_counter() - started, step_times, False, detail
         except Exception as exc:
             message = str(exc)
-            timed_out = isinstance(exc, DocumentTaskTimeout) or "timed out" in message.lower() or "context deadline exceeded" in message.lower()
+            timed_out = (
+                isinstance(exc, DocumentTaskTimeout)
+                or "timed out" in message.lower()
+                or "context deadline exceeded" in message.lower()
+            )
             return False, time.perf_counter() - started, step_times, timed_out, message
         finally:
             self.deadline = None
@@ -220,9 +220,7 @@ class DocumentOperationExecutor:
         elif function_name == "write":
             path = arguments["path"]
             parent = shlex.quote(posixpath.dirname(path))
-            created = sbx.commands.run(
-                f"mkdir -p {parent}", timeout=self._command_timeout(30), user="root"
-            )
+            created = sbx.commands.run(f"mkdir -p {parent}", timeout=self._command_timeout(30), user="root")
             if created.exit_code != 0:
                 return False, self._result_error("create write directory", created)
             sbx.files.write(
@@ -254,8 +252,7 @@ class DocumentOperationExecutor:
         return (
             self.config.document_case_kind == "xlsx"
             and DOCUMENT_MAX_REPAIR_ATTEMPTS[self.config.document_case_kind] > 0
-            and operation_id
-            in {"XLSX-K07-validate_workbook", "XLSX-K10-verify_business_rules"}
+            and operation_id in {"XLSX-K07-validate_workbook", "XLSX-K10-verify_business_rules"}
             and "XLSX-K08-repair_workbook" in self.operations
         )
 
@@ -286,7 +283,7 @@ class DocumentOperationExecutor:
         report = posixpath.join(self.config.document_workspace_dir, "output", "business_verification.json")
         report_q = shlex.quote(report)
         command = (
-            "python3 -c \"import json,sys; d=json.load(open(sys.argv[1])); "
+            'python3 -c "import json,sys; d=json.load(open(sys.argv[1])); '
             "sys.exit(0 if d.get('status') == 'success' and not d.get('failures') else 1)\" "
             f"{report_q}"
         )

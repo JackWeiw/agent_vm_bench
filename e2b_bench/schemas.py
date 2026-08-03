@@ -69,8 +69,7 @@ DOCUMENT_PDF_STEP_ORDER = [
     "PDF-K14-check_deliverables",
 ]
 DOCUMENT_LEGACY_STEP_IDS = {
-    "-".join(step_id.split("-", 2)[:2]): step_id
-    for step_id in DOCUMENT_PDF_STEP_ORDER + DOCUMENT_XLSX_STEP_ORDER
+    "-".join(step_id.split("-", 2)[:2]): step_id for step_id in DOCUMENT_PDF_STEP_ORDER + DOCUMENT_XLSX_STEP_ORDER
 }
 
 
@@ -91,6 +90,7 @@ def get_step_order(workflow_type: str, document_case_kind: str = "xlsx") -> List
     if workflow_type == "browser":
         return BROWSER_STEP_ORDER
     raise ValueError(f"Unsupported workflow_type: {workflow_type}")
+
 
 # Default replacement pairs for the vuejs/core coding benchmark.
 # Single definition - referenced by Config dataclass default, _from_dict,

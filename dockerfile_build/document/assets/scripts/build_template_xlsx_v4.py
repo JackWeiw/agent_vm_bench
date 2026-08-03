@@ -31,16 +31,12 @@ print(f"Shape: {raw.shape} ({total_input:,} rows)", flush=True)
 
 print("Reading zone lookup...", flush=True)
 zones = pd.read_csv(f"{INPUT}/taxi_zone_lookup.csv")
-zone_map = zones.set_index("LocationID")[["Borough", "Zone", "service_zone"]].to_dict(
-    "index"
-)
+zone_map = zones.set_index("LocationID")[["Borough", "Zone", "service_zone"]].to_dict("index")
 
 print("Cleaning data...", flush=True)
 df = raw.copy()
 df["tpep_pickup_datetime"] = pd.to_datetime(df["tpep_pickup_datetime"], errors="coerce")
-df["tpep_dropoff_datetime"] = pd.to_datetime(
-    df["tpep_dropoff_datetime"], errors="coerce"
-)
+df["tpep_dropoff_datetime"] = pd.to_datetime(df["tpep_dropoff_datetime"], errors="coerce")
 
 mask = df["tpep_pickup_datetime"].notna() & df["tpep_dropoff_datetime"].notna()
 mask &= df["tpep_pickup_datetime"] >= pd.Timestamp("2024-01-01")
@@ -65,9 +61,7 @@ print(f"After initial filter: {n1:,} ({total_input - n1} removed)", flush=True)
 df["pickup_date"] = df["tpep_pickup_datetime"].dt.date
 df["pickup_hour"] = df["tpep_pickup_datetime"].dt.hour
 df["pickup_weekday"] = df["tpep_pickup_datetime"].dt.dayofweek
-df["trip_duration_min"] = (
-    df["tpep_dropoff_datetime"] - df["tpep_pickup_datetime"]
-).dt.total_seconds() / 60.0
+df["trip_duration_min"] = (df["tpep_dropoff_datetime"] - df["tpep_pickup_datetime"]).dt.total_seconds() / 60.0
 df = df[df["trip_duration_min"].between(0, 360)].copy()
 n2 = len(df)
 print(f"After duration filter: {n2:,} ({n1 - n2} removed)", flush=True)
@@ -586,9 +580,7 @@ for ci, lm in [
     (4, f"=SUM(D2:D{ze})"),
     (5, f"=SUM(E2:E{ze})"),
 ]:
-    ws4.cell(row=ztr, column=ci, value=lm).number_format = (
-        usd_fmt if ci > 2 else int_fmt
-    )
+    ws4.cell(row=ztr, column=ci, value=lm).number_format = usd_fmt if ci > 2 else int_fmt
 ws4.cell(row=ztr, column=9, value=1).number_format = pct_fmt
 ws4.auto_filter.ref = f"A1:{get_column_letter(len(h4))}{ze}"
 ws4.freeze_panes = "A2"
@@ -622,9 +614,7 @@ for ci, lm in [
     (4, f"=SUM(D2:D{pe})"),
     (5, f"=SUM(E2:E{pe})"),
 ]:
-    ws5.cell(row=ptr, column=ci, value=lm).number_format = (
-        usd_fmt if ci > 2 else int_fmt
-    )
+    ws5.cell(row=ptr, column=ci, value=lm).number_format = usd_fmt if ci > 2 else int_fmt
 ws5.cell(row=ptr, column=8, value=1).number_format = pct_fmt
 ws5.auto_filter.ref = f"A1:{get_column_letter(len(h5))}{pe}"
 ws5.freeze_panes = "A2"
@@ -664,9 +654,7 @@ aw(ws6)
 
 # Sheet 7: Reconciliation
 ws7 = wb.create_sheet("Reconciliation")
-ws7.cell(row=1, column=1, value="Data Quality Summary").font = Font(
-    bold=True, size=13, name="Arial", color="2F5496"
-)
+ws7.cell(row=1, column=1, value="Data Quality Summary").font = Font(bold=True, size=13, name="Arial", color="2F5496")
 dq = [
     ("Total Raw Records", total_input, int_fmt),
     ("Records After Cleaning", n2, int_fmt),
@@ -707,9 +695,7 @@ for i, (lb, fm, nf) in enumerate(rits):
     ws7.cell(row=r, column=2, value=fm).number_format = nf
     ws7.cell(row=r, column=2).font = Font(size=10, name="Arial", color="006400")
 sr2 = ri1 + len(rits) + 2
-ws7.cell(row=sr2, column=1, value="Verification").font = Font(
-    bold=True, size=13, name="Arial", color="2F5496"
-)
+ws7.cell(row=sr2, column=1, value="Verification").font = Font(bold=True, size=13, name="Arial", color="2F5496")
 vr1 = sr2 + 1
 vits = [
     (
@@ -867,10 +853,5 @@ print(
     f"Hourly={hourly['Trips'].sum():,} Daily={daily['Trips'].sum():,} Zone={zone_sum['Trips'].sum():,} Pay={pay_sum['Trips'].sum():,}",
     flush=True,
 )
-ams = (
-    hourly["Trips"].sum()
-    == daily["Trips"].sum()
-    == zone_sum["Trips"].sum()
-    == pay_sum["Trips"].sum()
-)
+ams = hourly["Trips"].sum() == daily["Trips"].sum() == zone_sum["Trips"].sum() == pay_sum["Trips"].sum()
 print(f"All match: {ams}", flush=True)

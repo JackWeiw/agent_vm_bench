@@ -39,13 +39,9 @@ SHARED_NO_FIELDS = {
 def terminal_field_count(fields: dict[str, Any]) -> int:
     """Count leaf text/signature fields plus button groups exposed to the Skill."""
     leaf_fields = sum(
-        not field.get("/Kids") and field.get("/FT") in {"/Tx", "/Sig", "/Ch"}
-        for field in fields.values()
+        not field.get("/Kids") and field.get("/FT") in {"/Tx", "/Sig", "/Ch"} for field in fields.values()
     )
-    button_groups = sum(
-        bool(field.get("/Kids")) and field.get("/FT") == "/Btn"
-        for field in fields.values()
-    )
+    button_groups = sum(bool(field.get("/Kids")) and field.get("/FT") == "/Btn" for field in fields.values())
     return leaf_fields + button_groups
 
 
@@ -83,12 +79,11 @@ def field_value(fields: dict[str, Any], name: str) -> str:
 
 def changed_pixel_count(template_path: Path, output_path: Path) -> int:
     """Count visibly changed grayscale pixels between two rendered pages."""
-    with Image.open(template_path).convert("RGB") as template:
-        with Image.open(output_path).convert("RGB") as output:
-            if template.size != output.size:
-                return 0
-            difference = ImageChops.difference(template, output).convert("L")
-            return sum(value > 12 for value in difference.getdata())
+    with Image.open(template_path).convert("RGB") as template, Image.open(output_path).convert("RGB") as output:
+        if template.size != output.size:
+            return 0
+        difference = ImageChops.difference(template, output).convert("L")
+        return sum(value > 12 for value in difference.getdata())
 
 
 def verify_one_pdf(
@@ -122,17 +117,13 @@ def verify_one_pdf(
     expected_radio = {
         "Are you a U.S. Citizen?": "Yes" if applicant["us_citizen"] else "No",
         "Male": "Yes" if applicant["born_male_after_1959"] else "No",
-        "Have you registered with Selective Service": (
-            "Yes" if applicant["registered_selective_service"] else "No"
-        ),
+        "Have you registered with Selective Service": ("Yes" if applicant["registered_selective_service"] else "No"),
     }
     actual_radio = {name: field_value(fields, name) for name in expected_radio}
     shared_no = {name: field_value(fields, name) for name in SHARED_NO_FIELDS}
     render_pages = sorted(render_dir.glob("page_*.png"))
     changed_pixels = (
-        changed_pixel_count(template_page, render_dir / "page_2.png")
-        if (render_dir / "page_2.png").is_file()
-        else 0
+        changed_pixel_count(template_page, render_dir / "page_2.png") if (render_dir / "page_2.png").is_file() else 0
     )
     checks = {
         "pages": len(reader.pages) == 3,
@@ -143,15 +134,13 @@ def verify_one_pdf(
             "PLACE OF BIRTH Include city and state or country",
         )
         == applicant["place_of_birth"],
-        "date_of_birth": field_value(fields, "DATE OF BIRTH MM  DD  YYYY")
-        == applicant["date_of_birth"],
+        "date_of_birth": field_value(fields, "DATE OF BIRTH MM  DD  YYYY") == applicant["date_of_birth"],
         "day_phone": field_value(fields, "Day") == applicant["day_phone"],
         "radio_answers": actual_radio == expected_radio,
         "shared_no_answers": all(value == "No" for value in shared_no.values()),
         "sensitive_fields_blank": all(not value for value in sensitive_values.values()),
         "sensitive_fields_omitted": not (provided_ids & SENSITIVE_FIELDS),
-        "rendered_pages": len(render_pages) == 3
-        and all(path.stat().st_size > 10_000 for path in render_pages),
+        "rendered_pages": len(render_pages) == 3 and all(path.stat().st_size > 10_000 for path in render_pages),
         "visible_render_difference": changed_pixels > 500,
     }
     detail.update(
@@ -205,8 +194,7 @@ def main() -> int:
         checks,
         failures,
         "template_render",
-        len(template_renders) == 3
-        and all(path.stat().st_size > 10_000 for path in template_renders),
+        len(template_renders) == 3 and all(path.stat().st_size > 10_000 for path in template_renders),
         [str(path) for path in template_renders],
     )
     item_details: dict[str, Any] = {}

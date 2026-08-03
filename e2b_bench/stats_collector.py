@@ -423,15 +423,17 @@ class ReportFormatter:
                 continue
             stats = calc_percentiles(times)
             tail_ratio = calc_tail_ratio(times)
-            rows.append([
-                step_name,
-                str(len(times)),
-                f"{stats['avg'] * 1000:.1f}",
-                f"{stats['p50'] * 1000:.1f}",
-                f"{stats['p95'] * 1000:.1f}",
-                f"{stats['p99'] * 1000:.1f}",
-                f"{tail_ratio:.2f}x ({classify_tail_latency(tail_ratio)})",
-            ])
+            rows.append(
+                [
+                    step_name,
+                    str(len(times)),
+                    f"{stats['avg'] * 1000:.1f}",
+                    f"{stats['p50'] * 1000:.1f}",
+                    f"{stats['p95'] * 1000:.1f}",
+                    f"{stats['p99'] * 1000:.1f}",
+                    f"{tail_ratio:.2f}x ({classify_tail_latency(tail_ratio)})",
+                ]
+            )
         lines.extend(TableFormatter.format_table(headers, rows))
         return lines
 
@@ -646,9 +648,7 @@ class StatsCollector:
         # Get current cumulative totals before switching rounds
         task_total = sum(s.task_metrics.total_tasks for s in self.sandbox_states.values())
         task_success = sum(s.task_metrics.success_count for s in self.sandbox_states.values())
-        sandbox_latency_counts = {
-            s.sandbox_id: len(s.task_metrics.latencies) for s in self.sandbox_states.values()
-        }
+        sandbox_latency_counts = {s.sandbox_id: len(s.task_metrics.latencies) for s in self.sandbox_states.values()}
 
         # Switch to new round
         self.current_round = round_id
@@ -800,8 +800,7 @@ class StatsCollector:
                 round_total = 0
                 round_success = 0
             all_latencies = [
-                latency for state in self.sandbox_states.values()
-                for latency in state.document_metrics.latencies[-10:]
+                latency for state in self.sandbox_states.values() for latency in state.document_metrics.latencies[-10:]
             ]
             snapshot = TestSnapshot(
                 timestamp=now,

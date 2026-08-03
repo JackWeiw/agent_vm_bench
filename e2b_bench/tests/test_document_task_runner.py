@@ -17,7 +17,14 @@ from e2b_bench.document_task_runner import (
 )
 from e2b_bench.metrics_extractor import MetricsExtractor
 from e2b_bench.report_aggregator import ReportAggregator
-from e2b_bench.schemas import BrowserMetrics, CodingMetrics, DocumentMetrics, SandboxState, SandboxStatus, get_step_order
+from e2b_bench.schemas import (
+    BrowserMetrics,
+    CodingMetrics,
+    DocumentMetrics,
+    SandboxState,
+    SandboxStatus,
+    get_step_order,
+)
 from e2b_bench.stats_collector import StatsCollector
 from e2b_bench.task_runner import BrowserTaskRunner, TaskManager
 
@@ -60,7 +67,8 @@ def test_invalid_case_kind_is_rejected():
 
 
 def test_repair_policy_is_fixed_by_case_kind():
-    assert DOCUMENT_MAX_REPAIR_ATTEMPTS == {"pdf": 0, "xlsx": 1}
+    expected = {"pdf": 0, "xlsx": 1}
+    assert expected == DOCUMENT_MAX_REPAIR_ATTEMPTS
 
 
 def test_workspace_restore_has_no_image_recipe_or_sha_check():
@@ -157,10 +165,14 @@ def test_task_manager_dispatch_and_shared_document_deadline():
 
 
 def test_metrics_dispatch_report_extraction_and_column_groups(tmp_path):
-    for workflow, metrics_type in (("browser", BrowserMetrics), ("coding", CodingMetrics), ("document", DocumentMetrics)):
+    for workflow, metrics_type in (
+        ("browser", BrowserMetrics),
+        ("coding", CodingMetrics),
+        ("document", DocumentMetrics),
+    ):
         assert isinstance(SandboxState(1, workflow_type=workflow).task_metrics, metrics_type)
     with pytest.raises(ValueError, match="Unsupported workflow_type"):
-        SandboxState(1, workflow_type="unknown").task_metrics
+        _ = SandboxState(1, workflow_type="unknown").task_metrics
 
     config = document_config()
     state = SandboxState(1, workflow_type="document")
@@ -209,12 +221,15 @@ def test_unknown_task_runner_does_not_fall_back_to_browser():
 
 
 def test_document_preflight_runs_before_sandbox_manager_construction():
-    with patch(
-        "e2b_bench.document_task_runner.preflight_document",
-        side_effect=SceneRecipeError("invalid fixed recipe"),
-    ), patch("e2b_bench.bench.SandboxManager") as manager:
-        with pytest.raises(SceneRecipeError, match="invalid fixed recipe"):
-            run_benchmark(document_config())
+    with (
+        patch(
+            "e2b_bench.document_task_runner.preflight_document",
+            side_effect=SceneRecipeError("invalid fixed recipe"),
+        ),
+        patch("e2b_bench.bench.SandboxManager") as manager,
+        pytest.raises(SceneRecipeError, match="invalid fixed recipe"),
+    ):
+        run_benchmark(document_config())
     manager.assert_not_called()
 
 

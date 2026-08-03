@@ -330,9 +330,7 @@ class GroupRunner:
                 if document_baseline is None:
                     raise RuntimeError("Document metric baseline was not initialized")
                 document_current = self._document_metric_totals(self.sandbox_states)
-                task.success, task.error_msg = self._evaluate_document_task_delta(
-                    document_baseline, document_current
-                )
+                task.success, task.error_msg = self._evaluate_document_task_delta(document_baseline, document_current)
                 if task.success:
                     task_log("  Task completed successfully")
                 else:

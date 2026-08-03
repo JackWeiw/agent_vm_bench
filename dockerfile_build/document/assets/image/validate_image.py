@@ -61,14 +61,15 @@ def main():
     for command in REQUIRED_COMMANDS:
         if not shutil.which(command):
             raise RuntimeError("required command unavailable: %s" % command)
-    if not Path("/root/.openclaw/skills/pdf/SKILL.md").is_file() or not Path(
-        "/root/.openclaw/skills/xlsx/SKILL.md"
-    ).is_file():
+    if (
+        not Path("/root/.openclaw/skills/pdf/SKILL.md").is_file()
+        or not Path("/root/.openclaw/skills/xlsx/SKILL.md").is_file()
+    ):
         raise RuntimeError("OpenClaw skill compatibility path is unavailable")
     for package, expected in read_lock(ROOT / "requirements/runtime.lock").items():
         actual = importlib.metadata.version(package)
         if actual != expected:
-            raise RuntimeError("%s version mismatch: %s != %s" % (package, actual, expected))
+            raise RuntimeError(f"{package} version mismatch: {actual} != {expected}")
     manifest = json.loads((ROOT / "xlsx/input/template_manifest.json").read_text(encoding="utf-8"))
     if manifest.get("source_rows") != 2964624 or manifest.get("clean_rows") != 2758427:
         raise RuntimeError("XLSX manifest row constants do not match the benchmark")
@@ -81,4 +82,4 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except Exception as exc:
         print("document image validation failed: %s" % exc, file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(1) from None

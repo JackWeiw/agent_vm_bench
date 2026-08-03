@@ -35,7 +35,7 @@ def document_scene_layout(case_kind: str) -> Dict[str, str]:
     try:
         return DOCUMENT_SCENE_LAYOUTS[case_kind]
     except KeyError:
-        raise ValueError("document.case_kind must be 'pdf' or 'xlsx'")
+        raise ValueError("document.case_kind must be 'pdf' or 'xlsx'") from None
 
 
 @dataclass(frozen=True)
@@ -676,10 +676,7 @@ class Config:
                 raise ValueError("document.operation_timeout must be > 0")
             if self.document_recalc_timeout <= 0:
                 raise ValueError("document.recalc_timeout must be > 0")
-            if (
-                self.document_case_kind == "xlsx"
-                and self.document_recalc_timeout >= self.document_operation_timeout
-            ):
+            if self.document_case_kind == "xlsx" and self.document_recalc_timeout >= self.document_operation_timeout:
                 raise ValueError("document.recalc_timeout must be lower than operation_timeout")
             if self.document_task_timeout <= self.document_operation_timeout:
                 raise ValueError("document.task_timeout must be greater than operation_timeout")
