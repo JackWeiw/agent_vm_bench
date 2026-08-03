@@ -118,8 +118,10 @@ This adds E2B-required packages (systemd, openssh-server, websocat) and pushes t
 
 ### 3. Build E2B Template
 
+`build_e2b.py` is shared and lives at `dockerfile_build/build_e2b.py`:
+
 ```bash
-python3 build_e2b.py \
+python3 ../../build_e2b.py \
     --server-ip <e2b_api_ip> \
     --harbor-ip <harbor_ip> \
     --alias openclaw-coding-v1 \

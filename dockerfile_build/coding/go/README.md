@@ -114,7 +114,7 @@ docker build -t ubuntu-coding-go-bench:24.04-linuxarm64 -f Dockerfile .
 HARBOR_IP=X bash push_to_harbor.sh
 
 # Build the E2B template (alias is free-form; no code registration needed)
-python3 build_e2b.py --server-ip X --harbor-ip X \
+python3 ../../build_e2b.py --server-ip X --harbor-ip X \
     --alias openclaw-coding-go-v1 \
     --image e2b-orchestration/ubuntu-coding-go-bench:custom \
     --cpu 2 --memory 4096

@@ -75,7 +75,7 @@ Harbor访问地址：`http://HARBOR_IP:2900/`（admin/Harbor12345）
 从Harbor镜像构建E2B模板，创建用于sandbox.create()的Firecracker microVM模板：
 
 ```bash
-cd dockerfile_build/browser
+cd dockerfile_build
 
 # 构建模板（alias = 配置中使用的模板名称）
 python3 build_e2b.py --server-ip 71.14.96.192 --alias openclaw-browser-v1

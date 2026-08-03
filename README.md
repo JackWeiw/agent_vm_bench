@@ -73,7 +73,7 @@ Image pushed to `HARBOR_IP:2900/e2b-orchestration/ubuntu-openclaw-chromium:custo
 ### Step 4: Build E2B Template
 
 ```bash
-cd dockerfile_build/browser
+cd dockerfile_build
 # Build template from Harbor image (alias = template name for later use)
 python3 build_e2b.py --server-ip 71.14.96.192 --alias openclaw-browser-v1
 

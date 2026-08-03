@@ -93,7 +93,7 @@ download_page.sh → docker build → push_to_harbor.sh → build_e2b.py → htt
 1. **Download pages**: `bash download_page.sh` → saves to `web_content/`
 2. **Build image**: `cd dockerfile_build/browser && docker build -t ubuntu-openclaw-chromium:24.04-linuxarm64 .`
 3. **Push to Harbor**: `HARBOR_IP=X bash dockerfile_build/browser/push_to_harbor.sh` → pushes to Harbor registry
-4. **Build E2B template**: `python3 dockerfile_build/browser/build_e2b.py --server-ip X --alias openclaw-browser-v1` → requires `~/.e2b/config.json`
+4. **Build E2B template**: `python3 dockerfile_build/build_e2b.py --server-ip X --alias openclaw-browser-v1` → requires `~/.e2b/config.json`
 5. **Start web server**: `cd web_content/en.wikipedia.org/wiki && numactl --cpunodebind=2,3 --membind=2,3 python3 -m http.server 8080`
 6. **Modify config**: Edit `config/e2b/bench.yaml` with template name, local IP URLs, E2B API URL
 
