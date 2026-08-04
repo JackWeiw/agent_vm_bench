@@ -10,8 +10,6 @@ import os
 import re
 from typing import Any, Dict
 
-from .schemas import normalize_document_step_id
-
 
 class MetricsExtractor:
     """Extract metrics from vm_monitor analysis_report.xlsx"""
@@ -451,7 +449,7 @@ class MetricsExtractor:
         return metrics
 
     def extract_document_metrics(self, report_file: str) -> Dict[str, Any]:
-        """Extract PDF/XLSX overall and operation-ID metrics."""
+        """Extract PDF/XLSX overall and phase-ID metrics."""
         metrics: Dict[str, Any] = {}
         if not report_file or not os.path.exists(report_file):
             return metrics
@@ -483,10 +481,11 @@ class MetricsExtractor:
             )
             if timing:
                 step_pattern = (
-                    r"^\s*((?:XLSX|PDF)-K\d{2}(?:-[a-z0-9_]+)?)\s+" r"(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)"
+                    r"^\s*((?:XLSX|PDF)-P\d{2}-[a-z0-9_]+)\s+"
+                    r"(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)"
                 )
                 for match in re.finditer(step_pattern, timing.group(1), re.MULTILINE):
-                    step = normalize_document_step_id(match.group(1))
+                    step = match.group(1)
                     metrics[f"Document_{step}_Count"] = int(match.group(2))
                     metrics[f"Document_{step}_Avg_ms"] = float(match.group(3))
                     metrics[f"Document_{step}_P50_ms"] = float(match.group(4))

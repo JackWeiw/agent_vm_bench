@@ -358,7 +358,7 @@ class ReportAggregator:
             return "Browser"
         elif col_name.startswith("Coding_"):
             return "Coding"
-        elif re.match(r"Document_(?:XLSX|PDF)-K\d{2}(?:-[a-z0-9_]+)?_", col_name):
+        elif re.match(r"Document_(?:XLSX|PDF)-P\d{2}-[a-z0-9_]+_", col_name):
             return "Document_Steps"
         elif col_name.startswith("Document_"):
             return "Document"

@@ -2,7 +2,7 @@
   "schema_version": "scene-key-operations-v2",
   "case_id": "SUB-MEM-PDF-01",
   "case_kind": "pdf",
-  "description": "从两轮 trace 中选择的 14 个可执行关键操作；完整保留命令和 helper 源码。",
+  "description": "从两轮 trace 中整理的 4 个固定成功路径阶段；完整保留所选本地工具调用和 helper 源码。",
   "source_trajectories": [
     {
       "run": "pdf_first",
@@ -15,42 +15,30 @@
       "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json"
     }
   ],
-  "operation_count": 14,
+  "operation_count": 4,
   "workflow": {
     "success_path": [
-      "PDF-K01-read_requirements",
-      "PDF-K02-inspect_tools",
-      "PDF-K03-prepare_outputs",
-      "PDF-K04-check_form_fields",
-      "PDF-K05-extract_fields",
-      "PDF-K06-render_blank_form",
-      "PDF-K07-write_mapping_helper",
-      "PDF-K08-generate_field_values",
-      "PDF-K09-validate_field_values",
-      "PDF-K10-write_batch_helper",
-      "PDF-K11-fill_and_render",
-      "PDF-K12-write_summary",
-      "PDF-K13-verify_outputs",
-      "PDF-K14-check_deliverables"
-    ],
-    "conditional_paths": [
-      {
-        "trigger": "PDF-K06-render_blank_form 模板渲染失败",
-        "action": "修复目录或参数后重新执行 PDF-K06-render_blank_form"
-      },
-      {
-        "trigger": "PDF-K09-validate_field_values 字段映射失败",
-        "action": "返回 PDF-K07-write_mapping_helper，重新生成并校验字段值"
-      }
+      "PDF-P01-inspect_prepare",
+      "PDF-P02-build",
+      "PDF-P03-process_publish",
+      "PDF-P04-verify_deliver"
     ]
   },
   "key_operations": [
     {
       "order": 1,
-      "operation_id": "PDF-K01-read_requirements",
-      "operation": "read_task_guidance",
-      "description": "读取 PDF Skill、forms 指南、隐私要求和 verifier。",
+      "operation_id": "PDF-P01-inspect_prepare",
+      "operation": "inspect_and_prepare",
+      "description": "读取约束与工具，准备输出，检查字段并渲染空白模板。",
       "condition": "always",
+      "source_operations": [
+        "PDF-K01-read_requirements",
+        "PDF-K02-inspect_tools",
+        "PDF-K03-prepare_outputs",
+        "PDF-K04-check_form_fields",
+        "PDF-K05-extract_fields",
+        "PDF-K06-render_blank_form"
+      ],
       "source_tool_calls": [
         {
           "source": {
@@ -102,21 +90,7 @@
               "path": "/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/input/verify_pdf_batch.py"
             }
           }
-        }
-      ],
-      "expected_outputs": [],
-      "success_criteria": [
-        "已读取 PDF Skill 和 forms 指南",
-        "已检查隐私规则和严格 verifier"
-      ]
-    },
-    {
-      "order": 2,
-      "operation_id": "PDF-K02-inspect_tools",
-      "operation": "inspect_pdf_tooling",
-      "description": "检查字段检查、字段提取、填表和渲染工具。",
-      "condition": "always",
-      "source_tool_calls": [
+        },
         {
           "source": {
             "run": "pdf_second",
@@ -184,20 +158,7 @@
               "path": "/root/.openclaw/skills/pdf/scripts/convert_pdf_to_images.py"
             }
           }
-        }
-      ],
-      "expected_outputs": [],
-      "success_criteria": [
-        "明确四个 Skill 脚本的参数和输出格式"
-      ]
-    },
-    {
-      "order": 3,
-      "operation_id": "PDF-K03-prepare_outputs",
-      "operation": "prepare_output_layout",
-      "description": "准备字段值、填写后 PDF 和渲染目录。",
-      "condition": "always",
-      "source_tool_calls": [
+        },
         {
           "source": {
             "run": "pdf_second",
@@ -214,24 +175,7 @@
               "command": "mkdir -p /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/rendered/template /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/field_values /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/filled"
             }
           }
-        }
-      ],
-      "expected_outputs": [
-        "output/rendered/template",
-        "output/field_values",
-        "output/filled"
-      ],
-      "success_criteria": [
-        "所有输出目录已创建"
-      ]
-    },
-    {
-      "order": 4,
-      "operation_id": "PDF-K04-check_form_fields",
-      "operation": "check_fillable_fields",
-      "description": "检查源 PDF 是否包含可填写字段并保存、读取真实日志。",
-      "condition": "always",
-      "source_tool_calls": [
+        },
         {
           "source": {
             "run": "pdf_second",
@@ -265,23 +209,7 @@
               "command": "cat /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/check_fillable_fields.log"
             }
           }
-        }
-      ],
-      "expected_outputs": [
-        "output/check_fillable_fields.log"
-      ],
-      "success_criteria": [
-        "检查脚本只调用一次",
-        "日志确认表单包含可填写字段"
-      ]
-    },
-    {
-      "order": 5,
-      "operation_id": "PDF-K05-extract_fields",
-      "operation": "extract_and_inspect_form_fields",
-      "description": "提取并检查真实字段结构。",
-      "condition": "always",
-      "source_tool_calls": [
+        },
         {
           "source": {
             "run": "pdf_second",
@@ -315,22 +243,7 @@
               "path": "/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/form_field_info.json"
             }
           }
-        }
-      ],
-      "expected_outputs": [
-        "output/form_field_info.json"
-      ],
-      "success_criteria": [
-        "字段信息包含真实 field_id、page、type 和选项"
-      ]
-    },
-    {
-      "order": 6,
-      "operation_id": "PDF-K06-render_blank_form",
-      "operation": "render_and_inspect_template",
-      "description": "渲染空白模板并检查三页输出。",
-      "condition": "always",
-      "source_tool_calls": [
+        },
         {
           "source": {
             "run": "pdf_second",
@@ -350,21 +263,39 @@
         }
       ],
       "expected_outputs": [
+        "output/rendered/template",
+        "output/field_values",
+        "output/filled",
+        "output/check_fillable_fields.log",
+        "output/form_field_info.json",
         "output/rendered/template/page_1.png",
         "output/rendered/template/page_2.png",
         "output/rendered/template/page_3.png"
       ],
       "success_criteria": [
+        "已读取 PDF Skill 和 forms 指南",
+        "已检查隐私规则和严格 verifier",
+        "明确四个 Skill 脚本的参数和输出格式",
+        "所有输出目录已创建",
+        "检查脚本只调用一次",
+        "日志确认表单包含可填写字段",
+        "字段信息包含真实 field_id、page、type 和选项",
         "模板渲染命令退出成功",
         "生成 3 页非空 PNG"
       ]
     },
     {
-      "order": 7,
-      "operation_id": "PDF-K07-write_mapping_helper",
-      "operation": "author_field_mapping_helper",
-      "description": "编写申请人数据到字段 ID 的映射 helper；保留完整 Python 源码。",
+      "order": 2,
+      "operation_id": "PDF-P02-build",
+      "operation": "build_batch_inputs",
+      "description": "构建并校验十份字段值及最终批处理 helper。",
       "condition": "always",
+      "source_operations": [
+        "PDF-K07-write_mapping_helper",
+        "PDF-K08-generate_field_values",
+        "PDF-K09-validate_field_values",
+        "PDF-K10-write_batch_helper"
+      ],
       "source_tool_calls": [
         {
           "source": {
@@ -383,23 +314,7 @@
               "content": "#!/usr/bin/env python3\n\"\"\"Generate field-values JSONs for all 10 applicants and run fill + render.\"\"\"\n\nimport json\nimport subprocess\nimport sys\nfrom pathlib import Path\n\nSKILL_DIR = Path(\"/root/.openclaw/skills/pdf\")\nINPUT_PDF = Path(\"/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/input/of306_aug2023.pdf\")\nOUTPUT = Path(\"/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output\")\nFIELD_VALUES_DIR = OUTPUT / \"field_values\"\nFILLED_DIR = OUTPUT / \"filled\"\n\nwith open(Path(\"/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/input/synthetic_applicants.json\")) as f:\n    data = json.load(f)\n\napplicants = data[\"applicants\"]\nshared = data[\"shared_answers\"]\ncontinuation_text = shared[\"continuation\"]\n\nfor a in applicants:\n    aid = a[\"id\"]\n    values = []\n\n    # --- Page 2 fields ---\n\n    # Full Name\n    values.append({\n        \"field_id\": \"Full Name\",\n        \"description\": \"Full name of applicant\",\n        \"page\": 2,\n        \"value\": a[\"full_name\"]\n    })\n\n    # Place of birth\n    values.append({\n        \"field_id\": \"PLACE OF BIRTH Include city and state or country\",\n        \"description\": \"Place of birth\",\n        \"page\": 2,\n        \"value\": a[\"place_of_birth\"]\n    })\n\n    # Country of Citizenship\n    values.append({\n        \"field_id\": \"Country of Citizenship\",\n        \"description\": \"Country of citizenship\",\n        \"page\": 2,\n        \"value\": \"United States\"\n    })\n\n    # US Citizen - all Yes\n    values.append({\n        \"field_id\": \"Are you a U.S. Citizen?\",\n        \"description\": \"US Citizen radio\",\n        \"page\": 2,\n        \"value\": \"/Yes\"\n    })\n\n    # Date of birth\n    values.append({\n        \"field_id\": \"DATE OF BIRTH MM  DD  YYYY\",\n        \"description\": \"Date of birth\",\n        \"page\": 2,\n        \"value\": a[\"date_of_birth\"]\n    })\n\n    # Day phone\n    values.append({\n        \"field_id\": \"Day\",\n        \"description\": \"Daytime phone number\",\n        \"page\": 2,\n        \"value\": a[\"day_phone\"]\n    })\n\n    # Other names\n    values.append({\n        \"field_id\": \"Other Names Used 2\",\n        \"description\": \"Other names used\",\n        \"page\": 2,\n        \"value\": a[\"other_names\"]\n    })\n\n    # Male (born male after 1959)\n    male_value = \"/Yes\" if a[\"born_male_after_1959\"] else \"/No\"\n    values.append({\n        \"field_id\": \"Male\",\n        \"description\": \"Born male after Dec 31 1959\",\n        \"page\": 2,\n        \"value\": male_value\n    })\n\n    # Selective Service registration\n    ss_value = \"/Yes\" if a[\"registered_selective_service\"] else \"/No\"\n    values.append({\n        \"field_id\": \"Have you registered with Selective Service\",\n        \"description\": \"Selective Service registration\",\n        \"page\": 2,\n        \"value\": ss_value\n    })\n\n    # --- Shared background answers (all No) ---\n\n    # Military service - No\n    values.append({\n        \"field_id\": \"Have you ever served in the U.S. Military\",\n        \"description\": \"Military service\",\n        \"page\": 2,\n        \"value\": \"/No\"\n    })\n\n    # Convicted/paroled - No\n    values.append({\n        \"field_id\": \"Have you been convicted imprisoned probation or paroled last 7 years\",\n        \"description\": \"Convicted/paroled last 7 years\",\n        \"page\": 2,\n        \"value\": \"/No\"\n    })\n\n    # Court martialed - No\n    values.append({\n        \"field_id\": \"Have you been court martialed in the last 7 years\",\n        \"description\": \"Court martialed last 7 years\",\n        \"page\": 2,\n        \"value\": \"/No\"\n    })\n\n    # Currently under charges - No\n    values.append({\n        \"field_id\": \"Are you currently under charges\",\n        \"description\": \"Currently under charges\",\n        \"page\": 2,\n        \"value\": \"/No\"\n    })\n\n    # Fired/debarred - No\n    values.append({\n        \"field_id\": \"Have you been fired or debarred or quit due to a specific problem or quit after being told you would be fired\",\n        \"description\": \"Fired/debarred/quit\",\n        \"page\": 2,\n        \"value\": \"/No\"\n    })\n\n    # Delinquent federal debt - No\n    values.append({\n        \"field_id\": \"Are you delinquent on any Federal debt\",\n        \"description\": \"Delinquent federal debt\",\n        \"page\": 2,\n        \"value\": \"/No\"\n    })\n\n    # --- Page 3 fields ---\n\n    # Relative at agency - No\n    values.append({\n        \"field_id\": \"Do any of your relatives work for the agency or government organization for which you are submitting this form\",\n        \"description\": \"Relative at agency\",\n        \"page\": 3,\n        \"value\": \"/No\"\n    })\n\n    # Government retirement/pension - No\n    values.append({\n        \"field_id\": \"Have you applied or do you receive retirement or pension benefits from the military Federal or D.C. government\",\n        \"description\": \"Government retirement/pension\",\n        \"page\": 3,\n        \"value\": \"/No\"\n    })\n\n    # Continuation text\n    values.append({\n        \"field_id\": \"Continuation of Space or Agency Specific Questions\",\n        \"description\": \"Continuation text\",\n        \"page\": 3,\n        \"value\": continuation_text\n    })\n\n    # Write the field-values JSON\n    out_path = FIELD_VALUES_DIR / f\"{aid}.json\"\n    with open(out_path, \"w\") as f:\n        json.dump(values, f, indent=2)\n    print(f\"Wrote {out_path}\")\n\nprint(\"--- All field-values JSONs written ---\")\n"
             }
           }
-        }
-      ],
-      "expected_outputs": [
-        "generate_and_run_batch.py"
-      ],
-      "success_criteria": [
-        "helper 使用 form_field_info.json 中的真实字段",
-        "helper 明确排除 SSN、签名、日期和保险敏感字段"
-      ]
-    },
-    {
-      "order": 8,
-      "operation_id": "PDF-K08-generate_field_values",
-      "operation": "generate_field_values",
-      "description": "执行映射 helper，生成 10 份字段值 JSON。",
-      "condition": "always",
-      "source_tool_calls": [
+        },
         {
           "source": {
             "run": "pdf_second",
@@ -416,23 +331,7 @@
               "command": "cd /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01 && python3 generate_and_run_batch.py"
             }
           }
-        }
-      ],
-      "expected_outputs": [
-        "output/field_values/applicant_01.json ... applicant_10.json"
-      ],
-      "success_criteria": [
-        "正好生成 10 份 JSON",
-        "每份 JSON 对应一个合成申请人"
-      ]
-    },
-    {
-      "order": 9,
-      "operation_id": "PDF-K09-validate_field_values",
-      "operation": "validate_field_mapping",
-      "description": "使用第一轮 trace 的真实校验命令检查字段 ID、页码和敏感字段。",
-      "condition": "always",
-      "source_tool_calls": [
+        },
         {
           "source": {
             "run": "pdf_first",
@@ -449,22 +348,7 @@
               "command": "python3 -c \"\nimport json\n# Verify all field IDs exist in field_info\nwith open('/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/form_field_info.json') as f:\n    fi = json.load(f)\nvalid_ids = {x['field_id'] for x in fi}\nfor i in range(1, 11):\n    with open(f'/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/field_values/applicant_{i:02d}.json') as f:\n        vals = json.load(f)\n    for v in vals:\n        fid = v['field_id']\n        if fid not in valid_ids:\n            print(f'ERROR: {fid} not in field_info')\n        fi_entry = [x for x in fi if x['field_id'] == fid][0]\n        if v['page'] != fi_entry.get('page'):\n            print(f'ERROR: page mismatch for {fid}')\n    # Check no forbidden fields\n    forbidden = {'Social Security Number','17a Applicants Signature','17b Appointees Signature 1','Date','Date_2','Appointing Officer Enter Date of Appointment or Conversion MM  DD  YYYY','When did you leave your last Federal job','Did you waive Basic Life Insurance or any type of optional life insurance','If yes to 18b did you later cancel the waivers'}\n    provided_ids = {v['field_id'] for v in vals}\n    overlap = provided_ids & forbidden\n    if overlap:\n        print(f'ERROR: applicant_{i:02d} includes forbidden fields: {overlap}')\nprint('Validation complete')\n\" 2>&1"
             }
           }
-        }
-      ],
-      "expected_outputs": [],
-      "success_criteria": [
-        "所有 field_id 均存在",
-        "页码匹配",
-        "敏感字段集合无交集"
-      ]
-    },
-    {
-      "order": 10,
-      "operation_id": "PDF-K10-write_batch_helper",
-      "operation": "author_batch_processing_helper",
-      "description": "编写最终批处理 helper；保留完整填表和渲染循环源码。",
-      "condition": "always",
-      "source_tool_calls": [
+        },
         {
           "source": {
             "run": "pdf_second",
@@ -485,18 +369,31 @@
         }
       ],
       "expected_outputs": [
+        "generate_and_run_batch.py",
+        "output/field_values/applicant_01.json ... applicant_10.json",
         "run_batch_fill_render.py"
       ],
       "success_criteria": [
+        "helper 使用 form_field_info.json 中的真实字段",
+        "helper 明确排除 SSN、签名、日期和保险敏感字段",
+        "正好生成 10 份 JSON",
+        "每份 JSON 对应一个合成申请人",
+        "所有 field_id 均存在",
+        "页码匹配",
+        "敏感字段集合无交集",
         "helper 固化 10 次填表和 10 次填写结果渲染"
       ]
     },
     {
-      "order": 11,
-      "operation_id": "PDF-K11-fill_and_render",
-      "operation": "fill_and_render_batch",
-      "description": "执行批处理，生成 10 份 PDF 和 30 页填写结果 PNG。",
+      "order": 3,
+      "operation_id": "PDF-P03-process_publish",
+      "operation": "process_and_publish",
+      "description": "批量填充、渲染十份 PDF 并写入批处理摘要。",
       "condition": "always",
+      "source_operations": [
+        "PDF-K11-fill_and_render",
+        "PDF-K12-write_summary"
+      ],
       "source_tool_calls": [
         {
           "source": {
@@ -514,24 +411,7 @@
               "command": "cd /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01 && python3 run_batch_fill_render.py"
             }
           }
-        }
-      ],
-      "expected_outputs": [
-        "output/filled/applicant_01.pdf ... applicant_10.pdf",
-        "output/rendered/applicant_01 ... applicant_10"
-      ],
-      "success_criteria": [
-        "10 份 PDF 均为 3 页",
-        "每个申请人生成 3 页 PNG"
-      ]
-    },
-    {
-      "order": 12,
-      "operation_id": "PDF-K12-write_summary",
-      "operation": "write_batch_summary",
-      "description": "写入批处理摘要。",
-      "condition": "always",
-      "source_tool_calls": [
+        },
         {
           "source": {
             "run": "pdf_second",
@@ -552,9 +432,13 @@
         }
       ],
       "expected_outputs": [
+        "output/filled/applicant_01.pdf ... applicant_10.pdf",
+        "output/rendered/applicant_01 ... applicant_10",
         "output/batch_summary.json"
       ],
       "success_criteria": [
+        "10 份 PDF 均为 3 页",
+        "每个申请人生成 3 页 PNG",
         "applicant_count=10",
         "filled_pdf_count=10",
         "rendered_page_count=33",
@@ -563,11 +447,15 @@
       ]
     },
     {
-      "order": 13,
-      "operation_id": "PDF-K13-verify_outputs",
-      "operation": "run_business_verifier",
-      "description": "运行独立严格 verifier。",
+      "order": 4,
+      "operation_id": "PDF-P04-verify_deliver",
+      "operation": "verify_and_deliver",
+      "description": "运行严格业务验收并核对全部交付物。",
       "condition": "always",
+      "source_operations": [
+        "PDF-K13-verify_outputs",
+        "PDF-K14-check_deliverables"
+      ],
       "source_tool_calls": [
         {
           "source": {
@@ -585,23 +473,7 @@
               "command": "cd /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01 && python3 input/verify_pdf_batch.py input/of306_aug2023.pdf input/synthetic_applicants.json output output/business_verification.json"
             }
           }
-        }
-      ],
-      "expected_outputs": [
-        "output/business_verification.json"
-      ],
-      "success_criteria": [
-        "business_verification.json.status == success",
-        "failures 为空"
-      ]
-    },
-    {
-      "order": 14,
-      "operation_id": "PDF-K14-check_deliverables",
-      "operation": "validate_deliverables",
-      "description": "核对日志、字段信息、10 份 JSON、10 份 PDF、33 页 PNG 和验收文件。",
-      "condition": "always",
-      "source_tool_calls": [
+        },
         {
           "source": {
             "run": "pdf_second",
@@ -621,15 +493,17 @@
         }
       ],
       "expected_outputs": [
+        "output/business_verification.json",
         "output/check_fillable_fields.log",
         "output/form_field_info.json",
         "output/field_values/*.json",
         "output/filled/*.pdf",
         "output/rendered/**/*.png",
-        "output/batch_summary.json",
-        "output/business_verification.json"
+        "output/batch_summary.json"
       ],
       "success_criteria": [
+        "business_verification.json.status == success",
+        "failures 为空",
         "JSON=10",
         "PDF=10",
         "PNG=33",

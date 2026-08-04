@@ -1,9 +1,9 @@
 """Trace-derived PDF/XLSX document benchmark runners.
 
-The scene recipe is a ``scene-key-operations-v2`` JSON file.  Every key
-operation contains the original read/write/exec tool calls, including complete
-helper source code.  This module replays the selected success path against a
-fresh copy of a case seed and records operation IDs as step-level metrics.
+The scene recipe is a ``scene-key-operations-v2`` JSON file.  Every phase
+contains the original read/write/exec tool calls, including complete helper
+source code.  This module replays one fixed success path against a fresh copy
+of a case seed and records phase IDs as step-level metrics.
 """
 
 import json
@@ -34,7 +34,6 @@ DOCUMENT_OPERATIONS_FILES = {
     "pdf": Path("dockerfile_build/document/assets/operations/pdf_key_operations.json"),
     "xlsx": Path("dockerfile_build/document/assets/operations/xlsx_key_operations.json"),
 }
-DOCUMENT_MAX_REPAIR_ATTEMPTS = {"pdf": 0, "xlsx": 1}
 
 
 def get_document_operations_path(case_kind: str) -> Path:
@@ -57,50 +56,43 @@ def load_scene_recipe(expected_case_kind: str) -> Dict[str, Any]:
     if recipe.get("case_kind") != expected_case_kind:
         raise SceneRecipeError(f"recipe case_kind={recipe.get('case_kind')!r}, expected {expected_case_kind!r}")
 
-    operations = recipe.get("key_operations")
-    if not isinstance(operations, list) or not operations:
+    phases = recipe.get("key_operations")
+    if not isinstance(phases, list) or not phases:
         raise SceneRecipeError("recipe key_operations must be a non-empty list")
-    if recipe.get("operation_count") != len(operations):
+    if recipe.get("operation_count") != len(phases):
         raise SceneRecipeError("recipe operation_count does not match key_operations")
 
-    operation_ids = []
-    for operation in operations:
-        operation_id = operation.get("operation_id")
-        calls = operation.get("source_tool_calls")
-        if not operation_id or operation_id in operation_ids:
-            raise SceneRecipeError(f"missing or duplicate operation_id: {operation_id!r}")
+    phase_ids = []
+    for phase in phases:
+        phase_id = phase.get("operation_id")
+        calls = phase.get("source_tool_calls")
+        if not phase_id or phase_id in phase_ids:
+            raise SceneRecipeError(f"missing or duplicate phase ID: {phase_id!r}")
         if not isinstance(calls, list) or not calls:
-            raise SceneRecipeError(f"operation {operation_id} has no source tool calls")
+            raise SceneRecipeError(f"phase {phase_id} has no source tool calls")
         for source_call in calls:
             call = source_call.get("tool_call", {})
             if call.get("function_name") not in {"read", "write", "exec"}:
-                raise SceneRecipeError(f"operation {operation_id} contains unsupported tool call")
+                raise SceneRecipeError(f"phase {phase_id} contains unsupported tool call")
             if not isinstance(call.get("arguments"), dict):
-                raise SceneRecipeError(f"operation {operation_id} has invalid tool arguments")
-        operation_ids.append(operation_id)
+                raise SceneRecipeError(f"phase {phase_id} has invalid tool arguments")
+        phase_ids.append(phase_id)
 
     success_path = recipe.get("workflow", {}).get("success_path")
     if not isinstance(success_path, list) or not success_path:
         raise SceneRecipeError("recipe workflow.success_path must be a non-empty list")
-    missing = [operation_id for operation_id in success_path if operation_id not in operation_ids]
+    missing = [phase_id for phase_id in success_path if phase_id not in phase_ids]
     if missing:
-        raise SceneRecipeError(f"success_path references unknown operations: {missing}")
-    conditional_path = recipe.get("workflow", {}).get("conditional_path", {})
-    conditional_steps = conditional_path.get("steps", [])
-    if not isinstance(conditional_steps, list):
-        raise SceneRecipeError("recipe workflow.conditional_path.steps must be a list")
-    missing = [operation_id for operation_id in conditional_steps if operation_id not in operation_ids]
-    if missing:
-        raise SceneRecipeError(f"conditional_path references unknown operations: {missing}")
-    expected_count = 14 if expected_case_kind == "pdf" else 12
-    expected_ids = set(get_step_order("document", expected_case_kind))
-    if set(operation_ids) != expected_ids:
+        raise SceneRecipeError(f"success_path references unknown phases: {missing}")
+    expected_order = get_step_order("document", expected_case_kind)
+    if phase_ids != expected_order:
         raise SceneRecipeError(
-            f"recipe operation IDs are incomplete: expected {sorted(expected_ids)}, got {sorted(operation_ids)}"
+            f"recipe phase order is invalid: expected {expected_order}, got {phase_ids}"
         )
-    referenced_ids = set(success_path) | set(conditional_steps)
-    if referenced_ids != expected_ids:
-        raise SceneRecipeError("recipe workflow paths do not cover every key operation")
+    if success_path != expected_order:
+        raise SceneRecipeError("recipe workflow.success_path must contain every phase in canonical order")
+    if "conditional_path" in recipe.get("workflow", {}):
+        raise SceneRecipeError("document recipes must use a single fixed success path")
     return recipe
 
 
@@ -125,7 +117,7 @@ class DocumentOperationExecutor:
         self.config = config
         config.validate()
         self.recipe = load_scene_recipe(config.document_case_kind)
-        self.operations = {item["operation_id"]: item for item in self.recipe["key_operations"]}
+        self.phases = {item["operation_id"]: item for item in self.recipe["key_operations"]}
         # The scheduler stop event prevents a *new* complete task from starting.
         # It must not interrupt a recipe that has already begun.
         self.deadline: Optional[float] = None
@@ -159,7 +151,7 @@ class DocumentOperationExecutor:
         return True, ""
 
     def execute(self, sbx) -> Tuple[bool, float, Dict[str, float], bool, str]:
-        """Run the recipe's main path and, for XLSX, one trace-derived repair."""
+        """Run the recipe's single fixed phase path."""
         started = time.perf_counter()
         self.deadline = time.monotonic() + self.config.document_task_timeout
         step_times: Dict[str, float] = {}
@@ -170,15 +162,10 @@ class DocumentOperationExecutor:
             if not prepared:
                 return False, time.perf_counter() - started, step_times, False, error
 
-            for operation_id in self.recipe["workflow"]["success_path"]:
+            for phase_id in self.recipe["workflow"]["success_path"]:
                 self._check_cancelled()
-                ok, detail = self._execute_operation(sbx, operation_id, step_times)
+                ok, detail = self._execute_phase(sbx, phase_id, step_times)
                 if not ok:
-                    if self._can_repair(operation_id):
-                        repaired, repair_error = self._execute_xlsx_repair(sbx, step_times)
-                        if repaired:
-                            return self._finish_after_repair(sbx, started, step_times)
-                        detail = f"{detail}; repair failed: {repair_error}"
                     return False, time.perf_counter() - started, step_times, False, detail
 
             verified, detail = self._validate_business_result(sbx)
@@ -194,20 +181,20 @@ class DocumentOperationExecutor:
         finally:
             self.deadline = None
 
-    def _execute_operation(self, sbx, operation_id: str, step_times: Dict[str, float]) -> Tuple[bool, str]:
+    def _execute_phase(self, sbx, phase_id: str, step_times: Dict[str, float]) -> Tuple[bool, str]:
         started = time.perf_counter()
         try:
             self._check_cancelled()
-            operation = self.operations[operation_id]
-            for source_call in operation["source_tool_calls"]:
+            phase = self.phases[phase_id]
+            for source_call in phase["source_tool_calls"]:
                 self._check_cancelled()
                 call = source_call["tool_call"]
                 ok, detail = self._execute_tool_call(sbx, call["function_name"], call["arguments"])
                 if not ok:
-                    return False, f"{operation_id}: {detail}"
+                    return False, f"{phase_id}: {detail}"
             return True, ""
         finally:
-            step_times[operation_id] = step_times.get(operation_id, 0.0) + (time.perf_counter() - started)
+            step_times[phase_id] = step_times.get(phase_id, 0.0) + (time.perf_counter() - started)
 
     def _execute_tool_call(self, sbx, function_name: str, arguments: Dict[str, Any]) -> Tuple[bool, str]:
         if function_name == "read":
@@ -247,37 +234,6 @@ class DocumentOperationExecutor:
             return False, self._result_error(function_name, result)
         self._check_cancelled()
         return True, ""
-
-    def _can_repair(self, operation_id: str) -> bool:
-        return (
-            self.config.document_case_kind == "xlsx"
-            and DOCUMENT_MAX_REPAIR_ATTEMPTS[self.config.document_case_kind] > 0
-            and operation_id in {"XLSX-K07-validate_workbook", "XLSX-K10-verify_business_rules"}
-            and "XLSX-K08-repair_workbook" in self.operations
-        )
-
-    def _execute_xlsx_repair(self, sbx, step_times: Dict[str, float]) -> Tuple[bool, str]:
-        # K08 contains the actual repair helper plus execution/recalc/check calls
-        # from the source trajectory; it is intentionally treated atomically.
-        return self._execute_operation(sbx, "XLSX-K08-repair_workbook", step_times)
-
-    def _finish_after_repair(
-        self, sbx, started: float, step_times: Dict[str, float]
-    ) -> Tuple[bool, float, Dict[str, float], bool, str]:
-        # Re-publish the stable CSVs after repair before verifier/summary/final
-        # validation.  K09 is harmless to repeat when K10 was the trigger.
-        for operation_id in (
-            "XLSX-K09-export_summary_csvs",
-            "XLSX-K10-verify_business_rules",
-            "XLSX-K11-generate_summary",
-            "XLSX-K12-check_deliverables",
-        ):
-            self._check_cancelled()
-            ok, detail = self._execute_operation(sbx, operation_id, step_times)
-            if not ok:
-                return False, time.perf_counter() - started, step_times, False, detail
-        verified, detail = self._validate_business_result(sbx)
-        return verified, time.perf_counter() - started, step_times, False, detail
 
     def _validate_business_result(self, sbx) -> Tuple[bool, str]:
         report = posixpath.join(self.config.document_workspace_dir, "output", "business_verification.json")

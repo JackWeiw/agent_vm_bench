@@ -39,43 +39,17 @@ BROWSER_STEP_ORDER = ["open_tab", "page_load", "snapshot", "click", "screenshot"
 # verify peaks overlapping, observed at host level via vm_monitor/smap_tool.
 CODING_STEP_ORDER = ["find", "read", "edit", "verify", "diff"]
 DOCUMENT_XLSX_STEP_ORDER = [
-    "XLSX-K01-read_requirements",
-    "XLSX-K03-copy_template",
-    "XLSX-K02-inspect_workbook",
-    "XLSX-K04-write_enhancement_helper",
-    "XLSX-K05-enhance_workbook",
-    "XLSX-K06-recalculate_workbook",
-    "XLSX-K07-validate_workbook",
-    "XLSX-K08-repair_workbook",
-    "XLSX-K09-export_summary_csvs",
-    "XLSX-K10-verify_business_rules",
-    "XLSX-K11-generate_summary",
-    "XLSX-K12-check_deliverables",
+    "XLSX-P01-inspect_prepare",
+    "XLSX-P02-build",
+    "XLSX-P03-process_publish",
+    "XLSX-P04-verify_deliver",
 ]
 DOCUMENT_PDF_STEP_ORDER = [
-    "PDF-K01-read_requirements",
-    "PDF-K02-inspect_tools",
-    "PDF-K03-prepare_outputs",
-    "PDF-K04-check_form_fields",
-    "PDF-K05-extract_fields",
-    "PDF-K06-render_blank_form",
-    "PDF-K07-write_mapping_helper",
-    "PDF-K08-generate_field_values",
-    "PDF-K09-validate_field_values",
-    "PDF-K10-write_batch_helper",
-    "PDF-K11-fill_and_render",
-    "PDF-K12-write_summary",
-    "PDF-K13-verify_outputs",
-    "PDF-K14-check_deliverables",
+    "PDF-P01-inspect_prepare",
+    "PDF-P02-build",
+    "PDF-P03-process_publish",
+    "PDF-P04-verify_deliver",
 ]
-DOCUMENT_LEGACY_STEP_IDS = {
-    "-".join(step_id.split("-", 2)[:2]): step_id for step_id in DOCUMENT_PDF_STEP_ORDER + DOCUMENT_XLSX_STEP_ORDER
-}
-
-
-def normalize_document_step_id(step_id: str) -> str:
-    """Map a legacy numbered Document step ID to its semantic stable ID."""
-    return DOCUMENT_LEGACY_STEP_IDS.get(step_id, step_id)
 
 
 def get_step_order(workflow_type: str, document_case_kind: str = "xlsx") -> List[str]:
@@ -586,7 +560,7 @@ class CodingMetrics(TaskMetricsBase):
 
 
 class DocumentMetrics(TaskMetricsBase):
-    """PDF/XLSX task metrics; operation IDs are recorded dynamically."""
+    """PDF/XLSX task metrics; phase IDs are recorded dynamically."""
 
     step_order = DOCUMENT_XLSX_STEP_ORDER
 

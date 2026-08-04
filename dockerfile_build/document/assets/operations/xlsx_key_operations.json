@@ -2,7 +2,7 @@
   "schema_version": "scene-key-operations-v2",
   "case_id": "SUB-MEM-XLSX-01",
   "case_kind": "xlsx",
-  "description": "从两轮 trace 中选择的 12 个可执行关键操作；完整保留命令和 helper 源码。",
+  "description": "从两轮 trace 中整理的 4 个固定成功路径阶段；完整保留所选本地工具调用和 helper 源码。",
   "source_trajectories": [
     {
       "run": "xlsx_first",
@@ -15,39 +15,27 @@
       "trajectory": "/home/lcq/trace_extract/cases/xlsx/agent_run/trajectory.json"
     }
   ],
-  "operation_count": 12,
+  "operation_count": 4,
   "workflow": {
     "success_path": [
-      "XLSX-K01-read_requirements",
-      "XLSX-K03-copy_template",
-      "XLSX-K02-inspect_workbook",
-      "XLSX-K04-write_enhancement_helper",
-      "XLSX-K05-enhance_workbook",
-      "XLSX-K06-recalculate_workbook",
-      "XLSX-K07-validate_workbook",
-      "XLSX-K09-export_summary_csvs",
-      "XLSX-K10-verify_business_rules",
-      "XLSX-K11-generate_summary",
-      "XLSX-K12-check_deliverables"
-    ],
-    "conditional_path": {
-      "trigger": "XLSX-K07-validate_workbook 或 XLSX-K10-verify_business_rules 失败",
-      "steps": [
-        "XLSX-K08-repair_workbook",
-        "XLSX-K09-export_summary_csvs",
-        "XLSX-K10-verify_business_rules",
-        "XLSX-K11-generate_summary",
-        "XLSX-K12-check_deliverables"
-      ]
-    }
+      "XLSX-P01-inspect_prepare",
+      "XLSX-P02-build",
+      "XLSX-P03-process_publish",
+      "XLSX-P04-verify_deliver"
+    ]
   },
   "key_operations": [
     {
       "order": 1,
-      "operation_id": "XLSX-K01-read_requirements",
-      "operation": "read_task_guidance",
-      "description": "读取 XLSX Skill、任务约束和严格 verifier。",
+      "operation_id": "XLSX-P01-inspect_prepare",
+      "operation": "inspect_and_prepare",
+      "description": "读取约束，复制模板并检查工作簿结构、公式、图表、数据和样式。",
       "condition": "always",
+      "source_operations": [
+        "XLSX-K01-read_requirements",
+        "XLSX-K03-copy_template",
+        "XLSX-K02-inspect_workbook"
+      ],
       "source_tool_calls": [
         {
           "source": {
@@ -82,21 +70,24 @@
               "command": "cat /root/.openclaw/workspace/tool-modeling/SUB-MEM-OFFICE-01/input/verify_xlsx_enhanced.py"
             }
           }
-        }
-      ],
-      "expected_outputs": [],
-      "success_criteria": [
-        "已读取 XLSX Skill",
-        "已检查严格 verifier 的调用接口和验收条件"
-      ]
-    },
-    {
-      "order": 2,
-      "operation_id": "XLSX-K02-inspect_workbook",
-      "operation": "inspect_input_workbook",
-      "description": "检查原工作簿的 sheet、公式、图表、数据规模和样式。",
-      "condition": "always",
-      "source_tool_calls": [
+        },
+        {
+          "source": {
+            "run": "xlsx_second",
+            "session_id": "85e12fb7-a392-4cd8-9bdb-066156bc464a",
+            "trajectory": "/home/lcq/trace_extract/cases/xlsx/agent_run/trajectory.json",
+            "step_id": 13,
+            "tool_call_index": 0,
+            "tool_call_id": "call_00_IZ2ao383hfvzzEDIQJYV6755",
+            "timestamp": "2026-07-30T13:40:55.333Z"
+          },
+          "tool_call": {
+            "function_name": "exec",
+            "arguments": {
+              "command": "cp /root/.openclaw/workspace/tool-modeling/SUB-MEM-OFFICE-01/input/monthly_operations_template.xlsx /root/.openclaw/workspace/tool-modeling/SUB-MEM-OFFICE-01/output/monthly_operations_report.xlsx"
+            }
+          }
+        },
         {
           "source": {
             "run": "xlsx_second",
@@ -133,51 +124,28 @@
           }
         }
       ],
-      "expected_outputs": [],
+      "expected_outputs": [
+        "output/monthly_operations_report.xlsx"
+      ],
       "success_criteria": [
+        "已读取 XLSX Skill",
+        "已检查严格 verifier 的调用接口和验收条件",
+        "工作副本存在且源模板保持不变",
         "确认原始 sheet、公式和图表基线",
         "确认 Raw_Sample 数据规模",
         "获得增强所需的关键单元格和图表信息"
       ]
     },
     {
-      "order": 3,
-      "operation_id": "XLSX-K03-copy_template",
-      "operation": "prepare_workbook_copy",
-      "description": "复制模板作为工作副本。",
+      "order": 2,
+      "operation_id": "XLSX-P02-build",
+      "operation": "build_workbook",
+      "description": "写入并原子执行唯一的正式工作簿增强 helper。",
       "condition": "always",
-      "source_tool_calls": [
-        {
-          "source": {
-            "run": "xlsx_second",
-            "session_id": "85e12fb7-a392-4cd8-9bdb-066156bc464a",
-            "trajectory": "/home/lcq/trace_extract/cases/xlsx/agent_run/trajectory.json",
-            "step_id": 13,
-            "tool_call_index": 0,
-            "tool_call_id": "call_00_IZ2ao383hfvzzEDIQJYV6755",
-            "timestamp": "2026-07-30T13:40:55.333Z"
-          },
-          "tool_call": {
-            "function_name": "exec",
-            "arguments": {
-              "command": "cp /root/.openclaw/workspace/tool-modeling/SUB-MEM-OFFICE-01/input/monthly_operations_template.xlsx /root/.openclaw/workspace/tool-modeling/SUB-MEM-OFFICE-01/output/monthly_operations_report.xlsx"
-            }
-          }
-        }
+      "source_operations": [
+        "XLSX-K04-write_enhancement_helper",
+        "XLSX-K05-enhance_workbook"
       ],
-      "expected_outputs": [
-        "output/monthly_operations_report.xlsx"
-      ],
-      "success_criteria": [
-        "工作副本存在且源模板保持不变"
-      ]
-    },
-    {
-      "order": 4,
-      "operation_id": "XLSX-K04-write_enhancement_helper",
-      "operation": "author_workbook_helper",
-      "description": "编写工作簿增强 helper；source_tool_calls 中保留完整 10KB Python 源码。",
-      "condition": "always",
       "source_tool_calls": [
         {
           "source": {
@@ -196,23 +164,7 @@
               "content": "#!/usr/bin/env python3\n\"\"\"Enhance NYC TLC workbook with Executive_Summary sheet, KPI formulas, charts, formatting.\"\"\"\nfrom copy import copy\nfrom openpyxl import load_workbook\nfrom openpyxl.chart import LineChart, PieChart, Reference\nfrom openpyxl.chart.label import DataLabelList\nfrom openpyxl.chart.series import DataPoint\nfrom openpyxl.comments import Comment\nfrom openpyxl.formatting.rule import CellIsRule\nfrom openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers\nfrom openpyxl.utils import get_column_letter\nfrom openpyxl.worksheet.datavalidation import DataValidation\n\nSRC = \"/root/.openclaw/workspace/tool-modeling/SUB-MEM-OFFICE-01/output/monthly_operations_report.xlsx\"\nwb = load_workbook(SRC)\n\n# ── 1. Insert Executive_Summary as first sheet ──\nws = wb.create_sheet(\"Executive_Summary\", 0)\n\n# ── Style constants ──\nFONT_TITLE = Font(name=\"Arial\", size=16, bold=True, color=\"FFFFFF\")\nFONT_SECTION = Font(name=\"Arial\", size=12, bold=True, color=\"FFFFFF\")\nFONT_HEADER = Font(name=\"Arial\", size=10, bold=True, color=\"FFFFFF\")\nFONT_LABEL = Font(name=\"Arial\", size=10, bold=True)\nFONT_BLUE = Font(name=\"Arial\", size=10, color=\"0000FF\")      # hardcoded inputs\nFONT_GREEN = Font(name=\"Arial\", size=10, color=\"008000\")      # cross-sheet formulas\nFONT_BLACK = Font(name=\"Arial\", size=10, color=\"000000\")      # local formulas\nFILL_TITLE = PatternFill(start_color=\"1F4E79\", end_color=\"1F4E79\", fill_type=\"solid\")\nFILL_BLUE_HEADER = PatternFill(start_color=\"4472C4\", end_color=\"4472C4\", fill_type=\"solid\")\nFILL_LIGHT = PatternFill(start_color=\"D6E4F0\", end_color=\"D6E4F0\", fill_type=\"solid\")\nFILL_WHITE = PatternFill(start_color=\"FFFFFF\", end_color=\"FFFFFF\", fill_type=\"solid\")\nALIGN_CENTER = Alignment(horizontal=\"center\", vertical=\"center\", wrap_text=True)\nALIGN_LEFT = Alignment(horizontal=\"left\", vertical=\"center\", wrap_text=True)\nTHIN_BORDER = Border(\n    left=Side(style=\"thin\"),\n    right=Side(style=\"thin\"),\n    top=Side(style=\"thin\"),\n    bottom=Side(style=\"thin\"),\n)\n\n# Dimensions\nws.column_dimensions[\"A\"].width = 30\nfor col_letter in [\"B\",\"C\",\"D\",\"E\",\"F\"]:\n    ws.column_dimensions[col_letter].width = 20\n\n# ── Row 1: Master Title ──\nws.merge_cells(\"A1:F1\")\nws[\"A1\"] = \"NYC Taxi Operations — Executive Summary (January 2024)\"\nws[\"A1\"].font = FONT_TITLE\nws[\"A1\"].fill = FILL_TITLE\nws[\"A1\"].alignment = ALIGN_CENTER\nws.row_dimensions[1].height = 36\n\n# ── Row 3: KPI section header ──\nws.merge_cells(\"A3:F3\")\nws[\"A3\"] = \"Key Performance Indicators\"\nws[\"A3\"].font = FONT_SECTION\nws[\"A3\"].fill = FILL_BLUE_HEADER\nws[\"A3\"].alignment = ALIGN_CENTER\nws.row_dimensions[3].height = 28\n\n# ── Row 4: KPI headers ──\nkpi_headers = [(\"A4\", \"Metric\"), (\"B4\", \"Value\")]\nfor ref, val in kpi_headers:\n    c = ws[ref]\n    c.value = val\n    c.font = FONT_HEADER\n    c.fill = FILL_BLUE_HEADER\n    c.alignment = ALIGN_CENTER\n    c.border = THIN_BORDER\n\n# ── Row 5-9: KPI rows ──\nkpi_rows = [\n    (\"B5\", \"Total Trips\", '=Reconciliation!B10', FONT_GREEN, '#,##0'),\n    (\"B6\", \"Total Fare Revenue\", '=Reconciliation!B14', FONT_GREEN, '$#,##0.00'),\n    (\"B7\", \"Overall Average Fare\", '=Hourly_Summary!B34', FONT_GREEN, '$#,##0.00'),\n    (\"B8\", \"Removal Rate\", '=Reconciliation!B5', FONT_GREEN, '0.0%'),\n    (\"B9\", \"Reconciliation Status\",\n     '=IF(AND(Reconciliation!B24=\"YES - Consistent\",Reconciliation!B25=\"YES - Consistent\"),\"PASS\",\"REVIEW\")',\n     FONT_BLACK, '@'),\n]\n\nrow_num = 5\nfor ref, label, formula, font, nfmt in kpi_rows:\n    ws.cell(row=row_num, column=1, value=label).font = FONT_LABEL\n    ws.cell(row=row_num, column=1).alignment = ALIGN_LEFT\n    ws.cell(row=row_num, column=1).border = THIN_BORDER\n    ws.cell(row=row_num, column=1).fill = FILL_LIGHT if row_num % 2 == 0 else FILL_WHITE\n\n    c = ws[ref]\n    c.value = formula\n    c.font = font\n    c.number_format = nfmt\n    c.alignment = ALIGN_CENTER\n    c.border = THIN_BORDER\n    c.fill = FILL_LIGHT if row_num % 2 == 0 else FILL_WHITE\n    row_num += 1\n\n# ── Row 11: Scenario section header ──\nws.merge_cells(\"A11:F11\")\nws[\"A11\"] = \"Scenario Analysis\"\nws[\"A11\"].font = FONT_SECTION\nws[\"A11\"].fill = FILL_BLUE_HEADER\nws[\"A11\"].alignment = ALIGN_CENTER\nws.row_dimensions[11].height = 28\n\n# ── Row 12: Scenario selector ──\nws.cell(row=12, column=1, value=\"Selected Scenario:\").font = FONT_LABEL\nws.cell(row=12, column=1).alignment = ALIGN_LEFT\nws.cell(row=12, column=1).border = THIN_BORDER\nws.cell(row=12, column=1).fill = FILL_LIGHT\n\nws[\"B12\"] = \"Base\"\nws[\"B12\"].font = FONT_BLUE\nws[\"B12\"].alignment = ALIGN_CENTER\nws[\"B12\"].border = THIN_BORDER\nws[\"B12\"].fill = FILL_WHITE\n\ndv = DataValidation(type=\"list\", formula1='\"Base,Upside,Downside\"', allow_blank=False)\ndv.sqref = \"B12\"\ndv.prompt = \"Select a scenario\"\ndv.promptTitle = \"Scenario Selector\"\nws.add_data_validation(dv)\n\nws[\"B12\"].comment = Comment(\"Scenario selector — choose Base, Upside, or Downside to see projected impacts.\", \"Analyst\")\n\n# ── Row 12 headers for scenario table (D-F) ──\nscenario_headers = [(\"D12\", \"Scenario\"), (\"E12\", \"Fare Mult\"), (\"F12\", \"Trip Mult\")]\nfor ref, val in scenario_headers:\n    c = ws[ref]\n    c.value = val\n    c.font = FONT_HEADER\n    c.fill = FILL_BLUE_HEADER\n    c.alignment = ALIGN_CENTER\n    c.border = THIN_BORDER\n\n# ── Row 13-15: Scenario table ──\nscenario_data = [\n    (\"D13\", \"Base\", \"E13\", 1.00, \"F13\", 1.00),\n    (\"D14\", \"Upside\", \"E14\", 1.08, \"F14\", 1.05),\n    (\"D15\", \"Downside\", \"E15\", 0.93, \"F15\", 0.95),\n]\nfor row_idx, (d_ref, scenario, e_ref, fare_mult, f_ref, trip_mult) in enumerate(scenario_data, start=13):\n    dc = ws[d_ref]\n    dc.value = scenario\n    dc.font = FONT_BLUE\n    dc.alignment = ALIGN_CENTER\n    dc.border = THIN_BORDER\n    dc.fill = FILL_WHITE\n\n    ec = ws[e_ref]\n    ec.value = fare_mult\n    ec.font = FONT_BLUE\n    ec.number_format = '0.00'\n    ec.alignment = ALIGN_CENTER\n    ec.border = THIN_BORDER\n    ec.fill = FILL_WHITE\n\n    fc = ws[f_ref]\n    fc.value = trip_mult\n    fc.font = FONT_BLUE\n    fc.number_format = '0.00'\n    fc.alignment = ALIGN_CENTER\n    fc.border = THIN_BORDER\n    fc.fill = FILL_WHITE\n\nws[\"D13\"].comment = Comment(\"Scenario assumptions: fare and trip volume multipliers relative to base. Source: analyst estimates.\", \"Analyst\")\n\n# ── B13: Selected fare multiplier ──\nws[\"B13\"] = '=INDEX(E13:E15,MATCH(B12,D13:D15,0))'\nws[\"B13\"].font = FONT_BLACK\nws[\"B13\"].number_format = '0.00'\nws[\"B13\"].alignment = ALIGN_CENTER\nws[\"B13\"].border = THIN_BORDER\nws[\"B13\"].fill = FILL_WHITE\nws.cell(row=13, column=1, value=\"Selected Fare Mult:\").font = FONT_LABEL\nws.cell(row=13, column=1).alignment = ALIGN_LEFT\nws.cell(row=13, column=1).border = THIN_BORDER\nws.cell(row=13, column=1).fill = FILL_LIGHT\n\n# ── B14: Selected trip multiplier ──\nws[\"B14\"] = '=INDEX(F13:F15,MATCH(B12,D13:D15,0))'\nws[\"B14\"].font = FONT_BLACK\nws[\"B14\"].number_format = '0.00'\nws[\"B14\"].alignment = ALIGN_CENTER\nws[\"B14\"].border = THIN_BORDER\nws[\"B14\"].fill = FILL_WHITE\nws.cell(row=14, column=1, value=\"Selected Trip Mult:\").font = FONT_LABEL\nws.cell(row=14, column=1).alignment = ALIGN_LEFT\nws.cell(row=14, column=1).border = THIN_BORDER\nws.cell(row=14, column=1).fill = FILL_LIGHT\n\n# ── B15: Projected Trips ──\nws[\"B15\"] = '=B5*B14'\nws[\"B15\"].font = FONT_BLACK\nws[\"B15\"].number_format = '#,##0'\nws[\"B15\"].alignment = ALIGN_CENTER\nws[\"B15\"].border = THIN_BORDER\nws[\"B15\"].fill = FILL_WHITE\nws.cell(row=15, column=1, value=\"Projected Trips:\").font = FONT_LABEL\nws.cell(row=15, column=1).alignment = ALIGN_LEFT\nws.cell(row=15, column=1).border = THIN_BORDER\nws.cell(row=15, column=1).fill = FILL_LIGHT\n\n# ── B16: Projected Fare Revenue ──\nws[\"B16\"] = '=B6*B13*B14'\nws[\"B16\"].font = FONT_BLACK\nws[\"B16\"].number_format = '$#,##0.00'\nws[\"B16\"].alignment = ALIGN_CENTER\nws[\"B16\"].border = THIN_BORDER\nws[\"B16\"].fill = FILL_WHITE\nws.cell(row=16, column=1, value=\"Projected Fare Revenue:\").font = FONT_LABEL\nws.cell(row=16, column=1).alignment = ALIGN_LEFT\nws.cell(row=16, column=1).border = THIN_BORDER\nws.cell(row=16, column=1).fill = FILL_LIGHT\n\n# Mark cell B5 comment with source\nws[\"B5\"].comment = Comment(\"Source: Reconciliation sheet via Hourly_Summary aggregated totals.\", \"Analyst\")\n\n# ── Conditional Formatting ──\n# Rule 1: Highlight B9 (Reconciliation Status) red if it says REVIEW\nred_fill = PatternFill(start_color=\"FFC7CE\", end_color=\"FFC7CE\", fill_type=\"solid\")\nred_font = Font(color=\"9C0006\")\nws.conditional_formatting.add(\"B9\",\n    CellIsRule(operator=\"equal\", formula=['\"REVIEW\"'], fill=red_fill, font=red_font))\n\n# Rule 2: Highlight projected values if > base\ngreen_fill = PatternFill(start_color=\"C6EFCE\", end_color=\"C6EFCE\", fill_type=\"solid\")\nws.conditional_formatting.add(\"B15:B16\",\n    CellIsRule(operator=\"greaterThan\", formula=[\"B5\"], fill=green_fill,\n              font=Font(color=\"006100\")))\n\n# ── Freeze Panes: freeze row 4 (below header rows) ──\nws.freeze_panes = \"A4\"\n\n# ── CHARTS ──\n\n# Chart 1: Daily Trip Trend (Line Chart)\ndaily = wb[\"Daily_Summary\"]\nchart1 = LineChart()\nchart1.title = \"Daily Trip Volume — January 2024\"\nchart1.style = 10\nchart1.y_axis.title = \"Trips\"\nchart1.x_axis.title = \"Date\"\nchart1.width = 22\nchart1.height = 13\n\ncats = Reference(daily, min_col=1, min_row=2, max_row=32)  # A2:A32\nvals = Reference(daily, min_col=3, min_row=1, max_row=32)   # C1:C32 with header\nchart1.add_data(vals, titles_from_data=True)\nchart1.set_categories(cats)\ns = chart1.series[0]\ns.graphicalProperties.line.width = 22000  # in EMUs\ns.graphicalProperties.line.solidFill = \"1F4E79\"\nws.add_chart(chart1, \"A18\")\n\n# Chart 2: Payment Method Mix (Pie Chart)\npayment = wb[\"Payment_Summary\"]\nchart2 = PieChart()\nchart2.title = \"Payment Method Mix — January 2024\"\nchart2.style = 10\nchart2.width = 18\nchart2.height = 13\n\npie_cats = Reference(payment, min_col=1, min_row=2, max_row=5)\npie_vals = Reference(payment, min_col=2, min_row=1, max_row=5)\nchart2.add_data(pie_vals, titles_from_data=True)\nchart2.set_categories(pie_cats)\n\nchart2.dataLabels = DataLabelList()\nchart2.dataLabels.showPercent = True\nchart2.dataLabels.showCatName = True\nchart2.dataLabels.showVal = False\n\n# Colors for pie slices\ncolors = [\"4472C4\", \"ED7D31\", \"A5A5A5\", \"FFC000\"]\nfor i, color in enumerate(colors):\n    pt = DataPoint(idx=i)\n    pt.graphicalProperties.solidFill = color\n    chart2.series[0].data_points.append(pt)\n\nws.add_chart(chart2, \"A32\")\n\n# ── Save ──\nwb.save(SRC)\nprint(\"Enhancement complete: saved to\", SRC)\n"
             }
           }
-        }
-      ],
-      "expected_outputs": [
-        "enhance_workbook.py"
-      ],
-      "success_criteria": [
-        "helper 完整实现 Executive_Summary、KPI、情景分析、图表、样式、注释和数据验证",
-        "helper 在现有工作簿上编辑而非生成简化替代品"
-      ]
-    },
-    {
-      "order": 5,
-      "operation_id": "XLSX-K05-enhance_workbook",
-      "operation": "execute_workbook_helper",
-      "description": "执行 helper，生成增强工作簿。",
-      "condition": "always",
-      "source_tool_calls": [
+        },
         {
           "source": {
             "run": "xlsx_second",
@@ -233,19 +185,27 @@
         }
       ],
       "expected_outputs": [
+        "enhance_workbook.py",
         "output/monthly_operations_report.xlsx"
       ],
       "success_criteria": [
+        "helper 完整实现 Executive_Summary、KPI、情景分析、图表、样式、注释和数据验证",
+        "helper 在现有工作簿上编辑而非生成简化替代品",
         "helper 退出成功",
         "增强工作簿可被后续重算工具打开"
       ]
     },
     {
-      "order": 6,
-      "operation_id": "XLSX-K06-recalculate_workbook",
-      "operation": "recalculate_formulas",
-      "description": "使用真实 recalc.py 重算，并将真实 stdout 保存为 JSON。",
+      "order": 3,
+      "operation_id": "XLSX-P03-process_publish",
+      "operation": "process_and_publish",
+      "description": "重算并检查最终工作簿，然后动态导出两个摘要 CSV。",
       "condition": "always",
+      "source_operations": [
+        "XLSX-K06-recalculate_workbook",
+        "XLSX-K07-validate_workbook",
+        "XLSX-K09-export_summary_csvs"
+      ],
       "source_tool_calls": [
         {
           "source": {
@@ -264,23 +224,7 @@
               "timeout": 200
             }
           }
-        }
-      ],
-      "expected_outputs": [
-        "output/formula_recalc.json"
-      ],
-      "success_criteria": [
-        "重算命令退出成功",
-        "formula_recalc.json 来自 recalc.py 的真实输出"
-      ]
-    },
-    {
-      "order": 7,
-      "operation_id": "XLSX-K07-validate_workbook",
-      "operation": "inspect_generated_workbook",
-      "description": "检查公式、缓存值、布局和重算报告。",
-      "condition": "always",
-      "source_tool_calls": [
+        },
         {
           "source": {
             "run": "xlsx_first",
@@ -333,111 +277,7 @@
               "command": "cat /root/.openclaw/workspace/tool-modeling/SUB-MEM-OFFICE-01/output/formula_recalc.json"
             }
           }
-        }
-      ],
-      "expected_outputs": [],
-      "success_criteria": [
-        "目标公式和情景表结构正确",
-        "重算后的 KPI 缓存值可读取",
-        "formula_recalc.json 状态成功且无公式错误"
-      ]
-    },
-    {
-      "order": 8,
-      "operation_id": "XLSX-K08-repair_workbook",
-      "operation": "repair_workbook_helper",
-      "description": "检查失败时使用第一轮 trace 的实际修复版 helper 重新生成、重算和检查。",
-      "condition": "inspect_generated_workbook 或 run_business_verifier 失败",
-      "source_tool_calls": [
-        {
-          "source": {
-            "run": "xlsx_first",
-            "session_id": "208c4ad0-5f7e-444f-97da-9fd2dbca0e31",
-            "trajectory": "/home/lcq/trace_extract/trace_backups/20260730T133833Z/xlsx/agent_run/trajectory.json",
-            "step_id": 41,
-            "tool_call_index": 0,
-            "tool_call_id": "call_00_RmggLvq6n6NZTjJOhYhR7418",
-            "timestamp": "2026-07-30T01:21:59.089Z"
-          },
-          "tool_call": {
-            "function_name": "write",
-            "arguments": {
-              "content": "#!/usr/bin/env python3\n\"\"\"Enhance the NYC TLC monthly operations workbook with Executive_Summary sheet.\"\"\"\nimport shutil\nfrom pathlib import Path\n\nfrom openpyxl import load_workbook\nfrom openpyxl.chart import BarChart, PieChart, Reference\nfrom openpyxl.chart.label import DataLabelList\nfrom openpyxl.chart.series import DataPoint\nfrom openpyxl.comments import Comment\nfrom openpyxl.formatting.rule import CellIsRule, FormulaRule\nfrom openpyxl.styles import Alignment, Font, PatternFill\nfrom openpyxl.worksheet.datavalidation import DataValidation\n\nINPUT = Path(\"/root/.openclaw/workspace/tool-modeling/SUB-MEM-OFFICE-01/input\")\nOUTPUT = Path(\"/root/.openclaw/workspace/tool-modeling/SUB-MEM-OFFICE-01/output\")\nTEMPLATE = INPUT / \"monthly_operations_template.xlsx\"\nREPORT = OUTPUT / \"monthly_operations_report.xlsx\"\n\n# Style constants\nFD = \"Arial\"\nBF = Font(name=FD, size=14, bold=True, color=\"FFFFFF\")\nHF = Font(name=FD, size=11, bold=True, color=\"FFFFFF\")\nSF = Font(name=FD, size=12, bold=True, color=\"003366\")\nLF = Font(name=FD, size=11, bold=True, color=\"003366\")\nBLUE = Font(name=FD, size=11, color=\"0000FF\")\nGREEN = Font(name=FD, size=11, color=\"008000\")\nBLACK = Font(name=FD, size=11, color=\"000000\")\nIT = Font(name=FD, size=10, italic=True, color=\"666666\")\nHEAD = Font(name=FD, size=10, bold=True, color=\"FFFFFF\")\n\nHDR_FILL = PatternFill(start_color=\"003366\", end_color=\"003366\", fill_type=\"solid\")\nGRAY_FILL = PatternFill(start_color=\"E8ECF0\", end_color=\"E8ECF0\", fill_type=\"solid\")\nLIGHT_FILL = PatternFill(start_color=\"F4F6F8\", end_color=\"F4F6F8\", fill_type=\"solid\")\nTBH_FILL = PatternFill(start_color=\"4A5B6B\", end_color=\"4A5B6B\", fill_type=\"solid\")\nYEL_FILL = PatternFill(start_color=\"FFF2CC\", end_color=\"FFF2CC\", fill_type=\"solid\")\nCA = Alignment(horizontal=\"center\", vertical=\"center\", wrap_text=True)\nLA = Alignment(horizontal=\"left\", vertical=\"center\")\nCEN = Alignment(horizontal=\"center\", vertical=\"center\")\n\n# Copy template\nOUTPUT.mkdir(parents=True, exist_ok=True)\nshutil.copy2(TEMPLATE, REPORT)\n\nwb = load_workbook(REPORT)\nws = wb.create_sheet(\"Executive_Summary\", 0)\n\n# Column widths\nws.column_dimensions[\"A\"].width = 30\nws.column_dimensions[\"B\"].width = 22\nws.column_dimensions[\"C\"].width = 22\nws.column_dimensions[\"D\"].width = 22\nws.column_dimensions[\"E\"].width = 14\nws.column_dimensions[\"F\"].width = 14\n\n# ============ ROW 1: TITLE ============\nws.merge_cells(\"A1:F1\")\nws[\"A1\"] = \"NYC TLC Operations Report — January 2024\"\nws[\"A1\"].font = BF\nws[\"A1\"].fill = HDR_FILL\nws[\"A1\"].alignment = CA\nws.row_dimensions[1].height = 36\n\n# ============ ROW 3: KPI SECTION HEADER ============\nws.cell(row=3, column=1, value=\"Key Performance Indicators\").font = SF\nws.row_dimensions[3].height = 24\n\n# ============ ROW 4: COLUMN HEADERS ============\nfor col, txt in [(1, \"Metric\"), (2, \"Value\")]:\n    c = ws.cell(row=4, column=col, value=txt)\n    c.font = HF\n    c.fill = GRAY_FILL\n    c.alignment = CA\nws.merge_cells(\"B4:C4\")\n\n# ============ KPI ROWS (5-9) ============\nkpis = [\n    (5, \"Total Trips\", '=Reconciliation!B10', \"#,##0\", GREEN),\n    (6, \"Total Fare Revenue\", '=Reconciliation!B14', '$#,##0', GREEN),\n    (7, \"Overall Average Fare\", '=Hourly_Summary!B34', '$#,##0.00', GREEN),\n    (8, \"Removal Rate\", '=Reconciliation!B5', '0.0%', GREEN),\n    (9, \"Reconciliation Status\",\n     '=IF(AND(Reconciliation!B24=\"YES - Consistent\",Reconciliation!B25=\"YES - Consistent\"),\"PASS\",\"REVIEW\")',\n     '@', BLACK),\n]\nfor i, (row, label, formula, nfmt, font) in enumerate(kpis):\n    c_lbl = ws.cell(row=row, column=1, value=label)\n    c_lbl.font = LF\n    c_lbl.alignment = LA\n    c_val = ws.cell(row=row, column=2, value=formula)\n    c_val.font = font\n    c_val.alignment = CEN\n    c_val.number_format = nfmt\n    ws.merge_cells(f\"B{row}:C{row}\")\n    if i % 2 == 0:\n        c_lbl.fill = LIGHT_FILL\n        c_val.fill = LIGHT_FILL\n    ws.row_dimensions[row].height = 24\n\n# ============ COMMENTS ============\nws[\"B5\"].comment = Comment(\n    \"Source: NYC TLC Trip Record Data, January 2024. Cross-sheet reference to Reconciliation!B10.\",\n    \"Data Team\")\nws[\"B9\"].comment = Comment(\n    \"Status = PASS only when all trip and fare totals are consistent across summary sheets.\",\n    \"Data Team\")\n\n# ============ ROW 11: SCENARIO SECTION HEADER ============\nws.cell(row=11, column=1, value=\"Scenario Analysis\").font = SF\nws.row_dimensions[11].height = 24\n\n# ============ ROW 12: SCENARIO SELECTOR ============\nws.cell(row=12, column=1, value=\"Scenario Selector\").font = LF\nws.cell(row=12, column=2, value=\"Base\").font = BLUE\nws[\"B12\"].alignment = CEN\nws[\"B12\"].fill = YEL_FILL\nws.merge_cells(\"B12:C12\")\n\ndv = DataValidation(type=\"list\", formula1='\"Base,Upside,Downside\"', allow_blank=True)\ndv.sqref = \"B12\"\nws.add_data_validation(dv)\nws.row_dimensions[12].height = 24\n\n# ============ ROWS 13-16: DYNAMIC MULTIPLIERS AND PROJECTIONS ============\nws.cell(row=13, column=1, value=\"Fare Multiplier\").font = LF\nws.cell(row=13, column=2, value='=INDEX(E14:E16,MATCH(B12,D14:D16,0))').font = BLACK\nws[\"B13\"].alignment = CEN\nws[\"B13\"].number_format = \"0.00\"\nws.merge_cells(\"B13:C13\")\n\nws.cell(row=14, column=1, value=\"Trip Multiplier\").font = LF\nws.cell(row=14, column=2, value='=INDEX(F14:F16,MATCH(B12,D14:D16,0))').font = BLACK\nws[\"B14\"].alignment = CEN\nws[\"B14\"].number_format = \"0.00\"\nws.merge_cells(\"B14:C14\")\n\nws.cell(row=15, column=1, value=\"Projected Trips\").font = LF\nws.cell(row=15, column=2, value='=B5*B14').font = BLACK\nws[\"B15\"].alignment = CEN\nws[\"B15\"].number_format = \"#,##0\"\nws.merge_cells(\"B15:C15\")\n\nws.cell(row=16, column=1, value=\"Projected Fare Revenue\").font = LF\nws.cell(row=16, column=2, value='=B6*B13*B14').font = BLACK\nws[\"B16\"].alignment = CEN\nws[\"B16\"].number_format = \"$#,##0\"\nws.merge_cells(\"B16:C16\")\n\nfor r in range(13, 17):\n    ws.row_dimensions[r].height = 24\n\n# ============ SCENARIO TABLE (D13:F16) ============\nfor col, txt in [(4, \"Scenario\"), (5, \"Fare Mult\"), (6, \"Trip Mult\")]:\n    c = ws.cell(row=13, column=col, value=txt)\n    c.font = HEAD\n    c.fill = TBH_FILL\n    c.alignment = CA\nws.row_dimensions[13].height = 22\n\nscenarios = [\n    (14, \"Base\", 1.00, 1.00),\n    (15, \"Upside\", 1.08, 1.05),\n    (16, \"Downside\", 0.93, 0.95),\n]\nfor row, name, fare_m, trip_m in scenarios:\n    c_n = ws.cell(row=row, column=4, value=name)\n    c_n.font = BLUE\n    c_n.alignment = CEN\n    c_f = ws.cell(row=row, column=5, value=fare_m)\n    c_f.font = BLUE; c_f.alignment = CEN; c_f.number_format = \"0.00\"\n    c_t = ws.cell(row=row, column=6, value=trip_m)\n    c_t.font = BLUE; c_t.alignment = CEN; c_t.number_format = \"0.00\"\n    ws.row_dimensions[row].height = 22\n\n# ============ CHART 1: Daily Trip Trend ============\nds = wb[\"Daily_Summary\"]\nc1 = BarChart()\nc1.type = \"col\"\nc1.title = \"Daily Trip Trend — January 2024\"\nc1.x_axis.title = \"Date\"\nc1.y_axis.title = \"Trips\"\nc1.style = 10\nc1.width = 22\nc1.height = 13\nd1 = Reference(ds, min_col=3, min_row=1, max_row=32)\nct1 = Reference(ds, min_col=1, min_row=2, max_row=32)\nc1.add_data(d1, titles_from_data=True)\nc1.set_categories(ct1)\nc1.series[0].graphicalProperties.solidFill = \"4472C4\"\nc1.legend = None\nws.add_chart(c1, \"A18\")\n\n# ============ CHART 2: Payment Method Pie ============\nps = wb[\"Payment_Summary\"]\nc2 = PieChart()\nc2.title = \"Payment Method Mix\"\nc2.style = 10\nc2.width = 18\nc2.height = 13\nd2 = Reference(ps, min_col=2, min_row=1, max_row=5)\nct2 = Reference(ps, min_col=1, min_row=2, max_row=5)\nc2.add_data(d2, titles_from_data=True)\nc2.set_categories(ct2)\nc2.dataLabels = DataLabelList()\nc2.dataLabels.showPercent = True\nc2.dataLabels.showCatName = True\nfor i, color in enumerate([\"4472C4\", \"ED7D31\", \"A5A5A5\", \"FFC000\"]):\n    pt = DataPoint(idx=i)\n    pt.graphicalProperties.solidFill = color\n    c2.series[0].data_points.append(pt)\nws.add_chart(c2, \"A34\")\n\n# ============ CONDITIONAL FORMATTING ============\nred_fill = PatternFill(start_color=\"FF6666\", end_color=\"FF6666\", fill_type=\"solid\")\nred_font = Font(name=FD, size=11, bold=True, color=\"FFFFFF\")\nws.conditional_formatting.add(\n    \"B9\", CellIsRule(operator=\"notEqual\", formula=['\"PASS\"'], fill=red_fill, font=red_font))\n\ny_fill = PatternFill(start_color=\"FFFF00\", end_color=\"FFFF00\", fill_type=\"solid\")\nws.conditional_formatting.add(\n    \"D14:F16\", FormulaRule(formula=['$D14=$B$12'], fill=y_fill))\n\n# ============ FREEZE PANES ============\nws.freeze_panes = \"A5\"\n\n# ============ SAVE ============\nwb.save(str(REPORT))\nprint(f\"Saved to {REPORT}\")\nprint(f\"Sheets: {wb.sheetnames}\")\nprint(f\"B5 formula: {ws['B5'].value}\")\nprint(f\"B6 formula: {ws['B6'].value}\")\nprint(f\"B15 formula: {ws['B15'].value}\")\nprint(f\"B16 formula: {ws['B16'].value}\")\nwb.close()\n",
-              "path": "/root/.openclaw/workspace/tool-modeling/SUB-MEM-OFFICE-01/enhance_workbook.py"
-            }
-          }
         },
-        {
-          "source": {
-            "run": "xlsx_first",
-            "session_id": "208c4ad0-5f7e-444f-97da-9fd2dbca0e31",
-            "trajectory": "/home/lcq/trace_extract/trace_backups/20260730T133833Z/xlsx/agent_run/trajectory.json",
-            "step_id": 42,
-            "tool_call_index": 0,
-            "tool_call_id": "call_00_mtuUlIkiACZhEcLv8QpS6245",
-            "timestamp": "2026-07-30T01:22:08.272Z"
-          },
-          "tool_call": {
-            "function_name": "exec",
-            "arguments": {
-              "command": "cd /root/.openclaw/workspace/tool-modeling/SUB-MEM-OFFICE-01 && python3 /opt/document-bench/bin/run_xlsx_helper_atomic.py enhance_workbook.py output/monthly_operations_report.xlsx",
-              "timeout": 60
-            }
-          }
-        },
-        {
-          "source": {
-            "run": "xlsx_first",
-            "session_id": "208c4ad0-5f7e-444f-97da-9fd2dbca0e31",
-            "trajectory": "/home/lcq/trace_extract/trace_backups/20260730T133833Z/xlsx/agent_run/trajectory.json",
-            "step_id": 48,
-            "tool_call_index": 0,
-            "tool_call_id": "call_00_3neLgpMmPOg0ZArY8yBa9437",
-            "timestamp": "2026-07-30T01:24:08.599Z"
-          },
-          "tool_call": {
-            "function_name": "exec",
-            "arguments": {
-              "command": "cd /root/.openclaw/skills/xlsx/scripts && python3 recalc.py /root/.openclaw/workspace/tool-modeling/SUB-MEM-OFFICE-01/output/monthly_operations_report.xlsx __DOCUMENT_RECALC_TIMEOUT__ > /root/.openclaw/workspace/tool-modeling/SUB-MEM-OFFICE-01/output/formula_recalc.json",
-              "timeout": 200
-            }
-          }
-        },
-        {
-          "source": {
-            "run": "xlsx_first",
-            "session_id": "208c4ad0-5f7e-444f-97da-9fd2dbca0e31",
-            "trajectory": "/home/lcq/trace_extract/trace_backups/20260730T133833Z/xlsx/agent_run/trajectory.json",
-            "step_id": 51,
-            "tool_call_index": 0,
-            "tool_call_id": "call_00_gEfaHmO5cnnzUe2A5Qnx9393",
-            "timestamp": "2026-07-30T01:25:13.035Z"
-          },
-          "tool_call": {
-            "function_name": "exec",
-            "arguments": {
-              "command": "cat /root/.openclaw/workspace/tool-modeling/SUB-MEM-OFFICE-01/output/formula_recalc.json"
-            }
-          }
-        }
-      ],
-      "expected_outputs": [
-        "enhance_workbook.py",
-        "output/monthly_operations_report.xlsx",
-        "output/formula_recalc.json"
-      ],
-      "success_criteria": [
-        "修复后回到增强、重算和检查流程",
-        "不得在无失败时无条件执行此分支"
-      ]
-    },
-    {
-      "order": 9,
-      "operation_id": "XLSX-K09-export_summary_csvs",
-      "operation": "publish_csv_outputs",
-      "description": "从最终重算工作簿动态导出 Executive_Summary 和 Reconciliation CSV。",
-      "condition": "always",
-      "source_tool_calls": [
         {
           "source": {
             "run": "xlsx_second",
@@ -457,19 +297,30 @@
         }
       ],
       "expected_outputs": [
+        "output/formula_recalc.json",
         "output/monthly_operations_summary.csv",
         "output/reconciliation_summary.csv"
       ],
       "success_criteria": [
+        "重算命令退出成功",
+        "formula_recalc.json 来自 recalc.py 的真实输出",
+        "目标公式和情景表结构正确",
+        "重算后的 KPI 缓存值可读取",
+        "formula_recalc.json 状态成功且无公式错误",
         "两个 CSV 均从最终工作簿缓存值动态导出且非空"
       ]
     },
     {
-      "order": 10,
-      "operation_id": "XLSX-K10-verify_business_rules",
-      "operation": "run_business_verifier",
-      "description": "运行独立业务 verifier。",
+      "order": 4,
+      "operation_id": "XLSX-P04-verify_deliver",
+      "operation": "verify_and_deliver",
+      "description": "运行严格业务验收，生成执行摘要并核对六个交付文件。",
       "condition": "always",
+      "source_operations": [
+        "XLSX-K10-verify_business_rules",
+        "XLSX-K11-generate_summary",
+        "XLSX-K12-check_deliverables"
+      ],
       "source_tool_calls": [
         {
           "source": {
@@ -488,23 +339,7 @@
               "timeout": 120
             }
           }
-        }
-      ],
-      "expected_outputs": [
-        "output/business_verification.json"
-      ],
-      "success_criteria": [
-        "business_verification.json.status == success",
-        "failures 为空"
-      ]
-    },
-    {
-      "order": 11,
-      "operation_id": "XLSX-K11-generate_summary",
-      "operation": "write_execution_summary",
-      "description": "从最终工作簿、重算结果和严格验证结果动态生成执行摘要。",
-      "condition": "always",
-      "source_tool_calls": [
+        },
         {
           "source": {
             "run": "benchmark_hardening",
@@ -517,22 +352,7 @@
               "timeout": 60
             }
           }
-        }
-      ],
-      "expected_outputs": [
-        "output/xlsx_enhancement_summary.json"
-      ],
-      "success_criteria": [
-        "摘要由最终工作簿、重算 JSON 和 verifier JSON 实际派生"
-      ]
-    },
-    {
-      "order": 12,
-      "operation_id": "XLSX-K12-check_deliverables",
-      "operation": "validate_deliverables",
-      "description": "核对六个最终交付文件及状态。",
-      "condition": "always",
-      "source_tool_calls": [
+        },
         {
           "source": {
             "run": "xlsx_second",
@@ -552,14 +372,17 @@
         }
       ],
       "expected_outputs": [
+        "output/business_verification.json",
+        "output/xlsx_enhancement_summary.json",
         "output/monthly_operations_report.xlsx",
         "output/monthly_operations_summary.csv",
         "output/reconciliation_summary.csv",
-        "output/formula_recalc.json",
-        "output/business_verification.json",
-        "output/xlsx_enhancement_summary.json"
+        "output/formula_recalc.json"
       ],
       "success_criteria": [
+        "business_verification.json.status == success",
+        "failures 为空",
+        "摘要由最终工作簿、重算 JSON 和 verifier JSON 实际派生",
         "六个文件均存在",
         "业务验收成功",
         "重算报告成功"

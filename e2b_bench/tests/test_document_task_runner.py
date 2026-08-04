@@ -8,7 +8,6 @@ import pytest
 from e2b_bench.bench import run_benchmark
 from e2b_bench.config import Config
 from e2b_bench.document_task_runner import (
-    DOCUMENT_MAX_REPAIR_ATTEMPTS,
     DocumentOperationExecutor,
     DocumentTaskRunner,
     SceneRecipeError,
@@ -54,10 +53,11 @@ def document_config(case_kind="pdf"):
     return Config(workflow_type="document", document_case_kind="xlsx")
 
 
-@pytest.mark.parametrize("case_kind,count", [("pdf", 14), ("xlsx", 12)])
+@pytest.mark.parametrize("case_kind,count", [("pdf", 4), ("xlsx", 4)])
 def test_fixed_recipes_load_and_validate(case_kind, count):
     recipe = load_scene_recipe(case_kind)
     assert recipe["operation_count"] == count
+    assert recipe["workflow"] == {"success_path": get_step_order("document", case_kind)}
     assert get_document_operations_path(case_kind).is_file()
 
 
@@ -66,9 +66,10 @@ def test_invalid_case_kind_is_rejected():
         load_scene_recipe("docx")
 
 
-def test_repair_policy_is_fixed_by_case_kind():
-    expected = {"pdf": 0, "xlsx": 1}
-    assert expected == DOCUMENT_MAX_REPAIR_ATTEMPTS
+def test_xlsx_recipe_has_one_fixed_path_without_repair_phase():
+    recipe = load_scene_recipe("xlsx")
+    assert "conditional_path" not in recipe["workflow"]
+    assert all("repair" not in phase_id for phase_id in recipe["workflow"]["success_path"])
 
 
 def test_workspace_restore_has_no_image_recipe_or_sha_check():
@@ -82,37 +83,39 @@ def test_workspace_restore_has_no_image_recipe_or_sha_check():
     assert "sha256" not in command.lower()
 
 
-def test_pdf_complete_path_and_set_stop_event_does_not_interrupt_active_task():
+@pytest.mark.parametrize("case_kind", ["pdf", "xlsx"])
+def test_document_complete_path_and_set_stop_event_does_not_interrupt_active_task(case_kind):
     stop_event = threading.Event()
     stop_event.set()
-    executor = DocumentOperationExecutor(SandboxState(1, workflow_type="document"), document_config(), stop_event)
+    executor = DocumentOperationExecutor(
+        SandboxState(1, workflow_type="document"), document_config(case_kind), stop_event
+    )
     success, _latency, steps, timed_out, detail = executor.execute(FakeSandbox())
     assert success and not timed_out and not detail
-    assert list(steps) == get_step_order("document", "pdf")
+    assert list(steps) == get_step_order("document", case_kind)
 
 
-def test_xlsx_failure_uses_single_fixed_repair_path():
+def test_xlsx_phase_failure_stops_the_fixed_path_without_repair():
     executor = DocumentOperationExecutor(SandboxState(1, workflow_type="document"), document_config("xlsx"))
     calls = []
 
-    def operation(_sandbox, operation_id, step_times):
-        calls.append(operation_id)
-        step_times[operation_id] = 0.01
-        if operation_id == "XLSX-K07-validate_workbook" and calls.count(operation_id) == 1:
+    def phase(_sandbox, phase_id, step_times):
+        calls.append(phase_id)
+        step_times[phase_id] = 0.01
+        if phase_id == "XLSX-P03-process_publish":
             return False, "expected trigger"
         return True, ""
 
     with patch.object(executor, "prepare_workspace", return_value=(True, "")), patch.object(
-        executor, "_execute_operation", side_effect=operation
+        executor, "_execute_phase", side_effect=phase
     ), patch.object(executor, "_validate_business_result", return_value=(True, "")):
-        success, _latency, _steps, timed_out, _detail = executor.execute(FakeSandbox())
-    assert success and not timed_out
-    assert "XLSX-K08-repair_workbook" in calls
-    assert calls[-4:] == [
-        "XLSX-K09-export_summary_csvs",
-        "XLSX-K10-verify_business_rules",
-        "XLSX-K11-generate_summary",
-        "XLSX-K12-check_deliverables",
+        success, _latency, _steps, timed_out, detail = executor.execute(FakeSandbox())
+    assert not success and not timed_out
+    assert detail == "expected trigger"
+    assert calls == [
+        "XLSX-P01-inspect_prepare",
+        "XLSX-P02-build",
+        "XLSX-P03-process_publish",
     ]
 
 
@@ -164,7 +167,14 @@ def test_task_manager_dispatch_and_shared_document_deadline():
         manager.wait_all()
 
 
-def test_metrics_dispatch_report_extraction_and_column_groups(tmp_path):
+@pytest.mark.parametrize(
+    "case_kind,phase_id",
+    [
+        ("pdf", "PDF-P01-inspect_prepare"),
+        ("xlsx", "XLSX-P01-inspect_prepare"),
+    ],
+)
+def test_metrics_dispatch_report_extraction_and_column_groups(tmp_path, case_kind, phase_id):
     for workflow, metrics_type in (
         ("browser", BrowserMetrics),
         ("coding", CodingMetrics),
@@ -174,27 +184,26 @@ def test_metrics_dispatch_report_extraction_and_column_groups(tmp_path):
     with pytest.raises(ValueError, match="Unsupported workflow_type"):
         _ = SandboxState(1, workflow_type="unknown").task_metrics
 
-    config = document_config()
+    config = document_config(case_kind)
     state = SandboxState(1, workflow_type="document")
     state.creation_metrics.status = SandboxStatus.PORT_READY
-    state.document_metrics.add(1.25, True, step_times={"PDF-K01-read_requirements": 0.25})
+    state.document_metrics.add(1.25, True, step_times={phase_id: 0.25})
     report = StatsCollector(config, {1: state}).generate_report()
     report_file = tmp_path / "bench_report.txt"
     report_file.write_text(report, encoding="utf-8")
     metrics = MetricsExtractor().extract_document_metrics(str(report_file))
-    assert metrics["Document_Case_Kind"] == "pdf"
+    assert metrics["Document_Case_Kind"] == case_kind
     assert metrics["Document_Total_Tasks"] == 1
-    assert metrics["Document_PDF-K01-read_requirements_Count"] == 1
+    assert metrics[f"Document_{phase_id}_Count"] == 1
 
     aggregator = ReportAggregator()
     assert aggregator._find_column_group("Document_Success_Rate") == "Document"
-    assert aggregator._find_column_group("Document_PDF-K01-read_requirements_Avg_ms") == "Document_Steps"
-    assert aggregator._find_column_group("Document_PDF-K01_Avg_ms") == "Document_Steps"
+    assert aggregator._find_column_group(f"Document_{phase_id}_Avg_ms") == "Document_Steps"
     assert aggregator._find_column_group("Coding_verify_Avg_ms") == "Coding_Steps"
     assert aggregator._find_column_group("Browser_snapshot_Avg_ms") == "Browser_Steps"
 
 
-def test_legacy_document_step_ids_are_normalized_during_extraction(tmp_path):
+def test_legacy_document_operation_ids_are_not_extracted(tmp_path):
     report_file = tmp_path / "legacy_document_report.txt"
     report_file.write_text(
         """[Document Task Statistics]
@@ -210,8 +219,7 @@ PDF-K01  1      250.0    250.0    250.0    250.0
         encoding="utf-8",
     )
     metrics = MetricsExtractor().extract_document_metrics(str(report_file))
-    assert metrics["Document_PDF-K01-read_requirements_Count"] == 1
-    assert "Document_PDF-K01_Count" not in metrics
+    assert not any(key.startswith("Document_PDF-K01") for key in metrics)
 
 
 def test_unknown_task_runner_does_not_fall_back_to_browser():
