@@ -11,7 +11,8 @@ This directory contains all files needed to build the `ubuntu-openclaw-chromium:
 | `openclaw.json` | Openclaw configuration file |
 | `llama_openclaw.conf` | Supervisor configuration (manages llama-server and openclaw-gateway) |
 | `push_to_harbor.sh` | Script to prepare image and push to Harbor |
-| `build_e2b.py` | Script to build E2B template and create sandbox |
+
+> `build_e2b.py` (the shared E2B template builder) now lives at `dockerfile_build/build_e2b.py` and is used by both the browser and coding flows.
 
 ## Build Steps
 
@@ -66,17 +67,24 @@ Or run directly with parameters:
 PROXY=http://your-proxy:8888 HARBOR_IP=192.168.1.100 ./push_to_harbor.sh
 ```
 
+For x86_64, set `ARCH=x86` (the default is `arm`):
+```bash
+ARCH=x86 HARBOR_IP=192.168.1.100 ./push_to_harbor.sh
+```
+
 ### Step 3: Build E2B Template
+
+The shared `build_e2b.py` lives one directory up (it is shared with the `coding/` flows):
 
 ```bash
 # Install dependencies
 pip install e2b
 
 # Build template with server IP and Harbor IP
-python build_e2b.py --server-ip 141.61.17.196 --harbor-ip 141.61.17.196
+python ../build_e2b.py --server-ip 141.61.17.196 --harbor-ip 141.61.17.196
 
 # Optional: customize template settings
-python build_e2b.py --server-ip 141.61.17.196 --harbor-ip 141.61.17.196 \
+python ../build_e2b.py --server-ip 141.61.17.196 --harbor-ip 141.61.17.196 \
     --alias my-template --cpu 4 --memory 4096 \
     --image e2b-orchestration/ubuntu-openclaw-chromium:custom
 ```

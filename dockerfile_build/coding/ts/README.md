@@ -105,6 +105,12 @@ cd dockerfile_build/coding/ts
 docker build -t ubuntu-coding-bench:24.04-linuxarm64 -f Dockerfile .
 ```
 
+**x86_64:**
+
+```bash
+docker build -t ubuntu-coding-bench:24.04-x86_64 -f Dockerfile.x86 .
+```
+
 This clones vuejs/core and runs `pnpm install` (with `PUPPETEER_SKIP_DOWNLOAD=1`).
 No production build, no vite playground.
 
@@ -114,12 +120,20 @@ No production build, no vite playground.
 HARBOR_IP=<your_harbor_ip> bash push_to_harbor.sh
 ```
 
+For x86_64, set `ARCH=x86` (the default is `arm`):
+
+```bash
+ARCH=x86 HARBOR_IP=<your_harbor_ip> bash push_to_harbor.sh
+```
+
 This adds E2B-required packages (systemd, openssh-server, websocat) and pushes to Harbor registry.
 
 ### 3. Build E2B Template
 
+`build_e2b.py` is shared and lives at `dockerfile_build/build_e2b.py`:
+
 ```bash
-python3 build_e2b.py \
+python3 ../../build_e2b.py \
     --server-ip <e2b_api_ip> \
     --harbor-ip <harbor_ip> \
     --alias openclaw-coding-v1 \

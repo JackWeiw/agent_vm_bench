@@ -75,7 +75,7 @@ Harbor access: `http://HARBOR_IP:2900/` (admin/Harbor12345)
 Build an E2B template from the Harbor image. This creates the Firecracker microVM template used by sandbox.create():
 
 ```bash
-cd dockerfile_build/browser
+cd dockerfile_build
 
 # Build template (alias = template name for config)
 python3 build_e2b.py --server-ip 71.14.96.192 --alias openclaw-browser-v1
