@@ -1482,6 +1482,11 @@ class TestNumaNodeForIndex:
             node_counts[numa_node_for_index(i, nodes)] += 1
         assert node_counts == {2: 11, 3: 10}
 
+    def test_raw_int_returns_that_node(self):
+        """A raw int (constructor passthrough) is treated as a one-element list"""
+        assert numa_node_for_index(0, 2) == 2
+        assert numa_node_for_index(5, 2) == 2
+
 
 class TestConfigMultiNumaBind:
     """Tests for multi-node numa_bind loading and normalization"""

@@ -56,12 +56,20 @@ def _normalize_numa_bind(value: Any) -> Optional[List[int]]:
     raise TypeError(f"numa_bind must be int, list[int], or null, got {type(value).__name__}")
 
 
-def numa_node_for_index(index: int, nodes: Optional[List[int]]) -> Optional[int]:
+def numa_node_for_index(index: int, nodes) -> Optional[int]:
     """Return the NUMA node for a sandbox at the given 0-based index.
 
-    Round-robins across `nodes`. Returns None when `nodes` is None or empty
-    (no binding).
+    Round-robins across `nodes`. Accepts a list of ints, a single int (treated
+    as a one-element list), or None (no binding). Returns None when `nodes`
+    is None/empty.
     """
+    if nodes is None or nodes == "" or nodes == []:
+        return None
+    # Tolerate a raw int (constructor passthrough) by treating it as a single node
+    if isinstance(nodes, int) and not isinstance(nodes, bool):
+        if nodes <= 0:
+            return None
+        return nodes
     if not nodes:
         return None
     return nodes[index % len(nodes)]
