@@ -7,7 +7,7 @@ Supports YAML config file loading, CLI argument override, E2B environment variab
 import argparse
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
@@ -17,6 +17,66 @@ from .schemas import (
     DEFAULT_CODING_VERIFY_SCRIPT_GO,
     DEFAULT_CODING_VERIFY_SCRIPT_JS,
 )
+
+
+def _normalize_numa_bind(value: Any) -> Optional[List[int]]:
+    """Normalize numa_bind input to a canonical list of node IDs or None.
+
+    Accepts an int (single node), a list of ints, None, or an empty string.
+    Returns None (no binding) for None / empty / all-negative input. NUMA
+    node 0 is valid and kept. Negative node IDs are dropped. Duplicate IDs
+    are removed, preserving first-seen order.
+    """
+    # Treat empty string as "no binding" (defensive; YAML null is the norm)
+    if value is None or value == "" or value == []:
+        return None
+
+    # Single int -> singleton list
+    if isinstance(value, int) and not isinstance(value, bool):
+        if value < 0:
+            return None
+        return [value]
+
+    # List of ints: dedup preserving order, drop negative (node 0 is valid)
+    if isinstance(value, list):
+        seen = set()
+        normalized: List[int] = []
+        for item in value:
+            # bool is a subclass of int; reject it explicitly
+            if not isinstance(item, int) or isinstance(item, bool):
+                raise TypeError(f"numa_bind list items must be ints, got {type(item).__name__}")
+            if item < 0:
+                continue
+            if item in seen:
+                continue
+            seen.add(item)
+            normalized.append(item)
+        return normalized if normalized else None
+
+    raise TypeError(f"numa_bind must be int, list[int], or null, got {type(value).__name__}")
+
+
+def numa_node_for_index(index: int, nodes: Optional[Union[int, List[int]]]) -> Optional[int]:
+    """Return the NUMA node for a sandbox at the given 0-based index.
+
+    Round-robins across `nodes`. Accepts a list of ints, a single int (treated
+    as a one-element list), or None (no binding). NUMA node 0 is valid. Returns
+    None when `nodes` is None, an empty list, an empty string, or a negative
+    int. Raises TypeError for other types, including bool.
+    """
+    if nodes is None or nodes == "" or nodes == []:
+        return None
+
+    # bool is a subclass of int; reject it explicitly (consistent with
+    # _normalize_numa_bind) rather than letting len() fail later.
+    if isinstance(nodes, bool):
+        raise TypeError(f"numa_bind nodes must be int, list[int], or null, got {type(nodes).__name__}")
+
+    # Tolerate a raw int (constructor passthrough) by treating it as a single node
+    if isinstance(nodes, int):
+        return nodes if nodes >= 0 else None
+
+    return nodes[index % len(nodes)]
 
 
 @dataclass(frozen=True)
@@ -178,8 +238,11 @@ class Config:
     create_timeout: int = 86400
     total_count: int = 100
 
-    # NUMA binding for sandbox creation (None = no binding, int = bind to specific NUMA node)
-    numa_bind: Optional[int] = 2
+    # NUMA binding for sandbox creation.
+    # Accepts an int (single node), a list of ints (round-robin across nodes),
+    # or null (no binding). Defaults to node 2. Normalized to a list or None
+    # at load time (see _normalize_numa_bind).
+    numa_bind: Optional[Union[int, List[int]]] = 2
 
     # Detect existing sandboxes mode
     detect_existing: bool = False  # Detect existing sandboxes instead of creating new ones
@@ -316,7 +379,7 @@ class Config:
             detect_existing=sandbox.get("detect_existing", False),
             create_only=sandbox.get("create_only", False),
             sandbox_ids_file=sandbox.get("sandbox_ids_file", None),
-            numa_bind=sandbox.get("numa_bind", 2),
+            numa_bind=_normalize_numa_bind(sandbox.get("numa_bind", 2)),
             create_batch_size=create_batch.get("size") if create_batch else None,
             create_batch_interval=create_batch.get("interval") if create_batch else None,
             task_batch_size=task_batch.get("size") if task_batch else None,
@@ -493,7 +556,7 @@ class Config:
             detect_existing=args.detect if hasattr(args, "detect") and args.detect else False,
             create_only=args.create_only if hasattr(args, "create_only") and args.create_only else False,
             sandbox_ids_file=args.sandbox_ids_file if args.sandbox_ids_file is not None else None,
-            numa_bind=2,  # Default to NUMA node 2 when using CLI args only
+            numa_bind=_normalize_numa_bind(2),  # Default to NUMA node 2 when using CLI args only
             create_batch_size=args.create_batch_size,
             create_batch_interval=args.create_batch_interval,
             task_batch_size=args.task_batch_size,

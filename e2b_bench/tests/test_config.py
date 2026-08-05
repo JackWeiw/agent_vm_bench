@@ -9,7 +9,8 @@ import tempfile
 
 import pytest
 
-from e2b_bench.config import Config
+from e2b_bench.config import Config, _normalize_numa_bind, numa_node_for_index
+from e2b_bench.bench import build_arg_parser
 
 
 class TestConfigDefaults:
@@ -1227,6 +1228,14 @@ class TestConfigNumaBind:
         config = Config(numa_bind=3)
         assert config.numa_bind == 3
 
+    def test_constructor_does_not_normalize(self):
+        """Constructor stores raw value; normalization happens in _from_dict/from_args"""
+        config = Config(numa_bind=[2, 3])
+        assert config.numa_bind == [2, 3]
+        # A raw int is NOT converted to a list by the constructor
+        config_int = Config(numa_bind=5)
+        assert config_int.numa_bind == 5
+
     def test_set_null_via_constructor(self):
         """Set numa_bind to None (disabled)"""
         config = Config(numa_bind=None)
@@ -1245,7 +1254,7 @@ sandbox:
         config = Config.load_from_yaml(temp_path)
         os.unlink(temp_path)
 
-        assert config.numa_bind == 5
+        assert config.numa_bind == [5]
 
     def test_load_null_from_yaml(self):
         """Load numa_bind as null from YAML (disabled)"""
@@ -1263,7 +1272,7 @@ sandbox:
         assert config.numa_bind is None
 
     def test_load_missing_numa_bind_defaults_to_2(self):
-        """Missing numa_bind in YAML defaults to 2"""
+        """Missing numa_bind in YAML defaults to [2]"""
         yaml_content = """
 sandbox:
   template: custom-template
@@ -1274,7 +1283,7 @@ sandbox:
         config = Config.load_from_yaml(temp_path)
         os.unlink(temp_path)
 
-        assert config.numa_bind == 2
+        assert config.numa_bind == [2]
 
     def test_merge_with_args_uses_yaml_value(self):
         """merge_with_args uses YAML value for numa_bind"""
@@ -1326,10 +1335,10 @@ sandbox:
         )
 
         config = Config.merge_with_args(yaml_config, args)
-        assert config.numa_bind == 4
+        assert config.numa_bind == [4]
 
     def test_from_args_defaults_to_2(self):
-        """from_args defaults numa_bind to 2"""
+        """from_args defaults numa_bind to [2]"""
         import argparse
 
         args = argparse.Namespace(
@@ -1368,7 +1377,255 @@ sandbox:
         )
 
         config = Config.from_args(args)
-        assert config.numa_bind == 2
+        assert config.numa_bind == [2]
+
+
+class TestNormalizeNumaBind:
+    """Tests for _normalize_numa_bind helper"""
+
+    def test_none_returns_none(self):
+        """None input returns None (no binding)"""
+        assert _normalize_numa_bind(None) is None
+
+    def test_empty_string_returns_none(self):
+        """Empty string returns None"""
+        assert _normalize_numa_bind("") is None
+
+    def test_empty_list_returns_none(self):
+        """Empty list returns None"""
+        assert _normalize_numa_bind([]) is None
+
+    def test_single_int_returns_singleton_list(self):
+        """A single int N returns [N]"""
+        assert _normalize_numa_bind(2) == [2]
+
+    def test_single_int_zero_is_valid(self):
+        """NUMA node 0 is valid: _normalize_numa_bind(0) returns [0]"""
+        assert _normalize_numa_bind(0) == [0]
+
+    def test_single_negative_int_returns_none(self):
+        """A negative single int returns None (no binding)"""
+        assert _normalize_numa_bind(-1) is None
+
+    def test_list_returns_list_unchanged(self):
+        """A list of ints is returned as-is"""
+        assert _normalize_numa_bind([2, 3]) == [2, 3]
+
+    def test_list_dedup_preserves_order(self):
+        """Duplicate nodes are removed, preserving first-seen order"""
+        assert _normalize_numa_bind([2, 2, 3]) == [2, 3]
+
+    def test_list_drops_negative_only_keeps_zero(self):
+        """Negative node IDs are dropped; node 0 is valid and kept"""
+        assert _normalize_numa_bind([2, 0, 3, -1]) == [2, 0, 3]
+
+    def test_list_all_negative_returns_none(self):
+        """All-negative list returns None (no binding); node 0 alone is valid"""
+        assert _normalize_numa_bind([-1, -2]) is None
+
+    def test_string_raises_type_error(self):
+        """A non-empty string raises TypeError"""
+        with pytest.raises(TypeError):
+            _normalize_numa_bind("2")
+
+    def test_bool_raises_type_error(self):
+        """A top-level bool raises TypeError (bool is not accepted as a node)"""
+        with pytest.raises(TypeError):
+            _normalize_numa_bind(True)
+
+    def test_float_raises_type_error(self):
+        """A float raises TypeError"""
+        with pytest.raises(TypeError):
+            _normalize_numa_bind(3.14)
+
+    def test_list_with_non_int_item_raises_type_error(self):
+        """A list containing a non-int item raises TypeError"""
+        with pytest.raises(TypeError):
+            _normalize_numa_bind([1, "two"])
+
+    def test_list_with_bool_item_raises_type_error(self):
+        """A list containing a bool item raises TypeError"""
+        with pytest.raises(TypeError):
+            _normalize_numa_bind([1, True])
+
+
+class TestNumaNodeForIndex:
+    """Tests for numa_node_for_index round-robin helper"""
+
+    def test_none_nodes_returns_none(self):
+        """None nodes returns None (no binding)"""
+        assert numa_node_for_index(0, None) is None
+
+    def test_empty_nodes_returns_none(self):
+        """Empty node list returns None"""
+        assert numa_node_for_index(0, []) is None
+
+    def test_round_robin_two_nodes(self):
+        """Round-robin across two nodes: 0->2, 1->3, 2->2, 3->3"""
+        nodes = [2, 3]
+        assert numa_node_for_index(0, nodes) == 2
+        assert numa_node_for_index(1, nodes) == 3
+        assert numa_node_for_index(2, nodes) == 2
+        assert numa_node_for_index(3, nodes) == 3
+
+    def test_single_node_always_returns_that_node(self):
+        """A single-node list always returns that node"""
+        nodes = [5]
+        assert numa_node_for_index(0, nodes) == 5
+        assert numa_node_for_index(99, nodes) == 5
+
+    def test_20_sandboxes_two_nodes_even_split(self):
+        """20 sandboxes on [2,3]: 10 on node 2, 10 on node 3"""
+        nodes = [2, 3]
+        node_counts = {2: 0, 3: 0}
+        for i in range(20):
+            node_counts[numa_node_for_index(i, nodes)] += 1
+        assert node_counts == {2: 10, 3: 10}
+
+    def test_21_sandboxes_two_nodes_remainder_to_first(self):
+        """21 sandboxes on [2,3]: 11 on node 2, 10 on node 3"""
+        nodes = [2, 3]
+        node_counts = {2: 0, 3: 0}
+        for i in range(21):
+            node_counts[numa_node_for_index(i, nodes)] += 1
+        assert node_counts == {2: 11, 3: 10}
+
+    def test_raw_int_returns_that_node(self):
+        """A raw int (constructor passthrough) is treated as a one-element list"""
+        assert numa_node_for_index(0, 2) == 2
+        assert numa_node_for_index(5, 2) == 2
+
+    def test_round_robin_includes_node_zero(self):
+        """NUMA node 0 is a valid round-robin target: [0, 1] -> 0, 1, 0, 1"""
+        nodes = [0, 1]
+        assert numa_node_for_index(0, nodes) == 0
+        assert numa_node_for_index(1, nodes) == 1
+        assert numa_node_for_index(2, nodes) == 0
+        assert numa_node_for_index(3, nodes) == 1
+
+    def test_raw_int_zero_is_valid_node(self):
+        """A raw int 0 (constructor passthrough) is a valid single-node binding"""
+        assert numa_node_for_index(0, 0) == 0
+        assert numa_node_for_index(7, 0) == 0
+
+    def test_negative_int_returns_none(self):
+        """A negative raw int is invalid (no binding)"""
+        assert numa_node_for_index(0, -1) is None
+
+
+class TestConfigMultiNumaBind:
+    """Tests for multi-node numa_bind loading and normalization"""
+
+    def test_load_list_from_yaml(self):
+        """Load a list of NUMA nodes from YAML"""
+        yaml_content = """
+sandbox:
+  template: custom-template
+  numa_bind: [2, 3]
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.numa_bind == [2, 3]
+
+    def test_load_single_int_from_yaml_normalizes_to_list(self):
+        """A single int in YAML normalizes to a singleton list"""
+        yaml_content = """
+sandbox:
+  template: custom-template
+  numa_bind: 5
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.numa_bind == [5]
+
+    def test_load_null_from_yaml(self):
+        """null numa_bind in YAML normalizes to None"""
+        yaml_content = """
+sandbox:
+  template: custom-template
+  numa_bind: null
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.numa_bind is None
+
+    def test_load_missing_numa_bind_defaults_to_node_2(self):
+        """Missing numa_bind key defaults to [2]"""
+        yaml_content = """
+sandbox:
+  template: custom-template
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.numa_bind == [2]
+
+    def test_load_dedup_in_yaml(self):
+        """Duplicate nodes in YAML are deduplicated"""
+        yaml_content = """
+sandbox:
+  template: custom-template
+  numa_bind: [2, 2, 3]
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.numa_bind == [2, 3]
+
+    def test_load_drops_negative_only_keeps_zero_in_yaml(self):
+        """Negative node IDs in YAML are dropped; node 0 is kept"""
+        yaml_content = """
+sandbox:
+  template: custom-template
+  numa_bind: [2, 0, 3, -1]
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.numa_bind == [2, 0, 3]
+
+    def test_load_node_zero_in_yaml(self):
+        """NUMA node 0 is a valid binding target (round-robin includes it)"""
+        yaml_content = """
+sandbox:
+  template: custom-template
+  numa_bind: [0, 1]
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.numa_bind == [0, 1]
+
+    def test_from_args_defaults_to_singleton_list(self):
+        """from_args (CLI-only) defaults numa_bind to [2]"""
+        parser = build_arg_parser()
+        args = parser.parse_args([])
+        config = Config.from_args(args)
+        assert config.numa_bind == [2]
 
 
 if __name__ == "__main__":

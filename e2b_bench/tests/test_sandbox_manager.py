@@ -502,3 +502,75 @@ class TestCheckPorts:
 
         assert result["success"] is False
         assert "Stop event" in result["error"]
+
+
+class TestMultiNumaBinding:
+    """Tests for multi-NUMA round-robin binding during sandbox creation"""
+
+    def _create_single_and_capture_envs(self, config, sandbox_id):
+        """Helper: run _create_single on a sandbox_id, return the envs passed to Sandbox.create"""
+        manager = SandboxManager(config, Event())
+        state = SandboxState(sandbox_id=sandbox_id)
+        with patch("e2b_bench.sandbox_manager.Sandbox.create") as mock_create:
+            mock_sandbox = Mock()
+            mock_sandbox.sandbox_id = f"sbx_{sandbox_id}"
+            mock_create.return_value = mock_sandbox
+            manager._create_single(state)
+            _, kwargs = mock_create.call_args
+            return kwargs.get("envs")
+
+    def test_two_nodes_round_robin_20_sandboxes(self):
+        """20 sandboxes on [2,3]: odd IDs -> node 2, even IDs -> node 3"""
+        config = Config(numa_bind=[2, 3])
+        for sandbox_id in range(1, 21):
+            envs = self._create_single_and_capture_envs(config, sandbox_id)
+            expected_node = 2 if sandbox_id % 2 == 1 else 3
+            assert envs == {
+                "FC_BIND": str(expected_node)
+            }, f"sandbox_id={sandbox_id} expected FC_BIND={expected_node}, got {envs}"
+
+    def test_two_nodes_21_sandboxes_remainder_to_first(self):
+        """21 sandboxes on [2,3]: 11 on node 2, 10 on node 3"""
+        config = Config(numa_bind=[2, 3])
+        node_counts = {2: 0, 3: 0}
+        for sandbox_id in range(1, 22):
+            envs = self._create_single_and_capture_envs(config, sandbox_id)
+            # 0-based index = sandbox_id - 1; even index -> node 2, odd -> node 3
+            index = sandbox_id - 1
+            expected_node = 2 if index % 2 == 0 else 3
+            assert envs == {"FC_BIND": str(expected_node)}
+            node_counts[expected_node] += 1
+        assert node_counts == {2: 11, 3: 10}
+
+    def test_single_node_list_equivalent_to_int(self):
+        """[2] produces FC_BIND=2 for every sandbox (same as old numa_bind=2)"""
+        config = Config(numa_bind=[2])
+        for sandbox_id in [1, 2, 5, 20]:
+            envs = self._create_single_and_capture_envs(config, sandbox_id)
+            assert envs == {"FC_BIND": "2"}
+
+    def test_three_nodes_round_robin(self):
+        """[2, 3, 5] round-robins across three nodes"""
+        config = Config(numa_bind=[2, 3, 5])
+        nodes = [2, 3, 5]
+        for sandbox_id in range(1, 10):
+            envs = self._create_single_and_capture_envs(config, sandbox_id)
+            expected_node = nodes[(sandbox_id - 1) % 3]
+            assert envs == {"FC_BIND": str(expected_node)}
+
+    def test_none_numa_bind_no_envs(self):
+        """numa_bind=None produces envs=None for every sandbox"""
+        config = Config(numa_bind=None)
+        envs = self._create_single_and_capture_envs(config, sandbox_id=1)
+        assert envs is None
+
+    def test_nodes_including_zero_round_robin(self):
+        """[0, 1] round-robins across nodes 0 and 1 (node 0 is valid)"""
+        config = Config(numa_bind=[0, 1])
+        for sandbox_id in range(1, 21):
+            envs = self._create_single_and_capture_envs(config, sandbox_id)
+            index = sandbox_id - 1
+            expected_node = 0 if index % 2 == 0 else 1
+            assert envs == {
+                "FC_BIND": str(expected_node)
+            }, f"sandbox_id={sandbox_id} expected FC_BIND={expected_node}, got {envs}"

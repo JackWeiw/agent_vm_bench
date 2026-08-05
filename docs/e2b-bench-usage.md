@@ -273,7 +273,7 @@ sandbox:
   total_count: 100
   detect_existing: false
   create_only: false
-  numa_bind: 2  # Bind sandbox creation to NUMA node 2 (null/omit = no binding)
+  numa_bind: 2  # Bind sandbox creation to NUMA node 2 (null/omit = no binding; list e.g. [2,3] = round-robin)
   sandbox_ids_file: "sandboxs.txt"  # Save/load sandbox IDs (empty = disabled)
 
 # Creation batch control (protect E2B API from overload)
