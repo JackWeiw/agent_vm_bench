@@ -1,13 +1,53 @@
 #!/bin/bash
 
-# Delete all E2B sandboxes
-# Usage: ./delete_sandbox.sh [--env-file path/to/.env]
+# Delete E2B sandboxes.
+#
+# By default this script fetches every sandbox from the E2B API and deletes it.
+# Pass --ids-file <path> to delete only the sandbox IDs listed in a text file
+# (one ID per line). Blank lines and lines starting with '#' are ignored.
+#
+# Usage:
+#   ./delete_sandbox.sh                                  # delete all sandboxes
+#   ./delete_sandbox.sh --ids-file sandboxs.txt           # delete IDs listed in a file
+#   ./delete_sandbox.sh --env-file .env --ids-file sandboxs.txt
+#
+# The sandbox IDs file format matches the sandbox_ids_file used by the bench
+# config: a plain text file with one sandbox ID per line.
 
-# Default env file path
-ENV_FILE="${1:-.env}"
+# Defaults
+ENV_FILE=".env"
+IDS_FILE=""
 
 # E2B config file path (default: ~/.e2b/config.json)
 E2B_CONFIG="${E2B_CONFIG:-$HOME/.e2b/config.json}"
+
+# Parse command-line arguments. A bare positional argument is still accepted
+# as the env file path for backward compatibility with the original usage.
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --env-file)
+            ENV_FILE="$2"
+            shift 2
+            ;;
+        --ids-file)
+            IDS_FILE="$2"
+            shift 2
+            ;;
+        --help|-h)
+            sed -n '3,12p' "$0"
+            exit 0
+            ;;
+        *)
+            # Treat the first unknown positional argument as the env file
+            # to preserve the original `./delete_sandbox.sh .env` form.
+            if [ -z "$ENV_FILE_SET" ]; then
+                ENV_FILE="$1"
+                ENV_FILE_SET=1
+            fi
+            shift
+            ;;
+    esac
+done
 
 # Load E2B_API_URL from .env file
 if [ -f "$ENV_FILE" ]; then
@@ -38,7 +78,7 @@ fi
 
 if [ -z "$E2B_API_KEY" ]; then
     echo "Error: E2B_API_KEY not found in $E2B_CONFIG"
-    echo "Please ensure ~/.e2b/config.json contains 'api_key' field"
+    echo "Please ensure ~/.e2b/config.json contains 'teamApiKey' field"
     exit 1
 fi
 
@@ -48,15 +88,38 @@ if [ -n "$E2B_ACCESS_TOKEN" ]; then
     echo "E2B Access Token: ${E2B_ACCESS_TOKEN:0:20}..."
 fi
 
-# Get all sandbox IDs (keep quotes, same as original working version)
-echo "Fetching sandbox list..."
-sandbox_id=$(curl --request GET \
-    --url "${E2B_API_URL}/sandboxes" \
-    --header "x-api-key: ${E2B_API_KEY}" \
-    -s -k | jq '.[].sandboxID')
+# Build the list of sandbox IDs to delete. When --ids-file is provided, read
+# IDs from that file; otherwise fetch every sandbox from the API.
+if [ -n "$IDS_FILE" ]; then
+    if [ ! -f "$IDS_FILE" ]; then
+        echo "Error: Sandbox IDs file not found: $IDS_FILE"
+        exit 1
+    fi
 
-# Convert to array (same as original)
-sandbox_ids=($sandbox_id)
+    echo "Reading sandbox IDs from $IDS_FILE"
+    # Collect non-empty, non-comment lines into an array.
+    sandbox_ids=()
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Strip a leading hash and surrounding whitespace so commented IDs
+        # are skipped, then skip blank lines.
+        trimmed="${line#"${line%%[![:space:]]*}"}"   # trim leading whitespace
+        trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"  # trim trailing whitespace
+        case "$trimmed" in
+            ''|\#*) continue ;;
+        esac
+        sandbox_ids+=("$trimmed")
+    done < "$IDS_FILE"
+else
+    # Get all sandbox IDs (keep quotes, same as original working version)
+    echo "Fetching sandbox list..."
+    sandbox_id=$(curl --request GET \
+        --url "${E2B_API_URL}/sandboxes" \
+        --header "x-api-key: ${E2B_API_KEY}" \
+        -s -k | jq '.[].sandboxID')
+
+    # Convert to array (same as original)
+    sandbox_ids=($sandbox_id)
+fi
 
 if [ ${#sandbox_ids[@]} -eq 0 ]; then
     echo "No sandboxes found"
@@ -68,7 +131,8 @@ echo "Found ${#sandbox_ids[@]} sandboxes"
 # Delete each sandbox
 for id in "${sandbox_ids[@]}"; do
     echo "Deleting: $id"
-    # Remove surrounding quotes
+    # Remove surrounding quotes (IDs fetched from the API are JSON-quoted;
+    # file-based IDs are not, but this is a safe no-op for them).
     sd_id=$(echo "${id/#\"/}" | sed 's/"$//')
     curl --request DELETE \
         --url "${E2B_API_URL}/sandboxes/${sd_id}" \
