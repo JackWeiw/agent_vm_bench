@@ -7,7 +7,7 @@ Supports YAML config file loading, CLI argument override, E2B environment variab
 import argparse
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
@@ -226,8 +226,11 @@ class Config:
     create_timeout: int = 86400
     total_count: int = 100
 
-    # NUMA binding for sandbox creation (None = no binding, int = bind to specific NUMA node)
-    numa_bind: Optional[int] = 2
+    # NUMA binding for sandbox creation.
+    # Accepts an int (single node), a list of ints (round-robin across nodes),
+    # or null (no binding). Defaults to node 2. Normalized to a list or None
+    # at load time (see _normalize_numa_bind).
+    numa_bind: Optional[Union[int, List[int]]] = 2
 
     # Detect existing sandboxes mode
     detect_existing: bool = False  # Detect existing sandboxes instead of creating new ones
@@ -364,7 +367,7 @@ class Config:
             detect_existing=sandbox.get("detect_existing", False),
             create_only=sandbox.get("create_only", False),
             sandbox_ids_file=sandbox.get("sandbox_ids_file", None),
-            numa_bind=sandbox.get("numa_bind", 2),
+            numa_bind=_normalize_numa_bind(sandbox.get("numa_bind", 2)),
             create_batch_size=create_batch.get("size") if create_batch else None,
             create_batch_interval=create_batch.get("interval") if create_batch else None,
             task_batch_size=task_batch.get("size") if task_batch else None,
@@ -541,7 +544,7 @@ class Config:
             detect_existing=args.detect if hasattr(args, "detect") and args.detect else False,
             create_only=args.create_only if hasattr(args, "create_only") and args.create_only else False,
             sandbox_ids_file=args.sandbox_ids_file if args.sandbox_ids_file is not None else None,
-            numa_bind=2,  # Default to NUMA node 2 when using CLI args only
+            numa_bind=_normalize_numa_bind(2),  # Default to NUMA node 2 when using CLI args only
             create_batch_size=args.create_batch_size,
             create_batch_interval=args.create_batch_interval,
             task_batch_size=args.task_batch_size,

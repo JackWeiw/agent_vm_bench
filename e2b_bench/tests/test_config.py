@@ -10,6 +10,7 @@ import tempfile
 import pytest
 
 from e2b_bench.config import Config, _normalize_numa_bind, numa_node_for_index
+from e2b_bench.bench import build_arg_parser
 
 
 class TestConfigDefaults:
@@ -1227,6 +1228,14 @@ class TestConfigNumaBind:
         config = Config(numa_bind=3)
         assert config.numa_bind == 3
 
+    def test_constructor_does_not_normalize(self):
+        """Constructor stores raw value; normalization happens in _from_dict/from_args"""
+        config = Config(numa_bind=[2, 3])
+        assert config.numa_bind == [2, 3]
+        # A raw int is NOT converted to a list by the constructor
+        config_int = Config(numa_bind=5)
+        assert config_int.numa_bind == 5
+
     def test_set_null_via_constructor(self):
         """Set numa_bind to None (disabled)"""
         config = Config(numa_bind=None)
@@ -1245,7 +1254,7 @@ sandbox:
         config = Config.load_from_yaml(temp_path)
         os.unlink(temp_path)
 
-        assert config.numa_bind == 5
+        assert config.numa_bind == [5]
 
     def test_load_null_from_yaml(self):
         """Load numa_bind as null from YAML (disabled)"""
@@ -1263,7 +1272,7 @@ sandbox:
         assert config.numa_bind is None
 
     def test_load_missing_numa_bind_defaults_to_2(self):
-        """Missing numa_bind in YAML defaults to 2"""
+        """Missing numa_bind in YAML defaults to [2]"""
         yaml_content = """
 sandbox:
   template: custom-template
@@ -1274,7 +1283,7 @@ sandbox:
         config = Config.load_from_yaml(temp_path)
         os.unlink(temp_path)
 
-        assert config.numa_bind == 2
+        assert config.numa_bind == [2]
 
     def test_merge_with_args_uses_yaml_value(self):
         """merge_with_args uses YAML value for numa_bind"""
@@ -1326,10 +1335,10 @@ sandbox:
         )
 
         config = Config.merge_with_args(yaml_config, args)
-        assert config.numa_bind == 4
+        assert config.numa_bind == [4]
 
     def test_from_args_defaults_to_2(self):
-        """from_args defaults numa_bind to 2"""
+        """from_args defaults numa_bind to [2]"""
         import argparse
 
         args = argparse.Namespace(
@@ -1368,7 +1377,7 @@ sandbox:
         )
 
         config = Config.from_args(args)
-        assert config.numa_bind == 2
+        assert config.numa_bind == [2]
 
 
 class TestNormalizeNumaBind:
@@ -1472,6 +1481,106 @@ class TestNumaNodeForIndex:
         for i in range(21):
             node_counts[numa_node_for_index(i, nodes)] += 1
         assert node_counts == {2: 11, 3: 10}
+
+
+class TestConfigMultiNumaBind:
+    """Tests for multi-node numa_bind loading and normalization"""
+
+    def test_load_list_from_yaml(self):
+        """Load a list of NUMA nodes from YAML"""
+        yaml_content = """
+sandbox:
+  template: custom-template
+  numa_bind: [2, 3]
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.numa_bind == [2, 3]
+
+    def test_load_single_int_from_yaml_normalizes_to_list(self):
+        """A single int in YAML normalizes to a singleton list"""
+        yaml_content = """
+sandbox:
+  template: custom-template
+  numa_bind: 5
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.numa_bind == [5]
+
+    def test_load_null_from_yaml(self):
+        """null numa_bind in YAML normalizes to None"""
+        yaml_content = """
+sandbox:
+  template: custom-template
+  numa_bind: null
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.numa_bind is None
+
+    def test_load_missing_numa_bind_defaults_to_node_2(self):
+        """Missing numa_bind key defaults to [2]"""
+        yaml_content = """
+sandbox:
+  template: custom-template
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.numa_bind == [2]
+
+    def test_load_dedup_in_yaml(self):
+        """Duplicate nodes in YAML are deduplicated"""
+        yaml_content = """
+sandbox:
+  template: custom-template
+  numa_bind: [2, 2, 3]
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.numa_bind == [2, 3]
+
+    def test_load_drops_non_positive_in_yaml(self):
+        """Non-positive node IDs in YAML are dropped"""
+        yaml_content = """
+sandbox:
+  template: custom-template
+  numa_bind: [2, 0, 3, -1]
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.numa_bind == [2, 3]
+
+    def test_from_args_defaults_to_singleton_list(self):
+        """from_args (CLI-only) defaults numa_bind to [2]"""
+        parser = build_arg_parser()
+        args = parser.parse_args([])
+        config = Config.from_args(args)
+        assert config.numa_bind == [2]
 
 
 if __name__ == "__main__":
