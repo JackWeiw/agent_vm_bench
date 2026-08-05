@@ -9,7 +9,7 @@ import tempfile
 
 import pytest
 
-from e2b_bench.config import Config
+from e2b_bench.config import Config, _normalize_numa_bind, numa_node_for_index
 
 
 class TestConfigDefaults:
@@ -1369,6 +1369,84 @@ sandbox:
 
         config = Config.from_args(args)
         assert config.numa_bind == 2
+
+
+class TestNormalizeNumaBind:
+    """Tests for _normalize_numa_bind helper"""
+
+    def test_none_returns_none(self):
+        """None input returns None (no binding)"""
+        assert _normalize_numa_bind(None) is None
+
+    def test_empty_string_returns_none(self):
+        """Empty string returns None"""
+        assert _normalize_numa_bind("") is None
+
+    def test_empty_list_returns_none(self):
+        """Empty list returns None"""
+        assert _normalize_numa_bind([]) is None
+
+    def test_single_int_returns_singleton_list(self):
+        """A single int N returns [N]"""
+        assert _normalize_numa_bind(2) == [2]
+
+    def test_list_returns_list_unchanged(self):
+        """A list of ints is returned as-is"""
+        assert _normalize_numa_bind([2, 3]) == [2, 3]
+
+    def test_list_dedup_preserves_order(self):
+        """Duplicate nodes are removed, preserving first-seen order"""
+        assert _normalize_numa_bind([2, 2, 3]) == [2, 3]
+
+    def test_list_drops_non_positive(self):
+        """Non-positive node IDs are dropped"""
+        assert _normalize_numa_bind([2, 0, 3, -1]) == [2, 3]
+
+    def test_list_all_non_positive_returns_none(self):
+        """All-non-positive list returns None (no binding)"""
+        assert _normalize_numa_bind([0, -1]) is None
+
+
+class TestNumaNodeForIndex:
+    """Tests for numa_node_for_index round-robin helper"""
+
+    def test_none_nodes_returns_none(self):
+        """None nodes returns None (no binding)"""
+        assert numa_node_for_index(0, None) is None
+
+    def test_empty_nodes_returns_none(self):
+        """Empty node list returns None"""
+        assert numa_node_for_index(0, []) is None
+
+    def test_round_robin_two_nodes(self):
+        """Round-robin across two nodes: 0->2, 1->3, 2->2, 3->3"""
+        nodes = [2, 3]
+        assert numa_node_for_index(0, nodes) == 2
+        assert numa_node_for_index(1, nodes) == 3
+        assert numa_node_for_index(2, nodes) == 2
+        assert numa_node_for_index(3, nodes) == 3
+
+    def test_single_node_always_returns_that_node(self):
+        """A single-node list always returns that node"""
+        nodes = [5]
+        assert numa_node_for_index(0, nodes) == 5
+        assert numa_node_for_index(99, nodes) == 5
+
+    def test_20_sandboxes_two_nodes_even_split(self):
+        """20 sandboxes on [2,3]: 10 on node 2, 10 on node 3"""
+        nodes = [2, 3]
+        node_counts = {2: 0, 3: 0}
+        for i in range(20):
+            node_counts[numa_node_for_index(i, nodes)] += 1
+        assert node_counts == {2: 10, 3: 10}
+
+    def test_21_sandboxes_two_nodes_remainder_to_first(self):
+        """21 sandboxes on [2,3]: 11 on node 2, 10 on node 3"""
+        nodes = [2, 3]
+        node_counts = {2: 0, 3: 0}
+        for i in range(21):
+            node_counts[numa_node_for_index(i, nodes)] += 1
+        assert node_counts == {2: 11, 3: 10}
 
 
 if __name__ == "__main__":

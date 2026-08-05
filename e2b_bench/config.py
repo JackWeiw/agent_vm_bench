@@ -19,6 +19,54 @@ from .schemas import (
 )
 
 
+def _normalize_numa_bind(value) -> Optional[List[int]]:
+    """Normalize numa_bind input to a canonical list of node IDs or None.
+
+    Accepts an int (single node), a list of ints, None, or an empty string.
+    Returns None (no binding) for None / empty / all-non-positive input.
+    Non-positive node IDs are dropped. Duplicate IDs are removed, preserving
+    first-seen order.
+    """
+    # Treat empty string as "no binding" (defensive; YAML null is the norm)
+    if value is None or value == "" or value == []:
+        return None
+
+    # Single int -> singleton list
+    if isinstance(value, int) and not isinstance(value, bool):
+        if value <= 0:
+            return None
+        return [value]
+
+    # List of ints: dedup preserving order, drop non-positive
+    if isinstance(value, list):
+        seen = set()
+        normalized: List[int] = []
+        for item in value:
+            # bool is a subclass of int; reject it explicitly
+            if not isinstance(item, int) or isinstance(item, bool):
+                raise TypeError(f"numa_bind list items must be ints, got {type(item).__name__}")
+            if item <= 0:
+                continue
+            if item in seen:
+                continue
+            seen.add(item)
+            normalized.append(item)
+        return normalized if normalized else None
+
+    raise TypeError(f"numa_bind must be int, list[int], or null, got {type(value).__name__}")
+
+
+def numa_node_for_index(index: int, nodes: Optional[List[int]]) -> Optional[int]:
+    """Return the NUMA node for a sandbox at the given 0-based index.
+
+    Round-robins across `nodes`. Returns None when `nodes` is None or empty
+    (no binding).
+    """
+    if not nodes:
+        return None
+    return nodes[index % len(nodes)]
+
+
 @dataclass(frozen=True)
 class CodingLanguageProfile:
     """Per-language profile for the coding verify step.
