@@ -562,4 +562,4 @@ class TestMultiNumaBinding:
         """numa_bind=None produces envs=None for every sandbox"""
         config = Config(numa_bind=None)
         envs = self._create_single_and_capture_envs(config, sandbox_id=1)
-        assert envs is None or envs == {}
+        assert envs is None

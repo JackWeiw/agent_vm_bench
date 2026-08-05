@@ -56,22 +56,26 @@ def _normalize_numa_bind(value: Any) -> Optional[List[int]]:
     raise TypeError(f"numa_bind must be int, list[int], or null, got {type(value).__name__}")
 
 
-def numa_node_for_index(index: int, nodes) -> Optional[int]:
+def numa_node_for_index(index: int, nodes: Optional[Union[int, List[int]]]) -> Optional[int]:
     """Return the NUMA node for a sandbox at the given 0-based index.
 
     Round-robins across `nodes`. Accepts a list of ints, a single int (treated
     as a one-element list), or None (no binding). Returns None when `nodes`
-    is None/empty.
+    is None, an empty list, an empty string, or a non-positive int. Raises
+    TypeError for other types, including bool.
     """
     if nodes is None or nodes == "" or nodes == []:
         return None
+
+    # bool is a subclass of int; reject it explicitly (consistent with
+    # _normalize_numa_bind) rather than letting len() fail later.
+    if isinstance(nodes, bool):
+        raise TypeError(f"numa_bind nodes must be int, list[int], or null, got {type(nodes).__name__}")
+
     # Tolerate a raw int (constructor passthrough) by treating it as a single node
-    if isinstance(nodes, int) and not isinstance(nodes, bool):
-        if nodes <= 0:
-            return None
-        return nodes
-    if not nodes:
-        return None
+    if isinstance(nodes, int):
+        return nodes if nodes > 0 else None
+
     return nodes[index % len(nodes)]
 
 
