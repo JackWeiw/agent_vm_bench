@@ -273,7 +273,7 @@ sandbox:
   total_count: 100
   detect_existing: false
   create_only: false
-  numa_bind: 2  # 绑定沙箱创建到NUMA节点2（null/省略=不绑定）
+  numa_bind: 2  # 绑定沙箱创建到NUMA节点2（null/省略=不绑定；列表如[2,3]=轮询分布）
   sandbox_ids_file: "sandboxs.txt"  # 保存/加载沙箱ID（空=禁用）
 
 # 创建批量控制（保护E2B API不被过载）

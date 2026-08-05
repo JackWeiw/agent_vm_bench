@@ -27,7 +27,8 @@ sandbox:
   # total_count will be overridden by test matrix
   detect_existing: false
   create_only: false
-  numa_bind: 2                       # NUMA node to bind sandbox (null/omit = no binding)
+  # NUMA node(s) to bind sandboxes to. Single: 2; Multi (round-robin): [2, 3]; null/omit: none.
+  numa_bind: 2
 
 create_batch:
   size: 20

@@ -38,7 +38,8 @@ sandbox:
   detect_existing: false             # Detect existing sandboxes instead of creating new ones
   create_only: false                 # Create sandboxes only without running tasks (Phase 0)
   sandbox_ids_file: "sandboxs_go.txt"   # File path to save/load sandbox IDs
-  numa_bind: 2                       # NUMA node to bind sandbox (null/omit = no binding)
+  # NUMA node(s) to bind sandboxes to. Single: 2; Multi (round-robin): [2, 3]; null/omit: none.
+  numa_bind: 2
 
 # Sandbox creation batch control
 create_batch:
