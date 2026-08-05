@@ -1399,6 +1399,14 @@ class TestNormalizeNumaBind:
         """A single int N returns [N]"""
         assert _normalize_numa_bind(2) == [2]
 
+    def test_single_int_zero_is_valid(self):
+        """NUMA node 0 is valid: _normalize_numa_bind(0) returns [0]"""
+        assert _normalize_numa_bind(0) == [0]
+
+    def test_single_negative_int_returns_none(self):
+        """A negative single int returns None (no binding)"""
+        assert _normalize_numa_bind(-1) is None
+
     def test_list_returns_list_unchanged(self):
         """A list of ints is returned as-is"""
         assert _normalize_numa_bind([2, 3]) == [2, 3]
@@ -1407,13 +1415,13 @@ class TestNormalizeNumaBind:
         """Duplicate nodes are removed, preserving first-seen order"""
         assert _normalize_numa_bind([2, 2, 3]) == [2, 3]
 
-    def test_list_drops_non_positive(self):
-        """Non-positive node IDs are dropped"""
-        assert _normalize_numa_bind([2, 0, 3, -1]) == [2, 3]
+    def test_list_drops_negative_only_keeps_zero(self):
+        """Negative node IDs are dropped; node 0 is valid and kept"""
+        assert _normalize_numa_bind([2, 0, 3, -1]) == [2, 0, 3]
 
-    def test_list_all_non_positive_returns_none(self):
-        """All-non-positive list returns None (no binding)"""
-        assert _normalize_numa_bind([0, -1]) is None
+    def test_list_all_negative_returns_none(self):
+        """All-negative list returns None (no binding); node 0 alone is valid"""
+        assert _normalize_numa_bind([-1, -2]) is None
 
     def test_string_raises_type_error(self):
         """A non-empty string raises TypeError"""
@@ -1486,6 +1494,23 @@ class TestNumaNodeForIndex:
         """A raw int (constructor passthrough) is treated as a one-element list"""
         assert numa_node_for_index(0, 2) == 2
         assert numa_node_for_index(5, 2) == 2
+
+    def test_round_robin_includes_node_zero(self):
+        """NUMA node 0 is a valid round-robin target: [0, 1] -> 0, 1, 0, 1"""
+        nodes = [0, 1]
+        assert numa_node_for_index(0, nodes) == 0
+        assert numa_node_for_index(1, nodes) == 1
+        assert numa_node_for_index(2, nodes) == 0
+        assert numa_node_for_index(3, nodes) == 1
+
+    def test_raw_int_zero_is_valid_node(self):
+        """A raw int 0 (constructor passthrough) is a valid single-node binding"""
+        assert numa_node_for_index(0, 0) == 0
+        assert numa_node_for_index(7, 0) == 0
+
+    def test_negative_int_returns_none(self):
+        """A negative raw int is invalid (no binding)"""
+        assert numa_node_for_index(0, -1) is None
 
 
 class TestConfigMultiNumaBind:
@@ -1565,8 +1590,8 @@ sandbox:
 
         assert config.numa_bind == [2, 3]
 
-    def test_load_drops_non_positive_in_yaml(self):
-        """Non-positive node IDs in YAML are dropped"""
+    def test_load_drops_negative_only_keeps_zero_in_yaml(self):
+        """Negative node IDs in YAML are dropped; node 0 is kept"""
         yaml_content = """
 sandbox:
   template: custom-template
@@ -1578,7 +1603,22 @@ sandbox:
         config = Config.load_from_yaml(temp_path)
         os.unlink(temp_path)
 
-        assert config.numa_bind == [2, 3]
+        assert config.numa_bind == [2, 0, 3]
+
+    def test_load_node_zero_in_yaml(self):
+        """NUMA node 0 is a valid binding target (round-robin includes it)"""
+        yaml_content = """
+sandbox:
+  template: custom-template
+  numa_bind: [0, 1]
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+        config = Config.load_from_yaml(temp_path)
+        os.unlink(temp_path)
+
+        assert config.numa_bind == [0, 1]
 
     def test_from_args_defaults_to_singleton_list(self):
         """from_args (CLI-only) defaults numa_bind to [2]"""

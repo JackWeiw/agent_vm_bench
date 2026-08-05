@@ -563,3 +563,14 @@ class TestMultiNumaBinding:
         config = Config(numa_bind=None)
         envs = self._create_single_and_capture_envs(config, sandbox_id=1)
         assert envs is None
+
+    def test_nodes_including_zero_round_robin(self):
+        """[0, 1] round-robins across nodes 0 and 1 (node 0 is valid)"""
+        config = Config(numa_bind=[0, 1])
+        for sandbox_id in range(1, 21):
+            envs = self._create_single_and_capture_envs(config, sandbox_id)
+            index = sandbox_id - 1
+            expected_node = 0 if index % 2 == 0 else 1
+            assert envs == {
+                "FC_BIND": str(expected_node)
+            }, f"sandbox_id={sandbox_id} expected FC_BIND={expected_node}, got {envs}"

@@ -23,9 +23,9 @@ def _normalize_numa_bind(value: Any) -> Optional[List[int]]:
     """Normalize numa_bind input to a canonical list of node IDs or None.
 
     Accepts an int (single node), a list of ints, None, or an empty string.
-    Returns None (no binding) for None / empty / all-non-positive input.
-    Non-positive node IDs are dropped. Duplicate IDs are removed, preserving
-    first-seen order.
+    Returns None (no binding) for None / empty / all-negative input. NUMA
+    node 0 is valid and kept. Negative node IDs are dropped. Duplicate IDs
+    are removed, preserving first-seen order.
     """
     # Treat empty string as "no binding" (defensive; YAML null is the norm)
     if value is None or value == "" or value == []:
@@ -33,11 +33,11 @@ def _normalize_numa_bind(value: Any) -> Optional[List[int]]:
 
     # Single int -> singleton list
     if isinstance(value, int) and not isinstance(value, bool):
-        if value <= 0:
+        if value < 0:
             return None
         return [value]
 
-    # List of ints: dedup preserving order, drop non-positive
+    # List of ints: dedup preserving order, drop negative (node 0 is valid)
     if isinstance(value, list):
         seen = set()
         normalized: List[int] = []
@@ -45,7 +45,7 @@ def _normalize_numa_bind(value: Any) -> Optional[List[int]]:
             # bool is a subclass of int; reject it explicitly
             if not isinstance(item, int) or isinstance(item, bool):
                 raise TypeError(f"numa_bind list items must be ints, got {type(item).__name__}")
-            if item <= 0:
+            if item < 0:
                 continue
             if item in seen:
                 continue
@@ -60,9 +60,9 @@ def numa_node_for_index(index: int, nodes: Optional[Union[int, List[int]]]) -> O
     """Return the NUMA node for a sandbox at the given 0-based index.
 
     Round-robins across `nodes`. Accepts a list of ints, a single int (treated
-    as a one-element list), or None (no binding). Returns None when `nodes`
-    is None, an empty list, an empty string, or a non-positive int. Raises
-    TypeError for other types, including bool.
+    as a one-element list), or None (no binding). NUMA node 0 is valid. Returns
+    None when `nodes` is None, an empty list, an empty string, or a negative
+    int. Raises TypeError for other types, including bool.
     """
     if nodes is None or nodes == "" or nodes == []:
         return None
@@ -74,7 +74,7 @@ def numa_node_for_index(index: int, nodes: Optional[Union[int, List[int]]]) -> O
 
     # Tolerate a raw int (constructor passthrough) by treating it as a single node
     if isinstance(nodes, int):
-        return nodes if nodes > 0 else None
+        return nodes if nodes >= 0 else None
 
     return nodes[index % len(nodes)]
 
