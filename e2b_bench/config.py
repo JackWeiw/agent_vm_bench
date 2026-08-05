@@ -19,7 +19,7 @@ from .schemas import (
 )
 
 
-def _normalize_numa_bind(value) -> Optional[List[int]]:
+def _normalize_numa_bind(value: Any) -> Optional[List[int]]:
     """Normalize numa_bind input to a canonical list of node IDs or None.
 
     Accepts an int (single node), a list of ints, None, or an empty string.

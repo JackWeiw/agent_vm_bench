@@ -1406,6 +1406,31 @@ class TestNormalizeNumaBind:
         """All-non-positive list returns None (no binding)"""
         assert _normalize_numa_bind([0, -1]) is None
 
+    def test_string_raises_type_error(self):
+        """A non-empty string raises TypeError"""
+        with pytest.raises(TypeError):
+            _normalize_numa_bind("2")
+
+    def test_bool_raises_type_error(self):
+        """A top-level bool raises TypeError (bool is not accepted as a node)"""
+        with pytest.raises(TypeError):
+            _normalize_numa_bind(True)
+
+    def test_float_raises_type_error(self):
+        """A float raises TypeError"""
+        with pytest.raises(TypeError):
+            _normalize_numa_bind(3.14)
+
+    def test_list_with_non_int_item_raises_type_error(self):
+        """A list containing a non-int item raises TypeError"""
+        with pytest.raises(TypeError):
+            _normalize_numa_bind([1, "two"])
+
+    def test_list_with_bool_item_raises_type_error(self):
+        """A list containing a bool item raises TypeError"""
+        with pytest.raises(TypeError):
+            _normalize_numa_bind([1, True])
+
 
 class TestNumaNodeForIndex:
     """Tests for numa_node_for_index round-robin helper"""
