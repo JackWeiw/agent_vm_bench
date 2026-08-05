@@ -9,6 +9,7 @@
 # Usage:
 #   ./delete_sandbox.sh                                  # delete all sandboxes
 #   ./delete_sandbox.sh --ids-file sandboxs.txt           # delete IDs listed in a file
+#   ./delete_sandbox.sh --ids-file=sandboxs.txt           # same, = form
 #   ./delete_sandbox.sh --env-file .env --ids-file sandboxs.txt
 #
 # The sandbox IDs file format matches the sandbox_ids_file used by the bench
@@ -25,9 +26,17 @@ E2B_CONFIG="${E2B_CONFIG:-$HOME/.e2b/config.json}"
 # as the env file path for backward compatibility with the original usage.
 while [ $# -gt 0 ]; do
     case "$1" in
+        --env-file=*)
+            ENV_FILE="${1#--env-file=}"
+            shift
+            ;;
         --env-file)
             ENV_FILE="$2"
             shift 2
+            ;;
+        --ids-file=*)
+            IDS_FILE="${1#--ids-file=}"
+            shift
             ;;
         --ids-file)
             IDS_FILE="$2"
@@ -37,9 +46,16 @@ while [ $# -gt 0 ]; do
             sed -n '3,12p' "$0"
             exit 0
             ;;
+        -*)
+            echo "Error: Unknown option: $1"
+            echo "Usage: $0 [--env-file path/to/.env] [--ids-file path/to/ids.txt]"
+            exit 1
+            ;;
         *)
-            # Treat the first unknown positional argument as the env file
+            # Treat the first bare positional argument as the env file
             # to preserve the original `./delete_sandbox.sh .env` form.
+            # Flags (--foo) are rejected above so they are never mistaken
+            # for the env file.
             if [ -z "$ENV_FILE_SET" ]; then
                 ENV_FILE="$1"
                 ENV_FILE_SET=1
