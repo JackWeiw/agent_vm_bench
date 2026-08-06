@@ -2,8 +2,10 @@
 # Script to prepare and push the coding benchmark image for E2B template
 # Based on push_to_harbor.sh but using coding-bench image name
 #
-# Usage: HARBOR_IP=X bash push_to_harbor.sh                 # arm (default)
-#        ARCH=x86 HARBOR_IP=X bash push_to_harbor.sh        # x86_64
+# Usage: HARBOR_IP=X bash push_to_harbor.sh                              # ubuntu arm (default)
+#        ARCH=x86 HARBOR_IP=X bash push_to_harbor.sh                     # ubuntu x86_64
+#        OS=openeuler HARBOR_IP=X bash push_to_harbor.sh                # openEuler arm
+#        OS=openeuler ARCH=x86 HARBOR_IP=X bash push_to_harbor.sh       # openEuler x86_64
 
 set -e
 
@@ -11,27 +13,47 @@ set -e
 PROXY="${PROXY:-http://90.255.211.160:8888}"
 HARBOR_IP="${HARBOR_IP:-localhost}"
 
-# Architecture: "arm" (default) builds from Dockerfile (linuxarm64 tag);
-#               "x86"   builds from Dockerfile.x86 (x86_64 tag).
+# Architecture: "arm" (default) builds the linuxarm64 tag;
+#               "x86"   builds the x86_64 tag.
+# OS:           "ubuntu" (default) or "openeuler".
 ARCH="${ARCH:-arm}"
 case "${ARCH}" in
     arm)
         TAG_SUFFIX="linuxarm64"
-        DOCKERFILE="Dockerfile"
+        DOCKERFILE_ARCH=""
         WEBSOCAT_ASSET="websocat.aarch64-unknown-linux-musl" ;;
     x86)
         TAG_SUFFIX="x86_64"
-        DOCKERFILE="Dockerfile.x86"
+        DOCKERFILE_ARCH=".x86"
         WEBSOCAT_ASSET="websocat.x86_64-unknown-linux-musl" ;;
     *)
         echo "ERROR: ARCH must be 'arm' or 'x86', got: ${ARCH}" >&2
         exit 1 ;;
 esac
 
-# Image names
-BASE_IMAGE="ubuntu-coding-bench:24.04-${TAG_SUFFIX}"
-CUSTOM_IMAGE="ubuntu-coding-bench:custom"
-HARBOR_IMAGE="e2b-orchestration/ubuntu-coding-bench:custom"
+OS="${OS:-ubuntu}"
+case "${OS}" in
+    ubuntu)
+        OS_TAG="24.04"
+        IMAGE_NAME="ubuntu-coding-bench"
+        DOCKERFILE_STEM="Dockerfile" ;;
+    openeuler)
+        OS_TAG="24.03-lts-sp3"
+        IMAGE_NAME="openeuler-coding-bench"
+        DOCKERFILE_STEM="Dockerfile.openeuler" ;;
+    *)
+        echo "ERROR: OS must be 'ubuntu' or 'openeuler', got: ${OS}" >&2
+        exit 1 ;;
+esac
+
+# Dockerfile = OS stem + arch suffix (Dockerfile / Dockerfile.x86 /
+#              Dockerfile.openeuler / Dockerfile.openeuler.x86)
+DOCKERFILE="${DOCKERFILE_STEM}${DOCKERFILE_ARCH}"
+
+# Image names (the Harbor-side tag is arch/OS-neutral — overwritten per build)
+BASE_IMAGE="${IMAGE_NAME}:${OS_TAG}-${TAG_SUFFIX}"
+CUSTOM_IMAGE="${IMAGE_NAME}:custom"
+HARBOR_IMAGE="e2b-orchestration/${IMAGE_NAME}:custom"
 
 # Color output
 RED='\033[0;31m'
@@ -45,7 +67,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # Check if base image exists
 check_base_image() {
-    if ! docker images "${BASE_IMAGE}" --format "{{.Repository}}" | grep -q "ubuntu-coding-bench"; then
+    if ! docker images "${BASE_IMAGE}" --format "{{.Repository}}" | grep -q "${IMAGE_NAME}"; then
         log_error "Base image ${BASE_IMAGE} not found!"
         log_info "Please build it first: cd dockerfile_build/coding/ts && docker build -t ${BASE_IMAGE} -f ${DOCKERFILE} ."
         exit 1
@@ -71,13 +93,26 @@ install_components() {
     log_info "Installing E2B-required system packages (systemd, openssh-server, websocat, etc.)..."
     log_info "Using proxy: ${PROXY}"
 
-    docker exec temp-coding-image bash -c \
-        "export http_proxy=${PROXY}; \
-         export https_proxy=\$http_proxy; \
-         apt-get update && \
-         apt-get install -y wget systemd systemd-sysv openssh-server sudo chrony socat curl iputils-ping dnsutils iproute2 netcat-openbsd tcpdump passwd && \
-         apt-get clean && \
-         rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*"
+    case "${OS}" in
+        ubuntu)
+            docker exec temp-coding-image bash -c \
+                "export http_proxy=${PROXY}; \
+                 export https_proxy=\$http_proxy; \
+                 apt-get update && \
+                 apt-get install -y wget systemd systemd-sysv openssh-server sudo chrony socat curl iputils-ping dnsutils iproute2 netcat-openbsd tcpdump passwd && \
+                 apt-get clean && \
+                 rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*" ;;
+        openeuler)
+            # openEuler package names: iputils (not iputils-ping),
+            # bind-utils (not dnsutils), nmap-ncat (not netcat-openbsd),
+            # iproute (not iproute2).
+            docker exec temp-coding-image bash -c \
+                "export http_proxy=${PROXY}; \
+                 export https_proxy=\$http_proxy; \
+                 dnf install -y wget systemd systemd-sysv openssh-server sudo chrony socat curl iputils bind-utils iproute nmap-ncat tcpdump passwd && \
+                 dnf clean all && \
+                 rm -rf /var/cache/dnf /var/tmp/* /tmp/*" ;;
+    esac
 
     if [ $? -eq 0 ]; then
         log_info "System packages installed successfully"

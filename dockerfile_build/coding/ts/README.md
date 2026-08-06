@@ -111,6 +111,41 @@ docker build -t ubuntu-coding-bench:24.04-linuxarm64 -f Dockerfile .
 docker build -t ubuntu-coding-bench:24.04-x86_64 -f Dockerfile.x86 .
 ```
 
+**openEuler (optional):**
+
+The openEuler variants build from `Dockerfile.openeuler` / `Dockerfile.openeuler.x86`
+on an `openeuler-24.03-lts-sp3:latest` base (loaded from tar — not a registry).
+
+Step 0 — load the openEuler base tar:
+
+```bash
+# ARM64
+wget https://repo.openeuler.org/openEuler-24.03-LTS-SP3/docker_img/aarch64/openEuler-docker.aarch64.tar.xz
+xz -d openEuler-docker.aarch64.tar.xz
+docker load -i openEuler-docker.aarch64.tar
+# x86_64
+wget https://repo.openeuler.org/openEuler-24.03-LTS-SP3/docker_img/x86_64/openEuler-docker.x86_64.tar.xz
+xz -d openEuler-docker.x86_64.tar.xz
+docker load -i openEuler-docker.x86_64.tar
+```
+
+Build:
+
+```bash
+# ARM64
+docker build -t openeuler-coding-bench:24.03-lts-sp3-linuxarm64 -f Dockerfile.openeuler .
+# x86_64
+docker build -t openeuler-coding-bench:24.03-lts-sp3-x86_64 -f Dockerfile.openeuler.x86 .
+```
+
+Push (set `OS=openeuler`):
+
+```bash
+OS=openeuler HARBOR_IP=<your_harbor_ip> bash push_to_harbor.sh
+# x86_64:
+OS=openeuler ARCH=x86 HARBOR_IP=<your_harbor_ip> bash push_to_harbor.sh
+```
+
 This clones vuejs/core and runs `pnpm install` (with `PUPPETEER_SKIP_DOWNLOAD=1`).
 No production build, no vite playground.
 
