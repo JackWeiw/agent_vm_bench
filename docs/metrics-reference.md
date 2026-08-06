@@ -13,7 +13,7 @@ The batch summary collects **50+ metrics** from multiple sources for comprehensi
 | Source | Collection Tool | Metric Group | Count |
 |--------|-----------------|--------------|-------|
 | `bench_report_*.txt` | vm_bench_lite | Browser Metrics | 3 |
-| `analysis_report.xlsx` - Summary | qemu_monitor (built-in) | VM CPU | 2 |
+| `analysis_report.xlsx` - Summary | vm_monitor (built-in) | VM CPU | 2 |
 | `analysis_report.xlsx` - DevKit_TopDown | devkit_top_down | TopDown Analysis | 13 |
 | `analysis_report.xlsx` - DevKit_Memory | devkit_mem | Cache & Memory | 6 |
 | `analysis_report.xlsx` - NUMA_Bandwidth | devkit_mem | NUMA Bandwidth | 2+ (dynamic) |
@@ -55,7 +55,7 @@ From browser benchmark task performance statistics.
 
 ## VM CPU Metrics
 
-> **Source**: qemu_monitor built-in monitoring → `analysis_report.xlsx` Summary sheet
+> **Source**: vm_monitor built-in monitoring → `analysis_report.xlsx` Summary sheet
 
 | Column | Description |
 |--------|-------------|

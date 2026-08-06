@@ -315,8 +315,8 @@ results/
     ├── config.yaml                # Test config
     ├── test_log.txt               # Execution log
     ├── vm_bench_lite/             # Benchmark reports
-    ├── qemu_monitor/              # Monitoring data + Excel
-    └── summary/                   # Metrics JSON
+    ├── vm_monitor/               # Monitoring data + Excel
+    └── summary/                  # Metrics JSON
 ```
 
 ---
@@ -327,7 +327,6 @@ results/
 |------|-------------|
 | `create_server.py` | Create OpenStack VMs |
 | `vm_monitor.py` | Monitor VM resources (QEMU/Firecracker) + log collection |
-| `qemu_monitor.py` | (Deprecated) Legacy entry point for QEMU monitoring |
 | `vm_bench_lite.py` | Browser/QA benchmark |
 | `auto_vm_test.py` | Single test automation |
 | `batch_test_scheduler.py` | Batch test orchestration |

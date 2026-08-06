@@ -83,9 +83,6 @@ python3 vm_monitor.py -t 300 --enable-capture --log-dir /data/test_run_1
 
 # Specific NUMA nodes
 python3 vm_monitor.py -t 300 --enable-capture --numa 0,1
-
-# Backward compatible (deprecated)
-python3 qemu_monitor.py -t 300 -i 2
 ```
 
 #### Parameters
@@ -148,7 +145,7 @@ class MyVMMMonitor(VMMonitorBase):
 
 ## Log Collection Tools
 
-When using `--enable-capture`, qemu_monitor.py invokes the following performance collection tools. These tools generate detailed metrics that are aggregated into `analysis_report.xlsx` and later extracted into batch summary.
+When using `--enable-capture`, vm_monitor.py invokes the following performance collection tools. These tools generate detailed metrics that are aggregated into `analysis_report.xlsx` and later extracted into batch summary.
 
 ### Tool Overview
 
@@ -208,7 +205,7 @@ SMAP migration bandwidth monitoring:
 
 #### getfre
 
-Core frequency monitoring (物理核心频率采集):
+Core frequency monitoring:
 
 - **Frequency**: Real-time core frequency (MHz) per physical core
 - **NUMA Summary**: Average/min/max frequency per NUMA node
@@ -293,7 +290,7 @@ Collection Tools          →  analysis_report.xlsx  →  batch_summary.xlsx
 ├─ getfre_NUMA*.log     →  Getfre_Summary sheet  →  getfre_numa*_avg/min/max_mhz
 │                       →  Getfre_NUMA* sheets   →  per-core frequency
 │
-└─ qemu_monitor (built-in) → Summary sheet       →  vm_avg/max_cpu (2)
+└─ vm_monitor (built-in) → Summary sheet         →  vm_avg/max_cpu (2)
 ```
 
 For detailed metrics description, see [Metrics Reference](metrics-reference.md).

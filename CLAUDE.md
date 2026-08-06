@@ -45,7 +45,6 @@ The framework collects **50+ performance metrics** from hardware counters, kerne
 | Package | Purpose | Key Files |
 |---------|---------|-----------|
 | `vm_monitor/` | VMM monitoring (QEMU/Firecracker) | `base.py`, `qemu.py`, `firecracker.py` |
-| `qemu_monitor/` | Legacy QEMU monitoring (deprecated) | Use `vm_monitor` instead |
 | `e2b_bench/` | E2B sandbox testing | `bench.py`, `round_robin.py`, `task_runner.py`, `sandbox_manager.py`, `batch_scheduler.py`, `stats_collector.py`, `metrics_extractor.py`, `report_aggregator.py` |
 | `docker_bench/` | Docker container testing | `bench.py`, `container_manager.py` |
 | `vm_bench_lite/` | Browser/QA benchmark execution | Browser warmup + benchmark phases |
@@ -248,7 +247,7 @@ results/
 │   ├── config.yaml
 │   ├── test_log.txt
 │   ├── vm_bench_lite/
-│   ├── qemu_monitor/
+│   ├── vm_monitor/
 │   │   └── analysis_report.xlsx
 │   └── summary/
 │
@@ -285,7 +284,8 @@ config/
 1. **Deprecated scripts (marked in v0.2.0)**:
    - `vm_bench_lite.py` → use `vm_bench/` package
    - `create_server.py` → use `vm_bench --create-only`
-   - `qemu_monitor.py` and `qemu_monitor/` → use `vm_monitor`
+   - `qemu_monitor.py` and `qemu_monitor/` → removed in v0.4.0; use `vm_monitor`
+   - `session-replay/` → removed in v0.4.0; use `llm_replay`
 2. **smap_tool path hardcoded** - Should move to `.env` or config
 3. **No unit tests** - Core components lack test coverage
 4. **Versioned files** - `920x_ddr_latency_v*.py` should be consolidated
