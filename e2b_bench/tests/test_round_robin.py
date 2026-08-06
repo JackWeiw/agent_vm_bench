@@ -6,7 +6,9 @@ Tests for RoundRobinTaskManager: group preparation, round calculation, and termi
 
 import threading
 import unittest
+from unittest.mock import Mock, patch
 
+from e2b_bench.bench import run_benchmark
 from e2b_bench.config import Config
 from e2b_bench.round_robin import RoundRobinTaskManager
 from e2b_bench.schemas import BrowserMetrics, CreationMetrics, SandboxState, SandboxStatus
@@ -175,6 +177,52 @@ class TestCalculateRounds(unittest.TestCase):
         # 4 groups but only 3 rounds planned
         assert len(manager.sandbox_groups) == 4
         assert manager._calculate_rounds() == 3
+
+
+class TestExceptionCleanup(unittest.TestCase):
+    """Regression coverage for cleanup when round-robin execution fails."""
+
+    def test_stop_round_runs_when_runner_wait_raises(self):
+        config = Config(benchmark_mode="round_robin", round_size=1, round_count=1, test_duration=60)
+        manager = _make_manager(config, num_ready=1)
+        manager._start_round = Mock()
+        manager._wait_for_active_runners = Mock(side_effect=RuntimeError("runner deadline exceeded"))
+        manager._stop_round = Mock()
+
+        with self.assertRaisesRegex(RuntimeError, "deadline exceeded"):
+            manager.run()
+
+        manager._stop_round.assert_called_once_with()
+
+    def test_run_benchmark_cleans_up_browser_and_coding_on_round_robin_error(self):
+        for workflow_type in ("browser", "coding"):
+            with self.subTest(workflow_type=workflow_type):
+                config = Config(
+                    workflow_type=workflow_type,
+                    benchmark_mode="round_robin",
+                    total_count=1,
+                    round_size=1,
+                    round_count=1,
+                    test_duration=1,
+                )
+                sandbox_manager = Mock()
+                sandbox_manager.create_all.return_value = {1: _make_ready_state(1)}
+                stats_collector = Mock()
+                round_robin_manager = Mock()
+                round_robin_manager.run.side_effect = RuntimeError("round-robin failed")
+
+                with patch("e2b_bench.bench.SandboxManager", return_value=sandbox_manager) as manager_class, patch(
+                    "e2b_bench.bench.TaskManager"
+                ), patch("e2b_bench.bench.StatsCollector", return_value=stats_collector), patch(
+                    "e2b_bench.bench.RoundRobinTaskManager", return_value=round_robin_manager
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "round-robin failed"):
+                        run_benchmark(config)
+
+                stop_event = manager_class.call_args.args[1]
+                self.assertTrue(stop_event.is_set())
+                stats_collector.stop.assert_called_once_with()
+                sandbox_manager.kill_all.assert_called_once_with()
 
 
 if __name__ == "__main__":

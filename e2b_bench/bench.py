@@ -767,11 +767,10 @@ def run_benchmark(config: Config) -> dict:
         try:
             round_robin_manager.run()
         except Exception:
-            if config.workflow_type == "document":
-                stop_event.set()
-                stats_collector.stop()
-                if not config.detect_existing:
-                    sandbox_manager.kill_all()
+            stop_event.set()
+            stats_collector.stop()
+            if not config.detect_existing:
+                sandbox_manager.kill_all()
             raise
     else:
         # Fixed mode (original behavior)

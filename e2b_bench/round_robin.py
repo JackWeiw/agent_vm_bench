@@ -114,12 +114,12 @@ class RoundRobinTaskManager:
             # Cycle back to first group if needed
             self._start_round(round_id)
 
-            # Wait for all runners to complete
-            # Each runner executes one task (tab operations) and finishes naturally
-            self._wait_for_active_runners()
-
-            # Now stop the round (records metrics and baseline)
-            self._stop_round()
+            # Always finalize the round so partial metrics and baselines are
+            # preserved even when a runner exceeds its deadline.
+            try:
+                self._wait_for_active_runners()
+            finally:
+                self._stop_round()
 
             # Wait for round_interval before starting next round
             # This is the gap between rounds (after tasks complete)

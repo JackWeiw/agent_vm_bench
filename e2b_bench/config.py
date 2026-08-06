@@ -38,6 +38,7 @@ def document_scene_layout(case_kind: str) -> Dict[str, str]:
     except KeyError:
         raise ValueError("document.case_kind must be 'pdf' or 'xlsx'") from None
 
+
 def _normalize_numa_bind(value: Any) -> Optional[List[int]]:
     """Normalize numa_bind input to a canonical list of node IDs or None.
 
