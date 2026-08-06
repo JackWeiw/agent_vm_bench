@@ -6,13 +6,31 @@ Provides logging formatting, time handling, percentile calculation and other hel
 
 import logging
 import statistics
+import sys
 from datetime import datetime
 from typing import Dict, List
 
 
 def setup_logging(level: int = logging.INFO) -> None:
-    """Setup logging format"""
-    logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    """Configure root logging with a timestamped format.
+
+    ``logging.basicConfig`` is a no-op once the root logger already has
+    handlers (e.g. when the package is embedded in a host that configured
+    logging first). Explicitly force the root level afterwards so the default
+    INFO level — and the progress messages emitted at it — is honored even
+    in that case.
+
+    Output goes to stdout (not the logging default of stderr) to preserve
+    the pre-refactor ``print`` destination: shell redirects and ``tee``
+    keep capturing the report echo and progress output.
+    """
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        stream=sys.stdout,
+    )
+    logging.getLogger().setLevel(level)
 
 
 def format_timestamp(ts: float) -> str:

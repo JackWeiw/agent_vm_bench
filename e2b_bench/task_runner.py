@@ -15,6 +15,7 @@ Classes:
 - TaskManager: Manages warmup and task execution threads (workflow-aware dispatch)
 """
 
+import logging
 import random
 import re
 import threading
@@ -24,6 +25,8 @@ from typing import Dict, List, Tuple
 from .config import Config
 from .helpers import wait_for_port_ready
 from .schemas import SandboxState, SandboxStatus
+
+logger = logging.getLogger(__name__)
 
 
 def extract_element_refs(output: str) -> List[str]:
@@ -70,12 +73,14 @@ class WarmupRunner(threading.Thread):
         """
         # Wait for sandbox ports ready
         if not wait_for_port_ready(self.state):
-            print(f"[Sandbox{self.state.sandbox_id}] Cannot start warmup: {self.state.creation_metrics.status.value}")
+            logger.warning(
+                f"[Sandbox{self.state.sandbox_id}] Cannot start warmup: {self.state.creation_metrics.status.value}"
+            )
             return
 
         sbx = self.state.sandbox_obj
         if not sbx:
-            print(f"[Sandbox{self.state.sandbox_id}] No sandbox handle for warmup")
+            logger.info(f"[Sandbox{self.state.sandbox_id}] No sandbox handle for warmup")
             self.state.warmup_done = True
             return
 
@@ -86,18 +91,20 @@ class WarmupRunner(threading.Thread):
         if self.config.warmup_loops > 1:
             with WarmupRunner._warn_lock:
                 if not WarmupRunner._warmup_loops_warned:
-                    print(f"[Warmup] Note: warmup_loops={self.config.warmup_loops} is ignored (each URL opened once)")
+                    logger.info(
+                        f"[Warmup] Note: warmup_loops={self.config.warmup_loops} is ignored (each URL opened once)"
+                    )
                     WarmupRunner._warmup_loops_warned = True
 
         # Check if agent-browser is available
         try:
             result = sbx.commands.run("agent-browser --version", timeout=30, user="root")
             if result.exit_code != 0:
-                print(f"[Sandbox{self.state.sandbox_id}] agent-browser not available, skipping tab warmup")
+                logger.warning(f"[Sandbox{self.state.sandbox_id}] agent-browser not available, skipping tab warmup")
                 self.state.warmup_done = True
                 return
         except Exception as e:
-            print(f"[Sandbox{self.state.sandbox_id}] Failed to check agent-browser: {e}")
+            logger.error(f"[Sandbox{self.state.sandbox_id}] Failed to check agent-browser: {e}")
             self.state.warmup_done = True
             return
 
@@ -135,16 +142,18 @@ class WarmupRunner(threading.Thread):
                 time.sleep(self.config.warmup_delay)
 
             except Exception as e:
-                print(f"[Sandbox{self.state.sandbox_id}] Failed to open tab {i+1}: {e}")
+                logger.error(f"[Sandbox{self.state.sandbox_id}] Failed to open tab {i+1}: {e}")
                 failed_urls.append(url[:50])
 
         # Mark warmup complete
         self.state.warmup_done = True
 
         if failed_urls:
-            print(f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Warmup had {len(failed_urls)} failed pages")
+            logger.warning(
+                f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Warmup had {len(failed_urls)} failed pages"
+            )
         else:
-            print(
+            logger.info(
                 f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Warmup completed: {len(self.state.tab_ids)} tabs opened"
             )
 
@@ -158,7 +167,7 @@ class WarmupRunner(threading.Thread):
         # Step 1: DOM snapshot
         result = sbx.commands.run("agent-browser snapshot -i", timeout=60, user="root")
         if result.exit_code != 0:
-            print(f"[Sandbox{self.state.sandbox_id}] Tab {tab_num}: snapshot failed")
+            logger.warning(f"[Sandbox{self.state.sandbox_id}] Tab {tab_num}: snapshot failed")
             return
 
         # Extract element refs
@@ -168,12 +177,12 @@ class WarmupRunner(threading.Thread):
         if elements:
             click_result = sbx.commands.run(f"agent-browser click {elements[0]}", timeout=30, user="root")
             if click_result.exit_code != 0:
-                print(f"[Sandbox{self.state.sandbox_id}] Tab {tab_num}: click failed on {elements[0]}")
+                logger.warning(f"[Sandbox{self.state.sandbox_id}] Tab {tab_num}: click failed on {elements[0]}")
 
         # Step 3: Screenshot
         screenshot_result = sbx.commands.run("agent-browser screenshot", timeout=30, user="root")
         if screenshot_result.exit_code != 0:
-            print(f"[Sandbox{self.state.sandbox_id}] Tab {tab_num}: screenshot failed")
+            logger.warning(f"[Sandbox{self.state.sandbox_id}] Tab {tab_num}: screenshot failed")
 
 
 class BrowserTaskRunner(threading.Thread):
@@ -195,13 +204,15 @@ class BrowserTaskRunner(threading.Thread):
         """Task execution main loop"""
         # Wait for sandbox ports ready
         if not wait_for_port_ready(self.state, self.stop_event):
-            print(f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}")
+            logger.warning(
+                f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}"
+            )
             return
 
         # Browser task execution loop
         while not self.stop_event.is_set():
             if not self.state.is_alive:
-                print(f"[Sandbox{self.state.sandbox_id}] Sandbox offline, stopping tasks")
+                logger.info(f"[Sandbox{self.state.sandbox_id}] Sandbox offline, stopping tasks")
                 break
 
             # Execute single browser task
@@ -219,14 +230,14 @@ class BrowserTaskRunner(threading.Thread):
                 self.consecutive_errors += 1
                 if self.consecutive_errors >= 3:
                     self.state.is_alive = False
-                    print(f"[Sandbox{self.state.sandbox_id}] Marked offline (3 consecutive failures)")
+                    logger.warning(f"[Sandbox{self.state.sandbox_id}] Marked offline (3 consecutive failures)")
                     break
 
             # Random interval to avoid request spike
             sleep_time = random.uniform(self.config.browser_interval_min, self.config.browser_interval_max)
             time.sleep(sleep_time)
 
-        print(f"[Sandbox{self.state.sandbox_id}] Task runner ended")
+        logger.info(f"[Sandbox{self.state.sandbox_id}] Task runner ended")
 
     def _run_single_task(self) -> Tuple[bool, float]:
         """Execute single browser task
@@ -263,7 +274,7 @@ class BrowserTaskRunner(threading.Thread):
                     error_detail += f", stderr={result.stderr[:200]}"
                 if result.stdout:
                     error_detail += f", stdout={result.stdout[:200]}"
-                print(f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Task failed: {error_detail}")
+                logger.error(f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Task failed: {error_detail}")
 
                 # Store last error for debugging
                 self.state.browser_metrics.last_error = error_detail
@@ -272,7 +283,7 @@ class BrowserTaskRunner(threading.Thread):
         except Exception as e:
             elapsed = time.perf_counter() - start_time + 10  # simulate llm response time
             error_msg = str(e)
-            print(f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Task exception: {error_msg}")
+            logger.error(f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Task exception: {error_msg}")
             # Store last error for debugging
             self.state.browser_metrics.last_error = error_msg
             return False, elapsed
@@ -309,7 +320,7 @@ class TaskManager:
         ]
 
         if not ready_states:
-            print("No sandboxes ready for warmup")
+            logger.info("No sandboxes ready for warmup")
             return
 
         # Select warmup runner based on workflow type
@@ -318,31 +329,31 @@ class TaskManager:
 
             # Coding warmup: one initial verify (no resident process)
             if not self.config.coding_skip_verify:
-                print(f"\n{'=' * 60}")
-                print("Coding Warmup Phase Starting")
-                print(f"  Total: {len(ready_states)} sandboxes")
-                print(f"  Project: {self.config.coding_project_dir}")
-                print(f"  Language: {self.config.coding_language}")
-                print(f"  Initial verify: {'enabled' if not self.config.coding_skip_verify else 'skipped'}")
-                print(f"{'=' * 60}")
+                logger.info(f"\n{'=' * 60}")
+                logger.info("Coding Warmup Phase Starting")
+                logger.info(f"  Total: {len(ready_states)} sandboxes")
+                logger.info(f"  Project: {self.config.coding_project_dir}")
+                logger.info(f"  Language: {self.config.coding_language}")
+                logger.info(f"  Initial verify: {'enabled' if not self.config.coding_skip_verify else 'skipped'}")
+                logger.info(f"{'=' * 60}")
 
                 for state in ready_states:
                     runner = CodingWarmupRunner(state, self.config)
                     self.warmup_runners.append(runner)
                     runner.start()
             else:
-                print("Coding warmup skipped (initial verify disabled)")
+                logger.info("Coding warmup skipped (initial verify disabled)")
                 for state in ready_states:
                     state.warmup_done = True
         elif self.config.workflow_type == "document":
             from .document_task_runner import DocumentWarmupRunner
 
-            print(f"\n{'=' * 60}")
-            print("Document Warmup Phase Starting")
-            print(f"  Total: {len(ready_states)} sandboxes")
-            print(f"  Case kind: {self.config.document_case_kind}")
-            print(f"  Seed: {self.config.document_seed_dir}")
-            print(f"{'=' * 60}")
+            logger.info(f"\n{'=' * 60}")
+            logger.info("Document Warmup Phase Starting")
+            logger.info(f"  Total: {len(ready_states)} sandboxes")
+            logger.info(f"  Case kind: {self.config.document_case_kind}")
+            logger.info(f"  Seed: {self.config.document_seed_dir}")
+            logger.info(f"{'=' * 60}")
             for state in ready_states:
                 runner = DocumentWarmupRunner(state, self.config)
                 self.warmup_runners.append(runner)
@@ -350,18 +361,18 @@ class TaskManager:
         elif self.config.workflow_type == "browser":
             # Browser warmup: uses warmup_urls to open tabs
             if not self.config.warmup_urls:
-                print("No warmup URLs configured, skipping warmup")
+                logger.info("No warmup URLs configured, skipping warmup")
                 for state in ready_states:
                     state.warmup_done = True
                 return
 
-            print(f"\n{'=' * 60}")
-            print("Warmup Phase Starting")
-            print(f"  Total: {len(ready_states)} sandboxes")
-            print(f"  Warmup pages: {len(self.config.warmup_urls)}")
-            print(f"  Loop count: {self.config.warmup_loops}")
-            print(f"  Page delay: {self.config.warmup_delay}s")
-            print(f"{'=' * 60}")
+            logger.info(f"\n{'=' * 60}")
+            logger.info("Warmup Phase Starting")
+            logger.info(f"  Total: {len(ready_states)} sandboxes")
+            logger.info(f"  Warmup pages: {len(self.config.warmup_urls)}")
+            logger.info(f"  Loop count: {self.config.warmup_loops}")
+            logger.info(f"  Page delay: {self.config.warmup_delay}s")
+            logger.info(f"{'=' * 60}")
 
             for state in ready_states:
                 runner = WarmupRunner(state, self.config)
@@ -389,7 +400,7 @@ class TaskManager:
             now = time.time()
             if now - last_progress_time >= 5:
                 elapsed = now - start_time
-                print(f"   Warmup progress: {done_count}/{total_count} completed | elapsed {elapsed:.0f}s")
+                logger.info(f"   Warmup progress: {done_count}/{total_count} completed | elapsed {elapsed:.0f}s")
                 last_progress_time = now
 
             if done_count >= total_count:
@@ -433,7 +444,7 @@ class TaskManager:
         ]
 
         if not ready_states:
-            print("No sandboxes ready for task execution")
+            logger.info("No sandboxes ready for task execution")
             return
 
         # Select subset based on benchmark_percent
@@ -443,7 +454,7 @@ class TaskManager:
         if benchmark_count < total_ready:
             # Randomly select N sandboxes for benchmark
             benchmark_states = random.sample(ready_states, benchmark_count)
-            print(
+            logger.info(
                 f"\nBenchmark subset: {benchmark_count}/{total_ready} sandboxes ({self.config.benchmark_percent * 100:.0f}%)"
             )
         else:
@@ -462,23 +473,25 @@ class TaskManager:
 
         workflow_label = self.config.workflow_type.capitalize()
 
-        print(f"\n{'=' * 60}")
-        print(f"Batched {workflow_label} Task Execution Start")
-        print(f"  Total: {total} sandboxes")
-        print(f"  Batches: {batch_count} x {batch_size}")
-        print(f"  Interval: {self.config.task_batch_interval}s")
-        print(f"{'=' * 60}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"Batched {workflow_label} Task Execution Start")
+        logger.info(f"  Total: {total} sandboxes")
+        logger.info(f"  Batches: {batch_count} x {batch_size}")
+        logger.info(f"  Interval: {self.config.task_batch_interval}s")
+        logger.info(f"{'=' * 60}")
 
         for batch_id in range(batch_count):
             if self.stop_event.is_set():
-                print("Stop event detected, aborting task start")
+                logger.info("Stop event detected, aborting task start")
                 break
 
             start_idx = batch_id * batch_size
             end_idx = min(start_idx + batch_size, total)
             batch_states = ready_states[start_idx:end_idx]
 
-            print(f"\n[TaskBatch {batch_id}/{batch_count - 1}] Starting tasks for sandboxes {start_idx + 1}-{end_idx}")
+            logger.info(
+                f"\n[TaskBatch {batch_id}/{batch_count - 1}] Starting tasks for sandboxes {start_idx + 1}-{end_idx}"
+            )
 
             # Select runner based on workflow type
             for state in batch_states:
@@ -488,26 +501,26 @@ class TaskManager:
 
             # Wait between batches (last batch no wait)
             if batch_id < batch_count - 1 and self.config.task_batch_interval:
-                print(f"Waiting {self.config.task_batch_interval}s before next task batch...")
+                logger.info(f"Waiting {self.config.task_batch_interval}s before next task batch...")
                 time.sleep(self.config.task_batch_interval)
 
-        print(f"\nStarted {len(self.runners)} task runners in {batch_count} batches")
+        logger.info(f"\nStarted {len(self.runners)} task runners in {batch_count} batches")
 
     def _start_concurrent(self, ready_states: List[SandboxState]) -> None:
         """Full concurrent task execution start"""
         workflow_label = self.config.workflow_type.capitalize()
 
-        print(f"\n{'=' * 60}")
-        print(f"Concurrent {workflow_label} Task Execution Start")
-        print(f"  Total: {len(ready_states)} sandboxes (full concurrent)")
-        print(f"{'=' * 60}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"Concurrent {workflow_label} Task Execution Start")
+        logger.info(f"  Total: {len(ready_states)} sandboxes (full concurrent)")
+        logger.info(f"{'=' * 60}")
 
         for state in ready_states:
             runner = self._create_task_runner(state)
             self.runners.append(runner)
             runner.start()
 
-        print(f"\nStarted {len(self.runners)} task runners")
+        logger.info(f"\nStarted {len(self.runners)} task runners")
 
     def _create_task_runner(self, state: SandboxState) -> threading.Thread:
         """Create task runner based on workflow type
@@ -584,12 +597,12 @@ class TabOperationRunner(threading.Thread):
         """
         sbx = self.state.sandbox_obj
         if not sbx:
-            print(f"[Sandbox{self.state.sandbox_id}] No sandbox handle available for tab operations")
+            logger.info(f"[Sandbox{self.state.sandbox_id}] No sandbox handle available for tab operations")
             return
 
         # Get URL for this round (round-robin from browser_urls)
         if not self.config.browser_urls:
-            print(f"[Sandbox{self.state.sandbox_id}] No browser_urls configured")
+            logger.info(f"[Sandbox{self.state.sandbox_id}] No browser_urls configured")
             return
 
         url_index = self.round_id % len(self.config.browser_urls)
@@ -604,7 +617,7 @@ class TabOperationRunner(threading.Thread):
         if success:
             # Print success summary with step timing breakdown
             step_breakdown = ", ".join(f"{k}={v:.2f}s" for k, v in step_times.items() if v > 0)
-            print(f"[Sandbox{self.state.sandbox_id}] New tab completed in {elapsed:.2f}s ({step_breakdown})")
+            logger.info(f"[Sandbox{self.state.sandbox_id}] New tab completed in {elapsed:.2f}s ({step_breakdown})")
         else:
             self._handle_failure(url, failed_step, error_detail)
 
@@ -645,9 +658,9 @@ class TabOperationRunner(threading.Thread):
 
             # Log non-fatal errors (click/screenshot failures)
             if click_error:
-                print(f"[Sandbox{self.state.sandbox_id}] Non-fatal: {click_error}")
+                logger.warning(f"[Sandbox{self.state.sandbox_id}] Non-fatal: {click_error}")
             if screenshot_error:
-                print(f"[Sandbox{self.state.sandbox_id}] Non-fatal: {screenshot_error}")
+                logger.warning(f"[Sandbox{self.state.sandbox_id}] Non-fatal: {screenshot_error}")
 
             # Combine non-fatal errors for metrics tracking
             non_fatal_errors = []
@@ -813,7 +826,7 @@ class TabOperationRunner(threading.Thread):
             failed_step: Name of the step that failed
             error_detail: Detailed error message
         """
-        print(f"[Sandbox{self.state.sandbox_id}] URL '{url[:50]}' failed at {failed_step}: {error_detail}")
+        logger.error(f"[Sandbox{self.state.sandbox_id}] URL '{url[:50]}' failed at {failed_step}: {error_detail}")
         self.consecutive_errors += 1
         if self.consecutive_errors >= 3:
             self.state.is_alive = False

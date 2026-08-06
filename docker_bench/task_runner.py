@@ -14,6 +14,7 @@ Browser Workflow (using agent-browser):
 Note: agent-browser doesn't need explicit focus, open automatically works on current tab
 """
 
+import logging
 import random
 import re
 import threading
@@ -22,6 +23,8 @@ from typing import Dict, List, Tuple
 
 from .config import Config
 from .schemas import ContainerState, ContainerStatus
+
+logger = logging.getLogger(__name__)
 
 
 class BrowserTaskRunner(threading.Thread):
@@ -54,7 +57,7 @@ class BrowserTaskRunner(threading.Thread):
                 ContainerStatus.OFFLINE,
                 ContainerStatus.KILLED,
             ):
-                print(
+                logger.info(
                     f"[Container{self.state.container_id}] Cannot start tasks: {self.state.creation_metrics.status.value}"
                 )
                 return
@@ -64,14 +67,14 @@ class BrowserTaskRunner(threading.Thread):
         if not self.state.browser_started:
             success, error = self._start_browser_backend()
             if not success:
-                print(f"[Container{self.state.container_id}] Browser backend start failed: {error}")
+                logger.error(f"[Container{self.state.container_id}] Browser backend start failed: {error}")
                 self.state.is_alive = False
                 return
 
         # Browser task execution loop
         while not self.stop_event.is_set():
             if not self.state.is_alive:
-                print(f"[Container{self.state.container_id}] Container offline, stopping tasks")
+                logger.info(f"[Container{self.state.container_id}] Container offline, stopping tasks")
                 break
 
             # Execute single browser task (4-step workflow)
@@ -79,7 +82,9 @@ class BrowserTaskRunner(threading.Thread):
 
             # If task was interrupted by stop_event, don't count as failure
             if interrupted:
-                print(f"[Container{self.state.container_id}] Task interrupted by stop signal (not counted as failure)")
+                logger.info(
+                    f"[Container{self.state.container_id}] Task interrupted by stop signal (not counted as failure)"
+                )
                 break
 
             # Update metrics
@@ -94,7 +99,7 @@ class BrowserTaskRunner(threading.Thread):
                 self.consecutive_errors += 1
                 if self.consecutive_errors >= 3:
                     self.state.is_alive = False
-                    print(f"[Container{self.state.container_id}] Marked offline (3 consecutive failures)")
+                    logger.warning(f"[Container{self.state.container_id}] Marked offline (3 consecutive failures)")
                     break
 
             # Random interval to avoid request spike
@@ -104,7 +109,7 @@ class BrowserTaskRunner(threading.Thread):
         # Clear browser cache after task loop ends
         self._clear_browser_cache()
 
-        print(f"[Container{self.state.container_id}] Task runner ended")
+        logger.info(f"[Container{self.state.container_id}] Task runner ended")
 
     def _start_browser_backend(self) -> Tuple[bool, str]:
         """Start agent-browser daemon (once per container test session)
@@ -131,7 +136,7 @@ class BrowserTaskRunner(threading.Thread):
 
             if result.exit_code == 0:
                 self.state.browser_started = True
-                print(f"[Container{self.state.container_id}] agent-browser ready (browser will stay running)")
+                logger.info(f"[Container{self.state.container_id}] agent-browser ready (browser will stay running)")
                 return True, ""
             else:
                 output = (
@@ -206,7 +211,7 @@ class BrowserTaskRunner(threading.Thread):
         except Exception as e:
             elapsed = time.perf_counter() - start_time
             error_msg = str(e)
-            print(f"[Container{self.state.container_id}] Task exception: {error_msg}")
+            logger.error(f"[Container{self.state.container_id}] Task exception: {error_msg}")
             self.state.browser_metrics.last_error = error_msg
             interrupted = self.stop_event.is_set()
             return False, elapsed, step_times, interrupted
@@ -236,7 +241,7 @@ class BrowserTaskRunner(threading.Thread):
             )
 
             if result.exit_code != 0:
-                print(f"[Container{self.state.container_id}] Step 1 (open) failed: {output[:200]}")
+                logger.warning(f"[Container{self.state.container_id}] Step 1 (open) failed: {output[:200]}")
                 self.state.browser_metrics.last_error = f"open failed: {output[:200]}"
                 return False, elapsed
 
@@ -265,7 +270,7 @@ class BrowserTaskRunner(threading.Thread):
             )
 
             if result.exit_code != 0:
-                print(f"[Container{self.state.container_id}] Step 2 (snapshot) failed: {output[:200]}")
+                logger.warning(f"[Container{self.state.container_id}] Step 2 (snapshot) failed: {output[:200]}")
                 self.state.browser_metrics.last_error = f"snapshot failed: {output[:200]}"
                 return False, elapsed, []
 
@@ -292,7 +297,7 @@ class BrowserTaskRunner(threading.Thread):
 
         # Skip click if no elements available
         if not elements:
-            print(f"[Container{self.state.container_id}] Step 3 (click) skipped: no elements found")
+            logger.info(f"[Container{self.state.container_id}] Step 3 (click) skipped: no elements found")
             return True, 0.0
 
         start = time.perf_counter()
@@ -307,7 +312,7 @@ class BrowserTaskRunner(threading.Thread):
                 return True, elapsed
 
             # Working element failed (page might have changed), clear it and try new ones
-            print(
+            logger.info(
                 f"[Container{self.state.container_id}] Step 3 (click) previous working element {self.state.working_click_element} failed, trying new..."
             )
             self.state.working_click_element = ""
@@ -328,13 +333,15 @@ class BrowserTaskRunner(threading.Thread):
             if result.exit_code == 0:
                 # Found working element, save it for reuse
                 self.state.working_click_element = element_ref
-                print(
+                logger.info(
                     f"[Container{self.state.container_id}] Step 3 (click) succeeded with {element_ref} (saved for reuse)"
                 )
                 return True, elapsed
 
         # Strategy 3: Get fresh snapshot and retry
-        print(f"[Container{self.state.container_id}] Step 3 (click) initial attempts failed, getting fresh snapshot...")
+        logger.info(
+            f"[Container{self.state.container_id}] Step 3 (click) initial attempts failed, getting fresh snapshot..."
+        )
         time.sleep(0.5)
 
         snapshot_cmd = "sh -c 'unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && agent-browser snapshot -i'"
@@ -357,7 +364,7 @@ class BrowserTaskRunner(threading.Thread):
 
                     if result.exit_code == 0:
                         self.state.working_click_element = element_ref
-                        print(
+                        logger.info(
                             f"[Container{self.state.container_id}] Step 3 (click) retry succeeded with {element_ref} (saved for reuse)"
                         )
                         return True, elapsed
@@ -395,7 +402,7 @@ class BrowserTaskRunner(threading.Thread):
                     if isinstance(result.output, bytes)
                     else result.output
                 )
-                print(f"[Container{self.state.container_id}] Step 4 (screenshot) failed: {output[:100]}")
+                logger.warning(f"[Container{self.state.container_id}] Step 4 (screenshot) failed: {output[:100]}")
                 self.state.browser_metrics.last_error = f"screenshot failed: {output[:200]}"
                 return False, elapsed
 
@@ -422,7 +429,7 @@ class BrowserTaskRunner(threading.Thread):
             # Close all browser sessions at the end of test
             cmd = "sh -c 'unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && agent-browser close --all'"
             result = container.exec_run(cmd, user="root")
-            print(f"[Container{self.state.container_id}] Browser session closed")
+            logger.info(f"[Container{self.state.container_id}] Browser session closed")
             return result.exit_code == 0
         except Exception:
             return False
@@ -468,7 +475,7 @@ class TaskManager:
         ]
 
         if not ready_states:
-            print("No containers ready for task execution")
+            logger.info("No containers ready for task execution")
             return
 
         # Select subset based on benchmark_percent
@@ -478,7 +485,7 @@ class TaskManager:
         if benchmark_count < total_ready:
             # Select first N containers for benchmark
             benchmark_states = ready_states[:benchmark_count]
-            print(
+            logger.info(
                 f"\nBenchmark subset: {benchmark_count}/{total_ready} containers ({self.config.benchmark_percent * 100:.0f}%)"
             )
         else:
@@ -495,23 +502,25 @@ class TaskManager:
         batch_size = self.config.task_batch_size
         batch_count = (total + batch_size - 1) // batch_size
 
-        print(f"\n{'=' * 60}")
-        print("Batched Task Execution Start")
-        print(f"  Total: {total} containers")
-        print(f"  Batches: {batch_count} x {batch_size}")
-        print(f"  Interval: {self.config.task_batch_interval}s")
-        print(f"{'=' * 60}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info("Batched Task Execution Start")
+        logger.info(f"  Total: {total} containers")
+        logger.info(f"  Batches: {batch_count} x {batch_size}")
+        logger.info(f"  Interval: {self.config.task_batch_interval}s")
+        logger.info(f"{'=' * 60}")
 
         for batch_id in range(batch_count):
             if self.stop_event.is_set():
-                print("Stop event detected, aborting task start")
+                logger.info("Stop event detected, aborting task start")
                 break
 
             start_idx = batch_id * batch_size
             end_idx = min(start_idx + batch_size, total)
             batch_states = ready_states[start_idx:end_idx]
 
-            print(f"\n[TaskBatch {batch_id}/{batch_count - 1}] Starting tasks for containers {start_idx + 1}-{end_idx}")
+            logger.info(
+                f"\n[TaskBatch {batch_id}/{batch_count - 1}] Starting tasks for containers {start_idx + 1}-{end_idx}"
+            )
 
             # Start task runners for current batch
             for state in batch_states:
@@ -521,24 +530,24 @@ class TaskManager:
 
             # Wait between batches (last batch no wait)
             if batch_id < batch_count - 1 and self.config.task_batch_interval:
-                print(f"Waiting {self.config.task_batch_interval}s before next task batch...")
+                logger.info(f"Waiting {self.config.task_batch_interval}s before next task batch...")
                 time.sleep(self.config.task_batch_interval)
 
-        print(f"\nStarted {len(self.runners)} task runners in {batch_count} batches")
+        logger.info(f"\nStarted {len(self.runners)} task runners in {batch_count} batches")
 
     def _start_concurrent(self, ready_states: List[ContainerState]) -> None:
         """Full concurrent task execution start"""
-        print(f"\n{'=' * 60}")
-        print("Concurrent Task Execution Start")
-        print(f"  Total: {len(ready_states)} containers (full concurrent)")
-        print(f"{'=' * 60}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info("Concurrent Task Execution Start")
+        logger.info(f"  Total: {len(ready_states)} containers (full concurrent)")
+        logger.info(f"{'=' * 60}")
 
         for state in ready_states:
             runner = BrowserTaskRunner(state, self.config, self.stop_event)
             self.runners.append(runner)
             runner.start()
 
-        print(f"\nStarted {len(self.runners)} task runners")
+        logger.info(f"\nStarted {len(self.runners)} task runners")
 
     def wait_all(self, timeout: float = 5.0) -> None:
         """Wait for all task threads to end"""

@@ -28,6 +28,7 @@ Classes:
 """
 
 import base64
+import logging
 import random
 import threading
 import time
@@ -36,6 +37,8 @@ from typing import Dict, List, Optional, Tuple
 from .config import Config, _find_name_clause, get_coding_profile
 from .helpers import wait_for_port_ready
 from .schemas import SandboxState, SandboxStatus
+
+logger = logging.getLogger(__name__)
 
 
 def _build_edit_command(project_dir: str, target_file: str, find_str: str, replace_str: str) -> str:
@@ -132,7 +135,7 @@ def _run_verify(
         # `go clean -cache` exit code is irrelevant to verify success (a stale
         # cache clear failure mustn't fake a verify pass); log and proceed.
         if clean_res.exit_code != 0 and clean_res.stderr:
-            print(f"[verify_clean] pre-verify cmd non-zero: {(clean_res.stderr or '').strip()[:120]}")
+            logger.warning(f"[verify_clean] pre-verify cmd non-zero: {(clean_res.stderr or '').strip()[:120]}")
 
     eof = profile.heredoc_eof
 
@@ -201,12 +204,14 @@ class CodingWarmupRunner(threading.Thread):
     def run(self) -> None:
         """Execute warmup phase for this sandbox - one initial verify (no resident process)."""
         if not wait_for_port_ready(self.state):
-            print(f"[Sandbox{self.state.sandbox_id}] Cannot start warmup: {self.state.creation_metrics.status.value}")
+            logger.warning(
+                f"[Sandbox{self.state.sandbox_id}] Cannot start warmup: {self.state.creation_metrics.status.value}"
+            )
             return
 
         sbx = self.state.sandbox_obj
         if not sbx:
-            print(f"[Sandbox{self.state.sandbox_id}] No sandbox handle for warmup")
+            logger.info(f"[Sandbox{self.state.sandbox_id}] No sandbox handle for warmup")
             self.state.warmup_done = True
             return
 
@@ -217,11 +222,11 @@ class CodingWarmupRunner(threading.Thread):
         try:
             result = sbx.commands.run(f"ls {project_dir}/{project_marker}", timeout=30, user="root")
             if result.exit_code != 0:
-                print(f"[Sandbox{self.state.sandbox_id}] Project not found at {project_dir}, skipping warmup")
+                logger.warning(f"[Sandbox{self.state.sandbox_id}] Project not found at {project_dir}, skipping warmup")
                 self.state.warmup_done = True
                 return
         except Exception as e:
-            print(f"[Sandbox{self.state.sandbox_id}] Failed to verify project: {e}")
+            logger.error(f"[Sandbox{self.state.sandbox_id}] Failed to verify project: {e}")
             self.state.warmup_done = True
             return
 
@@ -233,29 +238,29 @@ class CodingWarmupRunner(threading.Thread):
                 user="root",
             )
             if result.exit_code != 0:
-                print(
+                logger.info(
                     f"[Sandbox{self.state.sandbox_id}] git checkout non-zero (exit {result.exit_code}): "
                     f"{(result.stderr or '').strip()[:120]}"
                 )
         except Exception as e:
-            print(f"[Sandbox{self.state.sandbox_id}] git checkout failed: {e}")
+            logger.error(f"[Sandbox{self.state.sandbox_id}] git checkout failed: {e}")
 
         # One initial verify warms esbuild/node or Go compiler caches and confirms
         # project health. No resident dev server - none in the trace.
         if not self.config.coding_skip_verify:
             try:
-                print(f"[Sandbox{self.state.sandbox_id}] Running initial verify...")
+                logger.info(f"[Sandbox{self.state.sandbox_id}] Running initial verify...")
                 pair = self.config.coding_source_files[0] if self.config.coding_source_files else {}
                 ok, err, _compile_only = _run_verify(sbx, project_dir, self.config, pair, round_id=0)
                 if ok:
-                    print(f"[Sandbox{self.state.sandbox_id}] Initial verify: success")
+                    logger.info(f"[Sandbox{self.state.sandbox_id}] Initial verify: success")
                 else:
-                    print(f"[Sandbox{self.state.sandbox_id}] Initial verify failed: {err[:120]}")
+                    logger.warning(f"[Sandbox{self.state.sandbox_id}] Initial verify failed: {err[:120]}")
             except Exception as e:
-                print(f"[Sandbox{self.state.sandbox_id}] Initial verify exception: {e}")
+                logger.error(f"[Sandbox{self.state.sandbox_id}] Initial verify exception: {e}")
 
         self.state.warmup_done = True
-        print(f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Coding warmup completed")
+        logger.info(f"[Sandbox{self.state.sandbox_id}] (E2B:{e2b_sandbox_id}) Coding warmup completed")
 
 
 class CodingTaskRunner(threading.Thread):
@@ -281,12 +286,14 @@ class CodingTaskRunner(threading.Thread):
     def run(self) -> None:
         """Task execution main loop"""
         if not wait_for_port_ready(self.state, self.stop_event):
-            print(f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}")
+            logger.warning(
+                f"[Sandbox{self.state.sandbox_id}] Cannot start tasks: {self.state.creation_metrics.status.value}"
+            )
             return
 
         while not self.stop_event.is_set():
             if not self.state.is_alive:
-                print(f"[Sandbox{self.state.sandbox_id}] Sandbox offline, stopping tasks")
+                logger.info(f"[Sandbox{self.state.sandbox_id}] Sandbox offline, stopping tasks")
                 break
 
             success, latency, verify_success, compile_only, timed_out = self._run_single_task()
@@ -306,13 +313,13 @@ class CodingTaskRunner(threading.Thread):
                 self.consecutive_errors += 1
                 if self.consecutive_errors >= 3:
                     self.state.is_alive = False
-                    print(f"[Sandbox{self.state.sandbox_id}] Marked offline (3 consecutive failures)")
+                    logger.warning(f"[Sandbox{self.state.sandbox_id}] Marked offline (3 consecutive failures)")
                     break
 
             sleep_time = random.uniform(self.config.coding_interval_min, self.config.coding_interval_max)
             time.sleep(sleep_time)
 
-        print(f"[Sandbox{self.state.sandbox_id}] Coding task runner ended")
+        logger.info(f"[Sandbox{self.state.sandbox_id}] Coding task runner ended")
 
     def _run_single_task(self) -> Tuple[bool, float, bool, bool, bool]:
         """Execute single coding task cycle (find -> read -> edit -> verify -> diff)
@@ -408,7 +415,7 @@ class CodingTaskRunner(threading.Thread):
             error_msg = str(e)
             timed_out = "timed out" in error_msg.lower() or "context deadline exceeded" in error_msg.lower()
             self.state.coding_metrics.last_error = error_msg
-            print(f"[Sandbox{self.state.sandbox_id}] Coding task exception: {error_msg[:100]}")
+            logger.error(f"[Sandbox{self.state.sandbox_id}] Coding task exception: {error_msg[:100]}")
             return False, elapsed, verify_success, compile_only, timed_out
 
 
@@ -455,12 +462,12 @@ class CodingRoundRunner(threading.Thread):
         """Execute coding operations for this round"""
         sbx = self.state.sandbox_obj
         if not sbx:
-            print(f"[Sandbox{self.state.sandbox_id}] No sandbox handle for coding round")
+            logger.info(f"[Sandbox{self.state.sandbox_id}] No sandbox handle for coding round")
             return
 
         source_files = self.config.coding_source_files
         if not source_files:
-            print(f"[Sandbox{self.state.sandbox_id}] No coding source files configured")
+            logger.info(f"[Sandbox{self.state.sandbox_id}] No coding source files configured")
             return
 
         pair_idx = self.round_id % len(source_files)
@@ -478,7 +485,7 @@ class CodingRoundRunner(threading.Thread):
 
         if success:
             step_breakdown = ", ".join(f"{k}={v:.2f}s" for k, v in step_times.items() if v > 0)
-            print(f"[Sandbox{self.state.sandbox_id}] Coding round completed in {elapsed:.2f}s ({step_breakdown})")
+            logger.info(f"[Sandbox{self.state.sandbox_id}] Coding round completed in {elapsed:.2f}s ({step_breakdown})")
         else:
             self._handle_failure(pair["file"], failed_step, error_detail)
 
@@ -512,7 +519,7 @@ class CodingRoundRunner(threading.Thread):
                 sbx, project_dir, target_file, find_str, replace_str, step_times
             )
             if not locate_ok:
-                print(f"[Sandbox{self.state.sandbox_id}] find warning: {locate_error}")
+                logger.warning(f"[Sandbox{self.state.sandbox_id}] find warning: {locate_error}")
             target_file = resolved_file
             find_str = resolved_find
             replace_str = resolved_replace
@@ -694,7 +701,9 @@ class CodingRoundRunner(threading.Thread):
 
     def _handle_failure(self, target_file: str, failed_step: str, error_detail: str) -> None:
         """Handle failure after metrics are recorded"""
-        print(f"[Sandbox{self.state.sandbox_id}] File '{target_file}' failed at {failed_step}: {error_detail[:600]}")
+        logger.error(
+            f"[Sandbox{self.state.sandbox_id}] File '{target_file}' failed at {failed_step}: {error_detail[:600]}"
+        )
         self.consecutive_errors += 1
         if self.consecutive_errors >= 3:
             self.state.is_alive = False

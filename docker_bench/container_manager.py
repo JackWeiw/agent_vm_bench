@@ -6,6 +6,7 @@ Uses Docker SDK for container lifecycle management
 Supports port check (18789 openclaw-gateway + 11436 llama-server)
 """
 
+import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Event
@@ -16,6 +17,8 @@ import docker.errors
 
 from .config import Config
 from .schemas import ContainerState, ContainerStatus
+
+logger = logging.getLogger(__name__)
 
 
 class ContainerManager:
@@ -49,24 +52,26 @@ class ContainerManager:
 
         Returns: {container_id: ContainerState}
         """
-        print(f"\n{'=' * 60}")
-        print("Detecting Existing Containers")
-        print(f"{'=' * 60}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info("Detecting Existing Containers")
+        logger.info(f"{'=' * 60}")
 
         # List containers matching the prefix
         try:
             all_containers = self.docker_client.containers.list(all=False)  # Only running
             matching_containers = [c for c in all_containers if c.name.startswith(self.config.container_prefix)]
-            print(f"  Found {len(matching_containers)} running containers with prefix '{self.config.container_prefix}'")
+            logger.info(
+                f"  Found {len(matching_containers)} running containers with prefix '{self.config.container_prefix}'"
+            )
         except Exception as e:
-            print(f"  Failed to list containers: {e}")
+            logger.error(f"  Failed to list containers: {e}")
             return {}
 
         if not matching_containers:
-            print("  No existing containers found")
+            logger.info("  No existing containers found")
             return {}
 
-        print("  Processing all containers...")
+        logger.info("  Processing all containers...")
 
         # Process each container
         for i, docker_container in enumerate(matching_containers):
@@ -77,28 +82,28 @@ class ContainerManager:
             state.docker_container = docker_container
             self.container_states[container_id] = state
 
-            print(f"\n[Container{container_id}] {container_name}...")
+            logger.info(f"\n[Container{container_id}] {container_name}...")
 
             try:
                 # Container is already running
                 state.creation_metrics.status = ContainerStatus.CREATED
-                print(f"[Container{container_id}] Already running")
+                logger.info(f"[Container{container_id}] Already running")
 
                 # Check port readiness
                 port_result = self._check_ports(state)
                 if port_result["success"]:
                     state.creation_metrics.status = ContainerStatus.PORT_READY
                     state.creation_metrics.port_wait_elapsed = port_result["wait_elapsed"]
-                    print(f"[Container{container_id}] Ports ready in {port_result['wait_elapsed']:.1f}s")
+                    logger.info(f"[Container{container_id}] Ports ready in {port_result['wait_elapsed']:.1f}s")
                 else:
                     state.creation_metrics.status = ContainerStatus.PORT_FAILED
                     state.creation_metrics.port_check_error = port_result["error"]
-                    print(f"[Container{container_id}] Port check failed: {port_result['error'][:50]}")
+                    logger.warning(f"[Container{container_id}] Port check failed: {port_result['error'][:50]}")
 
             except Exception as e:
                 state.creation_metrics.status = ContainerStatus.FAILED
                 state.creation_metrics.error_msg = str(e)
-                print(f"[Container{container_id}] Error: {str(e)[:80]}")
+                logger.error(f"[Container{container_id}] {str(e)[:80]}")
 
         return self.container_states
 
@@ -108,24 +113,24 @@ class ContainerManager:
         batch_size = self.config.create_batch_size
         batch_count = self.config.create_batch_count
 
-        print(f"\n{'=' * 60}")
-        print("Batched Container Creation")
-        print(f"  Total: {total} containers")
-        print(f"  Image: {self.config.docker_image}")
-        print(f"  Spec:  {self.config.cpu_limit}vCPU / {self.config.memory_limit}")
-        print(f"  Batches: {batch_count} x {batch_size}")
-        print(f"  Interval: {self.config.create_batch_interval}s")
-        print(f"{'=' * 60}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info("Batched Container Creation")
+        logger.info(f"  Total: {total} containers")
+        logger.info(f"  Image: {self.config.docker_image}")
+        logger.info(f"  Spec:  {self.config.cpu_limit}vCPU / {self.config.memory_limit}")
+        logger.info(f"  Batches: {batch_count} x {batch_size}")
+        logger.info(f"  Interval: {self.config.create_batch_interval}s")
+        logger.info(f"{'=' * 60}")
 
         for batch_id in range(batch_count):
             if self.stop_event.is_set():
-                print("Stop event detected, aborting creation")
+                logger.info("Stop event detected, aborting creation")
                 break
 
             start_idx = batch_id * batch_size
             end_idx = min(start_idx + batch_size, total)
 
-            print(f"\n[Batch {batch_id}/{batch_count - 1}] Creating containers {start_idx + 1}-{end_idx}")
+            logger.info(f"\n[Batch {batch_id}/{batch_count - 1}] Creating containers {start_idx + 1}-{end_idx}")
 
             # Concurrent creation of current batch
             batch_states = self._create_batch_concurrent(batch_id, start_idx, end_idx)
@@ -133,7 +138,7 @@ class ContainerManager:
 
             # Wait between batches (last batch no wait)
             if batch_id < batch_count - 1 and self.config.create_batch_interval:
-                print(f"Waiting {self.config.create_batch_interval}s before next batch...")
+                logger.info(f"Waiting {self.config.create_batch_interval}s before next batch...")
                 time.sleep(self.config.create_batch_interval)
 
         return self.container_states
@@ -161,7 +166,7 @@ class ContainerManager:
                     result = future.result()
                     if result["success"]:
                         # Container created, start port check
-                        print(
+                        logger.info(
                             f"[Container{container_id}] Created in {result['create_elapsed']:.1f}s, checking ports..."
                         )
 
@@ -173,21 +178,21 @@ class ContainerManager:
                             state.creation_metrics.total_elapsed = (
                                 result["create_elapsed"] + port_result["wait_elapsed"]
                             )
-                            print(
+                            logger.info(
                                 f"[Container{container_id}] Ports ready in {port_result['wait_elapsed']:.1f}s, total {state.creation_metrics.total_elapsed:.1f}s"
                             )
                         else:
                             state.creation_metrics.status = ContainerStatus.PORT_FAILED
                             state.creation_metrics.port_check_error = port_result["error"]
-                            print(f"[Container{container_id}] Port check failed: {port_result['error'][:50]}")
+                            logger.warning(f"[Container{container_id}] Port check failed: {port_result['error'][:50]}")
                     else:
                         state.creation_metrics.status = ContainerStatus.FAILED
                         state.creation_metrics.error_msg = result["error"]
-                        print(f"[Container{container_id}] Failed: {result['error'][:80]}")
+                        logger.error(f"[Container{container_id}] Failed: {result['error'][:80]}")
                 except Exception as e:
                     state.creation_metrics.status = ContainerStatus.FAILED
                     state.creation_metrics.error_msg = str(e)
-                    print(f"[Container{container_id}] Exception: {str(e)[:80]}")
+                    logger.error(f"[Container{container_id}] Exception: {str(e)[:80]}")
 
         return {i + 1: self.container_states[i + 1] for i in range(start, end)}
 
@@ -195,12 +200,12 @@ class ContainerManager:
         """Full concurrent creation of all containers"""
         total = self.config.total_count
 
-        print(f"\n{'=' * 60}")
-        print("Concurrent Container Creation")
-        print(f"  Total: {total} containers (full concurrent)")
-        print(f"  Image: {self.config.docker_image}")
-        print(f"  Spec:  {self.config.cpu_limit}vCPU / {self.config.memory_limit}")
-        print(f"{'=' * 60}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info("Concurrent Container Creation")
+        logger.info(f"  Total: {total} containers (full concurrent)")
+        logger.info(f"  Image: {self.config.docker_image}")
+        logger.info(f"  Spec:  {self.config.cpu_limit}vCPU / {self.config.memory_limit}")
+        logger.info(f"{'=' * 60}")
 
         return self._create_batch_concurrent(batch_id=0, start=0, end=total)
 
@@ -220,7 +225,7 @@ class ContainerManager:
             try:
                 existing = self.docker_client.containers.get(state.container_name)
                 existing.remove(force=True)
-                print(f"[Container{state.container_id}] Removed existing container with same name")
+                logger.info(f"[Container{state.container_id}] Removed existing container with same name")
             except docker.errors.NotFound:
                 pass  # No existing container, proceed
 
@@ -285,10 +290,10 @@ class ContainerManager:
                     # Check if port is listening (grep found the port)
                     if exit_code == 0 and len(output.strip()) > 0:
                         ready_ports.add(port)
-                        print(f"[Container{state.container_id}] Port {port} is listening")
+                        logger.info(f"[Container{state.container_id}] Port {port} is listening")
                 except Exception as e:
                     # exec_run error - continue checking
-                    print(f"[Container{state.container_id}] Port {port} check exception: {str(e)[:50]}")
+                    logger.warning(f"[Container{state.container_id}] Port {port} check exception: {str(e)[:50]}")
                     pass  # Continue checking other ports
 
             if len(ready_ports) == len(self.config.required_ports):
@@ -361,7 +366,7 @@ class ContainerManager:
 
     def remove_all(self) -> None:
         """Remove all containers"""
-        print("\nRemoving all containers...")
+        logger.info("\nRemoving all containers...")
         removed_count = 0
         for state in self.container_states.values():
             if state.docker_container:
@@ -371,5 +376,5 @@ class ContainerManager:
                     state.is_alive = False
                     removed_count += 1
                 except Exception as e:
-                    print(f"[Container{state.container_id}] Remove error: {str(e)[:50]}")
-        print(f"Removed {removed_count} containers")
+                    logger.warning(f"[Container{state.container_id}] Remove error: {str(e)[:50]}")
+        logger.info(f"Removed {removed_count} containers")
