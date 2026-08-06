@@ -63,14 +63,14 @@ check_base_image() {
 
 # Clean up any existing temp container
 cleanup_temp_container() {
-    log_info "Cleaning up any existing temp-image container..."
-    docker rm -f temp-image 2>/dev/null || true
+    log_info "Cleaning up any existing temp-openeuler-image container..."
+    docker rm -f temp-openeuler-image 2>/dev/null || true
 }
 
 # Start temporary container
 start_temp_container() {
     log_info "Starting temporary container..."
-    docker run -d --name temp-image "${BASE_IMAGE}"
+    docker run -d --name temp-openeuler-image "${BASE_IMAGE}"
     log_info "Container started successfully"
 }
 
@@ -82,7 +82,7 @@ install_components() {
     # openEuler package names differ from Ubuntu's apt names:
     #   iputils (not iputils-ping), bind-utils (not dnsutils),
     #   nmap-ncat (not netcat-openbsd), iproute (not iproute2)
-    docker exec temp-image bash -c \
+    docker exec temp-openeuler-image bash -c \
         "export http_proxy=${PROXY}; \
          export https_proxy=\$http_proxy; \
          dnf install -y wget systemd systemd-sysv openssh-server sudo chrony \
@@ -99,7 +99,7 @@ install_components() {
 
     # Install websocat
     log_info "Installing websocat..."
-    docker exec temp-image bash -c \
+    docker exec temp-openeuler-image bash -c \
         "export http_proxy=${PROXY}; \
          export https_proxy=\$http_proxy; \
          wget --no-check-certificate -O /usr/local/bin/websocat \
@@ -117,13 +117,13 @@ install_components() {
 # Stop and export container
 export_container() {
     log_info "Stopping and exporting container..."
-    docker stop temp-image
+    docker stop temp-openeuler-image
 
     log_info "Importing as new image ${CUSTOM_IMAGE}..."
-    docker export temp-image | docker import - "${CUSTOM_IMAGE}"
+    docker export temp-openeuler-image | docker import - "${CUSTOM_IMAGE}"
 
     log_info "Cleaning up temporary container..."
-    docker rm -f temp-image
+    docker rm -f temp-openeuler-image
 }
 
 # Push to Harbor registry
