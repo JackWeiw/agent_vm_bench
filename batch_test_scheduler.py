@@ -1077,7 +1077,7 @@ def generate_summary_report(results: Dict, output_path: str):
         col_idx = 1
 
         # Basic info (test_id, vm_count, ratio, active_percent, active_vm_count, success) - 6 columns
-        column_sources.append(("Basic Info (目录/config.yaml)", col_idx, col_idx + 5))
+        column_sources.append(("Basic Info (directory/config.yaml)", col_idx, col_idx + 5))
         col_idx += 6
 
         # Browser metrics - 4 columns

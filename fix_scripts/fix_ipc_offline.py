@@ -14,7 +14,7 @@ Usage:
 Steps:
     1. Find all devkit_top_down.log files in subdirectories
     2. Re-parse using correct IPC formula
-    3. Update analysis_report.xlsx in each qemu_monitor/ subdirectory
+    3. Update analysis_report.xlsx in each vm_monitor/ subdirectory
     4. Re-generate batch_summary.xlsx with corrected data
 """
 
@@ -27,14 +27,14 @@ from typing import Dict, List
 
 import pandas as pd
 
-# Import the corrected parser from qemu_monitor package
+# Import the corrected parser from vm_monitor package
 try:
-    from qemu_monitor.parsers import parse_devkit_top_down
+    from vm_monitor.parsers import parse_devkit_top_down
 
-    QEMU_MONITOR_AVAILABLE = True
+    VM_MONITOR_AVAILABLE = True
 except ImportError:
-    print("Warning: qemu_monitor.parsers not available, using built-in parser")
-    QEMU_MONITOR_AVAILABLE = False
+    print("Warning: vm_monitor.parsers not available, using built-in parser")
+    VM_MONITOR_AVAILABLE = False
 
 
 def parse_devkit_top_down_offline(log_path: str) -> Dict:
@@ -420,7 +420,7 @@ def regenerate_batch_summary(result_base_dir: str, output_path: str = None):
         # === KEY FIX: Re-parse log file with correct formula ===
         log_path = log_info["log_path"]
 
-        if QEMU_MONITOR_AVAILABLE:
+        if VM_MONITOR_AVAILABLE:
             parsed_data = parse_devkit_top_down(log_path)
         else:
             parsed_data = parse_devkit_top_down_offline(log_path)
@@ -686,7 +686,7 @@ This tool ALWAYS re-parses devkit_top_down.log files to get correct IPC.
         for log_info in log_files:
             print(f"\n[{log_info['task_id']}]")
 
-            if QEMU_MONITOR_AVAILABLE:
+            if VM_MONITOR_AVAILABLE:
                 parsed_data = parse_devkit_top_down(log_info["log_path"])
             else:
                 parsed_data = parse_devkit_top_down_offline(log_info["log_path"])

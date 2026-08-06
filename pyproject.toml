@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-vm-bench"
-version = "0.3.0"
+version = "0.4.0"
 description = "Performance testing framework for virtualization scenarios"
 readme = "README.md"
 license = {text = "MIT"}
@@ -56,7 +56,7 @@ batch-test-scheduler = "batch_test_scheduler:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["vm_monitor*", "vm_bench*", "e2b_bench*", "docker_bench*", "qemu_monitor*", "llm_replay*"]
+include = ["vm_monitor*", "vm_bench*", "e2b_bench*", "docker_bench*", "llm_replay*"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
@@ -158,7 +158,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["vm_monitor", "vm_bench", "e2b_bench", "docker_bench", "qemu_monitor", "llm_replay"]
+known-first-party = ["vm_monitor", "vm_bench", "e2b_bench", "docker_bench", "llm_replay"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ARG", "S101"]

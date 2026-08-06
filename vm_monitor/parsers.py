@@ -711,11 +711,11 @@ def parse_smap_bw(log_path: str) -> dict:
             )
 
         # Parse global summary
-        # Pattern: 全局汇总
-        #   周期总数: N
-        #   总页数: X
-        #   平均带宽: Y GB/s
-        #   周期带宽范围: min ~ max GB/s
+        # Pattern matches the smap_tool output block: 全局汇总
+        #   周期总数 (total cycles): N
+        #   总页数 (total pages): X
+        #   平均带宽 (avg bandwidth): Y GB/s
+        #   周期带宽范围 (cycle bandwidth range): min ~ max GB/s
         summary_pattern = re.compile(
             r"全局汇总.*?"
             r"周期总数:\s+(\d+).*?"
