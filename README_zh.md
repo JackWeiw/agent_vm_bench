@@ -251,3 +251,34 @@ qemu_monitor.start_monitoring(duration_seconds=60, interval_seconds=3)
 fc_monitor = FirecrackerMonitor()
 fc_monitor.start_monitoring(duration_seconds=60, interval_seconds=3)
 ```
+
+## PDF/XLSX 文档场景
+
+两个文档场景共用 `openclaw-document-v1` E2B Template，以及
+`dockerfile_build/document/` 下的同一份镜像：
+
+`config/e2b/pdf_bench.yaml` 和 `config/e2b/xlsx_bench.yaml` 中的 token、
+API key 和 `http://localhost:3000` 是占位值。连接远程 E2B 服务器时，
+可以修改本地 YAML，或使用下面的 CLI 覆盖方式（凭据不会显示在终端）：
+
+```bash
+read -rsp "E2B access token: " DOCUMENT_E2B_ACCESS_TOKEN
+echo
+read -rsp "E2B API key: " DOCUMENT_E2B_API_KEY
+echo
+read -rp "E2B API URL（例如 http://SERVER_IP:3000）: " DOCUMENT_E2B_API_URL
+
+DOCUMENT_E2B_ARGS=(
+  --e2b-access-token "${DOCUMENT_E2B_ACCESS_TOKEN}"
+  --e2b-api-key "${DOCUMENT_E2B_API_KEY}"
+  --e2b-api-url "${DOCUMENT_E2B_API_URL}"
+  --e2b-http-ssl false
+  --e2b-domain e2b.app
+)
+
+# 根据需要运行其中一个或两个场景
+python -m e2b_bench -c config/e2b/pdf_bench.yaml "${DOCUMENT_E2B_ARGS[@]}"
+python -m e2b_bench -c config/e2b/xlsx_bench.yaml "${DOCUMENT_E2B_ARGS[@]}"
+
+unset DOCUMENT_E2B_ACCESS_TOKEN DOCUMENT_E2B_API_KEY DOCUMENT_E2B_API_URL DOCUMENT_E2B_ARGS
+```

@@ -175,6 +175,33 @@ class TestDetectFromFile:
         assert result == {}
 
 
+class TestSandboxCleanup:
+    @staticmethod
+    def _manager_with_state(state):
+        manager = SandboxManager(Config(), Event())
+        manager.sandbox_states = {state.sandbox_id: state}
+        return manager
+
+    def test_kill_marks_live_sandbox_as_stopped_by_cleanup(self):
+        sandbox = Mock()
+        state = SandboxState(sandbox_id=1, sandbox_obj=sandbox)
+
+        self._manager_with_state(state).kill_all()
+
+        sandbox.kill.assert_called_once_with()
+        assert state.is_alive is False
+        assert state.stopped_by_cleanup is True
+
+    def test_kill_does_not_mask_existing_runtime_offline_state(self):
+        sandbox = Mock()
+        state = SandboxState(sandbox_id=2, sandbox_obj=sandbox, is_alive=False)
+
+        self._manager_with_state(state).kill_all()
+
+        sandbox.kill.assert_called_once_with()
+        assert state.stopped_by_cleanup is False
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 
@@ -322,6 +349,87 @@ class TestCheckReady:
         result = manager._check_ready(state)
 
         assert result["success"] is True
+
+    def test_check_ready_document_workflow_uses_validator(self):
+        config = Config(workflow_type="document", document_case_kind="pdf")
+        manager = SandboxManager(config, Event())
+        state = SandboxState(sandbox_id=1, workflow_type="document")
+        state.sandbox_obj = Mock()
+        state.sandbox_obj.commands.run.return_value = Mock(exit_code=0, stdout="", stderr="")
+
+        result = manager._check_ready(state)
+
+        assert result["success"] is True
+        state.sandbox_obj.commands.run.assert_called_once_with(
+            "document-bench-validate >/dev/null", timeout=60, user="root"
+        )
+
+    def test_check_ready_document_retries_transient_command_error(self):
+        config = Config(workflow_type="document", document_case_kind="xlsx")
+        manager = SandboxManager(config, Event())
+        state = SandboxState(sandbox_id=1, workflow_type="document")
+        state.sandbox_obj = Mock()
+        state.sandbox_obj.commands.run.side_effect = [
+            RuntimeError("command service unavailable"),
+            Mock(exit_code=0, stdout="", stderr=""),
+        ]
+
+        with patch("e2b_bench.sandbox_manager.READY_CHECK_INTERVAL", 0):
+            result = manager._check_document_ready(state)
+
+        assert result["success"] is True
+        assert state.sandbox_obj.commands.run.call_count == 2
+
+    def test_check_ready_document_does_not_retry_validator_failure(self):
+        config = Config(workflow_type="document", document_case_kind="pdf")
+        manager = SandboxManager(config, Event())
+        state = SandboxState(sandbox_id=1, workflow_type="document")
+        state.sandbox_obj = Mock()
+        state.sandbox_obj.commands.run.return_value = Mock(
+            exit_code=1,
+            stdout="",
+            stderr="missing document assets",
+        )
+
+        result = manager._check_document_ready(state)
+
+        assert result["success"] is False
+        assert "missing document assets" in result["error"]
+        state.sandbox_obj.commands.run.assert_called_once()
+
+    def test_check_ready_rejects_unknown_workflow(self):
+        with pytest.raises(ValueError, match="Unsupported workflow_type"):
+            SandboxManager(Config(workflow_type="unknown"), Event())
+
+
+class TestSandboxStateWorkflowPropagation:
+    @pytest.mark.parametrize("workflow", ["browser", "coding", "document"])
+    def test_create_path_sets_workflow(self, workflow):
+        manager = SandboxManager(Config(workflow_type=workflow), Event())
+        with patch.object(manager, "_create_single", return_value={"success": False, "error": "test"}):
+            states = manager._create_batch_concurrent(0, 0, 1)
+        assert states[1].workflow_type == workflow
+
+    @pytest.mark.parametrize("workflow", ["browser", "coding", "document"])
+    @patch("e2b_bench.sandbox_manager.Sandbox.connect")
+    @patch("e2b_bench.sandbox_manager.Sandbox.list")
+    def test_detect_path_sets_workflow(self, mock_list, mock_connect, workflow):
+        paginator = Mock()
+        paginator.has_next = True
+        calls = [0]
+
+        def next_items():
+            calls[0] += 1
+            paginator.has_next = False
+            return [Mock(sandbox_id="existing")]
+
+        paginator.next_items.side_effect = next_items
+        mock_list.return_value = paginator
+        mock_connect.return_value = Mock()
+        manager = SandboxManager(Config(workflow_type=workflow), Event())
+        with patch.object(manager, "_check_ready", return_value={"success": True, "wait_elapsed": 0.0, "error": ""}):
+            states = manager.detect_existing()
+        assert states[1].workflow_type == workflow
 
 
 class TestCheckCommandReady:

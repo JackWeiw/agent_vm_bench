@@ -33,6 +33,16 @@ ub_watch.log
 # Downloaded web content
 web_content/
 
+# Document benchmark downloaded/generated assets
+dockerfile_build/document/assets/cases/pdf/input/of306_aug2023.pdf
+dockerfile_build/document/assets/cases/xlsx/input/monthly_operations_template.xlsx
+dockerfile_build/document/assets/cases/xlsx/input/template_manifest.json
+dockerfile_build/document/assets/downloads/xlsx/*
+!dockerfile_build/document/assets/downloads/xlsx/.gitkeep
+dockerfile_build/document/assets/skills/
+dockerfile_build/document/assets/wheels/*/*.whl
+dockerfile_build/document/assets/runtime/*/websocat
+
 # Logs and temporary files
 *.tmp
 *.pid

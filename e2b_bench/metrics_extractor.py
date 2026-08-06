@@ -448,6 +448,52 @@ class MetricsExtractor:
 
         return metrics
 
+    def extract_document_metrics(self, report_file: str) -> Dict[str, Any]:
+        """Extract PDF/XLSX overall and phase-ID metrics."""
+        metrics: Dict[str, Any] = {}
+        if not report_file or not os.path.exists(report_file):
+            return metrics
+        try:
+            with open(report_file, encoding="utf-8") as handle:
+                content = handle.read()
+            if "[Document Task Statistics]" not in content:
+                return metrics
+            section = self._extract_section(content, "[Document Task Statistics]")
+            mappings = {
+                "Success Rate": "Document_Success_Rate",
+                "Avg Latency": "Document_Avg_Latency_ms",
+                "P99 Latency": "Document_P99_Latency_ms",
+                "Total Tasks": "Document_Total_Tasks",
+            }
+            for label, key in mappings.items():
+                match = re.search(r"%s:\s+([\d.]+)" % re.escape(label), section)
+                if match:
+                    value = float(match.group(1))
+                    metrics[key] = int(value) if key.endswith("Total_Tasks") else value
+            case_match = re.search(r"Case Kind:\s+(pdf|xlsx)", section, re.IGNORECASE)
+            if case_match:
+                metrics["Document_Case_Kind"] = case_match.group(1).lower()
+
+            timing = re.search(
+                r"\[Step-Level Timing \(Document (?:XLSX|PDF) Mode\)\](.*?)(?=\n\[|\n={10,}|\Z)",
+                content,
+                re.DOTALL,
+            )
+            if timing:
+                step_pattern = (
+                    r"^\s*((?:XLSX|PDF)-P\d{2}-[a-z0-9_]+)\s+" r"(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)"
+                )
+                for match in re.finditer(step_pattern, timing.group(1), re.MULTILINE):
+                    step = match.group(1)
+                    metrics[f"Document_{step}_Count"] = int(match.group(2))
+                    metrics[f"Document_{step}_Avg_ms"] = float(match.group(3))
+                    metrics[f"Document_{step}_P50_ms"] = float(match.group(4))
+                    metrics[f"Document_{step}_P95_ms"] = float(match.group(5))
+                    metrics[f"Document_{step}_P99_ms"] = float(match.group(6))
+        except Exception as exc:
+            print(f"[MetricsExtractor] Error extracting document metrics: {exc}")
+        return metrics
+
     def _extract_section(self, content: str, section_header: str) -> str:
         """Extract content between section header and next section or EOF.
 

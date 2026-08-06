@@ -7,8 +7,10 @@ Preserves sandbox handle for subsequent task execution
 Ready detection strategy:
 - Browser workflow: Check ports 18789 (openclaw-gateway) + 11436 (llama-server)
 - Coding workflow: Execute 'uname -a' command and check for successful response
+- Document workflow: Execute the image asset/dependency validator
 """
 
+import math
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -101,6 +103,7 @@ class SandboxManager:
 
     def __init__(self, config: Config, stop_event: Event):
         self.config = config
+        self.config.validate()
         self.stop_event = stop_event
         self.sandbox_states: Dict[int, SandboxState] = {}
 
@@ -156,7 +159,7 @@ class SandboxManager:
             sandbox_id = i + 1
             e2b_sandbox_id = listed_sandbox.sandbox_id if hasattr(listed_sandbox, "sandbox_id") else str(listed_sandbox)
 
-            state = SandboxState(sandbox_id=sandbox_id)
+            state = SandboxState(sandbox_id=sandbox_id, workflow_type=self.config.workflow_type)
             self.sandbox_states[sandbox_id] = state
 
             print(f"\n[Sandbox{sandbox_id}] Connecting to E2B:{e2b_sandbox_id}...")
@@ -268,7 +271,7 @@ class SandboxManager:
             sandbox_id = i + 1
             e2b_sandbox_id = listed_sandbox.sandbox_id if hasattr(listed_sandbox, "sandbox_id") else str(listed_sandbox)
 
-            state = SandboxState(sandbox_id=sandbox_id)
+            state = SandboxState(sandbox_id=sandbox_id, workflow_type=self.config.workflow_type)
             self.sandbox_states[sandbox_id] = state
 
             print(f"\n[Sandbox{sandbox_id}] Connecting to E2B:{e2b_sandbox_id}...")
@@ -341,7 +344,11 @@ class SandboxManager:
 
             for i in range(start, end):
                 sandbox_id = i + 1
-                state = SandboxState(sandbox_id=sandbox_id, batch_id=batch_id)
+                state = SandboxState(
+                    sandbox_id=sandbox_id,
+                    batch_id=batch_id,
+                    workflow_type=self.config.workflow_type,
+                )
                 self.sandbox_states[sandbox_id] = state
                 future = executor.submit(self._create_single, state)
                 futures[future] = sandbox_id
@@ -432,14 +439,94 @@ class SandboxManager:
 
         - Browser workflow: Check ports 18789 + 11436
         - Coding workflow: Execute 'uname -a' command
+        - Document workflow: Execute document-bench-validate
 
         Returns: {'success': bool, 'wait_elapsed': float, 'error': str}
         """
         if self.config.workflow_type == "coding":
             return self._check_command_ready(state)
-        else:
-            # Default: browser workflow
+        if self.config.workflow_type == "document":
+            return self._check_document_ready(state)
+        if self.config.workflow_type == "browser":
             return self._check_ports(state)
+        raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
+
+    def _check_document_ready(self, state: SandboxState) -> Dict[str, any]:
+        """Validate the document runtime, retrying transient command API failures.
+
+        A completed command with a non-zero exit code is a semantic image
+        validation failure and is returned immediately.  Exceptions raised
+        before a command result is available can occur while a newly-created
+        sandbox command service is still coming online, so those are retried
+        within the shared ready-check deadline.
+        """
+        sbx = state.sandbox_obj
+        if not sbx:
+            return {"success": False, "wait_elapsed": 0.0, "error": "No sandbox handle"}
+        if self.stop_event.is_set():
+            return {"success": False, "wait_elapsed": 0.0, "error": "Stop event"}
+
+        started = time.monotonic()
+        last_error = "document command service did not become ready"
+        seen_errors = set()
+
+        while time.monotonic() - started < READY_CHECK_MAX_WAIT:
+            if self.stop_event.is_set():
+                return {
+                    "success": False,
+                    "wait_elapsed": time.monotonic() - started,
+                    "error": "Stop event",
+                }
+
+            remaining = READY_CHECK_MAX_WAIT - (time.monotonic() - started)
+            command_timeout = max(1, min(60, math.ceil(remaining)))
+            try:
+                result = sbx.commands.run(
+                    "document-bench-validate >/dev/null",
+                    timeout=command_timeout,
+                    user="root",
+                )
+            except Exception as exc:
+                last_error = str(exc)
+                error_key = (type(exc).__name__, last_error[:80])
+                if error_key not in seen_errors:
+                    seen_errors.add(error_key)
+                    print(
+                        f"[Sandbox{state.sandbox_id}] Document ready check error: "
+                        f"{type(exc).__name__}: {last_error[:120]}"
+                    )
+                remaining = READY_CHECK_MAX_WAIT - (time.monotonic() - started)
+                if remaining <= 0:
+                    break
+                if self.stop_event.wait(min(READY_CHECK_INTERVAL, remaining)):
+                    return {
+                        "success": False,
+                        "wait_elapsed": time.monotonic() - started,
+                        "error": "Stop event",
+                    }
+                continue
+
+            elapsed = time.monotonic() - started
+            if result.exit_code == 0:
+                state.creation_metrics.port_ready_time = time.time()
+                return {"success": True, "wait_elapsed": elapsed, "error": ""}
+
+            # The validator ran, so this is an image/asset failure rather than
+            # transient command-service startup. Retrying would only hide the
+            # actionable validator output and delay failure reporting.
+            detail = (getattr(result, "stderr", "") or getattr(result, "stdout", "") or "no output").strip()
+            return {
+                "success": False,
+                "wait_elapsed": elapsed,
+                "error": f"Document runtime validation failed: {detail[:200]}",
+            }
+
+        elapsed = time.monotonic() - started
+        return {
+            "success": False,
+            "wait_elapsed": elapsed,
+            "error": f"Timeout waiting for document runtime validation: {last_error[:200]}",
+        }
 
     def _check_command_ready(self, state: SandboxState) -> Dict[str, any]:
         """Check if sandbox is ready by executing a simple command.
@@ -544,10 +631,16 @@ class SandboxManager:
         for state in self.sandbox_states.values():
             if state.sandbox_obj:
                 try:
+                    was_alive = state.is_alive
                     state.sandbox_obj.kill()
                     # Don't overwrite status - keep original (PORT_READY/FAILED etc) for stats
                     # state.creation_metrics.status = SandboxStatus.KILLED
                     state.is_alive = False
+                    # Preserve genuine runtime-offline states: cleanup must only
+                    # explain the transition when the sandbox was alive before
+                    # this intentional kill.
+                    if was_alive:
+                        state.stopped_by_cleanup = True
                     killed_count += 1
                 except Exception as e:
                     print(f"[Sandbox{state.sandbox_id}] Kill error: {str(e)[:50]}")

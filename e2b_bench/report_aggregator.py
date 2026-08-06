@@ -6,6 +6,7 @@ Supports styled output with data source grouping and merged cells.
 """
 
 import os
+import re
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -72,6 +73,13 @@ class ReportAggregator:
             "Coding_diff_P95_ms",
             "Coding_diff_P99_ms",
         ],
+        "Document": [
+            "Document_Case_Kind",
+            "Document_Success_Rate",
+            "Document_Avg_Latency_ms",
+            "Document_P99_Latency_ms",
+            "Document_Total_Tasks",
+        ],
         "VM_CPU": ["VM_CPU_Mean", "VM_CPU_Max"],
         "DevKit_TopDown": [
             "DevKit_TopDown_Cycles_Avg",
@@ -105,6 +113,8 @@ class ReportAggregator:
         "Browser_Steps": "5B9BD5",  # Light Blue (step timing subset)
         "Coding": "FF9900",  # Amber/Gold
         "Coding_Steps": "FFCC00",  # Yellow (step timing subset)
+        "Document": "8064A2",  # Purple
+        "Document_Steps": "B4A7D6",  # Light purple
         "VM_CPU": "FFC000",  # Orange
         "DevKit_TopDown": "ED7D31",  # Dark Orange
         "DevKit_Memory": "A5A5A5",  # Gray
@@ -300,6 +310,8 @@ class ReportAggregator:
             "Browser Steps": "Browser_Steps",
             "Coding": "Coding",
             "Coding Steps": "Coding_Steps",
+            "Document": "Document",
+            "Document Steps": "Document_Steps",
             "VM CPU": "VM_CPU",
             "DevKit TopDown": "DevKit_TopDown",
             "DevKit Memory": "DevKit_Memory",
@@ -320,6 +332,8 @@ class ReportAggregator:
             "Browser_Steps": "Browser Steps",
             "Coding": "Coding",
             "Coding_Steps": "Coding Steps",
+            "Document": "Document",
+            "Document_Steps": "Document Steps",
             "VM_CPU": "VM CPU",
             "DevKit_TopDown": "DevKit TopDown",
             "DevKit_Memory": "DevKit Memory",
@@ -344,6 +358,10 @@ class ReportAggregator:
             return "Browser"
         elif col_name.startswith("Coding_"):
             return "Coding"
+        elif re.match(r"Document_(?:XLSX|PDF)-P\d{2}-[a-z0-9_]+_", col_name):
+            return "Document_Steps"
+        elif col_name.startswith("Document_"):
+            return "Document"
         elif col_name.startswith("VM_CPU"):
             return "VM_CPU"
         elif col_name.startswith("DevKit_TopDown"):

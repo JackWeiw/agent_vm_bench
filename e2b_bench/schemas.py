@@ -38,6 +38,33 @@ BROWSER_STEP_ORDER = ["open_tab", "page_load", "snapshot", "click", "screenshot"
 # the real traces. Memory pressure comes from N concurrent sandboxes' transient
 # verify peaks overlapping, observed at host level via vm_monitor/smap_tool.
 CODING_STEP_ORDER = ["find", "read", "edit", "verify", "diff"]
+DOCUMENT_XLSX_STEP_ORDER = [
+    "XLSX-P01-inspect_prepare",
+    "XLSX-P02-build",
+    "XLSX-P03-process_publish",
+    "XLSX-P04-verify_deliver",
+]
+DOCUMENT_PDF_STEP_ORDER = [
+    "PDF-P01-inspect_prepare",
+    "PDF-P02-build",
+    "PDF-P03-process_publish",
+    "PDF-P04-verify_deliver",
+]
+
+
+def get_step_order(workflow_type: str, document_case_kind: str = "xlsx") -> List[str]:
+    if workflow_type == "coding":
+        return CODING_STEP_ORDER
+    if workflow_type == "document":
+        if document_case_kind == "pdf":
+            return DOCUMENT_PDF_STEP_ORDER
+        if document_case_kind == "xlsx":
+            return DOCUMENT_XLSX_STEP_ORDER
+        raise ValueError("document case_kind must be 'pdf' or 'xlsx'")
+    if workflow_type == "browser":
+        return BROWSER_STEP_ORDER
+    raise ValueError(f"Unsupported workflow_type: {workflow_type}")
+
 
 # Default replacement pairs for the vuejs/core coding benchmark.
 # Single definition - referenced by Config dataclass default, _from_dict,
@@ -532,6 +559,12 @@ class CodingMetrics(TaskMetricsBase):
             return self._compile_only_count
 
 
+class DocumentMetrics(TaskMetricsBase):
+    """PDF/XLSX task metrics; phase IDs are recorded dynamically."""
+
+    step_order = DOCUMENT_XLSX_STEP_ORDER
+
+
 @dataclass
 class SandboxState:
     """Sandbox complete state"""
@@ -545,8 +578,10 @@ class SandboxState:
     creation_metrics: CreationMetrics = field(default_factory=CreationMetrics)
     browser_metrics: BrowserMetrics = field(default_factory=BrowserMetrics)
     coding_metrics: CodingMetrics = field(default_factory=CodingMetrics)
+    document_metrics: DocumentMetrics = field(default_factory=DocumentMetrics)
 
     is_alive: bool = True  # Sandbox alive status
+    stopped_by_cleanup: bool = False  # Successfully stopped by normal benchmark cleanup
     last_task_time: float = 0.0  # Last task execution time (thread-safe via update_last_task_time)
     consecutive_failures: int = 0  # Consecutive failure count
     warmup_done: bool = False  # Warmup phase completed flag
@@ -572,7 +607,11 @@ class SandboxState:
         """
         if self.workflow_type == "coding":
             return self.coding_metrics
-        return self.browser_metrics
+        if self.workflow_type == "document":
+            return self.document_metrics
+        if self.workflow_type == "browser":
+            return self.browser_metrics
+        raise ValueError(f"Unsupported workflow_type: {self.workflow_type}")
 
     def update_last_task_time(self, timestamp: float) -> None:
         """Thread-safe update of last_task_time.
@@ -617,6 +656,11 @@ class TestSnapshot:
     coding_compile_only: int = 0  # pairs marked verify: compile_only that compiled+ran (no assertion)
     coding_avg_latency: float = 0.0
     coding_p99_latency: float = 0.0
+    # Document task metrics (populated when workflow_type="document")
+    document_total: int = 0
+    document_success: int = 0
+    document_avg_latency: float = 0.0
+    document_p99_latency: float = 0.0
     # Round comparison fields (proper dataclass fields, not ad-hoc attributes)
     round_total: int = 0
     round_success: int = 0
@@ -637,6 +681,7 @@ class BatchTask:
     analysis_file: Optional[str] = None  # analysis_report.xlsx path
     browser_metrics: Optional[Dict[str, Any]] = None  # Extracted browser metrics
     coding_metrics: Optional[Dict[str, Any]] = None  # Extracted coding metrics
+    document_metrics: Optional[Dict[str, Any]] = None  # Extracted PDF/XLSX metrics
     vm_metrics: Optional[Dict[str, Any]] = None  # Extracted vm_monitor metrics
     success: bool = False
     error_msg: Optional[str] = None

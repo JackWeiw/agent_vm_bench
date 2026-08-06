@@ -1,0 +1,127 @@
+{
+  "dataset_name": "Fictitious OF-306 training applicants",
+  "privacy_notice": "All records are synthetic. Do not populate SSN or signature fields.",
+  "applicants": [
+    {
+      "id": "applicant_01",
+      "full_name": "Avery Morgan Lee",
+      "place_of_birth": "Seattle, Washington",
+      "date_of_birth": "04/12/1988",
+      "day_phone": "202-555-0101",
+      "other_names": "None",
+      "us_citizen": true,
+      "born_male_after_1959": false,
+      "registered_selective_service": false
+    },
+    {
+      "id": "applicant_02",
+      "full_name": "Jordan Riley Chen",
+      "place_of_birth": "Portland, Oregon",
+      "date_of_birth": "09/23/1991",
+      "day_phone": "202-555-0102",
+      "other_names": "None",
+      "us_citizen": true,
+      "born_male_after_1959": true,
+      "registered_selective_service": true
+    },
+    {
+      "id": "applicant_03",
+      "full_name": "Taylor Quinn Brooks",
+      "place_of_birth": "Denver, Colorado",
+      "date_of_birth": "01/17/1985",
+      "day_phone": "202-555-0103",
+      "other_names": "None",
+      "us_citizen": true,
+      "born_male_after_1959": false,
+      "registered_selective_service": false
+    },
+    {
+      "id": "applicant_04",
+      "full_name": "Cameron Ellis Patel",
+      "place_of_birth": "Austin, Texas",
+      "date_of_birth": "06/08/1993",
+      "day_phone": "202-555-0104",
+      "other_names": "None",
+      "us_citizen": true,
+      "born_male_after_1959": true,
+      "registered_selective_service": true
+    },
+    {
+      "id": "applicant_05",
+      "full_name": "Morgan Sage Rivera",
+      "place_of_birth": "Phoenix, Arizona",
+      "date_of_birth": "11/29/1989",
+      "day_phone": "202-555-0105",
+      "other_names": "None",
+      "us_citizen": true,
+      "born_male_after_1959": false,
+      "registered_selective_service": false
+    },
+    {
+      "id": "applicant_06",
+      "full_name": "Reese Emerson Kim",
+      "place_of_birth": "Chicago, Illinois",
+      "date_of_birth": "03/05/1990",
+      "day_phone": "202-555-0106",
+      "other_names": "None",
+      "us_citizen": true,
+      "born_male_after_1959": true,
+      "registered_selective_service": true
+    },
+    {
+      "id": "applicant_07",
+      "full_name": "Skyler Rowan Davis",
+      "place_of_birth": "Boston, Massachusetts",
+      "date_of_birth": "08/14/1987",
+      "day_phone": "202-555-0107",
+      "other_names": "None",
+      "us_citizen": true,
+      "born_male_after_1959": false,
+      "registered_selective_service": false
+    },
+    {
+      "id": "applicant_08",
+      "full_name": "Parker Jules Nguyen",
+      "place_of_birth": "San Jose, California",
+      "date_of_birth": "12/02/1992",
+      "day_phone": "202-555-0108",
+      "other_names": "None",
+      "us_citizen": true,
+      "born_male_after_1959": true,
+      "registered_selective_service": true
+    },
+    {
+      "id": "applicant_09",
+      "full_name": "Casey Drew Wilson",
+      "place_of_birth": "Atlanta, Georgia",
+      "date_of_birth": "05/26/1986",
+      "day_phone": "202-555-0109",
+      "other_names": "None",
+      "us_citizen": true,
+      "born_male_after_1959": false,
+      "registered_selective_service": false
+    },
+    {
+      "id": "applicant_10",
+      "full_name": "Finley Arden Thompson",
+      "place_of_birth": "Raleigh, North Carolina",
+      "date_of_birth": "10/19/1994",
+      "day_phone": "202-555-0110",
+      "other_names": "None",
+      "us_citizen": true,
+      "born_male_after_1959": true,
+      "registered_selective_service": true
+    }
+  ],
+  "shared_answers": {
+    "military_service": false,
+    "convicted_or_paroled_last_7_years": false,
+    "court_martialed_last_7_years": false,
+    "currently_under_charges": false,
+    "fired_debarred_or_forced_to_quit": false,
+    "delinquent_federal_debt": false,
+    "relative_at_agency": false,
+    "government_retirement_or_pension": false,
+    "continuation": "Synthetic training record; no additional information."
+  }
+}

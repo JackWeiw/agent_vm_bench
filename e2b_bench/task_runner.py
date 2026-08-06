@@ -302,6 +302,7 @@ class TaskManager:
         Dispatches based on workflow_type:
         - "browser": uses WarmupRunner (opens browser tabs)
         - "coding": uses CodingWarmupRunner (one initial verify, no resident process)
+        - "document": validates and restores the PDF/XLSX seed
         """
         ready_states = [
             s for s in self.sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY
@@ -333,7 +334,20 @@ class TaskManager:
                 print("Coding warmup skipped (initial verify disabled)")
                 for state in ready_states:
                     state.warmup_done = True
-        else:
+        elif self.config.workflow_type == "document":
+            from .document_task_runner import DocumentWarmupRunner
+
+            print(f"\n{'=' * 60}")
+            print("Document Warmup Phase Starting")
+            print(f"  Total: {len(ready_states)} sandboxes")
+            print(f"  Case kind: {self.config.document_case_kind}")
+            print(f"  Seed: {self.config.document_seed_dir}")
+            print(f"{'=' * 60}")
+            for state in ready_states:
+                runner = DocumentWarmupRunner(state, self.config)
+                self.warmup_runners.append(runner)
+                runner.start()
+        elif self.config.workflow_type == "browser":
             # Browser warmup: uses warmup_urls to open tabs
             if not self.config.warmup_urls:
                 print("No warmup URLs configured, skipping warmup")
@@ -353,6 +367,8 @@ class TaskManager:
                 runner = WarmupRunner(state, self.config)
                 self.warmup_runners.append(runner)
                 runner.start()
+        else:
+            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
     def wait_warmup(self, timeout: float = 300.0) -> Tuple[int, int]:
         """Wait for all warmup runners to complete
@@ -388,10 +404,14 @@ class TaskManager:
         completed = sum(1 for s in self.sandbox_states.values() if s.warmup_done)
         if self.config.workflow_type == "coding":
             failed = sum(1 for s in self.sandbox_states.values() if s.warmup_done and s.coding_metrics.failed_count > 0)
-        else:
+        elif self.config.workflow_type == "document":
+            failed = sum(1 for s in self.sandbox_states.values() if getattr(s, "warmup_error", ""))
+        elif self.config.workflow_type == "browser":
             failed = sum(
                 1 for s in self.sandbox_states.values() if s.warmup_done and s.browser_metrics.failed_count > 0
             )
+        else:
+            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
         return completed, failed
 
@@ -502,13 +522,30 @@ class TaskManager:
             from .coding_task_runner import CodingTaskRunner
 
             return CodingTaskRunner(state, self.config, self.stop_event)
-        else:
+        if self.config.workflow_type == "document":
+            from .document_task_runner import DocumentTaskRunner
+
+            return DocumentTaskRunner(state, self.config, self.stop_event)
+        if self.config.workflow_type == "browser":
             return BrowserTaskRunner(state, self.config, self.stop_event)
+        raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
     def wait_all(self, timeout: float = 5.0) -> None:
         """Wait for all task threads to end"""
-        for runner in self.runners:
-            runner.join(timeout=timeout)
+        if self.config.workflow_type == "document":
+            deadline = time.monotonic() + self.config.document_task_timeout + 5
+            for runner in self.runners:
+                remaining = max(0.0, deadline - time.monotonic())
+                runner.join(timeout=remaining)
+            alive = [runner.name for runner in self.runners if runner.is_alive()]
+            if alive:
+                raise RuntimeError(f"document runners did not finish before task deadline: {alive}")
+            return
+        if self.config.workflow_type in {"browser", "coding"}:
+            for runner in self.runners:
+                runner.join(timeout=timeout)
+            return
+        raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
 
 class TabOperationRunner(threading.Thread):

@@ -1,0 +1,48 @@
+# E2B XLSX document benchmark. Operations and sandbox paths are selected from
+# case_kind by the host runner and cannot be overridden here.
+e2b_env:
+  E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+  E2B_API_KEY: "your_e2b_api_key_here"
+  E2B_DOMAIN: "e2b.app"
+  E2B_API_URL: "http://localhost:3000"
+  E2B_HTTP_SSL: "false"
+
+workflow_type: "document"
+
+sandbox:
+  template: "openclaw-document-v1"
+  create_timeout: 86400
+  total_count: 10
+  detect_existing: false
+  create_only: false
+  sandbox_ids_file: "sandboxs_document_xlsx.txt"
+  numa_bind: 2
+
+create_batch:
+  size: 10
+  interval: 3
+
+task_batch:
+  size: 5
+  interval: 5
+
+document:
+  case_kind: "xlsx"
+  operation_timeout: 900
+  recalc_timeout: 600
+  task_timeout: 1800
+  interval_min: 3.0
+  interval_max: 10.0
+
+test:
+  duration: 1800
+  stats_interval: 10
+  benchmark_percent: 1.0
+  benchmark_mode: "round_robin"
+  round_size: 5
+  round_count: 2
+  round_interval: 3
+
+report:
+  output_dir: "results/e2b/document_xlsx"
+  filename_prefix: "e2b_document_xlsx_bench"

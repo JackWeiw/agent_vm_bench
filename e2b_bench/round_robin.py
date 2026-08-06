@@ -14,7 +14,7 @@ import time
 from typing import Dict, List, Optional
 
 from .config import Config
-from .schemas import CODING_STEP_ORDER, BROWSER_STEP_ORDER, SandboxState, SandboxStatus
+from .schemas import SandboxState, SandboxStatus, get_step_order
 from .stats_collector import StatsCollector
 from .task_runner import TabOperationRunner
 
@@ -114,13 +114,12 @@ class RoundRobinTaskManager:
             # Cycle back to first group if needed
             self._start_round(round_id)
 
-            # Wait for all runners to complete
-            # Each runner executes one task (tab operations) and finishes naturally
-            for runner in self.active_runners:
-                runner.join(timeout=120)
-
-            # Now stop the round (records metrics and baseline)
-            self._stop_round()
+            # Always finalize the round so partial metrics and baselines are
+            # preserved even when a runner exceeds its deadline.
+            try:
+                self._wait_for_active_runners()
+            finally:
+                self._stop_round()
 
             # Wait for round_interval before starting next round
             # This is the gap between rounds (after tasks complete)
@@ -225,10 +224,16 @@ class RoundRobinTaskManager:
                 sandbox_latency_counts = {
                     s.sandbox_id: len(s.coding_metrics.latencies) for s in self.sandbox_states.values()
                 }
-            else:
+            elif self.config.workflow_type == "document":
+                sandbox_latency_counts = {
+                    s.sandbox_id: len(s.document_metrics.latencies) for s in self.sandbox_states.values()
+                }
+            elif self.config.workflow_type == "browser":
                 sandbox_latency_counts = {
                     s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()
                 }
+            else:
+                raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
             self.stats_collector._round_start_totals[0] = {
                 "total": 0,
                 "success": 0,
@@ -247,11 +252,20 @@ class RoundRobinTaskManager:
                 runner = CodingRoundRunner(state, self.config, self.round_stop_event, round_id)
                 self.active_runners.append(runner)
                 runner.start()
-        else:
+        elif self.config.workflow_type == "document":
+            from .document_task_runner import DocumentRoundRunner
+
+            for state in current_states:
+                runner = DocumentRoundRunner(state, self.config, self.round_stop_event, round_id)
+                self.active_runners.append(runner)
+                runner.start()
+        elif self.config.workflow_type == "browser":
             for state in current_states:
                 runner = TabOperationRunner(state, self.config, self.round_stop_event, round_id)
                 self.active_runners.append(runner)
                 runner.start()
+        else:
+            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
         self.current_round = round_id
 
@@ -283,12 +297,20 @@ class RoundRobinTaskManager:
                 sandbox_latency_counts = {
                     s.sandbox_id: len(s.coding_metrics.latencies) for s in self.sandbox_states.values()
                 }
-            else:
+            elif self.config.workflow_type == "document":
+                task_total = sum(s.document_metrics.total_tasks for s in self.sandbox_states.values())
+                task_success = sum(s.document_metrics.success_count for s in self.sandbox_states.values())
+                sandbox_latency_counts = {
+                    s.sandbox_id: len(s.document_metrics.latencies) for s in self.sandbox_states.values()
+                }
+            elif self.config.workflow_type == "browser":
                 task_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
                 task_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
                 sandbox_latency_counts = {
                     s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()
                 }
+            else:
+                raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
             self.stats_collector._round_start_totals[next_round] = {
                 "total": task_total,
                 "success": task_success,
@@ -302,8 +324,12 @@ class RoundRobinTaskManager:
             # Select metrics object based on workflow type
             if self.config.workflow_type == "coding":
                 metrics = state.coding_metrics
-            else:
+            elif self.config.workflow_type == "document":
+                metrics = state.document_metrics
+            elif self.config.workflow_type == "browser":
                 metrics = state.browser_metrics
+            else:
+                raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
             step_stats = metrics.get_step_stats()
             for step_name, stats in step_stats.items():
                 if step_name not in step_totals:
@@ -317,7 +343,7 @@ class RoundRobinTaskManager:
         runner_count = len(self.active_runners)
         if runner_count > 0 and step_totals:
             avg_parts = []
-            step_order = CODING_STEP_ORDER if self.config.workflow_type == "coding" else BROWSER_STEP_ORDER
+            step_order = get_step_order(self.config.workflow_type, self.config.document_case_kind)
             for step_name in step_order:
                 if step_name in step_totals:
                     avg_ms = (step_totals[step_name]["total"] / max(1, step_totals[step_name]["count"])) * 1000
@@ -334,6 +360,21 @@ class RoundRobinTaskManager:
 
         # Clear round marker in stats collector (but keep baseline)
         self.stats_collector.current_round = None
+
+    def _wait_for_active_runners(self) -> None:
+        """Use one shared deadline for long Document tasks."""
+        if self.config.workflow_type in {"browser", "coding"}:
+            for runner in self.active_runners:
+                runner.join(timeout=120)
+            return
+        if self.config.workflow_type != "document":
+            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
+        deadline = time.monotonic() + self.config.document_task_timeout + 5
+        for runner in self.active_runners:
+            runner.join(timeout=max(0.0, deadline - time.monotonic()))
+        alive = [runner.name for runner in self.active_runners if runner.is_alive()]
+        if alive:
+            raise RuntimeError(f"document round runners did not finish before task deadline: {alive}")
 
     def _calculate_rounds(self) -> int:
         """Calculate max number of rounds to execute.

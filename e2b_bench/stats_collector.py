@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from .config import Config
-from .schemas import CODING_STEP_ORDER, BROWSER_STEP_ORDER, SandboxState, SandboxStatus, TestSnapshot
+from .schemas import CODING_STEP_ORDER, BROWSER_STEP_ORDER, SandboxState, SandboxStatus, TestSnapshot, get_step_order
 from .utils import calc_p99, calc_percentiles, calc_tail_ratio, classify_tail_latency
 
 # Error display order — selected based on workflow_type
@@ -38,6 +38,7 @@ CODING_ERROR_DISPLAY = [
     "Timeout",
     "Other",
 ]
+DOCUMENT_ERROR_DISPLAY = ["Read failed", "Write failed", "Verifier failed", "Timeout", "Other"]
 
 
 class ErrorClassifier:
@@ -60,6 +61,8 @@ class ErrorClassifier:
         ("Edit failed", ["edit failed", "sed failed"]),
         ("Verify failed", ["verify failed", "npx tsx", "go run", "exit code"]),
         ("Diff failed", ["diff failed", "git diff"]),
+        ("Write failed", ["write failed", "create write directory"]),
+        ("Verifier failed", ["verification", "verifier", "business_verification"]),
         ("OOM", ["oom", "out of memory", "cannot allocate"]),
         ("Timeout", ["timeout", "timed out"]),
     ]
@@ -144,6 +147,9 @@ class ReportFormatter:
         lines.append("\n[Test Configuration]")
         lines.append(f"  Template:        {self.config.template}")
         lines.append(f"  Total Sandboxes: {self.config.total_count}")
+        if self.config.workflow_type == "document":
+            lines.append(f"  Workflow:        {self.config.workflow_type}")
+            lines.append(f"  Document Case:   {self.config.document_case_kind}")
 
         # Mode
         if self.config.detect_existing:
@@ -183,12 +189,18 @@ class ReportFormatter:
         port_failed_states = [
             s for s in self.sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_FAILED
         ]
-        offline_states = [s for s in self.sandbox_states.values() if not s.is_alive]
+        offline_states = [s for s in self.sandbox_states.values() if not s.is_alive and not s.stopped_by_cleanup]
 
         # Use workflow-specific labels
-        ready_label = "Command Ready" if self.config.workflow_type == "coding" else "Ports Ready"
-        check_failed_label = "Ready Check Failed" if self.config.workflow_type == "coding" else "Port Check Failed"
-        failed_ids_label = "Ready Failed IDs" if self.config.workflow_type == "coding" else "Port Failed IDs"
+        if self.config.workflow_type in {"coding", "document"}:
+            command_ready = True
+        elif self.config.workflow_type == "browser":
+            command_ready = False
+        else:
+            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
+        ready_label = "Command Ready" if command_ready else "Ports Ready"
+        check_failed_label = "Ready Check Failed" if command_ready else "Port Check Failed"
+        failed_ids_label = "Ready Failed IDs" if command_ready else "Port Failed IDs"
 
         lines = ["\n[Sandbox Status]"]
         lines.append(
@@ -377,21 +389,62 @@ class ReportFormatter:
 
         return lines
 
+    def format_document_stats_section(self) -> List[str]:
+        metrics = [state.document_metrics for state in self.sandbox_states.values()]
+        all_latencies = [latency for metric in metrics for latency in metric.latencies]
+        total_tasks = sum(metric.total_tasks for metric in metrics)
+        total_success = sum(metric.success_count for metric in metrics)
+        total_failed = sum(metric.failed_count for metric in metrics)
+        total_timeout = sum(metric.timeout_count for metric in metrics)
+        lines = ["\n[Document Task Statistics]"]
+        lines.append(f"  Case Kind:     {self.config.document_case_kind}")
+        lines.append(f"  Total Tasks:   {total_tasks}")
+        lines.append(f"  Success:       {total_success}")
+        lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
+        lines.append(f"  Success Rate:  {total_success / max(1, total_tasks) * 100:.1f}%")
+        if all_latencies:
+            lines.append(f"  Avg Latency:   {statistics.mean(all_latencies) * 1000:.1f}ms")
+            lines.append(f"  P99 Latency:   {calc_p99(all_latencies) * 1000:.1f}ms")
+        return lines
+
+    def format_document_step_timing_table(self) -> List[str]:
+        all_step_times: Dict[str, List[float]] = {}
+        for state in self.sandbox_states.values():
+            for step_name, times in state.document_metrics.get_step_times_copy().items():
+                all_step_times.setdefault(step_name, []).extend(times)
+        if not all_step_times:
+            return []
+        lines = [f"\n[Step-Level Timing (Document {self.config.document_case_kind.upper()} Mode)]"]
+        headers = ["Step", "Count", "Avg(ms)", "P50(ms)", "P95(ms)", "P99(ms)", "Tail"]
+        rows = []
+        for step_name in get_step_order("document", self.config.document_case_kind):
+            times = all_step_times.get(step_name, [])
+            if not times:
+                continue
+            stats = calc_percentiles(times)
+            tail_ratio = calc_tail_ratio(times)
+            rows.append(
+                [
+                    step_name,
+                    str(len(times)),
+                    f"{stats['avg'] * 1000:.1f}",
+                    f"{stats['p50'] * 1000:.1f}",
+                    f"{stats['p95'] * 1000:.1f}",
+                    f"{stats['p99'] * 1000:.1f}",
+                    f"{tail_ratio:.2f}x ({classify_tail_latency(tail_ratio)})",
+                ]
+            )
+        lines.extend(TableFormatter.format_table(headers, rows))
+        return lines
+
     def format_error_section(self) -> List[str]:
         """Format error details and classification section."""
         # Collect errors — dispatch based on workflow type
         failed_sandbox_errors = []
         for s in self.sandbox_states.values():
-            if self.config.workflow_type == "coding":
-                if s.coding_metrics.failed_count > 0 and s.coding_metrics.last_error:
-                    failed_sandbox_errors.append(
-                        (s.sandbox_id, s.coding_metrics.failed_count, s.coding_metrics.last_error)
-                    )
-            else:
-                if s.browser_metrics.failed_count > 0 and s.browser_metrics.last_error:
-                    failed_sandbox_errors.append(
-                        (s.sandbox_id, s.browser_metrics.failed_count, s.browser_metrics.last_error)
-                    )
+            metrics = s.task_metrics
+            if metrics.failed_count > 0 and metrics.last_error:
+                failed_sandbox_errors.append((s.sandbox_id, metrics.failed_count, metrics.last_error))
 
         if not failed_sandbox_errors:
             return []
@@ -415,7 +468,23 @@ class ReportFormatter:
         rows = []
 
         # Bug #6 fix: include coding error types when workflow_type is coding
-        error_display_order = CODING_ERROR_DISPLAY if self.config.workflow_type == "coding" else BROWSER_ERROR_DISPLAY
+        if self.config.workflow_type == "coding":
+            error_display_order = CODING_ERROR_DISPLAY
+        elif self.config.workflow_type == "document":
+            error_display_order = DOCUMENT_ERROR_DISPLAY
+        elif self.config.workflow_type == "browser":
+            error_display_order = BROWSER_ERROR_DISPLAY
+        else:
+            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
+
+        # The classifier is shared by all workflows, so a Document-specific
+        # pattern can also match text emitted by Browser/Coding.  Preserve the
+        # current workflow's report schema by folding categories it does not
+        # display into Other instead of silently dropping them from the table.
+        unsupported_types = [error_type for error_type in error_counts if error_type not in error_display_order]
+        for error_type in unsupported_types:
+            error_counts["Other"] = error_counts.get("Other", 0) + error_counts.pop(error_type)
+            error_sandbox_ids.setdefault("Other", []).extend(error_sandbox_ids.pop(error_type, []))
 
         for error_type in error_display_order:
             if error_type in error_counts:
@@ -487,18 +556,11 @@ class ReportFormatter:
         """Calculate final statistics for each round."""
         round_finals: Dict[int, Dict[str, Any]] = {}
 
-        if self.config.workflow_type == "coding":
-            final_task_total = sum(s.coding_metrics.total_tasks for s in self.sandbox_states.values())
-            final_task_success = sum(s.coding_metrics.success_count for s in self.sandbox_states.values())
-            final_sandbox_latency_counts = {
-                s.sandbox_id: len(s.coding_metrics.latencies) for s in self.sandbox_states.values()
-            }
-        else:
-            final_task_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
-            final_task_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
-            final_sandbox_latency_counts = {
-                s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()
-            }
+        final_task_total = sum(s.task_metrics.total_tasks for s in self.sandbox_states.values())
+        final_task_success = sum(s.task_metrics.success_count for s in self.sandbox_states.values())
+        final_sandbox_latency_counts = {
+            s.sandbox_id: len(s.task_metrics.latencies) for s in self.sandbox_states.values()
+        }
 
         for round_id in sorted(round_start_totals.keys()):
             start_total = round_start_totals[round_id]["total"]
@@ -525,20 +587,8 @@ class ReportFormatter:
             for s in self.sandbox_states.values():
                 sandbox_id = s.sandbox_id
                 start_count = start_sandbox_latency_counts.get(sandbox_id, 0)
-                end_count = end_sandbox_latency_counts.get(
-                    sandbox_id,
-                    len(
-                        s.coding_metrics.latencies
-                        if self.config.workflow_type == "coding"
-                        else s.browser_metrics.latencies
-                    ),
-                )
-                if self.config.workflow_type == "coding":
-                    round_latencies.extend(s.coding_metrics.get_latencies_since(start_count)[: end_count - start_count])
-                else:
-                    round_latencies.extend(
-                        s.browser_metrics.get_latencies_since(start_count)[: end_count - start_count]
-                    )
+                end_count = end_sandbox_latency_counts.get(sandbox_id, len(s.task_metrics.latencies))
+                round_latencies.extend(s.task_metrics.get_latencies_since(start_count)[: end_count - start_count])
 
             tasks = end_total - start_total
             success = end_success - start_success
@@ -596,18 +646,9 @@ class StatsCollector:
             round_id: Current round index (None to clear)
         """
         # Get current cumulative totals before switching rounds
-        if self.config.workflow_type == "coding":
-            task_total = sum(s.coding_metrics.total_tasks for s in self.sandbox_states.values())
-            task_success = sum(s.coding_metrics.success_count for s in self.sandbox_states.values())
-            sandbox_latency_counts = {
-                s.sandbox_id: len(s.coding_metrics.latencies) for s in self.sandbox_states.values()
-            }
-        else:
-            task_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
-            task_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
-            sandbox_latency_counts = {
-                s.sandbox_id: len(s.browser_metrics.latencies) for s in self.sandbox_states.values()
-            }
+        task_total = sum(s.task_metrics.total_tasks for s in self.sandbox_states.values())
+        task_success = sum(s.task_metrics.success_count for s in self.sandbox_states.values())
+        sandbox_latency_counts = {s.sandbox_id: len(s.task_metrics.latencies) for s in self.sandbox_states.values()}
 
         # Switch to new round
         self.current_round = round_id
@@ -747,7 +788,20 @@ class StatsCollector:
                 round_total=round_total,
                 round_success=round_success,
             )
-        else:
+        elif self.config.workflow_type == "document":
+            document_total = sum(s.document_metrics.total_tasks for s in self.sandbox_states.values())
+            document_success = sum(s.document_metrics.success_count for s in self.sandbox_states.values())
+            if self.current_round is not None and self.current_round in self._round_start_totals:
+                start_total = self._round_start_totals[self.current_round]["total"]
+                start_success = self._round_start_totals[self.current_round]["success"]
+                round_total = document_total - start_total
+                round_success = document_success - start_success
+            else:
+                round_total = 0
+                round_success = 0
+            all_latencies = [
+                latency for state in self.sandbox_states.values() for latency in state.document_metrics.latencies[-10:]
+            ]
             snapshot = TestSnapshot(
                 timestamp=now,
                 elapsed=elapsed,
@@ -755,7 +809,15 @@ class StatsCollector:
                 active_sandboxes=active_count,
                 offline_sandboxes=offline_count,
                 creation_stats=creation_stats,
+                document_total=document_total,
+                document_success=document_success,
+                document_avg_latency=statistics.mean(all_latencies) if all_latencies else 0.0,
+                document_p99_latency=calc_p99(all_latencies),
+                round_total=round_total,
+                round_success=round_success,
             )
+        else:
+            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
         self.snapshots.append(snapshot)
 
@@ -778,11 +840,18 @@ class StatsCollector:
                 f"  Coding:    {snapshot.coding_success:3d}/{snapshot.coding_total:3d}  "
                 f"avg={snapshot.coding_avg_latency:.2f}s  p99={snapshot.coding_p99_latency:.2f}s"
             )
-        else:
+        elif self.config.workflow_type == "document":
+            print(
+                f"  Document:  {snapshot.document_success:3d}/{snapshot.document_total:3d}  "
+                f"avg={snapshot.document_avg_latency:.2f}s  p99={snapshot.document_p99_latency:.2f}s"
+            )
+        elif self.config.workflow_type == "browser":
             print(
                 f"  Browser:   {snapshot.browser_success:3d}/{snapshot.browser_total:3d}  "
                 f"avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s"
             )
+        else:
+            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
         print(f"{'─' * 70}")
 
     def generate_report(self) -> str:
@@ -810,7 +879,7 @@ class StatsCollector:
         ]
         create_desc = (
             "sandbox.create API call time, excluding ready check"
-            if self.config.workflow_type == "coding"
+            if self.config.workflow_type in {"coding", "document"}
             else "sandbox.create API call time, excluding port wait"
         )
         lines.extend(formatter.format_percentile_section("Sandbox.create Performance", create_times, create_desc))
@@ -823,15 +892,22 @@ class StatsCollector:
         if self.config.workflow_type == "coding":
             ready_check_title = "Ready Check Wait Performance"
             ready_check_desc = "Waiting for 'uname -a' command response"
-        else:
+        elif self.config.workflow_type == "document":
+            ready_check_title = "Document Asset Check Performance"
+            ready_check_desc = "Running document-bench-validate inside the sandbox"
+        elif self.config.workflow_type == "browser":
             ready_check_title = "Port Check Wait Performance"
             ready_check_desc = "Waiting for 18789 openclaw-gateway + 11436 llama-server ports"
+        else:
+            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
         lines.extend(formatter.format_percentile_section(ready_check_title, port_wait_times, ready_check_desc))
 
         total_times = [s.creation_metrics.total_elapsed for s in ready_states if s.creation_metrics.total_elapsed > 0]
         total_desc = (
-            "sandbox.create + ready check" if self.config.workflow_type == "coding" else "sandbox.create + port wait"
+            "sandbox.create + ready check"
+            if self.config.workflow_type in {"coding", "document"}
+            else "sandbox.create + port wait"
         )
         lines.extend(formatter.format_percentile_section("Total Startup Performance", total_times, total_desc))
 
@@ -839,9 +915,14 @@ class StatsCollector:
         if self.config.workflow_type == "coding":
             lines.extend(formatter.format_coding_stats_section())
             lines.extend(formatter.format_coding_step_timing_table())
-        else:
+        elif self.config.workflow_type == "document":
+            lines.extend(formatter.format_document_stats_section())
+            lines.extend(formatter.format_document_step_timing_table())
+        elif self.config.workflow_type == "browser":
             lines.extend(formatter.format_browser_stats_section())
             lines.extend(formatter.format_step_timing_table())
+        else:
+            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
         # Error details
         lines.extend(formatter.format_error_section())

@@ -1,0 +1,514 @@
+{
+  "schema_version": "scene-key-operations-v2",
+  "case_id": "SUB-MEM-PDF-01",
+  "case_kind": "pdf",
+  "description": "从两轮 trace 中整理的 4 个固定成功路径阶段；完整保留所选本地工具调用和 helper 源码。",
+  "source_trajectories": [
+    {
+      "run": "pdf_first",
+      "session_id": "f8e0e14d-a214-4474-b05b-574ae04650c2",
+      "trajectory": "/home/lcq/trace_extract/trace_backups/20260730T133833Z/pdf/agent_run/trajectory.json"
+    },
+    {
+      "run": "pdf_second",
+      "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+      "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json"
+    }
+  ],
+  "operation_count": 4,
+  "workflow": {
+    "success_path": [
+      "PDF-P01-inspect_prepare",
+      "PDF-P02-build",
+      "PDF-P03-process_publish",
+      "PDF-P04-verify_deliver"
+    ]
+  },
+  "key_operations": [
+    {
+      "order": 1,
+      "operation_id": "PDF-P01-inspect_prepare",
+      "operation": "inspect_and_prepare",
+      "description": "读取约束与工具，准备输出，检查字段并渲染空白模板。",
+      "condition": "always",
+      "source_operations": [
+        "PDF-K01-read_requirements",
+        "PDF-K02-inspect_tools",
+        "PDF-K03-prepare_outputs",
+        "PDF-K04-check_form_fields",
+        "PDF-K05-extract_fields",
+        "PDF-K06-render_blank_form"
+      ],
+      "source_tool_calls": [
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 2,
+            "tool_call_index": 0,
+            "tool_call_id": "call_00_2IaPM1b59fcHmZ1kjfhV0423",
+            "timestamp": "2026-07-30T13:46:23.512Z"
+          },
+          "tool_call": {
+            "function_name": "read",
+            "arguments": {
+              "path": "/root/.openclaw/skills/pdf/SKILL.md"
+            }
+          }
+        },
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 2,
+            "tool_call_index": 1,
+            "tool_call_id": "call_01_mziftIx7x5vluKCzjbPD4824",
+            "timestamp": "2026-07-30T13:46:23.512Z"
+          },
+          "tool_call": {
+            "function_name": "read",
+            "arguments": {
+              "path": "/root/.openclaw/skills/pdf/forms.md"
+            }
+          }
+        },
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 5,
+            "tool_call_index": 0,
+            "tool_call_id": "call_00_42VNvIf63BAorgpnLpoh5613",
+            "timestamp": "2026-07-30T13:46:30.893Z"
+          },
+          "tool_call": {
+            "function_name": "read",
+            "arguments": {
+              "path": "/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/input/verify_pdf_batch.py"
+            }
+          }
+        },
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 4,
+            "tool_call_index": 2,
+            "tool_call_id": "call_02_ztD6B3G6RPZNPjsvMSZx4230",
+            "timestamp": "2026-07-30T13:46:29.493Z"
+          },
+          "tool_call": {
+            "function_name": "read",
+            "arguments": {
+              "path": "/root/.openclaw/skills/pdf/scripts/check_fillable_fields.py"
+            }
+          }
+        },
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 4,
+            "tool_call_index": 3,
+            "tool_call_id": "call_03_FeIc8uyG6FwvyEH8Es589817",
+            "timestamp": "2026-07-30T13:46:29.493Z"
+          },
+          "tool_call": {
+            "function_name": "read",
+            "arguments": {
+              "path": "/root/.openclaw/skills/pdf/scripts/extract_form_field_info.py"
+            }
+          }
+        },
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 4,
+            "tool_call_index": 4,
+            "tool_call_id": "call_04_sZ1GSI4EUdB7W0Ir8TyY4116",
+            "timestamp": "2026-07-30T13:46:29.493Z"
+          },
+          "tool_call": {
+            "function_name": "read",
+            "arguments": {
+              "path": "/root/.openclaw/skills/pdf/scripts/fill_fillable_fields.py"
+            }
+          }
+        },
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 4,
+            "tool_call_index": 5,
+            "tool_call_id": "call_05_sReYApGl7r2H26z6mVBD9649",
+            "timestamp": "2026-07-30T13:46:29.493Z"
+          },
+          "tool_call": {
+            "function_name": "read",
+            "arguments": {
+              "path": "/root/.openclaw/skills/pdf/scripts/convert_pdf_to_images.py"
+            }
+          }
+        },
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 10,
+            "tool_call_index": 0,
+            "tool_call_id": "call_00_jjJVJwjweAmIRZSauzNv8785",
+            "timestamp": "2026-07-30T13:46:49.607Z"
+          },
+          "tool_call": {
+            "function_name": "exec",
+            "arguments": {
+              "command": "mkdir -p /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/rendered/template /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/field_values /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/filled"
+            }
+          }
+        },
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 6,
+            "tool_call_index": 0,
+            "tool_call_id": "call_00_ZPtaJbN9HsmYbChj3tD89906",
+            "timestamp": "2026-07-30T13:46:37.200Z"
+          },
+          "tool_call": {
+            "function_name": "exec",
+            "arguments": {
+              "command": "cd /root/.openclaw/skills/pdf && python3 scripts/check_fillable_fields.py /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/input/of306_aug2023.pdf > /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/check_fillable_fields.log 2>&1"
+            }
+          }
+        },
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 7,
+            "tool_call_index": 0,
+            "tool_call_id": "call_00_xkyx6P1ov85cgzLsVKsu9990",
+            "timestamp": "2026-07-30T13:46:38.940Z"
+          },
+          "tool_call": {
+            "function_name": "exec",
+            "arguments": {
+              "command": "cat /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/check_fillable_fields.log"
+            }
+          }
+        },
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 8,
+            "tool_call_index": 0,
+            "tool_call_id": "call_00_cPJECCXMfj1qKGCyeyR96336",
+            "timestamp": "2026-07-30T13:46:40.653Z"
+          },
+          "tool_call": {
+            "function_name": "exec",
+            "arguments": {
+              "command": "cd /root/.openclaw/skills/pdf && python3 scripts/extract_form_field_info.py /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/input/of306_aug2023.pdf /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/form_field_info.json"
+            }
+          }
+        },
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 9,
+            "tool_call_index": 0,
+            "tool_call_id": "call_00_QStohw5cnN0zn0gq990e1142",
+            "timestamp": "2026-07-30T13:46:42.335Z"
+          },
+          "tool_call": {
+            "function_name": "read",
+            "arguments": {
+              "path": "/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/form_field_info.json"
+            }
+          }
+        },
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 11,
+            "tool_call_index": 0,
+            "tool_call_id": "call_00_jKSO94vRWP0dbTBCFch46148",
+            "timestamp": "2026-07-30T13:46:51.478Z"
+          },
+          "tool_call": {
+            "function_name": "exec",
+            "arguments": {
+              "command": "cd /root/.openclaw/skills/pdf && python3 scripts/convert_pdf_to_images.py /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/input/of306_aug2023.pdf /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/rendered/template"
+            }
+          }
+        }
+      ],
+      "expected_outputs": [
+        "output/rendered/template",
+        "output/field_values",
+        "output/filled",
+        "output/check_fillable_fields.log",
+        "output/form_field_info.json",
+        "output/rendered/template/page_1.png",
+        "output/rendered/template/page_2.png",
+        "output/rendered/template/page_3.png"
+      ],
+      "success_criteria": [
+        "已读取 PDF Skill 和 forms 指南",
+        "已检查隐私规则和严格 verifier",
+        "明确四个 Skill 脚本的参数和输出格式",
+        "所有输出目录已创建",
+        "检查脚本只调用一次",
+        "日志确认表单包含可填写字段",
+        "字段信息包含真实 field_id、page、type 和选项",
+        "模板渲染命令退出成功",
+        "生成 3 页非空 PNG"
+      ]
+    },
+    {
+      "order": 2,
+      "operation_id": "PDF-P02-build",
+      "operation": "build_batch_inputs",
+      "description": "构建并校验十份字段值及最终批处理 helper。",
+      "condition": "always",
+      "source_operations": [
+        "PDF-K07-write_mapping_helper",
+        "PDF-K08-generate_field_values",
+        "PDF-K09-validate_field_values",
+        "PDF-K10-write_batch_helper"
+      ],
+      "source_tool_calls": [
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 12,
+            "tool_call_index": 0,
+            "tool_call_id": "call_00_ljp2B0gIYbr3Frghtht35171",
+            "timestamp": "2026-07-30T13:47:01.428Z"
+          },
+          "tool_call": {
+            "function_name": "write",
+            "arguments": {
+              "path": "/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/generate_and_run_batch.py",
+              "content": "#!/usr/bin/env python3\n\"\"\"Generate field-values JSONs for all 10 applicants and run fill + render.\"\"\"\n\nimport json\nimport subprocess\nimport sys\nfrom pathlib import Path\n\nSKILL_DIR = Path(\"/root/.openclaw/skills/pdf\")\nINPUT_PDF = Path(\"/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/input/of306_aug2023.pdf\")\nOUTPUT = Path(\"/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output\")\nFIELD_VALUES_DIR = OUTPUT / \"field_values\"\nFILLED_DIR = OUTPUT / \"filled\"\n\nwith open(Path(\"/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/input/synthetic_applicants.json\")) as f:\n    data = json.load(f)\n\napplicants = data[\"applicants\"]\nshared = data[\"shared_answers\"]\ncontinuation_text = shared[\"continuation\"]\n\nfor a in applicants:\n    aid = a[\"id\"]\n    values = []\n\n    # --- Page 2 fields ---\n\n    # Full Name\n    values.append({\n        \"field_id\": \"Full Name\",\n        \"description\": \"Full name of applicant\",\n        \"page\": 2,\n        \"value\": a[\"full_name\"]\n    })\n\n    # Place of birth\n    values.append({\n        \"field_id\": \"PLACE OF BIRTH Include city and state or country\",\n        \"description\": \"Place of birth\",\n        \"page\": 2,\n        \"value\": a[\"place_of_birth\"]\n    })\n\n    # Country of Citizenship\n    values.append({\n        \"field_id\": \"Country of Citizenship\",\n        \"description\": \"Country of citizenship\",\n        \"page\": 2,\n        \"value\": \"United States\"\n    })\n\n    # US Citizen - all Yes\n    values.append({\n        \"field_id\": \"Are you a U.S. Citizen?\",\n        \"description\": \"US Citizen radio\",\n        \"page\": 2,\n        \"value\": \"/Yes\"\n    })\n\n    # Date of birth\n    values.append({\n        \"field_id\": \"DATE OF BIRTH MM  DD  YYYY\",\n        \"description\": \"Date of birth\",\n        \"page\": 2,\n        \"value\": a[\"date_of_birth\"]\n    })\n\n    # Day phone\n    values.append({\n        \"field_id\": \"Day\",\n        \"description\": \"Daytime phone number\",\n        \"page\": 2,\n        \"value\": a[\"day_phone\"]\n    })\n\n    # Other names\n    values.append({\n        \"field_id\": \"Other Names Used 2\",\n        \"description\": \"Other names used\",\n        \"page\": 2,\n        \"value\": a[\"other_names\"]\n    })\n\n    # Male (born male after 1959)\n    male_value = \"/Yes\" if a[\"born_male_after_1959\"] else \"/No\"\n    values.append({\n        \"field_id\": \"Male\",\n        \"description\": \"Born male after Dec 31 1959\",\n        \"page\": 2,\n        \"value\": male_value\n    })\n\n    # Selective Service registration\n    ss_value = \"/Yes\" if a[\"registered_selective_service\"] else \"/No\"\n    values.append({\n        \"field_id\": \"Have you registered with Selective Service\",\n        \"description\": \"Selective Service registration\",\n        \"page\": 2,\n        \"value\": ss_value\n    })\n\n    # --- Shared background answers (all No) ---\n\n    # Military service - No\n    values.append({\n        \"field_id\": \"Have you ever served in the U.S. Military\",\n        \"description\": \"Military service\",\n        \"page\": 2,\n        \"value\": \"/No\"\n    })\n\n    # Convicted/paroled - No\n    values.append({\n        \"field_id\": \"Have you been convicted imprisoned probation or paroled last 7 years\",\n        \"description\": \"Convicted/paroled last 7 years\",\n        \"page\": 2,\n        \"value\": \"/No\"\n    })\n\n    # Court martialed - No\n    values.append({\n        \"field_id\": \"Have you been court martialed in the last 7 years\",\n        \"description\": \"Court martialed last 7 years\",\n        \"page\": 2,\n        \"value\": \"/No\"\n    })\n\n    # Currently under charges - No\n    values.append({\n        \"field_id\": \"Are you currently under charges\",\n        \"description\": \"Currently under charges\",\n        \"page\": 2,\n        \"value\": \"/No\"\n    })\n\n    # Fired/debarred - No\n    values.append({\n        \"field_id\": \"Have you been fired or debarred or quit due to a specific problem or quit after being told you would be fired\",\n        \"description\": \"Fired/debarred/quit\",\n        \"page\": 2,\n        \"value\": \"/No\"\n    })\n\n    # Delinquent federal debt - No\n    values.append({\n        \"field_id\": \"Are you delinquent on any Federal debt\",\n        \"description\": \"Delinquent federal debt\",\n        \"page\": 2,\n        \"value\": \"/No\"\n    })\n\n    # --- Page 3 fields ---\n\n    # Relative at agency - No\n    values.append({\n        \"field_id\": \"Do any of your relatives work for the agency or government organization for which you are submitting this form\",\n        \"description\": \"Relative at agency\",\n        \"page\": 3,\n        \"value\": \"/No\"\n    })\n\n    # Government retirement/pension - No\n    values.append({\n        \"field_id\": \"Have you applied or do you receive retirement or pension benefits from the military Federal or D.C. government\",\n        \"description\": \"Government retirement/pension\",\n        \"page\": 3,\n        \"value\": \"/No\"\n    })\n\n    # Continuation text\n    values.append({\n        \"field_id\": \"Continuation of Space or Agency Specific Questions\",\n        \"description\": \"Continuation text\",\n        \"page\": 3,\n        \"value\": continuation_text\n    })\n\n    # Write the field-values JSON\n    out_path = FIELD_VALUES_DIR / f\"{aid}.json\"\n    with open(out_path, \"w\") as f:\n        json.dump(values, f, indent=2)\n    print(f\"Wrote {out_path}\")\n\nprint(\"--- All field-values JSONs written ---\")\n"
+            }
+          }
+        },
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 13,
+            "tool_call_index": 0,
+            "tool_call_id": "call_00_uv0jGm5dRryIsQMAANxH6616",
+            "timestamp": "2026-07-30T13:47:03.772Z"
+          },
+          "tool_call": {
+            "function_name": "exec",
+            "arguments": {
+              "command": "cd /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01 && python3 generate_and_run_batch.py"
+            }
+          }
+        },
+        {
+          "source": {
+            "run": "pdf_first",
+            "session_id": "f8e0e14d-a214-4474-b05b-574ae04650c2",
+            "trajectory": "/home/lcq/trace_extract/trace_backups/20260730T133833Z/pdf/agent_run/trajectory.json",
+            "step_id": 15,
+            "tool_call_index": 0,
+            "tool_call_id": "call_00_KXA9dZfkIx27TjvXl4al3581",
+            "timestamp": "2026-07-29T17:07:55.388Z"
+          },
+          "tool_call": {
+            "function_name": "exec",
+            "arguments": {
+              "command": "python3 -c \"\nimport json\n# Verify all field IDs exist in field_info\nwith open('/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/form_field_info.json') as f:\n    fi = json.load(f)\nvalid_ids = {x['field_id'] for x in fi}\nfor i in range(1, 11):\n    with open(f'/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/field_values/applicant_{i:02d}.json') as f:\n        vals = json.load(f)\n    for v in vals:\n        fid = v['field_id']\n        if fid not in valid_ids:\n            print(f'ERROR: {fid} not in field_info')\n        fi_entry = [x for x in fi if x['field_id'] == fid][0]\n        if v['page'] != fi_entry.get('page'):\n            print(f'ERROR: page mismatch for {fid}')\n    # Check no forbidden fields\n    forbidden = {'Social Security Number','17a Applicants Signature','17b Appointees Signature 1','Date','Date_2','Appointing Officer Enter Date of Appointment or Conversion MM  DD  YYYY','When did you leave your last Federal job','Did you waive Basic Life Insurance or any type of optional life insurance','If yes to 18b did you later cancel the waivers'}\n    provided_ids = {v['field_id'] for v in vals}\n    overlap = provided_ids & forbidden\n    if overlap:\n        print(f'ERROR: applicant_{i:02d} includes forbidden fields: {overlap}')\nprint('Validation complete')\n\" 2>&1"
+            }
+          }
+        },
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 14,
+            "tool_call_index": 0,
+            "tool_call_id": "call_00_E40zPwsqJugKcrtrPBfC8255",
+            "timestamp": "2026-07-30T13:47:08.124Z"
+          },
+          "tool_call": {
+            "function_name": "write",
+            "arguments": {
+              "content": "#!/usr/bin/env python3\n\"\"\"Execute fill+render for all 10 applicants. Invocations: 10 fills, 10 renders.\"\"\"\n\nimport subprocess\nimport sys\nfrom pathlib import Path\n\nSKILL_DIR = Path(\"/root/.openclaw/skills/pdf\")\nINPUT_PDF = Path(\"/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/input/of306_aug2023.pdf\")\nOUTPUT = Path(\"/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output\")\nFIELD_VALUES_DIR = OUTPUT / \"field_values\"\nFILLED_DIR = OUTPUT / \"filled\"\n\nFILL_SCRIPT = SKILL_DIR / \"scripts/fill_fillable_fields.py\"\nRENDER_SCRIPT = SKILL_DIR / \"scripts/convert_pdf_to_images.py\"\n\napplicant_ids = [f\"applicant_{i:02d}\" for i in range(1, 11)]\n\nfill_count = 0\nrender_count = 0\n\nfor aid in applicant_ids:\n    values_json = FIELD_VALUES_DIR / f\"{aid}.json\"\n    out_pdf = FILLED_DIR / f\"{aid}.pdf\"\n    \n    # Fill\n    cmd_fill = [\n        \"python3\", str(FILL_SCRIPT),\n        str(INPUT_PDF), str(values_json), str(out_pdf)\n    ]\n    result = subprocess.run(cmd_fill, capture_output=True, text=True, cwd=str(SKILL_DIR))\n    fill_count += 1\n    if result.returncode != 0:\n        print(f\"FAIL fill {aid}: {result.stderr}\", file=sys.stderr)\n        sys.exit(1)\n    print(f\"Filled {aid} -> {out_pdf}\")\n\n    # Render\n    render_dir = OUTPUT / \"rendered\" / aid\n    render_dir.mkdir(parents=True, exist_ok=True)\n    cmd_render = [\n        \"python3\", str(RENDER_SCRIPT),\n        str(out_pdf), str(render_dir)\n    ]\n    result = subprocess.run(cmd_render, capture_output=True, text=True, cwd=str(SKILL_DIR))\n    render_count += 1\n    if result.returncode != 0:\n        print(f\"FAIL render {aid}: {result.stderr}\", file=sys.stderr)\n        sys.exit(1)\n    print(f\"Rendered {aid} -> {render_dir}\")\n\nprint(f\"\\nDone. Fills: {fill_count}, Renders: {render_count}\")\n",
+              "path": "/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/run_batch_fill_render.py"
+            }
+          }
+        }
+      ],
+      "expected_outputs": [
+        "generate_and_run_batch.py",
+        "output/field_values/applicant_01.json ... applicant_10.json",
+        "run_batch_fill_render.py"
+      ],
+      "success_criteria": [
+        "helper 使用 form_field_info.json 中的真实字段",
+        "helper 明确排除 SSN、签名、日期和保险敏感字段",
+        "正好生成 10 份 JSON",
+        "每份 JSON 对应一个合成申请人",
+        "所有 field_id 均存在",
+        "页码匹配",
+        "敏感字段集合无交集",
+        "helper 固化 10 次填表和 10 次填写结果渲染"
+      ]
+    },
+    {
+      "order": 3,
+      "operation_id": "PDF-P03-process_publish",
+      "operation": "process_and_publish",
+      "description": "批量填充、渲染十份 PDF 并写入批处理摘要。",
+      "condition": "always",
+      "source_operations": [
+        "PDF-K11-fill_and_render",
+        "PDF-K12-write_summary"
+      ],
+      "source_tool_calls": [
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 15,
+            "tool_call_index": 0,
+            "tool_call_id": "call_00_ET_QRLRyMAFGHG45pWArukJ0449",
+            "timestamp": "2026-07-30T13:47:09.819Z"
+          },
+          "tool_call": {
+            "function_name": "exec",
+            "arguments": {
+              "command": "cd /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01 && python3 run_batch_fill_render.py"
+            }
+          }
+        },
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 16,
+            "tool_call_index": 0,
+            "tool_call_id": "call_00_6BeZEhiU0H6ByIvgcCvN8875",
+            "timestamp": "2026-07-30T13:47:20.211Z"
+          },
+          "tool_call": {
+            "function_name": "write",
+            "arguments": {
+              "content": "{\n  \"input_form\": \"of306_aug2023.pdf\",\n  \"applicant_count\": 10,\n  \"filled_pdf_count\": 10,\n  \"rendered_page_count\": 33,\n  \"fill_script_invocations\": 10,\n  \"render_script_invocations\": 11,\n  \"ssn_and_signatures_left_blank\": true\n}\n",
+              "path": "/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/batch_summary.json"
+            }
+          }
+        }
+      ],
+      "expected_outputs": [
+        "output/filled/applicant_01.pdf ... applicant_10.pdf",
+        "output/rendered/applicant_01 ... applicant_10",
+        "output/batch_summary.json"
+      ],
+      "success_criteria": [
+        "10 份 PDF 均为 3 页",
+        "每个申请人生成 3 页 PNG",
+        "applicant_count=10",
+        "filled_pdf_count=10",
+        "rendered_page_count=33",
+        "fill_script_invocations=10",
+        "render_script_invocations=11"
+      ]
+    },
+    {
+      "order": 4,
+      "operation_id": "PDF-P04-verify_deliver",
+      "operation": "verify_and_deliver",
+      "description": "运行严格业务验收并核对全部交付物。",
+      "condition": "always",
+      "source_operations": [
+        "PDF-K13-verify_outputs",
+        "PDF-K14-check_deliverables"
+      ],
+      "source_tool_calls": [
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 17,
+            "tool_call_index": 0,
+            "tool_call_id": "call_00_joQG8irRDGa72cgoqW3O5086",
+            "timestamp": "2026-07-30T13:47:22.067Z"
+          },
+          "tool_call": {
+            "function_name": "exec",
+            "arguments": {
+              "command": "cd /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01 && python3 input/verify_pdf_batch.py input/of306_aug2023.pdf input/synthetic_applicants.json output output/business_verification.json"
+            }
+          }
+        },
+        {
+          "source": {
+            "run": "pdf_second",
+            "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
+            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
+            "step_id": 18,
+            "tool_call_index": 0,
+            "tool_call_id": "call_00_pV5E3mJnLb48L71VM0bi2046",
+            "timestamp": "2026-07-30T13:47:26.233Z"
+          },
+          "tool_call": {
+            "function_name": "exec",
+            "arguments": {
+              "command": "echo \"=== Output tree ===\" && find /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output -type f | sort && echo \"=== PNG count ===\" && find /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/rendered -name '*.png' | wc -l && echo \"=== Filled PDF count ===\" && ls /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/filled/*.pdf | wc -l && echo \"=== Field values count ===\" && ls /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/field_values/*.json | wc -l && echo \"=== business_verification.json status ===\" && python3 -c \"import json; r=json.load(open('/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01/output/business_verification.json')); print(r['status'])\""
+            }
+          }
+        }
+      ],
+      "expected_outputs": [
+        "output/business_verification.json",
+        "output/check_fillable_fields.log",
+        "output/form_field_info.json",
+        "output/field_values/*.json",
+        "output/filled/*.pdf",
+        "output/rendered/**/*.png",
+        "output/batch_summary.json"
+      ],
+      "success_criteria": [
+        "business_verification.json.status == success",
+        "failures 为空",
+        "JSON=10",
+        "PDF=10",
+        "PNG=33",
+        "业务验收成功"
+      ]
+    }
+  ]
+}

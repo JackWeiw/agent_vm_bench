@@ -20,6 +20,7 @@ class TestStatsCollectorErrorClassification:
     def setup_method(self):
         """Set up test fixtures"""
         self.config = Mock(spec=Config)
+        self.config.workflow_type = "browser"
         self.config.template = "test-template"
         self.config.total_count = 5
         self.config.detect_existing = False
@@ -156,6 +157,33 @@ class TestStatsCollectorErrorClassification:
 
         assert "Other" in report
 
+    @staticmethod
+    def _format_workflow_error(workflow_type: str, error_msg: str) -> str:
+        config = Mock(spec=Config)
+        config.workflow_type = workflow_type
+        state = SandboxState(sandbox_id=1, workflow_type=workflow_type)
+        state.task_metrics.add(latency=1.0, success=False)
+        state.task_metrics._last_error = error_msg
+        return "\n".join(ReportFormatter(config, {1: state}).format_error_section())
+
+    def test_document_error_category_falls_back_to_other_for_browser(self):
+        report = self._format_workflow_error("browser", "write failed while saving output")
+
+        assert "Other" in report
+        assert "Write failed" not in report
+
+    def test_document_error_category_falls_back_to_other_for_coding(self):
+        report = self._format_workflow_error("coding", "business verification rejected the output")
+
+        assert "Other" in report
+        assert "Verifier failed" not in report
+
+    def test_document_error_category_remains_specific_for_document(self):
+        report = self._format_workflow_error("document", "business verification rejected the output")
+
+        assert "Verifier failed" in report
+        assert "Other" not in report
+
     def test_multiple_error_types(self):
         """Multiple error types should all be classified"""
         sandbox_states = {
@@ -171,12 +199,64 @@ class TestStatsCollectorErrorClassification:
         assert "Timeout" in report
 
 
+class TestStatsCollectorConfigurationCompatibility:
+    @staticmethod
+    def _generate_report(workflow_type: str) -> str:
+        config = Config(workflow_type=workflow_type)
+        if workflow_type == "document":
+            config.document_case_kind = "pdf"
+        state = SandboxState(sandbox_id=1, workflow_type=workflow_type)
+        return StatsCollector(config, {1: state}).generate_report()
+
+    @pytest.mark.parametrize("workflow_type", ["browser", "coding"])
+    def test_existing_workflow_reports_do_not_gain_workflow_line(self, workflow_type):
+        report = self._generate_report(workflow_type)
+
+        assert "  Workflow:" not in report
+        assert "  Document Case:" not in report
+
+    def test_document_report_includes_workflow_and_case(self):
+        report = self._generate_report("document")
+
+        assert "  Workflow:        document" in report
+        assert "  Document Case:   pdf" in report
+
+
+class TestSandboxRuntimeStatusReporting:
+    @staticmethod
+    def _format_status(state: SandboxState) -> str:
+        config = Config(workflow_type="document", document_case_kind="pdf")
+        return "\n".join(ReportFormatter(config, {state.sandbox_id: state}).format_sandbox_status_section())
+
+    def test_normal_cleanup_is_not_reported_as_runtime_offline(self):
+        state = SandboxState(sandbox_id=1, workflow_type="document")
+        state.creation_metrics.status = SandboxStatus.PORT_READY
+        state.is_alive = False
+        state.stopped_by_cleanup = True
+
+        report = self._format_status(state)
+
+        assert "Offline (runtime):   0" in report
+        assert "Offline IDs:" not in report
+
+    def test_real_runtime_stop_is_still_reported_offline(self):
+        state = SandboxState(sandbox_id=7, workflow_type="document")
+        state.creation_metrics.status = SandboxStatus.PORT_READY
+        state.is_alive = False
+
+        report = self._format_status(state)
+
+        assert "Offline (runtime):   1" in report
+        assert "Offline IDs:         [7]" in report
+
+
 class TestStatsCollectorRoundComparison:
     """Tests for round comparison latency calculation"""
 
     def setup_method(self):
         """Set up test fixtures"""
         self.config = Mock(spec=Config)
+        self.config.workflow_type = "browser"
         self.config.template = "test-template"
         self.config.total_count = 3
         self.config.detect_existing = False
@@ -298,6 +378,7 @@ class TestStatsCollectorRoundBaselineTiming:
     def setup_method(self):
         """Set up test fixtures"""
         self.config = Mock(spec=Config)
+        self.config.workflow_type = "browser"
         self.config.template = "test-template"
         self.config.total_count = 4
         self.config.detect_existing = False
@@ -484,6 +565,7 @@ class TestStatsCollectorRoundLatencyDelta:
     def setup_method(self):
         """Set up test fixtures"""
         self.config = Mock(spec=Config)
+        self.config.workflow_type = "browser"
         self.config.template = "test-template"
         self.config.total_count = 2
         self.config.detect_existing = False
@@ -554,6 +636,7 @@ class TestStatsCollectorTailLatency:
     def setup_method(self):
         """Set up test fixtures"""
         self.config = Mock(spec=Config)
+        self.config.workflow_type = "browser"
         self.config.template = "test-template"
         self.config.total_count = 2
         self.config.detect_existing = False
