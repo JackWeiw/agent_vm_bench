@@ -6,6 +6,7 @@ Common helper functions for statistics, formatting, and logging setup.
 
 import logging
 import statistics
+import sys
 from typing import Dict, List
 
 
@@ -20,6 +21,10 @@ def setup_logging(level: int = logging.INFO) -> None:
     so the root level is forced afterwards to guarantee the default INFO
     level — and the progress messages emitted at it — is honored.
 
+    Output goes to stdout (not the logging default of stderr) to preserve
+    the pre-refactor ``print`` destination: shell redirects and ``tee``
+    keep capturing the report echo and progress output.
+
     Args:
         level: Logging level (default ``logging.INFO``).
     """
@@ -27,6 +32,7 @@ def setup_logging(level: int = logging.INFO) -> None:
         level=level,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
+        stream=sys.stdout,
     )
     logging.getLogger().setLevel(level)
 
