@@ -175,6 +175,33 @@ class TestDetectFromFile:
         assert result == {}
 
 
+class TestSandboxCleanup:
+    @staticmethod
+    def _manager_with_state(state):
+        manager = SandboxManager(Config(), Event())
+        manager.sandbox_states = {state.sandbox_id: state}
+        return manager
+
+    def test_kill_marks_live_sandbox_as_stopped_by_cleanup(self):
+        sandbox = Mock()
+        state = SandboxState(sandbox_id=1, sandbox_obj=sandbox)
+
+        self._manager_with_state(state).kill_all()
+
+        sandbox.kill.assert_called_once_with()
+        assert state.is_alive is False
+        assert state.stopped_by_cleanup is True
+
+    def test_kill_does_not_mask_existing_runtime_offline_state(self):
+        sandbox = Mock()
+        state = SandboxState(sandbox_id=2, sandbox_obj=sandbox, is_alive=False)
+
+        self._manager_with_state(state).kill_all()
+
+        sandbox.kill.assert_called_once_with()
+        assert state.stopped_by_cleanup is False
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 

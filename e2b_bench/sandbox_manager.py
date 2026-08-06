@@ -628,10 +628,16 @@ class SandboxManager:
         for state in self.sandbox_states.values():
             if state.sandbox_obj:
                 try:
+                    was_alive = state.is_alive
                     state.sandbox_obj.kill()
                     # Don't overwrite status - keep original (PORT_READY/FAILED etc) for stats
                     # state.creation_metrics.status = SandboxStatus.KILLED
                     state.is_alive = False
+                    # Preserve genuine runtime-offline states: cleanup must only
+                    # explain the transition when the sandbox was alive before
+                    # this intentional kill.
+                    if was_alive:
+                        state.stopped_by_cleanup = True
                     killed_count += 1
                 except Exception as e:
                     print(f"[Sandbox{state.sandbox_id}] Kill error: {str(e)[:50]}")

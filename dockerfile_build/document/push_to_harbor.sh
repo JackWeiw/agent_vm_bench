@@ -7,23 +7,29 @@ NO_PROXY="${NO_PROXY:-127.0.0.1,localhost,harbor}"
 HARBOR_IP="${HARBOR_IP:-localhost}"
 WEBSOCAT_VERSION="${WEBSOCAT_VERSION:-1.14.0}"
 
-case "$(uname -m)" in
-    aarch64|arm64)
+# ARCH is optional. By default the host architecture is used; accepting the
+# same arm/x86 aliases as the other benchmark image scripts also makes the
+# target explicit in automation.
+REQUESTED_ARCH="${ARCH:-$(uname -m)}"
+case "${REQUESTED_ARCH}" in
+    arm|aarch64|arm64)
         ARCH="arm64"
+        DOCKERFILE="Dockerfile"
         BASE_IMAGE="ubuntu-document-bench:24.04-linuxarm64"
         CUSTOM_IMAGE="ubuntu-document-bench:custom-arm64"
         HARBOR_TAG="custom-arm64"
         WEBSOCAT_ASSET="websocat_max.aarch64-unknown-linux-musl"
         ;;
-    x86_64|amd64)
+    x86|x86_64|amd64)
         ARCH="amd64"
+        DOCKERFILE="Dockerfile.x86"
         BASE_IMAGE="ubuntu-document-bench:24.04-linuxamd64"
         CUSTOM_IMAGE="ubuntu-document-bench:custom-amd64"
         HARBOR_TAG="custom-amd64"
         WEBSOCAT_ASSET="websocat.x86_64-unknown-linux-musl"
         ;;
     *)
-        echo "Unsupported host architecture: $(uname -m)" >&2
+        echo "Unsupported architecture: ${REQUESTED_ARCH}; expected arm/arm64 or x86/amd64" >&2
         exit 1
         ;;
 esac
@@ -40,11 +46,7 @@ trap cleanup EXIT
 
 if ! docker image inspect "${BASE_IMAGE}" >/dev/null 2>&1; then
     echo "Base image not found: ${BASE_IMAGE}" >&2
-    if [ "${ARCH}" = "arm64" ]; then
-        echo "Build it with: docker build --build-arg HTTP_PROXY=... --build-arg HTTPS_PROXY=... -t ${BASE_IMAGE} -f Dockerfile ." >&2
-    else
-        echo "Build it with: docker build --build-arg HTTP_PROXY=... --build-arg HTTPS_PROXY=... -t ${BASE_IMAGE} -f Dockerfile.x86 ." >&2
-    fi
+    echo "Build it with: docker build --build-arg HTTP_PROXY=... --build-arg HTTPS_PROXY=... -t ${BASE_IMAGE} -f ${DOCKERFILE} ." >&2
     exit 1
 fi
 
@@ -122,4 +124,5 @@ docker tag "${CUSTOM_IMAGE}" "${TARGET_IMAGE}"
 docker push "${TARGET_IMAGE}"
 
 echo "Pushed ${TARGET_IMAGE}"
-echo "Create the E2B template with the existing server workflow, alias: openclaw-document-v1"
+echo "Create the E2B template with alias openclaw-document-v1 from image:"
+echo "  ${HARBOR_REPOSITORY}:${HARBOR_TAG}"

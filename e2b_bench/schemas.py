@@ -581,6 +581,7 @@ class SandboxState:
     document_metrics: DocumentMetrics = field(default_factory=DocumentMetrics)
 
     is_alive: bool = True  # Sandbox alive status
+    stopped_by_cleanup: bool = False  # Successfully stopped by normal benchmark cleanup
     last_task_time: float = 0.0  # Last task execution time (thread-safe via update_last_task_time)
     consecutive_failures: int = 0  # Consecutive failure count
     warmup_done: bool = False  # Warmup phase completed flag

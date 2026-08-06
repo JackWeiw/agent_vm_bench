@@ -222,6 +222,34 @@ class TestStatsCollectorConfigurationCompatibility:
         assert "  Document Case:   pdf" in report
 
 
+class TestSandboxRuntimeStatusReporting:
+    @staticmethod
+    def _format_status(state: SandboxState) -> str:
+        config = Config(workflow_type="document", document_case_kind="pdf")
+        return "\n".join(ReportFormatter(config, {state.sandbox_id: state}).format_sandbox_status_section())
+
+    def test_normal_cleanup_is_not_reported_as_runtime_offline(self):
+        state = SandboxState(sandbox_id=1, workflow_type="document")
+        state.creation_metrics.status = SandboxStatus.PORT_READY
+        state.is_alive = False
+        state.stopped_by_cleanup = True
+
+        report = self._format_status(state)
+
+        assert "Offline (runtime):   0" in report
+        assert "Offline IDs:" not in report
+
+    def test_real_runtime_stop_is_still_reported_offline(self):
+        state = SandboxState(sandbox_id=7, workflow_type="document")
+        state.creation_metrics.status = SandboxStatus.PORT_READY
+        state.is_alive = False
+
+        report = self._format_status(state)
+
+        assert "Offline (runtime):   1" in report
+        assert "Offline IDs:         [7]" in report
+
+
 class TestStatsCollectorRoundComparison:
     """Tests for round comparison latency calculation"""
 

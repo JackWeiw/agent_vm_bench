@@ -189,7 +189,9 @@ class ReportFormatter:
         port_failed_states = [
             s for s in self.sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_FAILED
         ]
-        offline_states = [s for s in self.sandbox_states.values() if not s.is_alive]
+        offline_states = [
+            s for s in self.sandbox_states.values() if not s.is_alive and not s.stopped_by_cleanup
+        ]
 
         # Use workflow-specific labels
         if self.config.workflow_type in {"coding", "document"}:
