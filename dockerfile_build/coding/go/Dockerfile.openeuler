@@ -11,7 +11,7 @@
 #   - Toolchain: Go (the toolchain an agent touches); stdlib-only verify scripts.
 #   - Pure Go, ARM64 compatible
 #
-# Trace-faithful loop (checked against a recorded openclaw agent trajectory on
+# Trace-faithful loop (verified against a captured openclaw agent trajectory on
 # gohugoio/hugo): find -> read -> edit -> verify (write ad-hoc
 # /tmp/test_*.go + `go run`) -> git diff. The agent NEVER runs `go build ./...`
 # or `go test ./...`; verification is a transient `go run /tmp/test_alert.go`
@@ -71,8 +71,8 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 # fallback uses -L so it follows that redirect if aliyun is unreachable.
 #
 # openEuler package names: xz (not xz-utils), libgomp (not libgomp1),
-# iproute (not iproute2), gnupg2 (not gnupg). dnf has no minimal-install
-# flag; net-tools may be absent on openEuler — drop it if dnf
+# iproute (not iproute2), gnupg2 (not gnupg). --no-install-recommends has no
+# dnf equivalent; net-tools may be absent on openEuler — drop it if dnf
 # cannot resolve it.
 RUN dnf install -y curl xz vim libgomp iproute net-tools gnupg2 git && \
     cd /usr/local && \
