@@ -82,7 +82,7 @@ except ImportError:
             return MockSandbox()
 
 
-from .config import Config
+from .config import Config, numa_node_for_index
 from .schemas import SandboxState, SandboxStatus
 
 # Required ports to check for browser workflow
@@ -412,10 +412,13 @@ class SandboxManager:
         state.creation_metrics.submit_time = time.time()
 
         try:
-            # Build envs dict with NUMA binding if configured
+            # Build envs dict with NUMA binding if configured.
+            # numa_bind is a normalized list of nodes (or None); round-robin
+            # across them by sandbox index so sandboxes spread evenly.
+            numa_node = numa_node_for_index(state.sandbox_id - 1, self.config.numa_bind)
             envs = {}
-            if self.config.numa_bind is not None:
-                envs["FC_BIND"] = str(self.config.numa_bind)
+            if numa_node is not None:
+                envs["FC_BIND"] = str(numa_node)
 
             sbx = Sandbox.create(self.config.template, timeout=self.config.create_timeout, envs=envs if envs else None)
             # Preserve sandbox handle
