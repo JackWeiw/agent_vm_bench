@@ -1,0 +1,146 @@
+# Coding Benchmark Template (openEuler) - E2B Sandbox for AI Coding Agent Memory Stress Testing
+#
+# Environment: Pure coding benchmark (NO browser/Chromium, NO agent tools, NO
+# resident dev server, NO production build step)
+#
+# Project: vuejs/core (https://github.com/vuejs/core)
+#   - 54k+ GitHub stars, Vue.js core framework (TypeScript monorepo, pnpm)
+#   - Real repo from the swe_bench_multilingual evaluation dataset (5 instances)
+#   - Toolchain: rollup + esbuild + tsx (the devDependencies an agent touches)
+#   - Pure JS/TS, ARM64 compatible
+#
+# Trace-faithful loop (verified against a captured openclaw agent trajectory on
+# vuejs/core): find -> read -> edit -> verify (write ad-hoc /tmp/test_*.mjs +
+# `npx tsx`) -> git diff. The agent NEVER runs a production build or a resident
+# dev server; verification is a transient `npx tsx` process loading the TS
+# module graph (esbuild transpile + node execute). Memory pressure comes from
+# N concurrent sandboxes' transient verify peaks overlapping.
+#
+# No build-time `node scripts/build.js` and no `node_modules/.bin` PATH patch:
+# the runtime verify uses only `npx` (symlinked at /usr/local/bin/npx), which
+# resolves tsx from node_modules/.bin internally. This removes the
+# `spawn rollup ENOENT` failure class entirely.
+#
+# Prerequisite (Step 0 in README): the openEuler base tar is NOT on a pull-able
+# registry. Load it before building:
+#   wget https://repo.openeuler.org/openEuler-24.03-LTS-SP3/docker_img/aarch64/openEuler-docker.aarch64.tar.xz
+#   xz -d openEuler-docker.aarch64.tar.xz
+#   docker load -i openEuler-docker.aarch64.tar   # -> openeuler-24.03-lts-sp3:latest
+#
+# Build:  docker build -t openeuler-coding-bench:24.03-lts-sp3-linuxarm64 -f Dockerfile.openeuler .
+# Push:   OS=openeuler HARBOR_IP=X bash push_to_harbor.sh
+# Template: python3 ../build_e2b.py --server-ip X --harbor-ip X \
+#     --alias openeuler-coding-v1 --image e2b-orchestration/openeuler-coding-bench:custom
+FROM openeuler-24.03-lts-sp3:latest
+
+# Configure proxy (empty by default, set via --build-arg if needed)
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ENV http_proxy=${HTTP_PROXY}
+ENV https_proxy=${HTTPS_PROXY}
+ENV HTTP_PROXY=${HTTP_PROXY}
+ENV HTTPS_PROXY=${HTTPS_PROXY}
+
+# Install Node24 and system packages
+#
+# The corp proxy presents a self-signed cert ("Huawei Web Secure Internet Gateway
+# CA"), so every TLS fetch must bypass verification. ca-certificates is NOT
+# installed - it is useless here (the proxy MITMs with its own root the system
+# store won't trust). curl -k skips TLS verify for each fetch.
+#
+# The node tarball is fetched from mirrors.aliyun.com/nodejs-release - it serves
+# the .tar.xz directly (no 302 redirect, no auth). nodejs.org and npmmirror both
+# 302-redirect, the hop that crawled at <6KB/s through the proxy and, with
+# wget's default no-follow, produced a truncated/corrupt body that broke
+# `tar -xvf` with "TAR_BAD_ARCHIVE: Unrecognized archive format" + checksum
+# failures. curl -kL follows the redirect if aliyun is unreachable. Same fix the
+# Go image (coding/go/Dockerfile.openeuler) uses for its Go toolchain tarball.
+#
+# openEuler package names: xz (not xz-utils), libgomp (not libgomp1),
+# iproute (not iproute2), gnupg2 (not gnupg). net-tools may be absent on
+# openEuler — drop it from the list below if dnf cannot resolve it.
+RUN dnf install -y curl xz vim libgomp iproute net-tools gnupg2 git && \
+    cd /usr/local && \
+    curl -kL --connect-timeout 30 --retry 3 --retry-delay 3 \
+        -o node-v24.14.0-linux-arm64.tar.xz \
+        https://mirrors.aliyun.com/nodejs-release/v24.14.0/node-v24.14.0-linux-arm64.tar.xz && \
+    tar -xvf node-v24.14.0-linux-arm64.tar.xz && \
+    mv node-v24.14.0-linux-arm64 node24 && \
+    rm -rf node-v24.14.0-linux-arm64.tar.xz && \
+    ln -sf /usr/local/node24/bin/node /usr/local/bin/node && \
+    ln -sf /usr/local/node24/bin/npm /usr/local/bin/npm && \
+    ln -sf /usr/local/node24/bin/npx /usr/local/bin/npx && \
+    # Install pnpm@11.13.0 (matches vuejs/core packageManager) via its mirrored
+    # tarball. corepack's metadata fetch against npmmirror fails (pnpm uses a
+    # special publish mechanism; npmjs has no tarball, npmmirror mirrors one at
+    # /pnpm/-/pnpm-<ver>.tgz). curl the tarball + npm i -g sidesteps corepack.
+    # The npmmirror tarball URL is a 302 redirect - curl -kL follows it (wget's
+    # default no-follow grabbed the 302 HTML body and broke the install).
+    npm config set strict-ssl false && \
+    npm config set registry https://registry.npmmirror.com && \
+    curl -kL --connect-timeout 30 --retry 3 --retry-delay 3 \
+        -o /tmp/pnpm.tgz \
+        https://registry.npmmirror.com/pnpm/-/pnpm-11.13.0.tgz && \
+    npm install -g /tmp/pnpm.tgz --registry=https://registry.npmmirror.com --strict-ssl=false && \
+    rm -f /tmp/pnpm.tgz && \
+    ln -sf /usr/local/node24/bin/pnpm /usr/local/bin/pnpm && \
+    ln -sf /usr/local/node24/bin/pnpx /usr/local/bin/pnpx && \
+    # Verify the installed pnpm is the version we expect (11.13.0). Build fails
+    # fast if a stale shim/PATH shadowing resolves a different version.
+    pnpm --version | grep -qx "11.13.0" || (echo "pnpm version mismatch, got: $(pnpm --version)" && exit 1) && \
+    git config --global http.sslVerify false && \
+    dnf clean all && rm -rf /var/cache/dnf /var/tmp/* /tmp/*
+
+# --- Coding benchmark project: vuejs/core (real swe_bench_multilingual repo) ---
+# Clone + install dependencies. No production build, no vite playground: the
+# runtime verify step uses `npx tsx` against the raw .ts source (exactly what
+# the captured openclaw agent did), which resolves tsx/esbuild from
+# node_modules/.bin internally. tsx/rollup/esbuild devDeps are the real surface.
+# PUPPETEER_SKIP_DOWNLOAD=1 skips puppeteer's browser download (not needed).
+RUN cd /opt && \
+    git clone --depth 1 https://github.com/vuejs/core.git coding-bench && \
+    cd coding-bench && \
+    # pnpm install against the mirror (no build, no PATH patch needed at runtime).
+    # --ignore-scripts skips vuejs/core's postinstall (simple-git-hooks sets
+    # pre-commit/commit-msg hooks we never use in a bench image); that postinstall
+    # is build-time noise, not part of the runtime verify surface.
+    pnpm config set registry https://registry.npmmirror.com && \
+    pnpm config set strict-ssl false && \
+    PUPPETEER_SKIP_DOWNLOAD=1 pnpm install --frozen-lockfile=false --ignore-scripts && \
+    # Install tsx@4.23.1 GLOBALLY so `npx tsx` resolves locally at sandbox runtime.
+    #
+    # tsx is NOT a vuejs/core dependency (not in root or any workspace package.json),
+    # so pnpm install never installs it. The real openclaw agent's `npx tsx /tmp/test.mjs`
+    # worked because npx prompted "Need to install tsx@4.23.1" and installed it over the
+    # network on first use (the trace contains "tsx@4.23.1"). Our sandbox has NO proxy,
+    # so that same prompt hangs until the 150s verify timeout.
+    #
+    # Pre-installing tsx globally reproduces the END STATE the agent reaches after its
+    # first npx-install: `npx tsx` resolves locally, no network. The verify behavior is
+    # identical (npx tsx running a transient .mjs). Version pinned to 4.23.1 to match
+    # the trace exactly.
+    npm config set strict-ssl false && \
+    npm config set registry https://registry.npmmirror.com && \
+    npm install -g tsx@4.23.1 --registry=https://registry.npmmirror.com --strict-ssl=false && \
+    ln -sf "$(npm root -g)/tsx/dist/cli.mjs" /usr/local/bin/tsx 2>/dev/null || true && \
+    # Offline-verify npx resolves tsx locally (no network). The earlier
+    # `npx tsx --version` was a FALSE POSITIVE: it ran during build WITH the proxy, so
+    # npx's "install tsx?" prompt succeeded over the network and hid that no local tsx
+    # existed. --no-install forces local resolution; build fails here if npx would go
+    # online, surfacing the problem at build time not sandbox runtime 150s in.
+    cd /opt/coding-bench && npx --no-install tsx --version \
+        || (echo "ERROR: npx tsx does not resolve locally (offline); runtime sandbox would hang" && exit 1) && \
+    echo "Install verification: SUCCESS (npx tsx resolves locally, no network needed)"
+
+# Copy the manual testing helper script
+COPY bench_helper.sh /opt/coding-bench/bench_helper.sh
+RUN chmod +x /opt/coding-bench/bench_helper.sh
+
+# Unset proxy environment variables after build
+ENV http_proxy= \
+    https_proxy= \
+    HTTP_PROXY= \
+    HTTPS_PROXY=
+
+# Default command: keep container running for sandbox access
+CMD ["sleep", "infinity"]
