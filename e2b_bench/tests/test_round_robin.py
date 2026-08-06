@@ -211,13 +211,14 @@ class TestExceptionCleanup(unittest.TestCase):
                 round_robin_manager = Mock()
                 round_robin_manager.run.side_effect = RuntimeError("round-robin failed")
 
-                with patch("e2b_bench.bench.SandboxManager", return_value=sandbox_manager) as manager_class, patch(
-                    "e2b_bench.bench.TaskManager"
-                ), patch("e2b_bench.bench.StatsCollector", return_value=stats_collector), patch(
-                    "e2b_bench.bench.RoundRobinTaskManager", return_value=round_robin_manager
+                with (
+                    patch("e2b_bench.bench.SandboxManager", return_value=sandbox_manager) as manager_class,
+                    patch("e2b_bench.bench.TaskManager"),
+                    patch("e2b_bench.bench.StatsCollector", return_value=stats_collector),
+                    patch("e2b_bench.bench.RoundRobinTaskManager", return_value=round_robin_manager),
+                    self.assertRaisesRegex(RuntimeError, "round-robin failed"),
                 ):
-                    with self.assertRaisesRegex(RuntimeError, "round-robin failed"):
-                        run_benchmark(config)
+                    run_benchmark(config)
 
                 stop_event = manager_class.call_args.args[1]
                 self.assertTrue(stop_event.is_set())

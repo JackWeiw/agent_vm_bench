@@ -19,7 +19,6 @@ from .schemas import (
 )
 
 
-
 DOCUMENT_SCENE_LAYOUTS: Dict[str, Dict[str, str]] = {
     "pdf": {
         "seed_dir": "/opt/document-bench/pdf",
@@ -97,7 +96,6 @@ def numa_node_for_index(index: int, nodes: Optional[Union[int, List[int]]]) -> O
         return nodes if nodes >= 0 else None
 
     return nodes[index % len(nodes)]
-
 
 
 @dataclass(frozen=True)

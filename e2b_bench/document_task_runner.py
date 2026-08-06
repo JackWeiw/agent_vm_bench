@@ -86,9 +86,7 @@ def load_scene_recipe(expected_case_kind: str) -> Dict[str, Any]:
         raise SceneRecipeError(f"success_path references unknown phases: {missing}")
     expected_order = get_step_order("document", expected_case_kind)
     if phase_ids != expected_order:
-        raise SceneRecipeError(
-            f"recipe phase order is invalid: expected {expected_order}, got {phase_ids}"
-        )
+        raise SceneRecipeError(f"recipe phase order is invalid: expected {expected_order}, got {phase_ids}")
     if success_path != expected_order:
         raise SceneRecipeError("recipe workflow.success_path must contain every phase in canonical order")
     if "conditional_path" in recipe.get("workflow", {}):
