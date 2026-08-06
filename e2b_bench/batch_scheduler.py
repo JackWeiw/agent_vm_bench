@@ -7,6 +7,7 @@ Supports offline mode: generate summary from existing test results.
 """
 
 import argparse
+import logging
 import os
 import re
 import threading
@@ -26,6 +27,9 @@ from .schemas import BatchTask, SandboxState, SandboxStatus, TaskGroup
 from .stats_collector import StatsCollector
 from .task_generator import TaskGenerator, load_matrix_config
 from .task_runner import TaskManager
+from .utils import setup_logging
+
+logger = logging.getLogger(__name__)
 
 
 class GroupRunner:
@@ -81,10 +85,10 @@ class GroupRunner:
         self._log(f"  Tasks: {len(self.group.tasks)}")
         self._log(f"  Group result dir: {self.group_result_dir}")
 
-        print(f"\n{'=' * 60}")
-        print(f"Group: {self.group.group_id}")
-        print(f"{'=' * 60}")
-        print(f"  Result directory: {self.group_result_dir}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"Group: {self.group.group_id}")
+        logger.info(f"{'=' * 60}")
+        logger.info(f"  Result directory: {self.group_result_dir}")
 
         try:
             # 1. Create sandboxes
@@ -97,7 +101,7 @@ class GroupRunner:
                 preflight_document(group_config)
             self.sandbox_manager = SandboxManager(group_config, self.stop_event)
 
-            print(f"\n[Phase 1] Creating {self.group.total_count} sandboxes...")
+            logger.info(f"\n[Phase 1] Creating {self.group.total_count} sandboxes...")
             self.sandbox_states = self.sandbox_manager.create_all()
 
             ready_count = sum(
@@ -122,7 +126,7 @@ class GroupRunner:
 
             # 3. Warmup (shared, once — browser needs warmup_urls, coding always warms up for dev server)
             if self.config.warmup_urls or self.config.workflow_type in {"coding", "document"}:
-                print("\n[Phase 2] Running warmup...")
+                logger.info("\n[Phase 2] Running warmup...")
                 task_manager = TaskManager(self._get_group_config(), self.sandbox_states, self.stop_event)
                 task_manager.start_warmup()
                 _completed, failed = task_manager.wait_warmup()
@@ -132,7 +136,7 @@ class GroupRunner:
 
             # 4. Run each task with different benchmark_percent
             for idx, task in enumerate(self.group.tasks):
-                print(f"\n[Phase 3.{idx + 1}] Task: {task.task_id}")
+                logger.info(f"\n[Phase 3.{idx + 1}] Task: {task.task_id}")
                 self._log(f"\n  Task {idx + 1}/{len(self.group.tasks)}: {task.task_id}")
                 self._log(f"    benchmark_percent: {task.benchmark_percent}")
 
@@ -378,7 +382,7 @@ class GroupRunner:
 
     def _cleanup(self):
         """Cleanup: stop smap_tool, kill sandboxes"""
-        print(f"\n[Cleanup] Group: {self.group.group_id}")
+        logger.info(f"\n[Cleanup] Group: {self.group.group_id}")
 
         if self.smap_tool:
             self.smap_tool.stop()
@@ -444,18 +448,18 @@ class BatchScheduler:
         Returns:
             Path to summary report Excel file
         """
-        print("\n" + "=" * 80)
-        print("E2B Batch Test Scheduler")
-        print("=" * 80)
+        logger.info("\n" + "=" * 80)
+        logger.info("E2B Batch Test Scheduler")
+        logger.info("=" * 80)
 
         # Print configuration
-        print(f"\nMatrix: {self.matrix_path}")
-        print(f"Template: {self.template_path}")
-        print(f"Output: {self.output_dir}")
+        logger.info(f"\nMatrix: {self.matrix_path}")
+        logger.info(f"Template: {self.template_path}")
+        logger.info(f"Output: {self.output_dir}")
 
         groups = self.task_generator.generate_groups()
-        print(f"\nGroups: {len(groups)}")
-        print(f"Total tasks: {self.task_generator.get_total_task_count()}")
+        logger.info(f"\nGroups: {len(groups)}")
+        logger.info(f"Total tasks: {self.task_generator.get_total_task_count()}")
 
         # Setup E2B environment
         self.template_config.setup_e2b_env()
@@ -464,9 +468,9 @@ class BatchScheduler:
         all_results: List[BatchTask] = []
 
         for idx, group in enumerate(groups):
-            print(f"\n{'=' * 80}")
-            print(f"Group {idx + 1}/{len(groups)}: {group.group_id}")
-            print(f"{'=' * 80}")
+            logger.info(f"\n{'=' * 80}")
+            logger.info(f"Group {idx + 1}/{len(groups)}: {group.group_id}")
+            logger.info(f"{'=' * 80}")
 
             runner = GroupRunner(group, self.template_config, self.batch_log_file)
             results = runner.run()
@@ -475,13 +479,13 @@ class BatchScheduler:
             # Check for failures
             failed = [t for t in results if not t.success]
             if failed and (not continue_on_failure or self.template_config.workflow_type == "document"):
-                print("\nGroup failed, stopping (continue_on_failure=False)")
+                logger.error("\nGroup failed, stopping (continue_on_failure=False)")
                 break
 
         # Extract metrics
-        print(f"\n{'=' * 80}")
-        print("Extracting metrics...")
-        print(f"{'=' * 80}")
+        logger.info(f"\n{'=' * 80}")
+        logger.info("Extracting metrics...")
+        logger.info(f"{'=' * 80}")
 
         metrics_data = []
         for task in all_results:
@@ -520,9 +524,9 @@ class BatchScheduler:
             metrics_data.append(metrics)
 
         # Aggregate results
-        print(f"\n{'=' * 80}")
-        print("Generating summary report...")
-        print(f"{'=' * 80}")
+        logger.info(f"\n{'=' * 80}")
+        logger.info("Generating summary report...")
+        logger.info(f"{'=' * 80}")
 
         report_path = self.report_aggregator.aggregate(metrics_data)
 
@@ -530,13 +534,13 @@ class BatchScheduler:
         success_count = sum(1 for t in all_results if t.success)
         failed_count = len(all_results) - success_count
 
-        print(f"\n{'=' * 80}")
-        print("Batch Test Complete")
-        print(f"{'=' * 80}")
-        print(f"  Total tasks: {len(all_results)}")
-        print(f"  Successful: {success_count}")
-        print(f"  Failed: {failed_count}")
-        print(f"  Summary report: {report_path}")
+        logger.info(f"\n{'=' * 80}")
+        logger.info("Batch Test Complete")
+        logger.info(f"{'=' * 80}")
+        logger.info(f"  Total tasks: {len(all_results)}")
+        logger.info(f"  Successful: {success_count}")
+        logger.info(f"  Failed: {failed_count}")
+        logger.info(f"  Summary report: {report_path}")
 
         return report_path
 
@@ -560,7 +564,7 @@ def scan_existing_results(result_base_dir: str) -> List[Dict[str, Any]]:
     tasks = []
 
     if not os.path.exists(result_base_dir):
-        print(f"ERROR: Result directory not found: {result_base_dir}")
+        logger.error(f"Result directory not found: {result_base_dir}")
         return tasks
 
     # Pattern for group directory: tc{n}_ratio{ratio}_timestamp
@@ -633,10 +637,10 @@ def _extract_task_info(
     success = has_analysis or has_report
 
     if not success:
-        print(f"  Skipping incomplete: {task_id}")
+        logger.warning(f"  Skipping incomplete: {task_id}")
         return None
 
-    print(f"  Found: {task_id} (tc={total_count}, ratio={ratio}, bp={benchmark_percent})")
+    logger.info(f"  Found: {task_id} (tc={total_count}, ratio={ratio}, bp={benchmark_percent})")
 
     workflow_type = "browser"
     if config_file:
@@ -670,24 +674,24 @@ def offline_summary(result_base_dir: str, output_path: str = None) -> str:
     Returns:
         Path to generated summary report
     """
-    print("=" * 60)
-    print("E2B Offline Batch Summary Generator")
-    print("=" * 60)
-    print(f"Scanning result directory: {result_base_dir}")
+    logger.info("=" * 60)
+    logger.info("E2B Offline Batch Summary Generator")
+    logger.info("=" * 60)
+    logger.info(f"Scanning result directory: {result_base_dir}")
 
     # Scan existing results
     task_infos = scan_existing_results(result_base_dir)
 
     if not task_infos:
-        print("ERROR: No valid test result directories found")
+        logger.error("No valid test result directories found")
         return ""
 
-    print(f"\nFound {len(task_infos)} test results")
+    logger.info(f"\nFound {len(task_infos)} test results")
 
     # Extract metrics
-    print("\n" + "=" * 60)
-    print("Extracting metrics from result files...")
-    print("=" * 60)
+    logger.info("\n" + "=" * 60)
+    logger.info("Extracting metrics from result files...")
+    logger.info("=" * 60)
 
     metrics_extractor = MetricsExtractor()
     metrics_data = []
@@ -726,7 +730,7 @@ def offline_summary(result_base_dir: str, output_path: str = None) -> str:
             metrics.update(vm_metrics)
 
         metrics_data.append(metrics)
-        print(f"  Extracted metrics from: {task_info['task_id']}")
+        logger.info(f"  Extracted metrics from: {task_info['task_id']}")
 
     # Generate output path if not specified
     if output_path is None:
@@ -734,20 +738,20 @@ def offline_summary(result_base_dir: str, output_path: str = None) -> str:
         output_path = os.path.join(result_base_dir, f"e2b_batch_summary_offline_{timestamp}.xlsx")
 
     # Generate summary report
-    print("\nGenerating summary report...")
+    logger.info("\nGenerating summary report...")
     report_aggregator = ReportAggregator(result_base_dir)
     report_path = report_aggregator.aggregate(metrics_data, os.path.basename(output_path))
 
     # Print summary
     success_count = sum(1 for t in task_infos if t["success"])
-    print("\n" + "=" * 60)
-    print("Offline Summary Complete")
-    print("=" * 60)
-    print(f"Total results processed: {len(task_infos)}")
-    print(f"Successful: {success_count}")
-    print(f"Incomplete: {len(task_infos) - success_count}")
-    print(f"Summary report: {report_path}")
-    print("=" * 60)
+    logger.info("\n" + "=" * 60)
+    logger.info("Offline Summary Complete")
+    logger.info("=" * 60)
+    logger.info(f"Total results processed: {len(task_infos)}")
+    logger.info(f"Successful: {success_count}")
+    logger.info(f"Incomplete: {len(task_infos) - success_count}")
+    logger.info(f"Summary report: {report_path}")
+    logger.info("=" * 60)
 
     return report_path
 
@@ -776,29 +780,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main():
     """CLI entry point"""
+    setup_logging()
     parser = build_arg_parser()
     args = parser.parse_args()
 
     # Offline mode: generate summary from existing results
     if args.offline:
         if not args.result_dir:
-            print("ERROR: --result-dir is required for offline mode")
+            logger.error("--result-dir is required for offline mode")
             return
 
         report_path = offline_summary(args.result_dir, args.output)
         if report_path:
-            print(f"\nDone. Report: {report_path}")
+            logger.info(f"\nDone. Report: {report_path}")
         return
 
     # Online mode: run batch tests
     if not args.matrix:
-        print("ERROR: --matrix is required for online mode")
+        logger.error("--matrix is required for online mode")
         return
 
     scheduler = BatchScheduler(matrix_path=args.matrix)
     report_path = scheduler.run(continue_on_failure=args.continue_on_failure)
 
-    print(f"\nDone. Report: {report_path}")
+    logger.info(f"\nDone. Report: {report_path}")
 
 
 if __name__ == "__main__":

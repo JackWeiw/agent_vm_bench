@@ -6,9 +6,12 @@ Supports all sheet types: Summary, DevKit_TopDown, DevKit_Memory,
 NUMA_Bandwidth, KSys, UBWatch_Latency, UBWatch_Bandwidth, SMAPBW, Getfre.
 """
 
+import logging
 import os
 import re
 from typing import Any, Dict
+
+logger = logging.getLogger(__name__)
 
 
 class MetricsExtractor:
@@ -28,7 +31,7 @@ class MetricsExtractor:
             Dict containing all extracted metrics with prefixed keys
         """
         if not os.path.exists(analysis_file):
-            print(f"[MetricsExtractor] File not found: {analysis_file}")
+            logger.warning(f"[MetricsExtractor] File not found: {analysis_file}")
             return {}
 
         metrics = {}
@@ -50,10 +53,10 @@ class MetricsExtractor:
             metrics.update(self._extract_smapbw_cycles(xls))
             metrics.update(self._extract_getfre(xls))
 
-            print(f"[MetricsExtractor] Extracted {len(metrics)} metrics from {analysis_file}")
+            logger.info(f"[MetricsExtractor] Extracted {len(metrics)} metrics from {analysis_file}")
 
         except Exception as e:
-            print(f"[MetricsExtractor] Error extracting metrics: {e}")
+            logger.error(f"[MetricsExtractor] Error extracting metrics: {e}")
 
         return metrics
 
@@ -385,7 +388,7 @@ class MetricsExtractor:
                 metrics[f"Coding_{step_name}_P99_ms"] = p99_ms
 
         except Exception as e:
-            print(f"[MetricsExtractor] Error extracting coding metrics: {e}")
+            logger.error(f"[MetricsExtractor] Error extracting coding metrics: {e}")
 
         return metrics
 
@@ -444,7 +447,7 @@ class MetricsExtractor:
                 metrics[f"Browser_{step_name}_P99_ms"] = p99_ms
 
         except Exception as e:
-            print(f"[MetricsExtractor] Error extracting browser metrics: {e}")
+            logger.error(f"[MetricsExtractor] Error extracting browser metrics: {e}")
 
         return metrics
 
@@ -491,7 +494,7 @@ class MetricsExtractor:
                     metrics[f"Document_{step}_P95_ms"] = float(match.group(5))
                     metrics[f"Document_{step}_P99_ms"] = float(match.group(6))
         except Exception as exc:
-            print(f"[MetricsExtractor] Error extracting document metrics: {exc}")
+            logger.error(f"[MetricsExtractor] Error extracting document metrics: {exc}")
         return metrics
 
     def _extract_section(self, content: str, section_header: str) -> str:

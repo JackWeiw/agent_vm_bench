@@ -19,6 +19,7 @@ Browser workflow (5 steps = 1 query):
 """
 
 import argparse
+import logging
 import threading
 import time
 
@@ -27,6 +28,9 @@ from .container_manager import ContainerManager
 from .schemas import ContainerStatus
 from .stats_collector import StatsCollector
 from .task_runner import TaskManager
+from .utils import setup_logging
+
+logger = logging.getLogger(__name__)
 
 
 def run_benchmark(config: Config) -> dict:
@@ -38,53 +42,55 @@ def run_benchmark(config: Config) -> dict:
     Returns:
         {'report': str, 'filepath': str}
     """
-    print("=" * 80)
-    print("Docker Container Bench - Browser Automation Performance Test")
-    print("=" * 80)
-    print(f"  Image:    {config.docker_image}")
-    print(f"  Spec:     {config.cpu_limit}vCPU / {config.memory_limit}")
+    logger.info("=" * 80)
+    logger.info("Docker Container Bench - Browser Automation Performance Test")
+    logger.info("=" * 80)
+    logger.info(f"  Image:    {config.docker_image}")
+    logger.info(f"  Spec:     {config.cpu_limit}vCPU / {config.memory_limit}")
 
     # Mode display
     if config.detect_existing:
-        print("  Mode:     Detect existing containers")
+        logger.info("  Mode:     Detect existing containers")
     elif config.create_only:
-        print("  Mode:     Create-only (Phase 0)")
+        logger.info("  Mode:     Create-only (Phase 0)")
     else:
-        print("  Mode:     Full workflow")
+        logger.info("  Mode:     Full workflow")
 
-    print(f"  Total:    {config.total_count} containers")
+    logger.info(f"  Total:    {config.total_count} containers")
 
     # Batch config display
     if config.create_batch_size:
-        print(
+        logger.info(
             f"  Create Batch: {config.create_batch_count} batches x {config.create_batch_size} (interval {config.create_batch_interval}s)"
         )
     else:
-        print("  Create Batch: Full concurrent creation")
+        logger.info("  Create Batch: Full concurrent creation")
 
     if not config.create_only:
         if config.task_batch_size:
-            print(
+            logger.info(
                 f"  Task Batch:   {config.task_batch_count} batches x {config.task_batch_size} (interval {config.task_batch_interval}s)"
             )
         else:
-            print("  Task Batch:   Full concurrent start")
+            logger.info("  Task Batch:   Full concurrent start")
 
-    print(f"  Duration: {config.test_duration}s")
+    logger.info(f"  Duration: {config.test_duration}s")
 
     # Benchmark percent display
     if config.benchmark_percent < 1.0:
         benchmark_count = config.benchmark_count
-        print(f"  Benchmark: {benchmark_count}/{config.total_count} containers ({config.benchmark_percent * 100:.0f}%)")
+        logger.info(
+            f"  Benchmark: {benchmark_count}/{config.total_count} containers ({config.benchmark_percent * 100:.0f}%)"
+        )
 
-    print("\n  Browser Workflow (5 steps = 1 query):")
-    print("    1. open [URL] --label [NAME]")
-    print("    2. focus [TAB_ID]")
-    print("    3. snapshot --limit 200")
-    print("    4. click e218 (retry)")
-    print("    5. screenshot")
+    logger.info("\n  Browser Workflow (5 steps = 1 query):")
+    logger.info("    1. open [URL] --label [NAME]")
+    logger.info("    2. focus [TAB_ID]")
+    logger.info("    3. snapshot --limit 200")
+    logger.info("    4. click e218 (retry)")
+    logger.info("    5. screenshot")
 
-    print("=" * 80)
+    logger.info("=" * 80)
 
     # Stop signal
     stop_event = threading.Event()
@@ -93,29 +99,29 @@ def run_benchmark(config: Config) -> dict:
     container_manager = ContainerManager(config, stop_event)
 
     if config.detect_existing:
-        print("\n[Phase 1] Detecting existing containers...")
+        logger.info("\n[Phase 1] Detecting existing containers...")
         creation_start_time = time.time()
         container_states = container_manager.detect_existing()
         creation_end_time = time.time()
     else:
-        print("\n[Phase 1] Creating containers...")
+        logger.info("\n[Phase 1] Creating containers...")
         creation_start_time = time.time()
         container_states = container_manager.create_all()
         creation_end_time = time.time()
 
     ready_count = sum(1 for s in container_states.values() if s.creation_metrics.status == ContainerStatus.PORT_READY)
     if ready_count == 0:
-        print("No containers ready for testing, exiting.")
+        logger.info("No containers ready for testing, exiting.")
         return {}
 
-    print(f"\nContainers ready: {ready_count}")
+    logger.info(f"\nContainers ready: {ready_count}")
 
     # Create-only mode: exit after creation with detailed timing report
     if config.create_only:
-        print("\n[Phase 0 Complete] Create-only mode finished.")
-        print(f"  Created: {len(container_states)} containers")
-        print(f"  Ports Ready: {ready_count}")
-        print("  Containers left running for later use.")
+        logger.info("\n[Phase 0 Complete] Create-only mode finished.")
+        logger.info(f"  Created: {len(container_states)} containers")
+        logger.info(f"  Ports Ready: {ready_count}")
+        logger.info("  Containers left running for later use.")
 
         # Generate creation timing report
         from .utils import calc_percentiles
@@ -127,28 +133,28 @@ def run_benchmark(config: Config) -> dict:
             s for s in container_states.values() if s.creation_metrics.status == ContainerStatus.PORT_FAILED
         ]
 
-        print("\n" + "=" * 70)
-        print("Creation Timing Report")
-        print("=" * 70)
+        logger.info("\n" + "=" * 70)
+        logger.info("Creation Timing Report")
+        logger.info("=" * 70)
 
         # Total elapsed time for all containers
         total_elapsed = creation_end_time - creation_start_time
-        print("\n[Overall Creation Time]")
-        print(f"  Total Wall Clock Time: {total_elapsed:.1f}s")
-        print("  (From first container creation start to last container port ready)")
-        print(f"  Throughput: {len(container_states) / total_elapsed:.2f} containers/sec")
+        logger.info("\n[Overall Creation Time]")
+        logger.info(f"  Total Wall Clock Time: {total_elapsed:.1f}s")
+        logger.info("  (From first container creation start to last container port ready)")
+        logger.info(f"  Throughput: {len(container_states) / total_elapsed:.2f} containers/sec")
 
-        print("\n[Container Status]")
-        print(
+        logger.info("\n[Container Status]")
+        logger.info(
             f"  Created (Docker):   {len([s for s in container_states.values() if s.creation_metrics.status not in (ContainerStatus.PENDING, ContainerStatus.CREATING)])} / {len(container_states)}"
         )
-        print(f"  Ports Ready:        {len(ready_states)} / {len(container_states)}")
-        print(f"  Create Failed:      {len(failed_states)}")
-        print(f"  Port Check Failed:  {len(port_failed_states)}")
+        logger.info(f"  Ports Ready:        {len(ready_states)} / {len(container_states)}")
+        logger.info(f"  Create Failed:      {len(failed_states)}")
+        logger.info(f"  Port Check Failed:  {len(port_failed_states)}")
         if failed_states:
-            print(f"  Create Failed IDs:  {[s.container_id for s in failed_states[:10]]}")
+            logger.info(f"  Create Failed IDs:  {[s.container_id for s in failed_states[:10]]}")
         if port_failed_states:
-            print(f"  Port Failed IDs:    {[s.container_id for s in port_failed_states[:10]]}")
+            logger.info(f"  Port Failed IDs:    {[s.container_id for s in port_failed_states[:10]]}")
 
         # Container creation performance statistics
         create_times = [
@@ -160,14 +166,14 @@ def run_benchmark(config: Config) -> dict:
         ]
         if create_times:
             stats = calc_percentiles(create_times)
-            print("\n[Container Creation Performance]")
-            print("  (docker run elapsed time, excluding port wait)")
-            print(f"  Min:  {stats['min']:.1f}s")
-            print(f"  Max:  {stats['max']:.1f}s")
-            print(f"  Avg:  {stats['avg']:.1f}s")
-            print(f"  P50:  {stats['p50']:.1f}s")
-            print(f"  P95:  {stats['p95']:.1f}s")
-            print(f"  P99:  {stats['p99']:.1f}s")
+            logger.info("\n[Container Creation Performance]")
+            logger.info("  (docker run elapsed time, excluding port wait)")
+            logger.info(f"  Min:  {stats['min']:.1f}s")
+            logger.info(f"  Max:  {stats['max']:.1f}s")
+            logger.info(f"  Avg:  {stats['avg']:.1f}s")
+            logger.info(f"  P50:  {stats['p50']:.1f}s")
+            logger.info(f"  P95:  {stats['p95']:.1f}s")
+            logger.info(f"  P99:  {stats['p99']:.1f}s")
 
         # Port wait performance statistics
         port_wait_times = [
@@ -175,33 +181,33 @@ def run_benchmark(config: Config) -> dict:
         ]
         if port_wait_times:
             stats = calc_percentiles(port_wait_times)
-            print("\n[Port Check Wait Performance]")
-            print(f"  (Waiting for {config.required_ports} ports)")
-            print(f"  Min:  {stats['min']:.1f}s")
-            print(f"  Max:  {stats['max']:.1f}s")
-            print(f"  Avg:  {stats['avg']:.1f}s")
-            print(f"  P50:  {stats['p50']:.1f}s")
-            print(f"  P95:  {stats['p95']:.1f}s")
-            print(f"  P99:  {stats['p99']:.1f}s")
+            logger.info("\n[Port Check Wait Performance]")
+            logger.info(f"  (Waiting for {config.required_ports} ports)")
+            logger.info(f"  Min:  {stats['min']:.1f}s")
+            logger.info(f"  Max:  {stats['max']:.1f}s")
+            logger.info(f"  Avg:  {stats['avg']:.1f}s")
+            logger.info(f"  P50:  {stats['p50']:.1f}s")
+            logger.info(f"  P95:  {stats['p95']:.1f}s")
+            logger.info(f"  P99:  {stats['p99']:.1f}s")
 
         # Total startup time (create + port_wait)
         total_times = [s.creation_metrics.total_elapsed for s in ready_states if s.creation_metrics.total_elapsed > 0]
         if total_times:
             stats = calc_percentiles(total_times)
-            print("\n[Total Startup Performance]")
-            print("  (Container creation + port wait)")
-            print(f"  Min:  {stats['min']:.1f}s")
-            print(f"  Max:  {stats['max']:.1f}s")
-            print(f"  Avg:  {stats['avg']:.1f}s")
-            print(f"  P50:  {stats['p50']:.1f}s")
-            print(f"  P95:  {stats['p95']:.1f}s")
-            print(f"  P99:  {stats['p99']:.1f}s")
+            logger.info("\n[Total Startup Performance]")
+            logger.info("  (Container creation + port wait)")
+            logger.info(f"  Min:  {stats['min']:.1f}s")
+            logger.info(f"  Max:  {stats['max']:.1f}s")
+            logger.info(f"  Avg:  {stats['avg']:.1f}s")
+            logger.info(f"  P50:  {stats['p50']:.1f}s")
+            logger.info(f"  P95:  {stats['p95']:.1f}s")
+            logger.info(f"  P99:  {stats['p99']:.1f}s")
 
-        print("\n" + "=" * 70)
+        logger.info("\n" + "=" * 70)
         return {"report": f"Create-only: {ready_count}/{len(container_states)} containers ready", "filepath": None}
 
     # 2. Start statistics collection
-    print("\n[Phase 2] Starting stats collector...")
+    logger.info("\n[Phase 2] Starting stats collector...")
     stats_collector = StatsCollector(config, container_states)
     stats_collector.start()
 
@@ -209,22 +215,22 @@ def run_benchmark(config: Config) -> dict:
     task_manager = TaskManager(config, container_states, stop_event)
     benchmark_count = max(1, int(ready_count * config.benchmark_percent))
     if config.benchmark_percent < 1.0:
-        print(
+        logger.info(
             f"\n[Phase 3] Starting browser tasks on {benchmark_count}/{ready_count} containers ({config.benchmark_percent * 100:.0f}%)..."
         )
     else:
-        print("\n[Phase 3] Starting browser tasks...")
+        logger.info("\n[Phase 3] Starting browser tasks...")
     task_manager.start_all()
 
     # 4. Run for specified duration
-    print(f"\n[Phase 4] Running for {config.test_duration} seconds...")
+    logger.info(f"\n[Phase 4] Running for {config.test_duration} seconds...")
     try:
         time.sleep(config.test_duration)
     except KeyboardInterrupt:
-        print("\nUser interrupt, stopping...")
+        logger.info("\nUser interrupt, stopping...")
 
     # 5. Stop all components
-    print("\n[Phase 5] Stopping...")
+    logger.info("\n[Phase 5] Stopping...")
     stop_event.set()
     task_manager.wait_all(timeout=5)
     stats_collector.stop()
@@ -233,16 +239,16 @@ def run_benchmark(config: Config) -> dict:
     if not config.detect_existing:
         container_manager.remove_all()
     else:
-        print("Containers left running (detect mode - not removing)")
+        logger.info("Containers left running (detect mode - not removing)")
 
     time.sleep(0.5)  # Allow daemon threads to complete output
 
     # 6. Generate and save report
     report = stats_collector.generate_report()
-    print("\n" + report)
+    logger.info("\n" + report)
 
     filepath = stats_collector.save_report(report)
-    print(f"\nReport saved to: {filepath}")
+    logger.info(f"\nReport saved to: {filepath}")
 
     return {"report": report, "filepath": filepath}
 
@@ -310,6 +316,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     """CLI entry point"""
+    setup_logging()
     parser = build_arg_parser()
     args = parser.parse_args()
 

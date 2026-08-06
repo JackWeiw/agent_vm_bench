@@ -5,10 +5,13 @@ Aggregates metrics from multiple batch test tasks into a single Excel report.
 Supports styled output with data source grouping and merged cells.
 """
 
+import logging
 import os
 import re
 from datetime import datetime
 from typing import Any, Dict, List
+
+logger = logging.getLogger(__name__)
 
 
 class ReportAggregator:
@@ -141,7 +144,7 @@ class ReportAggregator:
             Path to generated Excel file
         """
         if not metrics_data:
-            print("[ReportAggregator] No metrics data to aggregate")
+            logger.warning("[ReportAggregator] No metrics data to aggregate")
             return ""
 
         df = self._build_dataframe(metrics_data)
@@ -154,7 +157,7 @@ class ReportAggregator:
 
         self._export_excel(df, output_path)
 
-        print(f"[ReportAggregator] Report saved to: {output_path}")
+        logger.info(f"[ReportAggregator] Report saved to: {output_path}")
         return output_path
 
     def _build_dataframe(self, metrics_data: List[Dict[str, Any]]) -> "pd.DataFrame":
@@ -199,7 +202,7 @@ class ReportAggregator:
                 cols_to_drop.append(col)
 
         if cols_to_drop:
-            print(f"[ReportAggregator] Dropping empty columns (tools not enabled): {cols_to_drop}")
+            logger.info(f"[ReportAggregator] Dropping empty columns (tools not enabled): {cols_to_drop}")
             df = df.drop(columns=cols_to_drop)
 
         return df
@@ -269,9 +272,9 @@ class ReportAggregator:
         # Save the workbook
         wb.save(output_path)
 
-        print("  - Row 1: Data source headers (merged cells)")
-        print("  - Row 2: Column names")
-        print("  - Row 3+: Test data")
+        logger.info("  - Row 1: Data source headers (merged cells)")
+        logger.info("  - Row 2: Column names")
+        logger.info("  - Row 3+: Test data")
 
     def _build_column_sources(self, df: "pd.DataFrame") -> List[tuple]:
         """Build column source groups for merging

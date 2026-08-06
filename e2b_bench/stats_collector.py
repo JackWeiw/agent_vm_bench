@@ -5,6 +5,7 @@ Responsible for real-time snapshot collection, terminal output and final report 
 Includes detailed sandbox creation time, port wait time, browser task time statistics
 """
 
+import logging
 import os
 import statistics
 import threading
@@ -15,6 +16,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from .config import Config
 from .schemas import CODING_STEP_ORDER, BROWSER_STEP_ORDER, SandboxState, SandboxStatus, TestSnapshot, get_step_order
 from .utils import calc_p99, calc_percentiles, calc_tail_ratio, classify_tail_latency
+
+logger = logging.getLogger(__name__)
 
 # Error display order — selected based on workflow_type
 BROWSER_ERROR_DISPLAY = [
@@ -829,30 +832,30 @@ class StatsCollector:
         self._print_snapshot(snapshot)
 
     def _print_snapshot(self, snapshot: TestSnapshot) -> None:
-        """Print real-time snapshot"""
-        print(f"\n{'─' * 70}")
-        print(f"T+{snapshot.elapsed:6.1f}s  Status Snapshot")
-        print(f"{'─' * 70}")
-        print(f"  Sandboxes: {snapshot.active_sandboxes:3d} ready / {snapshot.offline_sandboxes:2d} offline")
+        """Emit real-time snapshot to the log stream."""
+        logger.info(f"\n{'─' * 70}")
+        logger.info(f"T+{snapshot.elapsed:6.1f}s  Status Snapshot")
+        logger.info(f"{'─' * 70}")
+        logger.info(f"  Sandboxes: {snapshot.active_sandboxes:3d} ready / {snapshot.offline_sandboxes:2d} offline")
 
         if self.config.workflow_type == "coding":
-            print(
+            logger.info(
                 f"  Coding:    {snapshot.coding_success:3d}/{snapshot.coding_total:3d}  "
                 f"avg={snapshot.coding_avg_latency:.2f}s  p99={snapshot.coding_p99_latency:.2f}s"
             )
         elif self.config.workflow_type == "document":
-            print(
+            logger.info(
                 f"  Document:  {snapshot.document_success:3d}/{snapshot.document_total:3d}  "
                 f"avg={snapshot.document_avg_latency:.2f}s  p99={snapshot.document_p99_latency:.2f}s"
             )
         elif self.config.workflow_type == "browser":
-            print(
+            logger.info(
                 f"  Browser:   {snapshot.browser_success:3d}/{snapshot.browser_total:3d}  "
                 f"avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s"
             )
         else:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
-        print(f"{'─' * 70}")
+        logger.info(f"{'─' * 70}")
 
     def generate_report(self) -> str:
         """Generate final TXT report using ReportFormatter."""

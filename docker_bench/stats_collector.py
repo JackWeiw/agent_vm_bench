@@ -6,6 +6,7 @@ Includes detailed container creation time, port wait time, browser task time sta
 Calculates QPS (queries per second) as core performance metric
 """
 
+import logging
 import os
 import statistics
 import threading
@@ -16,6 +17,8 @@ from typing import Dict, List, Optional
 from .config import Config
 from .schemas import ContainerState, ContainerStatus, TestSnapshot
 from .utils import calc_p99, calc_percentiles
+
+logger = logging.getLogger(__name__)
 
 
 class StatsCollector:
@@ -127,28 +130,28 @@ class StatsCollector:
 
     def _print_snapshot(self, snapshot: TestSnapshot) -> None:
         """Print real-time snapshot"""
-        print(f"\n{'─' * 70}")
-        print(f"T+{snapshot.elapsed:6.1f}s  Status Snapshot")
-        print(f"{'─' * 70}")
-        print(f"  Containers: {snapshot.active_containers:3d} ready / {snapshot.offline_containers:2d} offline")
+        logger.info(f"\n{'─' * 70}")
+        logger.info(f"T+{snapshot.elapsed:6.1f}s  Status Snapshot")
+        logger.info(f"{'─' * 70}")
+        logger.info(f"  Containers: {snapshot.active_containers:3d} ready / {snapshot.offline_containers:2d} offline")
 
         if snapshot.creation_stats.get("create") and snapshot.creation_stats["create"]["avg"] > 0:
-            print(
+            logger.info(
                 f"  Create:     avg={snapshot.creation_stats['create']['avg']:.1f}s  "
                 f"p99={snapshot.creation_stats['create']['p99']:.1f}s"
             )
         if snapshot.creation_stats.get("port_wait") and snapshot.creation_stats["port_wait"]["avg"] > 0:
-            print(
+            logger.info(
                 f"  PortWait:   avg={snapshot.creation_stats['port_wait']['avg']:.1f}s  "
                 f"p99={snapshot.creation_stats['port_wait']['p99']:.1f}s"
             )
 
-        print(
+        logger.info(
             f"  Queries:    {snapshot.browser_success:3d}/{snapshot.browser_total:3d}  "
             f"avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s"
         )
-        print(f"  QPS:        {snapshot.qps:.2f} queries/sec")
-        print(f"{'─' * 70}")
+        logger.info(f"  QPS:        {snapshot.qps:.2f} queries/sec")
+        logger.info(f"{'─' * 70}")
 
     def generate_report(self) -> str:
         """Generate final TXT report"""

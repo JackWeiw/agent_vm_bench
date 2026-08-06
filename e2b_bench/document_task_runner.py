@@ -7,6 +7,7 @@ of a case seed and records phase IDs as step-level metrics.
 """
 
 import json
+import logging
 import math
 import posixpath
 import random
@@ -19,6 +20,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from .config import Config
 from .helpers import wait_for_port_ready
 from .schemas import SandboxState, get_step_order
+
+logger = logging.getLogger(__name__)
 
 
 class SceneRecipeError(ValueError):
@@ -278,17 +281,17 @@ class DocumentWarmupRunner(threading.Thread):
             if not ok:
                 self.state.warmup_error = detail
                 self.state.document_metrics.last_error = detail
-                print(f"[Sandbox{self.state.sandbox_id}] Document warmup failed: {detail}")
+                logger.error(f"[Sandbox{self.state.sandbox_id}] Document warmup failed: {detail}")
             else:
                 self.state.warmup_error = ""
-                print(
+                logger.info(
                     f"[Sandbox{self.state.sandbox_id}] "
                     f"{self.config.document_case_kind.upper()} document warmup completed"
                 )
         except Exception as exc:
             self.state.warmup_error = str(exc)
             self.state.document_metrics.last_error = str(exc)
-            print(f"[Sandbox{self.state.sandbox_id}] Document warmup exception: {exc}")
+            logger.error(f"[Sandbox{self.state.sandbox_id}] Document warmup exception: {exc}")
         finally:
             self.state.warmup_done = True
 
@@ -346,7 +349,7 @@ class DocumentRoundRunner(threading.Thread):
         if timed_out:
             self.state.is_alive = False
         outcome = "completed" if success else f"failed: {detail[:160]}"
-        print(
+        logger.info(
             f"[Sandbox{self.state.sandbox_id}] {self.config.document_case_kind.upper()} "
             f"round {self.round_id} {outcome} ({latency:.2f}s)"
         )

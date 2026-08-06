@@ -9,6 +9,7 @@ Supports both browser and coding workflow types:
 - Coding: each round modifies a source file, builds, and tests (memory peak)
 """
 
+import logging
 import threading
 import time
 from typing import Dict, List, Optional
@@ -17,6 +18,8 @@ from .config import Config
 from .schemas import SandboxState, SandboxStatus, get_step_order
 from .stats_collector import StatsCollector
 from .task_runner import TabOperationRunner
+
+logger = logging.getLogger(__name__)
 
 
 class RoundRobinTaskManager:
@@ -78,7 +81,7 @@ class RoundRobinTaskManager:
         self._prepare_sandbox_groups()
 
         if not self.sandbox_groups:
-            print("[RoundRobin] No sandbox groups to execute")
+            logger.warning("[RoundRobin] No sandbox groups to execute")
             return
 
         # 2. Calculate number of rounds (auto or from config)
@@ -88,25 +91,25 @@ class RoundRobinTaskManager:
 
         # Print cycling info
         if self.config.round_count and self.config.round_count > 0:
-            print(
+            logger.info(
                 f"\n[RoundRobin] Will run up to {rounds} rounds (whichever ends first: round_count={rounds} or duration={self.config.test_duration}s)"
             )
         else:
-            print(f"\n[RoundRobin] Will cycle continuously until duration={self.config.test_duration}s")
-        print(f"[RoundRobin] Sandbox groups: {num_groups}, {len(self.sandbox_groups[0])} sandboxes per round")
+            logger.info(f"\n[RoundRobin] Will cycle continuously until duration={self.config.test_duration}s")
+        logger.info(f"[RoundRobin] Sandbox groups: {num_groups}, {len(self.sandbox_groups[0])} sandboxes per round")
 
         # 3. Execute each round (with cycling) until duration is reached
         start_time = time.time()
         for round_id in range(rounds):
             # Check stop conditions
             if self.stop_event.is_set():
-                print(f"[RoundRobin] Stop event detected, ending at round {round_id}")
+                logger.info(f"[RoundRobin] Stop event detected, ending at round {round_id}")
                 break
 
             # Check if duration is reached
             elapsed = time.time() - start_time
             if elapsed >= self.config.test_duration:
-                print(
+                logger.info(
                     f"[RoundRobin] Duration reached ({elapsed:.1f}s >= {self.config.test_duration}s), ending at round {round_id}"
                 )
                 break
@@ -127,7 +130,7 @@ class RoundRobinTaskManager:
                 time.sleep(self.config.round_interval)
 
         elapsed = time.time() - start_time
-        print(f"\n[RoundRobin] Completed {min(self.current_round + 1, rounds)} rounds in {elapsed:.1f}s")
+        logger.info(f"\n[RoundRobin] Completed {min(self.current_round + 1, rounds)} rounds in {elapsed:.1f}s")
 
     def _prepare_sandbox_groups(self) -> None:
         """Prepare sandbox groups for round-robin execution.
@@ -154,24 +157,24 @@ class RoundRobinTaskManager:
 
         total = len(self.all_ready_states)
         if total == 0:
-            print("[RoundRobin] No ready sandboxes available")
+            logger.warning("[RoundRobin] No ready sandboxes available")
             return
 
         # Determine number of groups based on round_size (determines group granularity)
         if self.config.round_size and self.config.round_size > 0:
             group_count = math.ceil(total / self.config.round_size)
-            print(f"[RoundRobin] Using round_size={self.config.round_size}, calculated {group_count} groups")
+            logger.info(f"[RoundRobin] Using round_size={self.config.round_size}, calculated {group_count} groups")
         else:
             # Default: use min(total, 10) groups
             group_count = min(total, 10)
-            print(f"[RoundRobin] Auto-configured {group_count} sandbox groups (default)")
+            logger.info(f"[RoundRobin] Auto-configured {group_count} sandbox groups (default)")
 
         # Calculate base distribution and remainder
         base_per_round = total // group_count
         remainder = total % group_count
 
-        print(f"[RoundRobin] Preparing groups: {total} sandboxes ÷ {group_count} groups")
-        print(f"[RoundRobin] Base per round: {base_per_round}, remainder: {remainder}")
+        logger.info(f"[RoundRobin] Preparing groups: {total} sandboxes ÷ {group_count} groups")
+        logger.info(f"[RoundRobin] Base per round: {base_per_round}, remainder: {remainder}")
 
         # Split into groups
         self.sandbox_groups = []
@@ -187,7 +190,7 @@ class RoundRobinTaskManager:
 
         # Log group sizes
         group_sizes = [len(g) for g in self.sandbox_groups]
-        print(f"[RoundRobin] Group sizes: {group_sizes}")
+        logger.info(f"[RoundRobin] Group sizes: {group_sizes}")
 
     def _start_round(self, round_id: int) -> None:
         """Start a specific round.
@@ -206,11 +209,11 @@ class RoundRobinTaskManager:
 
         # Show cycle info if this is a repeated group
         if round_id >= num_groups:
-            print(
+            logger.info(
                 f"\n[Round {round_id}] (cycle {round_id // num_groups}, group {group_idx}) Starting {len(current_states)} sandboxes"
             )
         else:
-            print(f"\n[Round {round_id}] Starting {len(current_states)} sandboxes")
+            logger.info(f"\n[Round {round_id}] Starting {len(current_states)} sandboxes")
 
         # Mark current round for statistics tracking (for snapshot grouping)
         # Note: Baseline is recorded in _stop_round() after tasks complete
@@ -350,9 +353,9 @@ class RoundRobinTaskManager:
                     avg_parts.append(f"{step_name}={avg_ms:.0f}ms")
 
             avg_str = ", ".join(avg_parts) if avg_parts else "no timing data"
-            print(f"[Round {self.current_round}] Completed: {runner_count} sandboxes, avg: {avg_str}")
+            logger.info(f"[Round {self.current_round}] Completed: {runner_count} sandboxes, avg: {avg_str}")
         else:
-            print(f"[Round {self.current_round}] Completed: {runner_count} sandboxes")
+            logger.info(f"[Round {self.current_round}] Completed: {runner_count} sandboxes")
 
         # Clear round state
         self.active_runners.clear()

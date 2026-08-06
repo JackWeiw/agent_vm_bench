@@ -10,6 +10,7 @@ Ready detection strategy:
 - Document workflow: Execute the image asset/dependency validator
 """
 
+import logging
 import math
 import os
 import time
@@ -85,6 +86,8 @@ except ImportError:
 from .config import Config, numa_node_for_index
 from .schemas import SandboxState, SandboxStatus
 
+logger = logging.getLogger(__name__)
+
 # Required ports to check for browser workflow
 BROWSER_REQUIRED_PORTS = [
     (18789, "openclaw-gateway"),
@@ -131,9 +134,9 @@ class SandboxManager:
 
         Returns: {sandbox_id: SandboxState}
         """
-        print(f"\n{'=' * 60}")
-        print("Detecting Existing Sandboxes")
-        print(f"{'=' * 60}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info("Detecting Existing Sandboxes")
+        logger.info(f"{'=' * 60}")
 
         # List all running sandboxes - returns SandboxPaginator
         try:
@@ -143,16 +146,16 @@ class SandboxManager:
             while paginator.has_next:
                 sandboxes = paginator.next_items()
                 existing_list.extend(sandboxes)
-            print(f"  Found {len(existing_list)} running sandboxes")
+            logger.info(f"  Found {len(existing_list)} running sandboxes")
         except Exception as e:
-            print(f"  Failed to list sandboxes: {e}")
+            logger.error(f"  Failed to list sandboxes: {e}")
             return {}
 
         if not existing_list:
-            print("  No existing sandboxes found")
+            logger.info("  No existing sandboxes found")
             return {}
 
-        print("  Processing all sandboxes...")
+        logger.info("  Processing all sandboxes...")
 
         # Connect to each sandbox and check ports
         for i, listed_sandbox in enumerate(existing_list):
@@ -162,30 +165,30 @@ class SandboxManager:
             state = SandboxState(sandbox_id=sandbox_id, workflow_type=self.config.workflow_type)
             self.sandbox_states[sandbox_id] = state
 
-            print(f"\n[Sandbox{sandbox_id}] Connecting to E2B:{e2b_sandbox_id}...")
+            logger.info(f"\n[Sandbox{sandbox_id}] Connecting to E2B:{e2b_sandbox_id}...")
 
             try:
                 # Connect to existing sandbox
                 sbx = Sandbox.connect(e2b_sandbox_id)
                 state.sandbox_obj = sbx
                 state.creation_metrics.status = SandboxStatus.CREATED
-                print(f"[Sandbox{sandbox_id}] Connected successfully")
+                logger.info(f"[Sandbox{sandbox_id}] Connected successfully")
 
                 # Check sandbox readiness
                 ready_result = self._check_ready(state)
                 if ready_result["success"]:
                     state.creation_metrics.status = SandboxStatus.PORT_READY
                     state.creation_metrics.port_wait_elapsed = ready_result["wait_elapsed"]
-                    print(f"[Sandbox{sandbox_id}] Ready in {ready_result['wait_elapsed']:.1f}s")
+                    logger.info(f"[Sandbox{sandbox_id}] Ready in {ready_result['wait_elapsed']:.1f}s")
                 else:
                     state.creation_metrics.status = SandboxStatus.PORT_FAILED
                     state.creation_metrics.port_check_error = ready_result["error"]
-                    print(f"[Sandbox{sandbox_id}] Ready check failed: {ready_result['error'][:50]}")
+                    logger.warning(f"[Sandbox{sandbox_id}] Ready check failed: {ready_result['error'][:50]}")
 
             except Exception as e:
                 state.creation_metrics.status = SandboxStatus.FAILED
                 state.creation_metrics.error_msg = str(e)
-                print(f"[Sandbox{sandbox_id}] Connect failed: {str(e)[:80]}")
+                logger.error(f"[Sandbox{sandbox_id}] Connect failed: {str(e)[:80]}")
 
         return self.sandbox_states
 
@@ -201,10 +204,10 @@ class SandboxManager:
         Returns:
             Dict of connected sandbox states {sandbox_id: SandboxState}
         """
-        print(f"\n{'=' * 60}")
-        print("Detecting Sandboxes from ID File")
-        print(f"{'=' * 60}")
-        print(f"  ID file: {ids_file}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info("Detecting Sandboxes from ID File")
+        logger.info(f"{'=' * 60}")
+        logger.info(f"  ID file: {ids_file}")
 
         # 1. Read target IDs from file
         if not os.path.exists(ids_file):
@@ -218,10 +221,10 @@ class SandboxManager:
                     target_ids.add(line)
 
         if not target_ids:
-            print(f"  WARNING: No IDs found in {ids_file}")
+            logger.warning(f"  No IDs found in {ids_file}")
             return {}
 
-        print(f"  Target IDs from file: {len(target_ids)}")
+        logger.info(f"  Target IDs from file: {len(target_ids)}")
 
         # 2. Get all running sandboxes
         try:
@@ -230,13 +233,13 @@ class SandboxManager:
             while paginator.has_next:
                 sandboxes = paginator.next_items()
                 running_list.extend(sandboxes)
-            print(f"  Running sandboxes: {len(running_list)}")
+            logger.info(f"  Running sandboxes: {len(running_list)}")
         except Exception as e:
-            print(f"  Failed to list sandboxes: {e}")
+            logger.error(f"  Failed to list sandboxes: {e}")
             return {}
 
         if not running_list:
-            print("  No running sandboxes found")
+            logger.info("  No running sandboxes found")
             return {}
 
         # 3. Match: only keep sandboxes in both sets
@@ -252,20 +255,20 @@ class SandboxManager:
         # IDs not found (in file but not running)
         not_found = target_ids - found_ids
         if not_found:
-            print(f"  WARNING: {len(not_found)} IDs not found or stopped")
+            logger.warning(f"  {len(not_found)} IDs not found or stopped")
             for sid in list(not_found)[:5]:  # Show first 5
-                print(f"    - {sid}")
+                logger.info(f"    - {sid}")
             if len(not_found) > 5:
-                print(f"    ... and {len(not_found) - 5} more")
+                logger.info(f"    ... and {len(not_found) - 5} more")
 
-        print(f"  Matched sandboxes: {len(matched)}")
+        logger.info(f"  Matched sandboxes: {len(matched)}")
 
         if not matched:
-            print("  No matched sandboxes to benchmark")
+            logger.info("  No matched sandboxes to benchmark")
             return {}
 
         # 4. Connect and check ports (same logic as detect_existing)
-        print("  Processing matched sandboxes...")
+        logger.info("  Processing matched sandboxes...")
 
         for i, listed_sandbox in enumerate(matched):
             sandbox_id = i + 1
@@ -274,30 +277,30 @@ class SandboxManager:
             state = SandboxState(sandbox_id=sandbox_id, workflow_type=self.config.workflow_type)
             self.sandbox_states[sandbox_id] = state
 
-            print(f"\n[Sandbox{sandbox_id}] Connecting to E2B:{e2b_sandbox_id}...")
+            logger.info(f"\n[Sandbox{sandbox_id}] Connecting to E2B:{e2b_sandbox_id}...")
 
             try:
                 # Connect to existing sandbox
                 sbx = Sandbox.connect(e2b_sandbox_id)
                 state.sandbox_obj = sbx
                 state.creation_metrics.status = SandboxStatus.CREATED
-                print(f"[Sandbox{sandbox_id}] Connected successfully")
+                logger.info(f"[Sandbox{sandbox_id}] Connected successfully")
 
                 # Check sandbox readiness
                 ready_result = self._check_ready(state)
                 if ready_result["success"]:
                     state.creation_metrics.status = SandboxStatus.PORT_READY
                     state.creation_metrics.port_wait_elapsed = ready_result["wait_elapsed"]
-                    print(f"[Sandbox{sandbox_id}] Ready in {ready_result['wait_elapsed']:.1f}s")
+                    logger.info(f"[Sandbox{sandbox_id}] Ready in {ready_result['wait_elapsed']:.1f}s")
                 else:
                     state.creation_metrics.status = SandboxStatus.PORT_FAILED
                     state.creation_metrics.port_check_error = ready_result["error"]
-                    print(f"[Sandbox{sandbox_id}] Ready check failed: {ready_result['error'][:50]}")
+                    logger.warning(f"[Sandbox{sandbox_id}] Ready check failed: {ready_result['error'][:50]}")
 
             except Exception as e:
                 state.creation_metrics.status = SandboxStatus.FAILED
                 state.creation_metrics.error_msg = str(e)
-                print(f"[Sandbox{sandbox_id}] Connect failed: {str(e)[:80]}")
+                logger.error(f"[Sandbox{sandbox_id}] Connect failed: {str(e)[:80]}")
 
         return self.sandbox_states
 
@@ -307,22 +310,22 @@ class SandboxManager:
         batch_size = self.config.create_batch_size
         batch_count = self.config.create_batch_count
 
-        print(f"\n{'=' * 60}")
-        print("Batched Sandbox Creation")
-        print(f"  Total: {total} sandboxes")
-        print(f"  Batches: {batch_count} x {batch_size}")
-        print(f"  Interval: {self.config.create_batch_interval}s")
-        print(f"{'=' * 60}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info("Batched Sandbox Creation")
+        logger.info(f"  Total: {total} sandboxes")
+        logger.info(f"  Batches: {batch_count} x {batch_size}")
+        logger.info(f"  Interval: {self.config.create_batch_interval}s")
+        logger.info(f"{'=' * 60}")
 
         for batch_id in range(batch_count):
             if self.stop_event.is_set():
-                print("Stop event detected, aborting creation")
+                logger.info("Stop event detected, aborting creation")
                 break
 
             start_idx = batch_id * batch_size
             end_idx = min(start_idx + batch_size, total)
 
-            print(f"\n[Batch {batch_id}/{batch_count - 1}] Creating sandboxes {start_idx + 1}-{end_idx}")
+            logger.info(f"\n[Batch {batch_id}/{batch_count - 1}] Creating sandboxes {start_idx + 1}-{end_idx}")
 
             # Concurrent creation of current batch
             batch_states = self._create_batch_concurrent(batch_id, start_idx, end_idx)
@@ -330,7 +333,7 @@ class SandboxManager:
 
             # Wait between batches (last batch no wait)
             if batch_id < batch_count - 1 and self.config.create_batch_interval:
-                print(f"Waiting {self.config.create_batch_interval}s before next batch...")
+                logger.info(f"Waiting {self.config.create_batch_interval}s before next batch...")
                 time.sleep(self.config.create_batch_interval)
 
         return self.sandbox_states
@@ -361,7 +364,9 @@ class SandboxManager:
                     result = future.result()
                     if result["success"]:
                         # sandbox.create succeeded, start ready check
-                        print(f"[Sandbox{sandbox_id}] Created in {result['create_elapsed']:.1f}s, checking ready...")
+                        logger.info(
+                            f"[Sandbox{sandbox_id}] Created in {result['create_elapsed']:.1f}s, checking ready..."
+                        )
 
                         # Ready check
                         ready_result = self._check_ready(state)
@@ -371,21 +376,21 @@ class SandboxManager:
                             state.creation_metrics.total_elapsed = (
                                 result["create_elapsed"] + ready_result["wait_elapsed"]
                             )
-                            print(
+                            logger.info(
                                 f"[Sandbox{sandbox_id}] Ready in {ready_result['wait_elapsed']:.1f}s, total {state.creation_metrics.total_elapsed:.1f}s"
                             )
                         else:
                             state.creation_metrics.status = SandboxStatus.PORT_FAILED
                             state.creation_metrics.port_check_error = ready_result["error"]
-                            print(f"[Sandbox{sandbox_id}] Ready check failed: {ready_result['error'][:50]}")
+                            logger.warning(f"[Sandbox{sandbox_id}] Ready check failed: {ready_result['error'][:50]}")
                     else:
                         state.creation_metrics.status = SandboxStatus.FAILED
                         state.creation_metrics.error_msg = result["error"]
-                        print(f"[Sandbox{sandbox_id}] Failed: {result['error'][:80]}")
+                        logger.error(f"[Sandbox{sandbox_id}] Failed: {result['error'][:80]}")
                 except Exception as e:
                     state.creation_metrics.status = SandboxStatus.FAILED
                     state.creation_metrics.error_msg = str(e)
-                    print(f"[Sandbox{sandbox_id}] Exception: {str(e)[:80]}")
+                    logger.error(f"[Sandbox{sandbox_id}] Exception: {str(e)[:80]}")
 
         return {i + 1: self.sandbox_states[i + 1] for i in range(start, end)}
 
@@ -393,10 +398,10 @@ class SandboxManager:
         """Full concurrent creation of all sandboxes"""
         total = self.config.total_count
 
-        print(f"\n{'=' * 60}")
-        print("Concurrent Sandbox Creation")
-        print(f"  Total: {total} sandboxes (full concurrent)")
-        print(f"{'=' * 60}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info("Concurrent Sandbox Creation")
+        logger.info(f"  Total: {total} sandboxes (full concurrent)")
+        logger.info(f"{'=' * 60}")
 
         return self._create_batch_concurrent(batch_id=0, start=0, end=total)
 
@@ -491,7 +496,7 @@ class SandboxManager:
                 error_key = (type(exc).__name__, last_error[:80])
                 if error_key not in seen_errors:
                     seen_errors.add(error_key)
-                    print(
+                    logger.warning(
                         f"[Sandbox{state.sandbox_id}] Document ready check error: "
                         f"{type(exc).__name__}: {last_error[:120]}"
                     )
@@ -554,7 +559,7 @@ class SandboxManager:
                 if result.exit_code == 0 and result.stdout.strip():
                     wait_elapsed = time.time() - start_time
                     state.creation_metrics.port_ready_time = time.time()
-                    print(
+                    logger.info(
                         f"[Sandbox{state.sandbox_id}] Command ready in {wait_elapsed:.1f}s: {result.stdout.strip()[:50]}"
                     )
                     return {"success": True, "wait_elapsed": wait_elapsed, "error": ""}
@@ -562,7 +567,7 @@ class SandboxManager:
                 err_key = (type(e).__name__, str(e)[:80])
                 if err_key not in seen_errors:
                     seen_errors.add(err_key)
-                    print(f"[Sandbox{state.sandbox_id}] uname check error: {type(e).__name__}: {str(e)[:120]}")
+                    logger.warning(f"[Sandbox{state.sandbox_id}] uname check error: {type(e).__name__}: {str(e)[:120]}")
 
             time.sleep(READY_CHECK_INTERVAL)
 
@@ -597,7 +602,7 @@ class SandboxManager:
 
                     if result.exit_code == 0 and "PORT_NOT_LISTENING" not in result.stdout:
                         ready_ports.add(port)
-                        print(f"[Sandbox{state.sandbox_id}] Port {port} ({name}) is listening")
+                        logger.info(f"[Sandbox{state.sandbox_id}] Port {port} ({name}) is listening")
                 except Exception:
                     pass  # Continue checking other ports
 
@@ -626,7 +631,7 @@ class SandboxManager:
 
     def kill_all(self) -> None:
         """Kill all sandboxes"""
-        print("\nKilling all sandboxes...")
+        logger.info("\nKilling all sandboxes...")
         killed_count = 0
         for state in self.sandbox_states.values():
             if state.sandbox_obj:
@@ -643,5 +648,5 @@ class SandboxManager:
                         state.stopped_by_cleanup = True
                     killed_count += 1
                 except Exception as e:
-                    print(f"[Sandbox{state.sandbox_id}] Kill error: {str(e)[:50]}")
-        print(f"Killed {killed_count} sandboxes")
+                    logger.warning(f"[Sandbox{state.sandbox_id}] Kill error: {str(e)[:50]}")
+        logger.info(f"Killed {killed_count} sandboxes")

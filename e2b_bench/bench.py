@@ -13,6 +13,7 @@ Supports multiple modes:
 """
 
 import argparse
+import logging
 import os
 import platform
 import shutil
@@ -30,6 +31,9 @@ from .sandbox_manager import SandboxManager
 from .schemas import SandboxState, SandboxStatus
 from .stats_collector import StatsCollector
 from .task_runner import TaskManager
+from .utils import setup_logging
+
+logger = logging.getLogger(__name__)
 
 # Warmup wave size constant - max sandboxes per wave in warmup-only mode
 WARMUP_WAVE_SIZE = 100
@@ -62,23 +66,23 @@ class SmapToolManager:
         ./smap_tool <count> `pidof firecracker` --swap-size <size> --ratio <ratio> --src-nid <nid> --dest-nid <nid>
         """
         if not self.config.smap_tool_enabled:
-            print("[SmapTool] Disabled in config, skipping")
+            logger.warning("[SmapTool] Disabled in config, skipping")
             return True
 
         if not self.config.smap_tool_path:
-            print("[SmapTool] Path not configured, skipping")
+            logger.warning("[SmapTool] Path not configured, skipping")
             return True
 
         # Get firecracker PIDs
         try:
             result = subprocess.run(["pidof", "firecracker"], capture_output=True, text=True)
             if result.returncode != 0 or not result.stdout.strip():
-                print("[SmapTool] No firecracker processes found")
+                logger.info("[SmapTool] No firecracker processes found")
                 return False
             firecracker_pids = result.stdout.strip()
-            print(f"[SmapTool] Found firecracker PIDs: {firecracker_pids}")
+            logger.info(f"[SmapTool] Found firecracker PIDs: {firecracker_pids}")
         except Exception as e:
-            print(f"[SmapTool] Failed to get firecracker PIDs: {e}")
+            logger.error(f"[SmapTool] Failed to get firecracker PIDs: {e}")
             return False
 
         # Build command
@@ -92,7 +96,7 @@ class SmapToolManager:
                 shutil.rmtree(smap_config_path)
             else:
                 smap_config_path.unlink()
-            print("[SmapTool] Cleaned up existing /dev/shm/smap_config")
+            logger.info("[SmapTool] Cleaned up existing /dev/shm/smap_config")
 
         cmd = (
             f"./{smap_exe} {sandbox_count} {firecracker_pids} "
@@ -102,8 +106,8 @@ class SmapToolManager:
             f"--dest-nid {self.config.smap_tool_dest_nid}"
         )
 
-        print(f"[SmapTool] Starting: {cmd}")
-        print(f"[SmapTool] Working directory: {smap_dir}")
+        logger.info(f"[SmapTool] Starting: {cmd}")
+        logger.info(f"[SmapTool] Working directory: {smap_dir}")
 
         # Prepare log files in result directory
         if self.log_dir:
@@ -140,11 +144,11 @@ class SmapToolManager:
                 )
 
             self.pid = self.process.pid
-            print(f"[SmapTool] Started with PID: {self.pid}")
-            print(f"[SmapTool] Logs saved to: {log_path}")
+            logger.info(f"[SmapTool] Started with PID: {self.pid}")
+            logger.info(f"[SmapTool] Logs saved to: {log_path}")
             return True
         except Exception as e:
-            print(f"[SmapTool] Failed to start: {e}")
+            logger.error(f"[SmapTool] Failed to start: {e}")
             return False
 
     def stop(self) -> None:
@@ -152,7 +156,7 @@ class SmapToolManager:
         if self.process is None:
             return
 
-        print(f"[SmapTool] Stopping process (PID: {self.pid})...")
+        logger.info(f"[SmapTool] Stopping process (PID: {self.pid})...")
         try:
             is_windows = platform.system() == "Windows"
 
@@ -162,18 +166,18 @@ class SmapToolManager:
                     self.process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     self.process.kill()
-                    print("[SmapTool] Process killed (timeout)")
+                    logger.warning("[SmapTool] Process killed (timeout)")
             else:
                 os.killpg(os.getpgid(self.pid), signal.SIGTERM)
                 try:
                     self.process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     os.killpg(os.getpgid(self.pid), signal.SIGKILL)
-                    print("[SmapTool] Process killed (timeout)")
+                    logger.warning("[SmapTool] Process killed (timeout)")
 
-            print("[SmapTool] Process stopped gracefully")
+            logger.info("[SmapTool] Process stopped gracefully")
         except Exception as e:
-            print(f"[SmapTool] Error stopping process: {e}")
+            logger.error(f"[SmapTool] Error stopping process: {e}")
 
         if self.stdout_file:
             self.stdout_file.close()
@@ -209,7 +213,7 @@ class VmMonitorManager:
         python3 vm_monitor.py --vmm firecracker -t <duration> --stress-file <file> --log-dir <dir>
         """
         if not self.config.vm_monitor_enabled:
-            print("[VmMonitor] Disabled in config, skipping")
+            logger.warning("[VmMonitor] Disabled in config, skipping")
             return True
 
         # Prepare log directory - use provided log_dir or default
@@ -247,8 +251,8 @@ class VmMonitorManager:
             "--auto-skip",  # Skip tools that are not available
         ]
 
-        print(f"[VmMonitor] Starting: {' '.join(cmd)}")
-        print(f"[VmMonitor] Log directory: {log_path}")
+        logger.info(f"[VmMonitor] Starting: {' '.join(cmd)}")
+        logger.info(f"[VmMonitor] Log directory: {log_path}")
 
         # Redirect stdout/stderr to log files (not PIPE)
         # PIPE buffer (64KB) can fill up and block the process when vm_monitor outputs lots of data
@@ -260,29 +264,29 @@ class VmMonitorManager:
             self.stderr_file = open(monitor_stderr_log, "w", buffering=1)
 
             self.process = subprocess.Popen(cmd, stdout=self.stdout_file, stderr=self.stderr_file, text=True)
-            print(f"[VmMonitor] Started with PID: {self.process.pid}")
-            print(f"[VmMonitor] Waiting for stress file: {stress_file}")
-            print(f"[VmMonitor] Output redirected to: {monitor_stdout_log}")
+            logger.info(f"[VmMonitor] Started with PID: {self.process.pid}")
+            logger.info(f"[VmMonitor] Waiting for stress file: {stress_file}")
+            logger.info(f"[VmMonitor] Output redirected to: {monitor_stdout_log}")
 
             # Store expected analysis file path
             self.analysis_file = str(log_path / "analysis_report.xlsx")
             return True
         except Exception as e:
-            print(f"[VmMonitor] Failed to start: {e}")
+            logger.error(f"[VmMonitor] Failed to start: {e}")
             return False
 
     def trigger_sampling(self) -> None:
         """Create stress file to trigger vm_monitor sampling"""
         stress_file = Path(self.config.vm_monitor_stress_file)
         stress_file.touch()
-        print(f"[VmMonitor] Stress file created: {stress_file}")
+        logger.info(f"[VmMonitor] Stress file created: {stress_file}")
 
     def stop_sampling(self) -> None:
         """Remove stress file to stop vm_monitor sampling"""
         stress_file = Path(self.config.vm_monitor_stress_file)
         if stress_file.exists():
             stress_file.unlink()
-            print(f"[VmMonitor] Stress file removed: {stress_file}")
+            logger.info(f"[VmMonitor] Stress file removed: {stress_file}")
 
     def wait_for_report(self, timeout: int = 300) -> str:
         """
@@ -294,22 +298,22 @@ class VmMonitorManager:
             return None
 
         analysis_path = Path(self.analysis_file)
-        print(f"[VmMonitor] Waiting for report: {analysis_path}")
+        logger.info(f"[VmMonitor] Waiting for report: {analysis_path}")
 
         start_time = time.time()
         check_interval = 10  # Check every 10 seconds
         while time.time() - start_time < timeout:
             if analysis_path.exists() and analysis_path.stat().st_size > 0:
-                print(f"[VmMonitor] Report generated: {analysis_path}")
+                logger.info(f"[VmMonitor] Report generated: {analysis_path}")
                 return str(analysis_path)
 
             elapsed = int(time.time() - start_time)
             remaining = timeout - elapsed
             if elapsed % 30 == 0:  # Log every 30 seconds
-                print(f"[VmMonitor] Waiting... {elapsed}s elapsed, {remaining}s remaining")
+                logger.info(f"[VmMonitor] Waiting... {elapsed}s elapsed, {remaining}s remaining")
             time.sleep(check_interval)
 
-        print(f"[VmMonitor] Report not found after {timeout}s timeout")
+        logger.error(f"[VmMonitor] Report not found after {timeout}s timeout")
         return None
 
     def stop(self) -> None:
@@ -317,16 +321,16 @@ class VmMonitorManager:
         if self.process is None:
             return
 
-        print(f"[VmMonitor] Stopping process (PID: {self.process.pid})...")
+        logger.info(f"[VmMonitor] Stopping process (PID: {self.process.pid})...")
         try:
             self.process.terminate()
             self.process.wait(timeout=10)
-            print("[VmMonitor] Process stopped gracefully")
+            logger.info("[VmMonitor] Process stopped gracefully")
         except subprocess.TimeoutExpired:
             self.process.kill()
-            print("[VmMonitor] Process killed (timeout)")
+            logger.warning("[VmMonitor] Process killed (timeout)")
         except Exception as e:
-            print(f"[VmMonitor] Error stopping process: {e}")
+            logger.error(f"[VmMonitor] Error stopping process: {e}")
 
         # Close log file handles
         if self.stdout_file:
@@ -362,9 +366,9 @@ def append_sandbox_ids(config: Config, sandbox_states: Dict[int, SandboxState]) 
             with open(config.sandbox_ids_file, "a") as f:  # Append mode
                 for sid in successful_ids:
                     f.write(f"{sid}\n")
-            print(f"Appended {len(successful_ids)} sandbox IDs to: {config.sandbox_ids_file}")
+            logger.info(f"Appended {len(successful_ids)} sandbox IDs to: {config.sandbox_ids_file}")
         except OSError as e:
-            print(f"ERROR: Failed to append sandbox IDs: {e}")
+            logger.error(f"Failed to append sandbox IDs: {e}")
 
 
 def run_benchmark(config: Config) -> dict:
@@ -387,35 +391,35 @@ def run_benchmark(config: Config) -> dict:
     # 1. Setup E2B environment variables
     config.setup_e2b_env()
 
-    print("=" * 80)
-    print("E2B Sandbox Bench - Batch Performance Test")
-    print("=" * 80)
-    print(f"  Template: {config.template}")
-    print(f"  Workflow:  {config.workflow_type}")
+    logger.info("=" * 80)
+    logger.info("E2B Sandbox Bench - Batch Performance Test")
+    logger.info("=" * 80)
+    logger.info(f"  Template: {config.template}")
+    logger.info(f"  Workflow:  {config.workflow_type}")
 
     # Mode display
     if config.detect_existing:
-        print("  Mode:     Detect existing sandboxes")
+        logger.info("  Mode:     Detect existing sandboxes")
     elif config.create_only:
-        print("  Mode:     Create-only (Phase 0)")
+        logger.info("  Mode:     Create-only (Phase 0)")
     elif config.warmup_only:
-        print("  Mode:     Warmup-only")
+        logger.info("  Mode:     Warmup-only")
     else:
-        print("  Mode:     Full workflow")
+        logger.info("  Mode:     Full workflow")
 
-    print(f"  Total:    {config.total_count} sandboxes")
+    logger.info(f"  Total:    {config.total_count} sandboxes")
 
     # Workflow-specific display
     if config.workflow_type == "coding":
-        print(f"  Project:    {config.coding_project_dir}")
-        print(f"  Language:   {config.coding_language}")
-        print(f"  Verify cmd: {config.coding_verify_cmd}")
-        print(f"  Source files: {len(config.coding_source_files)} files for round-robin")
-        print(f"  Verify:     {'enabled' if not config.coding_skip_verify else 'skipped'}")
+        logger.info(f"  Project:    {config.coding_project_dir}")
+        logger.info(f"  Language:   {config.coding_language}")
+        logger.info(f"  Verify cmd: {config.coding_verify_cmd}")
+        logger.info(f"  Source files: {len(config.coding_source_files)} files for round-robin")
+        logger.info(f"  Verify:     {'enabled' if not config.coding_skip_verify else 'skipped'}")
     elif config.workflow_type == "document":
-        print(f"  Case:       {config.document_case_kind.upper()}")
-        print(f"  Workspace:  {config.document_workspace_dir}")
-        print(
+        logger.info(f"  Case:       {config.document_case_kind.upper()}")
+        logger.info(f"  Workspace:  {config.document_workspace_dir}")
+        logger.info(
             f"  Timeouts:   operation={config.document_operation_timeout}s, "
             f"recalc={config.document_recalc_timeout}s, task={config.document_task_timeout}s"
         )
@@ -424,42 +428,42 @@ def run_benchmark(config: Config) -> dict:
 
     # Batch config display
     if config.create_batch_size:
-        print(
+        logger.info(
             f"  Create Batch: {config.create_batch_count} batches x {config.create_batch_size} (interval {config.create_batch_interval}s)"
         )
     else:
-        print("  Create Batch: Full concurrent creation")
+        logger.info("  Create Batch: Full concurrent creation")
 
     if not config.create_only:
         if config.task_batch_size:
-            print(
+            logger.info(
                 f"  Task Batch:   {config.task_batch_count} batches x {config.task_batch_size} (interval {config.task_batch_interval}s)"
             )
         else:
-            print("  Task Batch:   Full concurrent start")
+            logger.info("  Task Batch:   Full concurrent start")
 
         # Warmup config display
         if config.warmup_urls:
-            print(
+            logger.info(
                 f"  Warmup:       {len(config.warmup_urls)} pages x {config.warmup_loops} loops (delay {config.warmup_delay}s)"
             )
 
-    print(f"  Duration: {config.test_duration}s")
+    logger.info(f"  Duration: {config.test_duration}s")
 
     # Benchmark mode display (with mode-specific info)
     if config.benchmark_mode == "round_robin":
-        print(f"  Benchmark Mode: round_robin ({config.round_count} rounds x {config.round_interval}s)")
-        print(f"  Sandboxes: All {config.total_count} sandboxes will be tested across rounds")
+        logger.info(f"  Benchmark Mode: round_robin ({config.round_count} rounds x {config.round_interval}s)")
+        logger.info(f"  Sandboxes: All {config.total_count} sandboxes will be tested across rounds")
     else:
         # Benchmark percent display (only for fixed mode)
-        print(f"  Benchmark Mode: fixed")
+        logger.info(f"  Benchmark Mode: fixed")
         if config.benchmark_percent < 1.0:
             benchmark_count = config.benchmark_count
-            print(
+            logger.info(
                 f"  Benchmark: {benchmark_count}/{config.total_count} sandboxes ({config.benchmark_percent * 100:.0f}%)"
             )
 
-    print("=" * 80)
+    logger.info("=" * 80)
 
     # Stop signal
     stop_event = threading.Event()
@@ -472,9 +476,9 @@ def run_benchmark(config: Config) -> dict:
 
     if config.detect_existing:
         if config.sandbox_ids_file:
-            print(f"\n[Phase 1] Detecting sandboxes from ID file: {config.sandbox_ids_file}...")
+            logger.info(f"\n[Phase 1] Detecting sandboxes from ID file: {config.sandbox_ids_file}...")
         else:
-            print("\n[Phase 1] Detecting existing sandboxes...")
+            logger.info("\n[Phase 1] Detecting existing sandboxes...")
         creation_start_time = time.time()
         if config.sandbox_ids_file:
             sandbox_states = sandbox_manager.detect_from_file(config.sandbox_ids_file)
@@ -483,12 +487,12 @@ def run_benchmark(config: Config) -> dict:
         creation_end_time = time.time()
     elif needs_wave_warmup:
         # Wave-based warmup will create sandboxes in batches - skip Phase 1
-        print(f"\n[Phase 1] Skipped - wave-based warmup will create {config.total_count} sandboxes in batches")
+        logger.info(f"\n[Phase 1] Skipped - wave-based warmup will create {config.total_count} sandboxes in batches")
         sandbox_states = {}
         creation_start_time = time.time()
         creation_end_time = time.time()
     else:
-        print("\n[Phase 1] Creating sandboxes...")
+        logger.info("\n[Phase 1] Creating sandboxes...")
         creation_start_time = time.time()
         sandbox_states = sandbox_manager.create_all()
         creation_end_time = time.time()
@@ -497,18 +501,18 @@ def run_benchmark(config: Config) -> dict:
 
     # Skip ready_count check for wave-based warmup (will create sandboxes in Phase 2)
     if ready_count == 0 and not needs_wave_warmup:
-        print("No sandboxes ready for testing, exiting.")
+        logger.info("No sandboxes ready for testing, exiting.")
         return {}
 
     if ready_count > 0:
-        print(f"\nSandboxes ready: {ready_count}")
+        logger.info(f"\nSandboxes ready: {ready_count}")
 
     # Create-only mode: exit after creation with detailed timing report
     if config.create_only:
-        print("\n[Phase 0 Complete] Create-only mode finished.")
-        print(f"  Created: {len(sandbox_states)} sandboxes")
-        print(f"  Ports Ready: {ready_count}")
-        print("  Sandboxes left running for later use.")
+        logger.info("\n[Phase 0 Complete] Create-only mode finished.")
+        logger.info(f"  Created: {len(sandbox_states)} sandboxes")
+        logger.info(f"  Ports Ready: {ready_count}")
+        logger.info("  Sandboxes left running for later use.")
 
         # Generate creation timing report
         from .utils import calc_percentiles
@@ -520,28 +524,28 @@ def run_benchmark(config: Config) -> dict:
             s for s in sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_FAILED
         ]
 
-        print("\n" + "=" * 70)
-        print("Creation Timing Report")
-        print("=" * 70)
+        logger.info("\n" + "=" * 70)
+        logger.info("Creation Timing Report")
+        logger.info("=" * 70)
 
         # Total elapsed time for all sandboxes
         total_elapsed = creation_end_time - creation_start_time
-        print("\n[Overall Creation Time]")
-        print(f"  Total Wall Clock Time: {total_elapsed:.1f}s")
-        print("  (From first sandbox creation start to last sandbox port ready)")
-        print(f"  Throughput: {len(sandbox_states) / total_elapsed:.2f} sandboxes/sec")
+        logger.info("\n[Overall Creation Time]")
+        logger.info(f"  Total Wall Clock Time: {total_elapsed:.1f}s")
+        logger.info("  (From first sandbox creation start to last sandbox port ready)")
+        logger.info(f"  Throughput: {len(sandbox_states) / total_elapsed:.2f} sandboxes/sec")
 
-        print("\n[Sandbox Status]")
-        print(
+        logger.info("\n[Sandbox Status]")
+        logger.info(
             f"  Created (API):       {len([s for s in sandbox_states.values() if s.creation_metrics.status not in (SandboxStatus.PENDING, SandboxStatus.CREATING)])} / {len(sandbox_states)}"
         )
-        print(f"  Ports Ready:         {len(ready_states)} / {len(sandbox_states)}")
-        print(f"  Create Failed:       {len(failed_states)}")
-        print(f"  Port Check Failed:   {len(port_failed_states)}")
+        logger.info(f"  Ports Ready:         {len(ready_states)} / {len(sandbox_states)}")
+        logger.info(f"  Create Failed:       {len(failed_states)}")
+        logger.info(f"  Port Check Failed:   {len(port_failed_states)}")
         if failed_states:
-            print(f"  Create Failed IDs:   {[s.sandbox_id for s in failed_states[:10]]}")
+            logger.info(f"  Create Failed IDs:   {[s.sandbox_id for s in failed_states[:10]]}")
         if port_failed_states:
-            print(f"  Port Failed IDs:     {[s.sandbox_id for s in port_failed_states[:10]]}")
+            logger.info(f"  Port Failed IDs:     {[s.sandbox_id for s in port_failed_states[:10]]}")
 
         # sandbox.create performance statistics
         create_times = [
@@ -552,14 +556,14 @@ def run_benchmark(config: Config) -> dict:
         ]
         if create_times:
             stats = calc_percentiles(create_times)
-            print("\n[Sandbox.create Performance]")
-            print("  (sandbox.create API call time, excluding port wait)")
-            print(f"  Min:  {stats['min']:.1f}s")
-            print(f"  Max:  {stats['max']:.1f}s")
-            print(f"  Avg:  {stats['avg']:.1f}s")
-            print(f"  P50:  {stats['p50']:.1f}s")
-            print(f"  P95:  {stats['p95']:.1f}s")
-            print(f"  P99:  {stats['p99']:.1f}s")
+            logger.info("\n[Sandbox.create Performance]")
+            logger.info("  (sandbox.create API call time, excluding port wait)")
+            logger.info(f"  Min:  {stats['min']:.1f}s")
+            logger.info(f"  Max:  {stats['max']:.1f}s")
+            logger.info(f"  Avg:  {stats['avg']:.1f}s")
+            logger.info(f"  P50:  {stats['p50']:.1f}s")
+            logger.info(f"  P95:  {stats['p95']:.1f}s")
+            logger.info(f"  P99:  {stats['p99']:.1f}s")
 
         # Port wait performance statistics
         port_wait_times = [
@@ -567,29 +571,29 @@ def run_benchmark(config: Config) -> dict:
         ]
         if port_wait_times:
             stats = calc_percentiles(port_wait_times)
-            print("\n[Port Check Wait Performance]")
-            print("  (Waiting for 18789 openclaw-gateway + 11436 llama-server ports)")
-            print(f"  Min:  {stats['min']:.1f}s")
-            print(f"  Max:  {stats['max']:.1f}s")
-            print(f"  Avg:  {stats['avg']:.1f}s")
-            print(f"  P50:  {stats['p50']:.1f}s")
-            print(f"  P95:  {stats['p95']:.1f}s")
-            print(f"  P99:  {stats['p99']:.1f}s")
+            logger.info("\n[Port Check Wait Performance]")
+            logger.info("  (Waiting for 18789 openclaw-gateway + 11436 llama-server ports)")
+            logger.info(f"  Min:  {stats['min']:.1f}s")
+            logger.info(f"  Max:  {stats['max']:.1f}s")
+            logger.info(f"  Avg:  {stats['avg']:.1f}s")
+            logger.info(f"  P50:  {stats['p50']:.1f}s")
+            logger.info(f"  P95:  {stats['p95']:.1f}s")
+            logger.info(f"  P99:  {stats['p99']:.1f}s")
 
         # Total startup time (create + port_wait)
         total_times = [s.creation_metrics.total_elapsed for s in ready_states if s.creation_metrics.total_elapsed > 0]
         if total_times:
             stats = calc_percentiles(total_times)
-            print("\n[Total Startup Performance]")
-            print("  (sandbox.create + port wait)")
-            print(f"  Min:  {stats['min']:.1f}s")
-            print(f"  Max:  {stats['max']:.1f}s")
-            print(f"  Avg:  {stats['avg']:.1f}s")
-            print(f"  P50:  {stats['p50']:.1f}s")
-            print(f"  P95:  {stats['p95']:.1f}s")
-            print(f"  P99:  {stats['p99']:.1f}s")
+            logger.info("\n[Total Startup Performance]")
+            logger.info("  (sandbox.create + port wait)")
+            logger.info(f"  Min:  {stats['min']:.1f}s")
+            logger.info(f"  Max:  {stats['max']:.1f}s")
+            logger.info(f"  Avg:  {stats['avg']:.1f}s")
+            logger.info(f"  P50:  {stats['p50']:.1f}s")
+            logger.info(f"  P95:  {stats['p95']:.1f}s")
+            logger.info(f"  P99:  {stats['p99']:.1f}s")
 
-        print("\n" + "=" * 70)
+        logger.info("\n" + "=" * 70)
 
         # Save sandbox IDs to file if configured
         if config.sandbox_ids_file:
@@ -603,11 +607,11 @@ def run_benchmark(config: Config) -> dict:
                     with open(config.sandbox_ids_file, "w") as f:
                         for sid in successful_ids:
                             f.write(f"{sid}\n")
-                    print(f"\nSaved {len(successful_ids)} sandbox IDs to: {config.sandbox_ids_file}")
+                    logger.info(f"\nSaved {len(successful_ids)} sandbox IDs to: {config.sandbox_ids_file}")
                 except OSError as e:
-                    print(f"\nERROR: Failed to save sandbox IDs: {e}")
+                    logger.error(f"\nFailed to save sandbox IDs: {e}")
             else:
-                print(f"\nWARNING: No successful sandboxes to save to {config.sandbox_ids_file}")
+                logger.warning(f"\nNo successful sandboxes to save to {config.sandbox_ids_file}")
 
         return {"report": f"Create-only: {ready_count}/{len(sandbox_states)} sandboxes ready", "filepath": None}
 
@@ -616,7 +620,7 @@ def run_benchmark(config: Config) -> dict:
     task_manager = TaskManager(config, sandbox_states, stop_event)
 
     if config.warmup_only and _workflow_has_warmup(config):
-        print("\n[Phase 2] Running warmup phase...")
+        logger.info("\n[Phase 2] Running warmup phase...")
 
         # Check if wave-based warmup is needed
         if config.total_count <= WARMUP_WAVE_SIZE:
@@ -626,10 +630,12 @@ def run_benchmark(config: Config) -> dict:
             completed, failed = task_manager.wait_warmup(timeout=300)
             warmup_duration = time.time() - warmup_start
 
-            print(f"\nWarmup completed: {completed} sandboxes | {failed} failed | duration {warmup_duration:.1f}s")
-            print("\n[Phase 2 Complete] Warmup-only mode finished.")
-            print(f"  Warmup completed: {completed}/{ready_count}")
-            print("  Sandboxes left running for later benchmark.")
+            logger.info(
+                f"\nWarmup completed: {completed} sandboxes | {failed} failed | duration {warmup_duration:.1f}s"
+            )
+            logger.info("\n[Phase 2 Complete] Warmup-only mode finished.")
+            logger.info(f"  Warmup completed: {completed}/{ready_count}")
+            logger.info("  Sandboxes left running for later benchmark.")
 
             # Append sandbox IDs to file
             append_sandbox_ids(config, sandbox_states)
@@ -648,14 +654,14 @@ def run_benchmark(config: Config) -> dict:
                 total_detected = len(ready_states)
                 total_waves = (total_detected + WARMUP_WAVE_SIZE - 1) // WARMUP_WAVE_SIZE
 
-                print(f"  Wave-based warmup: {total_detected} detected sandboxes in {total_waves} waves")
+                logger.info(f"  Wave-based warmup: {total_detected} detected sandboxes in {total_waves} waves")
 
                 for wave_id in range(total_waves):
                     start_idx = wave_id * WARMUP_WAVE_SIZE
                     end_idx = min(start_idx + WARMUP_WAVE_SIZE, total_detected)
                     wave_states_list = ready_states[start_idx:end_idx]
 
-                    print(f"\n[Wave {wave_id + 1}/{total_waves}] Warming up {len(wave_states_list)} sandboxes...")
+                    logger.info(f"\n[Wave {wave_id + 1}/{total_waves}] Warming up {len(wave_states_list)} sandboxes...")
 
                     # Create wave_states dict for TaskManager
                     wave_states = {s.sandbox_id: s for s in wave_states_list}
@@ -667,7 +673,7 @@ def run_benchmark(config: Config) -> dict:
                         wave_task_manager = TaskManager(wave_config, wave_states, stop_event)
                         wave_task_manager.start_warmup()
                         completed, failed = wave_task_manager.wait_warmup(timeout=300)
-                        print(f"[Wave {wave_id + 1}] Warmup: {completed} completed, {failed} failed")
+                        logger.info(f"[Wave {wave_id + 1}] Warmup: {completed} completed, {failed} failed")
 
                     # Update all_sandbox_states
                     for state in wave_states_list:
@@ -682,12 +688,12 @@ def run_benchmark(config: Config) -> dict:
                 wave_id = 0
                 total_waves = (config.total_count + WARMUP_WAVE_SIZE - 1) // WARMUP_WAVE_SIZE
 
-                print(f"  Wave-based warmup: {config.total_count} sandboxes in {total_waves} waves")
+                logger.info(f"  Wave-based warmup: {config.total_count} sandboxes in {total_waves} waves")
 
                 while remaining > 0:
                     current_wave_size = min(WARMUP_WAVE_SIZE, remaining)
 
-                    print(f"\n[Wave {wave_id + 1}/{total_waves}] Creating {current_wave_size} sandboxes...")
+                    logger.info(f"\n[Wave {wave_id + 1}/{total_waves}] Creating {current_wave_size} sandboxes...")
 
                     # Create wave config with current wave size
                     wave_config = Config(
@@ -704,7 +710,7 @@ def run_benchmark(config: Config) -> dict:
                     )
 
                     if wave_ready_count == 0:
-                        print(f"[Wave {wave_id + 1}] ERROR: No sandboxes ready, stopping")
+                        logger.error(f"[Wave {wave_id + 1}] No sandboxes ready, stopping")
                         break
 
                     # Update sandbox IDs for all states
@@ -718,7 +724,7 @@ def run_benchmark(config: Config) -> dict:
                         wave_task_manager = TaskManager(wave_config, wave_states, stop_event)
                         wave_task_manager.start_warmup()
                         completed, failed = wave_task_manager.wait_warmup(timeout=300)
-                        print(f"[Wave {wave_id + 1}] Warmup: {completed} completed, {failed} failed")
+                        logger.info(f"[Wave {wave_id + 1}] Warmup: {completed} completed, {failed} failed")
 
                     # Append sandbox IDs after each wave
                     append_sandbox_ids(config, wave_states)
@@ -727,9 +733,9 @@ def run_benchmark(config: Config) -> dict:
                     wave_id += 1
 
             total_completed = sum(1 for s in all_sandbox_states.values() if s.warmup_done)
-            print(f"\n[Phase 2 Complete] Warmup-only mode finished.")
-            print(f"  Total warmed up: {total_completed}/{len(all_sandbox_states)}")
-            print("  Sandboxes left running for later benchmark.")
+            logger.info(f"\n[Phase 2 Complete] Warmup-only mode finished.")
+            logger.info(f"  Total warmed up: {total_completed}/{len(all_sandbox_states)}")
+            logger.info("  Sandboxes left running for later benchmark.")
 
         return {"report": f"Warmup-only mode completed", "filepath": None}
 
@@ -743,7 +749,7 @@ def run_benchmark(config: Config) -> dict:
                 state.warmup_done = True
 
     # 5. Start statistics collection
-    print("\n[Phase 3] Starting stats collector...")
+    logger.info("\n[Phase 3] Starting stats collector...")
     stats_collector = StatsCollector(config, sandbox_states)
     stats_collector.start()
 
@@ -752,16 +758,16 @@ def run_benchmark(config: Config) -> dict:
         # Round-robin mode: rotate sandbox groups across rounds
         benchmark_count = max(1, int(ready_count * config.benchmark_percent))
         workflow_label = config.workflow_type.capitalize()
-        print(f"\n[Phase 4] Starting round-robin {workflow_label} tasks...")
-        print(f"  Mode: round_robin")
-        print(f"  Round size: {config.round_size} sandboxes per round")
+        logger.info(f"\n[Phase 4] Starting round-robin {workflow_label} tasks...")
+        logger.info(f"  Mode: round_robin")
+        logger.info(f"  Round size: {config.round_size} sandboxes per round")
         if config.round_count:
-            print(f"  Max rounds: {config.round_count} (stops when round_count or duration reached)")
+            logger.info(f"  Max rounds: {config.round_count} (stops when round_count or duration reached)")
         else:
-            print(f"  Max rounds: unlimited (stops when duration={config.test_duration}s reached)")
-        print(f"  Duration limit: {config.test_duration}s")
-        print(f"  Interval: {config.round_interval}s per round")
-        print(f"  Total sandboxes: {ready_count}")
+            logger.info(f"  Max rounds: unlimited (stops when duration={config.test_duration}s reached)")
+        logger.info(f"  Duration limit: {config.test_duration}s")
+        logger.info(f"  Interval: {config.round_interval}s per round")
+        logger.info(f"  Total sandboxes: {ready_count}")
 
         round_robin_manager = RoundRobinTaskManager(config, sandbox_states, stop_event, stats_collector)
         try:
@@ -777,22 +783,22 @@ def run_benchmark(config: Config) -> dict:
         benchmark_count = max(1, int(ready_count * config.benchmark_percent))
         workflow_label = config.workflow_type.capitalize()
         if config.benchmark_percent < 1.0:
-            print(
+            logger.info(
                 f"\n[Phase 4] Starting {workflow_label} tasks on {benchmark_count}/{ready_count} sandboxes ({config.benchmark_percent * 100:.0f}%)..."
             )
         else:
-            print(f"\n[Phase 4] Starting {workflow_label} tasks...")
+            logger.info(f"\n[Phase 4] Starting {workflow_label} tasks...")
         task_manager.start_all()
 
         # 7. Run for specified duration
-        print(f"\n[Phase 5] Running for {config.test_duration} seconds...")
+        logger.info(f"\n[Phase 5] Running for {config.test_duration} seconds...")
         try:
             time.sleep(config.test_duration)
         except KeyboardInterrupt:
-            print("\nUser interrupt, stopping...")
+            logger.info("\nUser interrupt, stopping...")
 
     # 8. Stop all components
-    print("\n[Phase 6] Stopping...")
+    logger.info("\n[Phase 6] Stopping...")
     stop_event.set()
     try:
         task_manager.wait_all(timeout=5)
@@ -809,16 +815,16 @@ def run_benchmark(config: Config) -> dict:
     if not config.detect_existing:
         sandbox_manager.kill_all()
     else:
-        print("Sandboxes left running (detect mode - not killing)")
+        logger.info("Sandboxes left running (detect mode - not killing)")
 
     time.sleep(0.5)  # Allow daemon threads to complete output
 
     # 9. Generate and save report
     report = stats_collector.generate_report()
-    print("\n" + report)
+    logger.info("\n" + report)
 
     filepath = stats_collector.save_report(report)
-    print(f"\nReport saved to: {filepath}")
+    logger.info(f"\nReport saved to: {filepath}")
 
     return {"report": report, "filepath": filepath}
 
@@ -953,6 +959,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     """CLI entry point"""
+    setup_logging()
     parser = build_arg_parser()
     args = parser.parse_args()
 
@@ -966,7 +973,7 @@ def main() -> None:
 
     # Validate required parameters
     if not config.e2b_access_token and not args.config:
-        print("Error: E2B access token is required. Use --e2b-access-token or --config")
+        logger.error("E2B access token is required. Use --e2b-access-token or --config")
         return
 
     # Run test

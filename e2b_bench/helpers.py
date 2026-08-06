@@ -5,11 +5,14 @@ Provides common patterns used across runner classes to eliminate duplication:
 - wait_for_port_ready: sandbox port readiness polling (previously duplicated 4x)
 """
 
+import logging
 import time
 import threading
 from typing import Optional
 
 from .schemas import SandboxState, SandboxStatus
+
+logger = logging.getLogger(__name__)
 
 
 def wait_for_port_ready(
@@ -47,7 +50,7 @@ def wait_for_port_ready(
         if status == SandboxStatus.PORT_READY:
             return True
         if status in terminal_states:
-            print(f"[Sandbox{state.sandbox_id}] Terminal status: {status.value}")
+            logger.warning(f"[Sandbox{state.sandbox_id}] Terminal status: {status.value}")
             return False
 
         time.sleep(check_interval)

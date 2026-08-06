@@ -1,11 +1,28 @@
 """
 Utility Functions Module
 
-Common helper functions for statistics and formatting
+Common helper functions for statistics, formatting, and logging setup.
 """
 
+import logging
 import statistics
 from typing import Dict, List
+
+
+def setup_logging(level: int = logging.INFO) -> None:
+    """Configure root logging with a timestamped format.
+
+    Centralized so every docker_bench entry point emits consistent,
+    filterable log records instead of ad-hoc ``print`` output.
+
+    Args:
+        level: Logging level (default ``logging.INFO``).
+    """
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
 
 def calc_percentiles(values: List[float]) -> Dict[str, float]:
