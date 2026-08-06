@@ -821,7 +821,9 @@ def run_benchmark(config: Config) -> dict:
 
     # 9. Generate and save report
     report = stats_collector.generate_report()
-    logger.info("\n" + report)
+    # The report is the benchmark deliverable (program output), not a log
+    # line: print it to stdout so it stays visible regardless of log level.
+    print("\n" + report)
 
     filepath = stats_collector.save_report(report)
     logger.info(f"\nReport saved to: {filepath}")

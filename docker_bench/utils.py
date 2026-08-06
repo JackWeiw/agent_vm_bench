@@ -15,6 +15,11 @@ def setup_logging(level: int = logging.INFO) -> None:
     Centralized so every docker_bench entry point emits consistent,
     filterable log records instead of ad-hoc ``print`` output.
 
+    ``logging.basicConfig`` is a no-op once the root logger already has
+    handlers (e.g. when embedded in a host that configured logging first),
+    so the root level is forced afterwards to guarantee the default INFO
+    level — and the progress messages emitted at it — is honored.
+
     Args:
         level: Logging level (default ``logging.INFO``).
     """
@@ -23,6 +28,7 @@ def setup_logging(level: int = logging.INFO) -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    logging.getLogger().setLevel(level)
 
 
 def calc_percentiles(values: List[float]) -> Dict[str, float]:

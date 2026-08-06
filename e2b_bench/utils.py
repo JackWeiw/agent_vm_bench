@@ -11,8 +11,16 @@ from typing import Dict, List
 
 
 def setup_logging(level: int = logging.INFO) -> None:
-    """Setup logging format"""
+    """Configure root logging with a timestamped format.
+
+    ``logging.basicConfig`` is a no-op once the root logger already has
+    handlers (e.g. when the package is embedded in a host that configured
+    logging first). Explicitly force the root level afterwards so the default
+    INFO level — and the progress messages emitted at it — is honored even
+    in that case.
+    """
     logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    logging.getLogger().setLevel(level)
 
 
 def format_timestamp(ts: float) -> str:
