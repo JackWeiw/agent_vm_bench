@@ -25,7 +25,11 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 # Node 24 tarball from nodejs.org (NOT dnf nodejs, which ships Node 18.x —
 # already EOL — on openEuler 24.03-LTS-SP3). Keeps the same Node version as
 # the Ubuntu image so agent-browser/Playwright behave identically across OSes.
-RUN dnf install -y wget xz vim iproute net-tools git && \
+# dnf: skip SSL verification — the corp proxy presents a self-signed cert
+# ("Huawei Web Secure Internet Gateway CA") the system store won't trust.
+# curl/wget use --no-check-certificate; dnf reads sslverify from dnf.conf.
+RUN echo 'sslverify=0' >> /etc/dnf/dnf.conf && \
+    dnf install -y wget xz vim iproute net-tools git && \
     cd /usr/local && \
     wget --no-check-certificate https://nodejs.org/dist/v24.14.0/node-v24.14.0-linux-x64.tar.xz && \
     tar -xvf node-v24.14.0-linux-x64.tar.xz && \

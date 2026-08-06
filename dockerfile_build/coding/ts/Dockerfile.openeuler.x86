@@ -59,7 +59,11 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 # openEuler package names: xz (not xz-utils), libgomp (not libgomp1),
 # iproute (not iproute2), gnupg2 (not gnupg). net-tools may be absent on
 # openEuler — drop it from the list below if dnf cannot resolve it.
-RUN dnf install -y curl xz vim libgomp iproute net-tools gnupg2 git && \
+# dnf: skip SSL verification — the corp proxy presents a self-signed cert
+# ("Huawei Web Secure Internet Gateway CA") the system store won't trust.
+# curl uses -k; dnf reads sslverify from dnf.conf.
+RUN echo 'sslverify=0' >> /etc/dnf/dnf.conf && \
+    dnf install -y curl xz vim libgomp iproute net-tools gnupg2 git && \
     cd /usr/local && \
     curl -kL --connect-timeout 30 --retry 3 --retry-delay 3 \
         -o node-v24.14.0-linux-x64.tar.xz \

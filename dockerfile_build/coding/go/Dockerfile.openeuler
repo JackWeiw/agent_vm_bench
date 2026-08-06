@@ -74,7 +74,11 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 # iproute (not iproute2), gnupg2 (not gnupg). --no-install-recommends has no
 # dnf equivalent; net-tools may be absent on openEuler — drop it if dnf
 # cannot resolve it.
-RUN dnf install -y curl xz vim libgomp iproute net-tools gnupg2 git && \
+# dnf: skip SSL verification — the corp proxy presents a self-signed cert
+# ("Huawei Web Secure Internet Gateway CA") the system store won't trust.
+# curl uses -k; dnf reads sslverify from dnf.conf.
+RUN echo 'sslverify=0' >> /etc/dnf/dnf.conf && \
+    dnf install -y curl xz vim libgomp iproute net-tools gnupg2 git && \
     cd /usr/local && \
     ( curl -kL --connect-timeout 30 --retry 3 --retry-delay 3 \
         -o go1.23.4.linux-arm64.tar.gz \
