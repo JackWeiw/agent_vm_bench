@@ -22,7 +22,7 @@ import base64
 import time
 from typing import Dict, List, Tuple
 
-from bench_looper.core import IterationResult, run_shell
+from bench_looper.core import BenchScenario, IterationResult, run_shell
 
 
 def build_edit_command(project_dir: str, target_file: str, find_str: str, replace_str: str) -> str:
@@ -50,10 +50,13 @@ def build_edit_command(project_dir: str, target_file: str, find_str: str, replac
     )
 
 
-class CodingBench:
+class CodingBench(BenchScenario):
     """Base for coding-go / coding-ts plugins.
 
-    Subclasses set the profile fields and implement _step_verify.
+    Subclasses set the profile fields and implement _step_verify. Inherits
+    BenchScenario so run_warmup is a defined no-op (coding warmup is a no-op:
+    go clears GOCACHE per verify, ts/esbuild re-transpiles per run - neither
+    has a persistent cache to warm).
     """
 
     name = "coding"

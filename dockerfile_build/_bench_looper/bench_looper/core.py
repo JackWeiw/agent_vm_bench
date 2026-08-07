@@ -211,10 +211,18 @@ class BenchLooper:
         self._records.append(record)
         if res.success:
             self._successes += 1
+            step_str = ", ".join(f"{k}={v:.0f}ms" for k, v in record["steps"].items())
+            logger.info(
+                "[%s] iter %d ok %.0fms (%s)",
+                self.scenario.name,
+                round_id,
+                record["total_ms"],
+                step_str,
+            )
         else:
             self._failures += 1
             logger.warning(
-                "[%s] iteration %d failed at %s: %s",
+                "[%s] iter %d FAIL at %s: %s",
                 self.scenario.name,
                 round_id,
                 res.failed_step,
