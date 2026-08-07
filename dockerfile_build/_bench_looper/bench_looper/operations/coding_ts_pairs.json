@@ -1,0 +1,77 @@
+{
+  "profile": {
+    "project_dir": "/opt/coding-bench",
+    "run_cmd": "npx tsx /tmp/bench_verify.mjs",
+    "temp_test_path": "/tmp/bench_verify.mjs",
+    "heredoc_eof": "EOF",
+    "source_find_names": [
+      "*.ts",
+      "*.tsx",
+      "*.js"
+    ],
+    "source_find_root": "packages",
+    "checkout_paths": "packages/",
+    "verify_repeat": 3,
+    "verify_timeout": 120,
+    "_globals": "globalThis.__DEV__ = true\nglobalThis.__BROWSER__ = false\nglobalThis.__COMPAT__ = false\nglobalThis.__ESM_BUNDLER__ = true\nglobalThis.__FEATURE_OPTIONS_API__ = true\nglobalThis.__FEATURE_PROD_DEVTOOLS__ = false\nglobalThis.__FEATURE_SUSPENSE__ = true\nglobalThis.__RUNTIME_COMPILE__ = true\n",
+    "_import": "import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {\n"
+  },
+  "pairs": [
+    {
+      "file": "packages/shared/src/general.ts",
+      "find": "export const NOOP = (): void => {}",
+      "replace": "export const NOOP = (): void => undefined"
+    },
+    {
+      "file": "packages/shared/src/general.ts",
+      "find": "Always return false.",
+      "replace": "Always returns false."
+    },
+    {
+      "file": "packages/shared/src/index.ts",
+      "find": "export * from './general'",
+      "replace": "export * from './general' // bench round"
+    },
+    {
+      "file": "packages/vue/src/index.ts",
+      "find": "// This entry is the \"full-build\"",
+      "replace": "// This entry is the \"full-build\" (bench)"
+    },
+    {
+      "file": "packages/reactivity/src/baseHandlers.ts",
+      "find": "export const mutableHandlers: ProxyHandler<object> =",
+      "replace": "export const mutableHandlers: ProxyHandler<object> = // bench"
+    },
+    {
+      "file": "packages/runtime-core/src/errorHandling.ts",
+      "find": "import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared'",
+      "replace": "import { EMPTY_OBJ, isArray, isFunction, isPromise } from '@vue/shared' // bench"
+    }
+  ],
+  "verify_templates": [
+    {
+      "template": "<div id=\"x\">{{ msg }}</div>",
+      "assert": "if (ast.children[0].tag !== 'div') throw new Error('expected div')"
+    },
+    {
+      "template": "<textarea v-pre>{{ not interpolated }}</textarea>",
+      "assert": "if (ast.children[0].tag !== 'textarea') throw new Error('expected textarea')"
+    },
+    {
+      "template": "<ul><li v-for=\"i in list\">{{ i }}</li></ul>",
+      "assert": "if (ast.children[0].tag !== 'ul') throw new Error('expected ul')"
+    },
+    {
+      "template": "<div><span v-if=\"ok\">yes</span><span v-else>no</span></div>",
+      "assert": "if (ast.children[0].children.length < 2) throw new Error('expected 2 spans')"
+    },
+    {
+      "template": "<div>a</div><div>b</div>",
+      "assert": "if (ast.children.length < 2) throw new Error('expected 2 roots')"
+    },
+    {
+      "template": "<div :class=\"cls + extra\" @click=\"onClick\">text</div>",
+      "assert": "const div = ast.children[0]; if (!div.props || !div.props.length) throw new Error('expected props')"
+    }
+  ]
+}

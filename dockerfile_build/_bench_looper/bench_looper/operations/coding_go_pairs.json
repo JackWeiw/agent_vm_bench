@@ -1,0 +1,49 @@
+{
+  "profile": {
+    "project_dir": "/opt/coding-bench",
+    "run_cmd": "go run /tmp/bench_verify.go",
+    "temp_test_path": "/tmp/bench_verify.go",
+    "heredoc_eof": "GOEOF",
+    "source_find_names": [
+      "*.go"
+    ],
+    "source_find_root": ".",
+    "checkout_paths": "markup/",
+    "pre_verify_cmd": "go clean -cache",
+    "default_verify_script": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"All tests passed!\")\n}\n",
+    "verify_timeout": 120
+  },
+  "pairs": [
+    {
+      "file": "markup/goldmark/blockquotes/blockquotes.go",
+      "find": "var gitHubAlertRe = regexp.MustCompile(`^<p>\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\\]`)",
+      "replace": "var gitHubAlertRe = regexp.MustCompile(`(?i)^<p>\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\\]`)",
+      "verify_script": "package main\n\nimport (\n\t\"fmt\"\n\t\"regexp\"\n)\n\nvar gitHubAlertRe = regexp.MustCompile(`(?i)^<p>\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\\]`)\n\nfunc main() {\n\tcases := []struct{ in string; want bool }{\n\t\t{`<p>[!NOTE]`, true},\n\t\t{`<p>[!note]`, true},\n\t\t{`<p>[!Tip]`, true},\n\t\t{`<p>[!warning]`, true},\n\t\t{`<p>[!X]`, false},\n\t}\n\tok := true\n\tfor _, c := range cases {\n\t\tif gitHubAlertRe.MatchString(c.in) != c.want {\n\t\t\tok = false\n\t\t}\n\t}\n\tif ok {\n\t\tfmt.Println(\"All tests passed!\")\n\t} else {\n\t\tfmt.Println(\"Some tests failed!\")\n\t}\n}\n"
+    },
+    {
+      "file": "markup/goldmark/blockquotes/blockquotes.go",
+      "find": "// resolveGitHubAlert returns one of note, tip, warning, important or caution.",
+      "replace": "// resolveGitHubAlert returns one of note, tip, warning, important or caution. // bench"
+    },
+    {
+      "file": "markup/goldmark/blockquotes/blockquotes.go",
+      "find": "// An empty string if no match.",
+      "replace": "// An empty string if no match. // bench"
+    },
+    {
+      "file": "markup/goldmark/blockquotes/blockquotes.go",
+      "find": "// https://docs.github.com/en/get-started/writing-on-github",
+      "replace": "// https://docs.github.com/en/get-started/writing-on-github // bench"
+    },
+    {
+      "file": "markup/goldmark/blockquotes/blockquotes.go",
+      "find": "// Five types:",
+      "replace": "// Five types: // bench"
+    },
+    {
+      "file": "markup/goldmark/blockquotes/blockquotes.go",
+      "find": "// [!NOTE], [!TIP], [!WARNING], [!IMPORTANT], [!CAUTION]",
+      "replace": "// [!NOTE], [!TIP], [!WARNING], [!IMPORTANT], [!CAUTION] // bench"
+    }
+  ]
+}

@@ -63,7 +63,7 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 # ("Huawei Web Secure Internet Gateway CA") the system store won't trust.
 # curl uses -k; dnf reads sslverify from dnf.conf.
 RUN echo 'sslverify=0' >> /etc/dnf/dnf.conf && \
-    dnf install -y curl xz vim libgomp iproute net-tools gnupg2 git && \
+    dnf install -y curl xz vim libgomp iproute net-tools gnupg2 git python3 && \
     cd /usr/local && \
     curl -kL --connect-timeout 30 --retry 3 --retry-delay 3 \
         -o node-v24.14.0-linux-arm64.tar.xz \
@@ -136,9 +136,22 @@ RUN cd /opt && \
         || (echo "ERROR: npx tsx does not resolve locally (offline); runtime sandbox would hang" && exit 1) && \
     echo "Install verification: SUCCESS (npx tsx resolves locally, no network needed)"
 
-# Copy the manual testing helper script
-COPY bench_helper.sh /opt/coding-bench/bench_helper.sh
+# Copy the manual testing helper script (build context is dockerfile_build/)
+COPY coding/ts/bench_helper.sh /opt/coding-bench/bench_helper.sh
 RUN chmod +x /opt/coding-bench/bench_helper.sh
+
+# --- In-image bench looper (openEuler ARM) ---
+# Vendors the shared bench_looper package so the container runs the coding-ts
+# scenario end-to-end via the `coding-bench-ts` entry point, mirroring the
+# document-bench in-image looper. python3 is the looper runtime (also used by
+# the edit step's literal find->replace). Build context is dockerfile_build/
+# (parent) so the shared package is reachable - see the README's openEuler ARM
+# build command.
+COPY _bench_looper/bench_looper /opt/bench-looper/bench_looper
+RUN chmod +x /opt/bench-looper/bench_looper/runner.py && \
+    printf '#!/bin/sh\nexec python3 /opt/bench-looper/bench_looper/runner.py coding-ts "$@"\n' \
+      > /usr/local/bin/coding-bench-ts && chmod +x /usr/local/bin/coding-bench-ts
+ENV BENCH_RESULTS_DIR=/opt/bench-looper/results
 
 # Unset proxy environment variables after build
 ENV http_proxy= \
