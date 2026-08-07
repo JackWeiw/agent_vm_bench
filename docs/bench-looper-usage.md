@@ -56,21 +56,44 @@ Each image installs one entry point at `/usr/local/bin` and defaults to
 
 ### One-shot (run and exit)
 
+Each image installs one entry point at `/usr/local/bin` and defaults to
+`sleep infinity`. Run end-to-end and exit with `docker run --rm`; mount a host
+dir to `/results` and set `BENCH_RESULTS_DIR=/results` so JSON lands on the
+host. Results go to `/results/<scenario>/<run-id>/{iterations.jsonl,summary.json}`.
+
+Scenario -> image + entry point:
+
+| Scenario   | Image                                              | Entry point        | Results dir          |
+|------------|-----------------------------------------------------|--------------------|---------------------|
+| browser     | openeuler-agent-browser:24.03-lts-sp3-linuxarm64      | `browser-bench`     | `/results/browser/`    |
+| coding-go   | openeuler-coding-go-bench:24.03-lts-sp3-linuxarm64    | `coding-bench-go`   | `/results/coding-go/`  |
+| coding-ts   | openeuler-coding-bench:24.03-lts-sp3-linuxarm64        | `coding-bench-ts`   | `/results/coding-ts/`  |
+
 ```bash
 mkdir -p results
+
+# Browser - needs host/bridge networking to reach the http.server (see below)
 docker run --rm --network host \
+  -v "$PWD/results:/results" -e BENCH_RESULTS_DIR=/results \
+  openeuler-agent-browser:24.03-lts-sp3-linuxarm64 \
+  browser-bench --loops 100
+
+# Coding (Go) - offline (go run of stdlib-only verify scripts, no module fetch)
+docker run --rm \
   -v "$PWD/results:/results" -e BENCH_RESULTS_DIR=/results \
   openeuler-coding-go-bench:24.03-lts-sp3-linuxarm64 \
   coding-bench-go --loops 100
+
+# Coding (TypeScript) - offline (npx tsx resolves the pre-installed tsx)
+docker run --rm \
+  -v "$PWD/results:/results" -e BENCH_RESULTS_DIR=/results \
+  openeuler-coding-bench:24.03-lts-sp3-linuxarm64 \
+  coding-bench-ts --loops 100
 ```
 
-Replace the image + entry point per scenario:
-
-| Scenario   | Image                                         | Entry point        |
-|------------|-----------------------------------------------|--------------------|
-| browser     | openeuler-agent-browser:24.03-lts-sp3-linuxarm64 | `browser-bench`     |
-| coding-go   | openeuler-coding-go-bench:24.03-lts-sp3-linuxarm64 | `coding-bench-go`   |
-| coding-ts   | openeuler-coding-bench:24.03-lts-sp3-linuxarm64 | `coding-bench-ts`   |
+Tip: pass `--run-id <name>` to name the results subdir explicitly (otherwise a
+random id is used), and `--duration S` to stop after S wall-clock seconds
+instead of a fixed loop count.
 
 ### Long-running container + `docker exec` (slicing)
 
