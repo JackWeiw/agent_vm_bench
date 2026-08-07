@@ -576,6 +576,12 @@ class TabOperationRunner(threading.Thread):
         round_id: Current round number
     """
 
+    # Per-step E2B command timeout (seconds). Referenced by both the
+    # sbx.commands.run call sites and _classify_exception so the timeout
+    # reported in error messages always matches the actual budget.
+    OPEN_TAB_TIMEOUT = 60  # `agent-browser tab new`
+    SNAPSHOT_TIMEOUT = 60  # `agent-browser snapshot -i`
+
     def __init__(
         self,
         state: SandboxState,
@@ -689,7 +695,7 @@ class TabOperationRunner(threading.Thread):
         """
         # Step 1a: Create new tab
         tab_start = time.perf_counter()
-        result = sbx.commands.run(f'agent-browser tab new "{url}"', timeout=60, user="root")
+        result = sbx.commands.run(f'agent-browser tab new "{url}"', timeout=self.OPEN_TAB_TIMEOUT, user="root")
         step_times["open_tab"] = time.perf_counter() - tab_start
 
         if result.exit_code != 0:
@@ -723,7 +729,7 @@ class TabOperationRunner(threading.Thread):
             Tuple of (success, elements, error_detail)
         """
         step_start = time.perf_counter()
-        result = sbx.commands.run("agent-browser snapshot -i", timeout=60, user="root")
+        result = sbx.commands.run("agent-browser snapshot -i", timeout=self.SNAPSHOT_TIMEOUT, user="root")
         step_times["snapshot"] = time.perf_counter() - step_start
 
         if result.exit_code != 0:
@@ -788,17 +794,31 @@ class TabOperationRunner(threading.Thread):
         return True, ""
 
     def _classify_exception(self, e: Exception, step_times: Dict[str, float]) -> Tuple[str, str]:
-        """Classify exception to determine which step failed."""
+        """Classify an exception to determine which step failed and why.
+
+        Distinguishes:
+        - unreachable: the E2B control plane could not route the command to the
+          sandbox microVM (e.g. the sandbox was OOM-killed, paused, or reclaimed
+          by the host). The command never ran inside the sandbox, so this is an
+          infrastructure failure, not a per-step timeout. The dedicated bucket
+          keeps it separate from real code exceptions in the aggregated report.
+        - open_tab / snapshot: the corresponding step exceeded its E2B command
+          timeout (see OPEN_TAB_TIMEOUT / SNAPSHOT_TIMEOUT). The failing step is
+          inferred from which step had not yet recorded a timing in step_times.
+        - unknown: a timeout occurred on a step without a dedicated classifier.
+        - exception: any other non-timeout error.
+        """
         error_str = str(e)
+        if "Failed to route request to sandbox" in error_str:
+            return "unreachable", f"sandbox unreachable: {error_str[:100]}"
         if "context deadline exceeded" in error_str or "timed out" in error_str:
             if "open_tab" not in step_times:
-                return "open_tab", "open_tab timed out after 60s"
+                return "open_tab", f"open_tab timed out after {self.OPEN_TAB_TIMEOUT}s"
             elif "snapshot" not in step_times:
-                return "snapshot", "snapshot timed out after 60s"
+                return "snapshot", f"snapshot timed out after {self.SNAPSHOT_TIMEOUT}s"
             else:
                 return "unknown", f"operation timed out: {error_str[:100]}"
-        else:
-            return "exception", f"exception: {error_str[:100]}"
+        return "exception", f"exception: {error_str[:100]}"
 
     def _record_metrics(
         self, start_time: float, success: bool, step_times: Dict[str, float], error_detail: str
@@ -826,7 +846,10 @@ class TabOperationRunner(threading.Thread):
             failed_step: Name of the step that failed
             error_detail: Detailed error message
         """
-        logger.error(f"[Sandbox{self.state.sandbox_id}] URL '{url[:50]}' failed at {failed_step}: {error_detail}")
+        logger.error(
+            f"[Sandbox{self.state.sandbox_id}] Round {self.round_id} URL '{url[:50]}' "
+            f"failed at {failed_step}: {error_detail}"
+        )
         self.consecutive_errors += 1
         if self.consecutive_errors >= 3:
             self.state.is_alive = False

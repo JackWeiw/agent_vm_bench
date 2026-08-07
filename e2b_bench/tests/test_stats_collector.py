@@ -147,6 +147,25 @@ class TestStatsCollectorErrorClassification:
 
         assert "Gateway connection error" in report
 
+    def test_classify_sandbox_unreachable_route_failure(self):
+        """E2B routing failures are bucketed as 'Sandbox unreachable'."""
+        sandbox_states = {
+            1: self._create_sandbox_with_error(1, "sandbox unreachable: Failed to route request to sandbox"),
+        }
+        collector = StatsCollector(self.config, sandbox_states)
+        report = collector.generate_report()
+
+        assert "Sandbox unreachable" in report
+
+    def test_classify_gateway_not_shadowed_by_unreachable(self):
+        """http_unreachable stays 'Gateway connection error', not 'Sandbox unreachable'."""
+        from e2b_bench.stats_collector import ErrorClassifier
+
+        assert ErrorClassifier.classify("gateway failed: http_unreachable") == "Gateway connection error"
+        assert (
+            ErrorClassifier.classify("sandbox unreachable: Failed to route request to sandbox") == "Sandbox unreachable"
+        )
+
     def test_classify_other_error(self):
         """Unknown errors should be classified as Other"""
         sandbox_states = {
