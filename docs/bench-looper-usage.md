@@ -112,8 +112,10 @@ docker stop g1 && docker rm g1
 
 ### Browser networking
 
-The browser scenario fetches pages from an external http.server on the LAN
-(default URLs point at `http://192.168.110.10:8080/...`). Run it with host or
+The browser scenario fetches pages from an external http.server
+(default URLs point at `http://127.0.0.1:8080/...`, reachable with `--network
+host` on a Linux host where the http.server runs on the same host). Run it with
+host or
 bridge networking - **not** `--network none` (unlike the document bench, the
 page content is not bundled in the image). Override URLs with `--urls` /
 `--warmup-urls`.
