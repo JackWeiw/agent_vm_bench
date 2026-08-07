@@ -47,6 +47,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--duration", type=float, default=0.0, help="wall-clock stop in seconds (0 = no limit)")
     p.add_argument("--warmup", dest="warmup", action="store_true", default=True)
     p.add_argument("--no-warmup", dest="warmup", action="store_false")
+    p.add_argument(
+        "--quiet", action="store_true", help="suppress per-round INFO logs (failures + final summary still logged)"
+    )
     p.add_argument("--results-dir", default=os.environ.get(RESULTS_DIR_ENV, DEFAULT_RESULTS_DIR))
     p.add_argument("--run-id", default=os.environ.get(RUN_ID_ENV))
     # Browser overrides
@@ -76,6 +79,7 @@ def main(argv=None) -> int:
         warmup=args.warmup,
         results_dir=args.results_dir,
         run_id=args.run_id,
+        quiet=args.quiet,
     )
     return looper.run()
 

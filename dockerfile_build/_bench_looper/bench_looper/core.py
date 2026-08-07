@@ -133,11 +133,13 @@ class BenchLooper:
         warmup: bool,
         results_dir: str,
         run_id: Optional[str],
+        quiet: bool = False,
     ):
         self.scenario = scenario
         self.loops = loops
         self.duration = duration
         self.warmup = warmup
+        self.quiet = quiet
         self.run_id = run_id or uuid.uuid4().hex[:12]
         self.run_dir = Path(results_dir) / scenario.name / self.run_id
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -211,14 +213,15 @@ class BenchLooper:
         self._records.append(record)
         if res.success:
             self._successes += 1
-            step_str = ", ".join(f"{k}={v:.0f}ms" for k, v in record["steps"].items())
-            logger.info(
-                "[%s] iter %d ok %.0fms (%s)",
-                self.scenario.name,
-                round_id,
-                record["total_ms"],
-                step_str,
-            )
+            if not self.quiet:
+                step_str = ", ".join(f"{k}={v:.0f}ms" for k, v in record["steps"].items())
+                logger.info(
+                    "[%s] iter %d ok %.0fms (%s)",
+                    self.scenario.name,
+                    round_id,
+                    record["total_ms"],
+                    step_str,
+                )
         else:
             self._failures += 1
             logger.warning(

@@ -127,6 +127,7 @@ Common flags:
 | `--loops N`        | 20000   | Round count.                                                 |
 | `--duration S`     | 0       | Wall-clock stop in seconds (0 = no limit).                   |
 | `--warmup` / `--no-warmup` | on  | One-time warmup before the loop (excluded from results).     |
+| `--quiet`         | off     | Suppress per-round INFO logs (failures + final summary still logged). Use for slicing when you want minimal looper footprint. |
 | `--results-dir PATH` | `$BENCH_RESULTS_DIR` or `/opt/bench-looper/results` | Host-visible results dir (mount + env). |
 | `--run-id ID`      | random  | Run subdir name (defaults to a random 12-char id; or `BENCH_RUN_ID`). |
 
