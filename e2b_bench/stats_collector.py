@@ -29,6 +29,7 @@ BROWSER_ERROR_DISPLAY = [
     "Chrome start failed",
     "D-Bus connection error",
     "Gateway connection error",
+    "Sandbox unreachable",
     "Timeout",
     "Other",
 ]
@@ -38,6 +39,7 @@ CODING_ERROR_DISPLAY = [
     "Edit failed",
     "Verify failed",
     "OOM",
+    "Sandbox unreachable",
     "Timeout",
     "Other",
 ]
@@ -58,6 +60,7 @@ class ErrorClassifier:
         ("Chrome start failed", ["failed to start chrome", "chrome_start"]),
         ("D-Bus connection error", ["d-bus", "dbus", "failed to connect to the bus"]),
         ("Gateway connection error", ["gateway", "cdp", "http_unreachable"]),
+        ("Sandbox unreachable", ["failed to route", "sandbox unreachable"]),
         # Coding errors
         ("Find failed", ["find failed", "git checkout", "locate failed"]),
         ("Read failed", ["read failed", "head failed"]),
