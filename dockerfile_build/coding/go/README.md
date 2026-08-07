@@ -134,11 +134,12 @@ docker load -i openEuler-docker.x86_64.tar
 Build:
 
 ```bash
-# ARM64 — build context is dockerfile_build/ (parent, note the `..`) so the
-# shared bench_looper package is reachable for COPY.
-docker build -t openeuler-coding-go-bench:24.03-lts-sp3-linuxarm64 -f Dockerfile.openeuler ..
+# ARM64 — from the repo root. ARM uses dockerfile_build/ as context so the
+# shared _bench_looper package is reachable for COPY.
+docker build -f dockerfile_build/coding/go/Dockerfile.openeuler \
+  -t openeuler-coding-go-bench:24.03-lts-sp3-linuxarm64 dockerfile_build/
 # x86_64 (minimal image, dir-scoped build)
-docker build -t openeuler-coding-go-bench:24.03-lts-sp3-x86_64 -f Dockerfile.openeuler.x86 .
+cd dockerfile_build/coding/go && docker build -t openeuler-coding-go-bench:24.03-lts-sp3-x86_64 -f Dockerfile.openeuler.x86 .
 ```
 
 ## In-image bench looper (openEuler ARM)

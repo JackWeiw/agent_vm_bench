@@ -45,10 +45,10 @@ Both load to image name `openeuler-24.03-lts-sp3:latest`.
 **ARM64:**
 
 ```bash
-cd dockerfile_build/browser_openeuler
-# Build context is dockerfile_build/ (parent) so the shared bench_looper
-# package is reachable - note the trailing `..` and explicit `-f Dockerfile`.
-docker build -t openeuler-agent-browser:24.03-lts-sp3-linuxarm64 -f Dockerfile ..
+# From the repo root. ARM uses dockerfile_build/ as context so the shared
+# _bench_looper package is reachable for COPY (the image vendors it).
+docker build -f dockerfile_build/browser_openeuler/Dockerfile \
+  -t openeuler-agent-browser:24.03-lts-sp3-linuxarm64 dockerfile_build/
 ```
 
 **x86_64:**
@@ -62,10 +62,10 @@ docker build -f Dockerfile.x86 -t openeuler-agent-browser:24.03-lts-sp3-x86_64 .
 
 ```bash
 # ARM64 with proxy
-docker build -t openeuler-agent-browser:24.03-lts-sp3-linuxarm64 \
-  -f Dockerfile \
+docker build -f dockerfile_build/browser_openeuler/Dockerfile \
+  -t openeuler-agent-browser:24.03-lts-sp3-linuxarm64 \
   --build-arg HTTP_PROXY=http://your-proxy:port \
-  --build-arg HTTPS_PROXY=http://your-proxy:port ..
+  --build-arg HTTPS_PROXY=http://your-proxy:port dockerfile_build/
 
 # x86_64 with proxy
 docker build -f Dockerfile.x86 -t openeuler-agent-browser:24.03-lts-sp3-x86_64 \
