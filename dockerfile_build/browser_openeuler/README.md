@@ -114,7 +114,7 @@ http.server on the LAN, so run with host/bridge networking (not `--network none`
 One-shot end-to-end:
 
 ```bash
-docker run --rm --network host \
+docker run --rm --network host --cpus=2 --memory=4g \
   -v "$PWD/results:/results" -e BENCH_RESULTS_DIR=/results \
   openeuler-agent-browser:24.03-lts-sp3-linuxarm64 \
   browser-bench --loops 100
@@ -123,7 +123,7 @@ docker run --rm --network host \
 Long-running container driven via `docker exec`:
 
 ```bash
-docker run -d --name b1 --network host \
+docker run -d --name b1 --network host --cpus=2 --memory=4g \
   -v "$PWD/results:/results" -e BENCH_RESULTS_DIR=/results \
   openeuler-agent-browser:24.03-lts-sp3-linuxarm64
 docker exec b1 browser-bench --loops 100

@@ -73,23 +73,36 @@ Scenario -> image + entry point:
 mkdir -p results
 
 # Browser - needs host/bridge networking to reach the http.server (see below)
-docker run --rm --network host \
+docker run --rm --network host --cpus=2 --memory=4g \
   -v "$PWD/results:/results" -e BENCH_RESULTS_DIR=/results \
   openeuler-agent-browser:24.03-lts-sp3-linuxarm64 \
   browser-bench --loops 100
 
 # Coding (Go) - offline (go run of stdlib-only verify scripts, no module fetch)
-docker run --rm \
+docker run --rm --cpus=2 --memory=4g \
   -v "$PWD/results:/results" -e BENCH_RESULTS_DIR=/results \
   openeuler-coding-go-bench:24.03-lts-sp3-linuxarm64 \
   coding-bench-go --loops 100
 
 # Coding (TypeScript) - offline (npx tsx resolves the pre-installed tsx)
-docker run --rm \
+docker run --rm --cpus=2 --memory=4g \
   -v "$PWD/results:/results" -e BENCH_RESULTS_DIR=/results \
   openeuler-coding-bench:24.03-lts-sp3-linuxarm64 \
   coding-bench-ts --loops 100
 ```
+
+Resource limits (`--cpus` / `--memory` above) cap each container; adjust per
+host and slice. For overcommit/swap-out measurement, start N containers whose
+`--memory` sum exceeds host RAM and let them swap. Useful flags:
+
+| Flag                  | Purpose                                                |
+|-----------------------|--------------------------------------------------------|
+| `--cpus=N`             | CPU quota (N cores, fractional ok, e.g. 1.5).          |
+| `--memory=4g`         | Memory hard limit (the overcommit lever).              |
+| `--memory-swap=4g`    | Set = `--memory` to forbid extra swap, or larger to allow it. |
+| `--cpuset-cpus=0-3`    | Pin to specific CPUs (CPU isolation for slicing).       |
+| `--cpuset-mems=2`      | Pin memory to a NUMA node (matches the old numa_bind).  |
+| `--memory-reservation=3g` | Soft memory limit (reclaim hint).                  |
 
 Tip: pass `--run-id <name>` to name the results subdir explicitly (otherwise a
 random id is used), and `--duration S` to stop after S wall-clock seconds
@@ -101,7 +114,7 @@ The default CMD is `sleep infinity`, so start a long-running container and drive
 it via `docker exec`. This is the form the slicing harness attaches to:
 
 ```bash
-docker run -d --name g1 \
+docker run -d --name g1 --cpus=2 --memory=4g \
   -v "$PWD/results:/results" -e BENCH_RESULTS_DIR=/results \
   openeuler-coding-go-bench:24.03-lts-sp3-linuxarm64
 
@@ -109,6 +122,10 @@ docker exec g1 coding-bench-go --loops 100
 # repeat with different --run-id / loop counts as needed
 docker stop g1 && docker rm g1
 ```
+
+For an N-container slicing run, start N such containers (names g1..gN) with
+`--memory` summing past host RAM, then `docker exec` each. Pin to a NUMA node
+with `--cpuset-mems=<node>` to reproduce the old `numa_bind` behavior.
 
 ### Browser networking
 

@@ -152,7 +152,7 @@ and Go images expose `browser-bench` and `coding-bench-go` the same way.
 One-shot end-to-end:
 
 ```bash
-docker run --rm -v "$PWD/results:/results" -e BENCH_RESULTS_DIR=/results \
+docker run --rm --cpus=2 --memory=4g -v "$PWD/results:/results" -e BENCH_RESULTS_DIR=/results \
   openeuler-coding-bench:24.03-lts-sp3-linuxarm64 \
   coding-bench-ts --loops 100
 ```
@@ -160,7 +160,7 @@ docker run --rm -v "$PWD/results:/results" -e BENCH_RESULTS_DIR=/results \
 Long-running container driven via `docker exec`:
 
 ```bash
-docker run -d --name t1 -v "$PWD/results:/results" -e BENCH_RESULTS_DIR=/results \
+docker run -d --name t1 --cpus=2 --memory=4g -v "$PWD/results:/results" -e BENCH_RESULTS_DIR=/results \
   openeuler-coding-bench:24.03-lts-sp3-linuxarm64
 docker exec t1 coding-bench-ts --loops 100
 ```
