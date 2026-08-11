@@ -15,6 +15,7 @@ import json
 import logging
 import math
 import os
+import random
 import subprocess
 import sys
 import time
@@ -134,12 +135,16 @@ class BenchLooper:
         results_dir: str,
         run_id: Optional[str],
         quiet: bool = False,
+        interval_min: float = 0.0,
+        interval_max: float = 0.0,
     ):
         self.scenario = scenario
         self.loops = loops
         self.duration = duration
         self.warmup = warmup
         self.quiet = quiet
+        self.interval_min = interval_min
+        self.interval_max = interval_max
         self.run_id = run_id or uuid.uuid4().hex[:12]
         self.run_dir = Path(results_dir) / scenario.name / self.run_id
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -167,6 +172,11 @@ class BenchLooper:
                 break
             self._run_one(i)
             completed = i + 1
+            # Sleep between rounds (not after the last). Mirrors the host's
+            # interval_min/interval_max random stagger; 0/0 = back-to-back
+            # (continuous pressure, the slicing default).
+            if self.interval_max > 0 and i < self.loops - 1:
+                time.sleep(random.uniform(self.interval_min, self.interval_max))
 
         self._jsonl.close()
         self._write_summary()

@@ -147,6 +147,7 @@ Common flags:
 | `--duration S`     | 0       | Wall-clock stop in seconds (0 = no limit).                   |
 | `--warmup` / `--no-warmup` | on  | One-time warmup before the loop (excluded from results).     |
 | `--quiet`         | off     | Suppress per-round INFO logs (failures + final summary still logged). Use for slicing when you want minimal looper footprint. |
+| `--interval-min S` / `--interval-max S` | 0 / 0 | Random seconds to sleep between rounds (uniform[min,max]); 0/0 = back-to-back (continuous pressure, default). Mirrors the host interval_min/interval_max. |
 | `--results-dir PATH` | `$BENCH_RESULTS_DIR` or `/opt/bench-looper/results` | Host-visible results dir (mount + env). |
 | `--run-id ID`      | random  | Run subdir name (defaults to a random 12-char id; or `BENCH_RUN_ID`). |
 

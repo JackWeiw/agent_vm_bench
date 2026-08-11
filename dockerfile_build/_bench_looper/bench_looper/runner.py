@@ -50,6 +50,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--quiet", action="store_true", help="suppress per-round INFO logs (failures + final summary still logged)"
     )
+    p.add_argument(
+        "--interval-min",
+        type=float,
+        default=0.0,
+        help="min seconds to sleep between rounds (0 = no delay; continuous pressure)",
+    )
+    p.add_argument("--interval-max", type=float, default=0.0, help="max seconds to sleep between rounds (0 = no delay)")
     p.add_argument("--results-dir", default=os.environ.get(RESULTS_DIR_ENV, DEFAULT_RESULTS_DIR))
     p.add_argument("--run-id", default=os.environ.get(RUN_ID_ENV))
     # Browser overrides
@@ -80,6 +87,8 @@ def main(argv=None) -> int:
         results_dir=args.results_dir,
         run_id=args.run_id,
         quiet=args.quiet,
+        interval_min=args.interval_min,
+        interval_max=args.interval_max,
     )
     return looper.run()
 
