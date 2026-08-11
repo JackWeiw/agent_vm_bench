@@ -1,0 +1,44 @@
+# Coding Benchmark Template (Python) - E2B Sandbox for AI Coding Agent Memory Stress Testing
+#
+# x86_64 variant of coding/python/Dockerfile. Identical build, base image is the
+# plain ubuntu:24.04 (amd64). See Dockerfile for the full design rationale.
+#
+# Build:  docker build -t ubuntu-coding-python-bench:24.04-x86_64 -f Dockerfile.x86 .
+# Push:   ARCH=x86 HARBOR_IP=X bash push_to_harbor.sh
+# Template: python3 ../../build_e2b.py --server-ip X --harbor-ip X \
+#     --alias openclaw-coding-python-v1 --image e2b-orchestration/ubuntu-coding-python-bench:custom
+
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ENV http_proxy=${HTTP_PROXY}
+ENV https_proxy=${HTTPS_PROXY}
+ENV HTTP_PROXY=${HTTP_PROXY}
+ENV HTTPS_PROXY=${HTTPS_PROXY}
+
+RUN apt update && apt install -y --no-install-recommends python3 python3-pip git curl vim && \
+    pip3 install --no-cache-dir --break-system-packages \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        asgiref==3.8.1 sqlparse==0.5.0 && \
+    git config --global http.sslVerify false && \
+    apt clean && rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
+
+RUN cd /opt && \
+    git clone https://github.com/django/django.git coding-bench && \
+    cd coding-bench && \
+    git checkout 8d160f154f0240a423e83ffe0690e472f837373c && \
+    python3 -c "import django; from django.conf import settings; print('django', django.__version__)"
+
+COPY bench_helper.sh /opt/coding-bench/bench_helper.sh
+RUN chmod +x /opt/coding-bench/bench_helper.sh
+
+ENV http_proxy= \
+    https_proxy= \
+    HTTP_PROXY= \
+    HTTPS_PROXY=
+
+CMD ["sleep", "infinity"]

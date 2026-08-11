@@ -1,0 +1,119 @@
+# config/e2b/coding_python_bench.yaml
+# E2B Sandbox Coding Benchmark (Python) - Single Test Configuration
+#
+# Workflow type: coding — simulates AI coding agent memory pressure (Python)
+#   Trace-faithful loop (mirrors the captured openclaw trajectories that drive
+#   the ts/go variants): find -> read -> edit -> verify (python3) -> git diff.
+#   No resident dev server, no `manage.py runserver`, no full
+#   `tests/runtests.py` suite — verification is a transient
+#   `python3 /tmp/bench_verify.py` (CPython imports the django module graph).
+#   N sandboxes' verify peaks overlapping -> host memory overcommit.
+#
+# Project: django/django (github.com/django/django)
+#   - 60k+ stars, the Django web framework (large popular Python monorepo)
+#   - Real repo used across swe_bench / swe-bench-verified evaluations
+#   - Runtime deps (asgiref, sqlparse) pip-installed; the rest of django
+#     resolves from the cloned source via cwd on sys.path. The heavy
+#     django.forms/db module graph is the transient verify peak.
+#
+# Usage:
+#   python -m e2b_bench -c config/e2b/coding_python_bench.yaml --create-only
+#   python -m e2b_bench -c config/e2b/coding_python_bench.yaml --detect
+#   python -m e2b_bench -c config/e2b/coding_python_bench.yaml --detect -bm round_robin
+
+# E2B SDK environment variables (replace with real credentials)
+e2b_env:
+  E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+  E2B_API_KEY: "your_e2b_api_key_here"
+  E2B_DOMAIN: "e2b.app"
+  E2B_API_URL: "http://localhost:3000"
+  E2B_HTTP_SSL: "false"
+
+# Sandbox configuration
+sandbox:
+  template: "openclaw-coding-python-v1"   # E2B template name (Python coding template with django/django)
+  create_timeout: 86400                   # Sandbox creation timeout (seconds)
+  total_count: 10                         # Total sandbox count (start small for manual testing)
+  detect_existing: false                  # Detect existing sandboxes instead of creating new ones
+  create_only: false                      # Create sandboxes only without running tasks (Phase 0)
+  sandbox_ids_file: "sandboxs_python.txt" # File path to save/load sandbox IDs
+  # NUMA node(s) to bind sandboxes to. Single: 2; Multi (round-robin): [2, 3]; null/omit: none.
+  numa_bind: 2
+
+# Sandbox creation batch control
+create_batch:
+  size: 10                                # Sandboxes per batch during creation
+  interval: 3                             # Interval between creation batches (seconds)
+
+# Task execution batch control
+task_batch:
+  size: 5                                 # Sandboxes to start tasks per batch
+  interval: 5                             # Interval between task batches (seconds)
+
+# Workflow type selection — determines which runners, metrics, and reports to use
+workflow_type: "coding"
+
+# Coding task configuration (Python language)
+coding:
+  language: "python"                      # Coding language (selects the python verify profile)
+  project_dir: "/opt/coding-bench"        # django/django project directory inside sandbox
+  verify_cmd: "python3 /tmp/bench_verify.py"  # Verify run command (writes ad-hoc test + runs it)
+  verify_timeout: 120                     # Verify command timeout (seconds)
+  verify_repeat: 1                        # python stays N=1 (a single CPython import of the django graph is the real load; no persistent compile cache to warm)
+  source_files:                           # Replacement pairs for round-robin editing (verified against django/django)
+    - file: "django/conf/global_settings.py"
+      find: 'LANGUAGE_CODE = "en-us"'
+      replace: 'LANGUAGE_CODE = "en-us"  # bench round'
+      # Ad-hoc verify script: a bare `python3` script importing django and
+      # asserting a real invariant (LANGUAGE_CODE == "en-us") — mirrors the
+      # verification shape a real coding agent uses on a Python repo. Prints
+      # "All tests passed!" only if the assertion holds.
+      verify_script: |
+        import django
+        from django.conf import settings
+
+        settings.configure(
+            DEBUG=True,
+            DATABASES={},
+            INSTALLED_APPS=[],
+        )
+
+        import django.urls
+
+        assert settings.LANGUAGE_CODE == "en-us", settings.LANGUAGE_CODE
+        print("All tests passed!")
+    - file: "django/db/models/fields/__init__.py"
+      find: "class Field(RegisterLookupMixin):"
+      replace: "class Field(RegisterLookupMixin):  # bench"
+    - file: "django/http/response.py"
+      find: "class HttpResponse:"
+      replace: "class HttpResponse:  # bench"
+    - file: "django/utils/text.py"
+      find: "def slugify(value, allow_unicode=False):"
+      replace: "def slugify(value, allow_unicode=False):  # bench"
+    - file: "django/template/base.py"
+      find: "class Template:"
+      replace: "class Template:  # bench"
+    - file: "django/urls/resolvers.py"
+      find: "class URLResolver:"
+      replace: "class URLResolver:  # bench"
+  interval_min: 2.0                       # Min interval between tasks (fixed mode)
+  interval_max: 10.0                      # Max interval between tasks (fixed mode)
+  skip_verify: false                      # Skip the verify step (set true for edit-only testing)
+
+# Test run configuration
+test:
+  duration: 160                           # Test duration (seconds)
+  stats_interval: 10                      # Stats snapshot interval (seconds)
+  benchmark_percent: 1.0                  # Percentage of sandboxes for benchmark (1.0 = 100%)
+
+  # Round-robin mode configuration (recommended for coding benchmark)
+  benchmark_mode: "round_robin"
+  round_size: 5                           # Sandboxes per round
+  round_count: 20                         # Max rounds (stops when reached or duration exceeded)
+  round_interval: 3                       # Round interval (seconds)
+
+# Report configuration
+report:
+  output_dir: "results/e2b/coding_python"
+  filename_prefix: "e2b_coding_python_bench"

@@ -13,9 +13,11 @@ import yaml
 
 from .schemas import (
     DEFAULT_CODING_GO_SOURCE_FILES,
+    DEFAULT_CODING_PYTHON_SOURCE_FILES,
     DEFAULT_CODING_SOURCE_FILES,
     DEFAULT_CODING_VERIFY_SCRIPT_GO,
     DEFAULT_CODING_VERIFY_SCRIPT_JS,
+    DEFAULT_CODING_VERIFY_SCRIPT_PY,
 )
 
 
@@ -186,12 +188,28 @@ CODING_LANGUAGE_PROFILES: Dict[str, CodingLanguageProfile] = {
         # that cold-compile CPU pressure the customer needs to measure.
         pre_verify_cmd="go clean -cache",
     ),
+    "python": CodingLanguageProfile(
+        temp_test_path="/tmp/bench_verify.py",
+        heredoc_eof="PYEOF",
+        run_cmd="python3 /tmp/bench_verify.py",
+        source_find_names=("*.py",),
+        source_find_root=".",
+        # django/django: the framework package (all edits live under django/). Only
+        # that subtree is reset; config/support files (pyproject.toml, tests/) persist.
+        checkout_paths="django/",
+        default_verify_script=DEFAULT_CODING_VERIFY_SCRIPT_PY,
+        # No pre_verify_cmd (like ts): Python's __pycache__ holds cheap bytecode,
+        # not compiled types, so the in-memory django module graph (the actual
+        # verify peak) is unchanged warm or cold. A plain single write+run is the
+        # trace-faithful shape - no `go clean`-style cold-cache reset needed.
+    ),
 }
 
 # Maps a language to its default replacement-pair list (DEFAULT_CODING_*_SOURCE_FILES).
 CODING_LANGUAGE_DEFAULT_SOURCE_FILES: Dict[str, list] = {
     "ts": DEFAULT_CODING_SOURCE_FILES,
     "go": DEFAULT_CODING_GO_SOURCE_FILES,
+    "python": DEFAULT_CODING_PYTHON_SOURCE_FILES,
 }
 
 

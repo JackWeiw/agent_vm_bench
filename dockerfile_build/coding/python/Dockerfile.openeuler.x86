@@ -1,0 +1,45 @@
+# Coding Benchmark Template (openEuler, Python) - E2B Sandbox for AI Coding Agent Memory Stress Testing
+#
+# x86_64 variant of coding/python/Dockerfile.openeuler. Identical build, only the
+# base image tag differs (openEuler 24.03-LTS-SP3 amd64). See Dockerfile.openeuler
+# for the full design rationale.
+#
+# Build:  docker build -t openeuler-coding-python-bench:24.03-lts-sp3-x86_64 -f Dockerfile.openeuler.x86 .
+# Push:   OS=openeuler ARCH=x86 HARBOR_IP=X bash push_to_harbor.sh
+# Template: python3 ../build_e2b.py --server-ip X --harbor-ip X \
+#     --alias openeuler-coding-python-v1 --image e2b-orchestration/openeuler-coding-python-bench:custom
+FROM openeuler-24.03-lts-sp3:latest
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ENV http_proxy=${HTTP_PROXY}
+ENV https_proxy=${HTTPS_PROXY}
+ENV HTTP_PROXY=${HTTP_PROXY}
+ENV HTTPS_PROXY=${HTTPS_PROXY}
+
+RUN echo 'sslverify=0' >> /etc/dnf/dnf.conf && \
+    dnf install -y python3 python3-pip git curl vim && \
+    pip3 install --no-cache-dir --break-system-packages \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        asgiref==3.8.1 sqlparse==0.5.0 && \
+    git config --global http.sslVerify false && \
+    dnf clean all && rm -rf /var/cache/dnf /var/tmp/* /tmp/*
+
+RUN cd /opt && \
+    git clone https://github.com/django/django.git coding-bench && \
+    cd coding-bench && \
+    git checkout 8d160f154f0240a423e83ffe0690e472f837373c && \
+    python3 -c "import django; from django.conf import settings; print('django', django.__version__)"
+
+COPY bench_helper.sh /opt/coding-bench/bench_helper.sh
+RUN chmod +x /opt/coding-bench/bench_helper.sh
+
+ENV http_proxy= \
+    https_proxy= \
+    HTTP_PROXY= \
+    HTTPS_PROXY=
+
+CMD ["sleep", "infinity"]
