@@ -218,8 +218,10 @@ class CodingWarmupRunner(threading.Thread):
         e2b_sandbox_id = sbx.sandbox_id if hasattr(sbx, "sandbox_id") else "N/A"
         project_dir = self.config.coding_project_dir
 
-        project_marker = "go.mod" if self.config.coding_language == "go" else (
-            "pyproject.toml" if self.config.coding_language == "python" else "package.json"
+        project_marker = (
+            "go.mod"
+            if self.config.coding_language == "go"
+            else ("pyproject.toml" if self.config.coding_language == "python" else "package.json")
         )
         try:
             result = sbx.commands.run(f"ls {project_dir}/{project_marker}", timeout=30, user="root")
