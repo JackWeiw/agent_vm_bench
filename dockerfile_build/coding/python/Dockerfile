@@ -73,10 +73,14 @@ RUN apt update && apt install -y --no-install-recommends python3 python3-pip git
 RUN cd /opt && \
     git clone https://github.com/django/django.git coding-bench && \
     cd coding-bench && \
-    git checkout 8d160f154f0240a423e83ffe0690e472f837373c && \
-    # cwd is on sys.path, so `import django` resolves the cloned ./django package;
-    # this build-time check fails fast if pip deps or the repo layout are broken.
-    python3 -c "import django; from django.conf import settings; print('django', django.__version__)"
+    git checkout 8d160f154f0240a423e83ffe0690e472f837373c
+
+ENV PYTHONPATH=/opt/coding-bench
+
+# Smoke check: run in script mode (not -c) so sys.path[0] is /tmp/, not CWD,
+# catching the same ModuleNotFoundError the runtime verify would hit.
+RUN echo 'import django; from django.conf import settings; print("django", django.__version__)' > /tmp/_smoke.py && \
+    python3 /tmp/_smoke.py && rm /tmp/_smoke.py
 
 # Copy the manual testing helper script
 COPY bench_helper.sh /opt/coding-bench/bench_helper.sh

@@ -588,12 +588,13 @@ class CodingRoundRunner(threading.Thread):
         )
         found = (fallback.stdout or "").strip().splitlines()
         if found:
+            comment = "#" if self.config.coding_language == "python" else "//"
             return (
                 False,
                 f"target not found, fell back to {found[0]}",
                 found[0],
-                "// bench marker",
-                "// bench round\n// bench marker",
+                f"{comment} bench marker",
+                f"{comment} bench round\n{comment} bench marker",
             )
         return False, "checkout/locate failed", target_file, find_str, replace_str
 

@@ -300,7 +300,7 @@ DEFAULT_CODING_VERIFY_SCRIPT_GO = (
 # list, applying one pair per round then verifying by writing an ad-hoc
 # /tmp/bench_verify.py and running it via `python3` (the exact verification shape
 # a real coding agent uses on a Python repo).
-DEFAULT_CODING_PYTHON_SOURCE_FILES = [
+DEFAULT_CODING_PY_SOURCE_FILES = [
     {
         "file": "django/conf/global_settings.py",
         "find": 'LANGUAGE_CODE = "en-us"',

@@ -53,8 +53,12 @@ RUN echo 'sslverify=0' >> /etc/dnf/dnf.conf && \
 RUN cd /opt && \
     git clone https://github.com/django/django.git coding-bench && \
     cd coding-bench && \
-    git checkout 8d160f154f0240a423e83ffe0690e472f837373c && \
-    python3 -c "import django; from django.conf import settings; print('django', django.__version__)"
+    git checkout 8d160f154f0240a423e83ffe0690e472f837373c
+
+ENV PYTHONPATH=/opt/coding-bench
+
+RUN echo 'import django; from django.conf import settings; print("django", django.__version__)' > /tmp/_smoke.py && \
+    python3 /tmp/_smoke.py && rm /tmp/_smoke.py
 
 COPY bench_helper.sh /opt/coding-bench/bench_helper.sh
 RUN chmod +x /opt/coding-bench/bench_helper.sh
