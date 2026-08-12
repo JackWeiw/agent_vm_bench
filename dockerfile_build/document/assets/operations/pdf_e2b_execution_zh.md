@@ -496,7 +496,7 @@ render_count = 0
 for aid in applicant_ids:
     values_json = FIELD_VALUES_DIR / f"{aid}.json"
     out_pdf = FILLED_DIR / f"{aid}.pdf"
-    
+
     # Fill
     cmd_fill = [
         "python3", str(FILL_SCRIPT),
