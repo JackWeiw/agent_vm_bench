@@ -6,14 +6,18 @@ from bench_core.provider import (
     CreationMetrics,
     EnvironmentProvider,
     SandboxInstance,
+    SandboxStatus,
 )
 
 
 def test_creation_metrics_defaults():
     m = CreationMetrics()
-    assert m.start_time == 0.0
-    assert m.success is False
+    assert m.create_elapsed == 0.0
+    assert m.ready_check_elapsed == 0.0
+    assert m.total_elapsed == 0.0
+    assert m.status == SandboxStatus.PENDING
     assert m.error == ""
+    assert m.ready_check_error == ""
 
 
 def test_command_result_defaults():

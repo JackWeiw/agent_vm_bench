@@ -19,22 +19,48 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Mapping
+
+
+class SandboxStatus(Enum):
+    """Lifecycle state of a sandbox, set on ``CreationMetrics.status``.
+
+    The names are workflow-neutral: ``READY`` covers both "browser ports open"
+    and "command responsive" (coding/document); the report layer renders the
+    workflow-specific label. ``READY_FAILED`` is the dual of ``READY`` for the
+    readiness check (port probe / command / validate).
+    """
+
+    PENDING = "pending"  # waiting for creation
+    CREATING = "creating"  # create call in flight
+    CREATED = "created"  # create API succeeded, awaiting readiness
+    READY = "ready"  # readiness check passed, can run tasks
+    ACTIVE = "active"  # running tasks
+    FAILED = "failed"  # creation failed
+    READY_FAILED = "ready_failed"  # readiness check failed
+    OFFLINE = "offline"  # went down at runtime
+    KILLED = "killed"  # torn down by cleanup
 
 
 @dataclass
 class CreationMetrics:
-    """Per-sandbox creation timing.
+    """Per-sandbox creation timing + status (the perf bench's core measurement).
 
-    Unifies the byte-parallel ``CreationMetrics`` definitions that today live
-    independently in ``e2b_bench/schemas.py`` and ``docker_bench/schemas.py``.
+    Unifies the byte-parallel ``CreationMetrics`` in ``e2b_bench/schemas.py`` and
+    ``docker_bench/schemas.py`` under workflow-neutral names. ``ready_check_*``
+    generalises e2b's "port wait" and coding's "command/validate wait"; every
+    provider has a create step and a readiness step, so this shape is host-agnostic.
     """
 
-    start_time: float = 0.0
-    end_time: float = 0.0
-    duration: float = 0.0
-    success: bool = False
-    error: str = ""
+    submit_time: float = 0.0  # wall-clock when creation was submitted
+    ready_time: float = 0.0  # wall-clock when readiness was achieved
+    create_elapsed: float = 0.0  # create API call time, excluding readiness check
+    ready_check_elapsed: float = 0.0  # time spent waiting for readiness (port probe / command / validate)
+    total_elapsed: float = 0.0  # submit -> ready = create_elapsed + ready_check_elapsed
+    status: SandboxStatus = SandboxStatus.PENDING
+    error: str = ""  # creation error message
+    ready_check_error: str = ""  # readiness-check error message
 
 
 @dataclass
@@ -55,9 +81,9 @@ class SandboxInstance:
     """Host-agnostic sandbox/instance state.
 
     Unifies ``SandboxState`` (e2b) and ``ContainerState`` (docker). The provider
-    keeps any SDK handle internally; the kernel touches only the fields below.
-    Provider state classes may subclass this and add provider-specific fields --
-    the kernel reads the base view, the provider reads the subclass.
+    keeps any SDK handle internally (a ``{index: handle}`` table); the kernel
+    touches only the fields below, so adding a provider means holding your own
+    handle table -- not subclassing this type.
     """
 
     id: str
