@@ -1,0 +1,62 @@
+name: Engineering issue
+description: Maintainer tracking issue for a refactor, cleanup, or code-analysis finding.
+title: "<scope>: <short summary>"
+labels: []
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Current state / context
+      description: What exists today and why it matters.
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is wrong, risky, or missing? Be specific.
+    validations:
+      required: true
+  - type: textarea
+    id: where
+    attributes:
+      label: Where
+      description: File paths and line numbers. One per line where possible.
+    validations:
+      required: false
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Code excerpts, grep output, or numbers that show the problem.
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: direction
+    attributes:
+      label: Direction / proposed approach
+      description: Suggested fix or approach. Alternatives welcome.
+    validations:
+      required: false
+  - type: input
+    id: severity
+    attributes:
+      label: Severity / Effort
+      placeholder: "e.g. High / S, Med / M, Low / S"
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How do we know it is done?
+    validations:
+      required: false
+  - type: textarea
+    id: related
+    attributes:
+      label: Related
+      description: Other issues, RFCs, or PRs.
+    validations:
+      required: false
