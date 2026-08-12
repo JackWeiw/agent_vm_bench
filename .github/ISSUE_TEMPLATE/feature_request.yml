@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest a new feature or enhancement.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What pain point or missing capability does this address?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would you like to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+    validations:
+      required: false
+  - type: checkboxes
+    id: rfc
+    attributes:
+      label: Scope
+      options:
+        - label: This is a non-trivial change that may warrant an RFC (see docs/rfcs/README.md).
+          required: false

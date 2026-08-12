@@ -19,6 +19,14 @@ Test framework for OpenStack VM memory overcommit scenarios with comprehensive p
 | [Docker Bench Usage](docs/docker-bench-usage.md) | Docker container browser automation testing |
 | [Docker Bench Usage (中文)](docs/docker-bench-usage-zh.md) | Docker容器浏览器自动化性能测试指南 |
 
+## Contributing & Community
+
+- [Contributing guide](CONTRIBUTING.md) — dev setup, tests, and how to open a PR
+- [Code of Conduct](CODE_OF_CONDUCT.md) — standards for participation
+- [Getting help](SUPPORT.md) — where to ask, report, or propose changes
+- [RFC process](docs/rfcs/README.md) — for non-trivial design changes
+- [Issue templates](.github/ISSUE_TEMPLATE/) — bug, feature, and performance-anomaly forms
+
 ## Dependencies
 
 ```bash

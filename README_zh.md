@@ -20,6 +20,14 @@ OpenStack VM 内存超配场景下的性能测试框架，提供全面的性能�
 | [Docker Bench 使用指南（英文）](docs/docker-bench-usage.md)  | Docker container browser automation testing |
 
 
+## 贡献与社区
+
+- [贡献指南](CONTRIBUTING.md) — 开发环境搭建、测试与提交流程
+- [行为准则](CODE_OF_CONDUCT.md) — 参与标准
+- [获取帮助](SUPPORT.md) — 提问、反馈与建议渠道
+- [RFC 流程](docs/rfcs/README.md) — 用于重大设计变更
+- [Issue 模板](.github/ISSUE_TEMPLATE/) — Bug、Feature 与性能异常表单
+
 ## 依赖安装
 
 ```bash
