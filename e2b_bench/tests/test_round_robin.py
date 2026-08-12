@@ -195,6 +195,10 @@ class TestExceptionCleanup(unittest.TestCase):
         manager._stop_round.assert_called_once_with()
 
     def test_run_benchmark_cleans_up_browser_and_coding_on_round_robin_error(self):
+        # Round-robin failure must set the kernel stop event, stop stats, and
+        # tear down the sandboxes the kernel created (not detect mode). The
+        # kernel owns the orchestrators now; the provider's SandboxManager is
+        # constructed lazily at create_all time.
         for workflow_type in ("browser", "coding"):
             with self.subTest(workflow_type=workflow_type):
                 config = Config(
@@ -212,15 +216,16 @@ class TestExceptionCleanup(unittest.TestCase):
                 round_robin_manager.run.side_effect = RuntimeError("round-robin failed")
 
                 with (
-                    patch("e2b_bench.bench.SandboxManager", return_value=sandbox_manager) as manager_class,
-                    patch("e2b_bench.bench.TaskManager"),
-                    patch("e2b_bench.bench.StatsCollector", return_value=stats_collector),
-                    patch("e2b_bench.bench.RoundRobinTaskManager", return_value=round_robin_manager),
+                    patch("e2b_bench.provider.SandboxManager", return_value=sandbox_manager),
+                    patch("bench_core.bench.StatsCollector", return_value=stats_collector),
+                    patch("bench_core.bench.RoundRobinTaskManager", return_value=round_robin_manager) as rr_class,
                     self.assertRaisesRegex(RuntimeError, "round-robin failed"),
                 ):
                     run_benchmark(config)
 
-                stop_event = manager_class.call_args.args[1]
+                # The kernel passes its own stop event to the round-robin
+                # manager; the error path sets it before re-raising.
+                stop_event = rr_class.call_args.args[2]
                 self.assertTrue(stop_event.is_set())
                 stats_collector.stop.assert_called_once_with()
                 sandbox_manager.kill_all.assert_called_once_with()

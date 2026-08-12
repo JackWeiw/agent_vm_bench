@@ -48,15 +48,21 @@ def _make_state(
 
 
 def _provider_with(states: dict[int, SandboxState], *, config: Config | None = None) -> tuple[E2BProvider, Mock]:
-    """Build an E2BProvider over a mock manager holding the given states."""
+    """Build an E2BProvider over a mock manager holding the given states.
+
+    The provider constructs its SandboxManager lazily; tests inject a mock by
+    setting ``_manager`` so no SDK client is ever built.
+    """
     cfg = config if config is not None else Config()
+    provider = E2BProvider(cfg, Event())
     manager = Mock()
     manager.sandbox_states = dict(states)
     manager.create_all.return_value = manager.sandbox_states
     manager.detect_existing.return_value = manager.sandbox_states
     manager.detect_from_file.return_value = manager.sandbox_states
     manager.check_alive.return_value = True
-    return E2BProvider(cfg, manager), manager
+    provider._manager = manager  # inject; bypasses lazy SandboxManager construction
+    return provider, manager
 
 
 class TestCreateAll:
@@ -267,6 +273,27 @@ class TestSaveIds:
             assert caplog.text == "" or "No ready" in caplog.text
         finally:
             os.unlink(path)
+
+
+class TestLazyConstruction:
+    def test_manager_not_built_until_first_use(self):
+        provider = E2BProvider(Config(), Event())
+        assert provider._manager is None
+
+    def test_cleanup_all_is_noop_before_construction(self):
+        # If the kernel fails before create_all (e.g. document preflight
+        # raises), the manager was never built -> cleanup must not raise.
+        provider = E2BProvider(Config(), Event())
+        provider.cleanup_all()
+        assert provider._manager is None
+
+    def test_first_access_builds_manager(self):
+        from e2b_bench.sandbox_manager import SandboxManager
+
+        provider = E2BProvider(Config(), Event())
+        mgr = provider.manager
+        assert isinstance(mgr, SandboxManager)
+        assert provider._manager is mgr  # cached
 
 
 class TestKernelConfigFromE2B:

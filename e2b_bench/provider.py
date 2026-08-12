@@ -54,38 +54,56 @@ _STATUS_MAP: dict[E2BSandboxStatus, SandboxStatus] = {
 class E2BProvider(EnvironmentProvider):
     """EnvironmentProvider backed by an E2B :class:`SandboxManager`.
 
-    The adapter holds the manager (which owns the SDK handles) and the e2b
-    :class:`Config` (for env-var setup and the IDs-file path). The kernel drives
-    it through the abstract contract; it never touches the manager or SDK
-    types directly.
+    The adapter holds the e2b :class:`Config` (for env-var setup, the IDs-file
+    path, and NUMA) plus the stop event. The :class:`SandboxManager` is
+    constructed lazily on first use -- so the kernel can run host-side
+    preflight (e.g. document scene-recipe validation) and fail before any SDK
+    client is built. The kernel never sees the manager or SDK types directly.
     """
 
     name = "e2b"
 
-    def __init__(self, config: Config, manager: SandboxManager) -> None:
+    def __init__(self, config: Config, stop_event: threading.Event) -> None:
         self._config = config
-        self._manager = manager
+        self._stop_event = stop_event
+        self._manager: SandboxManager | None = None
+
+    @property
+    def manager(self) -> SandboxManager:
+        """The wrapped SandboxManager, constructed on first access.
+
+        Lazy so the kernel's preflight / prepare_env / header-print can run (and
+        fail) before any SDK client is built. Tests inject a mock by setting
+        ``_manager`` directly.
+        """
+        if self._manager is None:
+            self._manager = SandboxManager(self._config, self._stop_event)
+        return self._manager
 
     # ------------------------------------------------------------------ lifecycle
     def create_all(self) -> Mapping[int, SandboxInstance]:
-        return self._translate(self._manager.create_all())
+        return self._translate(self.manager.create_all())
 
     def detect_existing(self) -> Mapping[int, SandboxInstance]:
-        return self._translate(self._manager.detect_existing())
+        return self._translate(self.manager.detect_existing())
 
     def detect_from_ids(self, ids_file: str | None = None) -> Mapping[int, SandboxInstance] | None:
         path = ids_file or self._config.sandbox_ids_file
         if not path:
             return None
-        return self._translate(self._manager.detect_from_file(path))
+        return self._translate(self.manager.detect_from_file(path))
 
     def check_alive(self, inst: SandboxInstance) -> bool:
-        state = self._manager.sandbox_states.get(inst.index)
+        state = self.manager.sandbox_states.get(inst.index)
         if state is None:
             return False
-        return self._manager.check_alive(state)
+        return self.manager.check_alive(state)
 
     def cleanup_all(self) -> None:
+        # If the manager was never built (e.g. preflight failed before create),
+        # there is nothing to tear down.
+        if self._manager is None:
+            return
         self._manager.kill_all()
 
     # ------------------------------------------------------------------ setup hooks
@@ -102,7 +120,7 @@ class E2BProvider(EnvironmentProvider):
         cwd: str | None = None,
         env: dict[str, str] | None = None,
     ) -> CommandResult:
-        state = self._manager.sandbox_states.get(inst.index)
+        state = self.manager.sandbox_states.get(inst.index)
         if state is None or state.sandbox_obj is None:
             raise RuntimeError(f"No E2B handle for sandbox index {inst.index}")
         # Only forward kwargs the e2b SDK accepts; user/cwd/env are passed
@@ -176,10 +194,10 @@ def from_config(config: Config, stop_event: threading.Event) -> E2BProvider:
     """Build an :class:`E2BProvider` from an already-constructed e2b Config.
 
     Real entry points (``e2b_bench.bench.main``) build the e2b Config with full
-    CLI merge, then call this; the provider owns the manager it constructs.
+    CLI merge, then call this. The SandboxManager is constructed lazily on
+    first use, so this is cheap and does not talk to the e2b SDK yet.
     """
-    manager = SandboxManager(config, stop_event)
-    return E2BProvider(config, manager)
+    return E2BProvider(config, stop_event)
 
 
 def build_provider(config: KernelConfig, raw_config: dict) -> E2BProvider:

@@ -507,7 +507,10 @@ class TestVerifyTemplatePool(unittest.TestCase):
         not hardcoded to /opt/coding-bench. A non-default coding_project_dir must
         resolve the JS import against that tree (the same tree the shell cd'd
         into), else verify silently tests the wrong tree (issue #80)."""
-        from e2b_bench.schemas import _stamp_verify_body
+        # _stamp_verify_body now lives in bench_core.coding_payload (single
+        # source of truth after the payload dedup); e2b_bench.schemas re-exports
+        # the public DEFAULT_* constants but not the private helper.
+        from bench_core.coding_payload import _stamp_verify_body
 
         body_default = _stamp_verify_body("/opt/coding-bench", "<div>x</div>", "if (true)")
         body_custom = _stamp_verify_body("/srv/repos/vue", "<div>x</div>", "if (true)")

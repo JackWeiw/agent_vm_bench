@@ -229,12 +229,17 @@ def test_unknown_task_runner_does_not_fall_back_to_browser():
 
 
 def test_document_preflight_runs_before_sandbox_manager_construction():
+    # The kernel runs host-side document preflight before driving the provider;
+    # a bad recipe must fail before any SDK client (SandboxManager) is built.
+    # preflight_document now lives in bench_core (the kernel's module), and the
+    # provider constructs SandboxManager lazily at create_all time -- after
+    # preflight -- so a preflight failure means the manager is never built.
     with (
         patch(
-            "e2b_bench.document_task_runner.preflight_document",
+            "bench_core.task_runner.document.preflight_document",
             side_effect=SceneRecipeError("invalid fixed recipe"),
         ),
-        patch("e2b_bench.bench.SandboxManager") as manager,
+        patch("e2b_bench.provider.SandboxManager") as manager,
         pytest.raises(SceneRecipeError, match="invalid fixed recipe"),
     ):
         run_benchmark(document_config())
