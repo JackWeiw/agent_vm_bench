@@ -502,6 +502,38 @@ class TestVerifyTemplatePool(unittest.TestCase):
         self.assertIn("baseParse", DEFAULT_CODING_VERIFY_SCRIPT_JS)
         self.assertNotIn("globalThis.__TEST__", DEFAULT_CODING_VERIFY_SCRIPT_JS)
 
+    def test_stamp_verify_body_anchors_import_at_project_dir(self):
+        """The compiler-core import() path is anchored at the stamped project_dir,
+        not hardcoded to /opt/coding-bench. A non-default coding_project_dir must
+        resolve the JS import against that tree (the same tree the shell cd'd
+        into), else verify silently tests the wrong tree (issue #80)."""
+        from e2b_bench.schemas import _stamp_verify_body
+
+        body_default = _stamp_verify_body("/opt/coding-bench", "<div>x</div>", "if (true)")
+        body_custom = _stamp_verify_body("/srv/repos/vue", "<div>x</div>", "if (true)")
+
+        self.assertIn(
+            "import('/opt/coding-bench/packages/compiler-core/src/index.ts')",
+            body_default,
+        )
+        self.assertIn(
+            "import('/srv/repos/vue/packages/compiler-core/src/index.ts')",
+            body_custom,
+        )
+        # A changed project_dir must change the import path - the regression: the
+        # old body hardcoded /opt/coding-bench regardless of coding_project_dir.
+        self.assertNotIn("/opt/coding-bench", body_custom)
+
+    def test_default_verify_script_uses_default_project_dir(self):
+        """The back-compat default body is stamped against the default
+        /opt/coding-bench so existing snapshots stay byte-stable."""
+        from e2b_bench.schemas import DEFAULT_CODING_VERIFY_SCRIPT_JS
+
+        self.assertIn(
+            "import('/opt/coding-bench/packages/compiler-core/src/index.ts')",
+            DEFAULT_CODING_VERIFY_SCRIPT_JS,
+        )
+
     def test_default_pairs_carry_no_verify_script(self):
         """Pairs own edit semantics only ({file, find, replace}); verify workload
         comes from the shared pool, so no pair carries a verify_script anymore."""
