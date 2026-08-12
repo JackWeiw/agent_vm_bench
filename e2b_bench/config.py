@@ -249,6 +249,11 @@ def _normalize_source_files(raw: Any) -> List[Dict[str, str]]:
 # Sentinel for "no value found" (distinct from None, which is a valid value).
 _MISSING: Any = object()
 
+# Sentinel default for _FieldSpec.cli: "the argparse attr equals the field name".
+# Resolved to the field name in __post_init__, so rows with cli==field just omit cli.
+# A field with no CLI override sets cli=None explicitly; a different dest sets cli="...".
+_SAME: Any = object()
+
 # Every YAML section Config reads. _sections normalizes absent/null to {} so
 # extractors can call .get() without NoneType guards.
 _SECTION_NAMES = (
@@ -305,7 +310,9 @@ class _FieldSpec:
     """One Config field's resolution rules across all three construction paths.
 
     field: Config dataclass attribute name.
-    cli:   argparse attribute ("" = no CLI override).
+    cli:   argparse attribute. Omitted (the default) -> the field name (auto),
+           or None for yaml_only fields (no CLI). An explicit dest overrides
+           (e.g. total_count -> "total"); None forces no-CLI on a non-yaml_only field.
     y:     YAML source: a (section, key) tuple -> section.get(key), or a callable
            (data, sec) -> value for special cases. _MISSING = absent.
     d:     static default when YAML and CLI are both absent.
@@ -321,13 +328,18 @@ class _FieldSpec:
     """
 
     field: str
-    cli: str = ""
+    cli: Any = _SAME
     y: Any = None
     d: Any = _MISSING
     df: Optional[Callable[..., Any]] = None
     t: Optional[Callable[..., Any]] = None
     m: str = "cli_or_yaml"
     fa: str = "none"
+
+    def __post_init__(self) -> None:
+        if self.cli is _SAME:
+            # No explicit CLI: yaml_only fields have none, others share the field name.
+            object.__setattr__(self, "cli", None if self.m == "yaml_only" else self.field)
 
 
 # Compact alias so each table row fits on one line.
@@ -355,62 +367,49 @@ def _yaml_val(spec: _FieldSpec, data: Dict[str, Any], sec: Dict[str, Dict[str, A
 # the resolved-so-far context.
 _FIELDS: List[_FieldSpec] = [
     # --- E2B environment ---
-    _F("e2b_access_token", cli="e2b_access_token", y=("e2b_env", "E2B_ACCESS_TOKEN"), d=""),
-    _F("e2b_api_key", cli="e2b_api_key", y=("e2b_env", "E2B_API_KEY"), d=""),
-    _F("e2b_domain", cli="e2b_domain", y=("e2b_env", "E2B_DOMAIN"), d="e2b.app"),
-    _F("e2b_api_url", cli="e2b_api_url", y=("e2b_env", "E2B_API_URL"), d="http://localhost:3000"),
-    _F("e2b_http_ssl", cli="e2b_http_ssl", y=("e2b_env", "E2B_HTTP_SSL"), d="false"),
+    _F("e2b_access_token", y=("e2b_env", "E2B_ACCESS_TOKEN"), d=""),
+    _F("e2b_api_key", y=("e2b_env", "E2B_API_KEY"), d=""),
+    _F("e2b_domain", y=("e2b_env", "E2B_DOMAIN"), d="e2b.app"),
+    _F("e2b_api_url", y=("e2b_env", "E2B_API_URL"), d="http://localhost:3000"),
+    _F("e2b_http_ssl", y=("e2b_env", "E2B_HTTP_SSL"), d="false"),
     # --- Sandbox ---
-    _F("template", cli="template", y=("sandbox", "template"), d="openclaw-browser-v1"),
-    _F("create_timeout", cli="create_timeout", y=("sandbox", "create_timeout"), d=86400),
+    _F("template", y=("sandbox", "template"), d="openclaw-browser-v1"),
+    _F("create_timeout", y=("sandbox", "create_timeout"), d=86400),
     _F("total_count", cli="total", y=("sandbox", "total_count"), d=100),
     _F("numa_bind", y=("sandbox", "numa_bind"), d=2, t=_normalize_numa_bind, m="yaml_only"),
     _F("detect_existing", cli="detect", y=("sandbox", "detect_existing"), d=False, m="truthy_or_yaml", fa="truthy"),
-    _F("create_only", cli="create_only", y=("sandbox", "create_only"), d=False, m="truthy_or_yaml", fa="truthy"),
-    _F("sandbox_ids_file", cli="sandbox_ids_file", y=("sandbox", "sandbox_ids_file"), d=None),
+    _F("create_only", y=("sandbox", "create_only"), d=False, m="truthy_or_yaml", fa="truthy"),
+    _F("sandbox_ids_file", y=("sandbox", "sandbox_ids_file"), d=None),
     # --- Batch control ---
-    _F("create_batch_size", cli="create_batch_size", y=("create_batch", "size"), d=None),
-    _F("create_batch_interval", cli="create_batch_interval", y=("create_batch", "interval"), d=None),
-    _F("task_batch_size", cli="task_batch_size", y=("task_batch", "size"), d=None),
-    _F("task_batch_interval", cli="task_batch_interval", y=("task_batch", "interval"), d=None),
+    _F("create_batch_size", y=("create_batch", "size"), d=None),
+    _F("create_batch_interval", y=("create_batch", "interval"), d=None),
+    _F("task_batch_size", y=("task_batch", "size"), d=None),
+    _F("task_batch_interval", y=("task_batch", "interval"), d=None),
     # --- Benchmark / round-robin ---
-    _F("benchmark_percent", cli="benchmark_percent", y=("test", "benchmark_percent"), d=1.0),
-    _F("benchmark_mode", cli="benchmark_mode", y=("test", "benchmark_mode"), d="fixed"),
-    _F("round_count", cli="round_count", y=("test", "round_count"), d=None),
-    _F("round_size", cli="round_size", y=("test", "round_size"), d=5),
-    _F("round_interval", cli="round_interval", y=("test", "round_interval"), d=5),
+    _F("benchmark_percent", y=("test", "benchmark_percent"), d=1.0),
+    _F("benchmark_mode", y=("test", "benchmark_mode"), d="fixed"),
+    _F("round_count", y=("test", "round_count"), d=None),
+    _F("round_size", y=("test", "round_size"), d=5),
+    _F("round_interval", y=("test", "round_interval"), d=5),
     # --- Workflow type (dual-key: workflow.type then top-level workflow_type) ---
-    _F("workflow_type", cli="workflow_type", y=_extract_workflow_type, d="browser", fa="truthy"),
+    _F("workflow_type", y=_extract_workflow_type, d="browser", fa="truthy"),
     # --- Browser ---
     _F("browser_urls", cli="browser_url", y=("browser", "urls"), df=_browser_urls_default),
-    _F("browser_timeout", cli="browser_timeout", y=("browser", "task_timeout"), d=200),
-    _F("browser_interval_min", cli="browser_interval_min", y=("browser", "interval_min"), d=0.5),
-    _F("browser_interval_max", cli="browser_interval_max", y=("browser", "interval_max"), d=3.0),
+    _F("browser_timeout", y=("browser", "task_timeout"), d=200),
+    _F("browser_interval_min", y=("browser", "interval_min"), d=0.5),
+    _F("browser_interval_max", y=("browser", "interval_max"), d=3.0),
     # --- Warmup ---
     _F("warmup_urls", cli="warmup_url", y=("browser", "warmup_urls"), df=_empty_list),
-    _F("warmup_loops", cli="warmup_loops", y=("browser", "warmup_loops"), d=2),
-    _F("warmup_delay", cli="warmup_delay", y=("browser", "warmup_delay"), d=10),
-    _F("warmup_only", cli="warmup_only", y=("browser", "warmup_only"), d=False, m="truthy_or_yaml", fa="truthy"),
+    _F("warmup_loops", y=("browser", "warmup_loops"), d=2),
+    _F("warmup_delay", y=("browser", "warmup_delay"), d=10),
+    _F("warmup_only", y=("browser", "warmup_only"), d=False, m="truthy_or_yaml", fa="truthy"),
     # --- Coding (language before its dependents) ---
-    _F(
-        "coding_project_dir",
-        cli="coding_project_dir",
-        y=("coding", "project_dir"),
-        d="/opt/coding-bench",
-        fa="getattr",
-    ),
-    _F("coding_language", cli="coding_language", y=("coding", "language"), d="ts", fa="getattr"),
+    _F("coding_project_dir", y=("coding", "project_dir"), d="/opt/coding-bench", fa="getattr"),
+    _F("coding_language", y=("coding", "language"), d="ts", fa="getattr"),
     _F("coding_verify_cmd", y=("coding", "verify_cmd"), df=_verify_cmd_default, m="yaml_only"),
-    _F("coding_verify_timeout", cli="coding_verify_timeout", y=("coding", "verify_timeout"), d=120, fa="getattr"),
-    _F(
-        "coding_skip_verify",
-        cli="coding_skip_verify",
-        y=("coding", "skip_verify"),
-        d=False,
-        m="truthy_or_yaml",
-        fa="getattr",
-    ),
-    _F("coding_verify_repeat", cli="coding_verify_repeat", y=("coding", "verify_repeat"), d=3, fa="getattr"),
+    _F("coding_verify_timeout", y=("coding", "verify_timeout"), d=120, fa="getattr"),
+    _F("coding_skip_verify", y=("coding", "skip_verify"), d=False, m="truthy_or_yaml", fa="getattr"),
+    _F("coding_verify_repeat", y=("coding", "verify_repeat"), d=3, fa="getattr"),
     _F(
         "coding_source_files",
         cli="coding_source_file",
@@ -421,24 +420,18 @@ _FIELDS: List[_FieldSpec] = [
     _F("coding_interval_min", y=("coding", "interval_min"), d=2.0, m="yaml_only"),
     _F("coding_interval_max", y=("coding", "interval_max"), d=10.0, m="yaml_only"),
     # --- Document (truthy from_args: getattr(...,None) or default) ---
-    _F("document_case_kind", cli="document_case_kind", y=("document", "case_kind"), d="xlsx", fa="truthy"),
-    _F(
-        "document_operation_timeout",
-        cli="document_operation_timeout",
-        y=("document", "operation_timeout"),
-        d=900,
-        fa="truthy",
-    ),
-    _F("document_recalc_timeout", cli="document_recalc_timeout", y=("document", "recalc_timeout"), d=600, fa="truthy"),
-    _F("document_task_timeout", cli="document_task_timeout", y=("document", "task_timeout"), d=1800, fa="truthy"),
+    _F("document_case_kind", y=("document", "case_kind"), d="xlsx", fa="truthy"),
+    _F("document_operation_timeout", y=("document", "operation_timeout"), d=900, fa="truthy"),
+    _F("document_recalc_timeout", y=("document", "recalc_timeout"), d=600, fa="truthy"),
+    _F("document_task_timeout", y=("document", "task_timeout"), d=1800, fa="truthy"),
     _F("document_interval_min", y=("document", "interval_min"), d=3.0, m="yaml_only"),
     _F("document_interval_max", y=("document", "interval_max"), d=10.0, m="yaml_only"),
     # --- Test run ---
     _F("test_duration", cli="duration", y=("test", "duration"), d=600),
-    _F("stats_interval", cli="stats_interval", y=("test", "stats_interval"), d=10),
+    _F("stats_interval", y=("test", "stats_interval"), d=10),
     # --- Report ---
-    _F("output_dir", cli="output_dir", y=("report", "output_dir"), d="results/e2b"),
-    _F("filename_prefix", cli="filename_prefix", y=("report", "filename_prefix"), d="e2b_bench"),
+    _F("output_dir", y=("report", "output_dir"), d="results/e2b"),
+    _F("filename_prefix", y=("report", "filename_prefix"), d="e2b_bench"),
     # --- smap_tool (yaml-only in merge; hardcoded default in from_args) ---
     _F("smap_tool_enabled", y=("smap_tool", "enabled"), d=False, m="yaml_only"),
     _F("smap_tool_path", y=("smap_tool", "path"), d="", m="yaml_only"),
@@ -652,7 +645,7 @@ class Config:
 
         # 2. CLI value (_MISSING when the spec has no CLI attr or args is absent).
         cv = _MISSING
-        if spec.cli and args is not None:
+        if spec.cli is not None and args is not None:
             cv = getattr(args, spec.cli, _MISSING)
 
         # 3. Resolve per path.

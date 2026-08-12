@@ -1714,7 +1714,36 @@ class TestFieldSpecTable:
 
         for f in _FIELDS:
             if f.m == "yaml_only":
-                assert f.cli == "", f"{f.field}: yaml_only field must not declare a cli attr"
+                assert f.cli is None, f"{f.field}: yaml_only field must not declare a cli attr"
+
+    def test_cli_is_none_or_nonempty_str(self):
+        """After auto-derive, cli is None (no CLI) or a non-empty argparse attr string."""
+        from e2b_bench.config import _FIELDS
+
+        for f in _FIELDS:
+            assert f.cli is None or (isinstance(f.cli, str) and f.cli != ""), f"{f.field}: bad cli {f.cli!r}"
+
+    def test_known_cli_overrides(self):
+        """Fields whose argparse dest differs from the field name keep an explicit cli.
+
+        Every other non-None cli must equal its field name (auto-derived via _SAME).
+        """
+        from e2b_bench.config import _FIELDS
+
+        overrides = {
+            "total_count": "total",
+            "detect_existing": "detect",
+            "browser_urls": "browser_url",
+            "warmup_urls": "warmup_url",
+            "coding_source_files": "coding_source_file",
+            "test_duration": "duration",
+        }
+        by_field = {f.field: f.cli for f in _FIELDS}
+        for field, cli in overrides.items():
+            assert by_field[field] == cli, f"{field}: expected cli={cli!r}, got {by_field[field]!r}"
+        for f in _FIELDS:
+            if f.cli is not None and f.field not in overrides:
+                assert f.cli == f.field, f"{f.field}: cli {f.cli!r} != field name (auto-derive broken)"
 
     def test_merge_and_from_args_rules_are_valid(self):
         from e2b_bench.config import _FIELDS
