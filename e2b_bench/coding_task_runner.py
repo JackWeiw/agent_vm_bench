@@ -108,8 +108,8 @@ def _run_verify(
     The N bodies come from the shared DEFAULT_VERIFY_TEMPLATES pool, offset by
     `round_id % pool_len` so different rounds pick different N-subsets (mirrors the
     agent rewriting its ad-hoc test between verifies). Each body = 8 agent globals +
-    compiler-core import + baseParse(template) + assert + print (stamped via
-    _stamp_verify_body). Distinct temp files /tmp/bench_verify_{i}.mjs.
+    compiler-core import (anchored at project_dir) + baseParse(template) + assert +
+    print (stamped via _stamp_verify_body). Distinct temp files /tmp/bench_verify_{i}.mjs.
 
     go path: `coding_verify_repeat` is ignored (go stays N=1). go's per-verify cost
     is the genuine compile (already heavy via `go clean -cache` cold-compile); N go
@@ -152,7 +152,7 @@ def _run_verify(
         parts = [f"cd {project_dir}"]
         for i in range(n):
             entry = pool[(offset + i) % len(pool)]
-            body = _stamp_verify_body(entry["template"], entry["assert"])
+            body = _stamp_verify_body(project_dir, entry["template"], entry["assert"])
             path_i = f"/tmp/bench_verify_{i}.mjs"
             parts.append(f"cat > {path_i} << '{eof}'\n{body}{eof}\nnpx tsx {path_i}")
         cmd = " && ".join(parts)

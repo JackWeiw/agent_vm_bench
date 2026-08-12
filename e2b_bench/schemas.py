@@ -140,19 +140,28 @@ _CODING_VERIFY_GLOBALS = (
     "globalThis.__FEATURE_SUSPENSE__ = true\n"
     "globalThis.__RUNTIME_COMPILE__ = true\n"
 )
-_CODING_VERIFY_IMPORT = "import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {\n"
+# Relative path (within the coding project repo) to the compiler-core entry the
+# real openclaw agent imported to verify vuejs/core edits. Stamped under
+# config.coding_project_dir at verify time (see _stamp_verify_body) so the JS
+# import() resolves against the same tree the shell cd'd into - not a hardcoded
+# /opt/coding-bench that would silently test the wrong tree if coding_project_dir
+# is changed (issue #80).
+_CODING_VERIFY_IMPORT_REL = "packages/compiler-core/src/index.ts"
 
 
-def _stamp_verify_body(template: str, assert_code: str) -> str:
+def _stamp_verify_body(project_dir: str, template: str, assert_code: str) -> str:
     """Stamp a {template, assert} pair into a full ad-hoc verify .mjs body.
 
     8 agent globals + compiler-core import + baseParse(template) + assert_code +
-    print. Each body is a self-contained ad-hoc test (mirrors the real openclaw
-    agent's /tmp/test_*.mjs).
+    print. The compiler-core import() path is anchored at `project_dir` (i.e.
+    config.coding_project_dir) so the JS import resolves against the same tree
+    the shell cd'd into, not a hardcoded path. Each body is a self-contained
+    ad-hoc test (mirrors the real openclaw agent's /tmp/test_*.mjs).
     """
+    import_path = f"{project_dir}/{_CODING_VERIFY_IMPORT_REL}"
     return (
         _CODING_VERIFY_GLOBALS
-        + _CODING_VERIFY_IMPORT
+        + f"import({import_path!r}).then(m => {{\n"
         + f"  const ast = m.baseParse({template!r}, {{ parseMode: 'html' }})\n"
         f"  {assert_code}\n"
         "  console.log('All tests passed!')\n"
@@ -197,10 +206,13 @@ DEFAULT_VERIFY_TEMPLATES = [
     },
 ]
 
-# Back-compat: the shared default body = pool[0] stamped. Callers that don't use
-# the multi-process pool still get a valid single compiler-core baseParse body.
+# Back-compat: the shared default body = pool[0] stamped against the default
+# project dir. Callers that don't use the multi-process pool still get a valid
+# single compiler-core baseParse body (byte-stable: default dir = /opt/coding-bench).
 DEFAULT_CODING_VERIFY_SCRIPT_JS = _stamp_verify_body(
-    DEFAULT_VERIFY_TEMPLATES[0]["template"], DEFAULT_VERIFY_TEMPLATES[0]["assert"]
+    "/opt/coding-bench",
+    DEFAULT_VERIFY_TEMPLATES[0]["template"],
+    DEFAULT_VERIFY_TEMPLATES[0]["assert"],
 )
 
 

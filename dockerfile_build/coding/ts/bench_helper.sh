@@ -81,7 +81,7 @@ globalThis.__FEATURE_OPTIONS_API__ = true
 globalThis.__FEATURE_PROD_DEVTOOLS__ = false
 globalThis.__FEATURE_SUSPENSE__ = true
 globalThis.__RUNTIME_COMPILE__ = true
-import('/opt/coding-bench/packages/compiler-core/src/index.ts').then(m => {
+import('${PROJECT_DIR}/packages/compiler-core/src/index.ts').then(m => {
   const ast = m.baseParse('${POOL_TEMPLATES[$idx]}', { parseMode: 'html' })
   ${POOL_ASSERTS[$idx]}
   console.log('All tests passed!')
