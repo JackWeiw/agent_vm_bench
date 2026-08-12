@@ -59,7 +59,7 @@ Push the built image to your Harbor registry (required for E2B template build):
 cd dockerfile_build/browser
 
 # Set Harbor IP to your E2B/Harbor server
-HARBOR_IP=71.14.96.192 bash push_to_harbor.sh
+HARBOR_IP=<your-harbor-ip> bash push_to_harbor.sh
 ```
 
 The script:
@@ -78,12 +78,12 @@ Build an E2B template from the Harbor image. This creates the Firecracker microV
 cd dockerfile_build
 
 # Build template (alias = template name for config)
-python3 build_e2b.py --server-ip 71.14.96.192 --alias openclaw-browser-v1
+python3 build_e2b.py --server-ip <your-e2b-server-ip> --alias openclaw-browser-v1
 
 # With custom Harbor IP and template settings
 python3 build_e2b.py \
-    --server-ip 71.14.96.192 \
-    --harbor-ip 71.14.96.192 \
+    --server-ip <your-e2b-server-ip> \
+    --harbor-ip <your-harbor-ip> \
     --alias openclaw-browser-v1 \
     --cpu 2 \
     --memory 4096
@@ -119,7 +119,7 @@ Edit `config/e2b/bench.yaml` to match your environment:
 
 ```yaml
 e2b_env:
-  E2B_API_URL: "http://71.14.96.192:3000"  # Your E2B API server
+  E2B_API_URL: "http://YOUR_E2B_SERVER_IP:3000"  # Your E2B API server
 
 sandbox:
   template: "openclaw-browser-v1"  # Template alias from Step 4
@@ -186,7 +186,7 @@ cd e2b_bench/scripts
 
 # Configure environment
 cp .env.example .env
-# Edit .env: E2B_API_URL=http://71.14.96.192:3000
+# Edit .env: E2B_API_URL=http://YOUR_E2B_SERVER_IP:3000
 
 # Delete all sandboxes
 bash delete_sandbox.sh
@@ -960,8 +960,8 @@ cd e2b_bench
 ### Environment File (.env)
 
 ```bash
-E2B_API_URL=http://141.61.17.196:3000
-E2B_API_KEY=e2b_d8ced731a9db82628c1e7279bec5ca70d6f74a6f
+E2B_API_URL=http://YOUR_E2B_SERVER_IP:3000
+E2B_API_KEY=e2b_<your-team-api-key>
 ```
 
 ## Debugging

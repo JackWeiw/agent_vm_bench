@@ -59,7 +59,7 @@ Dockerfile安装内容：
 cd dockerfile_build/browser
 
 # 设置Harbor IP为你的E2B/Harbor服务器地址
-HARBOR_IP=71.14.96.192 bash push_to_harbor.sh
+HARBOR_IP=<your-harbor-ip> bash push_to_harbor.sh
 ```
 
 脚本执行流程：
@@ -78,12 +78,12 @@ Harbor访问地址：`http://HARBOR_IP:2900/`（admin/Harbor12345）
 cd dockerfile_build
 
 # 构建模板（alias = 配置中使用的模板名称）
-python3 build_e2b.py --server-ip 71.14.96.192 --alias openclaw-browser-v1
+python3 build_e2b.py --server-ip <your-e2b-server-ip> --alias openclaw-browser-v1
 
 # 自定义Harbor IP和模板参数
 python3 build_e2b.py \
-    --server-ip 71.14.96.192 \
-    --harbor-ip 71.14.96.192 \
+    --server-ip <your-e2b-server-ip> \
+    --harbor-ip <your-harbor-ip> \
     --alias openclaw-browser-v1 \
     --cpu 2 \
     --memory 4096
@@ -119,7 +119,7 @@ numactl --cpunodebind=2,3 --membind=2,3 python3 -m http.server 8080
 
 ```yaml
 e2b_env:
-  E2B_API_URL: "http://71.14.96.192:3000"  # 你的E2B API服务器
+  E2B_API_URL: "http://YOUR_E2B_SERVER_IP:3000"  # 你的E2B API服务器
 
 sandbox:
   template: "openclaw-browser-v1"  # 第4步创建的模板别名
@@ -186,7 +186,7 @@ cd e2b_bench/scripts
 
 # 配置环境
 cp .env.example .env
-# 编辑 .env: E2B_API_URL=http://71.14.96.192:3000
+# 编辑 .env: E2B_API_URL=http://YOUR_E2B_SERVER_IP:3000
 
 # 删除所有沙箱
 bash delete_sandbox.sh
@@ -960,8 +960,8 @@ cd e2b_bench
 ### 环境文件 (.env)
 
 ```bash
-E2B_API_URL=http://141.61.17.196:3000
-E2B_API_KEY=e2b_d8ced731a9db82628c1e7279bec5ca70d6f74a6f
+E2B_API_URL=http://YOUR_E2B_SERVER_IP:3000
+E2B_API_KEY=e2b_<your-team-api-key>
 ```
 
 ## 常见问题

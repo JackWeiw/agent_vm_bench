@@ -75,7 +75,7 @@ docker build -f Dockerfile.x86 -t openeuler-agent-browser:24.03-lts-sp3-x86_64 \
 ### Step 2: Push to Harbor Registry
 
 ```bash
-export PROXY=http://90.255.211.160:8888
+export PROXY=http://your-proxy:8888
 export HARBOR_IP=192.168.1.100
 chmod +x push_to_harbor.sh
 ./push_to_harbor.sh
@@ -93,7 +93,7 @@ The shared `build_e2b.py` lives one directory up (shared with the browser/coding
 
 ```bash
 pip install e2b
-python ../build_e2b.py --server-ip 141.61.17.196 --harbor-ip 141.61.17.196 \
+python ../build_e2b.py --server-ip <your-e2b-server-ip> --harbor-ip <your-harbor-ip> \
     --image e2b-orchestration/openeuler-agent-browser:custom \
     --alias openeuler-browser-v1
 ```
@@ -102,7 +102,7 @@ python ../build_e2b.py --server-ip 141.61.17.196 --harbor-ip 141.61.17.196 \
 
 ### Proxy Configuration
 
-- **Default proxy:** `http://90.255.211.160:8888`
+- **Default proxy:** `http://your-proxy:8888`
 - **Docker build:** Uses `HTTP_PROXY` and `HTTPS_PROXY` build args
 - **push_to_harbor.sh:** Uses `PROXY` environment variable
 

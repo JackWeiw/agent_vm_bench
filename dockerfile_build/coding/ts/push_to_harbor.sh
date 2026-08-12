@@ -10,7 +10,7 @@
 set -e
 
 # Configuration
-PROXY="${PROXY:-http://90.255.211.160:8888}"
+PROXY="${PROXY:-http://your-proxy:8888}"
 HARBOR_IP="${HARBOR_IP:-localhost}"
 
 # Architecture: "arm" (default) builds the linuxarm64 tag;

@@ -216,7 +216,7 @@ def main():
         help="Path to E2B config JSON file (default: /root/.e2b/config.json)",
     )
 
-    parser.add_argument("--ip", type=str, default=None, help="Machine IP address for E2B API URL (e.g., 90.91.159.195)")
+    parser.add_argument("--ip", type=str, default=None, help="Machine IP address for E2B API URL (e.g., 192.168.1.10)")
 
     parser.add_argument("--template", type=str, default=None, help="E2B template name (default: openclaw-chromium-v1)")
 

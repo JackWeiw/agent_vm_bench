@@ -11,7 +11,7 @@ Usage:
     python build_e2b.py --server-ip <e2b_api_server_ip> --harbor-ip <harbor_registry_ip>
 
 Example:
-    python build_e2b.py --server-ip 141.61.17.196 --harbor-ip 141.61.17.196
+    python build_e2b.py --server-ip <your-e2b-server-ip> --harbor-ip <your-harbor-ip>
 
 Note:
     Harbor registry is accessed via IP:30443 (nginx reverse proxy).
@@ -25,20 +25,12 @@ import sys
 
 from e2b import Sandbox, Template, default_build_logger, wait_for_port
 
-# Default configuration
-DEFAULT_SERVER_IP = "141.61.17.196"
-DEFAULT_HARBOR_IP = "141.61.17.196"
-
 
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Build E2B template and create sandbox")
-    parser.add_argument(
-        "--server-ip", default=DEFAULT_SERVER_IP, help=f"E2B API server IP address (default: {DEFAULT_SERVER_IP})"
-    )
-    parser.add_argument(
-        "--harbor-ip", default=DEFAULT_HARBOR_IP, help=f"Harbor registry IP address (default: {DEFAULT_HARBOR_IP})"
-    )
+    parser.add_argument("--server-ip", required=True, help="E2B API server IP address")
+    parser.add_argument("--harbor-ip", required=True, help="Harbor registry IP address")
     parser.add_argument("--alias", default="openclaw-chromium-v1", help="Template alias name")
     parser.add_argument("--cpu", type=int, default=2, help="CPU count for sandbox")
     parser.add_argument("--memory", type=int, default=4096, help="Memory in MB for sandbox")

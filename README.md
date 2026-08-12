@@ -73,7 +73,7 @@ docker build -f Dockerfile.x86 -t ubuntu-openclaw-chromium:24.04-linuxx86 .
 ```bash
 cd dockerfile_build/browser
 # Set Harbor IP (your E2B + Harbor server)
-HARBOR_IP=71.14.96.192 bash push_to_harbor.sh
+HARBOR_IP=<your-harbor-ip> bash push_to_harbor.sh
 ```
 
 Image pushed to `HARBOR_IP:2900/e2b-orchestration/ubuntu-openclaw-chromium:custom`.
@@ -83,10 +83,10 @@ Image pushed to `HARBOR_IP:2900/e2b-orchestration/ubuntu-openclaw-chromium:custo
 ```bash
 cd dockerfile_build
 # Build template from Harbor image (alias = template name for later use)
-python3 build_e2b.py --server-ip 71.14.96.192 --alias openclaw-browser-v1
+python3 build_e2b.py --server-ip <your-e2b-server-ip> --alias openclaw-browser-v1
 
 # Or with custom Harbor IP and alias
-python3 build_e2b.py --server-ip 71.14.96.192 --harbor-ip 71.14.96.192 --alias my-template
+python3 build_e2b.py --server-ip <your-e2b-server-ip> --harbor-ip <your-harbor-ip> --alias my-template
 ```
 
 Requires `~/.e2b/config.json` with `accessToken` and `teamApiKey`.
@@ -115,7 +115,7 @@ browser:
     # ... other pages
 
 e2b_env:
-  E2B_API_URL: "http://71.14.96.192:3000"  # ← Your E2B API server
+  E2B_API_URL: "http://YOUR_E2B_SERVER_IP:3000"  # ← Your E2B API server
 ```
 
 ### Step 7: Create Sandboxes
