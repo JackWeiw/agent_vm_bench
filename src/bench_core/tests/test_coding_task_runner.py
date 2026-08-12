@@ -18,7 +18,7 @@ from bench_core.task_runner.coding import (
     _run_verify,
 )
 from bench_core.config import KernelConfig
-from bench_core.provider import CommandResult
+from env_provider import CommandResult
 from bench_core.schemas import BenchSandbox
 from bench_core.tests.fake_provider import FakeProvider
 

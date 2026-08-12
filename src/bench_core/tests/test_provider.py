@@ -1,7 +1,7 @@
 """Contract tests for the host-agnostic provider interface."""
 import pytest
 
-from bench_core.provider import (
+from env_provider import (
     CommandResult,
     CreationMetrics,
     EnvironmentProvider,

@@ -1,7 +1,7 @@
 """E2B :class:`EnvironmentProvider` adapter.
 
 Wraps :class:`e2b_bench.sandbox_manager.SandboxManager` behind the kernel's
-:class:`bench_core.provider.EnvironmentProvider` contract. The manager owns the
+:class:`env_provider.EnvironmentProvider` contract. The manager owns the
 E2B SDK handles (``SandboxState.sandbox_obj``); the adapter translates those
 into host-agnostic :class:`SandboxInstance` objects and routes ``exec`` calls
 back through the manager's handle table -- the kernel never sees an SDK type.
@@ -19,7 +19,7 @@ from dataclasses import fields
 from typing import Any, Mapping
 
 from bench_core.config import KernelConfig
-from bench_core.provider import (
+from env_provider import (
     CommandResult,
     CreationMetrics,
     EnvironmentProvider,

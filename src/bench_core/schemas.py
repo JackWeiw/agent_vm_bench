@@ -4,7 +4,7 @@
 over a fleet of sandboxes. The metric types here are workflow-specific but
 host-agnostic: they track task counters, latencies, and step-level timing with
 no reference to e2b or docker. :class:`BenchSandbox` carries them alongside the
-lifecycle state inherited from :class:`bench_core.provider.SandboxInstance`.
+lifecycle state inherited from :class:`env_provider.SandboxInstance`.
 
 The coding/document *payload* data (replacement pairs, verify-script templates,
 language profiles) is also host-agnostic benchmark content -- it lives in
@@ -17,7 +17,7 @@ import threading
 from dataclasses import dataclass, field, fields
 from typing import Any
 
-from bench_core.provider import SandboxInstance, SandboxStatus
+from env_provider import SandboxInstance, SandboxStatus
 
 # Step order constants for workflow dispatch.
 BROWSER_STEP_ORDER = ["open_tab", "page_load", "snapshot", "click", "screenshot"]

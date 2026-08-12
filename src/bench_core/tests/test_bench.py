@@ -10,7 +10,7 @@ import os
 
 from bench_core.bench import run_benchmark
 from bench_core.config import KernelConfig
-from bench_core.provider import CreationMetrics, SandboxStatus
+from env_provider import CreationMetrics, SandboxStatus
 from bench_core.tests.fake_provider import FakeProvider
 
 

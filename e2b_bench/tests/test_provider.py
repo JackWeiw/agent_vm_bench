@@ -14,7 +14,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from bench_core.provider import CommandResult, SandboxInstance, SandboxStatus
+from env_provider import CommandResult, SandboxInstance, SandboxStatus
 from e2b_bench.config import Config
 from e2b_bench.provider import E2BProvider, kernel_config_from_e2b
 from e2b_bench.schemas import SandboxState

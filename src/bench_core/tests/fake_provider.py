@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Mapping
 
-from bench_core.provider import CommandResult, CreationMetrics, EnvironmentProvider, SandboxInstance, SandboxStatus
+from env_provider import CommandResult, CreationMetrics, EnvironmentProvider, SandboxInstance, SandboxStatus
 
 
 class FakeProvider(EnvironmentProvider):

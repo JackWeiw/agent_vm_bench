@@ -1,7 +1,7 @@
 """Docker :class:`EnvironmentProvider` adapter.
 
 Wraps :class:`docker_bench.container_manager.ContainerManager` behind the
-kernel's :class:`bench_core.provider.EnvironmentProvider` contract. The manager
+kernel's :class:`env_provider.EnvironmentProvider` contract. The manager
 owns the Docker SDK handles (``ContainerState.docker_container``); the adapter
 translates those into host-agnostic :class:`SandboxInstance` objects and routes
 ``exec`` calls back through the manager's handle table -- the kernel never sees
@@ -28,7 +28,7 @@ import threading
 from typing import Any, Mapping
 
 from bench_core.config import KernelConfig
-from bench_core.provider import (
+from env_provider import (
     CommandResult,
     CreationMetrics,
     EnvironmentProvider,

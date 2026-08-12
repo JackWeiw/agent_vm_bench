@@ -22,7 +22,7 @@ from bench_core.task_runner.document import (
     load_scene_recipe,
     preflight_document,
 )
-from bench_core.provider import CommandResult
+from env_provider import CommandResult
 from bench_core.schemas import BenchSandbox
 from bench_core.tests.fake_provider import FakeProvider
 

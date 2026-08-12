@@ -9,7 +9,7 @@ from __future__ import annotations
 import threading
 
 from bench_core.config import KernelConfig
-from bench_core.provider import CommandResult
+from env_provider import CommandResult
 from bench_core.schemas import BenchSandbox
 from bench_core.task_runner.browser import (
     BrowserTaskRunner,

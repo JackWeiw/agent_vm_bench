@@ -13,7 +13,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from bench_core.provider import CommandResult, SandboxInstance, SandboxStatus
+from env_provider import CommandResult, SandboxInstance, SandboxStatus
 from docker_bench.config import Config
 from docker_bench.provider import DockerProvider
 from docker_bench.schemas import ContainerState

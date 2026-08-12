@@ -19,7 +19,7 @@ import threading
 import time
 
 from bench_core.config import KernelConfig
-from bench_core.provider import EnvironmentProvider
+from env_provider import EnvironmentProvider
 from bench_core.schemas import BenchSandbox, get_step_order
 from bench_core.stats_collector import StatsCollector
 

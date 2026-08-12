@@ -1,9 +1,10 @@
 """Host-agnostic environment-provider contract + shared state types.
 
-The benchmark kernel (``bench_core``) depends only on :class:`EnvironmentProvider`
-and :class:`SandboxInstance`; provider implementations (e2b, docker, kata, ...)
-supply the concrete sandbox backend. The kernel never imports provider-specific
-types.
+This package is the shared seam that the benchmark kernel (``bench_core``) and
+every provider implementation (e2b, docker, future kata / agentenv) depend on
+-- neither the kernel nor any provider owns it. The kernel holds only
+:class:`SandboxInstance` and drives :class:`EnvironmentProvider`; a provider
+keeps its SDK handles internally and adapts them to this contract.
 
 Design notes
 ------------
@@ -180,3 +181,12 @@ class EnvironmentProvider(ABC):
         provider-native (e2b supports it directly; docker uses a watchdog);
         the kernel is unaware of the difference.
         """
+
+
+__all__ = [
+    "SandboxStatus",
+    "CreationMetrics",
+    "CommandResult",
+    "SandboxInstance",
+    "EnvironmentProvider",
+]

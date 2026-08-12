@@ -43,7 +43,7 @@ from bench_core.coding_payload import (
     _stamp_verify_body,
     get_coding_profile,
 )
-from bench_core.provider import EnvironmentProvider, SandboxInstance
+from env_provider import EnvironmentProvider, SandboxInstance
 from bench_core.schemas import BenchSandbox
 
 logger = logging.getLogger(__name__)
