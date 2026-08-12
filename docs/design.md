@@ -207,10 +207,10 @@ python auto_vm_test.py --config config/openstack/test_config_template.yaml
   └─ 记录删除耗时
 
 步骤3: 创建VM
-  ├─ 调用 create_server.py 创建指定数量VM
-  │   python3 create_server.py \
-  │     --start_ip {start_ip} \
-  │     --n {count} \
+  ├─ 调用 vm_bench 创建指定数量VM
+  │   python3 -m vm_bench --create-only \
+  │     --start-ip {start_ip} \
+  │     -n {count} \
   │     --subnet-prefix {subnet_prefix} \
   │     --network-id {network_id} \
   │     --az {az} \
@@ -348,9 +348,9 @@ openstack server list -c ID -f value  # 应返回空
 
 #### 4.3.3 创建VM
 ```bash
-python3 create_server.py \
-  --start_ip 192.168.110.11 \
-  --n 10 \
+python3 -m vm_bench --create-only \
+  --start-ip 192.168.110.11 \
+  -n 10 \
   --subnet-prefix 192.168.110. \
   --network-id cc56708a-c0c0-4d75-a87e-ed1b1a8af844 \
   --az nova_zone:controller \

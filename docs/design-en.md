@@ -207,10 +207,10 @@ Step 2: Cleanup Environment (Delete existing VMs)
   └─ Record deletion time
 
 Step 3: Create VMs
-  ├─ Call create_server.py to create specified number of VMs
-  │   python3 create_server.py \
-  │     --start_ip {start_ip} \
-  │     --n {count} \
+  ├─ Call vm_bench to create specified number of VMs
+  │   python3 -m vm_bench --create-only \
+  │     --start-ip {start_ip} \
+  │     -n {count} \
   │     --subnet-prefix {subnet_prefix} \
   │     --network-id {network_id} \
   │     --az {az} \
@@ -348,9 +348,9 @@ openstack server list -c ID -f value  # Should return empty
 
 #### 4.3.3 Create VMs
 ```bash
-python3 create_server.py \
-  --start_ip 192.168.110.11 \
-  --n 10 \
+python3 -m vm_bench --create-only \
+  --start-ip 192.168.110.11 \
+  -n 10 \
   --subnet-prefix 192.168.110. \
   --network-id cc56708a-c0c0-4d75-a87e-ed1b1a8af844 \
   --az nova_zone:controller \

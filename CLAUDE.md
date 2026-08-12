@@ -34,7 +34,7 @@ The framework collects **50+ performance metrics** from hardware counters, kerne
                           ▼
 ┌─────────────────────────────────────────────────────────┐
 │  Tool Execution Layer                                    │
-│  - create_server.py, vm_bench_lite.py, vm_monitor.py     │
+│  - vm_bench (create + browser/QA), vm_monitor.py         │
 │  - sandbox_manager.py, container_manager.py              │
 │  - External: smap_tool, devkit, ksys, ub_watch, getfre   │
 └─────────────────────────────────────────────────────────┘
@@ -47,7 +47,7 @@ The framework collects **50+ performance metrics** from hardware counters, kerne
 | `vm_monitor/` | VMM monitoring (QEMU/Firecracker) | `base.py`, `qemu.py`, `firecracker.py` |
 | `e2b_bench/` | E2B sandbox testing | `bench.py`, `round_robin.py`, `task_runner.py`, `sandbox_manager.py`, `batch_scheduler.py`, `stats_collector.py`, `metrics_extractor.py`, `report_aggregator.py` |
 | `docker_bench/` | Docker container testing | `bench.py`, `container_manager.py` |
-| `vm_bench_lite/` | Browser/QA benchmark execution | Browser warmup + benchmark phases |
+| `vm_bench/` | OpenStack VM browser/QA + creation benchmark | `bench.py`, `vm_manager.py`, `task_runner.py`, `stats_collector.py` |
 
 ## Code Conventions
 
@@ -107,7 +107,7 @@ download_page.sh → docker build → push_to_harbor.sh → build_e2b.py → htt
 | Script | Purpose | CLI |
 |--------|---------|-----|
 | `vm_monitor.py` | VMM monitoring | `-t`, `-i`, `--vmm`, `--enable-capture` |
-| `vm_bench_lite.py` | Browser/QA benchmark | `-n`, `-wp`, `-bsp`, `-t` |
+| `vm_bench/__main__.py` | OpenStack VM browser/QA + create | `--create-only`, `--detect`, `-n`, `--start-ip`, `--browser-url` |
 | `auto_vm_test.py` | Single OpenStack test | `--config` |
 | `batch_test_scheduler.py` | Batch OpenStack tests | `--config`, `--dry-run`, `--offline` |
 | `e2b_bench/__main__.py` | E2B testing | `--config`, `--batch`, `--detect`, `-bm round_robin` |
@@ -282,8 +282,8 @@ config/
 ## Known Issues / Limitations
 
 1. **Deprecated scripts (marked in v0.2.0)**:
-   - `vm_bench_lite.py` → use `vm_bench/` package
-   - `create_server.py` → use `vm_bench --create-only`
+   - `vm_bench_lite.py` → deprecated; retained as an internal `ImportError` fallback in `auto_vm_test.py` (console entry removed). Use the `vm_bench/` package
+   - `create_server.py` → deprecated; retained as an internal `ImportError` fallback in `auto_vm_test.py`. Use `vm_bench --create-only`
    - `qemu_monitor.py` and `qemu_monitor/` → removed in v0.4.0; use `vm_monitor`
    - `session-replay/` → removed in v0.4.0; use `llm_replay`
 2. **smap_tool path hardcoded** - Should move to `.env` or config
