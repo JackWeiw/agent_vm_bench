@@ -6,13 +6,11 @@
   "source_trajectories": [
     {
       "run": "xlsx_first",
-      "session_id": "208c4ad0-5f7e-444f-97da-9fd2dbca0e31",
-      "trajectory": "/home/lcq/trace_extract/trace_backups/20260730T133833Z/xlsx/agent_run/trajectory.json"
+      "session_id": "208c4ad0-5f7e-444f-97da-9fd2dbca0e31"
     },
     {
       "run": "xlsx_second",
-      "session_id": "85e12fb7-a392-4cd8-9bdb-066156bc464a",
-      "trajectory": "/home/lcq/trace_extract/cases/xlsx/agent_run/trajectory.json"
+      "session_id": "85e12fb7-a392-4cd8-9bdb-066156bc464a"
     }
   ],
   "operation_count": 4,
@@ -41,7 +39,6 @@
           "source": {
             "run": "xlsx_second",
             "session_id": "85e12fb7-a392-4cd8-9bdb-066156bc464a",
-            "trajectory": "/home/lcq/trace_extract/cases/xlsx/agent_run/trajectory.json",
             "step_id": 2,
             "tool_call_index": 0,
             "tool_call_id": "call_00_62zGFOJCjRucnCgGhmN85024",
@@ -58,7 +55,6 @@
           "source": {
             "run": "xlsx_second",
             "session_id": "85e12fb7-a392-4cd8-9bdb-066156bc464a",
-            "trajectory": "/home/lcq/trace_extract/cases/xlsx/agent_run/trajectory.json",
             "step_id": 3,
             "tool_call_index": 4,
             "tool_call_id": "call_04_zMlOPy8FR9mgAMAxVf0k7228",
@@ -75,7 +71,6 @@
           "source": {
             "run": "xlsx_second",
             "session_id": "85e12fb7-a392-4cd8-9bdb-066156bc464a",
-            "trajectory": "/home/lcq/trace_extract/cases/xlsx/agent_run/trajectory.json",
             "step_id": 13,
             "tool_call_index": 0,
             "tool_call_id": "call_00_IZ2ao383hfvzzEDIQJYV6755",
@@ -92,7 +87,6 @@
           "source": {
             "run": "xlsx_second",
             "session_id": "85e12fb7-a392-4cd8-9bdb-066156bc464a",
-            "trajectory": "/home/lcq/trace_extract/cases/xlsx/agent_run/trajectory.json",
             "step_id": 4,
             "tool_call_index": 0,
             "tool_call_id": "call_00_5hQcEt9aWdZnIdGE0zLV4565",
@@ -109,7 +103,6 @@
           "source": {
             "run": "xlsx_second",
             "session_id": "85e12fb7-a392-4cd8-9bdb-066156bc464a",
-            "trajectory": "/home/lcq/trace_extract/cases/xlsx/agent_run/trajectory.json",
             "step_id": 15,
             "tool_call_index": 0,
             "tool_call_id": "call_00_SFTI6sq2WMztNYNKmaRu0240",
@@ -151,7 +144,6 @@
           "source": {
             "run": "xlsx_second",
             "session_id": "85e12fb7-a392-4cd8-9bdb-066156bc464a",
-            "trajectory": "/home/lcq/trace_extract/cases/xlsx/agent_run/trajectory.json",
             "step_id": 17,
             "tool_call_index": 0,
             "tool_call_id": "call_00_e89jgIaBpZzfHG7VmTqV0254",
@@ -169,7 +161,6 @@
           "source": {
             "run": "xlsx_second",
             "session_id": "85e12fb7-a392-4cd8-9bdb-066156bc464a",
-            "trajectory": "/home/lcq/trace_extract/cases/xlsx/agent_run/trajectory.json",
             "step_id": 18,
             "tool_call_index": 0,
             "tool_call_id": "call_00_iMjBcIwhgE2kranvJKyQ3979",
@@ -211,7 +202,6 @@
           "source": {
             "run": "xlsx_second",
             "session_id": "85e12fb7-a392-4cd8-9bdb-066156bc464a",
-            "trajectory": "/home/lcq/trace_extract/cases/xlsx/agent_run/trajectory.json",
             "step_id": 26,
             "tool_call_index": 0,
             "tool_call_id": "call_00_8slYNfdpMziUGr93mj3l6678",
@@ -229,7 +219,6 @@
           "source": {
             "run": "xlsx_first",
             "session_id": "208c4ad0-5f7e-444f-97da-9fd2dbca0e31",
-            "trajectory": "/home/lcq/trace_extract/trace_backups/20260730T133833Z/xlsx/agent_run/trajectory.json",
             "step_id": 32,
             "tool_call_index": 0,
             "tool_call_id": "call_00_HDqC7tngSieTHpAlxbrL5902",
@@ -247,7 +236,6 @@
           "source": {
             "run": "xlsx_first",
             "session_id": "208c4ad0-5f7e-444f-97da-9fd2dbca0e31",
-            "trajectory": "/home/lcq/trace_extract/trace_backups/20260730T133833Z/xlsx/agent_run/trajectory.json",
             "step_id": 37,
             "tool_call_index": 0,
             "tool_call_id": "call_00_CYMMLmMulAURRKPsMgkf4360",
@@ -265,7 +253,6 @@
           "source": {
             "run": "xlsx_second",
             "session_id": "85e12fb7-a392-4cd8-9bdb-066156bc464a",
-            "trajectory": "/home/lcq/trace_extract/cases/xlsx/agent_run/trajectory.json",
             "step_id": 29,
             "tool_call_index": 0,
             "tool_call_id": "call_00_Bn0JSGkjGXZPQD4zU6XR2826",
@@ -282,7 +269,6 @@
           "source": {
             "run": "xlsx_second",
             "session_id": "85e12fb7-a392-4cd8-9bdb-066156bc464a",
-            "trajectory": "/home/lcq/trace_extract/cases/xlsx/agent_run/trajectory.json",
             "step_id": 25,
             "tool_call_index": 1,
             "tool_call_id": "call_01_02sdtqriOws6M3KFIe5E1183",
@@ -326,7 +312,6 @@
           "source": {
             "run": "xlsx_second",
             "session_id": "85e12fb7-a392-4cd8-9bdb-066156bc464a",
-            "trajectory": "/home/lcq/trace_extract/cases/xlsx/agent_run/trajectory.json",
             "step_id": 30,
             "tool_call_index": 0,
             "tool_call_id": "call_00_WXhA0lGkh98AlUAoxPl76040",
@@ -357,7 +342,6 @@
           "source": {
             "run": "xlsx_second",
             "session_id": "85e12fb7-a392-4cd8-9bdb-066156bc464a",
-            "trajectory": "/home/lcq/trace_extract/cases/xlsx/agent_run/trajectory.json",
             "step_id": 34,
             "tool_call_index": 0,
             "tool_call_id": "call_00_sCpZaqSKn0SCxeGqCuv67297",

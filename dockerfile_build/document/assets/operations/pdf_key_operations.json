@@ -6,13 +6,11 @@
   "source_trajectories": [
     {
       "run": "pdf_first",
-      "session_id": "f8e0e14d-a214-4474-b05b-574ae04650c2",
-      "trajectory": "/home/lcq/trace_extract/trace_backups/20260730T133833Z/pdf/agent_run/trajectory.json"
+      "session_id": "f8e0e14d-a214-4474-b05b-574ae04650c2"
     },
     {
       "run": "pdf_second",
-      "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-      "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json"
+      "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3"
     }
   ],
   "operation_count": 4,
@@ -44,7 +42,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 2,
             "tool_call_index": 0,
             "tool_call_id": "call_00_2IaPM1b59fcHmZ1kjfhV0423",
@@ -61,7 +58,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 2,
             "tool_call_index": 1,
             "tool_call_id": "call_01_mziftIx7x5vluKCzjbPD4824",
@@ -78,7 +74,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 5,
             "tool_call_index": 0,
             "tool_call_id": "call_00_42VNvIf63BAorgpnLpoh5613",
@@ -95,7 +90,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 4,
             "tool_call_index": 2,
             "tool_call_id": "call_02_ztD6B3G6RPZNPjsvMSZx4230",
@@ -112,7 +106,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 4,
             "tool_call_index": 3,
             "tool_call_id": "call_03_FeIc8uyG6FwvyEH8Es589817",
@@ -129,7 +122,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 4,
             "tool_call_index": 4,
             "tool_call_id": "call_04_sZ1GSI4EUdB7W0Ir8TyY4116",
@@ -146,7 +138,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 4,
             "tool_call_index": 5,
             "tool_call_id": "call_05_sReYApGl7r2H26z6mVBD9649",
@@ -163,7 +154,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 10,
             "tool_call_index": 0,
             "tool_call_id": "call_00_jjJVJwjweAmIRZSauzNv8785",
@@ -180,7 +170,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 6,
             "tool_call_index": 0,
             "tool_call_id": "call_00_ZPtaJbN9HsmYbChj3tD89906",
@@ -197,7 +186,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 7,
             "tool_call_index": 0,
             "tool_call_id": "call_00_xkyx6P1ov85cgzLsVKsu9990",
@@ -214,7 +202,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 8,
             "tool_call_index": 0,
             "tool_call_id": "call_00_cPJECCXMfj1qKGCyeyR96336",
@@ -231,7 +218,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 9,
             "tool_call_index": 0,
             "tool_call_id": "call_00_QStohw5cnN0zn0gq990e1142",
@@ -248,7 +234,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 11,
             "tool_call_index": 0,
             "tool_call_id": "call_00_jKSO94vRWP0dbTBCFch46148",
@@ -301,7 +286,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 12,
             "tool_call_index": 0,
             "tool_call_id": "call_00_ljp2B0gIYbr3Frghtht35171",
@@ -319,7 +303,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 13,
             "tool_call_index": 0,
             "tool_call_id": "call_00_uv0jGm5dRryIsQMAANxH6616",
@@ -336,7 +319,6 @@
           "source": {
             "run": "pdf_first",
             "session_id": "f8e0e14d-a214-4474-b05b-574ae04650c2",
-            "trajectory": "/home/lcq/trace_extract/trace_backups/20260730T133833Z/pdf/agent_run/trajectory.json",
             "step_id": 15,
             "tool_call_index": 0,
             "tool_call_id": "call_00_KXA9dZfkIx27TjvXl4al3581",
@@ -353,7 +335,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 14,
             "tool_call_index": 0,
             "tool_call_id": "call_00_E40zPwsqJugKcrtrPBfC8255",
@@ -399,7 +380,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 15,
             "tool_call_index": 0,
             "tool_call_id": "call_00_ET_QRLRyMAFGHG45pWArukJ0449",
@@ -416,7 +396,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 16,
             "tool_call_index": 0,
             "tool_call_id": "call_00_6BeZEhiU0H6ByIvgcCvN8875",
@@ -461,7 +440,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 17,
             "tool_call_index": 0,
             "tool_call_id": "call_00_joQG8irRDGa72cgoqW3O5086",
@@ -478,7 +456,6 @@
           "source": {
             "run": "pdf_second",
             "session_id": "bc13a924-f3f3-4822-a2b8-80e2ecdf96f3",
-            "trajectory": "/home/lcq/trace_extract/cases/pdf/agent_run/trajectory.json",
             "step_id": 18,
             "tool_call_index": 0,
             "tool_call_id": "call_00_pV5E3mJnLb48L71VM0bi2046",
