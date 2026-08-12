@@ -164,7 +164,7 @@ def _run_verify(
         cmd = (
             f"cd {project_dir} && "
             f"cat > {profile.temp_test_path} << '{eof}'\n"
-            f"{script_body}"
+            f"{script_body}\n"
             f"{eof}\n"
             f"{config.coding_verify_cmd}"
         )

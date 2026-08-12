@@ -248,10 +248,13 @@ def _normalize_source_files(raw: Any) -> List[Dict[str, str]]:
                 "replace": str(item.get("replace", f"// bench round\n// bench marker")),
             }
             # Preserve the optional `verify: compile_only` flag (a pair with no
-            # assertable semantics, honestly compile-only). verify_script is gone -
-            # the verify workload comes from the shared DEFAULT_VERIFY_TEMPLATES pool.
+            # assertable semantics, honestly compile-only).
             if item.get("verify"):
                 pair["verify"] = str(item["verify"])
+            # Preserve `verify_script` when present (Go and Python pairs carry their
+            # own ad-hoc verify scripts; ts pairs source from the shared pool).
+            if item.get("verify_script"):
+                pair["verify_script"] = str(item["verify_script"])
             result.append(pair)
         elif isinstance(item, str) and item:
             # CLI raw-file mode: safe generic comment marker (non-breaking, triggers rebuild)

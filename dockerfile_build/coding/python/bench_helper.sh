@@ -46,6 +46,11 @@ VERIFY_CMD="${BENCH_VERIFY_CMD:-python3 /tmp/bench_verify.py}"
 VERIFY_TIMEOUT="${BENCH_VERIFY_TIMEOUT:-120}"
 TEMP_TEST_PATH="/tmp/bench_verify.py"
 
+# Ensure django is importable in script mode (sys.path[0] is /tmp/, not CWD).
+# Dockerfile ENV PYTHONPATH handles this at build time; this is the belt-and-
+# suspenders runtime guard for manual testing inside the sandbox.
+export PYTHONPATH="${PROJECT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+
 # Replacement pairs for round-robin editing (verified against django/django).
 # Each pair is a real, type-safe edit. The 3rd field is an optional verify_script
 # body (a Python script importing django and asserting something real); empty =
@@ -57,11 +62,11 @@ TEMP_TEST_PATH="/tmp/bench_verify.py"
 # bash arrays can't carry real newlines cleanly across the | delimiter here.
 TARGET_FILES=(
     "django/conf/global_settings.py|LANGUAGE_CODE = \"en-us\"|LANGUAGE_CODE = \"en-us\"  # bench round|import django\nfrom django.conf import settings\n\nsettings.configure(\n    DEBUG=True,\n    DATABASES={},\n    INSTALLED_APPS=[],\n)\n\nimport django.urls\n\nassert settings.LANGUAGE_CODE == \"en-us\", settings.LANGUAGE_CODE\nprint(\"All tests passed!\")"
-    "django/db/models/fields/__init__.py|class Field(RegisterLookupMixin):|class Field(RegisterLookupMixin):  # bench||"
-    "django/http/response.py|class HttpResponse:|class HttpResponse:  # bench||"
-    "django/utils/text.py|def slugify(value, allow_unicode=False):|def slugify(value, allow_unicode=False):  # bench||"
-    "django/template/base.py|class Template:|class Template:  # bench||"
-    "django/urls/resolvers.py|class URLResolver:|class URLResolver:  # bench||"
+    "django/db/models/fields/__init__.py|class Field(RegisterLookupMixin):|class Field(RegisterLookupMixin):  # bench|"
+    "django/http/response.py|class HttpResponse:|class HttpResponse:  # bench|"
+    "django/utils/text.py|def slugify(value, allow_unicode=False):|def slugify(value, allow_unicode=False):  # bench|"
+    "django/template/base.py|class Template:|class Template:  # bench|"
+    "django/urls/resolvers.py|class URLResolver:|class URLResolver:  # bench|"
 )
 
 # Shared default verify script (used when a pair's verify_script is empty).
@@ -220,11 +225,9 @@ if [ "${SKIP_VERIFY}" = false ]; then
     # Write the temp test file (printf handles multi-line script bodies safely).
     printf '%s\n' "${SCRIPT_BODY}" > "${TEMP_TEST_PATH}"
 
-    # Run the ad-hoc test via `python3`. cwd is /opt/coding-bench so `import django`
-    # resolves the cloned source; asgiref/sqlparse come from the pip install.
-    # No cache clear needed: Python's __pycache__ holds cheap bytecode, not a
-    # persistent compile cache — the in-memory module graph (the actual peak) is
-    # unchanged warm or cold (see header comment).
+    # Run the ad-hoc test via `python3`. PYTHONPATH (set above) ensures the
+    # script-mode python3 can resolve `import django` from /opt/coding-bench/
+    # even though sys.path[0] is /tmp/, not CWD.
     cd "${PROJECT_DIR}" && timeout "${VERIFY_TIMEOUT}" ${VERIFY_CMD} > /tmp/verify_output.log 2>&1
     VERIFY_EXIT=$?
     VERIFY_END=$(date +%s%N)

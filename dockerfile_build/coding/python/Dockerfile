@@ -19,9 +19,8 @@
 # no full `python tests/runtests.py` suite, no resident dev server — none of those
 # appear in the real agent verify pattern.
 #
-# Django's runtime deps (asgiref, sqlparse) are pip-installed so a bare
-# `python3 /tmp/bench_verify.py` importing `django.*` resolves the cloned source
-# (via cwd on sys.path) plus its third-party deps. The heavy `django.forms` / db
+# Django's runtime deps (asgiref, sqlparse) are pip-installed; ENV PYTHONPATH makes
+# django importable in script mode (python3 resolves from /opt/coding-bench). The heavy `django.forms` / db
 # module graph is the memory peak (same role `go run`'s compiler and `npx tsx`'s
 # esbuild+node play in the ts/go variants).
 #
@@ -55,7 +54,8 @@ RUN apt update && apt install -y --no-install-recommends python3 python3-pip git
     # Django's runtime third-party deps. asgiref (async support, imported by
     # django.utils / django.core.management / django.forms) and sqlparse (imported
     # by django.db.backends) are the only external packages a bare django import
-    # touches; the rest of django resolves from the cloned source via cwd on sys.path.
+    # touches. django itself resolves from the cloned source via PYTHONPATH
+    # (set below), matching the real agent's script-mode verify pattern.
     # Ubuntu 24.04 pip is externally-managed (PEP 668) -> --break-system-packages.
     pip3 install --no-cache-dir --break-system-packages \
         -i https://pypi.tuna.tsinghua.edu.cn/simple \
@@ -65,20 +65,19 @@ RUN apt update && apt install -y --no-install-recommends python3 python3-pip git
     apt clean && rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
 
 # --- Coding benchmark project: django/django (real popular Python repo) ---
-# Clone + verify the interpreter can resolve `import django` from the project dir.
-# No production build, no manage.py runserver: the runtime verify step is a bare
-# `python3 /tmp/bench_verify.py` that imports django's module graph (exactly the
-# shape of a real coding agent's ad-hoc verify). Pinned to the SWE-bench
-# django__django-15781 base_commit so trace-faithful edits target real source state.
+# Clone + ENV PYTHONPATH (lightest approach — no pip install needed).
+# Script-mode python3 resolves `import django` from /opt/coding-bench via
+# PYTHONPATH. Pinned to the SWE-bench django__django-15781 base_commit so
+# trace-faithful edits target real source state.
+ENV PYTHONPATH=/opt/coding-bench
 RUN cd /opt && \
     git clone https://github.com/django/django.git coding-bench && \
     cd coding-bench && \
     git checkout 8d160f154f0240a423e83ffe0690e472f837373c
 
-ENV PYTHONPATH=/opt/coding-bench
-
-# Smoke check: run in script mode (not -c) so sys.path[0] is /tmp/, not CWD,
-# catching the same ModuleNotFoundError the runtime verify would hit.
+# Smoke check: run in script mode (python3 /tmp/_smoke.py) so it catches the
+# same ModuleNotFoundError the runtime verify would hit. ENV PYTHONPATH (set
+# above) makes django importable from /opt/coding-bench in script mode.
 RUN echo 'import django; from django.conf import settings; print("django", django.__version__)' > /tmp/_smoke.py && \
     python3 /tmp/_smoke.py && rm /tmp/_smoke.py
 

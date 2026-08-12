@@ -12,8 +12,8 @@
 # Project: django/django (github.com/django/django)
 #   - 60k+ stars, the Django web framework (large popular Python monorepo)
 #   - Real repo used across swe_bench / swe-bench-verified evaluations
-#   - Runtime deps (asgiref, sqlparse) pip-installed; the rest of django
-#     resolves from the cloned source via cwd on sys.path. The heavy
+#   - Runtime deps (asgiref, sqlparse) pip-installed; django itself resolves
+#     from the cloned source via ENV PYTHONPATH=/opt/coding-bench (script mode). The heavy
 #     django.forms/db module graph is the transient verify peak.
 #
 # Usage:

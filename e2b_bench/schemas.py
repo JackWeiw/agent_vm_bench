@@ -369,7 +369,7 @@ DEFAULT_CODING_VERIFY_SCRIPT_PY = (
     "import django.forms\n"
     "import django.template\n"
     "\n"
-    'print("All tests passed!")'
+    'print("All tests passed!")\n'
 )
 
 
