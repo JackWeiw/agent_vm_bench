@@ -66,3 +66,21 @@ def test_default_hooks_are_noops():
     assert p.prepare_env() is None
     assert p.prepare(SandboxInstance(id="x", index=0)) is None
     assert p.save_ids({}, "any") is None
+
+
+from bench_core.tests.fake_provider import FakeProvider  # noqa: E402
+
+
+def test_fake_provider_create_and_exec():
+    p = FakeProvider(count=3)
+    insts = p.create_all()
+    assert len(insts) == 3
+    assert all(i.ready for i in insts.values())
+    res = p.exec(insts[0], "echo hi")
+    assert res.exit_code == 0
+    assert "hi" in res.stdout
+    # cleanup tears every instance down and is observable.
+    assert not p.cleanup_called
+    p.cleanup_all()
+    assert p.cleanup_called
+    assert all(not i.is_alive for i in insts.values())
