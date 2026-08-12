@@ -56,6 +56,11 @@ include = ["vm_monitor*", "vm_bench*", "e2b_bench*", "docker_bench*", "llm_repla
 
 [tool.pytest.ini_options]
 minversion = "7.0"
+# src-layout: put src/ on sys.path so tests in any package (e2b_bench,
+# docker_bench, ...) can ``import bench_core`` without an editable install.
+# src/bench_core/tests already resolve it via the first-parent-without-__init__
+# mechanism; this covers the cross-package test imports.
+pythonpath = ["src"]
 addopts = [
     "-ra",
     "-q",
