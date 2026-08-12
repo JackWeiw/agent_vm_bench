@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import statistics
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 from bench_core.provider import SandboxInstance, SandboxStatus
@@ -319,6 +319,19 @@ class BenchSandbox(SandboxInstance):
         """Thread-safe read of ``last_task_time``."""
         with self._lock:
             return self.last_task_time
+
+    @classmethod
+    def from_instance(cls, inst: SandboxInstance, workflow_type: str) -> BenchSandbox:
+        """Promote a provider's lean :class:`SandboxInstance` to a kernel state.
+
+        Copies every lifecycle + creation-metrics field generically (so a new
+        ``SandboxInstance`` field is picked up automatically) and attaches fresh
+        workflow metrics. The provider keeps its SDK handle in its own
+        ``{index: handle}`` table; the resulting ``BenchSandbox`` is handle-free
+        and the provider can still look it up by ``index``/``id``.
+        """
+        kwargs = {f.name: getattr(inst, f.name) for f in fields(SandboxInstance)}
+        return cls(**kwargs, workflow_type=workflow_type)
 
 
 @dataclass

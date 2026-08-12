@@ -48,6 +48,7 @@ dev = [
 
 [project.scripts]
 vm-monitor = "vm_monitor.cli:main"
+bench-core = "bench_core.bench:main"
 
 [tool.setuptools.packages.find]
 where = ["src", "."]

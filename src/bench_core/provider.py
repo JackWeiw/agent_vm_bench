@@ -120,16 +120,22 @@ class EnvironmentProvider(ABC):
     def detect_existing(self) -> Mapping[int, SandboxInstance]:
         """Detect already-running sandboxes; return ``{index: instance}``."""
 
-    def detect_from_ids(self, ids_file: str | None) -> Mapping[int, SandboxInstance] | None:
+    def detect_from_ids(self, ids_file: str | None = None) -> Mapping[int, SandboxInstance] | None:
         """Load sandboxes from a persisted-IDs file.
 
-        Return ``None`` when the provider does not support ID persistence
-        (e2b does, docker does not). Default: unsupported.
+        When ``ids_file`` is None the provider uses its own configured path
+        (e2b holds one; docker has none). Return ``None`` when the provider
+        does not support ID persistence or has no path/file -- the caller then
+        falls back to :meth:`detect_existing`. Default: unsupported.
         """
         return None
 
-    def save_ids(self, instances: Mapping[int, SandboxInstance], ids_file: str) -> None:
-        """Persist sandbox IDs for a later :meth:`detect_from_ids`. Default no-op."""
+    def save_ids(self, instances: Mapping[int, SandboxInstance], ids_file: str | None = None) -> None:
+        """Persist sandbox IDs for a later :meth:`detect_from_ids`.
+
+        When ``ids_file`` is None the provider persists to its own configured
+        path; a provider with no path is a no-op. Default no-op.
+        """
         return None
 
     @abstractmethod

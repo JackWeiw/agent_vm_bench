@@ -40,6 +40,7 @@ class FakeProvider(EnvironmentProvider):
         self.cleanup_called = False
         self.prepare_env_calls = 0
         self.prepare_calls = 0
+        self.save_ids_calls = 0
 
     # --- lifecycle ---
     def create_all(self) -> dict[int, SandboxInstance]:
@@ -72,6 +73,10 @@ class FakeProvider(EnvironmentProvider):
 
     def prepare(self, inst: SandboxInstance) -> None:
         self.prepare_calls += 1
+
+    # --- id persistence (default no-op; tests assert the spine calls it) ---
+    def save_ids(self, instances, ids_file=None) -> None:  # type: ignore[override]
+        self.save_ids_calls += 1
 
     # --- command exec ---
     def exec(
