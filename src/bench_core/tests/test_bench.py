@@ -11,7 +11,7 @@ import os
 from bench_core.bench import run_benchmark
 from bench_core.config import KernelConfig
 from env_provider import CreationMetrics, SandboxStatus
-from bench_core.tests.fake_provider import FakeProvider
+from env_provider.fake import FakeProvider
 
 
 class _NoReadyProvider(FakeProvider):

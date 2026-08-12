@@ -239,7 +239,7 @@ def test_document_preflight_runs_before_sandbox_manager_construction():
             "bench_core.task_runner.document.preflight_document",
             side_effect=SceneRecipeError("invalid fixed recipe"),
         ),
-        patch("e2b_bench.provider.SandboxManager") as manager,
+        patch("env_provider.e2b.SandboxManager") as manager,
         pytest.raises(SceneRecipeError, match="invalid fixed recipe"),
     ):
         run_benchmark(document_config())

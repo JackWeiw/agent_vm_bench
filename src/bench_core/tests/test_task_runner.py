@@ -17,7 +17,7 @@ from bench_core.task_runner.browser import (
     WarmupRunner,
     extract_element_refs,
 )
-from bench_core.tests.fake_provider import FakeProvider
+from env_provider.fake import FakeProvider
 
 
 def _ready_sandbox(index: int = 0) -> BenchSandbox:

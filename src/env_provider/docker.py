@@ -36,10 +36,10 @@ from env_provider import (
     SandboxStatus,
 )
 
-from .config import Config
-from .container_manager import ContainerManager
-from .schemas import ContainerState
-from .schemas import ContainerStatus as DockerStatus
+from docker_bench.config import Config
+from docker_bench.container_manager import ContainerManager
+from docker_bench.schemas import ContainerState
+from docker_bench.schemas import ContainerStatus as DockerStatus
 
 logger = logging.getLogger(__name__)
 

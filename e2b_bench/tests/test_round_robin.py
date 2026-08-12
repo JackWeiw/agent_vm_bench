@@ -216,7 +216,7 @@ class TestExceptionCleanup(unittest.TestCase):
                 round_robin_manager.run.side_effect = RuntimeError("round-robin failed")
 
                 with (
-                    patch("e2b_bench.provider.SandboxManager", return_value=sandbox_manager),
+                    patch("env_provider.e2b.SandboxManager", return_value=sandbox_manager),
                     patch("bench_core.bench.StatsCollector", return_value=stats_collector),
                     patch("bench_core.bench.RoundRobinTaskManager", return_value=round_robin_manager) as rr_class,
                     self.assertRaisesRegex(RuntimeError, "round-robin failed"),

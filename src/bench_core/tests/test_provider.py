@@ -72,7 +72,7 @@ def test_default_hooks_are_noops():
     assert p.save_ids({}, "any") is None
 
 
-from bench_core.tests.fake_provider import FakeProvider  # noqa: E402
+from env_provider.fake import FakeProvider  # noqa: E402
 
 
 def test_fake_provider_create_and_exec():

@@ -1,10 +1,12 @@
-"""In-memory :class:`EnvironmentProvider` for kernel unit tests.
+"""In-memory :class:`EnvironmentProvider` -- the ``--provider fake`` smoke path
+and a reference double for kernel unit tests.
 
 ``FakeProvider`` lets the benchmark kernel be exercised end-to-end with no e2b
 or docker backend. Instances live in a dict; ``exec`` returns a canned
 :class:`CommandResult` (echoing the command's last token by default, or a
 caller-configured result for a given command). It is intentionally simple --
-production providers wrap real SDKs; this one wraps nothing.
+production providers wrap real SDKs; this one wraps nothing, so it doubles as
+the minimal template for adding a new provider submodule alongside this one.
 """
 from __future__ import annotations
 

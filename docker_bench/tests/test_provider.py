@@ -15,7 +15,7 @@ import pytest
 
 from env_provider import CommandResult, SandboxInstance, SandboxStatus
 from docker_bench.config import Config
-from docker_bench.provider import DockerProvider
+from env_provider.docker import DockerProvider
 from docker_bench.schemas import ContainerState
 from docker_bench.schemas import ContainerStatus as DockerStatus
 
@@ -369,6 +369,6 @@ def docker_bench_build_provider(raw_config: dict) -> DockerProvider:
     """Helper: call build_provider with a throwaway KernelConfig (unused)."""
     from bench_core.config import KernelConfig
 
-    from docker_bench.provider import build_provider
+    from env_provider.docker import build_provider
 
     return build_provider(KernelConfig(), raw_config)

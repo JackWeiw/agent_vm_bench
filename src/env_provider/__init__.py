@@ -1,10 +1,16 @@
 """Host-agnostic environment-provider contract + shared state types.
 
-This package is the shared seam that the benchmark kernel (``bench_core``) and
-every provider implementation (e2b, docker, future kata / agentenv) depend on
--- neither the kernel nor any provider owns it. The kernel holds only
-:class:`SandboxInstance` and drives :class:`EnvironmentProvider`; a provider
-keeps its SDK handles internally and adapts them to this contract.
+The contract (this ``__init__``) is the shared seam the benchmark kernel
+(``bench_core``) and every provider implementation depend on. It stays pure --
+no SDK imports -- so ``from env_provider import EnvironmentProvider`` never
+pulls in the e2b / docker SDKs.
+
+Provider implementations live as opt-in submodules alongside the contract:
+``env_provider.e2b``, ``env_provider.docker``, ``env_provider.fake``. Each is a
+leaf imported only by ``bench_core.bench._build_provider`` (and the e2b
+delegate) when that provider is selected, so the kernel never loads a backend
+it does not use. Adding a provider (kata, agentenv, ...) is one new submodule;
+the contract and the kernel are untouched.
 
 Design notes
 ------------

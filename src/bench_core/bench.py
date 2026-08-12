@@ -335,18 +335,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def _build_provider(name: str, config: KernelConfig, raw_config: dict[str, Any]) -> EnvironmentProvider:
     """Construct a provider by name.
 
-    ``fake`` is built inline (for smoke tests). Real providers live in their own
-    packages and are lazy-imported here -- the kernel never imports them
-    statically, so the layering rule (bench_core must not import e2b_bench) holds.
+    All providers live as submodules of ``env_provider`` (``e2b``, ``docker``,
+    ``fake``) and are lazy-imported here -- the kernel never imports a backend
+    statically, so the layering rule (bench_core must not import e2b_bench /
+    docker_bench) holds. ``env_provider``'s contract stays SDK-free; loading a
+    provider submodule is what pulls in that backend's SDK.
     """
     if name == "fake":
-        from bench_core.tests.fake_provider import FakeProvider
+        from env_provider.fake import FakeProvider
 
         return FakeProvider(count=config.total_count)
     if name == "e2b":
-        from e2b_bench.provider import build_provider  # type: ignore[import-not-found]
+        from env_provider.e2b import build_provider
     elif name == "docker":
-        from docker_bench.provider import build_provider  # type: ignore[import-not-found]
+        from env_provider.docker import build_provider
     else:
         raise ValueError(f"Unknown provider: {name}")
     return build_provider(config, raw_config)

@@ -27,10 +27,10 @@ from env_provider import (
     SandboxStatus,
 )
 
-from .config import Config, numa_node_for_index
-from .sandbox_manager import SandboxManager
-from .schemas import SandboxState
-from .schemas import SandboxStatus as E2BSandboxStatus
+from e2b_bench.config import Config, numa_node_for_index
+from e2b_bench.sandbox_manager import SandboxManager
+from e2b_bench.schemas import SandboxState
+from e2b_bench.schemas import SandboxStatus as E2BSandboxStatus
 
 logger = logging.getLogger(__name__)
 

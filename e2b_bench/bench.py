@@ -374,7 +374,7 @@ def run_benchmark(config: Config) -> dict:
     """
     config.validate()
     from bench_core.bench import run_benchmark as kernel_run
-    from .provider import from_config, kernel_config_from_e2b
+    from env_provider.e2b import from_config, kernel_config_from_e2b
 
     kernel_config = kernel_config_from_e2b(config)
     stop_event = threading.Event()

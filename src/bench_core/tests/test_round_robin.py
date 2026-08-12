@@ -18,7 +18,7 @@ from env_provider import CreationMetrics, SandboxStatus
 from bench_core.round_robin import RoundRobinTaskManager
 from bench_core.schemas import BenchSandbox
 from bench_core.stats_collector import StatsCollector
-from bench_core.tests.fake_provider import FakeProvider
+from env_provider.fake import FakeProvider
 
 
 def _ready_sbx(i: int) -> BenchSandbox:

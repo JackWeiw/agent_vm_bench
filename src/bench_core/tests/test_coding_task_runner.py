@@ -20,7 +20,7 @@ from bench_core.task_runner.coding import (
 from bench_core.config import KernelConfig
 from env_provider import CommandResult
 from bench_core.schemas import BenchSandbox
-from bench_core.tests.fake_provider import FakeProvider
+from env_provider.fake import FakeProvider
 
 
 def _ready_sandbox(index: int = 0) -> BenchSandbox:
