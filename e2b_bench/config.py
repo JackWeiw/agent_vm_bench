@@ -7,7 +7,7 @@ Supports YAML config file loading, CLI argument override, E2B environment variab
 import argparse
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import yaml
 
@@ -241,6 +241,221 @@ def _normalize_source_files(raw: Any) -> List[Dict[str, str]]:
     return result or list(DEFAULT_CODING_SOURCE_FILES)
 
 
+# Single source of truth for Config construction. _FIELDS lists each field once
+# (CLI attr, YAML source, default, transform, merge/from_args rules); one _build
+# loop resolves them for all three paths (_from_dict / merge_with_args / from_args),
+# which are now thin wrappers — replacing the former three near-duplicate kwargs blocks.
+
+# Sentinel for "no value found" (distinct from None, which is a valid value).
+_MISSING: Any = object()
+
+# Every YAML section Config reads. _sections normalizes absent/null to {} so
+# extractors can call .get() without NoneType guards.
+_SECTION_NAMES = (
+    "e2b_env",
+    "sandbox",
+    "create_batch",
+    "task_batch",
+    "browser",
+    "coding",
+    "document",
+    "test",
+    "report",
+    "smap_tool",
+    "vm_monitor",
+)
+
+
+def _sections(data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Return every YAML section as a dict (absent or null section -> {})."""
+    return {name: (data.get(name) or {}) for name in _SECTION_NAMES}
+
+
+def _extract_workflow_type(data: Dict[str, Any], sec: Dict[str, Dict[str, Any]]) -> Any:
+    """workflow.type wins over the legacy top-level workflow_type; _MISSING if neither."""
+    wf = data.get("workflow") or {}
+    val = wf.get("type", _MISSING)
+    if val is _MISSING:
+        val = data.get("workflow_type", _MISSING)
+    return val
+
+
+def _verify_cmd_default(ctx: Dict[str, Any]) -> str:
+    """Default coding_verify_cmd from the active language profile's run command."""
+    return get_coding_profile(ctx.get("coding_language", "ts")).run_cmd
+
+
+def _source_files_default(ctx: Dict[str, Any]) -> List[Dict[str, str]]:
+    """Default coding source-file pairs for the active language."""
+    lang = ctx.get("coding_language", "ts")
+    return CODING_LANGUAGE_DEFAULT_SOURCE_FILES.get(lang, DEFAULT_CODING_SOURCE_FILES)
+
+
+def _browser_urls_default(ctx: Dict[str, Any]) -> List[str]:
+    return ["http://192.168.110.10:8080/Weibo.html"]
+
+
+def _empty_list(ctx: Dict[str, Any]) -> list:
+    """Factory for list-valued defaults (avoids shared mutable defaults)."""
+    return []
+
+
+@dataclass(frozen=True)
+class _FieldSpec:
+    """One Config field's resolution rules across all three construction paths.
+
+    field: Config dataclass attribute name.
+    cli:   argparse attribute ("" = no CLI override).
+    y:     YAML source: a (section, key) tuple -> section.get(key), or a callable
+           (data, sec) -> value for special cases. _MISSING = absent.
+    d:     static default when YAML and CLI are both absent.
+    df:    dynamic default (ctx) -> value; receives resolved-so-far fields so a
+           default can depend on an earlier one (e.g. coding_verify_cmd on
+           coding_language). Overrides d.
+    t:     optional transform on the resolved value. Skipped in merge for
+           yaml_only fields (their value already came from a built Config).
+    m:     merge rule: "cli_or_yaml" (None-check), "truthy_or_yaml" (bool flags),
+           or "yaml_only" (no CLI; value taken from yaml_config).
+    fa:    from_args rule: "none" (None-check), "truthy" (falsy -> default),
+           or "getattr" (present-as-None kept; absent -> default).
+    """
+
+    field: str
+    cli: str = ""
+    y: Any = None
+    d: Any = _MISSING
+    df: Optional[Callable[..., Any]] = None
+    t: Optional[Callable[..., Any]] = None
+    m: str = "cli_or_yaml"
+    fa: str = "none"
+
+
+# Compact alias so each table row fits on one line.
+_F = _FieldSpec
+
+
+def _default(spec: _FieldSpec, ctx: Dict[str, Any]) -> Any:
+    """Resolve a spec's default: dynamic (df) wins over static (d)."""
+    return spec.df(ctx) if spec.df else spec.d
+
+
+def _yaml_val(spec: _FieldSpec, data: Dict[str, Any], sec: Dict[str, Dict[str, Any]]) -> Any:
+    """Extract a field's value from raw YAML data, or _MISSING if absent."""
+    y = spec.y
+    if y is None:
+        return _MISSING
+    if callable(y):
+        return y(data, sec)
+    section, key = y
+    return sec[section].get(key, _MISSING)
+
+
+# Order matters where a default depends on an earlier field: coding_language is
+# declared before coding_verify_cmd and coding_source_files, which read it from
+# the resolved-so-far context.
+_FIELDS: List[_FieldSpec] = [
+    # --- E2B environment ---
+    _F("e2b_access_token", cli="e2b_access_token", y=("e2b_env", "E2B_ACCESS_TOKEN"), d=""),
+    _F("e2b_api_key", cli="e2b_api_key", y=("e2b_env", "E2B_API_KEY"), d=""),
+    _F("e2b_domain", cli="e2b_domain", y=("e2b_env", "E2B_DOMAIN"), d="e2b.app"),
+    _F("e2b_api_url", cli="e2b_api_url", y=("e2b_env", "E2B_API_URL"), d="http://localhost:3000"),
+    _F("e2b_http_ssl", cli="e2b_http_ssl", y=("e2b_env", "E2B_HTTP_SSL"), d="false"),
+    # --- Sandbox ---
+    _F("template", cli="template", y=("sandbox", "template"), d="openclaw-browser-v1"),
+    _F("create_timeout", cli="create_timeout", y=("sandbox", "create_timeout"), d=86400),
+    _F("total_count", cli="total", y=("sandbox", "total_count"), d=100),
+    _F("numa_bind", y=("sandbox", "numa_bind"), d=2, t=_normalize_numa_bind, m="yaml_only"),
+    _F("detect_existing", cli="detect", y=("sandbox", "detect_existing"), d=False, m="truthy_or_yaml", fa="truthy"),
+    _F("create_only", cli="create_only", y=("sandbox", "create_only"), d=False, m="truthy_or_yaml", fa="truthy"),
+    _F("sandbox_ids_file", cli="sandbox_ids_file", y=("sandbox", "sandbox_ids_file"), d=None),
+    # --- Batch control ---
+    _F("create_batch_size", cli="create_batch_size", y=("create_batch", "size"), d=None),
+    _F("create_batch_interval", cli="create_batch_interval", y=("create_batch", "interval"), d=None),
+    _F("task_batch_size", cli="task_batch_size", y=("task_batch", "size"), d=None),
+    _F("task_batch_interval", cli="task_batch_interval", y=("task_batch", "interval"), d=None),
+    # --- Benchmark / round-robin ---
+    _F("benchmark_percent", cli="benchmark_percent", y=("test", "benchmark_percent"), d=1.0),
+    _F("benchmark_mode", cli="benchmark_mode", y=("test", "benchmark_mode"), d="fixed"),
+    _F("round_count", cli="round_count", y=("test", "round_count"), d=None),
+    _F("round_size", cli="round_size", y=("test", "round_size"), d=5),
+    _F("round_interval", cli="round_interval", y=("test", "round_interval"), d=5),
+    # --- Workflow type (dual-key: workflow.type then top-level workflow_type) ---
+    _F("workflow_type", cli="workflow_type", y=_extract_workflow_type, d="browser", fa="truthy"),
+    # --- Browser ---
+    _F("browser_urls", cli="browser_url", y=("browser", "urls"), df=_browser_urls_default),
+    _F("browser_timeout", cli="browser_timeout", y=("browser", "task_timeout"), d=200),
+    _F("browser_interval_min", cli="browser_interval_min", y=("browser", "interval_min"), d=0.5),
+    _F("browser_interval_max", cli="browser_interval_max", y=("browser", "interval_max"), d=3.0),
+    # --- Warmup ---
+    _F("warmup_urls", cli="warmup_url", y=("browser", "warmup_urls"), df=_empty_list),
+    _F("warmup_loops", cli="warmup_loops", y=("browser", "warmup_loops"), d=2),
+    _F("warmup_delay", cli="warmup_delay", y=("browser", "warmup_delay"), d=10),
+    _F("warmup_only", cli="warmup_only", y=("browser", "warmup_only"), d=False, m="truthy_or_yaml", fa="truthy"),
+    # --- Coding (language before its dependents) ---
+    _F(
+        "coding_project_dir",
+        cli="coding_project_dir",
+        y=("coding", "project_dir"),
+        d="/opt/coding-bench",
+        fa="getattr",
+    ),
+    _F("coding_language", cli="coding_language", y=("coding", "language"), d="ts", fa="getattr"),
+    _F("coding_verify_cmd", y=("coding", "verify_cmd"), df=_verify_cmd_default, m="yaml_only"),
+    _F("coding_verify_timeout", cli="coding_verify_timeout", y=("coding", "verify_timeout"), d=120, fa="getattr"),
+    _F(
+        "coding_skip_verify",
+        cli="coding_skip_verify",
+        y=("coding", "skip_verify"),
+        d=False,
+        m="truthy_or_yaml",
+        fa="getattr",
+    ),
+    _F("coding_verify_repeat", cli="coding_verify_repeat", y=("coding", "verify_repeat"), d=3, fa="getattr"),
+    _F(
+        "coding_source_files",
+        cli="coding_source_file",
+        y=("coding", "source_files"),
+        df=_source_files_default,
+        t=_normalize_source_files,
+    ),
+    _F("coding_interval_min", y=("coding", "interval_min"), d=2.0, m="yaml_only"),
+    _F("coding_interval_max", y=("coding", "interval_max"), d=10.0, m="yaml_only"),
+    # --- Document (truthy from_args: getattr(...,None) or default) ---
+    _F("document_case_kind", cli="document_case_kind", y=("document", "case_kind"), d="xlsx", fa="truthy"),
+    _F(
+        "document_operation_timeout",
+        cli="document_operation_timeout",
+        y=("document", "operation_timeout"),
+        d=900,
+        fa="truthy",
+    ),
+    _F("document_recalc_timeout", cli="document_recalc_timeout", y=("document", "recalc_timeout"), d=600, fa="truthy"),
+    _F("document_task_timeout", cli="document_task_timeout", y=("document", "task_timeout"), d=1800, fa="truthy"),
+    _F("document_interval_min", y=("document", "interval_min"), d=3.0, m="yaml_only"),
+    _F("document_interval_max", y=("document", "interval_max"), d=10.0, m="yaml_only"),
+    # --- Test run ---
+    _F("test_duration", cli="duration", y=("test", "duration"), d=600),
+    _F("stats_interval", cli="stats_interval", y=("test", "stats_interval"), d=10),
+    # --- Report ---
+    _F("output_dir", cli="output_dir", y=("report", "output_dir"), d="results/e2b"),
+    _F("filename_prefix", cli="filename_prefix", y=("report", "filename_prefix"), d="e2b_bench"),
+    # --- smap_tool (yaml-only in merge; hardcoded default in from_args) ---
+    _F("smap_tool_enabled", y=("smap_tool", "enabled"), d=False, m="yaml_only"),
+    _F("smap_tool_path", y=("smap_tool", "path"), d="", m="yaml_only"),
+    _F("smap_tool_swap_size", y=("smap_tool", "swap_size"), d=81920, m="yaml_only"),
+    _F("smap_tool_ratio", y=("smap_tool", "ratio"), d=15, m="yaml_only"),
+    _F("smap_tool_src_nid", y=("smap_tool", "src_nid"), d=2, m="yaml_only"),
+    _F("smap_tool_dest_nid", y=("smap_tool", "dest_nid"), d=5, m="yaml_only"),
+    # --- vm_monitor (yaml-only in merge; hardcoded default in from_args) ---
+    _F("vm_monitor_enabled", y=("vm_monitor", "enabled"), d=False, m="yaml_only"),
+    _F("vm_monitor_vmm_type", y=("vm_monitor", "vmm_type"), d="firecracker", m="yaml_only"),
+    _F("vm_monitor_duration", y=("vm_monitor", "duration"), d=600, m="yaml_only"),
+    _F("vm_monitor_numa", y=("vm_monitor", "numa"), d="1", m="yaml_only"),
+    _F("vm_monitor_log_dir", y=("vm_monitor", "log_dir"), d="results/e2b/vm_monitor", m="yaml_only"),
+    _F("vm_monitor_stress_file", y=("vm_monitor", "stress_file"), d="/dev/shm/e2b_benchmark_lock", m="yaml_only"),
+]
+
+
 @dataclass
 class Config:
     """Test configuration"""
@@ -383,12 +598,6 @@ class Config:
     @classmethod
     def _from_dict(cls, data: Dict[str, Any]) -> "Config":
         """Build Config from dictionary"""
-        e2b_env = data.get("e2b_env", {})
-        sandbox = data.get("sandbox", {})
-        create_batch = data.get("create_batch", {})
-        task_batch = data.get("task_batch", {})
-        browser = data.get("browser", {})
-        coding = data.get("coding", {})
         document = data.get("document", {})
         forbidden_document_options = {
             "operations_file",
@@ -399,285 +608,79 @@ class Config:
         if forbidden_document_options:
             options = ", ".join(sorted(forbidden_document_options))
             raise ValueError(f"document options are fixed by case_kind and must be removed: {options}")
-        test = data.get("test", {})
-        report = data.get("report", {})
-        smap_tool = data.get("smap_tool", {})
-        vm_monitor = data.get("vm_monitor", {})
-        # workflow_type is parsed from top-level YAML key, not a section
-
-        return cls(
-            e2b_access_token=e2b_env.get("E2B_ACCESS_TOKEN", ""),
-            e2b_api_key=e2b_env.get("E2B_API_KEY", ""),
-            e2b_domain=e2b_env.get("E2B_DOMAIN", "e2b.app"),
-            e2b_api_url=e2b_env.get("E2B_API_URL", "http://localhost:3000"),
-            e2b_http_ssl=e2b_env.get("E2B_HTTP_SSL", "false"),
-            template=sandbox.get("template", "openclaw-browser-v1"),
-            create_timeout=sandbox.get("create_timeout", 86400),
-            total_count=sandbox.get("total_count", 100),
-            detect_existing=sandbox.get("detect_existing", False),
-            create_only=sandbox.get("create_only", False),
-            sandbox_ids_file=sandbox.get("sandbox_ids_file", None),
-            numa_bind=_normalize_numa_bind(sandbox.get("numa_bind", 2)),
-            create_batch_size=create_batch.get("size") if create_batch else None,
-            create_batch_interval=create_batch.get("interval") if create_batch else None,
-            task_batch_size=task_batch.get("size") if task_batch else None,
-            task_batch_interval=task_batch.get("interval") if task_batch else None,
-            benchmark_percent=test.get("benchmark_percent", 1.0),
-            benchmark_mode=test.get("benchmark_mode", "fixed"),
-            round_count=test.get("round_count"),
-            round_size=test.get("round_size", 5),
-            round_interval=test.get("round_interval", 5),
-            workflow_type=data.get("workflow", {}).get("type", data.get("workflow_type", "browser")),
-            browser_urls=browser.get("urls", ["http://192.168.110.10:8080/Weibo.html"]),
-            browser_timeout=browser.get("task_timeout", 200),
-            browser_interval_min=browser.get("interval_min", 0.5),
-            browser_interval_max=browser.get("interval_max", 3.0),
-            warmup_urls=browser.get("warmup_urls", []),
-            warmup_loops=browser.get("warmup_loops", 2),
-            warmup_delay=browser.get("warmup_delay", 10),
-            warmup_only=browser.get("warmup_only", False),
-            coding_project_dir=coding.get("project_dir", "/opt/coding-bench"),
-            coding_language=coding.get("language", "ts"),
-            coding_verify_cmd=coding.get(
-                "verify_cmd",
-                # Default verify command from the active language profile (npx tsx
-                # for ts, go run for go) when YAML doesn't override it.
-                get_coding_profile(coding.get("language", "ts")).run_cmd,
-            ),
-            coding_verify_timeout=coding.get("verify_timeout", 120),
-            coding_skip_verify=coding.get("skip_verify", False),
-            coding_verify_repeat=coding.get("verify_repeat", 3),
-            coding_source_files=_normalize_source_files(
-                coding.get(
-                    "source_files",
-                    CODING_LANGUAGE_DEFAULT_SOURCE_FILES.get(coding.get("language", "ts"), DEFAULT_CODING_SOURCE_FILES),
-                )
-            ),
-            coding_interval_min=coding.get("interval_min", 2.0),
-            coding_interval_max=coding.get("interval_max", 10.0),
-            document_case_kind=document.get("case_kind", "xlsx"),
-            document_operation_timeout=document.get("operation_timeout", 900),
-            document_recalc_timeout=document.get("recalc_timeout", 600),
-            document_task_timeout=document.get("task_timeout", 1800),
-            document_interval_min=document.get("interval_min", 3.0),
-            document_interval_max=document.get("interval_max", 10.0),
-            test_duration=test.get("duration", 600),
-            stats_interval=test.get("stats_interval", 10),
-            output_dir=report.get("output_dir", "results/e2b"),
-            filename_prefix=report.get("filename_prefix", "e2b_bench"),
-            smap_tool_enabled=smap_tool.get("enabled", False),
-            smap_tool_path=smap_tool.get("path", ""),
-            smap_tool_swap_size=smap_tool.get("swap_size", 81920),
-            smap_tool_ratio=smap_tool.get("ratio", 15),
-            smap_tool_src_nid=smap_tool.get("src_nid", 2),
-            smap_tool_dest_nid=smap_tool.get("dest_nid", 5),
-            vm_monitor_enabled=vm_monitor.get("enabled", False),
-            vm_monitor_vmm_type=vm_monitor.get("vmm_type", "firecracker"),
-            vm_monitor_duration=vm_monitor.get("duration", 600),
-            vm_monitor_numa=vm_monitor.get("numa", "1"),
-            vm_monitor_log_dir=vm_monitor.get("log_dir", "results/e2b/vm_monitor"),
-            vm_monitor_stress_file=vm_monitor.get("stress_file", "/dev/shm/e2b_benchmark_lock"),
-        )
+        return cls._build(data, None, None)
 
     @classmethod
     def merge_with_args(cls, yaml_config: "Config", args: argparse.Namespace) -> "Config":
         """Merge CLI arguments (CLI has higher priority)"""
-        return cls(
-            e2b_access_token=args.e2b_access_token
-            if args.e2b_access_token is not None
-            else yaml_config.e2b_access_token,
-            e2b_api_key=args.e2b_api_key if args.e2b_api_key is not None else yaml_config.e2b_api_key,
-            e2b_domain=args.e2b_domain if args.e2b_domain is not None else yaml_config.e2b_domain,
-            e2b_api_url=args.e2b_api_url if args.e2b_api_url is not None else yaml_config.e2b_api_url,
-            e2b_http_ssl=args.e2b_http_ssl if args.e2b_http_ssl is not None else yaml_config.e2b_http_ssl,
-            template=args.template if args.template is not None else yaml_config.template,
-            create_timeout=args.create_timeout if args.create_timeout is not None else yaml_config.create_timeout,
-            total_count=args.total if args.total is not None else yaml_config.total_count,
-            detect_existing=args.detect if hasattr(args, "detect") and args.detect else yaml_config.detect_existing,
-            create_only=args.create_only
-            if hasattr(args, "create_only") and args.create_only
-            else yaml_config.create_only,
-            sandbox_ids_file=args.sandbox_ids_file
-            if args.sandbox_ids_file is not None
-            else yaml_config.sandbox_ids_file,
-            numa_bind=yaml_config.numa_bind,  # Use yaml config for numa_bind
-            create_batch_size=args.create_batch_size
-            if args.create_batch_size is not None
-            else yaml_config.create_batch_size,
-            create_batch_interval=args.create_batch_interval
-            if args.create_batch_interval is not None
-            else yaml_config.create_batch_interval,
-            task_batch_size=args.task_batch_size if args.task_batch_size is not None else yaml_config.task_batch_size,
-            task_batch_interval=args.task_batch_interval
-            if args.task_batch_interval is not None
-            else yaml_config.task_batch_interval,
-            browser_urls=args.browser_url if args.browser_url is not None else yaml_config.browser_urls,
-            browser_timeout=args.browser_timeout if args.browser_timeout is not None else yaml_config.browser_timeout,
-            browser_interval_min=args.browser_interval_min
-            if args.browser_interval_min is not None
-            else yaml_config.browser_interval_min,
-            browser_interval_max=args.browser_interval_max
-            if args.browser_interval_max is not None
-            else yaml_config.browser_interval_max,
-            warmup_urls=args.warmup_url if args.warmup_url is not None else yaml_config.warmup_urls,
-            warmup_loops=args.warmup_loops if args.warmup_loops is not None else yaml_config.warmup_loops,
-            warmup_delay=args.warmup_delay if args.warmup_delay is not None else yaml_config.warmup_delay,
-            warmup_only=args.warmup_only
-            if hasattr(args, "warmup_only") and args.warmup_only
-            else yaml_config.warmup_only,
-            benchmark_percent=args.benchmark_percent
-            if args.benchmark_percent is not None
-            else yaml_config.benchmark_percent,
-            benchmark_mode=getattr(args, "benchmark_mode", None)
-            if getattr(args, "benchmark_mode", None) is not None
-            else yaml_config.benchmark_mode,
-            round_count=getattr(args, "round_count", None)
-            if getattr(args, "round_count", None) is not None
-            else yaml_config.round_count,
-            round_size=getattr(args, "round_size", None)
-            if getattr(args, "round_size", None) is not None
-            else yaml_config.round_size,
-            round_interval=getattr(args, "round_interval", None)
-            if getattr(args, "round_interval", None) is not None
-            else yaml_config.round_interval,
-            workflow_type=getattr(args, "workflow_type", None)
-            if getattr(args, "workflow_type", None) is not None
-            else yaml_config.workflow_type,
-            coding_project_dir=getattr(args, "coding_project_dir", None)
-            if getattr(args, "coding_project_dir", None) is not None
-            else yaml_config.coding_project_dir,
-            coding_language=getattr(args, "coding_language", None)
-            if getattr(args, "coding_language", None) is not None
-            else yaml_config.coding_language,
-            coding_verify_cmd=yaml_config.coding_verify_cmd,  # from language profile / YAML
-            coding_verify_timeout=getattr(args, "coding_verify_timeout", None)
-            if getattr(args, "coding_verify_timeout", None) is not None
-            else yaml_config.coding_verify_timeout,
-            coding_source_files=_normalize_source_files(
-                getattr(args, "coding_source_file", None)
-                if getattr(args, "coding_source_file", None) is not None
-                else yaml_config.coding_source_files
-            ),
-            coding_interval_min=yaml_config.coding_interval_min,
-            coding_interval_max=yaml_config.coding_interval_max,
-            coding_skip_verify=getattr(args, "coding_skip_verify", False)
-            if hasattr(args, "coding_skip_verify") and args.coding_skip_verify
-            else yaml_config.coding_skip_verify,
-            coding_verify_repeat=getattr(args, "coding_verify_repeat", None)
-            if getattr(args, "coding_verify_repeat", None) is not None
-            else yaml_config.coding_verify_repeat,
-            document_case_kind=getattr(args, "document_case_kind", None)
-            if getattr(args, "document_case_kind", None) is not None
-            else yaml_config.document_case_kind,
-            document_operation_timeout=getattr(args, "document_operation_timeout", None)
-            if getattr(args, "document_operation_timeout", None) is not None
-            else yaml_config.document_operation_timeout,
-            document_recalc_timeout=getattr(args, "document_recalc_timeout", None)
-            if getattr(args, "document_recalc_timeout", None) is not None
-            else yaml_config.document_recalc_timeout,
-            document_task_timeout=getattr(args, "document_task_timeout", None)
-            if getattr(args, "document_task_timeout", None) is not None
-            else yaml_config.document_task_timeout,
-            document_interval_min=yaml_config.document_interval_min,
-            document_interval_max=yaml_config.document_interval_max,
-            test_duration=args.duration if args.duration is not None else yaml_config.test_duration,
-            stats_interval=args.stats_interval if args.stats_interval is not None else yaml_config.stats_interval,
-            output_dir=args.output_dir if args.output_dir is not None else yaml_config.output_dir,
-            filename_prefix=args.filename_prefix if args.filename_prefix is not None else yaml_config.filename_prefix,
-            # smap_tool and vm_monitor - use yaml values (no CLI override for these)
-            smap_tool_enabled=yaml_config.smap_tool_enabled,
-            smap_tool_path=yaml_config.smap_tool_path,
-            smap_tool_swap_size=yaml_config.smap_tool_swap_size,
-            smap_tool_ratio=yaml_config.smap_tool_ratio,
-            smap_tool_src_nid=yaml_config.smap_tool_src_nid,
-            smap_tool_dest_nid=yaml_config.smap_tool_dest_nid,
-            vm_monitor_enabled=yaml_config.vm_monitor_enabled,
-            vm_monitor_vmm_type=yaml_config.vm_monitor_vmm_type,
-            vm_monitor_duration=yaml_config.vm_monitor_duration,
-            vm_monitor_numa=yaml_config.vm_monitor_numa,
-            vm_monitor_log_dir=yaml_config.vm_monitor_log_dir,
-            vm_monitor_stress_file=yaml_config.vm_monitor_stress_file,
-        )
+        return cls._build(None, yaml_config, args)
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> "Config":
         """Build Config from CLI arguments only (no YAML file)"""
-        return cls(
-            e2b_access_token=args.e2b_access_token if args.e2b_access_token is not None else "",
-            e2b_api_key=args.e2b_api_key if args.e2b_api_key is not None else "",
-            e2b_domain=args.e2b_domain if args.e2b_domain is not None else "e2b.app",
-            e2b_api_url=args.e2b_api_url if args.e2b_api_url is not None else "http://localhost:3000",
-            e2b_http_ssl=args.e2b_http_ssl if args.e2b_http_ssl is not None else "false",
-            template=args.template if args.template is not None else "openclaw-browser-v1",
-            create_timeout=args.create_timeout if args.create_timeout is not None else 86400,
-            total_count=args.total if args.total is not None else 100,
-            detect_existing=args.detect if hasattr(args, "detect") and args.detect else False,
-            create_only=args.create_only if hasattr(args, "create_only") and args.create_only else False,
-            sandbox_ids_file=args.sandbox_ids_file if args.sandbox_ids_file is not None else None,
-            numa_bind=_normalize_numa_bind(2),  # Default to NUMA node 2 when using CLI args only
-            create_batch_size=args.create_batch_size,
-            create_batch_interval=args.create_batch_interval,
-            task_batch_size=args.task_batch_size,
-            task_batch_interval=args.task_batch_interval,
-            browser_urls=args.browser_url
-            if args.browser_url is not None
-            else ["http://192.168.110.10:8080/Weibo.html"],
-            browser_timeout=args.browser_timeout if args.browser_timeout is not None else 200,
-            browser_interval_min=args.browser_interval_min if args.browser_interval_min is not None else 0.5,
-            browser_interval_max=args.browser_interval_max if args.browser_interval_max is not None else 3.0,
-            # Warmup configuration
-            warmup_urls=args.warmup_url if args.warmup_url is not None else [],
-            warmup_loops=args.warmup_loops if args.warmup_loops is not None else 2,
-            warmup_delay=args.warmup_delay if args.warmup_delay is not None else 10,
-            warmup_only=args.warmup_only if hasattr(args, "warmup_only") and args.warmup_only else False,
-            benchmark_percent=args.benchmark_percent if args.benchmark_percent is not None else 1.0,
-            benchmark_mode=getattr(args, "benchmark_mode", None)
-            if getattr(args, "benchmark_mode", None) is not None
-            else "fixed",
-            round_count=getattr(args, "round_count", None),
-            round_size=getattr(args, "round_size", None) if getattr(args, "round_size", None) is not None else 5,
-            round_interval=getattr(args, "round_interval", None)
-            if getattr(args, "round_interval", None) is not None
-            else 5,
-            workflow_type=getattr(args, "workflow_type", None) or "browser",
-            coding_project_dir=getattr(args, "coding_project_dir", "/opt/coding-bench"),
-            coding_language=getattr(args, "coding_language", "ts"),
-            coding_verify_cmd=get_coding_profile(getattr(args, "coding_language", "ts")).run_cmd,
-            coding_verify_timeout=getattr(args, "coding_verify_timeout", 120),
-            coding_skip_verify=getattr(args, "coding_skip_verify", False),
-            coding_verify_repeat=getattr(args, "coding_verify_repeat", 3),
-            coding_source_files=_normalize_source_files(
-                getattr(args, "coding_source_file", None)
-                if getattr(args, "coding_source_file", None) is not None
-                else CODING_LANGUAGE_DEFAULT_SOURCE_FILES.get(
-                    getattr(args, "coding_language", "ts"), DEFAULT_CODING_SOURCE_FILES
-                )
-            ),
-            coding_interval_min=2.0,
-            coding_interval_max=10.0,
-            document_case_kind=getattr(args, "document_case_kind", None) or "xlsx",
-            document_operation_timeout=getattr(args, "document_operation_timeout", None) or 900,
-            document_recalc_timeout=getattr(args, "document_recalc_timeout", None) or 600,
-            document_task_timeout=getattr(args, "document_task_timeout", None) or 1800,
-            document_interval_min=3.0,
-            document_interval_max=10.0,
-            test_duration=args.duration if args.duration is not None else 600,
-            stats_interval=args.stats_interval if args.stats_interval is not None else 10,
-            output_dir=args.output_dir if args.output_dir is not None else "results/e2b",
-            filename_prefix=args.filename_prefix if args.filename_prefix is not None else "e2b_bench",
-            smap_tool_enabled=False,
-            smap_tool_path="",
-            smap_tool_swap_size=81920,
-            smap_tool_ratio=15,
-            smap_tool_src_nid=2,
-            smap_tool_dest_nid=5,
-            vm_monitor_enabled=False,
-            vm_monitor_vmm_type="firecracker",
-            vm_monitor_duration=600,
-            vm_monitor_numa="1",
-            vm_monitor_log_dir="results/e2b/vm_monitor",
-            vm_monitor_stress_file="/dev/shm/e2b_benchmark_lock",
-        )
+        return cls._build(None, None, args)
+
+    @classmethod
+    def _build(cls, data, yaml_config, args) -> "Config":
+        """Single source-of-truth builder for all three construction paths.
+
+        _from_dict(data)            -> _build(data, None, None)
+        merge_with_args(yaml, args)  -> _build(None, yaml, args)
+        from_args(args)             -> _build(None, None, args)
+
+        Resolves every field in _FIELDS against whichever sources are present,
+        preserving the exact priority semantics of the former hand-written
+        kwargs (CLI > YAML > default, with per-field None-check vs truthiness
+        and dynamic language-dependent defaults).
+        """
+        sec = _sections(data) if data is not None else None
+        resolved: Dict[str, Any] = {}
+        for spec in _FIELDS:
+            resolved[spec.field] = cls._resolve_one(spec, data, sec, yaml_config, args, resolved)
+        return cls(**resolved)
+
+    @staticmethod
+    def _resolve_one(spec, data, sec, yaml_config, args, ctx) -> Any:
+        """Resolve one field's value from the available sources."""
+        # 1. YAML value.
+        if data is not None:
+            yv = _yaml_val(spec, data, sec)  # _from_dict: extract from raw dict
+        elif yaml_config is not None:
+            yv = getattr(yaml_config, spec.field)  # merge: already-resolved Config attr
+        else:
+            yv = _MISSING  # from_args: no YAML
+
+        # 2. CLI value (_MISSING when the spec has no CLI attr or args is absent).
+        cv = _MISSING
+        if spec.cli and args is not None:
+            cv = getattr(args, spec.cli, _MISSING)
+
+        # 3. Resolve per path.
+        if data is not None:
+            val = yv if yv is not _MISSING else _default(spec, ctx)
+        elif yaml_config is not None:
+            if spec.m == "yaml_only" or cv is _MISSING:
+                val = yv
+            elif spec.m == "truthy_or_yaml":
+                val = cv if cv else yv
+            else:  # cli_or_yaml
+                val = cv if cv is not None else yv
+        else:  # from_args
+            if cv is not _MISSING:
+                if spec.fa == "getattr":
+                    val = cv  # attr present: keep as-is (even None)
+                elif spec.fa == "truthy":
+                    val = cv if cv else _default(spec, ctx)
+                else:  # none
+                    val = cv if cv is not None else _default(spec, ctx)
+            else:
+                val = _default(spec, ctx)
+
+        # 4. Transform — skipped for yaml_only merge, whose value already came
+        #    from a built Config and is therefore final (e.g. numa_bind).
+        if spec.t is not None and not (yaml_config is not None and spec.m == "yaml_only"):
+            val = spec.t(val)
+        return val
 
     def setup_e2b_env(self) -> None:
         """Setup E2B SDK environment variables"""

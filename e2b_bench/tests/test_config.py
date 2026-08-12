@@ -4,6 +4,7 @@ Test Config Module
 Tests for Config dataclass: loading, merging, properties
 """
 
+import argparse
 import os
 import tempfile
 
@@ -1626,6 +1627,178 @@ sandbox:
         args = parser.parse_args([])
         config = Config.from_args(args)
         assert config.numa_bind == [2]
+
+
+def _make_args(**overrides):
+    """Build an argparse.Namespace mirroring build_arg_parser()'s defaults.
+
+    type= args default to None; store_true args default to False — exactly what
+    the real parser produces when no flags are passed. Override per-test.
+    """
+    defaults = {
+        "e2b_access_token": None,
+        "e2b_api_key": None,
+        "e2b_domain": None,
+        "e2b_api_url": None,
+        "e2b_http_ssl": None,
+        "template": None,
+        "create_timeout": None,
+        "total": None,
+        "detect": False,
+        "create_only": False,
+        "sandbox_ids_file": None,
+        "create_batch_size": None,
+        "create_batch_interval": None,
+        "task_batch_size": None,
+        "task_batch_interval": None,
+        "workflow_type": None,
+        "browser_url": None,
+        "browser_timeout": None,
+        "browser_interval_min": None,
+        "browser_interval_max": None,
+        "coding_project_dir": None,
+        "coding_language": None,
+        "coding_verify_timeout": None,
+        "coding_source_file": None,
+        "coding_skip_verify": False,
+        "coding_verify_repeat": None,
+        "document_case_kind": None,
+        "document_operation_timeout": None,
+        "document_recalc_timeout": None,
+        "document_task_timeout": None,
+        "warmup_url": None,
+        "warmup_loops": None,
+        "warmup_delay": None,
+        "warmup_only": False,
+        "benchmark_percent": None,
+        "benchmark_mode": None,
+        "round_count": None,
+        "round_size": None,
+        "round_interval": None,
+        "duration": None,
+        "stats_interval": None,
+        "output_dir": None,
+        "filename_prefix": None,
+    }
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+class TestFieldSpecTable:
+    """Tests for the _FIELDS single-source-of-truth table (issue #76).
+
+    These guard the new abstraction's invariants — not just the old behavior
+    (which TestConfigDefaults / TestConfigLoadYaml / TestConfigPriorityChain
+    already pin down via the public methods).
+    """
+
+    def test_table_covers_every_config_field(self):
+        """Every Config dataclass field has exactly one _FIELDS row and vice versa."""
+        import dataclasses
+
+        from e2b_bench.config import Config, _FIELDS
+
+        table_fields = {f.field for f in _FIELDS}
+        dataclass_fields = {f.name for f in dataclasses.fields(Config)}
+        assert table_fields == dataclass_fields
+
+    def test_table_has_no_duplicate_fields(self):
+        from e2b_bench.config import _FIELDS
+
+        names = [f.field for f in _FIELDS]
+        assert len(names) == len(set(names))
+
+    def test_yaml_only_fields_declare_no_cli_attr(self):
+        """yaml_only merge fields read straight from yaml_config; a cli attr would be dead code."""
+        from e2b_bench.config import _FIELDS
+
+        for f in _FIELDS:
+            if f.m == "yaml_only":
+                assert f.cli == "", f"{f.field}: yaml_only field must not declare a cli attr"
+
+    def test_merge_and_from_args_rules_are_valid(self):
+        from e2b_bench.config import _FIELDS
+
+        merge_rules = {"cli_or_yaml", "truthy_or_yaml", "yaml_only"}
+        fa_rules = {"none", "truthy", "getattr"}
+        for f in _FIELDS:
+            assert f.m in merge_rules, f"{f.field}: bad merge rule {f.m!r}"
+            assert f.fa in fa_rules, f"{f.field}: bad from_args rule {f.fa!r}"
+
+    def test_coding_language_precedes_its_dependents(self):
+        """Dynamic defaults read coding_language from the resolved-so-far context."""
+        from e2b_bench.config import _FIELDS
+
+        order = {f.field: i for i, f in enumerate(_FIELDS)}
+        assert order["coding_language"] < order["coding_verify_cmd"]
+        assert order["coding_language"] < order["coding_source_files"]
+
+    def test_from_args_getattr_default_when_attr_absent(self):
+        """getattr rule: a fully-absent attr falls back to the static default."""
+        from e2b_bench.config import Config
+
+        # Namespace with NO coding_project_dir attribute at all.
+        config = Config.from_args(argparse.Namespace(coding_language="ts"))
+        assert config.coding_project_dir == "/opt/coding-bench"
+
+    def test_from_args_getattr_keeps_present_none(self):
+        """getattr rule: an attr present as None is kept (not replaced by the default).
+
+        This is the divergence from the None-check rule (coding_project_dir yields
+        None, not '/opt/coding-bench', when the real parser leaves it unset).
+        """
+        from e2b_bench.config import Config
+
+        config = Config.from_args(_make_args(coding_project_dir=None))
+        assert config.coding_project_dir is None
+
+    def test_from_args_dynamic_verify_cmd_follows_language(self):
+        """coding_verify_cmd's default comes from the active language profile's run command."""
+        from e2b_bench.config import Config
+
+        assert Config.from_args(_make_args(coding_language="ts")).coding_verify_cmd == "npx tsx /tmp/bench_verify.mjs"
+        assert Config.from_args(_make_args(coding_language="go")).coding_verify_cmd == "go run /tmp/bench_verify.go"
+
+    def test_from_args_dynamic_source_files_follow_language(self):
+        """coding_source_files' default pool follows coding_language (ts->vuejs, go->hugo)."""
+        from e2b_bench.config import Config
+
+        ts = Config.from_args(_make_args(coding_language="ts"))
+        go = Config.from_args(_make_args(coding_language="go"))
+        assert ts.coding_source_files[0]["file"].startswith("packages/")
+        assert go.coding_source_files[0]["file"].startswith("markup/")
+
+    def test_merge_does_not_renormalize_numa_bind(self):
+        """yaml_only merge passes the yaml attribute through unchanged.
+
+        A Config() built via the constructor stores the raw dataclass default
+        (numa_bind=2); merge must NOT re-run _normalize_numa_bind on it (which
+        would turn 2 into [2]). This is the transform-skip rule for yaml_only.
+        """
+        from e2b_bench.config import Config
+
+        raw = Config()  # constructor: no normalization -> numa_bind == 2
+        assert raw.numa_bind == 2
+        merged = Config.merge_with_args(raw, _make_args())
+        assert merged.numa_bind == 2  # not re-normalized to [2]
+
+    def test_truthy_merge_ignores_store_true_default(self):
+        """truthy_or_yaml: a False store_true default falls through to the YAML value."""
+        from e2b_bench.config import Config
+
+        yaml_config = Config(detect_existing=True, warmup_only=True)
+        merged = Config.merge_with_args(yaml_config, _make_args())  # detect=False, warmup_only=False
+        assert merged.detect_existing is True
+        assert merged.warmup_only is True
+
+    def test_cli_or_yaml_none_check_keeps_zero(self):
+        """cli_or_yaml uses an is-not-None check, so CLI 0 overrides YAML (not truthiness)."""
+        from e2b_bench.config import Config
+
+        yaml_config = Config(round_size=5, warmup_delay=2)
+        merged = Config.merge_with_args(yaml_config, _make_args(round_size=0, warmup_delay=0))
+        assert merged.round_size == 0
+        assert merged.warmup_delay == 0
 
 
 if __name__ == "__main__":
