@@ -53,12 +53,12 @@ DEVKIT_CPU_RANGE=96-191
 
 ## Core Tools
 
-### create_server.py - Create VMs
+### vm_bench - Create VMs
 
 ```bash
-python3 create_server.py \
-  --start_ip 192.168.110.11 \
-  --n 10 \
+python3 -m vm_bench --create-only \
+  --start-ip 192.168.110.11 \
+  -n 10 \
   --subnet-prefix 192.168.110. \
   --network-id cc56708a-c0c0-4d75-a87e-ed1b1a8af844 \
   --az nova_zone:controller \
