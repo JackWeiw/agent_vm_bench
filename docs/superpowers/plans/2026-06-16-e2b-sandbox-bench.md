@@ -66,8 +66,8 @@ __all__ = [
 # config/default.yaml
 # E2B SDK 环境变量配置
 e2b_env:
-  E2B_ACCESS_TOKEN: "sk_e2b_17bd3933af21f80dc10bba686691c4fcd7057123"
-  E2B_API_KEY: "e2b_5ec17bd3933af21f80dc10bba686691c4fcd7057"
+  E2B_ACCESS_TOKEN: "sk_e2b_<your-access-token>"
+  E2B_API_KEY: "e2b_<your-team-api-key>"
   E2B_DOMAIN: "e2b.app"
   E2B_API_URL: "http://localhost:3000"
   E2B_HTTP_SSL: "false"

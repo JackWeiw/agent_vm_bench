@@ -54,7 +54,7 @@ docker build -f Dockerfile.x86 -t ubuntu-openclaw-chromium:24.04-x86_64 \
 
 ```bash
 # Set proxy and Harbor IP (modify as needed)
-export PROXY=http://90.255.211.160:8888
+export PROXY=http://your-proxy:8888
 export HARBOR_IP=192.168.1.100
 
 # Run the push script
@@ -81,10 +81,10 @@ The shared `build_e2b.py` lives one directory up (it is shared with the `coding/
 pip install e2b
 
 # Build template with server IP and Harbor IP
-python ../build_e2b.py --server-ip 141.61.17.196 --harbor-ip 141.61.17.196
+python ../build_e2b.py --server-ip <your-e2b-server-ip> --harbor-ip <your-harbor-ip>
 
 # Optional: customize template settings
-python ../build_e2b.py --server-ip 141.61.17.196 --harbor-ip 141.61.17.196 \
+python ../build_e2b.py --server-ip <your-e2b-server-ip> --harbor-ip <your-harbor-ip> \
     --alias my-template --cpu 4 --memory 4096 \
     --image e2b-orchestration/ubuntu-openclaw-chromium:custom
 ```
@@ -95,7 +95,7 @@ python ../build_e2b.py --server-ip 141.61.17.196 --harbor-ip 141.61.17.196 \
 
 The Dockerfiles include proxy settings for servers that require proxy to access external network:
 
-- **Default proxy:** `http://90.255.211.160:8888`
+- **Default proxy:** `http://your-proxy:8888`
 - **Docker build:** Uses `HTTP_PROXY` and `HTTPS_PROXY` build args
 - **push_to_harbor.sh:** Uses `PROXY` environment variable
 

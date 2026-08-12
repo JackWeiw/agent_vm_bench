@@ -22,7 +22,7 @@ The `create` command will print the `restore` command at the end for convenience
 1. **`.env` file** — copy `e2b_bench/scripts/.env.example` to `e2b_bench/scripts/.env` and fill in values:
 
 ```ini
-E2B_API_URL=http://141.61.17.186:3000
+E2B_API_URL=http://YOUR_E2B_SERVER_IP:3000
 E2B_HTTP_SSL=false
 E2B_DOMAIN=e2b.app
 ```

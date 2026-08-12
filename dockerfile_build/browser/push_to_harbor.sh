@@ -8,7 +8,7 @@
 set -e
 
 # Configuration - modify these values
-PROXY="${PROXY:-http://90.255.211.160:8888}"  # Proxy server address
+PROXY="${PROXY:-http://your-proxy:8888}"  # Proxy server address
 HARBOR_IP="${HARBOR_IP:-localhost}"           # Harbor registry IP address
 
 # Architecture: "arm" (default) builds from Dockerfile (linuxarm64 tag);
