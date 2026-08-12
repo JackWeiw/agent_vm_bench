@@ -7,13 +7,18 @@ smap_tool, vm_monitor) lives in the provider's own config and never appears here
 
 The coding/document fields are host-agnostic: any provider whose sandbox can
 run the project/toolchain can execute them, so they belong to the kernel, not
-to e2b. The per-language profile machinery (``CODING_LANGUAGE_PROFILES``) stays
-in ``e2b_bench.config``; the kernel only carries the scalar fields.
+to e2b. The per-language profile machinery, replacement pairs, and verify
+templates live in :mod:`bench_core.coding_payload`; the kernel carries the
+scalar fields plus the resolved replacement-pair list
+(``coding_source_files``), which :meth:`__post_init__` defaults from
+``coding_language`` when not supplied explicitly.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import List
+
+from bench_core.coding_payload import CODING_LANGUAGE_DEFAULT_SOURCE_FILES, DEFAULT_CODING_SOURCE_FILES
 
 
 @dataclass
@@ -56,6 +61,11 @@ class KernelConfig:
     # --- coding (host-agnostic; provider supplies the sandbox that runs it) ---
     coding_project_dir: str = "/opt/coding-bench"
     coding_language: str = "ts"
+    # Replacement pairs to cycle through (see bench_core.coding_payload). When
+    # left None, __post_init__ resolves the language's default pair list, so
+    # ``KernelConfig(coding_language="go")`` gets the hugo pairs automatically;
+    # an explicit list is kept verbatim.
+    coding_source_files: list[dict] | None = None
     coding_verify_cmd: str = "npx tsx /tmp/bench_verify.mjs"
     coding_verify_timeout: int = 120
     coding_skip_verify: bool = False
@@ -78,6 +88,14 @@ class KernelConfig:
     # --- report ---
     output_dir: str = "results/kernel"
     filename_prefix: str = "bench"
+
+    def __post_init__(self) -> None:
+        # Resolve replacement pairs from the language when not supplied. A copy
+        # is made so a config never aliases the shared module-level list (callers
+        # mutate coding_source_files when locating fallback files).
+        if self.coding_source_files is None:
+            default = CODING_LANGUAGE_DEFAULT_SOURCE_FILES.get(self.coding_language, DEFAULT_CODING_SOURCE_FILES)
+            self.coding_source_files = [dict(p) for p in default]
 
     # --- derived counts ---
     @property

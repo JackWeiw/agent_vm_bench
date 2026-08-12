@@ -6,9 +6,9 @@ host-agnostic: they track task counters, latencies, and step-level timing with
 no reference to e2b or docker. :class:`BenchSandbox` carries them alongside the
 lifecycle state inherited from :class:`bench_core.provider.SandboxInstance`.
 
-The coding/document *payload* data (replacement pairs, verify-script templates)
-is benchmark content, not kernel infrastructure -- it stays in the provider/bench
-packages and is wired through config. Only the metric *machinery* lives here.
+The coding/document *payload* data (replacement pairs, verify-script templates,
+language profiles) is also host-agnostic benchmark content -- it lives in
+:mod:`bench_core.coding_payload`. Only the metric *machinery* lives here.
 """
 from __future__ import annotations
 
