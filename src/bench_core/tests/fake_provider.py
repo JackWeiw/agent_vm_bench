@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Mapping
 
-from bench_core.provider import CommandResult, EnvironmentProvider, SandboxInstance
+from bench_core.provider import CommandResult, CreationMetrics, EnvironmentProvider, SandboxInstance, SandboxStatus
 
 
 class FakeProvider(EnvironmentProvider):
@@ -49,6 +49,7 @@ class FakeProvider(EnvironmentProvider):
                 index=i,
                 ready=True,
                 is_alive=True,
+                creation_metrics=CreationMetrics(status=SandboxStatus.READY),
             )
             for i in range(self._count)
         }
