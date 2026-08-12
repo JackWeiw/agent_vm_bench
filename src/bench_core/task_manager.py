@@ -54,7 +54,7 @@ class TaskManager:
             return
 
         if self.config.workflow_type == "coding":
-            from bench_core.coding_task_runner import CodingWarmupRunner
+            from bench_core.task_runner.coding import CodingWarmupRunner
 
             if not self.config.coding_skip_verify:
                 logger.info(f"\n{'=' * 60}")
@@ -74,7 +74,7 @@ class TaskManager:
                 for state in ready_states:
                     state.warmup_done = True
         elif self.config.workflow_type == "document":
-            from bench_core.document_task_runner import DocumentWarmupRunner
+            from bench_core.task_runner.document import DocumentWarmupRunner
 
             logger.info(f"\n{'=' * 60}")
             logger.info("Document Warmup Phase Starting")
@@ -87,7 +87,7 @@ class TaskManager:
                 self.warmup_runners.append(runner)
                 runner.start()
         elif self.config.workflow_type == "browser":
-            from bench_core.task_runner import WarmupRunner
+            from bench_core.task_runner.browser import WarmupRunner
 
             if not self.config.warmup_urls:
                 logger.info("No warmup URLs configured, skipping warmup")
@@ -245,15 +245,15 @@ class TaskManager:
             Task runner thread (BrowserTaskRunner / CodingTaskRunner / DocumentTaskRunner).
         """
         if self.config.workflow_type == "coding":
-            from bench_core.coding_task_runner import CodingTaskRunner
+            from bench_core.task_runner.coding import CodingTaskRunner
 
             return CodingTaskRunner(state, self.config, self.stop_event, self.provider)
         if self.config.workflow_type == "document":
-            from bench_core.document_task_runner import DocumentTaskRunner
+            from bench_core.task_runner.document import DocumentTaskRunner
 
             return DocumentTaskRunner(state, self.config, self.stop_event, self.provider)
         if self.config.workflow_type == "browser":
-            from bench_core.task_runner import BrowserTaskRunner
+            from bench_core.task_runner.browser import BrowserTaskRunner
 
             return BrowserTaskRunner(state, self.config, self.stop_event, self.provider)
         raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")

@@ -181,7 +181,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     """
     config.validate()
     if config.workflow_type == "document":
-        from bench_core.document_task_runner import preflight_document
+        from bench_core.task_runner.document import preflight_document
 
         preflight_document(config)
 

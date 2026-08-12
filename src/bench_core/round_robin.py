@@ -187,21 +187,21 @@ class RoundRobinTaskManager:
         self.active_runners = []
 
         if self.config.workflow_type == "coding":
-            from bench_core.coding_task_runner import CodingRoundRunner
+            from bench_core.task_runner.coding import CodingRoundRunner
 
             for state in current_states:
                 runner = CodingRoundRunner(state, self.config, self.round_stop_event, round_id, self.provider)
                 self.active_runners.append(runner)
                 runner.start()
         elif self.config.workflow_type == "document":
-            from bench_core.document_task_runner import DocumentRoundRunner
+            from bench_core.task_runner.document import DocumentRoundRunner
 
             for state in current_states:
                 runner = DocumentRoundRunner(state, self.config, self.round_stop_event, round_id, self.provider)
                 self.active_runners.append(runner)
                 runner.start()
         elif self.config.workflow_type == "browser":
-            from bench_core.task_runner import TabOperationRunner
+            from bench_core.task_runner.browser import TabOperationRunner
 
             for state in current_states:
                 runner = TabOperationRunner(state, self.config, self.round_stop_event, round_id, self.provider)

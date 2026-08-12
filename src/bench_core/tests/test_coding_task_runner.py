@@ -10,7 +10,7 @@ import base64
 import threading
 
 from bench_core.coding_payload import DEFAULT_CODING_SOURCE_FILES
-from bench_core.coding_task_runner import (
+from bench_core.task_runner.coding import (
     CodingRoundRunner,
     CodingTaskRunner,
     CodingWarmupRunner,

@@ -15,7 +15,7 @@ from bench_core.config import KernelConfig
 from bench_core.provider import CreationMetrics, SandboxStatus
 from bench_core.schemas import BenchSandbox
 from bench_core.task_manager import TaskManager
-from bench_core.task_runner import BrowserTaskRunner
+from bench_core.task_runner.browser import BrowserTaskRunner
 from bench_core.tests.fake_provider import FakeProvider
 
 

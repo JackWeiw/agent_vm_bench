@@ -12,7 +12,7 @@ import json
 import threading
 
 from bench_core.config import KernelConfig
-from bench_core.document_task_runner import (
+from bench_core.task_runner.document import (
     DocumentOperationExecutor,
     DocumentRoundRunner,
     DocumentTaskRunner,
