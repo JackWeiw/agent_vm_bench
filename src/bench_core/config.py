@@ -20,6 +20,28 @@ from typing import List
 
 from bench_core.coding_payload import CODING_LANGUAGE_DEFAULT_SOURCE_FILES, DEFAULT_CODING_SOURCE_FILES
 
+# In-sandbox scene layout per document case kind. These paths live inside the
+# sandbox image (the document seed is baked in by the provider's prepare hook);
+# they are host-agnostic, so they belong to the kernel, not to e2b.
+DOCUMENT_SCENE_LAYOUTS: dict[str, dict[str, str]] = {
+    "pdf": {
+        "seed_dir": "/opt/document-bench/pdf",
+        "workspace_dir": "/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01",
+    },
+    "xlsx": {
+        "seed_dir": "/opt/document-bench/xlsx",
+        "workspace_dir": "/root/.openclaw/workspace/tool-modeling/SUB-MEM-OFFICE-01",
+    },
+}
+
+
+def document_scene_layout(case_kind: str) -> dict[str, str]:
+    """Return the in-sandbox ``{seed_dir, workspace_dir}`` layout for a case kind."""
+    try:
+        return DOCUMENT_SCENE_LAYOUTS[case_kind]
+    except KeyError:
+        raise ValueError("document_case_kind must be 'pdf' or 'xlsx'") from None
+
 
 @dataclass
 class KernelConfig:
@@ -75,6 +97,10 @@ class KernelConfig:
 
     # --- document ---
     document_case_kind: str = "xlsx"
+    # Optional override for the trace-recipe JSON path. When None, the runner
+    # auto-resolves it relative to the repo root (the dir holding pyproject.toml),
+    # so the kernel works from any repo checkout without provider help.
+    document_recipe_path: str | None = None
     document_operation_timeout: int = 900
     document_recalc_timeout: int = 600
     document_task_timeout: int = 1800
@@ -115,6 +141,16 @@ class KernelConfig:
         if not self.task_batch_size:
             return 1
         return (self.total_count + self.task_batch_size - 1) // self.task_batch_size
+
+    @property
+    def document_seed_dir(self) -> str:
+        """In-sandbox seed dir for the active document case kind."""
+        return document_scene_layout(self.document_case_kind)["seed_dir"]
+
+    @property
+    def document_workspace_dir(self) -> str:
+        """In-sandbox workspace dir for the active document case kind."""
+        return document_scene_layout(self.document_case_kind)["workspace_dir"]
 
     def validate(self) -> None:
         """Raise ``ValueError`` for invalid settings; call after construction."""
