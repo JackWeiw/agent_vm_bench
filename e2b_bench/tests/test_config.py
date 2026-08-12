@@ -1745,6 +1745,21 @@ class TestFieldSpecTable:
             if f.cli is not None and f.field not in overrides:
                 assert f.cli == f.field, f"{f.field}: cli {f.cli!r} != field name (auto-derive broken)"
 
+    def test_cli_dests_exist_in_argparse(self):
+        """Every non-None cli dest in _FIELDS must be a real argparse dest.
+
+        A cli pointing at a dest the parser never defines silently falls back
+        to the default (getattr returns _MISSING), masking a misconfigured field.
+        """
+        from e2b_bench.bench import build_arg_parser
+        from e2b_bench.config import _FIELDS
+
+        parser = build_arg_parser()
+        dests = {action.dest for action in parser._actions}
+        for f in _FIELDS:
+            if f.cli is not None:
+                assert f.cli in dests, f"{f.field}: cli dest {f.cli!r} not defined by build_arg_parser()"
+
     def test_merge_and_from_args_rules_are_valid(self):
         from e2b_bench.config import _FIELDS
 
