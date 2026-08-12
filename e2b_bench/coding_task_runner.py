@@ -164,7 +164,7 @@ def _run_verify(
         cmd = (
             f"cd {project_dir} && "
             f"cat > {profile.temp_test_path} << '{eof}'\n"
-            f"{script_body}"
+            f"{script_body}\n"
             f"{eof}\n"
             f"{config.coding_verify_cmd}"
         )
@@ -218,7 +218,11 @@ class CodingWarmupRunner(threading.Thread):
         e2b_sandbox_id = sbx.sandbox_id if hasattr(sbx, "sandbox_id") else "N/A"
         project_dir = self.config.coding_project_dir
 
-        project_marker = "go.mod" if self.config.coding_language == "go" else "package.json"
+        project_marker = (
+            "go.mod"
+            if self.config.coding_language == "go"
+            else ("pyproject.toml" if self.config.coding_language == "python" else "package.json")
+        )
         try:
             result = sbx.commands.run(f"ls {project_dir}/{project_marker}", timeout=30, user="root")
             if result.exit_code != 0:
@@ -369,7 +373,10 @@ class CodingTaskRunner(threading.Thread):
                 found = (fallback.stdout or "").strip().splitlines()
                 if found:
                     target_file = found[0]
-                    find_str, replace_str = "// bench marker", "// bench round\n// bench marker"
+                    # Python source uses '#' comments (not '//'); pick the marker
+                    # style so a locate-fallback edit still lands as a real edit.
+                    comment = "#" if self.config.coding_language == "python" else "//"
+                    find_str, replace_str = f"{comment} bench marker", f"{comment} bench round\n{comment} bench marker"
 
             t1 = time.perf_counter()
             sbx.commands.run(f"cd {project_dir} && head -20 {target_file}", timeout=15, user="root")
@@ -581,12 +588,13 @@ class CodingRoundRunner(threading.Thread):
         )
         found = (fallback.stdout or "").strip().splitlines()
         if found:
+            comment = "#" if self.config.coding_language == "python" else "//"
             return (
                 False,
                 f"target not found, fell back to {found[0]}",
                 found[0],
-                "// bench marker",
-                "// bench round\n// bench marker",
+                f"{comment} bench marker",
+                f"{comment} bench round\n{comment} bench marker",
             )
         return False, "checkout/locate failed", target_file, find_str, replace_str
 

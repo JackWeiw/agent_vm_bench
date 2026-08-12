@@ -289,6 +289,90 @@ DEFAULT_CODING_VERIFY_SCRIPT_GO = (
 )
 
 
+# Default replacement pairs for the django/django coding benchmark (Python
+# language). django (github.com/django/django) is a real repo used across
+# swe_bench / swe-bench-verified evaluations. Each pair is a real, type-safe
+# string edit applied to a verified django framework source file (all under
+# django/). The first pair mirrors an edit on django.conf.global_settings and
+# carries its own `verify_script` (a bare `python3` script importing django and
+# asserting a real invariant - LANGUAGE_CODE); pairs without a verify_script fall
+# back to DEFAULT_CODING_VERIFY_SCRIPT_PY. The runner round-robins through the
+# list, applying one pair per round then verifying by writing an ad-hoc
+# /tmp/bench_verify.py and running it via `python3` (the exact verification shape
+# a real coding agent uses on a Python repo).
+DEFAULT_CODING_PY_SOURCE_FILES = [
+    {
+        "file": "django/conf/global_settings.py",
+        "find": 'LANGUAGE_CODE = "en-us"',
+        "replace": 'LANGUAGE_CODE = "en-us"  # bench round',
+        "verify_script": (
+            "import django\n"
+            "from django.conf import settings\n"
+            "\n"
+            "settings.configure(\n"
+            "    DEBUG=True,\n"
+            "    DATABASES={},\n"
+            "    INSTALLED_APPS=[],\n"
+            ")\n"
+            "\n"
+            "import django.urls\n"
+            "\n"
+            'assert settings.LANGUAGE_CODE == "en-us", settings.LANGUAGE_CODE\n'
+            'print("All tests passed!")'
+        ),
+    },
+    {
+        "file": "django/db/models/fields/__init__.py",
+        "find": "class Field(RegisterLookupMixin):",
+        "replace": "class Field(RegisterLookupMixin):  # bench",
+    },
+    {
+        "file": "django/http/response.py",
+        "find": "class HttpResponse:",
+        "replace": "class HttpResponse:  # bench",
+    },
+    {
+        "file": "django/utils/text.py",
+        "find": "def slugify(value, allow_unicode=False):",
+        "replace": "def slugify(value, allow_unicode=False):  # bench",
+    },
+    {
+        "file": "django/template/base.py",
+        "find": "class Template:",
+        "replace": "class Template:  # bench",
+    },
+    {
+        "file": "django/urls/resolvers.py",
+        "find": "class URLResolver:",
+        "replace": "class URLResolver:  # bench",
+    },
+]
+
+
+# Shared default verify-script body for Python pairs without their own
+# verify_script. A transient CPython process importing django's module graph -
+# the memory peak (the same role `go run`'s compiler and `npx tsx`'s node+esbuild
+# play in the go/ts variants). It configures bare settings (no DB engine, no
+# installed apps) then imports the heavy graphs (django.urls -> conf/core,
+# django.forms -> db/models/widgets) and prints "All tests passed!".
+DEFAULT_CODING_VERIFY_SCRIPT_PY = (
+    "import django\n"
+    "from django.conf import settings\n"
+    "\n"
+    "settings.configure(\n"
+    "    DEBUG=True,\n"
+    "    DATABASES={},\n"
+    "    INSTALLED_APPS=[],\n"
+    ")\n"
+    "\n"
+    "import django.urls\n"
+    "import django.forms\n"
+    "import django.template\n"
+    "\n"
+    'print("All tests passed!")\n'
+)
+
+
 class SandboxStatus(Enum):
     """Sandbox status enumeration"""
 
