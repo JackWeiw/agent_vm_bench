@@ -102,11 +102,18 @@ READY_CHECK_INTERVAL = 5
 
 
 class SandboxManager:
-    """Sandbox lifecycle management"""
+    """Sandbox lifecycle management.
 
-    def __init__(self, config: Config, stop_event: Event):
-        self.config = config
-        self.config.validate()
+    Shared stress params (total_count, create_batch_*, workflow_type) are read
+    from ``kernel_config``; backend-specific knobs (template, create_timeout,
+    numa_bind) from ``e2b_config``. Single source of truth per axis: the kernel
+    owns the host-agnostic counts, the provider owns the e2b runtime knobs.
+    """
+
+    def __init__(self, kernel_config, e2b_config: Config, stop_event: Event):
+        self.kernel_config = kernel_config
+        self.config = e2b_config
+        self.kernel_config.validate()
         self.stop_event = stop_event
         self.sandbox_states: Dict[int, SandboxState] = {}
 
@@ -119,7 +126,7 @@ class SandboxManager:
 
         Returns: {sandbox_id: SandboxState}
         """
-        if self.config.create_batch_size and self.config.create_batch_size > 0:
+        if self.kernel_config.create_batch_size and self.kernel_config.create_batch_size > 0:
             return self._create_batched()
         else:
             return self._create_concurrent()
@@ -162,7 +169,7 @@ class SandboxManager:
             sandbox_id = i + 1
             e2b_sandbox_id = listed_sandbox.sandbox_id if hasattr(listed_sandbox, "sandbox_id") else str(listed_sandbox)
 
-            state = SandboxState(sandbox_id=sandbox_id, workflow_type=self.config.workflow_type)
+            state = SandboxState(sandbox_id=sandbox_id, workflow_type=self.kernel_config.workflow_type)
             self.sandbox_states[sandbox_id] = state
 
             logger.info(f"\n[Sandbox{sandbox_id}] Connecting to E2B:{e2b_sandbox_id}...")
@@ -274,7 +281,7 @@ class SandboxManager:
             sandbox_id = i + 1
             e2b_sandbox_id = listed_sandbox.sandbox_id if hasattr(listed_sandbox, "sandbox_id") else str(listed_sandbox)
 
-            state = SandboxState(sandbox_id=sandbox_id, workflow_type=self.config.workflow_type)
+            state = SandboxState(sandbox_id=sandbox_id, workflow_type=self.kernel_config.workflow_type)
             self.sandbox_states[sandbox_id] = state
 
             logger.info(f"\n[Sandbox{sandbox_id}] Connecting to E2B:{e2b_sandbox_id}...")
@@ -306,15 +313,15 @@ class SandboxManager:
 
     def _create_batched(self) -> Dict[int, SandboxState]:
         """Batched sandbox creation"""
-        total = self.config.total_count
-        batch_size = self.config.create_batch_size
-        batch_count = self.config.create_batch_count
+        total = self.kernel_config.total_count
+        batch_size = self.kernel_config.create_batch_size
+        batch_count = self.kernel_config.create_batch_count
 
         logger.info(f"\n{'=' * 60}")
         logger.info("Batched Sandbox Creation")
         logger.info(f"  Total: {total} sandboxes")
         logger.info(f"  Batches: {batch_count} x {batch_size}")
-        logger.info(f"  Interval: {self.config.create_batch_interval}s")
+        logger.info(f"  Interval: {self.kernel_config.create_batch_interval}s")
         logger.info(f"{'=' * 60}")
 
         for batch_id in range(batch_count):
@@ -332,9 +339,9 @@ class SandboxManager:
             self.sandbox_states.update(batch_states)
 
             # Wait between batches (last batch no wait)
-            if batch_id < batch_count - 1 and self.config.create_batch_interval:
-                logger.info(f"Waiting {self.config.create_batch_interval}s before next batch...")
-                time.sleep(self.config.create_batch_interval)
+            if batch_id < batch_count - 1 and self.kernel_config.create_batch_interval:
+                logger.info(f"Waiting {self.kernel_config.create_batch_interval}s before next batch...")
+                time.sleep(self.kernel_config.create_batch_interval)
 
         return self.sandbox_states
 
@@ -350,7 +357,7 @@ class SandboxManager:
                 state = SandboxState(
                     sandbox_id=sandbox_id,
                     batch_id=batch_id,
-                    workflow_type=self.config.workflow_type,
+                    workflow_type=self.kernel_config.workflow_type,
                 )
                 self.sandbox_states[sandbox_id] = state
                 future = executor.submit(self._create_single, state)
@@ -396,7 +403,7 @@ class SandboxManager:
 
     def _create_concurrent(self) -> Dict[int, SandboxState]:
         """Full concurrent creation of all sandboxes"""
-        total = self.config.total_count
+        total = self.kernel_config.total_count
 
         logger.info(f"\n{'=' * 60}")
         logger.info("Concurrent Sandbox Creation")
@@ -448,13 +455,13 @@ class SandboxManager:
 
         Returns: {'success': bool, 'wait_elapsed': float, 'error': str}
         """
-        if self.config.workflow_type == "coding":
+        if self.kernel_config.workflow_type == "coding":
             return self._check_command_ready(state)
-        if self.config.workflow_type == "document":
+        if self.kernel_config.workflow_type == "document":
             return self._check_document_ready(state)
-        if self.config.workflow_type == "browser":
+        if self.kernel_config.workflow_type == "browser":
             return self._check_ports(state)
-        raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
+        raise ValueError(f"Unsupported workflow_type: {self.kernel_config.workflow_type}")
 
     def _check_document_ready(self, state: SandboxState) -> Dict[str, any]:
         """Validate the document runtime, retrying transient command API failures.

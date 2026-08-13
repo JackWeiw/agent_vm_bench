@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import fields
 from typing import Any, Mapping
 
 from bench_core.config import KernelConfig
@@ -56,16 +55,18 @@ _STATUS_MAP: dict[str, SandboxStatus] = {
 class E2BProvider(EnvironmentProvider):
     """EnvironmentProvider backed by an E2B :class:`SandboxManager`.
 
-    The adapter holds the e2b :class:`Config` (for env-var setup, the IDs-file
-    path, and NUMA) plus the stop event. The :class:`SandboxManager` is
-    constructed lazily on first use -- so the kernel can run host-side
-    preflight (e.g. document scene-recipe validation) and fail before any SDK
-    client is built. The kernel never sees the manager or SDK types directly.
+    The adapter holds the kernel's :class:`KernelConfig` (shared stress params)
+    plus the e2b :class:`Config` (for env-var setup, the IDs-file path, and
+    NUMA) plus the stop event. The :class:`SandboxManager` is constructed
+    lazily on first use -- so the kernel can run host-side preflight (e.g.
+    document scene-recipe validation) and fail before any SDK client is built.
+    The kernel never sees the manager or SDK types directly.
     """
 
     name = "e2b"
 
-    def __init__(self, config: Config, stop_event: threading.Event) -> None:
+    def __init__(self, kernel_config: KernelConfig, config: Config, stop_event: threading.Event) -> None:
+        self._kernel_config = kernel_config
         self._config = config
         self._stop_event = stop_event
         self._manager: SandboxManager | None = None
@@ -79,7 +80,7 @@ class E2BProvider(EnvironmentProvider):
         ``_manager`` directly.
         """
         if self._manager is None:
-            self._manager = SandboxManager(self._config, self._stop_event)
+            self._manager = SandboxManager(self._kernel_config, self._config, self._stop_event)
         return self._manager
 
     # ------------------------------------------------------------------ lifecycle
@@ -192,37 +193,24 @@ class E2BProvider(EnvironmentProvider):
         )
 
 
-def from_config(config: Config, stop_event: threading.Event) -> E2BProvider:
-    """Build an :class:`E2BProvider` from an already-constructed e2b Config.
+def from_config(kernel_config: KernelConfig, config: Config, stop_event: threading.Event) -> E2BProvider:
+    """Build an :class:`E2BProvider` from a KernelConfig + e2b Config.
 
-    Real entry points (``e2b_bench.bench.main``) build the e2b Config with full
-    CLI merge, then call this. The SandboxManager is constructed lazily on
-    first use, so this is cheap and does not talk to the e2b SDK yet.
+    The SandboxManager is constructed lazily on first use, so this is cheap and
+    does not talk to the e2b SDK yet.
     """
-    return E2BProvider(config, stop_event)
+    return E2BProvider(kernel_config, config, stop_event)
 
 
 def build_provider(config: KernelConfig, raw_config: dict) -> E2BProvider:
     """Construct an :class:`E2BProvider` from a raw YAML dict (kernel smoke path).
 
-    The host-agnostic ``python -m bench_core --provider e2b`` entry has no e2b
-    Config object, so it reconstructs one from the raw YAML dict here. The real
-    e2b entry builds its Config with CLI merge and calls :func:`from_config`.
+    ``config`` is the already-built :class:`KernelConfig` (shared stress params
+    from :meth:`KernelConfig.from_raw`); the e2b backend Config is rebuilt here
+    from the ``e2b:`` block of the same raw dict. Both are passed to the
+    provider: the kernel drives ``config``, the manager reads backend knobs
+    from the e2b Config.
     """
-    del config  # The kernel's KernelConfig is rebuilt from the e2b Config downstream.
     stop_event = threading.Event()
-    e2b_config = Config._from_dict(raw_config) if raw_config else Config()
-    return from_config(e2b_config, stop_event)
-
-
-def kernel_config_from_e2b(config: Config) -> KernelConfig:
-    """Translate an e2b :class:`Config` into a host-agnostic :class:`KernelConfig`.
-
-    Copies every field that exists on ``KernelConfig`` by name; e2b-specific
-    fields (``template``, ``e2b_*`` env, ``smap_tool`` / ``vm_monitor`` blocks)
-    stay on the e2b Config and are not carried over -- the kernel reads only
-    the host-agnostic subset.
-    """
-    valid = {f.name for f in fields(KernelConfig)}
-    kwargs = {k: getattr(config, k) for k in valid if hasattr(config, k)}
-    return KernelConfig(**kwargs)
+    e2b_config = Config.from_raw(raw_config) if raw_config else Config()
+    return from_config(config, e2b_config, stop_event)

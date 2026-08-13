@@ -14,9 +14,10 @@ from unittest.mock import Mock
 
 import pytest
 
+from bench_core.config import KernelConfig
 from env_provider import CommandResult, SandboxInstance, SandboxStatus
 from env_provider.e2b.config import Config
-from env_provider.e2b import E2BProvider, kernel_config_from_e2b
+from env_provider.e2b import E2BProvider
 from env_provider.e2b.schemas import SandboxState
 from env_provider.e2b.schemas import SandboxStatus as E2BSandboxStatus
 
@@ -47,14 +48,20 @@ def _make_state(
     return state
 
 
-def _provider_with(states: dict[int, SandboxState], *, config: Config | None = None) -> tuple[E2BProvider, Mock]:
+def _provider_with(
+    states: dict[int, SandboxState],
+    *,
+    config: Config | None = None,
+    kernel_config: KernelConfig | None = None,
+) -> tuple[E2BProvider, Mock]:
     """Build an E2BProvider over a mock manager holding the given states.
 
     The provider constructs its SandboxManager lazily; tests inject a mock by
     setting ``_manager`` so no SDK client is ever built.
     """
     cfg = config if config is not None else Config()
-    provider = E2BProvider(cfg, Event())
+    kcfg = kernel_config if kernel_config is not None else KernelConfig()
+    provider = E2BProvider(kcfg, cfg, Event())
     manager = Mock()
     manager.sandbox_states = dict(states)
     manager.create_all.return_value = manager.sandbox_states
@@ -281,55 +288,49 @@ class TestSaveIds:
 
 class TestLazyConstruction:
     def test_manager_not_built_until_first_use(self):
-        provider = E2BProvider(Config(), Event())
+        provider = E2BProvider(KernelConfig(), Config(), Event())
         assert provider._manager is None
 
     def test_cleanup_all_is_noop_before_construction(self):
         # If the kernel fails before create_all (e.g. document preflight
         # raises), the manager was never built -> cleanup must not raise.
-        provider = E2BProvider(Config(), Event())
+        provider = E2BProvider(KernelConfig(), Config(), Event())
         provider.cleanup_all()
         assert provider._manager is None
 
     def test_first_access_builds_manager(self):
         from env_provider.e2b.manager import SandboxManager
 
-        provider = E2BProvider(Config(), Event())
+        provider = E2BProvider(KernelConfig(), Config(), Event())
         mgr = provider.manager
         assert isinstance(mgr, SandboxManager)
         assert provider._manager is mgr  # cached
 
 
-class TestKernelConfigFromE2B:
-    def test_copies_shared_fields(self):
-        config = Config()
-        config.total_count = 7
-        config.workflow_type = "coding"
-        config.benchmark_mode = "round_robin"
-        config.round_count = 3
+class TestBuildProvider:
+    def test_builds_from_empty_raw_config(self):
+        provider = e2b_build_provider({})
+        assert provider.name == "e2b"
+        assert provider._manager is None  # still lazy
 
-        kernel_cfg = kernel_config_from_e2b(config)
+    def test_builds_from_raw_dict(self):
+        # Unified schema: backend knobs under ``e2b:``, shared total_count under
+        # ``sandbox:`` (read into KernelConfig by from_raw).
+        raw = {
+            "e2b": {"template": "my-template", "env": {"E2B_DOMAIN": "dom"}},
+            "sandbox": {"total_count": 7},
+        }
+        provider = e2b_build_provider(raw)
 
-        assert kernel_cfg.total_count == 7
-        assert kernel_cfg.workflow_type == "coding"
-        assert kernel_cfg.benchmark_mode == "round_robin"
-        assert kernel_cfg.round_count == 3
+        assert provider._config.template == "my-template"
+        assert provider._config.e2b_domain == "dom"
+        assert provider._kernel_config.total_count == 7  # shared -> kernel
 
-    def test_e2b_specific_fields_not_carried(self):
-        config = Config()
-        config.template = "my-template"
-        config.e2b_access_token = "secret"
 
-        kernel_cfg = kernel_config_from_e2b(config)
+def e2b_build_provider(raw_config: dict) -> E2BProvider:
+    """Helper: call build_provider with a KernelConfig built from the same raw."""
+    from env_provider.e2b import build_provider
 
-        # template / e2b_* are provider-only; KernelConfig has no such field.
-        assert not hasattr(kernel_cfg, "template")
-        assert not hasattr(kernel_cfg, "e2b_access_token")
-
-    def test_uses_defaults_for_absent_kernel_fields(self):
-        # Config has no `create_batch_count` (it's a computed property) but
-        # KernelConfig doesn't either; the translation must not choke on the
-        # property being absent from the field set.
-        config = Config()
-        kernel_cfg = kernel_config_from_e2b(config)
-        assert kernel_cfg.benchmark_percent == 1.0  # default carried through
+    # Mirror bench_core.bench.main: the kernel builds KernelConfig from the raw
+    # dict's shared sections, then build_provider splits off the e2b block.
+    return build_provider(KernelConfig.from_raw(raw_config), raw_config)
