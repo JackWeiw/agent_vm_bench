@@ -1,79 +1,25 @@
+"""E2B backend state (SDK handle + backend lifecycle).
+
+The kernel works on host-agnostic :class:`bench_core.schemas.BenchSandbox` (built
+fresh via ``BenchSandbox.from_instance`` from the lean contract
+:class:`env_provider.SandboxInstance`); the e2b manager + adapter keep the SDK
+handle here and translate out of it. Workflow task metrics (browser/coding/
+document), step-order constants, and the batch-scheduler types live in
+:mod:`bench_core.schemas` (the kernel) -- not duplicated here.
+
+This module carries only:
+- :class:`SandboxStatus` -- e2b's backend status enum (PORT_READY / PORT_FAILED;
+  the adapter's ``_STATUS_MAP`` translates to the contract's workflow-neutral
+  ``env_provider.SandboxStatus``).
+- :class:`CreationMetrics` -- e2b creation/ready timing (``port_ready_time``
+  etc.; the adapter maps to the contract's ``CreationMetrics``).
+- :class:`SandboxState` -- per-sandbox backend state: the SDK handle
+  (``sandbox_obj``), backend lifecycle flags, and creation metrics.
 """
-Data Structure Definitions Module
+from __future__ import annotations
 
-Defines SandboxStatus, CreationMetrics, TaskMetricsBase, BrowserMetrics,
-CodingMetrics, SandboxState, TestSnapshot, BatchTask, TaskGroup.
-
-Step order constants for workflow dispatch:
-- BROWSER_STEP_ORDER: steps in browser round-robin mode
-- CODING_STEP_ORDER: steps in coding round-robin mode
-
-Default source files for the vuejs/core coding benchmark (single definition,
-referenced everywhere - config, runners, YAML templates).
-
-vuejs/core is a real repo from the swe_bench_multilingual evaluation dataset
-(github.com/vuejs/core, 5 real instances). Each entry is a {file, find, replace}
-replacement pair: a real, type-safe string edit applied to a verified file in
-the vuejs/core repo. The runner round-robins through the list, applying one pair
-per round then verifying project health by writing an ad-hoc test (stamped from
-DEFAULT_VERIFY_TEMPLATES) to /tmp and running it via `npx tsx` (the exact
-verification a real openclaw agent used on this repo).
-"""
-
-import statistics
-import threading
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
-
-from bench_core.coding_payload import (
-    DEFAULT_CODING_GO_SOURCE_FILES,
-    DEFAULT_CODING_PY_SOURCE_FILES,
-    DEFAULT_CODING_SOURCE_FILES,
-    DEFAULT_CODING_VERIFY_SCRIPT_GO,
-    DEFAULT_CODING_VERIFY_SCRIPT_JS,
-    DEFAULT_CODING_VERIFY_SCRIPT_PY,
-    DEFAULT_VERIFY_TEMPLATES,
-)
-
-# Step order constants for workflow dispatch
-BROWSER_STEP_ORDER = ["open_tab", "page_load", "snapshot", "click", "screenshot"]
-# Real AI coding agent workflow (verified against captured openclaw trajectories
-# on vuejs/core and gohugoio/hugo): locate file (find), inspect it (read), apply a
-# real edit, verify the edit by writing an ad-hoc test file and running it (verify),
-# then produce the verification artifact (git diff). `git checkout --` reset runs as
-# setup inside the `find` step, not a separate step. The `verify` step mirrors the
-# trace: the agent writes /tmp/test_*.mjs (or .go) then runs `npx tsx` / `go run`.
-# No production build, no full test suite, no resident dev server - none appear in
-# the real traces. Memory pressure comes from N concurrent sandboxes' transient
-# verify peaks overlapping, observed at host level via vm_monitor/smap_tool.
-CODING_STEP_ORDER = ["find", "read", "edit", "verify", "diff"]
-DOCUMENT_XLSX_STEP_ORDER = [
-    "XLSX-P01-inspect_prepare",
-    "XLSX-P02-build",
-    "XLSX-P03-process_publish",
-    "XLSX-P04-verify_deliver",
-]
-DOCUMENT_PDF_STEP_ORDER = [
-    "PDF-P01-inspect_prepare",
-    "PDF-P02-build",
-    "PDF-P03-process_publish",
-    "PDF-P04-verify_deliver",
-]
-
-
-def get_step_order(workflow_type: str, document_case_kind: str = "xlsx") -> List[str]:
-    if workflow_type == "coding":
-        return CODING_STEP_ORDER
-    if workflow_type == "document":
-        if document_case_kind == "pdf":
-            return DOCUMENT_PDF_STEP_ORDER
-        if document_case_kind == "xlsx":
-            return DOCUMENT_XLSX_STEP_ORDER
-        raise ValueError("document case_kind must be 'pdf' or 'xlsx'")
-    if workflow_type == "browser":
-        return BROWSER_STEP_ORDER
-    raise ValueError(f"Unsupported workflow_type: {workflow_type}")
 
 
 class SandboxStatus(Enum):
@@ -105,384 +51,27 @@ class CreationMetrics:
     port_check_error: str = ""  # Port check error message
 
 
-class TaskMetricsBase:
-    """Base class for workflow task metrics (thread-safe for concurrent access).
-
-    Provides the shared metrics tracking pattern: total/success/failed/timeout
-    counters, latency collection, step-level timing, and percentile calculations.
-    Subclasses override `step_order` and may extend `add()` with workflow-specific
-    parameters (e.g., verify_success for coding).
-
-    Extending for a new workflow type:
-        class DatabaseMetrics(TaskMetricsBase):
-            step_order = DATABASE_STEP_ORDER
-            # add build_success/test_success-like fields as needed
-    """
-
-    # Override in subclass to define workflow-specific step names
-    step_order: List[str] = []
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._total_tasks: int = 0
-        self._success_count: int = 0
-        self._failed_count: int = 0
-        self._timeout_count: int = 0
-        self._latencies: List[float] = []
-        self._last_error: str = ""
-        self._step_times: Dict[str, List[float]] = {}
-
-    def add(self, latency: float, success: bool, timeout: bool = False, step_times: Dict[str, float] = None) -> None:
-        """Add a task result (thread-safe).
-
-        Args:
-            latency: Total latency for the task (seconds)
-            success: Whether the task succeeded
-            timeout: Whether the task timed out
-            step_times: Optional dict of step name -> latency in seconds
-        """
-        with self._lock:
-            self._total_tasks += 1
-            if timeout:
-                self._timeout_count += 1
-                self._failed_count += 1
-            elif success:
-                self._success_count += 1
-                self._latencies.append(latency)
-            else:
-                self._failed_count += 1
-
-            if step_times:
-                for step_name, step_latency in step_times.items():
-                    if step_name not in self._step_times:
-                        self._step_times[step_name] = []
-                    self._step_times[step_name].append(step_latency)
-
-    @property
-    def total_tasks(self) -> int:
-        with self._lock:
-            return self._total_tasks
-
-    @property
-    def success_count(self) -> int:
-        with self._lock:
-            return self._success_count
-
-    @property
-    def failed_count(self) -> int:
-        with self._lock:
-            return self._failed_count
-
-    @property
-    def timeout_count(self) -> int:
-        with self._lock:
-            return self._timeout_count
-
-    @property
-    def latencies(self) -> List[float]:
-        with self._lock:
-            return list(self._latencies)  # Return a copy for thread safety
-
-    @property
-    def last_error(self) -> str:
-        with self._lock:
-            return self._last_error
-
-    @last_error.setter
-    def last_error(self, value: str) -> None:
-        with self._lock:
-            self._last_error = value
-
-    @property
-    def avg_latency(self) -> float:
-        """Average latency (seconds)"""
-        with self._lock:
-            return statistics.mean(self._latencies) if self._latencies else 0.0
-
-    @property
-    def p99_latency(self) -> float:
-        """P99 latency (seconds)"""
-        with self._lock:
-            if not self._latencies:
-                return 0.0
-            sorted_lat = sorted(self._latencies)
-            if len(sorted_lat) >= 100:
-                return sorted_lat[int(len(sorted_lat) * 0.99)]
-            return sorted_lat[-1]
-
-    def get_step_stats(self) -> Dict[str, Dict[str, float]]:
-        """Get statistics for each step (avg, p99, count).
-
-        Returns:
-            Dict of step_name -> {"avg": float, "p99": float, "count": int}
-        """
-        with self._lock:
-            result = {}
-            for step_name, times in self._step_times.items():
-                if not times:
-                    continue
-                sorted_times = sorted(times)
-                avg = statistics.mean(times)
-                p99 = sorted_times[-1] if len(sorted_times) < 100 else sorted_times[int(len(sorted_times) * 0.99)]
-                result[step_name] = {
-                    "avg": avg,
-                    "p99": p99,
-                    "count": len(times),
-                }
-            return result
-
-    def get_step_times_copy(self) -> Dict[str, List[float]]:
-        """Get a thread-safe copy of all step times.
-
-        Used for detailed tail latency analysis across all sandboxes.
-
-        Returns:
-            Dict of step_name -> list of latency values (copy)
-        """
-        with self._lock:
-            return {step_name: list(times) for step_name, times in self._step_times.items()}
-
-    def get_latencies_since(self, start_count: int) -> List[float]:
-        """Get latencies added after a certain count.
-
-        Args:
-            start_count: The latency count at the start (e.g., from previous round)
-
-        Returns:
-            List of latencies added since start_count
-        """
-        with self._lock:
-            if start_count >= len(self._latencies):
-                return []
-            return list(self._latencies[start_count:])
-
-
-class BrowserMetrics(TaskMetricsBase):
-    """Browser task metrics - inherits all shared logic from TaskMetricsBase.
-
-    Step order: open_tab, page_load, snapshot, click, screenshot.
-    No workflow-specific extensions; base add() signature is sufficient.
-    """
-
-    step_order = BROWSER_STEP_ORDER
-
-
-class CodingMetrics(TaskMetricsBase):
-    """Coding task metrics - extends TaskMetricsBase with verify-success tracking.
-
-    Step order: find, read, edit, verify, diff.
-    Adds verify_success_count beyond the base counters. The `verify` step
-    mirrors the real agent trace: write an ad-hoc test file to /tmp + run it
-    (npx tsx for ts, go run for go). verify_success tracks whether that step
-    passed (transient compile+run peak succeeded).
-    """
-
-    step_order = CODING_STEP_ORDER
-
-    def __init__(self):
-        super().__init__()
-        self._verify_success_count: int = 0  # pairs with a real-assertion verify_script that passed
-        self._compile_only_count: int = 0  # pairs marked verify: compile_only (or the no-script
-        #                                  # fallback) that compiled+ran without an assertion
-
-    def add(
-        self,
-        latency: float,
-        success: bool,
-        timeout: bool = False,
-        step_times: Dict[str, float] = None,
-        verify_success: bool = False,
-        compile_only: bool = False,
-    ) -> None:
-        """Add a coding task result (thread-safe).
-
-        Extends the base counters (total/success/failed/timeout/latencies/
-        step_times) with verify-success tracking. The base counters are
-        inlined here (not via super().add()) so both run under a single
-        Lock acquisition - threading.Lock is non-reentrant, so calling
-        super().add() while already holding self._lock would deadlock.
-
-        Args:
-            latency: Total latency for the task cycle (seconds)
-            success: Whether the overall task succeeded
-            timeout: Whether the task timed out
-            step_times: Optional dict of step name -> latency in seconds
-            verify_success: Whether the verify step (write temp test + run) succeeded
-            compile_only: True if this pair ran via the shared default (no per-pair
-                assertion - only compile/run was checked). verify_success and
-                compile_only are mutually exclusive; reported separately so a
-                compile-only pass is never mistaken for an assertion pass.
-        """
-        with self._lock:
-            self._total_tasks += 1
-            if timeout:
-                self._timeout_count += 1
-                self._failed_count += 1
-            elif success:
-                self._success_count += 1
-                self._latencies.append(latency)
-            else:
-                self._failed_count += 1
-
-            if verify_success:
-                self._verify_success_count += 1
-            if compile_only:
-                self._compile_only_count += 1
-
-            if step_times:
-                for step_name, step_latency in step_times.items():
-                    if step_name not in self._step_times:
-                        self._step_times[step_name] = []
-                    self._step_times[step_name].append(step_latency)
-
-    @property
-    def verify_success_count(self) -> int:
-        with self._lock:
-            return self._verify_success_count
-
-    @property
-    def compile_only_count(self) -> int:
-        with self._lock:
-            return self._compile_only_count
-
-
-class DocumentMetrics(TaskMetricsBase):
-    """PDF/XLSX task metrics; phase IDs are recorded dynamically."""
-
-    step_order = DOCUMENT_XLSX_STEP_ORDER
-
-
 @dataclass
 class SandboxState:
-    """Sandbox complete state"""
+    """Per-sandbox E2B backend state.
+
+    Carries the SDK handle (``sandbox_obj``) + backend lifecycle flags + creation
+    timing. Workflow task metrics (browser/coding/document), per-step timing, and
+    round-robin tab state live on the kernel's :class:`bench_core.schemas.BenchSandbox`,
+    not here: the adapter translates a ``SandboxState`` into a handle-free
+    :class:`env_provider.SandboxInstance`, then the kernel rebuilds its own
+    metrics state via ``BenchSandbox.from_instance``. The kernel never sees an
+    e2b ``SandboxState``.
+    """
 
     sandbox_id: int  # Sequence number (1, 2, 3...)
-    sandbox_obj: Optional[object] = None  # E2B Sandbox object reference (handle)
+    sandbox_obj: object | None = None  # E2B Sandbox object reference (handle)
     batch_id: int = -1  # Batch ID
 
-    workflow_type: str = "browser"  # Determines which metrics are primary
+    workflow_type: str = "browser"  # Selects the ready-check strategy (_check_ready)
 
     creation_metrics: CreationMetrics = field(default_factory=CreationMetrics)
-    browser_metrics: BrowserMetrics = field(default_factory=BrowserMetrics)
-    coding_metrics: CodingMetrics = field(default_factory=CodingMetrics)
-    document_metrics: DocumentMetrics = field(default_factory=DocumentMetrics)
 
     is_alive: bool = True  # Sandbox alive status
-    stopped_by_cleanup: bool = False  # Successfully stopped by normal benchmark cleanup
-    last_task_time: float = 0.0  # Last task execution time (thread-safe via update_last_task_time)
-    consecutive_failures: int = 0  # Consecutive failure count
-    warmup_done: bool = False  # Warmup phase completed flag
-
-    # Tab state (for round_robin tab-switch mode)
-    tab_ids: List[str] = field(default_factory=list)  # Active tab IDs [t1, t2, ...]
-
-    # Thread lock for last_task_time (not serialized)
-    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
-
-    def __post_init__(self):
-        """Initialize lock after dataclass creation."""
-        if not hasattr(self, "_lock") or not hasattr(self._lock, "acquire"):
-            object.__setattr__(self, "_lock", threading.Lock())
-
-    @property
-    def task_metrics(self) -> TaskMetricsBase:
-        """Polymorphic metrics access - returns the metrics object for the active workflow.
-
-        For browser workflow, returns browser_metrics.
-        For coding workflow, returns coding_metrics.
-        Enables unified code paths that don't need `if workflow_type == "coding"` dispatch.
-        """
-        if self.workflow_type == "coding":
-            return self.coding_metrics
-        if self.workflow_type == "document":
-            return self.document_metrics
-        if self.workflow_type == "browser":
-            return self.browser_metrics
-        raise ValueError(f"Unsupported workflow_type: {self.workflow_type}")
-
-    def update_last_task_time(self, timestamp: float) -> None:
-        """Thread-safe update of last_task_time.
-
-        Args:
-            timestamp: Wall-clock timestamp (from time.time())
-        """
-        with self._lock:
-            self.last_task_time = timestamp
-
-    def get_last_task_time(self) -> float:
-        """Thread-safe read of last_task_time.
-
-        Returns:
-            Last task execution timestamp
-        """
-        with self._lock:
-            return self.last_task_time
-
-
-@dataclass
-class TestSnapshot:
-    """Test snapshot"""
-
-    timestamp: float  # Snapshot timestamp
-    elapsed: float  # Time elapsed since test start (seconds)
-    total_sandboxes: int  # Total sandbox count
-    active_sandboxes: int  # Active sandbox count
-    offline_sandboxes: int  # Offline sandbox count
-    creation_stats: Dict[str, any] = field(
-        default_factory=dict
-    )  # {"create": {...}, "port_wait": {...}, "total": {...}}
-    # Browser task metrics
-    browser_total: int = 0
-    browser_success: int = 0
-    browser_avg_latency: float = 0.0
-    browser_p99_latency: float = 0.0
-    # Coding task metrics (populated when workflow_type="coding")
-    coding_total: int = 0
-    coding_success: int = 0
-    coding_verify_success: int = 0  # pairs with a real-assertion verify_script that passed
-    coding_compile_only: int = 0  # pairs marked verify: compile_only that compiled+ran (no assertion)
-    coding_avg_latency: float = 0.0
-    coding_p99_latency: float = 0.0
-    # Document task metrics (populated when workflow_type="document")
-    document_total: int = 0
-    document_success: int = 0
-    document_avg_latency: float = 0.0
-    document_p99_latency: float = 0.0
-    # Round comparison fields (proper dataclass fields, not ad-hoc attributes)
-    round_total: int = 0
-    round_success: int = 0
-
-
-@dataclass
-class BatchTask:
-    """Single batch test task parameters"""
-
-    task_id: str  # Unique ID, e.g. "tc10_ratio10_bp0.5"
-    total_count: int  # Sandbox count
-    benchmark_percent: float  # Percentage of sandboxes for benchmark
-    ratio: int  # Memory migration ratio (%)
-
-    # Runtime state (filled after execution)
-    result_dir: Optional[str] = None  # Result directory path
-    report_file: Optional[str] = None  # bench_report.txt path
-    analysis_file: Optional[str] = None  # analysis_report.xlsx path
-    browser_metrics: Optional[Dict[str, Any]] = None  # Extracted browser metrics
-    coding_metrics: Optional[Dict[str, Any]] = None  # Extracted coding metrics
-    document_metrics: Optional[Dict[str, Any]] = None  # Extracted PDF/XLSX metrics
-    vm_metrics: Optional[Dict[str, Any]] = None  # Extracted vm_monitor metrics
-    success: bool = False
-    error_msg: Optional[str] = None
-
-
-@dataclass
-class TaskGroup:
-    """Group of tasks that can reuse the same sandbox set"""
-
-    group_id: str  # Group ID, e.g. "tc10_ratio10"
-    total_count: int  # Shared by all tasks in group
-    ratio: int  # Shared by all tasks in group
-    tasks: List[BatchTask]  # Tasks with different benchmark_percent
-
-    # Runtime state
-    sandbox_states: Optional[Dict[int, Any]] = None  # Shared sandbox states
-    smap_tool_manager: Optional[Any] = None  # Shared SmapToolManager
+    stopped_by_cleanup: bool = False  # Killed by normal benchmark cleanup
+    warmup_done: bool = False  # Warmup phase completed flag (read by the adapter)
