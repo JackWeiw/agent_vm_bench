@@ -7,48 +7,21 @@ handle here and translate out of it. Workflow task metrics (browser/coding/
 document), step-order constants, and the batch-scheduler types live in
 :mod:`bench_core.schemas` (the kernel) -- not duplicated here.
 
-This module carries only:
-- :class:`SandboxStatus` -- e2b's backend status enum (PORT_READY / PORT_FAILED;
-  the adapter's ``_STATUS_MAP`` translates to the contract's workflow-neutral
-  ``env_provider.SandboxStatus``).
-- :class:`CreationMetrics` -- e2b creation/ready timing (``port_ready_time``
-  etc.; the adapter maps to the contract's ``CreationMetrics``).
-- :class:`SandboxState` -- per-sandbox backend state: the SDK handle
-  (``sandbox_obj``), backend lifecycle flags, and creation metrics.
+The backend status enum + creation metrics are shared with docker via
+:mod:`env_provider._base` (they were byte-identical); this module re-exports
+them under the e2b names so the manager/adapter imports unchanged. Only
+:class:`SandboxState` (the e2b handle + lifecycle flags) is defined here.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
 
+from env_provider._base import (
+    BackendCreationMetrics as CreationMetrics,
+    BackendSandboxStatus as SandboxStatus,
+)
 
-class SandboxStatus(Enum):
-    """Sandbox status enumeration"""
-
-    PENDING = "pending"  # Waiting for creation
-    CREATING = "creating"  # Creating in progress
-    CREATED = "created"  # sandbox.create succeeded, waiting for ports
-    PORT_READY = "port_ready"  # Ports ready, can execute tasks
-    ACTIVE = "active"  # Active, executing tasks
-    FAILED = "failed"  # Creation failed
-    PORT_FAILED = "port_failed"  # Port check failed
-    OFFLINE = "offline"  # Runtime offline
-    KILLED = "killed"  # Killed
-
-
-@dataclass
-class CreationMetrics:
-    """Sandbox creation performance metrics"""
-
-    submit_time: float = 0.0  # Creation submit time
-    create_ready_time: float = 0.0  # sandbox.create success time (excluding port wait)
-    port_ready_time: float = 0.0  # Ports ready time
-    create_elapsed: float = 0.0  # sandbox.create elapsed time (seconds)
-    port_wait_elapsed: float = 0.0  # Port wait elapsed time (seconds)
-    total_elapsed: float = 0.0  # Total elapsed = create_elapsed + port_wait_elapsed
-    status: SandboxStatus = SandboxStatus.PENDING
-    error_msg: str = ""
-    port_check_error: str = ""  # Port check error message
+__all__ = ["CreationMetrics", "SandboxState", "SandboxStatus"]
 
 
 @dataclass
@@ -68,7 +41,7 @@ class SandboxState:
     sandbox_obj: object | None = None  # E2B Sandbox object reference (handle)
     batch_id: int = -1  # Batch ID
 
-    workflow_type: str = "browser"  # Selects the ready-check strategy (_check_ready)
+    workflow_type: str = "browser"  # Selects the ready-check strategy (set by the manager from kernel_config)
 
     creation_metrics: CreationMetrics = field(default_factory=CreationMetrics)
 

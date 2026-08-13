@@ -198,12 +198,12 @@ class TestExec:
 
 
 class TestLifecycleHooks:
-    def test_cleanup_all_calls_kill_all(self):
+    def test_cleanup_all_calls_cleanup_all(self):
         provider, manager = _provider_with({})
 
         provider.cleanup_all()
 
-        manager.kill_all.assert_called_once()
+        manager.cleanup_all.assert_called_once()
 
     def test_prepare_env_calls_setup_e2b_env(self, monkeypatch, tmp_path):
         # Point E2B_CONFIG at a nonexistent file so setup_e2b_env's CLI-config

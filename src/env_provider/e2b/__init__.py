@@ -107,7 +107,7 @@ class E2BProvider(EnvironmentProvider):
         # there is nothing to tear down.
         if self._manager is None:
             return
-        self._manager.kill_all()
+        self._manager.cleanup_all()
 
     # ------------------------------------------------------------------ setup hooks
     def prepare_env(self) -> None:
