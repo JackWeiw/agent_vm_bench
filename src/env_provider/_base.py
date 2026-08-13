@@ -105,6 +105,10 @@ class BaseSandboxManager(ABC):
     _handle_attr: str = ""
     # Log noun (``"Sandbox"`` / ``"Container"``).
     _noun: str = "Sandbox"
+    # Identifier attribute name on the backend State (``sandbox_id`` /
+    # ``container_id``), used for log labels when only the state (not the index)
+    # is in hand.
+    _id_attr: str = "sandbox_id"
     # Whether cleanup_all sets status=KILLED. e2b is False (keeps the original
     # creation status for stats); docker is True.
     _set_killed_on_cleanup: bool = False
@@ -162,8 +166,9 @@ class BaseSandboxManager(ABC):
                 f"\n[Batch {batch_id}/{batch_count - 1}] " f"Creating {self._noun.lower()}s {start_idx + 1}-{end_idx}"
             )
 
-            batch_states = self._create_batch_concurrent(batch_id, start_idx, end_idx)
-            self._states.update(batch_states)
+            # Concurrent creation of the current batch (mutates self._states in
+            # place -- _create_batch_concurrent writes each state before submit).
+            self._create_batch_concurrent(batch_id, start_idx, end_idx)
 
             if batch_id < batch_count - 1 and self.kernel_config.create_batch_interval:
                 logger.info(f"Waiting {self.kernel_config.create_batch_interval}s before next batch...")
@@ -237,48 +242,18 @@ class BaseSandboxManager(ABC):
             logger.info(f"  No existing {self._noun.lower()}s found")
             return {}
 
-        logger.info("  Processing all...")
+        return self._detect_each(listed, word="all")
 
-        for i, item in enumerate(listed):
-            index = i + 1
-            ext_id = self._external_id(item)
-            label = f"{self._noun}{index}"
-            state = self._new_state(index, external_id=ext_id)
-            self._states[index] = state
+    def _detect_each(self, listed: list, *, word: str = "matched") -> dict[int, BackendState]:
+        """Per-item detect loop: attach + ready-check + status mapping.
 
-            logger.info(f"\n[{label}] {ext_id}...")
-
-            try:
-                handle = self._attach(item)
-                setattr(state, self._handle_attr, handle)
-                state.creation_metrics.status = BackendSandboxStatus.CREATED
-                logger.info(f"[{label}] Attached successfully")
-
-                ready = self._ready_checker().check(handle, self.kernel_config.workflow_type, label)
-                if ready["success"]:
-                    state.creation_metrics.status = BackendSandboxStatus.PORT_READY
-                    state.creation_metrics.port_wait_elapsed = ready["wait_elapsed"]
-                    state.creation_metrics.port_ready_time = time.time()
-                    logger.info(f"[{label}] Ready in {ready['wait_elapsed']:.1f}s")
-                else:
-                    state.creation_metrics.status = BackendSandboxStatus.PORT_FAILED
-                    state.creation_metrics.port_check_error = ready["error"]
-                    logger.warning(f"[{label}] Ready check failed: {ready['error'][:50]}")
-            except Exception as e:
-                state.creation_metrics.status = BackendSandboxStatus.FAILED
-                state.creation_metrics.error_msg = str(e)
-                logger.error(f"[{label}] {str(e)[:80]}")
-
-        return self._states
-
-    def _detect_each(self, listed: list) -> dict[int, BackendState]:
-        """Per-item detect loop, reusable by a backend's own detect variant.
-
-        ``detect_from_file`` (e2b) filters the running list itself, then calls
-        this to attach + ready-check each matched item -- reusing the same
-        attach→ready-check→status mapping as :meth:`detect_existing`.
+        Shared by :meth:`detect_existing` (``word="all"``) and a backend's own
+        detect variant: e2b's ``detect_from_file`` filters the running list
+        itself, then calls this with ``word="matched"``. Reuses
+        :meth:`_apply_ready` (``create_elapsed=None`` -- no creation timing on
+        detect) so the create and detect paths share one ready->status mapping.
         """
-        logger.info("  Processing matched...")
+        logger.info(f"  Processing {word}...")
         for i, item in enumerate(listed):
             index = i + 1
             ext_id = self._external_id(item)
@@ -295,15 +270,7 @@ class BaseSandboxManager(ABC):
                 logger.info(f"[{label}] Attached successfully")
 
                 ready = self._ready_checker().check(handle, self.kernel_config.workflow_type, label)
-                if ready["success"]:
-                    state.creation_metrics.status = BackendSandboxStatus.PORT_READY
-                    state.creation_metrics.port_wait_elapsed = ready["wait_elapsed"]
-                    state.creation_metrics.port_ready_time = time.time()
-                    logger.info(f"[{label}] Ready in {ready['wait_elapsed']:.1f}s")
-                else:
-                    state.creation_metrics.status = BackendSandboxStatus.PORT_FAILED
-                    state.creation_metrics.port_check_error = ready["error"]
-                    logger.warning(f"[{label}] Ready check failed: {ready['error'][:50]}")
+                self._apply_ready(state, ready)
             except Exception as e:
                 state.creation_metrics.status = BackendSandboxStatus.FAILED
                 state.creation_metrics.error_msg = str(e)
@@ -331,7 +298,7 @@ class BaseSandboxManager(ABC):
                     state.creation_metrics.status = BackendSandboxStatus.KILLED
                 killed += 1
             except Exception as e:
-                logger.warning(f"[{self._noun}{getattr(state, 'sandbox_id', '?')}] Kill error: {str(e)[:50]}")
+                logger.warning(f"[{self._label(state)}] Kill error: {str(e)[:50]}")
         logger.info(f"Killed {killed} {self._noun.lower()}s")
 
     # ----------------------------------------------------------------- helpers
@@ -339,22 +306,33 @@ class BaseSandboxManager(ABC):
         """The SDK handle on a state (``sandbox_obj`` / ``docker_container``)."""
         return getattr(state, self._handle_attr, None)
 
-    def _apply_ready(self, state: BackendState, ready: dict, *, create_elapsed: float) -> None:
-        """Map a ReadyChecker result onto a state's creation_metrics."""
+    def _label(self, state: BackendState) -> str:
+        """Log label for a state (``Sandbox3`` / ``Container2``) via ``_id_attr``."""
+        return f"{self._noun}{getattr(state, self._id_attr, '?')}"
+
+    def _apply_ready(self, state: BackendState, ready: dict, *, create_elapsed: float | None = None) -> None:
+        """Map a ReadyChecker result onto a state's creation_metrics.
+
+        On the create path pass ``create_elapsed`` so ``total_elapsed`` is set
+        and the log line includes the total; on the detect path leave it None
+        (no creation timing) and only the readiness wait is recorded.
+        """
+        label = self._label(state)
         if ready["success"]:
             state.creation_metrics.status = BackendSandboxStatus.PORT_READY
             state.creation_metrics.port_wait_elapsed = ready["wait_elapsed"]
-            state.creation_metrics.total_elapsed = create_elapsed + ready["wait_elapsed"]
             state.creation_metrics.port_ready_time = time.time()
-            label = f"{self._noun}{getattr(state, 'sandbox_id', getattr(state, 'container_id', '?'))}"
-            logger.info(
-                f"[{label}] Ready in {ready['wait_elapsed']:.1f}s, "
-                f"total {state.creation_metrics.total_elapsed:.1f}s"
-            )
+            if create_elapsed is not None:
+                state.creation_metrics.total_elapsed = create_elapsed + ready["wait_elapsed"]
+                logger.info(
+                    f"[{label}] Ready in {ready['wait_elapsed']:.1f}s, "
+                    f"total {state.creation_metrics.total_elapsed:.1f}s"
+                )
+            else:
+                logger.info(f"[{label}] Ready in {ready['wait_elapsed']:.1f}s")
         else:
             state.creation_metrics.status = BackendSandboxStatus.PORT_FAILED
             state.creation_metrics.port_check_error = ready["error"]
-            label = f"{self._noun}{getattr(state, 'sandbox_id', getattr(state, 'container_id', '?'))}"
             logger.warning(f"[{label}] Ready check failed: {ready['error'][:50]}")
 
     # --------------------------------------------------------- subclass seams

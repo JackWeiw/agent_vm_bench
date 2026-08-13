@@ -48,6 +48,7 @@ class SandboxManager(BaseSandboxManager):
 
     _handle_attr = "docker_container"
     _noun = "Container"
+    _id_attr = "container_id"
     # Docker's original remove_all set status=KILLED on cleanup; preserve that.
     _set_killed_on_cleanup = True
 
