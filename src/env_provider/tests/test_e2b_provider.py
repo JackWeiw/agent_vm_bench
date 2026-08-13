@@ -198,7 +198,11 @@ class TestLifecycleHooks:
 
         manager.kill_all.assert_called_once()
 
-    def test_prepare_env_calls_setup_e2b_env(self):
+    def test_prepare_env_calls_setup_e2b_env(self, monkeypatch, tmp_path):
+        # Point E2B_CONFIG at a nonexistent file so setup_e2b_env's CLI-config
+        # fallback can't pick up a real ~/.e2b/config.json from the dev machine.
+        monkeypatch.setenv("E2B_CONFIG", str(tmp_path / "no_such_config.json"))
+        monkeypatch.delenv("E2B_ACCESS_TOKEN", raising=False)
         config = Config()
         config.e2b_access_token = "token-abc"
         provider, _ = _provider_with({}, config=config)

@@ -5,8 +5,10 @@ Supports YAML config file loading, CLI argument override, E2B environment variab
 """
 
 import argparse
+import json
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import yaml
@@ -304,6 +306,35 @@ def _extract_workflow_type(data: Dict[str, Any], sec: Dict[str, Dict[str, Any]])
     if val is _MISSING:
         val = data.get("workflow_type", _MISSING)
     return val
+
+
+# Default E2B CLI config path. The E2B_CONFIG env var overrides it (mirrors
+# e2b_bench/scripts/delete_sandbox.sh), so tests / alternate installs can point
+# elsewhere without touching the real ~/.e2b/config.json.
+DEFAULT_E2B_CONFIG_PATH = str(Path.home() / ".e2b" / "config.json")
+
+
+def _load_e2b_cli_config(path: Optional[str] = None) -> Dict[str, str]:
+    """Read the E2B CLI config (~/.e2b/config.json) for credentials.
+
+    Mirrors ``e2b_bench/scripts/delete_sandbox.sh``: the path defaults to
+    ``~/.e2b/config.json`` and is overridable via the ``E2B_CONFIG`` env var.
+    Returns ``{"api_key": ..., "access_token": ...}``; each is ``""`` when the
+    file is absent, unreadable, or the key is missing, so callers fall back to
+    it transparently without raising.
+    """
+    cfg_path = path or os.environ.get("E2B_CONFIG") or DEFAULT_E2B_CONFIG_PATH
+    creds: Dict[str, str] = {"api_key": "", "access_token": ""}
+    try:
+        with open(cfg_path, encoding="utf-8") as f:
+            data = json.load(f)
+        creds["api_key"] = str(data.get("teamApiKey") or "")
+        creds["access_token"] = str(data.get("accessToken") or "")
+    except (OSError, ValueError):
+        # File absent / unreadable / bad JSON -> stay empty; setup_e2b_env then
+        # just leaves the env vars unset (same behavior as before this fallback).
+        pass
+    return creds
 
 
 def _verify_cmd_default(ctx: Dict[str, Any]) -> str:
@@ -697,11 +728,20 @@ class Config:
         return val
 
     def setup_e2b_env(self) -> None:
-        """Setup E2B SDK environment variables"""
-        if self.e2b_access_token:
-            os.environ["E2B_ACCESS_TOKEN"] = self.e2b_access_token
-        if self.e2b_api_key:
-            os.environ["E2B_API_KEY"] = self.e2b_api_key
+        """Set E2B SDK environment variables.
+
+        Credentials fall back to the E2B CLI config (~/.e2b/config.json) when not
+        set on this Config (YAML/CLI), so a user can authenticate via the CLI
+        config without repeating key/token in YAML. Mirrors
+        ``e2b_bench/scripts/delete_sandbox.sh``.
+        """
+        file_creds = _load_e2b_cli_config()
+        token = self.e2b_access_token or file_creds["access_token"]
+        api_key = self.e2b_api_key or file_creds["api_key"]
+        if token:
+            os.environ["E2B_ACCESS_TOKEN"] = token
+        if api_key:
+            os.environ["E2B_API_KEY"] = api_key
         if self.e2b_domain:
             os.environ["E2B_DOMAIN"] = self.e2b_domain
         if self.e2b_api_url:
