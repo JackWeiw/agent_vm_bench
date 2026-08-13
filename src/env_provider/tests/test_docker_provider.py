@@ -1,6 +1,6 @@
 """Tests for the Docker EnvironmentProvider adapter.
 
-The adapter wraps :class:`ContainerManager` behind the kernel's
+The adapter wraps :class:`SandboxManager` behind the kernel's
 :class:`EnvironmentProvider` contract. These tests mock the manager and its SDK
 handles, verifying the translation + delegation logic -- not the Docker SDK
 itself.
@@ -58,7 +58,7 @@ def _make_state(
 def _provider_with(states: dict[int, ContainerState], *, config: Config | None = None) -> tuple[DockerProvider, Mock]:
     """Build a DockerProvider over a mock manager holding the given states.
 
-    The provider constructs its ContainerManager lazily; tests inject a mock by
+    The provider constructs its SandboxManager lazily; tests inject a mock by
     setting ``_manager`` so no SDK client is ever built.
     """
     cfg = config if config is not None else Config()
@@ -332,9 +332,12 @@ class TestLazyConstruction:
         assert provider._manager is None
 
     def test_first_access_builds_manager(self):
-        # docker's ContainerManager.__init__ pings the daemon (docker.from_env
-        # eagerly fetches the server version); patch it so construction is
-        # testable without a running daemon.
+        # The Docker SDK is an optional extra, so this real-construction test
+        # skips where it is not installed (the mock-injection tests above still
+        # run). docker's SandboxManager.__init__ pings the daemon
+        # (docker.from_env eagerly fetches the server version); patch it so
+        # construction is testable without a running daemon.
+        pytest.importorskip("docker")
         from unittest.mock import patch
 
         from env_provider.docker.manager import SandboxManager

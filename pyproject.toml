@@ -52,7 +52,7 @@ bench-core = "bench_core.bench:main"
 
 [tool.setuptools.packages.find]
 where = ["src", "."]
-include = ["vm_monitor*", "vm_bench*", "e2b_bench*", "docker_bench*", "llm_replay*", "bench_core*"]
+include = ["vm_monitor*", "vm_bench*", "e2b_bench*", "docker_bench*", "llm_replay*", "bench_core*", "env_provider*"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
@@ -69,6 +69,7 @@ addopts = [
 ]
 testpaths = [
     "src/bench_core/tests",
+    "src/env_provider/tests",
     "e2b_bench/tests",
     "vm_bench/tests",
     "docker_bench/tests",
@@ -84,7 +85,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["vm_monitor", "vm_bench", "e2b_bench", "docker_bench", "llm_replay", "bench_core"]
+source = ["vm_monitor", "vm_bench", "e2b_bench", "docker_bench", "llm_replay", "bench_core", "env_provider"]
 branch = true
 omit = [
     "*/tests/*",
@@ -160,7 +161,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["vm_monitor", "vm_bench", "e2b_bench", "docker_bench", "llm_replay", "bench_core"]
+known-first-party = ["vm_monitor", "vm_bench", "e2b_bench", "docker_bench", "llm_replay", "bench_core", "env_provider"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ARG", "S101"]

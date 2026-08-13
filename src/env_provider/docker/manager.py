@@ -12,8 +12,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Event
 from typing import Dict, Tuple
 
-import docker
-import docker.errors
+try:
+    import docker
+    import docker.errors
+except ImportError:  # pragma: no cover - SDK is an optional extra
+    # The Docker SDK is an optional extra (only needed to actually talk to a
+    # daemon). Keeping this module importable without it lets the provider
+    # package and its tests load on SDK-free environments (e.g. CI), where the
+    # real manager is never constructed -- tests inject a mock, and the one
+    # SDK-backed construction test skips via ``pytest.importorskip("docker")``.
+    docker = None  # type: ignore[assignment]
 
 from .config import Config
 from .schemas import ContainerState, ContainerStatus
