@@ -6,48 +6,21 @@ fresh via ``BenchSandbox.from_instance`` from the lean contract
 container handle here and translate out of it. Workflow task metrics live in
 :mod:`bench_core.schemas` (the kernel) -- not duplicated here.
 
-This module carries only:
-- :class:`ContainerStatus` -- docker's backend status enum (PORT_READY /
-  PORT_FAILED; the adapter's ``_STATUS_MAP`` translates to the contract's
-  workflow-neutral ``env_provider.SandboxStatus``).
-- :class:`CreationMetrics` -- docker creation/ready timing (``port_ready_time``
-  etc.; the adapter maps to the contract's ``CreationMetrics``).
-- :class:`ContainerState` -- per-container backend state: the container handle
-  (``docker_container``), backend lifecycle flags, and creation metrics.
+The backend status enum + creation metrics are shared with e2b via
+:mod:`env_provider._base` (they were byte-identical); this module re-exports
+them under the docker names so the manager/adapter imports unchanged. Only
+:class:`ContainerState` (the docker handle + lifecycle flags) is defined here.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
 
+from env_provider._base import (
+    BackendCreationMetrics as CreationMetrics,
+    BackendSandboxStatus as ContainerStatus,
+)
 
-class ContainerStatus(Enum):
-    """Container status enumeration"""
-
-    PENDING = "pending"  # Waiting for creation
-    CREATING = "creating"  # Creating in progress
-    CREATED = "created"  # Container created, waiting for ports
-    PORT_READY = "port_ready"  # Ports ready, can execute tasks
-    ACTIVE = "active"  # Active, executing tasks
-    FAILED = "failed"  # Creation failed
-    PORT_FAILED = "port_failed"  # Port check failed
-    OFFLINE = "offline"  # Runtime offline
-    KILLED = "killed"  # Killed/removed
-
-
-@dataclass
-class CreationMetrics:
-    """Container creation performance metrics"""
-
-    submit_time: float = 0.0  # Creation submit time
-    create_ready_time: float = 0.0  # Container created time (excluding port wait)
-    port_ready_time: float = 0.0  # Ports ready time
-    create_elapsed: float = 0.0  # Container creation elapsed time (seconds)
-    port_wait_elapsed: float = 0.0  # Port wait elapsed time (seconds)
-    total_elapsed: float = 0.0  # Total elapsed = create_elapsed + port_wait_elapsed
-    status: ContainerStatus = ContainerStatus.PENDING
-    error_msg: str = ""
-    port_check_error: str = ""  # Port check error message
+__all__ = ["ContainerState", "ContainerStatus", "CreationMetrics"]
 
 
 @dataclass
@@ -65,10 +38,11 @@ class ContainerState:
 
     container_id: int  # Sequence number (1, 2, 3...)
     container_name: str = ""  # Docker container name
-    docker_container: object | None = None  # Docker container object reference
+    docker_container: object | None = None  # Docker container object reference (handle)
     batch_id: int = -1  # Batch ID
 
     creation_metrics: CreationMetrics = field(default_factory=CreationMetrics)
 
     is_alive: bool = True  # Container alive status
+    stopped_by_cleanup: bool = False  # Removed by normal benchmark cleanup (set by the base)
     browser_started: bool = False  # OpenClaw browser backend started flag (read by the adapter as warmup_done)

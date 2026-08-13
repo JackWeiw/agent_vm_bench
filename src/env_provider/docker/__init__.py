@@ -118,7 +118,7 @@ class DockerProvider(EnvironmentProvider):
         # there is nothing to tear down.
         if self._manager is None:
             return
-        self._manager.remove_all()
+        self._manager.cleanup_all()
 
     # ------------------------------------------------------------------ setup hooks
     def prepare_env(self) -> None:

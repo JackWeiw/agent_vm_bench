@@ -280,12 +280,12 @@ class TestExec:
 
 
 class TestLifecycleHooks:
-    def test_cleanup_all_calls_remove_all(self):
+    def test_cleanup_all_calls_cleanup_all(self):
         provider, manager = _provider_with({})
 
         provider.cleanup_all()
 
-        manager.remove_all.assert_called_once()
+        manager.cleanup_all.assert_called_once()
 
     def test_check_alive_delegates_to_manager(self):
         state = _make_state(1, status=DockerStatus.PORT_READY)

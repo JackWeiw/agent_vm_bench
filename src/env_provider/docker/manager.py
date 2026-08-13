@@ -1,16 +1,20 @@
-"""
-Container Management Module
+"""Docker container manager (SDK seams over :class:`BaseSandboxManager`).
 
-Responsible for Docker container creation, health check, batch control and termination
-Uses Docker SDK for container lifecycle management
-Supports port check (18789 openclaw-gateway + 11436 llama-server)
+The workflow-agnostic create/detect/cleanup skeleton is inherited from
+:class:`env_provider._base.BaseSandboxManager`; this module supplies only the
+Docker SDK seams (containers.run / list / remove + the exec probe) and the
+docker-specific methods the base can't own: ``check_alive`` (container.reload +
+status), ``start_browser_backend`` (hot-start openclaw), and
+``clear_browser_cache`` (wipe user-data). Readiness probing is delegated to
+:class:`env_provider._ready.ReadyChecker` via the base -- so docker, which
+previously only checked ports, now gains the same workflow-driven dispatch as
+e2b (coding/document probes, not just ports).
 """
 
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Event
-from typing import Dict, Tuple
+from typing import Any
 
 try:
     import docker
@@ -23,217 +27,59 @@ except ImportError:  # pragma: no cover - SDK is an optional extra
     # SDK-backed construction test skips via ``pytest.importorskip("docker")``.
     docker = None  # type: ignore[assignment]
 
+from env_provider._base import BaseSandboxManager, BackendSandboxStatus
+
 from .config import Config
-from .schemas import ContainerState, ContainerStatus
+from .schemas import ContainerState
 
 logger = logging.getLogger(__name__)
 
 
-class SandboxManager:
-    """Container lifecycle management using Docker SDK.
+class SandboxManager(BaseSandboxManager):
+    """Container lifecycle: SDK seams over the shared lifecycle template.
 
     Shared stress params (total_count, create_batch_*) are read from
-    ``kernel_config``; backend-specific knobs (image, prefix, resources,
-    ports) from ``docker_config``. This split keeps a single source of truth
-    per axis: the kernel owns the host-agnostic counts, the provider owns the
-    docker runtime knobs.
+    ``kernel_config``; backend knobs (image, prefix, resources, ports) from
+    ``docker_config``. Readiness is delegated to :class:`ReadyChecker` (built
+    by the base from :meth:`_exec_probe` + :meth:`_ready_config`); docker now
+    gets the full workflow-driven probe set (coding/document/browser), not just
+    the port check it had before.
     """
 
-    def __init__(self, kernel_config, docker_config: Config, stop_event: Event):
-        self.kernel_config = kernel_config
+    _handle_attr = "docker_container"
+    _noun = "Container"
+    # Docker's original remove_all set status=KILLED on cleanup; preserve that.
+    _set_killed_on_cleanup = True
+
+    def __init__(self, kernel_config, docker_config: Config, stop_event: Event) -> None:
+        super().__init__(kernel_config, stop_event)
         self.config = docker_config
-        self.stop_event = stop_event
-        self.container_states: Dict[int, ContainerState] = {}
+        # Built here (not lazily) to match the original behavior: construction
+        # itself validates the daemon is reachable. SDK-free environments never
+        # reach here -- tests inject a mock, and the SDK-backed test skips via
+        # ``pytest.importorskip("docker")``.
         self.docker_client = docker.from_env()
 
-    def create_all(self) -> Dict[int, ContainerState]:
-        """Batch create containers
+    # --------------------------------------------------------- subclass seams
+    def _new_state(self, index: int, *, batch_id: int = -1, external_id: str = "") -> ContainerState:
+        # On detect, external_id is the real container name; on create, generate
+        # the prefixed name so the create path can remove a stale same-name box.
+        name = external_id or f"{self.config.container_prefix}-{index}"
+        return ContainerState(
+            container_id=index,
+            container_name=name,
+            batch_id=batch_id,
+        )
 
-        Strategy based on create_batch config:
-        - With create_batch_size: batched creation to avoid resource spike
-        - Without config: full concurrent creation for max performance test
+    def _create_single(self, state: ContainerState) -> dict:
+        """Create one container; preserve the handle in ``state.docker_container``.
 
-        Returns: {container_id: ContainerState}
+        Removes a stale same-name container first (handle 409 conflict), then
+        runs the image with CPU/memory limits. The base runs the readiness
+        probe after this returns success and maps the result onto
+        ``creation_metrics``.
         """
-        if self.kernel_config.create_batch_size and self.kernel_config.create_batch_size > 0:
-            return self._create_batched()
-        else:
-            return self._create_concurrent()
-
-    def detect_existing(self) -> Dict[int, ContainerState]:
-        """Detect existing running containers
-
-        Query Docker API for existing containers with matching prefix,
-        check port readiness, and prepare for benchmark.
-
-        Returns: {container_id: ContainerState}
-        """
-        logger.info(f"\n{'=' * 60}")
-        logger.info("Detecting Existing Containers")
-        logger.info(f"{'=' * 60}")
-
-        # List containers matching the prefix
-        try:
-            all_containers = self.docker_client.containers.list(all=False)  # Only running
-            matching_containers = [c for c in all_containers if c.name.startswith(self.config.container_prefix)]
-            logger.info(
-                f"  Found {len(matching_containers)} running containers with prefix '{self.config.container_prefix}'"
-            )
-        except Exception as e:
-            logger.error(f"  Failed to list containers: {e}")
-            return {}
-
-        if not matching_containers:
-            logger.info("  No existing containers found")
-            return {}
-
-        logger.info("  Processing all containers...")
-
-        # Process each container
-        for i, docker_container in enumerate(matching_containers):
-            container_id = i + 1
-            container_name = docker_container.name
-
-            state = ContainerState(container_id=container_id, container_name=container_name)
-            state.docker_container = docker_container
-            self.container_states[container_id] = state
-
-            logger.info(f"\n[Container{container_id}] {container_name}...")
-
-            try:
-                # Container is already running
-                state.creation_metrics.status = ContainerStatus.CREATED
-                logger.info(f"[Container{container_id}] Already running")
-
-                # Check port readiness
-                port_result = self._check_ports(state)
-                if port_result["success"]:
-                    state.creation_metrics.status = ContainerStatus.PORT_READY
-                    state.creation_metrics.port_wait_elapsed = port_result["wait_elapsed"]
-                    logger.info(f"[Container{container_id}] Ports ready in {port_result['wait_elapsed']:.1f}s")
-                else:
-                    state.creation_metrics.status = ContainerStatus.PORT_FAILED
-                    state.creation_metrics.port_check_error = port_result["error"]
-                    logger.warning(f"[Container{container_id}] Port check failed: {port_result['error'][:50]}")
-
-            except Exception as e:
-                state.creation_metrics.status = ContainerStatus.FAILED
-                state.creation_metrics.error_msg = str(e)
-                logger.error(f"[Container{container_id}] {str(e)[:80]}")
-
-        return self.container_states
-
-    def _create_batched(self) -> Dict[int, ContainerState]:
-        """Batched container creation"""
-        total = self.kernel_config.total_count
-        batch_size = self.kernel_config.create_batch_size
-        batch_count = self.kernel_config.create_batch_count
-
-        logger.info(f"\n{'=' * 60}")
-        logger.info("Batched Container Creation")
-        logger.info(f"  Total: {total} containers")
-        logger.info(f"  Image: {self.config.docker_image}")
-        logger.info(f"  Spec:  {self.config.cpu_limit}vCPU / {self.config.memory_limit}")
-        logger.info(f"  Batches: {batch_count} x {batch_size}")
-        logger.info(f"  Interval: {self.kernel_config.create_batch_interval}s")
-        logger.info(f"{'=' * 60}")
-
-        for batch_id in range(batch_count):
-            if self.stop_event.is_set():
-                logger.info("Stop event detected, aborting creation")
-                break
-
-            start_idx = batch_id * batch_size
-            end_idx = min(start_idx + batch_size, total)
-
-            logger.info(f"\n[Batch {batch_id}/{batch_count - 1}] Creating containers {start_idx + 1}-{end_idx}")
-
-            # Concurrent creation of current batch
-            batch_states = self._create_batch_concurrent(batch_id, start_idx, end_idx)
-            self.container_states.update(batch_states)
-
-            # Wait between batches (last batch no wait)
-            if batch_id < batch_count - 1 and self.kernel_config.create_batch_interval:
-                logger.info(f"Waiting {self.kernel_config.create_batch_interval}s before next batch...")
-                time.sleep(self.kernel_config.create_batch_interval)
-
-        return self.container_states
-
-    def _create_batch_concurrent(self, batch_id: int, start: int, end: int) -> Dict[int, ContainerState]:
-        """Concurrent creation of one batch"""
-        states: Dict[int, ContainerState] = {}
-
-        with ThreadPoolExecutor(max_workers=end - start) as executor:
-            futures = {}
-
-            for i in range(start, end):
-                container_id = i + 1
-                container_name = f"{self.config.container_prefix}-{container_id}"
-                state = ContainerState(container_id=container_id, container_name=container_name, batch_id=batch_id)
-                self.container_states[container_id] = state
-                future = executor.submit(self._create_single, state)
-                futures[future] = container_id
-
-            for future in as_completed(futures):
-                container_id = futures[future]
-                state = self.container_states[container_id]
-
-                try:
-                    result = future.result()
-                    if result["success"]:
-                        # Container created, start port check
-                        logger.info(
-                            f"[Container{container_id}] Created in {result['create_elapsed']:.1f}s, checking ports..."
-                        )
-
-                        # Port check
-                        port_result = self._check_ports(state)
-                        if port_result["success"]:
-                            state.creation_metrics.status = ContainerStatus.PORT_READY
-                            state.creation_metrics.port_wait_elapsed = port_result["wait_elapsed"]
-                            state.creation_metrics.total_elapsed = (
-                                result["create_elapsed"] + port_result["wait_elapsed"]
-                            )
-                            logger.info(
-                                f"[Container{container_id}] Ports ready in {port_result['wait_elapsed']:.1f}s, total {state.creation_metrics.total_elapsed:.1f}s"
-                            )
-                        else:
-                            state.creation_metrics.status = ContainerStatus.PORT_FAILED
-                            state.creation_metrics.port_check_error = port_result["error"]
-                            logger.warning(f"[Container{container_id}] Port check failed: {port_result['error'][:50]}")
-                    else:
-                        state.creation_metrics.status = ContainerStatus.FAILED
-                        state.creation_metrics.error_msg = result["error"]
-                        logger.error(f"[Container{container_id}] Failed: {result['error'][:80]}")
-                except Exception as e:
-                    state.creation_metrics.status = ContainerStatus.FAILED
-                    state.creation_metrics.error_msg = str(e)
-                    logger.error(f"[Container{container_id}] Exception: {str(e)[:80]}")
-
-        return {i + 1: self.container_states[i + 1] for i in range(start, end)}
-
-    def _create_concurrent(self) -> Dict[int, ContainerState]:
-        """Full concurrent creation of all containers"""
-        total = self.kernel_config.total_count
-
-        logger.info(f"\n{'=' * 60}")
-        logger.info("Concurrent Container Creation")
-        logger.info(f"  Total: {total} containers (full concurrent)")
-        logger.info(f"  Image: {self.config.docker_image}")
-        logger.info(f"  Spec:  {self.config.cpu_limit}vCPU / {self.config.memory_limit}")
-        logger.info(f"{'=' * 60}")
-
-        return self._create_batch_concurrent(batch_id=0, start=0, end=total)
-
-    def _create_single(self, state: ContainerState) -> Dict[str, any]:
-        """Create single container
-
-        Key: Preserve docker container handle in state.docker_container
-        Record time when container.create succeeds, no port waiting
-
-        Returns: {'success': bool, 'create_elapsed': float, 'error': str}
-        """
-        state.creation_metrics.status = ContainerStatus.CREATING
+        state.creation_metrics.status = BackendSandboxStatus.CREATING
         state.creation_metrics.submit_time = time.time()
 
         try:
@@ -255,77 +101,54 @@ class SandboxManager:
                 mem_limit=self.config.memory_limit,
             )
 
-            # Preserve container handle
             state.docker_container = container
             state.creation_metrics.create_ready_time = time.time()
             state.creation_metrics.create_elapsed = (
                 state.creation_metrics.create_ready_time - state.creation_metrics.submit_time
             )
-            state.creation_metrics.status = ContainerStatus.CREATED
-
+            state.creation_metrics.status = BackendSandboxStatus.CREATED
             return {"success": True, "create_elapsed": state.creation_metrics.create_elapsed, "error": ""}
         except Exception as e:
             state.creation_metrics.create_ready_time = time.time()
             return {"success": False, "create_elapsed": 0.0, "error": str(e)}
 
-    def _check_ports(self, state: ContainerState) -> Dict[str, any]:
-        """Check if container ports are ready
+    def _list_existing(self) -> list:
+        """List running containers matching the configured prefix."""
+        all_containers = self.docker_client.containers.list(all=False)  # only running
+        return [c for c in all_containers if c.name.startswith(self.config.container_prefix)]
 
-        Check ports in self.config.required_ports (default: 18789 + 11436)
+    def _external_id(self, listed: Any) -> str:
+        # The container name is docker's stable identifier (the numeric
+        # container_id is the kernel index, not a docker id).
+        return listed.name
 
-        Returns: {'success': bool, 'wait_elapsed': float, 'error': str}
-        """
-        container = state.docker_container
-        if not container:
-            return {"success": False, "wait_elapsed": 0.0, "error": "No container handle"}
+    def _attach(self, listed: Any) -> Any:
+        # The listed container object IS the SDK handle (docker has no connect step).
+        return listed
 
-        start_time = time.time()
-        ready_ports = set()
+    def _kill_one(self, state: ContainerState) -> None:
+        state.docker_container.remove(force=True)
 
-        while time.time() - start_time < self.config.port_check_max_wait:
-            if self.stop_event.is_set():
-                return {"success": False, "wait_elapsed": time.time() - start_time, "error": "Stop event"}
+    def _exec_probe(self, handle: Any, cmd: str, timeout: int) -> tuple[int, str, str]:
+        # docker's exec_run has no native timeout; the ReadyChecker passes one
+        # but we honour the command only (probes are fast, bounded by max_wait).
+        result = handle.exec_run(cmd, user="root")
+        output = result.output
+        text = output.decode("utf-8", errors="ignore") if isinstance(output, bytes) else (output or "")
+        return result.exit_code, text, ""
 
-            for port in self.config.required_ports:
-                if port in ready_ports:
-                    continue
+    def _ready_config(self) -> tuple[int, int, list[int]]:
+        return (self.config.port_check_max_wait, self.config.port_check_interval, self.config.required_ports)
 
-                try:
-                    # Execute port check command inside container
-                    # Note: Use shell=True or sh -c to support pipe in exec_run
-                    cmd = f"sh -c 'ss -tlnp 2>/dev/null | grep :{port}'"
-                    result = container.exec_run(cmd, user="root")
+    def _create_header_extras(self) -> list[str]:
+        return [
+            f"Image: {self.config.docker_image}",
+            f"Spec:  {self.config.cpu_limit}vCPU / {self.config.memory_limit}",
+        ]
 
-                    output = (
-                        result.output.decode("utf-8", errors="ignore")
-                        if isinstance(result.output, bytes)
-                        else result.output
-                    )
-                    exit_code = result.exit_code
-
-                    # Check if port is listening (grep found the port)
-                    if exit_code == 0 and len(output.strip()) > 0:
-                        ready_ports.add(port)
-                        logger.info(f"[Container{state.container_id}] Port {port} is listening")
-                except Exception as e:
-                    # exec_run error - continue checking
-                    logger.warning(f"[Container{state.container_id}] Port {port} check exception: {str(e)[:50]}")
-                    pass  # Continue checking other ports
-
-            if len(ready_ports) == len(self.config.required_ports):
-                wait_elapsed = time.time() - start_time
-                state.creation_metrics.port_ready_time = time.time()
-                return {"success": True, "wait_elapsed": wait_elapsed, "error": ""}
-
-            time.sleep(self.config.port_check_interval)
-
-        # Timeout, return missing ports info
-        missing_ports = [p for p in self.config.required_ports if p not in ready_ports]
-        wait_elapsed = time.time() - start_time
-        return {"success": False, "wait_elapsed": wait_elapsed, "error": f"Timeout waiting for ports: {missing_ports}"}
-
+    # ------------------------------------------------- docker-specific methods
     def check_alive(self, state: ContainerState) -> bool:
-        """Check if container is alive"""
+        """Liveness via the Docker daemon (container.reload + status)."""
         container = state.docker_container
         if not container or not state.is_alive:
             return False
@@ -335,12 +158,10 @@ class SandboxManager:
         except Exception:
             return False
 
-    def start_browser_backend(self, state: ContainerState) -> Tuple[bool, str]:
-        """Start OpenClaw browser backend (hot start)
+    def start_browser_backend(self, state: ContainerState) -> tuple[bool, str]:
+        """Start OpenClaw browser backend (hot start).
 
         Execute: openclaw browser status && start
-
-        Returns: (success, error_msg)
         """
         container = state.docker_container
         if not container:
@@ -349,30 +170,24 @@ class SandboxManager:
         try:
             cmd = "openclaw browser status && start || openclaw browser start"
             result = container.exec_run(cmd, user="root")
-
             output = (
                 result.output.decode("utf-8", errors="ignore") if isinstance(result.output, bytes) else result.output
             )
-
             if result.exit_code == 0:
                 state.browser_started = True
                 return True, ""
-            else:
-                return False, f"exit_code={result.exit_code}, output={output[:200]}"
+            return False, f"exit_code={result.exit_code}, output={output[:200]}"
         except Exception as e:
             return False, str(e)
 
     def clear_browser_cache(self, state: ContainerState) -> bool:
-        """Clear browser cache for clean test
+        """Clear browser cache for a clean test.
 
         Execute: rm -rf /root/.openclaw/browser/openclaw/user-data
-
-        Returns: success
         """
         container = state.docker_container
         if not container:
             return False
-
         try:
             cmd = "rm -rf /root/.openclaw/browser/openclaw/user-data"
             result = container.exec_run(cmd, user="root")
@@ -380,17 +195,8 @@ class SandboxManager:
         except Exception:
             return False
 
-    def remove_all(self) -> None:
-        """Remove all containers"""
-        logger.info("\nRemoving all containers...")
-        removed_count = 0
-        for state in self.container_states.values():
-            if state.docker_container:
-                try:
-                    state.docker_container.remove(force=True)
-                    state.creation_metrics.status = ContainerStatus.KILLED
-                    state.is_alive = False
-                    removed_count += 1
-                except Exception as e:
-                    logger.warning(f"[Container{state.container_id}] Remove error: {str(e)[:50]}")
-        logger.info(f"Removed {removed_count} containers")
+    # ----------------------------------------------------- adapter alias (state)
+    @property
+    def container_states(self) -> dict[int, ContainerState]:
+        """Adapter-facing alias for the base state registry."""
+        return self._states
