@@ -13,6 +13,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from bench_core.config import KernelConfig
 from env_provider import CommandResult, SandboxInstance, SandboxStatus
 from env_provider.docker.config import Config
 from env_provider.docker import DockerProvider
@@ -55,14 +56,22 @@ def _make_state(
     return state
 
 
-def _provider_with(states: dict[int, ContainerState], *, config: Config | None = None) -> tuple[DockerProvider, Mock]:
+def _provider_with(
+    states: dict[int, ContainerState],
+    *,
+    config: Config | None = None,
+    kernel_config: KernelConfig | None = None,
+) -> tuple[DockerProvider, Mock]:
     """Build a DockerProvider over a mock manager holding the given states.
 
     The provider constructs its SandboxManager lazily; tests inject a mock by
     setting ``_manager`` so no SDK client is ever built.
     """
+    from bench_core.config import KernelConfig
+
     cfg = config if config is not None else Config()
-    provider = DockerProvider(cfg, Event())
+    kcfg = kernel_config if kernel_config is not None else KernelConfig()
+    provider = DockerProvider(kcfg, cfg, Event())
     manager = Mock()
     manager.container_states = dict(states)
     manager.create_all.return_value = manager.container_states
@@ -321,13 +330,13 @@ class TestLifecycleHooks:
 
 class TestLazyConstruction:
     def test_manager_not_built_until_first_use(self):
-        provider = DockerProvider(Config(), Event())
+        provider = DockerProvider(KernelConfig(), Config(), Event())
         assert provider._manager is None
 
     def test_cleanup_all_is_noop_before_construction(self):
         # If the kernel fails before create_all, the manager was never built ->
         # cleanup must not raise.
-        provider = DockerProvider(Config(), Event())
+        provider = DockerProvider(KernelConfig(), Config(), Event())
         provider.cleanup_all()
         assert provider._manager is None
 
@@ -342,7 +351,7 @@ class TestLazyConstruction:
 
         from env_provider.docker.manager import SandboxManager
 
-        provider = DockerProvider(Config(), Event())
+        provider = DockerProvider(KernelConfig(), Config(), Event())
         with patch("env_provider.docker.manager.docker.from_env") as from_env:
             from_env.return_value = Mock()
             mgr = provider.manager
@@ -357,21 +366,23 @@ class TestBuildProvider:
         assert provider._manager is None  # still lazy
 
     def test_builds_from_raw_dict(self):
+        # Unified schema: backend knobs under ``docker:``, shared total_count
+        # under ``sandbox:`` (read into KernelConfig by from_raw).
         raw = {
             "docker": {"image": "my-img", "container_prefix": "x"},
-            "container": {"total_count": 4},
+            "sandbox": {"total_count": 4},
         }
         provider = docker_bench_build_provider(raw)
 
         assert provider._config.docker_image == "my-img"
         assert provider._config.container_prefix == "x"
-        assert provider._config.total_count == 4
+        assert provider._kernel_config.total_count == 4  # shared -> kernel
 
 
 def docker_bench_build_provider(raw_config: dict) -> DockerProvider:
-    """Helper: call build_provider with a throwaway KernelConfig (unused)."""
-    from bench_core.config import KernelConfig
-
+    """Helper: call build_provider with a KernelConfig built from the same raw."""
     from env_provider.docker import build_provider
 
-    return build_provider(KernelConfig(), raw_config)
+    # Mirror bench_core.bench.main: the kernel builds KernelConfig from the raw
+    # dict's shared sections, then build_provider splits off the docker block.
+    return build_provider(KernelConfig.from_raw(raw_config), raw_config)

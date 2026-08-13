@@ -30,10 +30,18 @@ logger = logging.getLogger(__name__)
 
 
 class SandboxManager:
-    """Container lifecycle management using Docker SDK"""
+    """Container lifecycle management using Docker SDK.
 
-    def __init__(self, config: Config, stop_event: Event):
-        self.config = config
+    Shared stress params (total_count, create_batch_*) are read from
+    ``kernel_config``; backend-specific knobs (image, prefix, resources,
+    ports) from ``docker_config``. This split keeps a single source of truth
+    per axis: the kernel owns the host-agnostic counts, the provider owns the
+    docker runtime knobs.
+    """
+
+    def __init__(self, kernel_config, docker_config: Config, stop_event: Event):
+        self.kernel_config = kernel_config
+        self.config = docker_config
         self.stop_event = stop_event
         self.container_states: Dict[int, ContainerState] = {}
         self.docker_client = docker.from_env()
@@ -47,7 +55,7 @@ class SandboxManager:
 
         Returns: {container_id: ContainerState}
         """
-        if self.config.create_batch_size and self.config.create_batch_size > 0:
+        if self.kernel_config.create_batch_size and self.kernel_config.create_batch_size > 0:
             return self._create_batched()
         else:
             return self._create_concurrent()
@@ -117,9 +125,9 @@ class SandboxManager:
 
     def _create_batched(self) -> Dict[int, ContainerState]:
         """Batched container creation"""
-        total = self.config.total_count
-        batch_size = self.config.create_batch_size
-        batch_count = self.config.create_batch_count
+        total = self.kernel_config.total_count
+        batch_size = self.kernel_config.create_batch_size
+        batch_count = self.kernel_config.create_batch_count
 
         logger.info(f"\n{'=' * 60}")
         logger.info("Batched Container Creation")
@@ -127,7 +135,7 @@ class SandboxManager:
         logger.info(f"  Image: {self.config.docker_image}")
         logger.info(f"  Spec:  {self.config.cpu_limit}vCPU / {self.config.memory_limit}")
         logger.info(f"  Batches: {batch_count} x {batch_size}")
-        logger.info(f"  Interval: {self.config.create_batch_interval}s")
+        logger.info(f"  Interval: {self.kernel_config.create_batch_interval}s")
         logger.info(f"{'=' * 60}")
 
         for batch_id in range(batch_count):
@@ -145,9 +153,9 @@ class SandboxManager:
             self.container_states.update(batch_states)
 
             # Wait between batches (last batch no wait)
-            if batch_id < batch_count - 1 and self.config.create_batch_interval:
-                logger.info(f"Waiting {self.config.create_batch_interval}s before next batch...")
-                time.sleep(self.config.create_batch_interval)
+            if batch_id < batch_count - 1 and self.kernel_config.create_batch_interval:
+                logger.info(f"Waiting {self.kernel_config.create_batch_interval}s before next batch...")
+                time.sleep(self.kernel_config.create_batch_interval)
 
         return self.container_states
 
@@ -206,7 +214,7 @@ class SandboxManager:
 
     def _create_concurrent(self) -> Dict[int, ContainerState]:
         """Full concurrent creation of all containers"""
-        total = self.config.total_count
+        total = self.kernel_config.total_count
 
         logger.info(f"\n{'=' * 60}")
         logger.info("Concurrent Container Creation")

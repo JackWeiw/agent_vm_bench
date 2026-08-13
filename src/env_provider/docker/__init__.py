@@ -83,7 +83,8 @@ class DockerProvider(EnvironmentProvider):
 
     name = "docker"
 
-    def __init__(self, config: Config, stop_event: threading.Event) -> None:
+    def __init__(self, kernel_config: KernelConfig, config: Config, stop_event: threading.Event) -> None:
+        self._kernel_config = kernel_config
         self._config = config
         self._stop_event = stop_event
         self._manager: SandboxManager | None = None
@@ -96,7 +97,7 @@ class DockerProvider(EnvironmentProvider):
         client is built. Tests inject a mock by setting ``_manager`` directly.
         """
         if self._manager is None:
-            self._manager = SandboxManager(self._config, self._stop_event)
+            self._manager = SandboxManager(self._kernel_config, self._config, self._stop_event)
         return self._manager
 
     # ------------------------------------------------------------------ lifecycle
@@ -244,24 +245,24 @@ class DockerProvider(EnvironmentProvider):
         return box["result"]
 
 
-def from_config(config: Config, stop_event: threading.Event) -> DockerProvider:
-    """Build a :class:`DockerProvider` from an already-constructed docker Config.
+def from_config(kernel_config: KernelConfig, config: Config, stop_event: threading.Event) -> DockerProvider:
+    """Build a :class:`DockerProvider` from a KernelConfig + docker Config.
 
     The SandboxManager is constructed lazily on first use, so this is cheap
     and does not talk to the Docker daemon yet.
     """
-    return DockerProvider(config, stop_event)
+    return DockerProvider(kernel_config, config, stop_event)
 
 
 def build_provider(config: KernelConfig, raw_config: dict) -> DockerProvider:
     """Construct a :class:`DockerProvider` from a raw YAML dict (kernel smoke path).
 
-    The host-agnostic ``python -m bench_core --provider docker`` entry has no
-    docker Config object, so it reconstructs one from the raw YAML dict here.
-    The kernel drives its own :class:`KernelConfig`; only the provider needs the
-    docker Config.
+    ``config`` is the already-built :class:`KernelConfig` (shared stress params
+    from :meth:`KernelConfig.from_raw`); the docker backend Config is rebuilt
+    here from the ``docker:`` block of the same raw dict. Both are passed to the
+    provider: the kernel drives ``config``, the manager reads backend knobs from
+    the docker Config.
     """
-    del config  # KernelConfig is unused here; the provider rebuilds a docker Config.
     stop_event = threading.Event()
-    docker_config = Config._from_dict(raw_config) if raw_config else Config()
-    return from_config(docker_config, stop_event)
+    docker_config = Config.from_raw(raw_config) if raw_config else Config()
+    return from_config(config, docker_config, stop_event)
