@@ -1,0 +1,652 @@
+"""
+Sandbox Management Module
+
+Responsible for E2B sandbox creation, health check, batch control and termination
+Preserves sandbox handle for subsequent task execution
+
+Ready detection strategy:
+- Browser workflow: Check ports 18789 (openclaw-gateway) + 11436 (llama-server)
+- Coding workflow: Execute 'uname -a' command and check for successful response
+- Document workflow: Execute the image asset/dependency validator
+"""
+
+import logging
+import math
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Event
+from typing import Dict
+
+try:
+    from e2b import Sandbox
+except ImportError:
+    # Mock for development/testing without E2B SDK
+    class Sandbox:
+        @staticmethod
+        def create(template, timeout=86400, envs=None):  # noqa: ARG001 - envs unused in mock
+            class MockSandbox:
+                sandbox_id = "mock_sandbox_id"
+
+                class MockCommands:
+                    def run(self, cmd, timeout=60, user="root"):
+                        class Result:
+                            exit_code = 0
+                            stdout = ""
+
+                        return Result()
+
+                commands = MockCommands()
+
+                def kill(self):
+                    pass
+
+            return MockSandbox()
+
+        @staticmethod
+        def kill(sandbox_id):
+            pass
+
+        @staticmethod
+        def list():
+            """Mock list() for testing - returns Paginator-like object"""
+
+            class MockPaginator:
+                has_next = True
+                _items = [type("MockListedSandbox", (), {"sandbox_id": "mock_sandbox_1"})()]
+
+                def next_items(self):
+                    if self.has_next:
+                        self.has_next = False
+                        return self._items
+                    return []
+
+            return MockPaginator()
+
+        @staticmethod
+        def connect(sandbox_id):
+            """Mock connect() for testing"""
+
+            class MockSandbox:
+                sandbox_id = sandbox_id
+
+                class MockCommands:
+                    def run(self, cmd, timeout=60, user="root"):
+                        class Result:
+                            exit_code = 0
+                            stdout = ""
+
+                        return Result()
+
+                commands = MockCommands()
+
+            return MockSandbox()
+
+
+from .config import Config, numa_node_for_index
+from .schemas import SandboxState, SandboxStatus
+
+logger = logging.getLogger(__name__)
+
+# Required ports to check for browser workflow
+BROWSER_REQUIRED_PORTS = [
+    (18789, "openclaw-gateway"),
+    (11436, "llama-server"),
+]
+
+# Ready check maximum wait time (seconds)
+READY_CHECK_MAX_WAIT = 300
+
+# Ready check interval (seconds)
+READY_CHECK_INTERVAL = 5
+
+
+class SandboxManager:
+    """Sandbox lifecycle management"""
+
+    def __init__(self, config: Config, stop_event: Event):
+        self.config = config
+        self.config.validate()
+        self.stop_event = stop_event
+        self.sandbox_states: Dict[int, SandboxState] = {}
+
+    def create_all(self) -> Dict[int, SandboxState]:
+        """Batch create sandboxes
+
+        Strategy based on create_batch config:
+        - With create_batch_size: batched creation to avoid resource spike
+        - Without config: full concurrent creation for max performance test
+
+        Returns: {sandbox_id: SandboxState}
+        """
+        if self.config.create_batch_size and self.config.create_batch_size > 0:
+            return self._create_batched()
+        else:
+            return self._create_concurrent()
+
+    def detect_existing(self) -> Dict[int, SandboxState]:
+        """Detect existing running sandboxes
+
+        Query E2B API for existing sandboxes, connect to them,
+        check port readiness, and prepare for benchmark.
+
+        Sandbox.list() returns a SandboxPaginator, need to iterate it.
+
+        Returns: {sandbox_id: SandboxState}
+        """
+        logger.info(f"\n{'=' * 60}")
+        logger.info("Detecting Existing Sandboxes")
+        logger.info(f"{'=' * 60}")
+
+        # List all running sandboxes - returns SandboxPaginator
+        try:
+            paginator = Sandbox.list()
+            # Paginator needs has_next and next_items() to iterate
+            existing_list = []
+            while paginator.has_next:
+                sandboxes = paginator.next_items()
+                existing_list.extend(sandboxes)
+            logger.info(f"  Found {len(existing_list)} running sandboxes")
+        except Exception as e:
+            logger.error(f"  Failed to list sandboxes: {e}")
+            return {}
+
+        if not existing_list:
+            logger.info("  No existing sandboxes found")
+            return {}
+
+        logger.info("  Processing all sandboxes...")
+
+        # Connect to each sandbox and check ports
+        for i, listed_sandbox in enumerate(existing_list):
+            sandbox_id = i + 1
+            e2b_sandbox_id = listed_sandbox.sandbox_id if hasattr(listed_sandbox, "sandbox_id") else str(listed_sandbox)
+
+            state = SandboxState(sandbox_id=sandbox_id, workflow_type=self.config.workflow_type)
+            self.sandbox_states[sandbox_id] = state
+
+            logger.info(f"\n[Sandbox{sandbox_id}] Connecting to E2B:{e2b_sandbox_id}...")
+
+            try:
+                # Connect to existing sandbox
+                sbx = Sandbox.connect(e2b_sandbox_id)
+                state.sandbox_obj = sbx
+                state.creation_metrics.status = SandboxStatus.CREATED
+                logger.info(f"[Sandbox{sandbox_id}] Connected successfully")
+
+                # Check sandbox readiness
+                ready_result = self._check_ready(state)
+                if ready_result["success"]:
+                    state.creation_metrics.status = SandboxStatus.PORT_READY
+                    state.creation_metrics.port_wait_elapsed = ready_result["wait_elapsed"]
+                    logger.info(f"[Sandbox{sandbox_id}] Ready in {ready_result['wait_elapsed']:.1f}s")
+                else:
+                    state.creation_metrics.status = SandboxStatus.PORT_FAILED
+                    state.creation_metrics.port_check_error = ready_result["error"]
+                    logger.warning(f"[Sandbox{sandbox_id}] Ready check failed: {ready_result['error'][:50]}")
+
+            except Exception as e:
+                state.creation_metrics.status = SandboxStatus.FAILED
+                state.creation_metrics.error_msg = str(e)
+                logger.error(f"[Sandbox{sandbox_id}] Connect failed: {str(e)[:80]}")
+
+        return self.sandbox_states
+
+    def detect_from_file(self, ids_file: str) -> Dict[int, SandboxState]:
+        """Detect sandboxes from ID file with matching
+
+        Read target IDs from file, get running sandboxes via Sandbox.list(),
+        match intersection, connect and check ports.
+
+        Args:
+            ids_file: Path to file containing sandbox IDs (one per line)
+
+        Returns:
+            Dict of connected sandbox states {sandbox_id: SandboxState}
+        """
+        logger.info(f"\n{'=' * 60}")
+        logger.info("Detecting Sandboxes from ID File")
+        logger.info(f"{'=' * 60}")
+        logger.info(f"  ID file: {ids_file}")
+
+        # 1. Read target IDs from file
+        if not os.path.exists(ids_file):
+            raise FileNotFoundError(f"Sandbox IDs file not found: {ids_file}")
+
+        target_ids = set()
+        with open(ids_file) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    target_ids.add(line)
+
+        if not target_ids:
+            logger.warning(f"  No IDs found in {ids_file}")
+            return {}
+
+        logger.info(f"  Target IDs from file: {len(target_ids)}")
+
+        # 2. Get all running sandboxes
+        try:
+            paginator = Sandbox.list()
+            running_list = []
+            while paginator.has_next:
+                sandboxes = paginator.next_items()
+                running_list.extend(sandboxes)
+            logger.info(f"  Running sandboxes: {len(running_list)}")
+        except Exception as e:
+            logger.error(f"  Failed to list sandboxes: {e}")
+            return {}
+
+        if not running_list:
+            logger.info("  No running sandboxes found")
+            return {}
+
+        # 3. Match: only keep sandboxes in both sets
+        matched = []
+        found_ids = set()
+
+        for listed_sandbox in running_list:
+            e2b_id = listed_sandbox.sandbox_id if hasattr(listed_sandbox, "sandbox_id") else str(listed_sandbox)
+            if e2b_id in target_ids:
+                matched.append(listed_sandbox)
+                found_ids.add(e2b_id)
+
+        # IDs not found (in file but not running)
+        not_found = target_ids - found_ids
+        if not_found:
+            logger.warning(f"  {len(not_found)} IDs not found or stopped")
+            for sid in list(not_found)[:5]:  # Show first 5
+                logger.info(f"    - {sid}")
+            if len(not_found) > 5:
+                logger.info(f"    ... and {len(not_found) - 5} more")
+
+        logger.info(f"  Matched sandboxes: {len(matched)}")
+
+        if not matched:
+            logger.info("  No matched sandboxes to benchmark")
+            return {}
+
+        # 4. Connect and check ports (same logic as detect_existing)
+        logger.info("  Processing matched sandboxes...")
+
+        for i, listed_sandbox in enumerate(matched):
+            sandbox_id = i + 1
+            e2b_sandbox_id = listed_sandbox.sandbox_id if hasattr(listed_sandbox, "sandbox_id") else str(listed_sandbox)
+
+            state = SandboxState(sandbox_id=sandbox_id, workflow_type=self.config.workflow_type)
+            self.sandbox_states[sandbox_id] = state
+
+            logger.info(f"\n[Sandbox{sandbox_id}] Connecting to E2B:{e2b_sandbox_id}...")
+
+            try:
+                # Connect to existing sandbox
+                sbx = Sandbox.connect(e2b_sandbox_id)
+                state.sandbox_obj = sbx
+                state.creation_metrics.status = SandboxStatus.CREATED
+                logger.info(f"[Sandbox{sandbox_id}] Connected successfully")
+
+                # Check sandbox readiness
+                ready_result = self._check_ready(state)
+                if ready_result["success"]:
+                    state.creation_metrics.status = SandboxStatus.PORT_READY
+                    state.creation_metrics.port_wait_elapsed = ready_result["wait_elapsed"]
+                    logger.info(f"[Sandbox{sandbox_id}] Ready in {ready_result['wait_elapsed']:.1f}s")
+                else:
+                    state.creation_metrics.status = SandboxStatus.PORT_FAILED
+                    state.creation_metrics.port_check_error = ready_result["error"]
+                    logger.warning(f"[Sandbox{sandbox_id}] Ready check failed: {ready_result['error'][:50]}")
+
+            except Exception as e:
+                state.creation_metrics.status = SandboxStatus.FAILED
+                state.creation_metrics.error_msg = str(e)
+                logger.error(f"[Sandbox{sandbox_id}] Connect failed: {str(e)[:80]}")
+
+        return self.sandbox_states
+
+    def _create_batched(self) -> Dict[int, SandboxState]:
+        """Batched sandbox creation"""
+        total = self.config.total_count
+        batch_size = self.config.create_batch_size
+        batch_count = self.config.create_batch_count
+
+        logger.info(f"\n{'=' * 60}")
+        logger.info("Batched Sandbox Creation")
+        logger.info(f"  Total: {total} sandboxes")
+        logger.info(f"  Batches: {batch_count} x {batch_size}")
+        logger.info(f"  Interval: {self.config.create_batch_interval}s")
+        logger.info(f"{'=' * 60}")
+
+        for batch_id in range(batch_count):
+            if self.stop_event.is_set():
+                logger.info("Stop event detected, aborting creation")
+                break
+
+            start_idx = batch_id * batch_size
+            end_idx = min(start_idx + batch_size, total)
+
+            logger.info(f"\n[Batch {batch_id}/{batch_count - 1}] Creating sandboxes {start_idx + 1}-{end_idx}")
+
+            # Concurrent creation of current batch
+            batch_states = self._create_batch_concurrent(batch_id, start_idx, end_idx)
+            self.sandbox_states.update(batch_states)
+
+            # Wait between batches (last batch no wait)
+            if batch_id < batch_count - 1 and self.config.create_batch_interval:
+                logger.info(f"Waiting {self.config.create_batch_interval}s before next batch...")
+                time.sleep(self.config.create_batch_interval)
+
+        return self.sandbox_states
+
+    def _create_batch_concurrent(self, batch_id: int, start: int, end: int) -> Dict[int, SandboxState]:
+        """Concurrent creation of one batch"""
+        states: Dict[int, SandboxState] = {}
+
+        with ThreadPoolExecutor(max_workers=end - start) as executor:
+            futures = {}
+
+            for i in range(start, end):
+                sandbox_id = i + 1
+                state = SandboxState(
+                    sandbox_id=sandbox_id,
+                    batch_id=batch_id,
+                    workflow_type=self.config.workflow_type,
+                )
+                self.sandbox_states[sandbox_id] = state
+                future = executor.submit(self._create_single, state)
+                futures[future] = sandbox_id
+
+            for future in as_completed(futures):
+                sandbox_id = futures[future]
+                state = self.sandbox_states[sandbox_id]
+
+                try:
+                    result = future.result()
+                    if result["success"]:
+                        # sandbox.create succeeded, start ready check
+                        logger.info(
+                            f"[Sandbox{sandbox_id}] Created in {result['create_elapsed']:.1f}s, checking ready..."
+                        )
+
+                        # Ready check
+                        ready_result = self._check_ready(state)
+                        if ready_result["success"]:
+                            state.creation_metrics.status = SandboxStatus.PORT_READY
+                            state.creation_metrics.port_wait_elapsed = ready_result["wait_elapsed"]
+                            state.creation_metrics.total_elapsed = (
+                                result["create_elapsed"] + ready_result["wait_elapsed"]
+                            )
+                            logger.info(
+                                f"[Sandbox{sandbox_id}] Ready in {ready_result['wait_elapsed']:.1f}s, total {state.creation_metrics.total_elapsed:.1f}s"
+                            )
+                        else:
+                            state.creation_metrics.status = SandboxStatus.PORT_FAILED
+                            state.creation_metrics.port_check_error = ready_result["error"]
+                            logger.warning(f"[Sandbox{sandbox_id}] Ready check failed: {ready_result['error'][:50]}")
+                    else:
+                        state.creation_metrics.status = SandboxStatus.FAILED
+                        state.creation_metrics.error_msg = result["error"]
+                        logger.error(f"[Sandbox{sandbox_id}] Failed: {result['error'][:80]}")
+                except Exception as e:
+                    state.creation_metrics.status = SandboxStatus.FAILED
+                    state.creation_metrics.error_msg = str(e)
+                    logger.error(f"[Sandbox{sandbox_id}] Exception: {str(e)[:80]}")
+
+        return {i + 1: self.sandbox_states[i + 1] for i in range(start, end)}
+
+    def _create_concurrent(self) -> Dict[int, SandboxState]:
+        """Full concurrent creation of all sandboxes"""
+        total = self.config.total_count
+
+        logger.info(f"\n{'=' * 60}")
+        logger.info("Concurrent Sandbox Creation")
+        logger.info(f"  Total: {total} sandboxes (full concurrent)")
+        logger.info(f"{'=' * 60}")
+
+        return self._create_batch_concurrent(batch_id=0, start=0, end=total)
+
+    def _create_single(self, state: SandboxState) -> Dict[str, any]:
+        """Create single sandbox
+
+        Key: Preserve sandbox handle in state.sandbox_obj
+        Record time when sandbox.create succeeds, no port waiting
+
+        Returns: {'success': bool, 'create_elapsed': float, 'error': str}
+        """
+        state.creation_metrics.status = SandboxStatus.CREATING
+        state.creation_metrics.submit_time = time.time()
+
+        try:
+            # Build envs dict with NUMA binding if configured.
+            # numa_bind is a normalized list of nodes (or None); round-robin
+            # across them by sandbox index so sandboxes spread evenly.
+            numa_node = numa_node_for_index(state.sandbox_id - 1, self.config.numa_bind)
+            envs = {}
+            if numa_node is not None:
+                envs["FC_BIND"] = str(numa_node)
+
+            sbx = Sandbox.create(self.config.template, timeout=self.config.create_timeout, envs=envs if envs else None)
+            # Preserve sandbox handle
+            state.sandbox_obj = sbx
+            state.creation_metrics.create_ready_time = time.time()
+            state.creation_metrics.create_elapsed = (
+                state.creation_metrics.create_ready_time - state.creation_metrics.submit_time
+            )
+            state.creation_metrics.status = SandboxStatus.CREATED
+
+            return {"success": True, "create_elapsed": state.creation_metrics.create_elapsed, "error": ""}
+        except Exception as e:
+            state.creation_metrics.create_ready_time = time.time()
+            return {"success": False, "create_elapsed": 0.0, "error": str(e)}
+
+    def _check_ready(self, state: SandboxState) -> Dict[str, any]:
+        """Check if sandbox is ready based on workflow type.
+
+        - Browser workflow: Check ports 18789 + 11436
+        - Coding workflow: Execute 'uname -a' command
+        - Document workflow: Execute document-bench-validate
+
+        Returns: {'success': bool, 'wait_elapsed': float, 'error': str}
+        """
+        if self.config.workflow_type == "coding":
+            return self._check_command_ready(state)
+        if self.config.workflow_type == "document":
+            return self._check_document_ready(state)
+        if self.config.workflow_type == "browser":
+            return self._check_ports(state)
+        raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
+
+    def _check_document_ready(self, state: SandboxState) -> Dict[str, any]:
+        """Validate the document runtime, retrying transient command API failures.
+
+        A completed command with a non-zero exit code is a semantic image
+        validation failure and is returned immediately.  Exceptions raised
+        before a command result is available can occur while a newly-created
+        sandbox command service is still coming online, so those are retried
+        within the shared ready-check deadline.
+        """
+        sbx = state.sandbox_obj
+        if not sbx:
+            return {"success": False, "wait_elapsed": 0.0, "error": "No sandbox handle"}
+        if self.stop_event.is_set():
+            return {"success": False, "wait_elapsed": 0.0, "error": "Stop event"}
+
+        started = time.monotonic()
+        last_error = "document command service did not become ready"
+        seen_errors = set()
+
+        while time.monotonic() - started < READY_CHECK_MAX_WAIT:
+            if self.stop_event.is_set():
+                return {
+                    "success": False,
+                    "wait_elapsed": time.monotonic() - started,
+                    "error": "Stop event",
+                }
+
+            remaining = READY_CHECK_MAX_WAIT - (time.monotonic() - started)
+            command_timeout = max(1, min(60, math.ceil(remaining)))
+            try:
+                result = sbx.commands.run(
+                    "document-bench-validate >/dev/null",
+                    timeout=command_timeout,
+                    user="root",
+                )
+            except Exception as exc:
+                last_error = str(exc)
+                error_key = (type(exc).__name__, last_error[:80])
+                if error_key not in seen_errors:
+                    seen_errors.add(error_key)
+                    logger.warning(
+                        f"[Sandbox{state.sandbox_id}] Document ready check error: "
+                        f"{type(exc).__name__}: {last_error[:120]}"
+                    )
+                remaining = READY_CHECK_MAX_WAIT - (time.monotonic() - started)
+                if remaining <= 0:
+                    break
+                if self.stop_event.wait(min(READY_CHECK_INTERVAL, remaining)):
+                    return {
+                        "success": False,
+                        "wait_elapsed": time.monotonic() - started,
+                        "error": "Stop event",
+                    }
+                continue
+
+            elapsed = time.monotonic() - started
+            if result.exit_code == 0:
+                state.creation_metrics.port_ready_time = time.time()
+                return {"success": True, "wait_elapsed": elapsed, "error": ""}
+
+            # The validator ran, so this is an image/asset failure rather than
+            # transient command-service startup. Retrying would only hide the
+            # actionable validator output and delay failure reporting.
+            detail = (getattr(result, "stderr", "") or getattr(result, "stdout", "") or "no output").strip()
+            return {
+                "success": False,
+                "wait_elapsed": elapsed,
+                "error": f"Document runtime validation failed: {detail[:200]}",
+            }
+
+        elapsed = time.monotonic() - started
+        return {
+            "success": False,
+            "wait_elapsed": elapsed,
+            "error": f"Timeout waiting for document runtime validation: {last_error[:200]}",
+        }
+
+    def _check_command_ready(self, state: SandboxState) -> Dict[str, any]:
+        """Check if sandbox is ready by executing a simple command.
+
+        For coding workflow, sandbox is ready when it can execute 'uname -a'.
+
+        Returns: {'success': bool, 'wait_elapsed': float, 'error': str}
+        """
+        sbx = state.sandbox_obj
+        if not sbx:
+            return {"success": False, "wait_elapsed": 0.0, "error": "No sandbox handle"}
+
+        start_time = time.time()
+        # Print each distinct error once so a stuck ready-check surfaces the real
+        # cause instead of looping silently for READY_CHECK_MAX_WAIT (300s).
+        seen_errors: set = set()
+
+        while time.time() - start_time < READY_CHECK_MAX_WAIT:
+            if self.stop_event.is_set():
+                return {"success": False, "wait_elapsed": time.time() - start_time, "error": "Stop event"}
+
+            try:
+                result = sbx.commands.run("uname -a", timeout=10, user="root")
+
+                if result.exit_code == 0 and result.stdout.strip():
+                    wait_elapsed = time.time() - start_time
+                    state.creation_metrics.port_ready_time = time.time()
+                    logger.info(
+                        f"[Sandbox{state.sandbox_id}] Command ready in {wait_elapsed:.1f}s: {result.stdout.strip()[:50]}"
+                    )
+                    return {"success": True, "wait_elapsed": wait_elapsed, "error": ""}
+            except Exception as e:
+                err_key = (type(e).__name__, str(e)[:80])
+                if err_key not in seen_errors:
+                    seen_errors.add(err_key)
+                    logger.warning(f"[Sandbox{state.sandbox_id}] uname check error: {type(e).__name__}: {str(e)[:120]}")
+
+            time.sleep(READY_CHECK_INTERVAL)
+
+        wait_elapsed = time.time() - start_time
+        return {"success": False, "wait_elapsed": wait_elapsed, "error": "Timeout waiting for command response"}
+
+    def _check_ports(self, state: SandboxState) -> Dict[str, any]:
+        """Check if sandbox ports are ready (browser workflow).
+
+        Check 18789 (openclaw-gateway) and 11436 (llama-server)
+
+        Returns: {'success': bool, 'wait_elapsed': float, 'error': str}
+        """
+        sbx = state.sandbox_obj
+        if not sbx:
+            return {"success": False, "wait_elapsed": 0.0, "error": "No sandbox handle"}
+
+        start_time = time.time()
+        ready_ports = set()
+
+        while time.time() - start_time < READY_CHECK_MAX_WAIT:
+            if self.stop_event.is_set():
+                return {"success": False, "wait_elapsed": time.time() - start_time, "error": "Stop event"}
+
+            for port, name in BROWSER_REQUIRED_PORTS:
+                if port in ready_ports:
+                    continue
+
+                try:
+                    cmd = f"ss -tlnp | grep ':{port}' || netstat -tlnp 2>/dev/null | grep ':{port}' || echo 'PORT_NOT_LISTENING'"
+                    result = sbx.commands.run(cmd, timeout=10, user="root")
+
+                    if result.exit_code == 0 and "PORT_NOT_LISTENING" not in result.stdout:
+                        ready_ports.add(port)
+                        logger.info(f"[Sandbox{state.sandbox_id}] Port {port} ({name}) is listening")
+                except Exception:
+                    pass  # Continue checking other ports
+
+            if len(ready_ports) == len(BROWSER_REQUIRED_PORTS):
+                wait_elapsed = time.time() - start_time
+                state.creation_metrics.port_ready_time = time.time()
+                return {"success": True, "wait_elapsed": wait_elapsed, "error": ""}
+
+            time.sleep(READY_CHECK_INTERVAL)
+
+        # Timeout, return missing ports info
+        missing_ports = [f"{p}:{n}" for p, n in BROWSER_REQUIRED_PORTS if p not in ready_ports]
+        wait_elapsed = time.time() - start_time
+        return {"success": False, "wait_elapsed": wait_elapsed, "error": f"Timeout waiting for ports: {missing_ports}"}
+
+    def check_alive(self, state: SandboxState) -> bool:
+        """Check if sandbox is alive"""
+        sbx = state.sandbox_obj
+        if not sbx or not state.is_alive:
+            return False
+        try:
+            result = sbx.commands.run("echo alive", timeout=10, user="root")
+            return result.exit_code == 0
+        except Exception:
+            return False
+
+    def kill_all(self) -> None:
+        """Kill all sandboxes"""
+        logger.info("\nKilling all sandboxes...")
+        killed_count = 0
+        for state in self.sandbox_states.values():
+            if state.sandbox_obj:
+                try:
+                    was_alive = state.is_alive
+                    state.sandbox_obj.kill()
+                    # Don't overwrite status - keep original (PORT_READY/FAILED etc) for stats
+                    # state.creation_metrics.status = SandboxStatus.KILLED
+                    state.is_alive = False
+                    # Preserve genuine runtime-offline states: cleanup must only
+                    # explain the transition when the sandbox was alive before
+                    # this intentional kill.
+                    if was_alive:
+                        state.stopped_by_cleanup = True
+                    killed_count += 1
+                except Exception as e:
+                    logger.warning(f"[Sandbox{state.sandbox_id}] Kill error: {str(e)[:50]}")
+        logger.info(f"Killed {killed_count} sandboxes")

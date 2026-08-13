@@ -14,10 +14,10 @@ from unittest.mock import Mock
 import pytest
 
 from env_provider import CommandResult, SandboxInstance, SandboxStatus
-from docker_bench.config import Config
+from env_provider.docker.config import Config
 from env_provider.docker import DockerProvider
-from docker_bench.schemas import ContainerState
-from docker_bench.schemas import ContainerStatus as DockerStatus
+from env_provider.docker.schemas import ContainerState
+from env_provider.docker.schemas import ContainerStatus as DockerStatus
 
 
 class _ExecResult:
@@ -337,13 +337,13 @@ class TestLazyConstruction:
         # testable without a running daemon.
         from unittest.mock import patch
 
-        from docker_bench.container_manager import ContainerManager
+        from env_provider.docker.manager import SandboxManager
 
         provider = DockerProvider(Config(), Event())
-        with patch("docker_bench.container_manager.docker.from_env") as from_env:
+        with patch("env_provider.docker.manager.docker.from_env") as from_env:
             from_env.return_value = Mock()
             mgr = provider.manager
-        assert isinstance(mgr, ContainerManager)
+        assert isinstance(mgr, SandboxManager)
         assert provider._manager is mgr  # cached
 
 

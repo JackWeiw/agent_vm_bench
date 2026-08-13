@@ -1,6 +1,6 @@
 """E2B :class:`EnvironmentProvider` adapter.
 
-Wraps :class:`e2b_bench.sandbox_manager.SandboxManager` behind the kernel's
+Wraps :class:`env_provider.e2b.manager.SandboxManager` behind the kernel's
 :class:`env_provider.EnvironmentProvider` contract. The manager owns the
 E2B SDK handles (``SandboxState.sandbox_obj``); the adapter translates those
 into host-agnostic :class:`SandboxInstance` objects and routes ``exec`` calls
@@ -27,27 +27,29 @@ from env_provider import (
     SandboxStatus,
 )
 
-from e2b_bench.config import Config, numa_node_for_index
-from e2b_bench.sandbox_manager import SandboxManager
-from e2b_bench.schemas import SandboxState
-from e2b_bench.schemas import SandboxStatus as E2BSandboxStatus
+from .config import Config, numa_node_for_index
+from .manager import SandboxManager
+from .schemas import SandboxState
+from .schemas import SandboxStatus as E2BSandboxStatus
 
 logger = logging.getLogger(__name__)
 
 # e2b SandboxStatus -> kernel SandboxStatus. e2b's PORT_READY / PORT_FAILED are
 # workflow-neutralised to READY / READY_FAILED: the kernel report renders the
 # workflow-specific label ("port" for browser, "command" for coding), so the
-# status name itself stays host-agnostic.
-_STATUS_MAP: dict[E2BSandboxStatus, SandboxStatus] = {
-    E2BSandboxStatus.PENDING: SandboxStatus.PENDING,
-    E2BSandboxStatus.CREATING: SandboxStatus.CREATING,
-    E2BSandboxStatus.CREATED: SandboxStatus.CREATED,
-    E2BSandboxStatus.PORT_READY: SandboxStatus.READY,
-    E2BSandboxStatus.ACTIVE: SandboxStatus.ACTIVE,
-    E2BSandboxStatus.FAILED: SandboxStatus.FAILED,
-    E2BSandboxStatus.PORT_FAILED: SandboxStatus.READY_FAILED,
-    E2BSandboxStatus.OFFLINE: SandboxStatus.OFFLINE,
-    E2BSandboxStatus.KILLED: SandboxStatus.KILLED,
+# status name itself stays host-agnostic. Keyed by the enum's value string
+# (not by member identity) so the lookup stays correct when the SandboxStatus
+# enum class is re-bound across the provider/state module boundary.
+_STATUS_MAP: dict[str, SandboxStatus] = {
+    E2BSandboxStatus.PENDING.value: SandboxStatus.PENDING,
+    E2BSandboxStatus.CREATING.value: SandboxStatus.CREATING,
+    E2BSandboxStatus.CREATED.value: SandboxStatus.CREATED,
+    E2BSandboxStatus.PORT_READY.value: SandboxStatus.READY,
+    E2BSandboxStatus.ACTIVE.value: SandboxStatus.ACTIVE,
+    E2BSandboxStatus.FAILED.value: SandboxStatus.FAILED,
+    E2BSandboxStatus.PORT_FAILED.value: SandboxStatus.READY_FAILED,
+    E2BSandboxStatus.OFFLINE.value: SandboxStatus.OFFLINE,
+    E2BSandboxStatus.KILLED.value: SandboxStatus.KILLED,
 }
 
 
@@ -165,7 +167,7 @@ class E2BProvider(EnvironmentProvider):
         sbx_id = ""
         if state.sandbox_obj is not None:
             sbx_id = str(getattr(state.sandbox_obj, "sandbox_id", "") or "")
-        status = _STATUS_MAP.get(cm.status, SandboxStatus.FAILED)
+        status = _STATUS_MAP.get(cm.status.value, SandboxStatus.FAILED)
         # Mirror the manager's own NUMA convention (0-based index into the
         # numa_bind list); informational only -- the real binding happened at
         # creation time inside the manager.

@@ -1,6 +1,6 @@
 """Docker :class:`EnvironmentProvider` adapter.
 
-Wraps :class:`docker_bench.container_manager.ContainerManager` behind the
+Wraps :class:`env_provider.docker.manager.SandboxManager` behind the
 kernel's :class:`env_provider.EnvironmentProvider` contract. The manager
 owns the Docker SDK handles (``ContainerState.docker_container``); the adapter
 translates those into host-agnostic :class:`SandboxInstance` objects and routes
@@ -36,27 +36,29 @@ from env_provider import (
     SandboxStatus,
 )
 
-from docker_bench.config import Config
-from docker_bench.container_manager import ContainerManager
-from docker_bench.schemas import ContainerState
-from docker_bench.schemas import ContainerStatus as DockerStatus
+from .config import Config
+from .manager import SandboxManager
+from .schemas import ContainerState
+from .schemas import ContainerStatus as DockerStatus
 
 logger = logging.getLogger(__name__)
 
 # docker ContainerStatus -> kernel SandboxStatus. docker's PORT_READY /
 # PORT_FAILED are workflow-neutralised to READY / READY_FAILED, mirroring the
 # e2b adapter: the kernel report renders the workflow-specific label ("port"),
-# so the status name itself stays host-agnostic.
-_STATUS_MAP: dict[DockerStatus, SandboxStatus] = {
-    DockerStatus.PENDING: SandboxStatus.PENDING,
-    DockerStatus.CREATING: SandboxStatus.CREATING,
-    DockerStatus.CREATED: SandboxStatus.CREATED,
-    DockerStatus.PORT_READY: SandboxStatus.READY,
-    DockerStatus.ACTIVE: SandboxStatus.ACTIVE,
-    DockerStatus.FAILED: SandboxStatus.FAILED,
-    DockerStatus.PORT_FAILED: SandboxStatus.READY_FAILED,
-    DockerStatus.OFFLINE: SandboxStatus.OFFLINE,
-    DockerStatus.KILLED: SandboxStatus.KILLED,
+# so the status name itself stays host-agnostic. Keyed by the enum's value
+# string (not by member identity) so the lookup stays correct when the
+# ContainerStatus enum class is re-bound across the provider/state boundary.
+_STATUS_MAP: dict[str, SandboxStatus] = {
+    DockerStatus.PENDING.value: SandboxStatus.PENDING,
+    DockerStatus.CREATING.value: SandboxStatus.CREATING,
+    DockerStatus.CREATED.value: SandboxStatus.CREATED,
+    DockerStatus.PORT_READY.value: SandboxStatus.READY,
+    DockerStatus.ACTIVE.value: SandboxStatus.ACTIVE,
+    DockerStatus.FAILED.value: SandboxStatus.FAILED,
+    DockerStatus.PORT_FAILED.value: SandboxStatus.READY_FAILED,
+    DockerStatus.OFFLINE.value: SandboxStatus.OFFLINE,
+    DockerStatus.KILLED.value: SandboxStatus.KILLED,
 }
 
 
@@ -70,10 +72,10 @@ def _to_text(stream: bytes | str | None) -> str:
 
 
 class DockerProvider(EnvironmentProvider):
-    """EnvironmentProvider backed by a Docker :class:`ContainerManager`.
+    """EnvironmentProvider backed by a Docker :class:`SandboxManager`.
 
     The adapter holds the docker :class:`Config` plus the stop event. The
-    :class:`ContainerManager` (and its Docker SDK client) is constructed lazily
+    :class:`SandboxManager` (and its Docker SDK client) is constructed lazily
     on first use -- so the kernel can run host-side preflight and the header
     print before any SDK client is built. The kernel never sees the manager or
     SDK types directly.
@@ -84,17 +86,17 @@ class DockerProvider(EnvironmentProvider):
     def __init__(self, config: Config, stop_event: threading.Event) -> None:
         self._config = config
         self._stop_event = stop_event
-        self._manager: ContainerManager | None = None
+        self._manager: SandboxManager | None = None
 
     @property
-    def manager(self) -> ContainerManager:
-        """The wrapped ContainerManager, constructed on first access.
+    def manager(self) -> SandboxManager:
+        """The wrapped SandboxManager, constructed on first access.
 
         Lazy so the kernel's prepare_env / header-print can run before any SDK
         client is built. Tests inject a mock by setting ``_manager`` directly.
         """
         if self._manager is None:
-            self._manager = ContainerManager(self._config, self._stop_event)
+            self._manager = SandboxManager(self._config, self._stop_event)
         return self._manager
 
     # ------------------------------------------------------------------ lifecycle
@@ -164,7 +166,7 @@ class DockerProvider(EnvironmentProvider):
 
     def _to_instance(self, state: ContainerState) -> SandboxInstance:
         cm = state.creation_metrics
-        status = _STATUS_MAP.get(cm.status, SandboxStatus.FAILED)
+        status = _STATUS_MAP.get(cm.status.value, SandboxStatus.FAILED)
         # docker's stable identifier is the container name; the numeric
         # container_id is the kernel index. NUMA binding is a host-level
         # concern docker does not apply.
@@ -245,7 +247,7 @@ class DockerProvider(EnvironmentProvider):
 def from_config(config: Config, stop_event: threading.Event) -> DockerProvider:
     """Build a :class:`DockerProvider` from an already-constructed docker Config.
 
-    The ContainerManager is constructed lazily on first use, so this is cheap
+    The SandboxManager is constructed lazily on first use, so this is cheap
     and does not talk to the Docker daemon yet.
     """
     return DockerProvider(config, stop_event)

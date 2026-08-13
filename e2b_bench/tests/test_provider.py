@@ -15,10 +15,10 @@ from unittest.mock import Mock
 import pytest
 
 from env_provider import CommandResult, SandboxInstance, SandboxStatus
-from e2b_bench.config import Config
+from env_provider.e2b.config import Config
 from env_provider.e2b import E2BProvider, kernel_config_from_e2b
-from e2b_bench.schemas import SandboxState
-from e2b_bench.schemas import SandboxStatus as E2BSandboxStatus
+from env_provider.e2b.schemas import SandboxState
+from env_provider.e2b.schemas import SandboxStatus as E2BSandboxStatus
 
 
 def _make_state(
@@ -288,7 +288,7 @@ class TestLazyConstruction:
         assert provider._manager is None
 
     def test_first_access_builds_manager(self):
-        from e2b_bench.sandbox_manager import SandboxManager
+        from env_provider.e2b.manager import SandboxManager
 
         provider = E2BProvider(Config(), Event())
         mgr = provider.manager
