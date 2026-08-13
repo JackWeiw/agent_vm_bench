@@ -110,7 +110,7 @@ class TestCreateAll:
         assert sorted(states) == [1, 2, 3]
         assert all(s.creation_metrics.status == BackendSandboxStatus.PORT_READY for s in states.values())
         assert states[1].sandbox_obj is not None
-        assert mgr.created == [1, 2, 3]
+        assert sorted(mgr.created) == [1, 2, 3]  # order is non-deterministic (concurrent)
 
     def test_batched_create_runs_in_batches(self):
         mgr = FakeManager(
