@@ -144,10 +144,7 @@ def _run_verify(
         # Each body is stamped from a pool template; offset by round so consecutive
         # rounds differ. Temp files are indexed so the i-th cat+run pair uses
         # /tmp/bench_verify_{i}.mjs. `&&` fail-fast: first non-zero exit stops the rest.
-        # The verify payload (templates + stamping helper) is single-sourced in
-        # bench_core.coding_payload; import it where it lives rather than via the
-        # e2b schemas re-export, which carries only the public DEFAULT_* names.
-        from bench_core.coding_payload import DEFAULT_VERIFY_TEMPLATES, _stamp_verify_body
+        from .schemas import DEFAULT_VERIFY_TEMPLATES, _stamp_verify_body
 
         n = max(1, config.coding_verify_repeat)
         pool = DEFAULT_VERIFY_TEMPLATES

@@ -26,15 +26,25 @@ from pathlib import Path
 from typing import Dict
 
 from .config import Config
+from .round_robin import RoundRobinTaskManager
+from .sandbox_manager import SandboxManager
 from .schemas import SandboxState, SandboxStatus
+from .stats_collector import StatsCollector
+from .task_runner import TaskManager
 from .utils import setup_logging
 
 logger = logging.getLogger(__name__)
 
-# Warmup wave size constant - max sandboxes per wave in warmup-only mode.
-# Used by the batch scheduler's wave path (the single-test kernel defers
-# >100-sandbox warmup to the scheduler); retained here as the shared definition.
+# Warmup wave size constant - max sandboxes per wave in warmup-only mode
 WARMUP_WAVE_SIZE = 100
+
+
+def _workflow_has_warmup(config: Config) -> bool:
+    if config.workflow_type == "browser":
+        return bool(config.warmup_urls)
+    if config.workflow_type in {"coding", "document"}:
+        return True
+    raise ValueError(f"Unsupported workflow_type: {config.workflow_type}")
 
 
 class SmapToolManager:
@@ -362,24 +372,463 @@ def append_sandbox_ids(config: Config, sandbox_states: Dict[int, SandboxState]) 
 
 
 def run_benchmark(config: Config) -> dict:
-    """Run an E2B sandbox benchmark via the host-agnostic bench-core kernel.
+    """Run E2B sandbox performance test
 
-    Thin entry adapter: builds an E2BProvider from the (CLI-merged) e2b Config,
-    translates it to a host-agnostic KernelConfig, and delegates to
-    bench_core.bench.run_benchmark. The kernel owns the full create -> warmup
-    -> benchmark -> report spine; this function is the host-specific glue.
+    Args:
+        config: Test configuration object
 
-    The wave-based >100-sandbox warmup path (create-in-batches during warmup)
-    is deferred to the batch scheduler -- a follow-on phase.
+    Returns:
+        {'report': str, 'filepath': str}
     """
+    # Validate all host-side Document inputs before constructing a manager or
+    # connecting to any Sandbox.
     config.validate()
-    from bench_core.bench import run_benchmark as kernel_run
-    from env_provider.e2b import from_config, kernel_config_from_e2b
+    if config.workflow_type == "document":
+        from .document_task_runner import preflight_document
 
-    kernel_config = kernel_config_from_e2b(config)
+        preflight_document(config)
+
+    # 1. Setup E2B environment variables
+    config.setup_e2b_env()
+
+    logger.info("=" * 80)
+    logger.info("E2B Sandbox Bench - Batch Performance Test")
+    logger.info("=" * 80)
+    logger.info(f"  Template: {config.template}")
+    logger.info(f"  Workflow:  {config.workflow_type}")
+
+    # Mode display
+    if config.detect_existing:
+        logger.info("  Mode:     Detect existing sandboxes")
+    elif config.create_only:
+        logger.info("  Mode:     Create-only (Phase 0)")
+    elif config.warmup_only:
+        logger.info("  Mode:     Warmup-only")
+    else:
+        logger.info("  Mode:     Full workflow")
+
+    logger.info(f"  Total:    {config.total_count} sandboxes")
+
+    # Workflow-specific display
+    if config.workflow_type == "coding":
+        logger.info(f"  Project:    {config.coding_project_dir}")
+        logger.info(f"  Language:   {config.coding_language}")
+        logger.info(f"  Verify cmd: {config.coding_verify_cmd}")
+        logger.info(f"  Source files: {len(config.coding_source_files)} files for round-robin")
+        logger.info(f"  Verify:     {'enabled' if not config.coding_skip_verify else 'skipped'}")
+    elif config.workflow_type == "document":
+        logger.info(f"  Case:       {config.document_case_kind.upper()}")
+        logger.info(f"  Workspace:  {config.document_workspace_dir}")
+        logger.info(
+            f"  Timeouts:   operation={config.document_operation_timeout}s, "
+            f"recalc={config.document_recalc_timeout}s, task={config.document_task_timeout}s"
+        )
+    elif config.workflow_type != "browser":
+        raise ValueError(f"Unsupported workflow_type: {config.workflow_type}")
+
+    # Batch config display
+    if config.create_batch_size:
+        logger.info(
+            f"  Create Batch: {config.create_batch_count} batches x {config.create_batch_size} (interval {config.create_batch_interval}s)"
+        )
+    else:
+        logger.info("  Create Batch: Full concurrent creation")
+
+    if not config.create_only:
+        if config.task_batch_size:
+            logger.info(
+                f"  Task Batch:   {config.task_batch_count} batches x {config.task_batch_size} (interval {config.task_batch_interval}s)"
+            )
+        else:
+            logger.info("  Task Batch:   Full concurrent start")
+
+        # Warmup config display
+        if config.warmup_urls:
+            logger.info(
+                f"  Warmup:       {len(config.warmup_urls)} pages x {config.warmup_loops} loops (delay {config.warmup_delay}s)"
+            )
+
+    logger.info(f"  Duration: {config.test_duration}s")
+
+    # Benchmark mode display (with mode-specific info)
+    if config.benchmark_mode == "round_robin":
+        logger.info(f"  Benchmark Mode: round_robin ({config.round_count} rounds x {config.round_interval}s)")
+        logger.info(f"  Sandboxes: All {config.total_count} sandboxes will be tested across rounds")
+    else:
+        # Benchmark percent display (only for fixed mode)
+        logger.info(f"  Benchmark Mode: fixed")
+        if config.benchmark_percent < 1.0:
+            benchmark_count = config.benchmark_count
+            logger.info(
+                f"  Benchmark: {benchmark_count}/{config.total_count} sandboxes ({config.benchmark_percent * 100:.0f}%)"
+            )
+
+    logger.info("=" * 80)
+
+    # Stop signal
     stop_event = threading.Event()
-    provider = from_config(config, stop_event)
-    return kernel_run(kernel_config, provider)
+
+    # 2. Create or detect sandboxes
+    sandbox_manager = SandboxManager(config, stop_event)
+
+    # Check if wave-based warmup will handle creation (skip Phase 1 in this case)
+    needs_wave_warmup = config.warmup_only and not config.detect_existing and config.total_count > WARMUP_WAVE_SIZE
+
+    if config.detect_existing:
+        if config.sandbox_ids_file:
+            logger.info(f"\n[Phase 1] Detecting sandboxes from ID file: {config.sandbox_ids_file}...")
+        else:
+            logger.info("\n[Phase 1] Detecting existing sandboxes...")
+        creation_start_time = time.time()
+        if config.sandbox_ids_file:
+            sandbox_states = sandbox_manager.detect_from_file(config.sandbox_ids_file)
+        else:
+            sandbox_states = sandbox_manager.detect_existing()
+        creation_end_time = time.time()
+    elif needs_wave_warmup:
+        # Wave-based warmup will create sandboxes in batches - skip Phase 1
+        logger.info(f"\n[Phase 1] Skipped - wave-based warmup will create {config.total_count} sandboxes in batches")
+        sandbox_states = {}
+        creation_start_time = time.time()
+        creation_end_time = time.time()
+    else:
+        logger.info("\n[Phase 1] Creating sandboxes...")
+        creation_start_time = time.time()
+        sandbox_states = sandbox_manager.create_all()
+        creation_end_time = time.time()
+
+    ready_count = sum(1 for s in sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY)
+
+    # Skip ready_count check for wave-based warmup (will create sandboxes in Phase 2)
+    if ready_count == 0 and not needs_wave_warmup:
+        logger.info("No sandboxes ready for testing, exiting.")
+        return {}
+
+    if ready_count > 0:
+        logger.info(f"\nSandboxes ready: {ready_count}")
+
+    # Create-only mode: exit after creation with detailed timing report
+    if config.create_only:
+        logger.info("\n[Phase 0 Complete] Create-only mode finished.")
+        logger.info(f"  Created: {len(sandbox_states)} sandboxes")
+        logger.info(f"  Ports Ready: {ready_count}")
+        logger.info("  Sandboxes left running for later use.")
+
+        # Generate creation timing report
+        from .utils import calc_percentiles
+
+        # Sandbox status statistics
+        ready_states = [s for s in sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY]
+        failed_states = [s for s in sandbox_states.values() if s.creation_metrics.status == SandboxStatus.FAILED]
+        port_failed_states = [
+            s for s in sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_FAILED
+        ]
+
+        logger.info("\n" + "=" * 70)
+        logger.info("Creation Timing Report")
+        logger.info("=" * 70)
+
+        # Total elapsed time for all sandboxes
+        total_elapsed = creation_end_time - creation_start_time
+        logger.info("\n[Overall Creation Time]")
+        logger.info(f"  Total Wall Clock Time: {total_elapsed:.1f}s")
+        logger.info("  (From first sandbox creation start to last sandbox port ready)")
+        logger.info(f"  Throughput: {len(sandbox_states) / total_elapsed:.2f} sandboxes/sec")
+
+        logger.info("\n[Sandbox Status]")
+        logger.info(
+            f"  Created (API):       {len([s for s in sandbox_states.values() if s.creation_metrics.status not in (SandboxStatus.PENDING, SandboxStatus.CREATING)])} / {len(sandbox_states)}"
+        )
+        logger.info(f"  Ports Ready:         {len(ready_states)} / {len(sandbox_states)}")
+        logger.info(f"  Create Failed:       {len(failed_states)}")
+        logger.info(f"  Port Check Failed:   {len(port_failed_states)}")
+        if failed_states:
+            logger.info(f"  Create Failed IDs:   {[s.sandbox_id for s in failed_states[:10]]}")
+        if port_failed_states:
+            logger.info(f"  Port Failed IDs:     {[s.sandbox_id for s in port_failed_states[:10]]}")
+
+        # sandbox.create performance statistics
+        create_times = [
+            s.creation_metrics.create_elapsed
+            for s in sandbox_states.values()
+            if s.creation_metrics.create_elapsed > 0
+            and s.creation_metrics.status not in (SandboxStatus.FAILED, SandboxStatus.PENDING, SandboxStatus.CREATING)
+        ]
+        if create_times:
+            stats = calc_percentiles(create_times)
+            logger.info("\n[Sandbox.create Performance]")
+            logger.info("  (sandbox.create API call time, excluding port wait)")
+            logger.info(f"  Min:  {stats['min']:.1f}s")
+            logger.info(f"  Max:  {stats['max']:.1f}s")
+            logger.info(f"  Avg:  {stats['avg']:.1f}s")
+            logger.info(f"  P50:  {stats['p50']:.1f}s")
+            logger.info(f"  P95:  {stats['p95']:.1f}s")
+            logger.info(f"  P99:  {stats['p99']:.1f}s")
+
+        # Port wait performance statistics
+        port_wait_times = [
+            s.creation_metrics.port_wait_elapsed for s in ready_states if s.creation_metrics.port_wait_elapsed > 0
+        ]
+        if port_wait_times:
+            stats = calc_percentiles(port_wait_times)
+            logger.info("\n[Port Check Wait Performance]")
+            logger.info("  (Waiting for 18789 openclaw-gateway + 11436 llama-server ports)")
+            logger.info(f"  Min:  {stats['min']:.1f}s")
+            logger.info(f"  Max:  {stats['max']:.1f}s")
+            logger.info(f"  Avg:  {stats['avg']:.1f}s")
+            logger.info(f"  P50:  {stats['p50']:.1f}s")
+            logger.info(f"  P95:  {stats['p95']:.1f}s")
+            logger.info(f"  P99:  {stats['p99']:.1f}s")
+
+        # Total startup time (create + port_wait)
+        total_times = [s.creation_metrics.total_elapsed for s in ready_states if s.creation_metrics.total_elapsed > 0]
+        if total_times:
+            stats = calc_percentiles(total_times)
+            logger.info("\n[Total Startup Performance]")
+            logger.info("  (sandbox.create + port wait)")
+            logger.info(f"  Min:  {stats['min']:.1f}s")
+            logger.info(f"  Max:  {stats['max']:.1f}s")
+            logger.info(f"  Avg:  {stats['avg']:.1f}s")
+            logger.info(f"  P50:  {stats['p50']:.1f}s")
+            logger.info(f"  P95:  {stats['p95']:.1f}s")
+            logger.info(f"  P99:  {stats['p99']:.1f}s")
+
+        logger.info("\n" + "=" * 70)
+
+        # Save sandbox IDs to file if configured
+        if config.sandbox_ids_file:
+            successful_ids = [
+                s.sandbox_obj.sandbox_id
+                for s in sandbox_states.values()
+                if s.creation_metrics.status == SandboxStatus.PORT_READY and s.sandbox_obj is not None
+            ]
+            if successful_ids:
+                try:
+                    with open(config.sandbox_ids_file, "w") as f:
+                        for sid in successful_ids:
+                            f.write(f"{sid}\n")
+                    logger.info(f"\nSaved {len(successful_ids)} sandbox IDs to: {config.sandbox_ids_file}")
+                except OSError as e:
+                    logger.error(f"\nFailed to save sandbox IDs: {e}")
+            else:
+                logger.warning(f"\nNo successful sandboxes to save to {config.sandbox_ids_file}")
+
+        return {"report": f"Create-only: {ready_count}/{len(sandbox_states)} sandboxes ready", "filepath": None}
+
+    # 3. Warmup phase (only if warmup-only mode)
+    # Benchmark phase skips warmup - assumes sandboxes already warmed up
+    task_manager = TaskManager(config, sandbox_states, stop_event)
+
+    if config.warmup_only and _workflow_has_warmup(config):
+        logger.info("\n[Phase 2] Running warmup phase...")
+
+        # Check if wave-based warmup is needed
+        if config.total_count <= WARMUP_WAVE_SIZE:
+            # Single wave: existing logic
+            warmup_start = time.time()
+            task_manager.start_warmup()
+            completed, failed = task_manager.wait_warmup(timeout=300)
+            warmup_duration = time.time() - warmup_start
+
+            logger.info(
+                f"\nWarmup completed: {completed} sandboxes | {failed} failed | duration {warmup_duration:.1f}s"
+            )
+            logger.info("\n[Phase 2 Complete] Warmup-only mode finished.")
+            logger.info(f"  Warmup completed: {completed}/{ready_count}")
+            logger.info("  Sandboxes left running for later benchmark.")
+
+            # Append sandbox IDs to file
+            append_sandbox_ids(config, sandbox_states)
+        else:
+            # Multiple waves: warmup in batches of 100
+            # Behavior depends on --detect mode:
+            # - With --detect: use already-detected sandboxes, split into waves for warmup
+            # - Without --detect: create new sandboxes in each wave (then warmup)
+            all_sandbox_states = {}
+
+            if config.detect_existing:
+                # Use already-detected sandboxes, split into waves for warmup
+                ready_states = [
+                    s for s in sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY
+                ]
+                total_detected = len(ready_states)
+                total_waves = (total_detected + WARMUP_WAVE_SIZE - 1) // WARMUP_WAVE_SIZE
+
+                logger.info(f"  Wave-based warmup: {total_detected} detected sandboxes in {total_waves} waves")
+
+                for wave_id in range(total_waves):
+                    start_idx = wave_id * WARMUP_WAVE_SIZE
+                    end_idx = min(start_idx + WARMUP_WAVE_SIZE, total_detected)
+                    wave_states_list = ready_states[start_idx:end_idx]
+
+                    logger.info(f"\n[Wave {wave_id + 1}/{total_waves}] Warming up {len(wave_states_list)} sandboxes...")
+
+                    # Create wave_states dict for TaskManager
+                    wave_states = {s.sandbox_id: s for s in wave_states_list}
+
+                    # Warmup current wave
+                    if config.warmup_urls:
+                        wave_config = Config(**{k: v for k, v in config.__dict__.items()})
+                        wave_config.total_count = len(wave_states_list)
+                        wave_task_manager = TaskManager(wave_config, wave_states, stop_event)
+                        wave_task_manager.start_warmup()
+                        completed, failed = wave_task_manager.wait_warmup(timeout=300)
+                        logger.info(f"[Wave {wave_id + 1}] Warmup: {completed} completed, {failed} failed")
+
+                    # Update all_sandbox_states
+                    for state in wave_states_list:
+                        all_sandbox_states[state.sandbox_id] = state
+
+                    # Append sandbox IDs after each wave
+                    append_sandbox_ids(config, wave_states)
+
+            else:
+                # Create new sandboxes in each wave
+                remaining = config.total_count
+                wave_id = 0
+                total_waves = (config.total_count + WARMUP_WAVE_SIZE - 1) // WARMUP_WAVE_SIZE
+
+                logger.info(f"  Wave-based warmup: {config.total_count} sandboxes in {total_waves} waves")
+
+                while remaining > 0:
+                    current_wave_size = min(WARMUP_WAVE_SIZE, remaining)
+
+                    logger.info(f"\n[Wave {wave_id + 1}/{total_waves}] Creating {current_wave_size} sandboxes...")
+
+                    # Create wave config with current wave size
+                    wave_config = Config(
+                        **{k: v for k, v in config.__dict__.items()},
+                    )
+                    wave_config.total_count = current_wave_size
+
+                    # Create wave sandbox manager
+                    wave_manager = SandboxManager(wave_config, stop_event)
+                    wave_states = wave_manager.create_all()
+
+                    wave_ready_count = sum(
+                        1 for s in wave_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY
+                    )
+
+                    if wave_ready_count == 0:
+                        logger.error(f"[Wave {wave_id + 1}] No sandboxes ready, stopping")
+                        break
+
+                    # Update sandbox IDs for all states
+                    for sid, state in wave_states.items():
+                        # Re-index to global namespace
+                        state.sandbox_id = wave_id * WARMUP_WAVE_SIZE + sid
+                        all_sandbox_states[state.sandbox_id] = state
+
+                    # Warmup current wave
+                    if config.warmup_urls:
+                        wave_task_manager = TaskManager(wave_config, wave_states, stop_event)
+                        wave_task_manager.start_warmup()
+                        completed, failed = wave_task_manager.wait_warmup(timeout=300)
+                        logger.info(f"[Wave {wave_id + 1}] Warmup: {completed} completed, {failed} failed")
+
+                    # Append sandbox IDs after each wave
+                    append_sandbox_ids(config, wave_states)
+
+                    remaining -= current_wave_size
+                    wave_id += 1
+
+            total_completed = sum(1 for s in all_sandbox_states.values() if s.warmup_done)
+            logger.info(f"\n[Phase 2 Complete] Warmup-only mode finished.")
+            logger.info(f"  Total warmed up: {total_completed}/{len(all_sandbox_states)}")
+            logger.info("  Sandboxes left running for later benchmark.")
+
+        return {"report": f"Warmup-only mode completed", "filepath": None}
+
+    # 4. Benchmark phase (no warmup, just benchmark)
+    # Mark all sandboxes as warmup_done so they can start benchmark immediately
+    if not config.warmup_only:
+        # If warmup_urls is configured but not warmup-only, assume sandboxes need warmup_done
+        # For benchmark phase, mark all ready sandboxes as warmup_done (skip warmup)
+        for state in sandbox_states.values():
+            if state.creation_metrics.status == SandboxStatus.PORT_READY:
+                state.warmup_done = True
+
+    # 5. Start statistics collection
+    logger.info("\n[Phase 3] Starting stats collector...")
+    stats_collector = StatsCollector(config, sandbox_states)
+    stats_collector.start()
+
+    # 6. Start task execution (with batch control and benchmark_percent)
+    if config.benchmark_mode == "round_robin":
+        # Round-robin mode: rotate sandbox groups across rounds
+        benchmark_count = max(1, int(ready_count * config.benchmark_percent))
+        workflow_label = config.workflow_type.capitalize()
+        logger.info(f"\n[Phase 4] Starting round-robin {workflow_label} tasks...")
+        logger.info(f"  Mode: round_robin")
+        logger.info(f"  Round size: {config.round_size} sandboxes per round")
+        if config.round_count:
+            logger.info(f"  Max rounds: {config.round_count} (stops when round_count or duration reached)")
+        else:
+            logger.info(f"  Max rounds: unlimited (stops when duration={config.test_duration}s reached)")
+        logger.info(f"  Duration limit: {config.test_duration}s")
+        logger.info(f"  Interval: {config.round_interval}s per round")
+        logger.info(f"  Total sandboxes: {ready_count}")
+
+        round_robin_manager = RoundRobinTaskManager(config, sandbox_states, stop_event, stats_collector)
+        try:
+            round_robin_manager.run()
+        except Exception:
+            stop_event.set()
+            stats_collector.stop()
+            if not config.detect_existing:
+                sandbox_manager.kill_all()
+            raise
+    else:
+        # Fixed mode (original behavior)
+        benchmark_count = max(1, int(ready_count * config.benchmark_percent))
+        workflow_label = config.workflow_type.capitalize()
+        if config.benchmark_percent < 1.0:
+            logger.info(
+                f"\n[Phase 4] Starting {workflow_label} tasks on {benchmark_count}/{ready_count} sandboxes ({config.benchmark_percent * 100:.0f}%)..."
+            )
+        else:
+            logger.info(f"\n[Phase 4] Starting {workflow_label} tasks...")
+        task_manager.start_all()
+
+        # 7. Run for specified duration
+        logger.info(f"\n[Phase 5] Running for {config.test_duration} seconds...")
+        try:
+            time.sleep(config.test_duration)
+        except KeyboardInterrupt:
+            logger.info("\nUser interrupt, stopping...")
+
+    # 8. Stop all components
+    logger.info("\n[Phase 6] Stopping...")
+    stop_event.set()
+    try:
+        task_manager.wait_all(timeout=5)
+    except Exception:
+        stats_collector.stop()
+        if not config.detect_existing:
+            sandbox_manager.kill_all()
+        raise
+    if config.workflow_type == "document":
+        stats_collector._take_snapshot()
+    stats_collector.stop()
+
+    # Only kill if we created the sandboxes (not in detect mode)
+    if not config.detect_existing:
+        sandbox_manager.kill_all()
+    else:
+        logger.info("Sandboxes left running (detect mode - not killing)")
+
+    time.sleep(0.5)  # Allow daemon threads to complete output
+
+    # 9. Generate and save report
+    report = stats_collector.generate_report()
+    # The report is the run deliverable; emit it at INFO so it always prints
+    # under the default level (setup_logging pins root at INFO).
+    logger.info("\n" + report)
+
+    filepath = stats_collector.save_report(report)
+    logger.info(f"\nReport saved to: {filepath}")
+
+    return {"report": report, "filepath": filepath}
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
