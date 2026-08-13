@@ -160,3 +160,85 @@ class KernelConfig:
             raise ValueError(f"round_size must be > 0, got {self.round_size}")
         if self.benchmark_mode not in {"fixed", "round_robin"}:
             raise ValueError(f"benchmark_mode must be fixed or round_robin, got {self.benchmark_mode}")
+
+    @classmethod
+    def from_raw(cls, raw: dict) -> KernelConfig:
+        """Build a ``KernelConfig`` from a raw YAML dict in the unified schema.
+
+        The single reader of the shared stress sections (``sandbox`` /
+        ``create_batch`` / ``task_batch`` / ``browser`` / ``test`` / ``report``
+        / ``workflow_type``). Lifts the nested->flat mapping the e2b and docker
+        provider Configs each used to carry a copy of, so the kernel reads the
+        YAML's stress params instead of falling back to defaults.
+
+        Backend blocks (``e2b:`` / ``docker:``) are ignored here -- the provider
+        reads them from the same raw dict. Missing sections fall back to the
+        dataclass defaults, so a backend-only YAML still loads.
+        """
+        sandbox = raw.get("sandbox") or {}
+        create_batch = raw.get("create_batch") or {}
+        task_batch = raw.get("task_batch") or {}
+        browser = raw.get("browser") or {}
+        test = raw.get("test") or {}
+        report = raw.get("report") or {}
+        coding = raw.get("coding") or {}
+        document = raw.get("document") or {}
+
+        # workflow_type: top-level wins, then the legacy workflow.type form.
+        wf = raw.get("workflow_type")
+        if wf is None:
+            wf = (raw.get("workflow") or {}).get("type", "browser")
+
+        return cls(
+            # --- sandbox control ---
+            total_count=sandbox.get("total_count", 100),
+            detect_existing=sandbox.get("detect_existing", False),
+            create_only=sandbox.get("create_only", False),
+            # --- batch control ---
+            create_batch_size=create_batch.get("size"),
+            create_batch_interval=create_batch.get("interval"),
+            task_batch_size=task_batch.get("size"),
+            task_batch_interval=task_batch.get("interval"),
+            # --- benchmark ---
+            benchmark_percent=test.get("benchmark_percent", 1.0),
+            benchmark_mode=test.get("benchmark_mode", "fixed"),
+            round_count=test.get("round_count"),
+            round_size=test.get("round_size", 5),
+            round_interval=test.get("round_interval", 5),
+            # --- workflow ---
+            workflow_type=wf,
+            # --- browser ---
+            browser_urls=browser.get("urls", ["http://192.168.110.10:8080/Weibo.html"]),
+            browser_timeout=browser.get("task_timeout", 200),
+            browser_interval_min=browser.get("interval_min", 0.5),
+            browser_interval_max=browser.get("interval_max", 3.0),
+            # --- warmup (lives under browser) ---
+            warmup_urls=browser.get("warmup_urls", []),
+            warmup_loops=browser.get("warmup_loops", 2),
+            warmup_delay=browser.get("warmup_delay", 10),
+            warmup_only=browser.get("warmup_only", False),
+            # --- coding ---
+            coding_project_dir=coding.get("project_dir", "/opt/coding-bench"),
+            coding_language=coding.get("language", "ts"),
+            coding_source_files=coding.get("source_files"),
+            coding_verify_cmd=coding.get("verify_cmd", "npx tsx /tmp/bench_verify.mjs"),
+            coding_verify_timeout=coding.get("verify_timeout", 120),
+            coding_skip_verify=coding.get("skip_verify", False),
+            coding_verify_repeat=coding.get("verify_repeat", 3),
+            coding_interval_min=coding.get("interval_min", 2.0),
+            coding_interval_max=coding.get("interval_max", 10.0),
+            # --- document ---
+            document_case_kind=document.get("case_kind", "xlsx"),
+            document_recipe_path=document.get("recipe_path"),
+            document_operation_timeout=document.get("operation_timeout", 900),
+            document_recalc_timeout=document.get("recalc_timeout", 600),
+            document_task_timeout=document.get("task_timeout", 1800),
+            document_interval_min=document.get("interval_min", 3.0),
+            document_interval_max=document.get("interval_max", 10.0),
+            # --- test run ---
+            test_duration=test.get("duration", 600),
+            stats_interval=test.get("stats_interval", 10),
+            # --- report ---
+            output_dir=report.get("output_dir", "results/kernel"),
+            filename_prefix=report.get("filename_prefix", "bench"),
+        )

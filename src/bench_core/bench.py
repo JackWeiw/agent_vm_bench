@@ -25,7 +25,6 @@ import argparse
 import logging
 import threading
 import time
-from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
@@ -298,19 +297,20 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
 
 
 def load_config(path: str | Path) -> tuple[KernelConfig, dict[str, Any]]:
-    """Load a :class:`KernelConfig` from a YAML file.
+    """Load a :class:`KernelConfig` from a YAML file (unified schema).
 
-    Returns the config plus the raw YAML dict; provider-specific keys are
-    passed through to the provider constructor (the kernel never reads them).
+    Reads the shared stress sections via :meth:`KernelConfig.from_raw`, so the
+    kernel picks up ``create_batch`` / ``test`` / ``browser`` / ``sandbox``
+    instead of running on defaults. Returns the config plus the raw YAML dict;
+    backend blocks (``e2b:`` / ``docker:``) are passed through for the provider
+    to read -- the kernel never reads them.
     """
     import yaml
 
     with open(path, encoding="utf-8") as handle:
         raw: dict[str, Any] = yaml.safe_load(handle) or {}
 
-    valid = {f.name for f in fields(KernelConfig)}
-    kwargs = {k: v for k, v in raw.items() if k in valid}
-    return KernelConfig(**kwargs), raw
+    return KernelConfig.from_raw(raw), raw
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
