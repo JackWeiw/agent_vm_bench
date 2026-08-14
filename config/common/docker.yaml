@@ -1,0 +1,68 @@
+# config/common/docker.yaml
+# Docker-only browser benchmark config — a smaller stress profile (10 containers,
+# single Weibo url, no warmup/round-robin) for quick docker-only runs.
+#
+# For the shared backend-agnostic profile (reused by BOTH e2b and docker via
+# --provider), see browser.yaml. This file is kept as a docker-specific alternate.
+#
+# Read by the src kernel (bench_core) + env_provider.docker adapter. Legacy
+# docker_bench keeps its own config/docker/docker_bench.yaml (old schema) and
+# is unaffected.
+#
+# One shape for every backend: the ONLY backend-specific part is the top-level
+# ``docker:`` block below. All shared stress sections (sandbox / create_batch /
+# task_batch / browser / test / report / workflow_type) load into KernelConfig
+# via KernelConfig.from_raw; the docker block loads into env_provider.docker.Config.
+#
+# Validate without Docker:
+#   bench-core --provider fake --config config/common/docker.yaml --create-only -n 1
+# Create-only dry run (needs Docker daemon):
+#   bench-core --provider docker --config config/common/docker.yaml --create-only
+
+workflow_type: browser
+
+# === backend block (docker-only; read by env_provider.docker.Config.from_raw) ===
+docker:
+  image: "ubuntu-openclaw-chromium:24.04-arm64"  # Docker image name
+  container_prefix: "oc-bench"             # Container name prefix (oc-bench-1, ...)
+  cpu_limit: 2.0                           # CPU limit per container (--cpus)
+  memory_limit: "2g"                       # Memory limit per container (-m)
+  create_timeout: 300                      # Container creation timeout (seconds)
+  # Readiness is a workflow concern (browser port probe here) owned by the
+  # kernel's ReadyChecker -- provider-transparent, so no port_check block.
+  # See src/env_provider/_ready.py.
+
+# === shared stress sections (all -> KernelConfig) ===
+sandbox:                            # shared sandbox control (was sandbox+container mixed)
+  total_count: 10                   # Total container count (creation mode)
+  detect_existing: false            # Detect existing containers instead of creating new ones
+  create_only: false                # Create containers only without running tasks (Phase 0)
+
+# Container creation batch control (optional, full concurrent if not configured).
+create_batch:
+  size: 5                           # Containers per batch during creation
+  interval: 10                      # Interval between creation batches (seconds)
+
+# Task execution batch control (optional, full concurrent if not configured).
+task_batch:
+  size: 10                          # Containers to start tasks per batch
+  interval: 5                       # Interval between task batches (seconds)
+
+# Browser task configuration
+browser:
+  urls:
+    - "http://192.168.110.10:8080/Weibo.html"
+  task_timeout: 200                 # Browser task timeout (seconds)
+  interval_min: 5                   # Task interval minimum (seconds)
+  interval_max: 15                  # Task interval maximum (seconds)
+
+# Test run configuration
+test:
+  duration: 160                     # Test duration (seconds)
+  stats_interval: 10                # Stats snapshot interval (seconds)
+  benchmark_percent: 1.0            # Fraction of containers for benchmark (1.0 = 100%, 0.5 = 50%)
+
+# Report configuration
+report:
+  output_dir: "results/docker"
+  filename_prefix: "docker_bench"

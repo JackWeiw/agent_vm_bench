@@ -1,0 +1,99 @@
+# config/common/coding-go.yaml
+# Unified coding (Go) benchmark config — backend-agnostic (E2B + Docker).
+#
+# Workflow type: coding — simulates AI coding agent memory pressure.
+#   Trace-faithful loop: find -> read -> edit -> verify (go run) -> git diff.
+#   Verification is a transient `go run` cold-compile (pre_verify_cmd runs
+#   `go clean -cache` so every verify is a real full compile, not a cached
+#   repeat). N sandboxes' verify peaks overlapping -> host memory overcommit.
+#
+# Project: gohugoio/hugo (github.com/gohugoio/hugo)
+#   - Real swe_bench_multilingual instance gohugoio__hugo-12768
+#     (GitHub Alert case-insensitivity). The first replacement pair mirrors the
+#     gold patch (adds (?i) to the alert regex) and carries its own verify_script
+#     (a standalone `package main` exercising case-insensitive alert matching).
+#
+# The replacement pairs are the language's CANONICAL content in
+# bench_core.coding_payload -- omit ``source_files`` and
+# KernelConfig.__post_init__ fills them from
+# CODING_LANGUAGE_DEFAULT_SOURCE_FILES["go"] (6 hugo pairs, the first with its
+# own verify_script), so this file stays minimal.
+#
+# Pick the backend with --provider; the SAME stress profile runs on either:
+#   bench-core --provider e2b    --config config/common/coding-go.yaml --create-only
+#   bench-core --provider docker --config config/common/coding-go.yaml --create-only
+#
+# Validate without any SDK (parses shared sections only):
+#   bench-core --provider fake --config config/common/coding-go.yaml --create-only -n 1
+#
+# Legacy e2b_bench keeps its own config/e2b/coding_go_bench.yaml (old schema); unaffected.
+
+workflow_type: coding
+
+# === backend blocks (one per provider; only the matching one is read) ===
+e2b:
+  template: "openclaw-coding-go-v1"  # E2B template (coding template with gohugoio/hugo)
+  create_timeout: 86400
+  numa_bind: 2
+  sandbox_ids_file: "sandboxs_go.txt"  # save/load sandbox IDs across runs (empty = disabled)
+  env:                              # E2B SDK env vars; key/token fall back to ~/.e2b/config.json
+    E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+    E2B_API_KEY: "your_e2b_api_key_here"
+    E2B_DOMAIN: "e2b.app"
+    E2B_API_URL: "http://localhost:3000"
+    E2B_HTTP_SSL: "false"
+
+docker:
+  # NOTE: no coding image ships today (only ubuntu-openclaw-chromium). Build one
+  # that seeds gohugoio/hugo + the go toolchain, then point this at it.
+  image: "ubuntu-openclaw-coding-go:24.04-arm64"
+  container_prefix: "oc-bench"
+  cpu_limit: 2.0
+  memory_limit: "2g"
+  create_timeout: 300
+  # Readiness is a workflow concern (coding runs the uname probe, not ports);
+  # it is provider-transparent, so there is no port_check block here.
+
+# === shared stress sections (all -> KernelConfig) ===
+sandbox:                            # shared sandbox control
+  total_count: 10                    # Total sandbox count (start small for manual testing)
+  detect_existing: false            # Detect existing sandboxes instead of creating new ones
+  create_only: false                # Create sandboxes only without running tasks (Phase 0)
+
+# Sandbox creation batch control
+create_batch:
+  size: 10                          # Sandboxes per batch during creation
+  interval: 3                       # Interval between creation batches (seconds)
+
+# Task execution batch control
+task_batch:
+  size: 5                           # Sandboxes to start tasks per batch
+  interval: 5                       # Interval between task batches (seconds)
+
+# Coding task configuration (host-agnostic; the sandbox runs it).
+# source_files omitted -> __post_init__ fills the 6 canonical hugo pairs.
+coding:
+  language: "go"                   # selects the go verify profile (go run, go clean -cache)
+  project_dir: "/opt/coding-bench"  # gohugoio/hugo project directory inside sandbox
+  verify_cmd: "go run /tmp/bench_verify.go"  # Verify run command (the profile's run_cmd)
+  verify_timeout: 120               # Verify command timeout (seconds)
+  verify_repeat: 1                  # go: single cold-compile per verify (the profile ignores repeat)
+  interval_min: 2.0                 # Min interval between tasks (fixed mode)
+  interval_max: 10.0                # Max interval between tasks (fixed mode)
+  skip_verify: false                # Skip the verify step (set true for edit-only testing)
+
+# Test run configuration
+test:
+  duration: 160                     # Test duration (seconds)
+  stats_interval: 10                # Stats snapshot interval (seconds)
+  benchmark_percent: 1.0            # Percentage of sandboxes for benchmark (1.0 = 100%)
+  # Round-robin mode configuration (recommended for coding benchmark).
+  benchmark_mode: "round_robin"     # "fixed" (default) or "round_robin"
+  round_size: 5                     # Sandboxes per round
+  round_count: 20                   # Max rounds (stops when reached or duration exceeded)
+  round_interval: 3                 # Round interval in seconds
+
+# Report configuration
+report:
+  output_dir: "results/coding/go"
+  filename_prefix: "coding_go_bench"

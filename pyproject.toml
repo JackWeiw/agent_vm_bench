@@ -48,13 +48,19 @@ dev = [
 
 [project.scripts]
 vm-monitor = "vm_monitor.cli:main"
+bench-core = "bench_core.bench:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["vm_monitor*", "vm_bench*", "e2b_bench*", "docker_bench*", "llm_replay*"]
+where = ["src", "."]
+include = ["vm_monitor*", "vm_bench*", "e2b_bench*", "docker_bench*", "llm_replay*", "bench_core*", "env_provider*"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
+# src-layout: put src/ on sys.path so tests in any package (e2b_bench,
+# docker_bench, ...) can ``import bench_core`` without an editable install.
+# src/bench_core/tests already resolve it via the first-parent-without-__init__
+# mechanism; this covers the cross-package test imports.
+pythonpath = ["src"]
 addopts = [
     "-ra",
     "-q",
@@ -62,6 +68,8 @@ addopts = [
     "--strict-config",
 ]
 testpaths = [
+    "src/bench_core/tests",
+    "src/env_provider/tests",
     "e2b_bench/tests",
     "vm_bench/tests",
     "docker_bench/tests",
@@ -77,7 +85,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["vm_monitor", "vm_bench", "e2b_bench", "docker_bench", "llm_replay"]
+source = ["vm_monitor", "vm_bench", "e2b_bench", "docker_bench", "llm_replay", "bench_core", "env_provider"]
 branch = true
 omit = [
     "*/tests/*",
@@ -153,7 +161,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["vm_monitor", "vm_bench", "e2b_bench", "docker_bench", "llm_replay"]
+known-first-party = ["vm_monitor", "vm_bench", "e2b_bench", "docker_bench", "llm_replay", "bench_core", "env_provider"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ARG", "S101"]

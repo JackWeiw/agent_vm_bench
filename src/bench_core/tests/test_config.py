@@ -1,0 +1,152 @@
+"""KernelConfig tests (host-agnostic core fields only)."""
+import pytest
+
+from bench_core.config import KernelConfig
+
+
+def test_defaults():
+    c = KernelConfig()
+    assert c.total_count == 100
+    assert c.detect_existing is False
+    assert c.create_only is False
+    assert c.benchmark_mode == "fixed"
+    assert c.workflow_type == "browser"
+    assert c.test_duration == 600
+
+
+def test_benchmark_count():
+    c = KernelConfig(total_count=100, benchmark_percent=0.5)
+    assert c.benchmark_count == 50
+
+
+def test_benchmark_count_floor_is_one():
+    c = KernelConfig(total_count=1, benchmark_percent=0.0)
+    assert c.benchmark_count == 1
+
+
+def test_validation_rejects_bad_workflow():
+    with pytest.raises(ValueError):
+        KernelConfig(workflow_type="bogus").validate()
+
+
+def test_validation_rejects_bad_round_size():
+    with pytest.raises(ValueError):
+        KernelConfig(round_size=0).validate()
+
+
+def test_create_batch_count_concurrent_when_unset():
+    assert KernelConfig().create_batch_count == 1
+
+
+def test_create_batch_count_rounds_up():
+    c = KernelConfig(total_count=10, create_batch_size=3)
+    assert c.create_batch_count == 4
+
+
+# --- KernelConfig.from_raw: the shared loader (unified YAML schema) ---
+# Mirrors the nested->flat mapping the e2b/docker Configs used to each carry.
+# This is what load_config calls, so the kernel actually reads create_batch /
+# test / browser / sandbox sections instead of running on defaults.
+
+
+def _unified_raw(**overrides):
+    """A raw dict in the unified schema shape (backend block omitted)."""
+    raw = {
+        "workflow_type": "browser",
+        "sandbox": {"total_count": 100, "detect_existing": False, "create_only": False},
+        "create_batch": {"size": 20, "interval": 3},
+        "task_batch": {"size": 10, "interval": 5},
+        "browser": {
+            "urls": ["http://x/page.html"],
+            "task_timeout": 200,
+            "interval_min": 5,
+            "interval_max": 15,
+            "warmup_urls": ["http://x/w.html"],
+            "warmup_loops": 1,
+            "warmup_delay": 5,
+            "warmup_only": False,
+        },
+        "test": {
+            "duration": 160,
+            "stats_interval": 10,
+            "benchmark_percent": 1.0,
+            "benchmark_mode": "round_robin",
+            "round_size": 5,
+            "round_count": 5,
+            "round_interval": 5,
+        },
+        "report": {"output_dir": "results/common", "filename_prefix": "bench"},
+    }
+    raw.update(overrides)
+    return raw
+
+
+def test_from_raw_reads_nested_sections():
+    c = KernelConfig.from_raw(_unified_raw())
+
+    # sandbox -> shared control
+    assert c.total_count == 100
+    assert c.detect_existing is False
+    assert c.create_only is False
+    # create_batch / task_batch
+    assert c.create_batch_size == 20
+    assert c.create_batch_interval == 3
+    assert c.task_batch_size == 10
+    assert c.task_batch_interval == 5
+    # browser (incl warmup)
+    assert c.browser_urls == ["http://x/page.html"]
+    assert c.browser_timeout == 200
+    assert c.warmup_urls == ["http://x/w.html"]
+    assert c.warmup_loops == 1
+    # test (incl round-robin)
+    assert c.test_duration == 160
+    assert c.stats_interval == 10
+    assert c.benchmark_mode == "round_robin"
+    assert c.round_size == 5
+    assert c.round_count == 5
+    assert c.round_interval == 5
+    # report
+    assert c.output_dir == "results/common"
+    assert c.filename_prefix == "bench"
+    assert c.workflow_type == "browser"
+
+
+def test_from_raw_missing_sections_use_defaults():
+    # An empty dict (no shared sections) must not raise; every field falls back
+    # to its KernelConfig default, so a backend-only YAML still loads.
+    c = KernelConfig.from_raw({})
+
+    assert c.total_count == 100  # default
+    assert c.create_batch_size is None
+    assert c.test_duration == 600
+    assert c.benchmark_mode == "fixed"
+    assert c.workflow_type == "browser"
+
+
+def test_from_raw_partial_sections_fill_gaps():
+    # Partial sections merge with defaults (only the keys present are applied).
+    raw = {"sandbox": {"total_count": 7}, "test": {"duration": 30}}
+
+    c = KernelConfig.from_raw(raw)
+
+    assert c.total_count == 7
+    assert c.test_duration == 30
+    assert c.detect_existing is False  # default (key absent from sandbox)
+    assert c.benchmark_mode == "fixed"  # default (key absent from test)
+
+
+def test_from_raw_workflow_type_legacy_top_level():
+    # workflow_type may appear top-level OR as workflow.type (legacy); both resolve.
+    assert KernelConfig.from_raw({"workflow_type": "coding"}).workflow_type == "coding"
+    assert KernelConfig.from_raw({"workflow": {"type": "document"}}).workflow_type == "document"
+
+
+def test_from_raw_ignores_backend_block():
+    # Backend sections (e2b: / docker:) are passed through untouched; the kernel
+    # never reads them, so from_raw must not choke on or copy them.
+    raw = _unified_raw(e2b={"template": "t", "numa_bind": 2}, docker={"image": "img"})
+
+    c = KernelConfig.from_raw(raw)
+
+    assert not hasattr(c, "template")
+    assert not hasattr(c, "docker_image")

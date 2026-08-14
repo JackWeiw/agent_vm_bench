@@ -1,0 +1,101 @@
+# config/common/coding-ts.yaml
+# Unified coding (TypeScript) benchmark config — backend-agnostic (E2B + Docker).
+#
+# Workflow type: coding — simulates AI coding agent memory pressure.
+#   Trace-faithful loop (verified against a captured openclaw vuejs/core
+#   trajectory): find -> read -> edit -> verify (npx tsx) -> git diff.
+#   No resident dev server, no production build — verification is a transient
+#   `npx tsx` process loading the TS module graph. N sandboxes' verify peaks
+#   overlapping -> host memory overcommit.
+#
+# Project: vuejs/core (github.com/vuejs/core)
+#   - 54k stars, Vue.js core framework (TypeScript monorepo, pnpm)
+#   - Real repo from the swe_bench_multilingual evaluation dataset
+#   - Toolchain: rollup + esbuild + tsx (the devDeps an agent touches)
+#
+# The replacement pairs (and the 6 baseParse verify templates) are the language's
+# CANONICAL content in bench_core.coding_payload -- omit ``source_files`` and
+# KernelConfig.__post_init__ fills them from CODING_LANGUAGE_DEFAULT_SOURCE_FILES,
+# so this file stays minimal (language + verify_cmd + verify_repeat).
+#
+# Pick the backend with --provider; the SAME stress profile runs on either:
+#   bench-core --provider e2b    --config config/common/coding-ts.yaml --create-only
+#   bench-core --provider docker --config config/common/coding-ts.yaml --create-only
+#
+# Validate without any SDK (parses shared sections only):
+#   bench-core --provider fake --config config/common/coding-ts.yaml --create-only -n 1
+#
+# Legacy e2b_bench keeps its own config/e2b/coding_bench.yaml (old schema); unaffected.
+
+workflow_type: coding
+
+# === backend blocks (one per provider; only the matching one is read) ===
+e2b:
+  template: "openclaw-coding-v1"    # E2B template (coding template with vuejs/core)
+  create_timeout: 86400             # Sandbox creation timeout (seconds)
+  # NUMA node(s) to bind sandboxes to. Single: 2; Multi (round-robin): [2, 3]; null/omit: none.
+  numa_bind: 2
+  sandbox_ids_file: "sandboxs_ts.txt"  # save/load sandbox IDs across runs (empty = disabled)
+  env:                              # E2B SDK env vars; key/token fall back to ~/.e2b/config.json
+    E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+    E2B_API_KEY: "your_e2b_api_key_here"
+    E2B_DOMAIN: "e2b.app"
+    E2B_API_URL: "http://localhost:3000"
+    E2B_HTTP_SSL: "false"
+
+docker:
+  # NOTE: no coding image ships today (only ubuntu-openclaw-chromium). Build one
+  # that seeds vuejs/core + the node/pnpm/tsx toolchain, then point this at it.
+  image: "ubuntu-openclaw-coding-ts:24.04-arm64"
+  container_prefix: "oc-bench"
+  cpu_limit: 2.0
+  memory_limit: "2g"
+  create_timeout: 300
+  # Readiness is a workflow concern (coding runs the uname probe, not ports);
+  # it is provider-transparent, so there is no port_check block here.
+
+# === shared stress sections (all -> KernelConfig) ===
+sandbox:                            # shared sandbox control
+  total_count: 10                    # Total sandbox count (start small for manual testing)
+  detect_existing: false            # Detect existing sandboxes instead of creating new ones
+  create_only: false                # Create sandboxes only without running tasks (Phase 0)
+
+# Sandbox creation batch control
+create_batch:
+  size: 10                          # Sandboxes per batch during creation
+  interval: 3                       # Interval between creation batches (seconds)
+
+# Task execution batch control
+task_batch:
+  size: 5                           # Sandboxes to start tasks per batch
+  interval: 5                       # Interval between task batches (seconds)
+
+# Coding task configuration (host-agnostic; the sandbox runs it).
+# source_files omitted -> __post_init__ fills the 6 canonical vuejs/core pairs.
+coding:
+  language: "ts"                    # selects the ts verify profile (npx tsx)
+  project_dir: "/opt/coding-bench"  # vuejs/core project directory inside sandbox
+  verify_cmd: "npx tsx /tmp/bench_verify.mjs"  # Verify run command (the profile's run_cmd)
+  verify_timeout: 120               # Verify command timeout (seconds)
+  verify_repeat: 3                  # ts only: N independent npx tsx processes per verify step
+                                     # (raises steady-state CPU ~28% -> ~50%; go/python stay N=1)
+  interval_min: 2.0                 # Min interval between tasks (fixed mode)
+  interval_max: 10.0                # Max interval between tasks (fixed mode)
+  skip_verify: false                # Skip the verify step (set true for edit-only testing)
+
+# Test run configuration
+test:
+  duration: 160                     # Test duration (seconds)
+  stats_interval: 10                # Stats snapshot interval (seconds)
+  benchmark_percent: 1.0            # Percentage of sandboxes for benchmark (1.0 = 100%)
+  # Round-robin mode configuration (recommended for coding benchmark).
+  # Each round applies a different replacement pair + builds + tests.
+  benchmark_mode: "round_robin"     # "fixed" (default) or "round_robin"
+  round_size: 5                     # Sandboxes per round
+  round_count: 20                   # Max rounds (stops when reached or duration exceeded)
+  round_interval: 3                 # Round interval in seconds
+
+# Report configuration
+report:
+  output_dir: "results/coding/ts"
+  filename_prefix: "coding_ts_bench"
