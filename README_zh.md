@@ -38,10 +38,12 @@
 ### 1. 安装
 
 ```bash
+python3 -m venv venv
+source venv/bin/activate
 python -m pip install -e .
 ```
 
-editable 安装后注册 `bench-core` 和 `python -m bench_core`，**无需 `PYTHONPATH=src`**。后端 SDK 按需安装（用到哪个装哪个；`fake` 不需要）：
+editable 安装后注册 `bench-core` 和 `python -m bench_core`，**无需 `PYTHONPATH=src`**，并自动拉取 `pyproject.toml` 声明的核心依赖（`psutil`、`paramiko`、`flask`、`PyYAML`、`pandas`、`openpyxl` 等）。后端 SDK 按需安装（用到哪个装哪个；`fake` 不需要）：
 
 ```bash
 pip install e2b       # --provider e2b

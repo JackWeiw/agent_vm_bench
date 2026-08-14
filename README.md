@@ -48,12 +48,15 @@ they share no code with the new kernel.
 ### 1. Install
 
 ```bash
+python3 -m venv venv
+source venv/bin/activate
 python -m pip install -e .
 ```
 
-Editable install registers `bench-core` and `python -m bench_core` — **no
-`PYTHONPATH=src` needed**. Backend SDKs are opt-in (install only the one you
-use; `fake` needs none):
+The editable install registers `bench-core` and `python -m bench_core` — **no
+`PYTHONPATH=src` needed** — and pulls the core deps (`psutil`, `paramiko`,
+`flask`, `PyYAML`, `pandas`, `openpyxl`, ...) declared in `pyproject.toml`.
+Backend SDKs are opt-in (install only the one you use; `fake` needs none):
 
 ```bash
 pip install e2b       # --provider e2b

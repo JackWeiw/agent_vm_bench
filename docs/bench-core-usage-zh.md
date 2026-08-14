@@ -21,8 +21,13 @@
 editable 安装后,`bench-core` 和 `python -m bench_core` 都可直接用,**无需 `PYTHONPATH=src`**:
 
 ```bash
+python3 -m venv venv
+source venv/bin/activate
 python -m pip install -e .
 ```
+
+`pip install -e .` 会按 `pyproject.toml` 自动拉取核心依赖(`psutil`、`paramiko`、
+`flask`、`PyYAML`、`pandas`、`openpyxl` 等),无需再单独 `pip install -r requirements.txt`。
 
 可选后端 SDK(用到哪个装哪个;不用可不装):
 
