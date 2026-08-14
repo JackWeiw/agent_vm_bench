@@ -185,62 +185,85 @@ def export_to_excel(
             df_summary = pd.DataFrame(summary_data)
             df_summary.to_excel(writer, sheet_name="Summary", index=False)
 
-            # ========== Sheet 2: NUMA CPU Stats ==========
-            numa_cpu_data = {"NUMA Node": [], "Avg CPU (%)": [], "Peak CPU (%)": []}
+            # ========== Sheet 2: NUMA Overview (CPU + Memory + Hugepage) ==========
+            # Consolidates the former NUMA_CPU, NUMA_Memory, and Hugepage_Per_NUMA
+            # sheets into one per-NUMA-node wide table. Those three were sparse
+            # standalone tables (3-4 columns each) with no downstream sheet-name
+            # consumers (batch_test_scheduler / metrics_extractor read the
+            # collection-tool sheets, not these), so joining them by NUMA node
+            # loses no information and cuts three sheets to one.
+            from collections import defaultdict
+
+            # Per-node CPU aggregates (Avg, Peak)
+            numa_cpu_summary = {}
             for node in sorted(monitor.numa_cpu_history.keys()):
                 hist = monitor.numa_cpu_history[node]
                 if hist:
-                    numa_cpu_data["NUMA Node"].append(node)
-                    numa_cpu_data["Avg CPU (%)"].append(round(sum(hist) / len(hist), 1))
-                    numa_cpu_data["Peak CPU (%)"].append(round(monitor.numa_cpu_peak[node], 1))
-            if numa_cpu_data["NUMA Node"]:
-                pd.DataFrame(numa_cpu_data).to_excel(writer, sheet_name="NUMA_CPU", index=False)
+                    numa_cpu_summary[node] = (
+                        round(sum(hist) / len(hist), 1),
+                        round(monitor.numa_cpu_peak[node], 1),
+                    )
 
-            # ========== Sheet 3: NUMA Memory Stats ==========
-            numa_mem_data = {"NUMA Node": [], "Avg Used (MB)": [], "Peak Used (MB)": [], "Avg Usage (%)": []}
-            numa_summary = {}
-            from collections import defaultdict
-
-            numa_summary = defaultdict(lambda: {"used": [], "usage": []})
+            # Per-node memory aggregates (Avg Used, Peak Used, Avg Usage)
+            numa_mem_summary = defaultdict(lambda: {"used": [], "usage": []})
             for entry in monitor.numa_memory_history:
                 for n in entry["nodes"]:
-                    numa_summary[n["node"]]["used"].append(n["used"])
-                    numa_summary[n["node"]]["usage"].append(n["usage"])
-            for node_id in sorted(numa_summary.keys()):
-                data = numa_summary[node_id]
-                numa_mem_data["NUMA Node"].append(node_id)
-                numa_mem_data["Avg Used (MB)"].append(
-                    round(sum(data["used"]) / len(data["used"]), 0) if data["used"] else 0
-                )
-                numa_mem_data["Peak Used (MB)"].append(round(max(data["used"]), 0) if data["used"] else 0)
-                numa_mem_data["Avg Usage (%)"].append(
-                    round(sum(data["usage"]) / len(data["usage"]), 1) if data["usage"] else 0
-                )
-            if numa_mem_data["NUMA Node"]:
-                pd.DataFrame(numa_mem_data).to_excel(writer, sheet_name="NUMA_Memory", index=False)
+                    numa_mem_summary[n["node"]]["used"].append(n["used"])
+                    numa_mem_summary[n["node"]]["usage"].append(n["usage"])
 
-            # ========== Sheet 4: Hugepage Per NUMA ==========
-            if monitor.hugepage_per_numa_history:
-                hp_data = {"NUMA Node": [], "Avg Total (MB)": [], "Avg Used (MB)": [], "Avg Usage (%)": []}
-                hp_summary = defaultdict(lambda: {"total": [], "used": [], "usage": []})
-                for entry in monitor.hugepage_per_numa_history:
-                    for node_id, data in entry["nodes"].items():
-                        hp_summary[node_id]["total"].append(data["total_mb"])
-                        hp_summary[node_id]["used"].append(data["used_mb"])
-                        hp_summary[node_id]["usage"].append(data["usage_pct"])
-                for node_id in sorted(hp_summary.keys()):
-                    data = hp_summary[node_id]
-                    hp_data["NUMA Node"].append(node_id)
-                    hp_data["Avg Total (MB)"].append(
-                        round(sum(data["total"]) / len(data["total"]), 0) if data["total"] else 0
+            # Per-node hugepage aggregates (Avg Total, Avg Used, Avg Usage)
+            hp_summary = defaultdict(lambda: {"total": [], "used": [], "usage": []})
+            for entry in monitor.hugepage_per_numa_history:
+                for node_id, data in entry["nodes"].items():
+                    hp_summary[node_id]["total"].append(data["total_mb"])
+                    hp_summary[node_id]["used"].append(data["used_mb"])
+                    hp_summary[node_id]["usage"].append(data["usage_pct"])
+
+            # Union of NUMA nodes across all three sources (node sets may differ)
+            all_numa_nodes = sorted(
+                set(numa_cpu_summary.keys()) | set(numa_mem_summary.keys()) | set(hp_summary.keys())
+            )
+
+            if all_numa_nodes:
+                overview_data = {
+                    "NUMA Node": [],
+                    "Avg CPU (%)": [],
+                    "Peak CPU (%)": [],
+                    "Avg Used (MB)": [],
+                    "Peak Used (MB)": [],
+                    "Avg Usage (%)": [],
+                    "HP Avg Total (MB)": [],
+                    "HP Avg Used (MB)": [],
+                    "HP Avg Usage (%)": [],
+                }
+                for node in all_numa_nodes:
+                    overview_data["NUMA Node"].append(node)
+
+                    cpu_avg, cpu_peak = numa_cpu_summary.get(node, (0, 0))
+                    overview_data["Avg CPU (%)"].append(cpu_avg)
+                    overview_data["Peak CPU (%)"].append(cpu_peak)
+
+                    mem = numa_mem_summary.get(node)
+                    overview_data["Avg Used (MB)"].append(
+                        round(sum(mem["used"]) / len(mem["used"]), 0) if mem and mem["used"] else 0
                     )
-                    hp_data["Avg Used (MB)"].append(
-                        round(sum(data["used"]) / len(data["used"]), 0) if data["used"] else 0
+                    overview_data["Peak Used (MB)"].append(round(max(mem["used"]), 0) if mem and mem["used"] else 0)
+                    overview_data["Avg Usage (%)"].append(
+                        round(sum(mem["usage"]) / len(mem["usage"]), 1) if mem and mem["usage"] else 0
                     )
-                    hp_data["Avg Usage (%)"].append(
-                        round(sum(data["usage"]) / len(data["usage"]), 1) if data["usage"] else 0
+
+                    hp = hp_summary.get(node)
+                    overview_data["HP Avg Total (MB)"].append(
+                        round(sum(hp["total"]) / len(hp["total"]), 0) if hp and hp["total"] else 0
                     )
-                pd.DataFrame(hp_data).to_excel(writer, sheet_name="Hugepage_Per_NUMA", index=False)
+                    overview_data["HP Avg Used (MB)"].append(
+                        round(sum(hp["used"]) / len(hp["used"]), 0) if hp and hp["used"] else 0
+                    )
+                    overview_data["HP Avg Usage (%)"].append(
+                        round(sum(hp["usage"]) / len(hp["usage"]), 1) if hp and hp["usage"] else 0
+                    )
+
+                pd.DataFrame(overview_data).to_excel(writer, sheet_name="NUMA_Overview", index=False)
 
             # ========== Sheet 5: VM Statistics ==========
             if vm_stats:
