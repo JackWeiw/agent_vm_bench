@@ -209,16 +209,86 @@ unset DOCUMENT_E2B_ACCESS_TOKEN DOCUMENT_E2B_API_KEY DOCUMENT_E2B_API_URL DOCUME
 ## vm_monitor package
 
 Unified monitoring framework for multiple VMM types (used by the legacy batch
-scheduler; not yet integrated into the bench-core kernel):
+scheduler; not yet integrated into the bench-core kernel). Installed by
+`pip install -e .` as the **`vm-monitor`** console script. Sampling reads
+`/proc` and `/sys`, so a real run needs a **Linux host** (Windows/macOS can
+import the package and run `--help`, but collectors return nothing).
 
 | VMM Type | Process Names | CLI Flag |
 |----------|---------------|----------|
 | QEMU | `qemu-kvm`, `qemu-system` | `--vmm qemu` (default) |
 | Firecracker | `firecracker` | `--vmm firecracker` |
 
+### CLI
+
+`vm-monitor` is the entry point (`vm-monitor = "vm_monitor.cli:main"` in
+`pyproject.toml`). There is **no `python -m vm_monitor`** entry — use the
+console script.
+
+```bash
+# Timer mode — monitor 60s at 2s cadence (default vmm=qemu)
+vm-monitor -t 60 -i 2 --vmm qemu
+
+# Stress-sync — wait for a lock file, then monitor until it disappears
+sudo "$(which vm-monitor)" --stress-file /tmp/bench_running.lock --vmm qemu
+
+# With parallel log collection (devkit/ksys/ub_watch/smap_bw)
+sudo "$(which vm-monitor)" -t 60 -i 2 --enable-capture --vmm qemu
+
+# Firecracker microVMs
+sudo "$(which vm-monitor)" --vmm firecracker -t 60 -i 2
+```
+
+> `sudo vm-monitor ...` may fail to find the script because `sudo` resets
+> `PATH`. Use `sudo "$(which vm-monitor)"` (or `sudo -E`) so the venv's
+> console script resolves. Reading `/proc`/`/sys`/`/dev/ublkb*` requires root.
+
+Key flags:
+
+| Flag | Purpose |
+|------|---------|
+| `--vmm {qemu,firecracker}` | VMM to monitor (default `qemu`) |
+| `-t, --time` | Duration in seconds (default 60) |
+| `-i, --interval` | Sampling interval in seconds (default 3) |
+| `--numa 0,1` | NUMA nodes to report (default `1`) |
+| `--disks sda,sdb,sdc` | Block devices for I/O deltas (default `sda,sdb,sdc`) |
+| `--stress-file` / `--stress-process` | Wait for a stress marker, then monitor |
+| `--enable-capture` | Run devkit/ksys/ub_watch/smap_bw in parallel |
+| `--no-svg` | Skip the dark-themed SVG time-curve reports |
+| `--log-dir` | Output directory (default `logs_<timestamp>/`) |
+
+### Outputs
+
+- `<prefix>.csv`, `summary.csv` — per-sample raw + summary stats.
+- `analysis_report.xlsx` — multi-sheet report (Summary, NUMA, VM stats,
+  DevKit_TopDown/Memory, KSys, UBWatch, SMAPBW, Getfre, Swap/NUMA/VM-total
+  timelines, **Disk_IO_Timeline**, **Host_Mem_Timeline**) with charts.
+- **SVG time curves** (`disk_io.svg`, `host_resources.svg`, `swap.svg`,
+  `numa.svg`, `vm_total.svg`) — dependency-free dark-themed `<polyline>`
+  charts with grid/legend/threshold lines. Skipped with `--no-svg` or when
+  the source history is empty.
+
+### Collected host metrics
+
+Collected natively in `VMMonitorBase.collect_sample()` (no external process):
+
+- **Disk I/O** — per-device read/write MB/s, busy %, inflight from
+  `/sys/block/<dev>/stat` deltas (512-byte sectors; busy capped at 100%).
+- **Host memory detail** — Cached+SReclaimable / Buffers / Dirty / Writeback
+  from `/proc/meminfo`.
+- **ublk** — device count via `glob /dev/ublkb*`.
+- Plus existing: per-VM CPU/memory/hugepage, host CPU/mem, per-NUMA
+  CPU/memory/hugepage, swap, VM-total-memory aggregation.
+
+### Python API
+
 ```python
 from vm_monitor import QEMUMonitor, FirecrackerMonitor
 
 QEMUMonitor().start_monitoring(duration_seconds=60, interval_seconds=3)
 FirecrackerMonitor().start_monitoring(duration_seconds=60, interval_seconds=3)
+
+# Render dark-themed SVG time-curve reports from any monitor instance
+from vm_monitor.svg_exporter import export_svg_reports
+export_svg_reports(QEMUMonitor(), "logs")
 ```

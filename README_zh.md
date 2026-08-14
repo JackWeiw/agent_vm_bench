@@ -183,16 +183,83 @@ unset DOCUMENT_E2B_ACCESS_TOKEN DOCUMENT_E2B_API_KEY DOCUMENT_E2B_API_URL DOCUME
 
 ## vm_monitor 包
 
-统一监控框架，支持多种 VMM 类型（被旧版 batch 调度器使用；尚未接入 bench-core 内核）：
+统一监控框架，支持多种 VMM 类型（被旧版 batch 调度器使用；尚未接入 bench-core 内核）。由
+`pip install -e .` 安装为 **`vm-monitor`** 控制台脚本。采样读 `/proc` 与 `/sys`，所以
+**真实采集需 Linux 主机**（Windows/macOS 可 import、可跑 `--help`，但采集器拿不到数据）。
 
 | VMM 类型 | 进程名 | CLI 参数 |
 |----------|--------|----------|
 | QEMU | `qemu-kvm`, `qemu-system` | `--vmm qemu`（默认） |
 | Firecracker | `firecracker` | `--vmm firecracker` |
 
+### 命令行
+
+入口是 `vm-monitor`（`pyproject.toml` 中 `vm-monitor = "vm_monitor.cli:main"`）。
+**没有 `python -m vm_monitor`** 入口——请用控制台脚本。
+
+```bash
+# 定时模式——监控 60 秒，2 秒采样一次（默认 vmm=qemu）
+vm-monitor -t 60 -i 2 --vmm qemu
+
+# 压力同步——等到锁文件出现再开始监控，消失后停止
+sudo "$(which vm-monitor)" --stress-file /tmp/bench_running.lock --vmm qemu
+
+# 带并行日志采集（devkit/ksys/ub_watch/smap_bw）
+sudo "$(which vm-monitor)" -t 60 -i 2 --enable-capture --vmm qemu
+
+# Firecracker 微型机
+sudo "$(which vm-monitor)" --vmm firecracker -t 60 -i 2
+```
+
+> `sudo vm-monitor ...` 可能因 `sudo` 重置 `PATH` 而找不到脚本。用
+> `sudo "$(which vm-monitor)"`（或 `sudo -E`）让 venv 里的脚本可被解析。读
+> `/proc`/`/sys`/`/dev/ublkb*` 需要 root。
+
+主要参数：
+
+| 参数 | 用途 |
+|------|------|
+| `--vmm {qemu,firecracker}` | 监控的 VMM（默认 `qemu`） |
+| `-t, --time` | 持续秒数（默认 60） |
+| `-i, --interval` | 采样间隔秒（默认 3） |
+| `--numa 0,1` | 报告的 NUMA 节点（默认 `1`） |
+| `--disks sda,sdb,sdc` | 采集 I/O 增量的块设备（默认 `sda,sdb,sdc`） |
+| `--stress-file` / `--stress-process` | 等待压力标记后再监控 |
+| `--enable-capture` | 并行运行 devkit/ksys/ub_watch/smap_bw |
+| `--no-svg` | 跳过深色主题 SVG 时间曲线报告 |
+| `--log-dir` | 输出目录（默认 `logs_<时间戳>/`） |
+
+### 产物
+
+- `<前缀>.csv`、`summary.csv`——逐采样原始数据 + 汇总统计。
+- `analysis_report.xlsx`——多 sheet 报告（Summary、NUMA、VM 统计、
+  DevKit_TopDown/Memory、KSys、UBWatch、SMAPBW、Getfre、Swap/NUMA/VM-total
+  时间线、**Disk_IO_Timeline**、**Host_Mem_Timeline**）附图表。
+- **SVG 时间曲线**（`disk_io.svg`、`host_resources.svg`、`swap.svg`、
+  `numa.svg`、`vm_total.svg`）——无外部依赖的深色 `<polyline>` 图，含
+  网格/图例/阈值线。加 `--no-svg` 或源历史为空时跳过。
+
+### 采集的宿主机指标
+
+全部在 `VMMonitorBase.collect_sample()` 内原生采集（无额外进程）：
+
+- **磁盘 I/O**——每设备读/写 MB/s、忙碌率、inflight，来自
+  `/sys/block/<dev>/stat` 增量（512 字节扇区；忙碌率封顶 100%）。
+- **宿主机内存明细**——Cached+SReclaimable / Buffers / Dirty / Writeback，
+  来自 `/proc/meminfo`。
+- **ublk**——设备数，`glob /dev/ublkb*`。
+- 另有既有指标：每 VM 的 CPU/内存/大页、宿主机 CPU/内存、每 NUMA 的
+  CPU/内存/大页、swap、VM 总内存聚合。
+
+### Python API
+
 ```python
 from vm_monitor import QEMUMonitor, FirecrackerMonitor
 
 QEMUMonitor().start_monitoring(duration_seconds=60, interval_seconds=3)
 FirecrackerMonitor().start_monitoring(duration_seconds=60, interval_seconds=3)
+
+# 从任意 monitor 实例渲染深色 SVG 时间曲线报告
+from vm_monitor.svg_exporter import export_svg_reports
+export_svg_reports(QEMUMonitor(), "logs")
 ```
