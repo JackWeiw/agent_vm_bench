@@ -20,7 +20,8 @@ here rather than in each backend's package:
    attrs.
 
 Readiness itself is delegated to :class:`env_provider._ready.ReadyChecker`,
-constructed by the base from the subclass's ``_exec_probe`` + ``_ready_config``.
+constructed by the base from the subclass's ``_exec_probe`` and the
+provider-transparent ``_ready_config`` (shared workflow constants).
 """
 from __future__ import annotations
 
@@ -33,7 +34,7 @@ from enum import Enum
 from threading import Event
 from typing import Any, Protocol
 
-from env_provider._ready import ReadyChecker
+from env_provider._ready import BROWSER_REQUIRED_PORTS, READY_INTERVAL, READY_MAX_WAIT, ReadyChecker
 
 logger = logging.getLogger(__name__)
 
@@ -96,9 +97,10 @@ class BaseSandboxManager(ABC):
     """Lifecycle template for a backend sandbox manager.
 
     Owns the workflow-agnostic create/detect/cleanup skeleton. A subclass
-    supplies the backend SDK seams (abstract methods) + a few class attrs. The
-    readiness check is delegated to a :class:`ReadyChecker` built from the
-    subclass's ``_exec_probe`` + ``_ready_config``.
+    supplies the backend SDK seams (abstract methods) + a few class attrs.
+    Readiness is delegated to a :class:`ReadyChecker` built from the subclass's
+    ``_exec_probe`` and the base's provider-transparent ``_ready_config``
+    (shared workflow constants -- no per-backend readiness knobs).
     """
 
     # State attribute name on the backend State (``sandbox_obj`` / ``docker_container``).
@@ -366,9 +368,17 @@ class BaseSandboxManager(ABC):
     def _exec_probe(self, handle: Any, cmd: str, timeout: int) -> tuple[int, str, str]:
         """Run a probe command in a sandbox handle -> (exit_code, stdout, stderr)."""
 
-    @abstractmethod
     def _ready_config(self) -> tuple[int, int, list[int]]:
-        """Ready-check tuning: (max_wait, interval, ports)."""
+        """Ready-check tuning: (max_wait, interval, ports).
+
+        Provider-transparent: readiness is a workflow concern (browser ports
+        / coding uname / document validate -- see :class:`ReadyChecker`), so the
+        tuning is the same shared constants for every backend. A backend with a
+        genuine reason to differ (e.g. a slow-to-boot image) may override, but
+        e2b and docker do not -- hence this lives on the base, not as an
+        abstract seam. ``ports`` are only consulted by the browser probe.
+        """
+        return (READY_MAX_WAIT, READY_INTERVAL, [p for p, _ in BROWSER_REQUIRED_PORTS])
 
     def _create_header_extras(self) -> list[str]:
         """Extra header lines for the create banner (docker: image/spec; e2b: none)."""

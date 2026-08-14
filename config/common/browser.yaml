@@ -39,12 +39,9 @@ docker:
   cpu_limit: 2.0                           # CPU limit per container (--cpus)
   memory_limit: "2g"                       # Memory limit per container (-m)
   create_timeout: 300                      # Container creation timeout (seconds)
-  # Port readiness check (openclaw-gateway + llama-server). Docker-specific:
-  # e2b has no port probe (the e2b SDK reports readiness directly).
-  port_check:
-    ports: [18789, 11436]                  # Ports to check
-    max_wait: 300                          # Max wait time for ports (seconds)
-    interval: 5                            # Port check interval (seconds)
+  # Readiness (browser port probe, coding uname, document validate) is a workflow
+  # concern owned by the kernel's ReadyChecker -- provider-transparent, so no
+  # port_check block here. See src/env_provider/_ready.py.
 
 # === shared stress sections (all -> KernelConfig) ===
 sandbox:                            # shared sandbox control (creation mode)

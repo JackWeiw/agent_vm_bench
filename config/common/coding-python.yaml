@@ -53,12 +53,8 @@ docker:
   cpu_limit: 2.0
   memory_limit: "2g"
   create_timeout: 300
-  # Coding readiness uses the uname probe (not ports); ports are listed for
-  # parity with the browser config but are unused here.
-  port_check:
-    ports: [18789, 11436]
-    max_wait: 300
-    interval: 5
+  # Readiness is a workflow concern (coding runs the uname probe, not ports);
+  # it is provider-transparent, so there is no port_check block here.
 
 # === shared stress sections (all -> KernelConfig) ===
 sandbox:                            # shared sandbox control

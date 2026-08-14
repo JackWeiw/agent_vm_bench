@@ -80,7 +80,6 @@ except ImportError:
 
 
 from env_provider._base import BaseSandboxManager, BackendSandboxStatus
-from env_provider._ready import BROWSER_REQUIRED_PORTS, READY_INTERVAL, READY_MAX_WAIT
 
 from .config import Config, numa_node_for_index
 from .schemas import SandboxState
@@ -93,8 +92,8 @@ class SandboxManager(BaseSandboxManager):
 
     Shared stress params (total_count, create_batch_*, workflow_type) are read
     from ``kernel_config``; backend knobs (template, create_timeout, numa_bind)
-    from ``e2b_config``. Readiness is delegated to :class:`ReadyChecker` (built
-    by the base from :meth:`_exec_probe` + :meth:`_ready_config`).
+    from ``e2b_config``. Readiness is delegated to :class:`ReadyChecker` via the
+    base (provider-transparent ``_ready_config`` -- no e2b readiness knobs).
     """
 
     _handle_attr = "sandbox_obj"
@@ -168,9 +167,6 @@ class SandboxManager(BaseSandboxManager):
     def _exec_probe(self, handle: Any, cmd: str, timeout: int) -> tuple[int, str, str]:
         result = handle.commands.run(cmd, user="root", timeout=timeout)
         return result.exit_code, result.stdout, result.stderr
-
-    def _ready_config(self) -> tuple[int, int, list[int]]:
-        return (READY_MAX_WAIT, READY_INTERVAL, [p for p, _ in BROWSER_REQUIRED_PORTS])
 
     # ----------------------------------------------------- e2b-specific methods
     def detect_from_file(self, ids_file: str) -> dict[int, SandboxState]:

@@ -39,11 +39,11 @@ class SandboxManager(BaseSandboxManager):
     """Container lifecycle: SDK seams over the shared lifecycle template.
 
     Shared stress params (total_count, create_batch_*) are read from
-    ``kernel_config``; backend knobs (image, prefix, resources, ports) from
-    ``docker_config``. Readiness is delegated to :class:`ReadyChecker` (built
-    by the base from :meth:`_exec_probe` + :meth:`_ready_config`); docker now
-    gets the full workflow-driven probe set (coding/document/browser), not just
-    the port check it had before.
+    ``kernel_config``; backend knobs (image, prefix, resources) from
+    ``docker_config``. Readiness is delegated to :class:`ReadyChecker` via the
+    base (provider-transparent ``_ready_config`` -- no docker readiness knobs);
+    docker now gets the full workflow-driven probe set (coding/document/browser),
+    not just the port check it had before.
     """
 
     _handle_attr = "docker_container"
@@ -137,9 +137,6 @@ class SandboxManager(BaseSandboxManager):
         output = result.output
         text = output.decode("utf-8", errors="ignore") if isinstance(output, bytes) else (output or "")
         return result.exit_code, text, ""
-
-    def _ready_config(self) -> tuple[int, int, list[int]]:
-        return (self.config.port_check_max_wait, self.config.port_check_interval, self.config.required_ports)
 
     def _create_header_extras(self) -> list[str]:
         return [
