@@ -12,6 +12,7 @@ OpenStack VM 内存超配场景下的性能测试框架，提供全面的性能�
 | [设计文档 (英文)](docs/design-en.md) | 英文版设计文档 |
 | [指标参考](docs/metrics-reference.md) | 50+ 指标详细说明 |
 | [使用指南](docs/usage-guide.md) | 详细工具使用与配置 |
+| [bench-core 使用指南](docs/bench-core-usage-zh.md) | **src 内核压测（推荐）：安装→配置→CLI→清理** |
 | [vm_bench 使用指南](docs/vm_bench-usage-guide-zh.md) | **模块化 vm_bench 包使用指南（推荐）** |
 | [vm_bench Usage (EN)](docs/vm_bench-usage-guide.md) | vm_bench module usage guide |
 | [E2B Bench 使用指南](docs/e2b-bench-usage-zh.md) | E2B 沙箱批量性能测试 |
@@ -72,6 +73,35 @@ bash download_page.sh
 cd web_content/en.wikipedia.org/wiki
 numactl --cpunodebind=2,3 --membind=2,3 python3 -m http.server 8080
 ```
+
+---
+
+## bench-core（src 内核，主机无关）
+
+`bench_core` + `env_provider` 是新的压测内核：通过 `EnvironmentProvider` 抽象驱动
+e2b / docker / 未来的 kata / agentenv，一份压测配置在任一后端上跑同一套压力曲线。
+与冻结的 legacy `e2b_bench/`、`docker_bench/` 并存，互不影响。
+
+```bash
+# editable 安装后无需 PYTHONPATH
+python -m pip install -e .
+
+# fake 烟测（无 SDK）
+bench-core --provider fake --config config/common/browser.yaml --create-only -n 1
+
+# 真实后端（e2b/docker，同一份配置）
+bench-core --provider e2b    --config config/common/coding-ts.yaml --create-only -n 2
+bench-core --provider docker --config config/common/browser.yaml   --create-only -n 2
+
+# 清理（list + 销毁现有沙箱）
+bench-core --provider e2b --config config/common/coding-ts.yaml --cleanup
+```
+
+阶段阶梯：`--create-only`（建，留）→ `--detect --warmup-only`（复用，预热）→
+`--detect --test-duration 30`（短压测 + report）→ `--cleanup`（收尾）。
+
+详见 [bench-core 使用指南](docs/bench-core-usage-zh.md)；架构原理见
+[设计文档](docs/superpowers/specs/2026-08-12-environment-provider-bench-core-design.md)。
 
 ---
 
