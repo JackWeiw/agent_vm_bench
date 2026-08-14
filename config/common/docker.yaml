@@ -1,5 +1,9 @@
 # config/common/docker.yaml
-# Unified browser benchmark config — Docker backend.
+# Docker-only browser benchmark config — a smaller stress profile (10 containers,
+# single Weibo url, no warmup/round-robin) for quick docker-only runs.
+#
+# For the shared backend-agnostic profile (reused by BOTH e2b and docker via
+# --provider), see browser.yaml. This file is kept as a docker-specific alternate.
 #
 # Read by the src kernel (bench_core) + env_provider.docker adapter. Legacy
 # docker_bench keeps its own config/docker/docker_bench.yaml (old schema) and
@@ -11,9 +15,9 @@
 # via KernelConfig.from_raw; the docker block loads into env_provider.docker.Config.
 #
 # Validate without Docker:
-#   PYTHONPATH=src python -m bench_core --provider fake --config config/common/docker.yaml
+#   bench-core --provider fake --config config/common/docker.yaml --create-only -n 1
 # Create-only dry run (needs Docker daemon):
-#   PYTHONPATH=src python -m bench_core --provider docker --config config/common/docker.yaml --create-only
+#   bench-core --provider docker --config config/common/docker.yaml --create-only
 
 workflow_type: browser
 

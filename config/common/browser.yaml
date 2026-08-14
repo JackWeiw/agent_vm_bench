@@ -1,22 +1,22 @@
 # config/common/browser.yaml
-# Unified browser benchmark config — E2B backend.
+# Unified browser benchmark config — backend-agnostic (E2B + Docker).
 #
-# Read by the src kernel (bench_core) + env_provider.e2b adapter. Legacy
-# e2b_bench keeps its own config/e2b/bench.yaml (old schema) and is unaffected.
+# Read by the src kernel (bench_core). Either backend block below loads into its
+# provider Config; the shared stress sections (sandbox / create_batch /
+# task_batch / browser / test / report / workflow_type) load into KernelConfig.
+# Pick the backend with --provider; the SAME stress profile runs on either:
 #
-# One shape for every backend: the ONLY backend-specific part is the top-level
-# ``e2b:`` block below. All shared stress sections (sandbox / create_batch /
-# task_batch / browser / test / report / workflow_type) load into KernelConfig
-# via KernelConfig.from_raw; the e2b block loads into env_provider.e2b.Config.
+#   bench-core --provider e2b    --config config/common/browser.yaml --create-only
+#   bench-core --provider docker --config config/common/browser.yaml --create-only
 #
-# Validate without an SDK:
-#   PYTHONPATH=src python -m bench_core --provider fake --config config/common/browser.yaml
-# Create-only dry run (needs E2B creds):
-#   PYTHONPATH=src python -m bench_core --provider e2b --config config/common/browser.yaml --create-only
+# Validate without any SDK (parses shared sections only):
+#   bench-core --provider fake --config config/common/browser.yaml --create-only -n 1
+#
+# Legacy e2b_bench keeps its own config/e2b/bench.yaml (old schema); unaffected.
 
 workflow_type: browser
 
-# === backend block (e2b-only; read by env_provider.e2b.Config.from_raw) ===
+# === backend blocks (one per provider; only the matching one is read) ===
 e2b:
   template: "openclaw-browser-v1"
   create_timeout: 86400
@@ -32,6 +32,19 @@ e2b:
     E2B_DOMAIN: "e2b.app"
     E2B_API_URL: "http://localhost:3000"
     E2B_HTTP_SSL: "false"
+
+docker:
+  image: "ubuntu-openclaw-chromium:24.04-arm64"  # Docker image (browser: chromium + openclaw)
+  container_prefix: "oc-bench"             # Container name prefix (oc-bench-1, ...)
+  cpu_limit: 2.0                           # CPU limit per container (--cpus)
+  memory_limit: "2g"                       # Memory limit per container (-m)
+  create_timeout: 300                      # Container creation timeout (seconds)
+  # Port readiness check (openclaw-gateway + llama-server). Docker-specific:
+  # e2b has no port probe (the e2b SDK reports readiness directly).
+  port_check:
+    ports: [18789, 11436]                  # Ports to check
+    max_wait: 300                          # Max wait time for ports (seconds)
+    interval: 5                            # Port check interval (seconds)
 
 # === shared stress sections (all -> KernelConfig) ===
 sandbox:                            # shared sandbox control (creation mode)
@@ -94,5 +107,5 @@ test:
 
 # Report configuration
 report:
-  output_dir: "results/e2b"
-  filename_prefix: "e2b_bench"
+  output_dir: "results/browser"
+  filename_prefix: "browser_bench"
