@@ -180,6 +180,43 @@ def _full_monitor():
         {"ts": "2026-08-14 10:00:00", "total_mb": 6144.0, "vm_count": 2, "per_numa": {0: 3072.0, 5: 3072.0}},
         {"ts": "2026-08-14 10:00:05", "total_mb": 6200.0, "vm_count": 2, "per_numa": {0: 3100.0, 5: 3100.0}},
     ]
+
+    # Disk I/O (sda/sdb/sdc) + ublk -> Disk_IO_Timeline
+    m.target_disks = ["sda", "sdb", "sdc"]
+    m.disk_history = [
+        {
+            "ts": "2026-08-14 10:00:00",
+            "disks": {
+                "sda": {"r_mb_s": 10.0, "w_mb_s": 20.0, "util_pct": 5.0, "inflight": 1, "r_mb": 10.0, "w_mb": 20.0},
+                "sdb": {"r_mb_s": 5.0, "w_mb_s": 15.0, "util_pct": 3.0, "inflight": 2, "r_mb": 5.0, "w_mb": 15.0},
+                "sdc": {"r_mb_s": 1.0, "w_mb_s": 2.0, "util_pct": 1.0, "inflight": 0, "r_mb": 1.0, "w_mb": 2.0},
+            },
+        },
+        {
+            "ts": "2026-08-14 10:00:05",
+            "disks": {
+                "sda": {"r_mb_s": 12.0, "w_mb_s": 25.0, "util_pct": 6.0, "inflight": 1, "r_mb": 12.0, "w_mb": 25.0},
+                "sdb": {"r_mb_s": 6.0, "w_mb_s": 18.0, "util_pct": 4.0, "inflight": 3, "r_mb": 6.0, "w_mb": 18.0},
+                "sdc": {"r_mb_s": 2.0, "w_mb_s": 4.0, "util_pct": 2.0, "inflight": 1, "r_mb": 2.0, "w_mb": 4.0},
+            },
+        },
+    ]
+    m.peak_disk_write_mb_s = 25.0
+
+    # Host mem detail -> Host_Mem_Timeline + Summary peaks
+    m.host_mem_detail_history = [
+        {"ts": "2026-08-14 10:00:00", "cached_mb": 1000.0, "buffers_mb": 50.0, "dirty_mb": 10.0, "writeback_mb": 5.0},
+        {"ts": "2026-08-14 10:00:05", "cached_mb": 1100.0, "buffers_mb": 55.0, "dirty_mb": 20.0, "writeback_mb": 8.0},
+    ]
+    m.peak_dirty_mb = 20.0
+    m.peak_writeback_mb = 8.0
+
+    # ublk device count -> Disk_IO_Timeline column + Summary peak
+    m.ublk_history = [
+        {"ts": "2026-08-14 10:00:00", "ublk_devices": 3},
+        {"ts": "2026-08-14 10:00:05", "ublk_devices": 4},
+    ]
+    m.peak_ublk_devices = 4
     return m
 
 
@@ -393,6 +430,8 @@ class TestExportStructure(unittest.TestCase):
                 "Swap_Timeline",
                 "NUMA_Memory_Timeline",
                 "VM_Total_Memory_Timeline",
+                "Disk_IO_Timeline",
+                "Host_Mem_Timeline",
             ],
         )
 
@@ -463,12 +502,29 @@ class TestExportStructure(unittest.TestCase):
                 "Sample Count",
             ],
             "Raw_VM_Data": ["Timestamp", "VM Name", "PID", "CPU (%)", "Memory (MB)", "Hugepage (MB)"],
+            "Disk_IO_Timeline": [
+                "Timestamp",
+                "sda Read (MB/s)",
+                "sda Write (MB/s)",
+                "sda Util (%)",
+                "sda Inflight",
+                "sdb Read (MB/s)",
+                "sdb Write (MB/s)",
+                "sdb Util (%)",
+                "sdb Inflight",
+                "sdc Read (MB/s)",
+                "sdc Write (MB/s)",
+                "sdc Util (%)",
+                "sdc Inflight",
+                "ublk Devices",
+            ],
+            "Host_Mem_Timeline": ["Timestamp", "Cached (MB)", "Buffers (MB)", "Dirty (MB)", "Writeback (MB)"],
         }
         for sheet, expected in expected_cols.items():
             self.assertEqual(cols[sheet], expected, f"columns mismatch for {sheet}")
 
         expected_rows = {
-            "Summary": 30,  # meta(4)+host(4)+hugepage(4)+swap-cap(4)+swap-cache(3)+swap-act(6)+vm(5)
+            "Summary": 35,  # meta(4)+host(4)+hugepage(4)+swap-cap(4)+swap-cache(3)+swap-act(6)+vm(5)+disk/mem(5)
             "NUMA_Overview": 2,
             "VM_Stats": 2,
             "DevKit_TopDown": 13,
@@ -485,6 +541,8 @@ class TestExportStructure(unittest.TestCase):
             "Swap_Timeline": 2,
             "NUMA_Memory_Timeline": 2,
             "VM_Total_Memory_Timeline": 2,
+            "Disk_IO_Timeline": 2,
+            "Host_Mem_Timeline": 2,
         }
         for sheet, expected in expected_rows.items():
             self.assertEqual(rows[sheet], expected, f"row count mismatch for {sheet}")
@@ -494,7 +552,8 @@ class TestExportStructure(unittest.TestCase):
         _names, _cols, _rows, charts = _snapshot(self.output_file)
         # 1 DevKit pie + 1 IPC line + 1 MemBound bar + 1 DDR line + 1 CacheMiss bar
         # + 2 Swap (in/out + SwapCache) + 2 NUMA_Memory_Timeline (8A + 8B) + 1 VM_Total
-        self.assertEqual(charts, 10)
+        # + 1 Disk Write line + 1 Dirty+Writeback line
+        self.assertEqual(charts, 12)
 
 
 if __name__ == "__main__":

@@ -155,6 +155,24 @@ def _build_summary_sheet(writer, monitor, numa_nodes, overall_stats):
     )
     summary_data["Unit"].extend(["", "", "%", "%", "MB"])
 
+    # Disk I/O + host memory detail peaks
+    dirty_avg = (
+        round(sum(h["dirty_mb"] for h in monitor.host_mem_detail_history) / len(monitor.host_mem_detail_history), 2)
+        if monitor.host_mem_detail_history
+        else 0
+    )
+    summary_data["Metric"].extend(["Disk Write Peak", "Dirty Avg", "Dirty Peak", "Writeback Peak", "ublk Devices Peak"])
+    summary_data["Value"].extend(
+        [
+            round(monitor.peak_disk_write_mb_s, 2),
+            dirty_avg,
+            round(monitor.peak_dirty_mb, 2),
+            round(monitor.peak_writeback_mb, 2),
+            monitor.peak_ublk_devices,
+        ]
+    )
+    summary_data["Unit"].extend(["MB/s", "MB", "MB", "MB", ""])
+
     df_summary = pd.DataFrame(summary_data)
     df_summary.to_excel(writer, sheet_name="Summary", index=False)
 
@@ -678,12 +696,60 @@ def _build_vm_total_memory_timeline_sheet(writer, monitor):
         pd.DataFrame(vm_mem_data).to_excel(writer, sheet_name="VM_Total_Memory_Timeline", index=False)
 
 
+def _build_disk_io_sheet(writer, monitor):
+    """Sheet: Disk_IO_Timeline (per-device read/write MB/s, util%, inflight + ublk count).
+
+    One row per sample. Disk columns are spread per device in monitor.target_disks
+    order; devices missing from a sample's snapshot default to zero. ublk_devices is
+    aligned by sample index (collected in the same collect_sample cycle).
+    """
+    if not monitor.disk_history:
+        return
+    disk_data = {"Timestamp": []}
+    for dev in monitor.target_disks:
+        disk_data[f"{dev} Read (MB/s)"] = []
+        disk_data[f"{dev} Write (MB/s)"] = []
+        disk_data[f"{dev} Util (%)"] = []
+        disk_data[f"{dev} Inflight"] = []
+    disk_data["ublk Devices"] = []
+
+    for i, entry in enumerate(monitor.disk_history):
+        disk_data["Timestamp"].append(entry["ts"])
+        disks = entry.get("disks", {})
+        for dev in monitor.target_disks:
+            d = disks.get(dev, {})
+            disk_data[f"{dev} Read (MB/s)"].append(d.get("r_mb_s", 0))
+            disk_data[f"{dev} Write (MB/s)"].append(d.get("w_mb_s", 0))
+            disk_data[f"{dev} Util (%)"].append(d.get("util_pct", 0))
+            disk_data[f"{dev} Inflight"].append(d.get("inflight", 0))
+        # ublk_history shares the sample cadence; align by index, pad to 0
+        ublk = monitor.ublk_history[i]["ublk_devices"] if i < len(monitor.ublk_history) else 0
+        disk_data["ublk Devices"].append(ublk)
+
+    pd.DataFrame(disk_data).to_excel(writer, sheet_name="Disk_IO_Timeline", index=False)
+
+
+def _build_host_mem_timeline_sheet(writer, monitor):
+    """Sheet: Host_Mem_Timeline (cached / buffers / dirty / writeback MB per sample)."""
+    if not monitor.host_mem_detail_history:
+        return
+    mem_data = {
+        "Timestamp": [h["ts"] for h in monitor.host_mem_detail_history],
+        "Cached (MB)": [h["cached_mb"] for h in monitor.host_mem_detail_history],
+        "Buffers (MB)": [h["buffers_mb"] for h in monitor.host_mem_detail_history],
+        "Dirty (MB)": [h["dirty_mb"] for h in monitor.host_mem_detail_history],
+        "Writeback (MB)": [h["writeback_mb"] for h in monitor.host_mem_detail_history],
+    }
+    pd.DataFrame(mem_data).to_excel(writer, sheet_name="Host_Mem_Timeline", index=False)
+
+
 def _add_charts(output_file):
     """Add charts to an already-written Excel file (non-critical: failures warn)."""
     try:
         from openpyxl import load_workbook
         from openpyxl.chart import BarChart, LineChart, PieChart, Reference
         from openpyxl.chart.label import DataLabelList
+        from openpyxl.utils import get_column_letter
 
         wb = load_workbook(output_file)
 
@@ -951,6 +1017,50 @@ def _add_charts(output_file):
                 vm_chart.set_categories(cats)
                 ws.add_chart(vm_chart, "I2")
 
+        # Chart 10: Disk Write MB/s per device
+        if "Disk_IO_Timeline" in wb.sheetnames:
+            ws = wb["Disk_IO_Timeline"]
+            if ws.max_row > 1:
+                write_cols = [
+                    c
+                    for c in range(2, ws.max_column + 1)
+                    if (ws.cell(row=1, column=c).value or "").endswith("Write (MB/s)")
+                ]
+                if write_cols:
+                    disk_chart = LineChart()
+                    disk_chart.title = "Disk Write MB/s Over Time"
+                    disk_chart.style = 13
+                    disk_chart.y_axis.title = "MB/s"
+                    disk_chart.x_axis.title = "Time"
+                    disk_chart.width = 18
+                    disk_chart.height = 8
+                    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+                    for col in write_cols:
+                        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+                        disk_chart.add_data(data, titles_from_data=True)
+                    disk_chart.set_categories(cats)
+                    anchor_col = ws.max_column + 2
+                    ws.add_chart(disk_chart, f"{get_column_letter(anchor_col)}2")
+
+        # Chart 11: Dirty + Writeback MB
+        if "Host_Mem_Timeline" in wb.sheetnames:
+            ws = wb["Host_Mem_Timeline"]
+            if ws.max_row > 1:
+                # Dirty (col 4) and Writeback (col 5) by construction
+                mem_chart = LineChart()
+                mem_chart.title = "Dirty + Writeback Over Time"
+                mem_chart.style = 10
+                mem_chart.y_axis.title = "MB"
+                mem_chart.x_axis.title = "Time"
+                mem_chart.width = 18
+                mem_chart.height = 8
+                cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+                data = Reference(ws, min_col=4, min_row=1, max_col=5, max_row=ws.max_row)
+                mem_chart.add_data(data, titles_from_data=True)
+                mem_chart.set_categories(cats)
+                anchor_col = ws.max_column + 2
+                ws.add_chart(mem_chart, f"{get_column_letter(anchor_col)}2")
+
         wb.save(output_file)
         print("[OK] Charts added to Excel report")
 
@@ -1010,6 +1120,8 @@ def export_to_excel(
             _build_swap_timeline_sheet(writer, monitor)
             _build_numa_memory_timeline_sheet(writer, monitor, numa_nodes)
             _build_vm_total_memory_timeline_sheet(writer, monitor)
+            _build_disk_io_sheet(writer, monitor)
+            _build_host_mem_timeline_sheet(writer, monitor)
     except ImportError:
         print("[WARN] openpyxl not available, skipping Excel export")
         print("  Install with: pip install openpyxl")

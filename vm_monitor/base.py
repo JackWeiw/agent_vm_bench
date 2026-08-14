@@ -14,6 +14,7 @@ Provides system-level monitoring infrastructure independent of VMM type:
 """
 
 import csv
+import glob
 import os
 import re
 import signal
@@ -28,6 +29,51 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
 
 import psutil
+
+
+def _compute_disk_io_rates(cur: dict, prev: dict, interval: float) -> dict:
+    """Compute per-device disk I/O rates from two /sys/block/<dev>/stat snapshots.
+
+    Pure function (no /proc or /sys access) so the delta math is unit-testable
+    on non-Linux hosts. Each snapshot is {dev: {sectors_read, sectors_written,
+    ms_io, inflight}}. Returns {dev: {r_mb_s, w_mb_s, util_pct, inflight,
+    r_mb, w_mb}}.
+
+    Sector size is 512 bytes (kernel block-layer stat sector size). util_pct is
+    the fraction of wall-time the device spent servicing I/O: ms_io ticks at
+    10ms granularity, so util = (delta_ms_io / 10) / interval * 100, capped at
+    100. A zero/None interval or missing previous snapshot yields zero rates
+    (first sample has no baseline).
+    """
+    rates = {}
+    if not cur or not prev or not interval or interval <= 0:
+        for dev in cur or {}:
+            rates[dev] = {
+                "r_mb_s": 0.0,
+                "w_mb_s": 0.0,
+                "util_pct": 0.0,
+                "inflight": cur[dev].get("inflight", 0),
+                "r_mb": 0.0,
+                "w_mb": 0.0,
+            }
+        return rates
+    for dev, c in cur.items():
+        p = prev.get(dev, {})
+        d_read = c.get("sectors_read", 0) - p.get("sectors_read", 0)
+        d_write = c.get("sectors_written", 0) - p.get("sectors_written", 0)
+        d_ms = c.get("ms_io", 0) - p.get("ms_io", 0)
+        r_mb = d_read * 512 / 2**20
+        w_mb = d_write * 512 / 2**20
+        util = min(100.0, (d_ms / 10.0) / interval * 100)
+        rates[dev] = {
+            "r_mb_s": round(r_mb / interval, 2),
+            "w_mb_s": round(w_mb / interval, 2),
+            "util_pct": round(util, 1),
+            "inflight": c.get("inflight", 0),
+            "r_mb": round(r_mb, 2),
+            "w_mb": round(w_mb, 2),
+        }
+    return rates
 
 
 class VMMonitorBase(ABC):
@@ -97,6 +143,25 @@ class VMMonitorBase(ABC):
 
         # VM Total Memory Aggregation
         self.vm_total_memory_history = []
+
+        # Sampling interval (set by start_monitoring / wait_for_stress_and_monitor;
+        # initialized defensively so delta-based collectors are safe before a loop runs)
+        self.interval = 0
+
+        # Disk I/O Statistics (per-device /sys/block/<dev>/stat deltas)
+        self.target_disks = ["sda", "sdb", "sdc"]
+        self.disk_history = []
+        self._last_diskstats = None  # {dev: {sectors_read, sectors_written, ms_io, inflight}}
+        self.peak_disk_write_mb_s = 0.0
+
+        # Host Memory Detail (cached / buffers / dirty / writeback from /proc/meminfo)
+        self.host_mem_detail_history = []
+        self.peak_dirty_mb = 0.0
+        self.peak_writeback_mb = 0.0
+
+        # ublk device count (/dev/ublkb*)
+        self.ublk_history = []
+        self.peak_ublk_devices = 0
 
         # Specified NUMA Node CPU Statistics
         self.target_numa_nodes = [0]
@@ -508,6 +573,86 @@ class VMMonitorBase(ABC):
             if swap_cached_mb > self.peak_swap_cached_mb:
                 self.peak_swap_cached_mb = swap_cached_mb
         except:
+            pass
+
+    # ===================== Collect Disk I/O =====================
+    def collect_disk_stats(self):
+        """Collect per-device disk I/O rates from /sys/block/<dev>/stat.
+
+        Reads sectors read/written, inflight, and busy-ms for each device in
+        self.target_disks, computes per-second rates via deltas from the
+        previous sample normalized by self.interval. First sample (no prior
+        baseline) records zero rates. Missing devices are skipped silently.
+        """
+        cur_stats = {}
+        for dev in self.target_disks:
+            try:
+                with open(f"/sys/block/{dev}/stat") as f:
+                    fields = f.read().split()
+                if len(fields) < 10:
+                    continue
+                cur_stats[dev] = {
+                    "sectors_read": int(fields[2]),
+                    "sectors_written": int(fields[6]),
+                    "inflight": int(fields[8]),
+                    "ms_io": int(fields[9]),
+                }
+            except (OSError, ValueError):
+                continue
+
+        rates = _compute_disk_io_rates(cur_stats, self._last_diskstats, self.interval)
+        self._last_diskstats = cur_stats
+
+        peak_write = 0.0
+        for dev, r in rates.items():
+            if r["w_mb_s"] > peak_write:
+                peak_write = r["w_mb_s"]
+        if peak_write > self.peak_disk_write_mb_s:
+            self.peak_disk_write_mb_s = peak_write
+
+        self.disk_history.append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "disks": rates})
+
+    # ===================== Collect Host Memory Detail =====================
+    def collect_host_mem_detail(self):
+        """Collect host memory breakdown (cached/buffers/dirty/writeback) from /proc/meminfo.
+
+        Reuses _read_meminfo(). cached = Cached + SReclaimable (page cache +
+        reclaimable slab). All values in MB.
+        """
+        try:
+            mi = self._read_meminfo()
+            cached_mb = round(mi.get("Cached", 0) + mi.get("SReclaimable", 0), 2)
+            buffers_mb = round(mi.get("Buffers", 0), 2)
+            dirty_mb = round(mi.get("Dirty", 0), 2)
+            writeback_mb = round(mi.get("Writeback", 0), 2)
+            self.host_mem_detail_history.append(
+                {
+                    "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "cached_mb": cached_mb,
+                    "buffers_mb": buffers_mb,
+                    "dirty_mb": dirty_mb,
+                    "writeback_mb": writeback_mb,
+                }
+            )
+            if dirty_mb > self.peak_dirty_mb:
+                self.peak_dirty_mb = dirty_mb
+            if writeback_mb > self.peak_writeback_mb:
+                self.peak_writeback_mb = writeback_mb
+        except Exception:
+            pass
+
+    # ===================== Collect ublk Device Count =====================
+    def collect_ublk_count(self):
+        """Count /dev/ublkb* devices (userspace block devices).
+
+        Generic block-device inventory; not tied to any sandbox runtime.
+        """
+        try:
+            n = len(glob.glob("/dev/ublkb*"))
+            self.ublk_history.append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ublk_devices": n})
+            if n > self.peak_ublk_devices:
+                self.peak_ublk_devices = n
+        except Exception:
             pass
 
     # ===================== Collect VM Total Memory =====================
@@ -1077,6 +1222,9 @@ class VMMonitorBase(ABC):
         self.collect_numa_cpu()
         self.collect_host_stats()
         self.collect_swap_stats()
+        self.collect_disk_stats()
+        self.collect_host_mem_detail()
+        self.collect_ublk_count()
         self.get_numa_nodes_memory()  # Collect NUMA meminfo in same cycle as swap/hugepage
         vms = self.get_vms_realtime()
         self.last_vm_count = len(vms)
@@ -1177,6 +1325,19 @@ class VMMonitorBase(ABC):
             else:
                 print("Swap:      Not enabled", flush=True)
 
+        # Disk I/O + dirty/writeback (host memory detail)
+        if self.disk_history:
+            dh = self.disk_history[-1]["disks"]
+            total_write = sum(d.get("w_mb_s", 0) for d in dh.values())
+            total_read = sum(d.get("r_mb_s", 0) for d in dh.values())
+            ublk = self.ublk_history[-1]["ublk_devices"] if self.ublk_history else 0
+            dirty = self.host_mem_detail_history[-1]["dirty_mb"] if self.host_mem_detail_history else 0
+            print(
+                f"Disk:      Read {total_read:>6.1f} MB/s | Write {total_write:>6.1f} MB/s (Peak {self.peak_disk_write_mb_s:.1f})"
+                f" | Dirty {dirty:>6.1f} MB (Peak {self.peak_dirty_mb:.1f}) | ublk {ublk}",
+                flush=True,
+            )
+
         # SwapCache per NUMA
         if self.numa_memory_history:
             latest_numa = self.numa_memory_history[-1]["nodes"]
@@ -1253,6 +1414,7 @@ class VMMonitorBase(ABC):
         """
         print(f"Waiting for stress test to start... (Detection method: {check_type}={check_target})")
         self.interval = interval_seconds
+        self._last_diskstats = None  # avoid stale disk deltas across monitoring restarts
         if duration_seconds:
             print(f"Duration limit: {duration_seconds}s (will stop after this time)")
         stress_started = False
@@ -1313,6 +1475,7 @@ class VMMonitorBase(ABC):
 
     def start_monitoring(self, duration_seconds=None, interval_seconds=5):
         self.interval = interval_seconds
+        self._last_diskstats = None  # avoid stale disk deltas across monitoring restarts
         self.running = True
         start_time = time.time()
 
@@ -1443,6 +1606,20 @@ class VMMonitorBase(ABC):
             )
             w.writerow(["Host Avg Memory MB", host_mem_avg_mb])
             w.writerow(["Host Peak Memory MB", round(self.peak_host_mem_mb, 2)])
+            w.writerow(["Disk Write Peak MB/s", round(self.peak_disk_write_mb_s, 2)])
+            w.writerow(
+                [
+                    "Dirty Avg MB",
+                    round(
+                        sum(h["dirty_mb"] for h in self.host_mem_detail_history) / len(self.host_mem_detail_history), 2
+                    )
+                    if self.host_mem_detail_history
+                    else 0,
+                ]
+            )
+            w.writerow(["Dirty Peak MB", round(self.peak_dirty_mb, 2)])
+            w.writerow(["Writeback Peak MB", round(self.peak_writeback_mb, 2)])
+            w.writerow(["ublk Devices Peak", self.peak_ublk_devices])
 
             for node in sorted(self.numa_cpu_history.keys()):
                 hist = self.numa_cpu_history[node]
@@ -1658,6 +1835,9 @@ class VMMonitorBase(ABC):
         print(
             f"  Host Avg Memory: {host_mem_avg_mb:.0f}/{host_mem_total_mb:.0f} MB (Peak {self.peak_host_mem_mb:.0f} MB)"
         )
+        print(f"  Disk Write Peak:    {self.peak_disk_write_mb_s:.1f} MB/s")
+        print(f"  Dirty Peak:         {self.peak_dirty_mb:.1f} MB | Writeback Peak: {self.peak_writeback_mb:.1f} MB")
+        print(f"  ublk Devices Peak:  {self.peak_ublk_devices}")
         print("")
         print(f"  Total VMs:    {overall_stats['total_vms']}")
         print(f"  Alive VMs:     {self.last_vm_count}")
