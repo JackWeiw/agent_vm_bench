@@ -7,10 +7,14 @@ of the unified YAML by :meth:`KernelConfig.from_raw`. This Config holds only the
 e2b-specific knobs -- template, NUMA binding, sandbox IDs file, E2B SDK env --
 read from the ``e2b:`` block of that YAML.
 
-Credential fallback: when ``e2b_access_token`` / ``e2b_api_key`` are empty on
-this Config, :meth:`setup_e2b_env` reads them from the E2B CLI config
+Credential fallback: when ``e2b_access_token`` / ``e2b_api_key`` are blank OR
+hold a template placeholder (``your_e2b_access_token_here`` /
+``your_e2b_api_key_here``, as shipped in the example YAMLs) on this Config,
+:meth:`setup_e2b_env` reads them from the E2B CLI config
 (``~/.e2b/config.json``), so a user can authenticate via the CLI config without
-repeating key/token in YAML. Mirrors ``e2b_bench/scripts/delete_sandbox.sh``.
+repeating key/token in YAML -- and a copied template still falls back rather
+than sending the placeholder to the SDK as a real token. Mirrors
+``e2b_bench/scripts/delete_sandbox.sh``.
 
 Legacy ``e2b_bench`` keeps its own ``e2b_bench/config.py`` (with the old-schema
 load_from_yaml / merge_with_args / from_args CLI flow and the full _FieldSpec
@@ -92,6 +96,27 @@ def numa_node_for_index(index: int, nodes: int | list[int] | None) -> int | None
 DEFAULT_E2B_CONFIG_PATH = str(Path.home() / ".e2b" / "config.json")
 
 
+# Placeholder values the example YAMLs ship for unset credentials
+# (config/common/*.yaml). A user who copied the template verbatim would send
+# these to the E2B SDK as real tokens; treat them as unset so the CLI-config
+# (~/.e2b/config.json) fallback fills the gap instead.
+PLACEHOLDER_CREDENTIALS = frozenset({"your_e2b_access_token_here", "your_e2b_api_key_here"})
+
+
+def _resolved_credential(explicit: str, file_value: str) -> str:
+    """Pick the credential to export: the explicit YAML/CLI value, else the file value.
+
+    A blank or placeholder explicit value (the example YAMLs ship
+    ``your_e2b_access_token_here`` / ``your_e2b_api_key_here``) is treated as
+    unset, so the CLI-config value fills the gap rather than being shadowed by
+    the placeholder. Returns "" when neither source supplies one, leaving the
+    SDK env var unset (caller only exports on truthiness).
+    """
+    if explicit and explicit not in PLACEHOLDER_CREDENTIALS:
+        return explicit
+    return file_value
+
+
 def _load_e2b_cli_config(path: str | None = None) -> dict[str, str]:
     """Read the E2B CLI config (~/.e2b/config.json) for credentials.
 
@@ -167,12 +192,15 @@ class Config:
 
         Credentials fall back to the E2B CLI config (~/.e2b/config.json) when not
         set on this Config (YAML/CLI), so a user can authenticate via the CLI
-        config without repeating key/token in YAML. Mirrors
+        config without repeating key/token in YAML. A blank OR placeholder value
+        (the example YAMLs ship ``your_e2b_access_token_here``) counts as "not
+        set", so a copied template still falls back to the CLI config instead of
+        sending the placeholder to the SDK. Mirrors
         ``e2b_bench/scripts/delete_sandbox.sh``.
         """
         file_creds = _load_e2b_cli_config()
-        token = self.e2b_access_token or file_creds["access_token"]
-        api_key = self.e2b_api_key or file_creds["api_key"]
+        token = _resolved_credential(self.e2b_access_token, file_creds["access_token"])
+        api_key = _resolved_credential(self.e2b_api_key, file_creds["api_key"])
         if token:
             os.environ["E2B_ACCESS_TOKEN"] = token
         if api_key:

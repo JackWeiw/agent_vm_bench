@@ -137,3 +137,40 @@ class TestSetupE2BEnvFallback:
 
         assert os.environ.get("E2B_DOMAIN") == "example.com"
         assert os.environ.get("E2B_API_URL") == "https://example.com/api"
+
+    def test_placeholder_token_falls_back_to_file(self, tmp_path, monkeypatch):
+        # The example YAMLs ship ``your_e2b_access_token_here`` as a fill-in.
+        # A user who copied the template verbatim must NOT send that placeholder
+        # to the SDK as a real token; it must fall back to the CLI config file.
+        self._isolate(monkeypatch, tmp_path)
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({"accessToken": "file-tok", "teamApiKey": "file-key"}), encoding="utf-8")
+        monkeypatch.setenv("E2B_CONFIG", str(cfg_file))
+
+        config = Config(e2b_access_token="your_e2b_access_token_here", e2b_api_key="your_e2b_api_key_here")
+        config.setup_e2b_env()
+
+        assert os.environ.get("E2B_ACCESS_TOKEN") == "file-tok"
+        assert os.environ.get("E2B_API_KEY") == "file-key"
+
+    def test_placeholder_token_with_no_file_leaves_unset(self, tmp_path, monkeypatch):
+        # Placeholder + no CLI config file -> nothing to fall back to -> unset
+        # (not the placeholder string leaking into the environment).
+        self._isolate(monkeypatch, tmp_path)
+
+        config = Config(e2b_access_token="your_e2b_access_token_here")
+        config.setup_e2b_env()
+
+        assert "E2B_ACCESS_TOKEN" not in os.environ
+
+    def test_real_token_wins_over_file(self, tmp_path, monkeypatch):
+        # A real (non-placeholder) explicit token is NOT shadowed by the file.
+        self._isolate(monkeypatch, tmp_path)
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({"accessToken": "file-tok"}), encoding="utf-8")
+        monkeypatch.setenv("E2B_CONFIG", str(cfg_file))
+
+        config = Config(e2b_access_token="real-yaml-tok")
+        config.setup_e2b_env()
+
+        assert os.environ.get("E2B_ACCESS_TOKEN") == "real-yaml-tok"
