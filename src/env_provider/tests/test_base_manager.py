@@ -170,6 +170,60 @@ class TestDetectExisting:
 
 
 # --------------------------------------------------------------------- cleanup
+class TestCleanupExisting:
+    def test_lists_attaches_kills_each_without_ready_check(self):
+        # --cleanup lists fresh, attaches each, kills each -- WITHOUT the
+        # readiness probe (we are tearing down, not running tasks), so a dead
+        # sandbox or a service-down browser container can't stall teardown.
+        mgr = FakeManager(_kernel_config(), Event())
+        mgr._list_existing = lambda: [FakeListed("sbx-a"), FakeListed("sbx-b")]  # type: ignore[assignment]
+
+        killed = mgr.cleanup_existing()
+
+        assert killed == 2
+        # attach + kill each (FakeManager records attaches via the FakeListed-
+        # derived id; killed list records the sandbox_id the state carried).
+        assert mgr.killed == [1, 2]
+        # The ready checker is never built (no readiness probe on cleanup).
+        assert mgr._ready is None
+
+    def test_empty_list_kills_none(self):
+        mgr = FakeManager(_kernel_config(), Event())
+        mgr._list_existing = lambda: []  # type: ignore[assignment]
+        assert mgr.cleanup_existing() == 0
+        assert mgr.killed == []
+
+    def test_list_failure_returns_zero(self):
+        mgr = FakeManager(_kernel_config(), Event())
+
+        def boom():
+            raise RuntimeError("list API down")
+
+        mgr._list_existing = boom  # type: ignore[assignment]
+        assert mgr.cleanup_existing() == 0
+        assert mgr.killed == []
+
+    def test_one_kill_error_does_not_abort_rest(self):
+        mgr = FakeManager(_kernel_config(), Event())
+        mgr._list_existing = lambda: [FakeListed("a"), FakeListed("b"), FakeListed("c")]  # type: ignore[assignment]
+        # Make the second attach fail; the others must still be killed.
+        original_attach = mgr._attach
+
+        calls = {"n": 0}
+
+        def flaky_attach(listed):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("attach failed")
+            return original_attach(listed)
+
+        mgr._attach = flaky_attach  # type: ignore[assignment]
+        killed = mgr.cleanup_existing()
+        assert killed == 2  # first + third; second skipped
+        assert sorted(mgr.killed) == [1, 3]
+
+
+# --------------------------------------------------------------------- cleanup
 class TestCleanupAll:
     def test_kill_all_marks_stopped_by_cleanup(self):
         mgr = FakeManager(_kernel_config(total_count=3), Event())

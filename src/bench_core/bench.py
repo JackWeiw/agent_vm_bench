@@ -187,6 +187,16 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     # 1. Provider-level setup (e2b sets SDK env vars; docker needs nothing).
     provider.prepare_env()
 
+    # 1b. Cleanup-only: list + kill existing sandboxes, then exit. Tears down
+    # what a prior --create-only / --detect run left running. Skips the
+    # readiness probe (see provider.cleanup_existing) so a dead/service-down
+    # sandbox can't stall teardown.
+    if config.cleanup_only:
+        logger.info("\n[Cleanup] Tearing down existing sandboxes...")
+        killed = provider.cleanup_existing()
+        logger.info(f"\nCleanup: tore down {killed} sandbox(es).")
+        return {"report": f"Cleanup: tore down {killed} sandbox(es).", "filepath": None}
+
     _print_header(config, provider)
 
     stop_event = threading.Event()
@@ -328,6 +338,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--create-only", action="store_true")
     parser.add_argument("--detect", action="store_true")
     parser.add_argument("--warmup-only", action="store_true")
+    parser.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="list + kill all existing sandboxes (teardown of a prior "
+        "--create-only/--detect run that left them running), then exit",
+    )
     parser.add_argument("-o", "--output-dir")
     return parser
 
@@ -385,6 +401,8 @@ def main() -> None:
         config.detect_existing = True
     if args.warmup_only:
         config.warmup_only = True
+    if args.cleanup:
+        config.cleanup_only = True
     if args.output_dir:
         config.output_dir = args.output_dir
 

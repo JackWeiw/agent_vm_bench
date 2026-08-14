@@ -120,6 +120,12 @@ class DockerProvider(EnvironmentProvider):
             return
         self._manager.cleanup_all()
 
+    def cleanup_existing(self) -> int:
+        # Delegate to the manager's list->attach->remove path, which skips the
+        # readiness probe (a service-down container must not stall teardown on
+        # the 300s port wait).
+        return self.manager.cleanup_existing()
+
     # ------------------------------------------------------------------ setup hooks
     def prepare_env(self) -> None:
         # Docker needs no host-side environment setup (no SDK env vars); the

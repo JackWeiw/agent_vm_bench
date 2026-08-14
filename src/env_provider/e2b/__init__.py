@@ -109,6 +109,11 @@ class E2BProvider(EnvironmentProvider):
             return
         self._manager.cleanup_all()
 
+    def cleanup_existing(self) -> int:
+        # Delegate to the manager's list->connect->kill path, which skips the
+        # readiness probe (a dead sandbox must not stall teardown on uname).
+        return self.manager.cleanup_existing()
+
     # ------------------------------------------------------------------ setup hooks
     def prepare_env(self) -> None:
         self._config.setup_e2b_env()

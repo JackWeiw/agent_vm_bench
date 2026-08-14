@@ -113,6 +113,28 @@ class TestRunBenchmarkWarmupOnly:
         assert provider.cleanup_called is False
 
 
+class TestRunBenchmarkCleanup:
+    def test_cleanup_only_lists_kills_and_exits(self, tmp_path):
+        # Simulate sandboxes left running by a prior --create-only / --detect run.
+        config = KernelConfig(
+            workflow_type="browser",
+            total_count=2,
+            cleanup_only=True,
+            output_dir=str(tmp_path),
+        )
+        provider = FakeProvider(count=2)
+        provider.create_all()  # populate the instances a prior run left running
+
+        result = run_benchmark(config, provider)
+
+        assert result["filepath"] is None
+        assert "tore down 2" in result["report"]
+        assert provider.prepare_env_calls == 1
+        # The default cleanup_existing detect+kill path fired cleanup_all.
+        assert provider.cleanup_called is True
+        assert all(not inst.is_alive for inst in provider._instances.values())
+
+
 class TestRunBenchmarkNoReady:
     def test_no_ready_sandboxes_returns_empty(self, tmp_path):
         config = KernelConfig(

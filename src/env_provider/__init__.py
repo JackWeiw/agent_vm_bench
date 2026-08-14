@@ -153,6 +153,23 @@ class EnvironmentProvider(ABC):
     def cleanup_all(self) -> None:
         """Tear down all sandboxes (unifies ``kill_all`` / ``remove_all``)."""
 
+    def cleanup_existing(self) -> int:
+        """Tear down all *currently running* sandboxes (standalone ``--cleanup``).
+
+        Lists live sandboxes fresh and kills them -- unlike
+        :meth:`cleanup_all`, which kills only sandboxes tracked in this
+        provider's current run (a prior ``--create-only`` / ``--detect`` run
+        left none tracked here). Default: :meth:`detect_existing` then
+        :meth:`cleanup_all` (the detect attaches handles the kill needs). A
+        provider whose backend can list-and-kill without the readiness probe
+        overrides this to skip it (a dead sandbox or a service-down browser
+        container must not stall a teardown on the port/command wait). Returns
+        the number torn down.
+        """
+        instances = self.detect_existing()
+        self.cleanup_all()
+        return len(instances)
+
     # ------------------------------------------------------------------ setup hooks
     def prepare_env(self) -> None:
         """Provider-level setup, called once before create/detect.

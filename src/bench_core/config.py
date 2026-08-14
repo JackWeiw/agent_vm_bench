@@ -51,6 +51,7 @@ class KernelConfig:
     total_count: int = 100
     detect_existing: bool = False
     create_only: bool = False
+    cleanup_only: bool = False  # --cleanup: list + kill existing sandboxes, then exit
 
     # --- batch control (None = full concurrent) ---
     create_batch_size: int | None = None

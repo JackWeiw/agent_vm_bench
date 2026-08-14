@@ -184,6 +184,32 @@ class TestDetectExisting:
         assert mgr.detect_existing() == {}
 
 
+# --------------------------------------------------------------------- cleanup_existing
+class TestCleanupExisting:
+    def test_lists_removes_each_without_ready_check(self, monkeypatch):
+        # --cleanup lists fresh, removes each -- WITHOUT the readiness probe,
+        # so a service-down container can't stall on the 300s port wait.
+        client = _client(monkeypatch)
+        c1 = _FakeContainer("oc-bench-1")
+        c2 = _FakeContainer("oc-bench-2")
+        other = _FakeContainer("other-9")  # wrong prefix, filtered out
+        client.containers._running = [c1, c2, other]
+        mgr = SandboxManager(_kc(), Config(), Event())
+
+        killed = mgr.cleanup_existing()
+
+        assert killed == 2
+        assert c1.removed is True
+        assert c2.removed is True
+        assert other.removed is False  # prefix filter holds on cleanup too
+        assert mgr._ready is None  # no readiness probe on teardown
+
+    def test_empty_list_kills_none(self, monkeypatch):
+        _client(monkeypatch)
+        mgr = SandboxManager(_kc(), Config(), Event())
+        assert mgr.cleanup_existing() == 0
+
+
 # --------------------------------------------------------------------- cleanup_all
 class TestCleanupAll:
     def test_removes_each_container_and_marks_killed(self, monkeypatch):

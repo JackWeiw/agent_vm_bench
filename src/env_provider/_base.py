@@ -303,6 +303,55 @@ class BaseSandboxManager(ABC):
                 logger.warning(f"[{self._label(state)}] Kill error: {str(e)[:50]}")
         logger.info(f"Killed {killed} {self._noun.lower()}s")
 
+    # ----------------------------------------------------------- cleanup_existing
+    def cleanup_existing(self) -> int:
+        """List running sandboxes and kill them all (standalone ``--cleanup``).
+
+        Unlike :meth:`cleanup_all` (which kills only sandboxes tracked in this
+        manager's ``_states``), this lists live sandboxes fresh, attaches each,
+        and kills it -- so it tears down sandboxes a prior ``--create-only`` /
+        ``--detect`` run left running. The readiness probe is deliberately
+        skipped: we are tearing them down, not running tasks, so a dead sandbox
+        or a browser container whose services never came up must not stall the
+        teardown on the port/command wait. Reuses the same SDK seams
+        (``_list_existing`` / ``_external_id`` / ``_attach`` / ``_kill_one``) as
+        detect + cleanup, so no new abstract method.
+
+        Returns the number of sandboxes actually torn down.
+        """
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"Cleaning up existing {self._noun.lower()}s")
+        logger.info(f"{'=' * 60}")
+        try:
+            listed = self._list_existing()
+            logger.info(f"  Found {len(listed)} running {self._noun.lower()}s")
+        except Exception as e:
+            logger.error(f"  Failed to list {self._noun.lower()}s: {e}")
+            return 0
+
+        if not listed:
+            logger.info(f"  No existing {self._noun.lower()}s found")
+            return 0
+
+        killed = 0
+        for i, item in enumerate(listed, start=1):
+            ext_id = self._external_id(item)
+            label = f"{self._noun}{i}"
+            try:
+                handle = self._attach(item)
+                # _kill_one reads the handle off a state via _handle_attr, so
+                # build a throwaway state and set the handle on it. _new_state's
+                # other fields are unused on the kill path.
+                state = self._new_state(i, external_id=ext_id)
+                setattr(state, self._handle_attr, handle)
+                self._kill_one(state)
+                killed += 1
+                logger.info(f"[{label}] Killed {ext_id}")
+            except Exception as e:
+                logger.warning(f"[{label}] Kill error: {str(e)[:80]}")
+        logger.info(f"Killed {killed} of {len(listed)} {self._noun.lower()}s")
+        return killed
+
     # ----------------------------------------------------------------- helpers
     def _handle_of(self, state: BackendState) -> Any:
         """The SDK handle on a state (``sandbox_obj`` / ``docker_container``)."""
