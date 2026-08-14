@@ -11,6 +11,8 @@ previously only checked ports, now gains the same workflow-driven dispatch as
 e2b (coding/document probes, not just ports).
 """
 
+from __future__ import annotations
+
 import logging
 import time
 from threading import Event

@@ -133,7 +133,7 @@ These have their own managers / stats / round-robin (`e2b_bench/run_benchmark` i
 - **No Claude attribution.** Do not add `Co-Authored-By: Claude` or similar trailers.
 - **Commit messages** via heredoc `git commit -F - <<'EOF'`; Conventional Commit prefixes (`feat:`, `fix:`, `refactor:`, `docs:`, `ci:`, `chore:`).
 - **IP & secret scrubbing.** Private `192.168.x.x` addresses are OK to commit; scrub public IPs. Never commit real E2B access tokens / API keys — leave placeholders.
-- **Frozen legacy.** `e2b_bench/` and `docker_bench/` are frozen standalone legacy — do not refactor them into the kernel. PR #96 (`feat/bench-core-environment-provider`) is a **draft for user review — do not merge**.
+- **Frozen legacy.** `e2b_bench/` and `docker_bench/` are frozen standalone legacy — do not refactor them into the kernel.
 
 ## Entry Points
 

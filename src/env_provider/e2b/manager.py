@@ -8,6 +8,8 @@ matching) and ``check_alive`` (exec-based liveness). Readiness probing is
 delegated to :class:`env_provider._ready.ReadyChecker` via the base.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import time
