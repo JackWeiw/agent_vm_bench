@@ -24,6 +24,18 @@ try:
 except ImportError:
     PANDAS_AVAILABLE = False
 
+# Try to import openpyxl chart primitives for the Excel chart layer. Kept
+# optional (like pandas) so importing this module never hard-requires
+# openpyxl; _add_charts is a no-op when unavailable.
+try:
+    from openpyxl import load_workbook
+    from openpyxl.chart import BarChart, LineChart, PieChart, Reference
+    from openpyxl.utils import get_column_letter
+
+    OPENPYXL_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    OPENPYXL_AVAILABLE = False
+
 # Internal dependency
 from .parsers import parse_all_logs
 
@@ -154,6 +166,24 @@ def _build_summary_sheet(writer, monitor, numa_nodes, overall_stats):
         ]
     )
     summary_data["Unit"].extend(["", "", "%", "%", "MB"])
+
+    # Disk I/O + host memory detail peaks
+    dirty_avg = (
+        round(sum(h["dirty_mb"] for h in monitor.host_mem_detail_history) / len(monitor.host_mem_detail_history), 2)
+        if monitor.host_mem_detail_history
+        else 0
+    )
+    summary_data["Metric"].extend(["Disk Write Peak", "Dirty Avg", "Dirty Peak", "Writeback Peak", "ublk Devices Peak"])
+    summary_data["Value"].extend(
+        [
+            round(monitor.peak_disk_write_mb_s, 2),
+            dirty_avg,
+            round(monitor.peak_dirty_mb, 2),
+            round(monitor.peak_writeback_mb, 2),
+            monitor.peak_ublk_devices,
+        ]
+    )
+    summary_data["Unit"].extend(["MB/s", "MB", "MB", "MB", ""])
 
     df_summary = pd.DataFrame(summary_data)
     df_summary.to_excel(writer, sheet_name="Summary", index=False)
@@ -678,284 +708,420 @@ def _build_vm_total_memory_timeline_sheet(writer, monitor):
         pd.DataFrame(vm_mem_data).to_excel(writer, sheet_name="VM_Total_Memory_Timeline", index=False)
 
 
+def _build_disk_io_sheet(writer, monitor):
+    """Sheet: Disk_IO_Timeline (per-device read/write MB/s, util%, inflight + ublk count).
+
+    One row per sample. Disk columns are spread per device in monitor.target_disks
+    order; devices missing from a sample's snapshot default to zero. ublk_devices is
+    aligned by sample index (collected in the same collect_sample cycle).
+    """
+    if not monitor.disk_history:
+        return
+    disk_data = {"Timestamp": []}
+    for dev in monitor.target_disks:
+        disk_data[f"{dev} Read (MB/s)"] = []
+        disk_data[f"{dev} Write (MB/s)"] = []
+        disk_data[f"{dev} Util (%)"] = []
+        disk_data[f"{dev} Inflight"] = []
+    disk_data["ublk Devices"] = []
+
+    for i, entry in enumerate(monitor.disk_history):
+        disk_data["Timestamp"].append(entry["ts"])
+        disks = entry.get("disks", {})
+        for dev in monitor.target_disks:
+            d = disks.get(dev, {})
+            disk_data[f"{dev} Read (MB/s)"].append(d.get("r_mb_s", 0))
+            disk_data[f"{dev} Write (MB/s)"].append(d.get("w_mb_s", 0))
+            disk_data[f"{dev} Util (%)"].append(d.get("util_pct", 0))
+            disk_data[f"{dev} Inflight"].append(d.get("inflight", 0))
+        # ublk_history shares the sample cadence; align by index, pad to 0
+        ublk = monitor.ublk_history[i]["ublk_devices"] if i < len(monitor.ublk_history) else 0
+        disk_data["ublk Devices"].append(ublk)
+
+    pd.DataFrame(disk_data).to_excel(writer, sheet_name="Disk_IO_Timeline", index=False)
+
+
+def _build_host_mem_timeline_sheet(writer, monitor):
+    """Sheet: Host_Mem_Timeline (cached / buffers / dirty / writeback MB per sample)."""
+    if not monitor.host_mem_detail_history:
+        return
+    mem_data = {
+        "Timestamp": [h["ts"] for h in monitor.host_mem_detail_history],
+        "Cached (MB)": [h["cached_mb"] for h in monitor.host_mem_detail_history],
+        "Buffers (MB)": [h["buffers_mb"] for h in monitor.host_mem_detail_history],
+        "Dirty (MB)": [h["dirty_mb"] for h in monitor.host_mem_detail_history],
+        "Writeback (MB)": [h["writeback_mb"] for h in monitor.host_mem_detail_history],
+    }
+    pd.DataFrame(mem_data).to_excel(writer, sheet_name="Host_Mem_Timeline", index=False)
+
+
 def _add_charts(output_file):
-    """Add charts to an already-written Excel file (non-critical: failures warn)."""
+    """Add charts to an already-written Excel file (non-critical: failures warn).
+
+    Thin dispatcher: opens the workbook, delegates each chart to an _add_*
+    helper (one per logical chart), then saves. openpyxl is imported at module
+    top behind OPENPYXL_AVAILABLE; when absent this is a no-op.
+    """
+    if not OPENPYXL_AVAILABLE:
+        print("[WARN] openpyxl not available; skipping Excel charts")
+        return
     try:
-        from openpyxl import load_workbook
-        from openpyxl.chart import BarChart, LineChart, PieChart, Reference
-        from openpyxl.chart.label import DataLabelList
-
         wb = load_workbook(output_file)
-
-        # Chart 1: Top-down Pie Chart (four major categories)
-        if "DevKit_TopDown" in wb.sheetnames:
-            ws = wb["DevKit_TopDown"]
-            # Find the rows for the four categories (rows 4-7: Bad Speculation, Frontend Bound, Retiring, Backend Bound)
-            pie = PieChart()
-            pie.title = "CPU Top-down Analysis"
-            labels = Reference(ws, min_col=1, min_row=4, max_row=7)  # Metric names
-            data = Reference(ws, min_col=2, min_row=3, max_row=7)  # Values (include header)
-            pie.add_data(data, titles_from_data=True)
-            pie.set_categories(labels)
-            pie.width = 15
-            pie.height = 10
-            ws.add_chart(pie, "D2")
-
-        # Chart 2: IPC Timeline Line Chart
-        if "TopDown_Timeline" in wb.sheetnames:
-            ws = wb["TopDown_Timeline"]
-            if ws.max_row > 1:  # Has data
-                line = LineChart()
-                line.title = "IPC Over Time"
-                line.style = 10
-                line.y_axis.title = "IPC"
-                line.x_axis.title = "Time"
-                line.width = 18
-                line.height = 8
-
-                # Data: IPC column (column 2)
-                data = Reference(ws, min_col=2, min_row=1, max_row=ws.max_row)
-                cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)  # Timestamps
-                line.add_data(data, titles_from_data=True)
-                line.set_categories(cats)
-                ws.add_chart(line, "E2")
-
-        # Chart 3: Memory Bound Breakdown Bar Chart
-        if "DevKit_TopDown" in wb.sheetnames:
-            ws = wb["DevKit_TopDown"]
-            bar = BarChart()
-            bar.title = "Memory Bound Breakdown"
-            bar.style = 10
-            bar.y_axis.title = "Percentage (%)"
-            bar.width = 12
-            bar.height = 8
-
-            # Rows 8-11: L3 Bound, Mem Bound, Latency bound, Bandwidth bound
-            data = Reference(ws, min_col=2, min_row=8, max_row=11)
-            cats = Reference(ws, min_col=1, min_row=8, max_row=11)
-            bar.add_data(data)
-            bar.set_categories(cats)
-            bar.shape = 4
-            ws.add_chart(bar, "D14")
-
-        # Chart 4: DDR Bandwidth Timeline
-        if "Memory_Timeline" in wb.sheetnames:
-            ws = wb["Memory_Timeline"]
-            if ws.max_row > 1:
-                line2 = LineChart()
-                line2.title = "DDR Bandwidth Over Time"
-                line2.style = 13
-                line2.y_axis.title = "MB/s"
-                line2.x_axis.title = "Time"
-                line2.width = 18
-                line2.height = 8
-
-                # DDR Write and Read columns (columns 6 and 7)
-                data = Reference(ws, min_col=6, min_row=1, max_col=7, max_row=ws.max_row)
-                cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
-                line2.add_data(data, titles_from_data=True)
-                line2.set_categories(cats)
-                ws.add_chart(line2, "I2")
-
-        # Chart 5: Cache Miss Comparison Bar Chart
-        if "DevKit_Memory" in wb.sheetnames:
-            ws = wb["DevKit_Memory"]
-            bar2 = BarChart()
-            bar2.title = "Cache Miss Rate Comparison"
-            bar2.style = 10
-            bar2.y_axis.title = "Miss Rate (%)"
-            bar2.width = 12
-            bar2.height = 8
-
-            # Rows 2-5: L1D, L1I, L2D, L2I miss
-            data = Reference(ws, min_col=2, min_row=2, max_row=5)
-            cats = Reference(ws, min_col=1, min_row=2, max_row=5)
-            bar2.add_data(data)
-            bar2.set_categories(cats)
-            ws.add_chart(bar2, "D2")
-
-        # Chart 6: Swap In/Out Rate + SwapCached Timeline
-        if "Swap_Timeline" in wb.sheetnames:
-            ws = wb["Swap_Timeline"]
-            if ws.max_row > 1:
-                swap_line = LineChart()
-                swap_line.title = "Swap In/Out Rate Over Time"
-                swap_line.style = 13
-                swap_line.y_axis.title = "pages/s"
-                swap_line.x_axis.title = "Time"
-                swap_line.width = 18
-                swap_line.height = 8
-
-                # Find Swap In Rate and Swap Out Rate columns by header name
-                in_col = None
-                out_col = None
-                for col_idx in range(2, ws.max_column + 1):
-                    header = ws.cell(row=1, column=col_idx).value
-                    if header and "In Rate" in header:
-                        in_col = col_idx
-                    elif header and "Out Rate" in header:
-                        out_col = col_idx
-
-                if in_col and out_col:
-                    data = Reference(ws, min_col=in_col, min_row=1, max_col=out_col, max_row=ws.max_row)
-                    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
-                    swap_line.add_data(data, titles_from_data=True)
-                    swap_line.set_categories(cats)
-                ws.add_chart(swap_line, "H2")
-
-        # Chart 7: SwapCache (Total + per NUMA) from Swap_Timeline sheet
-        if "Swap_Timeline" in wb.sheetnames:
-            ws = wb["Swap_Timeline"]
-            if ws.max_row > 1:
-                sc_chart = LineChart()
-                sc_chart.title = "SwapCache per NUMA Over Time"
-                sc_chart.style = 10
-                sc_chart.y_axis.title = "MB"
-                sc_chart.x_axis.title = "Time"
-                sc_chart.width = 22
-                sc_chart.height = 10
-
-                # Find Swap Cached + per-NUMA SwapCache columns by header name
-                sc_cols = []
-                for col_idx in range(2, ws.max_column + 1):
-                    header = ws.cell(row=1, column=col_idx).value
-                    if header and ("SwapCached" in header or "SwapCache" in header or "Cached" in header):
-                        sc_cols.append(col_idx)
-
-                if sc_cols:
-                    # Build data reference across all SwapCache columns
-                    min_sc_col = min(sc_cols)
-                    max_sc_col = max(sc_cols)
-                    data = Reference(ws, min_col=min_sc_col, min_row=1, max_col=max_sc_col, max_row=ws.max_row)
-                    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
-                    sc_chart.add_data(data, titles_from_data=True)
-                    sc_chart.set_categories(cats)
-                ws.add_chart(sc_chart, "H16")
-
-        # Chart 8A: NUMA Free/Used Memory — memory headroom comparison
-        # Two separate charts for readability: Free/Used (MB scale) and SwapCache/Usage (mixed scale)
-        if "NUMA_Memory_Timeline" in wb.sheetnames:
-            ws = wb["NUMA_Memory_Timeline"]
-            if ws.max_row > 1:
-                # Classify columns by metric type
-                free_cols = []
-                used_cols = []
-                avail_cols = []
-                swapcache_cols = []
-                usage_cols = []
-                for col_idx in range(2, ws.max_column + 1):
-                    header = ws.cell(row=1, column=col_idx).value
-                    if header and "Free" in header:
-                        free_cols.append(col_idx)
-                    elif header and "Used" in header:
-                        used_cols.append(col_idx)
-                    elif header and "Available" in header:
-                        avail_cols.append(col_idx)
-                    elif header and "SwapCache" in header:
-                        swapcache_cols.append(col_idx)
-                    elif header and "Usage" in header:
-                        usage_cols.append(col_idx)
-
-                cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
-
-                # Chart 8A: Free/Used/Available Memory (MB scale)
-                chart_8a = LineChart()
-                chart_8a.title = "NUMA Free/Used Memory (Focus Nodes)"
-                chart_8a.style = 10
-                chart_8a.y_axis.title = "MB"
-                chart_8a.x_axis.title = "Time"
-                chart_8a.width = 22
-                chart_8a.height = 12
-
-                # Add series in order: Free, Available, Used
-                free_avail_used_cols = free_cols + avail_cols + used_cols
-                for col in free_avail_used_cols:
-                    data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
-                    chart_8a.add_data(data, titles_from_data=True)
-                chart_8a.set_categories(cats)
-
-                # Color scheme: Free=green thin, Available=light green medium, Used=red thick
-                # Local NUMA (first) gets solid lines, remote NUMA5 gets dashed lines
-                fa_series_styles = []
-                for col in free_cols:
-                    fa_series_styles.append(("00B050", 20000))  # green
-                for col in avail_cols:
-                    fa_series_styles.append(("92D050", 25000))  # light green
-                for col in used_cols:
-                    fa_series_styles.append(("FF0000", 30000))  # red thick
-
-                for i, (color, width) in enumerate(fa_series_styles):
-                    if i < len(chart_8a.series):
-                        s = chart_8a.series[i]
-                        s.graphicalProperties.line.solidFill = color
-                        s.graphicalProperties.line.width = width
-
-                ws.add_chart(chart_8a, "I2")
-
-                # Chart 8B: SwapCache & Usage% (SwapCache in MB, Usage in % — separate Y axes)
-                chart_8b = LineChart()
-                chart_8b.title = "NUMA SwapCache & Usage% (Focus Nodes)"
-                chart_8b.style = 10
-                chart_8b.y_axis.title = "MB (SwapCache)"
-                chart_8b.x_axis.title = "Time"
-                chart_8b.width = 22
-                chart_8b.height = 12
-
-                # Add SwapCache series to primary Y axis (MB)
-                for col in swapcache_cols:
-                    data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
-                    chart_8b.add_data(data, titles_from_data=True)
-                chart_8b.set_categories(cats)
-
-                # Add Usage% series on secondary Y axis (%)
-                # Use a second LineChart as overlay for the % axis
-                chart_8b_pct = LineChart()
-                chart_8b_pct.y_axis.title = "Usage (%)"
-                chart_8b_pct.y_axis.axId = 200  # separate axis ID
-                for col in usage_cols:
-                    data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
-                    chart_8b_pct.add_data(data, titles_from_data=True)
-                chart_8b_pct.set_categories(cats)
-
-                # Color SwapCache = orange, Usage% = blue
-                for i in range(len(swapcache_cols)):
-                    if i < len(chart_8b.series):
-                        s = chart_8b.series[i]
-                        s.graphicalProperties.line.solidFill = "FFC000"  # orange
-                        s.graphicalProperties.line.width = 20000
-                for i in range(len(usage_cols)):
-                    if i < len(chart_8b_pct.series):
-                        s = chart_8b_pct.series[i]
-                        s.graphicalProperties.line.solidFill = "0070C0"  # blue
-                        s.graphicalProperties.line.width = 15000
-
-                # Overlay the % chart on the MB chart (dual Y axis)
-                chart_8b += chart_8b_pct
-                ws.add_chart(chart_8b, "I16")
-
-        # Chart 9: VM Total Memory Timeline
-        if "VM_Total_Memory_Timeline" in wb.sheetnames:
-            ws = wb["VM_Total_Memory_Timeline"]
-            if ws.max_row > 1:
-                vm_chart = LineChart()
-                vm_chart.title = "VM Total Memory Over Time"
-                vm_chart.style = 13
-                vm_chart.y_axis.title = "MB"
-                vm_chart.x_axis.title = "Time"
-                vm_chart.width = 18
-                vm_chart.height = 8
-
-                data = Reference(ws, min_col=2, min_row=1, max_col=ws.max_column, max_row=ws.max_row)
-                cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
-                vm_chart.add_data(data, titles_from_data=True)
-                vm_chart.set_categories(cats)
-                ws.add_chart(vm_chart, "I2")
-
+        _add_topdown_pie(wb)
+        _add_ipc_line(wb)
+        _add_membound_bar(wb)
+        _add_ddr_line(wb)
+        _add_cache_miss_bar(wb)
+        _add_swap_inout_line(wb)
+        _add_swapcache_line(wb)
+        _add_numa_memory_charts(wb)
+        _add_vm_total_line(wb)
+        _add_disk_write_line(wb)
+        _add_dirty_writeback_line(wb)
         wb.save(output_file)
         print("[OK] Charts added to Excel report")
-
     except Exception as e:
         print(f"[WARN] Chart generation failed (non-critical): {e}")
+
+
+def _add_topdown_pie(wb):
+    """Chart 1: CPU top-down pie (Bad Spec / Frontend / Retiring / Backend)."""
+    if "DevKit_TopDown" not in wb.sheetnames:
+        return
+    ws = wb["DevKit_TopDown"]
+    pie = PieChart()
+    pie.title = "CPU Top-down Analysis"
+    labels = Reference(ws, min_col=1, min_row=4, max_row=7)  # Metric names
+    data = Reference(ws, min_col=2, min_row=3, max_row=7)  # Values (include header)
+    pie.add_data(data, titles_from_data=True)
+    pie.set_categories(labels)
+    pie.width = 15
+    pie.height = 10
+    ws.add_chart(pie, "D2")
+
+
+def _add_ipc_line(wb):
+    """Chart 2: IPC timeline."""
+    if "TopDown_Timeline" not in wb.sheetnames:
+        return
+    ws = wb["TopDown_Timeline"]
+    if ws.max_row <= 1:  # No data
+        return
+    line = LineChart()
+    line.title = "IPC Over Time"
+    line.style = 10
+    line.y_axis.title = "IPC"
+    line.x_axis.title = "Time"
+    line.width = 18
+    line.height = 8
+    # Data: IPC column (column 2)
+    data = Reference(ws, min_col=2, min_row=1, max_row=ws.max_row)
+    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)  # Timestamps
+    line.add_data(data, titles_from_data=True)
+    line.set_categories(cats)
+    ws.add_chart(line, "E2")
+
+
+def _add_membound_bar(wb):
+    """Chart 3: Memory-bound breakdown bar (L3 / Mem / Latency / Bandwidth)."""
+    if "DevKit_TopDown" not in wb.sheetnames:
+        return
+    ws = wb["DevKit_TopDown"]
+    bar = BarChart()
+    bar.title = "Memory Bound Breakdown"
+    bar.style = 10
+    bar.y_axis.title = "Percentage (%)"
+    bar.width = 12
+    bar.height = 8
+    # Rows 8-11: L3 Bound, Mem Bound, Latency bound, Bandwidth bound
+    data = Reference(ws, min_col=2, min_row=8, max_row=11)
+    cats = Reference(ws, min_col=1, min_row=8, max_row=11)
+    bar.add_data(data)
+    bar.set_categories(cats)
+    bar.shape = 4
+    ws.add_chart(bar, "D14")
+
+
+def _add_ddr_line(wb):
+    """Chart 4: DDR bandwidth timeline (Write + Read)."""
+    if "Memory_Timeline" not in wb.sheetnames:
+        return
+    ws = wb["Memory_Timeline"]
+    if ws.max_row <= 1:
+        return
+    line = LineChart()
+    line.title = "DDR Bandwidth Over Time"
+    line.style = 13
+    line.y_axis.title = "MB/s"
+    line.x_axis.title = "Time"
+    line.width = 18
+    line.height = 8
+    # DDR Write and Read columns (columns 6 and 7)
+    data = Reference(ws, min_col=6, min_row=1, max_col=7, max_row=ws.max_row)
+    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+    line.add_data(data, titles_from_data=True)
+    line.set_categories(cats)
+    ws.add_chart(line, "I2")
+
+
+def _add_cache_miss_bar(wb):
+    """Chart 5: Cache miss rate comparison (L1D / L1I / L2D / L2I)."""
+    if "DevKit_Memory" not in wb.sheetnames:
+        return
+    ws = wb["DevKit_Memory"]
+    bar = BarChart()
+    bar.title = "Cache Miss Rate Comparison"
+    bar.style = 10
+    bar.y_axis.title = "Miss Rate (%)"
+    bar.width = 12
+    bar.height = 8
+    # Rows 2-5: L1D, L1I, L2D, L2I miss
+    data = Reference(ws, min_col=2, min_row=2, max_row=5)
+    cats = Reference(ws, min_col=1, min_row=2, max_row=5)
+    bar.add_data(data)
+    bar.set_categories(cats)
+    ws.add_chart(bar, "D2")
+
+
+def _add_swap_inout_line(wb):
+    """Chart 6: Swap in/out rate timeline (columns located by header)."""
+    if "Swap_Timeline" not in wb.sheetnames:
+        return
+    ws = wb["Swap_Timeline"]
+    if ws.max_row <= 1:
+        return
+    swap_line = LineChart()
+    swap_line.title = "Swap In/Out Rate Over Time"
+    swap_line.style = 13
+    swap_line.y_axis.title = "pages/s"
+    swap_line.x_axis.title = "Time"
+    swap_line.width = 18
+    swap_line.height = 8
+    # Find Swap In Rate and Swap Out Rate columns by header name
+    in_col = None
+    out_col = None
+    for col_idx in range(2, ws.max_column + 1):
+        header = ws.cell(row=1, column=col_idx).value
+        if header and "In Rate" in header:
+            in_col = col_idx
+        elif header and "Out Rate" in header:
+            out_col = col_idx
+    if in_col and out_col:
+        data = Reference(ws, min_col=in_col, min_row=1, max_col=out_col, max_row=ws.max_row)
+        cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+        swap_line.add_data(data, titles_from_data=True)
+        swap_line.set_categories(cats)
+    ws.add_chart(swap_line, "H2")
+
+
+def _add_swapcache_line(wb):
+    """Chart 7: SwapCache (total + per NUMA) timeline."""
+    if "Swap_Timeline" not in wb.sheetnames:
+        return
+    ws = wb["Swap_Timeline"]
+    if ws.max_row <= 1:
+        return
+    sc_chart = LineChart()
+    sc_chart.title = "SwapCache per NUMA Over Time"
+    sc_chart.style = 10
+    sc_chart.y_axis.title = "MB"
+    sc_chart.x_axis.title = "Time"
+    sc_chart.width = 22
+    sc_chart.height = 10
+    # Find Swap Cached + per-NUMA SwapCache columns by header name
+    sc_cols = []
+    for col_idx in range(2, ws.max_column + 1):
+        header = ws.cell(row=1, column=col_idx).value
+        if header and ("SwapCached" in header or "SwapCache" in header or "Cached" in header):
+            sc_cols.append(col_idx)
+    if sc_cols:
+        # Build data reference across all SwapCache columns
+        min_sc_col = min(sc_cols)
+        max_sc_col = max(sc_cols)
+        data = Reference(ws, min_col=min_sc_col, min_row=1, max_col=max_sc_col, max_row=ws.max_row)
+        cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+        sc_chart.add_data(data, titles_from_data=True)
+        sc_chart.set_categories(cats)
+    ws.add_chart(sc_chart, "H16")
+
+
+def _add_numa_memory_charts(wb):
+    """Charts 8A/8B: NUMA free/used memory and SwapCache/Usage% timelines.
+
+    Two charts for readability: Free/Used/Available (MB scale) and
+    SwapCache/Usage% (dual Y axis via overlay).
+    """
+    if "NUMA_Memory_Timeline" not in wb.sheetnames:
+        return
+    ws = wb["NUMA_Memory_Timeline"]
+    if ws.max_row <= 1:
+        return
+    # Classify columns by metric type
+    free_cols = []
+    used_cols = []
+    avail_cols = []
+    swapcache_cols = []
+    usage_cols = []
+    for col_idx in range(2, ws.max_column + 1):
+        header = ws.cell(row=1, column=col_idx).value
+        if header and "Free" in header:
+            free_cols.append(col_idx)
+        elif header and "Used" in header:
+            used_cols.append(col_idx)
+        elif header and "Available" in header:
+            avail_cols.append(col_idx)
+        elif header and "SwapCache" in header:
+            swapcache_cols.append(col_idx)
+        elif header and "Usage" in header:
+            usage_cols.append(col_idx)
+
+    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+
+    # Chart 8A: Free/Used/Available Memory (MB scale)
+    chart_8a = LineChart()
+    chart_8a.title = "NUMA Free/Used Memory (Focus Nodes)"
+    chart_8a.style = 10
+    chart_8a.y_axis.title = "MB"
+    chart_8a.x_axis.title = "Time"
+    chart_8a.width = 22
+    chart_8a.height = 12
+
+    # Add series in order: Free, Available, Used
+    free_avail_used_cols = free_cols + avail_cols + used_cols
+    for col in free_avail_used_cols:
+        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+        chart_8a.add_data(data, titles_from_data=True)
+    chart_8a.set_categories(cats)
+
+    # Color scheme: Free=green thin, Available=light green medium, Used=red thick
+    fa_series_styles = []
+    for col in free_cols:
+        fa_series_styles.append(("00B050", 20000))  # green
+    for col in avail_cols:
+        fa_series_styles.append(("92D050", 25000))  # light green
+    for col in used_cols:
+        fa_series_styles.append(("FF0000", 30000))  # red thick
+
+    for i, (color, width) in enumerate(fa_series_styles):
+        if i < len(chart_8a.series):
+            s = chart_8a.series[i]
+            s.graphicalProperties.line.solidFill = color
+            s.graphicalProperties.line.width = width
+
+    ws.add_chart(chart_8a, "I2")
+
+    # Chart 8B: SwapCache & Usage% (SwapCache in MB, Usage in % — separate Y axes)
+    chart_8b = LineChart()
+    chart_8b.title = "NUMA SwapCache & Usage% (Focus Nodes)"
+    chart_8b.style = 10
+    chart_8b.y_axis.title = "MB (SwapCache)"
+    chart_8b.x_axis.title = "Time"
+    chart_8b.width = 22
+    chart_8b.height = 12
+
+    # Add SwapCache series to primary Y axis (MB)
+    for col in swapcache_cols:
+        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+        chart_8b.add_data(data, titles_from_data=True)
+    chart_8b.set_categories(cats)
+
+    # Add Usage% series on secondary Y axis (%)
+    # Use a second LineChart as overlay for the % axis
+    chart_8b_pct = LineChart()
+    chart_8b_pct.y_axis.title = "Usage (%)"
+    chart_8b_pct.y_axis.axId = 200  # separate axis ID
+    for col in usage_cols:
+        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+        chart_8b_pct.add_data(data, titles_from_data=True)
+    chart_8b_pct.set_categories(cats)
+
+    # Color SwapCache = orange, Usage% = blue
+    for i in range(len(swapcache_cols)):
+        if i < len(chart_8b.series):
+            s = chart_8b.series[i]
+            s.graphicalProperties.line.solidFill = "FFC000"  # orange
+            s.graphicalProperties.line.width = 20000
+    for i in range(len(usage_cols)):
+        if i < len(chart_8b_pct.series):
+            s = chart_8b_pct.series[i]
+            s.graphicalProperties.line.solidFill = "0070C0"  # blue
+            s.graphicalProperties.line.width = 15000
+
+    # Overlay the % chart on the MB chart (dual Y axis)
+    chart_8b += chart_8b_pct
+    ws.add_chart(chart_8b, "I16")
+
+
+def _add_vm_total_line(wb):
+    """Chart 9: VM total memory timeline."""
+    if "VM_Total_Memory_Timeline" not in wb.sheetnames:
+        return
+    ws = wb["VM_Total_Memory_Timeline"]
+    if ws.max_row <= 1:
+        return
+    vm_chart = LineChart()
+    vm_chart.title = "VM Total Memory Over Time"
+    vm_chart.style = 13
+    vm_chart.y_axis.title = "MB"
+    vm_chart.x_axis.title = "Time"
+    vm_chart.width = 18
+    vm_chart.height = 8
+    data = Reference(ws, min_col=2, min_row=1, max_col=ws.max_column, max_row=ws.max_row)
+    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+    vm_chart.add_data(data, titles_from_data=True)
+    vm_chart.set_categories(cats)
+    ws.add_chart(vm_chart, "I2")
+
+
+def _add_disk_write_line(wb):
+    """Chart 10: Disk write MB/s per device."""
+    if "Disk_IO_Timeline" not in wb.sheetnames:
+        return
+    ws = wb["Disk_IO_Timeline"]
+    if ws.max_row <= 1:
+        return
+    write_cols = [
+        c for c in range(2, ws.max_column + 1) if (ws.cell(row=1, column=c).value or "").endswith("Write (MB/s)")
+    ]
+    if not write_cols:
+        return
+    disk_chart = LineChart()
+    disk_chart.title = "Disk Write MB/s Over Time"
+    disk_chart.style = 13
+    disk_chart.y_axis.title = "MB/s"
+    disk_chart.x_axis.title = "Time"
+    disk_chart.width = 18
+    disk_chart.height = 8
+    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+    for col in write_cols:
+        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+        disk_chart.add_data(data, titles_from_data=True)
+    disk_chart.set_categories(cats)
+    anchor_col = ws.max_column + 2
+    ws.add_chart(disk_chart, f"{get_column_letter(anchor_col)}2")
+
+
+def _add_dirty_writeback_line(wb):
+    """Chart 11: Dirty + writeback MB timeline."""
+    if "Host_Mem_Timeline" not in wb.sheetnames:
+        return
+    ws = wb["Host_Mem_Timeline"]
+    if ws.max_row <= 1:
+        return
+    mem_chart = LineChart()
+    mem_chart.title = "Dirty + Writeback Over Time"
+    mem_chart.style = 10
+    mem_chart.y_axis.title = "MB"
+    mem_chart.x_axis.title = "Time"
+    mem_chart.width = 18
+    mem_chart.height = 8
+    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+    # Dirty (col 4) and Writeback (col 5) by construction
+    data = Reference(ws, min_col=4, min_row=1, max_col=5, max_row=ws.max_row)
+    mem_chart.add_data(data, titles_from_data=True)
+    mem_chart.set_categories(cats)
+    anchor_col = ws.max_column + 2
+    ws.add_chart(mem_chart, f"{get_column_letter(anchor_col)}2")
 
 
 def export_to_excel(
@@ -1010,6 +1176,8 @@ def export_to_excel(
             _build_swap_timeline_sheet(writer, monitor)
             _build_numa_memory_timeline_sheet(writer, monitor, numa_nodes)
             _build_vm_total_memory_timeline_sheet(writer, monitor)
+            _build_disk_io_sheet(writer, monitor)
+            _build_host_mem_timeline_sheet(writer, monitor)
     except ImportError:
         print("[WARN] openpyxl not available, skipping Excel export")
         print("  Install with: pip install openpyxl")

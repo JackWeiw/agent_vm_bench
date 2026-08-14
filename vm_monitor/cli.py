@@ -19,6 +19,7 @@ from .exporters import export_to_excel, print_capture_summary
 from .firecracker import FirecrackerMonitor
 from .log_capture import LogCapture
 from .qemu import QEMUMonitor
+from .svg_exporter import export_svg_reports
 
 # Try to import pandas for Excel availability check
 try:
@@ -70,7 +71,20 @@ def main():
     # Output parameters
     parser.add_argument("-o", "--output", type=str, help="Output prefix")
     parser.add_argument("--numa", type=str, default="1", help="Specify NUMA nodes to monitor, comma-separated 0,1")
+    parser.add_argument(
+        "--disks",
+        type=str,
+        default="sda,sdb,sdc",
+        help="Block devices to monitor for I/O, comma-separated (default: sda,sdb,sdc)",
+    )
     parser.add_argument("--log-dir", type=str, help="Log output directory (default: logs_${timestamp}/ in current dir)")
+
+    # SVG time-curve export
+    parser.add_argument(
+        "--no-svg",
+        action="store_true",
+        help="Skip writing dark-themed SVG time-curve reports (disk_io / host_resources / swap / numa / vm_total .svg)",
+    )
 
     # Log capture options
     parser.add_argument(
@@ -122,6 +136,8 @@ def main():
     except:
         m.target_numa_nodes = [0]
 
+    m.target_disks = [d.strip() for d in args.disks.split(",") if d.strip()]
+
     # Start log capture (parallel with monitor)
     if args.enable_capture:
         print("\nStarting log collection tools...")
@@ -162,5 +178,11 @@ def main():
     if PANDAS_AVAILABLE:
         excel_file = os.path.join(log_dir, "analysis_report.xlsx")
         export_to_excel(m, log_dir, m.target_numa_nodes, excel_file, capture_results)
+
+    # Export dark-themed SVG time-curve reports
+    if not args.no_svg:
+        svg_files = export_svg_reports(m, log_dir)
+        if svg_files:
+            print(f"[OK] SVG time-curve reports: {', '.join(os.path.basename(p) for p in svg_files)}")
 
     print(f"\nComplete! All outputs saved to: {log_dir}/")
