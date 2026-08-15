@@ -252,7 +252,10 @@ class CodingWarmupRunner(threading.Thread):
                     f"{(result.stderr or '').strip()[:120]}"
                 )
         except Exception as e:
-            logger.error(f"[Sandbox{self.state.index}] git checkout failed: {e}")
+            # Non-fatal: flow continues to initial verify below. An unexpected
+            # exception is more severe than the non-zero INFO above, but the
+            # warmup still proceeds, so WARNING rather than ERROR.
+            logger.warning(f"[Sandbox{self.state.index}] git checkout failed: {e}")
 
         # One initial verify warms esbuild/node or Go compiler caches and confirms
         # project health. No resident dev server -- none in the trace.
