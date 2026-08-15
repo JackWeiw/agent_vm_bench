@@ -119,7 +119,9 @@ class WarmupRunner(threading.Thread):
                 self._execute_tab_operations(i + 1)
                 time.sleep(self.config.warmup_delay)
             except Exception as e:
-                logger.error(f"[Sandbox{self.state.index}] Failed to open tab {i + 1}: {e}")
+                # Non-fatal: the failed URL is recorded in failed_urls and
+                # summarized at WARNING below; other tabs still warm up.
+                logger.warning(f"[Sandbox{self.state.index}] Failed to open tab {i + 1}: {e}")
                 failed_urls.append(url[:50])
 
         self.state.warmup_done = True
