@@ -47,6 +47,22 @@ def _nice_max(value: float) -> float:
     return step * exponent
 
 
+def _memory_scale(value_mb: float) -> Tuple[float, str]:
+    """Adaptive (divisor, unit label) for memory volumes stored in MiB.
+
+    Picks the largest binary unit whose threshold the peak stays under, so a
+    dirty-page axis reads ``2.4 GiB`` instead of ``2456 MiB`` once it grows,
+    but keeps ``MiB`` for small volumes (swap, writeback). The geometry still
+    auto-fits via :func:`_nice_max`; only the tick numbers + y-axis label are
+    divided/relabelled.
+    """
+    if value_mb >= 1024.0 * 1024.0:
+        return 1024.0 * 1024.0, "TiB"
+    if value_mb >= 1024.0:
+        return 1024.0, "GiB"
+    return 1.0, "MiB"
+
+
 def _elapsed_series(history: Sequence[dict], interval: float) -> List[float]:
     """Return per-sample elapsed-seconds from a history's ``ts`` strings.
 
@@ -86,12 +102,17 @@ def _line_chart(
     unit: str,
     series: Sequence[Tuple[str, str, str]],
     threshold: Optional[Tuple[float, str]] = None,
+    scale_family: Optional[str] = None,
 ) -> str:
     """Render one chart panel as an SVG <g> string.
 
     rows: list of dicts each carrying ``elapsed_s`` plus the series fields.
     series: list of (field_name, legend_label, color_hex).
     threshold: optional (value, label) drawn as a dashed amber line.
+    scale_family: ``"memory"`` flips the y-axis to an adaptive binary unit
+        (MiB/GiB/TiB) based on the peak value, so volumes large enough to
+        read in GiB are not crammed onto a multi-thousand MiB axis. Other
+        charts leave it None and use ``unit`` verbatim.
     """
     left, right, top, bottom = 58, 16, 38, 82
     plot_x, plot_y = x + left, y + top
@@ -108,6 +129,9 @@ def _line_chart(
     y_min = -_nice_max(abs(raw_min) * 1.05) if raw_min < 0 else 0.0
     y_max = _nice_max(raw_max * 1.05) if raw_max > 0 else 1.0
     y_span = max(1e-12, y_max - y_min)
+    # Adaptive unit: divide tick numbers by ``divisor`` and relabel the axis.
+    # Geometry (y_min/y_max/polyline) stays in raw space; only labels change.
+    divisor, display_unit = _memory_scale(raw_max) if scale_family == "memory" else (1.0, unit)
 
     parts = [
         f'<g><rect x="{x}" y="{y}" width="{width}" height="{height}" rx="10" ' f'fill="#101827" stroke="#26354a"/>',
@@ -115,7 +139,7 @@ def _line_chart(
     ]
     for tick in range(6):
         py = plot_y + plot_h * tick / 5
-        value = y_max - y_span * tick / 5
+        value = (y_max - y_span * tick / 5) / divisor
         parts.append(f'<line x1="{plot_x}" y1="{py:.1f}" x2="{plot_x + plot_w}" y2="{py:.1f}" class="grid"/>')
         parts.append(f'<text x="{plot_x - 8}" y="{py + 4:.1f}" text-anchor="end" class="axis">{value:.1f}</text>')
     for tick in range(5):
@@ -131,7 +155,7 @@ def _line_chart(
     parts.append(
         f'<text x="{x + 14}" y="{plot_y + plot_h / 2}" '
         f'transform="rotate(-90 {x + 14} {plot_y + plot_h / 2})" text-anchor="middle" '
-        f'class="axis">{_svg_escape(unit)}</text>'
+        f'class="axis">{_svg_escape(display_unit)}</text>'
     )
 
     if threshold and y_min <= threshold[0] <= y_max:
@@ -177,7 +201,7 @@ def _render_report(
 ) -> None:
     """Compose several line charts into one dark-themed SVG file.
 
-    charts: list of (chart_title, unit, series, threshold).
+    charts: list of (chart_title, unit, series, threshold[, scale_family]).
     rows_per_chart: per-chart row list (each row carries elapsed_s + fields).
     """
     columns = 1 if len(charts) <= 1 else 2
@@ -202,11 +226,13 @@ def _render_report(
         '<rect width="100%" height="100%" fill="#07101f"/>',
         f'<text x="30" y="45" class="title">{_svg_escape(title)}</text>',
     ]
-    for index, (ctitle, unit, series, thr) in enumerate(charts):
+    for index, chart in enumerate(charts):
+        ctitle, unit, series, thr = chart[:4]
+        sf = chart[4] if len(chart) > 4 else None
         rows = rows_per_chart[index] if index < len(rows_per_chart) else []
         x = 30 + (index % columns) * 700
         y = top + (index // columns) * (panel_h + gap)
-        parts.append(_line_chart(rows, x, y, panel_w, panel_h, ctitle, unit, series, thr))
+        parts.append(_line_chart(rows, x, y, panel_w, panel_h, ctitle, unit, series, thr, sf))
     parts.append("</svg>")
     with open(target, "w", encoding="utf-8") as f:
         f.write("".join(parts))
@@ -415,7 +441,7 @@ def _host_resource_report(monitor, target, rows):
     charts = [
         ("Host CPU Usage", "%", [("host_cpu_pct", "CPU", "#60a5fa"), ("iowait_pct", "IOWait", "#fb7185")], None),
         ("Host Memory Used", "GiB", [("host_mem_used_gb", "Used", "#f59e0b")], None),
-        ("Host Dirty Pages", "MiB", [("dirty_mb", "Dirty", "#fb7185")], dirty_threshold),
+        ("Host Dirty Pages", "MiB", [("dirty_mb", "Dirty", "#fb7185")], dirty_threshold, "memory"),
         (
             "Writeback / Cached / Buffers",
             "MiB",
@@ -425,6 +451,7 @@ def _host_resource_report(monitor, target, rows):
                 ("buffers_mb", "Buffers", "#c084fc"),
             ],
             None,
+            "memory",
         ),
     ]
     _render_report(target, "Host Resource Time Curves", charts, [rows] * len(charts))
@@ -454,6 +481,7 @@ def _host_pressure_report(target, rows):
                 ("sreclaimable_mb", "SReclaimable", "#c084fc"),
             ],
             None,
+            "memory",
         ),
         (
             "Runnable / Blocked Procs",
@@ -467,10 +495,10 @@ def _host_pressure_report(target, rows):
 
 def _swap_report(target, rows):
     charts = [
-        ("Swap Used", "MiB", [("swap_used_mb", "Used", "#fb7185")], None),
+        ("Swap Used", "MiB", [("swap_used_mb", "Used", "#fb7185")], None, "memory"),
         ("Swap In/Out Rate", "MiB/s", [("swap_in_rate", "In", "#4ade80"), ("swap_out_rate", "Out", "#f97316")], None),
-        ("Swap Cache", "MiB", [("swap_cached_mb", "Cached", "#60a5fa")], None),
-        ("Swap Used (cumulative view)", "MiB", [("swap_used_mb", "Used", "#f59e0b")], None),
+        ("Swap Cache", "MiB", [("swap_cached_mb", "Cached", "#60a5fa")], None, "memory"),
+        ("Swap Used (cumulative view)", "MiB", [("swap_used_mb", "Used", "#f59e0b")], None, "memory"),
     ]
     _render_report(target, "Swap Activity Time Curves", charts, [rows] * len(charts))
 

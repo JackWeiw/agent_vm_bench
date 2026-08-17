@@ -15,6 +15,7 @@ from vm_monitor.base import VMMonitorBase
 from vm_monitor.svg_exporter import (
     _elapsed_series,
     _finite,
+    _memory_scale,
     _nice_max,
     _svg_escape,
     export_svg_reports,
@@ -168,6 +169,16 @@ class TestPureHelpers(unittest.TestCase):
         self.assertAlmostEqual(_nice_max(50.0), 50.0)
         self.assertAlmostEqual(_nice_max(900.0), 1000.0)
 
+    def test_memory_scale(self):
+        # Below 1 GiB the axis stays in MiB.
+        self.assertEqual(_memory_scale(0.0), (1.0, "MiB"))
+        self.assertEqual(_memory_scale(500.0), (1.0, "MiB"))
+        # Crossing 1 GiB flips to GiB.
+        self.assertEqual(_memory_scale(1024.0), (1024.0, "GiB"))
+        self.assertEqual(_memory_scale(2456.0), (1024.0, "GiB"))
+        # Crossing 1 TiB flips to TiB.
+        self.assertEqual(_memory_scale(1024.0 * 1024.0), (1024.0 * 1024.0, "TiB"))
+
     def test_elapsed_series_from_ts(self):
         h = [
             {"ts": "2026-08-14 10:00:00"},
@@ -288,6 +299,62 @@ class TestSvgExport(unittest.TestCase):
         throughput = open(os.path.join(self.out_dir, "disk_io.svg"), encoding="utf-8").read()
         self.assertNotIn("Disk Queue Depth", throughput)
         self.assertNotIn("Disk Avg Latency", throughput)
+
+    def test_dirty_axis_scales_to_gib_when_large(self):
+        # Dirty page volume >= 1 GiB flips the chart's y-axis to GiB (adaptive
+        # unit). The Host Memory Used chart is always GiB, so a scaled dirty
+        # chart raises the GiB label count to 2; an unscaled dirty chart (MiB)
+        # would leave it at 1. Sibling charts are kept small (MiB) to isolate.
+        m = DummyMonitor()
+        m.interval = 1.0
+        m.host_mem_detail_history = [
+            {
+                "ts": "2026-08-14 10:00:00",
+                "dirty_mb": 2048.0,
+                "writeback_mb": 10.0,
+                "cached_mb": 100.0,
+                "buffers_mb": 10.0,
+            },
+            {
+                "ts": "2026-08-14 10:00:01",
+                "dirty_mb": 3072.0,
+                "writeback_mb": 12.0,
+                "cached_mb": 110.0,
+                "buffers_mb": 12.0,
+            },
+        ]
+        export_svg_reports(m, self.out_dir)
+        text = open(os.path.join(self.out_dir, "host_resources.svg"), encoding="utf-8").read()
+        self.assertEqual(text.count("GiB"), 2)  # Host Memory Used + scaled Dirty
+        # Unscaled (MiB) axis would have printed a multi-thousand top tick;
+        # the scaled axis divides it down instead.
+        self.assertNotIn("5000.0", text)
+
+    def test_dirty_axis_stays_mib_when_small(self):
+        # Dirty page volume under 1 GiB keeps MiB; the only GiB label then is
+        # the Host Memory Used chart (count == 1).
+        m = DummyMonitor()
+        m.interval = 1.0
+        m.host_mem_detail_history = [
+            {
+                "ts": "2026-08-14 10:00:00",
+                "dirty_mb": 20.0,
+                "writeback_mb": 10.0,
+                "cached_mb": 100.0,
+                "buffers_mb": 10.0,
+            },
+            {
+                "ts": "2026-08-14 10:00:01",
+                "dirty_mb": 40.0,
+                "writeback_mb": 12.0,
+                "cached_mb": 110.0,
+                "buffers_mb": 12.0,
+            },
+        ]
+        export_svg_reports(m, self.out_dir)
+        text = open(os.path.join(self.out_dir, "host_resources.svg"), encoding="utf-8").read()
+        self.assertEqual(text.count("GiB"), 1)
+        self.assertIn("MiB", text)
 
     def test_empty_monitor_writes_nothing(self):
         m = DummyMonitor()
