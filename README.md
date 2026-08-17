@@ -264,10 +264,14 @@ Key flags:
   DevKit_TopDown/Memory, KSys, UBWatch, SMAPBW, Getfre, Swap/NUMA/VM-total
   timelines, **Disk_IO_Timeline**, **Host_Mem_Timeline**,
   **Host_Pressure_Timeline**) with charts.
-- **SVG time curves** (`disk_io.svg`, `host_resources.svg`, `swap.svg`,
-  `numa.svg`, `vm_total.svg`) — dependency-free dark-themed `<polyline>`
-  charts with grid/legend/threshold lines. Skipped with `--no-svg` or when
-  the source history is empty.
+- **SVG time curves** — dependency-free dark-themed `<polyline>` charts with
+  grid/legend/threshold lines, grouped one concern per file so each renders
+  as a clean PPT slide: `disk_io.svg` (read/write/util + ublk),
+  `disk_latency.svg` (queue depth + await), `host_resources.svg`
+  (CPU/iowait, mem, dirty+threshold, WB/cached/buffers), `host_pressure.svg`
+  (page-cache pressure, anon/file cache, runnable/blocked), plus `swap.svg`,
+  `numa.svg`, `vm_total.svg`. Skipped with `--no-svg` or when the source
+  history is empty.
 
 ### Collected host metrics
 

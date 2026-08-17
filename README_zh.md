@@ -236,9 +236,12 @@ sudo "$(which vm-monitor)" --vmm firecracker -t 60 -i 2
   DevKit_TopDown/Memory、KSys、UBWatch、SMAPBW、Getfre、Swap/NUMA/VM-total
   时间线、**Disk_IO_Timeline**、**Host_Mem_Timeline**、
   **Host_Pressure_Timeline**）附图表。
-- **SVG 时间曲线**（`disk_io.svg`、`host_resources.svg`、`swap.svg`、
-  `numa.svg`、`vm_total.svg`）——无外部依赖的深色 `<polyline>` 图，含
-  网格/图例/阈值线。加 `--no-svg` 或源历史为空时跳过。
+- **SVG 时间曲线**——无外部依赖的深色 `<polyline>` 图，含网格/图例/阈值线，
+  按关注点拆成多文件，每个文件当一张干净的 PPT 页：`disk_io.svg`
+  （读/写/忙碌率 + ublk）、`disk_latency.svg`（队列深度 + await 时延）、
+  `host_resources.svg`（CPU/iowait、内存、dirty+阈值、WB/cached/buffers）、
+  `host_pressure.svg`（页缓存压力、匿名/文件缓存、runnable/blocked），
+  另有 `swap.svg`、`numa.svg`、`vm_total.svg`。加 `--no-svg` 或源历史为空时跳过。
 
 ### 采集的宿主机指标
 

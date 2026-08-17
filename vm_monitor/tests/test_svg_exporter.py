@@ -208,7 +208,15 @@ class TestSvgExport(unittest.TestCase):
         written = export_svg_reports(self.monitor, self.out_dir)
         self.assertEqual(
             sorted(os.path.basename(p) for p in written),
-            ["disk_io.svg", "host_resources.svg", "numa.svg", "swap.svg", "vm_total.svg"],
+            [
+                "disk_io.svg",
+                "disk_latency.svg",
+                "host_pressure.svg",
+                "host_resources.svg",
+                "numa.svg",
+                "swap.svg",
+                "vm_total.svg",
+            ],
         )
         for p in written:
             self.assertTrue(os.path.isfile(p))
@@ -248,29 +256,38 @@ class TestSvgExport(unittest.TestCase):
         self.assertIn("Writeback", text)
         self.assertIn("Cached", text)
         self.assertIn("Buffers", text)
-
-    def test_host_report_has_pressure_and_dirty_threshold(self):
-        export_svg_reports(self.monitor, self.out_dir)
-        text = open(os.path.join(self.out_dir, "host_resources.svg"), encoding="utf-8").read()
-        # New pressure / cache / proc charts rendered.
-        self.assertIn("Page-Cache Pressure", text)
-        self.assertIn("Anonymous / File Cache", text)
-        self.assertIn("Runnable / Blocked Procs", text)
+        # iowait rides on the CPU chart in the resource-baseline file.
         self.assertIn("IOWait", text)
         # Dirty throttle threshold line drawn (dirty_limit_mb=500 set in fixture);
         # it is the only dashed line in host_resources.svg (the util 100% line
         # lives in disk_io.svg).
         self.assertIn("dirty limit", text)
         self.assertGreaterEqual(text.count('stroke-dasharray="7 5"'), 1)
+        # Pressure / cache / runstate moved to host_pressure.svg, not here.
+        self.assertNotIn("Page-Cache Pressure", text)
+        self.assertNotIn("Runnable / Blocked Procs", text)
 
-    def test_disk_io_has_queue_and_latency_charts(self):
+    def test_host_pressure_report_carries_pressure_charts(self):
         export_svg_reports(self.monitor, self.out_dir)
-        text = open(os.path.join(self.out_dir, "disk_io.svg"), encoding="utf-8").read()
-        self.assertIn("Disk Queue Depth", text)
-        self.assertIn("Disk Avg Latency", text)
-        self.assertIn("Queue", text)
-        self.assertIn("R-await", text)
-        self.assertIn("W-await", text)
+        text = open(os.path.join(self.out_dir, "host_pressure.svg"), encoding="utf-8").read()
+        self.assertIn("Page-Cache Pressure", text)
+        self.assertIn("Anonymous / File Cache", text)
+        self.assertIn("Runnable / Blocked Procs", text)
+        # Dirty threshold stays in host_resources.svg, not here.
+        self.assertNotIn("dirty limit", text)
+
+    def test_disk_latency_report_carries_queue_and_await(self):
+        export_svg_reports(self.monitor, self.out_dir)
+        latency = open(os.path.join(self.out_dir, "disk_latency.svg"), encoding="utf-8").read()
+        self.assertIn("Disk Queue Depth", latency)
+        self.assertIn("Disk Avg Latency", latency)
+        self.assertIn("Queue", latency)
+        self.assertIn("R-await", latency)
+        self.assertIn("W-await", latency)
+        # Throughput charts live in disk_io.svg, not the latency file.
+        throughput = open(os.path.join(self.out_dir, "disk_io.svg"), encoding="utf-8").read()
+        self.assertNotIn("Disk Queue Depth", throughput)
+        self.assertNotIn("Disk Avg Latency", throughput)
 
     def test_empty_monitor_writes_nothing(self):
         m = DummyMonitor()

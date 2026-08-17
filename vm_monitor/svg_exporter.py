@@ -353,28 +353,63 @@ def _vm_total_rows(monitor) -> List[dict]:
 # ============================ report assembly ============================
 
 
-def _disk_report(monitor, target, rows):
+def _disk_throughput_report(monitor, target, rows):
+    """disk_io.svg: throughput + busy utilization + ublk inventory (4 charts).
+
+    Kept compact (2x2) so the file reads as one clean PPT slide. Latency /
+    queue-depth live in disk_latency.svg so the throughput view is not
+    crowded by a second axis family.
+    """
     disks = list(getattr(monitor, "target_disks", []) or [])
     read_series = [(f"{d}_read_mb_s", f"{d} Read", _PALETTE[i % len(_PALETTE)]) for i, d in enumerate(disks)]
     write_series = [(f"{d}_write_mb_s", f"{d} Write", _PALETTE[i % len(_PALETTE)]) for i, d in enumerate(disks)]
     util_series = [(f"{d}_util_pct", d, _PALETTE[i % len(_PALETTE)]) for i, d in enumerate(disks)]
+    charts = [
+        ("Disk Read Throughput", "MiB/s", read_series, None),
+        ("Disk Write Throughput", "MiB/s", write_series, None),
+        ("Disk Busy Utilization", "%", util_series, (100.0, "100%")),
+        ("ublk Devices", "count", [("ublk_devices", "ublk", "#38bdf8")], None),
+    ]
+    _render_report(target, "Disk I/O Time Curves", charts, [rows] * len(charts))
+
+
+def _disk_latency_report(monitor, target, rows):
+    """disk_latency.svg: avg queue depth + per-I/O await latency (2 charts).
+
+    Separate axis family (queue depth is dimensionless, await is ms) from the
+    throughput MB/s view. Only written when the disk snapshots carry the
+    latency fields (real collection always does; legacy/synthetic fixtures
+    without them skip this file).
+    """
+    disks = list(getattr(monitor, "target_disks", []) or [])
     queue_series = [(f"{d}_queue_depth", f"{d} Queue", _PALETTE[i % len(_PALETTE)]) for i, d in enumerate(disks)]
     await_series = []
     for i, d in enumerate(disks):
         await_series.append((f"{d}_read_await_ms", f"{d} R-await", _PALETTE[(2 * i) % len(_PALETTE)]))
         await_series.append((f"{d}_write_await_ms", f"{d} W-await", _PALETTE[(2 * i + 1) % len(_PALETTE)]))
     charts = [
-        ("Disk Read Throughput", "MiB/s", read_series, None),
-        ("Disk Write Throughput", "MiB/s", write_series, None),
-        ("Disk Busy Utilization", "%", util_series, (100.0, "100%")),
         ("Disk Queue Depth", "queue", queue_series, None),
         ("Disk Avg Latency (await)", "ms", await_series, None),
-        ("ublk Devices", "count", [("ublk_devices", "ublk", "#38bdf8")], None),
     ]
-    _render_report(target, "Disk I/O Time Curves", charts, [rows] * len(charts))
+    _render_report(target, "Disk Latency Time Curves", charts, [rows] * len(charts))
 
 
-def _host_report(monitor, target, rows):
+def _has_disk_latency(monitor) -> bool:
+    """True if any disk snapshot carries avg_queue_depth (collected since the
+    latency-fields extension). Gates disk_latency.svg so synthetic fixtures
+    that populate only r/w/util do not emit an all-zero latency report."""
+    for entry in getattr(monitor, "disk_history", []) or []:
+        for d in (entry.get("disks") or {}).values():
+            if isinstance(d, dict) and "avg_queue_depth" in d:
+                return True
+    return False
+
+
+def _host_resource_report(monitor, target, rows):
+    """host_resources.svg: CPU(+iowait), mem used, dirty(+throttle), WB/cached
+    /buffers (4 charts). The host resource baseline; kept at 2x2 so it fits a
+    single slide. Pressure / cache-breakdown / runstate live in
+    host_pressure.svg."""
     dirty_limit = float(getattr(monitor, "dirty_limit_mb", 0.0) or 0.0)
     dirty_threshold = (dirty_limit, "dirty limit") if dirty_limit > 0 else None
     charts = [
@@ -391,6 +426,15 @@ def _host_report(monitor, target, rows):
             ],
             None,
         ),
+    ]
+    _render_report(target, "Host Resource Time Curves", charts, [rows] * len(charts))
+
+
+def _host_pressure_report(target, rows):
+    """host_pressure.svg: page-cache pressure, anon/file cache breakdown,
+    runnable/blocked procs (3 charts). The memory-pressure + runstate view,
+    split out so host_resources.svg stays a clean baseline."""
+    charts = [
         (
             "Page-Cache Pressure",
             "MiB/s",
@@ -418,7 +462,7 @@ def _host_report(monitor, target, rows):
             None,
         ),
     ]
-    _render_report(target, "Host Resource Time Curves", charts, [rows] * len(charts))
+    _render_report(target, "Host Pressure Time Curves", charts, [rows] * len(charts))
 
 
 def _swap_report(target, rows):
@@ -464,13 +508,22 @@ def export_svg_reports(monitor, output_dir: str) -> List[str]:
 
     disk_rows = _disk_io_rows(monitor)
     if disk_rows:
-        _disk_report(monitor, _path("disk_io.svg"), disk_rows)
+        _disk_throughput_report(monitor, _path("disk_io.svg"), disk_rows)
         written.append(_path("disk_io.svg"))
+        # Latency/queue report only when the snapshots carry the latency fields.
+        if _has_disk_latency(monitor):
+            _disk_latency_report(monitor, _path("disk_latency.svg"), disk_rows)
+            written.append(_path("disk_latency.svg"))
 
     host_rows = _host_resource_rows(monitor)
     if host_rows:
-        _host_report(monitor, _path("host_resources.svg"), host_rows)
+        _host_resource_report(monitor, _path("host_resources.svg"), host_rows)
         written.append(_path("host_resources.svg"))
+        # Pressure / cache-breakdown / runstate view only when pressure history
+        # exists (keeps host_resources.svg a clean baseline on partial runs).
+        if getattr(monitor, "host_pressure_history", None):
+            _host_pressure_report(_path("host_pressure.svg"), host_rows)
+            written.append(_path("host_pressure.svg"))
 
     swap_rows = _swap_rows(monitor)
     if swap_rows:
