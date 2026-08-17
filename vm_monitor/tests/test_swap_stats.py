@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
-from vm_monitor.base import VMMonitorBase
+from vm_monitor.base import VMMonitorBase, _PAGE_SIZE
 
 
 # Concrete subclass for testing (VMMonitorBase is abstract)
@@ -231,8 +231,10 @@ class TestCollectSwapStats(unittest.TestCase):
         snapshot2 = self.monitor.swap_history[1]
         self.assertEqual(snapshot2["activity"]["pswpin_delta"], 120)
         self.assertEqual(snapshot2["activity"]["pswpout_delta"], 80)
-        self.assertAlmostEqual(snapshot2["activity"]["swap_in_rate"], 120 / 3, places=2)
-        self.assertAlmostEqual(snapshot2["activity"]["swap_out_rate"], 80 / 3, places=2)
+        # pswpin/pswpout are page counts -> rate in MiB/s via page size.
+        mib_per_page = _PAGE_SIZE / 2**20
+        self.assertAlmostEqual(snapshot2["activity"]["swap_in_rate"], 120 * mib_per_page / 3, places=2)
+        self.assertAlmostEqual(snapshot2["activity"]["swap_out_rate"], 80 * mib_per_page / 3, places=2)
 
         os.unlink(meminfo_path.name)
         os.unlink(vmstat_path1.name)

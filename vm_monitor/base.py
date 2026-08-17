@@ -600,8 +600,11 @@ class VMMonitorBase(ABC):
             if self._last_pswpin is not None:
                 pswpin_delta = pswpin_now - self._last_pswpin
                 pswpout_delta = pswpout_now - self._last_pswpout
-                swap_in_rate = round(pswpin_delta / self.interval, 2) if self.interval > 0 else 0
-                swap_out_rate = round(pswpout_delta / self.interval, 2) if self.interval > 0 else 0
+                # pswpin/pswpout are page counts (/proc/vmstat); convert to MiB/s
+                # via the host page size so the rate matches its "MiB/s" label.
+                mib_per_page = _PAGE_SIZE / 2**20
+                swap_in_rate = round(pswpin_delta * mib_per_page / self.interval, 2) if self.interval > 0 else 0
+                swap_out_rate = round(pswpout_delta * mib_per_page / self.interval, 2) if self.interval > 0 else 0
             else:
                 pswpin_delta = 0
                 pswpout_delta = 0
@@ -1512,7 +1515,7 @@ class VMMonitorBase(ABC):
                 print(
                     f"Swap:      {cap['used_mb']:>6.0f}/{cap['total_mb']:>6.0f} MB ({cap['usage_pct']:>5.1f}%)"
                     f" | Cached {cch['cached_mb']:>6.1f} MB"
-                    f" | In/Out {in_fmt}/{out_fmt} pg/s",
+                    f" | In/Out {in_fmt}/{out_fmt} MiB/s",
                     flush=True,
                 )
             else:
@@ -1934,14 +1937,22 @@ class VMMonitorBase(ABC):
             swap_peak_out_rate = (
                 round(max(s["activity"]["swap_out_rate"] for s in self.swap_history), 2) if self.swap_history else 0
             )
-            swap_total_in = self.swap_history[-1]["activity"]["pswpin_cumulative"] if self.swap_history else 0
-            swap_total_out = self.swap_history[-1]["activity"]["pswpout_cumulative"] if self.swap_history else 0
-            w.writerow(["Swap Avg In Rate (pages/s)", swap_avg_in_rate])
-            w.writerow(["Swap Avg Out Rate (pages/s)", swap_avg_out_rate])
-            w.writerow(["Swap Peak In Rate (pages/s)", swap_peak_in_rate])
-            w.writerow(["Swap Peak Out Rate (pages/s)", swap_peak_out_rate])
-            w.writerow(["Swap Total In Pages", swap_total_in])
-            w.writerow(["Swap Total Out Pages", swap_total_out])
+            swap_total_in = (
+                round(self.swap_history[-1]["activity"]["pswpin_cumulative"] * _PAGE_SIZE / 2**20, 2)
+                if self.swap_history
+                else 0
+            )
+            swap_total_out = (
+                round(self.swap_history[-1]["activity"]["pswpout_cumulative"] * _PAGE_SIZE / 2**20, 2)
+                if self.swap_history
+                else 0
+            )
+            w.writerow(["Swap Avg In Rate (MiB/s)", swap_avg_in_rate])
+            w.writerow(["Swap Avg Out Rate (MiB/s)", swap_avg_out_rate])
+            w.writerow(["Swap Peak In Rate (MiB/s)", swap_peak_in_rate])
+            w.writerow(["Swap Peak Out Rate (MiB/s)", swap_peak_out_rate])
+            w.writerow(["Swap Total In (MiB)", swap_total_in])
+            w.writerow(["Swap Total Out (MiB)", swap_total_out])
 
             # SwapCache per NUMA
             if self.numa_memory_history:
@@ -2140,14 +2151,22 @@ class VMMonitorBase(ABC):
             swap_peak_out_rate = (
                 round(max(s["activity"]["swap_out_rate"] for s in self.swap_history), 2) if self.swap_history else 0
             )
-            swap_total_in = self.swap_history[-1]["activity"]["pswpin_cumulative"] if self.swap_history else 0
-            swap_total_out = self.swap_history[-1]["activity"]["pswpout_cumulative"] if self.swap_history else 0
+            swap_total_in = (
+                round(self.swap_history[-1]["activity"]["pswpin_cumulative"] * _PAGE_SIZE / 2**20, 2)
+                if self.swap_history
+                else 0
+            )
+            swap_total_out = (
+                round(self.swap_history[-1]["activity"]["pswpout_cumulative"] * _PAGE_SIZE / 2**20, 2)
+                if self.swap_history
+                else 0
+            )
             print("[Swap Activity]")
             print(
-                f"  Avg In  | {swap_avg_in_rate:>8.2f} pg/s | Peak {swap_peak_in_rate:>8.2f} pg/s | Total {swap_total_in:>10d} pg"
+                f"  Avg In  | {swap_avg_in_rate:>8.2f} MiB/s | Peak {swap_peak_in_rate:>8.2f} MiB/s | Total {swap_total_in:>10.2f} MiB"
             )
             print(
-                f"  Avg Out | {swap_avg_out_rate:>8.2f} pg/s | Peak {swap_peak_out_rate:>8.2f} pg/s | Total {swap_total_out:>10d} pg"
+                f"  Avg Out | {swap_avg_out_rate:>8.2f} MiB/s | Peak {swap_peak_out_rate:>8.2f} MiB/s | Total {swap_total_out:>10.2f} MiB"
             )
 
         # SwapCache per NUMA summary

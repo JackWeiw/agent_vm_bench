@@ -16,6 +16,8 @@ from collections import defaultdict
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from vm_monitor.base import _PAGE_SIZE
+
 # Try to import pandas for Excel export
 try:
     import pandas as pd
@@ -128,16 +130,16 @@ def _build_summary_sheet(writer, monitor, numa_nodes, overall_stats):
         )
         swap_peak_in_rate = round(max(s["activity"]["swap_in_rate"] for s in monitor.swap_history), 2)
         swap_peak_out_rate = round(max(s["activity"]["swap_out_rate"] for s in monitor.swap_history), 2)
-        swap_total_in = monitor.swap_history[-1]["activity"]["pswpin_cumulative"]
-        swap_total_out = monitor.swap_history[-1]["activity"]["pswpout_cumulative"]
+        swap_total_in = round(monitor.swap_history[-1]["activity"]["pswpin_cumulative"] * _PAGE_SIZE / 2**20, 2)
+        swap_total_out = round(monitor.swap_history[-1]["activity"]["pswpout_cumulative"] * _PAGE_SIZE / 2**20, 2)
         summary_data["Metric"].extend(
             [
                 "Swap Avg In Rate",
                 "Swap Avg Out Rate",
                 "Swap Peak In Rate",
                 "Swap Peak Out Rate",
-                "Swap Total In Pages",
-                "Swap Total Out Pages",
+                "Swap Total In (MiB)",
+                "Swap Total Out (MiB)",
             ]
         )
         summary_data["Value"].extend(
@@ -150,7 +152,7 @@ def _build_summary_sheet(writer, monitor, numa_nodes, overall_stats):
                 swap_total_out,
             ]
         )
-        summary_data["Unit"].extend(["pages/s", "pages/s", "pages/s", "pages/s", "pages", "pages"])
+        summary_data["Unit"].extend(["MiB/s", "MiB/s", "MiB/s", "MiB/s", "MiB", "MiB"])
 
     # VM stats
     summary_data["Metric"].extend(
@@ -621,8 +623,8 @@ def _build_swap_timeline_sheet(writer, monitor):
         "Swap Free (MB)": [],
         "Swap Cached (MB)": [],
         "Swap Cache Ratio (%)": [],
-        "Swap In Rate (pages/s)": [],
-        "Swap Out Rate (pages/s)": [],
+        "Swap In Rate (MiB/s)": [],
+        "Swap Out Rate (MiB/s)": [],
     }
     for nid in all_numa_ids:
         swap_timeline_data[f"NUMA{nid} SwapCache (MB)"] = []
@@ -633,8 +635,8 @@ def _build_swap_timeline_sheet(writer, monitor):
         swap_timeline_data["Swap Free (MB)"].append(s["capacity"]["free_mb"])
         swap_timeline_data["Swap Cached (MB)"].append(s["cache"]["cached_mb"])
         swap_timeline_data["Swap Cache Ratio (%)"].append(s["cache"]["cached_ratio_pct"])
-        swap_timeline_data["Swap In Rate (pages/s)"].append(s["activity"]["swap_in_rate"])
-        swap_timeline_data["Swap Out Rate (pages/s)"].append(s["activity"]["swap_out_rate"])
+        swap_timeline_data["Swap In Rate (MiB/s)"].append(s["activity"]["swap_in_rate"])
+        swap_timeline_data["Swap Out Rate (MiB/s)"].append(s["activity"]["swap_out_rate"])
 
         # Per-NUMA SwapCache from numa_memory_history (same cycle)
         if i < len(monitor.numa_memory_history):
