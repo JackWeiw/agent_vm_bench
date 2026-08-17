@@ -397,6 +397,99 @@ def parse_templates(specs: list[str]) -> list[tuple[str, str]]:
     return out
 
 
+def _cell(v: float | None) -> str:
+    """Format a metric value for table cells; blank for missing/NaN."""
+    if v is None or v != v:  # None or NaN
+        return ""
+    return f"{v:.1f}"
+
+
+def _cold_mean(r: ArchResult) -> float | None:
+    if not r.cold:
+        return None
+    return statistics.fmean(cold_total_ms(c) for c in r.cold)
+
+
+def _snap_mean(r: ArchResult) -> float | None:
+    if not r.snapshot:
+        return None
+    return statistics.fmean(snap_total_ms(s) for s in r.snapshot)
+
+
+def _conc_wall(r: ArchResult) -> float | None:
+    return r.concurrent["wall_ms"] if r.concurrent else None
+
+
+def _lazy_value(mode: str, key: str):
+    def getter(r: ArchResult) -> float | None:
+        e = r.lazy.get(mode)
+        if not e or "error" in e:
+            return None
+        return e[key]
+
+    return getter
+
+
+# Fixed row order mirroring the customer benchmark table so runs from
+# different machines paste-align row-by-row.
+TABLE_ROWS: list[tuple[str, str]] = [
+    ("VM启动", "VM冷启动"),
+    ("VM启动", "VM快照启动"),
+    ("VM启动", "10并发快照启动"),
+    ("快照lazy load", "顺序遍历读-首读"),
+    ("快照lazy load", "顺序遍历读-次读"),
+    ("快照lazy load", "顺序遍历写-首写"),
+    ("快照lazy load", "顺序遍历写-次写"),
+    ("快照lazy load", "随机遍历读-首读"),
+    ("快照lazy load", "随机遍历读-次读"),
+    ("快照lazy load", "随机遍历写-首写"),
+    ("快照lazy load", "随机遍历写-次写"),
+]
+
+
+def _row_getter(metric: str):
+    if metric == "VM冷启动":
+        return _cold_mean
+    if metric == "VM快照启动":
+        return _snap_mean
+    if metric == "10并发快照启动":
+        return _conc_wall
+    mode_map = {
+        "顺序遍历读-首读": ("seq_read", "first_ms"),
+        "顺序遍历读-次读": ("seq_read", "second_ms"),
+        "顺序遍历写-首写": ("seq_write", "first_ms"),
+        "顺序遍历写-次写": ("seq_write", "second_ms"),
+        "随机遍历读-首读": ("rand_read", "first_ms"),
+        "随机遍历读-次读": ("rand_read", "second_ms"),
+        "随机遍历写-首写": ("rand_write", "first_ms"),
+        "随机遍历写-次写": ("rand_write", "second_ms"),
+    }
+    mode, key = mode_map[metric]
+    return _lazy_value(mode, key)
+
+
+def build_tsv(results: list[ArchResult]) -> str:
+    labels = [r.label for r in results]
+    lines = ["\t".join(["维度", "指标", *labels])]
+    for dim, metric in TABLE_ROWS:
+        getter = _row_getter(metric)
+        cells = [dim, metric] + [_cell(getter(r)) for r in results]
+        lines.append("\t".join(cells))
+    return "\n".join(lines) + "\n"
+
+
+def build_markdown(results: list[ArchResult]) -> str:
+    labels = [r.label for r in results]
+    header = "| 维度 | 指标 | " + " | ".join(labels) + " |"
+    sep = "|---|---|" + "|".join(["---"] * len(labels)) + "|"
+    lines = [header, sep]
+    for dim, metric in TABLE_ROWS:
+        getter = _row_getter(metric)
+        cells = [dim, metric] + [_cell(getter(r)) for r in results]
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
 async def main_async(args: argparse.Namespace) -> int:
     configure_env(args.api_url, args.api_key)
     templates = parse_templates(args.template)
@@ -417,7 +510,12 @@ async def main_async(args: argparse.Namespace) -> int:
         ),
         encoding="utf-8",
     )
-    print(f"\nReport written to {out_dir / 'report.json'}", flush=True)
+    # Paste-ready tables: TSV for Excel/Sheets, Markdown for docs/issues.
+    (out_dir / "report.tsv").write_text(build_tsv(results), encoding="utf-8")
+    (out_dir / "report.md").write_text(build_markdown(results) + "\n", encoding="utf-8")
+
+    print("\n" + build_markdown(results))
+    print(f"\nReport written to {out_dir}/ (report.json, report.tsv, report.md)", flush=True)
     return 0
 
 
