@@ -46,19 +46,33 @@ def _full_monitor():
     m = DummyMonitor()
     m.interval = 2.0
     m.target_disks = ["sda", "sdb"]
+
+    def dr(r, w, util, ifl, q, ra, wa):
+        return {
+            "r_mb_s": r,
+            "w_mb_s": w,
+            "util_pct": util,
+            "inflight": ifl,
+            "r_mb": r,
+            "w_mb": w,
+            "avg_queue_depth": q,
+            "read_await_ms": ra,
+            "write_await_ms": wa,
+        }
+
     m.disk_history = [
         {
             "ts": "2026-08-14 10:00:00",
             "disks": {
-                "sda": {"r_mb_s": 10.0, "w_mb_s": 20.0, "util_pct": 5.0, "inflight": 1, "r_mb": 10.0, "w_mb": 20.0},
-                "sdb": {"r_mb_s": 5.0, "w_mb_s": 15.0, "util_pct": 3.0, "inflight": 2, "r_mb": 5.0, "w_mb": 15.0},
+                "sda": dr(10.0, 20.0, 5.0, 1, 0.5, 2.0, 3.0),
+                "sdb": dr(5.0, 15.0, 3.0, 2, 1.0, 4.0, 5.0),
             },
         },
         {
             "ts": "2026-08-14 10:00:02",
             "disks": {
-                "sda": {"r_mb_s": 12.0, "w_mb_s": 25.0, "util_pct": 6.0, "inflight": 1, "r_mb": 12.0, "w_mb": 25.0},
-                "sdb": {"r_mb_s": 6.0, "w_mb_s": 18.0, "util_pct": 4.0, "inflight": 3, "r_mb": 6.0, "w_mb": 18.0},
+                "sda": dr(12.0, 25.0, 6.0, 1, 0.8, 2.5, 3.5),
+                "sdb": dr(6.0, 18.0, 4.0, 3, 1.2, 4.5, 5.5),
             },
         },
     ]
@@ -75,6 +89,38 @@ def _full_monitor():
         {"ts": "2026-08-14 10:00:00", "cached_mb": 1000.0, "buffers_mb": 50.0, "dirty_mb": 10.0, "writeback_mb": 5.0},
         {"ts": "2026-08-14 10:00:02", "cached_mb": 1100.0, "buffers_mb": 55.0, "dirty_mb": 20.0, "writeback_mb": 8.0},
     ]
+    m.host_pressure_history = [
+        {
+            "ts": "2026-08-14 10:00:00",
+            "page_scan_mib_s": 5.0,
+            "page_reclaim_mib_s": 4.0,
+            "file_refault_mib_s": 1.0,
+            "anon_pages_mb": 2000.0,
+            "file_cache_mb": 3000.0,
+            "sreclaimable_mb": 100.0,
+            "iowait_pct": 2.0,
+            "procs_running": 4,
+            "procs_blocked": 0,
+        },
+        {
+            "ts": "2026-08-14 10:00:02",
+            "page_scan_mib_s": 8.0,
+            "page_reclaim_mib_s": 6.0,
+            "file_refault_mib_s": 2.0,
+            "anon_pages_mb": 2100.0,
+            "file_cache_mb": 3100.0,
+            "sreclaimable_mb": 110.0,
+            "iowait_pct": 5.0,
+            "procs_running": 6,
+            "procs_blocked": 1,
+        },
+    ]
+    m.peak_page_scan_mib_s = 8.0
+    m.peak_page_reclaim_mib_s = 6.0
+    m.peak_file_refault_mib_s = 2.0
+    m.dirty_limit_mb = 500.0
+    m.dirty_background_limit_mb = 250.0
+    m._dirty_limits_read = True
     m.swap_history = [
         {
             "ts": "2026-08-14 10:00:00",
@@ -202,6 +248,29 @@ class TestSvgExport(unittest.TestCase):
         self.assertIn("Writeback", text)
         self.assertIn("Cached", text)
         self.assertIn("Buffers", text)
+
+    def test_host_report_has_pressure_and_dirty_threshold(self):
+        export_svg_reports(self.monitor, self.out_dir)
+        text = open(os.path.join(self.out_dir, "host_resources.svg"), encoding="utf-8").read()
+        # New pressure / cache / proc charts rendered.
+        self.assertIn("Page-Cache Pressure", text)
+        self.assertIn("Anonymous / File Cache", text)
+        self.assertIn("Runnable / Blocked Procs", text)
+        self.assertIn("IOWait", text)
+        # Dirty throttle threshold line drawn (dirty_limit_mb=500 set in fixture);
+        # it is the only dashed line in host_resources.svg (the util 100% line
+        # lives in disk_io.svg).
+        self.assertIn("dirty limit", text)
+        self.assertGreaterEqual(text.count('stroke-dasharray="7 5"'), 1)
+
+    def test_disk_io_has_queue_and_latency_charts(self):
+        export_svg_reports(self.monitor, self.out_dir)
+        text = open(os.path.join(self.out_dir, "disk_io.svg"), encoding="utf-8").read()
+        self.assertIn("Disk Queue Depth", text)
+        self.assertIn("Disk Avg Latency", text)
+        self.assertIn("Queue", text)
+        self.assertIn("R-await", text)
+        self.assertIn("W-await", text)
 
     def test_empty_monitor_writes_nothing(self):
         m = DummyMonitor()

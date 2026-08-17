@@ -30,20 +30,33 @@ from typing import Dict, List, Tuple
 
 import psutil
 
+# Host page size (bytes). Used to convert /proc/vmstat page counters (pgscan,
+# pgsteal, workingset_refault) into MiB. Guarded so importing this module on a
+# non-Linux host (where SC_PAGE_SIZE is unset) still works for tests.
+try:
+    _PAGE_SIZE = os.sysconf("SC_PAGE_SIZE")
+except (ValueError, OSError, AttributeError):
+    _PAGE_SIZE = 4096
+
 
 def _compute_disk_io_rates(cur: dict, prev: dict, interval: float) -> dict:
     """Compute per-device disk I/O rates from two /sys/block/<dev>/stat snapshots.
 
     Pure function (no /proc or /sys access) so the delta math is unit-testable
     on non-Linux hosts. Each snapshot is {dev: {sectors_read, sectors_written,
-    ms_io, inflight}}. Returns {dev: {r_mb_s, w_mb_s, util_pct, inflight,
-    r_mb, w_mb}}.
+    reads_completed, read_ms, writes_completed, write_ms, ms_io, weighted_ms,
+    inflight}}. Returns {dev: {r_mb_s, w_mb_s, util_pct, inflight, r_mb, w_mb,
+    avg_queue_depth, read_await_ms, write_await_ms}}.
 
     Sector size is 512 bytes (kernel block-layer stat sector size). util_pct is
     the fraction of wall-time the device spent servicing I/O: ms_io ticks at
     10ms granularity, so util = (delta_ms_io / 10) / interval * 100, capped at
-    100. A zero/None interval or missing previous snapshot yields zero rates
-    (first sample has no baseline).
+    100. avg_queue_depth is the mean in-flight request count over the interval
+    (weighted_ms / 1000 / interval, where weighted_ms is I/O-time weighted by
+    queue depth). read/write_await_ms is mean latency per completed I/O
+    (read_ms / reads_completed). A zero/None interval or missing previous
+    snapshot yields zero rates (first sample has no baseline). Snapshot fields
+    are read via .get so partial snapshots (older callers) do not raise.
     """
     rates = {}
     if not cur or not prev or not interval or interval <= 0:
@@ -52,9 +65,12 @@ def _compute_disk_io_rates(cur: dict, prev: dict, interval: float) -> dict:
                 "r_mb_s": 0.0,
                 "w_mb_s": 0.0,
                 "util_pct": 0.0,
-                "inflight": cur[dev].get("inflight", 0),
+                "inflight": (cur[dev] or {}).get("inflight", 0),
                 "r_mb": 0.0,
                 "w_mb": 0.0,
+                "avg_queue_depth": 0.0,
+                "read_await_ms": 0.0,
+                "write_await_ms": 0.0,
             }
         return rates
     for dev, c in cur.items():
@@ -65,6 +81,11 @@ def _compute_disk_io_rates(cur: dict, prev: dict, interval: float) -> dict:
         r_mb = d_read * 512 / 2**20
         w_mb = d_write * 512 / 2**20
         util = min(100.0, (d_ms / 10.0) / interval * 100)
+        d_reads = c.get("reads_completed", 0) - p.get("reads_completed", 0)
+        d_writes = c.get("writes_completed", 0) - p.get("writes_completed", 0)
+        d_read_ms = c.get("read_ms", 0) - p.get("read_ms", 0)
+        d_write_ms = c.get("write_ms", 0) - p.get("write_ms", 0)
+        d_weighted_ms = c.get("weighted_ms", 0) - p.get("weighted_ms", 0)
         rates[dev] = {
             "r_mb_s": round(r_mb / interval, 2),
             "w_mb_s": round(w_mb / interval, 2),
@@ -72,7 +93,38 @@ def _compute_disk_io_rates(cur: dict, prev: dict, interval: float) -> dict:
             "inflight": c.get("inflight", 0),
             "r_mb": round(r_mb, 2),
             "w_mb": round(w_mb, 2),
+            "avg_queue_depth": round(d_weighted_ms / 1000.0 / interval, 3),
+            "read_await_ms": round(d_read_ms / d_reads, 3) if d_reads > 0 else 0.0,
+            "write_await_ms": round(d_write_ms / d_writes, 3) if d_writes > 0 else 0.0,
         }
+    return rates
+
+
+def _compute_pressure_rates(cur: dict, prev: dict, interval: float, page_size: int = _PAGE_SIZE) -> dict:
+    """Compute page-cache pressure rates (MiB/s) from two /proc/vmstat snapshots.
+
+    Pure function (no /proc access) so the math is unit-testable on non-Linux
+    hosts. Each snapshot holds cumulative page counters:
+    pgscan_kswapd / pgscan_direct / pgscan_direct_throttle (pages scanned for
+    reclaim), pgsteal_kswapd / pgsteal_direct (pages reclaimed), and
+    workingset_refault_file (evicted file pages refaulted back). Returns rates
+    in MiB/s: page_scan_mib_s, page_reclaim_mib_s, file_refault_mib_s. A
+    zero/None interval or missing previous snapshot yields zero rates.
+    """
+    rates = {"page_scan_mib_s": 0.0, "page_reclaim_mib_s": 0.0, "file_refault_mib_s": 0.0}
+    if not cur or not prev or not interval or interval <= 0:
+        return rates
+    mib_per_page = page_size / 2**20
+
+    def _delta(key):
+        return max(0, cur.get(key, 0) - prev.get(key, 0))
+
+    scan = _delta("pgscan_kswapd") + _delta("pgscan_direct") + _delta("pgscan_direct_throttle")
+    steal = _delta("pgsteal_kswapd") + _delta("pgsteal_direct")
+    refault = _delta("workingset_refault_file")
+    rates["page_scan_mib_s"] = round(scan * mib_per_page / interval, 3)
+    rates["page_reclaim_mib_s"] = round(steal * mib_per_page / interval, 3)
+    rates["file_refault_mib_s"] = round(refault * mib_per_page / interval, 3)
     return rates
 
 
@@ -162,6 +214,21 @@ class VMMonitorBase(ABC):
         # ublk device count (/dev/ublkb*)
         self.ublk_history = []
         self.peak_ublk_devices = 0
+
+        # Host page-cache pressure + runnable/blocked procs (from /proc/vmstat
+        # + /proc/meminfo + /proc/stat). One sample per collect_sample cycle.
+        self.host_pressure_history = []
+        self.peak_page_scan_mib_s = 0.0
+        self.peak_page_reclaim_mib_s = 0.0
+        self.peak_file_refault_mib_s = 0.0
+        self._last_pressure = None  # cumulative vmstat page counters
+        self._last_cpu_total = None  # cumulative /proc/stat "cpu" total jiffies
+        self._last_cpu_iowait = None  # cumulative /proc/stat iowait jiffies
+        # Dirty-writeback throttle thresholds (MB); read lazily once from
+        # /proc/sys/vm. Used as a threshold line on the Dirty time curve.
+        self.dirty_limit_mb = 0.0
+        self.dirty_background_limit_mb = 0.0
+        self._dirty_limits_read = False
 
         # Specified NUMA Node CPU Statistics
         self.target_numa_nodes = [0]
@@ -579,23 +646,32 @@ class VMMonitorBase(ABC):
     def collect_disk_stats(self):
         """Collect per-device disk I/O rates from /sys/block/<dev>/stat.
 
-        Reads sectors read/written, inflight, and busy-ms for each device in
-        self.target_disks, computes per-second rates via deltas from the
-        previous sample normalized by self.interval. First sample (no prior
-        baseline) records zero rates. Missing devices are skipped silently.
+        Reads sectors read/written, inflight, busy-ms, I/O counts, I/O time,
+        and weighted I/O time for each device in self.target_disks, then
+        computes per-second rates + avg queue depth + per-I/O await latency
+        via deltas from the previous sample normalized by self.interval. First
+        sample (no prior baseline) records zero rates. Missing devices are
+        skipped silently. Bus (nvme vs sata) is classified by device name for
+        downstream grouping; it is not an AgentEnv-specific signal.
         """
         cur_stats = {}
         for dev in self.target_disks:
             try:
                 with open(f"/sys/block/{dev}/stat") as f:
                     fields = f.read().split()
-                if len(fields) < 10:
+                if len(fields) < 11:
                     continue
                 cur_stats[dev] = {
                     "sectors_read": int(fields[2]),
                     "sectors_written": int(fields[6]),
                     "inflight": int(fields[8]),
                     "ms_io": int(fields[9]),
+                    "reads_completed": int(fields[0]),
+                    "writes_completed": int(fields[4]),
+                    "read_ms": int(fields[3]),
+                    "write_ms": int(fields[7]),
+                    "weighted_ms": int(fields[10]),
+                    "bus": "nvme" if dev.startswith("nvme") else "sata",
                 }
             except (OSError, ValueError):
                 continue
@@ -654,6 +730,122 @@ class VMMonitorBase(ABC):
                 self.peak_ublk_devices = n
         except Exception:
             pass
+
+    # ===================== Collect Host Page-Cache Pressure =====================
+    def collect_host_pressure(self):
+        """Collect host page-cache pressure + runnable/blocked procs per sample.
+
+        Sources (all generic /proc, no sandbox-runtime coupling):
+        - /proc/meminfo: AnonPages, file cache (Cached+Buffers-Shmem),
+          SReclaimable. Reuses _read_meminfo() (also read by collect_swap_stats
+          and collect_host_mem_detail; one extra meminfo read per sample, <1ms).
+        - /proc/vmstat: pgscan_*/pgsteal_*/workingset_refault_file deltas ->
+          page_scan / page_reclaim / file_refault MiB/s. Reuses _read_vmstat().
+        - /proc/stat: "cpu" line -> instantaneous iowait% (delta vs prior
+          sample's cumulative jiffies); "procs_running" / "procs_blocked".
+        Also reads dirty throttle thresholds once (lazy) from /proc/sys/vm.
+        First sample (no prior baseline) records zero rates.
+        """
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        mi = self._read_meminfo()
+        anon_mb = round(mi.get("AnonPages", 0), 2)
+        sreclaimable_mb = round(mi.get("SReclaimable", 0), 2)
+        file_cache_mb = round(max(0.0, mi.get("Cached", 0) + mi.get("Buffers", 0) - mi.get("Shmem", 0)), 2)
+
+        # Page-cache pressure from /proc/vmstat deltas
+        vs = self._read_vmstat()
+        cur_pressure = {
+            "pgscan_kswapd": vs.get("pgscan_kswapd", 0),
+            "pgscan_direct": vs.get("pgscan_direct", 0),
+            "pgscan_direct_throttle": vs.get("pgscan_direct_throttle", 0),
+            "pgsteal_kswapd": vs.get("pgsteal_kswapd", 0),
+            "pgsteal_direct": vs.get("pgsteal_direct", 0),
+            "workingset_refault_file": vs.get("workingset_refault_file", 0),
+        }
+        pressure = _compute_pressure_rates(cur_pressure, self._last_pressure, self.interval)
+        self._last_pressure = cur_pressure
+
+        # iowait% + runnable/blocked procs from /proc/stat (delta-based iowait)
+        iowait_pct = 0.0
+        procs_running = 0
+        procs_blocked = 0
+        try:
+            with open("/proc/stat") as f:
+                for line in f:
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    if parts[0] == "cpu":
+                        vals = [int(x) for x in parts[1:11]]
+                        total = sum(vals)
+                        iowait = vals[4] if len(vals) > 4 else 0
+                        if self._last_cpu_total is not None and total > self._last_cpu_total:
+                            dt = total - self._last_cpu_total
+                            di = iowait - (self._last_cpu_iowait or 0)
+                            iowait_pct = round(max(0, di) / dt * 100, 1) if dt > 0 else 0.0
+                        self._last_cpu_total = total
+                        self._last_cpu_iowait = iowait
+                    elif parts[0] == "procs_running" and len(parts) > 1:
+                        procs_running = int(parts[1])
+                    elif parts[0] == "procs_blocked" and len(parts) > 1:
+                        procs_blocked = int(parts[1])
+        except (OSError, ValueError):
+            pass
+
+        # Dirty throttle thresholds (read once; sysctls are effectively static)
+        if not self._dirty_limits_read:
+            self.dirty_background_limit_mb, self.dirty_limit_mb = self._read_dirty_limits_mb(mi)
+            self._dirty_limits_read = True
+
+        self.host_pressure_history.append(
+            {
+                "ts": ts,
+                "page_scan_mib_s": pressure["page_scan_mib_s"],
+                "page_reclaim_mib_s": pressure["page_reclaim_mib_s"],
+                "file_refault_mib_s": pressure["file_refault_mib_s"],
+                "anon_pages_mb": anon_mb,
+                "file_cache_mb": file_cache_mb,
+                "sreclaimable_mb": sreclaimable_mb,
+                "iowait_pct": iowait_pct,
+                "procs_running": procs_running,
+                "procs_blocked": procs_blocked,
+            }
+        )
+        if pressure["page_scan_mib_s"] > self.peak_page_scan_mib_s:
+            self.peak_page_scan_mib_s = pressure["page_scan_mib_s"]
+        if pressure["page_reclaim_mib_s"] > self.peak_page_reclaim_mib_s:
+            self.peak_page_reclaim_mib_s = pressure["page_reclaim_mib_s"]
+        if pressure["file_refault_mib_s"] > self.peak_file_refault_mib_s:
+            self.peak_file_refault_mib_s = pressure["file_refault_mib_s"]
+
+    def _read_dirty_limits_mb(self, meminfo: dict) -> Tuple[float, float]:
+        """Return (dirty_background_limit, dirty_limit) in MB.
+
+        Reads /proc/sys/vm/dirty_bytes + dirty_background_bytes first (absolute
+        byte limits). When those are 0 (kernel falls back to ratio mode), uses
+        dirty_ratio / dirty_background_ratio * MemTotal. Returns (0, 0) if the
+        sysctls are unavailable (non-Linux hosts in tests).
+        """
+        try:
+            with open("/proc/sys/vm/dirty_bytes") as f:
+                dirty_bytes = int(f.read().strip() or 0)
+            with open("/proc/sys/vm/dirty_background_bytes") as f:
+                bg_bytes = int(f.read().strip() or 0)
+        except (OSError, ValueError):
+            dirty_bytes = bg_bytes = 0
+        if dirty_bytes > 0:
+            return round(bg_bytes / 2**20, 2), round(dirty_bytes / 2**20, 2)
+        try:
+            with open("/proc/sys/vm/dirty_ratio") as f:
+                dirty_ratio = int(f.read().strip() or 0)
+            with open("/proc/sys/vm/dirty_background_ratio") as f:
+                bg_ratio = int(f.read().strip() or 0)
+        except (OSError, ValueError):
+            dirty_ratio = bg_ratio = 0
+        memtotal = meminfo.get("MemTotal", 0)
+        if dirty_ratio > 0 and memtotal > 0:
+            return round(bg_ratio / 100 * memtotal, 2), round(dirty_ratio / 100 * memtotal, 2)
+        return 0.0, 0.0
 
     # ===================== Collect VM Total Memory =====================
     def collect_vm_total_memory(self, vms: List[Dict]) -> Dict:
@@ -1225,6 +1417,7 @@ class VMMonitorBase(ABC):
         self.collect_disk_stats()
         self.collect_host_mem_detail()
         self.collect_ublk_count()
+        self.collect_host_pressure()
         self.get_numa_nodes_memory()  # Collect NUMA meminfo in same cycle as swap/hugepage
         vms = self.get_vms_realtime()
         self.last_vm_count = len(vms)
@@ -1338,6 +1531,17 @@ class VMMonitorBase(ABC):
                 flush=True,
             )
 
+        # Page-cache pressure + runnable/blocked procs
+        if self.host_pressure_history:
+            p = self.host_pressure_history[-1]
+            print(
+                f"Pressure:  Scan {p['page_scan_mib_s']:>6.1f} | Reclaim {p['page_reclaim_mib_s']:>6.1f}"
+                f" | Refault {p['file_refault_mib_s']:>6.1f} MiB/s"
+                f" | iowait {p['iowait_pct']:>4.1f}% | run/blk {p['procs_running']}/{p['procs_blocked']}"
+                f" | Anon {p['anon_pages_mb']:.0f} File {p['file_cache_mb']:.0f} MB",
+                flush=True,
+            )
+
         # SwapCache per NUMA
         if self.numa_memory_history:
             latest_numa = self.numa_memory_history[-1]["nodes"]
@@ -1415,6 +1619,9 @@ class VMMonitorBase(ABC):
         print(f"Waiting for stress test to start... (Detection method: {check_type}={check_target})")
         self.interval = interval_seconds
         self._last_diskstats = None  # avoid stale disk deltas across monitoring restarts
+        self._last_pressure = None  # avoid stale vmstat pressure deltas
+        self._last_cpu_total = None  # avoid stale /proc/stat iowait baseline
+        self._dirty_limits_read = False  # re-read dirty sysctls on restart
         if duration_seconds:
             print(f"Duration limit: {duration_seconds}s (will stop after this time)")
         stress_started = False
@@ -1476,6 +1683,9 @@ class VMMonitorBase(ABC):
     def start_monitoring(self, duration_seconds=None, interval_seconds=5):
         self.interval = interval_seconds
         self._last_diskstats = None  # avoid stale disk deltas across monitoring restarts
+        self._last_pressure = None  # avoid stale vmstat pressure deltas
+        self._last_cpu_total = None  # avoid stale /proc/stat iowait baseline
+        self._dirty_limits_read = False  # re-read dirty sysctls on restart
         self.running = True
         start_time = time.time()
 
@@ -1620,6 +1830,9 @@ class VMMonitorBase(ABC):
             w.writerow(["Dirty Peak MB", round(self.peak_dirty_mb, 2)])
             w.writerow(["Writeback Peak MB", round(self.peak_writeback_mb, 2)])
             w.writerow(["ublk Devices Peak", self.peak_ublk_devices])
+            w.writerow(["Page Scan Peak MiB/s", round(self.peak_page_scan_mib_s, 3)])
+            w.writerow(["Page Reclaim Peak MiB/s", round(self.peak_page_reclaim_mib_s, 3)])
+            w.writerow(["File Refault Peak MiB/s", round(self.peak_file_refault_mib_s, 3)])
 
             for node in sorted(self.numa_cpu_history.keys()):
                 hist = self.numa_cpu_history[node]
@@ -1838,6 +2051,10 @@ class VMMonitorBase(ABC):
         print(f"  Disk Write Peak:    {self.peak_disk_write_mb_s:.1f} MB/s")
         print(f"  Dirty Peak:         {self.peak_dirty_mb:.1f} MB | Writeback Peak: {self.peak_writeback_mb:.1f} MB")
         print(f"  ublk Devices Peak:  {self.peak_ublk_devices}")
+        print(
+            f"  Page Pressure Peak: Scan {self.peak_page_scan_mib_s:.1f} | Reclaim {self.peak_page_reclaim_mib_s:.1f}"
+            f" | Refault {self.peak_file_refault_mib_s:.1f} MiB/s"
+        )
         print("")
         print(f"  Total VMs:    {overall_stats['total_vms']}")
         print(f"  Alive VMs:     {self.last_vm_count}")

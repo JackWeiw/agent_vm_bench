@@ -232,6 +232,9 @@ def _disk_io_rows(monitor) -> List[dict]:
                 row[f"{dev}_read_mb_s"] = d.get("r_mb_s", 0.0)
                 row[f"{dev}_write_mb_s"] = d.get("w_mb_s", 0.0)
                 row[f"{dev}_util_pct"] = d.get("util_pct", 0.0)
+                row[f"{dev}_queue_depth"] = d.get("avg_queue_depth", 0.0)
+                row[f"{dev}_read_await_ms"] = d.get("read_await_ms", 0.0)
+                row[f"{dev}_write_await_ms"] = d.get("write_await_ms", 0.0)
         if monitor.ublk_history and i < len(monitor.ublk_history):
             row["ublk_devices"] = monitor.ublk_history[i].get("ublk_devices", 0)
         rows.append(row)
@@ -239,16 +242,20 @@ def _disk_io_rows(monitor) -> List[dict]:
 
 
 def _host_resource_rows(monitor) -> List[dict]:
-    """Merge host_cpu_history + host_mem_history + host_mem_detail_history by index."""
+    """Merge host_cpu_history + host_mem_history + host_mem_detail_history +
+    host_pressure_history by index. Carries the dirty-limit threshold as a
+    flat field so the Dirty chart can draw a dashed throttle line."""
     cpu = monitor.host_cpu_history
     mem = monitor.host_mem_history
     detail = monitor.host_mem_detail_history
-    if not cpu and not mem and not detail:
+    pressure = getattr(monitor, "host_pressure_history", [])
+    if not cpu and not mem and not detail and not pressure:
         return []
     # Prefer a ts-bearing history for elapsed; fall back to index*interval.
-    ts_source: Sequence[dict] = detail if detail else (mem if mem else [])
+    ts_source: Sequence[dict] = detail if detail else (pressure if pressure else (mem if mem else []))
     elapsed = _elapsed_series(ts_source, getattr(monitor, "interval", 0))
-    n = max(len(cpu), len(mem), len(detail))
+    n = max(len(cpu), len(mem), len(detail), len(pressure))
+    dirty_limit = float(getattr(monitor, "dirty_limit_mb", 0.0) or 0.0)
     rows: List[dict] = []
     for i in range(n):
         row: dict = {"elapsed_s": elapsed[i] if i < len(elapsed) else i}
@@ -261,6 +268,19 @@ def _host_resource_rows(monitor) -> List[dict]:
             row["writeback_mb"] = detail[i].get("writeback_mb", 0.0)
             row["cached_mb"] = detail[i].get("cached_mb", 0.0)
             row["buffers_mb"] = detail[i].get("buffers_mb", 0.0)
+        if i < len(pressure):
+            p = pressure[i]
+            row["iowait_pct"] = p.get("iowait_pct", 0.0)
+            row["anon_pages_mb"] = p.get("anon_pages_mb", 0.0)
+            row["file_cache_mb"] = p.get("file_cache_mb", 0.0)
+            row["sreclaimable_mb"] = p.get("sreclaimable_mb", 0.0)
+            row["page_scan_mib_s"] = p.get("page_scan_mib_s", 0.0)
+            row["page_reclaim_mib_s"] = p.get("page_reclaim_mib_s", 0.0)
+            row["file_refault_mib_s"] = p.get("file_refault_mib_s", 0.0)
+            row["procs_running"] = p.get("procs_running", 0)
+            row["procs_blocked"] = p.get("procs_blocked", 0)
+        if dirty_limit > 0:
+            row["dirty_limit_mb"] = dirty_limit
         rows.append(row)
     return rows
 
@@ -338,20 +358,29 @@ def _disk_report(monitor, target, rows):
     read_series = [(f"{d}_read_mb_s", f"{d} Read", _PALETTE[i % len(_PALETTE)]) for i, d in enumerate(disks)]
     write_series = [(f"{d}_write_mb_s", f"{d} Write", _PALETTE[i % len(_PALETTE)]) for i, d in enumerate(disks)]
     util_series = [(f"{d}_util_pct", d, _PALETTE[i % len(_PALETTE)]) for i, d in enumerate(disks)]
+    queue_series = [(f"{d}_queue_depth", f"{d} Queue", _PALETTE[i % len(_PALETTE)]) for i, d in enumerate(disks)]
+    await_series = []
+    for i, d in enumerate(disks):
+        await_series.append((f"{d}_read_await_ms", f"{d} R-await", _PALETTE[(2 * i) % len(_PALETTE)]))
+        await_series.append((f"{d}_write_await_ms", f"{d} W-await", _PALETTE[(2 * i + 1) % len(_PALETTE)]))
     charts = [
         ("Disk Read Throughput", "MiB/s", read_series, None),
         ("Disk Write Throughput", "MiB/s", write_series, None),
         ("Disk Busy Utilization", "%", util_series, (100.0, "100%")),
+        ("Disk Queue Depth", "queue", queue_series, None),
+        ("Disk Avg Latency (await)", "ms", await_series, None),
         ("ublk Devices", "count", [("ublk_devices", "ublk", "#38bdf8")], None),
     ]
     _render_report(target, "Disk I/O Time Curves", charts, [rows] * len(charts))
 
 
-def _host_report(target, rows):
+def _host_report(monitor, target, rows):
+    dirty_limit = float(getattr(monitor, "dirty_limit_mb", 0.0) or 0.0)
+    dirty_threshold = (dirty_limit, "dirty limit") if dirty_limit > 0 else None
     charts = [
-        ("Host CPU Usage", "%", [("host_cpu_pct", "CPU", "#60a5fa")], None),
+        ("Host CPU Usage", "%", [("host_cpu_pct", "CPU", "#60a5fa"), ("iowait_pct", "IOWait", "#fb7185")], None),
         ("Host Memory Used", "GiB", [("host_mem_used_gb", "Used", "#f59e0b")], None),
-        ("Host Dirty Pages", "MiB", [("dirty_mb", "Dirty", "#fb7185")], None),
+        ("Host Dirty Pages", "MiB", [("dirty_mb", "Dirty", "#fb7185")], dirty_threshold),
         (
             "Writeback / Cached / Buffers",
             "MiB",
@@ -360,6 +389,32 @@ def _host_report(target, rows):
                 ("cached_mb", "Cached", "#4ade80"),
                 ("buffers_mb", "Buffers", "#c084fc"),
             ],
+            None,
+        ),
+        (
+            "Page-Cache Pressure",
+            "MiB/s",
+            [
+                ("page_scan_mib_s", "Scan", "#fb7185"),
+                ("page_reclaim_mib_s", "Reclaim", "#f59e0b"),
+                ("file_refault_mib_s", "Refault", "#60a5fa"),
+            ],
+            None,
+        ),
+        (
+            "Anonymous / File Cache",
+            "MiB",
+            [
+                ("anon_pages_mb", "Anon", "#fb7185"),
+                ("file_cache_mb", "File Cache", "#4ade80"),
+                ("sreclaimable_mb", "SReclaimable", "#c084fc"),
+            ],
+            None,
+        ),
+        (
+            "Runnable / Blocked Procs",
+            "count",
+            [("procs_running", "Running", "#4ade80"), ("procs_blocked", "Blocked", "#fb7185")],
             None,
         ),
     ]
@@ -414,7 +469,7 @@ def export_svg_reports(monitor, output_dir: str) -> List[str]:
 
     host_rows = _host_resource_rows(monitor)
     if host_rows:
-        _host_report(_path("host_resources.svg"), host_rows)
+        _host_report(monitor, _path("host_resources.svg"), host_rows)
         written.append(_path("host_resources.svg"))
 
     swap_rows = _swap_rows(monitor)

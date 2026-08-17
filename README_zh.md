@@ -234,7 +234,8 @@ sudo "$(which vm-monitor)" --vmm firecracker -t 60 -i 2
 - `<前缀>.csv`、`summary.csv`——逐采样原始数据 + 汇总统计。
 - `analysis_report.xlsx`——多 sheet 报告（Summary、NUMA、VM 统计、
   DevKit_TopDown/Memory、KSys、UBWatch、SMAPBW、Getfre、Swap/NUMA/VM-total
-  时间线、**Disk_IO_Timeline**、**Host_Mem_Timeline**）附图表。
+  时间线、**Disk_IO_Timeline**、**Host_Mem_Timeline**、
+  **Host_Pressure_Timeline**）附图表。
 - **SVG 时间曲线**（`disk_io.svg`、`host_resources.svg`、`swap.svg`、
   `numa.svg`、`vm_total.svg`）——无外部依赖的深色 `<polyline>` 图，含
   网格/图例/阈值线。加 `--no-svg` 或源历史为空时跳过。
@@ -243,10 +244,17 @@ sudo "$(which vm-monitor)" --vmm firecracker -t 60 -i 2
 
 全部在 `VMMonitorBase.collect_sample()` 内原生采集（无额外进程）：
 
-- **磁盘 I/O**——每设备读/写 MB/s、忙碌率、inflight，来自
-  `/sys/block/<dev>/stat` 增量（512 字节扇区；忙碌率封顶 100%）。
+- **磁盘 I/O**——每设备读/写 MB/s、忙碌率、inflight、**平均队列深度**、
+  **读/写 await 时延**，来自 `/sys/block/<dev>/stat` 增量（512 字节扇区；
+  忙碌率封顶 100%；队列深度由 weighted-I/O-ms 推导）。
 - **宿主机内存明细**——Cached+SReclaimable / Buffers / Dirty / Writeback，
-  来自 `/proc/meminfo`。
+  来自 `/proc/meminfo`；dirty-writeback **阈值线** 一次性读自
+  `/proc/sys/vm/dirty_bytes`（或 `dirty_ratio`），在 Dirty 时间曲线上画虚线。
+- **页缓存压力**——page-scan / page-reclaim / file-refault 速率（MiB/s），
+  来自 `/proc/vmstat` 增量（`pgscan_*` / `pgsteal_*` /
+  `workingset_refault_file`）；匿名内存与文件缓存（`Cached+Buffers-Shmem`）
+  及 `SReclaimable` 来自 `/proc/meminfo`；基于增量的 `iowait%` 与
+  runnable/blocked 进程数来自 `/proc/stat`。
 - **ublk**——设备数，`glob /dev/ublkb*`。
 - 另有既有指标：每 VM 的 CPU/内存/大页、宿主机 CPU/内存、每 NUMA 的
   CPU/内存/大页、swap、VM 总内存聚合。
