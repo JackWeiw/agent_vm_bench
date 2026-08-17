@@ -47,6 +47,22 @@ def _nice_max(value: float) -> float:
     return step * exponent
 
 
+def _memory_scale(value_mb: float) -> Tuple[float, str]:
+    """Adaptive (divisor, unit label) for memory volumes stored in MiB.
+
+    Picks the largest binary unit whose threshold the peak stays under, so a
+    dirty-page axis reads ``2.4 GiB`` instead of ``2456 MiB`` once it grows,
+    but keeps ``MiB`` for small volumes (swap, writeback). The geometry still
+    auto-fits via :func:`_nice_max`; only the tick numbers + y-axis label are
+    divided/relabelled.
+    """
+    if value_mb >= 1024.0 * 1024.0:
+        return 1024.0 * 1024.0, "TiB"
+    if value_mb >= 1024.0:
+        return 1024.0, "GiB"
+    return 1.0, "MiB"
+
+
 def _elapsed_series(history: Sequence[dict], interval: float) -> List[float]:
     """Return per-sample elapsed-seconds from a history's ``ts`` strings.
 
@@ -86,12 +102,17 @@ def _line_chart(
     unit: str,
     series: Sequence[Tuple[str, str, str]],
     threshold: Optional[Tuple[float, str]] = None,
+    scale_family: Optional[str] = None,
 ) -> str:
     """Render one chart panel as an SVG <g> string.
 
     rows: list of dicts each carrying ``elapsed_s`` plus the series fields.
     series: list of (field_name, legend_label, color_hex).
     threshold: optional (value, label) drawn as a dashed amber line.
+    scale_family: ``"memory"`` flips the y-axis to an adaptive binary unit
+        (MiB/GiB/TiB) based on the peak value, so volumes large enough to
+        read in GiB are not crammed onto a multi-thousand MiB axis. Other
+        charts leave it None and use ``unit`` verbatim.
     """
     left, right, top, bottom = 58, 16, 38, 82
     plot_x, plot_y = x + left, y + top
@@ -105,8 +126,16 @@ def _line_chart(
         all_values.append(threshold[0])
     raw_min = min(all_values, default=0.0)
     raw_max = max(all_values, default=1.0)
-    y_min = -_nice_max(abs(raw_min) * 1.05) if raw_min < 0 else 0.0
-    y_max = _nice_max(raw_max * 1.05) if raw_max > 0 else 1.0
+    # Adaptive unit: pick a binary unit from the peak, then project the whole
+    # axis (min/max/ticks/polyline/threshold) into scaled space so the ticks
+    # land on round numbers (0, 1, 2 ... GiB) -- not 4.9 / 3.9 / 2.9. Dividing
+    # only the tick labels (keeping geometry in raw space) would leave the
+    # axis unreadable and looking wrong.
+    divisor, display_unit = _memory_scale(raw_max) if scale_family == "memory" else (1.0, unit)
+    s_min = raw_min / divisor
+    s_max = raw_max / divisor
+    y_min = -_nice_max(abs(s_min) * 1.05) if s_min < 0 else 0.0
+    y_max = _nice_max(s_max * 1.05) if s_max > 0 else 1.0
     y_span = max(1e-12, y_max - y_min)
 
     parts = [
@@ -131,30 +160,33 @@ def _line_chart(
     parts.append(
         f'<text x="{x + 14}" y="{plot_y + plot_h / 2}" '
         f'transform="rotate(-90 {x + 14} {plot_y + plot_h / 2})" text-anchor="middle" '
-        f'class="axis">{_svg_escape(unit)}</text>'
+        f'class="axis">{_svg_escape(display_unit)}</text>'
     )
 
-    if threshold and y_min <= threshold[0] <= y_max:
-        py = plot_y + plot_h * (y_max - threshold[0]) / y_span
-        parts.append(
-            f'<line x1="{plot_x}" y1="{py:.1f}" x2="{plot_x + plot_w}" y2="{py:.1f}" '
-            f'stroke="#f59e0b" stroke-dasharray="7 5"/>'
-        )
-        parts.append(
-            f'<text x="{plot_x + plot_w - 4}" y="{py - 5:.1f}" text-anchor="end" '
-            f'fill="#fbbf24" class="legend">{_svg_escape(threshold[1])}</text>'
-        )
+    if threshold:
+        thr_scaled = threshold[0] / divisor
+        if y_min <= thr_scaled <= y_max:
+            py = plot_y + plot_h * (y_max - thr_scaled) / y_span
+            parts.append(
+                f'<line x1="{plot_x}" y1="{py:.1f}" x2="{plot_x + plot_w}" y2="{py:.1f}" '
+                f'stroke="#f59e0b" stroke-dasharray="7 5"/>'
+            )
+            parts.append(
+                f'<text x="{plot_x + plot_w - 4}" y="{py - 5:.1f}" text-anchor="end" '
+                f'fill="#fbbf24" class="legend">{_svg_escape(threshold[1])}</text>'
+            )
 
     legend_x = plot_x
     legend_y = y + height - 14
     for field, label, color in series:
         points: List[str] = []
         for row in rows:
-            value = float(row.get(field, math.nan))
-            if not math.isfinite(value):
+            raw = float(row.get(field, math.nan))
+            if not math.isfinite(raw):
                 continue
+            scaled = raw / divisor
             px = plot_x + plot_w * float(row["elapsed_s"]) / x_max
-            clipped = min(y_max, max(y_min, value))
+            clipped = min(y_max, max(y_min, scaled))
             py = plot_y + plot_h * (y_max - clipped) / y_span
             points.append(f"{px:.1f},{py:.1f}")
         if len(points) >= 2:
@@ -177,7 +209,7 @@ def _render_report(
 ) -> None:
     """Compose several line charts into one dark-themed SVG file.
 
-    charts: list of (chart_title, unit, series, threshold).
+    charts: list of (chart_title, unit, series, threshold[, scale_family]).
     rows_per_chart: per-chart row list (each row carries elapsed_s + fields).
     """
     columns = 1 if len(charts) <= 1 else 2
@@ -202,11 +234,13 @@ def _render_report(
         '<rect width="100%" height="100%" fill="#07101f"/>',
         f'<text x="30" y="45" class="title">{_svg_escape(title)}</text>',
     ]
-    for index, (ctitle, unit, series, thr) in enumerate(charts):
+    for index, chart in enumerate(charts):
+        ctitle, unit, series, thr = chart[:4]
+        sf = chart[4] if len(chart) > 4 else None
         rows = rows_per_chart[index] if index < len(rows_per_chart) else []
         x = 30 + (index % columns) * 700
         y = top + (index // columns) * (panel_h + gap)
-        parts.append(_line_chart(rows, x, y, panel_w, panel_h, ctitle, unit, series, thr))
+        parts.append(_line_chart(rows, x, y, panel_w, panel_h, ctitle, unit, series, thr, sf))
     parts.append("</svg>")
     with open(target, "w", encoding="utf-8") as f:
         f.write("".join(parts))
@@ -232,6 +266,9 @@ def _disk_io_rows(monitor) -> List[dict]:
                 row[f"{dev}_read_mb_s"] = d.get("r_mb_s", 0.0)
                 row[f"{dev}_write_mb_s"] = d.get("w_mb_s", 0.0)
                 row[f"{dev}_util_pct"] = d.get("util_pct", 0.0)
+                row[f"{dev}_queue_depth"] = d.get("avg_queue_depth", 0.0)
+                row[f"{dev}_read_await_ms"] = d.get("read_await_ms", 0.0)
+                row[f"{dev}_write_await_ms"] = d.get("write_await_ms", 0.0)
         if monitor.ublk_history and i < len(monitor.ublk_history):
             row["ublk_devices"] = monitor.ublk_history[i].get("ublk_devices", 0)
         rows.append(row)
@@ -239,16 +276,20 @@ def _disk_io_rows(monitor) -> List[dict]:
 
 
 def _host_resource_rows(monitor) -> List[dict]:
-    """Merge host_cpu_history + host_mem_history + host_mem_detail_history by index."""
+    """Merge host_cpu_history + host_mem_history + host_mem_detail_history +
+    host_pressure_history by index. Carries the dirty-limit threshold as a
+    flat field so the Dirty chart can draw a dashed throttle line."""
     cpu = monitor.host_cpu_history
     mem = monitor.host_mem_history
     detail = monitor.host_mem_detail_history
-    if not cpu and not mem and not detail:
+    pressure = getattr(monitor, "host_pressure_history", [])
+    if not cpu and not mem and not detail and not pressure:
         return []
     # Prefer a ts-bearing history for elapsed; fall back to index*interval.
-    ts_source: Sequence[dict] = detail if detail else (mem if mem else [])
+    ts_source: Sequence[dict] = detail if detail else (pressure if pressure else (mem if mem else []))
     elapsed = _elapsed_series(ts_source, getattr(monitor, "interval", 0))
-    n = max(len(cpu), len(mem), len(detail))
+    n = max(len(cpu), len(mem), len(detail), len(pressure))
+    dirty_limit = float(getattr(monitor, "dirty_limit_mb", 0.0) or 0.0)
     rows: List[dict] = []
     for i in range(n):
         row: dict = {"elapsed_s": elapsed[i] if i < len(elapsed) else i}
@@ -261,6 +302,19 @@ def _host_resource_rows(monitor) -> List[dict]:
             row["writeback_mb"] = detail[i].get("writeback_mb", 0.0)
             row["cached_mb"] = detail[i].get("cached_mb", 0.0)
             row["buffers_mb"] = detail[i].get("buffers_mb", 0.0)
+        if i < len(pressure):
+            p = pressure[i]
+            row["iowait_pct"] = p.get("iowait_pct", 0.0)
+            row["anon_pages_mb"] = p.get("anon_pages_mb", 0.0)
+            row["file_cache_mb"] = p.get("file_cache_mb", 0.0)
+            row["sreclaimable_mb"] = p.get("sreclaimable_mb", 0.0)
+            row["page_scan_mib_s"] = p.get("page_scan_mib_s", 0.0)
+            row["page_reclaim_mib_s"] = p.get("page_reclaim_mib_s", 0.0)
+            row["file_refault_mib_s"] = p.get("file_refault_mib_s", 0.0)
+            row["procs_running"] = p.get("procs_running", 0)
+            row["procs_blocked"] = p.get("procs_blocked", 0)
+        if dirty_limit > 0:
+            row["dirty_limit_mb"] = dirty_limit
         rows.append(row)
     return rows
 
@@ -333,7 +387,13 @@ def _vm_total_rows(monitor) -> List[dict]:
 # ============================ report assembly ============================
 
 
-def _disk_report(monitor, target, rows):
+def _disk_throughput_report(monitor, target, rows):
+    """disk_io.svg: throughput + busy utilization + ublk inventory (4 charts).
+
+    Kept compact (2x2) so the file reads as one clean PPT slide. Latency /
+    queue-depth live in disk_latency.svg so the throughput view is not
+    crowded by a second axis family.
+    """
     disks = list(getattr(monitor, "target_disks", []) or [])
     read_series = [(f"{d}_read_mb_s", f"{d} Read", _PALETTE[i % len(_PALETTE)]) for i, d in enumerate(disks)]
     write_series = [(f"{d}_write_mb_s", f"{d} Write", _PALETTE[i % len(_PALETTE)]) for i, d in enumerate(disks)]
@@ -347,11 +407,49 @@ def _disk_report(monitor, target, rows):
     _render_report(target, "Disk I/O Time Curves", charts, [rows] * len(charts))
 
 
-def _host_report(target, rows):
+def _disk_latency_report(monitor, target, rows):
+    """disk_latency.svg: avg queue depth + per-I/O await latency (2 charts).
+
+    Separate axis family (queue depth is dimensionless, await is ms) from the
+    throughput MB/s view. Only written when the disk snapshots carry the
+    latency fields (real collection always does; legacy/synthetic fixtures
+    without them skip this file).
+    """
+    disks = list(getattr(monitor, "target_disks", []) or [])
+    queue_series = [(f"{d}_queue_depth", f"{d} Queue", _PALETTE[i % len(_PALETTE)]) for i, d in enumerate(disks)]
+    await_series = []
+    for i, d in enumerate(disks):
+        await_series.append((f"{d}_read_await_ms", f"{d} R-await", _PALETTE[(2 * i) % len(_PALETTE)]))
+        await_series.append((f"{d}_write_await_ms", f"{d} W-await", _PALETTE[(2 * i + 1) % len(_PALETTE)]))
     charts = [
-        ("Host CPU Usage", "%", [("host_cpu_pct", "CPU", "#60a5fa")], None),
+        ("Disk Queue Depth", "queue", queue_series, None),
+        ("Disk Avg Latency (await)", "ms", await_series, None),
+    ]
+    _render_report(target, "Disk Latency Time Curves", charts, [rows] * len(charts))
+
+
+def _has_disk_latency(monitor) -> bool:
+    """True if any disk snapshot carries avg_queue_depth (collected since the
+    latency-fields extension). Gates disk_latency.svg so synthetic fixtures
+    that populate only r/w/util do not emit an all-zero latency report."""
+    for entry in getattr(monitor, "disk_history", []) or []:
+        for d in (entry.get("disks") or {}).values():
+            if isinstance(d, dict) and "avg_queue_depth" in d:
+                return True
+    return False
+
+
+def _host_resource_report(monitor, target, rows):
+    """host_resources.svg: CPU(+iowait), mem used, dirty(+throttle), WB/cached
+    /buffers (4 charts). The host resource baseline; kept at 2x2 so it fits a
+    single slide. Pressure / cache-breakdown / runstate live in
+    host_pressure.svg."""
+    dirty_limit = float(getattr(monitor, "dirty_limit_mb", 0.0) or 0.0)
+    dirty_threshold = (dirty_limit, "dirty limit") if dirty_limit > 0 else None
+    charts = [
+        ("Host CPU Usage", "%", [("host_cpu_pct", "CPU", "#60a5fa"), ("iowait_pct", "IOWait", "#fb7185")], None),
         ("Host Memory Used", "GiB", [("host_mem_used_gb", "Used", "#f59e0b")], None),
-        ("Host Dirty Pages", "MiB", [("dirty_mb", "Dirty", "#fb7185")], None),
+        ("Host Dirty Pages", "MiB", [("dirty_mb", "Dirty", "#fb7185")], dirty_threshold, "memory"),
         (
             "Writeback / Cached / Buffers",
             "MiB",
@@ -361,17 +459,54 @@ def _host_report(target, rows):
                 ("buffers_mb", "Buffers", "#c084fc"),
             ],
             None,
+            "memory",
         ),
     ]
     _render_report(target, "Host Resource Time Curves", charts, [rows] * len(charts))
 
 
+def _host_pressure_report(target, rows):
+    """host_pressure.svg: page-cache pressure, anon/file cache breakdown,
+    runnable/blocked procs (3 charts). The memory-pressure + runstate view,
+    split out so host_resources.svg stays a clean baseline."""
+    charts = [
+        (
+            "Page-Cache Pressure",
+            "MiB/s",
+            [
+                ("page_scan_mib_s", "Scan", "#fb7185"),
+                ("page_reclaim_mib_s", "Reclaim", "#f59e0b"),
+                ("file_refault_mib_s", "Refault", "#60a5fa"),
+            ],
+            None,
+        ),
+        (
+            "Anonymous / File Cache",
+            "MiB",
+            [
+                ("anon_pages_mb", "Anon", "#fb7185"),
+                ("file_cache_mb", "File Cache", "#4ade80"),
+                ("sreclaimable_mb", "SReclaimable", "#c084fc"),
+            ],
+            None,
+            "memory",
+        ),
+        (
+            "Runnable / Blocked Procs",
+            "count",
+            [("procs_running", "Running", "#4ade80"), ("procs_blocked", "Blocked", "#fb7185")],
+            None,
+        ),
+    ]
+    _render_report(target, "Host Pressure Time Curves", charts, [rows] * len(charts))
+
+
 def _swap_report(target, rows):
     charts = [
-        ("Swap Used", "MiB", [("swap_used_mb", "Used", "#fb7185")], None),
+        ("Swap Used", "MiB", [("swap_used_mb", "Used", "#fb7185")], None, "memory"),
         ("Swap In/Out Rate", "MiB/s", [("swap_in_rate", "In", "#4ade80"), ("swap_out_rate", "Out", "#f97316")], None),
-        ("Swap Cache", "MiB", [("swap_cached_mb", "Cached", "#60a5fa")], None),
-        ("Swap Used (cumulative view)", "MiB", [("swap_used_mb", "Used", "#f59e0b")], None),
+        ("Swap Cache", "MiB", [("swap_cached_mb", "Cached", "#60a5fa")], None, "memory"),
+        ("Swap Used (cumulative view)", "MiB", [("swap_used_mb", "Used", "#f59e0b")], None, "memory"),
     ]
     _render_report(target, "Swap Activity Time Curves", charts, [rows] * len(charts))
 
@@ -409,13 +544,22 @@ def export_svg_reports(monitor, output_dir: str) -> List[str]:
 
     disk_rows = _disk_io_rows(monitor)
     if disk_rows:
-        _disk_report(monitor, _path("disk_io.svg"), disk_rows)
+        _disk_throughput_report(monitor, _path("disk_io.svg"), disk_rows)
         written.append(_path("disk_io.svg"))
+        # Latency/queue report only when the snapshots carry the latency fields.
+        if _has_disk_latency(monitor):
+            _disk_latency_report(monitor, _path("disk_latency.svg"), disk_rows)
+            written.append(_path("disk_latency.svg"))
 
     host_rows = _host_resource_rows(monitor)
     if host_rows:
-        _host_report(_path("host_resources.svg"), host_rows)
+        _host_resource_report(monitor, _path("host_resources.svg"), host_rows)
         written.append(_path("host_resources.svg"))
+        # Pressure / cache-breakdown / runstate view only when pressure history
+        # exists (keeps host_resources.svg a clean baseline on partial runs).
+        if getattr(monitor, "host_pressure_history", None):
+            _host_pressure_report(_path("host_pressure.svg"), host_rows)
+            written.append(_path("host_pressure.svg"))
 
     swap_rows = _swap_rows(monitor)
     if swap_rows:

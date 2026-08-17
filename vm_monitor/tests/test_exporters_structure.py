@@ -183,21 +183,35 @@ def _full_monitor():
 
     # Disk I/O (sda/sdb/sdc) + ublk -> Disk_IO_Timeline
     m.target_disks = ["sda", "sdb", "sdc"]
+
+    def dr(r, w, util, ifl, q, ra, wa):
+        return {
+            "r_mb_s": r,
+            "w_mb_s": w,
+            "util_pct": util,
+            "inflight": ifl,
+            "r_mb": r,
+            "w_mb": w,
+            "avg_queue_depth": q,
+            "read_await_ms": ra,
+            "write_await_ms": wa,
+        }
+
     m.disk_history = [
         {
             "ts": "2026-08-14 10:00:00",
             "disks": {
-                "sda": {"r_mb_s": 10.0, "w_mb_s": 20.0, "util_pct": 5.0, "inflight": 1, "r_mb": 10.0, "w_mb": 20.0},
-                "sdb": {"r_mb_s": 5.0, "w_mb_s": 15.0, "util_pct": 3.0, "inflight": 2, "r_mb": 5.0, "w_mb": 15.0},
-                "sdc": {"r_mb_s": 1.0, "w_mb_s": 2.0, "util_pct": 1.0, "inflight": 0, "r_mb": 1.0, "w_mb": 2.0},
+                "sda": dr(10.0, 20.0, 5.0, 1, 0.5, 2.0, 3.0),
+                "sdb": dr(5.0, 15.0, 3.0, 2, 1.0, 4.0, 5.0),
+                "sdc": dr(1.0, 2.0, 1.0, 0, 0.2, 1.0, 1.5),
             },
         },
         {
             "ts": "2026-08-14 10:00:05",
             "disks": {
-                "sda": {"r_mb_s": 12.0, "w_mb_s": 25.0, "util_pct": 6.0, "inflight": 1, "r_mb": 12.0, "w_mb": 25.0},
-                "sdb": {"r_mb_s": 6.0, "w_mb_s": 18.0, "util_pct": 4.0, "inflight": 3, "r_mb": 6.0, "w_mb": 18.0},
-                "sdc": {"r_mb_s": 2.0, "w_mb_s": 4.0, "util_pct": 2.0, "inflight": 1, "r_mb": 2.0, "w_mb": 4.0},
+                "sda": dr(12.0, 25.0, 6.0, 1, 0.8, 2.5, 3.5),
+                "sdb": dr(6.0, 18.0, 4.0, 3, 1.2, 4.5, 5.5),
+                "sdc": dr(2.0, 4.0, 2.0, 1, 0.3, 1.5, 2.0),
             },
         },
     ]
@@ -217,6 +231,40 @@ def _full_monitor():
         {"ts": "2026-08-14 10:00:05", "ublk_devices": 4},
     ]
     m.peak_ublk_devices = 4
+
+    # Host page-cache pressure -> Host_Pressure_Timeline + Summary peaks
+    m.host_pressure_history = [
+        {
+            "ts": "2026-08-14 10:00:00",
+            "page_scan_mib_s": 5.0,
+            "page_reclaim_mib_s": 4.0,
+            "file_refault_mib_s": 1.0,
+            "anon_pages_mb": 2000.0,
+            "file_cache_mb": 3000.0,
+            "sreclaimable_mb": 100.0,
+            "iowait_pct": 2.0,
+            "procs_running": 4,
+            "procs_blocked": 0,
+        },
+        {
+            "ts": "2026-08-14 10:00:05",
+            "page_scan_mib_s": 8.0,
+            "page_reclaim_mib_s": 6.0,
+            "file_refault_mib_s": 2.0,
+            "anon_pages_mb": 2100.0,
+            "file_cache_mb": 3100.0,
+            "sreclaimable_mb": 110.0,
+            "iowait_pct": 5.0,
+            "procs_running": 6,
+            "procs_blocked": 1,
+        },
+    ]
+    m.peak_page_scan_mib_s = 8.0
+    m.peak_page_reclaim_mib_s = 6.0
+    m.peak_file_refault_mib_s = 2.0
+    m.dirty_limit_mb = 500.0
+    m.dirty_background_limit_mb = 250.0
+    m._dirty_limits_read = True
     return m
 
 
@@ -432,6 +480,7 @@ class TestExportStructure(unittest.TestCase):
                 "VM_Total_Memory_Timeline",
                 "Disk_IO_Timeline",
                 "Host_Mem_Timeline",
+                "Host_Pressure_Timeline",
             ],
         )
 
@@ -508,23 +557,44 @@ class TestExportStructure(unittest.TestCase):
                 "sda Write (MB/s)",
                 "sda Util (%)",
                 "sda Inflight",
+                "sda Queue Depth",
+                "sda Read Await (ms)",
+                "sda Write Await (ms)",
                 "sdb Read (MB/s)",
                 "sdb Write (MB/s)",
                 "sdb Util (%)",
                 "sdb Inflight",
+                "sdb Queue Depth",
+                "sdb Read Await (ms)",
+                "sdb Write Await (ms)",
                 "sdc Read (MB/s)",
                 "sdc Write (MB/s)",
                 "sdc Util (%)",
                 "sdc Inflight",
+                "sdc Queue Depth",
+                "sdc Read Await (ms)",
+                "sdc Write Await (ms)",
                 "ublk Devices",
             ],
             "Host_Mem_Timeline": ["Timestamp", "Cached (MB)", "Buffers (MB)", "Dirty (MB)", "Writeback (MB)"],
+            "Host_Pressure_Timeline": [
+                "Timestamp",
+                "Page Scan (MiB/s)",
+                "Page Reclaim (MiB/s)",
+                "File Refault (MiB/s)",
+                "Anon Pages (MB)",
+                "File Cache (MB)",
+                "SReclaimable (MB)",
+                "IOWait (%)",
+                "Procs Running",
+                "Procs Blocked",
+            ],
         }
         for sheet, expected in expected_cols.items():
             self.assertEqual(cols[sheet], expected, f"columns mismatch for {sheet}")
 
         expected_rows = {
-            "Summary": 35,  # meta(4)+host(4)+hugepage(4)+swap-cap(4)+swap-cache(3)+swap-act(6)+vm(5)+disk/mem(5)
+            "Summary": 38,  # meta(4)+host(4)+hugepage(4)+swap-cap(4)+swap-cache(3)+swap-act(6)+vm(5)+disk/mem(5)+pressure(3)
             "NUMA_Overview": 2,
             "VM_Stats": 2,
             "DevKit_TopDown": 13,
@@ -543,6 +613,7 @@ class TestExportStructure(unittest.TestCase):
             "VM_Total_Memory_Timeline": 2,
             "Disk_IO_Timeline": 2,
             "Host_Mem_Timeline": 2,
+            "Host_Pressure_Timeline": 2,
         }
         for sheet, expected in expected_rows.items():
             self.assertEqual(rows[sheet], expected, f"row count mismatch for {sheet}")
@@ -552,8 +623,8 @@ class TestExportStructure(unittest.TestCase):
         _names, _cols, _rows, charts = _snapshot(self.output_file)
         # 1 DevKit pie + 1 IPC line + 1 MemBound bar + 1 DDR line + 1 CacheMiss bar
         # + 2 Swap (in/out + SwapCache) + 2 NUMA_Memory_Timeline (8A + 8B) + 1 VM_Total
-        # + 1 Disk Write line + 1 Dirty+Writeback line
-        self.assertEqual(charts, 12)
+        # + 1 Disk Write line + 1 Dirty+Writeback line + 1 Host Pressure line
+        self.assertEqual(charts, 13)
 
 
 if __name__ == "__main__":

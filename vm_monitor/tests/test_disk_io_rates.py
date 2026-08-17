@@ -15,6 +15,11 @@ class TestComputeDiskIoRates(unittest.TestCase):
             "sectors_written": sectors_written,
             "ms_io": ms_io,
             "inflight": inflight,
+            "reads_completed": 0,
+            "writes_completed": 0,
+            "read_ms": 0,
+            "write_ms": 0,
+            "weighted_ms": 0,
         }
 
     def test_normal_delta(self):
@@ -74,6 +79,46 @@ class TestComputeDiskIoRates(unittest.TestCase):
         prev = {"sda": self._snap(100, 100, 0, 0)}
         r = _compute_disk_io_rates(cur, prev, 1.0)["sda"]
         self.assertEqual(r["r_mb_s"], round((10 - 100) * 512 / 2**20, 2))
+
+    def _full_snap(self, reads, writes, read_ms, write_ms, weighted_ms, ms_io, inflight):
+        return {
+            "sectors_read": reads * 2,  # 2 sectors/read so MB math stays independent
+            "sectors_written": writes * 2,
+            "ms_io": ms_io,
+            "inflight": inflight,
+            "reads_completed": reads,
+            "writes_completed": writes,
+            "read_ms": read_ms,
+            "write_ms": write_ms,
+            "weighted_ms": weighted_ms,
+        }
+
+    def test_queue_depth_and_await(self):
+        # 100 reads in 200 read-ms -> 2ms/read await; weighted_ms 3000 over 1s
+        # interval -> queue depth = 3000/1000/1 = 3.0
+        cur = {"sda": self._full_snap(100, 50, 200, 100, 3000, 1000, 2)}
+        prev = {"sda": self._full_snap(0, 0, 0, 0, 0, 0, 0)}
+        r = _compute_disk_io_rates(cur, prev, 1.0)["sda"]
+        self.assertAlmostEqual(r["read_await_ms"], 2.0)
+        self.assertAlmostEqual(r["write_await_ms"], 2.0)  # 100ms / 50 writes
+        self.assertAlmostEqual(r["avg_queue_depth"], 3.0)
+
+    def test_await_zero_when_no_io(self):
+        # No completed I/Os in interval -> await is 0 (no div-by-zero)
+        cur = {"sda": self._full_snap(0, 0, 0, 0, 0, 0, 1)}
+        prev = {"sda": self._full_snap(0, 0, 0, 0, 0, 0, 0)}
+        r = _compute_disk_io_rates(cur, prev, 1.0)["sda"]
+        self.assertEqual(r["read_await_ms"], 0.0)
+        self.assertEqual(r["write_await_ms"], 0.0)
+        self.assertEqual(r["avg_queue_depth"], 0.0)
+
+    def test_zero_interval_yields_zero_queue_await(self):
+        cur = {"sda": self._full_snap(100, 50, 200, 100, 3000, 1000, 2)}
+        prev = {"sda": self._full_snap(0, 0, 0, 0, 0, 0, 0)}
+        r = _compute_disk_io_rates(cur, prev, 0)["sda"]
+        self.assertEqual(r["avg_queue_depth"], 0.0)
+        self.assertEqual(r["read_await_ms"], 0.0)
+        self.assertEqual(r["write_await_ms"], 0.0)
 
 
 if __name__ == "__main__":

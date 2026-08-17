@@ -262,20 +262,33 @@ Key flags:
 - `<prefix>.csv`, `summary.csv` — per-sample raw + summary stats.
 - `analysis_report.xlsx` — multi-sheet report (Summary, NUMA, VM stats,
   DevKit_TopDown/Memory, KSys, UBWatch, SMAPBW, Getfre, Swap/NUMA/VM-total
-  timelines, **Disk_IO_Timeline**, **Host_Mem_Timeline**) with charts.
-- **SVG time curves** (`disk_io.svg`, `host_resources.svg`, `swap.svg`,
-  `numa.svg`, `vm_total.svg`) — dependency-free dark-themed `<polyline>`
-  charts with grid/legend/threshold lines. Skipped with `--no-svg` or when
-  the source history is empty.
+  timelines, **Disk_IO_Timeline**, **Host_Mem_Timeline**,
+  **Host_Pressure_Timeline**) with charts.
+- **SVG time curves** — dependency-free dark-themed `<polyline>` charts with
+  grid/legend/threshold lines, grouped one concern per file so each renders
+  as a clean PPT slide: `disk_io.svg` (read/write/util + ublk),
+  `disk_latency.svg` (queue depth + await), `host_resources.svg`
+  (CPU/iowait, mem, dirty+threshold, WB/cached/buffers), `host_pressure.svg`
+  (page-cache pressure, anon/file cache, runnable/blocked), plus `swap.svg`,
+  `numa.svg`, `vm_total.svg`. Skipped with `--no-svg` or when the source
+  history is empty.
 
 ### Collected host metrics
 
 Collected natively in `VMMonitorBase.collect_sample()` (no external process):
 
-- **Disk I/O** — per-device read/write MB/s, busy %, inflight from
-  `/sys/block/<dev>/stat` deltas (512-byte sectors; busy capped at 100%).
+- **Disk I/O** — per-device read/write MB/s, busy %, inflight, **avg queue
+  depth**, and **read/write await latency** from `/sys/block/<dev>/stat` deltas
+  (512-byte sectors; busy capped at 100%; queue depth = weighted-I/O-ms).
 - **Host memory detail** — Cached+SReclaimable / Buffers / Dirty / Writeback
-  from `/proc/meminfo`.
+  from `/proc/meminfo`; the dirty-writeback **throttle threshold** is read
+  once from `/proc/sys/vm/dirty_bytes` (or `dirty_ratio`) and drawn as a
+  dashed line on the Dirty time curve.
+- **Page-cache pressure** — page-scan / page-reclaim / file-refault rates
+  (MiB/s) from `/proc/vmstat` deltas (`pgscan_*` / `pgsteal_*` /
+  `workingset_refault_file`); anonymous vs file cache (`Cached+Buffers-Shmem`)
+  and `SReclaimable` from `/proc/meminfo`; `iowait%` (delta-based) plus
+  runnable/blocked procs from `/proc/stat`.
 - **ublk** — device count via `glob /dev/ublkb*`.
 - Plus existing: per-VM CPU/memory/hugepage, host CPU/mem, per-NUMA
   CPU/memory/hugepage, swap, VM-total-memory aggregation.

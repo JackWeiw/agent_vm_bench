@@ -15,6 +15,7 @@ from vm_monitor.base import VMMonitorBase
 from vm_monitor.svg_exporter import (
     _elapsed_series,
     _finite,
+    _memory_scale,
     _nice_max,
     _svg_escape,
     export_svg_reports,
@@ -46,19 +47,33 @@ def _full_monitor():
     m = DummyMonitor()
     m.interval = 2.0
     m.target_disks = ["sda", "sdb"]
+
+    def dr(r, w, util, ifl, q, ra, wa):
+        return {
+            "r_mb_s": r,
+            "w_mb_s": w,
+            "util_pct": util,
+            "inflight": ifl,
+            "r_mb": r,
+            "w_mb": w,
+            "avg_queue_depth": q,
+            "read_await_ms": ra,
+            "write_await_ms": wa,
+        }
+
     m.disk_history = [
         {
             "ts": "2026-08-14 10:00:00",
             "disks": {
-                "sda": {"r_mb_s": 10.0, "w_mb_s": 20.0, "util_pct": 5.0, "inflight": 1, "r_mb": 10.0, "w_mb": 20.0},
-                "sdb": {"r_mb_s": 5.0, "w_mb_s": 15.0, "util_pct": 3.0, "inflight": 2, "r_mb": 5.0, "w_mb": 15.0},
+                "sda": dr(10.0, 20.0, 5.0, 1, 0.5, 2.0, 3.0),
+                "sdb": dr(5.0, 15.0, 3.0, 2, 1.0, 4.0, 5.0),
             },
         },
         {
             "ts": "2026-08-14 10:00:02",
             "disks": {
-                "sda": {"r_mb_s": 12.0, "w_mb_s": 25.0, "util_pct": 6.0, "inflight": 1, "r_mb": 12.0, "w_mb": 25.0},
-                "sdb": {"r_mb_s": 6.0, "w_mb_s": 18.0, "util_pct": 4.0, "inflight": 3, "r_mb": 6.0, "w_mb": 18.0},
+                "sda": dr(12.0, 25.0, 6.0, 1, 0.8, 2.5, 3.5),
+                "sdb": dr(6.0, 18.0, 4.0, 3, 1.2, 4.5, 5.5),
             },
         },
     ]
@@ -75,6 +90,38 @@ def _full_monitor():
         {"ts": "2026-08-14 10:00:00", "cached_mb": 1000.0, "buffers_mb": 50.0, "dirty_mb": 10.0, "writeback_mb": 5.0},
         {"ts": "2026-08-14 10:00:02", "cached_mb": 1100.0, "buffers_mb": 55.0, "dirty_mb": 20.0, "writeback_mb": 8.0},
     ]
+    m.host_pressure_history = [
+        {
+            "ts": "2026-08-14 10:00:00",
+            "page_scan_mib_s": 5.0,
+            "page_reclaim_mib_s": 4.0,
+            "file_refault_mib_s": 1.0,
+            "anon_pages_mb": 2000.0,
+            "file_cache_mb": 3000.0,
+            "sreclaimable_mb": 100.0,
+            "iowait_pct": 2.0,
+            "procs_running": 4,
+            "procs_blocked": 0,
+        },
+        {
+            "ts": "2026-08-14 10:00:02",
+            "page_scan_mib_s": 8.0,
+            "page_reclaim_mib_s": 6.0,
+            "file_refault_mib_s": 2.0,
+            "anon_pages_mb": 2100.0,
+            "file_cache_mb": 3100.0,
+            "sreclaimable_mb": 110.0,
+            "iowait_pct": 5.0,
+            "procs_running": 6,
+            "procs_blocked": 1,
+        },
+    ]
+    m.peak_page_scan_mib_s = 8.0
+    m.peak_page_reclaim_mib_s = 6.0
+    m.peak_file_refault_mib_s = 2.0
+    m.dirty_limit_mb = 500.0
+    m.dirty_background_limit_mb = 250.0
+    m._dirty_limits_read = True
     m.swap_history = [
         {
             "ts": "2026-08-14 10:00:00",
@@ -122,6 +169,16 @@ class TestPureHelpers(unittest.TestCase):
         self.assertAlmostEqual(_nice_max(50.0), 50.0)
         self.assertAlmostEqual(_nice_max(900.0), 1000.0)
 
+    def test_memory_scale(self):
+        # Below 1 GiB the axis stays in MiB.
+        self.assertEqual(_memory_scale(0.0), (1.0, "MiB"))
+        self.assertEqual(_memory_scale(500.0), (1.0, "MiB"))
+        # Crossing 1 GiB flips to GiB.
+        self.assertEqual(_memory_scale(1024.0), (1024.0, "GiB"))
+        self.assertEqual(_memory_scale(2456.0), (1024.0, "GiB"))
+        # Crossing 1 TiB flips to TiB.
+        self.assertEqual(_memory_scale(1024.0 * 1024.0), (1024.0 * 1024.0, "TiB"))
+
     def test_elapsed_series_from_ts(self):
         h = [
             {"ts": "2026-08-14 10:00:00"},
@@ -162,7 +219,15 @@ class TestSvgExport(unittest.TestCase):
         written = export_svg_reports(self.monitor, self.out_dir)
         self.assertEqual(
             sorted(os.path.basename(p) for p in written),
-            ["disk_io.svg", "host_resources.svg", "numa.svg", "swap.svg", "vm_total.svg"],
+            [
+                "disk_io.svg",
+                "disk_latency.svg",
+                "host_pressure.svg",
+                "host_resources.svg",
+                "numa.svg",
+                "swap.svg",
+                "vm_total.svg",
+            ],
         )
         for p in written:
             self.assertTrue(os.path.isfile(p))
@@ -202,6 +267,135 @@ class TestSvgExport(unittest.TestCase):
         self.assertIn("Writeback", text)
         self.assertIn("Cached", text)
         self.assertIn("Buffers", text)
+        # iowait rides on the CPU chart in the resource-baseline file.
+        self.assertIn("IOWait", text)
+        # Dirty throttle threshold line drawn (dirty_limit_mb=500 set in fixture);
+        # it is the only dashed line in host_resources.svg (the util 100% line
+        # lives in disk_io.svg).
+        self.assertIn("dirty limit", text)
+        self.assertGreaterEqual(text.count('stroke-dasharray="7 5"'), 1)
+        # Pressure / cache / runstate moved to host_pressure.svg, not here.
+        self.assertNotIn("Page-Cache Pressure", text)
+        self.assertNotIn("Runnable / Blocked Procs", text)
+
+    def test_host_pressure_report_carries_pressure_charts(self):
+        export_svg_reports(self.monitor, self.out_dir)
+        text = open(os.path.join(self.out_dir, "host_pressure.svg"), encoding="utf-8").read()
+        self.assertIn("Page-Cache Pressure", text)
+        self.assertIn("Anonymous / File Cache", text)
+        self.assertIn("Runnable / Blocked Procs", text)
+        # Dirty threshold stays in host_resources.svg, not here.
+        self.assertNotIn("dirty limit", text)
+
+    def test_disk_latency_report_carries_queue_and_await(self):
+        export_svg_reports(self.monitor, self.out_dir)
+        latency = open(os.path.join(self.out_dir, "disk_latency.svg"), encoding="utf-8").read()
+        self.assertIn("Disk Queue Depth", latency)
+        self.assertIn("Disk Avg Latency", latency)
+        self.assertIn("Queue", latency)
+        self.assertIn("R-await", latency)
+        self.assertIn("W-await", latency)
+        # Throughput charts live in disk_io.svg, not the latency file.
+        throughput = open(os.path.join(self.out_dir, "disk_io.svg"), encoding="utf-8").read()
+        self.assertNotIn("Disk Queue Depth", throughput)
+        self.assertNotIn("Disk Avg Latency", throughput)
+
+    def test_dirty_axis_scales_to_gib_when_large(self):
+        # Dirty page volume >= 1 GiB flips the chart's y-axis to GiB (adaptive
+        # unit). Crucially the axis is computed in scaled space, so the ticks
+        # land on round numbers (0, 1, 2, 3, 4, 5 GiB) -- NOT the unreadable
+        # 4.9 / 3.9 / 2.9 you would get from only relabelling raw-space ticks.
+        # The Host Memory Used chart is always GiB, so a scaled dirty chart
+        # raises the GiB label count to 2; sibling charts stay small (MiB).
+        m = DummyMonitor()
+        m.interval = 1.0
+        m.host_mem_detail_history = [
+            {
+                "ts": "2026-08-14 10:00:00",
+                "dirty_mb": 2048.0,
+                "writeback_mb": 10.0,
+                "cached_mb": 100.0,
+                "buffers_mb": 10.0,
+            },
+            {
+                "ts": "2026-08-14 10:00:01",
+                "dirty_mb": 3072.0,
+                "writeback_mb": 12.0,
+                "cached_mb": 110.0,
+                "buffers_mb": 12.0,
+            },
+        ]
+        export_svg_reports(m, self.out_dir)
+        text = open(os.path.join(self.out_dir, "host_resources.svg"), encoding="utf-8").read()
+        self.assertEqual(text.count("GiB"), 2)  # Host Memory Used + scaled Dirty
+        # Round GiB ticks present; the broken raw-space version would have
+        # emitted 4.9 / 3.9 instead of 5.0 / 4.0.
+        self.assertIn("5.0", text)  # axis top (peak 3.0 GiB -> _nice_max -> 5)
+        self.assertIn("3.0", text)
+        self.assertNotIn("4.9", text)
+        self.assertNotIn("5000.0", text)  # unscaled MiB top tick must be gone
+
+    def test_dirty_axis_stays_mib_when_small(self):
+        # Dirty page volume under 1 GiB keeps MiB; the only GiB label then is
+        # the Host Memory Used chart (count == 1).
+        m = DummyMonitor()
+        m.interval = 1.0
+        m.host_mem_detail_history = [
+            {
+                "ts": "2026-08-14 10:00:00",
+                "dirty_mb": 20.0,
+                "writeback_mb": 10.0,
+                "cached_mb": 100.0,
+                "buffers_mb": 10.0,
+            },
+            {
+                "ts": "2026-08-14 10:00:01",
+                "dirty_mb": 40.0,
+                "writeback_mb": 12.0,
+                "cached_mb": 110.0,
+                "buffers_mb": 12.0,
+            },
+        ]
+        export_svg_reports(m, self.out_dir)
+        text = open(os.path.join(self.out_dir, "host_resources.svg"), encoding="utf-8").read()
+        self.assertEqual(text.count("GiB"), 1)
+        self.assertIn("MiB", text)
+
+    def test_dirty_polyline_maps_to_scaled_gib_axis(self):
+        # End-to-end correctness: the dirty-page polyline points must land at the
+        # pixel y the scaled axis predicts, so the drawn curve matches the data.
+        # Layout (2-col, 4 charts): dirty panel index 2 -> x=30, y=412;
+        # _line_chart plot_x=88, plot_y=450, plot_w=606, plot_h=200, x_max=1.
+        # dirty 2048/3072 -> divisor 1024 -> scaled 2.0/3.0; y_max=_nice_max(3.15)=5.
+        # point1 (2048 MiB=2.0 GiB): py = 450 + 200*(5-2)/5 = 570.0
+        # point2 (3072 MiB=3.0 GiB): py = 450 + 200*(5-3)/5 = 530.0
+        # The 3.0-GiB gridline (tick value 3.0) is also at py=530.0 -> the peak
+        # sits exactly on a labelled round gridline.
+        m = DummyMonitor()
+        m.interval = 1.0
+        m.host_mem_detail_history = [
+            {
+                "ts": "2026-08-14 10:00:00",
+                "dirty_mb": 2048.0,
+                "writeback_mb": 10.0,
+                "cached_mb": 100.0,
+                "buffers_mb": 10.0,
+            },
+            {
+                "ts": "2026-08-14 10:00:01",
+                "dirty_mb": 3072.0,
+                "writeback_mb": 12.0,
+                "cached_mb": 110.0,
+                "buffers_mb": 12.0,
+            },
+        ]
+        export_svg_reports(m, self.out_dir)
+        text = open(os.path.join(self.out_dir, "host_resources.svg"), encoding="utf-8").read()
+        # The dirty curve's two points, computed by the scaled axis math.
+        self.assertIn("88.0,570.0", text)  # 2048 MiB -> 2.0 GiB -> y=570
+        self.assertIn("694.0,530.0", text)  # 3072 MiB -> 3.0 GiB -> y=530
+        # Monotonic correctness: larger dirty -> smaller y (axis grows up).
+        self.assertLess(530.0, 570.0)
 
     def test_empty_monitor_writes_nothing(self):
         m = DummyMonitor()

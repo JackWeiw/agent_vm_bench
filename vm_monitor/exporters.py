@@ -16,6 +16,8 @@ from collections import defaultdict
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from vm_monitor.base import _PAGE_SIZE
+
 # Try to import pandas for Excel export
 try:
     import pandas as pd
@@ -128,16 +130,16 @@ def _build_summary_sheet(writer, monitor, numa_nodes, overall_stats):
         )
         swap_peak_in_rate = round(max(s["activity"]["swap_in_rate"] for s in monitor.swap_history), 2)
         swap_peak_out_rate = round(max(s["activity"]["swap_out_rate"] for s in monitor.swap_history), 2)
-        swap_total_in = monitor.swap_history[-1]["activity"]["pswpin_cumulative"]
-        swap_total_out = monitor.swap_history[-1]["activity"]["pswpout_cumulative"]
+        swap_total_in = round(monitor.swap_history[-1]["activity"]["pswpin_cumulative"] * _PAGE_SIZE / 2**20, 2)
+        swap_total_out = round(monitor.swap_history[-1]["activity"]["pswpout_cumulative"] * _PAGE_SIZE / 2**20, 2)
         summary_data["Metric"].extend(
             [
                 "Swap Avg In Rate",
                 "Swap Avg Out Rate",
                 "Swap Peak In Rate",
                 "Swap Peak Out Rate",
-                "Swap Total In Pages",
-                "Swap Total Out Pages",
+                "Swap Total In (MiB)",
+                "Swap Total Out (MiB)",
             ]
         )
         summary_data["Value"].extend(
@@ -150,7 +152,7 @@ def _build_summary_sheet(writer, monitor, numa_nodes, overall_stats):
                 swap_total_out,
             ]
         )
-        summary_data["Unit"].extend(["pages/s", "pages/s", "pages/s", "pages/s", "pages", "pages"])
+        summary_data["Unit"].extend(["MiB/s", "MiB/s", "MiB/s", "MiB/s", "MiB", "MiB"])
 
     # VM stats
     summary_data["Metric"].extend(
@@ -184,6 +186,17 @@ def _build_summary_sheet(writer, monitor, numa_nodes, overall_stats):
         ]
     )
     summary_data["Unit"].extend(["MB/s", "MB", "MB", "MB", ""])
+
+    # Page-cache pressure peaks
+    summary_data["Metric"].extend(["Page Scan Peak", "Page Reclaim Peak", "File Refault Peak"])
+    summary_data["Value"].extend(
+        [
+            round(monitor.peak_page_scan_mib_s, 3),
+            round(monitor.peak_page_reclaim_mib_s, 3),
+            round(monitor.peak_file_refault_mib_s, 3),
+        ]
+    )
+    summary_data["Unit"].extend(["MiB/s", "MiB/s", "MiB/s"])
 
     df_summary = pd.DataFrame(summary_data)
     df_summary.to_excel(writer, sheet_name="Summary", index=False)
@@ -610,8 +623,8 @@ def _build_swap_timeline_sheet(writer, monitor):
         "Swap Free (MB)": [],
         "Swap Cached (MB)": [],
         "Swap Cache Ratio (%)": [],
-        "Swap In Rate (pages/s)": [],
-        "Swap Out Rate (pages/s)": [],
+        "Swap In Rate (MiB/s)": [],
+        "Swap Out Rate (MiB/s)": [],
     }
     for nid in all_numa_ids:
         swap_timeline_data[f"NUMA{nid} SwapCache (MB)"] = []
@@ -622,8 +635,8 @@ def _build_swap_timeline_sheet(writer, monitor):
         swap_timeline_data["Swap Free (MB)"].append(s["capacity"]["free_mb"])
         swap_timeline_data["Swap Cached (MB)"].append(s["cache"]["cached_mb"])
         swap_timeline_data["Swap Cache Ratio (%)"].append(s["cache"]["cached_ratio_pct"])
-        swap_timeline_data["Swap In Rate (pages/s)"].append(s["activity"]["swap_in_rate"])
-        swap_timeline_data["Swap Out Rate (pages/s)"].append(s["activity"]["swap_out_rate"])
+        swap_timeline_data["Swap In Rate (MiB/s)"].append(s["activity"]["swap_in_rate"])
+        swap_timeline_data["Swap Out Rate (MiB/s)"].append(s["activity"]["swap_out_rate"])
 
         # Per-NUMA SwapCache from numa_memory_history (same cycle)
         if i < len(monitor.numa_memory_history):
@@ -723,6 +736,9 @@ def _build_disk_io_sheet(writer, monitor):
         disk_data[f"{dev} Write (MB/s)"] = []
         disk_data[f"{dev} Util (%)"] = []
         disk_data[f"{dev} Inflight"] = []
+        disk_data[f"{dev} Queue Depth"] = []
+        disk_data[f"{dev} Read Await (ms)"] = []
+        disk_data[f"{dev} Write Await (ms)"] = []
     disk_data["ublk Devices"] = []
 
     for i, entry in enumerate(monitor.disk_history):
@@ -734,6 +750,9 @@ def _build_disk_io_sheet(writer, monitor):
             disk_data[f"{dev} Write (MB/s)"].append(d.get("w_mb_s", 0))
             disk_data[f"{dev} Util (%)"].append(d.get("util_pct", 0))
             disk_data[f"{dev} Inflight"].append(d.get("inflight", 0))
+            disk_data[f"{dev} Queue Depth"].append(d.get("avg_queue_depth", 0))
+            disk_data[f"{dev} Read Await (ms)"].append(d.get("read_await_ms", 0))
+            disk_data[f"{dev} Write Await (ms)"].append(d.get("write_await_ms", 0))
         # ublk_history shares the sample cadence; align by index, pad to 0
         ublk = monitor.ublk_history[i]["ublk_devices"] if i < len(monitor.ublk_history) else 0
         disk_data["ublk Devices"].append(ublk)
@@ -753,6 +772,31 @@ def _build_host_mem_timeline_sheet(writer, monitor):
         "Writeback (MB)": [h["writeback_mb"] for h in monitor.host_mem_detail_history],
     }
     pd.DataFrame(mem_data).to_excel(writer, sheet_name="Host_Mem_Timeline", index=False)
+
+
+def _build_host_pressure_sheet(writer, monitor):
+    """Sheet: Host_Pressure_Timeline (page-cache pressure + anon/file cache + iowait/procs).
+
+    One row per sample from monitor.host_pressure_history. Covers the generic
+    host memory-pressure signals (page scan/reclaim/refault rates, anonymous vs
+    file cache, SReclaimable, iowait%, runnable/blocked procs) that the legacy
+    monitor lacked -- sourced from /proc/vmstat + /proc/meminfo + /proc/stat.
+    """
+    if not monitor.host_pressure_history:
+        return
+    pressure_data = {
+        "Timestamp": [h["ts"] for h in monitor.host_pressure_history],
+        "Page Scan (MiB/s)": [h["page_scan_mib_s"] for h in monitor.host_pressure_history],
+        "Page Reclaim (MiB/s)": [h["page_reclaim_mib_s"] for h in monitor.host_pressure_history],
+        "File Refault (MiB/s)": [h["file_refault_mib_s"] for h in monitor.host_pressure_history],
+        "Anon Pages (MB)": [h["anon_pages_mb"] for h in monitor.host_pressure_history],
+        "File Cache (MB)": [h["file_cache_mb"] for h in monitor.host_pressure_history],
+        "SReclaimable (MB)": [h["sreclaimable_mb"] for h in monitor.host_pressure_history],
+        "IOWait (%)": [h["iowait_pct"] for h in monitor.host_pressure_history],
+        "Procs Running": [h["procs_running"] for h in monitor.host_pressure_history],
+        "Procs Blocked": [h["procs_blocked"] for h in monitor.host_pressure_history],
+    }
+    pd.DataFrame(pressure_data).to_excel(writer, sheet_name="Host_Pressure_Timeline", index=False)
 
 
 def _add_charts(output_file):
@@ -778,6 +822,7 @@ def _add_charts(output_file):
         _add_vm_total_line(wb)
         _add_disk_write_line(wb)
         _add_dirty_writeback_line(wb)
+        _add_host_pressure_line(wb)
         wb.save(output_file)
         print("[OK] Charts added to Excel report")
     except Exception as e:
@@ -1124,6 +1169,29 @@ def _add_dirty_writeback_line(wb):
     ws.add_chart(mem_chart, f"{get_column_letter(anchor_col)}2")
 
 
+def _add_host_pressure_line(wb):
+    """Chart 13: Page-cache pressure rates (scan / reclaim / refault) timeline."""
+    if "Host_Pressure_Timeline" not in wb.sheetnames:
+        return
+    ws = wb["Host_Pressure_Timeline"]
+    if ws.max_row <= 1:
+        return
+    pressure_chart = LineChart()
+    pressure_chart.title = "Page-Cache Pressure Over Time"
+    pressure_chart.style = 10
+    pressure_chart.y_axis.title = "MiB/s"
+    pressure_chart.x_axis.title = "Time"
+    pressure_chart.width = 18
+    pressure_chart.height = 8
+    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+    # Page Scan (col 2) .. File Refault (col 4) by construction
+    data = Reference(ws, min_col=2, min_row=1, max_col=4, max_row=ws.max_row)
+    pressure_chart.add_data(data, titles_from_data=True)
+    pressure_chart.set_categories(cats)
+    anchor_col = ws.max_column + 2
+    ws.add_chart(pressure_chart, f"{get_column_letter(anchor_col)}2")
+
+
 def export_to_excel(
     monitor: "VMMonitorBase",
     log_dir: str,
@@ -1178,6 +1246,7 @@ def export_to_excel(
             _build_vm_total_memory_timeline_sheet(writer, monitor)
             _build_disk_io_sheet(writer, monitor)
             _build_host_mem_timeline_sheet(writer, monitor)
+            _build_host_pressure_sheet(writer, monitor)
     except ImportError:
         print("[WARN] openpyxl not available, skipping Excel export")
         print("  Install with: pip install openpyxl")
