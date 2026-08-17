@@ -257,7 +257,9 @@ async def measure_lazy(
 
 
 async def run_suite(label: str, template: str, args: argparse.Namespace) -> ArchResult:
-    timeout = args.sandbox_timeout
+    # AgentENV deserializes `timeout` as u32; the SDK forwards it verbatim, so cast
+    # to int here once and every downstream create/connect/pause call is covered.
+    timeout = int(args.sandbox_timeout)
     res = ArchResult(label=label)
 
     print(f"\n=== [{label}] template={template} ===", flush=True)
