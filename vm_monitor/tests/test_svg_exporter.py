@@ -302,9 +302,11 @@ class TestSvgExport(unittest.TestCase):
 
     def test_dirty_axis_scales_to_gib_when_large(self):
         # Dirty page volume >= 1 GiB flips the chart's y-axis to GiB (adaptive
-        # unit). The Host Memory Used chart is always GiB, so a scaled dirty
-        # chart raises the GiB label count to 2; an unscaled dirty chart (MiB)
-        # would leave it at 1. Sibling charts are kept small (MiB) to isolate.
+        # unit). Crucially the axis is computed in scaled space, so the ticks
+        # land on round numbers (0, 1, 2, 3, 4, 5 GiB) -- NOT the unreadable
+        # 4.9 / 3.9 / 2.9 you would get from only relabelling raw-space ticks.
+        # The Host Memory Used chart is always GiB, so a scaled dirty chart
+        # raises the GiB label count to 2; sibling charts stay small (MiB).
         m = DummyMonitor()
         m.interval = 1.0
         m.host_mem_detail_history = [
@@ -326,9 +328,12 @@ class TestSvgExport(unittest.TestCase):
         export_svg_reports(m, self.out_dir)
         text = open(os.path.join(self.out_dir, "host_resources.svg"), encoding="utf-8").read()
         self.assertEqual(text.count("GiB"), 2)  # Host Memory Used + scaled Dirty
-        # Unscaled (MiB) axis would have printed a multi-thousand top tick;
-        # the scaled axis divides it down instead.
-        self.assertNotIn("5000.0", text)
+        # Round GiB ticks present; the broken raw-space version would have
+        # emitted 4.9 / 3.9 instead of 5.0 / 4.0.
+        self.assertIn("5.0", text)  # axis top (peak 3.0 GiB -> _nice_max -> 5)
+        self.assertIn("3.0", text)
+        self.assertNotIn("4.9", text)
+        self.assertNotIn("5000.0", text)  # unscaled MiB top tick must be gone
 
     def test_dirty_axis_stays_mib_when_small(self):
         # Dirty page volume under 1 GiB keeps MiB; the only GiB label then is
@@ -355,6 +360,42 @@ class TestSvgExport(unittest.TestCase):
         text = open(os.path.join(self.out_dir, "host_resources.svg"), encoding="utf-8").read()
         self.assertEqual(text.count("GiB"), 1)
         self.assertIn("MiB", text)
+
+    def test_dirty_polyline_maps_to_scaled_gib_axis(self):
+        # End-to-end correctness: the dirty-page polyline points must land at the
+        # pixel y the scaled axis predicts, so the drawn curve matches the data.
+        # Layout (2-col, 4 charts): dirty panel index 2 -> x=30, y=412;
+        # _line_chart plot_x=88, plot_y=450, plot_w=606, plot_h=200, x_max=1.
+        # dirty 2048/3072 -> divisor 1024 -> scaled 2.0/3.0; y_max=_nice_max(3.15)=5.
+        # point1 (2048 MiB=2.0 GiB): py = 450 + 200*(5-2)/5 = 570.0
+        # point2 (3072 MiB=3.0 GiB): py = 450 + 200*(5-3)/5 = 530.0
+        # The 3.0-GiB gridline (tick value 3.0) is also at py=530.0 -> the peak
+        # sits exactly on a labelled round gridline.
+        m = DummyMonitor()
+        m.interval = 1.0
+        m.host_mem_detail_history = [
+            {
+                "ts": "2026-08-14 10:00:00",
+                "dirty_mb": 2048.0,
+                "writeback_mb": 10.0,
+                "cached_mb": 100.0,
+                "buffers_mb": 10.0,
+            },
+            {
+                "ts": "2026-08-14 10:00:01",
+                "dirty_mb": 3072.0,
+                "writeback_mb": 12.0,
+                "cached_mb": 110.0,
+                "buffers_mb": 12.0,
+            },
+        ]
+        export_svg_reports(m, self.out_dir)
+        text = open(os.path.join(self.out_dir, "host_resources.svg"), encoding="utf-8").read()
+        # The dirty curve's two points, computed by the scaled axis math.
+        self.assertIn("88.0,570.0", text)  # 2048 MiB -> 2.0 GiB -> y=570
+        self.assertIn("694.0,530.0", text)  # 3072 MiB -> 3.0 GiB -> y=530
+        # Monotonic correctness: larger dirty -> smaller y (axis grows up).
+        self.assertLess(530.0, 570.0)
 
     def test_empty_monitor_writes_nothing(self):
         m = DummyMonitor()

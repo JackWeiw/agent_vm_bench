@@ -126,12 +126,17 @@ def _line_chart(
         all_values.append(threshold[0])
     raw_min = min(all_values, default=0.0)
     raw_max = max(all_values, default=1.0)
-    y_min = -_nice_max(abs(raw_min) * 1.05) if raw_min < 0 else 0.0
-    y_max = _nice_max(raw_max * 1.05) if raw_max > 0 else 1.0
-    y_span = max(1e-12, y_max - y_min)
-    # Adaptive unit: divide tick numbers by ``divisor`` and relabel the axis.
-    # Geometry (y_min/y_max/polyline) stays in raw space; only labels change.
+    # Adaptive unit: pick a binary unit from the peak, then project the whole
+    # axis (min/max/ticks/polyline/threshold) into scaled space so the ticks
+    # land on round numbers (0, 1, 2 ... GiB) -- not 4.9 / 3.9 / 2.9. Dividing
+    # only the tick labels (keeping geometry in raw space) would leave the
+    # axis unreadable and looking wrong.
     divisor, display_unit = _memory_scale(raw_max) if scale_family == "memory" else (1.0, unit)
+    s_min = raw_min / divisor
+    s_max = raw_max / divisor
+    y_min = -_nice_max(abs(s_min) * 1.05) if s_min < 0 else 0.0
+    y_max = _nice_max(s_max * 1.05) if s_max > 0 else 1.0
+    y_span = max(1e-12, y_max - y_min)
 
     parts = [
         f'<g><rect x="{x}" y="{y}" width="{width}" height="{height}" rx="10" ' f'fill="#101827" stroke="#26354a"/>',
@@ -139,7 +144,7 @@ def _line_chart(
     ]
     for tick in range(6):
         py = plot_y + plot_h * tick / 5
-        value = (y_max - y_span * tick / 5) / divisor
+        value = y_max - y_span * tick / 5
         parts.append(f'<line x1="{plot_x}" y1="{py:.1f}" x2="{plot_x + plot_w}" y2="{py:.1f}" class="grid"/>')
         parts.append(f'<text x="{plot_x - 8}" y="{py + 4:.1f}" text-anchor="end" class="axis">{value:.1f}</text>')
     for tick in range(5):
@@ -158,27 +163,30 @@ def _line_chart(
         f'class="axis">{_svg_escape(display_unit)}</text>'
     )
 
-    if threshold and y_min <= threshold[0] <= y_max:
-        py = plot_y + plot_h * (y_max - threshold[0]) / y_span
-        parts.append(
-            f'<line x1="{plot_x}" y1="{py:.1f}" x2="{plot_x + plot_w}" y2="{py:.1f}" '
-            f'stroke="#f59e0b" stroke-dasharray="7 5"/>'
-        )
-        parts.append(
-            f'<text x="{plot_x + plot_w - 4}" y="{py - 5:.1f}" text-anchor="end" '
-            f'fill="#fbbf24" class="legend">{_svg_escape(threshold[1])}</text>'
-        )
+    if threshold:
+        thr_scaled = threshold[0] / divisor
+        if y_min <= thr_scaled <= y_max:
+            py = plot_y + plot_h * (y_max - thr_scaled) / y_span
+            parts.append(
+                f'<line x1="{plot_x}" y1="{py:.1f}" x2="{plot_x + plot_w}" y2="{py:.1f}" '
+                f'stroke="#f59e0b" stroke-dasharray="7 5"/>'
+            )
+            parts.append(
+                f'<text x="{plot_x + plot_w - 4}" y="{py - 5:.1f}" text-anchor="end" '
+                f'fill="#fbbf24" class="legend">{_svg_escape(threshold[1])}</text>'
+            )
 
     legend_x = plot_x
     legend_y = y + height - 14
     for field, label, color in series:
         points: List[str] = []
         for row in rows:
-            value = float(row.get(field, math.nan))
-            if not math.isfinite(value):
+            raw = float(row.get(field, math.nan))
+            if not math.isfinite(raw):
                 continue
+            scaled = raw / divisor
             px = plot_x + plot_w * float(row["elapsed_s"]) / x_max
-            clipped = min(y_max, max(y_min, value))
+            clipped = min(y_max, max(y_min, scaled))
             py = plot_y + plot_h * (y_max - clipped) / y_span
             points.append(f"{px:.1f},{py:.1f}")
         if len(points) >= 2:
