@@ -23,6 +23,8 @@
  * Usage:
  *   latbench populate  <mib> [shm|file]   create + dirty every page (run BEFORE pause)
  *   latbench measure   <mib> <mode> [shm|file]   re-open, traverse first+second (run AFTER resume)
+ *   latbench stress    <mib> <mode> <iters> [shm|file]   populate + loop resident traversal
+ *                                                       N times (multi-second profile window)
  *   latbench cleanup   [shm|file]                 unlink the backing object
  *   latbench help
  *
@@ -296,6 +298,103 @@ static int do_measure(size_t mib, const char *mode, const char *backing) {
     return 0;
 }
 
+/* Populate, then loop the traversal `iters` times on the resident (MAP_PRIVATE)
+ * mapping. The first traversal faults the private pages in (COW from snapshot if
+ * run after resume, or from the populated backing if run live); every subsequent
+ * traversal is a pure second-touch (resident) — the path we want to profile. This
+ * stretches the ~0.7ms second-touch into a multi-second window so an external
+ * profiler (devkit_mem / ksys / perf pinned to the host VMM process) can sample
+ * the guest resident-touch path: EPT/TLB walk, L2/L3 cache behavior.
+ *
+ * Run while attaching a profiler to the host VMM PID, e.g. on the AgentENV host:
+ *   perf stat -p <fc_pid> -e cache-misses,dtlb_load_misses.walks -I 1000 &
+ *   latbench stress 256 seq_read 2000 shm
+ */
+static int do_stress(size_t mib, const char *mode, long iters, const char *backing) {
+    int is_write = 0;
+    int is_random = 0;
+    if (strcmp(mode, "seq_read") == 0) {
+        is_write = 0;
+        is_random = 0;
+    } else if (strcmp(mode, "seq_write") == 0) {
+        is_write = 1;
+        is_random = 0;
+    } else if (strcmp(mode, "rand_read") == 0) {
+        is_write = 0;
+        is_random = 1;
+    } else if (strcmp(mode, "rand_write") == 0) {
+        is_write = 1;
+        is_random = 1;
+    } else {
+        fprintf(stderr, "unknown mode '%s' (want seq_read|seq_write|rand_read|rand_write)\n", mode);
+        return 2;
+    }
+    if (iters <= 0) {
+        fprintf(stderr, "iters must be > 0\n");
+        return 2;
+    }
+
+    /* Phase 1: populate the backing (MAP_SHARED) so pages hold real content. */
+    int pfd = -1;
+    void *pp = open_ws(mib, 1, 1, backing, &pfd);
+    if (!pp) {
+        return 1;
+    }
+    size_t pages = pages_for(mib);
+    for (size_t i = 0; i < pages; i++) {
+        *((volatile uint64_t *)((char *)pp + i * PAGE)) = (uint64_t)i * 0x9E3779B97F4A7C15ULL + 1;
+    }
+    munmap(pp, mib * 1024UL * 1024UL);
+    close(pfd);
+
+    /* Phase 2: reopen MAP_PRIVATE and warm the private mapping (first traversal,
+     * not counted), then loop iters times for the steady-state second-touch
+     * profile window. full_page matches the customer口径: seq = full 4KiB page,
+     * rand = one 8-byte slot per page. */
+    int mfd = -1;
+    void *p = open_ws(mib, 0, is_write, backing, &mfd);
+    if (!p) {
+        return 1;
+    }
+    uint32_t *order = NULL;
+    uint32_t *off = NULL;
+    build_plan(pages, is_random, &order, &off);
+    if (!order || !off) {
+        fprintf(stderr, "out of memory\n");
+        munmap(p, mib * 1024UL * 1024UL);
+        close(mfd);
+        free(order);
+        free(off);
+        return 1;
+    }
+    char *base = (char *)p;
+    int full_page = !is_random;
+    /* first traversal: faults the private pages in (excluded from the loop) */
+    if (is_write) {
+        traverse_write(base, pages, order, off, full_page);
+    } else {
+        traverse_read(base, pages, order, off, full_page);
+    }
+    /* steady-state second-touch loop — this is the window to profile */
+    double t0 = now_ms();
+    for (long i = 0; i < iters; i++) {
+        if (is_write) {
+            traverse_write(base, pages, order, off, full_page);
+        } else {
+            traverse_read(base, pages, order, off, full_page);
+        }
+    }
+    double total_ms = now_ms() - t0;
+    printf("STRESS %s iters=%ld total_ms=%.6f per_iter_ms=%.6f pages=%zu mib=%zu\n",
+           mode, iters, total_ms, total_ms / (double)iters, pages, mib);
+
+    munmap(p, mib * 1024UL * 1024UL);
+    close(mfd);
+    free(order);
+    free(off);
+    return 0;
+}
+
 static int do_cleanup(const char *backing) {
     if (backing_is_file(backing)) {
         unlink(FILE_PATH);
@@ -311,6 +410,7 @@ static void usage(void) {
             "usage:\n"
             "  latbench populate <mib> [shm|file]\n"
             "  latbench measure  <mib> <seq_read|seq_write|rand_read|rand_write> [shm|file]\n"
+            "  latbench stress   <mib> <mode> <iters> [shm|file]   (resident-traversal profile loop)\n"
             "  latbench cleanup  [shm|file]\n");
 }
 
@@ -358,6 +458,22 @@ int main(int argc, char **argv) {
             return 2;
         }
         return do_measure(mib, mode, backing);
+    }
+
+    if (strcmp(cmd, "stress") == 0) {
+        if (argc < 5) {
+            usage();
+            return 2;
+        }
+        size_t mib = (size_t)strtoul(argv[2], NULL, 10);
+        const char *mode = argv[3];
+        long iters = strtol(argv[4], NULL, 10);
+        const char *backing = (argc >= 6) ? argv[5] : "shm";
+        if (mib == 0) {
+            fprintf(stderr, "mib must be > 0\n");
+            return 2;
+        }
+        return do_stress(mib, mode, iters, backing);
     }
 
     usage();

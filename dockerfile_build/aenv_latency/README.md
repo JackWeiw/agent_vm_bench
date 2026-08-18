@@ -25,7 +25,7 @@ stays at 256MiB; the 4 resumes also feed the snapshot-start row).
 
 ## Files
 
-- `latbench.c` — in-guest probe. `populate` / `measure <mode>` / `cleanup`.
+- `latbench.c` — in-guest probe. `populate` / `measure <mode>` / `stress <mode> <iters>` / `cleanup`.
 - `Dockerfile` (arm) + `Dockerfile.x86` — lean Ubuntu + `latbench`, no workload.
 - `../../scripts/aenv_latency_bench.py` — standalone harness (e2b SDK only).
 
@@ -118,3 +118,58 @@ python scripts/aenv_latency_bench.py --template arm=... --backing file
 
 Note: with `--backing file`, first-touch reflects page-cache/disk load, not pure
 snapshot lazy-load — use it only as a fallback to confirm the mechanism.
+
+## Profiling the resident path (L2/L3, EPT/TLB) with devkit / ksys / perf
+
+The lazy-load first/second touches are 0.3–0.7ms — too short for a hardware
+counter tool to sample. `latbench stress` populates the working set, warms it
+with one traversal, then **loops the resident traversal N times** to give a
+multi-second steady-state window. Pin a profiler to the **host VMM process**
+(one firecracker/aenv vmm per sandbox) during that window to inspect the guest
+resident-touch path: EPT/TLB walk, L2/L3 cache behavior. This is how you tell
+whether the host backs guest RAM with 2M hugepages (→ EPT 2M, fast second-touch)
+vs 4KiB (→ EPT thrash, slow — a candidate explanation for a slow sequential
+second vs a fast one).
+
+The harness drives this (it owns sandbox creation — there is no direct shell
+into the sandbox):
+
+```bash
+# in one terminal: start the stress loop (prints the sandbox_id + VMM guidance)
+python scripts/aenv_latency_bench.py --template arm=lat \
+    --stress seq_read --stress-iters 3000
+
+# on the AgentENV HOST, find the VMM PID for that live sandbox
+FC_PID=$(pgrep -f 'firecracker|aenv|vmm' | head -1)
+
+# verify the guest-RAM backing page size for that process
+grep -E 'KernelPageSize|MMUPageSize|AnonHugePages' /proc/$FC_PID/smaps
+#   MMUPageSize: 2048 kB  => host backs guest RAM with 2M hugepages => EPT 2M
+#   MMUPageSize: 4 kB     => 4K => EPT 4K
+
+# pin + lock frequency, then sample during the loop window
+taskset -pc 8 $FC_PID
+cpupower -c 8 frequency-set -g performance
+# devkit_mem   -> L3 cache (mem_l3d_miss_percent), cache hierarchy
+# ksys         -> ksys_l3_latency_avg (L3 latency)
+# perf (lightweight alternative):
+perf stat -p $FC_PID -I 1000 \
+    -e cycles,cache-misses,dtlb_load_misses.walks,LLC-load-misses
+# arm: `perf list | grep -iE 'tlb|walk|cache|llc'` for arch event names
+```
+
+**A/B to confirm a hugepage/EPT hypothesis:** disable host hugepages/THP and re-run
+the stress profile. If `per_iter_ms` jumps (or the cache-miss / TLB-walk rate
+climbs), host hugepage backing (EPT 2M) was what made the resident touch cheap.
+
+```bash
+echo never > /sys/kernel/mm/transparent_hugepage/enabled
+echo never > /sys/kernel/mm/transparent_hugepage/shmem_enabled
+# if /proc/meminfo HugePages_Total > 0, those are explicit hugepages the
+# AgentENV/Firecracker mem-backend requested — reconfigure it to 4K;
+# toggling THP alone will not change those.
+```
+
+Modes: `seq_read` / `seq_write` (full 4KiB per page — bandwidth-bound, the
+case where hugepage/EPT 2M matters most) and `rand_read` / `rand_write` (one
+8-byte per page — latency-bound, stresses TLB/EPT walk per page).

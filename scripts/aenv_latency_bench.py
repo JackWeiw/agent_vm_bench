@@ -225,6 +225,21 @@ def parse_measure(stdout: str, mode: str) -> tuple[float, float] | None:
     return None
 
 
+def parse_stress(stdout: str) -> dict | None:
+    """Parse a `STRESS <mode> iters=N total_ms=F per_iter_ms=F pages=N mib=N` line."""
+    for line in stdout.splitlines():
+        line = line.strip()
+        if line.startswith("STRESS"):
+            out: dict = {}
+            for tok in line.split()[1:]:
+                if "=" in tok:
+                    k, v = tok.split("=", 1)
+                    out[k] = v
+            if "mode" in out and "total_ms" in out:
+                return out
+    return None
+
+
 async def measure_lazy(
     template: str,
     ws_mib: int,
@@ -344,6 +359,77 @@ async def measure_control(template: str, ws_mib: int, timeout: float, backing: s
     except Exception:
         pass
     return out
+
+
+async def run_stress(label: str, template: str, args: argparse.Namespace) -> dict:
+    """One-shot stress profile: create a sandbox, run `latbench stress` in the
+    background so an external profiler (devkit_mem / ksys / perf) can be attached
+    to the host VMM PID during the multi-second resident-traversal loop, collect
+    the STRESS line, kill. This is the only way to drive latbench from outside the
+    sandbox — there is no direct shell access, only the e2b command plane.
+
+    Run e.g.:
+      python scripts/aenv_latency_bench.py --template arm=lat --stress seq_read --stress-iters 2000
+    """
+    from e2b import AsyncSandbox
+
+    timeout = int(args.sandbox_timeout)
+    latbench = "/usr/local/bin/latbench"
+    mib = args.working_set_mib
+    mode = args.stress
+    iters = args.stress_iters
+    backing = args.backing
+
+    print(
+        f"\n=== [{label}] stress profile: {mode} {mib}MiB x{iters} iters backing={backing} ===",
+        flush=True,
+    )
+    result: dict = {"label": label, "mode": mode, "iters": iters, "mib": mib, "backing": backing}
+    sb = await AsyncSandbox.create(template=template, timeout=timeout, request_timeout=timeout)
+    try:
+        await ready_probe(sb)
+        sb_id = getattr(sb, "sandbox_id", None) or getattr(sb, "id", None) or "<unknown>"
+        print(
+            f"[{label}] sandbox_id={sb_id}\n"
+            f"[{label}] >>> attach devkit_mem / ksys / perf to the host VMM PID NOW <<<\n"
+            f"[{label}]     host:  pgrep -af 'firecracker|aenv|vmm'  (find the VMM for this sandbox)\n"
+            f"[{label}]            verify guest-RAM page size: "
+            f"grep -E 'KernelPageSize|MMUPageSize' /proc/$FC_PID/smaps\n"
+            f"[{label}]     see dockerfile_build/aenv_latency/README.md 'Profiling the resident path'",
+            flush=True,
+        )
+        cmd = f"{latbench} stress {mib} {mode} {iters} {backing}"
+        # seq full-page is bandwidth-bound (~tens of ms/iter); give the loop headroom.
+        cmd_timeout = max(args.stress_timeout, iters // 20 + 60)
+        raw = await run_cmd(sb, cmd, timeout=cmd_timeout)
+        stdout, stderr, code = result_fields(raw)
+        if code not in (None, 0):
+            result["error"] = f"exit={code} stderr={stderr!r}"
+            print(f"[{label}] stress FAILED: {result['error']}", flush=True)
+            return result
+        parsed = parse_stress(stdout)
+        if parsed is None:
+            result["error"] = f"unparseable stdout={stdout!r}"
+            print(f"[{label}] stress FAILED: {result['error']}", flush=True)
+            return result
+        try:
+            result["total_ms"] = float(parsed["total_ms"])
+            result["per_iter_ms"] = float(parsed["per_iter_ms"])
+        except (KeyError, ValueError):
+            result["error"] = f"bad STRESS line={parsed!r}"
+            return result
+        print(
+            f"[{label}] STRESS {result['mode']} iters={result['iters']} "
+            f"total_ms={result.get('total_ms', float('nan')):.3f} "
+            f"per_iter_ms={result.get('per_iter_ms', float('nan')):.6f}",
+            flush=True,
+        )
+        return result
+    finally:
+        try:
+            await sb.kill()
+        except Exception:
+            pass
 
 
 async def run_suite(label: str, template: str, args: argparse.Namespace) -> ArchResult:
@@ -671,6 +757,25 @@ def build_markdown(results: list[ArchResult]) -> str:
 async def main_async(args: argparse.Namespace) -> int:
     configure_env(args.api_url, args.api_key)
     templates = parse_templates(args.template)
+
+    if args.stress:
+        # Stress profile path: one `latbench stress` loop per template, skipping the
+        # full cold/snapshot/lazy suite. Output is a small report.json only (no TSV —
+        # stress is a single per_iter number, not a paste-ready comparison row).
+        stress_results: list[dict] = []
+        for label, alias in templates:
+            res = await run_stress(label, alias, args)
+            stress_results.append(res)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_dir = Path(args.output_dir) / f"{stamp}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "report.json").write_text(
+            json.dumps({"generated_at": stamp, "stress": stress_results}, indent=2),
+            encoding="utf-8",
+        )
+        print(f"\nStress report written to {out_dir}/ (report.json)", flush=True)
+        return 0
+
     results: list[ArchResult] = []
     for label, alias in templates:
         res = await run_suite(label, alias, args)
@@ -748,6 +853,27 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also run a no-pause/resume control (populate+measure) to prove the lazy-load "
         "delta is snapshot-induced; first touch should ~= second touch",
+    )
+    p.add_argument(
+        "--stress",
+        choices=MODES,
+        default=None,
+        help="skip the suite and run a single `latbench stress` profile loop in a fresh "
+        "sandbox (for attaching devkit_mem / ksys / perf to the host VMM and inspecting "
+        "L2/L3 / EPT / TLB behavior over a multi-second resident-traversal window)",
+    )
+    p.add_argument(
+        "--stress-iters",
+        type=int,
+        default=2000,
+        help="iterations for the stress profile loop (bigger = longer sampling window; "
+        "seq modes are bandwidth-bound so ~tens of ms/iter)",
+    )
+    p.add_argument(
+        "--stress-timeout",
+        type=int,
+        default=600,
+        help="floor for the stress-loop command timeout (s); auto-grows with iters",
     )
     p.add_argument("--output-dir", default="results/aenv_latency")
     return p
