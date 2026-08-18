@@ -64,6 +64,32 @@ python scripts/aenv_latency_bench.py \
 python scripts/aenv_latency_bench.py --template arm=... --control
 ```
 
+## Variance handling (read if your numbers swing between runs)
+
+The startup and lazy-load numbers are single-digit-ms to hundreds-of-ms — easily
+perturbed by host noise. The harness is built to suppress the known jitter sources:
+
+- **Warmup discard (`--warmup`, default 1).** The first cold create / snapshot
+  resume after a fresh template load runs cold (template cache, host scheduler
+  state) and is a consistent outlier. It is sampled on top of `--cold-samples` /
+  `--snapshot-samples` and dropped from every summary. Raw samples still land in
+  `report.json`.
+- **Median headline, not mean.** cold/snapshot/lazy headlines are the **median**
+  of the kept samples; the mean was pulled around by the long tail. A `p99` row
+  follows each startup metric in the TSV/Markdown as a noise ceiling, and the
+  console prints a `min..max` spread so you can *see* remaining jitter.
+- **Lazy repeats (`--lazy-repeats`, default 3).** Each lazy mode runs its
+  `populate → pause → resume → measure` cycle 3 times; first/second reported are
+  the median across repeats (with the raw per-repeat samples in JSON). A single
+  lazy observation had no variance estimate — this is the biggest lever.
+- **Bigger n by default.** `--cold-samples` and `--snapshot-samples` default to 10
+  (kept); bump higher for a tighter p99.
+
+If jitter is still large after these, the remaining cause is the host, not the
+harness: lock CPU governor to `performance`, fix/disable turbo frequency,
+isolate cores for the sandbox vCPUs, and run with no neighbor load. On a shared
+host you cannot control, the median + spread is the honest summary.
+
 Output goes to `results/aenv_latency/<timestamp>/` (`report.json`, `report.tsv`,
 `report.md`) plus a printed table. `report.tsv` is paste-ready for Excel — rows
 are fixed-order so arm and x86 runs from separate machines paste-align row-by-row.

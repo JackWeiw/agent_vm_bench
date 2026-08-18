@@ -14,6 +14,12 @@ The lazy-load payload (`latbench`) is baked into the image. It MUST run inside t
 sandbox: first-touch page-in only fires when the guest touches its own snapshotted
 memory. See dockerfile_build/aenv_latency/README.md for the methodology.
 
+Variance handling: the first sample of cold/snapshot is a warmup outlier (template
+cache / host scheduler cold) and lazy-load had only one observation per mode, so
+headlines swung widely. This harness discards `--warmup` leading samples, repeats
+each lazy mode `--lazy-repeats` times, and reports the **median** (not mean) plus a
+p99 noise ceiling so remaining jitter is visible. Raw samples are kept in report.json.
+
 Usage (single arch):
   E2B_API_URL=http://127.0.0.1:8000 E2B_API_KEY=e2b_000... \
     python scripts/aenv_latency_bench.py --template arm=aenv-latency-arm
@@ -95,14 +101,27 @@ def pct(values: list[float], q: float) -> float:
     return ordered[-1]
 
 
+def _drop_nan(vals: list[float]) -> list[float]:
+    return [v for v in vals if v == v]  # filter NaN
+
+
+def median_or_none(vals: list[float]) -> float | None:
+    clean = _drop_nan(vals)
+    return statistics.median(clean) if clean else None
+
+
 @dataclass
 class ArchResult:
     label: str
+    # cold/snapshot hold ALL samples (including the warmup prefix); the warmup count
+    # is kept separately so summary getters can slice [warmup:] and raw data survives.
     cold: list[dict] = field(default_factory=list)  # {create_ms, ready_ms}
     snapshot: list[dict] = field(default_factory=list)  # {resume_ms, ready_ms}
     concurrent: dict | None = None
-    lazy: dict = field(default_factory=dict)  # mode -> {first_ms, second_ms} or {error}
-    control: dict = field(default_factory=dict)  # no-pause/resume control: same shape as lazy
+    # lazy/control: mode -> {first_ms (median), second_ms (median), first_samples, second_samples}
+    lazy: dict = field(default_factory=dict)
+    control: dict = field(default_factory=dict)
+    warmup: int = 0  # number of leading cold/snapshot samples discarded as warmup
     errors: list[str] = field(default_factory=list)
 
 
@@ -187,7 +206,7 @@ async def measure_concurrent(template: str, k: int, timeout: float) -> dict:
         "k": k,
         "wall_ms": wall_ms,
         "per_instance": per,
-        "resume_mean_ms": statistics.fmean(resume_vals) if resume_vals else 0.0,
+        "resume_median_ms": statistics.median(resume_vals) if resume_vals else 0.0,
         "total_max_ms": max(total_vals) if total_vals else 0.0,
     }
 
@@ -211,8 +230,16 @@ async def measure_lazy(
     ws_mib: int,
     timeout: float,
     backing: str = "shm",
+    repeats: int = 3,
     keep: bool = False,
 ) -> tuple[dict, list[dict], Any | None]:
+    """Per mode: repeat `repeats` x (populate -> pause -> resume -> measure -> cleanup).
+
+    Each repeat is a fresh lazy cycle (populate re-dirties the shm, pause re-snapshots,
+    resume lazily restores), so the first-touch cost is genuinely re-measured every
+    repeat. Report median first/second across repeats + the raw per-repeat samples.
+    The 4*repeats resume timings also feed the snapshot-start row as a fallback.
+    """
     from e2b import AsyncSandbox
 
     sb = await AsyncSandbox.create(template=template, timeout=timeout, request_timeout=timeout)
@@ -221,31 +248,45 @@ async def measure_lazy(
     snap_samples: list[dict] = []
     latbench = "/usr/local/bin/latbench"
     for mode in MODES:
-        # populate while running -> pause -> resume (lazy state) -> measure
-        raw = await run_cmd(sb, f"{latbench} populate {ws_mib} {backing}", timeout=180)
-        _, stderr, code = result_fields(raw)
-        if code not in (None, 0):
-            lazy[mode] = {"error": f"populate exit={code} stderr={stderr!r}"}
-            continue
-        await sb.beta_pause(request_timeout=timeout)
-        t0 = time.perf_counter()
-        sb = await sb.connect(timeout=timeout, request_timeout=timeout)
-        resume_ms = (time.perf_counter() - t0) * 1000.0
-        ready_ms = await ready_probe(sb) * 1000.0
-        snap_samples.append({"resume_ms": resume_ms, "ready_ms": ready_ms})
+        firsts: list[float] = []
+        seconds: list[float] = []
+        last_err: str | None = None
+        for _ in range(repeats):
+            # populate while running -> pause -> resume (lazy state) -> measure
+            raw = await run_cmd(sb, f"{latbench} populate {ws_mib} {backing}", timeout=180)
+            _, stderr, code = result_fields(raw)
+            if code not in (None, 0):
+                last_err = f"populate exit={code} stderr={stderr!r}"
+                break
+            await sb.beta_pause(request_timeout=timeout)
+            t0 = time.perf_counter()
+            sb = await sb.connect(timeout=timeout, request_timeout=timeout)
+            resume_ms = (time.perf_counter() - t0) * 1000.0
+            ready_ms = await ready_probe(sb) * 1000.0
+            snap_samples.append({"resume_ms": resume_ms, "ready_ms": ready_ms})
 
-        raw = await run_cmd(sb, f"{latbench} measure {ws_mib} {mode} {backing}", timeout=180)
-        stdout, stderr, code = result_fields(raw)
-        if code not in (None, 0):
-            lazy[mode] = {"error": f"measure exit={code} stderr={stderr!r}"}
+            raw = await run_cmd(sb, f"{latbench} measure {ws_mib} {mode} {backing}", timeout=180)
+            stdout, stderr, code = result_fields(raw)
             await run_cmd(sb, f"{latbench} cleanup {backing}", timeout=30)
-            continue
-        parsed = parse_measure(stdout, mode)
-        if parsed is None:
-            lazy[mode] = {"error": f"unparseable stdout={stdout!r}"}
+            if code not in (None, 0):
+                last_err = f"measure exit={code} stderr={stderr!r}"
+                continue
+            parsed = parse_measure(stdout, mode)
+            if parsed is None:
+                last_err = f"unparseable stdout={stdout!r}"
+                continue
+            firsts.append(parsed[0])
+            seconds.append(parsed[1])
+
+        if firsts:
+            lazy[mode] = {
+                "first_ms": statistics.median(firsts),
+                "second_ms": statistics.median(seconds),
+                "first_samples": firsts,
+                "second_samples": seconds,
+            }
         else:
-            lazy[mode] = {"first_ms": parsed[0], "second_ms": parsed[1]}
-        await run_cmd(sb, f"{latbench} cleanup {backing}", timeout=30)
+            lazy[mode] = {"error": last_err or "no successful repeats"}
 
     last_sb = sb
     if not keep:
@@ -257,8 +298,8 @@ async def measure_lazy(
     return lazy, snap_samples, last_sb
 
 
-async def measure_control(template: str, ws_mib: int, timeout: float, backing: str = "shm") -> dict:
-    """Control: populate + measure with NO pause/resume.
+async def measure_control(template: str, ws_mib: int, timeout: float, backing: str = "shm", repeats: int = 3) -> dict:
+    """Control: populate + measure with NO pause/resume, repeated.
 
     The working set is populated in a running sandbox and measured immediately,
     so pages are already resident: first touch should ~= second touch (both cheap
@@ -272,23 +313,32 @@ async def measure_control(template: str, ws_mib: int, timeout: float, backing: s
     latbench = "/usr/local/bin/latbench"
     out: dict = {}
     for mode in MODES:
-        raw = await run_cmd(sb, f"{latbench} populate {ws_mib} {backing}", timeout=180)
-        _, stderr, code = result_fields(raw)
-        if code not in (None, 0):
-            out[mode] = {"error": f"populate exit={code} stderr={stderr!r}"}
-            continue
-        raw = await run_cmd(sb, f"{latbench} measure {ws_mib} {mode} {backing}", timeout=180)
-        stdout, stderr, code = result_fields(raw)
-        if code not in (None, 0):
-            out[mode] = {"error": f"measure exit={code} stderr={stderr!r}"}
+        firsts: list[float] = []
+        seconds: list[float] = []
+        for _ in range(repeats):
+            raw = await run_cmd(sb, f"{latbench} populate {ws_mib} {backing}", timeout=180)
+            _, _, code = result_fields(raw)
+            if code not in (None, 0):
+                continue
+            raw = await run_cmd(sb, f"{latbench} measure {ws_mib} {mode} {backing}", timeout=180)
+            stdout, _, code = result_fields(raw)
             await run_cmd(sb, f"{latbench} cleanup {backing}", timeout=30)
-            continue
-        parsed = parse_measure(stdout, mode)
-        if parsed is None:
-            out[mode] = {"error": f"unparseable stdout={stdout!r}"}
+            if code not in (None, 0):
+                continue
+            parsed = parse_measure(stdout, mode)
+            if parsed is None:
+                continue
+            firsts.append(parsed[0])
+            seconds.append(parsed[1])
+        if firsts:
+            out[mode] = {
+                "first_ms": statistics.median(firsts),
+                "second_ms": statistics.median(seconds),
+                "first_samples": firsts,
+                "second_samples": seconds,
+            }
         else:
-            out[mode] = {"first_ms": parsed[0], "second_ms": parsed[1]}
-        await run_cmd(sb, f"{latbench} cleanup {backing}", timeout=30)
+            out[mode] = {"error": "no successful repeats"}
     try:
         await sb.kill()
     except Exception:
@@ -300,20 +350,29 @@ async def run_suite(label: str, template: str, args: argparse.Namespace) -> Arch
     # AgentENV deserializes `timeout` as u32; the SDK forwards it verbatim, so cast
     # to int here once and every downstream create/connect/pause call is covered.
     timeout = int(args.sandbox_timeout)
-    res = ArchResult(label=label)
+    res = ArchResult(label=label, warmup=args.warmup)
 
     print(f"\n=== [{label}] template={template} ===", flush=True)
 
-    print(f"[{label}] cold start ({args.cold_samples} samples)...", flush=True)
+    # Sample counts are the KEPT counts; warmup samples are taken on top and discarded.
+    cold_n = args.cold_samples + args.warmup
+    snap_n = args.snapshot_samples + args.warmup
+    print(
+        f"[{label}] cold start ({args.cold_samples} kept + {args.warmup} warmup = {cold_n} runs)...",
+        flush=True,
+    )
     try:
-        res.cold = await measure_cold(template, args.cold_samples, timeout)
+        res.cold = await measure_cold(template, cold_n, timeout)
     except Exception as exc:  # noqa: BLE001
         res.errors.append(f"cold: {type(exc).__name__}: {exc}")
         print(f"[{label}] cold FAILED: {exc}", flush=True)
 
-    print(f"[{label}] snapshot start ({args.snapshot_samples} samples)...", flush=True)
+    print(
+        f"[{label}] snapshot start ({args.snapshot_samples} kept + {args.warmup} warmup = {snap_n} runs)...",
+        flush=True,
+    )
     try:
-        samples, _ = await measure_snapshot(template, args.snapshot_samples, timeout)
+        samples, _ = await measure_snapshot(template, snap_n, timeout)
         res.snapshot = samples
     except Exception as exc:  # noqa: BLE001
         res.errors.append(f"snapshot: {type(exc).__name__}: {exc}")
@@ -326,9 +385,15 @@ async def run_suite(label: str, template: str, args: argparse.Namespace) -> Arch
         res.errors.append(f"concurrent: {type(exc).__name__}: {exc}")
         print(f"[{label}] concurrent FAILED: {exc}", flush=True)
 
-    print(f"[{label}] lazy-load latency ({args.working_set_mib}MiB, backing={args.backing})...", flush=True)
+    print(
+        f"[{label}] lazy-load latency ({args.working_set_mib}MiB, backing={args.backing}, "
+        f"{args.lazy_repeats} repeats/mode)...",
+        flush=True,
+    )
     try:
-        lazy, snap, _ = await measure_lazy(template, args.working_set_mib, timeout, args.backing, keep=False)
+        lazy, snap, _ = await measure_lazy(
+            template, args.working_set_mib, timeout, args.backing, repeats=args.lazy_repeats, keep=False
+        )
         res.lazy = lazy
         if snap and not res.snapshot:
             res.snapshot = snap
@@ -337,9 +402,14 @@ async def run_suite(label: str, template: str, args: argparse.Namespace) -> Arch
         print(f"[{label}] lazy FAILED: {exc}", flush=True)
 
     if args.control:
-        print(f"[{label}] control (no pause/resume, {args.working_set_mib}MiB)...", flush=True)
+        print(
+            f"[{label}] control (no pause/resume, {args.working_set_mib}MiB, " f"{args.lazy_repeats} repeats/mode)...",
+            flush=True,
+        )
         try:
-            res.control = await measure_control(template, args.working_set_mib, timeout, args.backing)
+            res.control = await measure_control(
+                template, args.working_set_mib, timeout, args.backing, repeats=args.lazy_repeats
+            )
         except Exception as exc:  # noqa: BLE001
             res.errors.append(f"control: {type(exc).__name__}: {exc}")
             print(f"[{label}] control FAILED: {exc}", flush=True)
@@ -365,6 +435,21 @@ def snap_total_ms(s: dict) -> float:
     return s["resume_ms"] + (r if r == r else 0.0)
 
 
+def _cold_kept_totals(r: ArchResult) -> list[float]:
+    return [cold_total_ms(c) for c in r.cold[r.warmup :]]
+
+
+def _snap_kept_totals(r: ArchResult) -> list[float]:
+    return [snap_total_ms(s) for s in r.snapshot[r.warmup :]]
+
+
+def _spread(vals: list[float]) -> str:
+    clean = _drop_nan(vals)
+    if not clean:
+        return "n/a"
+    return f"{min(clean):.3f}..{max(clean):.3f}"
+
+
 def print_report(results: list[ArchResult]) -> None:
     print("\n" + "=" * 72)
     print("AgentENV latency benchmark — summary")
@@ -373,20 +458,20 @@ def print_report(results: list[ArchResult]) -> None:
     for r in results:
         print(f"\n## {r.label}")
         if r.cold:
-            totals = [cold_total_ms(c) for c in r.cold]
+            totals = _cold_kept_totals(r)
             print(
-                f"  VM cold start       mean={fmt_ms(statistics.fmean(totals))}ms  "
-                f"p50={fmt_ms(pct(totals, 0.5))}ms  p99={fmt_ms(pct(totals, 0.99))}ms  "
-                f"(n={len(totals)})"
+                f"  VM cold start       median={fmt_ms(median_or_none(totals))}ms  "
+                f"p99={fmt_ms(pct(_drop_nan(totals), 0.99))}ms  "
+                f"spread={_spread(totals)}ms  (n={len(totals)}, +{r.warmup} warmup)"
             )
         else:
             print("  VM cold start       (no data)")
         if r.snapshot:
-            totals = [snap_total_ms(s) for s in r.snapshot]
+            totals = _snap_kept_totals(r)
             print(
-                f"  VM snapshot start   mean={fmt_ms(statistics.fmean(totals))}ms  "
-                f"p50={fmt_ms(pct(totals, 0.5))}ms  p99={fmt_ms(pct(totals, 0.99))}ms  "
-                f"(n={len(totals)})"
+                f"  VM snapshot start   median={fmt_ms(median_or_none(totals))}ms  "
+                f"p99={fmt_ms(pct(_drop_nan(totals), 0.99))}ms  "
+                f"spread={_spread(totals)}ms  (n={len(totals)}, +{r.warmup} warmup)"
             )
         else:
             print("  VM snapshot start   (no data)")
@@ -394,12 +479,12 @@ def print_report(results: list[ArchResult]) -> None:
             c = r.concurrent
             print(
                 f"  {c['k']}-concurrent snap  wall={fmt_ms(c['wall_ms'])}ms  "
-                f"resume_mean={fmt_ms(c['resume_mean_ms'])}ms  "
+                f"resume_median={fmt_ms(c['resume_median_ms'])}ms  "
                 f"total_max={fmt_ms(c['total_max_ms'])}ms"
             )
         else:
             print("  concurrent snapshot (no data)")
-        print("  lazy-load latency (first / second, ms):")
+        print("  lazy-load latency (median first / second, ms; spread across repeats):")
         for mode in MODES:
             e = r.lazy.get(mode)
             if not e:
@@ -407,9 +492,13 @@ def print_report(results: list[ArchResult]) -> None:
             elif "error" in e:
                 print(f"    {mode:12s} ERROR: {e['error']}")
             else:
-                print(f"    {mode:12s} first={fmt_ms(e['first_ms'])}ms  " f"second={fmt_ms(e['second_ms'])}ms")
+                print(
+                    f"    {mode:12s} first={fmt_ms(e['first_ms'])}ms "
+                    f"[{_spread(e.get('first_samples', []))}]  "
+                    f"second={fmt_ms(e['second_ms'])}ms"
+                )
         if r.control:
-            print("  control (no pause/resume, first / second, ms):")
+            print("  control (no pause/resume, median first / second, ms):")
             for mode in MODES:
                 e = r.control.get(mode)
                 if not e:
@@ -417,14 +506,18 @@ def print_report(results: list[ArchResult]) -> None:
                 elif "error" in e:
                     print(f"    {mode:12s} ERROR: {e['error']}")
                 else:
-                    print(f"    {mode:12s} first={fmt_ms(e['first_ms'])}ms  " f"second={fmt_ms(e['second_ms'])}ms")
+                    print(
+                        f"    {mode:12s} first={fmt_ms(e['first_ms'])}ms "
+                        f"[{_spread(e.get('first_samples', []))}]  "
+                        f"second={fmt_ms(e['second_ms'])}ms"
+                    )
 
     if len(results) >= 2:
-        print("\n## x86 vs arm delta (snapshot start mean)")
+        print("\n## x86 vs arm delta (snapshot start median)")
         for r in results:
             if r.snapshot:
-                totals = [snap_total_ms(s) for s in r.snapshot]
-                print(f"  {r.label}: {fmt_ms(statistics.fmean(totals))}ms")
+                totals = _snap_kept_totals(r)
+                print(f"  {r.label}: {fmt_ms(median_or_none(totals))}ms")
 
     errs = [f"[{r.label}] {e}" for r in results for e in r.errors]
     if errs:
@@ -436,6 +529,7 @@ def print_report(results: list[ArchResult]) -> None:
 def to_jsonable(r: ArchResult) -> dict:
     return {
         "label": r.label,
+        "warmup": r.warmup,
         "cold": r.cold,
         "snapshot": r.snapshot,
         "concurrent": r.concurrent,
@@ -463,20 +557,30 @@ def _cell(v: float | None) -> str:
     return f"{v:.3f}"
 
 
-def _cold_mean(r: ArchResult) -> float | None:
-    if not r.cold:
-        return None
-    return statistics.fmean(cold_total_ms(c) for c in r.cold)
+def _cold_median(r: ArchResult) -> float | None:
+    return median_or_none(_cold_kept_totals(r))
 
 
-def _snap_mean(r: ArchResult) -> float | None:
-    if not r.snapshot:
-        return None
-    return statistics.fmean(snap_total_ms(s) for s in r.snapshot)
+def _cold_p99(r: ArchResult) -> float | None:
+    clean = _drop_nan(_cold_kept_totals(r))
+    return pct(clean, 0.99) if clean else None
+
+
+def _snap_median(r: ArchResult) -> float | None:
+    return median_or_none(_snap_kept_totals(r))
+
+
+def _snap_p99(r: ArchResult) -> float | None:
+    clean = _drop_nan(_snap_kept_totals(r))
+    return pct(clean, 0.99) if clean else None
 
 
 def _conc_wall(r: ArchResult) -> float | None:
     return r.concurrent["wall_ms"] if r.concurrent else None
+
+
+def _conc_total_max(r: ArchResult) -> float | None:
+    return r.concurrent["total_max_ms"] if r.concurrent else None
 
 
 def _lazy_value(mode: str, key: str):
@@ -484,7 +588,7 @@ def _lazy_value(mode: str, key: str):
         e = r.lazy.get(mode)
         if not e or "error" in e:
             return None
-        return e[key]
+        return e[key]  # first_ms / second_ms are medians across repeats
 
     return getter
 
@@ -500,11 +604,17 @@ def _control_value(mode: str, key: str):
 
 
 # Fixed row order mirroring the customer benchmark table so runs from
-# different machines paste-align row-by-row. Each row = (维度, 指标, getter).
+# different machines paste-align row-by-row. Headline = median (robust to the
+# warmup outlier + long tail); the p99 row right after each startup metric is a
+# noise ceiling so jitter is visible in the paste-ready table. Each row =
+# (维度, 指标, getter).
 TABLE_ROWS: list[tuple[str, str, Any]] = [
-    ("VM启动", "VM冷启动", _cold_mean),
-    ("VM启动", "VM快照启动", _snap_mean),
-    ("VM启动", "10并发快照启动", _conc_wall),
+    ("VM启动", "VM冷启动", _cold_median),
+    ("VM启动", "VM冷启动-p99", _cold_p99),
+    ("VM启动", "VM快照启动", _snap_median),
+    ("VM启动", "VM快照启动-p99", _snap_p99),
+    ("VM启动", "10并发快照启动-总耗时", _conc_wall),
+    ("VM启动", "10并发快照启动-单实例最大", _conc_total_max),
     ("快照lazy load", "顺序遍历读-首读", _lazy_value("seq_read", "first_ms")),
     ("快照lazy load", "顺序遍历读-次读", _lazy_value("seq_read", "second_ms")),
     ("快照lazy load", "顺序遍历写-首写", _lazy_value("seq_write", "first_ms")),
@@ -598,8 +708,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--api-url", default=os.environ.get("E2B_API_URL", DEFAULT_API_URL))
     p.add_argument("--api-key", default=os.environ.get("E2B_API_KEY", DEFAULT_API_KEY))
-    p.add_argument("--cold-samples", type=int, default=5)
-    p.add_argument("--snapshot-samples", type=int, default=5)
+    p.add_argument(
+        "--cold-samples",
+        type=int,
+        default=10,
+        help="kept cold-start samples (warmup is taken on top and discarded)",
+    )
+    p.add_argument(
+        "--snapshot-samples",
+        type=int,
+        default=10,
+        help="kept snapshot-start samples (warmup is taken on top and discarded)",
+    )
     p.add_argument("--concurrent", type=int, default=10, help="concurrent snapshot-start count")
     p.add_argument("--working-set-mib", type=int, default=256)
     p.add_argument(
@@ -609,6 +729,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="latbench working-set backing store (shm default; file if shm does not survive resume)",
     )
     p.add_argument("--sandbox-timeout", type=float, default=300.0, help="per-sandbox lifecycle timeout (s)")
+    p.add_argument(
+        "--warmup",
+        type=int,
+        default=1,
+        help="leading cold/snapshot samples to discard as warmup (the first create/pause after a "
+        "fresh template load runs cold and is an outlier; defaults to 1)",
+    )
+    p.add_argument(
+        "--lazy-repeats",
+        type=int,
+        default=3,
+        help="repeat each lazy-load mode's populate->pause->resume->measure cycle this many times; "
+        "report median first/second (single-repeat lazy-load had no variance estimate)",
+    )
     p.add_argument(
         "--control",
         action="store_true",
@@ -623,6 +757,9 @@ def main() -> None:
     args = build_parser().parse_args()
     if args.working_set_mib <= 0:
         print("working-set-mib must be > 0", file=sys.stderr)
+        sys.exit(2)
+    if args.warmup < 0 or args.lazy_repeats < 1:
+        print("warmup must be >= 0 and lazy-repeats must be >= 1", file=sys.stderr)
         sys.exit(2)
     try:
         sys.exit(asyncio.run(main_async(args)))
