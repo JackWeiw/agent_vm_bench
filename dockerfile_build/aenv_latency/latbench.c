@@ -3,8 +3,11 @@
  *
  * Measures the first-touch (lazy page-in from a restored snapshot) vs second-touch
  * (resident) latency of a working set, per the customer's benchmark shape:
- *   - working set = N x 4KiB pages, each page touched once at one random 8-byte slot
- *   - modes: seq_read / seq_write / rand_read / rand_write
+ *   - working set = N x 4KiB pages
+ *   - sequential modes (seq_read/seq_write): touch the FULL 4KiB of every page
+ *     (all 512 x 8-byte slots), pages in linear order — a bandwidth-style traversal
+ *   - random modes (rand_read/rand_write): touch ONE 8-byte slot per page, pages in
+ *     shuffled order — a latency-style traversal
  *   - report first-pass ms and second-pass ms
  *
  * The working set MUST be populated before pause so the snapshot stores real page
@@ -181,11 +184,25 @@ static void build_plan(size_t pages, int random_order, uint32_t **order_out,
 }
 
 static double traverse_read(char *base, size_t pages, const uint32_t *order,
-                             const uint32_t *off) {
+                             const uint32_t *off, int full_page) {
     volatile uint64_t sink = 0;
     double t0 = now_ms();
-    for (size_t i = 0; i < pages; i++) {
-        sink |= *((volatile uint64_t *)(base + (size_t)order[i] * PAGE + off[i]));
+    if (full_page) {
+        /* Sequential: touch every 8-byte slot of every 4KiB page (full-page access),
+         * pages in linear order. The first slot of each page triggers the lazy
+         * page-in; the remaining 511 slots are within the now-resident page. */
+        for (size_t i = 0; i < pages; i++) {
+            volatile uint64_t *page = (volatile uint64_t *)(base + i * PAGE);
+            for (size_t s = 0; s < PAGE / SLOT; s++) {
+                sink |= page[s];
+            }
+        }
+    } else {
+        /* Random: one 8-byte slot per page, in shuffled page order. Each page is
+         * touched exactly once, so first pass = one fault per page. */
+        for (size_t i = 0; i < pages; i++) {
+            sink |= *((volatile uint64_t *)(base + (size_t)order[i] * PAGE + off[i]));
+        }
     }
     double t1 = now_ms();
     (void)sink; /* prevent dead-code elimination */
@@ -193,11 +210,23 @@ static double traverse_read(char *base, size_t pages, const uint32_t *order,
 }
 
 static double traverse_write(char *base, size_t pages, const uint32_t *order,
-                              const uint32_t *off) {
+                             const uint32_t *off, int full_page) {
     double t0 = now_ms();
-    for (size_t i = 0; i < pages; i++) {
-        *((volatile uint64_t *)(base + (size_t)order[i] * PAGE + off[i])) =
-            0xDEADBEEFCAFEBABEULL;
+    if (full_page) {
+        /* Sequential full-page write; first write to a page COWs it from the
+         * snapshot, the remaining slots write the now-private resident page. */
+        for (size_t i = 0; i < pages; i++) {
+            volatile uint64_t *page = (volatile uint64_t *)(base + i * PAGE);
+            for (size_t s = 0; s < PAGE / SLOT; s++) {
+                page[s] = 0xDEADBEEFCAFEBABEULL;
+            }
+        }
+    } else {
+        /* Random one-slot-per-page write in shuffled order. */
+        for (size_t i = 0; i < pages; i++) {
+            *((volatile uint64_t *)(base + (size_t)order[i] * PAGE + off[i])) =
+                0xDEADBEEFCAFEBABEULL;
+        }
     }
     double t1 = now_ms();
     return t1 - t0;
@@ -246,12 +275,16 @@ static int do_measure(size_t mib, const char *mode, const char *backing) {
     char *base = (char *)p;
     double first_ms;
     double second_ms;
+    /* Sequential modes traverse the full 4KiB of each page; random modes touch
+     * one 8-byte slot per page. The access pattern is what distinguishes a
+     * bandwidth traversal (seq) from a latency traversal (rand). */
+    int full_page = !is_random;
     if (is_write) {
-        first_ms = traverse_write(base, pages, order, off);
-        second_ms = traverse_write(base, pages, order, off);
+        first_ms = traverse_write(base, pages, order, off, full_page);
+        second_ms = traverse_write(base, pages, order, off, full_page);
     } else {
-        first_ms = traverse_read(base, pages, order, off);
-        second_ms = traverse_read(base, pages, order, off);
+        first_ms = traverse_read(base, pages, order, off, full_page);
+        second_ms = traverse_read(base, pages, order, off, full_page);
     }
 
     printf("%s %.6f %.6f %zu %zu\n", mode, first_ms, second_ms, pages, mib);
