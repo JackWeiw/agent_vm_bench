@@ -254,7 +254,7 @@ static int do_measure(size_t mib, const char *mode, const char *backing) {
         second_ms = traverse_read(base, pages, order, off);
     }
 
-    printf("%s %.3f %.3f %zu %zu\n", mode, first_ms, second_ms, pages, mib);
+    printf("%s %.6f %.6f %zu %zu\n", mode, first_ms, second_ms, pages, mib);
 
     munmap(p, mib * 1024UL * 1024UL);
     close(fd);

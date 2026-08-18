@@ -58,9 +58,27 @@ python scripts/aenv_latency_bench.py --template arm=aenv-latency-arm
 # x86 vs arm
 python scripts/aenv_latency_bench.py \
     --template arm=aenv-latency-arm --template x86=aenv-latency-x86
+
+# also run a control (populate+measure with NO pause/resume) to prove the
+# lazy-load delta is snapshot-induced: control first touch should ~= second touch
+python scripts/aenv_latency_bench.py --template arm=... --control
 ```
 
-Output goes to `results/aenv_latency/<timestamp>/report.json` plus a printed table.
+Output goes to `results/aenv_latency/<timestamp>/` (`report.json`, `report.tsv`,
+`report.md`) plus a printed table. `report.tsv` is paste-ready for Excel — rows
+are fixed-order so arm and x86 runs from separate machines paste-align row-by-row.
+
+## Metric definitions (what the startup numbers actually measure)
+
+- **VM cold start** = `Sandbox.create()` call + ready probe (`true` runs). This is
+  "time until a command can execute in the sandbox", NOT pure kernel-boot time —
+  it includes the E2B/AgentENV command-plane (websocat/ssh) handshake. Fine for
+  x86-vs-arm (same ruler); not directly comparable to a customer number that may
+  measure pure VM boot or include image pull/template build.
+- **VM snapshot start** = `connect()` resume + ready probe, after `beta_pause()`.
+- **Lazy-load first/second** = in-guest `latbench` first-touch vs second-touch of
+  the 256MiB working set, at nanosecond source precision (printed to 1ns, table to
+  1µs). The first-minus-second delta is the snapshot lazy-load debt.
 
 ## If shm doesn't survive resume
 

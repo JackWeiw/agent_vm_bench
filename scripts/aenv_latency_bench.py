@@ -102,6 +102,7 @@ class ArchResult:
     snapshot: list[dict] = field(default_factory=list)  # {resume_ms, ready_ms}
     concurrent: dict | None = None
     lazy: dict = field(default_factory=dict)  # mode -> {first_ms, second_ms} or {error}
+    control: dict = field(default_factory=dict)  # no-pause/resume control: same shape as lazy
     errors: list[str] = field(default_factory=list)
 
 
@@ -170,7 +171,7 @@ async def measure_concurrent(template: str, k: int, timeout: float) -> dict:
     wall_ms = (time.perf_counter() - t0) * 1000.0
 
     per: list[dict] = []
-    for i, r in enumerate(raw):
+    for _, r in enumerate(raw):
         if isinstance(r, Exception):
             per.append({"error": f"{type(r).__name__}: {r}"})
         else:
@@ -256,6 +257,45 @@ async def measure_lazy(
     return lazy, snap_samples, last_sb
 
 
+async def measure_control(template: str, ws_mib: int, timeout: float, backing: str = "shm") -> dict:
+    """Control: populate + measure with NO pause/resume.
+
+    The working set is populated in a running sandbox and measured immediately,
+    so pages are already resident: first touch should ~= second touch (both cheap
+    minor faults). If that holds, the lazy-load delta in measure_lazy is proven
+    to be caused by snapshot pause/resume, not by any inherent first-mmap penalty.
+    """
+    from e2b import AsyncSandbox
+
+    sb = await AsyncSandbox.create(template=template, timeout=timeout, request_timeout=timeout)
+    await ready_probe(sb)
+    latbench = "/usr/local/bin/latbench"
+    out: dict = {}
+    for mode in MODES:
+        raw = await run_cmd(sb, f"{latbench} populate {ws_mib} {backing}", timeout=180)
+        _, stderr, code = result_fields(raw)
+        if code not in (None, 0):
+            out[mode] = {"error": f"populate exit={code} stderr={stderr!r}"}
+            continue
+        raw = await run_cmd(sb, f"{latbench} measure {ws_mib} {mode} {backing}", timeout=180)
+        stdout, stderr, code = result_fields(raw)
+        if code not in (None, 0):
+            out[mode] = {"error": f"measure exit={code} stderr={stderr!r}"}
+            await run_cmd(sb, f"{latbench} cleanup {backing}", timeout=30)
+            continue
+        parsed = parse_measure(stdout, mode)
+        if parsed is None:
+            out[mode] = {"error": f"unparseable stdout={stdout!r}"}
+        else:
+            out[mode] = {"first_ms": parsed[0], "second_ms": parsed[1]}
+        await run_cmd(sb, f"{latbench} cleanup {backing}", timeout=30)
+    try:
+        await sb.kill()
+    except Exception:
+        pass
+    return out
+
+
 async def run_suite(label: str, template: str, args: argparse.Namespace) -> ArchResult:
     # AgentENV deserializes `timeout` as u32; the SDK forwards it verbatim, so cast
     # to int here once and every downstream create/connect/pause call is covered.
@@ -296,6 +336,14 @@ async def run_suite(label: str, template: str, args: argparse.Namespace) -> Arch
         res.errors.append(f"lazy: {type(exc).__name__}: {exc}")
         print(f"[{label}] lazy FAILED: {exc}", flush=True)
 
+    if args.control:
+        print(f"[{label}] control (no pause/resume, {args.working_set_mib}MiB)...", flush=True)
+        try:
+            res.control = await measure_control(template, args.working_set_mib, timeout, args.backing)
+        except Exception as exc:  # noqa: BLE001
+            res.errors.append(f"control: {type(exc).__name__}: {exc}")
+            print(f"[{label}] control FAILED: {exc}", flush=True)
+
     return res
 
 
@@ -304,7 +352,7 @@ def fmt_ms(v: float | None) -> str:
         return "n/a"
     if v != v:  # NaN
         return "n/a"
-    return f"{v:.1f}"
+    return f"{v:.3f}"
 
 
 def cold_total_ms(c: dict) -> float:
@@ -360,6 +408,16 @@ def print_report(results: list[ArchResult]) -> None:
                 print(f"    {mode:12s} ERROR: {e['error']}")
             else:
                 print(f"    {mode:12s} first={fmt_ms(e['first_ms'])}ms  " f"second={fmt_ms(e['second_ms'])}ms")
+        if r.control:
+            print("  control (no pause/resume, first / second, ms):")
+            for mode in MODES:
+                e = r.control.get(mode)
+                if not e:
+                    print(f"    {mode:12s} (no data)")
+                elif "error" in e:
+                    print(f"    {mode:12s} ERROR: {e['error']}")
+                else:
+                    print(f"    {mode:12s} first={fmt_ms(e['first_ms'])}ms  " f"second={fmt_ms(e['second_ms'])}ms")
 
     if len(results) >= 2:
         print("\n## x86 vs arm delta (snapshot start mean)")
@@ -382,6 +440,7 @@ def to_jsonable(r: ArchResult) -> dict:
         "snapshot": r.snapshot,
         "concurrent": r.concurrent,
         "lazy": r.lazy,
+        "control": r.control,
         "errors": r.errors,
     }
 
@@ -401,7 +460,7 @@ def _cell(v: float | None) -> str:
     """Format a metric value for table cells; blank for missing/NaN."""
     if v is None or v != v:  # None or NaN
         return ""
-    return f"{v:.1f}"
+    return f"{v:.3f}"
 
 
 def _cold_mean(r: ArchResult) -> float | None:
@@ -430,49 +489,59 @@ def _lazy_value(mode: str, key: str):
     return getter
 
 
+def _control_value(mode: str, key: str):
+    def getter(r: ArchResult) -> float | None:
+        e = r.control.get(mode)
+        if not e or "error" in e:
+            return None
+        return e[key]
+
+    return getter
+
+
 # Fixed row order mirroring the customer benchmark table so runs from
-# different machines paste-align row-by-row.
-TABLE_ROWS: list[tuple[str, str]] = [
-    ("VM启动", "VM冷启动"),
-    ("VM启动", "VM快照启动"),
-    ("VM启动", "10并发快照启动"),
-    ("快照lazy load", "顺序遍历读-首读"),
-    ("快照lazy load", "顺序遍历读-次读"),
-    ("快照lazy load", "顺序遍历写-首写"),
-    ("快照lazy load", "顺序遍历写-次写"),
-    ("快照lazy load", "随机遍历读-首读"),
-    ("快照lazy load", "随机遍历读-次读"),
-    ("快照lazy load", "随机遍历写-首写"),
-    ("快照lazy load", "随机遍历写-次写"),
+# different machines paste-align row-by-row. Each row = (维度, 指标, getter).
+TABLE_ROWS: list[tuple[str, str, Any]] = [
+    ("VM启动", "VM冷启动", _cold_mean),
+    ("VM启动", "VM快照启动", _snap_mean),
+    ("VM启动", "10并发快照启动", _conc_wall),
+    ("快照lazy load", "顺序遍历读-首读", _lazy_value("seq_read", "first_ms")),
+    ("快照lazy load", "顺序遍历读-次读", _lazy_value("seq_read", "second_ms")),
+    ("快照lazy load", "顺序遍历写-首写", _lazy_value("seq_write", "first_ms")),
+    ("快照lazy load", "顺序遍历写-次写", _lazy_value("seq_write", "second_ms")),
+    ("快照lazy load", "随机遍历读-首读", _lazy_value("rand_read", "first_ms")),
+    ("快照lazy load", "随机遍历读-次读", _lazy_value("rand_read", "second_ms")),
+    ("快照lazy load", "随机遍历写-首写", _lazy_value("rand_write", "first_ms")),
+    ("快照lazy load", "随机遍历写-次写", _lazy_value("rand_write", "second_ms")),
+]
+
+# Control rows (populate+measure with NO pause/resume). First touch should
+# ~second touch, proving the lazy-load delta above is specifically caused by
+# snapshot pause/resume, not by any inherent first-mmap penalty. Emitted only
+# when --control was run for at least one template.
+CONTROL_ROWS: list[tuple[str, str, Any]] = [
+    ("对照(无快照)", "顺序遍历读-首读", _control_value("seq_read", "first_ms")),
+    ("对照(无快照)", "顺序遍历读-次读", _control_value("seq_read", "second_ms")),
+    ("对照(无快照)", "顺序遍历写-首写", _control_value("seq_write", "first_ms")),
+    ("对照(无快照)", "顺序遍历写-次写", _control_value("seq_write", "second_ms")),
+    ("对照(无快照)", "随机遍历读-首读", _control_value("rand_read", "first_ms")),
+    ("对照(无快照)", "随机遍历读-次读", _control_value("rand_read", "second_ms")),
+    ("对照(无快照)", "随机遍历写-首写", _control_value("rand_write", "first_ms")),
+    ("对照(无快照)", "随机遍历写-次写", _control_value("rand_write", "second_ms")),
 ]
 
 
-def _row_getter(metric: str):
-    if metric == "VM冷启动":
-        return _cold_mean
-    if metric == "VM快照启动":
-        return _snap_mean
-    if metric == "10并发快照启动":
-        return _conc_wall
-    mode_map = {
-        "顺序遍历读-首读": ("seq_read", "first_ms"),
-        "顺序遍历读-次读": ("seq_read", "second_ms"),
-        "顺序遍历写-首写": ("seq_write", "first_ms"),
-        "顺序遍历写-次写": ("seq_write", "second_ms"),
-        "随机遍历读-首读": ("rand_read", "first_ms"),
-        "随机遍历读-次读": ("rand_read", "second_ms"),
-        "随机遍历写-首写": ("rand_write", "first_ms"),
-        "随机遍历写-次写": ("rand_write", "second_ms"),
-    }
-    mode, key = mode_map[metric]
-    return _lazy_value(mode, key)
+def _all_rows(results: list[ArchResult]) -> list[tuple[str, str, Any]]:
+    rows = list(TABLE_ROWS)
+    if any(r.control for r in results):
+        rows += CONTROL_ROWS
+    return rows
 
 
 def build_tsv(results: list[ArchResult]) -> str:
     labels = [r.label for r in results]
     lines = ["\t".join(["维度", "指标", *labels])]
-    for dim, metric in TABLE_ROWS:
-        getter = _row_getter(metric)
+    for dim, metric, getter in _all_rows(results):
         cells = [dim, metric] + [_cell(getter(r)) for r in results]
         lines.append("\t".join(cells))
     return "\n".join(lines) + "\n"
@@ -483,8 +552,7 @@ def build_markdown(results: list[ArchResult]) -> str:
     header = "| 维度 | 指标 | " + " | ".join(labels) + " |"
     sep = "|---|---|" + "|".join(["---"] * len(labels)) + "|"
     lines = [header, sep]
-    for dim, metric in TABLE_ROWS:
-        getter = _row_getter(metric)
+    for dim, metric, getter in _all_rows(results):
         cells = [dim, metric] + [_cell(getter(r)) for r in results]
         lines.append("| " + " | ".join(cells) + " |")
     return "\n".join(lines)
@@ -541,6 +609,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="latbench working-set backing store (shm default; file if shm does not survive resume)",
     )
     p.add_argument("--sandbox-timeout", type=float, default=300.0, help="per-sandbox lifecycle timeout (s)")
+    p.add_argument(
+        "--control",
+        action="store_true",
+        help="also run a no-pause/resume control (populate+measure) to prove the lazy-load "
+        "delta is snapshot-induced; first touch should ~= second touch",
+    )
     p.add_argument("--output-dir", default="results/aenv_latency")
     return p
 
