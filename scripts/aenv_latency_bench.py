@@ -27,16 +27,6 @@ Usage (single arch):
 Compare x86 vs arm:
   python scripts/aenv_latency_bench.py \
       --template arm=aenv-latency-arm --template x86=aenv-latency-x86
-
-Also measure a REAL cold boot (OCI image -> kernel boot, not a snapshot load) and
-report it as 'VM冷启动(真boot)' alongside the template-snapshot 'VM冷启动' row. The
-two are different things: the template create is a snapshot load (~100ms), the cold
-boot is a real boot (seconds) and is the metric comparable to the customer's cold start.
-Pass the same OCI ref your `aenv pull` used, per arch:
-  python scripts/aenv_latency_bench.py \
-      --template arm=aenv-latency-arm --template x86=aenv-latency-x86 \
-      --cold-image arm=127.0.0.1:6000/ubuntu-aenv-latency-bench:24.04-linuxarm64 \
-      --cold-image x86=127.0.0.1:6000/ubuntu-aenv-latency-bench:24.04-x86_64
 """
 
 from __future__ import annotations
@@ -132,14 +122,6 @@ class ArchResult:
     lazy: dict = field(default_factory=dict)
     control: dict = field(default_factory=dict)
     warmup: int = 0  # number of leading cold/snapshot samples discarded as warmup
-    # Real cold boot from a raw OCI image (POST /sandboxes-cold -> for_create_fresh ->
-    # start_fresh, a kernel boot, NOT a snapshot load from a template). launch_sandbox
-    # waits for envd-ready before returning 201 (service.rs wait_for_ready), so create_ms
-    # already includes boot+envd and ready_ms is 0 -> cold_total_ms == create_ms. This is
-    # the metric comparable to the customer's "VM cold start"; the template create above
-    # is a snapshot load, not a boot. Optional (--cold-image).
-    cold_boot: list[dict] = field(default_factory=list)  # {create_ms, ready_ms}
-    cold_boot_warmup: int = 0  # separate warmup; first cold pulls/converts OCI layers
     errors: list[str] = field(default_factory=list)
 
 
@@ -160,92 +142,6 @@ async def measure_cold(template: str, n: int, timeout: float) -> list[dict]:
             await sb.kill()
         except Exception:
             pass
-    return out
-
-
-def _cold_http(method: str, url: str, api_key: str, body: dict | None, timeout: float) -> tuple[int, str]:
-    """Blocking HTTP helper for the cold-boot path (run via asyncio.to_thread)."""
-    import urllib.error
-    import urllib.request
-
-    data = None
-    headers = {"X-API-KEY": api_key}
-    if body is not None:
-        data = json.dumps(body).encode()
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read().decode()
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read().decode()
-
-
-async def measure_cold_boot(
-    image: str,
-    n: int,
-    timeout: float,
-    api_url: str,
-    api_key: str,
-    cpu: int = 2,
-    mem_mb: int = 4096,
-    gap: float = 0.0,
-) -> list[dict]:
-    """Real cold boot: POST /sandboxes-cold (image source -> for_create_fresh -> kernel boot).
-
-    launch_sandbox waits for envd-ready before returning 201, so create_ms is the full
-    cold-boot time (overlaybd convert + boot + envd) and ready_ms is 0. This is the
-    customer-comparable "VM cold start"; the e2b SDK has no cold-boot entry, so the create
-    call is raw HTTP (X-API-KEY header, same header the SDK sends). Cleanup is a raw DELETE.
-
-    A real boot is heavier than a snapshot load and there is a ~6s gateway timeout in front
-    of the API; cold boots run right after the template create+kill phase (whose firecracker
-    kills are async) get slowed past that timeout and 500. `gap` sleeps before each create so
-    each cold boot runs on a settled host; without it the first cold-boot samples 500.
-    """
-    endpoint = f"{api_url.rstrip('/')}/sandboxes-cold"
-    out: list[dict] = []
-    for i in range(n):
-        if gap > 0:
-            await asyncio.sleep(gap)
-        body = {
-            "image": image,
-            "timeout": int(timeout),
-            "autoPause": False,
-            "cpuCount": cpu,
-            "memoryMB": mem_mb,
-        }
-        # First cold may pull+convert OCI layers (tens of s); give the HTTP call more
-        # headroom than the sandbox TTL so a slow first boot is measured, not aborted.
-        http_timeout = timeout + 60.0
-        t0 = time.perf_counter()
-        try:
-            status, text = await asyncio.to_thread(_cold_http, "POST", endpoint, api_key, body, http_timeout)
-        except Exception as exc:  # noqa: BLE001
-            elapsed_ms = (time.perf_counter() - t0) * 1000.0
-            out.append({"create_ms": float("nan"), "ready_ms": 0.0, "error": f"{type(exc).__name__}: {exc}"})
-            print(f"  cold-boot #{i} create FAILED after {elapsed_ms:.0f}ms: {exc}", flush=True)
-            continue
-        create_ms = (time.perf_counter() - t0) * 1000.0
-        if status != 201:
-            out.append({"create_ms": float("nan"), "ready_ms": 0.0, "error": f"HTTP {status}: {text[:200]}"})
-            print(
-                f"  cold-boot #{i} create HTTP {status} after {create_ms:.0f}ms: {text[:200]}",
-                flush=True,
-            )
-            continue
-        try:
-            sandbox_id = json.loads(text)["sandboxID"]
-        except Exception:  # noqa: BLE001
-            out.append({"create_ms": create_ms, "ready_ms": 0.0, "error": f"no sandboxID: {text[:200]}"})
-            continue
-        out.append({"create_ms": create_ms, "ready_ms": 0.0})
-        try:
-            await asyncio.to_thread(
-                _cold_http, "DELETE", f"{api_url.rstrip('/')}/sandboxes/{sandbox_id}", api_key, None, 60.0
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"  cold-boot kill {sandbox_id} FAILED: {exc}", flush=True)
     return out
 
 
@@ -536,7 +432,7 @@ async def run_stress(label: str, template: str, args: argparse.Namespace) -> dic
             pass
 
 
-async def run_suite(label: str, template: str, args: argparse.Namespace, cold_image: str | None = None) -> ArchResult:
+async def run_suite(label: str, template: str, args: argparse.Namespace) -> ArchResult:
     # AgentENV deserializes `timeout` as u32; the SDK forwards it verbatim, so cast
     # to int here once and every downstream create/connect/pause call is covered.
     timeout = int(args.sandbox_timeout)
@@ -556,29 +452,6 @@ async def run_suite(label: str, template: str, args: argparse.Namespace, cold_im
     except Exception as exc:  # noqa: BLE001
         res.errors.append(f"cold: {type(exc).__name__}: {exc}")
         print(f"[{label}] cold FAILED: {exc}", flush=True)
-
-    if cold_image:
-        cb_n = args.cold_boot_samples + args.cold_boot_warmup
-        print(
-            f"[{label}] real cold boot from OCI image ({args.cold_boot_samples} kept + "
-            f"{args.cold_boot_warmup} warmup = {cb_n} runs, image={cold_image})...",
-            flush=True,
-        )
-        res.cold_boot_warmup = args.cold_boot_warmup
-        try:
-            res.cold_boot = await measure_cold_boot(
-                cold_image,
-                cb_n,
-                timeout,
-                args.api_url,
-                args.api_key,
-                cpu=args.cold_cpu,
-                mem_mb=args.cold_memory,
-                gap=args.cold_boot_gap,
-            )
-        except Exception as exc:  # noqa: BLE001
-            res.errors.append(f"cold_boot: {type(exc).__name__}: {exc}")
-            print(f"[{label}] cold_boot FAILED: {exc}", flush=True)
 
     print(
         f"[{label}] snapshot start ({args.snapshot_samples} kept + {args.warmup} warmup = {snap_n} runs)...",
@@ -652,19 +525,6 @@ def _cold_kept_totals(r: ArchResult) -> list[float]:
     return [cold_total_ms(c) for c in r.cold[r.warmup :]]
 
 
-def _cold_boot_kept_totals(r: ArchResult) -> list[float]:
-    return [cold_total_ms(c) for c in r.cold_boot[r.cold_boot_warmup :]]
-
-
-def _cold_boot_median(r: ArchResult) -> float | None:
-    return median_or_none(_cold_boot_kept_totals(r))
-
-
-def _cold_boot_p99(r: ArchResult) -> float | None:
-    clean = _drop_nan(_cold_boot_kept_totals(r))
-    return pct(clean, 0.99) if clean else None
-
-
 def _snap_kept_totals(r: ArchResult) -> list[float]:
     return [snap_total_ms(s) for s in r.snapshot[r.warmup :]]
 
@@ -701,16 +561,6 @@ def print_report(results: list[ArchResult]) -> None:
             )
         else:
             print("  VM snapshot start   (no data)")
-        if r.cold_boot:
-            totals = _cold_boot_kept_totals(r)
-            print(
-                f"  VM cold start (boot) median={fmt_ms(median_or_none(totals))}ms  "
-                f"p99={fmt_ms(pct(_drop_nan(totals), 0.99))}ms  "
-                f"spread={_spread(totals)}ms  (n={len(totals)}, +{r.cold_boot_warmup} warmup)  "
-                f"[POST /sandboxes-cold, kernel boot]"
-            )
-        else:
-            print("  VM cold start (boot) (not measured; pass --cold-image LABEL=REF)")
         if r.concurrent:
             c = r.concurrent
             print(
@@ -771,8 +621,6 @@ def to_jsonable(r: ArchResult) -> dict:
         "concurrent": r.concurrent,
         "lazy": r.lazy,
         "control": r.control,
-        "cold_boot": r.cold_boot,
-        "cold_boot_warmup": r.cold_boot_warmup,
         "errors": r.errors,
     }
 
@@ -849,8 +697,6 @@ def _control_value(mode: str, key: str):
 TABLE_ROWS: list[tuple[str, str, Any]] = [
     ("VM启动", "VM冷启动", _cold_median),
     ("VM启动", "VM冷启动-p99", _cold_p99),
-    ("VM启动", "VM冷启动(真boot)", _cold_boot_median),
-    ("VM启动", "VM冷启动(真boot)-p99", _cold_boot_p99),
     ("VM启动", "VM快照启动", _snap_median),
     ("VM启动", "VM快照启动-p99", _snap_p99),
     ("VM启动", "10并发快照启动-总耗时", _conc_wall),
@@ -931,9 +777,8 @@ async def main_async(args: argparse.Namespace) -> int:
         return 0
 
     results: list[ArchResult] = []
-    cold_images = dict(parse_templates(args.cold_image or []))
     for label, alias in templates:
-        res = await run_suite(label, alias, args, cold_image=cold_images.get(label))
+        res = await run_suite(label, alias, args)
         results.append(res)
 
     print_report(results)
@@ -979,51 +824,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=10,
         help="kept snapshot-start samples (warmup is taken on top and discarded)",
-    )
-    p.add_argument(
-        "--cold-image",
-        action="append",
-        default=None,
-        metavar="LABEL=REF",
-        help="OCI image ref for a REAL cold boot (POST /sandboxes-cold, kernel boot — "
-        "not a snapshot load). Repeat per arch with the same LABEL as --template, e.g. "
-        "arm=127.0.0.1:6000/ubuntu-aenv-latency-bench:24.04-linuxarm64. When given, an "
-        "extra 'VM冷启动(真boot)' row is measured alongside the template-snapshot 'VM冷启动' "
-        "row; the two are not the same thing (boot vs snapshot load).",
-    )
-    p.add_argument(
-        "--cold-boot-samples",
-        type=int,
-        default=10,
-        help="kept real-cold-boot samples (cold-boot warmup is taken on top and discarded)",
-    )
-    p.add_argument(
-        "--cold-boot-warmup",
-        type=int,
-        default=2,
-        help="leading cold-boot samples to discard (the first cold pulls/converts OCI "
-        "layers and is a tens-of-seconds outlier; 2 is safer than the snapshot warmup)",
-    )
-    p.add_argument(
-        "--cold-boot-gap",
-        type=float,
-        default=5.0,
-        help="seconds to sleep before each cold-boot create so it runs on a settled host "
-        "(the API has a ~6s gateway timeout; cold boots run right after the template "
-        "create+kill phase get slowed past it and 500). Raise to 10-15 if 5 still 500s",
-    )
-    p.add_argument(
-        "--cold-cpu",
-        type=int,
-        default=2,
-        help="cpuCount for the cold-boot sandbox (match your `aenv pull --cpu` so cold-boot "
-        "and template-sandbox resources align; default 2)",
-    )
-    p.add_argument(
-        "--cold-memory",
-        type=int,
-        default=4096,
-        help="memoryMB for the cold-boot sandbox (match your `aenv pull --memory`; default 4096)",
     )
     p.add_argument("--concurrent", type=int, default=10, help="concurrent snapshot-start count")
     p.add_argument("--working-set-mib", type=int, default=256)
