@@ -187,27 +187,41 @@ static void build_plan(size_t pages, int random_order, uint32_t **order_out,
 
 static double traverse_read(char *base, size_t pages, const uint32_t *order,
                              const uint32_t *off, int full_page) {
-    volatile uint64_t sink = 0;
+    /* Independent register accumulators (NOT a single volatile stack sink) so the
+     * load loop issues parallel independent loads and we measure real read
+     * bandwidth. A `volatile uint64_t sink |= x` chains every load through one
+     * stack slot via store-to-load forwarding, serializing the stream and
+     * under-measuring bandwidth — and arm's forwarding latency makes the cap bite
+     * harder than x86, which was the read-specific slowdown seen in the data
+     * (arm seq read ~6GB/s vs write ~18GB/s on the same pages). 4 accumulators
+     * break the chain the way STREAM does. */
+    uint64_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
     double t0 = now_ms();
     if (full_page) {
         /* Sequential: touch every 8-byte slot of every 4KiB page (full-page access),
          * pages in linear order. The first slot of each page triggers the lazy
          * page-in; the remaining 511 slots are within the now-resident page. */
         for (size_t i = 0; i < pages; i++) {
-            volatile uint64_t *page = (volatile uint64_t *)(base + i * PAGE);
-            for (size_t s = 0; s < PAGE / SLOT; s++) {
-                sink |= page[s];
+            const uint64_t *page = (const uint64_t *)(base + i * PAGE);
+            for (size_t s = 0; s < PAGE / SLOT; s += 4) {
+                a0 ^= page[s];
+                a1 ^= page[s + 1];
+                a2 ^= page[s + 2];
+                a3 ^= page[s + 3];
             }
         }
     } else {
         /* Random: one 8-byte slot per page, in shuffled page order. Each page is
-         * touched exactly once, so first pass = one fault per page. */
+         * touched exactly once, so first pass = one fault per page. Latency-bound
+         * (TLB / page-crossing), so a single register accumulator suffices. */
         for (size_t i = 0; i < pages; i++) {
-            sink |= *((volatile uint64_t *)(base + (size_t)order[i] * PAGE + off[i]));
+            a0 ^= *((const uint64_t *)(base + (size_t)order[i] * PAGE + off[i]));
         }
     }
     double t1 = now_ms();
-    (void)sink; /* prevent dead-code elimination */
+    uint64_t sink = a0 ^ a1 ^ a2 ^ a3;
+    asm volatile("" :: "r"(sink) : "memory"); /* keep the loads live */
+    (void)sink;
     return t1 - t0;
 }
 
