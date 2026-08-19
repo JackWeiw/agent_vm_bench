@@ -189,6 +189,7 @@ async def measure_cold_boot(
     api_key: str,
     cpu: int = 2,
     mem_mb: int = 4096,
+    gap: float = 0.0,
 ) -> list[dict]:
     """Real cold boot: POST /sandboxes-cold (image source -> for_create_fresh -> kernel boot).
 
@@ -196,10 +197,17 @@ async def measure_cold_boot(
     cold-boot time (overlaybd convert + boot + envd) and ready_ms is 0. This is the
     customer-comparable "VM cold start"; the e2b SDK has no cold-boot entry, so the create
     call is raw HTTP (X-API-KEY header, same header the SDK sends). Cleanup is a raw DELETE.
+
+    A real boot is heavier than a snapshot load and there is a ~6s gateway timeout in front
+    of the API; cold boots run right after the template create+kill phase (whose firecracker
+    kills are async) get slowed past that timeout and 500. `gap` sleeps before each create so
+    each cold boot runs on a settled host; without it the first cold-boot samples 500.
     """
     endpoint = f"{api_url.rstrip('/')}/sandboxes-cold"
     out: list[dict] = []
     for i in range(n):
+        if gap > 0:
+            await asyncio.sleep(gap)
         body = {
             "image": image,
             "timeout": int(timeout),
@@ -566,6 +574,7 @@ async def run_suite(label: str, template: str, args: argparse.Namespace, cold_im
                 args.api_key,
                 cpu=args.cold_cpu,
                 mem_mb=args.cold_memory,
+                gap=args.cold_boot_gap,
             )
         except Exception as exc:  # noqa: BLE001
             res.errors.append(f"cold_boot: {type(exc).__name__}: {exc}")
@@ -994,6 +1003,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=2,
         help="leading cold-boot samples to discard (the first cold pulls/converts OCI "
         "layers and is a tens-of-seconds outlier; 2 is safer than the snapshot warmup)",
+    )
+    p.add_argument(
+        "--cold-boot-gap",
+        type=float,
+        default=5.0,
+        help="seconds to sleep before each cold-boot create so it runs on a settled host "
+        "(the API has a ~6s gateway timeout; cold boots run right after the template "
+        "create+kill phase get slowed past it and 500). Raise to 10-15 if 5 still 500s",
     )
     p.add_argument(
         "--cold-cpu",
