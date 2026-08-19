@@ -214,13 +214,17 @@ async def measure_cold_boot(
         try:
             status, text = await asyncio.to_thread(_cold_http, "POST", endpoint, api_key, body, http_timeout)
         except Exception as exc:  # noqa: BLE001
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
             out.append({"create_ms": float("nan"), "ready_ms": 0.0, "error": f"{type(exc).__name__}: {exc}"})
-            print(f"  cold-boot #{i} create FAILED: {exc}", flush=True)
+            print(f"  cold-boot #{i} create FAILED after {elapsed_ms:.0f}ms: {exc}", flush=True)
             continue
         create_ms = (time.perf_counter() - t0) * 1000.0
         if status != 201:
             out.append({"create_ms": float("nan"), "ready_ms": 0.0, "error": f"HTTP {status}: {text[:200]}"})
-            print(f"  cold-boot #{i} create HTTP {status}: {text[:200]}", flush=True)
+            print(
+                f"  cold-boot #{i} create HTTP {status} after {create_ms:.0f}ms: {text[:200]}",
+                flush=True,
+            )
             continue
         try:
             sandbox_id = json.loads(text)["sandboxID"]
