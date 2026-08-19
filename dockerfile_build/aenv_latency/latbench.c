@@ -77,14 +77,17 @@ static int backing_is_file(const char *backing) {
 }
 
 /* open + size + mmap the working set. populate=1 -> create/truncate + MAP_SHARED.
- * populate=0 -> open existing + MAP_PRIVATE (so writes COW from the snapshot). */
+ * populate=0 -> open existing; shared=0 -> MAP_PRIVATE (reads map the shared page
+ * read-only, no copy), shared=1 -> MAP_SHARED (writes hit the restored shared page
+ * in place, no COW copy — matches a customer payload that writes anonymous memory
+ * restored by the snapshot, instead of paying a per-page COW copy on first write). */
 static void *open_ws(size_t mib, int populate, int write_mode, const char *backing,
-                     int *out_fd) {
+                     int shared, int *out_fd) {
     size_t size = mib * 1024UL * 1024UL;
     int fd;
     void *p;
     int prot = write_mode ? (PROT_READ | PROT_WRITE) : PROT_READ;
-    int flags = populate ? MAP_SHARED : MAP_PRIVATE;
+    int flags = (populate || shared) ? MAP_SHARED : MAP_PRIVATE;
 
     if (backing_is_file(backing)) {
         const char *path = FILE_PATH;
@@ -133,7 +136,7 @@ static void *open_ws(size_t mib, int populate, int write_mode, const char *backi
 
 static int do_populate(size_t mib, const char *backing) {
     int fd = -1;
-    void *p = open_ws(mib, 1, 1, backing, &fd);
+    void *p = open_ws(mib, 1, 1, backing, 0, &fd);
     if (!p) {
         return 1;
     }
@@ -230,8 +233,9 @@ static double traverse_write(char *base, size_t pages, const uint32_t *order,
                              const uint32_t *off, int full_page) {
     double t0 = now_ms();
     if (full_page) {
-        /* Sequential full-page write; first write to a page COWs it from the
-         * snapshot, the remaining slots write the now-private resident page. */
+        /* Sequential full-page write. The mapping is MAP_SHARED for measure
+         * writes, so the first write to a page lazy-restores it from the snapshot
+         * and writes in place (no COW); remaining slots write the resident page. */
         for (size_t i = 0; i < pages; i++) {
             volatile uint64_t *page = (volatile uint64_t *)(base + i * PAGE);
             for (size_t s = 0; s < PAGE / SLOT; s++) {
@@ -271,7 +275,12 @@ static int do_measure(size_t mib, const char *mode, const char *backing) {
     }
 
     int fd = -1;
-    void *p = open_ws(mib, 0, is_write, backing, &fd);
+    /* Write modes open MAP_SHARED so the first write hits the restored page in
+     * place (no COW copy) — matches a customer payload writing anonymous memory
+     * the snapshot restored. Read modes stay MAP_PRIVATE (read-only, no COW
+     * either way; the read residual vs anonymous is a separate backing-store
+     * matter, not COW). */
+    void *p = open_ws(mib, 0, is_write, backing, is_write, &fd);
     if (!p) {
         return 1;
     }
@@ -351,7 +360,7 @@ static int do_stress(size_t mib, const char *mode, long iters, const char *backi
 
     /* Phase 1: populate the backing (MAP_SHARED) so pages hold real content. */
     int pfd = -1;
-    void *pp = open_ws(mib, 1, 1, backing, &pfd);
+    void *pp = open_ws(mib, 1, 1, backing, 0, &pfd);
     if (!pp) {
         return 1;
     }
@@ -367,7 +376,7 @@ static int do_stress(size_t mib, const char *mode, long iters, const char *backi
      * profile window. full_page matches the customer口径: seq = full 4KiB page,
      * rand = one 8-byte slot per page. */
     int mfd = -1;
-    void *p = open_ws(mib, 0, is_write, backing, &mfd);
+    void *p = open_ws(mib, 0, is_write, backing, 0, &mfd);
     if (!p) {
         return 1;
     }

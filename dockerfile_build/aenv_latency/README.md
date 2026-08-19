@@ -15,8 +15,14 @@ contents; on resume those pages are restored on demand (lazy), so:
 
 If you skip populate and just `mmap` after resume, first touch degenerates to
 zero-page mapping and you measure nothing (the customer's 197–338ms first-touch is
-only explainable by fetching real snapshot contents; and first-*write* > first-*read*
-is the COW-from-snapshot signature).
+only explainable by fetching real snapshot contents).
+
+Write modes measure with `MAP_SHARED` (in-place write to the restored page, no
+copy-on-write) so first-write = lazy restore + write — matching a customer payload
+that writes anonymous memory the snapshot restored. (An earlier build used
+`MAP_PRIVATE`, which made first-write trigger a COW copy of every page and roughly
+doubled first-write traffic vs the customer. Read modes stay `MAP_PRIVATE`; reads map
+the shared page read-only so there is no COW either way.)
 
 Per-mode independence: after the first traversal loads every page, later modes' first
 touch is no longer lazy. So the harness runs each of the 4 modes in its own
