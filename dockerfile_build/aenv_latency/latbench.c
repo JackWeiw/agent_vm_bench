@@ -220,7 +220,8 @@ static double traverse_read(char *base, size_t pages, const uint32_t *order,
     }
     double t1 = now_ms();
     uint64_t sink = a0 ^ a1 ^ a2 ^ a3;
-    asm volatile("" :: "r"(sink) : "memory"); /* keep the loads live */
+    /* keep the loads live (use __asm__ so -std=c11, not gnu11, compiles) */
+    __asm__ __volatile__("" : : "r"(sink) : "memory");
     (void)sink;
     return t1 - t0;
 }
