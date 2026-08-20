@@ -3,7 +3,7 @@
 # Lean Ubuntu base + the `latbench` probe only. No coding/browser workload — this
 # image is intentionally minimal so the snapshot baseline is small and the lazy-load
 # signal of the 256MiB working set is clean. Build, then run `aenv pull` to register
-# the template; drive the suite with scripts/aenv_latency_bench.py.
+# the template; drive the suite with aenv_bench/aenv_latency_bench.py.
 #
 # Build:  docker build --build-arg HTTP_PROXY=http://your-proxy:8888 \
 #           -t ubuntu-aenv-latency-bench:24.04-linuxarm64 -f Dockerfile .

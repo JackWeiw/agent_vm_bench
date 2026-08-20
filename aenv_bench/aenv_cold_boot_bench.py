@@ -8,13 +8,13 @@ in-guest envd-ready is folded into create_ms (launch_sandbox wait_for_ready runs
 before the 201), so create_ms IS the customer-comparable "VM cold start".
 
 Compare x86 vs arm:
-  python scripts/aenv_cold_boot_bench.py \
+  python aenv_bench/aenv_cold_boot_bench.py \
       --image x86=127.0.0.1:6000/ubuntu-aenv-latency-bench:24.04-x86_64 \
       --image arm=127.0.0.1:6000/ubuntu-aenv-latency-bench:24.04-linuxarm64
 
 Single arch:
   E2B_API_URL=http://127.0.0.1:8000 E2B_API_KEY=e2b_000000 \
-    python scripts/aenv_cold_boot_bench.py --image x86=127.0.0.1:6000/...:24.04-x86_64
+    python aenv_bench/aenv_cold_boot_bench.py --image x86=127.0.0.1:6000/...:24.04-x86_64
 """
 
 from __future__ import annotations

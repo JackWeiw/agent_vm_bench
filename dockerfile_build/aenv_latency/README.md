@@ -4,6 +4,11 @@ Replicates the customer's four-metric AgentENV table (VM cold start, snapshot
 start, 10-concurrent snapshot start, snapshot lazy-load memory latency) and lets
 you diff x86 vs arm.
 
+> This doc covers **building the image** (`Dockerfile` + the in-guest `latbench`
+> probe) and the lazy-load methodology. For the run commands, the three launch
+> paths (cold boot / snapshot start / lazy-load), and why each is measured the
+> way it is, see [`../../aenv_bench/README.md`](../../aenv_bench/README.md).
+
 ## Methodology (read this — it's the part that's easy to get wrong)
 
 The lazy-load row only measures *snapshot lazy-load* if the 256MiB working set is
@@ -33,7 +38,7 @@ stays at 256MiB; the 4 resumes also feed the snapshot-start row).
 
 - `latbench.c` — in-guest probe. `populate` / `measure <mode>` / `stress <mode> <iters>` / `cleanup`.
 - `Dockerfile` (arm) + `Dockerfile.x86` — lean Ubuntu + `latbench`, no workload.
-- `../../scripts/aenv_latency_bench.py` — standalone harness (e2b SDK only).
+- `../../aenv_bench/aenv_latency_bench.py` — standalone harness (e2b SDK only).
 
 ## Build the image
 
@@ -59,15 +64,15 @@ export E2B_API_URL=http://127.0.0.1:8000
 export E2B_API_KEY=e2b_000000
 
 # single arch
-python scripts/aenv_latency_bench.py --template arm=aenv-latency-arm
+python aenv_bench/aenv_latency_bench.py --template arm=aenv-latency-arm
 
 # x86 vs arm
-python scripts/aenv_latency_bench.py \
+python aenv_bench/aenv_latency_bench.py \
     --template arm=aenv-latency-arm --template x86=aenv-latency-x86
 
 # also run a control (populate+measure with NO pause/resume) to prove the
 # lazy-load delta is snapshot-induced: control first touch should ~= second touch
-python scripts/aenv_latency_bench.py --template arm=... --control
+python aenv_bench/aenv_latency_bench.py --template arm=... --control
 ```
 
 ## Variance handling (read if your numbers swing between runs)
@@ -119,7 +124,7 @@ be captured + lazy-restored by the snapshot. If your AgentENV deploy clears tmpf
 resume, `measure` will error (`shm_open: No such file`). Retry with file backing:
 
 ```bash
-python scripts/aenv_latency_bench.py --template arm=... --backing file
+python aenv_bench/aenv_latency_bench.py --template arm=... --backing file
 ```
 
 Note: with `--backing file`, first-touch reflects page-cache/disk load, not pure
@@ -142,7 +147,7 @@ into the sandbox):
 
 ```bash
 # in one terminal: start the stress loop (prints the sandbox_id + VMM guidance)
-python scripts/aenv_latency_bench.py --template arm=lat \
+python aenv_bench/aenv_latency_bench.py --template arm=lat \
     --stress seq_read --stress-iters 3000
 
 # on the AgentENV HOST, find the VMM PID for that live sandbox

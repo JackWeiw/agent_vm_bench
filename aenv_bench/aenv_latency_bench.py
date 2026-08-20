@@ -22,10 +22,10 @@ p99 noise ceiling so remaining jitter is visible. Raw samples are kept in report
 
 Usage (single arch):
   E2B_API_URL=http://127.0.0.1:8000 E2B_API_KEY=e2b_000... \
-    python scripts/aenv_latency_bench.py --template arm=aenv-latency-arm
+    python aenv_bench/aenv_latency_bench.py --template arm=aenv-latency-arm
 
 Compare x86 vs arm:
-  python scripts/aenv_latency_bench.py \
+  python aenv_bench/aenv_latency_bench.py \
       --template arm=aenv-latency-arm --template x86=aenv-latency-x86
 """
 
@@ -369,7 +369,7 @@ async def run_stress(label: str, template: str, args: argparse.Namespace) -> dic
     sandbox — there is no direct shell access, only the e2b command plane.
 
     Run e.g.:
-      python scripts/aenv_latency_bench.py --template arm=lat --stress seq_read --stress-iters 2000
+      python aenv_bench/aenv_latency_bench.py --template arm=lat --stress seq_read --stress-iters 2000
     """
     from e2b import AsyncSandbox
 
