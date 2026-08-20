@@ -45,8 +45,10 @@ Both load to image name `openeuler-24.03-lts-sp3:latest`.
 **ARM64:**
 
 ```bash
-cd dockerfile_build/browser_openeuler
-docker build -t openeuler-agent-browser:24.03-lts-sp3-linuxarm64 .
+# From the repo root. ARM uses dockerfile_build/ as context so the shared
+# _bench_looper package is reachable for COPY (the image vendors it).
+docker build -f dockerfile_build/browser_openeuler/Dockerfile \
+  -t openeuler-agent-browser:24.03-lts-sp3-linuxarm64 dockerfile_build/
 ```
 
 **x86_64:**
@@ -60,9 +62,10 @@ docker build -f Dockerfile.x86 -t openeuler-agent-browser:24.03-lts-sp3-x86_64 .
 
 ```bash
 # ARM64 with proxy
-docker build -t openeuler-agent-browser:24.03-lts-sp3-linuxarm64 \
+docker build -f dockerfile_build/browser_openeuler/Dockerfile \
+  -t openeuler-agent-browser:24.03-lts-sp3-linuxarm64 \
   --build-arg HTTP_PROXY=http://your-proxy:port \
-  --build-arg HTTPS_PROXY=http://your-proxy:port .
+  --build-arg HTTPS_PROXY=http://your-proxy:port dockerfile_build/
 
 # x86_64 with proxy
 docker build -f Dockerfile.x86 -t openeuler-agent-browser:24.03-lts-sp3-x86_64 \
@@ -97,6 +100,36 @@ python ../build_e2b.py --server-ip <your-e2b-server-ip> --harbor-ip <your-harbor
     --image e2b-orchestration/openeuler-agent-browser:custom \
     --alias openeuler-browser-v1
 ```
+
+## In-image bench looper (openEuler ARM)
+
+The ARM image vendors the shared `bench_looper` package and a `browser-bench`
+entry point at `/usr/local/bin`. Default CMD is `sleep infinity`
+(long-running container for slicing); the entry point runs the browser
+scenario end-to-end (open_tab -> page_load -> snapshot -> click -> screenshot)
+and writes JSON results. The Go and TS images expose `coding-bench-go` and
+`coding-bench-ts` the same way. The browser fetches pages from an external
+http.server on the LAN, so run with host/bridge networking (not `--network none`).
+
+One-shot end-to-end:
+
+```bash
+docker run --rm --network host --cpus=2 --memory=4g \
+  -v "$PWD/results:/results" -e BENCH_RESULTS_DIR=/results \
+  openeuler-agent-browser:24.03-lts-sp3-linuxarm64 \
+  browser-bench --loops 100
+```
+
+Long-running container driven via `docker exec`:
+
+```bash
+docker run -d --name b1 --network host --cpus=2 --memory=4g \
+  -v "$PWD/results:/results" -e BENCH_RESULTS_DIR=/results \
+  openeuler-agent-browser:24.03-lts-sp3-linuxarm64
+docker exec b1 browser-bench --loops 100
+```
+
+Results land in `/results/browser/<run-id>/{iterations.jsonl,summary.json}`.
 
 ## Configuration
 

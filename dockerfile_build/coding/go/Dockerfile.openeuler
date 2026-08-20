@@ -33,7 +33,8 @@
 #   xz -d openEuler-docker.aarch64.tar.xz
 #   docker load -i openEuler-docker.aarch64.tar   # -> openeuler-24.03-lts-sp3:latest
 #
-# Build:  docker build -t openeuler-coding-go-bench:24.03-lts-sp3-linuxarm64 -f Dockerfile.openeuler .
+# Build:  docker build -f dockerfile_build/coding/go/Dockerfile.openeuler \
+#           -t openeuler-coding-go-bench:24.03-lts-sp3-linuxarm64 dockerfile_build/
 # Push:   OS=openeuler HARBOR_IP=X bash push_to_harbor.sh
 # Template: python3 ../build_e2b.py --server-ip X --harbor-ip X \
 #     --alias openeuler-coding-go-v1 --image e2b-orchestration/openeuler-coding-go-bench:custom
@@ -78,7 +79,7 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 # ("Huawei Web Secure Internet Gateway CA") the system store won't trust.
 # curl uses -k; dnf reads sslverify from dnf.conf.
 RUN echo 'sslverify=0' >> /etc/dnf/dnf.conf && \
-    dnf install -y curl xz vim libgomp iproute net-tools gnupg2 git && \
+    dnf install -y curl xz vim libgomp iproute net-tools gnupg2 git python3 && \
     cd /usr/local && \
     ( curl -kL --connect-timeout 30 --retry 3 --retry-delay 3 \
         -o go1.23.4.linux-arm64.tar.gz \
@@ -104,9 +105,22 @@ RUN cd /opt && \
     cd coding-bench && \
     git checkout 83235262d06a060bd22c168b3413903667b8aeb6
 
-# Copy the manual testing helper script
-COPY bench_helper.sh /opt/coding-bench/bench_helper.sh
+# Copy the manual testing helper script (build context is dockerfile_build/)
+COPY coding/go/bench_helper.sh /opt/coding-bench/bench_helper.sh
 RUN chmod +x /opt/coding-bench/bench_helper.sh
+
+# --- In-image bench looper (openEuler ARM) ---
+# Vendors the shared bench_looper package so the container runs the coding-go
+# scenario end-to-end via the `coding-bench-go` entry point, mirroring the
+# document-bench in-image looper. python3 is the looper runtime (also used by
+# the edit step's literal find->replace). Build context is dockerfile_build/
+# (parent) so the shared package is reachable - see the README's openEuler ARM
+# build command.
+COPY _bench_looper/bench_looper /opt/bench-looper/bench_looper
+RUN chmod +x /opt/bench-looper/bench_looper/runner.py && \
+    printf '#!/bin/sh\nexec python3 /opt/bench-looper/bench_looper/runner.py coding-go "$@"\n' \
+      > /usr/local/bin/coding-bench-go && chmod +x /usr/local/bin/coding-bench-go
+ENV BENCH_RESULTS_DIR=/opt/bench-looper/results
 
 # Unset proxy environment variables after build
 ENV http_proxy= \

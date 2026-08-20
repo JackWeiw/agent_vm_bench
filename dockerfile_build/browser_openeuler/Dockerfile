@@ -7,7 +7,8 @@
 #   xz -d openEuler-docker.aarch64.tar.xz
 #   docker load -i openEuler-docker.aarch64.tar   # -> image: openeuler-24.03-lts-sp3:latest
 #
-# Build:  docker build -t openeuler-agent-browser:24.03-lts-sp3-linuxarm64 .
+# Build:  docker build -f dockerfile_build/browser_openeuler/Dockerfile \
+#           -t openeuler-agent-browser:24.03-lts-sp3-linuxarm64 dockerfile_build/
 # Push:   ARCH=arm HARBOR_IP=X bash push_to_harbor.sh
 # Template: python ../build_e2b.py --server-ip X --harbor-ip X \
 #             --image e2b-orchestration/openeuler-agent-browser:custom --alias openeuler-browser-v1
@@ -29,7 +30,7 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 # ("Huawei Web Secure Internet Gateway CA") the system store won't trust.
 # curl/wget use --no-check-certificate; dnf reads sslverify from dnf.conf.
 RUN echo 'sslverify=0' >> /etc/dnf/dnf.conf && \
-    dnf install -y wget xz vim iproute net-tools git && \
+    dnf install -y wget xz vim iproute net-tools git python3 && \
     cd /usr/local && \
     wget --no-check-certificate https://nodejs.org/dist/v24.14.0/node-v24.14.0-linux-arm64.tar.xz && \
     tar -xvf node-v24.14.0-linux-arm64.tar.xz && \
@@ -51,6 +52,18 @@ RUN npm config set strict-ssl false && \
     npx playwright install chromium && \
     dnf install -y nss nspr atk at-spi2-atk gtk3 alsa-lib libgbm libdrm mesa-libEGL && \
     dnf clean all
+
+# --- In-image bench looper (openEuler ARM) ---
+# Vendors the shared bench_looper package so the container runs the browser
+# scenario end-to-end via the `browser-bench` entry point, mirroring the
+# document-bench in-image looper. python3 is the looper runtime. Build context
+# is dockerfile_build/ (parent) so the shared package is reachable - see the
+# README's openEuler ARM build command.
+COPY _bench_looper/bench_looper /opt/bench-looper/bench_looper
+RUN chmod +x /opt/bench-looper/bench_looper/runner.py && \
+    printf '#!/bin/sh\nexec python3 /opt/bench-looper/bench_looper/runner.py browser "$@"\n' \
+      > /usr/local/bin/browser-bench && chmod +x /usr/local/bin/browser-bench
+ENV BENCH_RESULTS_DIR=/opt/bench-looper/results
 
 # Unset proxy environment variables after build
 ENV http_proxy= \

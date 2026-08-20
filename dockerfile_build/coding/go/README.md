@@ -134,11 +134,40 @@ docker load -i openEuler-docker.x86_64.tar
 Build:
 
 ```bash
-# ARM64
-docker build -t openeuler-coding-go-bench:24.03-lts-sp3-linuxarm64 -f Dockerfile.openeuler .
-# x86_64
-docker build -t openeuler-coding-go-bench:24.03-lts-sp3-x86_64 -f Dockerfile.openeuler.x86 .
+# ARM64 — from the repo root. ARM uses dockerfile_build/ as context so the
+# shared _bench_looper package is reachable for COPY.
+docker build -f dockerfile_build/coding/go/Dockerfile.openeuler \
+  -t openeuler-coding-go-bench:24.03-lts-sp3-linuxarm64 dockerfile_build/
+# x86_64 (minimal image, dir-scoped build)
+cd dockerfile_build/coding/go && docker build -t openeuler-coding-go-bench:24.03-lts-sp3-x86_64 -f Dockerfile.openeuler.x86 .
 ```
+
+## In-image bench looper (openEuler ARM)
+
+The ARM image vendors the shared `bench_looper` package and a
+`coding-bench-go` entry point at `/usr/local/bin`. Default CMD is
+`sleep infinity` (long-running container for slicing); the entry point runs
+the coding-go scenario end-to-end (find -> read -> edit -> verify -> diff)
+and writes JSON results. The browser and TS images expose `browser-bench`
+and `coding-bench-ts` the same way.
+
+One-shot end-to-end:
+
+```bash
+docker run --rm --cpus=2 --memory=4g -v "$PWD/results:/results" -e BENCH_RESULTS_DIR=/results \
+  openeuler-coding-go-bench:24.03-lts-sp3-linuxarm64 \
+  coding-bench-go --loops 100
+```
+
+Long-running container driven via `docker exec`:
+
+```bash
+docker run -d --name g1 --cpus=2 --memory=4g -v "$PWD/results:/results" -e BENCH_RESULTS_DIR=/results \
+  openeuler-coding-go-bench:24.03-lts-sp3-linuxarm64
+docker exec g1 coding-bench-go --loops 100
+```
+
+Results land in `/results/coding-go/<run-id>/{iterations.jsonl,summary.json}`.
 
 Push (set `OS=openeuler`):
 
