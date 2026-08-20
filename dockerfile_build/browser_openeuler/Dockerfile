@@ -7,7 +7,8 @@
 #   xz -d openEuler-docker.aarch64.tar.xz
 #   docker load -i openEuler-docker.aarch64.tar   # -> image: openeuler-24.03-lts-sp3:latest
 #
-# Build:  docker build -t openeuler-agent-browser:24.03-lts-sp3-linuxarm64 .
+# Build:  docker build -f dockerfile_build/browser_openeuler/Dockerfile \
+#           -t openeuler-agent-browser:24.03-lts-sp3-linuxarm64 dockerfile_build/
 # Push:   ARCH=arm HARBOR_IP=X bash push_to_harbor.sh
 # Template: python ../build_e2b.py --server-ip X --harbor-ip X \
 #             --image e2b-orchestration/openeuler-agent-browser:custom --alias openeuler-browser-v1

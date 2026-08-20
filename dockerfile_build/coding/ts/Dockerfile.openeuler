@@ -27,7 +27,8 @@
 #   xz -d openEuler-docker.aarch64.tar.xz
 #   docker load -i openEuler-docker.aarch64.tar   # -> openeuler-24.03-lts-sp3:latest
 #
-# Build:  docker build -t openeuler-coding-bench:24.03-lts-sp3-linuxarm64 -f Dockerfile.openeuler .
+# Build:  docker build -f dockerfile_build/coding/ts/Dockerfile.openeuler \
+#           -t openeuler-coding-bench:24.03-lts-sp3-linuxarm64 dockerfile_build/
 # Push:   OS=openeuler HARBOR_IP=X bash push_to_harbor.sh
 # Template: python3 ../build_e2b.py --server-ip X --harbor-ip X \
 #     --alias openeuler-coding-v1 --image e2b-orchestration/openeuler-coding-bench:custom
