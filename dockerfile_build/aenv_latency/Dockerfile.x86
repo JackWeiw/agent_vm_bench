@@ -1,0 +1,32 @@
+# AgentENV snapshot lazy-load latency benchmark image (x86_64).
+# Identical to Dockerfile; base image is amd64 ubuntu:24.04. See Dockerfile header.
+#
+# Build:  docker build --build-arg HTTP_PROXY=http://your-proxy:8888 \
+#           -t ubuntu-aenv-latency-bench:24.04-x86_64 -f Dockerfile.x86 .
+
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/ubuntu:24.04 AS builder
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ENV http_proxy=${HTTP_PROXY}
+ENV https_proxy=${HTTPS_PROXY}
+ENV HTTP_PROXY=${HTTP_PROXY}
+ENV HTTPS_PROXY=${HTTPS_PROXY}
+
+# Skip TLS verification for apt behind the self-signed corp proxy (see Dockerfile).
+RUN printf 'Acquire::https::Verify-Peer "false";\nAcquire::https::Verify-Host "false";\n' \
+        > /etc/apt/apt.conf.d/99no-verify-proxy && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends gcc libc-dev && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
+COPY latbench.c /src/latbench.c
+RUN cc -O2 -std=c11 -o /latbench /src/latbench.c -lrt
+
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+COPY --from=builder /latbench /usr/local/bin/latbench
+RUN mkdir -p /opt/latbench
+RUN latbench help
+CMD ["sleep", "infinity"]
