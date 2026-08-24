@@ -28,9 +28,9 @@ import time
 from dataclasses import dataclass
 
 from bench_core.config import KernelConfig
-from bench_core.replay_payload import ReplayStep
+from bench_core.replay_payload import ReplayStep, load_pool
 from bench_core.schemas import BenchSandbox
-from env_provider import EnvironmentProvider
+from env_provider import CommandResult, EnvironmentProvider
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ class ReplayBaseRunner(threading.Thread):
     def _pause(self) -> None:
         """No-op in P1. P2: ``provider.pause(self.state)``."""
 
-    def _execute(self, step: ReplayStep):
+    def _execute(self, step: ReplayStep) -> CommandResult:
         """Exec the recorded action verbatim -- cwd/env via the exec contract."""
         return self.provider.exec(
             self.state,
@@ -147,3 +147,43 @@ class ReplayBaseRunner(threading.Thread):
         gap = step.delay_time_sec * self.config.replay_delay_scale
         if gap > 0 and not self.stop_event.is_set():
             self.stop_event.wait(gap)
+
+
+class ReplayWarmupRunner(threading.Thread):
+    """Warmup phase runner for replay -- load + validate the shared pool, probe exec.
+
+    Lightweight: loads the trajectory pool (cached, shared across sandboxes),
+    runs one trivial command to confirm the sandbox is command-responsive,
+    and marks the sandbox warmed up. No resident process (none needed).
+    """
+
+    def __init__(
+        self,
+        state: BenchSandbox,
+        config: KernelConfig,
+        provider: EnvironmentProvider,
+    ) -> None:
+        super().__init__(daemon=True)
+        self.state = state
+        self.config = config
+        self.provider = provider
+
+    def run(self) -> None:
+        if not self.state.ready:
+            logger.warning(f"[Sandbox{self.state.index}] Cannot start replay warmup: not ready")
+            self.state.warmup_done = True
+            return
+
+        pool = load_pool(self.config)
+        if not pool:
+            logger.warning(f"[Sandbox{self.state.index}] Replay pool empty; nothing to replay")
+        else:
+            logger.info(f"[Sandbox{self.state.index}] Replay pool: {len(pool)} trajectories")
+
+        try:
+            self.provider.exec(self.state, "true", timeout=10)
+        except Exception as e:
+            logger.warning(f"[Sandbox{self.state.index}] Replay warmup exec probe failed: {e}")
+
+        self.state.warmup_done = True
+        logger.info(f"[Sandbox{self.state.index}] Replay warmup completed")
