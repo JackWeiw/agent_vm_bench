@@ -13,8 +13,13 @@ host-agnostic payload module for the replay workflow.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from bench_core.config import KernelConfig
 
 # Action-type taxonomy (drives metrics bucketing). Terminal actions are
 # recognized for truncation but never executed.
@@ -108,3 +113,63 @@ def load_trajectory(path: Path) -> Trajectory:
         )
 
     return Trajectory(path=path, instance_id=instance_id, environment=environment, steps=tuple(steps))
+
+
+logger = logging.getLogger(__name__)
+
+_TRAJECTORY_SUFFIXES = (".replay.json", ".json", ".traj")
+
+# Module-level pool cache: (dir, glob) -> tuple[Trajectory, ...]. Frozen tuples
+# are safe for concurrent read by many runner threads; the pool is shared
+# read-only across all sandboxes. Each runner keeps its own cursor.
+_POOL_CACHE: dict[tuple[str, str], tuple[Trajectory, ...]] = {}
+
+
+def find_trajectories(directory: Path, glob: str = "*.replay.json") -> list[Path]:
+    """List trajectory files under ``directory`` matching ``glob``.
+
+    Sorted by path for deterministic pool ordering across runs. The glob
+    selects filenames; the suffix whitelist (``.replay.json`` / ``.json`` /
+    ``.traj``) filters out unrelated JSON so a ``*`` glob still stays scoped.
+    """
+    directory = Path(directory)
+    if not directory.is_dir():
+        return []
+    matches = [p for p in directory.glob(glob) if p.is_file() and p.name.endswith(_TRAJECTORY_SUFFIXES)]
+    return sorted(matches)
+
+
+def load_pool(config: KernelConfig) -> tuple[Trajectory, ...]:
+    """Load + cache the shared trajectory pool from ``config``.
+
+    A single trajectory's parse failure, missing fields, or empty ``steps``
+    logs a WARNING and is skipped — one corrupt file must not sink the batch
+    (robustness expected of a stress tool). Returns a cached frozen tuple so
+    repeat calls from different runner threads share one immutable object.
+    """
+    directory = config.replay_trajectory_dir
+    glob = config.replay_trajectory_glob
+    cache_key = (str(directory), glob)
+    if cache_key in _POOL_CACHE:
+        return _POOL_CACHE[cache_key]
+
+    pool: list[Trajectory] = []
+    for path in find_trajectories(Path(directory), glob):
+        try:
+            traj = load_trajectory(path)
+        except (json.JSONDecodeError, OSError, KeyError) as exc:
+            logger.warning(f"[replay] skipping unparseable trajectory {path.name}: {type(exc).__name__}: {exc}")
+            continue
+        if not traj.steps:
+            logger.warning(f"[replay] skipping trajectory with no executable steps: {path.name}")
+            continue
+        pool.append(traj)
+
+    cached = tuple(pool)
+    _POOL_CACHE[cache_key] = cached
+    return cached
+
+
+def reset_pool_cache() -> None:
+    """Test hook: clear the module-level pool cache between tests."""
+    _POOL_CACHE.clear()
