@@ -1,0 +1,8 @@
+{
+  "environment": "main",
+  "instance_id": "interrupted-traj",
+  "trajectory": [
+    {"action": "ls /testbed", "delay_time": 1.0},
+    {"action": "grep -r foo /testbed", "delay_time": 2.0}
+  ]
+}
