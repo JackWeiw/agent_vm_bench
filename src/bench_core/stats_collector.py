@@ -211,7 +211,7 @@ class ReportFormatter:
         offline_states = [s for s in self.sandbox_states.values() if not s.is_alive and not s.stopped_by_cleanup]
 
         # Use workflow-specific labels
-        if self.config.workflow_type in {"coding", "document"}:
+        if self.config.workflow_type in {"coding", "document", "replay"}:
             command_ready = True
         elif self.config.workflow_type == "browser":
             command_ready = False
@@ -444,6 +444,79 @@ class ReportFormatter:
         lines.extend(TableFormatter.format_table(headers, rows))
         return lines
 
+    def format_replay_stats_section(self) -> list[str]:
+        """Format trajectory-replay task statistics section."""
+        all_latencies: list[float] = []
+        for s in self.sandbox_states.values():
+            all_latencies.extend(s.replay_metrics.latencies)
+
+        total_tasks = sum(s.replay_metrics.total_tasks for s in self.sandbox_states.values())
+        total_success = sum(s.replay_metrics.success_count for s in self.sandbox_states.values())
+        total_failed = sum(s.replay_metrics.failed_count for s in self.sandbox_states.values())
+        total_timeout = sum(s.replay_metrics.timeout_count for s in self.sandbox_states.values())
+        completions = sum(s.replay_metrics.trajectory_completions for s in self.sandbox_states.values())
+        # Delay fidelity is per-sandbox (actual/requested delay); average across sandboxes.
+        fidelity_values = [s.replay_metrics.delay_fidelity for s in self.sandbox_states.values()]
+        delay_fidelity = statistics.mean(fidelity_values) if fidelity_values else 0.0
+
+        lines = ["\n[Replay Task Statistics]"]
+        lines.append(f"  Total Steps:   {total_tasks}")
+        lines.append(f"  Success:       {total_success}")
+        lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
+        lines.append(f"  Success Rate:  {total_success / max(1, total_tasks) * 100:.1f}%")
+        lines.append(f"  Trajectory Completions: {completions}")
+        lines.append(f"  Delay Fidelity: {delay_fidelity:.2f}")
+
+        if all_latencies:
+            avg = statistics.mean(all_latencies)
+            p99 = calc_p99(all_latencies)
+            lines.append(f"  Avg Latency:   {avg:.3f}s")
+            lines.append(f"  P99 Latency:   {p99:.3f}s")
+
+        return lines
+
+    def format_replay_step_timing_table(self) -> list[str]:
+        """Format replay per-action-type timing as a table.
+
+        Replay's "step" axis is the recorded action's type (shell /
+        str_replace_editor / bash / other), bucketed by ``classify_action``.
+        """
+        all_step_times: dict[str, list[float]] = {}
+        for s in self.sandbox_states.values():
+            step_times_copy = s.replay_metrics.get_step_times_copy()
+            for step_name, times in step_times_copy.items():
+                all_step_times.setdefault(step_name, []).extend(times)
+
+        if not all_step_times:
+            return []
+
+        lines = ["\n[Step-Level Timing (Replay Mode)]"]
+        headers = ["Action", "Count", "Avg(s)", "P50(s)", "P95(s)", "P99(s)", "Tail"]
+        rows: list[list[str]] = []
+
+        for step_name in get_step_order("replay"):
+            if step_name in all_step_times and all_step_times[step_name]:
+                times = all_step_times[step_name]
+                stats = calc_percentiles(times)
+                tail_ratio = calc_tail_ratio(times)
+                severity = classify_tail_latency(tail_ratio)
+                rows.append(
+                    [
+                        step_name,
+                        str(len(times)),
+                        f"{stats['avg']:.3f}",
+                        f"{stats['p50']:.3f}",
+                        f"{stats['p95']:.3f}",
+                        f"{stats['p99']:.3f}",
+                        f"{tail_ratio:.2f}x ({severity})",
+                    ]
+                )
+
+        lines.extend(TableFormatter.format_table(headers, rows))
+        lines.append("\n  Tail Ratio: P99/P50 - indicates long-tail latency severity")
+        lines.append("  < 1.2x: minimal | 1.2-1.5x: moderate | > 1.5x: significant")
+        return lines
+
     def format_error_section(self) -> list[str]:
         """Format error details and classification section."""
         failed_sandbox_errors: list[tuple[int, int, str]] = []
@@ -478,6 +551,8 @@ class ReportFormatter:
             error_display_order = DOCUMENT_ERROR_DISPLAY
         elif self.config.workflow_type == "browser":
             error_display_order = BROWSER_ERROR_DISPLAY
+        elif self.config.workflow_type == "replay":
+            error_display_order = CODING_ERROR_DISPLAY
         else:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
@@ -914,7 +989,7 @@ class StatsCollector:
         ]
         create_desc = (
             "sandbox.create API call time, excluding ready check"
-            if self.config.workflow_type in {"coding", "document"}
+            if self.config.workflow_type in {"coding", "document", "replay"}
             else "sandbox.create API call time, excluding port wait"
         )
         lines.extend(formatter.format_percentile_section("Sandbox.create Performance", create_times, create_desc))
@@ -933,6 +1008,9 @@ class StatsCollector:
         elif self.config.workflow_type == "browser":
             ready_check_title = "Port Check Wait Performance"
             ready_check_desc = "Waiting for 18789 openclaw-gateway + 11436 llama-server ports"
+        elif self.config.workflow_type == "replay":
+            ready_check_title = "Ready Check Wait Performance"
+            ready_check_desc = "Waiting for 'uname -a' command response"
         else:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
@@ -941,7 +1019,7 @@ class StatsCollector:
         total_times = [s.creation_metrics.total_elapsed for s in ready_states if s.creation_metrics.total_elapsed > 0]
         total_desc = (
             "sandbox.create + ready check"
-            if self.config.workflow_type in {"coding", "document"}
+            if self.config.workflow_type in {"coding", "document", "replay"}
             else "sandbox.create + port wait"
         )
         lines.extend(formatter.format_percentile_section("Total Startup Performance", total_times, total_desc))
@@ -956,6 +1034,9 @@ class StatsCollector:
         elif self.config.workflow_type == "browser":
             lines.extend(formatter.format_browser_stats_section())
             lines.extend(formatter.format_step_timing_table())
+        elif self.config.workflow_type == "replay":
+            lines.extend(formatter.format_replay_stats_section())
+            lines.extend(formatter.format_replay_step_timing_table())
         else:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
