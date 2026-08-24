@@ -132,3 +132,43 @@ def test_fixed_runner_stop_on_error_advances_to_next_trajectory():
     # trajectory completes, but the runner kept running (did not crash).
     assert state.replay_metrics.trajectory_completions == 0
     assert state.replay_metrics.failed_count >= 1
+
+
+def test_round_runner_replays_one_trajectory_per_round():
+    from bench_core.task_runner.replay import ReplayRoundRunner
+    from bench_core.replay_payload import reset_pool_cache
+
+    reset_pool_cache()
+    config = KernelConfig(
+        workflow_type="replay",
+        replay_trajectory_dir=str(__import__("pathlib").Path(__file__).parent / "fixtures" / "replay"),
+        replay_trajectory_glob="*",  # 2 valid trajectories in fixtures
+        replay_delay_scale=0.0,
+    )
+    state = _make_state()  # index=0 -> (0 + 0) % 2 = 0
+    stop = threading.Event()
+    runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=FakeProvider(count=1))
+    runner.run()
+    # The chosen trajectory has either 2 steps (no_terminal) -> replayed fully.
+    assert state.replay_metrics.total_tasks >= 2
+    assert state.replay_metrics.trajectory_completions == 1
+
+
+def test_round_runner_index_rotation_picks_different_trajectory():
+    from bench_core.task_runner.replay import ReplayRoundRunner
+    from bench_core.replay_payload import reset_pool_cache
+
+    reset_pool_cache()
+    config = KernelConfig(
+        workflow_type="replay",
+        replay_trajectory_dir=str(__import__("pathlib").Path(__file__).parent / "fixtures" / "replay"),
+        replay_trajectory_glob="*",
+        replay_delay_scale=0.0,
+    )
+    stop = threading.Event()
+    # sandbox index=1, round_id=0 -> (1 + 0) % 2 = 1 -> the other trajectory
+    state = BenchSandbox(id="fake-1", index=1, workflow_type="replay", ready=True)
+    runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=FakeProvider(count=1))
+    runner.run()
+    # the with_terminal trajectory has 2 executable steps.
+    assert state.replay_metrics.total_tasks >= 2

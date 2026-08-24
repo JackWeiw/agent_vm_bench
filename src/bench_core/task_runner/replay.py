@@ -277,3 +277,76 @@ class ReplayTaskRunner(ReplayBaseRunner):
 
         if aborted:
             logger.info(f"[Sandbox{self.state.index}] Trajectory {traj.instance_id} aborted (stop_on_error); advancing")
+
+
+class ReplayRoundRunner(ReplayBaseRunner):
+    """Round-robin replay runner -- replays one trajectory per round.
+
+    Trajectory selection is deterministic: index ``(state.index + round_id) %
+    len(pool)``. So round N, sandbox S always maps to the same trajectory, and
+    successive rounds rotate each sandbox through the pool. No cursor state
+    is held across rounds (round_id encodes the position).
+    """
+
+    def __init__(
+        self,
+        state: BenchSandbox,
+        config: KernelConfig,
+        stop_event: threading.Event,
+        round_id: int,
+        provider: EnvironmentProvider,
+    ) -> None:
+        super().__init__(state, config, stop_event, provider)
+        self.round_id = round_id
+
+    def run(self) -> None:
+        if not self.state.ready or not self.state.is_alive:
+            logger.info(f"[Sandbox{self.state.index}] Not ready/alive for replay round")
+            return
+
+        pool = load_pool(self.config)
+        if not pool:
+            logger.info(f"[Sandbox{self.state.index}] Replay pool empty; skipping round {self.round_id}")
+            return
+
+        idx = (self.state.index + self.round_id) % len(pool)
+        traj = pool[idx]
+        logger.info(f"[Sandbox{self.state.index}] Replay round {self.round_id}: trajectory {traj.instance_id}")
+
+        prev_slice_end = time.perf_counter()
+        aborted = False
+        for step in traj.steps:
+            if self.stop_event.is_set():
+                return
+            self._sleep_delay(step)
+            if self.stop_event.is_set():
+                return
+            slice_start = time.perf_counter()
+            actual_delay = slice_start - prev_slice_end
+            timed_out = False
+            try:
+                sr = self._run_slice(step)
+            except Exception as e:
+                msg = str(e).lower()
+                timed_out = "timed out" in msg or "context deadline exceeded" in msg
+                sr = StepResult(
+                    step_index=step.index,
+                    action_type=step.action_type,
+                    exit_code=1,
+                    exec_elapsed_sec=0.0,
+                    slice_total_sec=0.0,
+                    resume_sec=0.0,
+                    pause_sec=0.0,
+                    requested_delay_sec=step.delay_time_sec,
+                )
+                logger.error(f"[Sandbox{self.state.index}] Replay step {step.index} exception: {msg[:120]}")
+            prev_slice_end = time.perf_counter()
+            self._record_step(sr, timed_out=timed_out, actual_delay=actual_delay, trajectory_complete=False)
+            if (sr.exit_code != 0 or timed_out) and self.config.replay_stop_on_error:
+                aborted = True
+                break
+
+        if not aborted and not self.stop_event.is_set():
+            self.state.replay_metrics._mark_completion()
+
+        logger.info(f"[Sandbox{self.state.index}] Replay round {self.round_id} done (aborted={aborted})")
