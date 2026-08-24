@@ -7,6 +7,7 @@ The test is written before the implementation -- it should fail with
 from __future__ import annotations
 
 import threading
+import time
 
 from bench_core.config import KernelConfig
 from bench_core.replay_payload import ReplayStep
@@ -41,11 +42,11 @@ def test_slice_exec_verbatim_with_cwd_and_env():
     assert captured[0]["command"] == "find /testbed -name x"
     assert captured[0]["cwd"] == "/testbed"
     assert captured[0]["env"] == {"PAGER": "cat"}
-    # P1 floor: resume/pause are no-ops.
+    # P1 floor: resume/pause are no-ops (~0 measured overhead).
     assert result.exit_code == 0
-    assert result.resume_sec == 0.0
-    assert result.pause_sec == 0.0
-    assert result.slice_total_sec == result.exec_elapsed_sec
+    assert result.resume_sec < 0.01
+    assert result.pause_sec < 0.01
+    assert result.slice_total_sec >= result.exec_elapsed_sec
     assert result.requested_delay_sec == 1.0
 
 
@@ -172,3 +173,53 @@ def test_round_runner_index_rotation_picks_different_trajectory():
     runner.run()
     # the with_terminal trajectory has 2 executable steps.
     assert state.replay_metrics.total_tasks >= 2
+
+
+def test_run_slice_p1_noop_hooks_measure_near_zero():
+    """P1 baseline: no-op _resume/_pause add no lifecycle overhead; slice ~= exec."""
+    from bench_core.task_runner.replay import ReplayBaseRunner
+
+    config = KernelConfig(workflow_type="replay")
+    state = _make_state()
+    stop_event = threading.Event()
+    provider = FakeProvider(count=1)
+    runner = ReplayBaseRunner(state, config, stop_event, provider)
+    step = ReplayStep(index=0, action="echo hi", delay_time_sec=0.0, action_type="shell")
+
+    sr = runner._run_slice(step)
+
+    assert sr.exit_code == 0
+    assert sr.resume_sec < 0.01  # no-op hook ~0
+    assert sr.pause_sec < 0.01
+    assert sr.slice_total_sec >= sr.exec_elapsed_sec  # slice includes exec + ~0 hooks
+
+
+def test_run_slice_p2_override_flows_timing_through_hooks():
+    """P2 pluggability: overriding only _resume/_pause (not _run_slice) flows
+    lifecycle timings into resume_sec / pause_sec / slice_total_sec."""
+    from bench_core.task_runner.replay import ReplayBaseRunner
+
+    class _LifecycleRunner(ReplayBaseRunner):
+        RESUME_DUR = 0.02
+        PAUSE_DUR = 0.02
+
+        def _resume(self) -> None:
+            time.sleep(self.RESUME_DUR)
+
+        def _pause(self) -> None:
+            time.sleep(self.PAUSE_DUR)
+
+    config = KernelConfig(workflow_type="replay")
+    state = _make_state()
+    stop_event = threading.Event()
+    provider = FakeProvider(count=1)
+    runner = _LifecycleRunner(state, config, stop_event, provider)
+    step = ReplayStep(index=0, action="echo hi", delay_time_sec=0.0, action_type="shell")
+
+    sr = runner._run_slice(step)
+
+    assert sr.exit_code == 0
+    # The override's timing flowed through WITHOUT overriding _run_slice:
+    assert sr.resume_sec >= _LifecycleRunner.RESUME_DUR * 0.5  # tolerant lower bound
+    assert sr.pause_sec >= _LifecycleRunner.PAUSE_DUR * 0.5
+    assert sr.slice_total_sec >= sr.resume_sec + sr.pause_sec

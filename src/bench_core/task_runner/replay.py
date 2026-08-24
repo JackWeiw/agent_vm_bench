@@ -41,9 +41,11 @@ class StepResult:
 
     ``exec_elapsed_sec`` isolates the exec wall time so P2's lifecycle overhead
     (``slice_total_sec - exec_elapsed_sec`` = ``resume_sec + pause_sec``) is
-    computable without re-instrumenting the metrics. P1 sets
-    ``slice_total_sec = exec_elapsed_sec``; P2 starts summing the lifecycle
-    phases into ``slice_total_sec`` -- ``ReplayMetrics`` needs no schema change.
+    computable without re-instrumenting the metrics. ``_run_slice`` times the
+    resume / pause hooks and sums all three phases into ``slice_total_sec``; in
+    P1 the hooks are no-ops so ``resume_sec`` / ``pause_sec`` are ~0 and
+    ``slice_total_sec`` ~= ``exec_elapsed_sec``. P2 overrides the hooks with
+    real lifecycle calls and the timings flow through -- no schema change.
     """
 
     step_index: int
@@ -82,23 +84,35 @@ class ReplayBaseRunner(threading.Thread):
     def _run_slice(self, step: ReplayStep) -> StepResult:
         """One resume -> execute -> pause cycle.
 
-        P1: ``_resume`` / ``_pause`` are no-ops. P2 overrides them to call
-        ``provider.resume(self.state)`` / ``provider.pause(self.state)``
-        (capability-gated, e2b only).
+        Each hook is timed so P2's lifecycle overhead is captured without
+        re-instrumenting the metrics: ``slice_total_sec`` sums all three phases,
+        and ``resume_sec`` / ``pause_sec`` isolate the lifecycle cost. P1's
+        no-op hooks measure ~0, so ``slice_total_sec`` ~= ``exec_elapsed_sec``
+        (the "no lifecycle overhead" baseline). P2 overrides ``_resume`` /
+        ``_pause`` with real ``provider.resume(self.state)`` /
+        ``provider.pause(self.state)`` calls (capability-gated, e2b only) and
+        the timings flow through -- ``_run_slice`` itself is untouched.
         """
+        resume_start = time.perf_counter()
         self._resume()
+        resume_elapsed = time.perf_counter() - resume_start
+
         exec_start = time.perf_counter()
         result = self._execute(step)
         exec_elapsed = time.perf_counter() - exec_start
+
+        pause_start = time.perf_counter()
         self._pause()
+        pause_elapsed = time.perf_counter() - pause_start
+
         return StepResult(
             step_index=step.index,
             action_type=step.action_type,
             exit_code=result.exit_code,
             exec_elapsed_sec=exec_elapsed,
-            slice_total_sec=exec_elapsed,  # P1: == exec; P2 sums resume+exec+pause
-            resume_sec=0.0,
-            pause_sec=0.0,
+            slice_total_sec=resume_elapsed + exec_elapsed + pause_elapsed,
+            resume_sec=resume_elapsed,
+            pause_sec=pause_elapsed,
             requested_delay_sec=step.delay_time_sec,
         )
 
