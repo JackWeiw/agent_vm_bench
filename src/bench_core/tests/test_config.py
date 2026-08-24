@@ -150,3 +150,46 @@ def test_from_raw_ignores_backend_block():
 
     assert not hasattr(c, "template")
     assert not hasattr(c, "docker_image")
+
+
+def test_from_raw_replay_section():
+    raw = {
+        "workflow_type": "replay",
+        "replay": {
+            "trajectory_dir": "trajectories/swe",
+            "trajectory_glob": "*.replay.json",
+            "workdir": "/testbed",
+            "env": {"PAGER": "cat"},
+            "action_timeout": 120,
+            "delay_scale": 0.5,
+            "stop_on_error": True,
+            "mode": "exec_only",
+        },
+    }
+    cfg = KernelConfig.from_raw(raw)
+    assert cfg.workflow_type == "replay"
+    assert cfg.replay_trajectory_dir == "trajectories/swe"
+    assert cfg.replay_trajectory_glob == "*.replay.json"
+    assert cfg.replay_workdir == "/testbed"
+    assert cfg.replay_env == {"PAGER": "cat"}
+    assert cfg.replay_action_timeout == 120
+    assert cfg.replay_delay_scale == 0.5
+    assert cfg.replay_stop_on_error is True
+    assert cfg.replay_mode == "exec_only"
+
+
+def test_validate_accepts_replay():
+    cfg = KernelConfig(workflow_type="replay")
+    cfg.validate()  # must not raise
+
+
+def test_replay_defaults():
+    cfg = KernelConfig(workflow_type="replay")
+    assert cfg.replay_trajectory_dir == "trajectories"
+    assert cfg.replay_trajectory_glob == "*.replay.json"
+    assert cfg.replay_workdir == "/testbed"
+    assert cfg.replay_env == {}
+    assert cfg.replay_action_timeout == 300
+    assert cfg.replay_delay_scale == 1.0
+    assert cfg.replay_stop_on_error is False
+    assert cfg.replay_mode == "exec_only"

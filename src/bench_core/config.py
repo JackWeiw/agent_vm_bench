@@ -67,7 +67,7 @@ class KernelConfig:
     round_interval: int = 5
 
     # --- workflow axis (orthogonal to the environment axis) ---
-    workflow_type: str = "browser"  # "browser" | "coding" | "document"
+    workflow_type: str = "browser"  # "browser" | "coding" | "document" | "replay"
 
     # --- browser ---
     browser_urls: list[str] = field(default_factory=lambda: ["http://192.168.110.10:8080/Weibo.html"])
@@ -107,6 +107,16 @@ class KernelConfig:
     document_task_timeout: int = 1800
     document_interval_min: float = 3.0
     document_interval_max: float = 10.0
+
+    # --- replay (host-agnostic; replays recorded agent trajectories via exec) ---
+    replay_trajectory_dir: str = "trajectories"
+    replay_trajectory_glob: str = "*.replay.json"
+    replay_workdir: str = "/testbed"
+    replay_env: dict[str, str] = field(default_factory=dict)
+    replay_action_timeout: int = 300
+    replay_delay_scale: float = 1.0  # 1.0=realtime think gaps; 0=no delay; 0.1=10x compressed
+    replay_stop_on_error: bool = False
+    replay_mode: str = "exec_only"  # P1 implements exec_only only; lifecycle reserved for P2 (e2b)
 
     # --- test run ---
     test_duration: int = 600
@@ -155,7 +165,7 @@ class KernelConfig:
 
     def validate(self) -> None:
         """Raise ``ValueError`` for invalid settings; call after construction."""
-        if self.workflow_type not in {"browser", "coding", "document"}:
+        if self.workflow_type not in {"browser", "coding", "document", "replay"}:
             raise ValueError(f"Unsupported workflow_type: {self.workflow_type}")
         if self.round_size <= 0:
             raise ValueError(f"round_size must be > 0, got {self.round_size}")
@@ -184,6 +194,7 @@ class KernelConfig:
         report = raw.get("report") or {}
         coding = raw.get("coding") or {}
         document = raw.get("document") or {}
+        replay = raw.get("replay") or {}
 
         # workflow_type: top-level wins, then the legacy workflow.type form.
         wf = raw.get("workflow_type")
@@ -236,6 +247,15 @@ class KernelConfig:
             document_task_timeout=document.get("task_timeout", 1800),
             document_interval_min=document.get("interval_min", 3.0),
             document_interval_max=document.get("interval_max", 10.0),
+            # --- replay ---
+            replay_trajectory_dir=replay.get("trajectory_dir", "trajectories"),
+            replay_trajectory_glob=replay.get("trajectory_glob", "*.replay.json"),
+            replay_workdir=replay.get("workdir", "/testbed"),
+            replay_env=replay.get("env", {}),
+            replay_action_timeout=replay.get("action_timeout", 300),
+            replay_delay_scale=replay.get("delay_scale", 1.0),
+            replay_stop_on_error=replay.get("stop_on_error", False),
+            replay_mode=replay.get("mode", "exec_only"),
             # --- test run ---
             test_duration=test.get("duration", 600),
             stats_interval=test.get("stats_interval", 10),
