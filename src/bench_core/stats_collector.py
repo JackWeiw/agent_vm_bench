@@ -820,6 +820,34 @@ class StatsCollector:
                 round_total=round_total,
                 round_success=round_success,
             )
+        elif self.config.workflow_type == "replay":
+            task_total = sum(s.replay_metrics.total_tasks for s in self.sandbox_states.values())
+            task_success = sum(s.replay_metrics.success_count for s in self.sandbox_states.values())
+            if self.current_round is not None and self.current_round in self._round_start_totals:
+                start_total = self._round_start_totals[self.current_round]["total"]
+                start_success = self._round_start_totals[self.current_round]["success"]
+                round_total = task_total - start_total
+                round_success = task_success - start_success
+            else:
+                round_total = 0
+                round_success = 0
+            all_latencies = [
+                latency for state in self.sandbox_states.values() for latency in state.replay_metrics.latencies[-10:]
+            ]
+            snapshot = Snapshot(
+                timestamp=now,
+                elapsed=elapsed,
+                total_sandboxes=len(self.sandbox_states),
+                active_sandboxes=active_count,
+                offline_sandboxes=offline_count,
+                creation_stats=creation_stats,
+                replay_total=task_total,
+                replay_success=task_success,
+                replay_avg_latency=statistics.mean(all_latencies) if all_latencies else 0.0,
+                replay_p99_latency=calc_p99(all_latencies),
+                round_total=round_total,
+                round_success=round_success,
+            )
         else:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
@@ -853,6 +881,11 @@ class StatsCollector:
             logger.info(
                 f"  Browser:   {snapshot.browser_success:3d}/{snapshot.browser_total:3d}  "
                 f"avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s"
+            )
+        elif self.config.workflow_type == "replay":
+            logger.info(
+                f"  Replay:    {snapshot.replay_success:3d}/{snapshot.replay_total:3d}  "
+                f"avg={snapshot.replay_avg_latency:.2f}s  p99={snapshot.replay_p99_latency:.2f}s"
             )
         else:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
