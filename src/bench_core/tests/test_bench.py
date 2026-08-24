@@ -7,11 +7,14 @@ and warmup-only. Plus the no-ready-sandboxes early exit.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from bench_core.bench import run_benchmark
 from bench_core.config import KernelConfig
 from env_provider import CreationMetrics, SandboxStatus
 from env_provider.fake import FakeProvider
+
+REPLAY_FIXTURES = Path(__file__).parent / "fixtures" / "replay"
 
 
 class _NoReadyProvider(FakeProvider):
@@ -165,3 +168,54 @@ def test_load_config_replay_yaml():
     assert config.workflow_type == "replay"
     assert config.replay_trajectory_dir == "trajectories/swe-bench"
     assert config.replay_mode == "exec_only"
+
+
+class TestRunBenchmarkReplayRoundRobin:
+    def test_replay_round_robin_completes_and_writes_report(self, tmp_path):
+        config = KernelConfig(
+            workflow_type="replay",
+            total_count=2,
+            benchmark_mode="round_robin",
+            round_count=1,
+            round_size=2,
+            round_interval=0,
+            test_duration=60,
+            replay_trajectory_dir=str(REPLAY_FIXTURES),
+            replay_mode="exec_only",
+            replay_delay_scale=0.0,
+            output_dir=str(tmp_path),
+            filename_prefix="rr_replay",
+        )
+        provider = FakeProvider(count=2)
+
+        result = run_benchmark(config, provider)
+
+        assert result["filepath"]
+        assert os.path.isfile(result["filepath"])
+        assert "Performance Report" in result["report"]
+        assert "Replay Task Statistics" in result["report"]
+        assert provider.cleanup_called is True
+        assert provider.prepare_env_calls == 1
+
+
+class TestRunBenchmarkReplayFixed:
+    def test_replay_fixed_mode_completes(self, tmp_path):
+        config = KernelConfig(
+            workflow_type="replay",
+            total_count=2,
+            benchmark_mode="fixed",
+            test_duration=1,
+            replay_trajectory_dir=str(REPLAY_FIXTURES),
+            replay_mode="exec_only",
+            replay_delay_scale=0.0,
+            output_dir=str(tmp_path),
+            filename_prefix="fixed_replay",
+        )
+        provider = FakeProvider(count=2)
+
+        result = run_benchmark(config, provider)
+
+        assert os.path.isfile(result["filepath"])
+        assert "Performance Report" in result["report"]
+        assert "Replay Task Statistics" in result["report"]
+        assert provider.cleanup_called is True
