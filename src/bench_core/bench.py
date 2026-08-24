@@ -71,6 +71,11 @@ def _print_header(config: KernelConfig, provider: EnvironmentProvider) -> None:
     elif config.workflow_type == "document":
         lines.append(f"  Case:      {config.document_case_kind.upper()}")
         lines.append(f"  Workspace: {config.document_workspace_dir}")
+    elif config.workflow_type == "replay":
+        lines.append(f"  Traj dir:  {config.replay_trajectory_dir}")
+        lines.append(f"  Workdir:   {config.replay_workdir}")
+        lines.append(f"  Mode:      {config.replay_mode}")
+        lines.append(f"  Delay:     {config.replay_delay_scale}x")
     elif config.workflow_type != "browser":
         raise ValueError(f"Unsupported workflow_type: {config.workflow_type}")
 
@@ -329,7 +334,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", help="YAML config path")
     parser.add_argument("--provider", default="fake", choices=["fake", "e2b", "docker"])
     parser.add_argument("-n", "--total-count", type=int)
-    parser.add_argument("--workflow-type", choices=["browser", "coding", "document"])
+    parser.add_argument("--workflow-type", choices=["browser", "coding", "document", "replay"])
     parser.add_argument("-bm", "--benchmark-mode", choices=["fixed", "round_robin"])
     parser.add_argument("--round-count", type=int)
     parser.add_argument("--round-size", type=int)

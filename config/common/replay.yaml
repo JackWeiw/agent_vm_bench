@@ -1,0 +1,70 @@
+# Unified trajectory replay benchmark config — backend-agnostic (E2B + Docker).
+#
+# Workflow type: replay — re-executes recorded SWE-bench agent trajectories
+#   (ordered shell + str_replace_editor actions with per-step delay_time) as
+#   provider.exec() calls with think-time gaps. P1 is exec-only: no
+#   pause/resume lifecycle (that is P2, e2b-only). The same stress profile
+#   runs on either backend:
+#     bench-core --provider fake   --config config/common/replay.yaml --create-only -n 1
+#     bench-core --provider e2b    --config config/common/replay.yaml --create-only
+#     bench-core --provider docker --config config/common/replay.yaml --create-only
+
+workflow_type: replay
+
+# === backend blocks (one per provider; only the matching one is read) ===
+e2b:
+  template: "openclaw-coding-python-v1"  # any template whose image has /testbed
+  create_timeout: 86400
+  numa_bind: 2
+  sandbox_ids_file: "sandboxs_replay.txt"
+  env:
+    E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+    E2B_API_KEY: "your_e2b_api_key_here"
+    E2B_DOMAIN: "e2b.app"
+    E2B_API_URL: "http://localhost:3000"
+    E2B_HTTP_SSL: "false"
+
+docker:
+  image: "ubuntu-openclaw-coding-python:24.04-arm64"
+  container_prefix: "oc-replay"
+  cpu_limit: 2.0
+  memory_limit: "2g"
+  create_timeout: 300
+
+# === shared stress sections (all -> KernelConfig) ===
+sandbox:
+  total_count: 10
+  detect_existing: false
+  create_only: false
+
+create_batch:
+  size: 10
+  interval: 3
+
+task_batch:
+  size: 5
+  interval: 5
+
+# Replay configuration (host-agnostic; the sandbox runs the recorded commands).
+replay:
+  trajectory_dir: "trajectories/swe-bench"  # pool of .replay.json/.json/.traj
+  trajectory_glob: "*.replay.json"
+  workdir: "/testbed"                       # passed via exec cwd param (no shell wrap)
+  env: {}                                   # optional {PAGER: cat, ...} via exec env param
+  action_timeout: 300                       # per-action exec timeout (lifecycle timeouts are P2)
+  delay_scale: 1.0                          # 1.0=realtime; 0=no delay; 0.1=10x compressed
+  stop_on_error: false                      # abort current trajectory, advance to next (not the sandbox)
+  mode: exec_only                           # P1: exec_only; lifecycle reserved for P2 (e2b only)
+
+test:
+  duration: 300
+  stats_interval: 10
+  benchmark_percent: 1.0
+  benchmark_mode: "round_robin"
+  round_size: 5
+  round_count: 20
+  round_interval: 3
+
+report:
+  output_dir: "results/replay"
+  filename_prefix: "replay_bench"
