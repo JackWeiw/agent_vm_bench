@@ -46,6 +46,7 @@ class TaskManager:
         - "browser":  WarmupRunner (opens browser tabs)
         - "coding":   CodingWarmupRunner (one initial verify, no resident process)
         - "document": DocumentWarmupRunner (validates and restores the PDF/XLSX seed)
+        - "replay":   ReplayWarmupRunner (loads trajectory pool, probe exec)
         """
         ready_states = [s for s in self.sandbox_states.values() if s.ready]
 
@@ -107,6 +108,19 @@ class TaskManager:
                 runner = WarmupRunner(state, self.config, self.provider)
                 self.warmup_runners.append(runner)
                 runner.start()
+        elif self.config.workflow_type == "replay":
+            from bench_core.task_runner.replay import ReplayWarmupRunner
+
+            logger.info(f"\n{'=' * 60}")
+            logger.info("Replay Warmup Phase Starting")
+            logger.info(f"  Total: {len(ready_states)} sandboxes")
+            logger.info(f"  Trajectory dir: {self.config.replay_trajectory_dir}")
+            logger.info(f"  Mode: {self.config.replay_mode}")
+            logger.info(f"{'=' * 60}")
+            for state in ready_states:
+                runner = ReplayWarmupRunner(state, self.config, self.provider)
+                self.warmup_runners.append(runner)
+                runner.start()
         else:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
@@ -142,7 +156,7 @@ class TaskManager:
         completed = sum(1 for s in self.sandbox_states.values() if s.warmup_done)
         if self.config.workflow_type == "document":
             failed = sum(1 for s in self.sandbox_states.values() if s.warmup_done and s.document_metrics.last_error)
-        else:  # browser, coding -- warmup failures surface in the workflow metrics
+        else:  # browser, coding, replay -- warmup failures surface in the workflow metrics
             failed = sum(1 for s in self.sandbox_states.values() if s.warmup_done and s.task_metrics.failed_count > 0)
 
         return completed, failed
@@ -242,7 +256,7 @@ class TaskManager:
             state: Sandbox state for the runner.
 
         Returns:
-            Task runner thread (BrowserTaskRunner / CodingTaskRunner / DocumentTaskRunner).
+            Task runner thread (BrowserTaskRunner / CodingTaskRunner / DocumentTaskRunner / ReplayTaskRunner).
         """
         if self.config.workflow_type == "coding":
             from bench_core.task_runner.coding import CodingTaskRunner
@@ -256,6 +270,10 @@ class TaskManager:
             from bench_core.task_runner.browser import BrowserTaskRunner
 
             return BrowserTaskRunner(state, self.config, self.stop_event, self.provider)
+        if self.config.workflow_type == "replay":
+            from bench_core.task_runner.replay import ReplayTaskRunner
+
+            return ReplayTaskRunner(state, self.config, self.stop_event, self.provider)
         raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
     def wait_all(self, timeout: float = 5.0) -> None:
@@ -269,7 +287,7 @@ class TaskManager:
             if alive:
                 raise RuntimeError(f"document runners did not finish before task deadline: {alive}")
             return
-        if self.config.workflow_type in {"browser", "coding"}:
+        if self.config.workflow_type in {"browser", "coding", "replay"}:
             for runner in self.runners:
                 runner.join(timeout=timeout)
             return
