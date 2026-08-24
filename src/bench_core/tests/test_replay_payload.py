@@ -98,3 +98,65 @@ def test_load_trajectory_missing_instance_id_uses_filename_stem(tmp_path):
     p.write_text(json.dumps({"environment": "main", "trajectory": [{"action": "ls", "delay_time": 1.0}]}))
     traj = load_trajectory(p)
     assert traj.instance_id == "_no_id"
+
+
+# ---------------------------------------------------------------------------
+# find_trajectories
+# ---------------------------------------------------------------------------
+
+
+def test_find_trajectories_globs_extensions_and_sorts():
+    from bench_core.replay_payload import find_trajectories
+
+    paths = find_trajectories(FIXTURES, "*")
+    names = [p.name for p in paths]
+    # sorted deterministically by path
+    assert names == sorted(names)
+    # all four fixtures picked up (.replay.json, .json, .traj)
+    assert "with_terminal.replay.json" in names
+    assert "no_terminal.json" in names
+    assert "empty_steps.traj" in names
+    assert "corrupt.json" in names
+
+
+def test_find_trajectories_respects_glob():
+    from bench_core.replay_payload import find_trajectories
+
+    paths = find_trajectories(FIXTURES, "*.replay.json")
+    assert [p.name for p in paths] == ["with_terminal.replay.json"]
+
+
+# ---------------------------------------------------------------------------
+# load_pool
+# ---------------------------------------------------------------------------
+
+
+def test_load_pool_skips_corrupt_and_empty(caplog):
+    import logging
+    from bench_core.replay_payload import Trajectory, load_pool, reset_pool_cache
+
+    class _Cfg:
+        replay_trajectory_dir = str(FIXTURES)
+        replay_trajectory_glob = "*"
+
+    reset_pool_cache()
+    caplog.set_level(logging.WARNING)
+    pool = load_pool(_Cfg())  # type: ignore[arg-type]
+    # corrupt.json + empty_steps.traj skipped (empty steps); 2 survivors.
+    assert len(pool) == 2
+    assert all(isinstance(t, Trajectory) for t in pool)
+    # a warning was logged for the skipped files.
+    assert "corrupt.json" in caplog.text or "empty_steps" in caplog.text
+
+
+def test_load_pool_is_cached():
+    from bench_core.replay_payload import load_pool, reset_pool_cache
+
+    class _Cfg:
+        replay_trajectory_dir = str(FIXTURES)
+        replay_trajectory_glob = "*"
+
+    reset_pool_cache()
+    a = load_pool(_Cfg())  # type: ignore[arg-type]
+    b = load_pool(_Cfg())  # type: ignore[arg-type]
+    assert a is b  # same cached tuple object
