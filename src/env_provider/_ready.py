@@ -8,6 +8,8 @@ workflow probe passes:
 - document : run ``document-bench-validate`` until it exits 0 (a completed
              non-zero exit is an image-validation failure, returned immediately
              rather than retried -- retrying would hide the actionable output)
+- replay   : command responsiveness (reuses the coding probe -- a replay
+             sandbox only needs ``exec``, just like coding)
 
 The ONLY thing that varies by backend is the exec primitive: run a command in
 the sandbox handle and get ``(exit_code, stdout, stderr)``. Each manager supplies
@@ -89,6 +91,8 @@ class ReadyChecker:
             return self._check_document(handle, label)
         if workflow_type == "browser":
             return self._check_ports(handle, label)
+        if workflow_type == "replay":
+            return self._check_command(handle, label)
         raise ValueError(f"Unsupported workflow_type: {workflow_type}")
 
     # ------------------------------------------------------------------ coding
