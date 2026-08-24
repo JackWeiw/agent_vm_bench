@@ -157,3 +157,37 @@ class TestRunTwoRoundsBrowser:
 
         assert mgr.sandbox_groups == []
         assert stats._round_start_totals == {}
+
+
+class TestRoundRobinReplayWorkflow:
+    def test_start_round_with_replay_workflow(self):
+        """Verify _start_round accepts workflow_type='replay' without raising ValueError."""
+        import pathlib
+        from bench_core.replay_payload import reset_pool_cache
+
+        reset_pool_cache()
+        fixtures_dir = pathlib.Path(__file__).parent / "fixtures" / "replay"
+
+        config = KernelConfig(
+            workflow_type="replay",
+            round_size=1,
+            round_count=1,
+            test_duration=5,
+            replay_trajectory_dir=str(fixtures_dir),
+            replay_trajectory_glob="no_terminal.json",
+            replay_delay_scale=0.0,
+        )
+        states = _states(1)
+        # Set workflow_type on the sandbox so task_metrics resolves correctly
+        states[0].workflow_type = "replay"
+        stats = _new_stats(config, states)
+        mgr = RoundRobinTaskManager(config, states, threading.Event(), stats, FakeProvider(count=1))
+
+        mgr._prepare_sandbox_groups()
+        assert len(mgr.sandbox_groups) == 1
+
+        # Should not raise ValueError about unsupported workflow_type
+        mgr._start_round(0)
+        assert len(mgr.active_runners) == 1
+        mgr._wait_for_active_runners()
+        mgr._stop_round()
