@@ -149,3 +149,19 @@ class TestRunBenchmarkNoReady:
         assert result == {}
         # Never reached the cleanup phase.
         assert provider.cleanup_called is False
+
+
+def test_build_arg_parser_includes_replay_choice():
+    from bench_core.bench import build_arg_parser
+
+    args = build_arg_parser().parse_args(["--workflow-type", "replay"])
+    assert args.workflow_type == "replay"
+
+
+def test_load_config_replay_yaml():
+    from bench_core.bench import load_config
+
+    config, raw = load_config("config/common/replay.yaml")
+    assert config.workflow_type == "replay"
+    assert config.replay_trajectory_dir == "trajectories/swe-bench"
+    assert config.replay_mode == "exec_only"
