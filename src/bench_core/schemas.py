@@ -39,6 +39,10 @@ DOCUMENT_PDF_STEP_ORDER = [
     "PDF-P03-process_publish",
     "PDF-P04-verify_deliver",
 ]
+# Trajectory replay action-type taxonomy (drives per-bucket metrics). Replay
+# has no fixed pipeline (unlike coding's find->read->edit->verify->diff); the
+# "step" axis is the recorded action's type, bucketed by classify_action.
+REPLAY_STEP_ORDER = ["shell", "str_replace_editor", "bash", "other"]
 
 
 def get_step_order(workflow_type: str, document_case_kind: str = "xlsx") -> list[str]:
@@ -53,6 +57,8 @@ def get_step_order(workflow_type: str, document_case_kind: str = "xlsx") -> list
         raise ValueError("document case_kind must be 'pdf' or 'xlsx'")
     if workflow_type == "browser":
         return BROWSER_STEP_ORDER
+    if workflow_type == "replay":
+        return REPLAY_STEP_ORDER
     raise ValueError(f"Unsupported workflow_type: {workflow_type}")
 
 
@@ -271,6 +277,95 @@ class DocumentMetrics(TaskMetricsBase):
     step_order = DOCUMENT_XLSX_STEP_ORDER
 
 
+class ReplayMetrics(TaskMetricsBase):
+    """Trajectory replay metrics; the "step" axis is the action_type bucket.
+
+    Unlike coding's fixed find->read->edit->verify->diff pipeline, a replay
+    step is one recorded action, so step-level timing is bucketed by
+    ``action_type`` (shell / str_replace_editor / bash / ...). Extends the base
+    with action-type latency buckets, delay-fidelity tracking, and trajectory
+    completion counting.
+
+    Success semantics: a step is successful iff ``exit_code == 0`` and not
+    timed out. ``trajectory_complete`` is True only when the runner executed
+    every step of a trajectory through to its end (a ``stop_on_error`` abort
+    mid-trajectory does NOT count as complete).
+    """
+
+    step_order = REPLAY_STEP_ORDER
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._action_type_latencies: dict[str, list[float]] = {}
+        self._delay_requested: float = 0.0
+        self._delay_actual: float = 0.0
+        self._trajectory_completions: int = 0
+
+    def add(
+        self,
+        latency: float,
+        success: bool,
+        timeout: bool = False,
+        step_times: dict[str, float] | None = None,
+        *,
+        action_type: str = "shell",
+        requested_delay: float = 0.0,
+        actual_delay: float = 0.0,
+        trajectory_complete: bool = False,
+    ) -> None:
+        """Add a replay step result (thread-safe).
+
+        Base counters are inlined here (not via super().add()) so all updates
+        run under one Lock acquisition (threading.Lock is non-reentrant).
+        """
+        with self._lock:
+            self._total_tasks += 1
+            if timeout:
+                self._timeout_count += 1
+                self._failed_count += 1
+            elif success:
+                self._success_count += 1
+                self._latencies.append(latency)
+                self._action_type_latencies.setdefault(action_type, []).append(latency)
+            else:
+                self._failed_count += 1
+                self._action_type_latencies.setdefault(action_type, []).append(latency)
+
+            self._delay_requested += requested_delay
+            self._delay_actual += actual_delay
+            if trajectory_complete:
+                self._trajectory_completions += 1
+
+            if step_times:
+                for step_name, step_latency in step_times.items():
+                    self._step_times.setdefault(step_name, []).append(step_latency)
+
+    @property
+    def action_type_latencies(self) -> dict[str, list[float]]:
+        """Per-action-type latency lists (copy under lock)."""
+        with self._lock:
+            return {k: list(v) for k, v in self._action_type_latencies.items()}
+
+    @property
+    def delay_fidelity(self) -> float:
+        """sum(actual_delay) / sum(requested_delay); 0.0 when no delay requested."""
+        with self._lock:
+            if self._delay_requested <= 0.0:
+                return 0.0
+            return self._delay_actual / self._delay_requested
+
+    @property
+    def trajectory_completions(self) -> int:
+        with self._lock:
+            return self._trajectory_completions
+
+    def _mark_completion(self) -> None:
+        """Increment the completion counter (called by the runner when a
+        trajectory ran all its steps). Thread-safe."""
+        with self._lock:
+            self._trajectory_completions += 1
+
+
 @dataclass
 class BenchSandbox(SandboxInstance):
     """The kernel's working per-sandbox state.
@@ -287,6 +382,7 @@ class BenchSandbox(SandboxInstance):
     browser_metrics: BrowserMetrics = field(default_factory=BrowserMetrics)
     coding_metrics: CodingMetrics = field(default_factory=CodingMetrics)
     document_metrics: DocumentMetrics = field(default_factory=DocumentMetrics)
+    replay_metrics: ReplayMetrics = field(default_factory=ReplayMetrics)
 
     stopped_by_cleanup: bool = False  # cleanly stopped by normal benchmark cleanup
     consecutive_failures: int = 0  # consecutive task failures (used to flag a sandbox bad)
@@ -308,6 +404,8 @@ class BenchSandbox(SandboxInstance):
             return self.document_metrics
         if self.workflow_type == "browser":
             return self.browser_metrics
+        if self.workflow_type == "replay":
+            return self.replay_metrics
         raise ValueError(f"Unsupported workflow_type: {self.workflow_type}")
 
     def update_last_task_time(self, timestamp: float) -> None:
@@ -363,6 +461,11 @@ class Snapshot:
     document_success: int = 0
     document_avg_latency: float = 0.0
     document_p99_latency: float = 0.0
+    # Replay task metrics (workflow_type="replay")
+    replay_total: int = 0
+    replay_success: int = 0
+    replay_avg_latency: float = 0.0
+    replay_p99_latency: float = 0.0
     # Round comparison fields
     round_total: int = 0
     round_success: int = 0
