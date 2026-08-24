@@ -28,7 +28,7 @@ import time
 from dataclasses import dataclass
 
 from bench_core.config import KernelConfig
-from bench_core.replay_payload import ReplayStep, load_pool
+from bench_core.replay_payload import ReplayStep, Trajectory, load_pool
 from bench_core.schemas import BenchSandbox
 from env_provider import CommandResult, EnvironmentProvider
 
@@ -187,3 +187,93 @@ class ReplayWarmupRunner(threading.Thread):
 
         self.state.warmup_done = True
         logger.info(f"[Sandbox{self.state.index}] Replay warmup completed")
+
+
+class ReplayTaskRunner(ReplayBaseRunner):
+    """Fixed-mode replay runner -- continuously cycles the pool until stop_event.
+
+    Each iteration: pick the next trajectory (cursor advances per trajectory,
+    wrapping at pool end), replay its steps as slices, record metrics. On
+    ``stop_on_error``, a failing step aborts the current trajectory and
+    advances to the next -- it does NOT stop the sandbox or the benchmark.
+    """
+
+    def __init__(
+        self,
+        state: BenchSandbox,
+        config: KernelConfig,
+        stop_event: threading.Event,
+        provider: EnvironmentProvider,
+    ) -> None:
+        super().__init__(state, config, stop_event, provider)
+        self.consecutive_errors = 0
+
+    def run(self) -> None:
+        if not self.state.ready:
+            logger.warning(f"[Sandbox{self.state.index}] Cannot start replay: not ready")
+            return
+
+        pool = load_pool(self.config)
+        if not pool:
+            logger.info(f"[Sandbox{self.state.index}] Replay pool empty; exiting")
+            return
+
+        cursor = self.state.index % len(pool)
+        logger.info(f"[Sandbox{self.state.index}] Replay task runner started ({len(pool)} trajectories)")
+
+        while not self.stop_event.is_set() and self.state.is_alive:
+            traj = pool[cursor]
+            self._replay_trajectory(traj)
+            cursor = (cursor + 1) % len(pool)
+
+        logger.info(f"[Sandbox{self.state.index}] Replay task runner ended")
+
+    def _replay_trajectory(self, traj: Trajectory) -> None:
+        prev_slice_end = time.perf_counter()
+        aborted = False
+        for step in traj.steps:
+            if self.stop_event.is_set() or not self.state.is_alive:
+                return
+            self._sleep_delay(step)
+            if self.stop_event.is_set():
+                return
+            slice_start = time.perf_counter()
+            actual_delay = slice_start - prev_slice_end
+            timed_out = False
+            try:
+                sr = self._run_slice(step)
+            except Exception as e:
+                msg = str(e).lower()
+                timed_out = "timed out" in msg or "context deadline exceeded" in msg
+                sr = StepResult(
+                    step_index=step.index,
+                    action_type=step.action_type,
+                    exit_code=1,
+                    exec_elapsed_sec=0.0,
+                    slice_total_sec=0.0,
+                    resume_sec=0.0,
+                    pause_sec=0.0,
+                    requested_delay_sec=step.delay_time_sec,
+                )
+                logger.error(f"[Sandbox{self.state.index}] Replay step {step.index} exception: {msg[:120]}")
+            prev_slice_end = time.perf_counter()
+            self._record_step(sr, timed_out=timed_out, actual_delay=actual_delay, trajectory_complete=False)
+
+            if sr.exit_code != 0 or timed_out:
+                self.consecutive_errors += 1
+                if self.consecutive_errors >= 3:
+                    self.state.is_alive = False
+                    logger.warning(f"[Sandbox{self.state.index}] Marked offline (3 consecutive replay failures)")
+                    return
+                if self.config.replay_stop_on_error:
+                    aborted = True
+                    break
+            else:
+                self.consecutive_errors = 0
+
+        if not aborted and not self.stop_event.is_set():
+            # Ran every step to the end -> mark one completion.
+            self.state.replay_metrics._mark_completion()
+
+        if aborted:
+            logger.info(f"[Sandbox{self.state.index}] Trajectory {traj.instance_id} aborted (stop_on_error); advancing")
