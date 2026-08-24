@@ -47,3 +47,19 @@ def test_slice_exec_verbatim_with_cwd_and_env():
     assert result.pause_sec == 0.0
     assert result.slice_total_sec == result.exec_elapsed_sec
     assert result.requested_delay_sec == 1.0
+
+
+def test_warmup_loads_pool_and_probes_exec():
+    from bench_core.task_runner.replay import ReplayWarmupRunner
+    from bench_core.replay_payload import reset_pool_cache
+
+    reset_pool_cache()
+    config = KernelConfig(
+        workflow_type="replay",
+        replay_trajectory_dir=str(__import__("pathlib").Path(__file__).parent / "fixtures" / "replay"),
+        replay_trajectory_glob="*",
+    )
+    state = _make_state()
+    runner = ReplayWarmupRunner(state, config, FakeProvider(count=1))
+    runner.run()
+    assert state.warmup_done is True
