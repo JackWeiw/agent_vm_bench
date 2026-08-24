@@ -1,0 +1,9 @@
+{
+  "environment": "main",
+  "instance_id": "django-money__django-money.835c1ab8",
+  "trajectory": [
+    {"action": "find /testbed -type f -name '*.py'", "delay_time": 3.0, "response": "r0", "thought": "t0"},
+    {"action": "str_replace_editor str_replace --old_str a --new_str b", "delay_time": 11.8},
+    {"action": "submit", "delay_time": 5.0}
+  ]
+}

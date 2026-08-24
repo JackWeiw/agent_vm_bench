@@ -12,6 +12,7 @@ host-agnostic payload module for the replay workflow.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -70,3 +71,40 @@ def classify_action(action: str) -> str:
     if first == "bash":
         return "bash"
     return "shell"
+
+
+def load_trajectory(path: Path) -> Trajectory:
+    """Load one trajectory JSON, truncating at the first terminal action.
+
+    The terminal action (``submit``/``finish``/``done``) marks "agent
+    submitted"; it is **not executed** and **its ``delay_time`` is discarded**
+    — only steps preceding it are kept. If no terminal action is present (a
+    failed / interrupted trajectory), all steps are kept and no error is
+    raised.
+
+    ``instance_id`` falls back to the filename stem when absent.
+    """
+    path = Path(path)
+    with open(path, encoding="utf-8") as handle:
+        raw = json.load(handle)
+
+    environment = raw.get("environment", "main")
+    instance_id = raw.get("instance_id") or path.stem
+    raw_steps = raw.get("trajectory") or []
+
+    steps: list[ReplayStep] = []
+    for idx, entry in enumerate(raw_steps):
+        action = entry.get("action") or ""
+        action_type = classify_action(action)
+        if action_type in _TERMINAL_ACTIONS:
+            break  # truncate; terminal action + its delay_time discarded
+        steps.append(
+            ReplayStep(
+                index=idx,
+                action=action,
+                delay_time_sec=float(entry.get("delay_time", 0.0) or 0.0),
+                action_type=action_type,
+            )
+        )
+
+    return Trajectory(path=path, instance_id=instance_id, environment=environment, steps=tuple(steps))
