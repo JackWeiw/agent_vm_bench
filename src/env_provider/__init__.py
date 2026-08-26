@@ -27,7 +27,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Mapping
+from typing import Mapping, Protocol, runtime_checkable
 
 
 class SandboxStatus(Enum):
@@ -102,6 +102,22 @@ class SandboxInstance:
     creation_metrics: CreationMetrics = field(default_factory=CreationMetrics)
 
 
+@runtime_checkable
+class LifecycleCapable(Protocol):
+    """Provider that can pause (memory-snapshot) and resume (restore) a sandbox.
+
+    Replay's lifecycle mode calls these around each step's exec to measure
+    snapshot-restore overhead. Providers that don't implement it stay
+    exec-only; ``replay_mode: lifecycle`` on a non-capable provider fails fast.
+    """
+
+    def pause(self, inst: SandboxInstance) -> None:
+        ...
+
+    def resume(self, inst: SandboxInstance) -> None:
+        ...
+
+
 class EnvironmentProvider(ABC):
     """Contract a sandbox backend implements so the benchmark kernel can drive it.
 
@@ -112,6 +128,7 @@ class EnvironmentProvider(ABC):
     """
 
     name: str = "base"
+    default_replay_mode: str = "exec_only"  # replay workflow default; aenv overrides to "lifecycle"
 
     # ------------------------------------------------------------------ lifecycle
     @abstractmethod
@@ -212,4 +229,5 @@ __all__ = [
     "CommandResult",
     "SandboxInstance",
     "EnvironmentProvider",
+    "LifecycleCapable",
 ]
