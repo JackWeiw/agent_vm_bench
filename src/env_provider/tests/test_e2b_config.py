@@ -174,3 +174,30 @@ class TestSetupE2BEnvFallback:
         config.setup_e2b_env()
 
         assert os.environ.get("E2B_ACCESS_TOKEN") == "real-yaml-tok"
+
+
+def test_from_raw_block_selects_yaml_block():
+    """from_raw reads the block named by `block` (aenv, not e2b, when block='aenv')."""
+    raw = {
+        "e2b": {
+            "template": "e2b-tpl",
+            "sandbox_ids_file": "e2b-ids.txt",
+            "env": {"E2B_API_URL": "http://e2b-host:3000", "E2B_DOMAIN": "e2b.app"},
+        },
+        "aenv": {
+            "template": "aenv-tpl",
+            "sandbox_ids_file": "aenv-ids.txt",
+            "env": {"E2B_API_URL": "http://127.0.0.1:8000", "E2B_DOMAIN": "aenv.local"},
+        },
+    }
+    e2b_cfg = Config.from_raw(raw)  # default block
+    aenv_cfg = Config.from_raw(raw, block="aenv")
+
+    assert e2b_cfg.template == "e2b-tpl"
+    assert e2b_cfg.e2b_api_url == "http://e2b-host:3000"
+    assert e2b_cfg.sandbox_ids_file == "e2b-ids.txt"
+
+    assert aenv_cfg.template == "aenv-tpl"
+    assert aenv_cfg.e2b_api_url == "http://127.0.0.1:8000"
+    assert aenv_cfg.e2b_domain == "aenv.local"
+    assert aenv_cfg.sandbox_ids_file == "aenv-ids.txt"

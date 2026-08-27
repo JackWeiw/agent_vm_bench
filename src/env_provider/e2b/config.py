@@ -166,25 +166,27 @@ class Config:
     sandbox_ids_file: str | None = None
 
     @classmethod
-    def from_raw(cls, raw: dict[str, Any]) -> Config:
-        """Build from the unified YAML's ``e2b:`` block.
+    def from_raw(cls, raw: dict[str, Any], block: str = "e2b") -> Config:
+        """Build from the unified YAML's backend block (``e2b:`` by default).
 
-        ``env`` nests under ``e2b:`` in the unified schema (E2B SDK env vars).
-        ``numa_bind`` is normalized to a canonical list/None. Missing keys fall
-        back to the dataclass defaults, so a minimal ``e2b:`` block still loads.
+        ``block`` selects which top-level YAML key to read (``e2b`` for the
+        cloud e2b provider, ``aenv`` for the AENV provider, which reuses this
+        Config shape). ``env`` nests under the block. ``numa_bind`` is
+        normalized to a canonical list/None. Missing keys fall back to the
+        dataclass defaults, so a minimal block still loads.
         """
-        e2b = raw.get("e2b") or {}
-        env = e2b.get("env") or {}
+        backend = raw.get(block) or {}
+        env = backend.get("env") or {}
         return cls(
             e2b_access_token=env.get("E2B_ACCESS_TOKEN", ""),
             e2b_api_key=env.get("E2B_API_KEY", ""),
             e2b_domain=env.get("E2B_DOMAIN", "e2b.app"),
             e2b_api_url=env.get("E2B_API_URL", "http://localhost:3000"),
             e2b_http_ssl=env.get("E2B_HTTP_SSL", "false"),
-            template=e2b.get("template", "openclaw-browser-v1"),
-            create_timeout=e2b.get("create_timeout", 86400),
-            numa_bind=_normalize_numa_bind(e2b.get("numa_bind", 2)),
-            sandbox_ids_file=e2b.get("sandbox_ids_file"),
+            template=backend.get("template", "openclaw-browser-v1"),
+            create_timeout=backend.get("create_timeout", 86400),
+            numa_bind=_normalize_numa_bind(backend.get("numa_bind", 2)),
+            sandbox_ids_file=backend.get("sandbox_ids_file"),
         )
 
     def setup_e2b_env(self) -> None:
