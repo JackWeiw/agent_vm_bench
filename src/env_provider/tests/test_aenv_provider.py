@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from env_provider import LifecycleCapable, SandboxInstance
 from env_provider.aenv import AenvProvider
 from env_provider.e2b import E2BProvider
@@ -93,12 +95,20 @@ def test_pause_raises_on_missing_handle():
 
     provider._manager = _EmptyManager()
     inst = SandboxInstance(id="x", index=99)
-    try:
+    with pytest.raises(RuntimeError, match="index 99"):
         provider.pause(inst)
-    except RuntimeError as e:
-        assert "index 99" in str(e)
-    else:
-        raise AssertionError("expected RuntimeError for missing handle")
+
+
+def test_resume_raises_on_missing_handle():
+    provider = _make_provider(_FakeSbx())
+
+    class _EmptyManager:
+        sandbox_states = {}
+
+    provider._manager = _EmptyManager()
+    inst = SandboxInstance(id="x", index=99)
+    with pytest.raises(RuntimeError, match="index 99"):
+        provider.resume(inst)
 
 
 def test_e2b_is_not_lifecycle_capable():
