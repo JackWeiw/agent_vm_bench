@@ -192,4 +192,26 @@ def test_replay_defaults():
     assert cfg.replay_action_timeout == 300
     assert cfg.replay_delay_scale == 1.0
     assert cfg.replay_stop_on_error is False
-    assert cfg.replay_mode == "exec_only"
+    assert cfg.replay_mode is None
+
+
+def test_validate_accepts_replay_lifecycle():
+    cfg = KernelConfig(workflow_type="replay", replay_mode="lifecycle")
+    cfg.validate()  # must not raise
+
+
+def test_validate_accepts_replay_none_sentinel():
+    cfg = KernelConfig(workflow_type="replay", replay_mode=None)
+    cfg.validate()  # must not raise (None = pre-resolution sentinel)
+
+
+def test_validate_rejects_bad_replay_mode():
+    cfg = KernelConfig(workflow_type="replay", replay_mode="bogus")
+    with pytest.raises(ValueError, match="replay_mode"):
+        cfg.validate()
+
+
+def test_from_raw_replay_mode_none_when_absent():
+    raw = {"workflow_type": "replay", "replay": {"trajectory_dir": "t"}}
+    cfg = KernelConfig.from_raw(raw)
+    assert cfg.replay_mode is None
