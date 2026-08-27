@@ -10,7 +10,6 @@ from bench_core.bench import run_benchmark
 from bench_core.config import KernelConfig
 from bench_core.schemas import BenchSandbox
 from bench_core.task_runner.replay import (
-    ReplayBaseRunner,
     ReplayRoundRunner,
     ReplayWarmupRunner,
 )
@@ -43,7 +42,7 @@ class TestLifecycleE2E:
         result = run_benchmark(config, provider)
 
         assert "Replay Task Statistics" in result["report"]
-        # assert "Initial Pause" in result["report"]  # restored in Task 8 (stats_collector Initial Pause line)
+        assert "Initial Pause" in result["report"]
         # lifecycle hooks fired: resume + pause per step, plus one initial pause.
         assert provider.pause_calls >= 1
         assert provider.resume_calls >= 1

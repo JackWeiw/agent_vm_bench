@@ -465,6 +465,16 @@ class ReportFormatter:
         lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
         lines.append(f"  Success Rate:  {total_success / max(1, total_tasks) * 100:.1f}%")
         lines.append(f"  Trajectory Completions: {completions}")
+        # P2 lifecycle: one-time snapshot-creation pause (separate from per-step resume_sec).
+        initial_pauses = [
+            s.replay_metrics.initial_pause_sec
+            for s in self.sandbox_states.values()
+            if s.replay_metrics.initial_pause_sec > 0
+        ]
+        if initial_pauses:
+            lines.append(
+                f"  Initial Pause: {statistics.mean(initial_pauses):.3f}s " f"(over {len(initial_pauses)} sandbox(es))"
+            )
         lines.append(f"  Delay Fidelity: {delay_fidelity:.2f}")
 
         if all_latencies:

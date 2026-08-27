@@ -644,3 +644,51 @@ class TestStatsCollectorTailLatency:
         report = StatsCollector(self.config, sandbox_states).generate_report()
 
         assert any(level in report for level in ["minimal", "moderate", "significant"])
+
+
+class TestReplayInitialPauseReport:
+    """Initial Pause line in the replay stats section (P2 lifecycle)."""
+
+    def _replay_config(self) -> KernelConfig:
+        cfg = Mock(spec=KernelConfig)
+        cfg.workflow_type = "replay"
+        cfg.total_count = 2
+        cfg.detect_existing = False
+        cfg.create_only = False
+        cfg.create_batch_size = None
+        cfg.task_batch_size = None
+        cfg.test_duration = 60
+        cfg.output_dir = "/tmp/test"
+        cfg.filename_prefix = "test"
+        cfg.stats_interval = 5
+        return cfg
+
+    def test_initial_pause_line_rendered_when_set(self):
+        """A sandbox with initial_pause_sec > 0 surfaces an 'Initial Pause' line."""
+        state = BenchSandbox(id="sbx-0", index=0, workflow_type="replay")
+        state.replay_metrics.initial_pause_sec = 0.42
+        report = StatsCollector(self._replay_config(), {0: state}).generate_report()
+
+        assert "Initial Pause" in report
+        assert "0.420s" in report
+        assert "1 sandbox" in report
+
+    def test_initial_pause_line_omitted_when_zero(self):
+        """exec_only sandboxes (initial_pause_sec == 0) render no Initial Pause line."""
+        state = BenchSandbox(id="sbx-0", index=0, workflow_type="replay")
+        # initial_pause_sec stays 0.0 (default)
+        report = StatsCollector(self._replay_config(), {0: state}).generate_report()
+
+        assert "Initial Pause" not in report
+
+    def test_initial_pause_averages_across_sandboxes(self):
+        """Multiple paused sandboxes: mean of their initial_pause_sec values."""
+        s0 = BenchSandbox(id="sbx-0", index=0, workflow_type="replay")
+        s0.replay_metrics.initial_pause_sec = 0.20
+        s1 = BenchSandbox(id="sbx-1", index=1, workflow_type="replay")
+        s1.replay_metrics.initial_pause_sec = 0.40
+        report = StatsCollector(self._replay_config(), {0: s0, 1: s1}).generate_report()
+
+        assert "Initial Pause" in report
+        assert "0.300s" in report  # mean(0.20, 0.40)
+        assert "2 sandbox" in report
