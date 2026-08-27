@@ -300,6 +300,9 @@ class ReplayMetrics(TaskMetricsBase):
         self._delay_requested: float = 0.0
         self._delay_actual: float = 0.0
         self._trajectory_completions: int = 0
+        self.initial_pause_sec: float = (
+            0.0  # one-time snapshot-creation pause (single writer in _init_lifecycle; no lock)
+        )
 
     def add(
         self,
@@ -387,6 +390,7 @@ class BenchSandbox(SandboxInstance):
     stopped_by_cleanup: bool = False  # cleanly stopped by normal benchmark cleanup
     consecutive_failures: int = 0  # consecutive task failures (used to flag a sandbox bad)
     last_task_time: float = 0.0  # wall-clock of the last completed task
+    lifecycle_paused: bool = False  # one-time initial pause done (P2 lifecycle); persists across rounds
     tab_ids: list[str] = field(default_factory=list)  # active tab IDs for browser round-robin
 
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)

@@ -11,6 +11,7 @@ from bench_core.schemas import (
     BrowserMetrics,
     CodingMetrics,
     DocumentMetrics,
+    ReplayMetrics,
     TaskMetricsBase,
     Snapshot,
     get_step_order,
@@ -197,3 +198,22 @@ def test_snapshot_has_replay_fields():
     assert snap.replay_success == 0
     assert snap.replay_avg_latency == 0.0
     assert snap.replay_p99_latency == 0.0
+
+
+def test_bench_sandbox_lifecycle_paused_default_false():
+    sb = BenchSandbox.from_instance(
+        SandboxInstance(id="x", index=0),
+        workflow_type="replay",
+    )
+    assert sb.lifecycle_paused is False
+
+
+def test_replay_metrics_initial_pause_default_zero():
+    m = ReplayMetrics()
+    assert m.initial_pause_sec == 0.0
+
+
+def test_replay_metrics_initial_pause_settable():
+    m = ReplayMetrics()
+    m.initial_pause_sec = 1.25
+    assert m.initial_pause_sec == 1.25
