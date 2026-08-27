@@ -31,6 +31,18 @@ docker:
   memory_limit: "2g"
   create_timeout: 300
 
+aenv:
+  template: "openclaw-coding-python-v1"  # AENV snapshot-capable image (same /testbed shape)
+  create_timeout: 86400
+  numa_bind: 2
+  sandbox_ids_file: "sandboxs_replay_aenv.txt"
+  env:
+    E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+    E2B_API_KEY: "your_e2b_api_key_here"
+    E2B_DOMAIN: "your_aenv_domain_here"
+    E2B_API_URL: "http://127.0.0.1:8000"   # AENV server (loopback; scrub if public)
+    E2B_HTTP_SSL: "false"
+
 # === shared stress sections (all -> KernelConfig) ===
 sandbox:
   total_count: 10
@@ -54,7 +66,10 @@ replay:
   action_timeout: 300                       # per-action exec timeout (lifecycle timeouts are P2)
   delay_scale: 1.0                          # 1.0=realtime; 0=no delay; 0.1=10x compressed
   stop_on_error: false                      # abort current trajectory, advance to next (not the sandbox)
-  mode: exec_only                           # P1: exec_only; lifecycle reserved for P2 (e2b only)
+  # mode: exec_only (default for e2b/docker/fake) | lifecycle (default for aenv;
+  # requires a LifecycleCapable provider). lifecycle pauses the sandbox between
+  # steps and resumes per step to measure snapshot-restore overhead.
+  mode: exec_only
 
 test:
   duration: 300
