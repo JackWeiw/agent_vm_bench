@@ -1,6 +1,8 @@
 """Tests for the host-agnostic percentile / formatting helpers."""
 from __future__ import annotations
 
+import logging
+
 from bench_core.utils import (
     calc_p99,
     calc_percentiles,
@@ -8,6 +10,7 @@ from bench_core.utils import (
     classify_tail_latency,
     format_duration,
     format_latency_distribution,
+    setup_logging,
 )
 
 
@@ -68,3 +71,20 @@ class TestFormatLatencyDistribution:
         assert "P50=" in out
         assert "tail=" in out
         assert "ms" in out
+
+
+class TestSetupLogging:
+    def test_httpx_loggers_capped_to_warning(self):
+        # The E2B SDK's httpx transport logs every 2xx request at INFO, which
+        # floods replay lifecycle runs (3+ lines/step/sandbox). setup_logging
+        # must cap httpx/httpcore at WARNING so retries/failures still surface
+        # but the steady 2xx stream does not.
+        import httpx  # noqa: F401  -- ensure the loggers exist
+
+        for name in ("httpx", "httpcore"):
+            logging.getLogger(name).setLevel(logging.INFO)
+
+        setup_logging()
+
+        for name in ("httpx", "httpcore"):
+            assert logging.getLogger(name).getEffectiveLevel() == logging.WARNING

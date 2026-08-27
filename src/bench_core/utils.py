@@ -31,6 +31,15 @@ def setup_logging(level: int = logging.INFO) -> None:
     )
     logging.getLogger().setLevel(level)
 
+    # Silence the SDK HTTP transport (httpx/httpcore), which logs every
+    # request at INFO ("HTTP Request: POST <url> \"<status>\""). In replay
+    # lifecycle mode that is 3+ lines per sandbox per step (pause/connect/
+    # exec), drowning the kernel's own progress lines. Cap at WARNING so
+    # retries and connection failures still surface but the steady stream of
+    # 2xx lines does not. The E2B SDK uses httpx under the hood.
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
 
 def format_timestamp(ts: float) -> str:
     """Format a timestamp to HH:MM:SS."""
