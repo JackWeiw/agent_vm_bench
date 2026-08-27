@@ -275,3 +275,13 @@ def test_build_arg_parser_includes_aenv_provider():
 
     args = build_arg_parser().parse_args(["--provider", "aenv"])
     assert args.provider == "aenv"
+
+
+def test_load_config_replay_yaml_has_aenv_block():
+    from bench_core.bench import load_config
+
+    config, raw = load_config("config/common/replay.yaml")
+    assert "aenv" in raw
+    assert raw["aenv"]["env"]["E2B_API_URL"] == "http://127.0.0.1:8000"
+    # replay.mode stays exec_only in the shared YAML (aenv overrides at runtime).
+    assert raw["replay"]["mode"] == "exec_only"
