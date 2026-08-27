@@ -150,7 +150,12 @@ class Config:
     e2b_api_key: str = ""
     e2b_domain: str = "e2b.app"
     e2b_api_url: str = "http://localhost:3000"
-    e2b_http_ssl: str = "false"
+    e2b_http_ssl: str = "false"  # exported as E2B_HTTP_SSL (legacy; the SDK ignores it)
+    # Sandbox data-plane URL. When set, the SDK routes sandbox exec (envd) here
+    # verbatim instead of building ``https://49983-{id}.{domain}`` -- the knob a
+    # local AENV server needs (it proxies envd on a single host:port, no
+    # per-sandbox subdomain). Empty -> SDK uses its subdomain build (cloud e2b).
+    e2b_sandbox_url: str = ""
 
     # Sandbox creation knobs
     template: str = "openclaw-browser-v1"
@@ -183,6 +188,7 @@ class Config:
             e2b_domain=env.get("E2B_DOMAIN", "e2b.app"),
             e2b_api_url=env.get("E2B_API_URL", "http://localhost:3000"),
             e2b_http_ssl=env.get("E2B_HTTP_SSL", "false"),
+            e2b_sandbox_url=env.get("E2B_SANDBOX_URL", ""),
             template=backend.get("template", "openclaw-browser-v1"),
             create_timeout=backend.get("create_timeout", 86400),
             numa_bind=_normalize_numa_bind(backend.get("numa_bind", 2)),
@@ -213,3 +219,5 @@ class Config:
             os.environ["E2B_API_URL"] = self.e2b_api_url
         if self.e2b_http_ssl:
             os.environ["E2B_HTTP_SSL"] = self.e2b_http_ssl
+        if self.e2b_sandbox_url:
+            os.environ["E2B_SANDBOX_URL"] = self.e2b_sandbox_url

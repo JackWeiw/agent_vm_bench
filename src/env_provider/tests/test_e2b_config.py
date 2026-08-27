@@ -77,7 +77,14 @@ class TestSetupE2BEnvFallback:
     def _isolate(self, monkeypatch, tmp_path):
         """Pin E2B_CONFIG to a nonexistent path so no real ~/.e2b leaks in."""
         monkeypatch.setenv("E2B_CONFIG", str(tmp_path / "no_such_config.json"))
-        for var in ("E2B_ACCESS_TOKEN", "E2B_API_KEY", "E2B_DOMAIN", "E2B_API_URL", "E2B_HTTP_SSL"):
+        for var in (
+            "E2B_ACCESS_TOKEN",
+            "E2B_API_KEY",
+            "E2B_DOMAIN",
+            "E2B_API_URL",
+            "E2B_HTTP_SSL",
+            "E2B_SANDBOX_URL",
+        ):
             monkeypatch.delenv(var, raising=False)
 
     def test_falls_back_to_config_file_when_yaml_empty(self, tmp_path, monkeypatch):
@@ -175,6 +182,28 @@ class TestSetupE2BEnvFallback:
 
         assert os.environ.get("E2B_ACCESS_TOKEN") == "real-yaml-tok"
 
+    def test_sandbox_url_exported_when_set(self, tmp_path, monkeypatch):
+        # E2B_SANDBOX_URL (the AENV sandbox data-plane URL) is exported when the
+        # Config carries it, so the SDK routes sandbox exec at the AENV server
+        # instead of the {49983-id}.{domain} subdomain build.
+        self._isolate(monkeypatch, tmp_path)
+        config = Config()
+        config.e2b_sandbox_url = "http://127.0.0.1:8000"
+        config.setup_e2b_env()
+
+        assert os.environ.get("E2B_SANDBOX_URL") == "http://127.0.0.1:8000"
+
+    def test_sandbox_url_unset_keeps_existing_env(self, tmp_path, monkeypatch):
+        # When the Config has no sandbox_url (cloud e2b / absent key), a
+        # pre-existing E2B_SANDBOX_URL env var survives -- mirrors api_url/domain
+        # (only exported when truthy, never clobbered to empty). This preserves
+        # the shell-env override path for ad-hoc runs.
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setenv("E2B_SANDBOX_URL", "http://pre-existing:9000")
+        Config().setup_e2b_env()
+
+        assert os.environ.get("E2B_SANDBOX_URL") == "http://pre-existing:9000"
+
 
 def test_from_raw_block_selects_yaml_block():
     """from_raw reads the block named by `block` (aenv, not e2b, when block='aenv')."""
@@ -201,3 +230,15 @@ def test_from_raw_block_selects_yaml_block():
     assert aenv_cfg.e2b_api_url == "http://127.0.0.1:8000"
     assert aenv_cfg.e2b_domain == "aenv.local"
     assert aenv_cfg.sandbox_ids_file == "aenv-ids.txt"
+
+
+def test_from_raw_reads_sandbox_url():
+    """from_raw reads E2B_SANDBOX_URL from the block's env (AENV data-plane URL)."""
+    raw = {"aenv": {"env": {"E2B_SANDBOX_URL": "http://127.0.0.1:8000"}}}
+    cfg = Config.from_raw(raw, block="aenv")
+    assert cfg.e2b_sandbox_url == "http://127.0.0.1:8000"
+
+    # Absent key -> empty default (not exported by setup_e2b_env; SDK uses its
+    # subdomain build, which is what cloud e2b wants).
+    cfg2 = Config.from_raw({"aenv": {"env": {}}}, block="aenv")
+    assert cfg2.e2b_sandbox_url == ""
