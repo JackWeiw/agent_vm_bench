@@ -118,10 +118,41 @@ class ReplayBaseRunner(threading.Thread):
 
     # --- overridable no-op hooks (P2 replaces with real lifecycle calls) ---
     def _resume(self) -> None:
-        """No-op in P1. P2: ``provider.resume(self.state)``."""
+        """Resume the sandbox (restore from snapshot) before exec.
+
+        P2: real call only in lifecycle mode; exec_only is a no-op so the
+        P1 baseline (resume ~= 0) stays comparable.
+        """
+        if self.config.replay_mode == "lifecycle":
+            self.provider.resume(self.state)
 
     def _pause(self) -> None:
-        """No-op in P1. P2: ``provider.pause(self.state)``."""
+        """Pause the sandbox (memory-snapshot) after exec.
+
+        P2: real call only in lifecycle mode; exec_only is a no-op.
+        """
+        if self.config.replay_mode == "lifecycle":
+            self.provider.pause(self.state)
+
+    def _init_lifecycle(self) -> None:
+        """One-time transition into the paused state before the first slice.
+
+        Pre-pauses a running sandbox so step 1's resume is a true snapshot
+        restore (not a reattach). Idempotent via ``state.lifecycle_paused`` so
+        a fresh ReplayRoundRunner per round / multiple trajectories don't
+        double-pause. exec_only: no-op. The initial-pause cost is recorded
+        separately (``initial_pause_sec``), never folded into a per-step
+        ``resume_sec``.
+        """
+        if self.config.replay_mode == "lifecycle" and not self.state.lifecycle_paused:
+            t0 = time.perf_counter()
+            self.provider.pause(self.state)
+            self.state.replay_metrics.initial_pause_sec = time.perf_counter() - t0
+            self.state.lifecycle_paused = True
+            logger.info(
+                f"[Sandbox{self.state.index}] lifecycle initial pause "
+                f"{self.state.replay_metrics.initial_pause_sec:.3f}s"
+            )
 
     def _execute(self, step: ReplayStep) -> CommandResult:
         """Exec the recorded action verbatim -- cwd/env via the exec contract."""
@@ -235,6 +266,7 @@ class ReplayTaskRunner(ReplayBaseRunner):
         cursor = self.state.index % len(pool)
         logger.info(f"[Sandbox{self.state.index}] Replay task runner started ({len(pool)} trajectories)")
 
+        self._init_lifecycle()
         while not self.stop_event.is_set() and self.state.is_alive:
             traj = pool[cursor]
             self._replay_trajectory(traj)
@@ -326,6 +358,8 @@ class ReplayRoundRunner(ReplayBaseRunner):
         idx = (self.state.index + self.round_id) % len(pool)
         traj = pool[idx]
         logger.info(f"[Sandbox{self.state.index}] Replay round {self.round_id}: trajectory {traj.instance_id}")
+
+        self._init_lifecycle()
 
         prev_slice_end = time.perf_counter()
         aborted = False
