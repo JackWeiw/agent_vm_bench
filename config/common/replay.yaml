@@ -66,10 +66,10 @@ replay:
   action_timeout: 300                       # per-action exec timeout (lifecycle timeouts are P2)
   delay_scale: 1.0                          # 1.0=realtime; 0=no delay; 0.1=10x compressed
   stop_on_error: false                      # abort current trajectory, advance to next (not the sandbox)
-  # mode: exec_only (default for e2b/docker/fake) | lifecycle (default for aenv;
-  # requires a LifecycleCapable provider). lifecycle pauses the sandbox between
-  # steps and resumes per step to measure snapshot-restore overhead.
-  mode: exec_only
+  # mode: omit -> provider default (exec_only for e2b/docker/fake; lifecycle for
+  # aenv, which requires a LifecycleCapable provider). Set explicitly to
+  # override. lifecycle pauses the sandbox between steps and resumes per step
+  # to measure snapshot-restore overhead.
 
 test:
   duration: 300

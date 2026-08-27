@@ -45,7 +45,7 @@ def build_provider(config: KernelConfig, raw_config: dict) -> AenvProvider:
     server).
     """
     stop_event = threading.Event()
-    aenv_config = Config.from_raw(raw_config) if raw_config else Config()
+    aenv_config = Config.from_raw(raw_config, block="aenv") if raw_config else Config()
     return AenvProvider(config, aenv_config, stop_event)
 
 

@@ -119,3 +119,27 @@ def test_e2b_is_not_lifecycle_capable():
 
 def test_e2b_default_replay_mode_is_exec_only():
     assert E2BProvider.default_replay_mode == "exec_only"
+
+
+def test_build_provider_reads_aenv_block_not_e2b():
+    """build_provider must read the `aenv:` block, not `e2b:` (BLOCKER regression)."""
+    from env_provider.aenv import build_provider
+
+    kernel_cfg = KernelConfig(workflow_type="replay", total_count=1)
+    raw = {
+        "e2b": {
+            "template": "e2b-tpl",
+            "env": {"E2B_API_URL": "http://e2b-host:3000"},
+        },
+        "aenv": {
+            "template": "aenv-tpl",
+            "sandbox_ids_file": "aenv-ids.txt",
+            "env": {"E2B_API_URL": "http://127.0.0.1:8000"},
+        },
+    }
+    provider = build_provider(kernel_cfg, raw)
+
+    # The AenvProvider must have consumed the aenv block, not e2b.
+    assert provider._config.template == "aenv-tpl"
+    assert provider._config.e2b_api_url == "http://127.0.0.1:8000"
+    assert provider._config.sandbox_ids_file == "aenv-ids.txt"
