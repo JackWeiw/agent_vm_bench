@@ -40,8 +40,8 @@ aenv:
     E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
     E2B_API_KEY: "your_e2b_api_key_here"
     E2B_DOMAIN: "your_aenv_domain_here"
-    E2B_API_URL: "http://127.0.0.1:8000"   # AENV server (loopback; scrub if public)
-    E2B_HTTP_SSL: "false"
+    E2B_API_URL: "http://127.0.0.1:8000"      # AENV control plane (POST /sandboxes)
+    E2B_SANDBOX_URL: "http://127.0.0.1:8000"  # AENV data plane (envd proxy; overrides subdomain build, forces http)
 
 # === shared stress sections (all -> KernelConfig) ===
 sandbox:
