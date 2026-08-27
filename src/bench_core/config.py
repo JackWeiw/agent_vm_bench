@@ -116,7 +116,7 @@ class KernelConfig:
     replay_action_timeout: int = 300
     replay_delay_scale: float = 1.0  # 1.0=realtime think gaps; 0=no delay; 0.1=10x compressed
     replay_stop_on_error: bool = False
-    replay_mode: str = "exec_only"  # P1 implements exec_only only; lifecycle reserved for P2 (e2b)
+    replay_mode: str | None = None  # None = unset; resolved to provider default before validate. exec_only | lifecycle
 
     # --- test run ---
     test_duration: int = 600
@@ -171,6 +171,8 @@ class KernelConfig:
             raise ValueError(f"round_size must be > 0, got {self.round_size}")
         if self.benchmark_mode not in {"fixed", "round_robin"}:
             raise ValueError(f"benchmark_mode must be fixed or round_robin, got {self.benchmark_mode}")
+        if self.workflow_type == "replay" and self.replay_mode not in (None, "exec_only", "lifecycle"):
+            raise ValueError(f"replay_mode must be None, 'exec_only', or 'lifecycle', got {self.replay_mode!r}")
 
     @classmethod
     def from_raw(cls, raw: dict) -> KernelConfig:
@@ -255,7 +257,7 @@ class KernelConfig:
             replay_action_timeout=replay.get("action_timeout", 300),
             replay_delay_scale=replay.get("delay_scale", 1.0),
             replay_stop_on_error=replay.get("stop_on_error", False),
-            replay_mode=replay.get("mode", "exec_only"),
+            replay_mode=replay.get("mode"),
             # --- test run ---
             test_duration=test.get("duration", 600),
             stats_interval=test.get("stats_interval", 10),
