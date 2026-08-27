@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from bench_core.bench import run_benchmark
 from bench_core.config import KernelConfig
 from env_provider import CreationMetrics, SandboxStatus
@@ -219,3 +221,57 @@ class TestRunBenchmarkReplayFixed:
         assert "Performance Report" in result["report"]
         assert "Replay Task Statistics" in result["report"]
         assert provider.cleanup_called is True
+
+
+class _LifecycleCapableFake(FakeProvider):
+    """FakeProvider that satisfies LifecycleCapable (pause/resume no-ops)."""
+
+    def pause(self, inst):
+        return None
+
+    def resume(self, inst):
+        return None
+
+
+class TestRunBenchmarkReplayLifecycleStartup:
+    def test_lifecycle_on_non_capable_provider_raises(self, tmp_path):
+        config = KernelConfig(
+            workflow_type="replay",
+            total_count=1,
+            benchmark_mode="fixed",
+            test_duration=1,
+            replay_trajectory_dir=str(REPLAY_FIXTURES),
+            replay_mode="lifecycle",
+            replay_delay_scale=0.0,
+            output_dir=str(tmp_path),
+            filename_prefix="lc_fail",
+        )
+        provider = FakeProvider(count=1)  # NOT LifecycleCapable
+        with pytest.raises(ValueError, match="LifecycleCapable"):
+            run_benchmark(config, provider)
+
+    def test_lifecycle_on_capable_fake_resolves_and_runs(self, tmp_path):
+        config = KernelConfig(
+            workflow_type="replay",
+            total_count=1,
+            benchmark_mode="fixed",
+            test_duration=1,
+            replay_trajectory_dir=str(REPLAY_FIXTURES),
+            replay_mode=None,  # sentinel -> resolve to provider default
+            replay_delay_scale=0.0,
+            output_dir=str(tmp_path),
+            filename_prefix="lc_resolve",
+        )
+        provider = _LifecycleCapableFake(count=1)
+        # default_replay_mode is exec_only (inherited) -> resolves to exec_only,
+        # so lifecycle validation passes and the run completes.
+        result = run_benchmark(config, provider)
+        assert "Replay Task Statistics" in result["report"]
+        assert config.replay_mode == "exec_only"  # resolved from provider default
+
+
+def test_build_arg_parser_includes_aenv_provider():
+    from bench_core.bench import build_arg_parser
+
+    args = build_arg_parser().parse_args(["--provider", "aenv"])
+    assert args.provider == "aenv"

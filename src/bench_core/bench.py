@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from bench_core.config import KernelConfig
-from env_provider import EnvironmentProvider, SandboxInstance, SandboxStatus
+from env_provider import EnvironmentProvider, LifecycleCapable, SandboxInstance, SandboxStatus
 from bench_core.schemas import BenchSandbox
 from bench_core.stats_collector import StatsCollector
 from bench_core.task_manager import TaskManager
@@ -183,7 +183,17 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         ``{"report": str, "filepath": str | None}``, or ``{}`` when no sandboxes
         reached ready state.
     """
+    # Resolve replay_mode sentinel -> provider default before validation.
+    if config.workflow_type == "replay" and config.replay_mode is None:
+        config.replay_mode = getattr(provider, "default_replay_mode", "exec_only")
     config.validate()
+    if config.workflow_type == "replay" and config.replay_mode == "lifecycle":
+        if not isinstance(provider, LifecycleCapable):
+            raise ValueError(
+                f"replay.mode=lifecycle requires a LifecycleCapable provider "
+                f"(pause/resume); provider '{provider.name}' does not support it. "
+                f"Use --provider aenv."
+            )
     if config.workflow_type == "document":
         from bench_core.task_runner.document import preflight_document
 
@@ -332,7 +342,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     """Host-agnostic CLI. Provider packages add their own flags on top."""
     parser = argparse.ArgumentParser(description="Host-agnostic benchmark kernel")
     parser.add_argument("--config", help="YAML config path")
-    parser.add_argument("--provider", default="fake", choices=["fake", "e2b", "docker"])
+    parser.add_argument("--provider", default="fake", choices=["fake", "e2b", "docker", "aenv"])
     parser.add_argument("-n", "--total-count", type=int)
     parser.add_argument("--workflow-type", choices=["browser", "coding", "document", "replay"])
     parser.add_argument("-bm", "--benchmark-mode", choices=["fixed", "round_robin"])
@@ -370,6 +380,8 @@ def _build_provider(name: str, config: KernelConfig, raw_config: dict[str, Any])
         from env_provider.e2b import build_provider
     elif name == "docker":
         from env_provider.docker import build_provider
+    elif name == "aenv":
+        from env_provider.aenv import build_provider
     else:
         raise ValueError(f"Unknown provider: {name}")
     return build_provider(config, raw_config)
