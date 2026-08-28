@@ -873,3 +873,35 @@ class TestRunBenchmarkP26Wiring:
         provider = FakeLifecycleProvider(count=3)
         result = run_benchmark(config, provider)
         assert "running=1/3" in result["report"]
+
+
+def test_exec_is_qps_gated_in_lifecycle_mode():
+    """G1: provider.exec is wrapped in qps.slot('command') in lifecycle mode."""
+    from bench_core.admission import Admission, QpsRateLimiter, RunningSlotScheduler
+    from bench_core.config import KernelConfig
+    from bench_core.replay_payload import ReplayStep
+    from bench_core.schemas import BenchSandbox
+    from bench_core.task_runner.replay import ReplayBaseRunner
+    from env_provider import CommandResult
+
+    calls = []
+
+    class _RecordingProvider(FakeLifecycleProvider):
+        def exec(self, inst, command, *, timeout=None, cwd=None, env=None):
+            calls.append(command)
+            return CommandResult(exit_code=0, stdout="ok", stderr="")
+
+    cfg = KernelConfig(workflow_type="replay", replay_mode="lifecycle", replay_ready_probe=False)
+    provider = _RecordingProvider(count=1)
+    provider.create_all()
+    state = BenchSandbox.from_instance(provider._instances[0], "replay")
+    stop = threading.Event()
+    qps = QpsRateLimiter(qps=100.0, inflight_cap=4)
+    adm = Admission(slots=RunningSlotScheduler(maximum=1), qps=qps)
+    runner = ReplayBaseRunner(state, cfg, stop, provider, admission=adm)
+    step = ReplayStep(index=0, action_type="shell", action="true", delay_time_sec=0.0)
+    runner._run_slice(step, trajectory_id="t1")
+    snap = qps.snapshot()
+    # command bucket must have dispatched at least once (the exec was gated).
+    assert snap["dispatched_by_operation"].get("command", 0) >= 1
+    assert calls  # exec actually ran
