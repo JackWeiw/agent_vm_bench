@@ -47,6 +47,7 @@ class RoundRobinTaskManager:
         *,
         series: LifecycleSeriesWriter | None = None,
         admission: Admission | None = None,
+        launch_pacer=None,
     ):
         self.config = config
         self.sandbox_states = sandbox_states
@@ -55,6 +56,7 @@ class RoundRobinTaskManager:
         self.provider = provider
         self.series = series
         self.admission = admission
+        self.launch_pacer = launch_pacer
 
         # Sandbox groups for each round
         self.all_ready_states: list[BenchSandbox] = []
@@ -226,6 +228,7 @@ class RoundRobinTaskManager:
                     self.provider,
                     series=self.series,
                     admission=self.admission,
+                    launch_pacer=self.launch_pacer,
                 )
                 self.active_runners.append(runner)
                 runner.start()

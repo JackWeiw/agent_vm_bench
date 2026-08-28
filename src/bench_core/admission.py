@@ -318,3 +318,38 @@ class Admission:
 
     slots: RunningSlotScheduler
     qps: QpsRateLimiter | None = None
+
+
+class LaunchPacer:
+    """G5: shared no-catch-up launch pacing for a trajectory runner fleet.
+
+    One instance is shared across all worker threads in trajectory mode so the
+    ``next_launch_at`` deadline is visible to every worker. A per-runner field
+    would let each worker read its own ``0.0`` and burst-create in the same
+    instant -- the shared lock alone serializes nothing cross-runner because it
+    guards state only one worker can see.
+
+    The launch interval comes from the runner's config
+    (``replay_launch_interval_sec``); the pacer only owns the shared
+    lock + deadline cell. ``claim_turn`` is the sole mutation: under the lock it
+    computes ``wait_until = max(now, next_at)`` and advances
+    ``next_at = wait_until + interval`` (no catch-up burst), then returns the
+    deadline. The caller sleeps *outside* the lock so parked workers don't
+    block the queue.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._next_at = 0.0
+
+    def claim_turn(self, interval: float) -> float:
+        """Claim a launch turn; return the monotonic deadline to wait until.
+
+        No-op-equivalent when ``interval <= 0`` (returns ``time.monotonic()``,
+        i.e. no wait); callers gate on the interval before calling.
+        """
+        with self._lock:
+            now = time.monotonic()
+            wait_until = max(now, self._next_at)
+            self._next_at = wait_until + interval
+        return wait_until
