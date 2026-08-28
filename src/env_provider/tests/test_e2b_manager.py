@@ -89,7 +89,7 @@ class _FakeSandboxCls:
         self.list_items: list[_FakeListed] = []
         self.connected: list[str] = []
 
-    def create(self, template, timeout=86400, envs=None):
+    def create(self, template, timeout=86400, envs=None, metadata=None):
         sbx = _FakeSandbox(f"sbx-{len(self.created) + 1}")
         self.created.append((template, timeout, envs, sbx))
         return sbx
