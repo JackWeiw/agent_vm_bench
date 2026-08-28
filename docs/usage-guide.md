@@ -217,10 +217,10 @@ Core frequency monitoring:
 ```yaml
 # getfre_config.yaml
 getfre_path: /path/to/getfre    # executable path
-total_cores: 192                # 192-core system
+total_cores: 192                # total physical cores (omit to auto-detect from host topology)
 interval: 2                     # sampling interval (seconds)
 core_interval: 1                # core sampling interval (1=all, 2=every other)
-numa_nodes:                     # NUMA nodes to monitor
+numa_nodes:                     # NUMA nodes to monitor (omit to auto-discover)
   - 0
   - 1
 ```

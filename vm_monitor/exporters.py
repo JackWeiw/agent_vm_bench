@@ -45,9 +45,6 @@ from .parsers import parse_all_logs
 if TYPE_CHECKING:
     from .base import VMMonitorBase
 
-# Remote borrowing NUMA node — hardcoded as NUMA5; may not exist on all systems.
-_REMOTE_NUMA_ID = 5
-
 
 def _build_summary_sheet(writer, monitor, numa_nodes, overall_stats):
     """Sheet 1: Summary overview (test metadata + host/swap/hugepage/VM aggregates)."""
@@ -653,15 +650,20 @@ def _build_swap_timeline_sheet(writer, monitor):
 
 
 def _build_numa_memory_timeline_sheet(writer, monitor, numa_nodes):
-    """Sheet: NUMA_Memory_Timeline (focus NUMA nodes: CLI-specified + NUMA5).
+    """Sheet: NUMA_Memory_Timeline (focus NUMA nodes: CLI-specified + remote).
 
-    NUMA5 is the default remote borrowing node; if not present on this
-    system, it is skipped.
+    The remote borrowing node (NUMA5 by default — the platform's designated
+    cross-socket borrowing node) is added for free-memory monitoring; if it is
+    not present on this system it is skipped.
     """
     if not monitor.numa_memory_history:
         return
     all_numa_ids = sorted(set(n["node"] for entry in monitor.numa_memory_history for n in entry["nodes"]))
-    focus_numa_ids = sorted(set(list(numa_nodes or []) + [_REMOTE_NUMA_ID]))
+    remote = getattr(monitor, "remote_numa_id", None)
+    candidates = list(numa_nodes or [])
+    if remote is not None:
+        candidates.append(remote)
+    focus_numa_ids = sorted(set(candidates))
     focus_numa_ids = [nid for nid in focus_numa_ids if nid in all_numa_ids]
 
     mem_timeline_data = {"Timestamp": []}

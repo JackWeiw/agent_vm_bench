@@ -223,7 +223,8 @@ sudo "$(which vm-monitor)" --vmm firecracker -t 60 -i 2
 | `-t, --time` | 持续秒数（默认 60） |
 | `-i, --interval` | 采样间隔秒（默认 3） |
 | `--numa 0,1` | 报告的 NUMA 节点（默认 `1`） |
-| `--disks sda,sdb,sdc` | 采集 I/O 增量的块设备（默认 `sda,sdb,sdc`） |
+| `--remote-numa` | 指定的"远端借内存" NUMA 节点，加入 focus 集（默认 `5`，即本平台的跨 socket 借内存节点；传负值禁用） |
+| `--disks` | 采集 I/O 增量的块设备，逗号分隔（如 `sda,nvme0n1`）。`--disks all`（默认）自动发现本机所有物理块设备；虚拟/软件层（loop、ram、sr、zram、md、dm）自动排除 |
 | `--stress-file` / `--stress-process` | 等待压力标记后再监控 |
 | `--enable-capture` | 并行运行 devkit/ksys/ub_watch/smap_bw |
 | `--no-svg` | 跳过深色主题 SVG 时间曲线报告 |

@@ -14,7 +14,7 @@ import time
 from datetime import datetime
 
 # Internal dependencies
-from .config import calculate_cpu_range_from_numa, load_getfre_config, numa_to_physical_cores
+from .config import _count_physical_cores, calculate_cpu_range_from_numa, load_getfre_config, numa_to_physical_cores
 
 
 class LogCapture:
@@ -115,6 +115,11 @@ class LogCapture:
             return (False, "devkit_path not configured")
 
         cpu_range = self._get_cpu_range()
+        if not cpu_range:
+            # No CPU range could be determined (sysfs cpulist unreadable and no
+            # DEVKIT_CPU_RANGE configured). Don't launch devkit with a wrong/empty
+            # range — let the caller skip it rather than collect garbage.
+            return (False, "could not determine CPU range (set DEVKIT_CPU_RANGE in .env)")
         cmd = [self.config["devkit_path"], "tuner", "top-down", "-d", str(self.duration), "-i", "3", "-c", cpu_range]
         return self._start_tool(
             "devkit_top_down", cmd, "devkit_top_down.log", f"Started devkit tuner top-down (cpu_range={cpu_range})"
@@ -203,7 +208,7 @@ class LogCapture:
         if not getfre_path or not os.path.exists(getfre_path):
             return (False, f"getfre_path not found: {getfre_path}")
 
-        total_cores = getfre_config.get("total_cores", 192)
+        total_cores = getfre_config.get("total_cores") or _count_physical_cores()
         interval = getfre_config.get("interval", 2)
         core_interval = getfre_config.get("core_interval", 1)
         numa_nodes = getfre_config.get("numa_nodes", self.numa_nodes)
@@ -268,7 +273,7 @@ class LogCapture:
             numa_id: NUMA node ID
             cores: list of physical core IDs to collect
             getfre_path: path to getfre executable
-            total_cores: total physical cores (192)
+            total_cores: total physical cores
             interval: sampling interval in seconds
             log_file: file handle to write data
             stop_flag: threading.Event to signal stop

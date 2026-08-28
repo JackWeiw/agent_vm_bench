@@ -38,6 +38,41 @@ try:
 except (ValueError, OSError, AttributeError):
     _PAGE_SIZE = 4096
 
+# Block-layer stat sector size. The kernel documents /sys/block/<dev>/stat
+# sector counters as always 512 bytes regardless of the physical sector size.
+_SECTOR_SIZE_BYTES = 512
+# Conversion factor for byte -> MiB used throughout the monitor.
+_BYTES_PER_MIB = 2**20
+
+
+# Virtual / software block-device prefixes excluded from auto-discovery. These
+# either carry no real I/O (loop, ram, sr, zram) or are software layers stacked
+# on physical disks (md, dm) that would double-count throughput. Override with
+# an explicit --disks list when you want to monitor one of these.
+_VIRTUAL_DISK_PREFIXES = ("loop", "ram", "sr", "zram", "md", "dm")
+
+
+def _discover_block_devices() -> List[str]:
+    """Auto-discover physical block devices present on this host.
+
+    Enumerates /sys/block and returns the sorted list of devices whose names do
+    not start with a known virtual/software prefix and that expose a readable
+    ``stat`` file. Returns ``[]`` on non-Linux hosts or if /sys/block is
+    unreadable, so the monitor degrades gracefully (callers may still set
+    ``target_disks`` explicitly).
+    """
+    devices: List[str] = []
+    try:
+        entries = os.listdir("/sys/block")
+    except (OSError, FileNotFoundError):
+        return devices
+    for name in entries:
+        if name.startswith(_VIRTUAL_DISK_PREFIXES):
+            continue
+        if os.path.exists(f"/sys/block/{name}/stat"):
+            devices.append(name)
+    return sorted(devices)
+
 
 def _compute_disk_io_rates(cur: dict, prev: dict, interval: float) -> dict:
     """Compute per-device disk I/O rates from two /sys/block/<dev>/stat snapshots.
@@ -78,8 +113,8 @@ def _compute_disk_io_rates(cur: dict, prev: dict, interval: float) -> dict:
         d_read = c.get("sectors_read", 0) - p.get("sectors_read", 0)
         d_write = c.get("sectors_written", 0) - p.get("sectors_written", 0)
         d_ms = c.get("ms_io", 0) - p.get("ms_io", 0)
-        r_mb = d_read * 512 / 2**20
-        w_mb = d_write * 512 / 2**20
+        r_mb = d_read * _SECTOR_SIZE_BYTES / _BYTES_PER_MIB
+        w_mb = d_write * _SECTOR_SIZE_BYTES / _BYTES_PER_MIB
         util = min(100.0, (d_ms / 10.0) / interval * 100)
         d_reads = c.get("reads_completed", 0) - p.get("reads_completed", 0)
         d_writes = c.get("writes_completed", 0) - p.get("writes_completed", 0)
@@ -114,7 +149,7 @@ def _compute_pressure_rates(cur: dict, prev: dict, interval: float, page_size: i
     rates = {"page_scan_mib_s": 0.0, "page_reclaim_mib_s": 0.0, "file_refault_mib_s": 0.0}
     if not cur or not prev or not interval or interval <= 0:
         return rates
-    mib_per_page = page_size / 2**20
+    mib_per_page = page_size / _BYTES_PER_MIB
 
     def _delta(key):
         return max(0, cur.get(key, 0) - prev.get(key, 0))
@@ -145,8 +180,11 @@ class VMMonitorBase(ABC):
         vm_total_memory_history: VM total memory aggregation timeline
     """
 
-    # Remote borrowing NUMA node — hardcoded as NUMA5, may not exist on all systems
-    _REMOTE_NUMA_ID = 5
+    # Designated "remote borrowing" NUMA node — the node this platform uses to
+    # borrow memory from a remote socket (NUMA5 on the reference 4-socket box).
+    # Overridable from the CLI via --remote-numa. The instance attribute
+    # (self.remote_numa_id) holds the effective value; set in __init__.
+    DEFAULT_REMOTE_NUMA_ID = 5
 
     # Fields to extract from per-NUMA meminfo (sysfs name -> dict key)
     _NUMA_MEMINFO_FIELDS = {
@@ -200,8 +238,10 @@ class VMMonitorBase(ABC):
         # initialized defensively so delta-based collectors are safe before a loop runs)
         self.interval = 0
 
-        # Disk I/O Statistics (per-device /sys/block/<dev>/stat deltas)
-        self.target_disks = ["sda", "sdb", "sdc"]
+        # Disk I/O Statistics (per-device /sys/block/<dev>/stat deltas).
+        # Defaults to every physical block device on the host; override from the
+        # CLI via --disks (or set target_disks directly) to restrict to a subset.
+        self.target_disks = _discover_block_devices()
         self.disk_history = []
         self._last_diskstats = None  # {dev: {sectors_read, sectors_written, ms_io, inflight}}
         self.peak_disk_write_mb_s = 0.0
@@ -235,6 +275,8 @@ class VMMonitorBase(ABC):
         self.numa_cpu_history = defaultdict(list)
         self.numa_cpu_peak = defaultdict(float)
         self.available_numa_nodes = self.get_available_numa_nodes()
+        # Effective remote-borrowing node; override from CLI --remote-numa.
+        self.remote_numa_id = self.DEFAULT_REMOTE_NUMA_ID
 
     # ==================== Abstract Methods ====================
     @abstractmethod
@@ -520,11 +562,12 @@ class VMMonitorBase(ABC):
     def get_focus_numa_nodes(self) -> list:
         """Get focus NUMA nodes: CLI-specified target nodes + remote borrowing node.
 
-        The remote borrowing node (NUMA5) is added for free memory monitoring.
-        If NUMA5 does not exist on this system, it is silently excluded.
-        Returns only nodes that actually exist on the system.
+        The remote borrowing node (NUMA5 by default — the platform's designated
+        cross-socket borrowing node) is added for free-memory monitoring. If the
+        configured remote node does not exist on this system, it is silently
+        excluded. Returns only nodes that actually exist on the system.
         """
-        focus = sorted(set(self.target_numa_nodes + [self._REMOTE_NUMA_ID]))
+        focus = sorted(set(self.target_numa_nodes + ([self.remote_numa_id] if self.remote_numa_id is not None else [])))
         return [n for n in focus if n in self.available_numa_nodes]
 
     # ===================== Collect Specified NUMA Node CPU Usage =====================
@@ -1027,7 +1070,7 @@ class VMMonitorBase(ABC):
                     # Parse fields from tokens (skip first token = virtual address)
                     node_pages = {}  # {node_id: page_count}
                     anon_pages = 0
-                    kernelpagesize_kb = 4  # default page size
+                    kernelpagesize_kb = _PAGE_SIZE // 1024  # default page size
                     is_heap = False
                     is_stack = False
                     is_huge = False
@@ -1074,8 +1117,8 @@ class VMMonitorBase(ABC):
                     if not node_pages:
                         continue
 
-                    # Detect hugepages via page size > 4kB
-                    if kernelpagesize_kb > 4:
+                    # Detect hugepages via page size > base page size
+                    if kernelpagesize_kb > _PAGE_SIZE // 1024:
                         is_huge = True
 
                     # Convert pages to MB
@@ -1121,10 +1164,10 @@ class VMMonitorBase(ABC):
                             result["per_node"][node_id]["private_mb"] += anon_total_mb * proportion
 
                     # SwapCache — distribute proportionally across nodes
-                    # NOTE: swapcache in numa_maps always counts 4KB base pages regardless
+                    # NOTE: swapcache in numa_maps always counts base pages regardless
                     # of kernelpagesize_kB, because the kernel swap cache operates at base
-                    # page granularity. Use base_page_size_mb (4KB) for swapcache conversion.
-                    base_page_size_mb = 4 / 1024.0
+                    # page granularity. Use the host base page size for the conversion.
+                    base_page_size_mb = _PAGE_SIZE / _BYTES_PER_MIB
                     if swapcache_pages > 0 and total_line_pages > 0:
                         swapcache_total_mb = swapcache_pages * base_page_size_mb
                         result["swapcache_mb"] += swapcache_total_mb

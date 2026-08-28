@@ -6,6 +6,7 @@ Manages .env file configuration, NUMA node settings, and getfre YAML config.
 All tools' paths are loaded from .env and validated before use.
 """
 
+import glob
 import os
 
 # Try to import python-dotenv for .env support
@@ -36,6 +37,102 @@ ENV_REQUIRED_KEYS = [
     "GETFRE_PATH",
     "GETFRE_CONFIG_PATH",
 ]
+
+
+# ==================== Host topology auto-discovery ====================
+
+
+def _parse_cpulist(text: str) -> list:
+    """Parse a Linux cpulist string (e.g. "0-47,96-127") into a sorted list of ints."""
+    cores = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start, end = part.split("-")
+            cores.extend(range(int(start), int(end) + 1))
+        else:
+            cores.append(int(part))
+    return cores
+
+
+def _read_numa_cpulist(node: int) -> list:
+    """Logical CPU IDs belonging to a NUMA node, read from sysfs cpulist."""
+    try:
+        with open(f"/sys/devices/system/node/node{node}/cpulist") as f:
+            return _parse_cpulist(f.read().strip())
+    except Exception:
+        return []
+
+
+def _physical_cores_for_numa(node: int) -> list:
+    """Physical (non-hyperthread) core IDs for a NUMA node, deduped per socket.
+
+    For each logical CPU on the node, reads its
+    ``cpu{N}/topology/thread_siblings_list`` and keeps the lowest sibling ID as
+    the physical-core representative (so each physical core appears once).
+    Falls back to the full cpulist when topology files are unavailable (e.g.
+    some virtualized setups without HT).
+    """
+    logical = _read_numa_cpulist(node)
+    if not logical:
+        return []
+    physical = set()
+    have_topology = False
+    for cpu in logical:
+        try:
+            with open(f"/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list") as f:
+                siblings = _parse_cpulist(f.read().strip())
+            if siblings:
+                physical.add(min(siblings))
+                have_topology = True
+                continue
+        except Exception:
+            pass
+        physical.add(cpu)
+    if not have_topology:
+        # No topology files -> cannot dedup siblings; treat logical as physical.
+        return sorted(logical)
+    return sorted(physical)
+
+
+def _count_physical_cores() -> int:
+    """Count physical (non-HT) CPU cores on this host from sysfs topology.
+
+    Used as the getfre ``total_cores`` default. Falls back to ``os.cpu_count()``
+    when sysfs topology is unavailable (non-Linux / minimal containers).
+    """
+    physical = set()
+    have_topology = False
+    for cpu_dir in glob.glob("/sys/devices/system/cpu/cpu[0-9]*"):
+        try:
+            with open(f"{cpu_dir}/topology/thread_siblings_list") as f:
+                siblings = _parse_cpulist(f.read().strip())
+            if siblings:
+                physical.add(min(siblings))
+                have_topology = True
+                continue
+        except Exception:
+            pass
+    if have_topology:
+        return len(physical)
+    return os.cpu_count() or 1
+
+
+def _discover_numa_nodes() -> list:
+    """Auto-discover NUMA node IDs present on this host from sysfs.
+
+    Returns ``[0]`` when sysfs is unavailable (non-NUMA / non-Linux hosts).
+    """
+    try:
+        nodes = []
+        for f in os.listdir("/sys/devices/system/node/"):
+            if f.startswith("node") and f[4:].isdigit():
+                nodes.append(int(f[4:]))
+        return sorted(nodes) if nodes else [0]
+    except Exception:
+        return [0]
 
 
 def load_env_config() -> dict:
@@ -188,34 +285,26 @@ def validate_and_prompt_missing(config: dict, non_interactive: bool = False) -> 
 
 
 def calculate_cpu_range_from_numa(numa_nodes: list) -> str:
-    """Calculate CPU core range from NUMA node IDs
+    """Calculate CPU core range from NUMA node IDs.
 
     Args:
         numa_nodes: list of NUMA node IDs (e.g., [0, 1])
 
     Returns:
-        CPU range string like "0-95,192-287"
+        CPU range string like "0-95,192-287", or "" if no cpulist could be read
+        for any of the requested nodes (do not silently fall back to a wrong range).
     """
     all_cores = []
 
     for node in numa_nodes:
-        try:
-            cpulist_path = f"/sys/devices/system/node/node{node}/cpulist"
-            with open(cpulist_path) as f:
-                cpulist = f.read().strip()
-
-            # Parse cpulist (e.g., "0-95" or "0,1,2,3-10")
-            for part in cpulist.split(","):
-                if "-" in part:
-                    start, end = part.split("-")
-                    all_cores.extend(range(int(start), int(end) + 1))
-                else:
-                    all_cores.append(int(part))
-        except Exception as e:
-            print(f"[WARN] Failed to read CPU list for NUMA node {node}: {e}")
+        cores = _read_numa_cpulist(node)
+        if not cores:
+            print(f"[WARN] Failed to read CPU list for NUMA node {node}")
+            continue
+        all_cores.extend(cores)
 
     if not all_cores:
-        return "0-95"  # Fallback default
+        return ""  # No usable cpulist — let the caller decide rather than guess.
 
     # Sort and merge into ranges
     all_cores.sort()
@@ -244,35 +333,28 @@ def calculate_cpu_range_from_numa(numa_nodes: list) -> str:
 
 
 def numa_to_physical_cores(numa_nodes: list, core_interval: int = 1) -> dict:
-    """Convert NUMA node IDs to physical core IDs with sampling interval
+    """Convert NUMA node IDs to physical core IDs with sampling interval.
+
+    Cores per node are auto-discovered from sysfs topology
+    (``/sys/devices/system/node/node{N}/cpulist`` plus per-CPU
+    ``thread_siblings_list`` to drop hyperthread siblings), then sampled every
+    ``core_interval`` cores. Falls back to the full logical cpulist when HT
+    topology is unavailable.
 
     Args:
         numa_nodes: list of NUMA node IDs (e.g., [0, 1])
-        core_interval: sampling interval (1=all cores, 2=every other core)
+        core_interval: sampling interval (1=all physical cores, 2=every other)
 
     Returns:
         dict: {numa_id: [physical_core_ids]}
-        Example: {0: [0, 2, 4, ...46], 1: [48, 50, 52, ...94]}
     """
-    # NUMA to physical core mapping for 192-core system with hyperthreading
-    # Each NUMA has 48 physical cores (96 logical cores with HT)
-    numa_physical_ranges = {
-        0: (0, 47),  # NUMA 0: physical cores 0-47
-        1: (48, 95),  # NUMA 1: physical cores 48-95
-        2: (96, 143),  # NUMA 2: physical cores 96-143
-        3: (144, 191),  # NUMA 3: physical cores 144-191
-    }
-
     result = {}
     for numa in numa_nodes:
-        if numa not in numa_physical_ranges:
-            print(f"[WARN] Invalid NUMA node {numa}, skipping")
+        cores = _physical_cores_for_numa(numa)
+        if not cores:
+            print(f"[WARN] No physical cores discovered for NUMA node {numa}, skipping")
             continue
-        start, end = numa_physical_ranges[numa]
-        # Apply core_interval sampling
-        cores = list(range(start, end + 1, core_interval))
-        result[numa] = cores
-
+        result[numa] = cores[::core_interval]
     return result
 
 
@@ -285,14 +367,15 @@ def load_getfre_config(config_path: str) -> dict:
     Returns:
         dict with keys: getfre_path, total_cores, interval,
         core_interval, numa_nodes
-        Returns default config if file not found or invalid
+        Returns default config (auto-detected from the host) if file not
+        found or invalid
     """
     default_config = {
         "getfre_path": "",
-        "total_cores": 192,
+        "total_cores": _count_physical_cores(),
         "interval": 2,
         "core_interval": 1,
-        "numa_nodes": [0, 1],
+        "numa_nodes": _discover_numa_nodes(),
     }
 
     if not config_path or not os.path.exists(config_path):
