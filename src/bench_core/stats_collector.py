@@ -33,6 +33,12 @@ from bench_core.utils import (
 
 logger = logging.getLogger(__name__)
 
+# P2.5 lifecycle overhead: slices below this are excluded from per-sample
+# overhead (prevents 1.0 / 0.0001-style explosion). The duration percentile
+# lists already exclude == 0 (synthesized failures); this additionally drops
+# pathologically-fast real slices.
+MIN_SLICE_SEC = 0.001
+
 # Error display order, selected by workflow_type. The shared ErrorClassifier
 # may bucket an error into a category this workflow does not display; such
 # categories fold into "Other" so the report schema stays consistent.
@@ -482,6 +488,56 @@ class ReportFormatter:
             p99 = calc_p99(all_latencies)
             lines.append(f"  Avg Latency:   {avg:.3f}s")
             lines.append(f"  P99 Latency:   {p99:.3f}s")
+
+        # P2.5 [Lifecycle Overhead] -- lifecycle mode only. Per-sample
+        # overhead_i = (resume_sec_i + pause_sec_i) / slice_total_sec_i
+        # (mean/P50/P95), plus an aggregate ratio. Near-zero slices
+        # (slice_total_sec < MIN_SLICE_SEC) are excluded from the per-sample
+        # overhead list; the duration percentile lists already exclude == 0.
+        if self.config.replay_mode == "lifecycle":
+            all_resume: list[float] = []
+            all_pause: list[float] = []
+            all_slice: list[float] = []
+            for s in self.sandbox_states.values():
+                all_resume.extend(s.replay_metrics.resume_secs)
+                all_pause.extend(s.replay_metrics.pause_secs)
+                all_slice.extend(s.replay_metrics.slice_total_secs)
+            if all_slice:
+                lines.append("[Lifecycle Overhead]")
+                resume_stats = calc_percentiles(all_resume)
+                pause_stats = calc_percentiles(all_pause)
+                slice_stats = calc_percentiles(all_slice)
+                n = len(all_slice)
+                lines.append(
+                    f"  Resume:   P50={resume_stats['p50']:.3f}s "
+                    f"P95={resume_stats['p95']:.3f}s P99={resume_stats['p99']:.3f}s  (n={n})"
+                )
+                lines.append(
+                    f"  Pause:    P50={pause_stats['p50']:.3f}s "
+                    f"P95={pause_stats['p95']:.3f}s P99={pause_stats['p99']:.3f}s  (n={n})"
+                )
+                lines.append(
+                    f"  Slice:    P50={slice_stats['p50']:.3f}s "
+                    f"P95={slice_stats['p95']:.3f}s P99={slice_stats['p99']:.3f}s  (n={n})"
+                )
+                # per-sample overhead, near-zero guarded
+                overheads = [(r + p) / s for r, p, s in zip(all_resume, all_pause, all_slice) if s >= MIN_SLICE_SEC]
+                if overheads:
+                    oh_stats = calc_percentiles(overheads)
+                    lines.append(
+                        f"  Overhead per-sample: mean={oh_stats['avg'] * 100:.1f}% "
+                        f"P50={oh_stats['p50'] * 100:.1f}% P95={oh_stats['p95'] * 100:.1f}% "
+                        f"(n={len(overheads)})"
+                    )
+                # aggregate ratio (robust to per-sample outliers)
+                agg_slice = [s for s in all_slice if s >= MIN_SLICE_SEC]
+                agg_resume = [r for r, s in zip(all_resume, all_slice) if s >= MIN_SLICE_SEC]
+                agg_pause = [p for p, s in zip(all_pause, all_slice) if s >= MIN_SLICE_SEC]
+                if sum(agg_slice) > 0:
+                    agg = (sum(agg_resume) + sum(agg_pause)) / sum(agg_slice)
+                    lines.append(f"  Overhead aggregate:  {agg * 100:.1f}%")
+                # known caveat footer (resume-readiness, design §E)
+                lines.append("  (resume_sec excludes post-resume ready-wait; see design §E)")
 
         return lines
 
@@ -975,6 +1031,11 @@ class StatsCollector:
         else:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
         logger.info(f"{'─' * 70}")
+
+    def format_replay_stats_section(self) -> list[str]:
+        """Delegate to ReportFormatter.format_replay_stats_section."""
+        formatter = ReportFormatter(self.config, self.sandbox_states, self.provider_label)
+        return formatter.format_replay_stats_section()
 
     def generate_report(self) -> str:
         """Generate final TXT report using ReportFormatter."""
