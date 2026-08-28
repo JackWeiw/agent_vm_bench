@@ -538,8 +538,9 @@ class ReportFormatter:
                 if sum(agg_slice) > 0:
                     agg = (sum(agg_resume) + sum(agg_pause)) / sum(agg_slice)
                     lines.append(f"  Overhead aggregate:  {agg * 100:.1f}%")
-                # known caveat footer (resume-readiness, design §E)
-                lines.append("  (resume_sec excludes post-resume ready-wait; see design §E)")
+                # known caveat footer (resume_sec includes the post-resume ready-wait;
+                # the Resume decomp line below breaks resume_sec into api + ready_wait + qps_wait)
+                lines.append("  (resume_sec includes post-resume ready-wait; see Resume decomp)")
 
                 # P2.6 decomposition sub-block: column-stable breakdown of
                 # resume/pause into their segment components. Columns are NEVER
