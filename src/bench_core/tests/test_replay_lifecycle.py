@@ -372,3 +372,235 @@ class TestSeriesFileE2E:
         assert len(step_records) >= 1
         for r in step_records:
             assert r["round_id"] is None
+
+
+from bench_core.admission import Admission, RunningSlotScheduler
+from bench_core.task_runner.replay import ReplayStep
+
+
+class TestRunSliceP26Decomposition:
+    """P2.6: _run_slice acquires a slot, gates resume/pause via QPS, runs a
+    post-resume ``true`` ready-probe, and stamps six segment durations."""
+
+    _SEGMENT_KEYS = (
+        "slot_contention_wait_sec",
+        "resume_queue_wait_sec",
+        "resume_api_sec",
+        "resume_ready_wait_sec",
+        "pause_queue_wait_sec",
+        "pause_api_sec",
+    )
+
+    def test_step_record_has_six_segment_fields(self, tmp_path):
+        config = _lifecycle_config(tmp_path)
+        provider = FakeLifecycleProvider(count=1)
+        stop = threading.Event()
+        inst = SandboxInstance(id="x", index=2)
+        state = BenchSandbox.from_instance(inst, workflow_type="replay")
+        state.ready = True
+        path = _series_path(tmp_path)
+        series = LifecycleSeriesWriter(path)
+        runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider, series=series)
+        runner._init_lifecycle()
+
+        step = ReplayStep(index=3, action_type="shell", action="true", delay_time_sec=0.0)
+        sr = runner._run_slice(step, trajectory_id="traj-abc")
+        series.close()
+
+        events = [json.loads(l) for l in path.read_text().splitlines()]
+        step_records = [r for r in events if r["event"] == "step"]
+        assert len(step_records) == 1
+        rec = step_records[0]
+
+        # All six segment keys present and floats
+        for key in self._SEGMENT_KEYS:
+            assert key in rec, f"missing segment key {key}"
+            assert isinstance(rec[key], float), f"{key} is not a float"
+
+        # Invariants (P2.6 decomposition must sum exactly to totals).
+        assert (
+            abs(
+                rec["resume_sec"]
+                - (rec["resume_queue_wait_sec"] + rec["resume_api_sec"] + rec["resume_ready_wait_sec"])
+            )
+            < 1e-6
+        )
+        assert abs(rec["pause_sec"] - (rec["pause_queue_wait_sec"] + rec["pause_api_sec"])) < 1e-6
+        # StepResult mirrors the record
+        assert abs(sr.resume_sec - (sr.resume_queue_wait_sec + sr.resume_api_sec + sr.resume_ready_wait_sec)) < 1e-6
+        assert abs(sr.pause_sec - (sr.pause_queue_wait_sec + sr.pause_api_sec)) < 1e-6
+        assert abs(sr.slice_total_sec - (sr.resume_sec + sr.exec_elapsed_sec + sr.pause_sec)) < 1e-6
+        # resume_api captured the FakeLifecycleProvider sleep (measurably non-zero)
+        assert sr.resume_api_sec > 0.0
+        assert sr.pause_api_sec > 0.0
+
+    def test_ready_probe_runs_in_lifecycle(self, tmp_path):
+        """In lifecycle mode, ``true`` is exec'd as a ready probe after resume."""
+        config = _lifecycle_config(tmp_path)
+        provider = FakeLifecycleProvider(count=1)
+
+        # Class-level wrap to count ``true`` execs without recursion.
+        probe_calls = {"n": 0}
+        orig_exec = FakeLifecycleProvider.exec
+
+        def counting_exec(self_provider, inst, command, **kw):
+            if command == "true":
+                probe_calls["n"] += 1
+            return orig_exec(self_provider, inst, command, **kw)
+
+        FakeLifecycleProvider.exec = counting_exec
+        try:
+            stop = threading.Event()
+            inst = SandboxInstance(id="x", index=0)
+            state = BenchSandbox.from_instance(inst, workflow_type="replay")
+            state.ready = True
+            runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider)
+            runner._init_lifecycle()
+            step = ReplayStep(index=0, action_type="shell", action="echo hi", delay_time_sec=0.0)
+            sr = runner._run_slice(step)
+        finally:
+            FakeLifecycleProvider.exec = orig_exec
+
+        # At least one probe fired (action itself was ``echo hi``, not ``true``).
+        assert probe_calls["n"] >= 1
+        assert sr.resume_ready_wait_sec >= 0.0
+
+    def test_ready_probe_skipped_in_exec_only(self, tmp_path):
+        """exec_only mode does NOT run the ready probe (no lifecycle calls)."""
+        config = _lifecycle_config(tmp_path, replay_mode="exec_only", filename_prefix="eo")
+        provider = FakeLifecycleProvider(count=1)
+
+        probe_calls = {"n": 0}
+        orig_exec = FakeLifecycleProvider.exec
+
+        def counting_exec(self_provider, inst, command, **kw):
+            if command == "true":
+                probe_calls["n"] += 1
+            return orig_exec(self_provider, inst, command, **kw)
+
+        FakeLifecycleProvider.exec = counting_exec
+        try:
+            stop = threading.Event()
+            inst = SandboxInstance(id="x", index=0)
+            state = BenchSandbox.from_instance(inst, workflow_type="replay")
+            state.ready = True
+            runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider)
+            step = ReplayStep(index=0, action_type="shell", action="echo hi", delay_time_sec=0.0)
+            runner._run_slice(step)
+        finally:
+            FakeLifecycleProvider.exec = orig_exec
+
+        # exec_only: no probe (the action ``echo hi`` is NOT ``true``).
+        assert probe_calls["n"] == 0
+
+    def test_probe_exhaustion_emits_failed_record(self, tmp_path):
+        """When ``true`` always fails, the probe raises and the caller emits
+        a slice_failed record with all six segment fields zeroed."""
+        config = _lifecycle_config(tmp_path)
+        provider = FakeLifecycleProvider(count=1)
+
+        # Class-level wrap: force every ``true`` exec to return exit_code=1.
+        orig_exec = FakeLifecycleProvider.exec
+
+        def failing_true_exec(self_provider, inst, command, **kw):
+            if command == "true":
+                return CommandResult(exit_code=1, stdout="", stderr="not ready")
+            return orig_exec(self_provider, inst, command, **kw)
+
+        FakeLifecycleProvider.exec = failing_true_exec
+        try:
+            stop = threading.Event()
+            inst = SandboxInstance(id="x", index=0)
+            state = BenchSandbox.from_instance(inst, workflow_type="replay")
+            state.ready = True
+            path = _series_path(tmp_path)
+            series = LifecycleSeriesWriter(path)
+            runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider, series=series)
+            runner.run()
+            series.close()
+        finally:
+            FakeLifecycleProvider.exec = orig_exec
+
+        recs = [json.loads(l) for l in path.read_text().splitlines()]
+        failed = [r for r in recs if r.get("event") == "step" and r.get("slice_failed")]
+        assert len(failed) >= 1
+        rec = failed[0]
+        for key in self._SEGMENT_KEYS:
+            assert key in rec, f"failed record missing segment key {key}"
+            assert rec[key] == 0.0
+
+    def test_slot_contention_nonzero_when_m_lt_n(self, tmp_path):
+        """Two sandboxes, one running slot -> at least one slice waits."""
+        config = _lifecycle_config(tmp_path, total_count=2, benchmark_mode="round_robin", replay_delay_scale=0.0)
+        provider = FakeLifecycleProvider(count=2)
+
+        slots = RunningSlotScheduler(maximum=1)
+        admission = Admission(slots=slots, qps=None)
+
+        # Make pause slow so the single slot stays held across both runners.
+        orig_pause = FakeLifecycleProvider.pause
+
+        def slow_pause(self_provider, inst):
+            import time as _t
+
+            _t.sleep(0.2)
+            self_provider.pause_calls += 1
+
+        FakeLifecycleProvider.pause = slow_pause
+        try:
+            runners = []
+            for i in range(2):
+                stop = threading.Event()
+                inst = SandboxInstance(id=f"x{i}", index=i)
+                state = BenchSandbox.from_instance(inst, workflow_type="replay")
+                state.ready = True
+                r = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider, admission=admission)
+                runners.append(r)
+            for r in runners:
+                r.start()
+            for r in runners:
+                r.join(timeout=30)
+                assert not r.is_alive(), "runner did not finish"
+        finally:
+            FakeLifecycleProvider.pause = orig_pause
+
+        snap = slots.snapshot()
+        assert snap["granted"] >= 2
+        # At least one runner waited on the slot.
+        contention = [s.replay_metrics.slot_contention_wait_secs for s in (runners[0].state, runners[1].state)]
+        assert any(v and v[0] > 0 for v in contention), f"no contention observed: {contention}"
+
+    def test_lease_released_on_slice_exception(self, tmp_path):
+        """A mid-slice exception must NOT leak the running slot."""
+        config = _lifecycle_config(tmp_path)
+        provider = FakeLifecycleProvider(count=1)
+        slots = RunningSlotScheduler(maximum=1)
+        admission = Admission(slots=slots, qps=None)
+
+        class _BoomRunner(ReplayBaseRunner):
+            def _resume(self):
+                raise RuntimeError("resume blew up")
+
+        stop = threading.Event()
+        inst = SandboxInstance(id="x", index=0)
+        state = BenchSandbox.from_instance(inst, workflow_type="replay")
+        runner = _BoomRunner(state, config, stop, provider, admission=admission)
+        step = ReplayStep(index=0, action_type="shell", action="true", delay_time_sec=0.0)
+        with pytest.raises(RuntimeError):
+            runner._run_slice(step, trajectory_id="t")
+
+        snap = slots.snapshot()
+        assert snap["active"] == 0, f"leaked slot: active={snap['active']}"
+        # A lease was granted (the acquire happened before the raise).
+        assert snap["granted"] == 1
+
+
+class TestExecOnlyBuildsNoAdmission:
+    def test_exec_only_runner_admission_is_none(self, tmp_path):
+        config = _lifecycle_config(tmp_path, replay_mode="exec_only", filename_prefix="eo")
+        provider = FakeLifecycleProvider(count=1)
+        stop = threading.Event()
+        inst = SandboxInstance(id="x", index=0)
+        state = BenchSandbox.from_instance(inst, workflow_type="replay")
+        runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider)
+        assert runner.admission is None
