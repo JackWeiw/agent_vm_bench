@@ -32,6 +32,7 @@ from bench_core.config import KernelConfig
 from env_provider import EnvironmentProvider, LifecycleCapable, SandboxInstance, SandboxStatus
 from bench_core.schemas import BenchSandbox
 from bench_core.stats_collector import StatsCollector
+from bench_core.lifecycle_series import LifecycleSeriesWriter
 from bench_core.task_manager import TaskManager
 from bench_core.round_robin import RoundRobinTaskManager
 from bench_core.utils import calc_percentiles, setup_logging
@@ -265,16 +266,26 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     stats_collector = StatsCollector(config, states, provider.name)
     stats_collector.start()
 
+    # P2.5: lifecycle-mode-only per-step JSONL time series. Exec-only emits
+    # no file (lifecycle fields all-zero; nothing to curve).
+    series_writer: LifecycleSeriesWriter | None = None
+    if config.workflow_type == "replay" and config.replay_mode == "lifecycle":
+        series_path = Path(config.output_dir) / f"{config.filename_prefix}_lifecycle_series.jsonl"
+        series_writer = LifecycleSeriesWriter(series_path)
+        logger.info(f"  Lifecycle series: {series_path}")
+
     task_manager: TaskManager | None = None
     try:
         if config.benchmark_mode == "round_robin":
             logger.info("\n[Phase 4] Starting round-robin tasks...")
-            round_robin = RoundRobinTaskManager(config, states, stop_event, stats_collector, provider)
+            round_robin = RoundRobinTaskManager(
+                config, states, stop_event, stats_collector, provider, series=series_writer
+            )
             round_robin.run()
         else:
             workflow_label = config.workflow_type.capitalize()
             logger.info(f"\n[Phase 4] Starting {workflow_label} tasks...")
-            task_manager = TaskManager(config, states, stop_event, provider)
+            task_manager = TaskManager(config, states, stop_event, provider, series=series_writer)
             task_manager.start_all()
             logger.info(f"\n[Phase 5] Running for {config.test_duration} seconds...")
             try:
@@ -284,6 +295,8 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     except Exception:
         stop_event.set()
         stats_collector.stop()
+        if series_writer is not None:
+            series_writer.close()
         if not config.detect_existing:
             provider.cleanup_all()
         raise
@@ -296,6 +309,8 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
             task_manager.wait_all(timeout=5)
         except Exception:
             stats_collector.stop()
+            if series_writer is not None:
+                series_writer.close()
             if not config.detect_existing:
                 provider.cleanup_all()
             raise
@@ -304,6 +319,8 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     if config.workflow_type == "document":
         stats_collector._take_snapshot()
     stats_collector.stop()
+    if series_writer is not None:
+        series_writer.close()
 
     # Only tear down sandboxes the kernel created; detect mode leaves them running.
     if not config.detect_existing:

@@ -312,3 +312,43 @@ class TestLifecycleOverheadReport:
         # 0.2/1.2 = 16.7%, which must appear.
         assert "20.0%" not in joined
         assert "16.7%" in joined
+
+
+class TestSeriesFileE2E:
+    def test_lifecycle_run_emits_series_jsonl(self, tmp_path):
+        config = _lifecycle_config(tmp_path)
+        provider = FakeLifecycleProvider(count=1)
+        result = run_benchmark(config, provider)
+        series_path = Path(config.output_dir) / f"{config.filename_prefix}_lifecycle_series.jsonl"
+        assert series_path.exists()
+        lines = series_path.read_text().splitlines()
+        assert len(lines) >= 1
+        events = [json.loads(l) for l in lines]
+        # at least one initial_pause and one step
+        assert any(e["event"] == "initial_pause" for e in events)
+        assert any(e["event"] == "step" for e in events)
+        # every step record carries the six timestamps
+        for e in events:
+            if e["event"] == "step":
+                for f in ("resume_start", "resume_end", "exec_start", "exec_end", "pause_start", "pause_end"):
+                    assert f in e
+
+    def test_exec_only_run_emits_no_series_file(self, tmp_path):
+        config = _lifecycle_config(tmp_path, replay_mode="exec_only", filename_prefix="eo")
+        provider = FakeLifecycleProvider(count=1)
+        result = run_benchmark(config, provider)
+        series_path = Path(config.output_dir) / f"{config.filename_prefix}_lifecycle_series.jsonl"
+        assert not series_path.exists()
+
+    def test_round_robin_lifecycle_emits_series(self, tmp_path):
+        config = _lifecycle_config(tmp_path, benchmark_mode="round_robin", total_count=2, filename_prefix="rr")
+        provider = FakeLifecycleProvider(count=2)
+        result = run_benchmark(config, provider)
+        series_path = Path(config.output_dir) / f"{config.filename_prefix}_lifecycle_series.jsonl"
+        assert series_path.exists()
+        events = [json.loads(l) for l in series_path.read_text().splitlines()]
+        step_records = [e for e in events if e["event"] == "step"]
+        assert len(step_records) >= 1
+        # round_id present and int on every step record (round-robin mode)
+        for r in step_records:
+            assert isinstance(r["round_id"], int)

@@ -16,6 +16,7 @@ import time
 
 from bench_core.config import KernelConfig
 from env_provider import EnvironmentProvider
+from bench_core.lifecycle_series import LifecycleSeriesWriter
 from bench_core.schemas import BenchSandbox
 
 logger = logging.getLogger(__name__)
@@ -30,11 +31,14 @@ class TaskManager:
         sandbox_states: dict[int, BenchSandbox],
         stop_event: threading.Event,
         provider: EnvironmentProvider,
+        *,
+        series: LifecycleSeriesWriter | None = None,
     ):
         self.config = config
         self.sandbox_states = sandbox_states
         self.stop_event = stop_event
         self.provider = provider
+        self.series = series
         self.runners: list[threading.Thread] = []
         self.warmup_runners: list[threading.Thread] = []
 
@@ -273,7 +277,7 @@ class TaskManager:
         if self.config.workflow_type == "replay":
             from bench_core.task_runner.replay import ReplayTaskRunner
 
-            return ReplayTaskRunner(state, self.config, self.stop_event, self.provider)
+            return ReplayTaskRunner(state, self.config, self.stop_event, self.provider, series=self.series)
         raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
     def wait_all(self, timeout: float = 5.0) -> None:
