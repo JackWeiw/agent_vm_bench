@@ -50,7 +50,7 @@ class TestReplayMetricsLifecycleDurations:
     def test_defaults_when_kwargs_omitted(self):
         m = ReplayMetrics()
         m.add(latency=1.0, success=True, action_type="shell")
-        # no lifecycle kwargs -> zeros stored (slice_total_sec == 0 -> excluded)
+        # no lifecycle kwargs -> all default to 0.0 -> slice_total_sec == 0 excludes from all three lists
         assert m.resume_secs == []
         assert m.pause_secs == []
         assert m.slice_total_secs == []
