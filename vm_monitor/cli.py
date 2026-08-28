@@ -20,6 +20,7 @@ from .firecracker import FirecrackerMonitor
 from .log_capture import LogCapture
 from .qemu import QEMUMonitor
 from .svg_exporter import export_svg_reports
+from .base import _discover_block_devices
 
 # Try to import pandas for Excel availability check
 try:
@@ -72,10 +73,21 @@ def main():
     parser.add_argument("-o", "--output", type=str, help="Output prefix")
     parser.add_argument("--numa", type=str, default="1", help="Specify NUMA nodes to monitor, comma-separated 0,1")
     parser.add_argument(
+        "--remote-numa",
+        type=int,
+        default=5,
+        help="Designated 'remote borrowing' NUMA node (the node this platform uses to "
+        "borrow memory from a remote socket; NUMA5 on the reference 4-socket box). "
+        "Added to the focus set for free-memory monitoring. Use a negative value to "
+        "disable injecting any remote node (default 5).",
+    )
+    parser.add_argument(
         "--disks",
         type=str,
-        default="sda,sdb,sdc",
-        help="Block devices to monitor for I/O, comma-separated (default: sda,sdb,sdc)",
+        default="all",
+        help="Block devices to monitor for I/O, comma-separated (e.g. sda,nvme0n1). "
+        "Use 'all' (default) to auto-discover every physical block device on the host; "
+        "virtual/software layers (loop, ram, sr, zram, md, dm) are excluded.",
     )
     parser.add_argument("--log-dir", type=str, help="Log output directory (default: logs_${timestamp}/ in current dir)")
 
@@ -136,7 +148,14 @@ def main():
     except:
         m.target_numa_nodes = [0]
 
-    m.target_disks = [d.strip() for d in args.disks.split(",") if d.strip()]
+    # Override the platform-default remote borrowing node; a negative value
+    # disables injecting any remote node.
+    m.remote_numa_id = args.remote_numa if args.remote_numa >= 0 else None
+
+    if args.disks.strip().lower() == "all":
+        m.target_disks = _discover_block_devices()
+    else:
+        m.target_disks = [d.strip() for d in args.disks.split(",") if d.strip()]
 
     # Start log capture (parallel with monitor)
     if args.enable_capture:

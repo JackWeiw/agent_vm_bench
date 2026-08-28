@@ -6,6 +6,7 @@ Parses output logs from various collection tools (devkit, ksys, ub_watch,
 smap_bw, getfre) and extracts structured metrics data.
 """
 
+import glob
 import os
 import re
 
@@ -330,8 +331,8 @@ def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
             # Parse NUMA bandwidth per node - track which nodes found in this report
             found_nodes = set()
             for line in report.split("\n"):
-                if re.match(r"\s+[0-3]\s+[\d.]+MB/s", line):
-                    node_match = re.match(r"\s+([0-3])\s+", line)
+                if re.match(r"\s+\d+\s+[\d.]+MB/s", line):
+                    node_match = re.match(r"\s+(\d+)\s+", line)
                     if node_match:
                         node_id = int(node_match.group(1))
                         matches = re.findall(r"([\d.]+)MB/s", line)
@@ -365,7 +366,7 @@ def parse_devkit_mem(log_path: str, numa_nodes: list = None) -> dict:
                 for line in l3_lines:
                     # Match lines with NODE and CCL=-- (NUMA aggregate)
                     # Pattern: NODE (digit) + whitespace + "--" + numbers + percentage
-                    l3_match = re.match(r"\s*([0-3])\s+--\s+[\d.]+MB/s\s+[\d.]+MB/s\s+([\d.]+)%", line.strip())
+                    l3_match = re.match(r"\s*(\d+)\s+--\s+[\d.]+MB/s\s+[\d.]+MB/s\s+([\d.]+)%", line.strip())
                     if l3_match:
                         node_id = int(l3_match.group(1))
                         # Filter: only collect if node_id is in numa_nodes parameter
@@ -796,10 +797,13 @@ def parse_all_logs(log_dir: str, numa_nodes: list = None) -> dict:
     if os.path.exists(smap_path):
         results["smap_bw"] = parse_smap_bw(smap_path)
 
-    # Parse getfre logs (per NUMA)
+    # Parse getfre logs (per NUMA) — discover all getfre_NUMA*.log present
     getfre_results = {}
-    for numa_id in range(4):  # Check NUMA 0-3
-        getfre_path = os.path.join(log_dir, f"getfre_NUMA{numa_id}.log")
+    for getfre_path in glob.glob(os.path.join(log_dir, "getfre_NUMA*.log")):
+        m = re.search(r"getfre_NUMA(\d+)\.log$", os.path.basename(getfre_path))
+        if not m:
+            continue
+        numa_id = int(m.group(1))
         if os.path.exists(getfre_path):
             getfre_results[numa_id] = parse_getfre(getfre_path)
     if getfre_results:

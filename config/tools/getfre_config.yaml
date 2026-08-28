@@ -8,7 +8,7 @@
 # This can also be overridden via GETFRE_PATH in .env file
 getfre_path: /path/to/getfre
 
-# Total physical cores (must be 128 or 192)
+# Total physical cores (set to the host's physical core count; omit to auto-detect)
 total_cores: 192
 
 # Sampling interval in seconds

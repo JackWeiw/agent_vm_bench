@@ -251,7 +251,8 @@ Key flags:
 | `-t, --time` | Duration in seconds (default 60) |
 | `-i, --interval` | Sampling interval in seconds (default 3) |
 | `--numa 0,1` | NUMA nodes to report (default `1`) |
-| `--disks sda,sdb,sdc` | Block devices for I/O deltas (default `sda,sdb,sdc`) |
+| `--remote-numa` | Designated "remote borrowing" NUMA node added to the focus set (default `5` — the platform's cross-socket borrowing node; negative disables) |
+| `--disks` | Block devices for I/O deltas, comma-separated (e.g. `sda,nvme0n1`). `--disks all` (default) auto-discovers every physical block device on the host; virtual/software layers (loop, ram, sr, zram, md, dm) are excluded |
 | `--stress-file` / `--stress-process` | Wait for a stress marker, then monitor |
 | `--enable-capture` | Run devkit/ksys/ub_watch/smap_bw in parallel |
 | `--no-svg` | Skip the dark-themed SVG time-curve reports |
