@@ -48,6 +48,7 @@ class RunningLease:
         task_id: The task that requested the slot.
         acquired_at: Monotonic timestamp when the slot was granted.
         queue_wait_sec: Time spent waiting in the queue before grant.
+        natural_delay_sec: The ready_at pre-delay sleep (0 when no ready_at supplied).
         _released: Internal flag; exposed via the ``released`` property.
     """
 
@@ -55,6 +56,7 @@ class RunningLease:
     task_id: str
     acquired_at: float
     queue_wait_sec: float
+    natural_delay_sec: float = 0.0
     _released: bool = False
 
     @property
@@ -93,13 +95,25 @@ class RunningSlotScheduler:
         self._seq = 0  # monotonically increasing sequence number
         self._cond = threading.Condition(threading.Lock())
 
-    def acquire(self, task_id: str) -> RunningLease:
+    def acquire(self, task_id: str, *, ready_at: float | None = None) -> RunningLease:
         """Block until a running slot is free (FIFO order preserved).
 
-        Returns a :class:`RunningLease` carrying ``queue_wait_sec`` (time spent
-        waiting in the queue). The caller is responsible for releasing the lease
-        in a ``finally`` block.
+        If ``ready_at`` is given (monotonic timestamp in the future), the caller
+        sleeps until that time **before** entering the FIFO queue. The pre-delay
+        is returned as ``natural_delay_sec`` on the lease so that
+        ``queue_wait_sec`` measures only capacity contention (not the natural
+        scheduling delay).
+
+        Returns a :class:`RunningLease` carrying ``queue_wait_sec`` (capacity
+        wait) and ``natural_delay_sec`` (ready_at pre-delay, 0 when absent).
+        The caller is responsible for releasing the lease in a ``finally`` block.
         """
+        natural_delay = 0.0
+        if ready_at is not None:
+            delay = ready_at - time.monotonic()
+            if delay > 0:
+                natural_delay = delay
+                time.sleep(delay)
         queued_at = time.monotonic()
         event = threading.Event()
         with self._cond:
@@ -127,6 +141,7 @@ class RunningSlotScheduler:
                 task_id=task_id,
                 acquired_at=acquired_at,
                 queue_wait_sec=queue_wait,
+                natural_delay_sec=natural_delay,
             )
 
     def release(self, lease: RunningLease) -> None:
@@ -139,7 +154,7 @@ class RunningSlotScheduler:
             self._cond.notify_all()
 
     def snapshot(self) -> dict[str, Any]:
-        """Return ``{"maximum", "active", "peak_active", "granted", "average_queue_wait_sec"}``."""
+        """Return ``{"maximum", "active", "peak_active", "granted", "average_queue_wait_sec", "waiting"}``."""
         with self._cond:
             return {
                 "maximum": self._maximum,
@@ -147,6 +162,7 @@ class RunningSlotScheduler:
                 "peak_active": self._peak_active,
                 "granted": self._granted,
                 "average_queue_wait_sec": self._total_queue_wait / self._granted if self._granted else 0.0,
+                "waiting": len(self._queue),
             }
 
 
@@ -193,6 +209,8 @@ class QpsRateLimiter:
         self._total_wait = 0.0
         self._max_wait = 0.0
         self._dispatched_by_op: dict[str, int] = {"resume": 0, "pause": 0, "cleanup": 0}
+        self._waiting = 0  # threads parked in the QPS time-wait
+        self._waiting_by_op: dict[str, int] = {}
 
     def slot(self, operation: str) -> _QpsSlot:
         """Return a context manager that enforces QPS rate + inflight cap.
@@ -208,7 +226,8 @@ class QpsRateLimiter:
 
         Returns:
             ``{"qps", "inflight_cap", "in_flight", "dispatched",
-            "average_wait_sec", "max_wait_sec", "dispatched_by_operation"}``.
+            "average_wait_sec", "max_wait_sec", "dispatched_by_operation",
+            "waiting", "waiting_by_operation"}``.
         """
         # in_flight = inflight_cap - current semaphore value
         with self._dispatch_lock:
@@ -220,6 +239,8 @@ class QpsRateLimiter:
                 "average_wait_sec": self._total_wait / self._dispatched if self._dispatched else 0.0,
                 "max_wait_sec": self._max_wait,
                 "dispatched_by_operation": dict(self._dispatched_by_op),
+                "waiting": self._waiting,
+                "waiting_by_operation": dict(self._waiting_by_op),
             }
 
 
@@ -255,8 +276,16 @@ class _QpsSlot:
                 # dispatch_at is in the past; slide forward from now.
                 delay = 0.0
                 self._lim._next_dispatch_at = now + self._lim._interval
+            if delay > 0:
+                self._lim._waiting += 1
+                self._lim._waiting_by_op[self._op] = self._lim._waiting_by_op.get(self._op, 0) + 1
         if delay > 0:
-            time.sleep(delay)
+            try:
+                time.sleep(delay)
+            finally:
+                with self._lim._dispatch_lock:
+                    self._lim._waiting -= 1
+                    self._lim._waiting_by_op[self._op] = max(0, self._lim._waiting_by_op.get(self._op, 0) - 1)
         # Step 2: inflight semaphore acquire AFTER the wait.
         self._lim._inflight.acquire()
         # Step 3: record metrics.

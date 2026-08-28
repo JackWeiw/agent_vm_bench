@@ -13,6 +13,91 @@ import pytest
 from bench_core.admission import Admission, QpsRateLimiter, RunningLease, RunningSlotScheduler
 
 
+def test_acquire_ready_at_parks_before_enqueue():
+    """ready_at in the future: the sleep happens before FIFO wait, so
+    queue_wait_sec measures only capacity contention (not the natural delay)."""
+    sched = RunningSlotScheduler(maximum=1)
+    # Occupy the only slot so a 2nd acquireor waits.
+    held = sched.acquire("first")
+    ready_at = time.monotonic() + 0.3
+    lease2 = [None]
+
+    def _acq():
+        lease2[0] = sched.acquire("second", ready_at=ready_at)
+
+    t = threading.Thread(target=_acq)
+    t.start()
+    # Wait for ready_at sleep to finish, then release the held slot.
+    time.sleep(0.4)
+    sched.release(held)
+    t.join()
+    assert lease2[0] is not None
+    # natural_delay ~= 0.3s (the ready_at sleep); capacity_wait small (held released
+    # immediately, but the waiter parked ~0.3s before enqueue).
+    assert lease2[0].natural_delay_sec >= 0.2
+    # queue_wait_sec (capacity) should be small -- the slot freed right away.
+    assert lease2[0].queue_wait_sec < 0.2
+
+
+def test_acquire_no_ready_at_has_zero_natural_delay():
+    sched = RunningSlotScheduler(maximum=2)
+    lease = sched.acquire("t")
+    assert lease.natural_delay_sec == 0.0
+    sched.release(lease)
+
+
+def test_snapshot_waiting_counts_parked_threads():
+    sched = RunningSlotScheduler(maximum=1)
+    held = sched.acquire("first")
+    started = threading.Event()
+    done = threading.Event()
+
+    def _acq():
+        started.set()
+        sched.acquire("second")
+        done.set()
+
+    t = threading.Thread(target=_acq, daemon=True)
+    t.start()
+    assert started.wait(2)
+    time.sleep(0.1)  # let it park in the FIFO wait
+    snap = sched.snapshot()
+    assert snap["waiting"] >= 1
+    sched.release(held)
+    assert done.wait(2)
+
+
+def test_qps_snapshot_waiting_by_operation():
+    lim = QpsRateLimiter(qps=1.0, inflight_cap=1)
+    # Occupy inflight so a 2nd slot() parks in the QPS sleep.
+    entered = threading.Event()
+    release_ev = threading.Event()
+
+    def _hold():
+        with lim.slot("command"):
+            entered.set()
+            release_ev.wait(2)
+
+    holder = threading.Thread(target=_hold, daemon=True)
+    holder.start()
+    assert entered.wait(2)
+
+    parked = threading.Event()
+
+    def _wait():
+        with lim.slot("command"):
+            parked.set()
+
+    w = threading.Thread(target=_wait, daemon=True)
+    w.start()
+    time.sleep(0.15)  # let it enter the QPS time-wait
+    snap = lim.snapshot()
+    assert snap["waiting"] >= 1
+    assert snap["waiting_by_operation"].get("command", 0) >= 1
+    release_ev.set()
+    assert parked.wait(2)
+
+
 # -------------------------------------------------------------- RunningSlotScheduler
 
 
@@ -160,6 +245,7 @@ class TestRunningSlotSchedulerSnapshot:
             "peak_active",
             "granted",
             "average_queue_wait_sec",
+            "waiting",
         }
         assert snap["maximum"] == 3
         assert snap["active"] == 0
@@ -306,6 +392,8 @@ class TestQpsRateLimiterSnapshot:
             "average_wait_sec",
             "max_wait_sec",
             "dispatched_by_operation",
+            "waiting",
+            "waiting_by_operation",
         }
         assert snap["qps"] == 10
         assert snap["inflight_cap"] == 3
