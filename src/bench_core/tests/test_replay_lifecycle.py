@@ -253,3 +253,62 @@ class TestExecOnlySkipsSeries:
         state = BenchSandbox.from_instance(inst, workflow_type="replay")
         runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider)
         assert runner.series is None
+
+
+class TestLifecycleOverheadReport:
+    def test_lifecycle_report_has_overhead_section(self, tmp_path):
+        config = _lifecycle_config(tmp_path)
+        provider = FakeLifecycleProvider(count=1)
+        result = run_benchmark(config, provider)
+        report = result["report"]
+        assert "[Lifecycle Overhead]" in report
+        assert "Resume:" in report
+        assert "Pause:" in report
+        assert "Overhead per-sample" in report
+        assert "Overhead aggregate" in report
+
+    def test_exec_only_report_has_no_overhead_section(self, tmp_path):
+        config = _lifecycle_config(tmp_path, replay_mode="exec_only", filename_prefix="eo")
+        provider = FakeLifecycleProvider(count=1)
+        result = run_benchmark(config, provider)
+        assert "[Lifecycle Overhead]" not in result["report"]
+
+    def test_overhead_near_zero_guard_drops_tiny_slices(self, tmp_path):
+        # Manually seed ReplayMetrics with one tiny slice (< MIN_SLICE_SEC)
+        # and one normal slice; the tiny one must not explode the per-sample
+        # overhead (excluded by the guard).
+        from bench_core.stats_collector import StatsCollector
+
+        inst = SandboxInstance(id="x", index=0)
+        state = BenchSandbox.from_instance(inst, workflow_type="replay")
+        config = _lifecycle_config(tmp_path)
+        sc = StatsCollector(config, {0: state}, "fake")
+        m = state.replay_metrics
+        # tiny slice (below MIN_SLICE_SEC=0.001) -- excluded from overhead
+        m.add(
+            latency=0.0001,
+            success=True,
+            action_type="shell",
+            resume_sec=0.00001,
+            pause_sec=0.00001,
+            slice_total_sec=0.0001,
+        )
+        # normal slice
+        m.add(
+            latency=1.0,
+            success=True,
+            action_type="shell",
+            resume_sec=0.1,
+            pause_sec=0.1,
+            slice_total_sec=1.2,
+        )
+
+        lines = sc.format_replay_stats_section()
+        joined = "\n".join(lines)
+        assert "[Lifecycle Overhead]" in joined
+        # the tiny slice's overhead is (0.00001+0.00001)/0.0001 = 20.0% -- it
+        # must be EXCLUDED by the MIN_SLICE_SEC guard (slice_total_sec=0.0001
+        # < 0.001), so 20.0% must NOT appear. The normal sample's overhead is
+        # 0.2/1.2 = 16.7%, which must appear.
+        assert "20.0%" not in joined
+        assert "16.7%" in joined
