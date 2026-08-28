@@ -27,6 +27,7 @@ import threading
 import time
 from dataclasses import dataclass
 
+from bench_core.admission import Admission
 from bench_core.config import KernelConfig
 from bench_core.lifecycle_series import LifecycleSeriesWriter
 from bench_core.replay_payload import ReplayStep, Trajectory, load_pool
@@ -34,6 +35,16 @@ from bench_core.schemas import BenchSandbox
 from env_provider import CommandResult, EnvironmentProvider
 
 logger = logging.getLogger(__name__)
+
+# Ready-probe kernel constants (not YAML knobs -- provider-transparent, like
+# ``_ready.py``'s ``READY_MAX_WAIT``). The probe runs ``true`` via the exec
+# contract until the sandbox command plane is ready after resume.
+READY_PROBE_MAX_ATTEMPTS = 5
+READY_PROBE_TIMEOUT = 10  # seconds per attempt
+
+
+class SandboxInfrastructureError(RuntimeError):
+    """Sandbox transport/readiness failure that must stop the current slice."""
 
 
 @dataclass(slots=True)
@@ -57,6 +68,13 @@ class StepResult:
     resume_sec: float
     pause_sec: float
     requested_delay_sec: float
+    # P2.6 segment decomposition (sum to resume_sec / pause_sec respectively)
+    resume_api_sec: float = 0.0
+    resume_ready_wait_sec: float = 0.0
+    slot_contention_wait_sec: float = 0.0
+    resume_queue_wait_sec: float = 0.0
+    pause_queue_wait_sec: float = 0.0
+    pause_api_sec: float = 0.0
 
 
 class ReplayBaseRunner(threading.Thread):
@@ -76,6 +94,7 @@ class ReplayBaseRunner(threading.Thread):
         provider: EnvironmentProvider,
         *,
         series: LifecycleSeriesWriter | None = None,
+        admission: Admission | None = None,
     ) -> None:
         super().__init__(daemon=True)
         self.state = state
@@ -83,74 +102,133 @@ class ReplayBaseRunner(threading.Thread):
         self.stop_event = stop_event
         self.provider = provider
         self.series = series
+        self.admission = admission
 
     # --- the slice (the spine P2 plugs into) ---
     def _run_slice(self, step: ReplayStep, *, trajectory_id: str = "") -> StepResult:
         """One resume -> execute -> pause cycle.
 
-        Stamps six wall-clock (time.time) phase boundaries for the per-step
-        JSONL series (resume_start..pause_end) alongside the perf_counter
-        durations. The series record is written when self.series is set;
-        durations flow into ReplayMetrics.add via _record_step.
+        P2.6: slot.acquire -> resume(QPS) -> ready_probe -> exec -> pause(QPS) ->
+        slot.release. Six segment durations (slot_contention / resume_queue /
+        resume_api / resume_ready_wait / pause_queue / pause_api) written to the
+        series + fed into ReplayMetrics. resume_sec/pause_sec totals preserved
+        (sum of their segments). Lease release in finally so mid-slice exceptions
+        don't leak the running slot.
         """
-        resume_start_ts = time.time()
-        resume_start = time.perf_counter()
-        self._resume()
-        resume_end = time.perf_counter()
-        resume_end_ts = time.time()
-        resume_elapsed = resume_end - resume_start
+        # Acquire running slot (if admission configured)
+        lease = None
+        slot_contention_wait_sec = 0.0
+        if self.admission is not None:
+            lease = self.admission.slots.acquire(f"sbx{self.state.index}_step{step.index}")
+            slot_contention_wait_sec = lease.queue_wait_sec
 
-        exec_start_ts = time.time()
-        exec_start = time.perf_counter()
-        result = self._execute(step)
-        exec_end = time.perf_counter()
-        exec_end_ts = time.time()
-        exec_elapsed = exec_end - exec_start
+        try:
+            # Resume phase (QPS-gated if limiter present)
+            resume_start_ts = time.time()
+            resume_queue_wait_sec = 0.0
+            resume_api_sec = 0.0
+            if self.admission is not None and self.admission.qps is not None:
+                t_slot = time.perf_counter()
+                with self.admission.qps.slot("resume"):
+                    t_api = time.perf_counter()
+                    self._resume()
+                    resume_api_sec = time.perf_counter() - t_api
+                resume_queue_wait_sec = (time.perf_counter() - t_slot) - resume_api_sec
+            else:
+                t0 = time.perf_counter()
+                self._resume()
+                resume_api_sec = time.perf_counter() - t0
 
-        pause_start_ts = time.time()
-        pause_start = time.perf_counter()
-        self._pause()
-        pause_end = time.perf_counter()
-        pause_end_ts = time.time()
-        pause_elapsed = pause_end - pause_start
+            # Ready probe (post-resume, not QPS-gated; config-gated + lifecycle mode)
+            resume_ready_wait_sec = 0.0
+            if getattr(self.config, "replay_ready_probe", True) and self.config.replay_mode == "lifecycle":
+                resume_ready_wait_sec = self._probe_ready()
 
-        sr = StepResult(
-            step_index=step.index,
-            action_type=step.action_type,
-            exit_code=result.exit_code,
-            exec_elapsed_sec=exec_elapsed,
-            slice_total_sec=resume_elapsed + exec_elapsed + pause_elapsed,
-            resume_sec=resume_elapsed,
-            pause_sec=pause_elapsed,
-            requested_delay_sec=step.delay_time_sec,
-        )
-        # Success-path record. On exception _run_slice raises (no record here);
-        # the caller's except block emits a slice_failed=True record instead.
-        if self.series is not None:
-            self.series.write(
-                {
-                    "event": "step",
-                    "sandbox_index": self.state.index,
-                    "trajectory_id": trajectory_id,
-                    "round_id": getattr(self, "round_id", None),
-                    "step_index": step.index,
-                    "action_type": step.action_type,
-                    "resume_start": resume_start_ts,
-                    "resume_end": resume_end_ts,
-                    "exec_start": exec_start_ts,
-                    "exec_end": exec_end_ts,
-                    "pause_start": pause_start_ts,
-                    "pause_end": pause_end_ts,
-                    "resume_sec": resume_elapsed,
-                    "exec_sec": exec_elapsed,
-                    "pause_sec": pause_elapsed,
-                    "slice_total_sec": sr.slice_total_sec,
-                    "exit_code": result.exit_code,
-                    "timed_out": False,
-                    "slice_failed": False,
-                }
+            # resume_sec = sum of segments (exact, no double-counting)
+            resume_sec = resume_queue_wait_sec + resume_api_sec + resume_ready_wait_sec
+            resume_end_ts = time.time()
+
+            # Exec phase
+            exec_start_ts = time.time()
+            exec_start = time.perf_counter()
+            result = self._execute(step)
+            exec_end = time.perf_counter()
+            exec_end_ts = time.time()
+            exec_elapsed = exec_end - exec_start
+
+            # Pause phase (QPS-gated if limiter present)
+            pause_start_ts = time.time()
+            pause_queue_wait_sec = 0.0
+            pause_api_sec = 0.0
+            if self.admission is not None and self.admission.qps is not None:
+                t_slot = time.perf_counter()
+                with self.admission.qps.slot("pause"):
+                    t_api = time.perf_counter()
+                    self._pause()
+                    pause_api_sec = time.perf_counter() - t_api
+                pause_queue_wait_sec = (time.perf_counter() - t_slot) - pause_api_sec
+            else:
+                t0 = time.perf_counter()
+                self._pause()
+                pause_api_sec = time.perf_counter() - t0
+
+            # pause_sec = sum of segments (exact, no double-counting)
+            pause_sec = pause_queue_wait_sec + pause_api_sec
+            pause_end_ts = time.time()
+
+            sr = StepResult(
+                step_index=step.index,
+                action_type=step.action_type,
+                exit_code=result.exit_code,
+                exec_elapsed_sec=exec_elapsed,
+                slice_total_sec=resume_sec + exec_elapsed + pause_sec,
+                resume_sec=resume_sec,
+                pause_sec=pause_sec,
+                requested_delay_sec=step.delay_time_sec,
+                resume_api_sec=resume_api_sec,
+                resume_ready_wait_sec=resume_ready_wait_sec,
+                slot_contention_wait_sec=slot_contention_wait_sec,
+                resume_queue_wait_sec=resume_queue_wait_sec,
+                pause_queue_wait_sec=pause_queue_wait_sec,
+                pause_api_sec=pause_api_sec,
             )
-        return sr
+            # Success-path record. On exception _run_slice raises (no record here);
+            # the caller's except block emits a slice_failed=True record instead.
+            if self.series is not None:
+                self.series.write(
+                    {
+                        "event": "step",
+                        "sandbox_index": self.state.index,
+                        "trajectory_id": trajectory_id,
+                        "round_id": getattr(self, "round_id", None),
+                        "step_index": step.index,
+                        "action_type": step.action_type,
+                        "resume_start": resume_start_ts,
+                        "resume_end": resume_end_ts,
+                        "exec_start": exec_start_ts,
+                        "exec_end": exec_end_ts,
+                        "pause_start": pause_start_ts,
+                        "pause_end": pause_end_ts,
+                        "resume_sec": resume_sec,
+                        "exec_sec": exec_elapsed,
+                        "pause_sec": pause_sec,
+                        "slice_total_sec": sr.slice_total_sec,
+                        "exit_code": result.exit_code,
+                        "timed_out": False,
+                        "slice_failed": False,
+                        "slot_contention_wait_sec": slot_contention_wait_sec,
+                        "resume_queue_wait_sec": resume_queue_wait_sec,
+                        "resume_api_sec": resume_api_sec,
+                        "resume_ready_wait_sec": resume_ready_wait_sec,
+                        "pause_queue_wait_sec": pause_queue_wait_sec,
+                        "pause_api_sec": pause_api_sec,
+                    }
+                )
+            return sr
+        finally:
+            # Release lease in finally so mid-slice exceptions don't leak the slot.
+            if lease is not None:
+                self.admission.slots.release(lease)
 
     # --- overridable no-op hooks (P2 replaces with real lifecycle calls) ---
     def _resume(self) -> None:
@@ -203,6 +281,25 @@ class ReplayBaseRunner(threading.Thread):
                 f"{self.state.replay_metrics.initial_pause_sec:.3f}s"
             )
 
+    def _probe_ready(self) -> float:
+        """Run ``true`` until the sandbox command plane is ready. Not QPS-gated.
+
+        Returns total wall time of the probe loop. Exhaustion raises
+        SandboxInfrastructureError -> the caller synthesizes a failed slice.
+        """
+        started = time.perf_counter()
+        for _ in range(READY_PROBE_MAX_ATTEMPTS):
+            try:
+                result = self.provider.exec(self.state, "true", timeout=READY_PROBE_TIMEOUT)
+                if result.exit_code == 0:
+                    return time.perf_counter() - started
+            except Exception as e:
+                logger.debug(f"[Sandbox{self.state.index}] ready-probe attempt failed: {e}")
+        raise SandboxInfrastructureError(
+            f"Sandbox {self.state.index} command service did not become ready "
+            f"after {READY_PROBE_MAX_ATTEMPTS} attempts"
+        )
+
     def _execute(self, step: ReplayStep) -> CommandResult:
         """Exec the recorded action verbatim -- cwd/env via the exec contract."""
         return self.provider.exec(
@@ -237,6 +334,10 @@ class ReplayBaseRunner(threading.Thread):
             resume_sec=step_result.resume_sec,
             pause_sec=step_result.pause_sec,
             slice_total_sec=step_result.slice_total_sec,
+            resume_api_sec=step_result.resume_api_sec,
+            resume_ready_wait_sec=step_result.resume_ready_wait_sec,
+            slot_contention_wait_sec=step_result.slot_contention_wait_sec,
+            pause_api_sec=step_result.pause_api_sec,
         )
         self.state.update_last_task_time(time.time())
 
@@ -304,8 +405,9 @@ class ReplayTaskRunner(ReplayBaseRunner):
         provider: EnvironmentProvider,
         *,
         series: LifecycleSeriesWriter | None = None,
+        admission: Admission | None = None,
     ) -> None:
-        super().__init__(state, config, stop_event, provider, series=series)
+        super().__init__(state, config, stop_event, provider, series=series, admission=admission)
         self.consecutive_errors = 0
 
     def run(self) -> None:
@@ -378,6 +480,12 @@ class ReplayTaskRunner(ReplayBaseRunner):
                             "exit_code": 1,
                             "timed_out": timed_out,
                             "slice_failed": True,
+                            "slot_contention_wait_sec": 0.0,
+                            "resume_queue_wait_sec": 0.0,
+                            "resume_api_sec": 0.0,
+                            "resume_ready_wait_sec": 0.0,
+                            "pause_queue_wait_sec": 0.0,
+                            "pause_api_sec": 0.0,
                         }
                     )
                 logger.error(f"[Sandbox{self.state.index}] Replay step {step.index} exception: {msg[:120]}")
@@ -428,8 +536,9 @@ class ReplayRoundRunner(ReplayBaseRunner):
         provider: EnvironmentProvider,
         *,
         series: LifecycleSeriesWriter | None = None,
+        admission: Admission | None = None,
     ) -> None:
-        super().__init__(state, config, stop_event, provider, series=series)
+        super().__init__(state, config, stop_event, provider, series=series, admission=admission)
         self.round_id = round_id
 
     def run(self) -> None:
@@ -496,6 +605,12 @@ class ReplayRoundRunner(ReplayBaseRunner):
                             "exit_code": 1,
                             "timed_out": timed_out,
                             "slice_failed": True,
+                            "slot_contention_wait_sec": 0.0,
+                            "resume_queue_wait_sec": 0.0,
+                            "resume_api_sec": 0.0,
+                            "resume_ready_wait_sec": 0.0,
+                            "pause_queue_wait_sec": 0.0,
+                            "pause_api_sec": 0.0,
                         }
                     )
                 logger.error(f"[Sandbox{self.state.index}] Replay step {step.index} exception: {msg[:120]}")
