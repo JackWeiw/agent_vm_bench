@@ -195,6 +195,10 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 f"(pause/resume); provider '{provider.name}' does not support it. "
                 f"Use --provider aenv."
             )
+    # exec_only has no lifecycle calls; force the ready probe off regardless of
+    # whether exec_only was explicit in YAML or resolved from the provider default.
+    if config.workflow_type == "replay" and config.replay_mode == "exec_only":
+        config.replay_ready_probe = False
     if config.workflow_type == "document":
         from bench_core.task_runner.document import preflight_document
 
@@ -274,18 +278,51 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         series_writer = LifecycleSeriesWriter(series_path)
         logger.info(f"  Lifecycle series: {series_path}")
 
+    # P2.6: Admission controllers (lifecycle-only). Construct only when a knob
+    # is set; thread through both managers into the replay runners.
+    from bench_core.admission import Admission, QpsRateLimiter, RunningSlotScheduler
+
+    admission: Admission | None = None
+    admission_snapshot: dict | None = None
+    if config.workflow_type == "replay" and config.replay_mode == "lifecycle":
+        slots = None
+        qps_lim = None
+        if config.replay_running_concurrency is not None and config.replay_running_concurrency < config.total_count:
+            slots = RunningSlotScheduler(maximum=config.replay_running_concurrency)
+        if config.replay_control_plane_qps is not None:
+            cap = config.replay_control_plane_inflight_cap or min(64, config.total_count)
+            qps_lim = QpsRateLimiter(qps=config.replay_control_plane_qps, inflight_cap=cap)
+        if slots is not None or qps_lim is not None:
+            # If only qps is set, provide a pass-through slots scheduler (cap=total)
+            # so the runner's admission path (slot acquire/release + qps gating) runs.
+            admission = Admission(
+                slots=slots or RunningSlotScheduler(maximum=config.total_count),
+                qps=qps_lim,
+            )
+            admission_snapshot = {
+                "running": config.replay_running_concurrency or config.total_count,
+                "total": config.total_count,
+                "qps": config.replay_control_plane_qps or "off",
+                "peak_active": 0,
+                "avg_queue_wait_sec": 0.0,
+            }
+            logger.info(
+                f"  Admission: running={admission_snapshot['running']}/{config.total_count}, "
+                f"qps={admission_snapshot['qps']}"
+            )
+
     task_manager: TaskManager | None = None
     try:
         if config.benchmark_mode == "round_robin":
             logger.info("\n[Phase 4] Starting round-robin tasks...")
             round_robin = RoundRobinTaskManager(
-                config, states, stop_event, stats_collector, provider, series=series_writer
+                config, states, stop_event, stats_collector, provider, series=series_writer, admission=admission
             )
             round_robin.run()
         else:
             workflow_label = config.workflow_type.capitalize()
             logger.info(f"\n[Phase 4] Starting {workflow_label} tasks...")
-            task_manager = TaskManager(config, states, stop_event, provider, series=series_writer)
+            task_manager = TaskManager(config, states, stop_event, provider, series=series_writer, admission=admission)
             task_manager.start_all()
             logger.info(f"\n[Phase 5] Running for {config.test_duration} seconds...")
             try:
@@ -329,6 +366,15 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         logger.info("Sandboxes left running (detect mode - not killing)")
 
     time.sleep(0.5)  # Let daemon threads finish writing output.
+
+    # Refresh admission snapshot from the controllers before the report.
+    if admission is not None:
+        snap = admission.slots.snapshot()
+        admission_snapshot["peak_active"] = snap["peak_active"]
+        admission_snapshot["avg_queue_wait_sec"] = snap["average_queue_wait_sec"]
+        if admission.qps is not None:
+            admission_snapshot["qps_dispatched"] = admission.qps.snapshot()["dispatched"]
+        stats_collector.admission_snapshot = admission_snapshot
 
     # 8. Generate and save the report.
     report = stats_collector.generate_report()

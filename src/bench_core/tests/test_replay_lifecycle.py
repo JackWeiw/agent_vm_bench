@@ -663,3 +663,72 @@ class TestExecOnlyBuildsNoAdmission:
         state = BenchSandbox.from_instance(inst, workflow_type="replay")
         runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider)
         assert runner.admission is None
+
+
+class TestConfigP26Knobs:
+    """P2.6: config knobs for admission controllers."""
+
+    def test_from_raw_reads_admission_knobs(self):
+        raw = {
+            "replay": {
+                "running_concurrency": 4,
+                "control_plane_qps": 20.0,
+                "control_plane_inflight_cap": 64,
+                "ready_probe": False,
+            },
+            "sandbox": {"total_count": 10},
+        }
+        config = KernelConfig.from_raw(raw)
+        assert config.replay_running_concurrency == 4
+        assert config.replay_control_plane_qps == 20.0
+        assert config.replay_control_plane_inflight_cap == 64
+        assert config.replay_ready_probe is False
+
+    def test_validation_rejects_running_concurrency_over_total(self):
+        with pytest.raises(ValueError, match="replay_running_concurrency.*must be <="):
+            KernelConfig(total_count=5, replay_running_concurrency=6)
+
+    def test_validation_rejects_zero_qps(self):
+        with pytest.raises(ValueError, match="replay_control_plane_qps must be > 0"):
+            KernelConfig(replay_control_plane_qps=0.0)
+
+    def test_exec_only_forces_ready_probe_false(self):
+        config = KernelConfig(
+            total_count=2,
+            workflow_type="replay",
+            replay_mode="exec_only",
+            replay_ready_probe=True,
+        )
+        assert config.replay_ready_probe is False
+
+
+class TestRunBenchmarkP26Wiring:
+    """P2.6: run_benchmark constructs Admission + threads it through managers."""
+
+    def test_admission_constructed_in_lifecycle(self, tmp_path):
+        """With running_concurrency=1 and qps=50.0, admission is built (qps triggers
+        pass-through slots when running_concurrency == total_count)."""
+        config = _lifecycle_config(
+            tmp_path,
+            replay_running_concurrency=1,
+            replay_control_plane_qps=50.0,
+        )
+        provider = FakeLifecycleProvider(count=1)
+        result = run_benchmark(config, provider)
+        assert "Admission:" in result["report"]
+        assert "Slot contention:" in result["report"]
+
+    def test_no_admission_when_knobs_unset(self, tmp_path):
+        """Vanilla lifecycle config (no admission knobs) -> no admission in report."""
+        config = _lifecycle_config(tmp_path)
+        provider = FakeLifecycleProvider(count=1)
+        result = run_benchmark(config, provider)
+        assert "Admission:" not in result["report"]
+        assert "Slot contention:" not in result["report"]
+
+    def test_admission_running_fraction_in_report(self, tmp_path):
+        """With total_count=3 and running_concurrency=1, report shows running=1/3."""
+        config = _lifecycle_config(tmp_path, total_count=3, replay_running_concurrency=1)
+        provider = FakeLifecycleProvider(count=3)
+        result = run_benchmark(config, provider)
+        assert "running=1/3" in result["report"]

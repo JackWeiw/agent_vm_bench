@@ -117,6 +117,10 @@ class KernelConfig:
     replay_delay_scale: float = 1.0  # 1.0=realtime think gaps; 0=no delay; 0.1=10x compressed
     replay_stop_on_error: bool = False
     replay_mode: str | None = None  # None = unset; resolved to provider default before validate. exec_only | lifecycle
+    replay_running_concurrency: int | None = None
+    replay_control_plane_qps: float | None = None
+    replay_control_plane_inflight_cap: int | None = None
+    replay_ready_probe: bool = True
 
     # --- test run ---
     test_duration: int = 600
@@ -133,6 +137,26 @@ class KernelConfig:
         if self.coding_source_files is None:
             default = CODING_LANGUAGE_DEFAULT_SOURCE_FILES.get(self.coding_language, DEFAULT_CODING_SOURCE_FILES)
             self.coding_source_files = [dict(p) for p in default]
+
+        # P2.6 admission knobs. replay_running_concurrency must be in [1, total_count]
+        # when set; replay_control_plane_qps must be > 0; inflight_cap must be >= 1.
+        if self.replay_running_concurrency is not None:
+            if self.replay_running_concurrency < 1:
+                raise ValueError(f"replay_running_concurrency must be >= 1, got {self.replay_running_concurrency}")
+            if self.replay_running_concurrency > self.total_count:
+                raise ValueError(
+                    f"replay_running_concurrency ({self.replay_running_concurrency}) must be <= "
+                    f"total_count ({self.total_count})"
+                )
+        if self.replay_control_plane_qps is not None and self.replay_control_plane_qps <= 0:
+            raise ValueError(f"replay_control_plane_qps must be > 0, got {self.replay_control_plane_qps}")
+        if self.replay_control_plane_inflight_cap is not None and self.replay_control_plane_inflight_cap < 1:
+            raise ValueError("replay_control_plane_inflight_cap must be >= 1")
+
+        # exec_only has no lifecycle calls; the ready probe is meaningless there.
+        # Covers the explicit exec_only case; bench.py covers the post-sentinel case.
+        if self.replay_mode == "exec_only":
+            self.replay_ready_probe = False
 
     # --- derived counts ---
     @property
@@ -258,6 +282,10 @@ class KernelConfig:
             replay_delay_scale=replay.get("delay_scale", 1.0),
             replay_stop_on_error=replay.get("stop_on_error", False),
             replay_mode=replay.get("mode"),
+            replay_running_concurrency=replay.get("running_concurrency"),
+            replay_control_plane_qps=replay.get("control_plane_qps"),
+            replay_control_plane_inflight_cap=replay.get("control_plane_inflight_cap"),
+            replay_ready_probe=replay.get("ready_probe", True),
             # --- test run ---
             test_duration=test.get("duration", 600),
             stats_interval=test.get("stats_interval", 10),
