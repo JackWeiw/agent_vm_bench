@@ -75,6 +75,10 @@ replay:
   # control_plane_qps: 20.0                 # lifecycle control-plane QPS; omit = unlimited
   # control_plane_inflight_cap: 64          # max concurrent lifecycle calls; omit = min(64, total_count)
   # ready_probe: true                       # post-resume `true` probe (lifecycle only)
+  # Phase 1 stress-control knobs (trajectory mode). Commented = safe defaults.
+  # lifecycle_retries: 2          # G3: transient resume/pause retry attempts
+  # launch_interval_sec: 0.0      # G5: trajectory-start no-catch-up pacing
+  # pause_duration_sec: 0.0       # G2: extra pause beyond recorded think-time
 
 test:
   duration: 300
