@@ -29,7 +29,14 @@ from pathlib import Path
 from typing import Any
 
 from bench_core.config import KernelConfig
-from env_provider import EnvironmentProvider, LifecycleCapable, SandboxInstance, SandboxStatus
+from env_provider import (
+    CreationMetrics,
+    EnvironmentProvider,
+    EphemeralCapable,
+    LifecycleCapable,
+    SandboxInstance,
+    SandboxStatus,
+)
 from bench_core.schemas import BenchSandbox
 from bench_core.stats_collector import StatsCollector
 from bench_core.lifecycle_series import LifecycleSeriesWriter
@@ -195,6 +202,13 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 f"(pause/resume); provider '{provider.name}' does not support it. "
                 f"Use --provider aenv."
             )
+    if config.workflow_type == "replay" and config.replay_mode == "trajectory":
+        if not isinstance(provider, EphemeralCapable):
+            raise ValueError(
+                f"replay.mode=trajectory requires an EphemeralCapable provider "
+                f"(create_one/kill_one); provider '{provider.name}' does not support it. "
+                f"Use --provider aenv."
+            )
     # exec_only has no lifecycle calls; force the ready probe off regardless of
     # whether exec_only was explicit in YAML or resolved from the provider default.
     if config.workflow_type == "replay" and config.replay_mode == "exec_only":
@@ -221,9 +235,25 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
 
     stop_event = threading.Event()
 
-    # 2. Create or detect sandboxes. detect mode prefers persisted IDs (when the
-    # provider supports them) and falls back to live detection.
-    if config.detect_existing:
+    # 2. Create or detect sandboxes. Trajectory mode skips create_all (each
+    # trajectory creates/kills its own sandbox in-runner); build N lightweight
+    # shells the workers fill per trajectory. detect mode is incompatible with
+    # trajectory (no persistent pool to detect).
+    if config.replay_mode == "trajectory":
+        if config.detect_existing:
+            logger.info("\n[Phase 1] detect mode incompatible with trajectory mode; building shells.")
+        logger.info(f"\n[Phase 1] Trajectory mode: {config.total_count} worker shells (no pre-create).")
+        instances = {
+            i: SandboxInstance(
+                id=f"traj-shell-{i}",
+                index=i,
+                ready=True,  # the shell is "ready" to host trajectories
+                is_alive=True,
+                creation_metrics=CreationMetrics(status=SandboxStatus.PENDING),
+            )
+            for i in range(1, config.total_count + 1)
+        }
+    elif config.detect_existing:
         instances = provider.detect_from_ids()
         if instances is None:
             instances = provider.detect_existing()
@@ -273,7 +303,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     # P2.5: lifecycle-mode-only per-step JSONL time series. Exec-only emits
     # no file (lifecycle fields all-zero; nothing to curve).
     series_writer: LifecycleSeriesWriter | None = None
-    if config.workflow_type == "replay" and config.replay_mode == "lifecycle":
+    if config.workflow_type == "replay" and config.replay_mode in ("lifecycle", "trajectory"):
         series_path = Path(config.output_dir) / f"{config.filename_prefix}_lifecycle_series.jsonl"
         series_writer = LifecycleSeriesWriter(series_path)
         logger.info(f"  Lifecycle series: {series_path}")
@@ -284,7 +314,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
 
     admission: Admission | None = None
     admission_snapshot: dict | None = None
-    if config.workflow_type == "replay" and config.replay_mode == "lifecycle":
+    if config.workflow_type == "replay" and config.replay_mode in ("lifecycle", "trajectory"):
         slots = None
         qps_lim = None
         if config.replay_running_concurrency is not None and config.replay_running_concurrency < config.total_count:

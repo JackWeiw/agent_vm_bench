@@ -905,3 +905,45 @@ def test_exec_is_qps_gated_in_lifecycle_mode():
     # command bucket must have dispatched at least once (the exec was gated).
     assert snap["dispatched_by_operation"].get("command", 0) >= 1
     assert calls  # exec actually ran
+
+
+def test_trajectory_mode_guard_rejects_non_ephemeral_provider():
+    """Spine: replay_mode=trajectory on a non-EphemeralCapable provider fails fast."""
+    from bench_core.bench import run_benchmark
+    from bench_core.config import KernelConfig
+
+    class _Plain:
+        name = "plain"
+
+    cfg = KernelConfig(workflow_type="replay", replay_mode="trajectory", total_count=1)
+    with pytest.raises(ValueError, match="EphemeralCapable"):
+        run_benchmark(cfg, _Plain())  # type: ignore[arg-type]
+
+
+def test_trajectory_mode_skips_create_all_and_builds_shells():
+    """Spine: trajectory mode does NOT call create_all; builds N ready shells.
+
+    Uses create_only=True so the spine exits after the create block (before the
+    runner), isolating the create-block wiring from the Task 8 runner logic.
+    """
+    from bench_core.bench import run_benchmark
+    from bench_core.config import KernelConfig
+    from env_provider.fake import FakeProvider
+
+    cfg = KernelConfig(
+        workflow_type="replay",
+        replay_mode="trajectory",
+        total_count=3,
+        create_only=True,
+    )
+    provider = FakeProvider(count=0)
+    called = {"create_all": False}
+    orig = provider.create_all
+
+    def _spy():
+        called["create_all"] = True
+        return orig()
+
+    provider.create_all = _spy  # type: ignore[assignment]
+    run_benchmark(cfg, provider)
+    assert called["create_all"] is False
