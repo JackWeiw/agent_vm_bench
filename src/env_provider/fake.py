@@ -39,6 +39,7 @@ class FakeProvider(EnvironmentProvider):
         self._count = count
         self._exec_results: dict[str, CommandResult] = dict(exec_results or {})
         self._instances: dict[int, SandboxInstance] = {}
+        self._meta_log: dict[int, dict[str, str] | None] = {}
         self.cleanup_called = False
         self.prepare_env_calls = 0
         self.prepare_calls = 0
@@ -68,6 +69,27 @@ class FakeProvider(EnvironmentProvider):
         self.cleanup_called = True
         for inst in self._instances.values():
             inst.is_alive = False
+
+    # --- ephemeral lifecycle (trajectory mode; EphemeralCapable) ---
+    def create_one(self, index: int, *, metadata: dict[str, str] | None = None) -> SandboxInstance:
+        """Create a single in-memory sandbox on demand (trajectory mode)."""
+        self._meta_log[index] = dict(metadata) if metadata else None
+        inst = SandboxInstance(
+            id=f"fake-{index}",
+            index=index,
+            ready=True,
+            is_alive=True,
+            creation_metrics=CreationMetrics(status=SandboxStatus.READY),
+        )
+        self._instances[index] = inst
+        return inst
+
+    def kill_one(self, inst: SandboxInstance) -> None:
+        """Tear down a single sandbox (trajectory mode). No-op if never created."""
+        existing = self._instances.get(inst.index)
+        if existing is None:
+            return
+        existing.is_alive = False
 
     # --- setup hooks (record calls so tests can assert wiring) ---
     def prepare_env(self) -> None:
