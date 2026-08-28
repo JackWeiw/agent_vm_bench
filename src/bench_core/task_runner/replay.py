@@ -342,7 +342,21 @@ class ReplayBaseRunner(threading.Thread):
         )
 
     def _execute(self, step: ReplayStep) -> CommandResult:
-        """Exec the recorded action verbatim -- cwd/env via the exec contract."""
+        """Exec the recorded action verbatim -- cwd/env via the exec contract.
+
+        G1: in lifecycle/trajectory mode the exec call start is QPS-gated under
+        the ``"command"`` bucket (matches the reference's ``command_start_slot``).
+        exec_only is ungated (baseline -- no admission controller is constructed).
+        """
+        if self.admission is not None and self.admission.qps is not None:
+            with self.admission.qps.slot("command"):
+                return self.provider.exec(
+                    self.state,
+                    step.action,
+                    cwd=self.config.replay_workdir or None,
+                    env=self.config.replay_env or None,
+                    timeout=self.config.replay_action_timeout,
+                )
         return self.provider.exec(
             self.state,
             step.action,
