@@ -215,6 +215,12 @@ class TestRunSliceSeriesRecord:
         assert len(failed) >= 1
         assert failed[0]["exit_code"] == 1
         assert failed[0]["slice_failed"] is True
+        # spec §B: durations and timestamps are honestly zeroed on the
+        # synthesized failure path (partial pre-throw timings are out of scope).
+        for f in ("resume_start", "resume_end", "exec_start", "exec_end", "pause_start", "pause_end"):
+            assert failed[0][f] == 0.0
+        for f in ("resume_sec", "exec_sec", "pause_sec", "slice_total_sec"):
+            assert failed[0][f] == 0.0
 
 
 class TestRecordStepPassesDurations:
@@ -352,3 +358,17 @@ class TestSeriesFileE2E:
         # round_id present and int on every step record (round-robin mode)
         for r in step_records:
             assert isinstance(r["round_id"], int)
+
+    def test_fixed_mode_round_id_is_null(self, tmp_path):
+        # spec §A decision: round_id is null (None) in fixed mode, int in
+        # round-robin. The default _lifecycle_config is fixed mode.
+        config = _lifecycle_config(tmp_path, filename_prefix="fixed")
+        provider = FakeLifecycleProvider(count=1)
+        result = run_benchmark(config, provider)
+        series_path = Path(config.output_dir) / f"{config.filename_prefix}_lifecycle_series.jsonl"
+        assert series_path.exists()
+        events = [json.loads(l) for l in series_path.read_text().splitlines()]
+        step_records = [e for e in events if e["event"] == "step"]
+        assert len(step_records) >= 1
+        for r in step_records:
+            assert r["round_id"] is None
