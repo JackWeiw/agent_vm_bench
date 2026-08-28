@@ -303,6 +303,9 @@ class ReplayMetrics(TaskMetricsBase):
         self.initial_pause_sec: float = (
             0.0  # one-time snapshot-creation pause (single writer in _init_lifecycle; no lock)
         )
+        self._resume_secs: list[float] = []
+        self._pause_secs: list[float] = []
+        self._slice_total_secs: list[float] = []
 
     def add(
         self,
@@ -315,6 +318,9 @@ class ReplayMetrics(TaskMetricsBase):
         requested_delay: float = 0.0,
         actual_delay: float = 0.0,
         trajectory_complete: bool = False,
+        resume_sec: float = 0.0,
+        pause_sec: float = 0.0,
+        slice_total_sec: float = 0.0,
     ) -> None:
         """Add a replay step result (thread-safe).
 
@@ -343,11 +349,40 @@ class ReplayMetrics(TaskMetricsBase):
                 for step_name, step_latency in step_times.items():
                     self._step_times.setdefault(step_name, []).append(step_latency)
 
+            # Lifecycle duration lists (P2.5): aligned, failure-free for
+            # percentile math. slice_total_sec == 0 means the runner
+            # synthesized a zero-placeholder StepResult on an exception path
+            # (resume/exec/pause threw) -- not a measurement, so excluded
+            # from all three lists to keep them length-aligned and avoid
+            # divide-by-zero in overhead math.
+            if slice_total_sec > 0.0:
+                self._resume_secs.append(resume_sec)
+                self._pause_secs.append(pause_sec)
+                self._slice_total_secs.append(slice_total_sec)
+
     @property
     def action_type_latencies(self) -> dict[str, list[float]]:
         """Per-action-type latency lists (copy under lock)."""
         with self._lock:
             return {k: list(v) for k, v in self._action_type_latencies.items()}
+
+    @property
+    def resume_secs(self) -> list[float]:
+        """Per-step resume durations, copy under lock (failure-free)."""
+        with self._lock:
+            return list(self._resume_secs)
+
+    @property
+    def pause_secs(self) -> list[float]:
+        """Per-step pause durations, copy under lock (failure-free)."""
+        with self._lock:
+            return list(self._pause_secs)
+
+    @property
+    def slice_total_secs(self) -> list[float]:
+        """Per-step slice totals, copy under lock (failure-free)."""
+        with self._lock:
+            return list(self._slice_total_secs)
 
     @property
     def delay_fidelity(self) -> float:
