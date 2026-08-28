@@ -121,6 +121,9 @@ class KernelConfig:
     replay_control_plane_qps: float | None = None
     replay_control_plane_inflight_cap: int | None = None
     replay_ready_probe: bool = True
+    replay_lifecycle_retries: int = 2  # G3: transient resume/pause retry attempts (0 = no retry)
+    replay_launch_interval_sec: float = 0.0  # G5: trajectory-start no-catch-up pacing (trajectory mode)
+    replay_pause_duration_sec: float = 0.0  # extra pause beyond recorded think-time (G2 ready_at)
 
     # --- test run ---
     test_duration: int = 600
@@ -152,6 +155,13 @@ class KernelConfig:
             raise ValueError(f"replay_control_plane_qps must be > 0, got {self.replay_control_plane_qps}")
         if self.replay_control_plane_inflight_cap is not None and self.replay_control_plane_inflight_cap < 1:
             raise ValueError("replay_control_plane_inflight_cap must be >= 1")
+
+        if self.replay_lifecycle_retries < 0:
+            raise ValueError(f"replay_lifecycle_retries must be >= 0, got {self.replay_lifecycle_retries}")
+        if self.replay_launch_interval_sec < 0:
+            raise ValueError(f"replay_launch_interval_sec must be >= 0, got {self.replay_launch_interval_sec}")
+        if self.replay_pause_duration_sec < 0:
+            raise ValueError(f"replay_pause_duration_sec must be >= 0, got {self.replay_pause_duration_sec}")
 
         # exec_only has no lifecycle calls; the ready probe is meaningless there.
         # Covers the explicit exec_only case; bench.py covers the post-sentinel case.
@@ -195,8 +205,10 @@ class KernelConfig:
             raise ValueError(f"round_size must be > 0, got {self.round_size}")
         if self.benchmark_mode not in {"fixed", "round_robin"}:
             raise ValueError(f"benchmark_mode must be fixed or round_robin, got {self.benchmark_mode}")
-        if self.workflow_type == "replay" and self.replay_mode not in (None, "exec_only", "lifecycle"):
-            raise ValueError(f"replay_mode must be None, 'exec_only', or 'lifecycle', got {self.replay_mode!r}")
+        if self.workflow_type == "replay" and self.replay_mode not in (None, "exec_only", "lifecycle", "trajectory"):
+            raise ValueError(
+                f"replay_mode must be None, 'exec_only', 'lifecycle', or 'trajectory', got {self.replay_mode!r}"
+            )
 
     @classmethod
     def from_raw(cls, raw: dict) -> KernelConfig:
@@ -286,6 +298,9 @@ class KernelConfig:
             replay_control_plane_qps=replay.get("control_plane_qps"),
             replay_control_plane_inflight_cap=replay.get("control_plane_inflight_cap"),
             replay_ready_probe=replay.get("ready_probe", True),
+            replay_lifecycle_retries=replay.get("lifecycle_retries", 2),
+            replay_launch_interval_sec=replay.get("launch_interval_sec", 0.0),
+            replay_pause_duration_sec=replay.get("pause_duration_sec", 0.0),
             # --- test run ---
             test_duration=test.get("duration", 600),
             stats_interval=test.get("stats_interval", 10),
