@@ -1,0 +1,70 @@
+# Shared PDF/XLSX document benchmark image (x86_64, optimized CPython 3.12.3).
+FROM --platform=linux/amd64 python:3.12.3-slim-bookworm AS optimized-python
+
+FROM --platform=linux/amd64 swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/ubuntu:24.04 AS asset-builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ARG NO_PROXY=
+ARG OPM_PDF_URL="https://www.opm.gov/media/dxrbwvmb/declaration-for-federal-employment-optional-form-august-2023.pdf"
+ARG TLC_PARQUET_URL="https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet"
+ARG TLC_ZONE_URL="https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv"
+ARG ANTHROPIC_SKILLS_REPO="https://github.com/anthropics/skills.git"
+ARG ANTHROPIC_SKILLS_COMMIT="9d2f1ae187231d8199c64b5b762e1bdf2244733d"
+ENV http_proxy=${HTTP_PROXY} https_proxy=${HTTPS_PROXY} HTTP_PROXY=${HTTP_PROXY} HTTPS_PROXY=${HTTPS_PROXY} no_proxy=${NO_PROXY} NO_PROXY=${NO_PROXY}
+
+RUN printf '%s\n' 'Acquire::Retries "5";' 'Acquire::http::Timeout "60";' \
+        'Acquire::https::Timeout "60";' 'Acquire::https::Verify-Peer "false";' \
+        'Acquire::https::Verify-Host "false";' > /etc/apt/apt.conf.d/99document-network && \
+    if [ -n "${HTTP_PROXY}" ]; then printf 'Acquire::http::Proxy "%s";\nAcquire::https::Proxy "%s";\n' "${HTTP_PROXY}" "${HTTPS_PROXY:-$HTTP_PROXY}" >> /etc/apt/apt.conf.d/99document-network; fi && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        curl git poppler-utils python3 python3-pip unzip && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY assets/ /build/assets/
+RUN chmod +x /build/assets/scripts/prepare_document_assets.sh && \
+    ASSET_ROOT=/build/assets DOCUMENT_ARCH=amd64 \
+    OPM_PDF_URL="${OPM_PDF_URL}" TLC_PARQUET_URL="${TLC_PARQUET_URL}" \
+    TLC_ZONE_URL="${TLC_ZONE_URL}" ANTHROPIC_SKILLS_REPO="${ANTHROPIC_SKILLS_REPO}" \
+    ANTHROPIC_SKILLS_COMMIT="${ANTHROPIC_SKILLS_COMMIT}" \
+    /build/assets/scripts/prepare_document_assets.sh
+
+FROM --platform=linux/amd64 swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive DOCUMENT_BENCH_ROOT=/opt/document-bench
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ARG NO_PROXY=
+ENV http_proxy=${HTTP_PROXY} https_proxy=${HTTPS_PROXY} HTTP_PROXY=${HTTP_PROXY} HTTPS_PROXY=${HTTPS_PROXY} no_proxy=${NO_PROXY} NO_PROXY=${NO_PROXY}
+
+RUN printf '%s\n' 'Acquire::Retries "5";' 'Acquire::http::Timeout "60";' \
+        'Acquire::https::Timeout "60";' 'Acquire::https::Verify-Peer "false";' \
+        'Acquire::https::Verify-Host "false";' > /etc/apt/apt.conf.d/99document-network && \
+    if [ -n "${HTTP_PROXY}" ]; then printf 'Acquire::http::Proxy "%s";\nAcquire::https::Proxy "%s";\n' "${HTTP_PROXY}" "${HTTPS_PROXY:-$HTTP_PROXY}" >> /etc/apt/apt.conf.d/99document-network; fi && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        fonts-dejavu-core fonts-liberation libreoffice-calc poppler-utils python3 python3-pip && \
+    rm -f /etc/apt/apt.conf.d/99document-network && rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
+
+COPY --from=optimized-python /usr/local/ /usr/local/
+
+RUN ldconfig && \
+    /usr/local/bin/python3 -c "import sys, sysconfig; args = sysconfig.get_config_var('CONFIG_ARGS') or ''; assert sys.version_info[:3] == (3, 12, 3), sys.version; assert '--enable-optimizations' in args, args; assert '--with-lto' in args, args; print(sys.version); print(args)"
+
+COPY --from=asset-builder /build/assets/cases/pdf /opt/document-bench/pdf
+COPY --from=asset-builder /build/assets/cases/xlsx /opt/document-bench/xlsx
+COPY --from=asset-builder /build/assets/skills /opt/document-bench/skills
+COPY --from=asset-builder /build/assets/image /opt/document-bench/bin
+COPY --from=asset-builder /build/assets/requirements/runtime.lock /opt/document-bench/requirements/runtime.lock
+COPY --from=asset-builder /build/assets/wheels/amd64 /tmp/document-wheels
+
+RUN /usr/local/bin/python3 -m pip install --no-deps --no-index \
+        --find-links=/tmp/document-wheels -r /opt/document-bench/requirements/runtime.lock && \
+    chmod +x /opt/document-bench/bin/*.py && \
+    mkdir -p /root/.openclaw && ln -s /opt/document-bench/skills /root/.openclaw/skills && \
+    ln -s /opt/document-bench/bin/validate_image.py /usr/local/bin/document-bench-validate && \
+    rm -rf /tmp/document-wheels /root/.cache && \
+    document-bench-validate
+
+ENV http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= no_proxy= NO_PROXY=
+CMD ["sleep", "infinity"]
