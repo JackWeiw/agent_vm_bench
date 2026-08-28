@@ -310,6 +310,7 @@ class ReplayMetrics(TaskMetricsBase):
         self._resume_ready_wait_secs: list[float] = []
         self._slot_contention_wait_secs: list[float] = []
         self._pause_api_secs: list[float] = []
+        self._resume_queue_wait_secs: list[float] = []
 
     def add(
         self,
@@ -329,6 +330,7 @@ class ReplayMetrics(TaskMetricsBase):
         resume_ready_wait_sec: float = 0.0,
         slot_contention_wait_sec: float = 0.0,
         pause_api_sec: float = 0.0,
+        resume_queue_wait_sec: float = 0.0,
     ) -> None:
         """Add a replay step result (thread-safe).
 
@@ -364,7 +366,9 @@ class ReplayMetrics(TaskMetricsBase):
             # from all seven lists to keep them length-aligned and avoid
             # divide-by-zero in overhead math. P2.6 adds four segment lists
             # (resume_api, resume_ready_wait, slot_contention_wait, pause_api)
-            # that must stay aligned with the original three.
+            # that must stay aligned with the original three. P2.6 Task 4 adds
+            # resume_queue_wait_secs (QPS limiter queue wait on resume) as the
+            # eighth list; all eight append atomically.
             if slice_total_sec > 0.0:
                 self._resume_secs.append(resume_sec)
                 self._pause_secs.append(pause_sec)
@@ -373,6 +377,7 @@ class ReplayMetrics(TaskMetricsBase):
                 self._resume_ready_wait_secs.append(resume_ready_wait_sec)
                 self._slot_contention_wait_secs.append(slot_contention_wait_sec)
                 self._pause_api_secs.append(pause_api_sec)
+                self._resume_queue_wait_secs.append(resume_queue_wait_sec)
 
     @property
     def action_type_latencies(self) -> dict[str, list[float]]:
@@ -421,6 +426,12 @@ class ReplayMetrics(TaskMetricsBase):
         """Per-step provider.pause() wall times, copy under lock (P2.6)."""
         with self._lock:
             return list(self._pause_api_secs)
+
+    @property
+    def resume_queue_wait_secs(self) -> list[float]:
+        """Per-step QPS limiter queue waits on resume, copy under lock (P2.6)."""
+        with self._lock:
+            return list(self._resume_queue_wait_secs)
 
     @property
     def delay_fidelity(self) -> float:

@@ -338,6 +338,7 @@ class ReplayBaseRunner(threading.Thread):
             resume_ready_wait_sec=step_result.resume_ready_wait_sec,
             slot_contention_wait_sec=step_result.slot_contention_wait_sec,
             pause_api_sec=step_result.pause_api_sec,
+            resume_queue_wait_sec=step_result.resume_queue_wait_sec,
         )
         self.state.update_last_task_time(time.time())
 
