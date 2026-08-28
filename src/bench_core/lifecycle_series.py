@@ -48,3 +48,9 @@ class LifecycleSeriesWriter:
         with self._lock:
             if not self._fh.closed:
                 self._fh.close()
+
+    def __enter__(self) -> LifecycleSeriesWriter:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
