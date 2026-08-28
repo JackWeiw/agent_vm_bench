@@ -16,7 +16,7 @@ from __future__ import annotations
 import threading
 
 from bench_core.config import KernelConfig
-from env_provider import SandboxInstance
+from env_provider import EphemeralCapable, SandboxInstance
 
 from env_provider.e2b import E2BProvider
 from env_provider.e2b.config import Config
@@ -79,3 +79,47 @@ class AenvProvider(E2BProvider):
         if state is None:
             raise RuntimeError(f"No AENV handle for sandbox index {inst.index}")
         state.sandbox_obj = Sandbox.connect(inst.id)
+
+    # ------------------------------------------------------------------ ephemeral (trajectory mode)
+    def create_one(self, index: int, *, metadata: dict[str, str] | None = None) -> SandboxInstance:
+        """Create a single sandbox on demand (trajectory mode, EphemeralCapable).
+
+        Mirrors the single-sandbox path of ``_create_batch_concurrent``: build a
+        state, run ``_create_single`` (forwarding ``metadata``), run the base
+        readiness probe, and map the result via ``_apply_ready`` -- so timing is
+        consistent with ``create_all``. The returned instance's
+        ``creation_metrics`` reflects this trajectory; the runner accumulates
+        per-trajectory ``create_sec``/``kill_sec`` into ``ReplayMetrics``.
+        """
+        from env_provider._base import BackendSandboxStatus
+
+        mgr = self.manager
+        state = mgr._new_state(index)
+        mgr._states[index] = state
+        result = mgr._create_single(state, metadata=metadata)
+        label = f"{mgr._noun}{index}"
+        if result["success"]:
+            ready = mgr._ready_checker().check(
+                mgr._handle_of(state),
+                self._kernel_config.workflow_type,
+                label,
+            )
+            mgr._apply_ready(state, ready, create_elapsed=result["create_elapsed"])
+        else:
+            state.creation_metrics.status = BackendSandboxStatus.FAILED
+            state.creation_metrics.error_msg = result["error"]
+            state.is_alive = False
+            raise RuntimeError(f"create_one({index}) failed: {result['error']}")
+        return self._to_instance(state)
+
+    def kill_one(self, inst: SandboxInstance) -> None:
+        """Tear down a single sandbox (trajectory mode, EphemeralCapable)."""
+        state = self.manager.sandbox_states.get(inst.index)
+        if state is None:
+            return  # never created (runner finally-path safety)
+        try:
+            if self.manager._handle_of(state) is not None:
+                self.manager._kill_one(state)
+        finally:
+            inst.is_alive = False
+            state.is_alive = False
