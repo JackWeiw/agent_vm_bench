@@ -772,6 +772,77 @@ class TestConfigP26Knobs:
         assert config.replay_ready_probe is False
 
 
+class TestL7DecompositionFields:
+    """L7 (Task 4): running_slot_held_sec + interaction_total_sec decomposition."""
+
+    def test_replay_metrics_collect_slot_held_and_interaction_lists(self):
+        """L7: ReplayMetrics collects running_slot_held_sec + interaction_total_sec."""
+        from bench_core.schemas import ReplayMetrics
+
+        m = ReplayMetrics()
+        m.add(
+            latency=0.5,
+            success=True,
+            slice_total_sec=1.0,
+            resume_sec=0.2,
+            pause_sec=0.3,
+            running_slot_held_sec=0.9,
+            interaction_total_sec=1.4,
+            create_sec=0.0,
+            kill_sec=0.0,
+        )
+        assert m.running_slot_held_secs == [0.9]
+        assert m.interaction_total_secs == [1.4]
+        # create_sec and kill_sec are appended atomically with the other lists
+        # (trajectory mode passes non-zero values; per-step mode passes 0.0)
+        assert m.create_secs == [0.0]
+        assert m.kill_secs == [0.0]
+
+    def test_replay_metrics_lists_stay_aligned_on_failure_exclusion(self):
+        """A zero slice_total_sec (synthesized failure) is excluded from ALL lists."""
+        from bench_core.schemas import ReplayMetrics
+
+        m = ReplayMetrics()
+        m.add(
+            latency=0.5,
+            success=False,
+            slice_total_sec=0.0,
+            resume_sec=0.0,
+            pause_sec=0.0,
+            running_slot_held_sec=0.0,
+            interaction_total_sec=0.0,
+            create_sec=0.0,
+            kill_sec=0.0,
+        )
+        m.add(
+            latency=0.5,
+            success=True,
+            slice_total_sec=1.0,
+            resume_sec=0.1,
+            pause_sec=0.2,
+            running_slot_held_sec=0.8,
+            interaction_total_sec=1.1,
+            create_sec=0.0,
+            kill_sec=0.0,
+        )
+        # All 12 lists length-aligned to 1 (the failure excluded).
+        for lst in (
+            m.resume_secs,
+            m.pause_secs,
+            m.slice_total_secs,
+            m.resume_api_secs,
+            m.resume_ready_wait_secs,
+            m.slot_contention_wait_secs,
+            m.pause_api_secs,
+            m.resume_queue_wait_secs,
+            m.running_slot_held_secs,
+            m.interaction_total_secs,
+            m.create_secs,
+            m.kill_secs,
+        ):
+            assert len(lst) == 1
+
+
 class TestRunBenchmarkP26Wiring:
     """P2.6: run_benchmark constructs Admission + threads it through managers."""
 
