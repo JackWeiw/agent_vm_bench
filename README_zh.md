@@ -17,7 +17,7 @@
 | [bench-core 使用指南](docs/bench-core-usage-zh.md) | **src 内核压测（推荐）：安装→配置→CLI→清理** |
 | [设计文档](docs/design.md) | 系统架构与流程设计 |
 | [设计文档 (英文)](docs/design-en.md) | 英文版设计文档 |
-| [指标参考](docs/metrics-reference.md) | 50+ 指标详细说明 |
+| [指标参考](docs/metrics-reference.md) | bench_core + vm_monitor 指标、采集来源与计算公式 |
 | [使用指南](docs/usage-guide.md) | 详细工具使用与配置 |
 | [vm_bench 使用指南](docs/vm_bench-usage-guide-zh.md) | 模块化 vm_bench（OpenStack） |
 | [E2B Bench 使用指南](docs/e2b-bench-usage-zh.md) | E2B 沙箱批量性能测试 |
