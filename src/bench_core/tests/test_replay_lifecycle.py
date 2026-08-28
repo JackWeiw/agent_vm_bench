@@ -1009,3 +1009,39 @@ def test_run_trajectory_creates_runs_kills_with_lease(tmp_path):
     assert len(m.running_slot_held_secs) == 1
     # the trajectory-level lease hold is measurably non-zero (overlaid in finally).
     assert m.running_slot_held_secs[0] > 0
+
+
+def test_report_renders_slot_held_line_in_trajectory_mode(tmp_path):
+    """L7: trajectory mode renders [Lifecycle Overhead] with Slot held + Interaction lines."""
+    from bench_core.stats_collector import ReportFormatter
+
+    cfg = KernelConfig(workflow_type="replay", replay_mode="trajectory", replay_running_concurrency=1)
+    state = BenchSandbox.from_instance(SandboxInstance(id="s1", index=1), workflow_type="replay")
+    m = state.replay_metrics
+    # Seed two aligned samples so all 12 lists stay length-consistent.
+    for _ in range(2):
+        m.add(
+            latency=0.5,
+            success=True,
+            action_type="shell",
+            resume_sec=0.1,
+            pause_sec=0.1,
+            slice_total_sec=1.0,
+            resume_api_sec=0.05,
+            resume_ready_wait_sec=0.0,
+            resume_queue_wait_sec=0.0,
+            slot_contention_wait_sec=0.0,
+            pause_api_sec=0.05,
+        )
+    # Overlay L7 trajectory-level durations on the last recorded step.
+    m._running_slot_held_secs[-1] = 0.7
+    m._interaction_total_secs[-1] = 1.2
+    fmt = ReportFormatter(
+        cfg,
+        {1: state},
+        admission_snapshot={"running": 1, "total": 1, "qps": "off", "peak_active": 1, "avg_queue_wait_sec": 0.0},
+    )
+    report = "\n".join(fmt.format_replay_stats_section())
+    assert "[Lifecycle Overhead]" in report
+    assert "Slot held:" in report
+    assert "Interaction:" in report

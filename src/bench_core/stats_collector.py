@@ -491,19 +491,23 @@ class ReportFormatter:
             lines.append(f"  Avg Latency:   {avg:.3f}s")
             lines.append(f"  P99 Latency:   {p99:.3f}s")
 
-        # P2.5 [Lifecycle Overhead] -- lifecycle mode only. Per-sample
+        # P2.5 [Lifecycle Overhead] -- lifecycle + trajectory mode. Per-sample
         # overhead_i = (resume_sec_i + pause_sec_i) / slice_total_sec_i
         # (mean/P50/P95), plus an aggregate ratio. Near-zero slices
         # (slice_total_sec < MIN_SLICE_SEC) are excluded from the per-sample
         # overhead list; the duration percentile lists already exclude == 0.
-        if self.config.replay_mode == "lifecycle":
+        if self.config.replay_mode in ("lifecycle", "trajectory"):
             all_resume: list[float] = []
             all_pause: list[float] = []
             all_slice: list[float] = []
+            all_slot_held: list[float] = []
+            all_interaction: list[float] = []
             for s in self.sandbox_states.values():
                 all_resume.extend(s.replay_metrics.resume_secs)
                 all_pause.extend(s.replay_metrics.pause_secs)
                 all_slice.extend(s.replay_metrics.slice_total_secs)
+                all_slot_held.extend(s.replay_metrics.running_slot_held_secs)
+                all_interaction.extend(s.replay_metrics.interaction_total_secs)
             if all_slice:
                 lines.append("[Lifecycle Overhead]")
                 resume_stats = calc_percentiles(all_resume)
@@ -522,6 +526,21 @@ class ReportFormatter:
                     f"  Slice:    P50={slice_stats['p50']:.3f}s "
                     f"P95={slice_stats['p95']:.3f}s P99={slice_stats['p99']:.3f}s  (n={n})"
                 )
+                # L7: Slot held (overcommit-efficiency = lease release - acquire,
+                # meaningful only under a running-slot admission controller) and
+                # Interaction (full agent-interaction budget per slice).
+                if all_slot_held and self.admission_snapshot is not None:
+                    held_stats = calc_percentiles(all_slot_held)
+                    lines.append(
+                        f"  Slot held: P50={held_stats['p50']:.3f}s "
+                        f"P95={held_stats['p95']:.3f}s  (n={len(all_slot_held)})"
+                    )
+                if all_interaction:
+                    inter_stats = calc_percentiles(all_interaction)
+                    lines.append(
+                        f"  Interaction: P50={inter_stats['p50']:.3f}s "
+                        f"P95={inter_stats['p95']:.3f}s  (n={len(all_interaction)})"
+                    )
                 # per-sample overhead, near-zero guarded
                 overheads = [(r + p) / s for r, p, s in zip(all_resume, all_pause, all_slice) if s >= MIN_SLICE_SEC]
                 if overheads:
