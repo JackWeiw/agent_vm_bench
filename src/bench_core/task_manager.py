@@ -35,6 +35,7 @@ class TaskManager:
         *,
         series: LifecycleSeriesWriter | None = None,
         admission: Admission | None = None,
+        launch_pacer=None,
     ):
         self.config = config
         self.sandbox_states = sandbox_states
@@ -42,6 +43,7 @@ class TaskManager:
         self.provider = provider
         self.series = series
         self.admission = admission
+        self.launch_pacer = launch_pacer
         self.runners: list[threading.Thread] = []
         self.warmup_runners: list[threading.Thread] = []
 
@@ -281,7 +283,13 @@ class TaskManager:
             from bench_core.task_runner.replay import ReplayTaskRunner
 
             return ReplayTaskRunner(
-                state, self.config, self.stop_event, self.provider, series=self.series, admission=self.admission
+                state,
+                self.config,
+                self.stop_event,
+                self.provider,
+                series=self.series,
+                admission=self.admission,
+                launch_pacer=self.launch_pacer,
             )
         raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 

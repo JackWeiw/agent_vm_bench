@@ -310,7 +310,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
 
     # P2.6: Admission controllers (lifecycle-only). Construct only when a knob
     # is set; thread through both managers into the replay runners.
-    from bench_core.admission import Admission, QpsRateLimiter, RunningSlotScheduler
+    from bench_core.admission import Admission, LaunchPacer, QpsRateLimiter, RunningSlotScheduler
 
     admission: Admission | None = None
     admission_snapshot: dict | None = None
@@ -341,18 +341,40 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 f"qps={admission_snapshot['qps']}"
             )
 
+    # G5: shared no-catch-up launch pacer for trajectory mode (one per fleet).
+    # Paces trajectory starts so multiple workers don't burst-create in the
+    # same instant. The pacer's lock + deadline cell are shared across all
+    # workers (a per-runner field would let each read its own 0.0 and burst).
+    # None outside trajectory mode (no per-trajectory create).
+    trajectory_launch_pacer = LaunchPacer() if config.replay_mode == "trajectory" else None
+
     task_manager: TaskManager | None = None
     try:
         if config.benchmark_mode == "round_robin":
             logger.info("\n[Phase 4] Starting round-robin tasks...")
             round_robin = RoundRobinTaskManager(
-                config, states, stop_event, stats_collector, provider, series=series_writer, admission=admission
+                config,
+                states,
+                stop_event,
+                stats_collector,
+                provider,
+                series=series_writer,
+                admission=admission,
+                launch_pacer=trajectory_launch_pacer,
             )
             round_robin.run()
         else:
             workflow_label = config.workflow_type.capitalize()
             logger.info(f"\n[Phase 4] Starting {workflow_label} tasks...")
-            task_manager = TaskManager(config, states, stop_event, provider, series=series_writer, admission=admission)
+            task_manager = TaskManager(
+                config,
+                states,
+                stop_event,
+                provider,
+                series=series_writer,
+                admission=admission,
+                launch_pacer=trajectory_launch_pacer,
+            )
             task_manager.start_all()
             logger.info(f"\n[Phase 5] Running for {config.test_duration} seconds...")
             try:

@@ -947,3 +947,65 @@ def test_trajectory_mode_skips_create_all_and_builds_shells():
     provider.create_all = _spy  # type: ignore[assignment]
     run_benchmark(cfg, provider)
     assert called["create_all"] is False
+
+
+def test_run_trajectory_creates_runs_kills_with_lease(tmp_path):
+    """E2E: _run_trajectory does create -> steps -> kill under one lease, and
+    overlays create/kill/slot-held timing on the last recorded step.
+
+    Uses FakeLifecycleProvider (not bare FakeProvider) because trajectory mode
+    calls _resume -> provider.resume, and FakeProvider has no resume/pause.
+    """
+    from pathlib import Path
+
+    from bench_core.admission import Admission, QpsRateLimiter, RunningSlotScheduler
+    from bench_core.replay_payload import ReplayStep, Trajectory
+
+    class _Provider(FakeLifecycleProvider):
+        def __init__(self):
+            super().__init__(count=0)
+            self.killed = []
+
+        def kill_one(self, inst):
+            self.killed.append(inst.index)
+            super().kill_one(inst)
+
+    cfg = KernelConfig(
+        workflow_type="replay",
+        replay_mode="trajectory",
+        total_count=1,
+        replay_running_concurrency=1,
+        replay_control_plane_qps=100.0,
+        replay_lifecycle_retries=2,
+        replay_ready_probe=False,
+    )
+    provider = _Provider()
+    stop = threading.Event()
+    inst = SandboxInstance(id="shell", index=1)
+    state = BenchSandbox.from_instance(inst, workflow_type="replay")
+    state.ready = True
+    state.is_alive = True
+    series = LifecycleSeriesWriter(tmp_path / "series.jsonl")
+    adm = Admission(slots=RunningSlotScheduler(maximum=1), qps=QpsRateLimiter(qps=100.0, inflight_cap=4))
+    runner = ReplayTaskRunner(state, cfg, stop, provider, series=series, admission=adm)
+
+    traj = Trajectory(
+        path=Path("tr-1"),
+        instance_id="tr-1",
+        environment="env",
+        steps=(ReplayStep(index=0, action_type="shell", action="echo hi", delay_time_sec=0.0),),
+    )
+    runner._run_trajectory(traj)
+    series.close()
+
+    # create happened (metadata forwarded)
+    assert 1 in provider._meta_log
+    # kill happened
+    assert 1 in provider.killed
+    # metrics: create_secs + kill_secs + slot_held all populated on one step
+    m = state.replay_metrics
+    assert len(m.create_secs) == 1
+    assert len(m.kill_secs) == 1
+    assert len(m.running_slot_held_secs) == 1
+    # the trajectory-level lease hold is measurably non-zero (overlaid in finally).
+    assert m.running_slot_held_secs[0] > 0
