@@ -319,6 +319,65 @@ class TestLifecycleOverheadReport:
         assert "20.0%" not in joined
         assert "16.7%" in joined
 
+    def test_decomposition_block_renders_in_lifecycle(self, tmp_path):
+        config = _lifecycle_config(tmp_path)
+        provider = FakeLifecycleProvider(count=1)
+        result = run_benchmark(config, provider)
+        report = result["report"]
+        assert "Resume decomp:" in report
+        assert "Pause decomp:" in report
+        assert "qps_wait" in report
+        assert "ready_wait" in report
+
+    def test_decomposition_columns_stable_when_probe_off(self, tmp_path):
+        config = _lifecycle_config(tmp_path)
+        # Task 5 adds replay_ready_probe as a real config field; for Task 4
+        # we set it directly so the test runs without Task 5's field.
+        config.replay_ready_probe = False  # type: ignore[attr-defined]
+        provider = FakeLifecycleProvider(count=1)
+        result = run_benchmark(config, provider)
+        report = result["report"]
+        # Column present, value 0.000s (probe was off)
+        assert "ready_wait" in report
+
+    def test_admission_block_absent_when_no_controller(self, tmp_path):
+        config = _lifecycle_config(tmp_path)
+        provider = FakeLifecycleProvider(count=1)
+        result = run_benchmark(config, provider)
+        report = result["report"]
+        assert "Slot contention:" not in report
+        assert "Admission:" not in report
+
+    def test_admission_block_present_when_admission_snapshot_set(self, tmp_path):
+        from bench_core.stats_collector import StatsCollector
+
+        inst = SandboxInstance(id="x", index=0)
+        state = BenchSandbox.from_instance(inst, workflow_type="replay")
+        config = _lifecycle_config(tmp_path)
+        m = state.replay_metrics
+        # Seed one normal slice so the decomposition block renders
+        m.add(
+            latency=1.0,
+            success=True,
+            action_type="shell",
+            resume_sec=0.1,
+            pause_sec=0.1,
+            slice_total_sec=1.2,
+            slot_contention_wait_sec=0.05,
+        )
+        sc = StatsCollector(config, {0: state}, "fake")
+        sc.admission_snapshot = {
+            "running": 1,
+            "total": 3,
+            "qps": "off",
+            "peak_active": 1,
+            "avg_queue_wait_sec": 0.01,
+        }
+        lines = sc.format_replay_stats_section()
+        joined = "\n".join(lines)
+        assert "Slot contention:" in joined
+        assert "Admission: running=1/3" in joined
+
 
 class TestSeriesFileE2E:
     def test_lifecycle_run_emits_series_jsonl(self, tmp_path):

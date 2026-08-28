@@ -79,13 +79,15 @@ class TestReplayMetricsP26Segments:
             resume_ready_wait_sec=0.15,
             slot_contention_wait_sec=0.1,
             pause_api_sec=0.25,
+            resume_queue_wait_sec=0.05,
         )
         assert m.resume_api_secs == [0.2]
         assert m.resume_ready_wait_secs == [0.15]
         assert m.slot_contention_wait_secs == [0.1]
         assert m.pause_api_secs == [0.25]
+        assert m.resume_queue_wait_secs == [0.05]
 
-    def test_zero_slice_excludes_all_seven(self):
+    def test_zero_slice_excludes_all_eight(self):
         m = ReplayMetrics()
         m.add(
             latency=0.0,
@@ -98,6 +100,7 @@ class TestReplayMetricsP26Segments:
             resume_ready_wait_sec=0.0,
             slot_contention_wait_sec=0.0,
             pause_api_sec=0.0,
+            resume_queue_wait_sec=0.0,
         )
         assert m.resume_secs == []
         assert m.pause_secs == []
@@ -106,8 +109,9 @@ class TestReplayMetricsP26Segments:
         assert m.resume_ready_wait_secs == []
         assert m.slot_contention_wait_secs == []
         assert m.pause_api_secs == []
+        assert m.resume_queue_wait_secs == []
 
-    def test_seven_lists_aligned_under_concurrency(self):
+    def test_eight_lists_aligned_under_concurrency(self):
         m = ReplayMetrics()
 
         def worker(_i: int) -> None:
@@ -122,6 +126,7 @@ class TestReplayMetricsP26Segments:
                 resume_ready_wait_sec=0.01,
                 slot_contention_wait_sec=0.005,
                 pause_api_sec=0.03,
+                resume_queue_wait_sec=0.004,
             )
 
         threads = [threading.Thread(target=worker, args=(i,)) for i in range(50)]
@@ -138,6 +143,7 @@ class TestReplayMetricsP26Segments:
         assert len(m.resume_ready_wait_secs) == n
         assert len(m.slot_contention_wait_secs) == n
         assert len(m.pause_api_secs) == n
+        assert len(m.resume_queue_wait_secs) == n
 
     def test_segment_properties_return_copies(self):
         m = ReplayMetrics()
@@ -152,16 +158,19 @@ class TestReplayMetricsP26Segments:
             resume_ready_wait_sec=0.15,
             slot_contention_wait_sec=0.1,
             pause_api_sec=0.25,
+            resume_queue_wait_sec=0.05,
         )
         # Mutate every returned list; internal state must be unaffected.
         m.resume_api_secs.append(999.0)
         m.resume_ready_wait_secs.append(999.0)
         m.slot_contention_wait_secs.append(999.0)
         m.pause_api_secs.append(999.0)
+        m.resume_queue_wait_secs.append(999.0)
         assert m.resume_api_secs == [0.2]
         assert m.resume_ready_wait_secs == [0.15]
         assert m.slot_contention_wait_secs == [0.1]
         assert m.pause_api_secs == [0.25]
+        assert m.resume_queue_wait_secs == [0.05]
 
     def test_add_without_segment_kwargs_defaults_zero(self):
         m = ReplayMetrics()
@@ -179,3 +188,17 @@ class TestReplayMetricsP26Segments:
         assert m.resume_ready_wait_secs == [0.0]
         assert m.slot_contention_wait_secs == [0.0]
         assert m.pause_api_secs == [0.0]
+        assert m.resume_queue_wait_secs == [0.0]
+
+    def test_add_stores_resume_queue_wait(self):
+        m = ReplayMetrics()
+        m.add(
+            latency=1.0,
+            success=True,
+            action_type="shell",
+            resume_sec=0.5,
+            pause_sec=0.3,
+            slice_total_sec=1.8,
+            resume_queue_wait_sec=0.05,
+        )
+        assert m.resume_queue_wait_secs == [0.05]

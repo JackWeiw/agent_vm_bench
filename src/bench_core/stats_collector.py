@@ -163,10 +163,12 @@ class ReportFormatter:
         config: KernelConfig,
         sandbox_states: dict[int, BenchSandbox],
         provider_label: str = "",
+        admission_snapshot: dict | None = None,
     ):
         self.config = config
         self.sandbox_states = sandbox_states
         self.provider_label = provider_label
+        self.admission_snapshot = admission_snapshot
 
     def format_config_section(self) -> list[str]:
         """Format test configuration section."""
@@ -539,6 +541,56 @@ class ReportFormatter:
                 # known caveat footer (resume-readiness, design §E)
                 lines.append("  (resume_sec excludes post-resume ready-wait; see design §E)")
 
+                # P2.6 decomposition sub-block: column-stable breakdown of
+                # resume/pause into their segment components. Columns are NEVER
+                # conditionally dropped (0.000s when inactive); only the Slot
+                # contention and Admission WHOLE LINES are conditional on an
+                # admission controller being present.
+                all_resume_api: list[float] = []
+                all_resume_ready_wait: list[float] = []
+                all_resume_queue_wait: list[float] = []
+                all_slot_contention: list[float] = []
+                all_pause_api: list[float] = []
+                for s in self.sandbox_states.values():
+                    all_resume_api.extend(s.replay_metrics.resume_api_secs)
+                    all_resume_ready_wait.extend(s.replay_metrics.resume_ready_wait_secs)
+                    all_resume_queue_wait.extend(s.replay_metrics.resume_queue_wait_secs)
+                    all_slot_contention.extend(s.replay_metrics.slot_contention_wait_secs)
+                    all_pause_api.extend(s.replay_metrics.pause_api_secs)
+
+                # Resume decomp line (always rendered when all_slice non-empty)
+                resume_api_stats = calc_percentiles(all_resume_api)
+                resume_ready_wait_stats = calc_percentiles(all_resume_ready_wait)
+                resume_queue_wait_stats = calc_percentiles(all_resume_queue_wait)
+                lines.append(
+                    f"  Resume decomp: api P50={resume_api_stats['p50']:.3f}s "
+                    f"P95={resume_api_stats['p95']:.3f}s | "
+                    f"ready_wait P50={resume_ready_wait_stats['p50']:.3f}s | "
+                    f"qps_wait P50={resume_queue_wait_stats['p50']:.3f}s  (n={n})"
+                )
+
+                # Pause decomp line (qps_wait shared from resume_queue_wait_secs
+                # since the limiter is shared; pause has no ready_wait)
+                pause_api_stats = calc_percentiles(all_pause_api)
+                lines.append(
+                    f"  Pause decomp:  api P50={pause_api_stats['p50']:.3f}s | "
+                    f"qps_wait P50={resume_queue_wait_stats['p50']:.3f}s  (n={n})"
+                )
+
+                # Conditional lines (only when admission controller was built)
+                if self.admission_snapshot is not None:
+                    slot_contention_stats = calc_percentiles(all_slot_contention)
+                    lines.append(
+                        f"  Slot contention: P50={slot_contention_stats['p50']:.3f}s "
+                        f"P95={slot_contention_stats['p95']:.3f}s  (n={len(all_slot_contention)})"
+                    )
+                    a = self.admission_snapshot
+                    lines.append(
+                        f"  Admission: running={a.get('running', 0)}/{a.get('total', 0)} "
+                        f"qps={a.get('qps', 'off')} peak_active={a.get('peak_active', 0)} "
+                        f"avg_queue_wait={a.get('avg_queue_wait_sec', 0.0):.3f}s"
+                    )
+
         return lines
 
     def format_replay_step_timing_table(self) -> list[str]:
@@ -754,6 +806,7 @@ class StatsCollector:
         self.config = config
         self.sandbox_states = sandbox_states
         self.provider_label = provider_label
+        self.admission_snapshot: dict | None = None
         self.snapshots: list[Snapshot] = []
         self.start_time: float = 0.0
         self._stop = threading.Event()
@@ -1034,7 +1087,9 @@ class StatsCollector:
 
     def format_replay_stats_section(self) -> list[str]:
         """Delegate to ReportFormatter.format_replay_stats_section."""
-        formatter = ReportFormatter(self.config, self.sandbox_states, self.provider_label)
+        formatter = ReportFormatter(
+            self.config, self.sandbox_states, self.provider_label, admission_snapshot=self.admission_snapshot
+        )
         return formatter.format_replay_stats_section()
 
     def generate_report(self) -> str:
