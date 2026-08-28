@@ -75,6 +75,9 @@ class StepResult:
     resume_queue_wait_sec: float = 0.0
     pause_queue_wait_sec: float = 0.0
     pause_api_sec: float = 0.0
+    # L7 decomposition (Phase 1): slot hold + full interaction budget.
+    running_slot_held_sec: float = 0.0
+    interaction_total_sec: float = 0.0
 
 
 class ReplayBaseRunner(threading.Thread):
@@ -103,9 +106,10 @@ class ReplayBaseRunner(threading.Thread):
         self.provider = provider
         self.series = series
         self.admission = admission
+        self._prev_pause_end_monotonic: float | None = None
 
     # --- the slice (the spine P2 plugs into) ---
-    def _run_slice(self, step: ReplayStep, *, trajectory_id: str = "") -> StepResult:
+    def _run_slice(self, step: ReplayStep, *, trajectory_id: str = "", lease_already_held: bool = False) -> StepResult:
         """One resume -> execute -> pause cycle.
 
         P2.6: slot.acquire -> resume(QPS) -> ready_probe -> exec -> pause(QPS) ->
@@ -115,12 +119,22 @@ class ReplayBaseRunner(threading.Thread):
         (sum of their segments). Lease release in finally so mid-slice exceptions
         don't leak the running slot.
         """
-        # Acquire running slot (if admission configured)
+        # Acquire running slot (if admission configured AND no trajectory-level
+        # lease already held). In trajectory mode _run_trajectory acquires the
+        # lease once for the whole trajectory and passes lease_already_held=True
+        # so _run_slice does NOT double-acquire.
         lease = None
         slot_contention_wait_sec = 0.0
-        if self.admission is not None:
-            lease = self.admission.slots.acquire(f"sbx{self.state.index}_step{step.index}")
-            slot_contention_wait_sec = lease.queue_wait_sec
+        natural_delay_sec = 0.0
+        capacity_wait_sec = 0.0
+        slot_acquired_at = 0.0
+        if self.admission is not None and not lease_already_held:
+            ready_at = self._compute_ready_at(step)
+            lease = self.admission.slots.acquire(f"sbx{self.state.index}_step{step.index}", ready_at=ready_at)
+            natural_delay_sec = lease.natural_delay_sec
+            capacity_wait_sec = lease.queue_wait_sec
+            slot_contention_wait_sec = natural_delay_sec + capacity_wait_sec
+            slot_acquired_at = lease.acquired_at
 
         try:
             # Resume phase (QPS-gated if limiter present)
@@ -191,6 +205,15 @@ class ReplayBaseRunner(threading.Thread):
                 resume_queue_wait_sec=resume_queue_wait_sec,
                 pause_queue_wait_sec=pause_queue_wait_sec,
                 pause_api_sec=pause_api_sec,
+                running_slot_held_sec=((time.perf_counter() - slot_acquired_at) if slot_acquired_at else 0.0),
+                interaction_total_sec=(
+                    resume_sec
+                    + exec_elapsed
+                    + pause_sec
+                    + step.delay_time_sec * self.config.replay_delay_scale
+                    + natural_delay_sec
+                    + capacity_wait_sec
+                ),
             )
             # Success-path record. On exception _run_slice raises (no record here);
             # the caller's except block emits a slice_failed=True record instead.
@@ -222,13 +245,31 @@ class ReplayBaseRunner(threading.Thread):
                         "resume_ready_wait_sec": resume_ready_wait_sec,
                         "pause_queue_wait_sec": pause_queue_wait_sec,
                         "pause_api_sec": pause_api_sec,
+                        "running_slot_held_sec": sr.running_slot_held_sec,
+                        "interaction_total_sec": sr.interaction_total_sec,
                     }
                 )
+            # Track pause-end for the next step's ready_at (G2).
+            self._prev_pause_end_monotonic = time.perf_counter()
             return sr
         finally:
             # Release lease in finally so mid-slice exceptions don't leak the slot.
             if lease is not None:
                 self.admission.slots.release(lease)
+
+    def _compute_ready_at(self, step: ReplayStep) -> float | None:
+        """G2: the monotonic timestamp this step becomes admissible.
+
+        ``prev_pause_end_monotonic + step.delay_time_sec + replay_pause_duration_sec``.
+        The first step in a worker has no preceding pause -> ``None`` (immediate
+        admission, no pre-delay park). Splits natural think-time delay from
+        capacity contention on the lease.
+        """
+        prev = self._prev_pause_end_monotonic
+        if prev is None:
+            return None
+        extra = self.config.replay_pause_duration_sec or 0.0
+        return prev + step.delay_time_sec * self.config.replay_delay_scale + extra
 
     # --- overridable no-op hooks (P2 replaces with real lifecycle calls) ---
     def _resume(self) -> None:
@@ -339,6 +380,10 @@ class ReplayBaseRunner(threading.Thread):
             slot_contention_wait_sec=step_result.slot_contention_wait_sec,
             pause_api_sec=step_result.pause_api_sec,
             resume_queue_wait_sec=step_result.resume_queue_wait_sec,
+            running_slot_held_sec=step_result.running_slot_held_sec,
+            interaction_total_sec=step_result.interaction_total_sec,
+            create_sec=0.0,  # populated by _run_trajectory (trajectory mode)
+            kill_sec=0.0,
         )
         self.state.update_last_task_time(time.time())
 
