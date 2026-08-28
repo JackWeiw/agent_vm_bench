@@ -20,6 +20,7 @@ import time
 
 from bench_core.config import KernelConfig
 from env_provider import EnvironmentProvider
+from bench_core.lifecycle_series import LifecycleSeriesWriter
 from bench_core.schemas import BenchSandbox, get_step_order
 from bench_core.stats_collector import StatsCollector
 
@@ -42,12 +43,15 @@ class RoundRobinTaskManager:
         stop_event: threading.Event,
         stats_collector: StatsCollector,
         provider: EnvironmentProvider,
+        *,
+        series: LifecycleSeriesWriter | None = None,
     ):
         self.config = config
         self.sandbox_states = sandbox_states
         self.stop_event = stop_event
         self.stats_collector = stats_collector
         self.provider = provider
+        self.series = series
 
         # Sandbox groups for each round
         self.all_ready_states: list[BenchSandbox] = []
@@ -211,7 +215,9 @@ class RoundRobinTaskManager:
             from bench_core.task_runner.replay import ReplayRoundRunner
 
             for state in current_states:
-                runner = ReplayRoundRunner(state, self.config, self.round_stop_event, round_id, self.provider)
+                runner = ReplayRoundRunner(
+                    state, self.config, self.round_stop_event, round_id, self.provider, series=self.series
+                )
                 self.active_runners.append(runner)
                 runner.start()
         else:
