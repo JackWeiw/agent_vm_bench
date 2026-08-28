@@ -1094,7 +1094,9 @@ class StatsCollector:
 
     def generate_report(self) -> str:
         """Generate final TXT report using ReportFormatter."""
-        formatter = ReportFormatter(self.config, self.sandbox_states, self.provider_label)
+        formatter = ReportFormatter(
+            self.config, self.sandbox_states, self.provider_label, admission_snapshot=self.admission_snapshot
+        )
 
         lines: list[str] = []
 

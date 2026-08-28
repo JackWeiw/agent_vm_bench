@@ -70,6 +70,11 @@ replay:
   # aenv, which requires a LifecycleCapable provider). Set explicitly to
   # override. lifecycle pauses the sandbox between steps and resumes per step
   # to measure snapshot-restore overhead.
+  # P2.6 admission knobs (lifecycle-only; exec_only ignores these):
+  # running_concurrency: 4                  # M <= total_count; omit = no cap (M=N)
+  # control_plane_qps: 20.0                 # lifecycle control-plane QPS; omit = unlimited
+  # control_plane_inflight_cap: 64          # max concurrent lifecycle calls; omit = min(64, total_count)
+  # ready_probe: true                       # post-resume `true` probe (lifecycle only)
 
 test:
   duration: 300
