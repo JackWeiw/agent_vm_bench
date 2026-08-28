@@ -28,6 +28,7 @@ import time
 from dataclasses import dataclass
 
 from bench_core.config import KernelConfig
+from bench_core.lifecycle_series import LifecycleSeriesWriter
 from bench_core.replay_payload import ReplayStep, Trajectory, load_pool
 from bench_core.schemas import BenchSandbox
 from env_provider import CommandResult, EnvironmentProvider
@@ -73,39 +74,47 @@ class ReplayBaseRunner(threading.Thread):
         config: KernelConfig,
         stop_event: threading.Event,
         provider: EnvironmentProvider,
+        *,
+        series: LifecycleSeriesWriter | None = None,
     ) -> None:
         super().__init__(daemon=True)
         self.state = state
         self.config = config
         self.stop_event = stop_event
         self.provider = provider
+        self.series = series
 
     # --- the slice (the spine P2 plugs into) ---
-    def _run_slice(self, step: ReplayStep) -> StepResult:
+    def _run_slice(self, step: ReplayStep, *, trajectory_id: str = "") -> StepResult:
         """One resume -> execute -> pause cycle.
 
-        Each hook is timed so P2's lifecycle overhead is captured without
-        re-instrumenting the metrics: ``slice_total_sec`` sums all three phases,
-        and ``resume_sec`` / ``pause_sec`` isolate the lifecycle cost. P1's
-        no-op hooks measure ~0, so ``slice_total_sec`` ~= ``exec_elapsed_sec``
-        (the "no lifecycle overhead" baseline). P2 overrides ``_resume`` /
-        ``_pause`` with real ``provider.resume(self.state)`` /
-        ``provider.pause(self.state)`` calls (capability-gated, e2b only) and
-        the timings flow through -- ``_run_slice`` itself is untouched.
+        Stamps six wall-clock (time.time) phase boundaries for the per-step
+        JSONL series (resume_start..pause_end) alongside the perf_counter
+        durations. The series record is written when self.series is set;
+        durations flow into ReplayMetrics.add via _record_step.
         """
+        resume_start_ts = time.time()
         resume_start = time.perf_counter()
         self._resume()
-        resume_elapsed = time.perf_counter() - resume_start
+        resume_end = time.perf_counter()
+        resume_end_ts = time.time()
+        resume_elapsed = resume_end - resume_start
 
+        exec_start_ts = time.time()
         exec_start = time.perf_counter()
         result = self._execute(step)
-        exec_elapsed = time.perf_counter() - exec_start
+        exec_end = time.perf_counter()
+        exec_end_ts = time.time()
+        exec_elapsed = exec_end - exec_start
 
+        pause_start_ts = time.time()
         pause_start = time.perf_counter()
         self._pause()
-        pause_elapsed = time.perf_counter() - pause_start
+        pause_end = time.perf_counter()
+        pause_end_ts = time.time()
+        pause_elapsed = pause_end - pause_start
 
-        return StepResult(
+        sr = StepResult(
             step_index=step.index,
             action_type=step.action_type,
             exit_code=result.exit_code,
@@ -115,6 +124,33 @@ class ReplayBaseRunner(threading.Thread):
             pause_sec=pause_elapsed,
             requested_delay_sec=step.delay_time_sec,
         )
+        # Success-path record. On exception _run_slice raises (no record here);
+        # the caller's except block emits a slice_failed=True record instead.
+        if self.series is not None:
+            self.series.write(
+                {
+                    "event": "step",
+                    "sandbox_index": self.state.index,
+                    "trajectory_id": trajectory_id,
+                    "round_id": getattr(self, "round_id", None),
+                    "step_index": step.index,
+                    "action_type": step.action_type,
+                    "resume_start": resume_start_ts,
+                    "resume_end": resume_end_ts,
+                    "exec_start": exec_start_ts,
+                    "exec_end": exec_end_ts,
+                    "pause_start": pause_start_ts,
+                    "pause_end": pause_end_ts,
+                    "resume_sec": resume_elapsed,
+                    "exec_sec": exec_elapsed,
+                    "pause_sec": pause_elapsed,
+                    "slice_total_sec": sr.slice_total_sec,
+                    "exit_code": result.exit_code,
+                    "timed_out": False,
+                    "slice_failed": False,
+                }
+            )
+        return sr
 
     # --- overridable no-op hooks (P2 replaces with real lifecycle calls) ---
     def _resume(self) -> None:
@@ -145,10 +181,23 @@ class ReplayBaseRunner(threading.Thread):
         ``resume_sec``.
         """
         if self.config.replay_mode == "lifecycle" and not self.state.lifecycle_paused:
+            pause_start_ts = time.time()
             t0 = time.perf_counter()
             self.provider.pause(self.state)
-            self.state.replay_metrics.initial_pause_sec = time.perf_counter() - t0
+            pause_elapsed = time.perf_counter() - t0
+            pause_end_ts = time.time()
+            self.state.replay_metrics.initial_pause_sec = pause_elapsed
             self.state.lifecycle_paused = True
+            if self.series is not None:
+                self.series.write(
+                    {
+                        "event": "initial_pause",
+                        "sandbox_index": self.state.index,
+                        "pause_start": pause_start_ts,
+                        "pause_end": pause_end_ts,
+                        "initial_pause_sec": pause_elapsed,
+                    }
+                )
             logger.info(
                 f"[Sandbox{self.state.index}] lifecycle initial pause "
                 f"{self.state.replay_metrics.initial_pause_sec:.3f}s"
@@ -172,6 +221,7 @@ class ReplayBaseRunner(threading.Thread):
         timed_out: bool,
         actual_delay: float,
         trajectory_complete: bool,
+        trajectory_id: str = "",
     ) -> None:
         """Record one step's metrics into ``self.state.replay_metrics``."""
         success = step_result.exit_code == 0 and not timed_out
@@ -184,6 +234,9 @@ class ReplayBaseRunner(threading.Thread):
             requested_delay=step_result.requested_delay_sec,
             actual_delay=actual_delay,
             trajectory_complete=trajectory_complete,
+            resume_sec=step_result.resume_sec,
+            pause_sec=step_result.pause_sec,
+            slice_total_sec=step_result.slice_total_sec,
         )
         self.state.update_last_task_time(time.time())
 
@@ -249,8 +302,10 @@ class ReplayTaskRunner(ReplayBaseRunner):
         config: KernelConfig,
         stop_event: threading.Event,
         provider: EnvironmentProvider,
+        *,
+        series: LifecycleSeriesWriter | None = None,
     ) -> None:
-        super().__init__(state, config, stop_event, provider)
+        super().__init__(state, config, stop_event, provider, series=series)
         self.consecutive_errors = 0
 
     def run(self) -> None:
@@ -287,7 +342,7 @@ class ReplayTaskRunner(ReplayBaseRunner):
             actual_delay = slice_start - prev_slice_end
             timed_out = False
             try:
-                sr = self._run_slice(step)
+                sr = self._run_slice(step, trajectory_id=traj.instance_id)
             except Exception as e:
                 msg = str(e).lower()
                 timed_out = "timed out" in msg or "context deadline exceeded" in msg
@@ -301,9 +356,39 @@ class ReplayTaskRunner(ReplayBaseRunner):
                     pause_sec=0.0,
                     requested_delay_sec=step.delay_time_sec,
                 )
+                if self.series is not None:
+                    self.series.write(
+                        {
+                            "event": "step",
+                            "sandbox_index": self.state.index,
+                            "trajectory_id": traj.instance_id,
+                            "round_id": getattr(self, "round_id", None),
+                            "step_index": step.index,
+                            "action_type": step.action_type,
+                            "resume_start": 0.0,
+                            "resume_end": 0.0,
+                            "exec_start": 0.0,
+                            "exec_end": 0.0,
+                            "pause_start": 0.0,
+                            "pause_end": 0.0,
+                            "resume_sec": 0.0,
+                            "exec_sec": 0.0,
+                            "pause_sec": 0.0,
+                            "slice_total_sec": 0.0,
+                            "exit_code": 1,
+                            "timed_out": timed_out,
+                            "slice_failed": True,
+                        }
+                    )
                 logger.error(f"[Sandbox{self.state.index}] Replay step {step.index} exception: {msg[:120]}")
             prev_slice_end = time.perf_counter()
-            self._record_step(sr, timed_out=timed_out, actual_delay=actual_delay, trajectory_complete=False)
+            self._record_step(
+                sr,
+                timed_out=timed_out,
+                actual_delay=actual_delay,
+                trajectory_complete=False,
+                trajectory_id=traj.instance_id,
+            )
 
             if sr.exit_code != 0 or timed_out:
                 self.consecutive_errors += 1
@@ -341,8 +426,10 @@ class ReplayRoundRunner(ReplayBaseRunner):
         stop_event: threading.Event,
         round_id: int,
         provider: EnvironmentProvider,
+        *,
+        series: LifecycleSeriesWriter | None = None,
     ) -> None:
-        super().__init__(state, config, stop_event, provider)
+        super().__init__(state, config, stop_event, provider, series=series)
         self.round_id = round_id
 
     def run(self) -> None:
@@ -373,7 +460,7 @@ class ReplayRoundRunner(ReplayBaseRunner):
             actual_delay = slice_start - prev_slice_end
             timed_out = False
             try:
-                sr = self._run_slice(step)
+                sr = self._run_slice(step, trajectory_id=traj.instance_id)
             except Exception as e:
                 msg = str(e).lower()
                 timed_out = "timed out" in msg or "context deadline exceeded" in msg
@@ -387,9 +474,39 @@ class ReplayRoundRunner(ReplayBaseRunner):
                     pause_sec=0.0,
                     requested_delay_sec=step.delay_time_sec,
                 )
+                if self.series is not None:
+                    self.series.write(
+                        {
+                            "event": "step",
+                            "sandbox_index": self.state.index,
+                            "trajectory_id": traj.instance_id,
+                            "round_id": getattr(self, "round_id", None),
+                            "step_index": step.index,
+                            "action_type": step.action_type,
+                            "resume_start": 0.0,
+                            "resume_end": 0.0,
+                            "exec_start": 0.0,
+                            "exec_end": 0.0,
+                            "pause_start": 0.0,
+                            "pause_end": 0.0,
+                            "resume_sec": 0.0,
+                            "exec_sec": 0.0,
+                            "pause_sec": 0.0,
+                            "slice_total_sec": 0.0,
+                            "exit_code": 1,
+                            "timed_out": timed_out,
+                            "slice_failed": True,
+                        }
+                    )
                 logger.error(f"[Sandbox{self.state.index}] Replay step {step.index} exception: {msg[:120]}")
             prev_slice_end = time.perf_counter()
-            self._record_step(sr, timed_out=timed_out, actual_delay=actual_delay, trajectory_complete=False)
+            self._record_step(
+                sr,
+                timed_out=timed_out,
+                actual_delay=actual_delay,
+                trajectory_complete=False,
+                trajectory_id=traj.instance_id,
+            )
             if (sr.exit_code != 0 or timed_out) and self.config.replay_stop_on_error:
                 aborted = True
                 break
