@@ -27,7 +27,7 @@ they share no code with the new kernel.
 | [bench-core 使用指南](docs/bench-core-usage-zh.md) | **src 内核压测（推荐）：安装→配置→CLI→清理** |
 | [Design](docs/design.md) | System architecture and flow design |
 | [Design (EN)](docs/design-en.md) | English version of design doc |
-| [Metrics Reference](docs/metrics-reference.md) | All 50+ metrics explained |
+| [Metrics Reference](docs/metrics-reference.md) | bench_core + vm_monitor metrics, collection sources & formulas |
 | [Usage Guide](docs/usage-guide.md) | Detailed tool usage and configuration |
 | [vm_bench Usage](docs/vm_bench-usage-guide.md) | Modular vm_bench package (OpenStack) |
 | [E2B Bench Usage](docs/e2b-bench-usage.md) | E2B Sandbox batch performance testing |

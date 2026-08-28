@@ -218,7 +218,7 @@ Each tool produces logs parsed by `vm_monitor/parsers.py`:
 
 ## Metrics Reference
 
-See [docs/metrics-reference.md](docs/metrics-reference.md) for complete metric descriptions.
+See [docs/metrics-reference.md](docs/metrics-reference.md) for complete metric descriptions — `bench_core` kernel timing/task metrics, every `vm_monitor` sheet, and the `/proc`+`/sys` collection sources & calculation formulas.
 
 ### Key metrics to watch
 
@@ -307,6 +307,6 @@ config/
 - [docs/bench-core-usage-zh.md](docs/bench-core-usage-zh.md) — src kernel usage (install→config→CLI→cleanup→troubleshooting)
 - [docs/superpowers/specs/2026-08-12-environment-provider-bench-core-design.md](docs/superpowers/specs/2026-08-12-environment-provider-bench-core-design.md) — EnvironmentProvider + bench_core design (local working doc)
 - [docs/design.md](docs/design.md) / [docs/design-en.md](docs/design-en.md) — system architecture (CN/EN)
-- [docs/metrics-reference.md](docs/metrics-reference.md) — all 50+ metrics explained
+- [docs/metrics-reference.md](docs/metrics-reference.md) — bench_core kernel + vm_monitor sheet metrics, /proc & /sys collection sources, calculation formulas
 - [docs/usage-guide.md](docs/usage-guide.md) — detailed legacy tool usage
 - [docs/e2b-bench-usage.md](docs/e2b-bench-usage.md) / [docs/docker-bench-usage.md](docs/docker-bench-usage.md) — frozen legacy backend guides
