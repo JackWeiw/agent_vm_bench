@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -663,6 +664,75 @@ class TestExecOnlyBuildsNoAdmission:
         state = BenchSandbox.from_instance(inst, workflow_type="replay")
         runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider)
         assert runner.admission is None
+
+
+class TestOvercommitE2E:
+    """P2.6 Task 6: end-to-end overcommit and exec_only regression."""
+
+    def test_m_lt_n_emits_paused_windows_and_slot_wait(self, tmp_path):
+        """3 sandboxes, 1 running slot -> steady-state paused majority +
+        slot contention. Uses a slow-pause monkeypatch (0.1s) so the single
+        slot is held long enough for the other sandboxes to queue -- this
+        makes the contention assertion deterministic on fast machines.
+        """
+        config = _lifecycle_config(
+            tmp_path,
+            total_count=3,
+            benchmark_mode="fixed",
+            test_duration=2,
+            filename_prefix="oc",
+            replay_running_concurrency=1,
+        )
+        provider = FakeLifecycleProvider(count=3)
+
+        # Slow pause so the single running slot stays occupied long enough
+        # for the other two sandboxes to queue deterministically.
+        orig_pause = FakeLifecycleProvider.pause
+
+        def slow_pause(self_provider, inst):
+            self_provider.pause_calls += 1
+            time.sleep(0.1)
+
+        FakeLifecycleProvider.pause = slow_pause
+        try:
+            result = run_benchmark(config, provider)
+        finally:
+            FakeLifecycleProvider.pause = orig_pause
+
+        series_path = Path(config.output_dir) / f"{config.filename_prefix}_lifecycle_series.jsonl"
+        assert series_path.exists()
+        events = [json.loads(l) for l in series_path.read_text().splitlines()]
+        steps = [e for e in events if e["event"] == "step"]
+        assert len(steps) >= 3, f"expected >=3 step slices, got {len(steps)}"
+        assert any(
+            s["slot_contention_wait_sec"] > 0 for s in steps
+        ), "no slot_contention_wait_sec > 0 observed across slices"
+        assert "Admission: running=1/3" in result["report"]
+        assert "Slot contention:" in result["report"]
+
+    def test_exec_only_regression_unchanged(self, tmp_path):
+        """exec_only must IGNORE admission knobs: no lifecycle calls, no
+        series file, no lifecycle/admission report lines. Byte-for-byte
+        P2.5 regression.
+        """
+        config = _lifecycle_config(
+            tmp_path,
+            replay_mode="exec_only",
+            filename_prefix="eo",
+            replay_running_concurrency=1,
+            replay_control_plane_qps=50.0,
+        )
+        provider = FakeLifecycleProvider(count=1)
+        result = run_benchmark(config, provider)
+        report = result["report"]
+
+        assert "[Lifecycle Overhead]" not in report
+        assert "Admission:" not in report
+        assert "Slot contention:" not in report
+        assert provider.pause_calls == 0
+        assert provider.resume_calls == 0
+        series_path = Path(config.output_dir) / f"{config.filename_prefix}_lifecycle_series.jsonl"
+        assert not series_path.exists()
 
 
 class TestConfigP26Knobs:
