@@ -203,11 +203,15 @@ def test_run_slice_p2_override_flows_timing_through_hooks():
         RESUME_DUR = 0.02
         PAUSE_DUR = 0.02
 
-        def _resume(self) -> None:
+        def _resume(self) -> tuple[float, float]:
+            t = time.perf_counter()
             time.sleep(self.RESUME_DUR)
+            return 0.0, time.perf_counter() - t
 
-        def _pause(self) -> None:
+        def _pause(self) -> tuple[float, float]:
+            t = time.perf_counter()
             time.sleep(self.PAUSE_DUR)
+            return 0.0, time.perf_counter() - t
 
     config = KernelConfig(workflow_type="replay")
     state = _make_state()

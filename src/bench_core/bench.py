@@ -318,15 +318,15 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         slots = None
         qps_lim = None
         if config.replay_running_concurrency is not None and config.replay_running_concurrency < config.total_count:
-            slots = RunningSlotScheduler(maximum=config.replay_running_concurrency)
+            slots = RunningSlotScheduler(maximum=config.replay_running_concurrency, stop_event=stop_event)
         if config.replay_control_plane_qps is not None:
             cap = config.replay_control_plane_inflight_cap or min(64, config.total_count)
-            qps_lim = QpsRateLimiter(qps=config.replay_control_plane_qps, inflight_cap=cap)
+            qps_lim = QpsRateLimiter(qps=config.replay_control_plane_qps, inflight_cap=cap, stop_event=stop_event)
         if slots is not None or qps_lim is not None:
             # If only qps is set, provide a pass-through slots scheduler (cap=total)
             # so the runner's admission path (slot acquire/release + qps gating) runs.
             admission = Admission(
-                slots=slots or RunningSlotScheduler(maximum=config.total_count),
+                slots=slots or RunningSlotScheduler(maximum=config.total_count, stop_event=stop_event),
                 qps=qps_lim,
             )
             admission_snapshot = {

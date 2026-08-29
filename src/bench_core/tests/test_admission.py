@@ -439,3 +439,132 @@ class TestRunningLease:
         finally:
             sched.release(lease)
         assert lease.released is True
+
+
+# -------------------------------------------------------------- P0-1: hold_inflight
+
+
+class TestQpsHoldInflightOption:
+    """P0-1: command exec must not hold an inflight permit during the body.
+
+    The reference rate-limits only stream establishment; bench_core's exec is a
+    monolithic blocking RPC with no stream handle, so holding an inflight permit
+    for the whole body would serialize long commands behind the cap. ``command``
+    callers pass ``hold_inflight=False``; lifecycle ops keep the default (True).
+    """
+
+    def test_command_slot_without_inflight_does_not_consume_permit(self):
+        lim = QpsRateLimiter(qps=1000.0, inflight_cap=2)
+        with lim.slot("command", hold_inflight=False):
+            assert lim.snapshot()["in_flight"] == 0
+        assert lim.snapshot()["in_flight"] == 0
+        # dispatched counter still increments (QPS time-wait still applied)
+        snap = lim.snapshot()
+        assert snap["dispatched"] == 1
+        assert snap["dispatched_by_operation"]["command"] == 1
+
+    def test_lifecycle_slot_default_holds_inflight(self):
+        lim = QpsRateLimiter(qps=1000.0, inflight_cap=2)
+        with lim.slot("resume"):
+            assert lim.snapshot()["in_flight"] == 1
+        assert lim.snapshot()["in_flight"] == 0
+
+    def test_command_slot_releases_no_inflight_on_body_exception(self):
+        lim = QpsRateLimiter(qps=1000.0, inflight_cap=2)
+
+        class _Boom(Exception):
+            pass
+
+        with pytest.raises(_Boom), lim.slot("command", hold_inflight=False):
+            raise _Boom
+        assert lim.snapshot()["in_flight"] == 0
+
+
+# -------------------------------------------------------------- P1-4: column-stable
+
+
+class TestQpsOperationColumns:
+    """P1-4: dispatched/waiting_by_operation are column-stable over the 5 built-ins."""
+
+    def test_builtin_keys_present_and_zero_before_dispatch(self):
+        lim = QpsRateLimiter(qps=1000.0, inflight_cap=4)
+        snap = lim.snapshot()
+        for k in ("resume", "pause", "cleanup", "create", "command"):
+            assert k in snap["dispatched_by_operation"]
+            assert snap["dispatched_by_operation"][k] == 0
+            assert k in snap["waiting_by_operation"]
+            assert snap["waiting_by_operation"][k] == 0
+
+
+# -------------------------------------------------------------- P1-3 + P0-2
+
+
+class TestRunningSlotDelayedVisibility:
+    """P1-3: snapshot.waiting must count delayed-but-not-yet-eligible requests."""
+
+    def test_waiting_counts_delayed_requests(self):
+        stop = threading.Event()
+        sched = RunningSlotScheduler(maximum=1, stop_event=stop)
+        held = sched.acquire("t1")  # occupy the single slot
+        try:
+
+            def _waiter():
+                try:
+                    sched.acquire("t2", ready_at=time.monotonic() + 10.0)
+                except BaseException:
+                    pass
+
+            w = threading.Thread(target=_waiter, daemon=True)
+            w.start()
+            time.sleep(0.25)  # let the waiter park in the natural-delay sleep
+            snap = sched.snapshot()
+            assert snap["waiting"] >= 1  # delayed waiter is pending
+            stop.set()  # abort the 10s sleep
+            w.join(2)
+        finally:
+            sched.release(held)
+
+
+class TestQpsStopResponsiveness:
+    """P0-2: QPS time-wait and inflight acquire must be stop_event-responsive."""
+
+    def test_time_wait_interrupted_by_stop_event(self):
+        stop = threading.Event()
+        lim = QpsRateLimiter(qps=1.0, inflight_cap=2, stop_event=stop)
+        raised = threading.Event()
+
+        with lim.slot("resume"):  # 1st dispatch: delay ~0, occupies 1 inflight
+            # 2nd dispatch: QPS time-wait ~1s (next_dispatch_at is ~1s in future)
+            def _w():
+                try:
+                    with lim.slot("resume"):
+                        pass
+                except BaseException:
+                    raised.set()
+
+            t = threading.Thread(target=_w, daemon=True)
+            t.start()
+            time.sleep(0.25)  # let it enter the QPS time-wait
+            stop.set()
+            assert raised.wait(2), "QPS time-wait did not abort on stop_event"
+
+    def test_fifo_wait_interrupted_by_stop_event(self):
+        stop = threading.Event()
+        sched = RunningSlotScheduler(maximum=1, stop_event=stop)
+        held = sched.acquire("t1")  # occupy the only slot
+        try:
+            raised = threading.Event()
+
+            def _w():
+                try:
+                    sched.acquire("t2")  # no ready_at -> parks in FIFO wait
+                except BaseException:
+                    raised.set()
+
+            t = threading.Thread(target=_w, daemon=True)
+            t.start()
+            time.sleep(0.25)
+            stop.set()
+            assert raised.wait(2), "FIFO wait did not abort on stop_event"
+        finally:
+            sched.release(held)

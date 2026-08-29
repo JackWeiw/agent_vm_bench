@@ -907,6 +907,97 @@ def test_exec_is_qps_gated_in_lifecycle_mode():
     assert calls  # exec actually ran
 
 
+def test_lifecycle_call_splits_queue_wait_from_api_sec():
+    """P1-9: _lifecycle_call_with_retry surfaces (queue_wait, api_sec) separately,
+    un-folding the earlier G3 conflation that jammed the QPS wait into api_sec.
+
+    Forces the limiter's next dispatch deadline into the future so the queue wait
+    is deterministic (~the deadline gap) regardless of box speed, then asserts the
+    split: queue_wait carries the QPS time-wait, api_sec carries the pure call.
+    """
+    import time
+
+    from bench_core.admission import Admission, QpsRateLimiter, RunningSlotScheduler
+    from bench_core.config import KernelConfig
+    from bench_core.schemas import BenchSandbox
+    from bench_core.task_runner.replay import ReplayBaseRunner
+    from env_provider import SandboxInstance
+
+    cfg = KernelConfig(workflow_type="replay", replay_mode="lifecycle", replay_ready_probe=False)
+    provider = FakeLifecycleProvider(count=1)
+    provider.create_all()
+    state = BenchSandbox.from_instance(provider._instances[0], "replay")
+    stop = threading.Event()
+    qps = QpsRateLimiter(qps=100.0, inflight_cap=4)
+    adm = Admission(slots=RunningSlotScheduler(maximum=1), qps=qps)
+    runner = ReplayBaseRunner(state, cfg, stop, provider, admission=adm)
+
+    # Force a future dispatch deadline ~0.05s out so the queue wait is observable.
+    qps._next_dispatch_at = time.monotonic() + 0.05
+    queue_wait, api = runner._lifecycle_call_with_retry("resume", lambda: provider.resume(state))
+
+    # queue_wait captures the QPS time-wait (>= 0.04 tolerant lower bound); api_sec
+    # captures the pure resume call (FakeLifecycleProvider sleeps 0.02 -> >= 0.01).
+    assert queue_wait >= 0.04
+    assert api >= 0.01
+    # Without a QPS limiter the queue wait is 0 and only the API duration is measured.
+    runner_noqps = ReplayBaseRunner(state, cfg, stop, provider, admission=None)
+    q2, a2 = runner_noqps._lifecycle_call_with_retry("pause", lambda: provider.pause(state))
+    assert q2 == 0.0
+    assert a2 >= 0.01
+
+
+def test_lifecycle_call_shutdown_during_retry_bypasses_except():
+    """P0-2: ShutdownInterrupted raised mid-retry (inside the QPS slot enter of
+    attempt 2) must bypass the ``except Exception`` retry handler and propagate
+    to the caller. This is the load-bearing BaseException-vs-Exception path: a
+    shutdown is not a retryable failure, so it must not be swallowed into a
+    retry loop or recorded as slice_failed.
+
+    Attempt 1 fails transiently (``503``) and is caught by ``except Exception``;
+    the QPS limiter's deadline is now ~0.5 s in the future (qps=2 -> 0.5 s
+    interval). Attempt 2's ``_stop_aware_sleep`` sees ``stop_event`` set and
+    raises ``ShutdownInterrupted`` before the body runs.
+    """
+    from bench_core.admission import (
+        Admission,
+        QpsRateLimiter,
+        RunningSlotScheduler,
+        ShutdownInterrupted,
+    )
+    from bench_core.config import KernelConfig
+    from bench_core.schemas import BenchSandbox
+    from bench_core.task_runner.replay import ReplayBaseRunner
+    from env_provider import SandboxInstance
+
+    cfg = KernelConfig(
+        workflow_type="replay",
+        replay_mode="lifecycle",
+        replay_lifecycle_retries=2,
+        replay_ready_probe=False,
+    )
+
+    class _TransientProvider(FakeLifecycleProvider):
+        def resume(self, inst):
+            raise RuntimeError("503 gateway timeout")
+
+    provider = _TransientProvider(count=1)
+    provider.create_all()
+    state = BenchSandbox.from_instance(provider._instances[0], "replay")
+    stop = threading.Event()
+    # qps=2 -> 0.5 s interval: after attempt 1's dispatch the next deadline is
+    # ~0.5 s out, so attempt 2's slot enter must sleep -> _stop_aware_sleep.
+    qps = QpsRateLimiter(qps=2.0, inflight_cap=4, stop_event=stop)
+    adm = Admission(slots=RunningSlotScheduler(maximum=1, stop_event=stop), qps=qps)
+    runner = ReplayBaseRunner(state, cfg, stop, provider, admission=adm)
+
+    stop.set()  # shutdown requested before the call
+    with pytest.raises(ShutdownInterrupted):
+        runner._lifecycle_call_with_retry("resume", lambda: provider.resume(state))
+    # Attempt 1 did dispatch (transient failure recorded in the retry loop).
+    assert qps.snapshot()["dispatched"] >= 1
+
+
 def test_trajectory_mode_guard_rejects_non_ephemeral_provider():
     """Spine: replay_mode=trajectory on a non-EphemeralCapable provider fails fast."""
     from bench_core.bench import run_benchmark

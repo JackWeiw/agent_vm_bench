@@ -38,6 +38,66 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# The five built-in control-plane operation types (column-stable in every
+# snapshot). Custom operation strings are still accepted on the fly -- the
+# dicts below are seeded with these and unknown keys are added when first
+# seen -- so this set defines the stable reporting columns, not a closed enum.
+_OPERATION_TYPES: tuple[str, ...] = ("resume", "pause", "cleanup", "create", "command")
+
+# Polling interval (seconds) used by every stop-responsive wait in this module.
+# Chosen so a benchmark shutdown is observed within ~250 ms without hammering
+# condition locks / semaphores on a hot fleet. Tune here, not at call sites.
+_STOP_POLL_SEC: float = 0.25
+
+
+class ShutdownInterrupted(BaseException):
+    """Raised from admission waits when the benchmark stop_event is set.
+
+    A ``BaseException`` (not ``Exception``) deliberately: shutdown is not a
+    retryable failure, so it must bypass the lifecycle retry loop's
+    ``except Exception`` and the per-step ``except Exception`` handlers (a
+    shutdown must not be recorded as ``slice_failed``). It propagates up to the
+    runner's ``run()`` loop, which catches it and exits the thread cleanly. The
+    slice/trajectory ``finally`` blocks still run, so running-slot leases release.
+    """
+
+
+def _stop_aware_sleep(delay: float, stop_event: threading.Event | None) -> None:
+    """Sleep ``delay`` seconds; raise ``ShutdownInterrupted`` if stop sets.
+
+    Without a stop_event, falls back to a plain ``time.sleep`` (preserves the
+    single-thread / unit-test path where no shutdown signal exists).
+    """
+    if delay <= 0:
+        return
+    if stop_event is None:
+        time.sleep(delay)
+        return
+    deadline = time.monotonic() + delay
+    while True:
+        now = time.monotonic()
+        remaining = deadline - now
+        if remaining <= 0:
+            return
+        if stop_event.is_set():
+            raise ShutdownInterrupted("admission time-wait interrupted by stop_event")
+        stop_event.wait(min(remaining, _STOP_POLL_SEC))
+
+
+def _stop_aware_acquire(semaphore: threading.Semaphore, stop_event: threading.Event | None) -> bool:
+    """Acquire ``semaphore``; raise ``ShutdownInterrupted`` if stop sets.
+
+    Returns True on acquire. Without a stop_event, blocks normally.
+    """
+    if stop_event is None:
+        semaphore.acquire()
+        return True
+    while True:
+        if semaphore.acquire(timeout=_STOP_POLL_SEC):
+            return True
+        if stop_event.is_set():
+            raise ShutdownInterrupted("inflight acquire interrupted by stop_event")
+
 
 @dataclass(slots=True)
 class RunningLease:
@@ -81,14 +141,20 @@ class RunningSlotScheduler:
         ValueError: ``maximum < 1``.
     """
 
-    def __init__(self, maximum: int) -> None:
+    def __init__(self, maximum: int, *, stop_event: threading.Event | None = None) -> None:
         if maximum < 1:
             raise ValueError(f"maximum must be >= 1, got {maximum}")
         self._maximum = maximum
+        self._stop_event = stop_event
         self._active: set[int] = set()  # lease_ids currently held
         self._peak_active = 0
         self._granted = 0
         self._total_queue_wait = 0.0
+        # P1-3: count requests still sleeping until their ready_at. They are
+        # pending (not yet granted) but absent from _queue, so without this
+        # counter snapshot.waiting would undercount during launch pacing /
+        # inter-step delays.
+        self._delayed_count = 0
         # FIFO queue: list of (task_id, queued_at_monotonic, event, seq)
         # event is set when the lease is granted.
         self._queue: list[tuple[str, float, threading.Event, int]] = []
@@ -113,7 +179,15 @@ class RunningSlotScheduler:
             delay = ready_at - time.monotonic()
             if delay > 0:
                 natural_delay = delay
-                time.sleep(delay)
+                # P1-3: register as pending BEFORE sleeping so snapshot.waiting
+                # counts delayed-but-not-yet-eligible requests.
+                with self._cond:
+                    self._delayed_count += 1
+                try:
+                    _stop_aware_sleep(delay, self._stop_event)
+                finally:
+                    with self._cond:
+                        self._delayed_count -= 1
         queued_at = time.monotonic()
         event = threading.Event()
         with self._cond:
@@ -124,7 +198,17 @@ class RunningSlotScheduler:
             while True:
                 if self._queue and self._queue[0][3] == seq and len(self._active) < self._maximum:
                     break
-                self._cond.wait()
+                # P0-2: stop-responsive FIFO wait. Bounded timeout so a shutdown
+                # is observed even without a notify (e.g. a dead backend that
+                # never releases).
+                if self._stop_event is not None and self._stop_event.is_set():
+                    try:
+                        self._queue.remove((task_id, queued_at, event, seq))
+                    except ValueError:
+                        pass
+                    self._cond.notify_all()
+                    raise ShutdownInterrupted("running-slot FIFO wait interrupted by stop_event")
+                self._cond.wait(timeout=_STOP_POLL_SEC)
             # Pop myself from the head
             self._queue.pop(0)
             # Grant the lease
@@ -154,7 +238,11 @@ class RunningSlotScheduler:
             self._cond.notify_all()
 
     def snapshot(self) -> dict[str, Any]:
-        """Return ``{"maximum", "active", "peak_active", "granted", "average_queue_wait_sec", "waiting"}``."""
+        """Return ``{"maximum", "active", "peak_active", "granted", "average_queue_wait_sec", "waiting"}``.
+
+        ``waiting`` counts both capacity-queued requests and delayed-but-not-yet-
+        eligible requests (still sleeping until their ``ready_at``).
+        """
         with self._cond:
             return {
                 "maximum": self._maximum,
@@ -162,7 +250,7 @@ class RunningSlotScheduler:
                 "peak_active": self._peak_active,
                 "granted": self._granted,
                 "average_queue_wait_sec": self._total_queue_wait / self._granted if self._granted else 0.0,
-                "waiting": len(self._queue),
+                "waiting": len(self._queue) + self._delayed_count,
             }
 
 
@@ -193,7 +281,7 @@ class QpsRateLimiter:
         ValueError: ``qps <= 0`` or ``inflight_cap < 1``.
     """
 
-    def __init__(self, qps: float, inflight_cap: int) -> None:
+    def __init__(self, qps: float, inflight_cap: int, *, stop_event: threading.Event | None = None) -> None:
         if qps <= 0:
             raise ValueError(f"qps must be > 0, got {qps}")
         if inflight_cap < 1:
@@ -204,22 +292,30 @@ class QpsRateLimiter:
         self._inflight = threading.Semaphore(inflight_cap)
         self._next_dispatch_at = time.monotonic()
         self._dispatch_lock = threading.Lock()
+        self._stop_event = stop_event
         # Metrics
         self._dispatched = 0
         self._total_wait = 0.0
         self._max_wait = 0.0
-        self._dispatched_by_op: dict[str, int] = {"resume": 0, "pause": 0, "cleanup": 0}
+        self._dispatched_by_op: dict[str, int] = {op: 0 for op in _OPERATION_TYPES}
         self._waiting = 0  # threads parked in the QPS time-wait
-        self._waiting_by_op: dict[str, int] = {}
+        self._waiting_by_op: dict[str, int] = {op: 0 for op in _OPERATION_TYPES}
 
-    def slot(self, operation: str) -> _QpsSlot:
+    def slot(self, operation: str, *, hold_inflight: bool = True) -> _QpsSlot:
         """Return a context manager that enforces QPS rate + inflight cap.
 
         Args:
             operation: Operation type for metrics (``"resume"``, ``"pause"``,
-                ``"cleanup"``, or a custom string).
+                ``"cleanup"``, ``"create"``, ``"command"``, or a custom string).
+            hold_inflight: When False, apply only the QPS time-wait and do NOT
+                acquire an inflight permit. Used for the ``"command"`` bucket in
+                bench_core: ``provider.exec`` is a monolithic blocking RPC with no
+                stream handle, so holding an inflight permit for the whole body
+                would serialize long commands behind the cap. Lifecycle calls
+                (resume/pause/cleanup/create) are short RPCs and keep the default
+                (True) so the inflight fuse still bounds concurrent dispatch.
         """
-        return _QpsSlot(self, operation)
+        return _QpsSlot(self, operation, hold_inflight=hold_inflight)
 
     def snapshot(self) -> dict[str, Any]:
         """Return dispatch metrics.
@@ -251,16 +347,20 @@ class _QpsSlot:
 
     1. Compute dispatch time under ``_dispatch_lock``; sleep for the rate delay
        **before** acquiring inflight (so we don't hold a permit while parked).
-    2. Acquire inflight semaphore.
+    2. Acquire inflight semaphore -- UNLESS ``hold_inflight`` is False (the
+       ``"command"`` bucket), in which case the body runs concurrent without a
+       permit, matching the reference's "rate-limit stream-open only" intent.
     3. Record metrics.
 
-    Exit (finally): release inflight even if the body raised.
+    Exit (finally): release inflight only if it was acquired.
     """
 
-    def __init__(self, limiter: QpsRateLimiter, operation: str) -> None:
+    def __init__(self, limiter: QpsRateLimiter, operation: str, *, hold_inflight: bool = True) -> None:
         self._lim = limiter
         self._op = operation
+        self._hold_inflight = hold_inflight
         self._wait_started_at = 0.0
+        self._acquired_inflight = False
 
     def __enter__(self) -> None:
         self._wait_started_at = time.monotonic()
@@ -281,13 +381,16 @@ class _QpsSlot:
                 self._lim._waiting_by_op[self._op] = self._lim._waiting_by_op.get(self._op, 0) + 1
         if delay > 0:
             try:
-                time.sleep(delay)
+                _stop_aware_sleep(delay, self._lim._stop_event)
             finally:
                 with self._lim._dispatch_lock:
                     self._lim._waiting -= 1
                     self._lim._waiting_by_op[self._op] = max(0, self._lim._waiting_by_op.get(self._op, 0) - 1)
-        # Step 2: inflight semaphore acquire AFTER the wait.
-        self._lim._inflight.acquire()
+        # Step 2: inflight semaphore acquire AFTER the wait (skipped for the
+        # command bucket, whose body may outlive a reasonable inflight permit).
+        if self._hold_inflight:
+            _stop_aware_acquire(self._lim._inflight, self._lim._stop_event)
+            self._acquired_inflight = True
         # Step 3: record metrics.
         wait_sec = time.monotonic() - self._wait_started_at
         with self._lim._dispatch_lock:
@@ -298,8 +401,9 @@ class _QpsSlot:
             self._lim._dispatched_by_op[self._op] = self._lim._dispatched_by_op.get(self._op, 0) + 1
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        # Finally: release inflight even if the body raised.
-        self._lim._inflight.release()
+        # Finally: release inflight only if we acquired it (command bucket did not).
+        if self._acquired_inflight:
+            self._lim._inflight.release()
 
 
 @dataclass(slots=True)
