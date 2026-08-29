@@ -27,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from bench_core.admission import Admission, LaunchPacer
+from bench_core.admission import Admission, LaunchPacer, ShutdownInterrupted
 from bench_core.config import KernelConfig
 from bench_core.lifecycle_series import LifecycleSeriesWriter
 from bench_core.replay_payload import ReplayStep, Trajectory, load_pool
@@ -143,16 +143,13 @@ class ReplayBaseRunner(threading.Thread):
             slot_acquired_at = lease.acquired_at
 
         try:
-            # Resume phase (QPS-gated inside _resume with G3 retry). Phase 1
-            # folds the QPS queue wait into resume_api_sec -- the retry loop
-            # owns the limiter, so each retry attempt re-enters it. queue_wait
-            # is 0; the sum invariant (resume_sec = queue + api + ready_wait)
-            # holds exactly.
+            # Resume phase (QPS-gated inside _resume with G3 retry). P1-9 un-folds
+            # the queue wait from the API duration: _lifecycle_call_with_retry
+            # returns (queue_wait, api) so resume_queue_wait_sec carries the real
+            # QPS time-wait and resume_api_sec the pure call. The sum invariant
+            # (resume_sec = queue + api + ready_wait) holds exactly.
             resume_start_ts = time.time()
-            resume_queue_wait_sec = 0.0
-            t_slot = time.perf_counter()
-            self._resume()
-            resume_api_sec = time.perf_counter() - t_slot
+            resume_queue_wait_sec, resume_api_sec = self._resume()
 
             # Ready probe (post-resume, not QPS-gated; config-gated + lifecycle/trajectory)
             resume_ready_wait_sec = 0.0
@@ -174,13 +171,10 @@ class ReplayBaseRunner(threading.Thread):
             exec_end_ts = time.time()
             exec_elapsed = exec_end - exec_start
 
-            # Pause phase (QPS-gated inside _pause with G3 retry). queue_wait
-            # folded into pause_api_sec; pause_queue_wait_sec is 0.
+            # Pause phase (QPS-gated inside _pause with G3 retry). P1-9 un-folds
+            # the queue wait from the API duration, mirroring resume.
             pause_start_ts = time.time()
-            pause_queue_wait_sec = 0.0
-            t_slot = time.perf_counter()
-            self._pause()
-            pause_api_sec = time.perf_counter() - t_slot
+            pause_queue_wait_sec, pause_api_sec = self._pause()
 
             # pause_sec = sum of segments (exact, no double-counting)
             pause_sec = pause_queue_wait_sec + pause_api_sec
@@ -268,44 +262,71 @@ class ReplayBaseRunner(threading.Thread):
         return prev + step.delay_time_sec * self.config.replay_delay_scale + extra
 
     # --- lifecycle hooks (lifecycle/trajectory: real call + G3 retry; exec_only: no-op) ---
-    def _resume(self) -> None:
+    def _resume(self) -> tuple[float, float]:
         """Resume the sandbox (restore from snapshot) before exec.
 
         lifecycle/trajectory: real call with G3 transient retry. Each retry
-        attempt is QPS-gated (re-enters the limiter). exec_only: no-op so the
-        baseline (resume ~= 0) stays comparable.
+        attempt is QPS-gated (re-enters the limiter). Returns
+        ``(queue_wait_sec, api_sec)`` -- the QPS time-wait split from the pure
+        API call. exec_only: no-op so the baseline (resume ~= 0) stays
+        comparable.
         """
         if self.config.replay_mode not in ("lifecycle", "trajectory"):
-            return
-        self._lifecycle_call_with_retry("resume", lambda: self.provider.resume(self.state))
+            return 0.0, 0.0
+        return self._lifecycle_call_with_retry("resume", lambda: self.provider.resume(self.state))
 
-    def _pause(self) -> None:
+    def _pause(self) -> tuple[float, float]:
         """Pause the sandbox (memory-snapshot) after exec.
 
-        lifecycle/trajectory: real call with G3 transient retry. exec_only: no-op.
+        lifecycle/trajectory: real call with G3 transient retry. Returns
+        ``(queue_wait_sec, api_sec)``. exec_only: no-op.
         """
         if self.config.replay_mode not in ("lifecycle", "trajectory"):
-            return
-        self._lifecycle_call_with_retry("pause", lambda: self.provider.pause(self.state))
+            return 0.0, 0.0
+        return self._lifecycle_call_with_retry("pause", lambda: self.provider.pause(self.state))
 
-    def _lifecycle_call_with_retry(self, operation: str, fn) -> None:
+    def _lifecycle_call_with_retry(self, operation: str, fn) -> tuple[float, float]:
         """Run a lifecycle call with transient-error retry (G3).
+
+        Returns ``(queue_wait_sec, api_sec)`` -- the QPS time-wait (scheduler
+        queue) is split from the pure API call duration so the caller can
+        populate ``*_queue_wait_sec`` and ``*_api_sec`` independently. This
+        un-folds the earlier G3 conflation that jammed the queue wait into
+        ``api_sec``.
 
         Up to ``replay_lifecycle_retries`` retries on a transient exception;
         each retry re-enters the QPS limiter under the same ``operation``
-        bucket. On a non-transient exception or exhaustion, raise (the caller
-        synthesizes a failed slice). Structured retry-event logging is Phase 2.
+        bucket, and the per-attempt ``queue_wait``/``api`` durations are
+        accumulated (a transient attempt still spent real time waiting +
+        calling before failing). On a non-transient exception or exhaustion,
+        raise (the caller synthesizes a failed slice; the partial totals are
+        discarded). Structured retry-event logging is Phase 2.
+
+        Without a QPS limiter (``admission`` unset or ``qps`` None), the
+        queue wait is always 0.0 and only the API duration is measured.
         """
         retries = getattr(self.config, "replay_lifecycle_retries", 0)
+        total_queue_wait = 0.0
+        total_api = 0.0
         last_exc: BaseException | None = None
         for attempt in range(retries + 1):
             try:
                 if self.admission is not None and self.admission.qps is not None:
+                    t_qps_start = time.perf_counter()
                     with self.admission.qps.slot(operation):
-                        fn()
+                        t_api_start = time.perf_counter()
+                        total_queue_wait += t_api_start - t_qps_start
+                        try:
+                            fn()
+                        finally:
+                            total_api += time.perf_counter() - t_api_start
                 else:
-                    fn()
-                return
+                    t_api_start = time.perf_counter()
+                    try:
+                        fn()
+                    finally:
+                        total_api += time.perf_counter() - t_api_start
+                return total_queue_wait, total_api
             except Exception as e:  # noqa: BLE001 - classify + retry/re-raise
                 last_exc = e
                 if attempt >= retries or not is_transient_sandbox_error(e):
@@ -317,6 +338,7 @@ class ReplayBaseRunner(threading.Thread):
         # Unreachable: the loop either returns on success or raises.
         if last_exc is not None:
             raise last_exc
+        return 0.0, 0.0  # pragma: no cover - unreachable
 
     def _init_lifecycle(self) -> None:
         """One-time transition into the paused state before the first slice.
@@ -380,12 +402,17 @@ class ReplayBaseRunner(threading.Thread):
     def _execute(self, step: ReplayStep) -> CommandResult:
         """Exec the recorded action verbatim -- cwd/env via the exec contract.
 
-        G1: in lifecycle/trajectory mode the exec call start is QPS-gated under
-        the ``"command"`` bucket (matches the reference's ``command_start_slot``).
-        exec_only is ungated (baseline -- no admission controller is constructed).
+        G1: in lifecycle/trajectory mode the exec dispatch is QPS-gated under the
+        ``"command"`` bucket but with ``hold_inflight=False`` -- the QPS time-wait
+        smooths the burst of command dispatches, but no inflight permit is held
+        during the body. The reference's ``command_start_slot`` rate-limits only
+        stream establishment and releases before the command body runs; bench_core
+        has no stream handle (``provider.exec`` is a monolithic blocking RPC), so
+        holding an inflight permit for the whole body would serialize long
+        commands behind the cap. exec_only is ungated (no admission controller).
         """
         if self.admission is not None and self.admission.qps is not None:
-            with self.admission.qps.slot("command"):
+            with self.admission.qps.slot("command", hold_inflight=False):
                 return self.provider.exec(
                     self.state,
                     step.action,
@@ -484,33 +511,36 @@ class ReplayBaseRunner(threading.Thread):
         self._prev_pause_end_monotonic = None  # first step: ready_at=None (G2)
         if is_ephemeral:
             self._wait_for_launch_turn()
-            if self.admission is not None:
-                lease = self.admission.slots.acquire(f"sbx{self.state.index}_{traj.instance_id}")
-                lease_acquired_at = lease.acquired_at
-            try:
-                # G1: create under the 'create' QPS bucket; G3: single call, no retry.
-                t0 = time.perf_counter()
-                if self.admission is not None and self.admission.qps is not None:
-                    with self.admission.qps.slot("create"):
-                        self.provider.create_one(self.state.index, metadata={"trajectory_id": traj.instance_id})
-                else:
-                    self.provider.create_one(self.state.index, metadata={"trajectory_id": traj.instance_id})
-                create_sec = time.perf_counter() - t0
-                # Post-create ready probe (lifecycle concern; not QPS-gated).
-                if getattr(self.config, "replay_ready_probe", True) and self.config.replay_mode in (
-                    "lifecycle",
-                    "trajectory",
-                ):
-                    self._probe_ready()
-            except Exception as e:
-                logger.error(
-                    f"[Sandbox{self.state.index}] trajectory {traj.instance_id} " f"create failed: {str(e)[:120]}"
-                )
-                if lease is not None:
-                    self.admission.slots.release(lease)
-                self._record_trajectory_failure(traj, create_sec=create_sec, kill_sec=0.0)
-                return
+        # The outer try/finally owns the trajectory-level lease release so a
+        # BaseException (ShutdownInterrupted from the create/step/cleanup QPS
+        # slots, or KeyboardInterrupt) still releases the lease -- the lease is
+        # acquired inside this try, so the finally always sees the current state.
         try:
+            if is_ephemeral:
+                if self.admission is not None:
+                    lease = self.admission.slots.acquire(f"sbx{self.state.index}_{traj.instance_id}")
+                    lease_acquired_at = lease.acquired_at
+                try:
+                    # G1: create under the 'create' QPS bucket; G3: single call, no retry.
+                    t0 = time.perf_counter()
+                    if self.admission is not None and self.admission.qps is not None:
+                        with self.admission.qps.slot("create"):
+                            self.provider.create_one(self.state.index, metadata={"trajectory_id": traj.instance_id})
+                    else:
+                        self.provider.create_one(self.state.index, metadata={"trajectory_id": traj.instance_id})
+                    create_sec = time.perf_counter() - t0
+                    # Post-create ready probe (lifecycle concern; not QPS-gated).
+                    if getattr(self.config, "replay_ready_probe", True) and self.config.replay_mode in (
+                        "lifecycle",
+                        "trajectory",
+                    ):
+                        self._probe_ready()
+                except Exception as e:
+                    logger.error(
+                        f"[Sandbox{self.state.index}] trajectory {traj.instance_id} create failed: {str(e)[:120]}"
+                    )
+                    self._record_trajectory_failure(traj, create_sec=create_sec, kill_sec=0.0)
+                    return  # lease released by the outer finally
             self._init_lifecycle()
             prev_slice_end = time.perf_counter()
             completed = True
@@ -732,7 +762,10 @@ class ReplayTaskRunner(ReplayBaseRunner):
             cursor = self.state.index % len(pool)
             while not self.stop_event.is_set() and self.state.is_alive and run < target:
                 traj = pool[cursor]
-                self._run_trajectory(traj)
+                try:
+                    self._run_trajectory(traj)
+                except ShutdownInterrupted:
+                    break
                 cursor = (cursor + 1) % len(pool)
                 run += 1
         else:
@@ -740,7 +773,10 @@ class ReplayTaskRunner(ReplayBaseRunner):
             cursor = self.state.index % len(pool)
             while not self.stop_event.is_set() and self.state.is_alive:
                 traj = pool[cursor]
-                self._replay_trajectory(traj)
+                try:
+                    self._replay_trajectory(traj)
+                except ShutdownInterrupted:
+                    break
                 cursor = (cursor + 1) % len(pool)
 
         logger.info(f"[Sandbox{self.state.index}] Replay task runner ended")
@@ -836,11 +872,14 @@ class ReplayRoundRunner(ReplayBaseRunner):
         traj = pool[idx]
         logger.info(f"[Sandbox{self.state.index}] Replay round {self.round_id}: trajectory {traj.instance_id}")
 
-        if self.config.replay_mode == "trajectory":
-            self._run_trajectory(traj)
-        else:
-            self._init_lifecycle()
-            self._replay_round_loop(traj)
+        try:
+            if self.config.replay_mode == "trajectory":
+                self._run_trajectory(traj)
+            else:
+                self._init_lifecycle()
+                self._replay_round_loop(traj)
+        except ShutdownInterrupted:
+            pass  # benchmark shutdown mid-slice; round ends cleanly
         logger.info(f"[Sandbox{self.state.index}] Replay round {self.round_id} done")
 
     def _replay_round_loop(self, traj: Trajectory) -> None:
