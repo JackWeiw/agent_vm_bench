@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Any
 
 from bench_core.config import KernelConfig
+from bench_core.observability import ReplayObservability
 from env_provider import SandboxStatus
 from bench_core.schemas import (
     CODING_STEP_ORDER,
@@ -607,12 +608,64 @@ class ReportFormatter:
                         f"P95={slot_contention_stats['p95']:.3f}s  (n={len(all_slot_contention)})"
                     )
                     a = self.admission_snapshot
-                    lines.append(
-                        f"  Admission: running={a.get('running', 0)}/{a.get('total', 0)} "
-                        f"qps={a.get('qps', 'off')} peak_active={a.get('peak_active', 0)} "
-                        f"avg_queue_wait={a.get('avg_queue_wait_sec', 0.0):.3f}s"
-                    )
+                    lines.append("  Admission:")
+                    rs = a.get("running_slots") or {}
+                    if rs:
+                        lines.append(
+                            f"    Running slots: maximum={rs.get('maximum', 0)} "
+                            f"active={rs.get('active', 0)} peak_active={rs.get('peak_active', 0)} "
+                            f"granted={rs.get('granted', 0)} waiting={rs.get('waiting', 0)} "
+                            f"avg_queue_wait={rs.get('average_queue_wait_sec', 0.0):.3f}s"
+                        )
+                    ql = a.get("qps_limiter")
+                    if ql and a.get("qps") != "off":
+                        lines.append(
+                            f"    QPS limiter:   qps={ql.get('qps')} "
+                            f"inflight={ql.get('in_flight', 0)}/{ql.get('inflight_cap', 0)} "
+                            f"dispatched={ql.get('dispatched', 0)} "
+                            f"avg_wait={ql.get('average_wait_sec', 0.0):.1f}s "
+                            f"max_wait={ql.get('max_wait_sec', 0.0):.1f}s"
+                        )
+                        dbo = ql.get("dispatched_by_operation", {})
+                        lines.append(
+                            "    Dispatched by operation: "
+                            + " ".join(
+                                f"{op}={dbo.get(op, 0)}" for op in ("resume", "pause", "cleanup", "create", "command")
+                            )
+                        )
+                        wbo = ql.get("waiting_by_operation", {})
+                        lines.append(
+                            "    Waiting by operation:    "
+                            + " ".join(
+                                f"{op}={wbo.get(op, 0)}" for op in ("resume", "pause", "cleanup", "create", "command")
+                            )
+                        )
 
+        return lines
+
+    def format_throughput_section(self) -> list[str]:
+        """[Throughput & Overcommit] -- throughput/efficiency from ReplayObservability.
+
+        Rendered for replay workflows. Wall-gated metrics (steps_per_sec,
+        effective_parallelism, exec_wall_utilization) render ``n/a (zero
+        wall-clock time)`` when wall_sec is None/<=0; overcommit_ratio is
+        always rendered (it does not depend on wall-clock).
+        """
+        obs = ReplayObservability(
+            self.config,
+            self.sandbox_states,
+            admission_snapshot=self.admission_snapshot,
+            wall_sec=self.wall_sec,
+        )
+        lines = ["\n[Throughput & Overcommit]"]
+        na = "n/a (zero wall-clock time)"
+        sps = obs.steps_per_sec
+        lines.append(f"  steps_per_sec:         {f'{sps:.2f}' if sps is not None else na}")
+        ep = obs.effective_parallelism
+        lines.append(f"  effective_parallelism: {f'{ep:.2f}' if ep is not None else na}")
+        eu = obs.exec_wall_utilization
+        lines.append(f"  exec_wall_utilization: {f'{eu * 100:.1f}%' if eu is not None else na}")
+        lines.append(f"  overcommit_ratio:      {obs.overcommit_ratio:.1f}x")
         return lines
 
     def format_replay_step_timing_table(self) -> list[str]:
@@ -1200,6 +1253,7 @@ class StatsCollector:
             lines.extend(formatter.format_step_timing_table())
         elif self.config.workflow_type == "replay":
             lines.extend(formatter.format_replay_stats_section())
+            lines.extend(formatter.format_throughput_section())
             lines.extend(formatter.format_replay_step_timing_table())
         else:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")

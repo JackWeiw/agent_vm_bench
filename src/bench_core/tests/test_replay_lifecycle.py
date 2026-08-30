@@ -373,11 +373,21 @@ class TestLifecycleOverheadReport:
             "qps": "off",
             "peak_active": 1,
             "avg_queue_wait_sec": 0.01,
+            "running_slots": {
+                "maximum": 1,
+                "active": 0,
+                "peak_active": 1,
+                "granted": 3,
+                "average_queue_wait_sec": 0.01,
+                "waiting": 0,
+            },
         }
         lines = sc.format_replay_stats_section()
         joined = "\n".join(lines)
         assert "Slot contention:" in joined
-        assert "Admission: running=1/3" in joined
+        assert "Admission:" in joined
+        assert "Running slots:" in joined
+        assert "QPS limiter:" not in joined
 
 
 class TestSeriesFileE2E:
@@ -707,7 +717,8 @@ class TestOvercommitE2E:
         assert any(
             s["slot_contention_wait_sec"] > 0 for s in steps
         ), "no slot_contention_wait_sec > 0 observed across slices"
-        assert "Admission: running=1/3" in result["report"]
+        assert "Running slots:" in result["report"]
+        assert "maximum=1" in result["report"]
         assert "Slot contention:" in result["report"]
 
     def test_exec_only_regression_unchanged(self, tmp_path):
@@ -868,11 +879,12 @@ class TestRunBenchmarkP26Wiring:
         assert "Slot contention:" not in result["report"]
 
     def test_admission_running_fraction_in_report(self, tmp_path):
-        """With total_count=3 and running_concurrency=1, report shows running=1/3."""
+        """With total_count=3 and running_concurrency=1, report shows maximum=1 in Running slots."""
         config = _lifecycle_config(tmp_path, total_count=3, replay_running_concurrency=1)
         provider = FakeLifecycleProvider(count=3)
         result = run_benchmark(config, provider)
-        assert "running=1/3" in result["report"]
+        assert "Running slots:" in result["report"]
+        assert "maximum=1" in result["report"]
 
     def test_admission_snapshot_merges_full_sub_snapshots(self, tmp_path):
         """Phase 3: admission_snapshot embeds the full running_slots + qps_limiter

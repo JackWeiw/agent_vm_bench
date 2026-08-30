@@ -661,6 +661,7 @@ class TestReplayInitialPauseReport:
         cfg.output_dir = "/tmp/test"
         cfg.filename_prefix = "test"
         cfg.stats_interval = 5
+        cfg.replay_running_concurrency = None
         return cfg
 
     def test_initial_pause_line_rendered_when_set(self):
