@@ -874,6 +874,43 @@ class TestRunBenchmarkP26Wiring:
         result = run_benchmark(config, provider)
         assert "running=1/3" in result["report"]
 
+    def test_admission_snapshot_merges_full_sub_snapshots(self, tmp_path):
+        """Phase 3: admission_snapshot embeds the full running_slots + qps_limiter
+        sub-snapshots (not just the flattened peak/wait keys) so the report and
+        xlsx renderer can read the complete controller state."""
+        config = _lifecycle_config(
+            tmp_path,
+            replay_running_concurrency=1,
+            replay_control_plane_qps=50.0,
+        )
+        provider = FakeLifecycleProvider(count=1)
+        result = run_benchmark(config, provider)
+        snap = result["admission_snapshot"]
+        assert snap is not None
+        # Full running-slots sub-snapshot
+        assert "running_slots" in snap
+        rs = snap["running_slots"]
+        for k in ("maximum", "active", "peak_active", "granted", "average_queue_wait_sec", "waiting"):
+            assert k in rs, f"running_slots missing {k}"
+        # Full qps-limiter sub-snapshot
+        assert "qps_limiter" in snap
+        ql = snap["qps_limiter"]
+        for k in (
+            "qps",
+            "inflight_cap",
+            "in_flight",
+            "dispatched",
+            "average_wait_sec",
+            "max_wait_sec",
+            "dispatched_by_operation",
+            "waiting",
+            "waiting_by_operation",
+        ):
+            assert k in ql, f"qps_limiter missing {k}"
+        # The flattened backward-compat keys are still present (existing report reads them).
+        assert "peak_active" in snap and "avg_queue_wait_sec" in snap
+        assert "qps_dispatched" in snap
+
 
 def test_exec_is_qps_gated_in_lifecycle_mode():
     """G1: provider.exec is wrapped in qps.slot('command') in lifecycle mode."""

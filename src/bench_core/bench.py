@@ -188,8 +188,10 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         provider: The sandbox backend, already constructed.
 
     Returns:
-        ``{"report": str, "filepath": str | None}``, or ``{}`` when no sandboxes
-        reached ready state.
+        ``{"report": str, "filepath": str | None, "admission_snapshot": dict | None}``,
+        or ``{}`` when no sandboxes reached ready state. ``admission_snapshot`` is
+        the merged running-slot + QPS-limiter snapshot (``None`` outside
+        lifecycle/trajectory replay modes).
     """
     # Resolve replay_mode sentinel -> provider default before validation.
     if config.workflow_type == "replay" and config.replay_mode is None:
@@ -424,8 +426,11 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         snap = admission.slots.snapshot()
         admission_snapshot["peak_active"] = snap["peak_active"]
         admission_snapshot["avg_queue_wait_sec"] = snap["average_queue_wait_sec"]
+        admission_snapshot["running_slots"] = snap  # full sub-snapshot for the report/xlsx
         if admission.qps is not None:
-            admission_snapshot["qps_dispatched"] = admission.qps.snapshot()["dispatched"]
+            qps_snap = admission.qps.snapshot()
+            admission_snapshot["qps_dispatched"] = qps_snap["dispatched"]
+            admission_snapshot["qps_limiter"] = qps_snap  # full sub-snapshot
         stats_collector.admission_snapshot = admission_snapshot
 
     # 8. Generate and save the report.
@@ -433,7 +438,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     filepath = stats_collector.save_report(report)
     logger.info("\n" + report)
     logger.info(f"\nReport saved to: {filepath}")
-    return {"report": report, "filepath": filepath}
+    return {"report": report, "filepath": filepath, "admission_snapshot": admission_snapshot}
 
 
 def load_config(path: str | Path) -> tuple[KernelConfig, dict[str, Any]]:
