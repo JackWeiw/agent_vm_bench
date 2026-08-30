@@ -305,6 +305,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     # P2.5: lifecycle-mode-only per-step JSONL time series. Exec-only emits
     # no file (lifecycle fields all-zero; nothing to curve).
     series_writer: LifecycleSeriesWriter | None = None
+    series_path: Path | None = None
     if config.workflow_type == "replay" and config.replay_mode in ("lifecycle", "trajectory"):
         series_path = Path(config.output_dir) / f"{config.filename_prefix}_lifecycle_series.jsonl"
         series_writer = LifecycleSeriesWriter(series_path)
@@ -454,7 +455,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 wall_sec=wall_sec,
             )
             xlsx_path = Path(config.output_dir) / f"{config.filename_prefix}_obs.xlsx"
-            XlsxReportRenderer(obs).render(xlsx_path)
+            XlsxReportRenderer(obs, series_path=series_path if series_writer else None).render(xlsx_path)
             logger.info(f"Xlsx report saved to: {xlsx_path}")
 
     logger.info("\n" + report)
