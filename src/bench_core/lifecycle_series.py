@@ -54,3 +54,25 @@ class LifecycleSeriesWriter:
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+
+def load_events(path: Path) -> list[dict]:
+    """Read a lifecycle-series JSONL file into a list of event dicts.
+
+    Malformed lines are skipped with a warning (the series is append-only +
+    line-buffered; a torn final line is tolerable). Missing file -> [].
+    """
+    p = Path(path)
+    if not p.exists():
+        return []
+    out: list[dict] = []
+    with open(p, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                logger.warning("skipping malformed series line in %s", p)
+    return out
