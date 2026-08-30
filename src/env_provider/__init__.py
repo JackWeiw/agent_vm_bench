@@ -138,6 +138,20 @@ class EphemeralCapable(Protocol):
         ...
 
 
+@runtime_checkable
+class SnapshotSizeCapable(Protocol):
+    """Provider that can stat overlaybd snapshot disk usage per paused sandbox.
+
+    Replay's lifecycle mode probes this right after :meth:`pause`; providers
+    that don't implement it skip snapshot-size collection (the snapshot sheet
+    stays header-only). Returns a dict of size fields or ``None`` when the
+    snapshot dir is absent/unreadable.
+    """
+
+    def snapshot_sizes(self, inst: SandboxInstance) -> dict | None:
+        ...
+
+
 class EnvironmentProvider(ABC):
     """Contract a sandbox backend implements so the benchmark kernel can drive it.
 
@@ -251,4 +265,5 @@ __all__ = [
     "EnvironmentProvider",
     "LifecycleCapable",
     "EphemeralCapable",
+    "SnapshotSizeCapable",
 ]
