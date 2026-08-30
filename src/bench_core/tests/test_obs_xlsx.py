@@ -260,3 +260,43 @@ def test_per_step_linechart_references_all_data_rows(tmp_path):
                 assert hi - lo + 1 == 3, f"latency series references {hi-lo+1} rows, expected 3 (off-by-one? ref={f})"
                 found = True
     assert found, "no LineChart series referenced the latency_ms (B) column"
+
+
+def test_concurrency_states_sheet_from_series(tmp_path):
+    from unittest.mock import MagicMock
+
+    from bench_core.lifecycle_series import LifecycleSeriesWriter
+
+    # write two step events spanning ~2 seconds
+    sp = tmp_path / "s.jsonl"
+    w = LifecycleSeriesWriter(sp)
+    w.write(
+        {
+            "event": "step",
+            "sandbox_index": 0,
+            "step_index": 0,
+            "resume_start": 0.0,
+            "resume_end": 0.5,
+            "exec_start": 0.5,
+            "exec_end": 1.5,
+            "pause_start": 1.5,
+            "pause_end": 2.0,
+        }
+    )
+    w.close()
+
+    obs = MagicMock()  # minimal; the concurrency sheet reads only series_path
+    r = XlsxReportRenderer(obs, series_path=sp)
+    out = tmp_path / "o.xlsx"
+    # stub the other sheets by calling just the new method
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    r._sheet_concurrency_states(wb)
+    wb.save(out)
+    wb2 = openpyxl.load_workbook(out)
+    ws = wb2["Concurrency states"]
+    # header + >=1 data row, one chart
+    assert ws.max_row >= 2
+    assert len(ws._charts) >= 1

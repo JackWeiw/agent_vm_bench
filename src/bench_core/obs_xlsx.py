@@ -11,6 +11,7 @@ falls back to the text report + a warning; this module raises normally.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openpyxl import Workbook
@@ -20,8 +21,6 @@ from openpyxl.styles import Font
 from bench_core.utils import calc_percentiles
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from bench_core.observability import ReplayObservability
 
 
@@ -99,6 +98,7 @@ class XlsxReportRenderer:
         self._sheet_throughput_overcommit(wb)
         self._sheet_trajectory_summary(wb)
         self._sheet_retry_impact(wb)
+        self._sheet_concurrency_states(wb)
         wb.save(path)
 
     # --- sheets ---
@@ -284,3 +284,18 @@ class XlsxReportRenderer:
         for op, n in obs.retry_count_by_op.items():
             rows.append([f"retry_queued:{op}", n])
         _write_table(ws, ["metric", "value"], rows)
+
+    def _sheet_concurrency_states(self, wb: Workbook) -> None:
+        ws = wb.create_sheet("Concurrency states")
+        headers = ["second", "pausing", "paused", "resuming", "exec", "active"]
+        if self.series_path is None or not Path(self.series_path).exists():
+            _write_table(ws, headers, [])
+            return
+        from bench_core.lifecycle_series import load_events
+        from bench_core.lifecycle_reconstruct import reconstruct_concurrency
+
+        bins = reconstruct_concurrency(load_events(Path(self.series_path)))
+        rows = [[b["second"], b["pausing"], b["paused"], b["resuming"], b["exec"], b["active"]] for b in bins]
+        _write_table(ws, headers, rows)
+        if rows:
+            _add_line_chart(ws, "Tasks per state (dominant each second)", "count", 1, [2, 3, 4, 5, 6], len(rows), "H2")
