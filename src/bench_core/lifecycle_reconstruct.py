@@ -117,3 +117,31 @@ def gantt_segments(events: list[dict]) -> list[tuple[str, list[tuple[float, floa
     rows = [(f"sbx{idx}", segs) for idx, segs in by_task.items() if segs]
     rows.sort(key=lambda r: min(a for a, _, _ in r[1]))
     return rows
+
+
+_MIB = 1024 * 1024
+
+
+def snapshot_rows(events: list[dict]) -> list[dict]:
+    """Per-pause snapshot-size rows from ``snapshot_size`` series events.
+
+    Converts bytes -> MiB. Only ``event == "snapshot_size"`` rows are kept.
+    """
+    rows: list[dict] = []
+    for e in events:
+        if e.get("event") != "snapshot_size":
+            continue
+        rows.append(
+            {
+                "pause_seq": e.get("pause_seq"),
+                "sandbox_index": e.get("sandbox_index"),
+                "sandbox_id": e.get("sandbox_id"),
+                "logical_mb": round((e.get("logical_bytes") or 0) / _MIB, 3),
+                "disk_mb": round((e.get("disk_bytes") or 0) / _MIB, 3),
+                "inherited_mb": round((e.get("inherited_bytes") or 0) / _MIB, 3),
+                "cumulative_mb": round((e.get("cumulative_bytes") or 0) / _MIB, 3),
+                "generations": e.get("generations"),
+                "files": e.get("files"),
+            }
+        )
+    return rows

@@ -139,3 +139,36 @@ def test_gantt_segments_groups_by_sandbox_sorted_by_start() -> None:
     # each row's segments are (start, end, phase)
     phases = {ph for _, _, ph in rows[0][1]}
     assert "pausing" in phases and "exec" in phases
+
+
+# ---------------------------------------------------------------------------
+# Task 4: snapshot_rows
+# ---------------------------------------------------------------------------
+
+from bench_core.lifecycle_reconstruct import snapshot_rows
+
+
+def test_snapshot_rows_filters_snapshot_events_and_converts_mb() -> None:
+    events = [
+        {
+            "event": "snapshot_size",
+            "sandbox_index": 0,
+            "sandbox_id": "abc",
+            "pause_seq": 1,
+            "logical_bytes": 2 * 1024 * 1024,
+            "disk_bytes": 1024 * 1024,
+            "inherited_bytes": 512 * 1024,
+            "cumulative_bytes": 3 * 1024 * 1024,
+            "generations": 2,
+            "files": 10,
+        },
+        {"event": "step", "sandbox_index": 0},  # ignored
+    ]
+    rows = snapshot_rows(events)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["pause_seq"] == 1
+    assert r["logical_mb"] == 2.0
+    assert r["disk_mb"] == 1.0
+    assert r["inherited_mb"] == 0.5
+    assert r["cumulative_mb"] == 3.0
