@@ -628,9 +628,31 @@ class ReplayBaseRunner(threading.Thread):
                         "trajectory",
                     ):
                         self._probe_ready()
+                    self._series_write(
+                        {
+                            "event": "trajectory_create",
+                            "sandbox_index": self.state.index,
+                            "timestamp": time.time(),
+                            "trajectory_id": traj.instance_id,
+                            "create_sec": create_sec,
+                            "success": True,
+                        }
+                    )
                 except Exception as e:
                     logger.error(
                         f"[Sandbox{self.state.index}] trajectory {traj.instance_id} create failed: {str(e)[:120]}"
+                    )
+                    self._series_write(
+                        {
+                            "event": "trajectory_create",
+                            "sandbox_index": self.state.index,
+                            "timestamp": time.time(),
+                            "trajectory_id": traj.instance_id,
+                            "create_sec": create_sec,
+                            "success": False,
+                            "error_type": type(e).__name__,
+                            "error": str(e)[:120],
+                        }
                     )
                     self._record_trajectory_failure(traj, create_sec=create_sec, kill_sec=0.0)
                     return  # lease released by the outer finally
@@ -683,9 +705,31 @@ class ReplayBaseRunner(threading.Thread):
                     else:
                         self.provider.kill_one(self.state)
                     kill_sec = time.perf_counter() - t0
+                    self._series_write(
+                        {
+                            "event": "trajectory_kill",
+                            "sandbox_index": self.state.index,
+                            "timestamp": time.time(),
+                            "trajectory_id": traj.instance_id,
+                            "kill_sec": kill_sec,
+                            "success": True,
+                        }
+                    )
                 except Exception as e:
                     logger.warning(f"[Sandbox{self.state.index}] kill failed: {str(e)[:80]}; lease still released")
                     kill_sec = time.perf_counter() - t0
+                    self._series_write(
+                        {
+                            "event": "trajectory_kill",
+                            "sandbox_index": self.state.index,
+                            "timestamp": time.time(),
+                            "trajectory_id": traj.instance_id,
+                            "kill_sec": kill_sec,
+                            "success": False,
+                            "error_type": type(e).__name__,
+                            "error": str(e)[:120],
+                        }
+                    )
         finally:
             if lease is not None:
                 self._series_write(
