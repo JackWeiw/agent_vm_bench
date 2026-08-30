@@ -285,29 +285,30 @@ class ReplayBaseRunner(threading.Thread):
             return 0.0, 0.0
         return self._lifecycle_call_with_retry("pause", lambda: self.provider.pause(self.state))
 
+    def _series_write(self, record: dict) -> None:
+        """Best-effort series write; a logging failure must never change control flow."""
+        if self.series is None:
+            return
+        try:
+            self.series.write(record)
+        except Exception as e:  # noqa: BLE001 - logging best-effort
+            logger.warning(f"[Sandbox{self.state.index}] series write failed: {str(e)[:80]}")
+
     def _lifecycle_call_with_retry(self, operation: str, fn) -> tuple[float, float]:
-        """Run a lifecycle call with transient-error retry (G3).
+        """Run a lifecycle call with transient-error retry (G3) + structured
+        retry events (Phase 2).
 
-        Returns ``(queue_wait_sec, api_sec)`` -- the QPS time-wait (scheduler
-        queue) is split from the pure API call duration so the caller can
-        populate ``*_queue_wait_sec`` and ``*_api_sec`` independently. This
-        un-folds the earlier G3 conflation that jammed the queue wait into
-        ``api_sec``.
-
-        Up to ``replay_lifecycle_retries`` retries on a transient exception;
-        each retry re-enters the QPS limiter under the same ``operation``
-        bucket, and the per-attempt ``queue_wait``/``api`` durations are
-        accumulated (a transient attempt still spent real time waiting +
-        calling before failing). On a non-transient exception or exhaustion,
-        raise (the caller synthesizes a failed slice; the partial totals are
-        discarded). Structured retry-event logging is Phase 2.
-
-        Without a QPS limiter (``admission`` unset or ``qps`` None), the
-        queue wait is always 0.0 and only the API duration is measured.
+        Returns ``(queue_wait_sec, api_sec)``. Emits ``retry_queued`` /
+        ``retry_recovered`` / ``retry_exhausted`` events to the series and
+        advances the ReplayMetrics retry accumulators. Series writes are
+        best-effort (never mask the lifecycle exception). ``ShutdownInterrupted``
+        (BaseException) bypasses the ``except Exception`` retry path, so no
+        ``retry_exhausted`` is emitted for a shutdown.
         """
         retries = getattr(self.config, "replay_lifecycle_retries", 0)
         total_queue_wait = 0.0
         total_api = 0.0
+        had_transient = False
         last_exc: BaseException | None = None
         for attempt in range(retries + 1):
             try:
@@ -326,16 +327,61 @@ class ReplayBaseRunner(threading.Thread):
                         fn()
                     finally:
                         total_api += time.perf_counter() - t_api_start
+                if had_transient:
+                    self._series_write(
+                        {
+                            "event": "retry_recovered",
+                            "sandbox_index": self.state.index,
+                            "timestamp": time.time(),
+                            "operation": operation,
+                            "attempt": attempt + 1,
+                            "total_queue_wait_sec": total_queue_wait,
+                            "total_api_sec": total_api,
+                        }
+                    )
                 return total_queue_wait, total_api
             except Exception as e:  # noqa: BLE001 - classify + retry/re-raise
                 last_exc = e
-                if attempt >= retries or not is_transient_sandbox_error(e):
+                transient = is_transient_sandbox_error(e)
+                if attempt >= retries or not transient:
+                    self._series_write(
+                        {
+                            "event": "retry_exhausted",
+                            "sandbox_index": self.state.index,
+                            "timestamp": time.time(),
+                            "operation": operation,
+                            "attempt": attempt + 1,
+                            "retryable": transient,
+                            "error_type": type(e).__name__,
+                            "error": str(e)[:120],
+                        }
+                    )
                     raise
+                had_transient = True
+                self._series_write(
+                    {
+                        "event": "retry_queued",
+                        "sandbox_index": self.state.index,
+                        "timestamp": time.time(),
+                        "operation": operation,
+                        "attempt": attempt + 1,
+                        "max_attempts": retries + 1,
+                        "error_type": type(e).__name__,
+                        "error": str(e)[:120],
+                        "accumulated_queue_wait_sec": total_queue_wait,
+                        "accumulated_api_sec": total_api,
+                    }
+                )
+                # Advance the report accumulator; time_lost = accumulated time across all attempts so far.
+                self.state.replay_metrics.record_retry_event(
+                    "retry_queued",
+                    operation=operation,
+                    time_lost_sec=total_queue_wait + total_api,
+                )
                 logger.warning(
                     f"[Sandbox{self.state.index}] {operation} transient error "
                     f"(attempt {attempt + 1}/{retries + 1}): {str(e)[:80]}; retrying"
                 )
-        # Unreachable: the loop either returns on success or raises.
         if last_exc is not None:
             raise last_exc
         return 0.0, 0.0  # pragma: no cover - unreachable
