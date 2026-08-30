@@ -423,9 +423,11 @@ class ReplayMetrics(TaskMetricsBase):
         """Append one slice's final retry count for percentile math.
 
         Called by the runner at slice-end with the slice's retry_queued count
-        (a delta of :attr:`retry_queued_count` captured across the slice).
-        Zero-count slices are still appended so the list stays length-aligned
-        with the slice list.
+        (a delta of :attr:`retry_queued_count` captured across the slice). Only
+        successful slices reach this call; synthesized-failure slices (where the
+        runner raises before slice-end) are excluded by the ``slice_total_sec >
+        0.0`` gate in :meth:`add`, so this list stays length-aligned with the
+        duration lists -- both exclude failure slices.
         """
         with self._lock:
             self._retries_per_slice.append(count)
