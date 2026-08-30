@@ -11,6 +11,7 @@ falls back to the text report + a warning; this module raises normally.
 """
 from __future__ import annotations
 
+import io
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -99,6 +100,8 @@ class XlsxReportRenderer:
         self._sheet_trajectory_summary(wb)
         self._sheet_retry_impact(wb)
         self._sheet_concurrency_states(wb)
+        gantt_png = Path(path).parent / f"{Path(path).stem.split('_obs')[0]}_gantt.png"
+        self._sheet_gantt(wb, out_png=gantt_png)
         wb.save(path)
 
     # --- sheets ---
@@ -299,3 +302,53 @@ class XlsxReportRenderer:
         _write_table(ws, headers, rows)
         if rows:
             _add_line_chart(ws, "Tasks per state (dominant each second)", "count", 1, [2, 3, 4, 5, 6], len(rows), "H2")
+
+    def _sheet_gantt(self, wb: Workbook, *, out_png: Path | None = None) -> None:
+        ws = wb.create_sheet("Gantt")
+        ws.append(["Gantt (per-sandbox phase timeline)"])
+        if self.series_path is None or not Path(self.series_path).exists():
+            ws.append(["no series data"])
+            return
+        try:
+            import matplotlib
+
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+        except ImportError:
+            ws.append(["matplotlib not installed; install with 'pip install matplotlib'"])
+            return
+
+        from bench_core.lifecycle_series import load_events
+        from bench_core.lifecycle_reconstruct import gantt_segments
+
+        rows = gantt_segments(load_events(Path(self.series_path)))
+        if not rows:
+            ws.append(["no step events"])
+            return
+        color = {"pausing": "#d62728", "paused": "#ffd8a8", "resuming": "#9467bd", "exec": "#2ca02c"}
+        n = len(rows)
+        fig, ax = plt.subplots(figsize=(28, max(12, n * 0.55 + 2)))
+        t0 = min(a for _, segs in rows for a, _, _ in segs)
+        for yi, (name, segs) in enumerate(rows):
+            for a, b, ph in segs:
+                ax.barh(yi, b - a, left=a - t0, height=0.75, color=color[ph], edgecolor="none", zorder=3)
+        ax.set_yticks(range(n))
+        ax.set_yticklabels([r[0] for r in rows])
+        ax.set_xlabel("Relative time (s, from earliest event)")
+        ax.invert_yaxis()
+        ax.grid(True, axis="x", linestyle=":", alpha=0.4)
+        ax.legend(
+            [plt.Rectangle((0, 0), 1, 1, fc=c) for c in color.values()],
+            list(color.keys()),
+            loc="upper right",
+        )
+        fig.tight_layout()
+        buf = io.BytesIO()
+        fig.savefig(buf, dpi=130, format="png")
+        png_bytes = buf.getvalue()
+        plt.close(fig)
+        if out_png is not None:
+            out_png.write_bytes(png_bytes)
+        from openpyxl.drawing.image import Image as XLImage
+
+        ws.add_image(XLImage(io.BytesIO(png_bytes)), "A3")

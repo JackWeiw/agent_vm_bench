@@ -300,3 +300,36 @@ def test_concurrency_states_sheet_from_series(tmp_path):
     # header + >=1 data row, one chart
     assert ws.max_row >= 2
     assert len(ws._charts) >= 1
+
+
+def test_gantt_sheet_embeds_png(tmp_path):
+    pytest.importorskip("matplotlib")
+    from unittest.mock import MagicMock
+
+    from bench_core.lifecycle_series import LifecycleSeriesWriter
+
+    sp = tmp_path / "s.jsonl"
+    w = LifecycleSeriesWriter(sp)
+    w.write(
+        {
+            "event": "step",
+            "sandbox_index": 0,
+            "step_index": 0,
+            "resume_start": 0.0,
+            "resume_end": 0.5,
+            "exec_start": 0.5,
+            "exec_end": 1.5,
+            "pause_start": 1.5,
+            "pause_end": 2.0,
+        }
+    )
+    w.close()
+
+    r = XlsxReportRenderer(MagicMock(), series_path=sp)
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    r._sheet_gantt(wb, out_png=tmp_path / "gantt.png")
+    wb.save(tmp_path / "o.xlsx")
+    assert (tmp_path / "gantt.png").exists()
