@@ -170,6 +170,11 @@ class Config:
     # Sandbox IDs file (for save/load sandbox IDs across runs)
     sandbox_ids_file: str | None = None
 
+    # AENV snapshot dir override. When set, the AenvProvider stats
+    # ``<snapshot_dir>/<sandbox_id>/`` for per-pause overlaybd snapshot sizes.
+    # None -> default /var/lib/aenv/persisted-sandboxes/artifacts/<id>/.
+    snapshot_dir: str | None = None
+
     @classmethod
     def from_raw(cls, raw: dict[str, Any], block: str = "e2b") -> Config:
         """Build from the unified YAML's backend block (``e2b:`` by default).
@@ -193,6 +198,7 @@ class Config:
             create_timeout=backend.get("create_timeout", 86400),
             numa_bind=_normalize_numa_bind(backend.get("numa_bind", 2)),
             sandbox_ids_file=backend.get("sandbox_ids_file"),
+            snapshot_dir=backend.get("snapshot_dir"),
         )
 
     def setup_e2b_env(self) -> None:

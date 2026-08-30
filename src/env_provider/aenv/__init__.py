@@ -14,12 +14,16 @@ one-liner (add the methods to ``E2BProvider``).
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 from bench_core.config import KernelConfig
 from env_provider import EphemeralCapable, SandboxInstance
 
+from env_provider.aenv._snapshot import scan_snapshot_sizes
 from env_provider.e2b import E2BProvider
 from env_provider.e2b.config import Config
+
+DEFAULT_SNAPSHOT_DIR = "/var/lib/aenv/persisted-sandboxes/artifacts"
 
 try:
     from e2b import Sandbox
@@ -79,6 +83,17 @@ class AenvProvider(E2BProvider):
         if state is None:
             raise RuntimeError(f"No AENV handle for sandbox index {inst.index}")
         state.sandbox_obj = Sandbox.connect(inst.id)
+
+    def snapshot_sizes(self, inst: SandboxInstance) -> dict | None:
+        """Stat the sandbox's persisted-snapshot tree (inode-deduped).
+
+        Overrides the default ``/var/lib/aenv/persisted-sandboxes/artifacts``
+        via ``aenv.snapshot_dir``. Returns ``None`` if the dir is absent, so
+        the runner skips the ``snapshot_size`` series event without crashing.
+        """
+        base = self._config.snapshot_dir or DEFAULT_SNAPSHOT_DIR
+        sandbox_dir = Path(base) / inst.id
+        return scan_snapshot_sizes(sandbox_dir)
 
     # ------------------------------------------------------------------ ephemeral (trajectory mode)
     def create_one(self, index: int, *, metadata: dict[str, str] | None = None) -> SandboxInstance:

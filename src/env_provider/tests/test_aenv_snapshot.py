@@ -71,3 +71,39 @@ def test_scan_empty_dir_returns_none(tmp_path: Path) -> None:
     empty = tmp_path / "empty-sandbox"
     empty.mkdir()
     assert scan_snapshot_sizes(empty) is None
+
+
+# ------------------------------------------------------------------ Config + provider integration
+
+
+from env_provider.aenv import AenvProvider
+from env_provider.e2b.config import Config
+
+
+def test_config_from_raw_reads_snapshot_dir() -> None:
+    cfg = Config.from_raw({"aenv": {"snapshot_dir": "/tmp/snap"}}, block="aenv")
+    assert cfg.snapshot_dir == "/tmp/snap"
+
+
+def test_config_snapshot_dir_defaults_none() -> None:
+    cfg = Config.from_raw({"aenv": {}}, block="aenv")
+    assert cfg.snapshot_dir is None
+
+
+def test_aenv_provider_snapshot_sizes_uses_dir(tmp_path, monkeypatch) -> None:
+    # Build a provider with a fake config pointing at tmp_path; place a gen dir.
+    cfg = Config.from_raw({"aenv": {"snapshot_dir": str(tmp_path)}}, block="aenv")
+    # gen0 with one 1MiB file under <sandbox_id>/
+    gen = tmp_path / "abc" / "g0"
+    gen.mkdir(parents=True)
+    (gen / "layer.bin").write_bytes(b"\0" * (1024 * 1024))
+
+    # Minimal provider: bypass the E2B SDK/manager by setting _config directly.
+    p = AenvProvider.__new__(AenvProvider)
+    p._config = cfg
+
+    inst = type("I", (), {"id": "abc", "index": 0})()
+    out = p.snapshot_sizes(inst)
+    assert out is not None
+    assert out["logical_bytes"] == 1024 * 1024
+    assert out["generations"] == 1
