@@ -88,7 +88,7 @@ class XlsxReportRenderer:
         self.series_path = series_path
 
     def render(self, path: str | Path) -> None:
-        """Write the workbook to ``path`` (overwrites). Creates all 7 sheets."""
+        """Write the workbook to ``path`` (overwrites). Creates all 10 sheets."""
         wb = Workbook()
         # openpyxl seeds one default sheet; remove it after building named sheets.
         wb.remove(wb.active)
@@ -102,6 +102,7 @@ class XlsxReportRenderer:
         self._sheet_concurrency_states(wb)
         gantt_png = Path(path).parent / f"{Path(path).stem.split('_obs')[0]}_gantt.png"
         self._sheet_gantt(wb, out_png=gantt_png)
+        self._sheet_snapshot_sizes(wb)
         wb.save(path)
 
     # --- sheets ---
@@ -352,3 +353,41 @@ class XlsxReportRenderer:
         from openpyxl.drawing.image import Image as XLImage
 
         ws.add_image(XLImage(io.BytesIO(png_bytes)), "A3")
+
+    def _sheet_snapshot_sizes(self, wb: Workbook) -> None:
+        ws = wb.create_sheet("Snapshot sizes")
+        headers = [
+            "pause_seq",
+            "sandbox_index",
+            "sandbox_id",
+            "logical_mb",
+            "disk_mb",
+            "inherited_mb",
+            "cumulative_mb",
+            "generations",
+            "files",
+        ]
+        if self.series_path is None or not Path(self.series_path).exists():
+            _write_table(ws, headers, [])
+            return
+        from bench_core.lifecycle_series import load_events
+        from bench_core.lifecycle_reconstruct import snapshot_rows
+
+        rows = snapshot_rows(load_events(Path(self.series_path)))
+        out = [
+            [
+                r["pause_seq"],
+                r["sandbox_index"],
+                r["sandbox_id"],
+                r["logical_mb"],
+                r["disk_mb"],
+                r["inherited_mb"],
+                r["cumulative_mb"],
+                r["generations"],
+                r["files"],
+            ]
+            for r in rows
+        ]
+        _write_table(ws, headers, out)
+        if out:
+            _add_line_chart(ws, "Snapshot size per pause", "MiB", 1, [4, 5, 7], len(out), "K2")

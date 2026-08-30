@@ -333,3 +333,38 @@ def test_gantt_sheet_embeds_png(tmp_path):
     r._sheet_gantt(wb, out_png=tmp_path / "gantt.png")
     wb.save(tmp_path / "o.xlsx")
     assert (tmp_path / "gantt.png").exists()
+
+
+def test_snapshot_sizes_sheet(tmp_path):
+    from unittest.mock import MagicMock
+
+    from bench_core.lifecycle_series import LifecycleSeriesWriter
+
+    sp = tmp_path / "s.jsonl"
+    w = LifecycleSeriesWriter(sp)
+    w.write(
+        {
+            "event": "snapshot_size",
+            "sandbox_index": 0,
+            "sandbox_id": "a",
+            "pause_seq": 1,
+            "logical_bytes": 2 * 1024 * 1024,
+            "disk_bytes": 1024 * 1024,
+            "inherited_bytes": 0,
+            "cumulative_bytes": 1024 * 1024,
+            "generations": 1,
+            "files": 1,
+        }
+    )
+    w.close()
+
+    r = XlsxReportRenderer(MagicMock(), series_path=sp)
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    r._sheet_snapshot_sizes(wb)
+    wb.save(tmp_path / "o.xlsx")
+    ws = openpyxl.load_workbook(tmp_path / "o.xlsx")["Snapshot sizes"]
+    assert ws.max_row >= 2
+    assert len(ws._charts) >= 1
