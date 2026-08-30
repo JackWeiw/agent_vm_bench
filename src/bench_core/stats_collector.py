@@ -164,11 +164,13 @@ class ReportFormatter:
         sandbox_states: dict[int, BenchSandbox],
         provider_label: str = "",
         admission_snapshot: dict | None = None,
+        wall_sec: float | None = None,
     ):
         self.config = config
         self.sandbox_states = sandbox_states
         self.provider_label = provider_label
         self.admission_snapshot = admission_snapshot
+        self.wall_sec = wall_sec
 
     def format_config_section(self) -> list[str]:
         """Format test configuration section."""
@@ -1105,17 +1107,31 @@ class StatsCollector:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
         logger.info(f"{'─' * 70}")
 
+    def _resolved_wall_sec(self) -> float | None:
+        """Measured wall-clock since ``start()``, or None if ``start()`` was never called."""
+        if self.start_time:
+            return time.time() - self.start_time
+        return None
+
     def format_replay_stats_section(self) -> list[str]:
         """Delegate to ReportFormatter.format_replay_stats_section."""
         formatter = ReportFormatter(
-            self.config, self.sandbox_states, self.provider_label, admission_snapshot=self.admission_snapshot
+            self.config,
+            self.sandbox_states,
+            self.provider_label,
+            admission_snapshot=self.admission_snapshot,
+            wall_sec=self._resolved_wall_sec(),
         )
         return formatter.format_replay_stats_section()
 
     def generate_report(self) -> str:
         """Generate final TXT report using ReportFormatter."""
         formatter = ReportFormatter(
-            self.config, self.sandbox_states, self.provider_label, admission_snapshot=self.admission_snapshot
+            self.config,
+            self.sandbox_states,
+            self.provider_label,
+            admission_snapshot=self.admission_snapshot,
+            wall_sec=self._resolved_wall_sec(),
         )
 
         lines: list[str] = []
