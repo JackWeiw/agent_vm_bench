@@ -1,10 +1,15 @@
-"""load_events reader tests (P2.5 Task 1 -- lifecycle reconstruct)."""
+"""Lifecycle reconstruct tests (P2.5 Task 1-2 -- load_events + reconstruct_concurrency)."""
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
 from bench_core.lifecycle_series import load_events
+
+
+# ---------------------------------------------------------------------------
+# Task 1: load_events
+# ---------------------------------------------------------------------------
 
 
 def test_load_events_reads_jsonl(tmp_path: Path) -> None:
@@ -28,3 +33,78 @@ def test_load_events_skips_malformed_line(tmp_path: Path) -> None:
 
 def test_load_events_missing_file(tmp_path: Path) -> None:
     assert load_events(tmp_path / "nope.jsonl") == []
+
+
+# ---------------------------------------------------------------------------
+# Task 2: reconstruct_concurrency
+# ---------------------------------------------------------------------------
+
+from bench_core.lifecycle_reconstruct import reconstruct_concurrency
+
+
+def _step(idx: int, rs: float, re: float, xs: float, xe: float, ps: float, pe: float) -> dict:
+    """Build a step event with the 6 timestamp fields reconstruct reads."""
+    return {
+        "event": "step",
+        "sandbox_index": 0,
+        "step_index": idx,
+        "resume_start": rs,
+        "resume_end": re,
+        "exec_start": xs,
+        "exec_end": xe,
+        "pause_start": ps,
+        "pause_end": pe,
+    }
+
+
+def test_reconstruct_concurrency_single_sandbox_one_second() -> None:
+    # one sandbox: resume 0.0-0.5, exec 0.5-1.5, pause 1.5-2.0
+    events = [_step(0, 0.0, 0.5, 0.5, 1.5, 1.5, 2.0)]
+    bins = reconstruct_concurrency(events)
+    # second 0 (0.0-1.0): resuming [0,0.5)=0.5s vs exec [0.5,1.0)=0.5s
+    # tie -> max() returns first maximal index: PHASES[2]=resuming beats PHASES[3]=exec
+    assert bins[0]["second"] == 0
+    assert bins[0]["resuming"] == 1
+    # second 1 (1.0-2.0): exec [1.0,1.5)=0.5s vs pausing [1.5,2.0)=0.5s
+    # tie -> PHASES[0]=pausing beats PHASES[3]=exec (earliest index wins)
+    assert bins[1]["pausing"] == 1
+    assert bins[1]["active"] == 1
+
+
+def test_reconstruct_concurrency_filters_zeroed_timestamps() -> None:
+    # failed step: all timestamps 0 -> filtered, no bins
+    events = [_step(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)]
+    assert reconstruct_concurrency(events) == []
+
+
+def test_reconstruct_concurrency_active_excludes_paused() -> None:
+    # sandbox A: only pausing 0-1 (pause_start=0, pause_end=1)
+    # sandbox B: only exec 0-1 (resume_end=0, exec_end=1)
+    events = [
+        _step(0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),  # pausing [0,1)
+        {
+            "event": "step",
+            "sandbox_index": 1,
+            "step_index": 0,
+            "resume_start": 0.0,
+            "resume_end": 0.0,
+            "exec_start": 0.0,
+            "exec_end": 1.0,
+            "pause_start": 1.0,
+            "pause_end": 1.0,
+        },  # exec [0,1)
+    ]
+    bins = reconstruct_concurrency(events)
+    assert bins[0]["pausing"] == 1  # sandbox A: pausing (not "paused")
+    assert bins[0]["exec"] == 1  # sandbox B: exec
+    # active = pausing + resuming + exec = 1 + 0 + 1 = 2
+    assert bins[0]["active"] == 2
+
+
+def test_reconstruct_concurrency_includes_trailing_empty_bins() -> None:
+    # max end = 2.0 -> seconds 0..3 (t1 = int(2.0)+1 = 3, n_sec = 3-0+1 = 4)
+    events = [_step(0, 0.0, 0.5, 0.5, 1.0, 1.0, 2.0)]
+    bins = reconstruct_concurrency(events)
+    assert len(bins) == 4
+    assert bins[2]["active"] == 0  # trailing empty
+    assert bins[3]["active"] == 0
