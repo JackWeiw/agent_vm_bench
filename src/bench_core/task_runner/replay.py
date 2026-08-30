@@ -33,7 +33,7 @@ from bench_core.lifecycle_series import LifecycleSeriesWriter
 from bench_core.replay_payload import ReplayStep, Trajectory, load_pool
 from bench_core.schemas import BenchSandbox
 from bench_core.transients import is_transient_sandbox_error
-from env_provider import CommandResult, EnvironmentProvider, EphemeralCapable
+from env_provider import CommandResult, EnvironmentProvider, EphemeralCapable, SnapshotSizeCapable
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +113,8 @@ class ReplayBaseRunner(threading.Thread):
         # instance is shared across the whole fleet by the spine so the
         # next-launch deadline is visible to every worker.
         self._launch_pacer = launch_pacer
+        # Per-sandbox 1-based pause counter for snapshot_size events.
+        self._pause_seq = 0
 
     # --- the slice (the spine P2 plugs into) ---
     def _run_slice(self, step: ReplayStep, *, trajectory_id: str = "", lease_already_held: bool = False) -> StepResult:
@@ -195,6 +197,9 @@ class ReplayBaseRunner(threading.Thread):
             # pause_sec = sum of segments (exact, no double-counting)
             pause_sec = pause_queue_wait_sec + pause_api_sec
             pause_end_ts = time.time()
+
+            # P-snap: collect overlaybd snapshot sizes when the provider can.
+            self._emit_snapshot_size()
 
             sr = StepResult(
                 step_index=step.index,
@@ -328,6 +333,37 @@ class ReplayBaseRunner(threading.Thread):
             return {}
         s = self.admission.slots.snapshot()
         return {"active_after": s["active"], "waiting_after": s["waiting"]}
+
+    def _emit_snapshot_size(self) -> None:
+        """Collect overlaybd snapshot sizes and emit a ``snapshot_size`` event.
+
+        Only in lifecycle/trajectory mode (exec_only has no real pause). Probes
+        the :class:`SnapshotSizeCapable` capability; a ``None`` result (dir
+        absent) or a scan error is skipped silently so non-aenv backends and
+        missing snapshot dirs are unaffected. Best-effort: never raises.
+        """
+        if self.config.replay_mode not in ("lifecycle", "trajectory"):
+            return
+        if not isinstance(self.provider, SnapshotSizeCapable):
+            return
+        try:
+            snap = self.provider.snapshot_sizes(self.state)
+        except Exception as e:  # noqa: BLE001 - best-effort, never fail the slice
+            logger.warning(f"[Sandbox{self.state.index}] snapshot_sizes failed: {str(e)[:80]}")
+            return
+        if snap is None:
+            return
+        self._pause_seq += 1
+        self._series_write(
+            {
+                "event": "snapshot_size",
+                "sandbox_index": self.state.index,
+                "sandbox_id": getattr(self.state, "id", None),
+                "timestamp": time.time(),
+                "pause_seq": self._pause_seq,
+                **snap,
+            }
+        )
 
     def _lifecycle_call_with_retry(self, operation: str, fn) -> tuple[float, float]:
         """Run a lifecycle call with transient-error retry (G3) + structured
