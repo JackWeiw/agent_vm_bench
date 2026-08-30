@@ -104,3 +104,35 @@ def test_retry_impact_zero_when_no_events():
     assert obs.retry_count_by_op == {}
     assert obs.time_lost_to_retry_sec == 0.0
     assert obs.retries_per_slice_p95 == 0.0  # empty list -> calc_percentiles returns 0.0
+
+
+def test_trajectory_summary_stats():
+    state = BenchSandbox.from_instance(SandboxInstance(id="x", index=0), "replay")
+    m = ReplayMetrics()
+    # seed trajectory slices with create_sec/kill_sec
+    for cs, ks in ((1.0, 0.5), (2.0, 0.6), (3.0, 0.7)):
+        m.add(
+            latency=0.1,
+            success=True,
+            action_type="shell",
+            slice_total_sec=1.0,
+            create_sec=cs,
+            kill_sec=ks,
+        )
+    state.replay_metrics = m
+    cfg = KernelConfig(workflow_type="replay", replay_mode="trajectory", total_count=1)
+    obs = ReplayObservability(cfg, {0: state})
+    cs_stats = obs.create_sec_stats
+    assert cs_stats["min"] == 1.0 and cs_stats["max"] == 3.0
+    assert cs_stats["p50"] == 2.0
+    ks_stats = obs.kill_sec_stats
+    assert ks_stats["min"] == 0.5 and ks_stats["max"] == 0.7
+
+
+def test_trajectory_stats_empty_when_no_create_secs():
+    state = BenchSandbox.from_instance(SandboxInstance(id="x", index=0), "replay")
+    state.replay_metrics = ReplayMetrics()  # no slices -> empty create_secs
+    cfg = KernelConfig(workflow_type="replay", replay_mode="trajectory", total_count=1)
+    obs = ReplayObservability(cfg, {0: state})
+    assert obs.create_sec_stats == {"min": 0.0, "max": 0.0, "avg": 0.0, "p50": 0.0, "p95": 0.0, "p99": 0.0}
+    assert obs.kill_sec_stats["p50"] == 0.0

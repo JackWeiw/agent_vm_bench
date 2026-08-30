@@ -106,3 +106,20 @@ class ReplayObservability:
     def retries_per_slice_p95(self) -> float:
         vals = [v for m in self._metrics_lists for v in m.retries_per_slice]
         return calc_percentiles(vals)["p95"]
+
+    # --- Phase 3.4: trajectory summary percentiles (trajectory mode) ---
+
+    @property
+    def create_sec_stats(self) -> dict[str, float]:
+        vals = [v for m in self._metrics_lists for v in m.create_secs]
+        return calc_percentiles(vals)
+
+    @property
+    def kill_sec_stats(self) -> dict[str, float]:
+        vals = [v for m in self._metrics_lists for v in m.kill_secs]
+        return calc_percentiles(vals)
+
+    @property
+    def slot_held_stats(self) -> dict[str, float]:
+        vals = [v for m in self._metrics_lists for v in m.running_slot_held_secs]
+        return calc_percentiles(vals)

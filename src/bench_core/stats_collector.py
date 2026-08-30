@@ -688,6 +688,37 @@ class ReportFormatter:
         lines.append(f"  overcommit_ratio:      {obs.overcommit_ratio:.1f}x")
         return lines
 
+    def format_trajectory_summary_section(self) -> list[str]:
+        """[Trajectory Summary] -- create/kill/slot-held percentiles for trajectory mode.
+
+        Rendered only in trajectory mode AND when create_sec measurements exist
+        (create_secs is populated only in trajectory mode; empty otherwise). The
+        slot_held line reuses the same running_slot_held_secs list as
+        [Lifecycle Overhead] but shows P99 here too.
+        """
+        if self.config.replay_mode != "trajectory":
+            return []
+        obs = ReplayObservability(
+            self.config,
+            self.sandbox_states,
+            admission_snapshot=self.admission_snapshot,
+            wall_sec=self.wall_sec,
+        )
+        cs = obs.create_sec_stats
+        # Gate on non-empty create_secs (calc_percentiles returns all-0.0 for an empty list).
+        if cs["p99"] == 0.0 and cs["max"] == 0.0:
+            return []
+        ks = obs.kill_sec_stats
+        sh = obs.slot_held_stats
+        n_create = sum(len(s.replay_metrics.create_secs) for s in self.sandbox_states.values())
+        n_kill = sum(len(s.replay_metrics.kill_secs) for s in self.sandbox_states.values())
+        lines = ["\n[Trajectory Summary]"]
+        lines.append(f"  Create sec: P50={cs['p50']:.3f}s P95={cs['p95']:.3f}s P99={cs['p99']:.3f}s  (n={n_create})")
+        lines.append(f"  Kill sec:   P50={ks['p50']:.3f}s P95={ks['p95']:.3f}s P99={ks['p99']:.3f}s  (n={n_kill})")
+        if sh["max"] > 0.0:
+            lines.append(f"  Slot held:  P50={sh['p50']:.3f}s P95={sh['p95']:.3f}s P99={sh['p99']:.3f}s")
+        return lines
+
     def format_replay_step_timing_table(self) -> list[str]:
         """Format replay per-action-type timing as a table.
 
@@ -1274,6 +1305,7 @@ class StatsCollector:
         elif self.config.workflow_type == "replay":
             lines.extend(formatter.format_replay_stats_section())
             lines.extend(formatter.format_throughput_section())
+            lines.extend(formatter.format_trajectory_summary_section())
             lines.extend(formatter.format_replay_step_timing_table())
         else:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
