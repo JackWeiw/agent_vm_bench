@@ -108,3 +108,34 @@ def test_reconstruct_concurrency_includes_trailing_empty_bins() -> None:
     assert len(bins) == 4
     assert bins[2]["active"] == 0  # trailing empty
     assert bins[3]["active"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 3: gantt_segments
+# ---------------------------------------------------------------------------
+
+from bench_core.lifecycle_reconstruct import gantt_segments
+
+
+def test_gantt_segments_groups_by_sandbox_sorted_by_start() -> None:
+    # sandbox 1 starts earlier than sandbox 0 -> sorted first
+    events = [
+        _step(0, 5.0, 5.5, 5.5, 6.5, 6.5, 7.0),  # sbx 0
+        {
+            "event": "step",
+            "sandbox_index": 1,
+            "step_index": 0,
+            "resume_start": 1.0,
+            "resume_end": 1.5,
+            "exec_start": 1.5,
+            "exec_end": 2.0,
+            "pause_start": 0.0,
+            "pause_end": 1.0,
+        },
+    ]
+    rows = gantt_segments(events)
+    assert rows[0][0] == "sbx1"  # earlier start first
+    assert rows[1][0] == "sbx0"
+    # each row's segments are (start, end, phase)
+    phases = {ph for _, _, ph in rows[0][1]}
+    assert "pausing" in phases and "exec" in phases

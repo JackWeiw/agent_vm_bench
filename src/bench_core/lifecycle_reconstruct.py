@@ -97,3 +97,23 @@ def reconstruct_concurrency(events: list[dict]) -> list[dict]:
             }
         )
     return rows
+
+
+def gantt_segments(events: list[dict]) -> list[tuple[str, list[tuple[float, float, str]]]]:
+    """Per-sandbox ``(label, [(start, end, phase), ...])`` for the Gantt chart.
+
+    Sandboxes are sorted by earliest event time. ``label`` is ``sbx<index>``.
+    """
+    by_task: dict[int, list[tuple[float, float, str]]] = {}
+    for e in events:
+        if e.get("event") != "step":
+            continue
+        idx = e.get("sandbox_index")
+        if idx is None:
+            continue
+        segs = _step_segments(e)
+        if segs:
+            by_task.setdefault(idx, []).extend(segs)
+    rows = [(f"sbx{idx}", segs) for idx, segs in by_task.items() if segs]
+    rows.sort(key=lambda r: min(a for a, _, _ in r[1]))
+    return rows
