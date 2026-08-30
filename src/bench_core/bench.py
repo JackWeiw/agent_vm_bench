@@ -538,6 +538,14 @@ def main() -> None:
     if args.output_dir:
         config.output_dir = args.output_dir
 
+    # Attach a file handler once config (and CLI overrides) are resolved.
+    # Stdout stays plaintext for live tailing; JSON lines go to the file only
+    # for lifecycle/trajectory replay modes.
+    log_dir = Path(config.output_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = str(log_dir / f"{config.filename_prefix}.log")
+    setup_logging(log_path=log_path, json_lines=config.replay_mode in ("lifecycle", "trajectory"))
+
     provider = _build_provider(args.provider, config, raw)
     run_benchmark(config, provider)
 
