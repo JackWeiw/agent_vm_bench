@@ -142,5 +142,5 @@ class TestXlsxReportRenderer:
         wb = load_workbook(str(path))
         assert "Trajectory summary" in wb.sheetnames
         ws = wb["Trajectory summary"]
-        # no create_sec data in lifecycle mode -> sheet has at most a header/placeholder row
-        assert ws.max_row <= 2
+        # no create_sec data in lifecycle mode -> header only
+        assert ws.max_row == 1

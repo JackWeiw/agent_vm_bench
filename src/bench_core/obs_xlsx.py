@@ -1,10 +1,13 @@
 """Phase 3: xlsx observability renderer over the shared ReplayObservability model.
 
 One data layer (ReplayObservability), two renderers (text ReportFormatter +
-this xlsx). Emits a multi-sheet workbook; openpyxl is a core dep. The renderer
-is pure I/O -- all aggregation lives in the model. A render failure (e.g.
-openpyxl missing on a minimal install) is caught by the caller (run_benchmark)
-which falls back to the text report + a warning; this module raises normally.
+this xlsx). Emits a multi-sheet workbook; openpyxl is a core dep. Semantic
+metrics (throughput / retry / trajectory percentiles) are owned by the model;
+this renderer only flattens raw per-sandbox series into percentile rows for
+the step / lifecycle / trajectory tables (the model exposes percentile dicts,
+not the raw lists + counts those tables need). A render failure (e.g. openpyxl
+missing on a minimal install) is caught by the caller (run_benchmark) which
+falls back to the text report + a warning; this module raises normally.
 """
 from __future__ import annotations
 
@@ -16,14 +19,22 @@ from openpyxl.styles import Font
 from bench_core.utils import calc_percentiles
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from bench_core.observability import ReplayObservability
 
 
 def _write_table(ws, headers: list[str], rows: list[list]) -> None:
-    """Write a header row (bold) + data rows to a worksheet."""
+    """Write a header row (bold) + data rows to a worksheet.
+
+    Bold the row just appended (tracked via ``ws.max_row``), not always row 1,
+    so a sheet with multiple sub-tables (e.g. Admission & QPS) styles each
+    header correctly.
+    """
     bold = Font(bold=True)
     ws.append(headers)
-    for c in ws[1]:
+    header_row = ws.max_row
+    for c in ws[header_row]:
         c.font = bold
     for row in rows:
         ws.append(row)
@@ -41,7 +52,7 @@ class XlsxReportRenderer:
     def __init__(self, observability: ReplayObservability) -> None:
         self.obs = observability
 
-    def render(self, path: str) -> None:
+    def render(self, path: str | Path) -> None:
         """Write the workbook to ``path`` (overwrites). Creates all 7 sheets."""
         wb = Workbook()
         # openpyxl seeds one default sheet; remove it after building named sheets.
@@ -65,9 +76,9 @@ class XlsxReportRenderer:
         total_failed = sum(s.replay_metrics.failed_count for s in obs.states.values())
         rows = [
             ["workflow_type", cfg.workflow_type],
-            ["replay_mode", getattr(cfg, "replay_mode", None)],
+            ["replay_mode", cfg.replay_mode],
             ["total_count", cfg.total_count],
-            ["running_concurrency", getattr(cfg, "replay_running_concurrency", None)],
+            ["running_concurrency", cfg.replay_running_concurrency],
             ["test_duration", cfg.test_duration],
             ["wall_sec", obs.wall_sec],
             ["total_steps", obs.total_steps],
@@ -167,8 +178,7 @@ class XlsxReportRenderer:
         if getattr(obs.config, "replay_mode", None) != "trajectory":
             _write_table(ws, ["segment", "n", "min", "max", "avg", "p50", "p95", "p99"], [])
             return
-        cs = obs.create_sec_stats
-        if cs["max"] == 0.0 and cs["p99"] == 0.0:
+        if not any(s.replay_metrics.create_secs for s in obs.states.values()):
             # no trajectory data -> leave the header only
             _write_table(ws, ["segment", "n", "min", "max", "avg", "p50", "p95", "p99"], [])
             return

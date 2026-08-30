@@ -453,7 +453,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 admission_snapshot=admission_snapshot,
                 wall_sec=wall_sec,
             )
-            xlsx_path = str(Path(config.output_dir) / f"{config.filename_prefix}_obs.xlsx")
+            xlsx_path = Path(config.output_dir) / f"{config.filename_prefix}_obs.xlsx"
             XlsxReportRenderer(obs).render(xlsx_path)
             logger.info(f"Xlsx report saved to: {xlsx_path}")
 
