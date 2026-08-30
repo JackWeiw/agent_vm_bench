@@ -316,6 +316,18 @@ class ReplayMetrics(TaskMetricsBase):
         self._create_secs: list[float] = []  # trajectory mode only; empty otherwise
         self._kill_secs: list[float] = []  # trajectory mode only; empty otherwise
 
+        # Phase 2/3: retry-event accumulators. ``record_retry_event`` is called
+        # by the runner each time it emits a retry_* event to the series, so the
+        # report reads aggregated retry impact from ReplayMetrics (its
+        # consistent data source), NOT by re-reading the series JSONL. The
+        # per-slice retry count is a SEPARATE concern: the runner appends it at
+        # slice-end via ``append_retries_per_slice`` (not through
+        # ``record_retry_event``) so it never double-counts the counter.
+        self._retry_queued_count: int = 0
+        self._retry_queued_count_by_op: dict[str, int] = {}
+        self._time_lost_to_retry_sec: float = 0.0
+        self._retries_per_slice: list[int] = []
+
     def add(
         self,
         latency: float,
@@ -391,6 +403,32 @@ class ReplayMetrics(TaskMetricsBase):
                 self._interaction_total_secs.append(interaction_total_sec)
                 self._create_secs.append(create_sec)
                 self._kill_secs.append(kill_sec)
+
+    def record_retry_event(self, event_type: str, *, operation: str, time_lost_sec: float = 0.0) -> None:
+        """Record a retry_* event for the report's retry-impact block.
+
+        Thread-safe. Advances the retry counters only for ``retry_queued``
+        events (recovered/exhausted are series-only; their counts derive from
+        queued). Does NOT touch ``retries_per_slice`` -- the per-slice count
+        is appended separately at slice-end via :meth:`append_retries_per_slice`
+        so the counters never double-count.
+        """
+        with self._lock:
+            if event_type == "retry_queued":
+                self._retry_queued_count += 1
+                self._retry_queued_count_by_op[operation] = self._retry_queued_count_by_op.get(operation, 0) + 1
+                self._time_lost_to_retry_sec += time_lost_sec
+
+    def append_retries_per_slice(self, count: int) -> None:
+        """Append one slice's final retry count for percentile math.
+
+        Called by the runner at slice-end with the slice's retry_queued count
+        (a delta of :attr:`retry_queued_count` captured across the slice).
+        Zero-count slices are still appended so the list stays length-aligned
+        with the slice list.
+        """
+        with self._lock:
+            self._retries_per_slice.append(count)
 
     @property
     def action_type_latencies(self) -> dict[str, list[float]]:
@@ -473,6 +511,30 @@ class ReplayMetrics(TaskMetricsBase):
         """Per-trajectory kill durations (trajectory mode), copy under lock (L7)."""
         with self._lock:
             return list(self._kill_secs)
+
+    @property
+    def retry_queued_count(self) -> int:
+        """Total retry_queued events recorded (Phase 2/3)."""
+        with self._lock:
+            return self._retry_queued_count
+
+    @property
+    def retry_queued_count_by_op(self) -> dict[str, int]:
+        """retry_queued count per operation (resume/pause), copy under lock (Phase 2/3)."""
+        with self._lock:
+            return dict(self._retry_queued_count_by_op)
+
+    @property
+    def time_lost_to_retry_sec(self) -> float:
+        """Sum of time_lost_sec across all retry_queued events (Phase 2/3)."""
+        with self._lock:
+            return self._time_lost_to_retry_sec
+
+    @property
+    def retries_per_slice(self) -> list[int]:
+        """Per-slice retry_queued counts, copy under lock (Phase 2/3)."""
+        with self._lock:
+            return list(self._retries_per_slice)
 
     @property
     def delay_fidelity(self) -> float:

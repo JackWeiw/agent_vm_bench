@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from bench_core.schemas import ReplayMetrics
 
 
@@ -202,3 +204,65 @@ class TestReplayMetricsP26Segments:
             resume_queue_wait_sec=0.05,
         )
         assert m.resume_queue_wait_secs == [0.05]
+
+
+class TestRetryAccumulators:
+    def test_record_retry_event_accumulates(self):
+        m = ReplayMetrics()
+        m.record_retry_event("retry_queued", operation="resume", time_lost_sec=0.05)
+        m.record_retry_event("retry_queued", operation="resume", time_lost_sec=0.03)
+        m.record_retry_event("retry_queued", operation="pause", time_lost_sec=0.02)
+        assert m.retry_queued_count == 3
+        assert m.retry_queued_count_by_op == {"resume": 2, "pause": 1}
+        assert m.time_lost_to_retry_sec == pytest.approx(0.10)
+        assert m.retries_per_slice == []  # filled by append_retries_per_slice, not here
+
+    def test_retry_counts_zero_before_any_event(self):
+        m = ReplayMetrics()
+        assert m.retry_queued_count == 0
+        assert m.retry_queued_count_by_op == {}
+        assert m.time_lost_to_retry_sec == 0.0
+        assert m.retries_per_slice == []
+
+    def test_append_retries_per_slice_does_not_advance_counter(self):
+        m = ReplayMetrics()
+        m.record_retry_event("retry_queued", operation="resume", time_lost_sec=0.05)
+        m.append_retries_per_slice(1)  # slice had 1 retry
+        m.append_retries_per_slice(0)  # next slice had 0
+        assert m.retry_queued_count == 1  # NOT double-counted
+        assert m.retries_per_slice == [1, 0]
+
+    def test_non_retry_queued_events_are_ignored(self):
+        m = ReplayMetrics()
+        m.record_retry_event("retry_recovered", operation="resume", time_lost_sec=0.05)
+        m.record_retry_event("retry_exhausted", operation="pause", time_lost_sec=0.10)
+        assert m.retry_queued_count == 0
+        assert m.retry_queued_count_by_op == {}
+        assert m.time_lost_to_retry_sec == 0.0
+
+    def test_retry_queued_count_by_op_returns_copy(self):
+        m = ReplayMetrics()
+        m.record_retry_event("retry_queued", operation="resume", time_lost_sec=0.05)
+        got = m.retry_queued_count_by_op
+        got["resume"] = 999
+        got["injected"] = 1
+        assert m.retry_queued_count_by_op == {"resume": 1}
+
+    def test_retry_accumulators_under_concurrent_recordings(self):
+        m = ReplayMetrics()
+
+        def worker(_i: int) -> None:
+            m.record_retry_event("retry_queued", operation="resume", time_lost_sec=0.01)
+            m.append_retries_per_slice(1)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert m.retry_queued_count == 20
+        assert m.retry_queued_count_by_op == {"resume": 20}
+        assert m.time_lost_to_retry_sec == pytest.approx(0.20)
+        assert len(m.retries_per_slice) == 20
+        assert sum(m.retries_per_slice) == 20
