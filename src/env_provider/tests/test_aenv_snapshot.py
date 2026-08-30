@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+from env_provider.aenv._snapshot import scan_snapshot_sizes
+
+
+def _write(path: Path, size: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as f:
+        f.truncate(size)
+
+
+def test_scan_dedups_inherited_hardlinks(tmp_path: Path) -> None:
+    """Hardlinked inode is counted once: its apparent size goes to inherited,
+    not re-counted as unique disk in the inheriting generation."""
+    # gen0: a 1 MiB file (unique inode). gen1 hardlinks it (inherited).
+    gen0 = tmp_path / "g0-uuid"
+    gen1 = tmp_path / "g1-uuid"
+    base = gen0 / "layer.bin"
+    _write(base, 1024 * 1024)
+    gen1.mkdir()
+    os.link(base, gen1 / "layer.bin")  # hardlink -> same inode
+
+    out = scan_snapshot_sizes(tmp_path)
+    assert out is not None
+    # Newest generation (gen1, sorted last by name) sees the inode as
+    # already-seen (first encountered in gen0) -> inherited.
+    assert out["generations"] == 2
+    # files = newest gen's file count (gen1 has 1 hardlinked file)
+    assert out["files"] == 1
+    # logical_bytes = apparent size in newest gen (st_size works everywhere)
+    assert out["logical_bytes"] == 1024 * 1024
+    # The inode-dedup invariant: hardlinked file in gen1 is inherited (not unique)
+    assert out["inherited_bytes"] == 1024 * 1024
+    # disk_bytes is unique-to-newest-gen physical blocks; the inode was first
+    # seen in gen0, so gen1 contributes nothing unique.
+    assert out["disk_bytes"] == 0
+
+    # cumulative_bytes = sum of unique_disk across all generations.
+    # On Windows, st_blocks is unavailable -> 0 everywhere; cumulative == 0.
+    # On Linux, cumulative == st_blocks*512 for the single first-seen inode.
+    # Either way: cumulative equals disk_bytes (gen1 unique) plus whatever
+    # gen0 reported as unique for the inode -- counted exactly once.
+    assert out["cumulative_bytes"] == out["disk_bytes"] + _gen0_disk_bytes(tmp_path)
+
+
+def _gen0_disk_bytes(root: Path) -> int:
+    """Compute what the algorithm attributes to gen0's unique disk."""
+    gen0 = sorted(p for p in root.iterdir() if p.is_dir())[0]
+    total = 0
+    seen: set[tuple[int, int]] = set()
+    for _dirpath, _dirs, files in os.walk(gen0):
+        for name in files:
+            full = os.path.join(_dirpath, name)
+            st = os.lstat(full)
+            key = (st.st_dev, st.st_ino)
+            if key not in seen:
+                seen.add(key)
+                total += getattr(st, "st_blocks", 0) * 512
+    return total
+
+
+def test_scan_missing_dir_returns_none(tmp_path: Path) -> None:
+    assert scan_snapshot_sizes(tmp_path / "nope") is None
+
+
+def test_scan_empty_dir_returns_none(tmp_path: Path) -> None:
+    empty = tmp_path / "empty-sandbox"
+    empty.mkdir()
+    assert scan_snapshot_sizes(empty) is None
