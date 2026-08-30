@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from openpyxl import Workbook
+from openpyxl.chart import LineChart, Reference
 from openpyxl.styles import Font
 
 from bench_core.utils import calc_percentiles
@@ -40,6 +41,39 @@ def _write_table(ws, headers: list[str], rows: list[list]) -> None:
         ws.append(row)
 
 
+def _add_line_chart(
+    ws,
+    title: str,
+    y_title: str,
+    cat_col: int,
+    data_cols: list[int],
+    n_rows: int,
+    anchor: str,
+    *,
+    header_row: int = 1,
+    first_data_row: int = 2,
+) -> None:
+    """Add a LineChart with one series per data column; categories from cat_col.
+
+    n_rows is the number of DATA rows (excluding the header). The header lives
+    at ``header_row``; data occupies ``header_row+1 .. header_row+n_rows``.
+    """
+    if n_rows <= 0:
+        return
+    ch = LineChart()
+    ch.title = title
+    ch.y_axis.title = y_title
+    ch.x_axis.title = ws.cell(header_row, cat_col).value
+    ch.height = 8
+    ch.width = 16
+    for col in data_cols:
+        ref = Reference(ws, min_col=col, min_row=header_row, max_row=header_row + n_rows)
+        ch.add_data(ref, titles_from_data=True)
+    cats = Reference(ws, min_col=cat_col, min_row=first_data_row, max_row=header_row + n_rows)
+    ch.set_categories(cats)
+    ws.add_chart(ch, anchor)
+
+
 def _pcts_row(label: str, values: list[float]) -> list:
     """One row: [label, n, min, max, avg, p50, p95, p99] for a latency list."""
     s = calc_percentiles(values)
@@ -49,8 +83,9 @@ def _pcts_row(label: str, values: list[float]) -> list:
 class XlsxReportRenderer:
     """Render a ReplayObservability model to a multi-sheet xlsx workbook."""
 
-    def __init__(self, observability: ReplayObservability) -> None:
+    def __init__(self, observability: ReplayObservability, series_path: Path | None = None) -> None:
         self.obs = observability
+        self.series_path = series_path
 
     def render(self, path: str | Path) -> None:
         """Write the workbook to ``path`` (overwrites). Creates all 7 sheets."""
@@ -102,6 +137,27 @@ class XlsxReportRenderer:
         for act in sorted(by_action):
             rows.append(_pcts_row(act, by_action[act]))
         _write_table(ws, ["bucket", "n", "min", "max", "avg", "p50", "p95", "p99"], rows)
+        # Per-step detail rows (latency per step, concatenated across sandboxes).
+        step_rows = [[i + 1, round(v * 1000, 1)] for i, v in enumerate(all_lat)]
+        if step_rows:
+            ws.append([])
+            ws.append(["step_index", "latency_ms"])
+            hdr = ws.max_row
+            for c in ws[hdr]:
+                c.font = Font(bold=True)
+            for r in step_rows:
+                ws.append(r)
+            _add_line_chart(
+                ws,
+                "Per-step latency",
+                "ms",
+                ws.cell(hdr, 1).column,
+                [ws.cell(hdr, 2).column],
+                len(step_rows),
+                f"A{ws.max_row + 2}",
+                header_row=hdr,
+                first_data_row=hdr + 1,
+            )
 
     def _sheet_lifecycle_overhead(self, wb: Workbook) -> None:
         ws = wb.create_sheet("Lifecycle overhead")
@@ -122,6 +178,34 @@ class XlsxReportRenderer:
             lists["interaction"].extend(m.interaction_total_secs)
         rows = [_pcts_row(label, vals) for label, vals in lists.items()]
         _write_table(ws, ["segment", "n", "min", "max", "avg", "p50", "p95", "p99"], rows)
+        # Per-step detail + line chart (resume/pause/slice ms over step index).
+        n = len(lists["resume"])
+        if n:
+            ws.append([])
+            ws.append(["step_index", "resume_ms", "pause_ms", "slice_ms"])
+            hdr = ws.max_row
+            for c in ws[hdr]:
+                c.font = Font(bold=True)
+            for i in range(n):
+                ws.append(
+                    [
+                        i + 1,
+                        round(lists["resume"][i] * 1000, 1),
+                        round(lists["pause"][i] * 1000, 1),
+                        round(lists["slice_total"][i] * 1000, 1),
+                    ]
+                )
+            _add_line_chart(
+                ws,
+                "Per-step lifecycle overhead",
+                "ms",
+                1,
+                [2, 3, 4],
+                n,
+                f"A{ws.max_row + 2}",
+                header_row=hdr,
+                first_data_row=hdr + 1,
+            )
 
     def _sheet_admission_qps(self, wb: Workbook) -> None:
         ws = wb.create_sheet("Admission & QPS")

@@ -144,3 +144,119 @@ class TestXlsxReportRenderer:
         ws = wb["Trajectory summary"]
         # no create_sec data in lifecycle mode -> header only
         assert ws.max_row == 1
+
+
+def test_renderer_accepts_series_path_and_draws_per_step_linechart(tmp_path):
+    from unittest.mock import MagicMock
+
+    obs = MagicMock()
+    obs.config.workflow_type = "replay"
+    obs.config.replay_mode = "lifecycle"
+    obs.config.total_count = 1
+    obs.config.replay_running_concurrency = 1
+    obs.config.test_duration = 10
+    obs.wall_sec = 10.0
+    obs.total_steps = 1
+    obs.overcommit_ratio = 1.0
+    obs.concurrency = 1
+    obs.steps_per_sec = 0.1
+    obs.effective_parallelism = 1.0
+    obs.exec_wall_utilization = 1.0
+    obs.retry_count = 0
+    obs.retry_count_by_op = {}
+    obs.time_lost_to_retry_sec = 0.0
+    obs.retries_per_slice_p95 = 0.0
+    obs.create_sec_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
+    obs.kill_sec_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
+    obs.slot_held_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
+    obs.admission_snapshot = None
+    # one sandbox with one step's durations
+    m = MagicMock()
+    m.latencies = [0.5]
+    m.action_type_latencies = {}
+    m.resume_secs = [0.1]
+    m.pause_secs = [0.2]
+    m.slice_total_secs = [0.8]
+    m.running_slot_held_secs = [0.8]
+    m.interaction_total_secs = [0.8]
+    m.create_secs = []
+    m.kill_secs = []
+    m.success_count = 1
+    m.failed_count = 0
+    state = MagicMock()
+    state.replay_metrics = m
+    obs.states = {0: state}
+
+    out = tmp_path / "obs.xlsx"
+    XlsxReportRenderer(obs, series_path=None).render(out)
+    wb = openpyxl.load_workbook(out)
+    assert "Per-step timings" in wb.sheetnames
+    # a LineChart exists on the sheet
+    assert len(wb["Per-step timings"]._charts) >= 1
+
+
+def test_per_step_linechart_references_all_data_rows(tmp_path):
+    from unittest.mock import MagicMock
+    from openpyxl import load_workbook
+
+    obs = MagicMock()
+    obs.config.workflow_type = "replay"
+    obs.config.replay_mode = "lifecycle"
+    obs.config.total_count = 1
+    obs.config.replay_running_concurrency = 1
+    obs.config.test_duration = 10
+    obs.wall_sec = 10.0
+    obs.total_steps = 3
+    obs.overcommit_ratio = 1.0
+    obs.concurrency = 1
+    obs.steps_per_sec = 0.3
+    obs.effective_parallelism = 1.0
+    obs.exec_wall_utilization = 1.0
+    obs.retry_count = 0
+    obs.retry_count_by_op = {}
+    obs.time_lost_to_retry_sec = 0.0
+    obs.retries_per_slice_p95 = 0.0
+    obs.create_sec_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
+    obs.kill_sec_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
+    obs.slot_held_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
+    obs.admission_snapshot = None
+    m = MagicMock()
+    m.latencies = [0.1, 0.2, 0.3]  # THREE steps
+    m.action_type_latencies = {}
+    m.resume_secs = [0.1, 0.2, 0.3]
+    m.pause_secs = [0.1, 0.2, 0.3]
+    m.slice_total_secs = [0.5, 0.6, 0.7]
+    m.running_slot_held_secs = [0.4, 0.5, 0.6]
+    m.interaction_total_secs = [0.5, 0.6, 0.7]
+    m.create_secs = []
+    m.kill_secs = []
+    m.success_count = 3
+    m.failed_count = 0
+    state = MagicMock()
+    state.replay_metrics = m
+    obs.states = {0: state}
+
+    out = tmp_path / "obs.xlsx"
+    XlsxReportRenderer(obs, series_path=None).render(out)
+    wb = load_workbook(out)
+    ws = wb["Per-step timings"]
+    # the per-step detail block has 3 data rows; the latency series must
+    # reference exactly 3 value cells (not 2 -- the off-by-one bug drops one).
+    charts = ws._charts
+    assert charts, "expected a LineChart on Per-step timings"
+    # find the chart whose series references the latency_ms column (B)
+    found = False
+    for ch in charts:
+        for s in ch.series:
+            ref = getattr(s.val, "numRef", None)
+            f = ref.f if ref is not None else None
+            if f and "$B$" in f:
+                # count rows in the range, e.g. '...!$B$6:$B$8' -> 3 rows
+                import re
+
+                m_ = re.search(r"\$B\$(\d+):\$B\$(\d+)", f)
+                assert m_, f"unexpected val ref format: {f}"
+                lo, hi = int(m_.group(1)), int(m_.group(2))
+                assert hi - lo + 1 == 3, f"latency series references {hi-lo+1} rows, expected 3 (off-by-one? ref={f})"
+                found = True
+    assert found, "no LineChart series referenced the latency_ms (B) column"
