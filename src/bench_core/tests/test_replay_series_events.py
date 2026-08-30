@@ -111,3 +111,40 @@ class TestRetryEvents:
         series.close()
         events = [e for e in _series_events(tmp_path) if e["event"].startswith("retry_")]
         assert events == []
+
+
+class TestAdmissionEvents:
+    def _runner(self, tmp_path, *, mode="lifecycle", admission=True):
+        cfg = KernelConfig(workflow_type="replay", replay_mode=mode, replay_ready_probe=False)
+        provider = FakeLifecycleProvider(count=1)
+        provider.create_all()
+        state = BenchSandbox.from_instance(provider._instances[0], "replay")
+        stop = threading.Event()
+        series = LifecycleSeriesWriter(tmp_path / "s.jsonl")
+        adm = None
+        if admission:
+            adm = Admission(
+                slots=RunningSlotScheduler(maximum=1, stop_event=stop),
+                qps=QpsRateLimiter(qps=1000.0, inflight_cap=4, stop_event=stop),
+            )
+        runner = ReplayBaseRunner(state, cfg, stop, provider, admission=adm, series=series)
+        return runner, series, provider, state
+
+    def test_slot_acquire_and_release_emitted(self, tmp_path):
+        runner, series, provider, state = self._runner(tmp_path)
+        step = ReplayStep(index=0, action_type="shell", action="echo hi", delay_time_sec=0.0)
+        runner._run_slice(step, trajectory_id="t1")
+        series.close()
+        events = [e for e in _series_events(tmp_path) if e["event"] in ("slot_acquire", "slot_release")]
+        assert [e["event"] for e in events] == ["slot_acquire", "slot_release"]
+        acq = events[0]
+        assert acq["sandbox_index"] == state.index
+        assert "lease_id" in acq and "queue_wait_sec" in acq and "active_after" in acq
+
+    def test_no_admission_events_in_exec_only(self, tmp_path):
+        runner, series, provider, state = self._runner(tmp_path, mode="exec_only", admission=False)
+        step = ReplayStep(index=0, action_type="shell", action="echo hi", delay_time_sec=0.0)
+        runner._run_slice(step)
+        series.close()
+        events = [e for e in _series_events(tmp_path) if e["event"].startswith("slot_")]
+        assert events == []

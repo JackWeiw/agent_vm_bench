@@ -142,6 +142,22 @@ class ReplayBaseRunner(threading.Thread):
             slot_contention_wait_sec = natural_delay_sec + capacity_wait_sec
             slot_acquired_at = lease.acquired_at
 
+        if lease is not None:
+            self._series_write(
+                {
+                    "event": "slot_acquire",
+                    "sandbox_index": self.state.index,
+                    "timestamp": time.time(),
+                    "task_id": lease.task_id,
+                    "lease_id": lease.lease_id,
+                    "queue_wait_sec": lease.queue_wait_sec,
+                    "natural_delay_sec": lease.natural_delay_sec,
+                    **self._slot_snapshot(),
+                }
+            )
+
+        retry_count_before = self.state.replay_metrics.retry_queued_count
+
         try:
             # Resume phase (QPS-gated inside _resume with G3 retry). P1-9 un-folds
             # the queue wait from the API duration: _lifecycle_call_with_retry
@@ -241,10 +257,22 @@ class ReplayBaseRunner(threading.Thread):
                 )
             # Track pause-end for the next step's ready_at (G2).
             self._prev_pause_end_monotonic = time.perf_counter()
+            self.state.replay_metrics.append_retries_per_slice(
+                self.state.replay_metrics.retry_queued_count - retry_count_before
+            )
             return sr
         finally:
             # Release lease in finally so mid-slice exceptions don't leak the slot.
             if lease is not None:
+                self._series_write(
+                    {
+                        "event": "slot_release",
+                        "sandbox_index": self.state.index,
+                        "timestamp": time.time(),
+                        "lease_id": lease.lease_id,
+                        **self._slot_snapshot(),
+                    }
+                )
                 self.admission.slots.release(lease)
 
     def _compute_ready_at(self, step: ReplayStep) -> float | None:
@@ -293,6 +321,13 @@ class ReplayBaseRunner(threading.Thread):
             self.series.write(record)
         except Exception as e:  # noqa: BLE001 - logging best-effort
             logger.warning(f"[Sandbox{self.state.index}] series write failed: {str(e)[:80]}")
+
+    def _slot_snapshot(self) -> dict:
+        """Running-slot snapshot fields for admission events (empty if no admission)."""
+        if self.admission is None:
+            return {}
+        s = self.admission.slots.snapshot()
+        return {"active_after": s["active"], "waiting_after": s["waiting"]}
 
     def _lifecycle_call_with_retry(self, operation: str, fn) -> tuple[float, float]:
         """Run a lifecycle call with transient-error retry (G3) + structured
@@ -566,6 +601,18 @@ class ReplayBaseRunner(threading.Thread):
                 if self.admission is not None:
                     lease = self.admission.slots.acquire(f"sbx{self.state.index}_{traj.instance_id}")
                     lease_acquired_at = lease.acquired_at
+                    self._series_write(
+                        {
+                            "event": "slot_acquire",
+                            "sandbox_index": self.state.index,
+                            "timestamp": time.time(),
+                            "task_id": lease.task_id,
+                            "lease_id": lease.lease_id,
+                            "queue_wait_sec": lease.queue_wait_sec,
+                            "natural_delay_sec": lease.natural_delay_sec,
+                            **self._slot_snapshot(),
+                        }
+                    )
                 try:
                     # G1: create under the 'create' QPS bucket; G3: single call, no retry.
                     t0 = time.perf_counter()
@@ -641,6 +688,15 @@ class ReplayBaseRunner(threading.Thread):
                     kill_sec = time.perf_counter() - t0
         finally:
             if lease is not None:
+                self._series_write(
+                    {
+                        "event": "slot_release",
+                        "sandbox_index": self.state.index,
+                        "timestamp": time.time(),
+                        "lease_id": lease.lease_id,
+                        **self._slot_snapshot(),
+                    }
+                )
                 self.admission.slots.release(lease)
             # Overlay trajectory-level durations (create/kill/slot-held) on the
             # last recorded step. These span the whole trajectory, not a single
