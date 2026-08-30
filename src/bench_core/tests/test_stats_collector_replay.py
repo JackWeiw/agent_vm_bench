@@ -114,3 +114,25 @@ class TestThroughputSection:
         # overcommit_ratio is NOT wall-gated -> still a number
         assert "overcommit_ratio:" in joined
         assert "2.0" in joined  # 2/1
+
+
+class TestRetryImpactBlock:
+    def test_retry_impact_renders_when_events_present(self):
+        state = _state_with_slices()
+        m = state.replay_metrics
+        m.record_retry_event("retry_queued", operation="resume", time_lost_sec=0.05)
+        m.append_retries_per_slice(1)
+        joined = _format(state, admission_snapshot=_FULL_ADMISSION, wall_sec=10.0)
+        assert "Retry impact:" in joined
+        assert "retries: 1" in joined or "retries=1" in joined
+        assert "time lost" in joined
+        assert "retries/slice P95" in joined  # percentile line only when retry_count > 0
+
+    def test_retry_impact_zero_renders_no_percentile(self):
+        state = _state_with_slices()  # no retry events seeded
+        joined = _format(state, admission_snapshot=_FULL_ADMISSION, wall_sec=10.0)
+        assert "Retry impact:" in joined
+        assert "retries: 0" in joined or "retries=0" in joined
+        assert "time lost" in joined
+        # P95 line is gated on retry_count > 0 -> absent here
+        assert "retries/slice P95" not in joined

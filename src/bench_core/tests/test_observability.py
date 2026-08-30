@@ -66,3 +66,41 @@ def test_empty_states_safe():
     assert obs.total_steps == 0
     assert obs.steps_per_sec == 0.0
     assert obs.overcommit_ratio == 1.0
+
+
+def test_retry_impact_properties():
+    state = BenchSandbox.from_instance(SandboxInstance(id="x", index=0), "replay")
+    m = ReplayMetrics()
+    # seed one normal slice so the lists populate
+    m.add(
+        latency=0.1,
+        success=True,
+        action_type="shell",
+        resume_sec=0.05,
+        pause_sec=0.05,
+        slice_total_sec=1.0,
+    )
+    # seed retry events via the Task-1 accumulators
+    m.record_retry_event("retry_queued", operation="resume", time_lost_sec=0.05)
+    m.record_retry_event("retry_queued", operation="resume", time_lost_sec=0.03)
+    m.record_retry_event("retry_queued", operation="pause", time_lost_sec=0.02)
+    m.append_retries_per_slice(2)  # this slice had 2 retries
+    m.append_retries_per_slice(0)
+    state.replay_metrics = m
+    cfg = KernelConfig(workflow_type="replay", total_count=1)
+    obs = ReplayObservability(cfg, {0: state})
+    assert obs.retry_count == 3
+    assert obs.retry_count_by_op == {"resume": 2, "pause": 1}
+    assert obs.time_lost_to_retry_sec == pytest.approx(0.10)
+    assert obs.retries_per_slice_p95 == pytest.approx(2.0)  # [2,0] -> p95=2
+
+
+def test_retry_impact_zero_when_no_events():
+    state = BenchSandbox.from_instance(SandboxInstance(id="x", index=0), "replay")
+    state.replay_metrics = ReplayMetrics()
+    cfg = KernelConfig(workflow_type="replay", total_count=1)
+    obs = ReplayObservability(cfg, {0: state})
+    assert obs.retry_count == 0
+    assert obs.retry_count_by_op == {}
+    assert obs.time_lost_to_retry_sec == 0.0
+    assert obs.retries_per_slice_p95 == 0.0  # empty list -> calc_percentiles returns 0.0

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from bench_core.utils import calc_percentiles
+
 if TYPE_CHECKING:
     from bench_core.config import KernelConfig
     from bench_core.schemas import BenchSandbox
@@ -81,3 +83,26 @@ class ReplayObservability:
     @property
     def overcommit_ratio(self) -> float:
         return self.config.total_count / self.concurrency if self.concurrency else 0.0
+
+    # --- Phase 3.3: retry-impact (read from ReplayMetrics accumulators, not the series) ---
+
+    @property
+    def retry_count(self) -> int:
+        return sum(m.retry_queued_count for m in self._metrics_lists)
+
+    @property
+    def retry_count_by_op(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for m in self._metrics_lists:
+            for op, n in m.retry_queued_count_by_op.items():
+                out[op] = out.get(op, 0) + n
+        return out
+
+    @property
+    def time_lost_to_retry_sec(self) -> float:
+        return sum(m.time_lost_to_retry_sec for m in self._metrics_lists)
+
+    @property
+    def retries_per_slice_p95(self) -> float:
+        vals = [v for m in self._metrics_lists for v in m.retries_per_slice]
+        return calc_percentiles(vals)["p95"]

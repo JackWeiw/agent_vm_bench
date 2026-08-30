@@ -564,6 +564,26 @@ class ReportFormatter:
                 # the Resume decomp line below breaks resume_sec into api + ready_wait + qps_wait)
                 lines.append("  (resume_sec includes post-resume ready-wait; see Resume decomp)")
 
+                # Phase 3.3: retry-impact sub-block. Reads the ReplayMetrics
+                # accumulators (populated by the runner alongside retry_* series
+                # events), NOT the series JSONL -- ReplayMetrics is the report's
+                # consistent data source. retries/time lost always render; the
+                # per-slice P95 line only when retries actually occurred.
+                retry_count = sum(s.replay_metrics.retry_queued_count for s in self.sandbox_states.values())
+                retry_time_lost = sum(s.replay_metrics.time_lost_to_retry_sec for s in self.sandbox_states.values())
+                if retry_count > 0:
+                    all_retries_per_slice: list[int] = []
+                    for s in self.sandbox_states.values():
+                        all_retries_per_slice.extend(s.replay_metrics.retries_per_slice)
+                    rp95 = calc_percentiles(all_retries_per_slice)["p95"]
+                    lines.append(
+                        f"  Retry impact: retries={retry_count} "
+                        f"(time lost={retry_time_lost:.3f}s) "
+                        f"retries/slice P95={rp95:.2f}"
+                    )
+                else:
+                    lines.append(f"  Retry impact: retries={retry_count} " f"(time lost={retry_time_lost:.3f}s)")
+
                 # P2.6 decomposition sub-block: column-stable breakdown of
                 # resume/pause into their segment components. Columns are NEVER
                 # conditionally dropped (0.000s when inactive); only the Slot
