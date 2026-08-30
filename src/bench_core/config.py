@@ -132,6 +132,7 @@ class KernelConfig:
     # --- report ---
     output_dir: str = "results/kernel"
     filename_prefix: str = "bench"
+    report_format: str = "txt"
 
     def __post_init__(self) -> None:
         # Resolve replacement pairs from the language when not supplied. A copy
@@ -307,4 +308,5 @@ class KernelConfig:
             # --- report ---
             output_dir=report.get("output_dir", "results/kernel"),
             filename_prefix=report.get("filename_prefix", "bench"),
+            report_format=report.get("format", "txt"),
         )

@@ -92,3 +92,4 @@ test:
 report:
   output_dir: "results/replay"
   filename_prefix: "replay_bench"
+  format: txt  # txt (default) | xlsx | both

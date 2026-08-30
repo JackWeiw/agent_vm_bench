@@ -436,6 +436,27 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     # 8. Generate and save the report.
     report = stats_collector.generate_report()
     filepath = stats_collector.save_report(report)
+
+    # Phase 3.5: optional xlsx observability workbook (replay workflows only).
+    if config.workflow_type == "replay" and config.report_format in ("xlsx", "both"):
+        try:
+            from bench_core.obs_xlsx import XlsxReportRenderer
+        except ImportError:  # openpyxl missing on a minimal install
+            logger.warning("openpyxl not installed; skipping xlsx report (txt only)")
+        else:
+            from bench_core.observability import ReplayObservability
+
+            wall_sec = (time.time() - stats_collector.start_time) if stats_collector.start_time else None
+            obs = ReplayObservability(
+                config,
+                stats_collector.sandbox_states,
+                admission_snapshot=admission_snapshot,
+                wall_sec=wall_sec,
+            )
+            xlsx_path = str(Path(config.output_dir) / f"{config.filename_prefix}_obs.xlsx")
+            XlsxReportRenderer(obs).render(xlsx_path)
+            logger.info(f"Xlsx report saved to: {xlsx_path}")
+
     logger.info("\n" + report)
     logger.info(f"\nReport saved to: {filepath}")
     return {"report": report, "filepath": filepath, "admission_snapshot": admission_snapshot}
@@ -480,6 +501,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--create-only/--detect run that left them running), then exit",
     )
     parser.add_argument("-o", "--output-dir")
+    parser.add_argument(
+        "--report-format",
+        choices=["txt", "xlsx", "both"],
+        default=None,
+        help="report output format (default: txt; xlsx/both add an openpyxl workbook)",
+    )
     return parser
 
 
@@ -542,6 +569,8 @@ def main() -> None:
         config.cleanup_only = True
     if args.output_dir:
         config.output_dir = args.output_dir
+    if args.report_format:
+        config.report_format = args.report_format
 
     # Attach a file handler once config (and CLI overrides) are resolved.
     # Stdout stays plaintext for live tailing; JSON lines go to the file only
