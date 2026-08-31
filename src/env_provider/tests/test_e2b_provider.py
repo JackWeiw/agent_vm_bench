@@ -365,6 +365,35 @@ class TestTemplatePassthrough:
         # (c) _slot_templates records the resolved templates (1-based keys).
         assert provider.manager._slot_templates == {1: "swb-a", 2: "swb-b", 3: "swb-a"}
 
+    def test_no_templates_kwarg_falls_back_to_config_default(self, monkeypatch):
+        """templates=None → _create_single uses self.config.template (default)."""
+        from env_provider.e2b import manager as _mgr_mod
+        from env_provider.tests.test_e2b_manager import _FakeSandboxCls
+
+        fake = _FakeSandboxCls()
+        monkeypatch.setattr(_mgr_mod, "Sandbox", fake)
+
+        kcfg = KernelConfig(total_count=3, workflow_type="browser")
+        e2b_cfg = Config()
+        provider = E2BProvider(kcfg, e2b_cfg, Event())
+
+        instances = provider.create_all()  # no templates= kwarg
+
+        default_tpl = e2b_cfg.template  # "openclaw-browser-v1"
+
+        # Every Sandbox.create call receives the Config default as the first arg.
+        assert len(fake.created) == 3
+        for entry in fake.created:
+            assert entry[0] == default_tpl
+
+        # Every SandboxInstance.template is stamped with the default.
+        for inst in instances.values():
+            assert inst.template == default_tpl
+
+        # _slot_templates records the default for every slot.
+        for slot_id in [1, 2, 3]:
+            assert provider.manager._slot_templates[slot_id] == default_tpl
+
 
 def e2b_build_provider(raw_config: dict) -> E2BProvider:
     """Helper: call build_provider with a KernelConfig built from the same raw."""
