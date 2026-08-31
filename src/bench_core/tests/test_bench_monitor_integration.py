@@ -51,10 +51,10 @@ def test_run_benchmark_brackets_monitor_around_stress(monkeypatch, tmp_path):
 
     result = run_benchmark(config, provider)  # noqa: F841 -- exercise the spine
 
-    # The stress bracket must be invoked in order around dispatch.
+    # The stress bracket must be invoked in order around dispatch. Asserting
+    # presence alone would let a stop-before-begin bug pass, so check the sequence.
     assert "init" in calls
-    assert "start" in calls
-    assert "begin" in calls
-    assert "end" in calls
-    assert "stop" in calls
+    assert calls.index("start") < calls.index("begin")
+    assert calls.index("begin") < calls.index("end")
+    assert calls.index("end") < calls.index("stop")
     # merge_into is replay-xlsx-only; browser+txt does NOT call it -- so do NOT assert "merge".
