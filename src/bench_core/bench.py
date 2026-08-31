@@ -262,9 +262,6 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     # trajectory creates/kills its own sandbox in-runner); build N lightweight
     # shells the workers fill per trajectory. detect mode is incompatible with
     # trajectory (no persistent pool to detect).
-    # Compute replay template map for multi-template routing (None if not replay
-    # or no manifest configured).
-    templates = _replay_template_map(config)
     if config.replay_mode == "trajectory":
         if config.detect_existing:
             logger.info("\n[Phase 1] detect mode incompatible with trajectory mode; building shells.")
@@ -286,6 +283,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         logger.info("\n[Phase 1] Detected existing sandboxes...")
     else:
         logger.info("\n[Phase 1] Creating sandboxes...")
+        templates = _replay_template_map(config) if config.workflow_type == "replay" else None
         instances = provider.create_all(templates=templates)
     instances = dict(instances)
 
