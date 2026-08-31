@@ -93,3 +93,16 @@ report:
   output_dir: "results/replay"
   filename_prefix: "replay_bench"
   format: txt  # txt (default) | xlsx | both
+
+# Host-level monitor (optional). Default `auto` enables vm_monitor only when the
+# provider has a VMM (e2b/aenv -> firecracker); docker/fake are skipped.
+monitor:
+  enabled: auto          # auto | true | false
+  vmm: auto              # auto | qemu | firecracker (auto = take provider hint)
+  interval: 3
+  capture: auto          # auto | true | false (auto/true -> --enable-capture --auto-skip)
+  numa: "1"
+  stress_file: /dev/shm/bench_core_monitor.lock
+  log_dir: null          # null = <report.output_dir>/vm_monitor
+  merge_report: true     # replay xlsx: copy VM_Stats/NUMA_Overview/DevKit_TopDown into obs workbook
+  report_timeout: 300
