@@ -100,6 +100,7 @@ class SandboxInstance:
     is_alive: bool = True
     warmup_done: bool = False
     creation_metrics: CreationMetrics = field(default_factory=CreationMetrics)
+    template: str | None = None  # concrete backend template this sandbox was created with
 
 
 @runtime_checkable
@@ -131,7 +132,9 @@ class EphemeralCapable(Protocol):
     G3 deferred).
     """
 
-    def create_one(self, index: int, *, metadata: dict[str, str] | None = None) -> SandboxInstance:
+    def create_one(
+        self, index: int, *, template: str | None = None, metadata: dict[str, str] | None = None
+    ) -> SandboxInstance:
         ...
 
     def kill_one(self, inst: SandboxInstance) -> None:
@@ -169,12 +172,17 @@ class EnvironmentProvider(ABC):
 
     # ------------------------------------------------------------------ lifecycle
     @abstractmethod
-    def create_all(self) -> Mapping[int, SandboxInstance]:
+    def create_all(self, *, templates: dict[int, str | None] | None = None) -> Mapping[int, SandboxInstance]:
         """Create all sandboxes and return ``{index: instance}``.
 
-        Ready-checks (port probing, command readiness) happen *inside* this
-        method before instances are returned, so the kernel only ever sees
-        ready instances.
+        ``templates`` maps 0-based request slots ``0..total_count-1`` to
+        concrete template names (None/absent = provider default). The provider
+        creates exactly one sandbox per slot, binds the slot's resolved template
+        to ``SandboxInstance.template``, and returns the list in slot order
+        (no reordering/reuse) -- template-affinity routing depends on the
+        slot↔template↔position binding being stable.
+
+        Ready-checks happen inside this method before instances are returned.
         """
 
     @abstractmethod
