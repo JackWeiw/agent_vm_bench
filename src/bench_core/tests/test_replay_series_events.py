@@ -200,7 +200,7 @@ class TestTrajectoryEvents:
             def __init__(self):
                 super().__init__(count=0)
 
-            def create_one(self, index, metadata=None):
+            def create_one(self, index, *, template=None, metadata=None):
                 raise RuntimeError("create boom")
 
         cfg = KernelConfig(

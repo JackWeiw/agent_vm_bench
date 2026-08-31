@@ -328,6 +328,11 @@ class ReplayMetrics(TaskMetricsBase):
         self._time_lost_to_retry_sec: float = 0.0
         self._retries_per_slice: list[int] = []
 
+        # Task 7: orphan-skip counter. A sandbox whose template matches no
+        # trajectory in the pool is an "orphan" -- it skips the benchmark
+        # phase with a warning. Thread-safe (reuses self._lock).
+        self._orphan_skip_count: int = 0
+
     def add(
         self,
         latency: float,
@@ -431,6 +436,22 @@ class ReplayMetrics(TaskMetricsBase):
         """
         with self._lock:
             self._retries_per_slice.append(count)
+
+    def record_orphan_skip(self) -> None:
+        """Record one orphan-sandbox skip (template affinity matched nothing).
+
+        Thread-safe. Called by the runner when a sandbox's template has no
+        matching trajectory in the pool -- the sandbox exits the benchmark
+        phase without running any trajectory.
+        """
+        with self._lock:
+            self._orphan_skip_count += 1
+
+    @property
+    def orphan_skip_count(self) -> int:
+        """Number of orphan sandboxes that skipped the benchmark phase."""
+        with self._lock:
+            return self._orphan_skip_count
 
     @property
     def action_type_latencies(self) -> dict[str, list[float]]:

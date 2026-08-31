@@ -44,6 +44,15 @@ READY_PROBE_MAX_ATTEMPTS = 5
 READY_PROBE_TIMEOUT = 10  # seconds per attempt
 
 
+def _affinity_pool(pool: tuple[Trajectory, ...], template: str | None) -> list[Trajectory]:
+    """Trajectories whose template matches this sandbox's template.
+
+    Legacy (no manifest): every trajectory template is None and every sandbox
+    template is None, so this returns the whole pool unchanged.
+    """
+    return [t for t in pool if t.template == template]
+
+
 class SandboxInfrastructureError(RuntimeError):
     """Sandbox transport/readiness failure that must stop the current slice."""
 
@@ -654,9 +663,13 @@ class ReplayBaseRunner(threading.Thread):
                     t0 = time.perf_counter()
                     if self.admission is not None and self.admission.qps is not None:
                         with self.admission.qps.slot("create"):
-                            self.provider.create_one(self.state.index, metadata={"trajectory_id": traj.instance_id})
+                            self.provider.create_one(
+                                self.state.index, template=traj.template, metadata={"trajectory_id": traj.instance_id}
+                            )
                     else:
-                        self.provider.create_one(self.state.index, metadata={"trajectory_id": traj.instance_id})
+                        self.provider.create_one(
+                            self.state.index, template=traj.template, metadata={"trajectory_id": traj.instance_id}
+                        )
                     create_sec = time.perf_counter() - t0
                     # Post-create ready probe (lifecycle concern; not QPS-gated).
                     if getattr(self.config, "replay_ready_probe", True) and self.config.replay_mode in (
@@ -939,6 +952,8 @@ class ReplayTaskRunner(ReplayBaseRunner):
             # _run_trajectory owns per-trajectory lifecycle setup (create/kill);
             # _init_lifecycle is a no-op in trajectory mode (skips initial pause),
             # so it is only called in the non-trajectory branch below.
+            # Trajectory mode cycles the WHOLE pool (not affinity-filtered):
+            # each trajectory brings its own template via create_one(template=).
             target = self.config.total_count
             run = 0
             cursor = self.state.index % len(pool)
@@ -951,15 +966,28 @@ class ReplayTaskRunner(ReplayBaseRunner):
                 cursor = (cursor + 1) % len(pool)
                 run += 1
         else:
+            # Non-trajectory (exec_only / lifecycle): affinity-filter the pool so
+            # this sandbox only runs trajectories matching its template. Legacy
+            # (no manifest): both sides are None -> whole pool returned.
+            my_pool = _affinity_pool(pool, self.state.template)
+            if not my_pool:
+                logger.warning(
+                    f"[Sandbox{self.state.index}] template {self.state.template!r} "
+                    f"has no trajectory in the pool; skipping (orphan)"
+                )
+                self.state.replay_metrics.record_orphan_skip()
+                return
             self._init_lifecycle()
-            cursor = self.state.index % len(pool)
+            # Round-robin across the affinity-filtered sub-fleet; when my_pool
+            # is shorter than pool, modulo still spreads sandboxes evenly.
+            cursor = self.state.index % len(my_pool)
             while not self.stop_event.is_set() and self.state.is_alive:
-                traj = pool[cursor]
+                traj = my_pool[cursor]
                 try:
                     self._replay_trajectory(traj)
                 except ShutdownInterrupted:
                     break
-                cursor = (cursor + 1) % len(pool)
+                cursor = (cursor + 1) % len(my_pool)
 
         logger.info(f"[Sandbox{self.state.index}] Replay task runner ended")
 
@@ -1050,18 +1078,34 @@ class ReplayRoundRunner(ReplayBaseRunner):
             logger.info(f"[Sandbox{self.state.index}] Replay pool empty; skipping round {self.round_id}")
             return
 
-        idx = (self.state.index + self.round_id) % len(pool)
-        traj = pool[idx]
-        logger.info(f"[Sandbox{self.state.index}] Replay round {self.round_id}: trajectory {traj.instance_id}")
-
-        try:
-            if self.config.replay_mode == "trajectory":
+        if self.config.replay_mode == "trajectory":
+            # Trajectory mode: cycle the WHOLE pool (not affinity-filtered).
+            # Each trajectory brings its own template via create_one(template=).
+            idx = (self.state.index + self.round_id) % len(pool)
+            traj = pool[idx]
+            logger.info(f"[Sandbox{self.state.index}] Replay round {self.round_id}: trajectory {traj.instance_id}")
+            try:
                 self._run_trajectory(traj)
-            else:
+            except ShutdownInterrupted:
+                pass  # benchmark shutdown mid-slice; round ends cleanly
+        else:
+            # Non-trajectory (exec_only / lifecycle): affinity-filter the pool.
+            my_pool = _affinity_pool(pool, self.state.template)
+            if not my_pool:
+                logger.warning(
+                    f"[Sandbox{self.state.index}] template {self.state.template!r} "
+                    f"has no trajectory in the pool; skipping (orphan)"
+                )
+                self.state.replay_metrics.record_orphan_skip()
+                return
+            idx = (self.state.index + self.round_id) % len(my_pool)
+            traj = my_pool[idx]
+            logger.info(f"[Sandbox{self.state.index}] Replay round {self.round_id}: trajectory {traj.instance_id}")
+            try:
                 self._init_lifecycle()
                 self._replay_round_loop(traj)
-        except ShutdownInterrupted:
-            pass  # benchmark shutdown mid-slice; round ends cleanly
+            except ShutdownInterrupted:
+                pass  # benchmark shutdown mid-slice; round ends cleanly
         logger.info(f"[Sandbox{self.state.index}] Replay round {self.round_id} done")
 
     def _replay_round_loop(self, traj: Trajectory) -> None:
