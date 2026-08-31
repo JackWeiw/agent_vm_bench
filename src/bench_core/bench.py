@@ -58,6 +58,26 @@ def _promote(instances: dict[int, SandboxInstance], workflow_type: str) -> dict[
     return {i: BenchSandbox.from_instance(s, workflow_type) for i, s in instances.items()}
 
 
+def _replay_template_map(config: KernelConfig) -> dict[int, str | None] | None:
+    """Round-robin the pool's (template, trajectory) pairs over total_count slots.
+
+    Returns None when no manifest is configured (legacy single-template path)
+    or when the workflow is not replay. Sandbox k gets
+    ``pool[k % len(pool)].template`` (may be None -> provider uses its default).
+
+    The ``load_pool`` import is function-local to avoid a circular import at
+    module load time (``replay_payload`` imports ``config``, not ``bench``).
+    """
+    if config.workflow_type != "replay" or not config.replay_template_manifest:
+        return None
+    from bench_core.replay_payload import load_pool
+
+    pool = load_pool(config)
+    if not pool:
+        return None
+    return {k: pool[k % len(pool)].template for k in range(config.total_count)}
+
+
 def _print_header(config: KernelConfig, provider: EnvironmentProvider) -> None:
     """Print the run configuration banner (host-agnostic)."""
     lines = ["=" * 80, "Sandbox Bench - Performance Test", "=" * 80]
@@ -242,6 +262,9 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     # trajectory creates/kills its own sandbox in-runner); build N lightweight
     # shells the workers fill per trajectory. detect mode is incompatible with
     # trajectory (no persistent pool to detect).
+    # Compute replay template map for multi-template routing (None if not replay
+    # or no manifest configured).
+    templates = _replay_template_map(config)
     if config.replay_mode == "trajectory":
         if config.detect_existing:
             logger.info("\n[Phase 1] detect mode incompatible with trajectory mode; building shells.")
@@ -263,7 +286,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         logger.info("\n[Phase 1] Detected existing sandboxes...")
     else:
         logger.info("\n[Phase 1] Creating sandboxes...")
-        instances = provider.create_all()
+        instances = provider.create_all(templates=templates)
     instances = dict(instances)
 
     ready_count = sum(1 for s in instances.values() if s.ready)

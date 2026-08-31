@@ -22,8 +22,8 @@ REPLAY_FIXTURES = Path(__file__).parent / "fixtures" / "replay"
 class _NoReadyProvider(FakeProvider):
     """A FakeProvider whose instances never reach ready state."""
 
-    def create_all(self):
-        instances = super().create_all()
+    def create_all(self, *, templates=None):
+        instances = super().create_all(templates=templates)
         for inst in instances.values():
             inst.ready = False
             inst.is_alive = False
