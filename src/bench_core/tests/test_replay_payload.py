@@ -197,15 +197,15 @@ def _write_traj(dir_: Path, name: str, instance_id: str) -> Path:
 
 
 def test_load_pool_attaches_template_from_manifest(tmp_path):
+    import json
+
     from bench_core.replay_payload import load_pool, reset_pool_cache
 
     traj_dir = tmp_path / "traj"
     _write_traj(traj_dir, "a.replay.json", "a")
     _write_traj(traj_dir, "b.replay.json", "b")
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(
-        __import__("json").dumps({"a.replay.json": "swb-a", "b.replay.json": "swb-b"}), encoding="utf-8"
-    )
+    manifest.write_text(json.dumps({"a.replay.json": "swb-a", "b.replay.json": "swb-b"}), encoding="utf-8")
 
     reset_pool_cache()
     pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest)))
@@ -215,13 +215,15 @@ def test_load_pool_attaches_template_from_manifest(tmp_path):
 
 
 def test_load_pool_missing_manifest_entry_is_none_with_warning(tmp_path, caplog):
+    import json
     import logging
+
     from bench_core.replay_payload import load_pool, reset_pool_cache
 
     traj_dir = tmp_path / "traj"
     _write_traj(traj_dir, "a.replay.json", "a")
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(__import__("json").dumps({}), encoding="utf-8")  # no entry for a
+    manifest.write_text(json.dumps({}), encoding="utf-8")  # no entry for a
 
     reset_pool_cache()
     caplog.set_level(logging.WARNING)
@@ -236,7 +238,7 @@ def test_load_pool_missing_manifest_file_raises(tmp_path):
     traj_dir = tmp_path / "traj"
     _write_traj(traj_dir, "a.replay.json", "a")
     reset_pool_cache()
-    with pytest.raises((FileNotFoundError, ValueError)):
+    with pytest.raises(ValueError, match="template_manifest not readable"):
         load_pool(_cfg_for_manifest(tmp_path, manifest=str(tmp_path / "nope.json")))
 
 
@@ -288,3 +290,21 @@ def test_load_pool_cache_invalidates_on_manifest_change(tmp_path):
     reset_pool_cache()
     assert load_pool(_cfg_for_manifest(tmp_path, manifest=str(m1)))[0].template == "swb-a"
     assert load_pool(_cfg_for_manifest(tmp_path, manifest=str(m2)))[0].template == "swb-a2"
+
+
+def test_load_pool_non_string_manifest_value_is_none_with_warning(tmp_path, caplog):
+    import json
+    import logging
+
+    from bench_core.replay_payload import load_pool, reset_pool_cache
+
+    traj_dir = tmp_path / "traj"
+    _write_traj(traj_dir, "a.replay.json", "a")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"a.replay.json": 123}), encoding="utf-8")
+
+    reset_pool_cache()
+    caplog.set_level(logging.WARNING)
+    pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest)))
+    assert pool[0].template is None
+    assert "is not a string" in caplog.text
