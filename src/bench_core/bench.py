@@ -40,6 +40,7 @@ from env_provider import (
 from bench_core.schemas import BenchSandbox
 from bench_core.stats_collector import StatsCollector
 from bench_core.lifecycle_series import LifecycleSeriesWriter
+from bench_core.monitor import MonitorController
 from bench_core.task_manager import TaskManager
 from bench_core.round_robin import RoundRobinTaskManager
 from bench_core.utils import calc_percentiles, setup_logging
@@ -301,6 +302,8 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     logger.info("\n[Phase 3] Starting stats collector...")
     stats_collector = StatsCollector(config, states, provider.name)
     stats_collector.start()
+    monitor = MonitorController(config, provider)
+    monitor.start()
 
     # P2.5: lifecycle-mode-only per-step JSONL time series. Exec-only emits
     # no file (lifecycle fields all-zero; nothing to curve).
@@ -353,6 +356,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
 
     task_manager: TaskManager | None = None
     try:
+        monitor.begin_stress()
         if config.benchmark_mode == "round_robin":
             logger.info("\n[Phase 4] Starting round-robin tasks...")
             round_robin = RoundRobinTaskManager(
@@ -386,6 +390,8 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 logger.info("\nUser interrupt, stopping...")
     except Exception:
         stop_event.set()
+        monitor.end_stress()
+        monitor.stop()
         stats_collector.stop()
         if series_writer is not None:
             series_writer.close()
@@ -396,10 +402,13 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     # 7. Stop all components.
     logger.info("\n[Phase 6] Stopping...")
     stop_event.set()
+    monitor.end_stress()
     if task_manager is not None:
         try:
             task_manager.wait_all(timeout=5)
         except Exception:
+            monitor.end_stress()
+            monitor.stop()
             stats_collector.stop()
             if series_writer is not None:
                 series_writer.close()
@@ -435,6 +444,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         stats_collector.admission_snapshot = admission_snapshot
 
     # 8. Generate and save the report.
+    monitor.stop()
     report = stats_collector.generate_report()
     filepath = stats_collector.save_report(report)
 
@@ -457,6 +467,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
             xlsx_path = Path(config.output_dir) / f"{config.filename_prefix}_obs.xlsx"
             XlsxReportRenderer(obs, series_path=series_path if series_writer else None).render(xlsx_path)
             logger.info(f"Xlsx report saved to: {xlsx_path}")
+            monitor.merge_into(xlsx_path)
 
     logger.info("\n" + report)
     logger.info(f"\nReport saved to: {filepath}")
