@@ -327,6 +327,45 @@ class TestBuildProvider:
         assert provider._kernel_config.total_count == 7  # shared -> kernel
 
 
+class TestTemplatePassthrough:
+    """Per-sandbox template reaches Sandbox.create and SandboxInstance.template.
+
+    End-to-end: real SandboxManager + real E2BProvider with ``Sandbox`` replaced
+    by :class:`_FakeSandboxCls` in the manager module. Verifies (a) each
+    ``Sandbox.create`` call receives the per-slot template as its first arg,
+    (b) ``_slot_templates`` is populated so ``_to_instance`` can stamp
+    ``SandboxInstance.template``, and (c) ``E2BProvider.create_all`` forwards
+    the ``templates`` kwarg to the manager.
+    """
+
+    def test_per_slot_template_reaches_create_and_instance(self, monkeypatch):
+        from env_provider.e2b import manager as _mgr_mod
+        from env_provider.tests.test_e2b_manager import _FakeSandboxCls
+
+        fake = _FakeSandboxCls()
+        monkeypatch.setattr(_mgr_mod, "Sandbox", fake)
+
+        kcfg = KernelConfig(total_count=3, workflow_type="browser")
+        e2b_cfg = Config()
+        provider = E2BProvider(kcfg, e2b_cfg, Event())
+
+        instances = provider.create_all(templates={0: "swb-a", 1: "swb-b", 2: "swb-a"})
+
+        # (a) Sandbox.create receives the per-slot template as its first arg.
+        assert len(fake.created) == 3
+        assert fake.created[0][0] == "swb-a"
+        assert fake.created[1][0] == "swb-b"
+        assert fake.created[2][0] == "swb-a"
+
+        # (b) SandboxInstance.template is stamped from _slot_templates.
+        assert instances[1].template == "swb-a"
+        assert instances[2].template == "swb-b"
+        assert instances[3].template == "swb-a"
+
+        # (c) _slot_templates records the resolved templates (1-based keys).
+        assert provider.manager._slot_templates == {1: "swb-a", 2: "swb-b", 3: "swb-a"}
+
+
 def e2b_build_provider(raw_config: dict) -> E2BProvider:
     """Helper: call build_provider with a KernelConfig built from the same raw."""
     from env_provider.e2b import build_provider

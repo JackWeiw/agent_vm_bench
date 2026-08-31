@@ -128,6 +128,8 @@ class SandboxManager(BaseSandboxManager):
         state.creation_metrics.status = BackendSandboxStatus.CREATING
         state.creation_metrics.submit_time = time.time()
 
+        resolved = template or self.config.template
+
         try:
             # Build envs with NUMA binding if configured. numa_bind is a
             # normalized list of nodes (or None); round-robin across them by
@@ -138,7 +140,7 @@ class SandboxManager(BaseSandboxManager):
                 envs["FC_BIND"] = str(numa_node)
 
             sbx = Sandbox.create(
-                self.config.template,
+                resolved,
                 timeout=self.config.create_timeout,
                 envs=envs if envs else None,
                 metadata=metadata,
@@ -149,10 +151,20 @@ class SandboxManager(BaseSandboxManager):
                 state.creation_metrics.create_ready_time - state.creation_metrics.submit_time
             )
             state.creation_metrics.status = BackendSandboxStatus.CREATED
-            return {"success": True, "create_elapsed": state.creation_metrics.create_elapsed, "error": ""}
+            return {
+                "success": True,
+                "create_elapsed": state.creation_metrics.create_elapsed,
+                "error": "",
+                "template": resolved,
+            }
         except Exception as e:
             state.creation_metrics.create_ready_time = time.time()
-            return {"success": False, "create_elapsed": 0.0, "error": str(e)}
+            return {
+                "success": False,
+                "create_elapsed": 0.0,
+                "error": str(e),
+                "template": resolved,
+            }
 
     def _list_existing(self) -> list:
         """List running sandboxes (flatten the E2B paginator)."""

@@ -85,8 +85,8 @@ class E2BProvider(EnvironmentProvider):
         return self._manager
 
     # ------------------------------------------------------------------ lifecycle
-    def create_all(self) -> Mapping[int, SandboxInstance]:
-        return self._translate(self.manager.create_all())
+    def create_all(self, *, templates: dict[int, str | None] | None = None) -> Mapping[int, SandboxInstance]:
+        return self._translate(self.manager.create_all(templates=templates))
 
     def detect_existing(self) -> Mapping[int, SandboxInstance]:
         return self._translate(self.manager.detect_existing())
@@ -196,6 +196,7 @@ class E2BProvider(EnvironmentProvider):
                 error=cm.error_msg,
                 ready_check_error=cm.port_check_error,
             ),
+            template=self.manager._slot_templates.get(state.sandbox_id),
         )
 
 
