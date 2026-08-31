@@ -8,7 +8,18 @@ binary is missing, or the lock dir is unwritable -- never compromising the bench
 """
 from __future__ import annotations
 
+import atexit
+import logging
+import shutil
+import subprocess
+import time
 from dataclasses import dataclass
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+_VM_MONITOR_BIN = "vm-monitor"
+_MERGE_SHEETS = ("VM_Stats", "NUMA_Overview", "DevKit_TopDown")
 
 
 @dataclass
@@ -40,3 +51,107 @@ class MonitorConfig:
             merge_report=bool(raw.get("merge_report", True)),
             report_timeout=int(raw.get("report_timeout", 300)),
         )
+
+
+class MonitorController:
+    """Spawns ``vm-monitor`` for the stress window; no-op when not applicable."""
+
+    def __init__(self, config, provider):
+        self._config = config
+        self._provider = provider
+        mc = config.monitor
+        self._vmm_resolved = mc.vmm if mc.vmm != "auto" else provider.vmm_type
+        self._capture_on = mc.capture in ("auto", "true")
+        self._effective = mc.enabled == "true" or (mc.enabled == "auto" and self._vmm_resolved is not None)
+        self._log_dir = Path(mc.log_dir) if mc.log_dir else Path(config.output_dir) / "vm_monitor"
+        self._stress_file = Path(mc.stress_file)
+        self._report_timeout = mc.report_timeout
+        self._merge_report = mc.merge_report
+        self._interval = mc.interval
+        self._numa = mc.numa
+        self.proc = None
+        self._stdout_fh = None
+        self._stderr_fh = None
+        self._begin_ts: float | None = None
+        self._end_ts: float | None = None
+        self.report_xlsx: Path | None = None
+        self._started = False
+        self._cmd = self._build_cmd()
+
+    def _build_cmd(self) -> list[str]:
+        exe = shutil.which(_VM_MONITOR_BIN)
+        if exe is None:
+            return []
+        cmd = [
+            exe,
+            "--vmm",
+            self._vmm_resolved,
+            "-i",
+            str(self._interval),
+            "--numa",
+            self._numa,
+            "--stress-file",
+            str(self._stress_file),
+            "--log-dir",
+            str(self._log_dir),
+        ]
+        if self._capture_on:
+            cmd += ["--enable-capture", "--auto-skip"]
+        # Hard upper bound: vm_monitor exits after this even if the lock is never
+        # removed (SIGKILL/OOM on the kernel side cannot reap the subprocess).
+        hard_t = getattr(self._config, "test_duration", self._report_timeout) + 60
+        cmd += ["-t", str(hard_t)]
+        return cmd
+
+    def start(self) -> None:
+        if not self._effective:
+            logger.warning("vm_monitor disabled: provider=%s vmm=%s", self._provider.name, self._vmm_resolved)
+            return
+        if not self._cmd:
+            logger.warning("vm_monitor disabled: %s binary not found on PATH", _VM_MONITOR_BIN)
+            return
+        # Stale-lock cleanup: a prior hard crash (SIGKILL/OOM) may have left the lock;
+        # vm_monitor would otherwise treat a pre-existing file as "stress active" and exit.
+        if self._stress_file.exists():
+            try:
+                self._stress_file.unlink()
+            except OSError as e:
+                logger.warning("vm_monitor disabled: cannot remove stale lock %s: %s", self._stress_file, e)
+                return
+            logger.warning("Stress lock file found from previous run, removing stale lock %s", self._stress_file)
+        # Lock-dir / log-dir write probe (e.g. /dev/shm denied in restricted envs).
+        try:
+            self._log_dir.mkdir(parents=True, exist_ok=True)
+            self._stdout_fh = open(self._log_dir / "stdout.log", "w", buffering=1)
+            self._stderr_fh = open(self._log_dir / "stderr.log", "w", buffering=1)
+        except OSError as e:
+            logger.warning("vm_monitor disabled: cannot write log_dir %s: %s", self._log_dir, e)
+            return
+        try:
+            self.proc = subprocess.Popen(self._cmd, stdout=self._stdout_fh, stderr=self._stderr_fh)
+        except OSError as e:
+            logger.error("vm_monitor failed to spawn: %s", e)
+            self._close_handles()
+            return
+        atexit.register(self._emergency_kill)
+        self._started = True
+        time.sleep(0.5)  # brief init; vm_monitor idles waiting for the lock
+
+    def _close_handles(self) -> None:
+        for attr in ("_stdout_fh", "_stderr_fh"):
+            fh = getattr(self, attr)
+            if fh is not None and not fh.closed:
+                try:
+                    fh.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            setattr(self, attr, None)
+
+    def _emergency_kill(self) -> None:
+        """atexit backstop stub (full impl in Task 5)."""
+        if self.proc is not None and self.proc.poll() is None:
+            try:
+                self.proc.terminate()
+            except Exception:  # noqa: BLE001
+                pass
+        self._close_handles()
