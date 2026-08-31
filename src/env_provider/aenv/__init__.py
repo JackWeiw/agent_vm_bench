@@ -96,12 +96,16 @@ class AenvProvider(E2BProvider):
         return scan_snapshot_sizes(sandbox_dir)
 
     # ------------------------------------------------------------------ ephemeral (trajectory mode)
-    def create_one(self, index: int, *, metadata: dict[str, str] | None = None) -> SandboxInstance:
+    def create_one(
+        self, index: int, *, template: str | None = None, metadata: dict[str, str] | None = None
+    ) -> SandboxInstance:
         """Create a single sandbox on demand (trajectory mode, EphemeralCapable).
 
         Mirrors the single-sandbox path of ``_create_batch_concurrent``: build a
-        state, run ``_create_single`` (forwarding ``metadata``), run the base
-        readiness probe, and map the result via ``_apply_ready`` -- so timing is
+        state, run ``_create_single`` (forwarding ``metadata`` + ``template``),
+        populate ``_slot_templates`` so ``_to_instance`` stamps the resolved
+        template onto ``SandboxInstance.template``, run the base readiness
+        probe, and map the result via ``_apply_ready`` -- so timing is
         consistent with ``create_all``. The returned instance's
         ``creation_metrics`` reflects this trajectory; the runner accumulates
         per-trajectory ``create_sec``/``kill_sec`` into ``ReplayMetrics``.
@@ -111,9 +115,10 @@ class AenvProvider(E2BProvider):
         mgr = self.manager
         state = mgr._new_state(index)
         mgr._states[index] = state
-        result = mgr._create_single(state, metadata=metadata)
+        result = mgr._create_single(state, metadata=metadata, template=template)
         label = f"{mgr._noun}{index}"
         if result["success"]:
+            mgr._slot_templates[index] = result.get("template")
             ready = mgr._ready_checker().check(
                 mgr._handle_of(state),
                 self._kernel_config.workflow_type,

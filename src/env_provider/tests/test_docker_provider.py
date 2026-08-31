@@ -148,6 +148,23 @@ class TestCreateAll:
 
         assert provider.create_all()[1].warmup_done is True
 
+    def test_create_all_forwards_templates_to_manager(self):
+        state = _make_state(1, status=DockerStatus.PORT_READY, container_name="oc-bench-1")
+        provider, manager = _provider_with({1: state})
+        templates = {1: "custom-image"}
+
+        provider.create_all(templates=templates)
+
+        manager.create_all.assert_called_once_with(templates=templates)
+
+    def test_create_all_without_templates_is_legacy(self):
+        state = _make_state(1, status=DockerStatus.PORT_READY, container_name="oc-bench-1")
+        provider, manager = _provider_with({1: state})
+
+        provider.create_all()
+
+        manager.create_all.assert_called_once_with(templates=None)
+
 
 class TestDetect:
     def test_detect_existing_delegates_to_manager(self):

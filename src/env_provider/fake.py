@@ -46,7 +46,7 @@ class FakeProvider(EnvironmentProvider):
         self.save_ids_calls = 0
 
     # --- lifecycle ---
-    def create_all(self) -> dict[int, SandboxInstance]:
+    def create_all(self, *, templates: dict[int, str | None] | None = None) -> dict[int, SandboxInstance]:
         self._instances = {
             i: SandboxInstance(
                 id=f"fake-{i}",
@@ -54,6 +54,7 @@ class FakeProvider(EnvironmentProvider):
                 ready=True,
                 is_alive=True,
                 creation_metrics=CreationMetrics(status=SandboxStatus.READY),
+                template=templates.get(i) if templates else None,
             )
             for i in range(self._count)
         }
@@ -71,7 +72,9 @@ class FakeProvider(EnvironmentProvider):
             inst.is_alive = False
 
     # --- ephemeral lifecycle (trajectory mode; EphemeralCapable) ---
-    def create_one(self, index: int, *, metadata: dict[str, str] | None = None) -> SandboxInstance:
+    def create_one(
+        self, index: int, *, template: str | None = None, metadata: dict[str, str] | None = None
+    ) -> SandboxInstance:
         """Create a single in-memory sandbox on demand (trajectory mode)."""
         self._meta_log[index] = dict(metadata) if metadata else None
         inst = SandboxInstance(
@@ -80,6 +83,7 @@ class FakeProvider(EnvironmentProvider):
             ready=True,
             is_alive=True,
             creation_metrics=CreationMetrics(status=SandboxStatus.READY),
+            template=template,
         )
         self._instances[index] = inst
         return inst

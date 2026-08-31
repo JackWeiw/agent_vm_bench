@@ -101,8 +101,8 @@ class DockerProvider(EnvironmentProvider):
         return self._manager
 
     # ------------------------------------------------------------------ lifecycle
-    def create_all(self) -> Mapping[int, SandboxInstance]:
-        return self._translate(self.manager.create_all())
+    def create_all(self, *, templates: dict[int, str | None] | None = None) -> Mapping[int, SandboxInstance]:
+        return self._translate(self.manager.create_all(templates=templates))
 
     def detect_existing(self) -> Mapping[int, SandboxInstance]:
         return self._translate(self.manager.detect_existing())

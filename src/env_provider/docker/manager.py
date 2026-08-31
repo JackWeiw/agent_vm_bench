@@ -85,6 +85,8 @@ class SandboxManager(BaseSandboxManager):
         state.creation_metrics.status = BackendSandboxStatus.CREATING
         state.creation_metrics.submit_time = time.time()
 
+        resolved_image = template or self.config.docker_image
+
         try:
             # Remove existing container with same name if exists (handle 409 conflict)
             try:
@@ -96,7 +98,7 @@ class SandboxManager(BaseSandboxManager):
 
             # Create container with resource limits
             container = self.docker_client.containers.run(
-                image=self.config.docker_image,
+                image=resolved_image,
                 name=state.container_name,
                 detach=True,  # Run in background
                 remove=False,  # Don't auto-remove
@@ -110,10 +112,20 @@ class SandboxManager(BaseSandboxManager):
                 state.creation_metrics.create_ready_time - state.creation_metrics.submit_time
             )
             state.creation_metrics.status = BackendSandboxStatus.CREATED
-            return {"success": True, "create_elapsed": state.creation_metrics.create_elapsed, "error": ""}
+            return {
+                "success": True,
+                "create_elapsed": state.creation_metrics.create_elapsed,
+                "error": "",
+                "template": resolved_image,
+            }
         except Exception as e:
             state.creation_metrics.create_ready_time = time.time()
-            return {"success": False, "create_elapsed": 0.0, "error": str(e)}
+            return {
+                "success": False,
+                "create_elapsed": 0.0,
+                "error": str(e),
+                "template": resolved_image,
+            }
 
     def _list_existing(self) -> list:
         """List running containers matching the configured prefix."""

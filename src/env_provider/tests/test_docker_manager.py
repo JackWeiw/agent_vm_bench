@@ -124,6 +124,35 @@ class TestCreateSingle:
         assert result["success"] is False
         assert "run failed" in result["error"]
 
+    def test_create_single_with_template_uses_custom_image(self, monkeypatch):
+        client = _client(monkeypatch)
+        mgr = SandboxManager(_kc(total_count=1), Config(), Event())
+        state = mgr._new_state(1)
+        result = mgr._create_single(state, template="custom-image")
+        assert result["success"] is True
+        call = client.containers.run_calls[0]
+        assert call["image"] == "custom-image"
+        assert result["template"] == "custom-image"
+
+    def test_create_single_without_template_uses_default(self, monkeypatch):
+        client = _client(monkeypatch)
+        mgr = SandboxManager(_kc(total_count=1), Config(), Event())
+        state = mgr._new_state(1)
+        result = mgr._create_single(state)
+        assert result["success"] is True
+        call = client.containers.run_calls[0]
+        assert call["image"] == Config().docker_image
+        assert result["template"] == Config().docker_image
+
+    def test_create_single_exception_returns_template_in_failure(self, monkeypatch):
+        client = _client(monkeypatch)
+        client.containers.run = lambda **kw: (_ for _ in ()).throw(RuntimeError("run failed"))
+        mgr = SandboxManager(_kc(total_count=1), Config(), Event())
+        state = mgr._new_state(1)
+        result = mgr._create_single(state, template="custom-image")
+        assert result["success"] is False
+        assert result["template"] == "custom-image"
+
 
 # --------------------------------------------------------------------- _list_existing
 class TestListExisting:

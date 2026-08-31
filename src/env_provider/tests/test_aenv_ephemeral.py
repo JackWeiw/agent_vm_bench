@@ -99,6 +99,32 @@ def test_aenv_satisfies_ephemeral_capable(monkeypatch):
     assert isinstance(provider, EphemeralCapable)
 
 
+def test_create_one_accepts_template_and_populates_slot_templates(monkeypatch):
+    """create_one with template parameter passes it to _create_single and populates _slot_templates."""
+    provider, fake = _make_provider(monkeypatch)
+    inst = provider.create_one(1, template="swb-a", metadata={"trajectory_id": "tr-7"})
+
+    # Verify template was passed to SDK create call
+    template_arg, _, _, _, _ = fake.created[0]
+    assert template_arg == "swb-a"
+
+    # Verify SandboxInstance.template is set (proves _slot_templates was populated)
+    assert inst.template == "swb-a"
+
+
+def test_create_one_without_template_uses_default(monkeypatch):
+    """create_one without template parameter uses the default template from config."""
+    provider, fake = _make_provider(monkeypatch)
+    inst = provider.create_one(1, metadata={"trajectory_id": "tr-7"})
+
+    # Verify template was passed to SDK create call (should be default from config)
+    template_arg, _, _, _, _ = fake.created[0]
+    assert template_arg == provider._config.template
+
+    # Verify SandboxInstance.template reflects the default
+    assert inst.template == provider._config.template
+
+
 def test_create_one_delegates_and_probes_ready(monkeypatch):
     provider, fake = _make_provider(monkeypatch)
     inst = provider.create_one(1, metadata={"trajectory_id": "tr-7"})
