@@ -476,6 +476,9 @@ class ReportFormatter:
         lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
         lines.append(f"  Success Rate:  {total_success / max(1, total_tasks) * 100:.1f}%")
         lines.append(f"  Trajectory Completions: {completions}")
+        orphan_skipped = sum(s.replay_metrics.orphan_skip_count for s in self.sandbox_states.values())
+        if orphan_skipped:
+            lines.append(f"  Orphan Skipped: {orphan_skipped}")
         # P2 lifecycle: one-time snapshot-creation pause (separate from per-step resume_sec).
         initial_pauses = [
             s.replay_metrics.initial_pause_sec

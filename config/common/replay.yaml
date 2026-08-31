@@ -61,6 +61,11 @@ task_batch:
 replay:
   trajectory_dir: "trajectories/swe-bench"  # pool of .replay.json/.json/.traj
   trajectory_glob: "*.replay.json"
+  # Side manifest mapping trajectory file (path relative to trajectory_dir) ->
+  # concrete backend template, e.g. {"foo.replay.json": "swb-foo"}. Lives with
+  # the dataset (not the benchmark config). Omit -> single-template legacy
+  # (all trajectories use the provider block's default `template`).
+  # template_manifest: "trajectories/swe-bench/inst463-trajectory-templates.json"
   workdir: "/testbed"                       # passed via exec cwd param (no shell wrap)
   env: {}                                   # optional {PAGER: cat, ...} via exec env param
   action_timeout: 300                       # per-action exec timeout (lifecycle timeouts are P2)

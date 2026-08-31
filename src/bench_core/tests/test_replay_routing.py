@@ -325,3 +325,46 @@ def test_trajectory_create_one_none_template(tmp_path, monkeypatch):
 
     assert len(create_calls) == 1
     assert create_calls[0]["template"] is None
+
+
+# ---------------------------------------------------------------------------
+# Report renderer: orphan_skip_count surfaces in the text report
+# ---------------------------------------------------------------------------
+
+
+def test_replay_report_renders_orphan_skipped_line():
+    """format_replay_stats_section renders 'Orphan Skipped: N' when > 0.
+
+    Task 8 of the multi-template replay plan. The renderer must aggregate
+    ``replay_metrics.orphan_skip_count`` across all sandbox states and emit a
+    conditional ``Orphan Skipped: N`` line after ``Trajectory Completions``.
+    """
+    from bench_core.stats_collector import StatsCollector
+
+    cfg = KernelConfig(workflow_type="replay", replay_delay_scale=0.0)
+    state_a = BenchSandbox(id="a", index=0, workflow_type="replay")
+    state_b = BenchSandbox(id="b", index=1, workflow_type="replay")
+    state_a.replay_metrics.record_orphan_skip()
+    state_a.replay_metrics.record_orphan_skip()
+    state_b.replay_metrics.record_orphan_skip()
+
+    sc = StatsCollector(cfg, {0: state_a, 1: state_b}, "fake")
+    lines = sc.format_replay_stats_section()
+    joined = "\n".join(lines)
+
+    assert "Orphan Skipped: 3" in joined
+
+
+def test_replay_report_omits_orphan_skipped_when_zero():
+    """No 'Orphan Skipped' line when no sandboxes orphan (matches the
+    conditional-render pattern used for ``initial_pauses``)."""
+    from bench_core.stats_collector import StatsCollector
+
+    cfg = KernelConfig(workflow_type="replay", replay_delay_scale=0.0)
+    state = BenchSandbox(id="a", index=0, workflow_type="replay")
+
+    sc = StatsCollector(cfg, {0: state}, "fake")
+    lines = sc.format_replay_stats_section()
+    joined = "\n".join(lines)
+
+    assert "Orphan Skipped" not in joined

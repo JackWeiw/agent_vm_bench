@@ -135,6 +135,8 @@ A top-level `monitor:` block (peer of `report:`) controls host-level `vm_monitor
 
 Outputs: a text report (`<output_dir>/<prefix>_<ts>.txt`), a JSONL lifecycle series (`<prefix>_lifecycle_series.jsonl`), and (with `report.format: xlsx|both`) a 10-sheet observability workbook (`<prefix>_obs.xlsx`: Overview, Per-step timings, Lifecycle overhead, Admission & QPS, Throughput & overcommit, Trajectory summary, Retry impact, Concurrency states, Gantt, Snapshot sizes). All series events are `time.time()`-stamped for direct join with `vm_monitor` host samples (see `monitor:` above).
 
+Multi-template routing: trajectories may declare per-file concrete templates via a side `template_manifest` (referenced by `replay.template_manifest`). The fleet is round-robin-allocated over the pool's (template, trajectory) pairs, runners route by template affinity (orphan templates skip with a count), and trajectory mode passes `template=` per `create_one`.
+
 ### Logging
 
 - Python `logging` module, not `print`. Levels: DEBUG (verbose), INFO (progress), WARNING (issues), ERROR (failures).
