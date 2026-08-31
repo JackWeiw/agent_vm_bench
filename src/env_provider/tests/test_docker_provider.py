@@ -148,6 +148,19 @@ class TestCreateAll:
 
         assert provider.create_all()[1].warmup_done is True
 
+    def test_create_all_stamps_template_on_instance(self):
+        """Regression test: _to_instance must read _slot_templates and stamp SandboxInstance.template."""
+        state = _make_state(1, status=DockerStatus.PORT_READY, container_name="oc-bench-1")
+        provider, manager = _provider_with({1: state})
+
+        # Seed _slot_templates as the base manager's create_all would do
+        manager._slot_templates = {1: "custom-image"}
+        manager.create_all.return_value = {1: state}
+
+        instances = provider.create_all(templates={0: "custom-image"})
+
+        assert instances[1].template == "custom-image"
+
     def test_create_all_forwards_templates_to_manager(self):
         state = _make_state(1, status=DockerStatus.PORT_READY, container_name="oc-bench-1")
         provider, manager = _provider_with({1: state})

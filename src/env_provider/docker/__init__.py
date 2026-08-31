@@ -194,6 +194,7 @@ class DockerProvider(EnvironmentProvider):
                 error=cm.error_msg,
                 ready_check_error=cm.port_check_error,
             ),
+            template=self.manager._slot_templates.get(state.container_id),
         )
 
     # ------------------------------------------------------------------ internals
