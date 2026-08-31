@@ -491,6 +491,14 @@ def load_config(path: str | Path) -> tuple[KernelConfig, dict[str, Any]]:
     return KernelConfig.from_raw(raw), raw
 
 
+def _apply_monitor_override(config: KernelConfig, args) -> None:
+    """Apply --vm-monitor / --no-vm-monitor CLI overrides to config.monitor.enabled."""
+    if getattr(args, "no_vm_monitor", False):
+        config.monitor.enabled = "false"
+    elif getattr(args, "vm_monitor", "auto") != "auto":
+        config.monitor.enabled = args.vm_monitor
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     """Host-agnostic CLI. Provider packages add their own flags on top."""
     parser = argparse.ArgumentParser(description="Host-agnostic benchmark kernel")
@@ -518,6 +526,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["txt", "xlsx", "both"],
         default=None,
         help="report output format (default: txt; xlsx/both add an openpyxl workbook)",
+    )
+    parser.add_argument(
+        "--vm-monitor",
+        choices=["auto", "true", "false"],
+        default="auto",
+        help="Override vm_monitor auto-enable: auto (default, by provider vmm_type), true, false.",
+    )
+    parser.add_argument(
+        "--no-vm-monitor",
+        action="store_true",
+        help="Short-circuit vm_monitor off (overrides --vm-monitor and YAML).",
     )
     return parser
 
@@ -583,6 +602,7 @@ def main() -> None:
         config.output_dir = args.output_dir
     if args.report_format:
         config.report_format = args.report_format
+    _apply_monitor_override(config, args)
 
     # Attach a file handler once config (and CLI overrides) are resolved.
     # Stdout stays plaintext for live tailing; JSON lines go to the file only
