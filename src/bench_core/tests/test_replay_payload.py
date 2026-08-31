@@ -138,6 +138,7 @@ def test_load_pool_skips_corrupt_and_empty(caplog):
     class _Cfg:
         replay_trajectory_dir = str(FIXTURES)
         replay_trajectory_glob = "*"
+        replay_template_manifest = None
 
     reset_pool_cache()
     caplog.set_level(logging.WARNING)
@@ -155,8 +156,110 @@ def test_load_pool_is_cached():
     class _Cfg:
         replay_trajectory_dir = str(FIXTURES)
         replay_trajectory_glob = "*"
+        replay_template_manifest = None
 
     reset_pool_cache()
     a = load_pool(_Cfg())  # type: ignore[arg-type]
     b = load_pool(_Cfg())  # type: ignore[arg-type]
     assert a is b  # same cached tuple object
+
+
+# ---------------------------------------------------------------------------
+# load_pool — template manifest
+# ---------------------------------------------------------------------------
+
+
+def _cfg_for_manifest(tmp_path: Path, *, manifest: str | None = None) -> KernelConfig:
+    """Minimal KernelConfig for manifest tests; all other fields use defaults."""
+    from bench_core.config import KernelConfig
+
+    return KernelConfig(
+        workflow_type="replay",
+        total_count=2,
+        benchmark_mode="fixed",
+        test_duration=1,
+        replay_trajectory_dir=str(tmp_path / "traj"),
+        replay_template_manifest=manifest,
+    )
+
+
+def _write_traj(dir_: Path, name: str, instance_id: str) -> Path:
+    import json
+
+    dir_.mkdir(parents=True, exist_ok=True)
+    p = dir_ / name
+    p.write_text(
+        json.dumps({"instance_id": instance_id, "trajectory": [{"action": "echo hi", "delay_time": 0}]}),
+        encoding="utf-8",
+    )
+    return p
+
+
+def test_load_pool_attaches_template_from_manifest(tmp_path):
+    from bench_core.replay_payload import load_pool, reset_pool_cache
+
+    traj_dir = tmp_path / "traj"
+    _write_traj(traj_dir, "a.replay.json", "a")
+    _write_traj(traj_dir, "b.replay.json", "b")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        __import__("json").dumps({"a.replay.json": "swb-a", "b.replay.json": "swb-b"}), encoding="utf-8"
+    )
+
+    reset_pool_cache()
+    pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest)))
+    by_id = {t.instance_id: t for t in pool}
+    assert by_id["a"].template == "swb-a"
+    assert by_id["b"].template == "swb-b"
+
+
+def test_load_pool_missing_manifest_entry_is_none_with_warning(tmp_path, caplog):
+    import logging
+    from bench_core.replay_payload import load_pool, reset_pool_cache
+
+    traj_dir = tmp_path / "traj"
+    _write_traj(traj_dir, "a.replay.json", "a")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(__import__("json").dumps({}), encoding="utf-8")  # no entry for a
+
+    reset_pool_cache()
+    caplog.set_level(logging.WARNING)
+    pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest)))
+    assert pool[0].template is None
+    assert "no manifest entry" in caplog.text
+
+
+def test_load_pool_missing_manifest_file_raises(tmp_path):
+    from bench_core.replay_payload import load_pool, reset_pool_cache
+
+    traj_dir = tmp_path / "traj"
+    _write_traj(traj_dir, "a.replay.json", "a")
+    reset_pool_cache()
+    with pytest.raises((FileNotFoundError, ValueError)):
+        load_pool(_cfg_for_manifest(tmp_path, manifest=str(tmp_path / "nope.json")))
+
+
+def test_load_pool_no_manifest_keeps_template_none(tmp_path):
+    from bench_core.replay_payload import load_pool, reset_pool_cache
+
+    traj_dir = tmp_path / "traj"
+    _write_traj(traj_dir, "a.replay.json", "a")
+    reset_pool_cache()
+    pool = load_pool(_cfg_for_manifest(tmp_path, manifest=None))
+    assert all(t.template is None for t in pool)
+
+
+def test_load_pool_cache_invalidates_on_manifest_change(tmp_path):
+    import json
+    from bench_core.replay_payload import load_pool, reset_pool_cache
+
+    traj_dir = tmp_path / "traj"
+    _write_traj(traj_dir, "a.replay.json", "a")
+    m1 = tmp_path / "m1.json"
+    m1.write_text(json.dumps({"a.replay.json": "swb-a"}), encoding="utf-8")
+    m2 = tmp_path / "m2.json"
+    m2.write_text(json.dumps({"a.replay.json": "swb-a2"}), encoding="utf-8")
+
+    reset_pool_cache()
+    assert load_pool(_cfg_for_manifest(tmp_path, manifest=str(m1)))[0].template == "swb-a"
+    assert load_pool(_cfg_for_manifest(tmp_path, manifest=str(m2)))[0].template == "swb-a2"

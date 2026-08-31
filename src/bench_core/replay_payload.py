@@ -12,8 +12,10 @@ host-agnostic payload module for the replay workflow.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -44,16 +46,18 @@ class ReplayStep:
 class Trajectory:
     """One loaded trajectory.
 
-    ``environment`` is a reserved passthrough field (P1 does not consume it;
-    later multi-template / multi-environment matching will). ``steps`` excludes
-    the terminal action (``submit``/``finish``/``done``), which marks "agent
-    submitted" and is not executed.
+    ``template`` is the concrete backend template this trajectory runs against,
+    attached from the side manifest by :func:`load_pool` (None when no manifest
+    or no entry -> provider uses its default template). ``environment`` is a
+    reserved passthrough field, not consulted for template resolution. ``steps``
+    excludes the terminal action (``submit``/``finish``/``done``).
     """
 
     path: Path
     instance_id: str
     environment: str
     steps: tuple[ReplayStep, ...]
+    template: str | None = None
 
 
 def classify_action(action: str) -> str:
@@ -119,10 +123,10 @@ logger = logging.getLogger(__name__)
 
 _TRAJECTORY_SUFFIXES = (".replay.json", ".json", ".traj")
 
-# Module-level pool cache: (dir, glob) -> tuple[Trajectory, ...]. Frozen tuples
-# are safe for concurrent read by many runner threads; the pool is shared
-# read-only across all sandboxes. Each runner keeps its own cursor.
-_POOL_CACHE: dict[tuple[str, str], tuple[Trajectory, ...]] = {}
+# Module-level pool cache: (dir, glob, manifest_path) -> tuple[Trajectory, ...].
+# Frozen tuples are safe for concurrent read by many runner threads; the pool is
+# shared read-only across all sandboxes. Each runner keeps its own cursor.
+_POOL_CACHE: dict[tuple[str, str, str], tuple[Trajectory, ...]] = {}
 
 
 def find_trajectories(directory: Path, glob: str = "*.replay.json") -> list[Path]:
@@ -142,16 +146,29 @@ def find_trajectories(directory: Path, glob: str = "*.replay.json") -> list[Path
 def load_pool(config: KernelConfig) -> tuple[Trajectory, ...]:
     """Load + cache the shared trajectory pool from ``config``.
 
-    A single trajectory's parse failure, missing fields, or empty ``steps``
-    logs a WARNING and is skipped — one corrupt file must not sink the batch
-    (robustness expected of a stress tool). Returns a cached frozen tuple so
-    repeat calls from different runner threads share one immutable object.
+    When ``config.replay_template_manifest`` is set, each trajectory's
+    ``template`` is attached from the manifest (keyed by path relative to
+    ``replay_trajectory_dir``); a missing entry leaves ``template=None`` with a
+    WARNING. A missing/unreadable manifest file is a hard error (an explicit
+    manifest the user asked for must be readable). Returns a cached frozen tuple
+    so repeat calls from different runner threads share one immutable object.
     """
     directory = config.replay_trajectory_dir
     glob = config.replay_trajectory_glob
-    cache_key = (str(directory), glob)
+    manifest_path = config.replay_template_manifest
+    cache_key = (str(directory), glob, str(manifest_path or ""))
     if cache_key in _POOL_CACHE:
         return _POOL_CACHE[cache_key]
+
+    manifest: dict[str, str] | None = None
+    if manifest_path:
+        try:
+            with open(manifest_path, encoding="utf-8") as handle:
+                manifest = json.load(handle)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"replay.template_manifest not readable at {manifest_path}: {type(exc).__name__}: {exc}"
+            ) from exc
 
     pool: list[Trajectory] = []
     for path in find_trajectories(Path(directory), glob):
@@ -163,6 +180,14 @@ def load_pool(config: KernelConfig) -> tuple[Trajectory, ...]:
         if not traj.steps:
             logger.warning(f"[replay] skipping trajectory with no executable steps: {path.name}")
             continue
+
+        template: str | None = None
+        if manifest is not None:
+            rel = os.path.relpath(path, directory)
+            template = manifest.get(rel)
+            if template is None:
+                logger.warning(f"[replay] trajectory {rel} has no manifest entry; falling back to default template")
+            traj = dataclasses.replace(traj, template=template)
         pool.append(traj)
 
     cached = tuple(pool)
