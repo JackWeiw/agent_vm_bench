@@ -279,3 +279,20 @@ class TestCreateAllTemplates:
         mgr = FakeManager(_kernel_config(total_count=2), Event())
         mgr.create_all()  # no templates
         assert all(t is None for _, t in mgr.seen_templates)
+
+    def test_create_all_records_template_on_failure(self):
+        # Failed creates still record the resolved template in _slot_templates,
+        # so downstream code can inspect the per-slot mapping regardless of outcome.
+        mgr = FakeManager(_kernel_config(total_count=2), Event(), create_fails={2})
+        mgr.create_all(templates={0: "swb-a", 1: "swb-b"})
+        assert mgr._slot_templates[1] == "swb-a"
+        assert mgr._slot_templates[2] == "swb-b"  # failure path still records
+        assert mgr._states[2].creation_metrics.status == BackendSandboxStatus.FAILED
+
+    def test_create_batched_threads_templates(self):
+        cfg = _kernel_config(total_count=4, create_batch_size=2, create_batch_interval=0)
+        mgr = FakeManager(cfg, Event())
+        mgr.create_all(templates={0: "t0", 1: "t1", 2: "t2", 3: "t3"})
+        seen = {i: t for i, t in mgr.seen_templates}
+        assert seen == {1: "t0", 2: "t1", 3: "t2", 4: "t3"}
+        assert mgr._slot_templates == {1: "t0", 2: "t1", 3: "t2", 4: "t3"}

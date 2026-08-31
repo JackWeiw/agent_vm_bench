@@ -120,7 +120,7 @@ class BaseSandboxManager(ABC):
         self.stop_event = stop_event
         self.kernel_config.validate()
         self._states: dict[int, BackendState] = {}
-        self._slot_templates: dict[int, str] = {}  # sandbox_id -> resolved template (for _to_instance)
+        self._slot_templates: dict[int, str | None] = {}  # sandbox_id -> resolved template (for _to_instance)
         self._ready: ReadyChecker | None = None  # built lazily by _ready_checker()
 
     # ------------------------------------------------------------------ ready
