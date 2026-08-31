@@ -169,7 +169,7 @@ def test_load_pool_is_cached():
 # ---------------------------------------------------------------------------
 
 
-def _cfg_for_manifest(tmp_path: Path, *, manifest: str | None = None) -> KernelConfig:
+def _cfg_for_manifest(tmp_path: Path, *, manifest: str | None = None, glob: str = "*.replay.json") -> KernelConfig:
     """Minimal KernelConfig for manifest tests; all other fields use defaults."""
     from bench_core.config import KernelConfig
 
@@ -179,6 +179,7 @@ def _cfg_for_manifest(tmp_path: Path, *, manifest: str | None = None) -> KernelC
         benchmark_mode="fixed",
         test_duration=1,
         replay_trajectory_dir=str(tmp_path / "traj"),
+        replay_trajectory_glob=glob,
         replay_template_manifest=manifest,
     )
 
@@ -247,6 +248,30 @@ def test_load_pool_no_manifest_keeps_template_none(tmp_path):
     reset_pool_cache()
     pool = load_pool(_cfg_for_manifest(tmp_path, manifest=None))
     assert all(t.template is None for t in pool)
+
+
+def test_load_pool_manifest_key_is_relpath_not_basename(tmp_path):
+    """Manifest keys must be ``os.path.relpath(path, trajectory_dir)``, not the
+    bare filename.  A subdirectory trajectory with the same basename as a flat
+    one would collide under basename lookup; relpath keeps them distinct.
+    """
+    import json
+    from bench_core.replay_payload import load_pool, reset_pool_cache
+
+    traj_dir = tmp_path / "traj"
+    _write_traj(traj_dir, "a.replay.json", "flat_a")
+    _write_traj(traj_dir / "sub", "a.replay.json", "sub_a")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({"a.replay.json": "swb-flat", "sub/a.replay.json": "swb-sub"}),
+        encoding="utf-8",
+    )
+
+    reset_pool_cache()
+    pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest), glob="**/*.replay.json"))
+    by_id = {t.instance_id: t for t in pool}
+    assert by_id["flat_a"].template == "swb-flat"
+    assert by_id["sub_a"].template == "swb-sub"
 
 
 def test_load_pool_cache_invalidates_on_manifest_change(tmp_path):

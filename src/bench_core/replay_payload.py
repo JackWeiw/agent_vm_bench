@@ -183,7 +183,7 @@ def load_pool(config: KernelConfig) -> tuple[Trajectory, ...]:
 
         template: str | None = None
         if manifest is not None:
-            rel = os.path.relpath(path, directory)
+            rel = os.path.relpath(path, directory).replace("\\", "/")
             template = manifest.get(rel)
             if template is None:
                 logger.warning(f"[replay] trajectory {rel} has no manifest entry; falling back to default template")
