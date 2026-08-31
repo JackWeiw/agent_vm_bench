@@ -120,6 +120,7 @@ class BaseSandboxManager(ABC):
         self.stop_event = stop_event
         self.kernel_config.validate()
         self._states: dict[int, BackendState] = {}
+        self._slot_templates: dict[int, str] = {}  # sandbox_id -> resolved template (for _to_instance)
         self._ready: ReadyChecker | None = None  # built lazily by _ready_checker()
 
     # ------------------------------------------------------------------ ready
@@ -137,13 +138,13 @@ class BaseSandboxManager(ABC):
         return self._ready
 
     # ------------------------------------------------------------- create_all
-    def create_all(self) -> dict[int, BackendState]:
+    def create_all(self, *, templates: dict[int, str | None] | None = None) -> dict[int, BackendState]:
         """Batched (if ``create_batch_size`` set) or full-concurrent creation."""
         if self.kernel_config.create_batch_size and self.kernel_config.create_batch_size > 0:
-            return self._create_batched()
-        return self._create_concurrent()
+            return self._create_batched(templates)
+        return self._create_concurrent(templates)
 
-    def _create_batched(self) -> dict[int, BackendState]:
+    def _create_batched(self, templates: dict[int, str | None] | None = None) -> dict[int, BackendState]:
         total = self.kernel_config.total_count
         batch_size = self.kernel_config.create_batch_size
         batch_count = self.kernel_config.create_batch_count
@@ -170,7 +171,7 @@ class BaseSandboxManager(ABC):
 
             # Concurrent creation of the current batch (mutates self._states in
             # place -- _create_batch_concurrent writes each state before submit).
-            self._create_batch_concurrent(batch_id, start_idx, end_idx)
+            self._create_batch_concurrent(batch_id, start_idx, end_idx, templates=templates)
 
             if batch_id < batch_count - 1 and self.kernel_config.create_batch_interval:
                 logger.info(f"Waiting {self.kernel_config.create_batch_interval}s before next batch...")
@@ -178,7 +179,9 @@ class BaseSandboxManager(ABC):
 
         return self._states
 
-    def _create_batch_concurrent(self, batch_id: int, start: int, end: int) -> dict[int, BackendState]:
+    def _create_batch_concurrent(
+        self, batch_id: int, start: int, end: int, *, templates: dict[int, str | None] | None = None
+    ) -> dict[int, BackendState]:
         states: dict[int, BackendState] = {}
 
         with ThreadPoolExecutor(max_workers=end - start) as executor:
@@ -187,7 +190,8 @@ class BaseSandboxManager(ABC):
                 index = i + 1
                 state = self._new_state(index, batch_id=batch_id)
                 self._states[index] = state
-                future = executor.submit(self._create_single, state)
+                slot_template = templates.get(i) if templates else None
+                future = executor.submit(self._create_single, state, template=slot_template)
                 futures[future] = index
 
             for future in as_completed(futures):
@@ -197,6 +201,7 @@ class BaseSandboxManager(ABC):
 
                 try:
                     result = future.result()
+                    self._slot_templates[index] = result.get("template")
                     if result["success"]:
                         logger.info(f"[{label}] Created in {result['create_elapsed']:.1f}s, checking ready...")
                         ready = self._ready_checker().check(
@@ -216,7 +221,7 @@ class BaseSandboxManager(ABC):
 
         return {i + 1: self._states[i + 1] for i in range(start, end)}
 
-    def _create_concurrent(self) -> dict[int, BackendState]:
+    def _create_concurrent(self, templates: dict[int, str | None] | None = None) -> dict[int, BackendState]:
         total = self.kernel_config.total_count
         logger.info(f"\n{'=' * 60}")
         logger.info(f"Concurrent {self._noun} Creation")
@@ -224,7 +229,7 @@ class BaseSandboxManager(ABC):
             logger.info(f"  {extra}")
         logger.info(f"  Total: {total} {self._noun.lower()}s (full concurrent)")
         logger.info(f"{'=' * 60}")
-        return self._create_batch_concurrent(batch_id=0, start=0, end=total)
+        return self._create_batch_concurrent(batch_id=0, start=0, end=total, templates=templates)
 
     # ---------------------------------------------------------- detect_existing
     def detect_existing(self) -> dict[int, BackendState]:
@@ -392,9 +397,10 @@ class BaseSandboxManager(ABC):
         """Build a fresh per-sandbox State (backend dataclass)."""
 
     @abstractmethod
-    def _create_single(self, state: BackendState) -> dict:
-        """Backend SDK create. Returns ``{success, create_elapsed, error}`` and
-        must set the handle on ``state`` + the creation timing fields."""
+    def _create_single(self, state: BackendState, *, template: str | None = None) -> dict:
+        """Backend SDK create. Returns ``{success, create_elapsed, error, template}``
+        (``template`` = the resolved template actually used) and must set the
+        handle on ``state`` + the creation timing fields."""
 
     @abstractmethod
     def _list_existing(self) -> list:

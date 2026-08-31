@@ -74,7 +74,7 @@ class SandboxManager(BaseSandboxManager):
             batch_id=batch_id,
         )
 
-    def _create_single(self, state: ContainerState) -> dict:
+    def _create_single(self, state: ContainerState, *, template: str | None = None) -> dict:
         """Create one container; preserve the handle in ``state.docker_container``.
 
         Removes a stale same-name container first (handle 409 conflict), then

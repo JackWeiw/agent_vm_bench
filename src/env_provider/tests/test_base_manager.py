@@ -44,19 +44,22 @@ class FakeManager(BaseSandboxManager):
         super().__init__(kernel_config, stop_event)
         self.created: list[int] = []
         self.killed: list[int] = []
+        self.seen_templates: list[tuple[int, str | None]] = []
         self._create_fails = set(create_fails)
         self._ready_fails = set(ready_fails)
 
     def _new_state(self, index, *, batch_id=-1, external_id=""):
         return FakeState(sandbox_id=index, batch_id=batch_id)
 
-    def _create_single(self, state):
+    def _create_single(self, state, *, template=None):
         self.created.append(state.sandbox_id)
+        self.seen_templates.append((state.sandbox_id, template))
         if state.sandbox_id in self._create_fails:
             state.creation_metrics.create_ready_time = 0.0
-            return {"success": False, "create_elapsed": 0.0, "error": "boom"}
+            return {"success": False, "create_elapsed": 0.0, "error": "boom", "template": template or "default"}
         state.sandbox_obj = object()  # a handle
-        return {"success": True, "create_elapsed": 1.0, "error": ""}
+        state.creation_metrics.status = BackendSandboxStatus.CREATED
+        return {"success": True, "create_elapsed": 1.0, "error": "", "template": template or "default"}
 
     def _list_existing(self):
         return [FakeListed("sbx-a"), FakeListed("sbx-b")]
@@ -257,3 +260,22 @@ class TestCleanupAll:
         mgr.cleanup_all()
         assert mgr._states[1].stopped_by_cleanup is False
         assert mgr._states[2].stopped_by_cleanup is True
+
+
+# --------------------------------------------------------------- templates
+class TestCreateAllTemplates:
+    def test_create_all_threads_templates_to_create_single(self):
+        # _FakeManager records (index, template) seen by _create_single.
+        mgr = FakeManager(_kernel_config(total_count=3), Event())
+        mgr.create_all(templates={0: "swb-a", 1: "swb-b", 2: "swb-a"})
+        seen = {i: t for i, t in mgr.seen_templates}
+        assert seen[1] == "swb-a"  # slot 0 -> sandbox_id 1
+        assert seen[2] == "swb-b"
+        assert seen[3] == "swb-a"
+        # resolved templates recorded for _to_instance:
+        assert mgr._slot_templates == {1: "swb-a", 2: "swb-b", 3: "swb-a"}
+
+    def test_create_all_none_templates_passes_none_per_slot(self):
+        mgr = FakeManager(_kernel_config(total_count=2), Event())
+        mgr.create_all()  # no templates
+        assert all(t is None for _, t in mgr.seen_templates)

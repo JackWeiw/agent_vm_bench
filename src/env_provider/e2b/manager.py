@@ -115,7 +115,9 @@ class SandboxManager(BaseSandboxManager):
             workflow_type=self.kernel_config.workflow_type,
         )
 
-    def _create_single(self, state: SandboxState, *, metadata: dict[str, str] | None = None) -> dict:
+    def _create_single(
+        self, state: SandboxState, *, metadata: dict[str, str] | None = None, template: str | None = None
+    ) -> dict:
         """Create one sandbox; preserve the handle in ``state.sandbox_obj``.
 
         Records submit→create timing; the base runs the readiness probe after
