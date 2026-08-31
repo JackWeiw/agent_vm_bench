@@ -203,6 +203,35 @@ class MonitorController:
         self._started = False
         return [self.report_xlsx] if self.report_xlsx is not None else []
 
+    def merge_into(self, obs_xlsx: Path) -> None:
+        """Copy key host sheets from vm_monitor's report into the replay obs workbook.
+
+        Replay-only; called by bench.py AFTER the obs xlsx is rendered. opt-in via
+        merge_report. Any failure (incl. openpyxl OOM on large workbooks) -> warning
+        only; raw artifacts always remain in <log_dir>/.
+        """
+        if self.report_xlsx is None or not self._merge_report:
+            return
+        try:
+            from openpyxl import load_workbook
+        except ImportError:
+            logger.warning("vm_monitor merge skipped: openpyxl unavailable")
+            return
+        try:
+            src = load_workbook(self.report_xlsx, read_only=True)
+            dst = load_workbook(obs_xlsx)
+            for name in _MERGE_SHEETS:
+                if name in src.sheetnames and name not in dst.sheetnames:
+                    src_ws = src[name]
+                    dst_ws = dst.create_sheet(name)
+                    for row in src_ws.iter_rows():
+                        for cell in row:
+                            if cell.value is not None:
+                                dst_ws.cell(row=cell.row, column=cell.column, value=cell.value)
+            dst.save(obs_xlsx)
+        except Exception as e:  # noqa: BLE001 - merge must never block the bench report
+            logger.warning("vm_monitor merge failed (raw artifacts remain in %s): %s", self._log_dir, e)
+
     def _emergency_kill(self) -> None:
         """atexit backstop. Does NOT run on SIGKILL/OOM -- documented limitation;
         vm_monitor's own -t timer is the hard back-stop in those cases."""

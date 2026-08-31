@@ -232,3 +232,72 @@ def test_stop_handles_dead_subprocess(monkeypatch, tmp_path, caplog):
     mc.stop()
     assert mc.report_xlsx is None
     assert any("without report" in r.message for r in caplog.records)
+
+
+def _make_src_xlsx(path):
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "VM_Stats"
+    ws.cell(row=1, column=1, value="vm")
+    ws.cell(row=2, column=1, value="fc-1")
+    wb.create_sheet("NUMA_Overview")
+    wb["NUMA_Overview"].cell(row=1, column=1, value="node0")
+    wb.save(path)
+
+
+def _make_obs_xlsx(path):
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    wb.active.title = "Overview"
+    wb.save(path)
+
+
+def test_merge_into_copies_host_sheets(monkeypatch, tmp_path):
+    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    src = tmp_path / "analysis_report.xlsx"
+    _make_src_xlsx(src)
+    obs = tmp_path / "obs.xlsx"
+    _make_obs_xlsx(obs)
+    mc = MonitorController(
+        _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path)), _StubProvider(vmm_type="firecracker")
+    )
+    mc.start()
+    mc.report_xlsx = src  # pretend stop() found it
+    mc.merge_into(obs)
+    from openpyxl import load_workbook
+
+    wb = load_workbook(obs)
+    assert "VM_Stats" in wb.sheetnames and "NUMA_Overview" in wb.sheetnames
+    assert wb["VM_Stats"]["A2"].value == "fc-1"
+
+
+def test_merge_into_noop_when_no_report(monkeypatch, tmp_path):
+    mc = MonitorController(_cfg(), _StubProvider(vmm_type="firecracker"))
+    mc.merge_into(tmp_path / "obs.xlsx")  # report_xlsx is None -> no-op, no raise
+
+
+def test_merge_into_noop_when_disabled(monkeypatch, tmp_path):
+    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    src = tmp_path / "analysis_report.xlsx"
+    _make_src_xlsx(src)
+    obs = tmp_path / "obs.xlsx"
+    _make_obs_xlsx(obs)
+    mc = MonitorController(
+        _cfg(merge_report=False, stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path)),
+        _StubProvider(vmm_type="firecracker"),
+    )
+    mc.report_xlsx = src
+    mc.merge_into(obs)
+    from openpyxl import load_workbook
+
+    assert "VM_Stats" not in load_workbook(obs).sheetnames
+
+
+def test_merge_into_failure_is_warning_only(monkeypatch, tmp_path, caplog):
+    mc = MonitorController(_cfg(), _StubProvider(vmm_type="firecracker"))
+    mc.report_xlsx = tmp_path / "does-not-exist.xlsx"  # load_workbook will raise
+    mc.merge_into(tmp_path / "obs.xlsx")  # must not raise
+    assert any("merge failed" in r.message.lower() for r in caplog.records)
