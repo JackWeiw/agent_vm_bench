@@ -175,8 +175,37 @@ class MonitorController:
                     pass
             setattr(self, attr, None)
 
+    def stop(self) -> list[Path]:
+        """Wait for vm_monitor's analysis_report.xlsx (up to report_timeout), then reap.
+
+        Does NOT merge -- the obs workbook does not exist yet at this point in
+        run_benchmark. Call ``merge_into`` after the obs xlsx is rendered.
+        """
+        if not self._started:
+            return []
+        xlsx = self._log_dir / "analysis_report.xlsx"
+        deadline = time.time() + self._report_timeout
+        while time.time() < deadline:
+            if self.proc.poll() is not None and not xlsx.exists():
+                logger.error("vm_monitor subprocess exited (code=%s) without report", self.proc.returncode)
+                break
+            if xlsx.exists():
+                self.report_xlsx = xlsx
+                break
+            time.sleep(1)
+        if self.proc.poll() is None:  # still running -> overdue
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+        self._close_handles()
+        self._started = False
+        return [self.report_xlsx] if self.report_xlsx is not None else []
+
     def _emergency_kill(self) -> None:
-        """atexit backstop stub (full impl in Task 5)."""
+        """atexit backstop. Does NOT run on SIGKILL/OOM -- documented limitation;
+        vm_monitor's own -t timer is the hard back-stop in those cases."""
         if self.proc is not None and self.proc.poll() is None:
             try:
                 self.proc.terminate()

@@ -182,3 +182,53 @@ def test_begin_end_noop_when_not_started():
     mc.begin_stress()
     mc.end_stress()
     assert mc.stress_window is None
+
+
+def test_stop_collects_report_and_closes_handles(monkeypatch, tmp_path):
+    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.monitor.subprocess.Popen", lambda *a, **kw: _FakeProc())
+    mc = MonitorController(
+        _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path), report_timeout=2),
+        _StubProvider(vmm_type="firecracker"),
+    )
+    mc.start()
+    # pre-create the report so stop() finds it immediately
+    (tmp_path / "analysis_report.xlsx").write_text("x")
+    artifacts = mc.stop()
+    assert mc.report_xlsx == tmp_path / "analysis_report.xlsx"
+    assert artifacts and artifacts[0] == mc.report_xlsx
+    assert mc._stdout_fh is None and mc._stderr_fh is None  # closed
+
+
+def test_stop_kills_overdue_process(monkeypatch, tmp_path):
+    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    proc = _FakeProc()
+    monkeypatch.setattr("bench_core.monitor.subprocess.Popen", lambda *a, **kw: proc)
+    mc = MonitorController(
+        _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path), report_timeout=1),
+        _StubProvider(vmm_type="firecracker"),
+    )
+    mc.start()
+    # no xlsx ever appears; proc never exits on its own (poll() stays None)
+    mc.stop()
+    assert proc.terminated is True  # terminate() called
+
+
+def test_stop_noop_when_not_started():
+    mc = MonitorController(_cfg(), _StubProvider(vmm_type=None))
+    assert mc.stop() == []
+
+
+def test_stop_handles_dead_subprocess(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    proc = _FakeProc()
+    proc.returncode = 1  # already dead, no report
+    monkeypatch.setattr("bench_core.monitor.subprocess.Popen", lambda *a, **kw: proc)
+    mc = MonitorController(
+        _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path), report_timeout=2),
+        _StubProvider(vmm_type="firecracker"),
+    )
+    mc.start()
+    mc.stop()
+    assert mc.report_xlsx is None
+    assert any("without report" in r.message for r in caplog.records)
