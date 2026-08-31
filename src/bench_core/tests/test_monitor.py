@@ -146,3 +146,39 @@ class _FakeProc:
 
     def kill(self):
         self.returncode = -9
+
+
+def test_begin_end_stress_lifecycle(monkeypatch, tmp_path):
+    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.monitor.subprocess.Popen", lambda *a, **kw: _FakeProc())
+    lock = tmp_path / "lock"
+    mc = MonitorController(_cfg(stress_file=str(lock), log_dir=str(tmp_path)), _StubProvider(vmm_type="firecracker"))
+    mc.start()
+    assert mc.stress_window is None  # not begun yet
+
+    mc.begin_stress()
+    assert lock.exists()
+    assert mc._begin_ts is not None
+
+    mc.end_stress()
+    assert not lock.exists()
+    assert mc._end_ts is not None
+    assert mc.stress_window is not None and mc.stress_window >= 0.0
+
+
+def test_end_stress_idempotent_when_no_lock(monkeypatch, tmp_path):
+    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.monitor.subprocess.Popen", lambda *a, **kw: _FakeProc())
+    lock = tmp_path / "lock"
+    mc = MonitorController(_cfg(stress_file=str(lock), log_dir=str(tmp_path)), _StubProvider(vmm_type="firecracker"))
+    mc.start()
+    mc.begin_stress()
+    lock.unlink()  # simulate external removal
+    mc.end_stress()  # must not raise
+
+
+def test_begin_end_noop_when_not_started():
+    mc = MonitorController(_cfg(), _StubProvider(vmm_type=None))
+    mc.begin_stress()
+    mc.end_stress()
+    assert mc.stress_window is None

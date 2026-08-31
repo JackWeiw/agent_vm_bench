@@ -137,6 +137,34 @@ class MonitorController:
         self._started = True
         time.sleep(0.5)  # brief init; vm_monitor idles waiting for the lock
 
+    def begin_stress(self) -> None:
+        if not self._started:
+            return
+        try:
+            self._stress_file.touch()
+        except OSError as e:
+            logger.warning("vm_monitor: cannot create stress lock %s: %s", self._stress_file, e)
+            return
+        self._begin_ts = time.time()
+
+    def end_stress(self) -> None:
+        if not self._started:
+            return
+        try:
+            self._stress_file.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            logger.warning("vm_monitor: cannot remove stress lock %s: %s", self._stress_file, e)
+        self._end_ts = time.time()
+
+    @property
+    def stress_window(self) -> float | None:
+        """Seconds between begin_stress and end_stress, or None if the bracket never ran."""
+        if self._begin_ts is not None and self._end_ts is not None:
+            return self._end_ts - self._begin_ts
+        return None
+
     def _close_handles(self) -> None:
         for attr in ("_stdout_fh", "_stderr_fh"):
             fh = getattr(self, attr)
