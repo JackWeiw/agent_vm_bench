@@ -163,6 +163,9 @@ class EnvironmentProvider(ABC):
 
     name: str = "base"
     default_replay_mode: str = "exec_only"  # replay workflow default; aenv overrides to "lifecycle"
+    # Host VMM process family for vm_monitor auto-enable (None = this backend has no VMM to sample).
+    # e2b/aenv -> "firecracker"; docker/fake -> None. Read by bench_core.MonitorController.
+    vmm_type: str | None = None
 
     # ------------------------------------------------------------------ lifecycle
     @abstractmethod

@@ -64,6 +64,7 @@ class E2BProvider(EnvironmentProvider):
     """
 
     name = "e2b"
+    vmm_type = "firecracker"  # E2B sandboxes are Firecracker microVMs
 
     def __init__(self, kernel_config: KernelConfig, config: Config, stop_event: threading.Event) -> None:
         self._kernel_config = kernel_config
