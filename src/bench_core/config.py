@@ -2,8 +2,9 @@
 
 ``KernelConfig`` holds the configuration the benchmark kernel needs to drive any
 provider. Provider-specific config (e2b env vars, docker image, NUMA binding,
-smap_tool, vm_monitor) lives in the provider's own config and never appears here
--- the kernel reads only the host-agnostic subset.
+smap_tool) lives in the provider's own config; vm_monitor is orchestrated
+host-side via the ``monitor:`` section (see MonitorController). The kernel
+reads only the host-agnostic subset.
 
 The coding/document fields are host-agnostic: any provider whose sandbox can
 run the project/toolchain can execute them, so they belong to the kernel, not
@@ -19,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import List
 
 from bench_core.coding_payload import CODING_LANGUAGE_DEFAULT_SOURCE_FILES, DEFAULT_CODING_SOURCE_FILES
+from bench_core.monitor import MonitorConfig
 
 # In-sandbox scene layout per document case kind. These paths live inside the
 # sandbox image (the document seed is baked in by the provider's prepare hook);
@@ -134,6 +136,9 @@ class KernelConfig:
     filename_prefix: str = "bench"
     report_format: str = "txt"
 
+    # --- monitor (host-side vm_monitor orchestration) ---
+    monitor: MonitorConfig = field(default_factory=MonitorConfig)
+
     def __post_init__(self) -> None:
         # Resolve replacement pairs from the language when not supplied. A copy
         # is made so a config never aliases the shared module-level list (callers
@@ -231,6 +236,7 @@ class KernelConfig:
         browser = raw.get("browser") or {}
         test = raw.get("test") or {}
         report = raw.get("report") or {}
+        monitor = raw.get("monitor") or {}
         coding = raw.get("coding") or {}
         document = raw.get("document") or {}
         replay = raw.get("replay") or {}
@@ -309,4 +315,6 @@ class KernelConfig:
             output_dir=report.get("output_dir", "results/kernel"),
             filename_prefix=report.get("filename_prefix", "bench"),
             report_format=report.get("format", "txt"),
+            # --- monitor ---
+            monitor=MonitorConfig.from_raw(monitor),
         )
