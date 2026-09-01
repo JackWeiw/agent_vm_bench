@@ -44,7 +44,14 @@ MIN_SLICE_SEC = 0.001
 # overhead table can slice each sandbox's lists between round boundaries.
 # resume + pause over slice = lifecycle overhead; the three lists are
 # appended in lockstep per slice, so they stay index-aligned across a round.
-_LIFECYCLE_ROUND_KEYS: tuple[str, ...] = ("resume_secs", "pause_secs", "slice_total_secs")
+# running_slot_held_secs is sliced the same way for the per-round Slot held
+# column (only meaningful under an admission controller).
+_LIFECYCLE_ROUND_KEYS: tuple[str, ...] = (
+    "resume_secs",
+    "pause_secs",
+    "slice_total_secs",
+    "running_slot_held_secs",
+)
 
 # Error display order, selected by workflow_type. The shared ErrorClassifier
 # may bucket an error into a category this workflow does not display; such
@@ -898,15 +905,34 @@ class ReportFormatter:
         return lines
 
     def _format_lifecycle_overhead_by_round(self, active_rounds: dict[int, dict[str, Any]]) -> list[str]:
-        """Per-round resume/pause/slice P50 + aggregate overhead sub-table.
+        """Per-round resume/pause/slice P50+P95 + aggregate overhead sub-table.
 
-        The three lists are index-aligned within each round (appended in
+        The lifecycle lists are index-aligned within each round (appended in
         lockstep per slice), so the aggregate overhead ratio = (resume+pause)
         /slice is computed over matching samples, with near-zero slices
         excluded (same guard as the cumulative section).
+
+        Carries only the per-round comparison dimension (P50/P95 + overhead +
+        slot-held); the depth metrics (P99, per-sample overhead, decomp,
+        interaction) stay in the cumulative [Lifecycle Overhead] section to
+        avoid restating them per round. Slot held is meaningful only under an
+        admission controller, so its column is conditional on admission_snapshot.
         """
+        has_admission = self.admission_snapshot is not None
         lines = ["", "[Lifecycle Overhead by Round]"]
-        headers = ["Round", "n", "Resume P50(s)", "Pause P50(s)", "Slice P50(s)", "Overhead%"]
+        headers = [
+            "Round",
+            "n",
+            "Resume P50(s)",
+            "Resume P95(s)",
+            "Pause P50(s)",
+            "Pause P95(s)",
+            "Slice P50(s)",
+            "Slice P95(s)",
+        ]
+        if has_admission:
+            headers.append("Slot held P50(s)")
+        headers.append("Overhead%")
         rows: list[list[str]] = []
         for round_id in sorted(active_rounds.keys()):
             resumes = active_rounds[round_id]["resume"]
@@ -921,16 +947,22 @@ class ReportFormatter:
             agg_resume = [rv for rv, sv in zip(resumes, slices) if sv >= MIN_SLICE_SEC]
             agg_pause = [pv for pv, sv in zip(pauses, slices) if sv >= MIN_SLICE_SEC]
             overhead = (sum(agg_resume) + sum(agg_pause)) / sum(agg_slice) if sum(agg_slice) > 0 else 0.0
-            rows.append(
-                [
-                    str(round_id),
-                    str(len(slices)),
-                    f"{r_stats['p50']:.3f}",
-                    f"{p_stats['p50']:.3f}",
-                    f"{s_stats['p50']:.3f}",
-                    f"{overhead * 100:.1f}",
-                ]
-            )
+            row = [
+                str(round_id),
+                str(len(slices)),
+                f"{r_stats['p50']:.3f}",
+                f"{r_stats['p95']:.3f}",
+                f"{p_stats['p50']:.3f}",
+                f"{p_stats['p95']:.3f}",
+                f"{s_stats['p50']:.3f}",
+                f"{s_stats['p95']:.3f}",
+            ]
+            if has_admission:
+                slot_held = active_rounds[round_id].get("slot_held", [])
+                held_stats = calc_percentiles(slot_held) if slot_held else calc_percentiles([0.0])
+                row.append(f"{held_stats['p50']:.3f}")
+            row.append(f"{overhead * 100:.1f}")
+            rows.append(row)
         if not rows:
             return []
         lines.extend(TableFormatter.format_table(headers, rows))
@@ -983,11 +1015,12 @@ class ReportFormatter:
                 end_count = end_sandbox_latency_counts.get(sandbox_index, len(s.task_metrics.latencies))
                 round_latencies.extend(s.task_metrics.get_latencies_since(start_count)[: end_count - start_count])
 
-            # Per-round replay lifecycle slices (resume/pause/slice), aligned
-            # by index within each sandbox. Empty for non-replay workflows.
+            # Per-round replay lifecycle slices (resume/pause/slice/slot_held),
+            # aligned by index within each sandbox. Empty for non-replay.
             round_resume: list[float] = []
             round_pause: list[float] = []
             round_slice: list[float] = []
+            round_slot_held: list[float] = []
             if self.config.workflow_type == "replay":
                 for s in self.sandbox_states.values():
                     rm = s.replay_metrics
@@ -997,6 +1030,7 @@ class ReportFormatter:
                         ("resume_secs", round_resume),
                         ("pause_secs", round_pause),
                         ("slice_total_secs", round_slice),
+                        ("running_slot_held_secs", round_slot_held),
                     ):
                         sn = rb_start.get(key, 0)
                         en = rb_end.get(key, len(getattr(rm, key)))
@@ -1011,6 +1045,7 @@ class ReportFormatter:
                 "resume": round_resume,
                 "pause": round_pause,
                 "slice": round_slice,
+                "slot_held": round_slot_held,
             }
 
         return round_finals

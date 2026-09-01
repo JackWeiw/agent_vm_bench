@@ -727,11 +727,22 @@ class TestReplayLifecycleOverheadByRound:
         return cfg
 
     @staticmethod
-    def _baseline(sandbox_idx: int, resume: int, pause: int, slice_n: int) -> dict[str, int]:
-        return {sandbox_idx: {"resume_secs": resume, "pause_secs": pause, "slice_total_secs": slice_n}}
+    def _baseline(sandbox_idx: int, resume: int, pause: int, slice_n: int, slot_held: int = 0) -> dict[str, int]:
+        return {
+            sandbox_idx: {
+                "resume_secs": resume,
+                "pause_secs": pause,
+                "slice_total_secs": slice_n,
+                "running_slot_held_secs": slot_held,
+            }
+        }
 
     def test_per_round_overhead_rendered_for_lifecycle_multiround(self):
-        """lifecycle + 2 rounds -> per-round overhead table with both rows."""
+        """lifecycle + 2 rounds -> per-round overhead table with both rows.
+
+        No admission controller -> no Slot held column (it is conditional on
+        admission_snapshot being set, mirroring the cumulative section).
+        """
         state = BenchSandbox(id="sbx-0", index=0, workflow_type="replay")
         # Round 0 slice: resume .1 / pause .05 / slice 1.0 -> 15.0% overhead
         state.replay_metrics.add(latency=1.0, success=True, resume_sec=0.1, pause_sec=0.05, slice_total_sec=1.0)
@@ -755,8 +766,54 @@ class TestReplayLifecycleOverheadByRound:
 
         assert "[Lifecycle Overhead by Round]" in report
         assert "Overhead%" in report
+        assert "Resume P95(s)" in report  # P95 columns now present
         assert "15.0" in report  # round 0 overhead
         assert "20.0" in report  # round 1 overhead
+        # No admission controller -> Slot held column omitted.
+        assert "Slot held" not in report
+
+    def test_per_round_slot_held_column_when_admission_present(self):
+        """With an admission controller, the per-round Slot held column renders."""
+        state = BenchSandbox(id="sbx-0", index=0, workflow_type="replay")
+        # Round 0: slot held 0.30; Round 1: slot held 0.50
+        state.replay_metrics.add(
+            latency=1.0,
+            success=True,
+            resume_sec=0.1,
+            pause_sec=0.05,
+            slice_total_sec=1.0,
+            running_slot_held_sec=0.30,
+        )
+        state.replay_metrics.add(
+            latency=1.5,
+            success=True,
+            resume_sec=0.2,
+            pause_sec=0.1,
+            slice_total_sec=1.5,
+            running_slot_held_sec=0.50,
+        )
+
+        collector = StatsCollector(self._config(), {0: state})
+        collector.admission_snapshot = {"running_slots": {}}  # non-None -> admission active
+        collector._round_start_totals[0] = {
+            "total": 0,
+            "success": 0,
+            "sandbox_latency_counts": {0: 0},
+            "replay_baselines": self._baseline(0, 0, 0, 0, 0),
+        }
+        collector._round_start_totals[1] = {
+            "total": 1,
+            "success": 1,
+            "sandbox_latency_counts": {0: 1},
+            "replay_baselines": self._baseline(0, 1, 1, 1, 1),
+        }
+        report = collector.generate_report()
+
+        assert "[Lifecycle Overhead by Round]" in report
+        assert "Slot held P50(s)" in report
+        # Round 0 slot held P50 = 0.300; round 1 = 0.500
+        assert "0.300" in report
+        assert "0.500" in report
 
     def test_per_round_overhead_omitted_for_exec_only(self):
         """exec_only has no lifecycle data -> sub-table skipped, task table kept."""
