@@ -1,0 +1,122 @@
+# exec_only replay baseline — identical stress shape to replay.yaml (lifecycle)
+# but WITHOUT pause/resume. Same total_count / round_size / round_count /
+# action_timeout / trajectory pool / template_manifest; only mode differs.
+#
+# Purpose: the no-lifecycle baseline against which replay.yaml's lifecycle
+# pause/resume overhead is compared. Sandboxes are long-lived (created once,
+# reused across steps); each step is a bare provider.exec() — no resume, no
+# pause, no snapshot.
+#
+# CAVEAT: admission controllers (running_concurrency / control_plane_qps /
+# control_plane_inflight_cap) are wired ONLY for lifecycle/trajectory modes
+# (bench.py wires Admission when replay_mode in {lifecycle, trajectory}).
+# In exec_only they are NO-OPS — kept below for config parity with replay.yaml
+# but they do not gate anything. At ratio 1:1 this is equivalent (lifecycle's
+# running_concurrency=384 == total_count also means no queueing), so the two
+# configs are directly comparable. exec_only CANNOT express memory
+# overcommit (ratio 1:k, k>1): with no pause to free RAM, k*N sandboxes just
+# run concurrently — there is no multiplexing. For overcommit use replay.yaml
+# (lifecycle).
+#
+#   bench-core --provider aenv --config config/common/replay-exec-only.yaml -n 384
+
+workflow_type: replay
+
+# === backend blocks (one per provider; only the matching one is read) ===
+e2b:
+  template: "openclaw-coding-python-v1"
+  create_timeout: 86400
+  numa_bind: 2
+  sandbox_ids_file: "sandboxs_replay.txt"
+  env:
+    E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+    E2B_API_KEY: "your_e2b_api_key_here"
+    E2B_DOMAIN: "e2b.app"
+    E2B_API_URL: "http://localhost:3000"
+    E2B_HTTP_SSL: "false"
+
+docker:
+  image: "ubuntu-openclaw-coding-python:24.04-arm64"
+  container_prefix: "oc-replay"
+  cpu_limit: 2.0
+  memory_limit: "2g"
+  create_timeout: 300
+
+aenv:
+  template: "openclaw-coding-python-v1"  # AENV snapshot-capable image (same /testbed shape)
+  create_timeout: 86400
+  numa_bind: 2
+  sandbox_ids_file: "sandboxs_replay_aenv.txt"
+  env:
+    E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+    E2B_API_KEY: "your_e2b_api_key_here"
+    E2B_DOMAIN: "your_aenv_domain_here"
+    E2B_API_URL: "http://127.0.0.1:8000"      # AENV control plane (POST /sandboxes)
+    E2B_SANDBOX_URL: "http://127.0.0.1:8000"  # AENV data plane (envd proxy; overrides subdomain build, forces http)
+
+# === shared stress sections (all -> KernelConfig) ===
+sandbox:
+  total_count: 384          # same as lifecycle baseline
+  detect_existing: false
+  create_only: false
+
+create_batch:
+  size: 96
+  interval: 1
+
+task_batch:
+  size: 5
+  interval: 5
+
+# Replay configuration (host-agnostic; the sandbox runs the recorded commands).
+replay:
+  # Point these at your dataset (host-specific; do not commit real paths).
+  trajectory_dir: "trajectories/swe-bench"  # pool of .replay.json/.json/.traj
+  trajectory_glob: "*.replay.json"
+  # Side manifest mapping trajectory file (path relative to trajectory_dir) ->
+  # concrete backend template. Omit -> single-template legacy.
+  # template_manifest: "trajectories/swe-bench/inst463-trajectory-templates.json"
+  workdir: "/testbed"
+  env: {}
+  action_timeout: 10                        # per-action exec timeout (same as lifecycle)
+  delay_scale: 1.0
+  stop_on_error: false
+
+  mode: exec_only   # <-- the only real difference from replay.yaml: no pause/resume.
+                     # aenv's default is lifecycle, so set this explicitly.
+                     # KernelConfig.__post_init__ force-disables ready_probe in exec_only.
+
+  # The three knobs below are NO-OPS in exec_only (admission is lifecycle/trajectory
+  # only). Kept for parity with replay.yaml; at ratio 1:1 the comparison is fair.
+  running_concurrency: 384             # ignored in exec_only
+  control_plane_qps: 1000.0           # ignored in exec_only
+  control_plane_inflight_cap: 1024     # ignored in exec_only
+  pause_duration_sec: 0.0             # ignored in exec_only (no pause phase)
+  ready_probe: true                   # force-disabled by __post_init__ in exec_only
+  lifecycle_retries: 2                # ignored in exec_only (no lifecycle calls)
+  # launch_interval_sec: 0.0          # trajectory-mode only; no effect here either.
+
+test:
+  duration: 3600
+  stats_interval: 10
+  benchmark_percent: 1.0
+  benchmark_mode: "round_robin"
+  round_size: 384     # same as lifecycle: one group = all sandboxes -> all concurrent
+  round_count: 1      # each sandbox runs exactly 1 trajectory
+  round_interval: 0
+
+report:
+  output_dir: "results/replay-exec-only"
+  filename_prefix: "replay_exec_only_bench"
+  format: both
+
+monitor:
+  enabled: auto          # aenv -> firecracker auto-enables vm_monitor
+  vmm: auto
+  interval: 3
+  capture: auto
+  numa: "1"
+  stress_file: /dev/shm/bench_core_monitor.lock
+  log_dir: null
+  merge_report: true
+  report_timeout: 300
