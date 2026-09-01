@@ -1,13 +1,24 @@
-# Unified trajectory replay benchmark config — backend-agnostic (E2B + Docker).
+# Lifecycle oversubscription replay benchmark config — backend-agnostic
+# (aenv lifecycle; e2b/docker fall back to exec_only).
 #
 # Workflow type: replay — re-executes recorded SWE-bench agent trajectories
 #   (ordered shell + str_replace_editor actions with per-step delay_time) as
-#   provider.exec() calls with think-time gaps. P1 is exec-only: no
-#   pause/resume lifecycle (that is P2, e2b-only). The same stress profile
-#   runs on either backend:
-#     bench-core --provider fake   --config config/common/replay.yaml --create-only -n 1
-#     bench-core --provider e2b    --config config/common/replay.yaml --create-only
-#     bench-core --provider docker --config config/common/replay.yaml --create-only
+#   provider.exec() calls with think-time gaps.
+#
+# lifecycle model: long-lived sandboxes, pause once after create, then per step
+#   acquire running slot -> resume -> command -> pause -> release slot.
+#   Paused sandboxes free memory (snapshot), so k*N sandboxes fit in N slots
+#   of RAM -> memory overcommit.
+#
+# Memory overcommit math (example: 1.5 TiB host, 4 GiB/VM):
+#   baseline VMs = 1.5 TiB / 4 GiB = 384        (ratio 1:1, no oversubscription)
+#   ratio 1:k  -> total_count = k * 384 ,  running_concurrency = 384
+#     1:2 -> total_count 768,  running_concurrency 384   (2x overcommit)
+#     1:3 -> total_count 1152, running_concurrency 384   (3x overcommit)
+#
+#   bench-core --provider aenv --config config/common/replay.yaml -n 384
+# For docs on exec_only / lifecycle / trajectory modes, see
+# docs/bench-core-usage-zh.md §8.
 
 workflow_type: replay
 
@@ -45,13 +56,16 @@ aenv:
 
 # === shared stress sections (all -> KernelConfig) ===
 sandbox:
-  total_count: 10
+  total_count: 384          # ratio 1:1 baseline = 1.5TiB/4GiB.  ratio 1:k -> k*384.
   detect_existing: false
   create_only: false
 
 create_batch:
-  size: 10
-  interval: 3
+  size: 96
+  interval: 1              # NOTE: int seconds. Fine-grained per-VM launch pacing
+                           # (launch_interval_sec) is trajectory-mode only; lifecycle
+                           # pre-creates via create_all in batches, so use batch
+                           # intervals as a coarse approximation. See §8.1.
 
 task_batch:
   size: 5
@@ -59,6 +73,7 @@ task_batch:
 
 # Replay configuration (host-agnostic; the sandbox runs the recorded commands).
 replay:
+  # Point these at your dataset (host-specific; do not commit real paths).
   trajectory_dir: "trajectories/swe-bench"  # pool of .replay.json/.json/.traj
   trajectory_glob: "*.replay.json"
   # Side manifest mapping trajectory file (path relative to trajectory_dir) ->
@@ -68,36 +83,39 @@ replay:
   # template_manifest: "trajectories/swe-bench/inst463-trajectory-templates.json"
   workdir: "/testbed"                       # passed via exec cwd param (no shell wrap)
   env: {}                                   # optional {PAGER: cat, ...} via exec env param
-  action_timeout: 300                       # per-action exec timeout (lifecycle timeouts are P2)
+  action_timeout: 10                        # per-action exec timeout (lifecycle timeouts below)
   delay_scale: 1.0                          # 1.0=realtime; 0=no delay; 0.1=10x compressed
   stop_on_error: false                      # abort current trajectory, advance to next (not the sandbox)
+
   # mode: omit -> provider default (exec_only for e2b/docker/fake; lifecycle for
-  # aenv, which requires a LifecycleCapable provider). Set explicitly to
-  # override. lifecycle pauses the sandbox between steps and resumes per step
-  # to measure snapshot-restore overhead.
-  # P2.6 admission knobs (lifecycle-only; exec_only ignores these):
-  # running_concurrency: 4                  # M <= total_count; omit = no cap (M=N)
-  # control_plane_qps: 20.0                 # lifecycle control-plane QPS; omit = unlimited
-  # control_plane_inflight_cap: 64          # max concurrent lifecycle calls; omit = min(64, total_count)
-  # ready_probe: true                       # post-resume `true` probe (lifecycle only)
-  # Phase 1 stress-control knobs (trajectory mode). Commented = safe defaults.
-  # lifecycle_retries: 2          # G3: transient resume/pause retry attempts
-  # launch_interval_sec: 0.0      # G5: trajectory-start no-catch-up pacing
-  # pause_duration_sec: 0.0       # G2: extra pause beyond recorded think-time
+  # aenv, which requires a LifecycleCapable provider). Set explicitly to override.
+  mode: lifecycle        # long-lived sandboxes: create -> pause once, then per step
+                          # resume -> exec -> pause on N running slots. Paused sandboxes
+                          # free memory -> k*N fit in N slots (memory overcommit). See §8.
+
+  running_concurrency: 384    # N running slots. Stays at the baseline VM count for any
+                               # ratio 1:k; total_count grows to k*384.
+  control_plane_qps: 1000.0           # lifecycle control-plane QPS; omit = unlimited
+  control_plane_inflight_cap: 1024     # max concurrent lifecycle calls; omit = min(64, total_count)
+  pause_duration_sec: 0.0     # extra pause beyond recorded think-time
+  ready_probe: true           # post-resume `true` probe (lifecycle only)
+  lifecycle_retries: 2        # transient resume/pause retry attempts (0 = no retry)
+  # launch_interval_sec: 0.0  # trajectory-mode only (per-sandbox create pacing);
+                              # no effect in lifecycle (creation is batched up front).
 
 test:
-  duration: 300
+  duration: 3600      # generous; round_count gates run-to-completion (single round)
   stats_interval: 10
   benchmark_percent: 1.0
   benchmark_mode: "round_robin"
-  round_size: 5
-  round_count: 20
-  round_interval: 3
+  round_size: 384     # = total_count -> one group = all sandboxes -> all concurrent
+  round_count: 1      # each sandbox runs exactly 1 trajectory (= 1 repeat)
+  round_interval: 0
 
 report:
   output_dir: "results/replay"
   filename_prefix: "replay_bench"
-  format: txt  # txt (default) | xlsx | both
+  format: both  # txt + xlsx observability workbook (lifecycle overhead, snapshot sizes)
 
 # Host-level monitor (optional). Default `auto` enables vm_monitor only when the
 # provider has a VMM (e2b/aenv -> firecracker); docker/fake are skipped.

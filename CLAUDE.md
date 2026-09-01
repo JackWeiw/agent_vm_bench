@@ -127,11 +127,13 @@ A top-level `monitor:` block (peer of `report:`) controls host-level `vm_monitor
 
 ### Replay workflow (trajectory / lifecycle replay)
 
-`config/common/replay.yaml` drives the replay workflow (`workflow_type: replay`): deterministic replay of recorded SWE-bench trajectories against sandbox backends, primarily `--provider aenv` (lifecycle pause/resume) or `--provider e2b` (exec-only). Modes (per `replay.mode`, defaults to the provider's `default_replay_mode`):
+`config/common/replay.yaml` drives the replay workflow (`workflow_type: replay`): deterministic replay of recorded SWE-bench trajectories against sandbox backends, primarily `--provider aenv` (lifecycle pause/resume) or `--provider e2b` (exec-only). `replay.yaml` ships as the aenv **lifecycle 1:1 (no-oversubscription) baseline**; see [docs/bench-core-usage-zh.md](docs/bench-core-usage-zh.md) §8 for the mode guide. Modes (per `replay.mode`, defaults to the provider's `default_replay_mode`):
 
-- `exec_only` — continuous exec of trajectory steps, no pause/resume.
-- `lifecycle` — per-step `provider.pause()`/`resume()` (aenv `LifecycleCapable`); emits `initial_pause` + per-slice `pause`/`resume` segments and `snapshot_size` events (aenv `SnapshotSizeCapable`).
-- `trajectory` — ephemeral create→kill per trajectory (`EphemeralCapable` `create_one`/`kill_one`); G5 launch pacing, G3 retry.
+- `exec_only` — long-lived sandboxes, continuous exec of trajectory steps, no pause/resume. Baseline for pure exec-replay cost; used when the backend has no lifecycle capability (e2b/docker/fake).
+- `lifecycle` — long-lived sandboxes: `create_all` → pause once → per-step `provider.resume()`/`pause()` (aenv `LifecycleCapable`). Oversubscription = **snapshot memory reuse** — pause frees RAM, so `k×N` sandboxes fit in `running_concurrency = N` slots. Emits `initial_pause` + per-slice `pause`/`resume` segments and `snapshot_size` events (aenv `SnapshotSizeCapable`).
+- `trajectory` — ephemeral `create_one`/`kill_one` per trajectory (`EphemeralCapable`); per-step resume/pause still runs. Oversubscription = **queue limiting** (M slots gate concurrent trajectories; the rest defer `create`, not pause-to-free-memory). `launch_interval_sec` (per-sandbox create pacing) is **trajectory-only** — lifecycle pre-creates via `create_all` batches (`create_batch`, integer-second intervals), so it has no sub-second per-VM launch pacing.
+
+The three modes differ by **sandbox lifecycle** (long-lived exec-only / long-lived pause-resume / ephemeral create-kill), not by "whether a rate limiter is attached"; `launch_interval_sec` exists in trajectory only because frequent per-trajectory `create_one` calls need pacing. Oversubscription ratio: with a fixed host (e.g. 1.5 TiB / 4 GiB per VM → 384 baseline), `running_concurrency` stays at the baseline (N slots) and `total_count` scales to `k×384` for ratio `1:k` (1:2 → 768/384, 1:3 → 1152/384). Scale `round_size` with `total_count` (single group = all concurrent); each ratio is one run.
 
 Outputs: a text report (`<output_dir>/<prefix>_<ts>.txt`), a JSONL lifecycle series (`<prefix>_lifecycle_series.jsonl`), and (with `report.format: xlsx|both`) a 10-sheet observability workbook (`<prefix>_obs.xlsx`: Overview, Per-step timings, Lifecycle overhead, Admission & QPS, Throughput & overcommit, Trajectory summary, Retry impact, Concurrency states, Gantt, Snapshot sizes). All series events are `time.time()`-stamped for direct join with `vm_monitor` host samples (see `monitor:` above).
 
