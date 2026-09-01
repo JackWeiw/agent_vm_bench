@@ -73,7 +73,20 @@ class TestAdmissionBlockRender:
         assert "inflight=0/4" in joined and "dispatched=12" in joined
         assert "Dispatched by operation:" in joined
         assert "resume=3" in joined and "command=3" in joined
+        # All-zero waiting -> the line is suppressed (pure noise, no op queued).
+        assert "Waiting by operation:" not in joined
+
+    def test_waiting_by_operation_renders_when_nonzero(self):
+        snap = {
+            **_FULL_ADMISSION,
+            "qps_limiter": {
+                **_FULL_ADMISSION["qps_limiter"],
+                "waiting_by_operation": {"resume": 0, "pause": 1, "cleanup": 0, "create": 0, "command": 0},
+            },
+        }
+        joined = _format(_state_with_slices(), admission_snapshot=snap, wall_sec=10.0)
         assert "Waiting by operation:" in joined
+        assert "pause=1" in joined
 
     def test_qps_off_renders_only_running_slots(self):
         snap = {**_FULL_ADMISSION, "qps": "off"}

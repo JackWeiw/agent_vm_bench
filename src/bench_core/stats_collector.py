@@ -484,14 +484,17 @@ class ReportFormatter:
         delay_fidelity = statistics.mean(fidelity_values) if fidelity_values else 0.0
 
         lines = ["\n[Replay Task Statistics]"]
-        lines.append(f"  Total Steps:   {total_tasks}")
-        lines.append(f"  Success:       {total_success}")
-        lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
-        lines.append(f"  Success Rate:  {total_success / max(1, total_tasks) * 100:.1f}%")
-        lines.append(f"  Trajectory Completions: {completions}")
+        # Label+colon padded to the widest ("Trajectory Completions:") so every
+        # value starts in the same column; the colon stays contiguous with the
+        # label so ``"Label:"`` substring asserts keep working.
+        lines.append(f"  {'Total Steps:':<24}{total_tasks}")
+        lines.append(f"  {'Success:':<24}{total_success}")
+        lines.append(f"  {'Failed:':<24}{total_failed} (timeout: {total_timeout})")
+        lines.append(f"  {'Success Rate:':<24}{total_success / max(1, total_tasks) * 100:.1f}%")
+        lines.append(f"  {'Trajectory Completions:':<24}{completions}")
         orphan_skipped = sum(s.replay_metrics.orphan_skip_count for s in self.sandbox_states.values())
         if orphan_skipped:
-            lines.append(f"  Orphan Skipped: {orphan_skipped}")
+            lines.append(f"  {'Orphan Skipped:':<24}{orphan_skipped}")
         # P2 lifecycle: one-time snapshot-creation pause (separate from per-step resume_sec).
         initial_pauses = [
             s.replay_metrics.initial_pause_sec
@@ -499,16 +502,17 @@ class ReportFormatter:
             if s.replay_metrics.initial_pause_sec > 0
         ]
         if initial_pauses:
+            noun = "sandbox" if len(initial_pauses) == 1 else "sandboxes"
             lines.append(
-                f"  Initial Pause: {statistics.mean(initial_pauses):.3f}s " f"(over {len(initial_pauses)} sandbox(es))"
+                f"  {'Initial Pause:':<24}{statistics.mean(initial_pauses):.3f}s (over {len(initial_pauses)} {noun})"
             )
-        lines.append(f"  Delay Fidelity: {delay_fidelity:.2f}")
+        lines.append(f"  {'Delay Fidelity:':<24}{delay_fidelity:.2f}")
 
         if all_latencies:
             avg = statistics.mean(all_latencies)
             p99 = calc_p99(all_latencies)
-            lines.append(f"  Avg Latency:   {avg:.3f}s")
-            lines.append(f"  P99 Latency:   {p99:.3f}s")
+            lines.append(f"  {'Avg Latency:':<24}{avg:.3f}s")
+            lines.append(f"  {'P99 Latency:':<24}{p99:.3f}s")
 
         # P2.5 [Lifecycle Overhead] -- lifecycle + trajectory mode. Per-sample
         # overhead_i = (resume_sec_i + pause_sec_i) / slice_total_sec_i
@@ -533,31 +537,37 @@ class ReportFormatter:
                 pause_stats = calc_percentiles(all_pause)
                 slice_stats = calc_percentiles(all_slice)
                 n = len(all_slice)
+                # Percentile lines aligned to the widest label in this group
+                # ("Interaction:") so the P50= column starts in one place.
                 lines.append(
-                    f"  Resume:   P50={resume_stats['p50']:.3f}s "
+                    f"  {'Resume:':<13}P50={resume_stats['p50']:.3f}s "
                     f"P95={resume_stats['p95']:.3f}s P99={resume_stats['p99']:.3f}s  (n={n})"
                 )
                 lines.append(
-                    f"  Pause:    P50={pause_stats['p50']:.3f}s "
+                    f"  {'Pause:':<13}P50={pause_stats['p50']:.3f}s "
                     f"P95={pause_stats['p95']:.3f}s P99={pause_stats['p99']:.3f}s  (n={n})"
                 )
                 lines.append(
-                    f"  Slice:    P50={slice_stats['p50']:.3f}s "
+                    f"  {'Slice:':<13}P50={slice_stats['p50']:.3f}s "
                     f"P95={slice_stats['p95']:.3f}s P99={slice_stats['p99']:.3f}s  (n={n})"
                 )
-                # L7: Slot held (overcommit-efficiency = lease release - acquire,
-                # meaningful only under a running-slot admission controller) and
-                # Interaction (full agent-interaction budget per slice).
+                # L7: Slot held (overcommit-efficiency = lease release - acquire).
+                # slot_held ≡ slice by construction (the lease spans resume->pause;
+                # slot_contention_wait happens before acquire, so it is never in the
+                # lease). Only render when it materially diverges from slice -- e.g.
+                # trajectory-mode capacity_wait -- otherwise it restates Slice.
                 if all_slot_held and self.admission_snapshot is not None:
-                    held_stats = calc_percentiles(all_slot_held)
-                    lines.append(
-                        f"  Slot held: P50={held_stats['p50']:.3f}s "
-                        f"P95={held_stats['p95']:.3f}s  (n={len(all_slot_held)})"
-                    )
+                    held_diverges = any(abs(h - s) >= 0.001 for h, s in zip(all_slot_held, all_slice))
+                    if held_diverges:
+                        held_stats = calc_percentiles(all_slot_held)
+                        lines.append(
+                            f"  {'Slot held:':<13}P50={held_stats['p50']:.3f}s "
+                            f"P95={held_stats['p95']:.3f}s  (n={len(all_slot_held)})"
+                        )
                 if all_interaction:
                     inter_stats = calc_percentiles(all_interaction)
                     lines.append(
-                        f"  Interaction: P50={inter_stats['p50']:.3f}s "
+                        f"  {'Interaction:':<13}P50={inter_stats['p50']:.3f}s "
                         f"P95={inter_stats['p95']:.3f}s  (n={len(all_interaction)})"
                     )
                 # per-sample overhead, near-zero guarded
@@ -670,12 +680,16 @@ class ReportFormatter:
                             )
                         )
                         wbo = ql.get("waiting_by_operation", {})
-                        lines.append(
-                            "    Waiting by operation:    "
-                            + " ".join(
-                                f"{op}={wbo.get(op, 0)}" for op in ("resume", "pause", "cleanup", "create", "command")
+                        # Suppress an all-zero waiting line -- it is pure noise
+                        # (no op is ever queued) and never adds information.
+                        if any(wbo.get(op, 0) for op in ("resume", "pause", "cleanup", "create", "command")):
+                            lines.append(
+                                "    Waiting by operation:    "
+                                + " ".join(
+                                    f"{op}={wbo.get(op, 0)}"
+                                    for op in ("resume", "pause", "cleanup", "create", "command")
+                                )
                             )
-                        )
 
         return lines
 
@@ -695,13 +709,15 @@ class ReportFormatter:
         )
         lines = ["\n[Throughput & Overcommit]"]
         na = "n/a (zero wall-clock time)"
+        if self.wall_sec is not None and self.wall_sec > 0:
+            lines.append(f"  {'wall_sec:':<24}{self.wall_sec:.1f}")
         sps = obs.steps_per_sec
-        lines.append(f"  steps_per_sec:         {f'{sps:.2f}' if sps is not None else na}")
+        lines.append(f"  {'steps_per_sec:':<24}{f'{sps:.2f}' if sps is not None else na}")
         ep = obs.effective_parallelism
-        lines.append(f"  effective_parallelism: {f'{ep:.2f}' if ep is not None else na}")
+        lines.append(f"  {'effective_parallelism:':<24}{f'{ep:.2f}' if ep is not None else na}")
         eu = obs.exec_wall_utilization
-        lines.append(f"  exec_wall_utilization: {f'{eu * 100:.1f}%' if eu is not None else na}")
-        lines.append(f"  overcommit_ratio:      {obs.overcommit_ratio:.1f}x")
+        lines.append(f"  {'exec_wall_utilization:':<24}{f'{eu * 100:.1f}%' if eu is not None else na}")
+        lines.append(f"  {'overcommit_ratio:':<24}{obs.overcommit_ratio:.1f}x")
         return lines
 
     def format_trajectory_summary_section(self) -> list[str]:

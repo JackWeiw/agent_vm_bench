@@ -352,7 +352,12 @@ def test_replay_report_renders_orphan_skipped_line():
     lines = sc.format_replay_stats_section()
     joined = "\n".join(lines)
 
-    assert "Orphan Skipped: 3" in joined
+    # Label is column-aligned (padded), so match the label and the count
+    # separately rather than a single-space ``"Orphan Skipped: 3"`` literal.
+    assert "Orphan Skipped:" in joined
+    assert "3" in joined
+    orphan_line = next(line for line in lines if "Orphan Skipped:" in line)
+    assert orphan_line.rstrip().endswith("3")
 
 
 def test_replay_report_omits_orphan_skipped_when_zero():
