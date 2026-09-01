@@ -43,6 +43,13 @@ logger = logging.getLogger(__name__)
 READY_PROBE_MAX_ATTEMPTS = 5
 READY_PROBE_TIMEOUT = 10  # seconds per attempt
 
+# Sentinel exit code providers return for a command that timed out with partial
+# output but no integer exit code (e.g. the E2B SDK's request-timeout exception).
+# Mirrors the timeout(1) convention. The runner treats this as a timed-out step
+# (failed, recorded, continues when replay_stop_on_error is false) instead of a
+# normal nonzero exit, so the timeout metric bucket stays meaningful.
+TIMEOUT_EXIT_CODE = 124
+
 
 def _affinity_pool(pool: tuple[Trajectory, ...], template: str | None) -> list[Trajectory]:
     """Trajectories whose template matches this sandbox's template.
@@ -257,7 +264,7 @@ class ReplayBaseRunner(threading.Thread):
                         "pause_sec": pause_sec,
                         "slice_total_sec": sr.slice_total_sec,
                         "exit_code": result.exit_code,
-                        "timed_out": False,
+                        "timed_out": result.exit_code == TIMEOUT_EXIT_CODE,
                         "slice_failed": False,
                         "slot_contention_wait_sec": slot_contention_wait_sec,
                         "resume_queue_wait_sec": resume_queue_wait_sec,
@@ -565,6 +572,12 @@ class ReplayBaseRunner(threading.Thread):
         trajectory_id: str = "",
     ) -> None:
         """Record one step's metrics into ``self.state.replay_metrics``."""
+        # A provider may surface a command timeout as exit_code=TIMEOUT_EXIT_CODE
+        # (the E2B SDK raises on request timeout; the provider converts it to a
+        # CommandResult so the slice continues). Treat that as timed_out here so
+        # the timeout metric bucket and the success flag stay accurate.
+        if step_result.exit_code == TIMEOUT_EXIT_CODE:
+            timed_out = True
         success = step_result.exit_code == 0 and not timed_out
         self.state.replay_metrics.add(
             latency=step_result.exec_elapsed_sec,

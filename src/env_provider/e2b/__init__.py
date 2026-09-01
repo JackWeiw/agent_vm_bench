@@ -141,7 +141,30 @@ class E2BProvider(EnvironmentProvider):
             kwargs["cwd"] = cwd
         if env is not None:
             kwargs["env"] = env
-        result = state.sandbox_obj.commands.run(command, **kwargs)
+        try:
+            result = state.sandbox_obj.commands.run(command, **kwargs)
+        except Exception as exc:
+            # The E2B SDK raises on command timeout and (for some SDK variants)
+            # on nonzero exit, but carries stdout/stderr/exit_code on the
+            # exception. Mirror replay-aenv-main's _dispatch_command /
+            # result_fields: surface those as a normal CommandResult so the
+            # runner records a failed step with partial output and continues,
+            # instead of propagating and aborting the slice. A timeout that
+            # carries output but no integer exit code is mapped to 124 (the
+            # timeout(1) convention) so the runner can bucket it as timed_out.
+            stdout = getattr(exc, "stdout", "") or ""
+            stderr = getattr(exc, "stderr", "") or ""
+            exit_code = None
+            for name in ("exit_code", "return_code", "exit_status", "code"):
+                value = getattr(exc, name, None)
+                if isinstance(value, int):
+                    exit_code = value
+                    break
+            if exit_code is None and not (stdout or stderr):
+                raise  # genuine transport error with no command output -> propagate
+            if exit_code is None:
+                exit_code = 124  # timeout with partial output, no exit code
+            return CommandResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
         return CommandResult(
             exit_code=result.exit_code,
             stdout=result.stdout,

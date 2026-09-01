@@ -169,7 +169,9 @@ def test_load_config_replay_yaml():
     config, raw = load_config("config/common/replay.yaml")
     assert config.workflow_type == "replay"
     assert config.replay_trajectory_dir == "trajectories/swe-bench"
-    assert config.replay_mode is None  # sentinel; resolved to provider default in run_benchmark
+    # replay.yaml ships as the explicit lifecycle 1:1 baseline (aenv default,
+    # set explicitly so the same config is unambiguous on any provider).
+    assert config.replay_mode == "lifecycle"
 
 
 class TestRunBenchmarkReplayRoundRobin:
@@ -283,6 +285,5 @@ def test_load_config_replay_yaml_has_aenv_block():
     config, raw = load_config("config/common/replay.yaml")
     assert "aenv" in raw
     assert raw["aenv"]["env"]["E2B_API_URL"] == "http://127.0.0.1:8000"
-    # replay.mode is absent in the shared YAML -> provider default applies at
-    # runtime (exec_only for e2b/docker/fake; lifecycle for aenv).
-    assert "mode" not in raw["replay"]
+    # replay.yaml sets mode explicitly (lifecycle 1:1 baseline).
+    assert raw["replay"]["mode"] == "lifecycle"

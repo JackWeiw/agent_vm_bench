@@ -78,7 +78,7 @@ replay:
   # template_manifest: "trajectories/swe-bench/inst463-trajectory-templates.json"
   workdir: "/testbed"
   env: {}
-  action_timeout: 10                        # per-action exec timeout (same as lifecycle)
+  action_timeout: 300                       # per-action exec timeout (same as lifecycle)
   delay_scale: 1.0
   stop_on_error: false
 

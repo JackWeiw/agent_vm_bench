@@ -625,6 +625,13 @@ def main() -> None:
         config.report_format = args.report_format
     _apply_monitor_override(config, args)
 
+    # Stamp each run into its own subdir so the log, lifecycle series, report,
+    # and vm_monitor outputs never overwrite a previous run (mirrors the
+    # runs/<name>-<timestamp>/ layout). Applies to every workflow; the report
+    # filename's own timestamp becomes redundant but harmless.
+    run_stamp = time.strftime("%Y%m%d-%H%M%S")
+    config.output_dir = str(Path(config.output_dir) / f"{config.filename_prefix}_{run_stamp}")
+
     # Attach a file handler once config (and CLI overrides) are resolved.
     # Stdout stays plaintext for live tailing; JSON lines go to the file only
     # for lifecycle/trajectory replay modes.

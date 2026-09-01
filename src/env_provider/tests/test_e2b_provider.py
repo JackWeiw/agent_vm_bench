@@ -196,6 +196,57 @@ class TestExec:
         with pytest.raises(RuntimeError, match="No E2B handle"):
             provider.exec(inst, "ls")
 
+    def test_exec_timeout_exception_becomes_command_result_124(self):
+        # The E2B SDK raises on request timeout; the adapter surfaces it as a
+        # CommandResult (exit_code 124 = timeout(1) convention) carrying any
+        # partial stdout, so the runner records a failed step and continues
+        # instead of aborting the slice. Mirrors replay-aenv-main.
+        state = _make_state(1, status=E2BSandboxStatus.PORT_READY)
+        provider, _ = _provider_with({1: state})
+        inst = provider.create_all()[1]
+
+        err = Exception("request timed out")
+        err.stdout = "partial"  # type: ignore[attr-defined]
+        err.stderr = ""  # type: ignore[attr-defined]
+        state.sandbox_obj.commands.run = Mock(side_effect=err)
+
+        result = provider.exec(inst, "slow-cmd", timeout=10)
+
+        assert isinstance(result, CommandResult)
+        assert result.exit_code == 124
+        assert result.stdout == "partial"
+
+    def test_exec_nonzero_exit_exception_becomes_command_result(self):
+        # Some E2B SDK variants raise on nonzero exit with exit_code/stderr on
+        # the exception; the adapter returns them as a normal CommandResult.
+        state = _make_state(1, status=E2BSandboxStatus.PORT_READY)
+        provider, _ = _provider_with({1: state})
+        inst = provider.create_all()[1]
+
+        err = Exception("command exited with code 2 and error: boom")
+        err.exit_code = 2  # type: ignore[attr-defined]
+        err.stdout = ""  # type: ignore[attr-defined]
+        err.stderr = "boom"  # type: ignore[attr-defined]
+        state.sandbox_obj.commands.run = Mock(side_effect=err)
+
+        result = provider.exec(inst, "failing-cmd", timeout=10)
+
+        assert isinstance(result, CommandResult)
+        assert result.exit_code == 2
+        assert result.stderr == "boom"
+
+    def test_exec_transport_error_without_output_propagates(self):
+        # A transport error with no command output still propagates (not a
+        # command outcome the runner should swallow).
+        state = _make_state(1, status=E2BSandboxStatus.PORT_READY)
+        provider, _ = _provider_with({1: state})
+        inst = provider.create_all()[1]
+
+        state.sandbox_obj.commands.run = Mock(side_effect=ConnectionError("network gone"))
+
+        with pytest.raises(ConnectionError, match="network gone"):
+            provider.exec(inst, "ls", timeout=10)
+
 
 class TestLifecycleHooks:
     def test_cleanup_all_calls_cleanup_all(self):
