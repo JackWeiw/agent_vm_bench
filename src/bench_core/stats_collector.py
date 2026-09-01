@@ -40,6 +40,12 @@ logger = logging.getLogger(__name__)
 # pathologically-fast real slices.
 MIN_SLICE_SEC = 0.001
 
+# Replay lifecycle list accessors snapshotted per round so the per-round
+# overhead table can slice each sandbox's lists between round boundaries.
+# resume + pause over slice = lifecycle overhead; the three lists are
+# appended in lockstep per slice, so they stay index-aligned across a round.
+_LIFECYCLE_ROUND_KEYS: tuple[str, ...] = ("resume_secs", "pause_secs", "slice_total_secs")
+
 # Error display order, selected by workflow_type. The shared ErrorClassifier
 # may bucket an error into a category this workflow does not display; such
 # categories fold into "Other" so the report schema stays consistent.
@@ -827,15 +833,22 @@ class ReportFormatter:
         if not round_start_totals:
             return []
 
-        lines = ["\n" + "=" * 80, "[Round Comparison]", "=" * 80]
-
         # Calculate round finals (includes post-last-round sentinel with tasks=0)
         round_finals = self._calculate_round_finals(round_start_totals)
 
         # Filter out rounds with tasks=0 (post-last-round baseline sentinel)
         active_rounds = {k: v for k, v in round_finals.items() if v["tasks"] > 0}
+
+        # Single-round (or none): the per-round view is pure redundancy with
+        # the cumulative task statistics -- suppress it. This is the common
+        # replay case (round_count=1, round_size=total -> one all-concurrent
+        # pass). Genuine multi-round runs keep the table.
+        if len(active_rounds) <= 1:
+            return []
+
         total_tasks = sum(r["tasks"] for r in active_rounds.values())
 
+        lines = ["\n" + "=" * 80, "[Round Comparison]", "=" * 80]
         lines.append(f"\n  Summary: {total_tasks} tasks across {len(active_rounds)} rounds")
 
         headers = ["Round", "Tasks", "Success%", "Avg(s)", "P50(s)", "P95(s)", "P99(s)", "Tail"]
@@ -874,6 +887,53 @@ class ReportFormatter:
             )
 
         lines.extend(TableFormatter.format_table(headers, rows))
+
+        # Per-round lifecycle overhead: only replay lifecycle/trajectory have
+        # resume/pause data (exec_only has none -> lists empty -> skip). This
+        # is the per-round view the cumulative [Lifecycle Overhead] section
+        # cannot show -- e.g. whether the 2nd trajectory pass resumes slower.
+        if self.config.workflow_type == "replay" and self.config.replay_mode in ("lifecycle", "trajectory"):
+            lines.extend(self._format_lifecycle_overhead_by_round(active_rounds))
+
+        return lines
+
+    def _format_lifecycle_overhead_by_round(self, active_rounds: dict[int, dict[str, Any]]) -> list[str]:
+        """Per-round resume/pause/slice P50 + aggregate overhead sub-table.
+
+        The three lists are index-aligned within each round (appended in
+        lockstep per slice), so the aggregate overhead ratio = (resume+pause)
+        /slice is computed over matching samples, with near-zero slices
+        excluded (same guard as the cumulative section).
+        """
+        lines = ["", "[Lifecycle Overhead by Round]"]
+        headers = ["Round", "n", "Resume P50(s)", "Pause P50(s)", "Slice P50(s)", "Overhead%"]
+        rows: list[list[str]] = []
+        for round_id in sorted(active_rounds.keys()):
+            resumes = active_rounds[round_id]["resume"]
+            pauses = active_rounds[round_id]["pause"]
+            slices = active_rounds[round_id]["slice"]
+            if not slices:
+                continue
+            r_stats = calc_percentiles(resumes)
+            p_stats = calc_percentiles(pauses)
+            s_stats = calc_percentiles(slices)
+            agg_slice = [sv for sv in slices if sv >= MIN_SLICE_SEC]
+            agg_resume = [rv for rv, sv in zip(resumes, slices) if sv >= MIN_SLICE_SEC]
+            agg_pause = [pv for pv, sv in zip(pauses, slices) if sv >= MIN_SLICE_SEC]
+            overhead = (sum(agg_resume) + sum(agg_pause)) / sum(agg_slice) if sum(agg_slice) > 0 else 0.0
+            rows.append(
+                [
+                    str(round_id),
+                    str(len(slices)),
+                    f"{r_stats['p50']:.3f}",
+                    f"{p_stats['p50']:.3f}",
+                    f"{s_stats['p50']:.3f}",
+                    f"{overhead * 100:.1f}",
+                ]
+            )
+        if not rows:
+            return []
+        lines.extend(TableFormatter.format_table(headers, rows))
         return lines
 
     def _calculate_round_finals(self, round_start_totals: dict[int, dict[str, Any]]) -> dict[int, dict[str, Any]]:
@@ -883,27 +943,38 @@ class ReportFormatter:
         final_task_total = sum(s.task_metrics.total_tasks for s in self.sandbox_states.values())
         final_task_success = sum(s.task_metrics.success_count for s in self.sandbox_states.values())
         final_sandbox_latency_counts = {s.index: len(s.task_metrics.latencies) for s in self.sandbox_states.values()}
+        # Final cumulative replay lifecycle list lengths (end boundary for the
+        # last round); mirrors the per-round snapshot taken in set_round.
+        final_replay_baselines: dict[int, dict[str, int]] = {}
+        if self.config.workflow_type == "replay":
+            for s in self.sandbox_states.values():
+                rm = s.replay_metrics
+                final_replay_baselines[s.index] = {k: len(getattr(rm, k)) for k in _LIFECYCLE_ROUND_KEYS}
 
         for round_id in sorted(round_start_totals.keys()):
             start_total = round_start_totals[round_id]["total"]
             start_success = round_start_totals[round_id]["success"]
             start_sandbox_latency_counts = round_start_totals[round_id]["sandbox_latency_counts"]
+            start_replay_baselines = round_start_totals[round_id].get("replay_baselines", {})
 
             # Determine end values
             if round_id == max(round_start_totals.keys()):
                 end_total = final_task_total
                 end_success = final_task_success
                 end_sandbox_latency_counts = final_sandbox_latency_counts
+                end_replay_baselines = final_replay_baselines
             else:
                 next_round = round_id + 1
                 if next_round in round_start_totals:
                     end_total = round_start_totals[next_round]["total"]
                     end_success = round_start_totals[next_round]["success"]
                     end_sandbox_latency_counts = round_start_totals[next_round]["sandbox_latency_counts"]
+                    end_replay_baselines = round_start_totals[next_round].get("replay_baselines", {})
                 else:
                     end_total = final_task_total
                     end_success = final_task_success
                     end_sandbox_latency_counts = final_sandbox_latency_counts
+                    end_replay_baselines = final_replay_baselines
 
             round_latencies: list[float] = []
             for s in self.sandbox_states.values():
@@ -912,12 +983,34 @@ class ReportFormatter:
                 end_count = end_sandbox_latency_counts.get(sandbox_index, len(s.task_metrics.latencies))
                 round_latencies.extend(s.task_metrics.get_latencies_since(start_count)[: end_count - start_count])
 
+            # Per-round replay lifecycle slices (resume/pause/slice), aligned
+            # by index within each sandbox. Empty for non-replay workflows.
+            round_resume: list[float] = []
+            round_pause: list[float] = []
+            round_slice: list[float] = []
+            if self.config.workflow_type == "replay":
+                for s in self.sandbox_states.values():
+                    rm = s.replay_metrics
+                    rb_start = start_replay_baselines.get(s.index, {})
+                    rb_end = end_replay_baselines.get(s.index, {})
+                    for key, acc in (
+                        ("resume_secs", round_resume),
+                        ("pause_secs", round_pause),
+                        ("slice_total_secs", round_slice),
+                    ):
+                        sn = rb_start.get(key, 0)
+                        en = rb_end.get(key, len(getattr(rm, key)))
+                        acc.extend(getattr(rm, key)[sn:en])
+
             tasks = end_total - start_total
             success = end_success - start_success
             round_finals[round_id] = {
                 "tasks": tasks,
                 "success": success,
                 "latencies": round_latencies,
+                "resume": round_resume,
+                "pause": round_pause,
+                "slice": round_slice,
             }
 
         return round_finals
@@ -980,6 +1073,16 @@ class StatsCollector:
         task_success = sum(s.task_metrics.success_count for s in self.sandbox_states.values())
         sandbox_latency_counts = {s.index: len(s.task_metrics.latencies) for s in self.sandbox_states.values()}
 
+        # Replay lifecycle per-round baselines: snapshot cumulative list
+        # lengths so the per-round overhead table can slice each sandbox's
+        # resume/pause/slice lists between consecutive round boundaries.
+        # No-op for non-replay workflows (the lists stay empty).
+        replay_baselines: dict[int, dict[str, int]] = {}
+        if self.config.workflow_type == "replay":
+            for s in self.sandbox_states.values():
+                rm = s.replay_metrics
+                replay_baselines[s.index] = {k: len(getattr(rm, k)) for k in _LIFECYCLE_ROUND_KEYS}
+
         # Switch to new round
         self.current_round = round_id
 
@@ -995,6 +1098,7 @@ class StatsCollector:
                     "total": task_total,
                     "success": task_success,
                     "sandbox_latency_counts": sandbox_latency_counts,
+                    "replay_baselines": replay_baselines,
                 }
 
     def _collect_loop(self) -> None:

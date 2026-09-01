@@ -271,7 +271,7 @@ class TestStatsCollectorRoundComparison:
         assert "[Round Comparison]" not in report
 
     def test_round_comparison_with_single_round(self):
-        """Single round should show correct stats."""
+        """Single round is redundant with cumulative stats -> suppressed."""
         sandbox_states = {
             1: self._create_sandbox_with_latencies(1, [1.0, 2.0, 3.0]),
             2: self._create_sandbox_with_latencies(2, [2.0, 3.0, 4.0]),
@@ -287,8 +287,7 @@ class TestStatsCollectorRoundComparison:
 
         report = collector.generate_report()
 
-        assert "[Round Comparison]" in report
-        assert "Summary: 6 tasks across 1 rounds" in report
+        assert "[Round Comparison]" not in report
 
     def test_round_comparison_latency_extraction(self):
         """Round latency should be extracted from correct range."""
@@ -604,15 +603,21 @@ class TestStatsCollectorTailLatency:
 
     def test_round_comparison_shows_tail_ratio(self):
         """Round Comparison should include tail ratio."""
-        sandbox_states = {
-            1: self._create_sandbox_with_step_times(1, {"open_tab": 1.0}),
-            2: self._create_sandbox_with_step_times(2, {"open_tab": 2.0}),
-        }
+        s1 = self._create_sandbox_with_step_times(1, {"open_tab": 1.0})
+        s1.browser_metrics.add(latency=2.0, success=True, step_times={"open_tab": 2.0})
+        s2 = self._create_sandbox_with_step_times(2, {"open_tab": 2.0})
+        s2.browser_metrics.add(latency=3.0, success=True, step_times={"open_tab": 3.0})
+        sandbox_states = {1: s1, 2: s2}
         collector = StatsCollector(self.config, sandbox_states)
         collector._round_start_totals[0] = {
             "total": 0,
             "success": 0,
             "sandbox_latency_counts": {1: 0, 2: 0},
+        }
+        collector._round_start_totals[1] = {
+            "total": 2,
+            "success": 2,
+            "sandbox_latency_counts": {1: 1, 2: 1},
         }
         report = collector.generate_report()
 
@@ -621,12 +626,19 @@ class TestStatsCollectorTailLatency:
 
     def test_round_comparison_shows_percentiles(self):
         """Round Comparison should show Avg, P50, P95, P99."""
-        sandbox_states = {1: self._create_sandbox_with_step_times(1, {"open_tab": 1.0})}
+        state = self._create_sandbox_with_step_times(1, {"open_tab": 1.0})
+        state.browser_metrics.add(latency=2.0, success=True, step_times={"open_tab": 2.0})
+        sandbox_states = {1: state}
         collector = StatsCollector(self.config, sandbox_states)
         collector._round_start_totals[0] = {
             "total": 0,
             "success": 0,
             "sandbox_latency_counts": {1: 0},
+        }
+        collector._round_start_totals[1] = {
+            "total": 1,
+            "success": 1,
+            "sandbox_latency_counts": {1: 1},
         }
         report = collector.generate_report()
 
@@ -693,3 +705,97 @@ class TestReplayInitialPauseReport:
         assert "Initial Pause" in report
         assert "0.300s" in report  # mean(0.20, 0.40)
         assert "2 sandbox" in report
+
+
+class TestReplayLifecycleOverheadByRound:
+    """Per-round lifecycle overhead sub-table (multi-round replay lifecycle)."""
+
+    def _config(self, replay_mode: str = "lifecycle") -> KernelConfig:
+        cfg = Mock(spec=KernelConfig)
+        cfg.workflow_type = "replay"
+        cfg.replay_mode = replay_mode
+        cfg.total_count = 1
+        cfg.detect_existing = False
+        cfg.create_only = False
+        cfg.create_batch_size = None
+        cfg.task_batch_size = None
+        cfg.test_duration = 60
+        cfg.output_dir = "/tmp/test"
+        cfg.filename_prefix = "test"
+        cfg.stats_interval = 5
+        cfg.replay_running_concurrency = None
+        return cfg
+
+    @staticmethod
+    def _baseline(sandbox_idx: int, resume: int, pause: int, slice_n: int) -> dict[str, int]:
+        return {sandbox_idx: {"resume_secs": resume, "pause_secs": pause, "slice_total_secs": slice_n}}
+
+    def test_per_round_overhead_rendered_for_lifecycle_multiround(self):
+        """lifecycle + 2 rounds -> per-round overhead table with both rows."""
+        state = BenchSandbox(id="sbx-0", index=0, workflow_type="replay")
+        # Round 0 slice: resume .1 / pause .05 / slice 1.0 -> 15.0% overhead
+        state.replay_metrics.add(latency=1.0, success=True, resume_sec=0.1, pause_sec=0.05, slice_total_sec=1.0)
+        # Round 1 slice: resume .2 / pause .1 / slice 1.5 -> 20.0% overhead
+        state.replay_metrics.add(latency=1.5, success=True, resume_sec=0.2, pause_sec=0.1, slice_total_sec=1.5)
+
+        collector = StatsCollector(self._config(), {0: state})
+        collector._round_start_totals[0] = {
+            "total": 0,
+            "success": 0,
+            "sandbox_latency_counts": {0: 0},
+            "replay_baselines": self._baseline(0, 0, 0, 0),
+        }
+        collector._round_start_totals[1] = {
+            "total": 1,
+            "success": 1,
+            "sandbox_latency_counts": {0: 1},
+            "replay_baselines": self._baseline(0, 1, 1, 1),
+        }
+        report = collector.generate_report()
+
+        assert "[Lifecycle Overhead by Round]" in report
+        assert "Overhead%" in report
+        assert "15.0" in report  # round 0 overhead
+        assert "20.0" in report  # round 1 overhead
+
+    def test_per_round_overhead_omitted_for_exec_only(self):
+        """exec_only has no lifecycle data -> sub-table skipped, task table kept."""
+        state = BenchSandbox(id="sbx-0", index=0, workflow_type="replay")
+        state.replay_metrics.add(latency=1.0, success=True)
+        state.replay_metrics.add(latency=1.5, success=True)
+
+        collector = StatsCollector(self._config("exec_only"), {0: state})
+        collector._round_start_totals[0] = {
+            "total": 0,
+            "success": 0,
+            "sandbox_latency_counts": {0: 0},
+            "replay_baselines": self._baseline(0, 0, 0, 0),
+        }
+        collector._round_start_totals[1] = {
+            "total": 1,
+            "success": 1,
+            "sandbox_latency_counts": {0: 1},
+            "replay_baselines": self._baseline(0, 0, 0, 0),
+        }
+        report = collector.generate_report()
+
+        assert "[Lifecycle Overhead by Round]" not in report
+        # Multi-round task comparison still renders.
+        assert "[Round Comparison]" in report
+
+    def test_per_round_overhead_omitted_for_single_round(self):
+        """Single round -> both round comparison and per-round overhead suppressed."""
+        state = BenchSandbox(id="sbx-0", index=0, workflow_type="replay")
+        state.replay_metrics.add(latency=1.0, success=True, resume_sec=0.1, pause_sec=0.05, slice_total_sec=1.0)
+
+        collector = StatsCollector(self._config(), {0: state})
+        collector._round_start_totals[0] = {
+            "total": 0,
+            "success": 0,
+            "sandbox_latency_counts": {0: 0},
+            "replay_baselines": self._baseline(0, 0, 0, 0),
+        }
+        report = collector.generate_report()
+
+        assert "[Lifecycle Overhead by Round]" not in report
+        assert "[Round Comparison]" not in report  # single-round redundancy suppressed

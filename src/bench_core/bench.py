@@ -127,7 +127,20 @@ def _print_header(config: KernelConfig, provider: EnvironmentProvider) -> None:
 
     if config.benchmark_mode == "round_robin":
         rounds_label = f"{config.round_count} rounds" if config.round_count else "unlimited"
-        lines.append(f"  Benchmark Mode: round_robin ({rounds_label}, interval {config.round_interval}s)")
+        if config.workflow_type == "replay":
+            # In replay a "round" = one trajectory per sandbox (all concurrent);
+            # round_count>1 rotates each sandbox through the pool. A single round
+            # is all-concurrent (no rotation), so the label avoids "round_robin"
+            # jargon inherited from the browser stress model.
+            if config.round_count and config.round_count <= 1:
+                lines.append("  Benchmark Mode: replay (1 trajectory/sandbox, all concurrent)")
+            else:
+                lines.append(
+                    f"  Benchmark Mode: replay round-robin ({rounds_label}, "
+                    f"1 trajectory/sandbox/round, interval {config.round_interval}s)"
+                )
+        else:
+            lines.append(f"  Benchmark Mode: round_robin ({rounds_label}, interval {config.round_interval}s)")
     else:
         lines.append("  Benchmark Mode: fixed")
         if config.benchmark_percent < 1.0:
