@@ -119,10 +119,13 @@ class TestXlsxReportRenderer:
         wb = load_workbook(str(path))
         ws = wb["Throughput & overcommit"]
         rows = [[c.value for c in r] for r in ws.iter_rows()]
-        # has steps_per_sec / overcommit_ratio rows
         joined = " ".join(str(v) for row in rows for v in row)
+        # throughput-side metrics present
         assert "steps_per_sec" in joined
-        assert "overcommit_ratio" in joined
+        assert "concurrency" in joined
+        # overcommit_ratio + wall_sec are Overview-only -- not duplicated here
+        assert "overcommit_ratio" not in joined
+        assert "wall_sec" not in joined
 
     def test_retry_impact_sheet_present_when_retries_exist(self, tmp_path):
         obs, _ = _seeded_observability(with_retry=True)
@@ -144,6 +147,34 @@ class TestXlsxReportRenderer:
         ws = wb["Trajectory summary"]
         # no create_sec data in lifecycle mode -> header only
         assert ws.max_row == 1
+
+    def test_host_sheets_ingested_in_single_render(self, tmp_path):
+        from openpyxl import Workbook as _Wb
+
+        host = tmp_path / "analysis_report.xlsx"
+        src = _Wb()
+        ws = src.active
+        ws.title = "VM_Stats"
+        ws.cell(row=1, column=1, value="vm")
+        ws.cell(row=2, column=1, value="fc-1")
+        n2 = src.create_sheet("NUMA_Overview")
+        n2.cell(row=1, column=1, value="node0")
+        src.save(host)
+
+        obs, _ = _seeded_observability()
+        path = tmp_path / "obs.xlsx"
+        XlsxReportRenderer(obs, host_xlsx=host).render(str(path))
+        wb = load_workbook(str(path))
+        assert "VM_Stats" in wb.sheetnames
+        assert wb["VM_Stats"]["A2"].value == "fc-1"
+        assert "NUMA_Overview" in wb.sheetnames
+
+    def test_host_merge_skipped_without_host_xlsx(self, tmp_path):
+        obs, _ = _seeded_observability()
+        path = tmp_path / "obs.xlsx"
+        XlsxReportRenderer(obs, host_xlsx=None).render(str(path))
+        wb = load_workbook(str(path))
+        assert "VM_Stats" not in wb.sheetnames
 
 
 def test_renderer_accepts_series_path_and_draws_per_step_linechart(tmp_path):

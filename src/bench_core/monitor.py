@@ -19,7 +19,6 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _VM_MONITOR_BIN = "vm-monitor"
-_MERGE_SHEETS = ("VM_Stats", "NUMA_Overview", "DevKit_TopDown")
 
 
 @dataclass
@@ -203,34 +202,22 @@ class MonitorController:
         self._started = False
         return [self.report_xlsx] if self.report_xlsx is not None else []
 
-    def merge_into(self, obs_xlsx: Path) -> None:
-        """Copy key host sheets from vm_monitor's report into the replay obs workbook.
+    def merge_source(self) -> Path | None:
+        """Return the host report to merge into the obs workbook, or ``None``.
 
-        Replay-only; called by bench.py AFTER the obs xlsx is rendered. opt-in via
-        merge_report. Any failure (incl. openpyxl OOM on large workbooks) -> warning
-        only; raw artifacts always remain in <log_dir>/.
+        The obs renderer ingests host sheets (VM_Stats/NUMA_Overview/DevKit_TopDown)
+        during its single write pass, so this controller no longer touches the obs
+        file -- a previous load/save round-trip there dropped every chart and PNG.
+        Returns the report path when ``merge_report`` is set and a report exists;
+        any failure (incl. openpyxl OOM on large workbooks) -> None; raw artifacts
+        always remain in <log_dir>/.
         """
         if self.report_xlsx is None or not self._merge_report:
-            return
-        try:
-            from openpyxl import load_workbook
-        except ImportError:
-            logger.warning("vm_monitor merge skipped: openpyxl unavailable")
-            return
-        try:
-            src = load_workbook(self.report_xlsx, read_only=True)
-            dst = load_workbook(obs_xlsx)
-            for name in _MERGE_SHEETS:
-                if name in src.sheetnames and name not in dst.sheetnames:
-                    src_ws = src[name]
-                    dst_ws = dst.create_sheet(name)
-                    for row in src_ws.iter_rows():
-                        for cell in row:
-                            if cell.value is not None:
-                                dst_ws.cell(row=cell.row, column=cell.column, value=cell.value)
-            dst.save(obs_xlsx)
-        except Exception as e:  # noqa: BLE001 - merge must never block the bench report
-            logger.warning("vm_monitor merge failed (raw artifacts remain in %s): %s", self._log_dir, e)
+            return None
+        if not Path(self.report_xlsx).exists():
+            logger.warning("vm_monitor merge skipped: report missing (%s)", self.report_xlsx)
+            return None
+        return self.report_xlsx
 
     def _emergency_kill(self) -> None:
         """atexit backstop. Does NOT run on SIGKILL/OOM -- documented limitation;

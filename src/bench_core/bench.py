@@ -499,9 +499,12 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 wall_sec=wall_sec,
             )
             xlsx_path = Path(config.output_dir) / f"{config.filename_prefix}_obs.xlsx"
-            XlsxReportRenderer(obs, series_path=series_path if series_writer else None).render(xlsx_path)
+            XlsxReportRenderer(
+                obs,
+                series_path=series_path if series_writer else None,
+                host_xlsx=monitor.merge_source(),
+            ).render(xlsx_path)
             logger.info(f"Xlsx report saved to: {xlsx_path}")
-            monitor.merge_into(xlsx_path)
 
     logger.info("\n" + report)
     logger.info(f"\nReport saved to: {filepath}")

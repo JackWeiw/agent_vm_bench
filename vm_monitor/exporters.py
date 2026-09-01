@@ -953,12 +953,19 @@ def _add_swap_inout_line(wb):
             in_col = col_idx
         elif header and "Out Rate" in header:
             out_col = col_idx
-    if in_col and out_col:
-        data = Reference(ws, min_col=in_col, min_row=1, max_col=out_col, max_row=ws.max_row)
-        cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
-        swap_line.add_data(data, titles_from_data=True)
-        swap_line.set_categories(cats)
-    ws.add_chart(swap_line, "H2")
+    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+    # Add each rate as its own series so a non-adjacent In/Out pair does not
+    # pull intervening columns (e.g. Swap Cached) into the chart.
+    for col in (in_col, out_col):
+        if col is not None:
+            data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+            swap_line.add_data(data, titles_from_data=True)
+    swap_line.set_categories(cats)
+    # An empty chart (zero series) writes an invalid <c:plotArea> with no
+    # <c:ser> children -> Excel shows a "unreadable content" repair prompt.
+    # Only embed the chart when it actually carries data.
+    if swap_line.series:
+        ws.add_chart(swap_line, "H2")
 
 
 def _add_swapcache_line(wb):
@@ -981,15 +988,15 @@ def _add_swapcache_line(wb):
         header = ws.cell(row=1, column=col_idx).value
         if header and ("SwapCached" in header or "SwapCache" in header or "Cached" in header):
             sc_cols.append(col_idx)
-    if sc_cols:
-        # Build data reference across all SwapCache columns
-        min_sc_col = min(sc_cols)
-        max_sc_col = max(sc_cols)
-        data = Reference(ws, min_col=min_sc_col, min_row=1, max_col=max_sc_col, max_row=ws.max_row)
-        cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+    # Add each SwapCache column as its own series. A min..max span would
+    # capture non-SwapCache columns sitting between two SwapCache columns.
+    for col in sc_cols:
+        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
         sc_chart.add_data(data, titles_from_data=True)
-        sc_chart.set_categories(cats)
-    ws.add_chart(sc_chart, "H16")
+    sc_chart.set_categories(cats)
+    if sc_chart.series:
+        ws.add_chart(sc_chart, "H16")
 
 
 def _add_numa_memory_charts(wb):
@@ -1033,7 +1040,8 @@ def _add_numa_memory_charts(wb):
     chart_8a.width = 22
     chart_8a.height = 12
 
-    # Add series in order: Free, Available, Used
+    # Add series in order: Free, Available, Used (one Reference each so
+    # non-contiguous focus-node columns are not spanned together).
     free_avail_used_cols = free_cols + avail_cols + used_cols
     for col in free_avail_used_cols:
         data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
@@ -1055,7 +1063,8 @@ def _add_numa_memory_charts(wb):
             s.graphicalProperties.line.solidFill = color
             s.graphicalProperties.line.width = width
 
-    ws.add_chart(chart_8a, "I2")
+    if chart_8a.series:
+        ws.add_chart(chart_8a, "I2")
 
     # Chart 8B: SwapCache & Usage% (SwapCache in MB, Usage in % — separate Y axes)
     chart_8b = LineChart()
@@ -1094,9 +1103,11 @@ def _add_numa_memory_charts(wb):
             s.graphicalProperties.line.solidFill = "0070C0"  # blue
             s.graphicalProperties.line.width = 15000
 
-    # Overlay the % chart on the MB chart (dual Y axis)
-    chart_8b += chart_8b_pct
-    ws.add_chart(chart_8b, "I16")
+    # Overlay the % chart on the MB chart (dual Y axis) only when at least
+    # one side has data; embedding a chart with zero series corrupts the file.
+    if chart_8b.series or chart_8b_pct.series:
+        chart_8b += chart_8b_pct
+        ws.add_chart(chart_8b, "I16")
 
 
 def _add_vm_total_line(wb):
