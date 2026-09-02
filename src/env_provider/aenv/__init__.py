@@ -36,18 +36,21 @@ def _resolve_snapshot_base(config: Config) -> str:
     """Resolve the persisted-sandboxes base dir for snapshot-size scanning.
 
     Priority:
-      1. ``aenv.snapshot_dir`` -- explicit YAML override (verbatim, no suffix).
-      2. ``$AENV_HOME_PATH`` -- the AENV server's home-path env var.
-      3. ``$AENV_HOME`` -- the README's home-path convention.
-      4. ``DEFAULT_SNAPSHOT_DIR`` (``/var/lib/aenv/...``).
+      1. ``aenv.snapshot_dir`` -- explicit YAML full-path override (no suffix).
+      2. ``aenv.aenv_home_path`` -- YAML home path (+ persisted-sandboxes/artifacts).
+      3. ``$AENV_HOME_PATH`` -- the AENV server's home-path env var (fallback).
+      4. ``$AENV_HOME`` -- the README's home-path convention (fallback).
+      5. ``DEFAULT_SNAPSHOT_DIR`` (``/var/lib/aenv/...``).
 
-    The AENV server reads AENV_HOME_PATH to decide where to *write* persisted
-    sandboxes; bench-core reads the same var to *scan* them, so the two stay in
-    sync without a per-run path knob. The YAML override is the escape hatch for
-    non-standard layouts.
+    The YAML ``aenv_home_path`` is the primary source (no shell env var to
+    export -- the path lives in the config alongside everything else). The env
+    vars are kept as a lower-priority fallback for when bench-core runs on the
+    same host as the AENV server with AENV_HOME_PATH already set.
     """
     if config.snapshot_dir:
         return config.snapshot_dir
+    if config.aenv_home_path:
+        return str(Path(config.aenv_home_path) / _SNAPSHOT_SUBDIR)
     for var in ("AENV_HOME_PATH", "AENV_HOME"):
         home = os.environ.get(var)
         if home:

@@ -172,9 +172,15 @@ class Config:
 
     # AENV snapshot dir override. When set, the AenvProvider stats
     # ``<snapshot_dir>/<sandbox_id>/`` for per-pause overlaybd snapshot sizes.
-    # None -> resolve from $AENV_HOME_PATH / $AENV_HOME (+ persisted-sandboxes/
-    # artifacts), else the /var/lib/aenv default. See aenv._resolve_snapshot_base.
+    # None -> resolve from aenv_home_path / $AENV_HOME_PATH (see below), else
+    # the /var/lib/aenv default. See aenv._resolve_snapshot_base.
     snapshot_dir: str | None = None
+    # AENV server home path (the ``aenv_home_path`` YAML field). The persisted-
+    # sandboxes tree lives under ``<home>/persisted-sandboxes/artifacts/``; this
+    # is the primary source for the snapshot-scan base, so the path stays in the
+    # YAML config alongside everything else (no shell env var to export).
+    # $AENV_HOME_PATH / $AENV_HOME are kept as a lower-priority fallback.
+    aenv_home_path: str | None = None
 
     @classmethod
     def from_raw(cls, raw: dict[str, Any], block: str = "e2b") -> Config:
@@ -200,6 +206,7 @@ class Config:
             numa_bind=_normalize_numa_bind(backend.get("numa_bind", 2)),
             sandbox_ids_file=backend.get("sandbox_ids_file"),
             snapshot_dir=backend.get("snapshot_dir"),
+            aenv_home_path=backend.get("aenv_home_path"),
         )
 
     def setup_e2b_env(self) -> None:

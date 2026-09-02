@@ -47,12 +47,12 @@ aenv:
   create_timeout: 86400
   numa_bind: 2
   sandbox_ids_file: "sandboxs_replay_aenv.txt"
-  # snapshot_dir: null  # explicit override of the persisted-sandboxes base dir.
-  #                   # Omit -> resolve from the AENV_HOME_PATH (or AENV_HOME)
-  #                   # env var + persisted-sandboxes/artifacts; that var is the
-  #                   # AENV server's home path and the source of truth for where
-  #                   # snapshots are written, so bench-core scans the same path.
-  #                   # Final fallback is /var/lib/aenv/persisted-sandboxes/artifacts.
+  # AENV server home path -- the primary source for the snapshot-scan base.
+  # The persisted-sandboxes tree lives under <aenv_home_path>/persisted-
+  # sandboxes/artifacts/<sandbox_id>/, so set this to where the AENV server
+  # stores its data (no shell env var to export). Falls back to $AENV_HOME_PATH
+  # / $AENV_HOME, then /var/lib/aenv. snapshot_dir overrides the full base.
+  # aenv_home_path: "/var/lib/aenv"
   env:
     E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
     E2B_API_KEY: "your_e2b_api_key_here"
