@@ -114,7 +114,7 @@ class KernelConfig:
     replay_trajectory_dir: str = "trajectories"
     replay_trajectory_glob: str = "*.replay.json"
     replay_template_manifest: str | None = None  # path to {traj_relpath: template} JSON; None = single-template legacy
-    replay_workdir: str = "/testbed"
+    replay_workdir: str = "/"  # exec cwd; "/" = run at root (no shell wrap)
     replay_env: dict[str, str] = field(default_factory=dict)
     replay_action_timeout: int = 300
     replay_delay_scale: float = 1.0  # 1.0=realtime think gaps; 0=no delay; 0.1=10x compressed
@@ -297,7 +297,7 @@ class KernelConfig:
             replay_trajectory_dir=replay.get("trajectory_dir", "trajectories"),
             replay_trajectory_glob=replay.get("trajectory_glob", "*.replay.json"),
             replay_template_manifest=replay.get("template_manifest"),
-            replay_workdir=replay.get("workdir", "/testbed"),
+            replay_workdir=replay.get("workdir", "/"),
             replay_env=replay.get("env", {}),
             replay_action_timeout=replay.get("action_timeout", 300),
             replay_delay_scale=replay.get("delay_scale", 1.0),

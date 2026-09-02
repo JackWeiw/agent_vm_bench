@@ -27,9 +27,9 @@ class MonitorConfig:
 
     enabled: str = "auto"  # auto | true | false   (auto = decide by provider.vmm_type)
     vmm: str = "auto"  # auto | qemu | firecracker  (auto = take provider hint)
-    interval: int = 3  # sampling interval (seconds)
+    interval: int = 2  # sampling interval (seconds)
     capture: str = "auto"  # auto | true | false  (auto/true -> --enable-capture --auto-skip)
-    numa: str = "1"  # NUMA nodes, comma-separated
+    numa: str = "all"  # NUMA nodes: "all" = every node, or comma-separated "0,1"
     disks: str = "all"  # block devices for I/O, comma-separated (sda,nvme0n1); "all" auto-discovers
     stress_file: str = "/dev/shm/bench_core_monitor.lock"
     log_dir: str | None = None  # None -> <report.output_dir>/vm_monitor
@@ -46,9 +46,9 @@ class MonitorConfig:
         return cls(
             enabled=str(raw.get("enabled", "auto")),
             vmm=str(raw.get("vmm", "auto")),
-            interval=int(raw.get("interval", 3)),
+            interval=int(raw.get("interval", 2)),
             capture=str(raw.get("capture", "auto")),
-            numa=str(raw.get("numa", "1")),
+            numa=str(raw.get("numa", "all")),
             disks=str(raw.get("disks", "all")),
             stress_file=str(raw.get("stress_file", "/dev/shm/bench_core_monitor.lock")),
             log_dir=raw.get("log_dir"),

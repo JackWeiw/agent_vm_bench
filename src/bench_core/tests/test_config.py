@@ -187,7 +187,7 @@ def test_replay_defaults():
     cfg = KernelConfig(workflow_type="replay")
     assert cfg.replay_trajectory_dir == "trajectories"
     assert cfg.replay_trajectory_glob == "*.replay.json"
-    assert cfg.replay_workdir == "/testbed"
+    assert cfg.replay_workdir == "/"
     assert cfg.replay_env == {}
     assert cfg.replay_action_timeout == 300
     assert cfg.replay_delay_scale == 1.0

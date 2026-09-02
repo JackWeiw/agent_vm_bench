@@ -87,7 +87,7 @@ replay:
   # the dataset (not the benchmark config). Omit -> single-template legacy
   # (all trajectories use the provider block's default `template`).
   # template_manifest: "trajectories/swe-bench/inst463-trajectory-templates.json"
-  workdir: "/testbed"                       # passed via exec cwd param (no shell wrap)
+  workdir: "/"                            # exec cwd (no shell wrap); "/" = run at root
   env: {}                                   # optional {PAGER: cat, ...} via exec env param
   action_timeout: 300                       # per-action exec timeout (lifecycle timeouts below)
   delay_scale: 1.0                          # 1.0=realtime; 0=no delay; 0.1=10x compressed
@@ -110,7 +110,11 @@ replay:
                               # no effect in lifecycle (creation is batched up front).
 
 test:
-  duration: 3600      # generous; round_count gates run-to-completion (single round)
+  duration: 3600      # hard time ceiling: round_robin stops at duration OR when all
+                       # rounds finish, whichever is first. With round_count=1 the
+                       # single trajectory round usually completes well under this, so
+                       # round_count gates run-to-completion; duration caps stalled
+                       # runs. Also feeds vm_monitor's -t backstop (duration + 60s).
   stats_interval: 10
   benchmark_percent: 1.0
   benchmark_mode: "round_robin"
@@ -128,9 +132,9 @@ report:
 monitor:
   enabled: auto          # auto | true | false
   vmm: auto              # auto | qemu | firecracker (auto = take provider hint)
-  interval: 3
+  interval: 2
   capture: auto          # auto | true | false (auto/true -> --enable-capture --auto-skip)
-  numa: "1"
+  numa: all              # "all" = every NUMA node, or comma-separated "0,1"
   disks: all             # block devices for I/O: "all" auto-discovers physical devices;
                          # or comma-separated, e.g. "sda,nvme0n1" to monitor specific disks.
   stress_file: /dev/shm/bench_core_monitor.lock

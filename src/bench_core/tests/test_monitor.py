@@ -15,11 +15,12 @@ def test_monitor_config_defaults_when_absent():
     assert cfg.monitor.enabled == "auto"
     assert cfg.monitor.vmm == "auto"
     assert cfg.monitor.capture == "auto"
-    assert cfg.monitor.interval == 3
+    assert cfg.monitor.interval == 2
     assert cfg.monitor.merge_report is False
     assert cfg.monitor.report_timeout == 300
     assert cfg.monitor.log_dir is None
     assert cfg.monitor.disks == "all"
+    assert cfg.monitor.numa == "all"
 
 
 def test_monitor_config_from_raw_overrides():
@@ -93,8 +94,8 @@ def test_command_construction(monkeypatch, tmp_path):
     assert "--vmm" in cmd and "firecracker" in cmd
     assert "--stress-file" in cmd
     assert "--auto-skip" in cmd and "--enable-capture" in cmd  # capture=auto
-    assert "-i" in cmd and "3" in cmd
-    assert "--numa" in cmd
+    assert "-i" in cmd and "2" in cmd
+    assert cmd[cmd.index("--numa") + 1] == "all"
     assert "--disks" in cmd and "all" in cmd  # default
     assert "-t" in cmd  # hard upper-bound timer
 

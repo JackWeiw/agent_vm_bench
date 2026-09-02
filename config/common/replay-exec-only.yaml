@@ -76,7 +76,7 @@ replay:
   # Side manifest mapping trajectory file (path relative to trajectory_dir) ->
   # concrete backend template. Omit -> single-template legacy.
   # template_manifest: "trajectories/swe-bench/inst463-trajectory-templates.json"
-  workdir: "/testbed"
+  workdir: "/"
   env: {}
   action_timeout: 300                       # per-action exec timeout (same as lifecycle)
   delay_scale: 1.0
@@ -97,7 +97,7 @@ replay:
   # launch_interval_sec: 0.0          # trajectory-mode only; no effect here either.
 
 test:
-  duration: 3600
+  duration: 3600      # hard time ceiling (see replay.yaml); round_count gates completion
   stats_interval: 10
   benchmark_percent: 1.0
   benchmark_mode: "round_robin"
@@ -113,9 +113,9 @@ report:
 monitor:
   enabled: auto          # aenv -> firecracker auto-enables vm_monitor
   vmm: auto
-  interval: 3
+  interval: 2
   capture: auto
-  numa: "1"
+  numa: all              # "all" = every NUMA node, or comma-separated "0,1"
   stress_file: /dev/shm/bench_core_monitor.lock
   log_dir: null
   merge_report: true
