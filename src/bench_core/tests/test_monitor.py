@@ -19,6 +19,7 @@ def test_monitor_config_defaults_when_absent():
     assert cfg.monitor.merge_report is True
     assert cfg.monitor.report_timeout == 300
     assert cfg.monitor.log_dir is None
+    assert cfg.monitor.disks == "all"
 
 
 def test_monitor_config_from_raw_overrides():
@@ -30,6 +31,7 @@ def test_monitor_config_from_raw_overrides():
             "interval": 5,
             "capture": "false",
             "numa": "0,1",
+            "disks": "sda,nvme0n1",
             "stress_file": "/tmp/lock",
             "log_dir": "out/vm",
             "merge_report": False,
@@ -42,6 +44,7 @@ def test_monitor_config_from_raw_overrides():
     assert cfg.monitor.interval == 5
     assert cfg.monitor.capture == "false"
     assert cfg.monitor.numa == "0,1"
+    assert cfg.monitor.disks == "sda,nvme0n1"
     assert cfg.monitor.stress_file == "/tmp/lock"
     assert cfg.monitor.log_dir == "out/vm"
     assert cfg.monitor.merge_report is False
@@ -92,7 +95,18 @@ def test_command_construction(monkeypatch, tmp_path):
     assert "--auto-skip" in cmd and "--enable-capture" in cmd  # capture=auto
     assert "-i" in cmd and "3" in cmd
     assert "--numa" in cmd
+    assert "--disks" in cmd and "all" in cmd  # default
     assert "-t" in cmd  # hard upper-bound timer
+
+
+def test_command_disks_override(monkeypatch, tmp_path):
+    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    prov = _StubProvider(vmm_type="firecracker")
+    mc = MonitorController(_cfg(disks="sda,nvme0n1", stress_file=str(tmp_path / "lock")), prov)
+    cmd = mc._cmd
+    # the custom disk list reaches the vm-monitor CLI verbatim
+    i = cmd.index("--disks")
+    assert cmd[i + 1] == "sda,nvme0n1"
 
 
 def test_command_capture_false_omits_flags(monkeypatch, tmp_path):

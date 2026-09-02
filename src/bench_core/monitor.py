@@ -30,6 +30,7 @@ class MonitorConfig:
     interval: int = 3  # sampling interval (seconds)
     capture: str = "auto"  # auto | true | false  (auto/true -> --enable-capture --auto-skip)
     numa: str = "1"  # NUMA nodes, comma-separated
+    disks: str = "all"  # block devices for I/O, comma-separated (sda,nvme0n1); "all" auto-discovers
     stress_file: str = "/dev/shm/bench_core_monitor.lock"
     log_dir: str | None = None  # None -> <report.output_dir>/vm_monitor
     merge_report: bool = True  # replay xlsx: copy key host sheets into obs workbook
@@ -45,6 +46,7 @@ class MonitorConfig:
             interval=int(raw.get("interval", 3)),
             capture=str(raw.get("capture", "auto")),
             numa=str(raw.get("numa", "1")),
+            disks=str(raw.get("disks", "all")),
             stress_file=str(raw.get("stress_file", "/dev/shm/bench_core_monitor.lock")),
             log_dir=raw.get("log_dir"),
             merge_report=bool(raw.get("merge_report", True)),
@@ -68,6 +70,7 @@ class MonitorController:
         self._merge_report = mc.merge_report
         self._interval = mc.interval
         self._numa = mc.numa
+        self._disks = mc.disks
         self.proc = None
         self._stdout_fh = None
         self._stderr_fh = None
@@ -89,6 +92,8 @@ class MonitorController:
             str(self._interval),
             "--numa",
             self._numa,
+            "--disks",
+            self._disks,
             "--stress-file",
             str(self._stress_file),
             "--log-dir",

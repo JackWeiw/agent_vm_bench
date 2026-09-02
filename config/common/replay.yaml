@@ -125,6 +125,8 @@ monitor:
   interval: 3
   capture: auto          # auto | true | false (auto/true -> --enable-capture --auto-skip)
   numa: "1"
+  disks: all             # block devices for I/O: "all" auto-discovers physical devices;
+                         # or comma-separated, e.g. "sda,nvme0n1" to monitor specific disks.
   stress_file: /dev/shm/bench_core_monitor.lock
   log_dir: null          # null = <report.output_dir>/vm_monitor
   merge_report: true     # replay xlsx: copy VM_Stats/NUMA_Overview/DevKit_TopDown into obs workbook
