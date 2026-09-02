@@ -13,6 +13,7 @@ one-liner (add the methods to ``E2BProvider``).
 """
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 
@@ -23,7 +24,36 @@ from env_provider.aenv._snapshot import scan_snapshot_sizes
 from env_provider.e2b import E2BProvider
 from env_provider.e2b.config import Config
 
+# Hardcoded fallback when neither AENV_HOME_PATH / AENV_HOME nor an explicit
+# ``aenv.snapshot_dir`` override is set -- the AENV default install location.
 DEFAULT_SNAPSHOT_DIR = "/var/lib/aenv/persisted-sandboxes/artifacts"
+# The persisted-sandboxes tree lives under ``<aenv-home>/persisted-sandboxes/
+# artifacts/<sandbox_id>/``; this suffix is appended to the resolved home path.
+_SNAPSHOT_SUBDIR = Path("persisted-sandboxes") / "artifacts"
+
+
+def _resolve_snapshot_base(config: Config) -> str:
+    """Resolve the persisted-sandboxes base dir for snapshot-size scanning.
+
+    Priority:
+      1. ``aenv.snapshot_dir`` -- explicit YAML override (verbatim, no suffix).
+      2. ``$AENV_HOME_PATH`` -- the AENV server's home-path env var.
+      3. ``$AENV_HOME`` -- the README's home-path convention.
+      4. ``DEFAULT_SNAPSHOT_DIR`` (``/var/lib/aenv/...``).
+
+    The AENV server reads AENV_HOME_PATH to decide where to *write* persisted
+    sandboxes; bench-core reads the same var to *scan* them, so the two stay in
+    sync without a per-run path knob. The YAML override is the escape hatch for
+    non-standard layouts.
+    """
+    if config.snapshot_dir:
+        return config.snapshot_dir
+    for var in ("AENV_HOME_PATH", "AENV_HOME"):
+        home = os.environ.get(var)
+        if home:
+            return str(Path(home) / _SNAPSHOT_SUBDIR)
+    return DEFAULT_SNAPSHOT_DIR
+
 
 try:
     from e2b import Sandbox
@@ -87,11 +117,14 @@ class AenvProvider(E2BProvider):
     def snapshot_sizes(self, inst: SandboxInstance) -> dict | None:
         """Stat the sandbox's persisted-snapshot tree (inode-deduped).
 
-        Overrides the default ``/var/lib/aenv/persisted-sandboxes/artifacts``
-        via ``aenv.snapshot_dir``. Returns ``None`` if the dir is absent, so
-        the runner skips the ``snapshot_size`` series event without crashing.
+        Base resolves via :func:`_resolve_snapshot_base` (explicit
+        ``aenv.snapshot_dir`` override, else ``$AENV_HOME_PATH``/``$AENV_HOME`` +
+        ``persisted-sandboxes/artifacts``, else the hardcoded default). The
+        sandbox's own dir is ``<base>/<sandbox_id>/``. Returns ``None`` if the
+        dir is absent, so the runner skips the ``snapshot_size`` series event
+        without crashing.
         """
-        base = self._config.snapshot_dir or DEFAULT_SNAPSHOT_DIR
+        base = _resolve_snapshot_base(self._config)
         sandbox_dir = Path(base) / inst.id
         return scan_snapshot_sizes(sandbox_dir)
 

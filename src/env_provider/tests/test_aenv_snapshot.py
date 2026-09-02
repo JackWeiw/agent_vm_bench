@@ -107,3 +107,60 @@ def test_aenv_provider_snapshot_sizes_uses_dir(tmp_path, monkeypatch) -> None:
     assert out is not None
     assert out["logical_bytes"] == 1024 * 1024
     assert out["generations"] == 1
+
+
+def test_resolve_snapshot_base_explicit_dir_wins(monkeypatch) -> None:
+    from env_provider.aenv import _resolve_snapshot_base
+
+    monkeypatch.setenv("AENV_HOME_PATH", "/srv/aenv")
+    cfg = Config.from_raw({"aenv": {"snapshot_dir": "/explicit/snap"}}, block="aenv")
+    assert _resolve_snapshot_base(cfg) == "/explicit/snap"
+
+
+def test_resolve_snapshot_base_from_aenv_home_path(monkeypatch) -> None:
+    from env_provider.aenv import _resolve_snapshot_base
+
+    monkeypatch.delenv("AENV_HOME_PATH", raising=False)
+    monkeypatch.delenv("AENV_HOME", raising=False)
+    monkeypatch.setenv("AENV_HOME_PATH", "/srv/aenv")
+    cfg = Config.from_raw({"aenv": {}}, block="aenv")
+    assert _resolve_snapshot_base(cfg) == str(Path("/srv/aenv/persisted-sandboxes/artifacts"))
+
+
+def test_resolve_snapshot_base_falls_back_to_aenv_home(monkeypatch) -> None:
+    from env_provider.aenv import _resolve_snapshot_base
+
+    # AENV_HOME_PATH unset -> AENV_HOME is the fallback.
+    monkeypatch.delenv("AENV_HOME_PATH", raising=False)
+    monkeypatch.setenv("AENV_HOME", "/data/aenv")
+    cfg = Config.from_raw({"aenv": {}}, block="aenv")
+    assert _resolve_snapshot_base(cfg) == str(Path("/data/aenv/persisted-sandboxes/artifacts"))
+
+
+def test_resolve_snapshot_base_default_when_nothing_set(monkeypatch) -> None:
+    from env_provider.aenv import DEFAULT_SNAPSHOT_DIR, _resolve_snapshot_base
+
+    monkeypatch.delenv("AENV_HOME_PATH", raising=False)
+    monkeypatch.delenv("AENV_HOME", raising=False)
+    cfg = Config.from_raw({"aenv": {}}, block="aenv")
+    assert _resolve_snapshot_base(cfg) == DEFAULT_SNAPSHOT_DIR
+
+
+def test_aenv_provider_snapshot_sizes_from_env_home(tmp_path, monkeypatch) -> None:
+    """AENV_HOME_PATH drives the scan path end-to-end (not just the resolver)."""
+    from env_provider.aenv import AenvProvider
+
+    # Point AENV_HOME_PATH at tmp_path; the provider scans
+    # <tmp>/persisted-sandboxes/artifacts/<id>/<gen>/...
+    monkeypatch.delenv("AENV_HOME", raising=False)
+    monkeypatch.setenv("AENV_HOME_PATH", str(tmp_path))
+    base = tmp_path / "persisted-sandboxes" / "artifacts" / "abc" / "g0"
+    base.mkdir(parents=True)
+    (base / "layer.bin").write_bytes(b"\0" * 512)
+
+    p = AenvProvider.__new__(AenvProvider)
+    p._config = Config.from_raw({"aenv": {}}, block="aenv")
+    inst = type("I", (), {"id": "abc", "index": 0})()
+    out = p.snapshot_sizes(inst)
+    assert out is not None
+    assert out["generations"] == 1

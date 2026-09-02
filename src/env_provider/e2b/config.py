@@ -172,7 +172,8 @@ class Config:
 
     # AENV snapshot dir override. When set, the AenvProvider stats
     # ``<snapshot_dir>/<sandbox_id>/`` for per-pause overlaybd snapshot sizes.
-    # None -> default /var/lib/aenv/persisted-sandboxes/artifacts/<id>/.
+    # None -> resolve from $AENV_HOME_PATH / $AENV_HOME (+ persisted-sandboxes/
+    # artifacts), else the /var/lib/aenv default. See aenv._resolve_snapshot_base.
     snapshot_dir: str | None = None
 
     @classmethod
