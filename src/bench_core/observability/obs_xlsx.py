@@ -287,37 +287,63 @@ class XlsxReportRenderer:
     def _sheet_trajectory_summary(self, wb: Workbook) -> None:
         ws = wb.create_sheet("Trajectory summary")
         obs = self.obs
-        # Per-trajectory per-step latency profile -- available in every mode
+        # Per-trajectory per-segment latency profile -- available in every mode
         # (the series carries trajectory_id on each step). This decomposes the
         # pooled Per-step timings / Lifecycle overhead tables by trajectory, so
-        # it is additive, not redundant. exec = pure command time; slice =
-        # end-to-end resume+exec+pause.
+        # it is additive, not redundant. exec = pure command time; resume/pause
+        # are lifecycle segments; slot_wait = running-slot acquisition wait
+        # (admission contention); slice = end-to-end resume+exec+pause. All
+        # seconds. Each segment carries p50/p95/p99 so a trajectory's
+        # pause/resume/wait distribution is inspectable at a glance, not just
+        # the exec/slice extremes.
         wrote_profile = False
         if self.series_path is not None and Path(self.series_path).exists():
             from bench_core.observability.lifecycle_series import load_events
 
-            exec_by_traj: dict[str, list[float]] = {}
-            slice_by_traj: dict[str, list[float]] = {}
+            seg_by_traj: dict[str, dict[str, list[float]]] = {}
             for ev in load_events(Path(self.series_path)):
                 if ev.get("event") != "step":
                     continue
                 tid = ev.get("trajectory_id") or ""
-                if ev.get("exec_sec") is not None:
-                    exec_by_traj.setdefault(tid, []).append(ev["exec_sec"])
-                if ev.get("slice_total_sec") is not None:
-                    slice_by_traj.setdefault(tid, []).append(ev["slice_total_sec"])
-            if exec_by_traj:
+                segs = seg_by_traj.setdefault(tid, {})
+                for key in (
+                    "exec_sec",
+                    "resume_sec",
+                    "pause_sec",
+                    "slot_contention_wait_sec",
+                    "slice_total_sec",
+                ):
+                    v = ev.get(key)
+                    if v is not None:
+                        segs.setdefault(key, []).append(v)
+            if seg_by_traj:
                 rows = []
-                for tid in sorted(exec_by_traj):
-                    e = calc_percentiles(exec_by_traj[tid])
-                    s = calc_percentiles(slice_by_traj.get(tid, []))
+                for tid in sorted(seg_by_traj):
+                    segs = seg_by_traj[tid]
+                    e = calc_percentiles(segs.get("exec_sec", []))
+                    r = calc_percentiles(segs.get("resume_sec", []))
+                    p = calc_percentiles(segs.get("pause_sec", []))
+                    sw = calc_percentiles(segs.get("slot_contention_wait_sec", []))
+                    s = calc_percentiles(segs.get("slice_total_sec", []))
+                    # n_steps from whichever segment populated; exec is always
+                    # present on a real step event so it is the reliable count.
+                    n = len(segs.get("exec_sec", []))
                     rows.append(
                         [
                             tid,
-                            len(exec_by_traj[tid]),
+                            n,
                             round(e["p50"], 3),
                             round(e["p95"], 3),
                             round(e["p99"], 3),
+                            round(r["p50"], 3),
+                            round(r["p95"], 3),
+                            round(r["p99"], 3),
+                            round(p["p50"], 3),
+                            round(p["p95"], 3),
+                            round(p["p99"], 3),
+                            round(sw["p50"], 3),
+                            round(sw["p95"], 3),
+                            round(sw["p99"], 3),
                             round(s["p50"], 3),
                             round(s["p95"], 3),
                             round(s["p99"], 3),
@@ -331,6 +357,15 @@ class XlsxReportRenderer:
                         "exec_p50_s",
                         "exec_p95_s",
                         "exec_p99_s",
+                        "resume_p50_s",
+                        "resume_p95_s",
+                        "resume_p99_s",
+                        "pause_p50_s",
+                        "pause_p95_s",
+                        "pause_p99_s",
+                        "slot_wait_p50_s",
+                        "slot_wait_p95_s",
+                        "slot_wait_p99_s",
                         "slice_p50_s",
                         "slice_p95_s",
                         "slice_p99_s",
@@ -359,6 +394,13 @@ class XlsxReportRenderer:
         slice_failed), broken down by trajectory, so each trajectory's per-step
         resume/exec/pause/slice timings are inspectable directly. Sourced from the
         series JSONL; empty when there is no series file (e.g. a minimal install).
+
+        Duration columns are seconds (matching the reference step-detail.csv), not
+        the milliseconds used by the Per-step/Lifecycle chart sheets. The
+        sub-segments sit next to their parent total so the sum invariants are
+        visually verifiable: ``resume_sec == resume_queue_wait_sec +
+        resume_api_sec + resume_ready_wait_sec`` and ``pause_sec ==
+        pause_queue_wait_sec + pause_api_sec``.
         """
         ws = wb.create_sheet("Step detail")
         headers = [
@@ -369,11 +411,17 @@ class XlsxReportRenderer:
             "action_type",
             "slice_failed",
             "resume_sec",
+            "resume_queue_wait_sec",
+            "resume_api_sec",
+            "resume_ready_wait_sec",
             "exec_sec",
             "pause_sec",
+            "pause_queue_wait_sec",
+            "pause_api_sec",
             "slice_total_sec",
             "interaction_total_sec",
             "slot_contention_wait_sec",
+            "running_slot_held_sec",
             "exit_code",
             "timed_out",
         ]
@@ -395,11 +443,17 @@ class XlsxReportRenderer:
                     ev.get("action_type") or "",
                     bool(ev.get("slice_failed")),
                     _round_or_none(ev.get("resume_sec")),
+                    _round_or_none(ev.get("resume_queue_wait_sec")),
+                    _round_or_none(ev.get("resume_api_sec")),
+                    _round_or_none(ev.get("resume_ready_wait_sec")),
                     _round_or_none(ev.get("exec_sec")),
                     _round_or_none(ev.get("pause_sec")),
+                    _round_or_none(ev.get("pause_queue_wait_sec")),
+                    _round_or_none(ev.get("pause_api_sec")),
                     _round_or_none(ev.get("slice_total_sec")),
                     _round_or_none(ev.get("interaction_total_sec")),
                     _round_or_none(ev.get("slot_contention_wait_sec")),
+                    _round_or_none(ev.get("running_slot_held_sec")),
                     ev.get("exit_code"),
                     bool(ev.get("timed_out")),
                 ]

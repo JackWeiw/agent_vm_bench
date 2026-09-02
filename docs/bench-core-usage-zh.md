@@ -331,3 +331,67 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
   字段名(如 sweagent 原始格式),需先转成 `.replay.json`。
 - `template_manifest` 是 `{trajectory相对路径: template}` 的 side JSON。多模板时,非 trajectory
   模式按 template 亲和路由(孤儿模板跳过计数);trajectory 模式 `create_one(template=)` 逐条带。
+
+### 8.4 可观测性工作簿 (`*_obs.xlsx`)
+
+`report.format: xlsx|both` 时,除了文本报告 + JSONL lifecycle series,还会产出
+`<output_dir>/<prefix>_obs.xlsx`(11 张表,openpyxl 渲染)。所有时长列**统一为秒(s)**,
+与参考实现的 `step-detail.csv` 单位一致;`Per-step timings` / `Lifecycle overhead`
+两张表的内嵌折图为可读性用毫秒(ms),表头会标注。无 lifecycle_series 文件时(如
+minimal install),依赖 series 的表只输出表头,不报错。
+
+| Sheet | 行粒度 | 内容 |
+|-------|--------|------|
+| Overview | 标量 | mode / total_count / running_concurrency / test_duration / wall_sec / steps / success / failed / overcommit_ratio |
+| Per-step timings | 池化百分位 | 全 fleet `latency`(=纯 exec 耗时)的 n/min/max/avg/p50/p95/p99,按 `action_type` 分桶;附 per-step 折图(ms) |
+| Lifecycle overhead | 池化百分位 | `resume` / `pause` / `slice_total` / `slot_held` / `interaction` 五段的百分位;附 per-step 折图(ms)。仅 lifecycle/trajectory 模式 |
+| Admission & QPS | 标量 | running slot(maximum/active/peak_active/granted/avg_queue_wait)+ QPS 限流(qps/inflight_cap/in_flight/dispatched/avg_wait/max_wait)+ per-operation 分发/等待 |
+| Throughput & overcommit | 标量 | steps_per_sec / effective_parallelism / exec_wall_utilization / concurrency |
+| Trajectory summary | **每 trajectory 一行** | n_steps + exec/resume/pause/slot_wait/slice 各 p50/p95/p99(秒)。按 trajectory_id 升序;trajectory 模式额外附 create_sec/kill_sec 百分位 |
+| Step detail | **每 step 事件一行** | 见下表;含成功与 `slice_failed` 合成行,按 (trajectory, sandbox, step) 排序,冻结首行 + autofilter |
+| Retry impact | 标量 | retry_count / time_lost_to_retry_sec / retries_per_slice_p95 + per-operation retry_queued 计数 |
+| Concurrency states | 每秒一行 | 每秒各 sandbox 的主导状态计数(pausing/paused/resuming/exec/active)+ 折图 |
+| Gantt | 图 | 每 sandbox 的 phase 时间线(resume/exec/pause),内嵌 PNG;大 fleet 自动缩小行高 |
+| Snapshot sizes | 每 pause 一行 | logical/disk/inherited/cumulative MiB + generations/files;附折图。仅 `SnapshotSizeCapable`(aenv) |
+
+#### Step detail 列(20 列,秒)
+
+子段紧贴其父总量,使和不变式可在表内直接验证:
+`resume_sec == resume_queue_wait_sec + resume_api_sec + resume_ready_wait_sec`,
+`pause_sec == pause_queue_wait_sec + pause_api_sec`。
+
+| 列 | 含义 |
+|----|------|
+| `trajectory_id` | 该 step 所属轨迹的 instance_id |
+| `sandbox_index` | 执行沙箱在 fleet 内的下标(0..N-1),非后端 sandbox_id |
+| `round_id` | round_robin 轮次号;fixed/trajectory 模式为空 |
+| `step_index` | 轨迹内 step 序号(0-based) |
+| `action_type` | `shell`/`bash`/`str_replace_editor`/`submit`/`finish`/`done` |
+| `slice_failed` | runner 合成的失败 slice(异常/stop_on_error);True 时下面时长列全 0 |
+| `resume_sec` | resume 总时长 = queue + api + ready_wait |
+| `resume_queue_wait_sec` | QPS 限流器排队等待(resume) |
+| `resume_api_sec` | 纯 resume API 调用耗时 |
+| `resume_ready_wait_sec` | resume 后的就绪探测等待(lifecycle/trajectory 模式;exec_only 为 0) |
+| `exec_sec` | 纯 `provider.exec()` 墙钟耗时(= Per-step timings 的 latency) |
+| `pause_sec` | pause 总时长 = queue + api |
+| `pause_queue_wait_sec` | QPS 限流器排队等待(pause) |
+| `pause_api_sec` | 纯 pause API 调用耗时 |
+| `slice_total_sec` | resume + exec + pause;失败 slice 为 0(被排除出百分位计算) |
+| `interaction_total_sec` | 一次交互的完整预算 = resume + exec + pause + delay + natural_delay + capacity_wait(≥ slice_total) |
+| `slot_contention_wait_sec` | 获取 running slot 的竞争等待(admission) |
+| `running_slot_held_sec` | running slot 持有总时长(acquire→release) |
+| `exit_code` | `provider.exec()` 退出码 |
+| `timed_out` | 是否命中超时退出码 |
+
+#### Trajectory summary 列(17 列,秒)
+
+每条轨迹(instance)一行,把池化百分位按实例拆开,便于定位是哪条轨迹拖慢了 p99。
+
+`trajectory_id` / `n_steps` / `exec_p50_s`·`exec_p95_s`·`exec_p99_s` /
+`resume_p50_s`·`resume_p95_s`·`resume_p99_s` / `pause_p50_s`·`pause_p95_s`·`pause_p99_s` /
+`slot_wait_p50_s`·`slot_wait_p95_s`·`slot_wait_p99_s` / `slice_p50_s`·`slice_p95_s`·`slice_p99_s`。
+
+> 更细的 per-step queue/api/ready_wait 子段见 `Step detail`;per-second 并发状态见
+> `Concurrency states`;snapshot 内存见 `Snapshot sizes`。host 级系统资源(CPU/内存/NUMA)
+> 在独立的 vm_monitor `analysis_report.xlsx`(`monitor.merge_report: false` 时)或合并进
+> 本工作簿的 `VM_Stats`/`NUMA_Overview`/`DevKit_TopDown` sheet(`merge_report: true` 时)。

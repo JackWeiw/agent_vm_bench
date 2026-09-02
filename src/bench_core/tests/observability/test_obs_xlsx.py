@@ -422,11 +422,17 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
             "action_type": "shell",
             "slice_failed": False,
             "resume_sec": 0.1,
+            "resume_queue_wait_sec": 0.02,
+            "resume_api_sec": 0.05,
+            "resume_ready_wait_sec": 0.03,
             "exec_sec": 0.5,
             "pause_sec": 0.2,
+            "pause_queue_wait_sec": 0.04,
+            "pause_api_sec": 0.16,
             "slice_total_sec": 0.8,
             "interaction_total_sec": 0.8,
             "slot_contention_wait_sec": 0.0,
+            "running_slot_held_sec": 0.7,
             "exit_code": 0,
             "timed_out": False,
         }
@@ -441,11 +447,17 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
             "action_type": "edit",
             "slice_failed": False,
             "resume_sec": 0.1,
+            "resume_queue_wait_sec": 0.02,
+            "resume_api_sec": 0.05,
+            "resume_ready_wait_sec": 0.03,
             "exec_sec": 0.4,
             "pause_sec": 0.2,
+            "pause_queue_wait_sec": 0.04,
+            "pause_api_sec": 0.16,
             "slice_total_sec": 0.7,
             "interaction_total_sec": 0.7,
             "slot_contention_wait_sec": 0.0,
+            "running_slot_held_sec": 0.6,
             "exit_code": 0,
             "timed_out": False,
         }
@@ -461,11 +473,17 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
             "action_type": "shell",
             "slice_failed": True,
             "resume_sec": 0.0,
+            "resume_queue_wait_sec": 0.0,
+            "resume_api_sec": 0.0,
+            "resume_ready_wait_sec": 0.0,
             "exec_sec": 0.0,
             "pause_sec": 0.0,
+            "pause_queue_wait_sec": 0.0,
+            "pause_api_sec": 0.0,
             "slice_total_sec": 0.0,
             "interaction_total_sec": 0.0,
             "slot_contention_wait_sec": 0.0,
+            "running_slot_held_sec": 0.0,
             "exit_code": 1,
             "timed_out": True,
         }
@@ -488,6 +506,14 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
     assert "trajectory_id" in headers
     assert "exec_sec" in headers
     assert "slice_failed" in headers
+    # sub-decomposition columns (already emitted by the runner into the series)
+    # are surfaced so the sum invariants are inspectable in the sheet itself.
+    assert "resume_queue_wait_sec" in headers
+    assert "resume_api_sec" in headers
+    assert "resume_ready_wait_sec" in headers
+    assert "pause_queue_wait_sec" in headers
+    assert "pause_api_sec" in headers
+    assert "running_slot_held_sec" in headers
     # header + 3 data rows (the snapshot_size event is dropped)
     assert ws.max_row == 4
     # sorted: traj-a step0, traj-a step1, traj-b step0
@@ -503,6 +529,18 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
     timed_col = headers.index("timed_out") + 1
     assert ws.cell(2, failed_col).value is True
     assert ws.cell(2, timed_col).value is True
+    # sum invariant on the success row: resume_sec == queue + api + ready_wait
+    # (rounded to 3 dp), pause_sec == queue + api. Guards against column-order
+    # drift silently breaking the parent/child relationship.
+    rsm = ws.cell(3, headers.index("resume_sec") + 1).value
+    rq = ws.cell(3, headers.index("resume_queue_wait_sec") + 1).value
+    ra = ws.cell(3, headers.index("resume_api_sec") + 1).value
+    rr = ws.cell(3, headers.index("resume_ready_wait_sec") + 1).value
+    assert rsm is not None and round(rq + ra + rr, 3) == rsm
+    psm = ws.cell(3, headers.index("pause_sec") + 1).value
+    pq = ws.cell(3, headers.index("pause_queue_wait_sec") + 1).value
+    pa = ws.cell(3, headers.index("pause_api_sec") + 1).value
+    assert psm is not None and round(pq + pa, 3) == psm
     # frozen header + autofilter on the data range
     assert ws.freeze_panes == "A2"
     assert ws.auto_filter.ref is not None
@@ -522,3 +560,65 @@ def test_step_detail_sheet_empty_without_series(tmp_path):
     ws = openpyxl.load_workbook(tmp_path / "o.xlsx")["Step detail"]
     assert ws.max_row == 1  # header only
     assert ws.cell(1, 1).value == "trajectory_id"
+
+
+def test_trajectory_summary_breaks_down_pause_resume_wait_per_instance(tmp_path):
+    """Trajectory summary: per-instance percentiles for resume/pause/slot_wait
+    alongside exec/slice, so each trajectory's lifecycle overhead is visible
+    per-instance, not just pooled across the fleet."""
+    from unittest.mock import MagicMock
+
+    from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
+
+    sp = tmp_path / "s.jsonl"
+    w = LifecycleSeriesWriter(sp)
+    # Two trajectories; resume/pause/wait values differ so percentiles are
+    # distinguishable per instance.
+    for tid, resume, pause, slot_wait in (("traj-a", 0.10, 0.20, 0.01), ("traj-b", 0.50, 0.60, 0.05)):
+        for i in range(3):
+            w.write(
+                {
+                    "event": "step",
+                    "sandbox_index": i,
+                    "trajectory_id": tid,
+                    "step_index": i,
+                    "exec_sec": 0.4,
+                    "resume_sec": resume,
+                    "pause_sec": pause,
+                    "slot_contention_wait_sec": slot_wait,
+                    "slice_total_sec": resume + 0.4 + pause,
+                }
+            )
+    w.close()
+
+    obs = MagicMock()
+    obs.config.replay_mode = "lifecycle"
+    r = XlsxReportRenderer(obs, series_path=sp)
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    r._sheet_trajectory_summary(wb)
+    wb.save(tmp_path / "o.xlsx")
+    ws = openpyxl.load_workbook(tmp_path / "o.xlsx")["Trajectory summary"]
+
+    headers = [c.value for c in ws[1]]
+    assert "trajectory_id" in headers
+    assert "n_steps" in headers
+    # the new per-instance lifecycle/wait segments are present
+    assert "resume_p50_s" in headers
+    assert "pause_p50_s" in headers
+    assert "slot_wait_p50_s" in headers
+    assert "slice_p50_s" in headers
+    # one row per trajectory (a, b), header + 2 rows
+    assert ws.max_row == 3
+    traj_col = headers.index("trajectory_id") + 1
+    assert ws.cell(2, traj_col).value == "traj-a"
+    assert ws.cell(3, traj_col).value == "traj-b"
+    # traj-a resume (0.10) < traj-b resume (0.50) -- per-instance separation
+    rp = headers.index("resume_p50_s") + 1
+    assert ws.cell(2, rp).value == 0.1
+    assert ws.cell(3, rp).value == 0.5
+    # n_steps carried through
+    n_col = headers.index("n_steps") + 1
+    assert ws.cell(2, n_col).value == 3
