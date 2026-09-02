@@ -198,6 +198,8 @@ def test_snapshot_has_replay_fields():
     assert snap.replay_success == 0
     assert snap.replay_avg_latency == 0.0
     assert snap.replay_p99_latency == 0.0
+    assert snap.replay_traj_done == 0
+    assert snap.replay_total_trajs == 0
 
 
 def test_bench_sandbox_lifecycle_paused_default_false():

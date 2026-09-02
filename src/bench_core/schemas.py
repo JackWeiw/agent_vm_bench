@@ -680,6 +680,11 @@ class Snapshot:
     replay_success: int = 0
     replay_avg_latency: float = 0.0
     replay_p99_latency: float = 0.0
+    # Trajectory-level progress: completions across the fleet vs the one-pass
+    # target (pool_size * fleet). done may exceed total once sandboxes cycle
+    # past their first pool pass -- >1.0 means "more than one full pass done".
+    replay_traj_done: int = 0
+    replay_total_trajs: int = 0
     # Round comparison fields
     round_total: int = 0
     round_success: int = 0

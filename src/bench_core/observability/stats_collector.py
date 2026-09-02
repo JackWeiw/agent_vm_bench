@@ -40,6 +40,27 @@ logger = logging.getLogger(__name__)
 # pathologically-fast real slices.
 MIN_SLICE_SEC = 0.001
 
+
+def replay_pool_size(config: KernelConfig) -> int:
+    """Distinct-trajectory count in the replay pool, 0 if unresolvable.
+
+    ``load_pool`` is itself module-cached, so this is O(1) after the first
+    runner-thread call and shares one immutable tuple across the fleet. Used
+    by both the live snapshot (one-pass progress denominator) and the final
+    report's "One-pass Target" line. Returns 0 for non-replay workflows or
+    when the pool cannot be loaded (e.g. Mock configs in unit tests).
+    """
+    if config.workflow_type != "replay":
+        return 0
+    try:
+        from bench_core.payload.replay_payload import load_pool
+
+        return len(load_pool(config))
+    except Exception:
+        logger.debug("replay pool size unavailable", exc_info=True)
+        return 0
+
+
 # Replay lifecycle list accessors snapshotted per round so the per-round
 # overhead table can slice each sandbox's lists between round boundaries.
 # resume + pause over slice = lifecycle overhead; the three lists are
@@ -492,6 +513,11 @@ class ReportFormatter:
         lines.append(f"  {'Failed:':<24}{total_failed} (timeout: {total_timeout})")
         lines.append(f"  {'Success Rate:':<24}{total_success / max(1, total_tasks) * 100:.1f}%")
         lines.append(f"  {'Trajectory Completions:':<24}{completions}")
+        total_trajs = replay_pool_size(self.config) * len(self.sandbox_states)
+        if total_trajs:
+            lines.append(
+                f"  {'One-pass Target:':<24}{total_trajs} (pool {replay_pool_size(self.config)} x fleet {len(self.sandbox_states)})"
+            )
         orphan_skipped = sum(s.replay_metrics.orphan_skip_count for s in self.sandbox_states.values())
         if orphan_skipped:
             lines.append(f"  {'Orphan Skipped:':<24}{orphan_skipped}")
@@ -1312,6 +1338,8 @@ class StatsCollector:
             all_latencies = [
                 latency for state in self.sandbox_states.values() for latency in state.replay_metrics.latencies[-10:]
             ]
+            traj_done = sum(s.replay_metrics.trajectory_completions for s in self.sandbox_states.values())
+            total_trajs = replay_pool_size(self.config) * len(self.sandbox_states)
             snapshot = Snapshot(
                 timestamp=now,
                 elapsed=elapsed,
@@ -1323,6 +1351,8 @@ class StatsCollector:
                 replay_success=task_success,
                 replay_avg_latency=statistics.mean(all_latencies) if all_latencies else 0.0,
                 replay_p99_latency=calc_p99(all_latencies),
+                replay_traj_done=traj_done,
+                replay_total_trajs=total_trajs,
                 round_total=round_total,
                 round_success=round_success,
             )
@@ -1363,6 +1393,7 @@ class StatsCollector:
         elif self.config.workflow_type == "replay":
             logger.info(
                 f"  Replay:    {snapshot.replay_success:3d}/{snapshot.replay_total:3d}  "
+                f"traj={snapshot.replay_traj_done}/{snapshot.replay_total_trajs}  "
                 f"avg={snapshot.replay_avg_latency:.2f}s  p99={snapshot.replay_p99_latency:.2f}s"
             )
         else:
