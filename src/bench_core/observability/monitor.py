@@ -20,14 +20,6 @@ logger = logging.getLogger(__name__)
 
 _VM_MONITOR_BIN = "vm-monitor"
 
-# Grace window for vm_monitor's post-xlsx work. The CLI order is
-# monitor -> CSV -> xlsx -> SVG -> exit 0, so the analysis_report.xlsx
-# appears BEFORE the SVG time-curve export. stop() must let the subprocess
-# finish SVG (and exit on its own) after the xlsx lands, otherwise every SVG
-# file is dropped. SVG export is fast (string-build over the histories);
-# 60 s is generous even for long high-frequency runs.
-_SVG_EXPORT_GRACE_SEC = 60
-
 
 @dataclass
 class MonitorConfig:
@@ -195,6 +187,11 @@ class MonitorController:
 
         Does NOT merge -- the obs workbook does not exist yet at this point in
         run_benchmark. Call ``merge_into`` after the obs xlsx is rendered.
+
+        The vm_monitor CLI writes its artifacts in order CSV -> SVG -> xlsx, so
+        the xlsx is the LAST artifact: its appearance means every file (CSV,
+        SVG, xlsx) is already written and the subprocess is essentially done.
+        Reaping at xlsx-appearance is therefore safe -- nothing is dropped.
         """
         if not self._started:
             return []
@@ -208,21 +205,7 @@ class MonitorController:
                 self.report_xlsx = xlsx
                 break
             time.sleep(1)
-        # The xlsx report appears BEFORE vm_monitor's SVG time-curve export
-        # step (CLI order: monitor -> CSV -> xlsx -> SVG -> exit 0). Once the
-        # xlsx is here, let the subprocess finish SVG + final print and exit 0
-        # on its own; terminating at xlsx-appearance drops every SVG file.
-        # Only the grace-window overrun, or no-xlsx (overdue/hung), is reaped.
-        if self.report_xlsx is not None and self.proc.poll() is None:
-            try:
-                self.proc.wait(timeout=_SVG_EXPORT_GRACE_SEC)
-            except subprocess.TimeoutExpired:
-                logger.warning(
-                    "vm_monitor did not finish SVG export within %ss after the xlsx report; terminating",
-                    _SVG_EXPORT_GRACE_SEC,
-                )
-        # Reap if still running (overdue before xlsx, or hung after the SVG grace).
-        if self.proc.poll() is None:
+        if self.proc.poll() is None:  # still running -> overdue
             self.proc.terminate()
             try:
                 self.proc.wait(timeout=5)

@@ -211,15 +211,21 @@ def main():
         capture_results = capture.get_results()
         print_capture_summary(capture_results, log_dir, m.target_numa_nodes)
 
-    # Export to Excel (if pandas available)
-    if PANDAS_AVAILABLE:
-        excel_file = os.path.join(log_dir, "analysis_report.xlsx")
-        export_to_excel(m, log_dir, m.target_numa_nodes, excel_file, capture_results)
-
-    # Export dark-themed SVG time-curve reports
+    # Export dark-themed SVG time-curve reports FIRST. The xlsx report must be
+    # the LAST artifact written: orchestrators (bench-core MonitorController)
+    # poll for analysis_report.xlsx as the "all artifacts written" signal and
+    # reap the subprocess the moment it appears. If SVG ran after xlsx, that
+    # reap would drop every SVG file.
     if not args.no_svg:
         svg_files = export_svg_reports(m, log_dir)
         if svg_files:
             print(f"[OK] SVG time-curve reports: {', '.join(os.path.basename(p) for p in svg_files)}")
+
+    # Export to Excel (if pandas available) -- LAST so its appearance signals
+    # that CSV + SVG + xlsx are all written and the subprocess is essentially
+    # done (safe to reap).
+    if PANDAS_AVAILABLE:
+        excel_file = os.path.join(log_dir, "analysis_report.xlsx")
+        export_to_excel(m, log_dir, m.target_numa_nodes, excel_file, capture_results)
 
     print(f"\nComplete! All outputs saved to: {log_dir}/")

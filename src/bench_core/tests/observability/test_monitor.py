@@ -234,56 +234,6 @@ def test_stop_noop_when_not_started():
     assert mc.stop() == []
 
 
-class _SvgFinishingProc:
-    """Realistic fake: the xlsx is already written, and the subprocess exits 0
-    on its own when waited on (it "finishes SVG export"). Models the real CLI
-    order monitor -> CSV -> xlsx -> SVG -> exit 0."""
-
-    def __init__(self):
-        self.returncode = None
-        self.terminated = False
-        self.killed = False
-
-    def poll(self):
-        return self.returncode
-
-    def wait(self, timeout=None):
-        # process finishes its post-xlsx work (SVG) and exits 0 on its own
-        self.returncode = 0
-        return 0
-
-    def terminate(self):
-        self.terminated = True
-        self.returncode = -15
-
-    def kill(self):
-        self.killed = True
-        self.returncode = -9
-
-
-def test_stop_lets_subprocess_finish_svg_after_xlsx(monkeypatch, tmp_path):
-    """Regression: stop() used to terminate vm_monitor the instant the xlsx
-    report appeared, killing the SVG time-curve export that runs AFTER xlsx in
-    the CLI (monitor -> CSV -> xlsx -> SVG -> exit 0). Now it waits for the
-    process to exit on its own so SVG files are produced."""
-    proc = _SvgFinishingProc()
-    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
-    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: proc)
-    mc = MonitorController(
-        _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path), report_timeout=2),
-        _StubProvider(vmm_type="firecracker"),
-    )
-    mc.start()
-    # xlsx already produced by the (fake) vm_monitor; SVG is about to run
-    (tmp_path / "analysis_report.xlsx").write_text("x")
-    mc.stop()
-    assert mc.report_xlsx == tmp_path / "analysis_report.xlsx"
-    # the process exited 0 on its own -> terminate must NOT have been called
-    assert proc.terminated is False
-    assert proc.killed is False
-    assert proc.returncode == 0
-
-
 def test_stop_handles_dead_subprocess(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
     proc = _FakeProc()
