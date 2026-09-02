@@ -16,7 +16,7 @@ def test_monitor_config_defaults_when_absent():
     assert cfg.monitor.vmm == "auto"
     assert cfg.monitor.capture == "auto"
     assert cfg.monitor.interval == 3
-    assert cfg.monitor.merge_report is True
+    assert cfg.monitor.merge_report is False
     assert cfg.monitor.report_timeout == 300
     assert cfg.monitor.log_dir is None
     assert cfg.monitor.disks == "all"
@@ -266,7 +266,8 @@ def test_merge_source_returns_report_when_enabled(monkeypatch, tmp_path):
     src = tmp_path / "analysis_report.xlsx"
     _make_src_xlsx(src)
     mc = MonitorController(
-        _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path)), _StubProvider(vmm_type="firecracker")
+        _cfg(merge_report=True, stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path)),
+        _StubProvider(vmm_type="firecracker"),
     )
     mc.start()
     mc.report_xlsx = src  # pretend stop() found it
@@ -292,7 +293,10 @@ def test_merge_source_none_when_disabled(monkeypatch, tmp_path):
 
 
 def test_merge_source_none_when_missing(monkeypatch, tmp_path, caplog):
-    mc = MonitorController(_cfg(), _StubProvider(vmm_type="firecracker"))
+    mc = MonitorController(
+        _cfg(merge_report=True, stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path)),
+        _StubProvider(vmm_type="firecracker"),
+    )
     mc.report_xlsx = tmp_path / "does-not-exist.xlsx"
     # must not raise; warns and returns None
     assert mc.merge_source() is None

@@ -98,6 +98,7 @@ class TestXlsxReportRenderer:
             "Admission & QPS",
             "Throughput & overcommit",
             "Trajectory summary",
+            "Step detail",
             "Retry impact",
         ):
             assert sheet in names, f"missing sheet {sheet}; got {names}"
@@ -399,3 +400,125 @@ def test_snapshot_sizes_sheet(tmp_path):
     ws = openpyxl.load_workbook(tmp_path / "o.xlsx")["Snapshot sizes"]
     assert ws.max_row >= 2
     assert len(ws._charts) >= 1
+
+
+def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
+    """Step detail: one row per step event, broken down by trajectory_id,
+    sorted by (trajectory, sandbox, step), with a frozen header + autofilter."""
+    from unittest.mock import MagicMock
+
+    from bench_core.lifecycle_series import LifecycleSeriesWriter
+
+    sp = tmp_path / "s.jsonl"
+    w = LifecycleSeriesWriter(sp)
+    # Two trajectories, two sandboxes. Written out of order to exercise the sort.
+    w.write(
+        {
+            "event": "step",
+            "sandbox_index": 1,
+            "trajectory_id": "traj-b",
+            "round_id": 0,
+            "step_index": 0,
+            "action_type": "shell",
+            "slice_failed": False,
+            "resume_sec": 0.1,
+            "exec_sec": 0.5,
+            "pause_sec": 0.2,
+            "slice_total_sec": 0.8,
+            "interaction_total_sec": 0.8,
+            "slot_contention_wait_sec": 0.0,
+            "exit_code": 0,
+            "timed_out": False,
+        }
+    )
+    w.write(
+        {
+            "event": "step",
+            "sandbox_index": 0,
+            "trajectory_id": "traj-a",
+            "round_id": 0,
+            "step_index": 1,
+            "action_type": "edit",
+            "slice_failed": False,
+            "resume_sec": 0.1,
+            "exec_sec": 0.4,
+            "pause_sec": 0.2,
+            "slice_total_sec": 0.7,
+            "interaction_total_sec": 0.7,
+            "slot_contention_wait_sec": 0.0,
+            "exit_code": 0,
+            "timed_out": False,
+        }
+    )
+    # a failed step (slice_failed=True) is still emitted as a row
+    w.write(
+        {
+            "event": "step",
+            "sandbox_index": 0,
+            "trajectory_id": "traj-a",
+            "round_id": 0,
+            "step_index": 0,
+            "action_type": "shell",
+            "slice_failed": True,
+            "resume_sec": 0.0,
+            "exec_sec": 0.0,
+            "pause_sec": 0.0,
+            "slice_total_sec": 0.0,
+            "interaction_total_sec": 0.0,
+            "slot_contention_wait_sec": 0.0,
+            "exit_code": 1,
+            "timed_out": True,
+        }
+    )
+    # a non-step event is ignored
+    w.write({"event": "snapshot_size", "sandbox_index": 0})
+    w.close()
+
+    r = XlsxReportRenderer(MagicMock(), series_path=sp)
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    r._sheet_step_detail(wb)
+    out = tmp_path / "o.xlsx"
+    wb.save(out)
+    ws = openpyxl.load_workbook(out)["Step detail"]
+
+    headers = [c.value for c in ws[1]]
+    assert "trajectory_id" in headers
+    assert "exec_sec" in headers
+    assert "slice_failed" in headers
+    # header + 3 data rows (the snapshot_size event is dropped)
+    assert ws.max_row == 4
+    # sorted: traj-a step0, traj-a step1, traj-b step0
+    traj_col = headers.index("trajectory_id") + 1
+    step_col = headers.index("step_index") + 1
+    assert ws.cell(2, traj_col).value == "traj-a"
+    assert ws.cell(2, step_col).value == 0
+    assert ws.cell(3, traj_col).value == "traj-a"
+    assert ws.cell(3, step_col).value == 1
+    assert ws.cell(4, traj_col).value == "traj-b"
+    # the failed step row carries slice_failed=True and timed_out=True
+    failed_col = headers.index("slice_failed") + 1
+    timed_col = headers.index("timed_out") + 1
+    assert ws.cell(2, failed_col).value is True
+    assert ws.cell(2, timed_col).value is True
+    # frozen header + autofilter on the data range
+    assert ws.freeze_panes == "A2"
+    assert ws.auto_filter.ref is not None
+
+
+def test_step_detail_sheet_empty_without_series(tmp_path):
+    """No series file -> Step detail sheet exists with a header only (no crash)."""
+    from unittest.mock import MagicMock
+
+    from openpyxl import Workbook
+
+    r = XlsxReportRenderer(MagicMock(), series_path=None)
+    wb = Workbook()
+    wb.remove(wb.active)
+    r._sheet_step_detail(wb)
+    wb.save(tmp_path / "o.xlsx")
+    ws = openpyxl.load_workbook(tmp_path / "o.xlsx")["Step detail"]
+    assert ws.max_row == 1  # header only
+    assert ws.cell(1, 1).value == "trajectory_id"

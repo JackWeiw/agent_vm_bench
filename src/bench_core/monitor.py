@@ -33,7 +33,10 @@ class MonitorConfig:
     disks: str = "all"  # block devices for I/O, comma-separated (sda,nvme0n1); "all" auto-discovers
     stress_file: str = "/dev/shm/bench_core_monitor.lock"
     log_dir: str | None = None  # None -> <report.output_dir>/vm_monitor
-    merge_report: bool = True  # replay xlsx: copy key host sheets into obs workbook
+    # False = keep vm_monitor's system-resource report (analysis_report.xlsx) as a
+    # standalone file; the replay obs workbook stays a trajectory-metrics-only file.
+    # True = copy VM_Stats/NUMA_Overview/DevKit_TopDown into the obs workbook.
+    merge_report: bool = False
     report_timeout: int = 300  # max wait for analysis_report.xlsx (seconds)
 
     @classmethod
@@ -49,7 +52,7 @@ class MonitorConfig:
             disks=str(raw.get("disks", "all")),
             stress_file=str(raw.get("stress_file", "/dev/shm/bench_core_monitor.lock")),
             log_dir=raw.get("log_dir"),
-            merge_report=bool(raw.get("merge_report", True)),
+            merge_report=bool(raw.get("merge_report", False)),
             report_timeout=int(raw.get("report_timeout", 300)),
         )
 

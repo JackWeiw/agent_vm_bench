@@ -86,6 +86,16 @@ def _pcts_row(label: str, values: list[float]) -> list:
     return [label, len(values), s["min"], s["max"], s["avg"], s["p50"], s["p95"], s["p99"]]
 
 
+def _round_or_none(v, ndigits: int = 3):
+    """Round a series float to ndigits, preserving None/missing as None."""
+    if v is None:
+        return None
+    try:
+        return round(float(v), ndigits)
+    except (TypeError, ValueError):
+        return None
+
+
 class XlsxReportRenderer:
     """Render a ReplayObservability model to a multi-sheet xlsx workbook."""
 
@@ -100,7 +110,7 @@ class XlsxReportRenderer:
         self.host_xlsx = host_xlsx
 
     def render(self, path: str | Path) -> None:
-        """Write the workbook to ``path`` (overwrites). Creates all 10 sheets."""
+        """Write the workbook to ``path`` (overwrites). Creates all 11 sheets."""
         wb = Workbook()
         # openpyxl seeds one default sheet; remove it after building named sheets.
         wb.remove(wb.active)
@@ -110,6 +120,7 @@ class XlsxReportRenderer:
         self._sheet_admission_qps(wb)
         self._sheet_throughput_overcommit(wb)
         self._sheet_trajectory_summary(wb)
+        self._sheet_step_detail(wb)
         self._sheet_retry_impact(wb)
         self._sheet_concurrency_states(wb)
         gantt_png = Path(path).parent / f"{Path(path).stem.split('_obs')[0]}_gantt.png"
@@ -338,6 +349,70 @@ class XlsxReportRenderer:
             rows = [_pcts_row("create_sec", [v for s in obs.states.values() for v in s.replay_metrics.create_secs])]
             rows.append(_pcts_row("kill_sec", [v for s in obs.states.values() for v in s.replay_metrics.kill_secs]))
             _write_table(ws, ["segment", "n", "min", "max", "avg", "p50", "p95", "p99"], rows)
+
+    def _sheet_step_detail(self, wb: Workbook) -> None:
+        """Per-trajectory per-step raw rows -- the detail behind the percentile tables.
+
+        The Per-step timings sheet pools every step (no trajectory_id); the
+        Trajectory summary sheet shows per-trajectory percentiles only. This sheet
+        is the missing middle: one row per recorded step event (success and
+        slice_failed), broken down by trajectory, so each trajectory's per-step
+        resume/exec/pause/slice timings are inspectable directly. Sourced from the
+        series JSONL; empty when there is no series file (e.g. a minimal install).
+        """
+        ws = wb.create_sheet("Step detail")
+        headers = [
+            "trajectory_id",
+            "sandbox_index",
+            "round_id",
+            "step_index",
+            "action_type",
+            "slice_failed",
+            "resume_sec",
+            "exec_sec",
+            "pause_sec",
+            "slice_total_sec",
+            "interaction_total_sec",
+            "slot_contention_wait_sec",
+            "exit_code",
+            "timed_out",
+        ]
+        if self.series_path is None or not Path(self.series_path).exists():
+            _write_table(ws, headers, [])
+            return
+        from bench_core.lifecycle_series import load_events
+
+        rows: list[list] = []
+        for ev in load_events(Path(self.series_path)):
+            if ev.get("event") != "step":
+                continue
+            rows.append(
+                [
+                    ev.get("trajectory_id") or "",
+                    ev.get("sandbox_index"),
+                    ev.get("round_id"),
+                    ev.get("step_index"),
+                    ev.get("action_type") or "",
+                    bool(ev.get("slice_failed")),
+                    _round_or_none(ev.get("resume_sec")),
+                    _round_or_none(ev.get("exec_sec")),
+                    _round_or_none(ev.get("pause_sec")),
+                    _round_or_none(ev.get("slice_total_sec")),
+                    _round_or_none(ev.get("interaction_total_sec")),
+                    _round_or_none(ev.get("slot_contention_wait_sec")),
+                    ev.get("exit_code"),
+                    bool(ev.get("timed_out")),
+                ]
+            )
+        # Sort by trajectory, then sandbox, then step -- so each trajectory's
+        # steps read top-to-bottom in execution order.
+        rows.sort(key=lambda r: (str(r[0]), r[1] if r[1] is not None else 0, r[3] if r[3] is not None else 0))
+        _write_table(ws, headers, rows)
+        if rows:
+            # Freeze the header + enable autofilter so the user can pivot by
+            # trajectory / action_type / exit_code without re-sorting in Excel.
+            ws.freeze_panes = "A2"
+            ws.auto_filter.ref = ws.dimensions
 
     def _sheet_retry_impact(self, wb: Workbook) -> None:
         ws = wb.create_sheet("Retry impact")

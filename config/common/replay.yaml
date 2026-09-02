@@ -135,5 +135,9 @@ monitor:
                          # or comma-separated, e.g. "sda,nvme0n1" to monitor specific disks.
   stress_file: /dev/shm/bench_core_monitor.lock
   log_dir: null          # null = <report.output_dir>/vm_monitor
-  merge_report: true     # replay xlsx: copy VM_Stats/NUMA_Overview/DevKit_TopDown into obs workbook
+  # False (default): two separate files -- vm_monitor's system-resource report
+  # (analysis_report.xlsx) stands alone, and the replay obs workbook
+  # (<prefix>_obs.xlsx) carries trajectory/replay metrics only. Set true to copy
+  # VM_Stats/NUMA_Overview/DevKit_TopDown into the obs workbook instead.
+  merge_report: false
   report_timeout: 300
