@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from bench_core.config import KernelConfig
-from bench_core.observability import ReplayObservability
+from bench_core.observability.replay_obs import ReplayObservability
 from bench_core.schemas import BenchSandbox, ReplayMetrics
 from env_provider import SandboxInstance
 

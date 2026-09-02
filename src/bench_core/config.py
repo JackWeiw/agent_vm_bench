@@ -9,7 +9,7 @@ reads only the host-agnostic subset.
 The coding/document fields are host-agnostic: any provider whose sandbox can
 run the project/toolchain can execute them, so they belong to the kernel, not
 to e2b. The per-language profile machinery, replacement pairs, and verify
-templates live in :mod:`bench_core.coding_payload`; the kernel carries the
+templates live in :mod:`bench_core.payload.coding_payload`; the kernel carries the
 scalar fields plus the resolved replacement-pair list
 (``coding_source_files``), which :meth:`__post_init__` defaults from
 ``coding_language`` when not supplied explicitly.
@@ -19,8 +19,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List
 
-from bench_core.coding_payload import CODING_LANGUAGE_DEFAULT_SOURCE_FILES, DEFAULT_CODING_SOURCE_FILES
-from bench_core.monitor import MonitorConfig
+from bench_core.payload.coding_payload import CODING_LANGUAGE_DEFAULT_SOURCE_FILES, DEFAULT_CODING_SOURCE_FILES
+from bench_core.observability.monitor import MonitorConfig
 
 # In-sandbox scene layout per document case kind. These paths live inside the
 # sandbox image (the document seed is baked in by the provider's prepare hook);
@@ -86,7 +86,7 @@ class KernelConfig:
     # --- coding (host-agnostic; provider supplies the sandbox that runs it) ---
     coding_project_dir: str = "/opt/coding-bench"
     coding_language: str = "ts"
-    # Replacement pairs to cycle through (see bench_core.coding_payload). When
+    # Replacement pairs to cycle through (see bench_core.payload.coding_payload). When
     # left None, __post_init__ resolves the language's default pair list, so
     # ``KernelConfig(coding_language="go")`` gets the hugo pairs automatically;
     # an explicit list is kept verbatim.

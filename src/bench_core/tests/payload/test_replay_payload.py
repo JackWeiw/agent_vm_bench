@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from bench_core.replay_payload import ReplayStep, Trajectory, classify_action, load_trajectory
+from bench_core.payload.replay_payload import ReplayStep, Trajectory, classify_action, load_trajectory
 
-FIXTURES = Path(__file__).parent / "fixtures" / "replay"
+FIXTURES = Path(__file__).parent.parent / "fixtures" / "replay"
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +92,7 @@ def test_load_trajectory_instance_id_from_file_wins():
 
 def test_load_trajectory_missing_instance_id_uses_filename_stem(tmp_path):
     import json
-    from bench_core.replay_payload import load_trajectory
+    from bench_core.payload.replay_payload import load_trajectory
 
     p = tmp_path / "_no_id.json"
     p.write_text(json.dumps({"environment": "main", "trajectory": [{"action": "ls", "delay_time": 1.0}]}))
@@ -106,7 +106,7 @@ def test_load_trajectory_missing_instance_id_uses_filename_stem(tmp_path):
 
 
 def test_find_trajectories_globs_extensions_and_sorts():
-    from bench_core.replay_payload import find_trajectories
+    from bench_core.payload.replay_payload import find_trajectories
 
     paths = find_trajectories(FIXTURES, "*")
     names = [p.name for p in paths]
@@ -120,7 +120,7 @@ def test_find_trajectories_globs_extensions_and_sorts():
 
 
 def test_find_trajectories_respects_glob():
-    from bench_core.replay_payload import find_trajectories
+    from bench_core.payload.replay_payload import find_trajectories
 
     paths = find_trajectories(FIXTURES, "*.replay.json")
     assert [p.name for p in paths] == ["with_terminal.replay.json"]
@@ -133,7 +133,7 @@ def test_find_trajectories_respects_glob():
 
 def test_load_pool_skips_corrupt_and_empty(caplog):
     import logging
-    from bench_core.replay_payload import Trajectory, load_pool, reset_pool_cache
+    from bench_core.payload.replay_payload import Trajectory, load_pool, reset_pool_cache
 
     class _Cfg:
         replay_trajectory_dir = str(FIXTURES)
@@ -151,7 +151,7 @@ def test_load_pool_skips_corrupt_and_empty(caplog):
 
 
 def test_load_pool_is_cached():
-    from bench_core.replay_payload import load_pool, reset_pool_cache
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
 
     class _Cfg:
         replay_trajectory_dir = str(FIXTURES)
@@ -199,7 +199,7 @@ def _write_traj(dir_: Path, name: str, instance_id: str) -> Path:
 def test_load_pool_attaches_template_from_manifest(tmp_path):
     import json
 
-    from bench_core.replay_payload import load_pool, reset_pool_cache
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
 
     traj_dir = tmp_path / "traj"
     _write_traj(traj_dir, "a.replay.json", "a")
@@ -218,7 +218,7 @@ def test_load_pool_missing_manifest_entry_is_none_with_warning(tmp_path, caplog)
     import json
     import logging
 
-    from bench_core.replay_payload import load_pool, reset_pool_cache
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
 
     traj_dir = tmp_path / "traj"
     _write_traj(traj_dir, "a.replay.json", "a")
@@ -233,7 +233,7 @@ def test_load_pool_missing_manifest_entry_is_none_with_warning(tmp_path, caplog)
 
 
 def test_load_pool_missing_manifest_file_raises(tmp_path):
-    from bench_core.replay_payload import load_pool, reset_pool_cache
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
 
     traj_dir = tmp_path / "traj"
     _write_traj(traj_dir, "a.replay.json", "a")
@@ -243,7 +243,7 @@ def test_load_pool_missing_manifest_file_raises(tmp_path):
 
 
 def test_load_pool_no_manifest_keeps_template_none(tmp_path):
-    from bench_core.replay_payload import load_pool, reset_pool_cache
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
 
     traj_dir = tmp_path / "traj"
     _write_traj(traj_dir, "a.replay.json", "a")
@@ -258,7 +258,7 @@ def test_load_pool_manifest_key_is_relpath_not_basename(tmp_path):
     one would collide under basename lookup; relpath keeps them distinct.
     """
     import json
-    from bench_core.replay_payload import load_pool, reset_pool_cache
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
 
     traj_dir = tmp_path / "traj"
     _write_traj(traj_dir, "a.replay.json", "flat_a")
@@ -278,7 +278,7 @@ def test_load_pool_manifest_key_is_relpath_not_basename(tmp_path):
 
 def test_load_pool_cache_invalidates_on_manifest_change(tmp_path):
     import json
-    from bench_core.replay_payload import load_pool, reset_pool_cache
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
 
     traj_dir = tmp_path / "traj"
     _write_traj(traj_dir, "a.replay.json", "a")
@@ -296,7 +296,7 @@ def test_load_pool_non_string_manifest_value_is_none_with_warning(tmp_path, capl
     import json
     import logging
 
-    from bench_core.replay_payload import load_pool, reset_pool_cache
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
 
     traj_dir = tmp_path / "traj"
     _write_traj(traj_dir, "a.replay.json", "a")

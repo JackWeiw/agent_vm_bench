@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from bench_core.config import KernelConfig
-from bench_core.monitor import MonitorConfig, MonitorController
+from bench_core.observability.monitor import MonitorConfig, MonitorController
 
 
 def test_monitor_config_defaults_when_absent():
@@ -78,7 +78,7 @@ def test_start_skips_when_no_vmm(caplog):
 
 
 def test_start_skips_when_binary_missing(monkeypatch, caplog):
-    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: None)
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: None)
     prov = _StubProvider(vmm_type="firecracker")
     mc = MonitorController(_cfg(), prov)
     mc.start()
@@ -87,7 +87,7 @@ def test_start_skips_when_binary_missing(monkeypatch, caplog):
 
 
 def test_command_construction(monkeypatch, tmp_path):
-    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
     prov = _StubProvider(vmm_type="firecracker")
     mc = MonitorController(_cfg(stress_file=str(tmp_path / "lock")), prov)
     cmd = mc._cmd
@@ -101,7 +101,7 @@ def test_command_construction(monkeypatch, tmp_path):
 
 
 def test_command_disks_override(monkeypatch, tmp_path):
-    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
     prov = _StubProvider(vmm_type="firecracker")
     mc = MonitorController(_cfg(disks="sda,nvme0n1", stress_file=str(tmp_path / "lock")), prov)
     cmd = mc._cmd
@@ -111,7 +111,7 @@ def test_command_disks_override(monkeypatch, tmp_path):
 
 
 def test_command_capture_false_omits_flags(monkeypatch, tmp_path):
-    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
     prov = _StubProvider(vmm_type="firecracker")
     mc = MonitorController(_cfg(capture="false", stress_file=str(tmp_path / "lock")), prov)
     assert "--enable-capture" not in mc._cmd
@@ -119,8 +119,8 @@ def test_command_capture_false_omits_flags(monkeypatch, tmp_path):
 
 
 def test_start_removes_stale_lock(monkeypatch, tmp_path, caplog):
-    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
-    monkeypatch.setattr("bench_core.monitor.subprocess.Popen", lambda *a, **kw: _FakeProc())
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: _FakeProc())
     lock = tmp_path / "lock"
     lock.touch()
     prov = _StubProvider(vmm_type="firecracker")
@@ -132,7 +132,7 @@ def test_start_removes_stale_lock(monkeypatch, tmp_path, caplog):
 
 
 def test_start_degrades_when_log_dir_unwritable(monkeypatch, tmp_path, caplog):
-    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
     # Create a regular file; using it as a parent dir makes mkdir() fail (FileExistsError is OSError).
     blocker = tmp_path / "blocker"
     blocker.write_text("not a dir")
@@ -164,8 +164,8 @@ class _FakeProc:
 
 
 def test_begin_end_stress_lifecycle(monkeypatch, tmp_path):
-    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
-    monkeypatch.setattr("bench_core.monitor.subprocess.Popen", lambda *a, **kw: _FakeProc())
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: _FakeProc())
     lock = tmp_path / "lock"
     mc = MonitorController(_cfg(stress_file=str(lock), log_dir=str(tmp_path)), _StubProvider(vmm_type="firecracker"))
     mc.start()
@@ -182,8 +182,8 @@ def test_begin_end_stress_lifecycle(monkeypatch, tmp_path):
 
 
 def test_end_stress_idempotent_when_no_lock(monkeypatch, tmp_path):
-    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
-    monkeypatch.setattr("bench_core.monitor.subprocess.Popen", lambda *a, **kw: _FakeProc())
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: _FakeProc())
     lock = tmp_path / "lock"
     mc = MonitorController(_cfg(stress_file=str(lock), log_dir=str(tmp_path)), _StubProvider(vmm_type="firecracker"))
     mc.start()
@@ -200,8 +200,8 @@ def test_begin_end_noop_when_not_started():
 
 
 def test_stop_collects_report_and_closes_handles(monkeypatch, tmp_path):
-    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
-    monkeypatch.setattr("bench_core.monitor.subprocess.Popen", lambda *a, **kw: _FakeProc())
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: _FakeProc())
     mc = MonitorController(
         _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path), report_timeout=2),
         _StubProvider(vmm_type="firecracker"),
@@ -216,9 +216,9 @@ def test_stop_collects_report_and_closes_handles(monkeypatch, tmp_path):
 
 
 def test_stop_kills_overdue_process(monkeypatch, tmp_path):
-    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
     proc = _FakeProc()
-    monkeypatch.setattr("bench_core.monitor.subprocess.Popen", lambda *a, **kw: proc)
+    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: proc)
     mc = MonitorController(
         _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path), report_timeout=1),
         _StubProvider(vmm_type="firecracker"),
@@ -235,10 +235,10 @@ def test_stop_noop_when_not_started():
 
 
 def test_stop_handles_dead_subprocess(monkeypatch, tmp_path, caplog):
-    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
     proc = _FakeProc()
     proc.returncode = 1  # already dead, no report
-    monkeypatch.setattr("bench_core.monitor.subprocess.Popen", lambda *a, **kw: proc)
+    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: proc)
     mc = MonitorController(
         _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path), report_timeout=2),
         _StubProvider(vmm_type="firecracker"),
@@ -263,7 +263,7 @@ def _make_src_xlsx(path):
 
 
 def test_merge_source_returns_report_when_enabled(monkeypatch, tmp_path):
-    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
     src = tmp_path / "analysis_report.xlsx"
     _make_src_xlsx(src)
     mc = MonitorController(
@@ -282,7 +282,7 @@ def test_merge_source_none_when_no_report(monkeypatch, tmp_path):
 
 
 def test_merge_source_none_when_disabled(monkeypatch, tmp_path):
-    monkeypatch.setattr("bench_core.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
     src = tmp_path / "analysis_report.xlsx"
     _make_src_xlsx(src)
     mc = MonitorController(

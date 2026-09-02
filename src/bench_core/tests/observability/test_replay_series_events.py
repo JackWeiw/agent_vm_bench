@@ -9,8 +9,8 @@ import pytest
 
 from bench_core.admission import Admission, QpsRateLimiter, RunningSlotScheduler, ShutdownInterrupted
 from bench_core.config import KernelConfig
-from bench_core.lifecycle_series import LifecycleSeriesWriter
-from bench_core.replay_payload import ReplayStep, Trajectory
+from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
+from bench_core.payload.replay_payload import ReplayStep, Trajectory
 from bench_core.schemas import BenchSandbox
 from bench_core.task_runner.replay import ReplayBaseRunner
 from env_provider import SandboxInstance

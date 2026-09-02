@@ -29,8 +29,8 @@ from dataclasses import dataclass
 
 from bench_core.admission import Admission, LaunchPacer, ShutdownInterrupted
 from bench_core.config import KernelConfig
-from bench_core.lifecycle_series import LifecycleSeriesWriter
-from bench_core.replay_payload import ReplayStep, Trajectory, load_pool
+from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
+from bench_core.payload.replay_payload import ReplayStep, Trajectory, load_pool
 from bench_core.schemas import BenchSandbox
 from bench_core.transients import is_transient_sandbox_error
 from env_provider import CommandResult, EnvironmentProvider, EphemeralCapable, SnapshotSizeCapable

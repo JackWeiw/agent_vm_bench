@@ -7,8 +7,8 @@ openpyxl = pytest.importorskip("openpyxl", reason="openpyxl is a core dep")
 from openpyxl import load_workbook  # noqa: E402
 
 from bench_core.config import KernelConfig  # noqa: E402
-from bench_core.observability import ReplayObservability  # noqa: E402
-from bench_core.obs_xlsx import XlsxReportRenderer  # noqa: E402
+from bench_core.observability.replay_obs import ReplayObservability  # noqa: E402
+from bench_core.observability.obs_xlsx import XlsxReportRenderer  # noqa: E402
 from bench_core.schemas import BenchSandbox, ReplayMetrics  # noqa: E402
 from env_provider import SandboxInstance  # noqa: E402
 
@@ -297,7 +297,7 @@ def test_per_step_linechart_references_all_data_rows(tmp_path):
 def test_concurrency_states_sheet_from_series(tmp_path):
     from unittest.mock import MagicMock
 
-    from bench_core.lifecycle_series import LifecycleSeriesWriter
+    from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 
     # write two step events spanning ~2 seconds
     sp = tmp_path / "s.jsonl"
@@ -338,7 +338,7 @@ def test_gantt_sheet_embeds_png(tmp_path):
     pytest.importorskip("matplotlib")
     from unittest.mock import MagicMock
 
-    from bench_core.lifecycle_series import LifecycleSeriesWriter
+    from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 
     sp = tmp_path / "s.jsonl"
     w = LifecycleSeriesWriter(sp)
@@ -370,7 +370,7 @@ def test_gantt_sheet_embeds_png(tmp_path):
 def test_snapshot_sizes_sheet(tmp_path):
     from unittest.mock import MagicMock
 
-    from bench_core.lifecycle_series import LifecycleSeriesWriter
+    from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 
     sp = tmp_path / "s.jsonl"
     w = LifecycleSeriesWriter(sp)
@@ -407,7 +407,7 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
     sorted by (trajectory, sandbox, step), with a frozen header + autofilter."""
     from unittest.mock import MagicMock
 
-    from bench_core.lifecycle_series import LifecycleSeriesWriter
+    from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 
     sp = tmp_path / "s.jsonl"
     w = LifecycleSeriesWriter(sp)

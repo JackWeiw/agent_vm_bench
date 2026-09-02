@@ -22,7 +22,7 @@ from openpyxl.styles import Font
 from bench_core.utils import calc_percentiles
 
 if TYPE_CHECKING:
-    from bench_core.observability import ReplayObservability
+    from bench_core.observability.replay_obs import ReplayObservability
 
 # Host-level vm_monitor sheets copied into the obs workbook during the single
 # render pass (cell values only). Kept here -- the renderer owns the merge -- so
@@ -294,7 +294,7 @@ class XlsxReportRenderer:
         # end-to-end resume+exec+pause.
         wrote_profile = False
         if self.series_path is not None and Path(self.series_path).exists():
-            from bench_core.lifecycle_series import load_events
+            from bench_core.observability.lifecycle_series import load_events
 
             exec_by_traj: dict[str, list[float]] = {}
             slice_by_traj: dict[str, list[float]] = {}
@@ -380,7 +380,7 @@ class XlsxReportRenderer:
         if self.series_path is None or not Path(self.series_path).exists():
             _write_table(ws, headers, [])
             return
-        from bench_core.lifecycle_series import load_events
+        from bench_core.observability.lifecycle_series import load_events
 
         rows: list[list] = []
         for ev in load_events(Path(self.series_path)):
@@ -432,8 +432,8 @@ class XlsxReportRenderer:
         if self.series_path is None or not Path(self.series_path).exists():
             _write_table(ws, headers, [])
             return
-        from bench_core.lifecycle_series import load_events
-        from bench_core.lifecycle_reconstruct import reconstruct_concurrency
+        from bench_core.observability.lifecycle_series import load_events
+        from bench_core.observability.lifecycle_reconstruct import reconstruct_concurrency
 
         bins = reconstruct_concurrency(load_events(Path(self.series_path)))
         rows = [[b["second"], b["pausing"], b["paused"], b["resuming"], b["exec"], b["active"]] for b in bins]
@@ -456,8 +456,8 @@ class XlsxReportRenderer:
             ws.append(["matplotlib not installed; install with 'pip install matplotlib'"])
             return
 
-        from bench_core.lifecycle_series import load_events
-        from bench_core.lifecycle_reconstruct import gantt_segments
+        from bench_core.observability.lifecycle_series import load_events
+        from bench_core.observability.lifecycle_reconstruct import gantt_segments
 
         rows = gantt_segments(load_events(Path(self.series_path)))
         if not rows:
@@ -514,8 +514,8 @@ class XlsxReportRenderer:
         if self.series_path is None or not Path(self.series_path).exists():
             _write_table(ws, headers, [])
             return
-        from bench_core.lifecycle_series import load_events
-        from bench_core.lifecycle_reconstruct import snapshot_rows
+        from bench_core.observability.lifecycle_series import load_events
+        from bench_core.observability.lifecycle_reconstruct import snapshot_rows
 
         rows = snapshot_rows(load_events(Path(self.series_path)))
         out = [

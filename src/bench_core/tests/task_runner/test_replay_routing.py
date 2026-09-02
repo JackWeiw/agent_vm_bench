@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 
 from bench_core.config import KernelConfig
-from bench_core.replay_payload import Trajectory, ReplayStep, reset_pool_cache
+from bench_core.payload.replay_payload import Trajectory, ReplayStep, reset_pool_cache
 from bench_core.schemas import BenchSandbox, ReplayMetrics
 from bench_core.task_runner.replay import ReplayTaskRunner, ReplayRoundRunner
 from env_provider import SandboxInstance
@@ -339,7 +339,7 @@ def test_replay_report_renders_orphan_skipped_line():
     ``replay_metrics.orphan_skip_count`` across all sandbox states and emit a
     conditional ``Orphan Skipped: N`` line after ``Trajectory Completions``.
     """
-    from bench_core.stats_collector import StatsCollector
+    from bench_core.observability.stats_collector import StatsCollector
 
     cfg = KernelConfig(workflow_type="replay", replay_delay_scale=0.0)
     state_a = BenchSandbox(id="a", index=0, workflow_type="replay")
@@ -363,7 +363,7 @@ def test_replay_report_renders_orphan_skipped_line():
 def test_replay_report_omits_orphan_skipped_when_zero():
     """No 'Orphan Skipped' line when no sandboxes orphan (matches the
     conditional-render pattern used for ``initial_pauses``)."""
-    from bench_core.stats_collector import StatsCollector
+    from bench_core.observability.stats_collector import StatsCollector
 
     cfg = KernelConfig(workflow_type="replay", replay_delay_scale=0.0)
     state = BenchSandbox(id="a", index=0, workflow_type="replay")

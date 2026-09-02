@@ -5,7 +5,7 @@ import json
 import threading
 from pathlib import Path
 
-from bench_core.lifecycle_series import LifecycleSeriesWriter
+from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 
 
 class TestLifecycleSeriesWriter:

@@ -8,7 +8,7 @@ lifecycle state inherited from :class:`env_provider.SandboxInstance`.
 
 The coding/document *payload* data (replacement pairs, verify-script templates,
 language profiles) is also host-agnostic benchmark content -- it lives in
-:mod:`bench_core.coding_payload`. Only the metric *machinery* lives here.
+:mod:`bench_core.payload.coding_payload`. Only the metric *machinery* lives here.
 """
 from __future__ import annotations
 

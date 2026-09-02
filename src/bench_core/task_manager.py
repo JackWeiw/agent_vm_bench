@@ -17,7 +17,7 @@ import time
 from bench_core.config import KernelConfig
 from env_provider import EnvironmentProvider
 from bench_core.admission import Admission
-from bench_core.lifecycle_series import LifecycleSeriesWriter
+from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 from bench_core.schemas import BenchSandbox
 
 logger = logging.getLogger(__name__)

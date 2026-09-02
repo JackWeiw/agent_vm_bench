@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from bench_core.lifecycle_series import LifecycleSeriesWriter, load_events
+from bench_core.observability.lifecycle_series import LifecycleSeriesWriter, load_events
 from bench_core.task_runner.replay import ReplayBaseRunner
 from env_provider import SnapshotSizeCapable
 

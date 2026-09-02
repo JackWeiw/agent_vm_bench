@@ -37,7 +37,7 @@ import threading
 import time
 
 from bench_core.config import KernelConfig
-from bench_core.coding_payload import (
+from bench_core.payload.coding_payload import (
     DEFAULT_VERIFY_TEMPLATES,
     _find_name_clause,
     _stamp_verify_body,

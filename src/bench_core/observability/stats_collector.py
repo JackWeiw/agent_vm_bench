@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Any
 
 from bench_core.config import KernelConfig
-from bench_core.observability import ReplayObservability
+from bench_core.observability.replay_obs import ReplayObservability
 from env_provider import SandboxStatus
 from bench_core.schemas import (
     CODING_STEP_ORDER,

@@ -12,7 +12,7 @@ import pytest
 
 from bench_core.bench import run_benchmark
 from bench_core.config import KernelConfig
-from bench_core.lifecycle_series import LifecycleSeriesWriter
+from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 from bench_core.schemas import BenchSandbox
 from bench_core.task_runner.replay import (
     ReplayBaseRunner,
@@ -23,7 +23,7 @@ from bench_core.task_runner.replay import (
 from env_provider import SandboxInstance
 from env_provider.tests.lifecycle_fake import FakeLifecycleProvider
 
-REPLAY_FIXTURES = Path(__file__).parent / "fixtures" / "replay"
+REPLAY_FIXTURES = Path(__file__).parent.parent / "fixtures" / "replay"
 
 
 def _lifecycle_config(tmp_path, **kw):
@@ -124,7 +124,7 @@ class TestRunSliceSeriesRecord:
         runner._init_lifecycle()
 
         # drive one slice via the real _run_slice using a fixture step
-        from bench_core.replay_payload import ReplayStep
+        from bench_core.payload.replay_payload import ReplayStep
 
         step = ReplayStep(index=3, action_type="shell", action="true", delay_time_sec=0.0)
         sr = runner._run_slice(step, trajectory_id="traj-abc")
@@ -186,7 +186,7 @@ class TestRunSliceSeriesRecord:
         path = _series_path(tmp_path)
         series = LifecycleSeriesWriter(path)
         runner = _BoomRunner(state, config, stop, provider, series=series)
-        from bench_core.replay_payload import ReplayStep
+        from bench_core.payload.replay_payload import ReplayStep
 
         step = ReplayStep(index=0, action_type="shell", action="true", delay_time_sec=0.0)
         with pytest.raises(RuntimeError):
@@ -284,7 +284,7 @@ class TestLifecycleOverheadReport:
         # Manually seed ReplayMetrics with one tiny slice (< MIN_SLICE_SEC)
         # and one normal slice; the tiny one must not explode the per-sample
         # overhead (excluded by the guard).
-        from bench_core.stats_collector import StatsCollector
+        from bench_core.observability.stats_collector import StatsCollector
 
         inst = SandboxInstance(id="x", index=0)
         state = BenchSandbox.from_instance(inst, workflow_type="replay")
@@ -350,7 +350,7 @@ class TestLifecycleOverheadReport:
         assert "Admission:" not in report
 
     def test_admission_block_present_when_admission_snapshot_set(self, tmp_path):
-        from bench_core.stats_collector import StatsCollector
+        from bench_core.observability.stats_collector import StatsCollector
 
         inst = SandboxInstance(id="x", index=0)
         state = BenchSandbox.from_instance(inst, workflow_type="replay")
@@ -928,7 +928,7 @@ def test_exec_is_qps_gated_in_lifecycle_mode():
     """G1: provider.exec is wrapped in qps.slot('command') in lifecycle mode."""
     from bench_core.admission import Admission, QpsRateLimiter, RunningSlotScheduler
     from bench_core.config import KernelConfig
-    from bench_core.replay_payload import ReplayStep
+    from bench_core.payload.replay_payload import ReplayStep
     from bench_core.schemas import BenchSandbox
     from bench_core.task_runner.replay import ReplayBaseRunner
     from env_provider import CommandResult
@@ -1099,7 +1099,7 @@ def test_run_trajectory_creates_runs_kills_with_lease(tmp_path):
     from pathlib import Path
 
     from bench_core.admission import Admission, QpsRateLimiter, RunningSlotScheduler
-    from bench_core.replay_payload import ReplayStep, Trajectory
+    from bench_core.payload.replay_payload import ReplayStep, Trajectory
 
     class _Provider(FakeLifecycleProvider):
         def __init__(self):
@@ -1153,7 +1153,7 @@ def test_run_trajectory_creates_runs_kills_with_lease(tmp_path):
 
 def test_report_renders_slot_held_line_in_trajectory_mode(tmp_path):
     """L7: trajectory mode renders [Lifecycle Overhead] with Slot held + Interaction lines."""
-    from bench_core.stats_collector import ReportFormatter
+    from bench_core.observability.stats_collector import ReportFormatter
 
     cfg = KernelConfig(workflow_type="replay", replay_mode="trajectory", replay_running_concurrency=1)
     state = BenchSandbox.from_instance(SandboxInstance(id="s1", index=1), workflow_type="replay")

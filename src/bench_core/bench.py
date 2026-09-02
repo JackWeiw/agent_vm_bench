@@ -38,9 +38,9 @@ from env_provider import (
     SandboxStatus,
 )
 from bench_core.schemas import BenchSandbox
-from bench_core.stats_collector import StatsCollector
-from bench_core.lifecycle_series import LifecycleSeriesWriter
-from bench_core.monitor import MonitorController
+from bench_core.observability.stats_collector import StatsCollector
+from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
+from bench_core.observability.monitor import MonitorController
 from bench_core.task_manager import TaskManager
 from bench_core.round_robin import RoundRobinTaskManager
 from bench_core.utils import calc_percentiles, setup_logging
@@ -70,7 +70,7 @@ def _replay_template_map(config: KernelConfig) -> dict[int, str | None] | None:
     """
     if config.workflow_type != "replay" or not config.replay_template_manifest:
         return None
-    from bench_core.replay_payload import load_pool
+    from bench_core.payload.replay_payload import load_pool
 
     pool = load_pool(config)
     if not pool:
@@ -485,11 +485,11 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     # Phase 3.5: optional xlsx observability workbook (replay workflows only).
     if config.workflow_type == "replay" and config.report_format in ("xlsx", "both"):
         try:
-            from bench_core.obs_xlsx import XlsxReportRenderer
+            from bench_core.observability.obs_xlsx import XlsxReportRenderer
         except ImportError:  # openpyxl missing on a minimal install
             logger.warning("openpyxl not installed; skipping xlsx report (txt only)")
         else:
-            from bench_core.observability import ReplayObservability
+            from bench_core.observability.replay_obs import ReplayObservability
 
             wall_sec = (time.time() - stats_collector.start_time) if stats_collector.start_time else None
             obs = ReplayObservability(

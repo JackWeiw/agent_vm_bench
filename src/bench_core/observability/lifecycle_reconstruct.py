@@ -1,9 +1,9 @@
 """Pure transforms over loaded lifecycle-series events.
 
-No I/O -- takes a ``list[dict]`` (from :func:`bench_core.lifecycle_series.load_events`)
+No I/O -- takes a ``list[dict]`` (from :func:`bench_core.observability.lifecycle_series.load_events`)
 and produces the shapes the xlsx renderer draws: per-second concurrency-state bins,
 per-sandbox Gantt phase segments, and per-pause snapshot-size rows. Keeping this
-out of ``observability.py`` (which is contractually I/O-free) is why the reverted
+out of ``replay_obs.py`` (which is contractually I/O-free) is why the reverted
 ``180e46c`` placement was wrong.
 """
 from __future__ import annotations

@@ -7,7 +7,7 @@ consume them; this module owns no SDK and no timing.
 
 A trajectory is a frozen, immutable record safe for concurrent read by many
 sandbox threads (the pool is shared read-only; each runner keeps its own
-cursor). Mirrors :mod:`bench_core.coding_payload`'s positioning as the
+cursor). Mirrors :mod:`bench_core.payload.coding_payload`'s positioning as the
 host-agnostic payload module for the replay workflow.
 """
 from __future__ import annotations

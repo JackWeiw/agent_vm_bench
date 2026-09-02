@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from bench_core.lifecycle_series import load_events
+from bench_core.observability.lifecycle_series import load_events
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +39,7 @@ def test_load_events_missing_file(tmp_path: Path) -> None:
 # Task 2: reconstruct_concurrency
 # ---------------------------------------------------------------------------
 
-from bench_core.lifecycle_reconstruct import reconstruct_concurrency
+from bench_core.observability.lifecycle_reconstruct import reconstruct_concurrency
 
 
 def _step(idx: int, rs: float, re: float, xs: float, xe: float, ps: float, pe: float) -> dict:
@@ -114,7 +114,7 @@ def test_reconstruct_concurrency_includes_trailing_empty_bins() -> None:
 # Task 3: gantt_segments
 # ---------------------------------------------------------------------------
 
-from bench_core.lifecycle_reconstruct import gantt_segments
+from bench_core.observability.lifecycle_reconstruct import gantt_segments
 
 
 def test_gantt_segments_groups_by_sandbox_sorted_by_start() -> None:
@@ -145,7 +145,7 @@ def test_gantt_segments_groups_by_sandbox_sorted_by_start() -> None:
 # Task 4: snapshot_rows
 # ---------------------------------------------------------------------------
 
-from bench_core.lifecycle_reconstruct import snapshot_rows
+from bench_core.observability.lifecycle_reconstruct import snapshot_rows
 
 
 def test_snapshot_rows_filters_snapshot_events_and_converts_mb() -> None:

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from bench_core.bench import _replay_template_map, run_benchmark
 from bench_core.config import KernelConfig
-from bench_core.replay_payload import reset_pool_cache
+from bench_core.payload.replay_payload import reset_pool_cache
 from env_provider.fake import FakeProvider
 
 
