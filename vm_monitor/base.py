@@ -244,6 +244,10 @@ class VMMonitorBase(ABC):
         self.target_disks = _discover_block_devices()
         self.disk_history = []
         self._last_diskstats = None  # {dev: {sectors_read, sectors_written, ms_io, inflight}}
+        # monotonic timestamp of the last /sys/block/<dev>/stat read, so disk
+        # rates divide by the ACTUAL elapsed window (not the nominal sampling
+        # interval). Disk is sub-sampled at 1s regardless of self.interval.
+        self._last_disk_monotonic = None
         self.peak_disk_write_mb_s = 0.0
 
         # Host Memory Detail (cached / buffers / dirty / writeback from /proc/meminfo)
@@ -695,10 +699,15 @@ class VMMonitorBase(ABC):
         Reads sectors read/written, inflight, busy-ms, I/O counts, I/O time,
         and weighted I/O time for each device in self.target_disks, then
         computes per-second rates + avg queue depth + per-I/O await latency
-        via deltas from the previous sample normalized by self.interval. First
-        sample (no prior baseline) records zero rates. Missing devices are
-        skipped silently. Bus (nvme vs sata) is classified by device name for
-        downstream grouping; it is not an AgentEnv-specific signal.
+        via deltas from the previous sample normalized by the ACTUAL elapsed
+        wall-clock time between reads (time.monotonic delta), not the nominal
+        self.interval. Disk is sub-sampled at a 1-second cadence by
+        _disk_subsample_sleep regardless of the general sampling interval, so
+        r_mb_s / w_mb_s reflect a true 1-second window -- burst peaks are not
+        smeared over a longer interval. First sample (no prior baseline)
+        records zero rates. Missing devices are skipped silently. Bus (nvme vs
+        sata) is classified by device name for downstream grouping; it is not
+        an AgentEnv-specific signal.
         """
         cur_stats = {}
         for dev in self.target_disks:
@@ -722,7 +731,17 @@ class VMMonitorBase(ABC):
             except (OSError, ValueError):
                 continue
 
-        rates = _compute_disk_io_rates(cur_stats, self._last_diskstats, self.interval)
+        # Divide by the real time between reads, not self.interval. The disk
+        # sub-sampler ticks at 1s, so this is a true per-second rate even when
+        # the general sampling interval is larger (3s/5s/...).
+        now = time.monotonic()
+        prev = self._last_diskstats
+        if prev is None:
+            elapsed = 0.0
+        else:
+            elapsed = now - (self._last_disk_monotonic if self._last_disk_monotonic is not None else now)
+        self._last_disk_monotonic = now
+        rates = _compute_disk_io_rates(cur_stats, prev, elapsed)
         self._last_diskstats = cur_stats
 
         peak_write = 0.0
@@ -1455,14 +1474,18 @@ class VMMonitorBase(ABC):
 
     # ==================== Template Methods ====================
     def collect_sample(self):
-        """Collect one sample (full refresh each time)"""
+        """Collect one sample (full refresh each time).
+
+        Disk I/O and ublk device count are NOT collected here -- they are
+        sub-sampled at a 1-second cadence by _disk_subsample_sleep (called
+        during the main loop's sleep), so disk_history and ublk_history carry
+        true per-second bandwidth regardless of the general sampling interval.
+        """
         self.collect_hugepage_stats()
         self.collect_numa_cpu()
         self.collect_host_stats()
         self.collect_swap_stats()
-        self.collect_disk_stats()
         self.collect_host_mem_detail()
-        self.collect_ublk_count()
         self.collect_host_pressure()
         self.get_numa_nodes_memory()  # Collect NUMA meminfo in same cycle as swap/hugepage
         vms = self.get_vms_realtime()
@@ -1495,6 +1518,31 @@ class VMMonitorBase(ABC):
             sample_data.append(record)
             self.data.append(record)
         return sample_data
+
+    def _disk_subsample_sleep(self, seconds: float) -> None:
+        """Sleep for ``seconds``, sampling disk I/O + ublk count every 1s.
+
+        Disk bandwidth is computed over a 1-second window regardless of the
+        general sampling interval (``self.interval``), so r_mb_s / w_mb_s are
+        true per-second rates -- burst peaks are not smeared over a longer
+        interval. Disk and ublk are sampled together each tick so disk_history
+        and ublk_history stay index-aligned for the Disk_IO_Timeline sheet
+        (both carry real per-row timestamps, so the timeline x-axis is real
+        elapsed seconds, not ``index * interval``). Returns early when
+        ``self.running`` is cleared (stop signal). No-op when ``seconds <= 0``.
+        """
+        if seconds <= 0 or not self.running:
+            return
+        end = time.monotonic() + seconds
+        while self.running:
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(1.0, remaining))
+            if not self.running:
+                break
+            self.collect_disk_stats()
+            self.collect_ublk_count()
 
     def display_realtime_table(self, sample_data, elapsed_time, duration, check_method=""):
         """Display real-time table"""
@@ -1665,6 +1713,7 @@ class VMMonitorBase(ABC):
         print(f"Waiting for stress test to start... (Detection method: {check_type}={check_target})")
         self.interval = interval_seconds
         self._last_diskstats = None  # avoid stale disk deltas across monitoring restarts
+        self._last_disk_monotonic = None  # disk sub-sampler resets its own baseline
         self._last_pressure = None  # avoid stale vmstat pressure deltas
         self._last_cpu_total = None  # avoid stale /proc/stat iowait baseline
         self._dirty_limits_read = False  # re-read dirty sysctls on restart
@@ -1721,7 +1770,9 @@ class VMMonitorBase(ABC):
 
                 sl = max(0, interval_seconds - (time.time() - loop_start))
                 if sl > 0 and self.running:
-                    time.sleep(sl)
+                    # Disk bandwidth sub-samples at 1s during the sleep, so
+                    # r_mb_s / w_mb_s stay per-second-accurate at any interval.
+                    self._disk_subsample_sleep(sl)
         except KeyboardInterrupt:
             pass
         return self.data
@@ -1729,6 +1780,7 @@ class VMMonitorBase(ABC):
     def start_monitoring(self, duration_seconds=None, interval_seconds=5):
         self.interval = interval_seconds
         self._last_diskstats = None  # avoid stale disk deltas across monitoring restarts
+        self._last_disk_monotonic = None  # disk sub-sampler resets its own baseline
         self._last_pressure = None  # avoid stale vmstat pressure deltas
         self._last_cpu_total = None  # avoid stale /proc/stat iowait baseline
         self._dirty_limits_read = False  # re-read dirty sysctls on restart
@@ -1765,7 +1817,9 @@ class VMMonitorBase(ABC):
 
                 sl = max(0, interval_seconds - (time.time() - loop_start))
                 if sl > 0 and self.running:
-                    time.sleep(sl)
+                    # Disk bandwidth sub-samples at 1s during the sleep, so
+                    # r_mb_s / w_mb_s stay per-second-accurate at any interval.
+                    self._disk_subsample_sleep(sl)
         except KeyboardInterrupt:
             pass
         return self.data

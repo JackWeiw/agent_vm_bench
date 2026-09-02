@@ -726,9 +726,11 @@ def _build_vm_total_memory_timeline_sheet(writer, monitor):
 def _build_disk_io_sheet(writer, monitor):
     """Sheet: Disk_IO_Timeline (per-device read/write MB/s, util%, inflight + ublk count).
 
-    One row per sample. Disk columns are spread per device in monitor.target_disks
+    One row per disk sub-sample. Disk columns are spread per device in monitor.target_disks
     order; devices missing from a sample's snapshot default to zero. ublk_devices is
-    aligned by sample index (collected in the same collect_sample cycle).
+    aligned by tick index -- disk and ublk are sub-sampled together at a 1-second
+    cadence (independent of the general sampling interval), so disk bandwidth is a
+    true per-second rate at any interval.
     """
     if not monitor.disk_history:
         return
@@ -755,7 +757,7 @@ def _build_disk_io_sheet(writer, monitor):
             disk_data[f"{dev} Queue Depth"].append(d.get("avg_queue_depth", 0))
             disk_data[f"{dev} Read Await (ms)"].append(d.get("read_await_ms", 0))
             disk_data[f"{dev} Write Await (ms)"].append(d.get("write_await_ms", 0))
-        # ublk_history shares the sample cadence; align by index, pad to 0
+        # ublk_history shares the 1s disk sub-sample cadence; align by index, pad to 0
         ublk = monitor.ublk_history[i]["ublk_devices"] if i < len(monitor.ublk_history) else 0
         disk_data["ublk Devices"].append(ublk)
 
