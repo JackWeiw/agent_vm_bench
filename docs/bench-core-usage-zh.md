@@ -347,7 +347,7 @@ minimal install),依赖 series 的表只输出表头,不报错。
 | Lifecycle overhead | 池化百分位 | `resume` / `pause` / `slice_total` / `slot_held` / `interaction` 五段的百分位;附 per-step 折图(ms)。仅 lifecycle/trajectory 模式 |
 | Admission & QPS | 标量 | running slot(maximum/active/peak_active/granted/avg_queue_wait)+ QPS 限流(qps/inflight_cap/in_flight/dispatched/avg_wait/max_wait)+ per-operation 分发/等待 |
 | Throughput & overcommit | 标量 | steps_per_sec / effective_parallelism / exec_wall_utilization / concurrency |
-| Trajectory summary | **每 trajectory 一行** | n_steps + exec/resume/pause/slot_wait/slice 各 p50/p95/p99(秒)。按 trajectory_id 升序;trajectory 模式额外附 create_sec/kill_sec 百分位 |
+| Trajectory summary | **每 trajectory 一行** | n_steps + 各段 sum(slice_total/exec/resume/pause/interaction_total/slot_wait/resume_queue_wait/pause_queue_wait/running_slot_held)+ avg_slice(秒)。按 trajectory_id 升序;trajectory 模式额外附 create_sec/kill_sec 百分位 |
 | Step detail | **每 step 事件一行** | 见下表;含成功与 `slice_failed` 合成行,按 (trajectory, sandbox, step) 排序,冻结首行 + autofilter |
 | Retry impact | 标量 | retry_count / time_lost_to_retry_sec / retries_per_slice_p95 + per-operation retry_queued 计数 |
 | Concurrency states | 每秒一行 | 每秒各 sandbox 的主导状态计数(pausing/paused/resuming/exec/active)+ 折图 |
@@ -383,15 +383,28 @@ minimal install),依赖 series 的表只输出表头,不报错。
 | `exit_code` | `provider.exec()` 退出码 |
 | `timed_out` | 是否命中超时退出码 |
 
-#### Trajectory summary 列(17 列,秒)
+#### Trajectory summary 列(12 列,秒,sum-based)
 
-每条轨迹(instance)一行,把池化百分位按实例拆开,便于定位是哪条轨迹拖慢了 p99。
+每条轨迹(instance)一行,做**成本归因**——这条轨迹的总墙钟花在哪了(pause vs resume vs exec vs 排队等待)。用 **sum 而非百分位**:per-instance 的 per-step 分布已在 `Step detail`(按 trajectory_id 筛)和 `Lifecycle overhead`(池化)里,这里只回答"总量分解 + 浪费性等待"。`n_steps` 计所有 step 事件(含 `slice_failed` 失败步,失败步对 sum 贡献 0 但计入尝试数,故 avg_slice 反映 per-attempt 成本)。
 
-`trajectory_id` / `n_steps` / `exec_p50_s`·`exec_p95_s`·`exec_p99_s` /
-`resume_p50_s`·`resume_p95_s`·`resume_p99_s` / `pause_p50_s`·`pause_p95_s`·`pause_p99_s` /
-`slot_wait_p50_s`·`slot_wait_p95_s`·`slot_wait_p99_s` / `slice_p50_s`·`slice_p95_s`·`slice_p99_s`。
+| 列 | 含义 |
+|----|------|
+| `trajectory_id` | 实例 |
+| `n_steps` | 该轨迹累计回放的 step 总数(含失败步) |
+| `slice_total_sum_s` | 总活跃墙钟 = resume + exec + pause(和不变式) |
+| `exec_sum_s` | 纯命令执行总耗时 |
+| `resume_sum_s` | resume 总耗时 |
+| `pause_sum_s` | pause 总耗时 |
+| `interaction_total_sum_s` | 含 delay + capacity_wait 的完整交互预算(≥ slice_total,超卖分析用) |
+| `slot_wait_sum_s` | admission slot 竞争等待总耗时 |
+| `resume_queue_wait_sum_s` | resume 的 QPS 限流排队总耗时 |
+| `pause_queue_wait_sum_s` | pause 的 QPS 限流排队总耗时 |
+| `running_slot_held_sum_s` | running slot 持有总时长(slot 占用/超卖粒度) |
+| `avg_slice_s` | slice_total_sum / n_steps,典型单步成本 |
 
-> 更细的 per-step queue/api/ready_wait 子段见 `Step detail`;per-second 并发状态见
-> `Concurrency states`;snapshot 内存见 `Snapshot sizes`。host 级系统资源(CPU/内存/NUMA)
-> 在独立的 vm_monitor `analysis_report.xlsx`(`monitor.merge_report: false` 时)或合并进
+> resume/pause 更细的子段(api_sec / ready_wait / queue_wait)per-step 值见 `Step detail`;
+> per-second 并发状态见 `Concurrency states`;snapshot 内存见 `Snapshot sizes`。
+> per-instance 的 per-step 百分位分布不在本表——按 `trajectory_id` 在 `Step detail` 筛即可,
+> 池化百分位见 `Lifecycle overhead` / `Per-step timings`。
+> host 级系统资源(CPU/内存/NUMA)在独立的 vm_monitor `analysis_report.xlsx`(`monitor.merge_report: false` 时)或合并进
 > 本工作簿的 `VM_Stats`/`NUMA_Overview`/`DevKit_TopDown` sheet(`merge_report: true` 时)。

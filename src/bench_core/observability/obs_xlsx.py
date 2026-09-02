@@ -287,66 +287,66 @@ class XlsxReportRenderer:
     def _sheet_trajectory_summary(self, wb: Workbook) -> None:
         ws = wb.create_sheet("Trajectory summary")
         obs = self.obs
-        # Per-trajectory per-segment latency profile -- available in every mode
-        # (the series carries trajectory_id on each step). This decomposes the
-        # pooled Per-step timings / Lifecycle overhead tables by trajectory, so
-        # it is additive, not redundant. exec = pure command time; resume/pause
-        # are lifecycle segments; slot_wait = running-slot acquisition wait
-        # (admission contention); slice = end-to-end resume+exec+pause. All
-        # seconds. Each segment carries p50/p95/p99 so a trajectory's
-        # pause/resume/wait distribution is inspectable at a glance, not just
-        # the exec/slice extremes.
+        # Per-trajectory cumulative cost attribution (seconds). Sums, not
+        # percentiles: a per-instance summary answers "where did this
+        # trajectory's wall-clock go" (pause vs resume vs exec vs waits), and
+        # per-step distributions already live in the Step detail sheet (filter
+        # by trajectory_id) and pooled in the Lifecycle overhead sheet. n_steps
+        # counts every recorded step event (success + slice_failed); a failed
+        # slice contributes 0 to the sums (it did no work) but still counts as
+        # an attempted step, so avg_slice reflects the per-attempt cost.
         wrote_profile = False
         if self.series_path is not None and Path(self.series_path).exists():
             from bench_core.observability.lifecycle_series import load_events
 
-            seg_by_traj: dict[str, dict[str, list[float]]] = {}
+            # slice_total_sec is the invariant total (resume+exec+pause);
+            # interaction_total_sec adds delay + capacity_wait (>= slice).
+            # The three wait sums (slot / resume_queue / pause_queue) isolate
+            # non-productive time: admission contention + QPS-limiter queueing.
+            SEG_KEYS = (
+                "slice_total_sec",
+                "exec_sec",
+                "resume_sec",
+                "pause_sec",
+                "interaction_total_sec",
+                "slot_contention_wait_sec",
+                "resume_queue_wait_sec",
+                "pause_queue_wait_sec",
+                "running_slot_held_sec",
+            )
+            sums: dict[str, dict[str, float]] = {}
+            counts: dict[str, int] = {}
             for ev in load_events(Path(self.series_path)):
                 if ev.get("event") != "step":
                     continue
                 tid = ev.get("trajectory_id") or ""
-                segs = seg_by_traj.setdefault(tid, {})
-                for key in (
-                    "exec_sec",
-                    "resume_sec",
-                    "pause_sec",
-                    "slot_contention_wait_sec",
-                    "slice_total_sec",
-                ):
-                    v = ev.get(key)
+                acc = sums.setdefault(tid, {k: 0.0 for k in SEG_KEYS})
+                counts[tid] = counts.get(tid, 0) + 1
+                for k in SEG_KEYS:
+                    v = ev.get(k)
                     if v is not None:
-                        segs.setdefault(key, []).append(v)
-            if seg_by_traj:
+                        acc[k] += float(v)
+            if sums:
                 rows = []
-                for tid in sorted(seg_by_traj):
-                    segs = seg_by_traj[tid]
-                    e = calc_percentiles(segs.get("exec_sec", []))
-                    r = calc_percentiles(segs.get("resume_sec", []))
-                    p = calc_percentiles(segs.get("pause_sec", []))
-                    sw = calc_percentiles(segs.get("slot_contention_wait_sec", []))
-                    s = calc_percentiles(segs.get("slice_total_sec", []))
-                    # n_steps from whichever segment populated; exec is always
-                    # present on a real step event so it is the reliable count.
-                    n = len(segs.get("exec_sec", []))
+                for tid in sorted(sums):
+                    acc = sums[tid]
+                    n = counts[tid]
+                    slice_sum = acc["slice_total_sec"]
+                    avg_slice = slice_sum / n if n else 0.0
                     rows.append(
                         [
                             tid,
                             n,
-                            round(e["p50"], 3),
-                            round(e["p95"], 3),
-                            round(e["p99"], 3),
-                            round(r["p50"], 3),
-                            round(r["p95"], 3),
-                            round(r["p99"], 3),
-                            round(p["p50"], 3),
-                            round(p["p95"], 3),
-                            round(p["p99"], 3),
-                            round(sw["p50"], 3),
-                            round(sw["p95"], 3),
-                            round(sw["p99"], 3),
-                            round(s["p50"], 3),
-                            round(s["p95"], 3),
-                            round(s["p99"], 3),
+                            round(slice_sum, 3),
+                            round(acc["exec_sec"], 3),
+                            round(acc["resume_sec"], 3),
+                            round(acc["pause_sec"], 3),
+                            round(acc["interaction_total_sec"], 3),
+                            round(acc["slot_contention_wait_sec"], 3),
+                            round(acc["resume_queue_wait_sec"], 3),
+                            round(acc["pause_queue_wait_sec"], 3),
+                            round(acc["running_slot_held_sec"], 3),
+                            round(avg_slice, 3),
                         ]
                     )
                 _write_table(
@@ -354,21 +354,16 @@ class XlsxReportRenderer:
                     [
                         "trajectory_id",
                         "n_steps",
-                        "exec_p50_s",
-                        "exec_p95_s",
-                        "exec_p99_s",
-                        "resume_p50_s",
-                        "resume_p95_s",
-                        "resume_p99_s",
-                        "pause_p50_s",
-                        "pause_p95_s",
-                        "pause_p99_s",
-                        "slot_wait_p50_s",
-                        "slot_wait_p95_s",
-                        "slot_wait_p99_s",
-                        "slice_p50_s",
-                        "slice_p95_s",
-                        "slice_p99_s",
+                        "slice_total_sum_s",
+                        "exec_sum_s",
+                        "resume_sum_s",
+                        "pause_sum_s",
+                        "interaction_total_sum_s",
+                        "slot_wait_sum_s",
+                        "resume_queue_wait_sum_s",
+                        "pause_queue_wait_sum_s",
+                        "running_slot_held_sum_s",
+                        "avg_slice_s",
                     ],
                     rows,
                 )

@@ -562,18 +562,19 @@ def test_step_detail_sheet_empty_without_series(tmp_path):
     assert ws.cell(1, 1).value == "trajectory_id"
 
 
-def test_trajectory_summary_breaks_down_pause_resume_wait_per_instance(tmp_path):
-    """Trajectory summary: per-instance percentiles for resume/pause/slot_wait
-    alongside exec/slice, so each trajectory's lifecycle overhead is visible
-    per-instance, not just pooled across the fleet."""
+def test_trajectory_summary_attributes_cost_per_instance(tmp_path):
+    """Trajectory summary: per-instance SUMS (not percentiles) so each
+    trajectory's wall-clock decomposes into pause/resume/exec/wait totals --
+    "where did this trajectory's time go", which percentiles (available in the
+    Step detail / Lifecycle overhead sheets) do not show."""
     from unittest.mock import MagicMock
 
     from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 
     sp = tmp_path / "s.jsonl"
     w = LifecycleSeriesWriter(sp)
-    # Two trajectories; resume/pause/wait values differ so percentiles are
-    # distinguishable per instance.
+    # Two trajectories, 3 steps each, distinct resume/pause/wait so sums are
+    # attributable per instance. slice_total = resume + exec + pause exactly.
     for tid, resume, pause, slot_wait in (("traj-a", 0.10, 0.20, 0.01), ("traj-b", 0.50, 0.60, 0.05)):
         for i in range(3):
             w.write(
@@ -586,7 +587,11 @@ def test_trajectory_summary_breaks_down_pause_resume_wait_per_instance(tmp_path)
                     "resume_sec": resume,
                     "pause_sec": pause,
                     "slot_contention_wait_sec": slot_wait,
-                    "slice_total_sec": resume + 0.4 + pause,
+                    "resume_queue_wait_sec": 0.02,
+                    "pause_queue_wait_sec": 0.03,
+                    "running_slot_held_sec": 0.9,
+                    "slice_total_sec": round(resume + 0.4 + pause, 3),
+                    "interaction_total_sec": round(resume + 0.4 + pause + 0.05, 3),
                 }
             )
     w.close()
@@ -605,20 +610,41 @@ def test_trajectory_summary_breaks_down_pause_resume_wait_per_instance(tmp_path)
     headers = [c.value for c in ws[1]]
     assert "trajectory_id" in headers
     assert "n_steps" in headers
-    # the new per-instance lifecycle/wait segments are present
-    assert "resume_p50_s" in headers
-    assert "pause_p50_s" in headers
-    assert "slot_wait_p50_s" in headers
-    assert "slice_p50_s" in headers
+    # sum-based cost-attribution columns (no percentiles on this sheet)
+    assert "slice_total_sum_s" in headers
+    assert "exec_sum_s" in headers
+    assert "resume_sum_s" in headers
+    assert "pause_sum_s" in headers
+    assert "slot_wait_sum_s" in headers
+    assert "resume_queue_wait_sum_s" in headers
+    assert "pause_queue_wait_sum_s" in headers
+    assert "running_slot_held_sum_s" in headers
+    assert "avg_slice_s" in headers
+    # no percentile columns remain (they live in Step detail / Lifecycle overhead)
+    assert not any(h.endswith("_p50_s") for h in headers)
     # one row per trajectory (a, b), header + 2 rows
     assert ws.max_row == 3
     traj_col = headers.index("trajectory_id") + 1
     assert ws.cell(2, traj_col).value == "traj-a"
     assert ws.cell(3, traj_col).value == "traj-b"
-    # traj-a resume (0.10) < traj-b resume (0.50) -- per-instance separation
-    rp = headers.index("resume_p50_s") + 1
-    assert ws.cell(2, rp).value == 0.1
-    assert ws.cell(3, rp).value == 0.5
-    # n_steps carried through
+    # traj-a: resume 3x0.10=0.30, pause 3x0.20=0.60, exec 3x0.4=1.2,
+    # slice_total 3x0.70=2.10, slot_wait 3x0.01=0.03
+    rs = headers.index("resume_sum_s") + 1
+    ps = headers.index("pause_sum_s") + 1
+    es = headers.index("exec_sum_s") + 1
+    ss = headers.index("slice_total_sum_s") + 1
+    sw = headers.index("slot_wait_sum_s") + 1
+    assert ws.cell(2, rs).value == 0.3
+    assert ws.cell(2, ps).value == 0.6
+    assert ws.cell(2, es).value == 1.2
+    assert ws.cell(2, ss).value == 2.1
+    assert ws.cell(2, sw).value == 0.03
+    # traj-b resume (1.50) > traj-a resume (0.30) -- per-instance separation
+    assert ws.cell(3, rs).value == 1.5
+    # sum invariant: slice_total_sum == resume_sum + exec_sum + pause_sum
+    assert round(ws.cell(2, rs).value + ws.cell(2, es).value + ws.cell(2, ps).value, 3) == ws.cell(2, ss).value
+    # avg_slice = slice_total_sum / n_steps (traj-a: 2.10 / 3 = 0.70)
     n_col = headers.index("n_steps") + 1
+    avg_col = headers.index("avg_slice_s") + 1
     assert ws.cell(2, n_col).value == 3
+    assert ws.cell(2, avg_col).value == 0.7
