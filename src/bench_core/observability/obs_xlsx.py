@@ -17,8 +17,12 @@ from typing import TYPE_CHECKING
 
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, LineChart, Reference
+from openpyxl.comments import Comment
+from openpyxl.formatting.rule import ColorScaleRule, DataBarRule
 from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
 
+from bench_core.observability.trajectory_summary import SEG_KEYS, trajectory_summaries
 from bench_core.utils import calc_percentiles
 
 if TYPE_CHECKING:
@@ -86,15 +90,18 @@ def _add_line_chart(
     ws.add_chart(ch, anchor)
 
 
-def _add_trajectory_cost_chart(ws, header_row: int, n_traj: int) -> None:
+def _add_trajectory_cost_chart(ws, headers: list[str], header_row: int, n_traj: int) -> None:
     """Stacked bar of per-trajectory exec / resume / pause sums (bar height ==
     slice_total_sum) so the cost-attribution table's "where did each
     trajectory's wall-clock go" reads at a glance.
 
     Categories = trajectory_id (col 1); the three series take their titles from
-    the table header -- exec_sum_s (col 4) / resume_sum_s (col 5) /
-    pause_sum_s (col 6). Anchored to the right of the 12-column table so it
-    does not overlap the trailing create/kill percentile sub-table."""
+    the table header (exec_sum_s / resume_sum_s / pause_sum_s) -- located by
+    HEADER NAME so a column reorder never silently breaks the chart. The anchor
+    is COMPUTED from the header count (1-col gap past the table) so adding
+    columns never lands the floating chart on top of data: the old hardcoded
+    "N2" overlapped data once the failure cluster widened the table to 15 cols
+    (col N became a data column)."""
     if n_traj <= 0:
         return
     ch = BarChart()
@@ -106,12 +113,14 @@ def _add_trajectory_cost_chart(ws, header_row: int, n_traj: int) -> None:
     ch.x_axis.title = "trajectory_id"
     ch.height = 8
     ch.width = 16
-    for col in (4, 5, 6):  # exec_sum_s / resume_sum_s / pause_sum_s
+    for name in ("exec_sum_s", "resume_sum_s", "pause_sum_s"):
+        col = headers.index(name) + 1
         ref = Reference(ws, min_col=col, min_row=header_row, max_row=header_row + n_traj)
         ch.add_data(ref, titles_from_data=True)
     cats = Reference(ws, min_col=1, min_row=header_row + 1, max_row=header_row + n_traj)
     ch.set_categories(cats)
-    ws.add_chart(ch, "N2")
+    anchor_col = get_column_letter(len(headers) + 2)
+    ws.add_chart(ch, f"{anchor_col}2")
 
 
 def _pcts_row(label: str, values: list[float]) -> list:
@@ -404,76 +413,83 @@ class XlsxReportRenderer:
         if self.series_path is not None and Path(self.series_path).exists():
             from bench_core.observability.lifecycle_series import load_events
 
-            # slice_total_sec is the invariant total (resume+exec+pause);
-            # interaction_total_sec adds delay + capacity_wait (>= slice).
-            # The three wait sums (slot / resume_queue / pause_queue) isolate
-            # non-productive time: admission contention + QPS-limiter queueing.
-            SEG_KEYS = (
-                "slice_total_sec",
-                "exec_sec",
-                "resume_sec",
-                "pause_sec",
-                "interaction_total_sec",
-                "slot_contention_wait_sec",
-                "resume_queue_wait_sec",
-                "pause_queue_wait_sec",
-                "running_slot_held_sec",
-            )
-            sums: dict[str, dict[str, float]] = {}
-            counts: dict[str, int] = {}
-            for ev in load_events(Path(self.series_path)):
-                if ev.get("event") != "step":
-                    continue
-                tid = ev.get("trajectory_id") or ""
-                acc = sums.setdefault(tid, {k: 0.0 for k in SEG_KEYS})
-                counts[tid] = counts.get(tid, 0) + 1
-                for k in SEG_KEYS:
-                    v = ev.get(k)
-                    if v is not None:
-                        acc[k] += float(v)
-            if sums:
+            # Union-keyed (step + trajectory_create/kill/failed) so a trajectory
+            # that failed at create (zero step events) still appears -- the worst
+            # trajectories are the ones a comparison most needs to surface.
+            summaries = trajectory_summaries(load_events(Path(self.series_path)))
+            if summaries:
+                headers = [
+                    "trajectory_id",
+                    "n_steps",
+                    "n_failed",
+                    "n_timeout",
+                    "success_rate",
+                    "slice_total_sum_s",
+                    "exec_sum_s",
+                    "resume_sum_s",
+                    "pause_sum_s",
+                    "interaction_total_sum_s",
+                    "slot_wait_sum_s",
+                    "resume_queue_wait_sum_s",
+                    "pause_queue_wait_sum_s",
+                    "running_slot_held_sum_s",
+                    "avg_slice_s",
+                ]
+                sr_idx = headers.index("success_rate")
                 rows = []
-                for tid in sorted(sums):
-                    acc = sums[tid]
-                    n = counts[tid]
-                    slice_sum = acc["slice_total_sec"]
-                    avg_slice = slice_sum / n if n else 0.0
+                for s in summaries:
+                    sums = s["sums"]
                     rows.append(
                         [
-                            tid,
-                            n,
-                            round(slice_sum, 3),
-                            round(acc["exec_sec"], 3),
-                            round(acc["resume_sec"], 3),
-                            round(acc["pause_sec"], 3),
-                            round(acc["interaction_total_sec"], 3),
-                            round(acc["slot_contention_wait_sec"], 3),
-                            round(acc["resume_queue_wait_sec"], 3),
-                            round(acc["pause_queue_wait_sec"], 3),
-                            round(acc["running_slot_held_sec"], 3),
-                            round(avg_slice, 3),
+                            s["trajectory_id"],
+                            s["n_steps"],
+                            s["n_failed"],
+                            s["n_timeout"],
+                            s["success_rate"],  # None when 0 steps attempted
+                            *(round(sums[k], 3) for k in SEG_KEYS),
+                            round(s["avg_slice"], 3),
                         ]
                     )
-                header_row = _write_table(
-                    ws,
-                    [
-                        "trajectory_id",
-                        "n_steps",
-                        "slice_total_sum_s",
-                        "exec_sum_s",
-                        "resume_sum_s",
-                        "pause_sum_s",
-                        "interaction_total_sum_s",
-                        "slot_wait_sum_s",
-                        "resume_queue_wait_sum_s",
-                        "pause_queue_wait_sum_s",
-                        "running_slot_held_sum_s",
-                        "avg_slice_s",
-                    ],
-                    rows,
-                )
+                header_row = _write_table(ws, headers, rows)
                 wrote_profile = True
-                _add_trajectory_cost_chart(ws, header_row, len(rows))
+                _add_trajectory_cost_chart(ws, headers, header_row, len(rows))
+                # At-a-glance outlier highlighting the reference's per-trial
+                # table lacks: data bars on the two cost drivers (total slice +
+                # slot queueing -- longer bar = slower / more queueing) and a red
+                # color scale on the failure count. Only when trajectories
+                # exist, so a series-less sheet stays empty (max_row==1, no CF
+                # on an empty range). success_rate=None (0 steps) gets a hover
+                # comment so the blank cell is not mistaken for "0 = all failed".
+                first, last = header_row + 1, header_row + len(rows)
+                for ri, row in enumerate(rows, start=first):
+                    if row[sr_idx] is None:
+                        ws.cell(ri, sr_idx + 1).comment = Comment(
+                            "no steps attempted (created/killed with 0 steps); " "0.0 = all steps failed",
+                            "bench-core",
+                        )
+
+                def _col_range(col: int) -> str:
+                    letter = get_column_letter(col)
+                    return f"{letter}{first}:{letter}{last}"
+
+                ws.conditional_formatting.add(
+                    _col_range(headers.index("slice_total_sum_s") + 1),
+                    DataBarRule(start_type="min", end_type="max", color="638EC6"),
+                )
+                ws.conditional_formatting.add(
+                    _col_range(headers.index("slot_wait_sum_s") + 1),
+                    DataBarRule(start_type="min", end_type="max", color="638EC6"),
+                )
+                ws.conditional_formatting.add(
+                    _col_range(headers.index("n_failed") + 1),
+                    ColorScaleRule(
+                        start_type="num",
+                        start_value=0,
+                        start_color="FFFFFF",
+                        end_type="max",
+                        end_color="FF0000",
+                    ),
+                )
         # Trajectory-mode-only: ephemeral create/kill lifecycle (not in any other
         # sheet). slot_held is intentionally omitted -- it is already pooled in
         # the Lifecycle overhead sheet.

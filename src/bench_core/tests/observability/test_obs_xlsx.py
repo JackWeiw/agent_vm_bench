@@ -801,3 +801,197 @@ def test_trajectory_summary_chart_legend_uses_header_names(tmp_path):
         "resume_sum_s",
         "pause_sum_s",
     ], f"chart legend should be header column names, got {labels}"
+
+
+def _traj_series_file(sp, events):
+    """Write a list of step-event dicts to a lifecycle series JSONL file."""
+    from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
+
+    w = LifecycleSeriesWriter(sp)
+    for ev in events:
+        w.write(ev)
+    w.close()
+
+
+def _step_ev(
+    tid,
+    *,
+    step_index=0,
+    sandbox_index=0,
+    exec_sec=0.4,
+    resume_sec=0.1,
+    pause_sec=0.2,
+    slice_failed=False,
+    timed_out=False,
+    exit_code=0,
+    slot_contention_wait_sec=0.0,
+):
+    s = round(resume_sec + exec_sec + pause_sec, 3)
+    return {
+        "event": "step",
+        "sandbox_index": sandbox_index,
+        "trajectory_id": tid,
+        "step_index": step_index,
+        "action_type": "shell",
+        "resume_sec": resume_sec,
+        "exec_sec": exec_sec,
+        "pause_sec": pause_sec,
+        "slice_total_sec": s,
+        "interaction_total_sec": round(s + 0.05, 3),
+        "slot_contention_wait_sec": slot_contention_wait_sec,
+        "resume_queue_wait_sec": 0.0,
+        "pause_queue_wait_sec": 0.0,
+        "running_slot_held_sec": 0.0,
+        "slice_failed": slice_failed,
+        "timed_out": timed_out,
+        "exit_code": exit_code,
+    }
+
+
+def test_trajectory_summary_has_failure_and_success_columns(tmp_path):
+    """n_failed / n_timeout / success_rate columns let the user spot which
+    trajectory fails or times out most -- the reference's Per-task summary has
+    ok/failed/timeout; bench-core now matches + adds the rate."""
+    from unittest.mock import MagicMock
+
+    sp = tmp_path / "s.jsonl"
+    _traj_series_file(
+        sp,
+        [
+            # traj-a: 2 success + 1 failed slice
+            _step_ev("traj-a", step_index=0),
+            _step_ev("traj-a", step_index=1),
+            _step_ev(
+                "traj-a", step_index=2, slice_failed=True, exit_code=1, exec_sec=0.0, resume_sec=0.0, pause_sec=0.0
+            ),
+            # traj-b: 1 success + 1 timeout (exec completed but hit the timeout)
+            _step_ev("traj-b", step_index=0),
+            _step_ev("traj-b", step_index=1, timed_out=True, exit_code=124),
+        ],
+    )
+
+    obs = MagicMock()
+    obs.config.replay_mode = "lifecycle"
+    r = XlsxReportRenderer(obs, series_path=sp)
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    r._sheet_trajectory_summary(wb)
+    out = tmp_path / "o.xlsx"
+    wb.save(out)
+    ws = load_workbook(out)["Trajectory summary"]
+
+    headers = [c.value for c in ws[1]]
+    assert "n_failed" in headers
+    assert "n_timeout" in headers
+    assert "success_rate" in headers
+
+    traj_col = headers.index("trajectory_id") + 1
+    nf = headers.index("n_failed") + 1
+    nt = headers.index("n_timeout") + 1
+    sr = headers.index("success_rate") + 1
+    # traj-a row (row 2): 1 failed, 0 timeout, success_rate 2/3
+    assert ws.cell(2, traj_col).value == "traj-a"
+    assert ws.cell(2, nf).value == 1
+    assert ws.cell(2, nt).value == 0
+    assert round(ws.cell(2, sr).value, 6) == round(2 / 3, 6)
+    # traj-b row (row 3): 0 failed, 1 timeout, success_rate 1.0 (timeout != slice_failed)
+    assert ws.cell(3, traj_col).value == "traj-b"
+    assert ws.cell(3, nf).value == 0
+    assert ws.cell(3, nt).value == 1
+    assert ws.cell(3, sr).value == 1.0
+
+
+def test_trajectory_summary_has_data_bars_and_failure_color_scale(tmp_path):
+    """Conditional formatting: data bars on slice_total_sum_s + slot_wait_sum_s
+    (longer bar = slower / more queueing) and a red color scale on n_failed --
+    the at-a-glance outlier highlighting the reference's per-trial table lacks."""
+    from unittest.mock import MagicMock
+
+    sp = tmp_path / "s.jsonl"
+    _traj_series_file(
+        sp,
+        [
+            _step_ev("traj-a", step_index=0, slot_contention_wait_sec=0.01),
+            _step_ev("traj-a", step_index=1, slot_contention_wait_sec=0.01),
+            _step_ev("traj-b", step_index=0, exec_sec=2.0, slot_contention_wait_sec=0.5),
+            _step_ev("traj-b", step_index=1, exec_sec=2.0, slot_contention_wait_sec=0.5),
+        ],
+    )
+
+    obs = MagicMock()
+    obs.config.replay_mode = "lifecycle"
+    r = XlsxReportRenderer(obs, series_path=sp)
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    r._sheet_trajectory_summary(wb)
+    out = tmp_path / "o.xlsx"
+    wb.save(out)
+    ws = load_workbook(out)["Trajectory summary"]
+
+    headers = [c.value for c in ws[1]]
+    from openpyxl.utils import get_column_letter
+
+    slice_col = get_column_letter(headers.index("slice_total_sum_s") + 1)
+    slot_col = get_column_letter(headers.index("slot_wait_sum_s") + 1)
+    nf_col = get_column_letter(headers.index("n_failed") + 1)
+
+    rule_cols = []  # (type, covered-column-letter)
+    for cf in ws.conditional_formatting:
+        for rule in cf.rules:
+            for rng in str(cf.sqref).split():
+                col = "".join(ch for ch in rng.split(":")[0] if ch.isalpha())
+                rule_cols.append((rule.type, col))
+    types = {t for t, _ in rule_cols}
+    cols_by_type = {t: {c for _, c in rule_cols if _[0] == t} for t in types}
+    # simpler: gather per-type column sets
+    databar_cols = {c for t, c in rule_cols if t == "dataBar"}
+    colorscale_cols = {c for t, c in rule_cols if t == "colorScale"}
+    assert slice_col in databar_cols, f"expected dataBar on {slice_col}; got {databar_cols}"
+    assert slot_col in databar_cols, f"expected dataBar on {slot_col}; got {databar_cols}"
+    assert nf_col in colorscale_cols, f"expected colorScale on {nf_col}; got {colorscale_cols}"
+
+
+def test_trajectory_summary_chart_anchor_clear_of_table(tmp_path):
+    """Adding the failure cluster widened the table to 15 columns; the chart
+    anchor must be COMPUTED from the header count (not the old hardcoded "N2")
+    so the floating chart never sits on top of a data column. Regression guard."""
+    import re
+    from unittest.mock import MagicMock
+    from openpyxl.utils import column_index_from_string
+
+    sp = tmp_path / "s.jsonl"
+    _traj_series_file(sp, [_step_ev("traj-a"), _step_ev("traj-b")])
+
+    obs = MagicMock()
+    obs.config.replay_mode = "lifecycle"
+    r = XlsxReportRenderer(obs, series_path=sp)
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    r._sheet_trajectory_summary(wb)
+    ws = wb["Trajectory summary"]
+    charts = ws._charts
+    assert charts, "expected the cost chart"
+    n_headers = ws.max_column  # 15
+    # Read the anchor robustly (string in-memory; OneCellAnchor after reload).
+    anchor = charts[0].anchor
+    if isinstance(anchor, str):
+        m = re.match(r"([A-Z]+)", anchor)
+        anchor_col = column_index_from_string(m.group(1))
+    else:
+        marker = getattr(anchor, "from_", None) or getattr(anchor, "_from", None)
+        anchor_col = marker.col + 1  # openpyxl markers are 0-based
+    assert anchor_col > n_headers, (
+        f"chart anchor col {anchor_col} must sit past the {n_headers}-col table; " f"anchor={anchor!r}"
+    )
+
+
+def test_trajectory_summary_cf_absent_without_series(tmp_path):
+    """No series file -> no conditional-formatting rules (a DataBarRule on an
+    empty/inverted range would corrupt the sheet). max_row stays 1."""
+    obs, _ = _seeded_observability(replay_mode="lifecycle")
+    path = tmp_path / "obs.xlsx"
+    XlsxReportRenderer(obs).render(str(path))
+    ws = load_workbook(str(path))["Trajectory summary"]
+    assert ws.max_row == 1
+    rules = [r for cf in ws.conditional_formatting for r in cf.rules]
+    assert rules == [], f"no CF rules expected without a series; got {rules}"

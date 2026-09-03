@@ -506,6 +506,18 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
             ).render(xlsx_path)
             logger.info(f"Xlsx report saved to: {xlsx_path}")
 
+    # Per-trajectory replay_result.json export (replay lifecycle/trajectory
+    # mode only; a no-op when the series file is absent). Emits one
+    # replay_result.json per trajectory + a trajectories/index.json catalog
+    # so a fleet of dozens/hundreds of trajectories is browsable without
+    # walking folders. Runs regardless of report_format (txt-only runs still
+    # get the per-trajectory JSON).
+    if series_path is not None and Path(series_path).exists():
+        from bench_core.observability.trajectory_export import export_trajectories
+
+        n_traj = export_trajectories(series_path, config.output_dir, filename_prefix=config.filename_prefix)
+        logger.info("Per-trajectory replay_result.json exported: %d trajectories", n_traj)
+
     logger.info("\n" + report)
     logger.info(f"\nReport saved to: {filepath}")
     return {"report": report, "filepath": filepath, "admission_snapshot": admission_snapshot}
