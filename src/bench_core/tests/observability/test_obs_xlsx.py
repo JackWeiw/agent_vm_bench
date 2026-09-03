@@ -741,3 +741,63 @@ def test_trajectory_summary_has_stacked_cost_bar_chart(tmp_path):
     ch = charts[0]
     # three stacked cost-decomposition series: exec / resume / pause
     assert len(ch.series) == 3, f"expected 3 cost series; got {len(ch.series)}"
+
+
+def test_trajectory_summary_chart_legend_uses_header_names(tmp_path):
+    """The stacked cost bar chart's legend must take titles from the HEADER row
+    (exec_sum_s / resume_sum_s / pause_sum_s), not from the first data row
+    (which would surface the first trajectory's numeric sums as legend labels).
+
+    Regression guard: header_row was derived as ws.max_row+1 on a fresh empty
+    sheet, but openpyxl reports max_row==1 for an empty sheet, so the +1 aimed
+    the chart's title Reference at row 2 (first data row) instead of row 1.
+    """
+    import re
+    from unittest.mock import MagicMock
+
+    from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
+
+    sp = tmp_path / "s.jsonl"
+    w = LifecycleSeriesWriter(sp)
+    for tid, resume, pause in (("traj-a", 0.10, 0.20), ("traj-b", 0.50, 0.60)):
+        for i in range(3):
+            w.write(
+                {
+                    "event": "step",
+                    "sandbox_index": i,
+                    "trajectory_id": tid,
+                    "step_index": i,
+                    "exec_sec": 0.4,
+                    "resume_sec": resume,
+                    "pause_sec": pause,
+                    "slice_total_sec": round(resume + 0.4 + pause, 3),
+                    "interaction_total_sec": round(resume + 0.4 + pause + 0.05, 3),
+                }
+            )
+    w.close()
+
+    obs = MagicMock()
+    obs.config.replay_mode = "lifecycle"
+    r = XlsxReportRenderer(obs, series_path=sp)
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    r._sheet_trajectory_summary(wb)
+    out = tmp_path / "o.xlsx"
+    wb.save(out)
+    ws = load_workbook(out)["Trajectory summary"]
+    ch = ws._charts[0]
+
+    # Each series title is a StrRef into a header cell (titles_from_data=True).
+    # Resolve the referenced cell and read its value -- must be a column name,
+    # not a numeric sum from the first trajectory's data row.
+    labels = []
+    for s in ch.series:
+        f = s.tx.strRef.f if (s.tx is not None and s.tx.strRef is not None) else None
+        m = re.search(r"!([A-Z]+)(\d+)$", f or "")
+        assert m, f"unexpected series title reference: {f!r}"
+        labels.append(ws[f"{m.group(1)}{m.group(2)}"].value)
+    assert labels == [
+        "exec_sum_s",
+        "resume_sum_s",
+        "pause_sum_s",
+    ], f"chart legend should be header column names, got {labels}"

@@ -31,12 +31,17 @@ if TYPE_CHECKING:
 _MERGE_SHEETS = ("VM_Stats", "NUMA_Overview", "DevKit_TopDown")
 
 
-def _write_table(ws, headers: list[str], rows: list[list]) -> None:
-    """Write a header row (bold) + data rows to a worksheet.
+def _write_table(ws, headers: list[str], rows: list[list]) -> int:
+    """Write a header row (bold) + data rows to a worksheet; return the row the
+    header landed on.
 
-    Bold the row just appended (tracked via ``ws.max_row``), not always row 1,
-    so a sheet with multiple sub-tables (e.g. Trajectory summary) styles each
-    header correctly.
+    Bold the row just appended (tracked via ``ws.max_row`` after the append),
+    not always row 1, so a sheet with multiple sub-tables (e.g. Trajectory
+    summary) styles each header correctly. Callers that need to anchor a chart
+    Reference on the header (titles_from_data) MUST use the returned row rather
+    than ``ws.max_row + 1`` computed before the write: openpyxl reports
+    ``max_row == 1`` for a fresh empty sheet, so a pre-write ``+1`` lands one row
+    past the header and points chart title refs at the first data row.
     """
     bold = Font(bold=True)
     ws.append(headers)
@@ -45,6 +50,7 @@ def _write_table(ws, headers: list[str], rows: list[list]) -> None:
         c.font = bold
     for row in rows:
         ws.append(row)
+    return header_row
 
 
 def _add_line_chart(
@@ -448,8 +454,7 @@ class XlsxReportRenderer:
                             round(avg_slice, 3),
                         ]
                     )
-                header_row = ws.max_row + 1  # row the header will land on
-                _write_table(
+                header_row = _write_table(
                     ws,
                     [
                         "trajectory_id",
