@@ -45,6 +45,9 @@ dev = [
     "mypy>=1.0.0",
     "pre-commit>=3.0.0",
 ]
+# matplotlib powers the replay-observability Gantt PNG (optional; the Gantt
+# sheet is skipped with a warning when absent -- the other 9 sheets still render).
+obs-gantt = ["matplotlib>=3.5"]
 
 [project.scripts]
 vm-monitor = "vm_monitor.cli:main"

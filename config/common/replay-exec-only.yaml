@@ -1,0 +1,148 @@
+# exec_only replay baseline — identical stress shape to replay.yaml (lifecycle)
+# but WITHOUT pause/resume. Same total_count / round_size / round_count /
+# action_timeout / trajectory pool / template_manifest; only mode differs.
+#
+# Purpose: the no-lifecycle baseline against which replay.yaml's lifecycle
+# pause/resume overhead is compared. Sandboxes are long-lived (created once,
+# reused across steps); each step is a bare provider.exec() — no resume, no
+# pause, no snapshot.
+#
+# CAVEAT: admission controllers (running_concurrency / control_plane_qps /
+# control_plane_inflight_cap) are wired ONLY for lifecycle/trajectory modes
+# (bench.py wires Admission when replay_mode in {lifecycle, trajectory}).
+# In exec_only they are NO-OPS — kept below for config parity with replay.yaml
+# but they do not gate anything. At ratio 1:1 this is equivalent (lifecycle's
+# running_concurrency=384 == total_count also means no queueing), so the two
+# configs are directly comparable. exec_only CANNOT express memory
+# overcommit (ratio 1:k, k>1): with no pause to free RAM, k*N sandboxes just
+# run concurrently — there is no multiplexing. For overcommit use replay.yaml
+# (lifecycle).
+#
+#   bench-core --provider aenv --config config/common/replay-exec-only.yaml -n 384
+
+workflow_type: replay
+
+# === backend blocks (one per provider; only the matching one is read) ===
+e2b:
+  template: "openclaw-coding-python-v1"
+  create_timeout: 86400
+  numa_bind: 2
+  sandbox_ids_file: "sandboxs_replay.txt"
+  env:
+    E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+    E2B_API_KEY: "your_e2b_api_key_here"
+    E2B_DOMAIN: "e2b.app"
+    E2B_API_URL: "http://localhost:3000"
+    E2B_HTTP_SSL: "false"
+
+docker:
+  image: "ubuntu-openclaw-coding-python:24.04-arm64"
+  container_prefix: "oc-replay"
+  cpu_limit: 2.0
+  memory_limit: "2g"
+  create_timeout: 300
+
+aenv:
+  template: "openclaw-coding-python-v1"  # AENV snapshot-capable image (same /testbed shape)
+  create_timeout: 86400
+  numa_bind: 2
+  sandbox_ids_file: "sandboxs_replay_aenv.txt"
+  # AENV server home path -- primary source for the snapshot-scan base. Irrelevant
+  # in exec_only (no pause/snapshot), kept for config parity with replay.yaml.
+  # Falls back to $AENV_HOME_PATH / $AENV_HOME, then /var/lib/aenv.
+  # aenv_home_path: "/var/lib/aenv"
+  env:
+    E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+    E2B_API_KEY: "your_e2b_api_key_here"
+    E2B_DOMAIN: "your_aenv_domain_here"
+    E2B_API_URL: "http://127.0.0.1:8000"      # AENV control plane (POST /sandboxes)
+    E2B_SANDBOX_URL: "http://127.0.0.1:8000"  # AENV data plane (envd proxy; overrides subdomain build, forces http)
+
+# === shared stress sections (all -> KernelConfig) ===
+sandbox:
+  total_count: 384          # same as lifecycle baseline
+  detect_existing: false
+  create_only: false
+
+create_batch:
+  size: 96
+  interval: 1              # NOTE: int seconds. Fine-grained per-VM launch pacing
+                           # (launch_interval_sec) is trajectory-mode only; lifecycle
+                           # pre-creates via create_all in batches, so use batch
+                           # intervals as a coarse approximation. exec_only reuses
+                           # the same pre-created fleet for the whole run. See §8.1.
+
+task_batch:
+  size: 5
+  interval: 5
+
+# Replay configuration (host-agnostic; the sandbox runs the recorded commands).
+replay:
+  # Point these at your dataset (host-specific; do not commit real paths).
+  trajectory_dir: "trajectories/swe-bench"  # pool of .replay.json/.json/.traj
+  trajectory_glob: "*.replay.json"
+  # Side manifest mapping trajectory file (path relative to trajectory_dir) ->
+  # concrete backend template. Lives with the dataset (not the benchmark config).
+  # Omit -> single-template legacy (all trajectories use the provider block's
+  # default `template`).
+  # template_manifest: "trajectories/swe-bench/inst463-trajectory-templates.json"
+  workdir: "/"                            # exec cwd (no shell wrap); "/" = run at root
+  env: {}                                   # optional {PAGER: cat, ...} via exec env param
+  action_timeout: 300                       # per-action exec timeout (same as lifecycle)
+  delay_scale: 1.0                          # 1.0=realtime; 0=no delay; 0.1=10x compressed
+  stop_on_error: false                      # abort current trajectory, advance to next (not the sandbox)
+
+  # mode: omit -> provider default (exec_only for e2b/docker/fake; lifecycle for
+  # aenv, which requires a LifecycleCapable provider). Set explicitly to override.
+  mode: exec_only   # <-- the only real difference from replay.yaml: no pause/resume.
+                     # aenv's default is lifecycle, so set this explicitly.
+                     # KernelConfig.__post_init__ force-disables ready_probe in exec_only.
+
+  # The knobs below are NO-OPS in exec_only (admission + launch pacer are
+  # lifecycle/trajectory only). Kept for parity with replay.yaml; at ratio 1:1
+  # the comparison is fair (lifecycle's running_concurrency=384 == total_count
+  # means no queueing either).
+  running_concurrency: 384             # ignored in exec_only (no admission)
+  control_plane_qps: 1000.0           # ignored in exec_only (no QPS limiter)
+  control_plane_inflight_cap: 1024     # ignored in exec_only (no inflight cap)
+  pause_duration_sec: 0.0             # ignored in exec_only (no pause phase)
+  ready_probe: true                   # force-disabled by __post_init__ in exec_only
+  lifecycle_retries: 2                # ignored in exec_only (no lifecycle calls)
+  # launch_interval_sec: 0.0          # trajectory-mode only; no effect here either.
+
+test:
+  duration: 3600      # hard time ceiling: round_robin stops at duration OR when all
+                       # rounds finish, whichever is first. With round_count=1 the
+                       # single trajectory round usually completes well under this, so
+                       # round_count gates run-to-completion; duration caps stalled
+                       # runs. Also feeds vm_monitor's -t backstop (duration + 60s).
+  stats_interval: 10
+  benchmark_percent: 1.0
+  benchmark_mode: "round_robin"
+  round_size: 384     # same as lifecycle: one group = all sandboxes -> all concurrent
+  round_count: 1      # each sandbox runs exactly 1 trajectory (= 1 repeat)
+  round_interval: 0
+
+report:
+  output_dir: "results/replay-exec-only"
+  filename_prefix: "replay_exec_only_bench"
+  format: both  # txt + xlsx observability workbook (Per-step timings, Trajectory summary)
+
+# Host-level monitor (optional). Default `auto` enables vm_monitor only when the
+# provider has a VMM (e2b/aenv -> firecracker); docker/fake are skipped.
+monitor:
+  enabled: auto          # auto | true | false
+  vmm: auto              # auto | qemu | firecracker (auto = take provider hint)
+  interval: 2
+  capture: auto          # auto | true | false (auto/true -> --enable-capture --auto-skip)
+  numa: all              # "all" = every NUMA node, or comma-separated "0,1"
+  disks: all             # block devices for I/O: "all" auto-discovers physical devices;
+                         # or comma-separated, e.g. "sda,nvme0n1" to monitor specific disks.
+  stress_file: /dev/shm/bench_core_monitor.lock
+  log_dir: null          # null = <report.output_dir>/vm_monitor
+  # False (default): two separate files -- vm_monitor's system-resource report
+  # (analysis_report.xlsx) stands alone, and the replay obs workbook
+  # (<prefix>_obs.xlsx) carries trajectory/replay metrics only. Set true to copy
+  # VM_Stats/NUMA_Overview/DevKit_TopDown into the obs workbook instead.
+  merge_report: false
+  report_timeout: 300

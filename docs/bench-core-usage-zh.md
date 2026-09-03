@@ -252,3 +252,156 @@ YAML 里保留占位符即可(会自动回退),别把真密钥写进 YAML。
 **docker coding 镜像不存在**
 coding 配置里的 `ubuntu-openclaw-coding-{ts,go,python}:24.04-arm64` 是占位符,需先构建
 (含对应语言工具链 + 项目仓库),再用 `--provider docker` 跑 coding。browser 镜像现成。
+
+---
+
+## 8. Replay 工作流
+
+`workflow_type: replay` 把录制的 SWE-bench agent 轨迹(有序 shell + `str_replace_editor`
+动作,带 per-step `delay_time`)通过 `provider.exec()` 原样回放。同一份压力曲线可跑在
+aenv(lifecycle pause/resume)或 e2b/docker(exec_only)上。`config/common/replay.yaml` 是
+aenv lifecycle 内存超卖压测的 1:1 基线配置。
+
+### 8.1 三种 mode
+
+三种模式的根本区别是**沙箱生命周期**,不是"有没有限流":
+
+| mode | 沙箱生命周期 | 每 step 做什么 | 并发/超卖控制 | 何时用 |
+|------|------------|--------------|--------------|--------|
+| `exec_only` | 预创建后**长驻**,整轮不创不杀 | 仅 exec | 无 | 测纯轨迹回放(exec)开销基线;后端无 lifecycle/ephemeral 能力(e2b/docker/fake) |
+| `lifecycle` | 预创建后**长驻**,整轮不杀 | acquire slot→resume→exec→pause→release | pause 打快照释放内存,k×N 沙箱塞进 N slot(**内存超卖**) | 测 pause/resume 快照开销 + 内存 overcommit;需 LifecycleCapable(aenv) |
+| `trajectory` | **临时**,每条轨迹 create→…→kill | acquire slot(整条轨迹持有)→resume→exec→pause→release | M slot 限并发轨迹数,未开始的推迟 create(**排队限流,非内存复用**) | 测频繁建删沙箱的 create/kill 开销 + 启动节流;需 EphemeralCapable(aenv) |
+
+**exec_only vs trajectory 的区别不在"限流"**:
+
+- exec_only 沙箱**长驻**,整轮压测用同一批预创建的沙箱,只 exec,**不创不杀、不 pause/resume**。
+- trajectory 沙箱**临时**,每条轨迹单独 `create_one` → 跑完 → `kill_one`。
+- `launch_interval_sec` 只是 trajectory 因为**频繁 create 才需要**的启动节流;exec_only 预创建
+  一次、整轮复用,用不到启动节流。所以"trajectory 多了个限流"只是表象,本质是沙箱生命周期不同
+  (长驻复用 vs 临时建删)。
+
+**lifecycle vs trajectory 的超卖机制不同**:
+
+- lifecycle 超卖 = **快照内存复用**。沙箱长驻,pause 释放物理内存,所以 `total_count = k×N`
+  个沙箱能放进 `running_concurrency = N` 个 slot 的 RAM。running slot 按 **step 粒度**获取/释放
+  (一条命令一轮 acquire/release)。
+- trajectory 超卖 = **排队限流**。running slot 按**整条轨迹**持有(create 前 acquire、kill 后
+  release);M slot → 同时 M 条轨迹在跑,其余排队等开始,**不会"暂停腾内存"**,沙箱用完即杀。
+
+> `launch_interval_sec`(浮点秒,per-sandbox create 节流)只在 trajectory 模式生效。lifecycle
+> 模式预创建用 `create_batch.size`/`interval`(且 `interval` 是整数秒),做不了 sub-second 级
+> per-sandbox 节流——这是 lifecycle 的已知限制,需精细启动节流请用 trajectory。
+
+### 8.2 lifecycle 内存超卖:ratio 配置法
+
+整机内存固定,按"基线 VM 数 = 整机内存 / 单 VM 内存"算:
+
+- 例:1.5 TiB 整机、单 VM 4 GiB → 基线 = 1536 / 4 = **384** 个 VM。
+- `running_concurrency` 恒等于基线 VM 数(N 个 running slot);
+  `total_count` 随超卖比 `1:k` 放大到 `k × 基线`。
+
+| 超卖比 | `total_count` | `running_concurrency` | 含义 |
+|--------|--------------|----------------------|------|
+| 1:1(基线) | 384 | 384 | 无超卖,384 沙箱全跑 |
+| 1:2 | 768 | 384 | 2x overcommit,768 沙箱在 384 slot 上多路复用 |
+| 1:3 | 1152 | 384 | 3x overcommit |
+
+`config/common/replay.yaml` 是 1:1 基线。测别的 ratio 时改三处(或用 `-n` 覆盖 `total_count`,
+但 `running_concurrency` / `round_size` 在 YAML 里,需一起改):
+
+```yaml
+sandbox:
+  total_count: 768        # k × 基线
+test:
+  round_size: 768         # 跟 total_count 一致 -> 单组=全部 -> 全并发
+  # running_concurrency: 384   保持不变(N slot)
+```
+
+```bash
+bench-core --provider aenv --config config/common/replay.yaml -n 768
+```
+
+> 扫描多个 ratio 测退化曲线时,写个脚本循环改 `total_count` + `round_size` 跑即可。
+
+### 8.3 轨迹格式与 template_manifest
+
+- bench-core 的 loader 期望每个轨迹 JSON 为
+  `{instance_id, environment, trajectory:[{action, delay_time}, ...]}`,在首个
+  `submit/finish/done` 处截断(见 `src/bench_core/replay_payload.py`)。若你的轨迹是别的
+  字段名(如 sweagent 原始格式),需先转成 `.replay.json`。
+- `template_manifest` 是 `{trajectory相对路径: template}` 的 side JSON。多模板时,非 trajectory
+  模式按 template 亲和路由(孤儿模板跳过计数);trajectory 模式 `create_one(template=)` 逐条带。
+
+### 8.4 可观测性工作簿 (`*_obs.xlsx`)
+
+`report.format: xlsx|both` 时,除了文本报告 + JSONL lifecycle series,还会产出
+`<output_dir>/<prefix>_obs.xlsx`(8 张表,openpyxl 渲染;Overview 为合并汇总看板——原 Admission & QPS / Throughput & overcommit / Retry impact 三张标量表已并入,数据名称栏填色加粗)。所有时长列**统一为秒(s)**,
+与参考实现的 `step-detail.csv` 单位一致;`Per-step timings` / `Lifecycle overhead`
+两张表的内嵌折图为可读性用毫秒(ms),表头会标注。无 lifecycle_series 文件时(如
+minimal install),依赖 series 的表只输出表头,不报错。
+
+| Sheet | 行粒度 | 内容 |
+|-------|--------|------|
+| Overview | 标量(合并汇总,分组着色) | **单表汇总**(原 Admission & QPS / Throughput & overcommit / Retry impact 三张标量表已并入此表):Run(mode/total_count/running_concurrency/test_duration/wall_sec/steps/success/failed/overcommit_ratio)+ Throughput(steps_per_sec/effective_parallelism/exec_wall_utilization/concurrency)+ Admission & QPS(running_slot 的 maximum/active/peak_active/granted/avg_queue_wait/waiting + QPS 限流 qps/inflight_cap/in_flight/dispatched/avg_wait/max_wait + per-operation 分发/等待子表)+ Retry(retry_count/time_lost_to_retry_sec/retries_per_slice_p95 + per-operation retry_queued)。数据名称栏(A 列)填色加粗,分组用 banner 行分隔 |
+| Per-step timings | 池化百分位 | 全 fleet `latency`(=纯 exec 耗时)的 n/min/max/avg/p50/p95/p99,按 `action_type` 分桶;附 per-step 折图(ms) |
+| Lifecycle overhead | 池化百分位 | `resume` / `pause` / `slice_total` / `slot_held` / `interaction` 五段的百分位;附 per-step 折图(ms)。仅 lifecycle/trajectory 模式 |
+| Trajectory summary | **每 trajectory 一行** | n_steps + 各段 sum(slice_total/exec/resume/pause/interaction_total/slot_wait/resume_queue_wait/pause_queue_wait/running_slot_held)+ avg_slice(秒)。按 trajectory_id 升序;trajectory 模式额外附 create_sec/kill_sec 百分位 |
+| Step detail | **每 step 事件一行** | 见下表;含成功与 `slice_failed` 合成行,按 (trajectory, sandbox, step) 排序,冻结首行 + autofilter |
+| Concurrency states | 每秒一行 | 每秒各 sandbox 的主导状态计数(pausing/paused/resuming/exec/active)+ 折图 |
+| Gantt | 图 | 每 sandbox 的 phase 时间线(resume/exec/pause),内嵌 PNG;大 fleet 自动缩小行高 |
+| Snapshot sizes | 每 pause 一行 | logical/disk/inherited/cumulative MiB + generations/files;附折图。仅 `SnapshotSizeCapable`(aenv) |
+
+#### Step detail 列(20 列,秒)
+
+子段紧贴其父总量,使和不变式可在表内直接验证:
+`resume_sec == resume_queue_wait_sec + resume_api_sec + resume_ready_wait_sec`,
+`pause_sec == pause_queue_wait_sec + pause_api_sec`。
+
+| 列 | 含义 |
+|----|------|
+| `trajectory_id` | 该 step 所属轨迹的 instance_id |
+| `sandbox_index` | 执行沙箱在 fleet 内的下标(0..N-1),非后端 sandbox_id |
+| `round_id` | round_robin 轮次号;fixed/trajectory 模式为空 |
+| `step_index` | 轨迹内 step 序号(0-based) |
+| `action_type` | `shell`/`bash`/`str_replace_editor`/`submit`/`finish`/`done` |
+| `slice_failed` | runner 合成的失败 slice(异常/stop_on_error);True 时下面时长列全 0 |
+| `resume_sec` | resume 总时长 = queue + api + ready_wait |
+| `resume_queue_wait_sec` | QPS 限流器排队等待(resume) |
+| `resume_api_sec` | 纯 resume API 调用耗时 |
+| `resume_ready_wait_sec` | resume 后的就绪探测等待(lifecycle/trajectory 模式;exec_only 为 0) |
+| `exec_sec` | 纯 `provider.exec()` 墙钟耗时(= Per-step timings 的 latency) |
+| `pause_sec` | pause 总时长 = queue + api |
+| `pause_queue_wait_sec` | QPS 限流器排队等待(pause) |
+| `pause_api_sec` | 纯 pause API 调用耗时 |
+| `slice_total_sec` | resume + exec + pause;失败 slice 为 0(被排除出百分位计算) |
+| `interaction_total_sec` | 一次交互的完整预算 = resume + exec + pause + delay + natural_delay + capacity_wait(≥ slice_total) |
+| `slot_contention_wait_sec` | 获取 running slot 的竞争等待(admission) |
+| `running_slot_held_sec` | running slot 持有总时长(acquire→release) |
+| `exit_code` | `provider.exec()` 退出码 |
+| `timed_out` | 是否命中超时退出码 |
+
+#### Trajectory summary 列(12 列,秒,sum-based)
+
+每条轨迹(instance)一行,做**成本归因**——这条轨迹的总墙钟花在哪了(pause vs resume vs exec vs 排队等待)。用 **sum 而非百分位**:per-instance 的 per-step 分布已在 `Step detail`(按 trajectory_id 筛)和 `Lifecycle overhead`(池化)里,这里只回答"总量分解 + 浪费性等待"。`n_steps` 计所有 step 事件(含 `slice_failed` 失败步,失败步对 sum 贡献 0 但计入尝试数,故 avg_slice 反映 per-attempt 成本)。
+
+| 列 | 含义 |
+|----|------|
+| `trajectory_id` | 实例 |
+| `n_steps` | 该轨迹累计回放的 step 总数(含失败步) |
+| `slice_total_sum_s` | 总活跃墙钟 = resume + exec + pause(和不变式) |
+| `exec_sum_s` | 纯命令执行总耗时 |
+| `resume_sum_s` | resume 总耗时 |
+| `pause_sum_s` | pause 总耗时 |
+| `interaction_total_sum_s` | 含 delay + capacity_wait 的完整交互预算(≥ slice_total,超卖分析用) |
+| `slot_wait_sum_s` | admission slot 竞争等待总耗时 |
+| `resume_queue_wait_sum_s` | resume 的 QPS 限流排队总耗时 |
+| `pause_queue_wait_sum_s` | pause 的 QPS 限流排队总耗时 |
+| `running_slot_held_sum_s` | running slot 持有总时长(slot 占用/超卖粒度) |
+| `avg_slice_s` | slice_total_sum / n_steps,典型单步成本 |
+
+> resume/pause 更细的子段(api_sec / ready_wait / queue_wait)per-step 值见 `Step detail`;
+> per-second 并发状态见 `Concurrency states`;snapshot 内存见 `Snapshot sizes`。
+> per-instance 的 per-step 百分位分布不在本表——按 `trajectory_id` 在 `Step detail` 筛即可,
+> 池化百分位见 `Lifecycle overhead` / `Per-step timings`。
+> host 级系统资源(CPU/内存/NUMA)在独立的 vm_monitor `analysis_report.xlsx`(`monitor.merge_report: false` 时)或合并进
+> 本工作簿的 `VM_Stats`/`NUMA_Overview`/`DevKit_TopDown` sheet(`merge_report: true` 时)。

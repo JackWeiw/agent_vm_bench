@@ -150,3 +150,106 @@ def test_from_raw_ignores_backend_block():
 
     assert not hasattr(c, "template")
     assert not hasattr(c, "docker_image")
+
+
+def test_from_raw_replay_section():
+    raw = {
+        "workflow_type": "replay",
+        "replay": {
+            "trajectory_dir": "trajectories/swe",
+            "trajectory_glob": "*.replay.json",
+            "workdir": "/testbed",
+            "env": {"PAGER": "cat"},
+            "action_timeout": 120,
+            "delay_scale": 0.5,
+            "stop_on_error": True,
+            "mode": "exec_only",
+        },
+    }
+    cfg = KernelConfig.from_raw(raw)
+    assert cfg.workflow_type == "replay"
+    assert cfg.replay_trajectory_dir == "trajectories/swe"
+    assert cfg.replay_trajectory_glob == "*.replay.json"
+    assert cfg.replay_workdir == "/testbed"
+    assert cfg.replay_env == {"PAGER": "cat"}
+    assert cfg.replay_action_timeout == 120
+    assert cfg.replay_delay_scale == 0.5
+    assert cfg.replay_stop_on_error is True
+    assert cfg.replay_mode == "exec_only"
+
+
+def test_validate_accepts_replay():
+    cfg = KernelConfig(workflow_type="replay")
+    cfg.validate()  # must not raise
+
+
+def test_replay_defaults():
+    cfg = KernelConfig(workflow_type="replay")
+    assert cfg.replay_trajectory_dir == "trajectories"
+    assert cfg.replay_trajectory_glob == "*.replay.json"
+    assert cfg.replay_workdir == "/"
+    assert cfg.replay_env == {}
+    assert cfg.replay_action_timeout == 300
+    assert cfg.replay_delay_scale == 1.0
+    assert cfg.replay_stop_on_error is False
+    assert cfg.replay_mode is None
+
+
+def test_validate_accepts_replay_lifecycle():
+    cfg = KernelConfig(workflow_type="replay", replay_mode="lifecycle")
+    cfg.validate()  # must not raise
+
+
+def test_validate_accepts_replay_none_sentinel():
+    cfg = KernelConfig(workflow_type="replay", replay_mode=None)
+    cfg.validate()  # must not raise (None = pre-resolution sentinel)
+
+
+def test_validate_rejects_bad_replay_mode():
+    cfg = KernelConfig(workflow_type="replay", replay_mode="bogus")
+    with pytest.raises(ValueError, match="replay_mode"):
+        cfg.validate()
+
+
+def test_from_raw_replay_mode_none_when_absent():
+    raw = {"workflow_type": "replay", "replay": {"trajectory_dir": "t"}}
+    cfg = KernelConfig.from_raw(raw)
+    assert cfg.replay_mode is None
+
+
+# --- replay lifecycle / trajectory knobs (P1 Task 2) ---
+
+
+def test_config_defaults_trajectory_retries_and_pacing():
+    cfg = KernelConfig()
+    assert cfg.replay_lifecycle_retries == 2
+    assert cfg.replay_launch_interval_sec == 0.0
+    assert cfg.replay_pause_duration_sec == 0.0
+
+
+def test_config_validates_trajectory_mode():
+    cfg = KernelConfig(workflow_type="replay", replay_mode="trajectory")
+    cfg.validate()  # must not raise
+
+
+def test_config_rejects_negative_retries():
+    with pytest.raises(ValueError):
+        KernelConfig(replay_lifecycle_retries=-1)
+
+
+def test_config_rejects_negative_launch_interval():
+    with pytest.raises(ValueError):
+        KernelConfig(replay_launch_interval_sec=-0.1)
+
+
+def test_config_rejects_negative_pause_duration():
+    with pytest.raises(ValueError):
+        KernelConfig(replay_pause_duration_sec=-0.5)
+
+
+def test_config_from_raw_reads_trajectory_knobs():
+    raw = {"replay": {"mode": "trajectory", "lifecycle_retries": 5, "launch_interval_sec": 1.5}}
+    cfg = KernelConfig.from_raw(raw)
+    assert cfg.replay_mode == "trajectory"
+    assert cfg.replay_lifecycle_retries == 5
+    assert cfg.replay_launch_interval_sec == 1.5

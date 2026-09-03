@@ -1,0 +1,166 @@
+# Trajectory oversubscription replay benchmark config — backend-agnostic
+# (aenv trajectory; requires an EphemeralCapable provider).
+#
+# Workflow type: replay — re-executes recorded SWE-bench agent trajectories
+#   (ordered shell + str_replace_editor actions with per-step delay_time) as
+#   provider.exec() calls with think-time gaps.
+#
+# trajectory model: EPHEMERAL sandboxes. Each trajectory does
+#   create_one -> (per step: acquire slot -> resume -> exec -> pause -> release)
+#   -> kill_one. A running-slot lease spans the WHOLE trajectory (acquired before
+#   create, released after kill). Oversubscription = QUEUE LIMITING, not memory
+#   reuse: M slots gate concurrent trajectories; the rest defer create (they do
+#   NOT pause-to-free-memory). Sandboxes are killed on completion.
+#
+# Memory overcommit math (example: 1.5 TiB host, 4 GiB/VM):
+#   baseline VMs = 1.5 TiB / 4 GiB = 384        (ratio 1:1, no oversubscription)
+#   ratio 1:k  -> total_count = k * 384 ,  running_concurrency = 384
+#     1:2 -> total_count 768,  running_concurrency 384   (2x overcommit)
+#     1:3 -> total_count 1152, running_concurrency 384   (3x overcommit)
+#   Here total_count is the count of trajectory worker shells (each runs
+#   round_count trajectories); running_concurrency caps how many may be live at
+#   once. At ratio 1:1 (total_count == running_concurrency) nothing queues.
+#
+# launch_interval_sec (float seconds, trajectory-ONLY): per-sandbox create pacing
+#   so multiple workers don't burst-create in the same instant. lifecycle cannot
+#   express sub-second per-VM pacing (its create is batched up front); trajectory
+#   can. Set 0.0 to disable pacing.
+#
+#   bench-core --provider aenv --config config/common/replay-trajectory.yaml -n 384
+# For docs on exec_only / lifecycle / trajectory modes, see
+# docs/bench-core-usage-zh.md §8.
+
+workflow_type: replay
+
+# === backend blocks (one per provider; only the matching one is read) ===
+e2b:
+  template: "openclaw-coding-python-v1"  # any template whose image has /testbed
+  create_timeout: 86400
+  numa_bind: 2
+  sandbox_ids_file: "sandboxs_replay.txt"
+  env:
+    E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+    E2B_API_KEY: "your_e2b_api_key_here"
+    E2B_DOMAIN: "e2b.app"
+    E2B_API_URL: "http://localhost:3000"
+    E2B_HTTP_SSL: "false"
+
+docker:
+  image: "ubuntu-openclaw-coding-python:24.04-arm64"
+  container_prefix: "oc-replay"
+  cpu_limit: 2.0
+  memory_limit: "2g"
+  create_timeout: 300
+
+aenv:
+  template: "openclaw-coding-python-v1"  # AENV snapshot-capable image (same /testbed shape)
+  create_timeout: 86400
+  numa_bind: 2
+  sandbox_ids_file: "sandboxs_replay_aenv.txt"
+  # AENV server home path -- the primary source for the snapshot-scan base.
+  # The persisted-sandboxes tree lives under <aenv_home_path>/persisted-
+  # sandboxes/artifacts/<sandbox_id>/, so set this to where the AENV server
+  # stores its data (no shell env var to export). Falls back to $AENV_HOME_PATH
+  # / $AENV_HOME, then /var/lib/aenv. snapshot_dir overrides the full base.
+  # aenv_home_path: "/var/lib/aenv"
+  env:
+    E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+    E2B_API_KEY: "your_e2b_api_key_here"
+    E2B_DOMAIN: "your_aenv_domain_here"
+    E2B_API_URL: "http://127.0.0.1:8000"      # AENV control plane (POST /sandboxes)
+    E2B_SANDBOX_URL: "http://127.0.0.1:8000"  # AENV data plane (envd proxy; overrides subdomain build, forces http)
+
+# === shared stress sections (all -> KernelConfig) ===
+sandbox:
+  total_count: 384          # ratio 1:1 baseline = 1.5TiB/4GiB.  ratio 1:k -> k*384.
+                            # In trajectory mode this is the worker-shell count
+                            # (no pre-create; each shell create_one/kill_one per
+                            # trajectory). detect_existing is incompatible with
+                            # trajectory mode (no persistent pool to detect).
+  detect_existing: false
+  create_only: false
+
+create_batch:
+  size: 96
+  interval: 1              # NOTE: create_batch is NOT used in trajectory mode
+                           # (no create_all pre-create; each trajectory calls
+                           # create_one directly). Kept for schema parity. Per-VM
+                           # sub-second pacing is launch_interval_sec below. See §8.1.
+
+task_batch:
+  size: 5
+  interval: 5
+
+# Replay configuration (host-agnostic; the sandbox runs the recorded commands).
+replay:
+  # Point these at your dataset (host-specific; do not commit real paths).
+  trajectory_dir: "trajectories/swe-bench"  # pool of .replay.json/.json/.traj
+  trajectory_glob: "*.replay.json"
+  # Side manifest mapping trajectory file (path relative to trajectory_dir) ->
+  # concrete backend template, e.g. {"foo.replay.json": "swb-foo"}. Lives with
+  # the dataset (not the benchmark config). Omit -> single-template legacy
+  # (all trajectories use the provider block's default `template`). In trajectory
+  # mode create_one(template=) is passed per trajectory.
+  # template_manifest: "trajectories/swe-bench/inst463-trajectory-templates.json"
+  workdir: "/"                            # exec cwd (no shell wrap); "/" = run at root
+  env: {}                                   # optional {PAGER: cat, ...} via exec env param
+  action_timeout: 300                       # per-action exec timeout (lifecycle timeouts below)
+  delay_scale: 1.0                          # 1.0=realtime; 0=no delay; 0.1=10x compressed
+  stop_on_error: false                      # abort current trajectory, advance to next (not the sandbox)
+
+  # mode: omit -> provider default (exec_only for e2b/docker/fake; lifecycle for
+  # aenv, which requires a LifecycleCapable provider). Set explicitly to override.
+  mode: trajectory    # ephemeral sandboxes: per-trajectory create_one -> steps -> kill_one.
+                      # A running-slot lease spans the whole trajectory (acquired
+                      # before create, released after kill). Oversubscription = queue
+                      # limiting (M slots gate concurrent trajectories; the rest
+                      # defer create). Requires EphemeralCapable (aenv). See §8.
+
+  running_concurrency: 384    # M concurrent-trajectory slots. Stays at the baseline VM
+                               # count for any ratio 1:k; total_count grows to k*384
+                               # (the rest queue, they do NOT pause-to-free-memory).
+  control_plane_qps: 1000.0           # lifecycle control-plane QPS; omit = unlimited
+  control_plane_inflight_cap: 1024     # max concurrent lifecycle calls; omit = min(64, total_count)
+  pause_duration_sec: 0.0     # extra pause beyond recorded think-time
+  ready_probe: true           # post-resume `true` probe (lifecycle/trajectory only)
+  lifecycle_retries: 2        # transient resume/pause retry attempts (0 = no retry)
+  launch_interval_sec: 0.5    # trajectory-ONLY: per-sandbox create pacing (float sec)
+                              # so workers don't burst-create. 0.0 = no pacing.
+                              # lifecycle cannot express this (batched create).
+
+test:
+  duration: 3600      # hard time ceiling: round_robin stops at duration OR when all
+                       # rounds finish, whichever is first. With round_count=1 the
+                       # single trajectory round usually completes well under this, so
+                       # round_count gates run-to-completion; duration caps stalled
+                       # runs. Also feeds vm_monitor's -t backstop (duration + 60s).
+  stats_interval: 10
+  benchmark_percent: 1.0
+  benchmark_mode: "round_robin"
+  round_size: 384     # = total_count -> one group = all sandboxes -> all concurrent
+  round_count: 1      # each sandbox runs exactly 1 trajectory (= 1 repeat)
+  round_interval: 0
+
+report:
+  output_dir: "results/replay-trajectory"
+  filename_prefix: "replay_trajectory_bench"
+  format: both  # txt + xlsx observability workbook (create/kill overhead, snapshot sizes)
+
+# Host-level monitor (optional). Default `auto` enables vm_monitor only when the
+# provider has a VMM (e2b/aenv -> firecracker); docker/fake are skipped.
+monitor:
+  enabled: auto          # auto | true | false
+  vmm: auto              # auto | qemu | firecracker (auto = take provider hint)
+  interval: 2
+  capture: auto          # auto | true | false (auto/true -> --enable-capture --auto-skip)
+  numa: all              # "all" = every NUMA node, or comma-separated "0,1"
+  disks: all             # block devices for I/O: "all" auto-discovers physical devices;
+                         # or comma-separated, e.g. "sda,nvme0n1" to monitor specific disks.
+  stress_file: /dev/shm/bench_core_monitor.lock
+  log_dir: null          # null = <report.output_dir>/vm_monitor
+  # False (default): two separate files -- vm_monitor's system-resource report
+  # (analysis_report.xlsx) stands alone, and the replay obs workbook
+  # (<prefix>_obs.xlsx) carries trajectory/replay metrics only. Set true to copy
+  # VM_Stats/NUMA_Overview/DevKit_TopDown into the obs workbook instead.
+  merge_report: false
+  report_timeout: 300

@@ -20,8 +20,10 @@ import time
 
 from bench_core.config import KernelConfig
 from env_provider import EnvironmentProvider
+from bench_core.admission import Admission
+from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 from bench_core.schemas import BenchSandbox, get_step_order
-from bench_core.stats_collector import StatsCollector
+from bench_core.observability.stats_collector import StatsCollector
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +44,19 @@ class RoundRobinTaskManager:
         stop_event: threading.Event,
         stats_collector: StatsCollector,
         provider: EnvironmentProvider,
+        *,
+        series: LifecycleSeriesWriter | None = None,
+        admission: Admission | None = None,
+        launch_pacer=None,
     ):
         self.config = config
         self.sandbox_states = sandbox_states
         self.stop_event = stop_event
         self.stats_collector = stats_collector
         self.provider = provider
+        self.series = series
+        self.admission = admission
+        self.launch_pacer = launch_pacer
 
         # Sandbox groups for each round
         self.all_ready_states: list[BenchSandbox] = []
@@ -207,6 +216,22 @@ class RoundRobinTaskManager:
                 runner = TabOperationRunner(state, self.config, self.round_stop_event, round_id, self.provider)
                 self.active_runners.append(runner)
                 runner.start()
+        elif self.config.workflow_type == "replay":
+            from bench_core.task_runner.replay import ReplayRoundRunner
+
+            for state in current_states:
+                runner = ReplayRoundRunner(
+                    state,
+                    self.config,
+                    self.round_stop_event,
+                    round_id,
+                    self.provider,
+                    series=self.series,
+                    admission=self.admission,
+                    launch_pacer=self.launch_pacer,
+                )
+                self.active_runners.append(runner)
+                runner.start()
         else:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
@@ -267,7 +292,7 @@ class RoundRobinTaskManager:
 
     def _wait_for_active_runners(self) -> None:
         """Wait for this round's runners; document tasks use one shared deadline."""
-        if self.config.workflow_type in {"browser", "coding"}:
+        if self.config.workflow_type in {"browser", "coding", "replay"}:
             for runner in self.active_runners:
                 runner.join(timeout=120)
             return

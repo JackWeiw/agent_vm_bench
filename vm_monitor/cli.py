@@ -31,6 +31,22 @@ except ImportError:
     PANDAS_AVAILABLE = False
 
 
+def resolve_numa_nodes(numa_arg: str, available_nodes: list[int]) -> list[int]:
+    """Resolve a --numa argument to a concrete list of NUMA node IDs.
+
+    "all" -> every node the host exposes (``available_nodes``); falls back to
+    [0] when the host is non-NUMA (no /sys/devices/system/node nodeN dirs) so a
+    default "all" never yields an empty focus set. A comma-separated int list
+    ("0,1") is parsed verbatim; an unparseable value falls back to [0].
+    """
+    if numa_arg.strip().lower() == "all":
+        return list(available_nodes) if available_nodes else [0]
+    try:
+        return list(map(int, numa_arg.split(",")))
+    except ValueError:
+        return [0]
+
+
 def main():
     """Main entry point for VM monitoring tool"""
     parser = argparse.ArgumentParser(
@@ -67,11 +83,16 @@ def main():
 
     # Timing parameters
     parser.add_argument("-t", "--time", type=int, default=60, help="Timer duration seconds (default 60)")
-    parser.add_argument("-i", "--interval", type=int, default=3, help="Sampling interval (default 3 seconds)")
+    parser.add_argument("-i", "--interval", type=int, default=2, help="Sampling interval (default 2 seconds)")
 
     # Output parameters
     parser.add_argument("-o", "--output", type=str, help="Output prefix")
-    parser.add_argument("--numa", type=str, default="1", help="Specify NUMA nodes to monitor, comma-separated 0,1")
+    parser.add_argument(
+        "--numa",
+        type=str,
+        default="all",
+        help="NUMA nodes to monitor: 'all' (default) = every node, or comma-separated 0,1",
+    )
     parser.add_argument(
         "--remote-numa",
         type=int,
@@ -143,10 +164,7 @@ def main():
         print(f"[ERROR] Unknown VMM type: {args.vmm}")
         sys.exit(1)
 
-    try:
-        m.target_numa_nodes = list(map(int, args.numa.split(",")))
-    except:
-        m.target_numa_nodes = [0]
+    m.target_numa_nodes = resolve_numa_nodes(args.numa, m.available_numa_nodes)
 
     # Override the platform-default remote borrowing node; a negative value
     # disables injecting any remote node.
@@ -193,15 +211,21 @@ def main():
         capture_results = capture.get_results()
         print_capture_summary(capture_results, log_dir, m.target_numa_nodes)
 
-    # Export to Excel (if pandas available)
-    if PANDAS_AVAILABLE:
-        excel_file = os.path.join(log_dir, "analysis_report.xlsx")
-        export_to_excel(m, log_dir, m.target_numa_nodes, excel_file, capture_results)
-
-    # Export dark-themed SVG time-curve reports
+    # Export dark-themed SVG time-curve reports FIRST. The xlsx report must be
+    # the LAST artifact written: orchestrators (bench-core MonitorController)
+    # poll for analysis_report.xlsx as the "all artifacts written" signal and
+    # reap the subprocess the moment it appears. If SVG ran after xlsx, that
+    # reap would drop every SVG file.
     if not args.no_svg:
         svg_files = export_svg_reports(m, log_dir)
         if svg_files:
             print(f"[OK] SVG time-curve reports: {', '.join(os.path.basename(p) for p in svg_files)}")
+
+    # Export to Excel (if pandas available) -- LAST so its appearance signals
+    # that CSV + SVG + xlsx are all written and the subprocess is essentially
+    # done (safe to reap).
+    if PANDAS_AVAILABLE:
+        excel_file = os.path.join(log_dir, "analysis_report.xlsx")
+        export_to_excel(m, log_dir, m.target_numa_nodes, excel_file, capture_results)
 
     print(f"\nComplete! All outputs saved to: {log_dir}/")

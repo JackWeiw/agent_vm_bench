@@ -68,6 +68,7 @@ The kernel (`bench_core`) and every provider impl depend on the contract (`env_p
 - `round_robin.py` — `RoundRobinTaskManager` (group rotation, per-step timing).
 - `stats_collector.py` — snapshots + report generation (`generate_report` / `save_report`).
 - `coding_payload.py` — canonical coding replacement pairs + verify scripts.
+- `monitor.py` — `MonitorController` + `MonitorConfig`: host-level `vm-monitor` orchestration around the stress phase (stress-file sync subprocess; auto-enable by provider `vmm_type`; outputs to `report.output_dir/vm_monitor/`; optional host-sheet merge into replay obs xlsx).
 - `schemas.py` (`BenchSandbox`), `utils.py` (`calc_percentiles`, `setup_logging`).
 
 **`env_provider` contract** (`src/env_provider/__init__.py`): `EnvironmentProvider` ABC (`create_all`, `detect_existing`, `detect_from_ids`, `save_ids`, `check_alive`, `cleanup_all`, `cleanup_existing`, `prepare_env`, `prepare`, `exec`) + `SandboxInstance` / `CreationMetrics` / `CommandResult` / `SandboxStatus`. `exec()` is the **sole command primitive** — file writes go through `exec` as a heredoc, no separate upload method, so adding a provider is implementing `exec`. The provider keeps any SDK handle internally (`id → handle`); the kernel holds only the host-agnostic `SandboxInstance`.
@@ -120,6 +121,24 @@ These have their own managers / stats / round-robin (`e2b_bench/run_benchmark` i
 - Environment variables loaded from `.env` files. Never hardcode paths — use config or `.env`.
 - Never declare per-backend readiness (port/timing) knobs in YAML — readiness is provider-transparent (kernel constants).
 
+### Host-level monitor (`monitor:` section)
+
+A top-level `monitor:` block (peer of `report:`) controls host-level `vm_monitor` collection during the stress phase. Default `enabled: auto` turns it on only for providers with a VMM (`vmm_type`): e2b/aenv → `firecracker`; docker/fake → skipped. `vm-monitor` runs as a local subprocess (stress-file sync) bracketing active stress; outputs (CSV + `analysis_report.xlsx` + SVG) land in `<report.output_dir>/vm_monitor/`. By default (`merge_report: false`) the replay result is **two separate files**: vm_monitor's `analysis_report.xlsx` (system resources) stands alone, and the replay `<prefix>_obs.xlsx` carries trajectory/replay metrics only (incl. a per-trajectory per-step detail sheet). Set `merge_report: true` to copy host sheets (`VM_Stats`/`NUMA_Overview`/`DevKit_TopDown`) into the obs workbook instead. `--no-vm-monitor` short-circuits it off. Never compromises the bench: missing binary/tools or an unwritable lock dir degrade to a warning + skip.
+
+### Replay workflow (trajectory / lifecycle replay)
+
+`config/common/replay.yaml` drives the replay workflow (`workflow_type: replay`): deterministic replay of recorded SWE-bench trajectories against sandbox backends, primarily `--provider aenv` (lifecycle pause/resume) or `--provider e2b` (exec-only). `replay.yaml` ships as the aenv **lifecycle 1:1 (no-oversubscription) baseline**; see [docs/bench-core-usage-zh.md](docs/bench-core-usage-zh.md) §8 for the mode guide. Modes (per `replay.mode`, defaults to the provider's `default_replay_mode`):
+
+- `exec_only` — long-lived sandboxes, continuous exec of trajectory steps, no pause/resume. Baseline for pure exec-replay cost; used when the backend has no lifecycle capability (e2b/docker/fake).
+- `lifecycle` — long-lived sandboxes: `create_all` → pause once → per-step `provider.resume()`/`pause()` (aenv `LifecycleCapable`). Oversubscription = **snapshot memory reuse** — pause frees RAM, so `k×N` sandboxes fit in `running_concurrency = N` slots. Emits `initial_pause` + per-slice `pause`/`resume` segments and `snapshot_size` events (aenv `SnapshotSizeCapable`).
+- `trajectory` — ephemeral `create_one`/`kill_one` per trajectory (`EphemeralCapable`); per-step resume/pause still runs. Oversubscription = **queue limiting** (M slots gate concurrent trajectories; the rest defer `create`, not pause-to-free-memory). `launch_interval_sec` (per-sandbox create pacing) is **trajectory-only** — lifecycle pre-creates via `create_all` batches (`create_batch`, integer-second intervals), so it has no sub-second per-VM launch pacing.
+
+The three modes differ by **sandbox lifecycle** (long-lived exec-only / long-lived pause-resume / ephemeral create-kill), not by "whether a rate limiter is attached"; `launch_interval_sec` exists in trajectory only because frequent per-trajectory `create_one` calls need pacing. Oversubscription ratio: with a fixed host (e.g. 1.5 TiB / 4 GiB per VM → 384 baseline), `running_concurrency` stays at the baseline (N slots) and `total_count` scales to `k×384` for ratio `1:k` (1:2 → 768/384, 1:3 → 1152/384). Scale `round_size` with `total_count` (single group = all concurrent); each ratio is one run.
+
+Outputs: a text report (`<output_dir>/<prefix>_<ts>.txt`), a JSONL lifecycle series (`<prefix>_lifecycle_series.jsonl`), and (with `report.format: xlsx|both`) an 8-sheet observability workbook (`<prefix>_obs.xlsx`: Overview [consolidates Run / Throughput / Admission & QPS / Retry impact as grouped, color-coded sections], Per-step timings, Lifecycle overhead, Trajectory summary, Step detail, Concurrency states, Gantt, Snapshot sizes). The vm_monitor system-resource report (`analysis_report.xlsx`) is a separate file by default (`monitor.merge_report: false`). All series events are `time.time()`-stamped for direct join with `vm_monitor` host samples (see `monitor:` above).
+
+Multi-template routing: trajectories may declare per-file concrete templates via a side `template_manifest` (referenced by `replay.template_manifest`). The fleet is round-robin-allocated over the pool's (template, trajectory) pairs, runners route by template affinity (orphan templates skip with a count), and trajectory mode passes `template=` per `create_one`.
+
 ### Logging
 
 - Python `logging` module, not `print`. Levels: DEBUG (verbose), INFO (progress), WARNING (issues), ERROR (failures).
@@ -139,7 +158,7 @@ These have their own managers / stats / round-robin (`e2b_bench/run_benchmark` i
 
 | Script | Purpose | CLI |
 |--------|---------|-----|
-| `bench-core` (`bench_core.bench:main`) | host-agnostic kernel (recommended) | `--config`, `--provider {fake,e2b,docker}`, `--create-only`, `--detect`, `--warmup-only`, `--cleanup`, `-n`, `-bm`, `--test-duration` |
+| `bench-core` (`bench_core.bench:main`) | host-agnostic kernel (recommended) | `--config`, `--provider {fake,e2b,docker,aenv}`, `--create-only`, `--detect`, `--warmup-only`, `--cleanup`, `-n`, `-bm`, `--test-duration`, `--vm-monitor {auto,true,false}`, `--no-vm-monitor` |
 | `vm-monitor` (`vm_monitor.cli:main`) | VMM monitoring | `-t`, `-i`, `--vmm`, `--enable-capture` |
 | `vm_bench/__main__.py` | OpenStack VM browser/QA + create | `--create-only`, `--detect`, `-n`, `--start-ip`, `--browser-url` |
 | `auto_vm_test.py` | Single OpenStack test | `--config` |
@@ -187,9 +206,10 @@ Each tool produces logs parsed by `vm_monitor/parsers.py`:
    [create-only] -> creation timing report -> save_ids() -> exit (keep running)
 4. warmup waves (orchestrator)                              # [warmup-only] -> save_ids() -> exit (keep running)
 5. stats_collector.start()
-6. dispatch: round_robin -> RoundRobinTaskManager.run() | fixed -> TaskManager.start_all(); sleep(duration)
-7. stop; stats_collector.stop(); cleanup_all() (skip in detect mode)
-8. stats_collector.generate_report() + save_report()
+6. monitor.start() (auto vm-monitor, host-level; begin_stress at dispatch entry, end_stress at exit)
+7. dispatch: round_robin -> RoundRobinTaskManager.run() | fixed -> TaskManager.start_all(); sleep(duration)
+8. stop; stats_collector.stop(); cleanup_all() (skip in detect mode)
+9. stats_collector.generate_report() + save_report()
 ```
 
 ### OpenStack VM test (`auto_vm_test.py`)

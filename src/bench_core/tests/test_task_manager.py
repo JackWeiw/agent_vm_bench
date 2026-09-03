@@ -141,3 +141,26 @@ class TestStartAll:
         assert len(mgr.runners) == 4
         stop.set()
         mgr.wait_all(timeout=5)
+
+
+class TestReplay:
+    def test_task_manager_creates_replay_task_runner(self):
+        config = KernelConfig(workflow_type="replay")
+        state = _ready_sbx(0, warmup_done=True)
+        state.workflow_type = "replay"
+        tm = TaskManager(config, {0: state}, threading.Event(), FakeProvider(count=1))
+
+        runner = tm._create_task_runner(state)
+
+        from bench_core.task_runner.replay import ReplayTaskRunner
+
+        assert isinstance(runner, ReplayTaskRunner)
+
+    def test_task_manager_replay_wait_all_join_group(self):
+        config = KernelConfig(workflow_type="replay")
+        state = _ready_sbx(0, warmup_done=True)
+        state.workflow_type = "replay"
+        tm = TaskManager(config, {0: state}, threading.Event(), FakeProvider(count=1))
+
+        # wait_all must not raise for replay (it joins like browser/coding).
+        tm.wait_all(timeout=0.1)

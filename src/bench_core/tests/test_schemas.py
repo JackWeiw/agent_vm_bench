@@ -11,6 +11,7 @@ from bench_core.schemas import (
     BrowserMetrics,
     CodingMetrics,
     DocumentMetrics,
+    ReplayMetrics,
     TaskMetricsBase,
     Snapshot,
     get_step_order,
@@ -140,3 +141,81 @@ class TestSnapshot:
         assert snap.browser_total == 0
         assert snap.creation_stats == {}
         assert snap.round_total == 0
+
+
+def test_get_step_order_replay():
+    from bench_core.schemas import get_step_order
+
+    assert get_step_order("replay") == ["shell", "str_replace_editor", "bash", "other"]
+
+
+def test_replay_metrics_buckets_by_action_type():
+    from bench_core.schemas import ReplayMetrics
+
+    m = ReplayMetrics()
+    m.add(
+        latency=0.1, success=True, action_type="shell", requested_delay=1.0, actual_delay=0.9, trajectory_complete=False
+    )
+    m.add(
+        latency=0.2,
+        success=False,
+        action_type="str_replace_editor",
+        requested_delay=2.0,
+        actual_delay=2.1,
+        trajectory_complete=False,
+    )
+    assert m.total_tasks == 2
+    assert m.success_count == 1
+    assert m.failed_count == 1
+    lat = m.action_type_latencies
+    assert set(lat.keys()) == {"shell", "str_replace_editor"}
+    assert len(lat["shell"]) == 1
+
+
+def test_replay_metrics_delay_fidelity_and_completions():
+    from bench_core.schemas import ReplayMetrics
+
+    m = ReplayMetrics()
+    m.add(0.1, True, action_type="shell", requested_delay=1.0, actual_delay=0.8, trajectory_complete=False)
+    m.add(0.1, True, action_type="shell", requested_delay=2.0, actual_delay=2.2, trajectory_complete=True)
+    assert m.delay_fidelity == (0.8 + 2.2) / (1.0 + 2.0)
+    assert m.trajectory_completions == 1
+
+
+def test_bench_sandbox_replay_metrics_dispatch():
+    from bench_core.schemas import BenchSandbox, ReplayMetrics
+
+    sb = BenchSandbox(id="x", index=0, workflow_type="replay")
+    assert isinstance(sb.task_metrics, ReplayMetrics)
+    assert sb.task_metrics.step_order == ["shell", "str_replace_editor", "bash", "other"]
+
+
+def test_snapshot_has_replay_fields():
+    from bench_core.schemas import Snapshot
+
+    snap = Snapshot(timestamp=0.0, elapsed=0.0, total_sandboxes=1, active_sandboxes=1, offline_sandboxes=0)
+    assert snap.replay_total == 0
+    assert snap.replay_success == 0
+    assert snap.replay_avg_latency == 0.0
+    assert snap.replay_p99_latency == 0.0
+    assert snap.replay_traj_done == 0
+    assert snap.replay_total_trajs == 0
+
+
+def test_bench_sandbox_lifecycle_paused_default_false():
+    sb = BenchSandbox.from_instance(
+        SandboxInstance(id="x", index=0),
+        workflow_type="replay",
+    )
+    assert sb.lifecycle_paused is False
+
+
+def test_replay_metrics_initial_pause_default_zero():
+    m = ReplayMetrics()
+    assert m.initial_pause_sec == 0.0
+
+
+def test_replay_metrics_initial_pause_settable():
+    m = ReplayMetrics()
+    m.initial_pause_sec = 1.25
+    assert m.initial_pause_sec == 1.25

@@ -29,9 +29,18 @@ from pathlib import Path
 from typing import Any
 
 from bench_core.config import KernelConfig
-from env_provider import EnvironmentProvider, SandboxInstance, SandboxStatus
+from env_provider import (
+    CreationMetrics,
+    EnvironmentProvider,
+    EphemeralCapable,
+    LifecycleCapable,
+    SandboxInstance,
+    SandboxStatus,
+)
 from bench_core.schemas import BenchSandbox
-from bench_core.stats_collector import StatsCollector
+from bench_core.observability.stats_collector import StatsCollector
+from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
+from bench_core.observability.monitor import MonitorController
 from bench_core.task_manager import TaskManager
 from bench_core.round_robin import RoundRobinTaskManager
 from bench_core.utils import calc_percentiles, setup_logging
@@ -47,6 +56,26 @@ def _promote(instances: dict[int, SandboxInstance], workflow_type: str) -> dict[
     lifecycle fields generically, so the provider stays unaware of ``BenchSandbox``.
     """
     return {i: BenchSandbox.from_instance(s, workflow_type) for i, s in instances.items()}
+
+
+def _replay_template_map(config: KernelConfig) -> dict[int, str | None] | None:
+    """Round-robin the pool's (template, trajectory) pairs over total_count slots.
+
+    Returns None when no manifest is configured (legacy single-template path)
+    or when the workflow is not replay. Sandbox k gets
+    ``pool[k % len(pool)].template`` (may be None -> provider uses its default).
+
+    The ``load_pool`` import is function-local to avoid a circular import at
+    module load time (``replay_payload`` imports ``config``, not ``bench``).
+    """
+    if config.workflow_type != "replay" or not config.replay_template_manifest:
+        return None
+    from bench_core.payload.replay_payload import load_pool
+
+    pool = load_pool(config)
+    if not pool:
+        return None
+    return {k: pool[k % len(pool)].template for k in range(config.total_count)}
 
 
 def _print_header(config: KernelConfig, provider: EnvironmentProvider) -> None:
@@ -71,6 +100,11 @@ def _print_header(config: KernelConfig, provider: EnvironmentProvider) -> None:
     elif config.workflow_type == "document":
         lines.append(f"  Case:      {config.document_case_kind.upper()}")
         lines.append(f"  Workspace: {config.document_workspace_dir}")
+    elif config.workflow_type == "replay":
+        lines.append(f"  Traj dir:  {config.replay_trajectory_dir}")
+        lines.append(f"  Workdir:   {config.replay_workdir}")
+        lines.append(f"  Mode:      {config.replay_mode}")
+        lines.append(f"  Delay:     {config.replay_delay_scale}x")
     elif config.workflow_type != "browser":
         raise ValueError(f"Unsupported workflow_type: {config.workflow_type}")
 
@@ -93,7 +127,20 @@ def _print_header(config: KernelConfig, provider: EnvironmentProvider) -> None:
 
     if config.benchmark_mode == "round_robin":
         rounds_label = f"{config.round_count} rounds" if config.round_count else "unlimited"
-        lines.append(f"  Benchmark Mode: round_robin ({rounds_label}, interval {config.round_interval}s)")
+        if config.workflow_type == "replay":
+            # In replay a "round" = one trajectory per sandbox (all concurrent);
+            # round_count>1 rotates each sandbox through the pool. A single round
+            # is all-concurrent (no rotation), so the label avoids "round_robin"
+            # jargon inherited from the browser stress model.
+            if config.round_count and config.round_count <= 1:
+                lines.append("  Benchmark Mode: replay (1 trajectory/sandbox, all concurrent)")
+            else:
+                lines.append(
+                    f"  Benchmark Mode: replay round-robin ({rounds_label}, "
+                    f"1 trajectory/sandbox/round, interval {config.round_interval}s)"
+                )
+        else:
+            lines.append(f"  Benchmark Mode: round_robin ({rounds_label}, interval {config.round_interval}s)")
     else:
         lines.append("  Benchmark Mode: fixed")
         if config.benchmark_percent < 1.0:
@@ -175,10 +222,33 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         provider: The sandbox backend, already constructed.
 
     Returns:
-        ``{"report": str, "filepath": str | None}``, or ``{}`` when no sandboxes
-        reached ready state.
+        ``{"report": str, "filepath": str | None, "admission_snapshot": dict | None}``,
+        or ``{}`` when no sandboxes reached ready state. ``admission_snapshot`` is
+        the merged running-slot + QPS-limiter snapshot (``None`` outside
+        lifecycle/trajectory replay modes).
     """
+    # Resolve replay_mode sentinel -> provider default before validation.
+    if config.workflow_type == "replay" and config.replay_mode is None:
+        config.replay_mode = getattr(provider, "default_replay_mode", "exec_only")
     config.validate()
+    if config.workflow_type == "replay" and config.replay_mode == "lifecycle":
+        if not isinstance(provider, LifecycleCapable):
+            raise ValueError(
+                f"replay.mode=lifecycle requires a LifecycleCapable provider "
+                f"(pause/resume); provider '{provider.name}' does not support it. "
+                f"Use --provider aenv."
+            )
+    if config.workflow_type == "replay" and config.replay_mode == "trajectory":
+        if not isinstance(provider, EphemeralCapable):
+            raise ValueError(
+                f"replay.mode=trajectory requires an EphemeralCapable provider "
+                f"(create_one/kill_one); provider '{provider.name}' does not support it. "
+                f"Use --provider aenv."
+            )
+    # exec_only has no lifecycle calls; force the ready probe off regardless of
+    # whether exec_only was explicit in YAML or resolved from the provider default.
+    if config.workflow_type == "replay" and config.replay_mode == "exec_only":
+        config.replay_ready_probe = False
     if config.workflow_type == "document":
         from bench_core.task_runner.document import preflight_document
 
@@ -201,16 +271,33 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
 
     stop_event = threading.Event()
 
-    # 2. Create or detect sandboxes. detect mode prefers persisted IDs (when the
-    # provider supports them) and falls back to live detection.
-    if config.detect_existing:
+    # 2. Create or detect sandboxes. Trajectory mode skips create_all (each
+    # trajectory creates/kills its own sandbox in-runner); build N lightweight
+    # shells the workers fill per trajectory. detect mode is incompatible with
+    # trajectory (no persistent pool to detect).
+    if config.replay_mode == "trajectory":
+        if config.detect_existing:
+            logger.info("\n[Phase 1] detect mode incompatible with trajectory mode; building shells.")
+        logger.info(f"\n[Phase 1] Trajectory mode: {config.total_count} worker shells (no pre-create).")
+        instances = {
+            i: SandboxInstance(
+                id=f"traj-shell-{i}",
+                index=i,
+                ready=True,  # the shell is "ready" to host trajectories
+                is_alive=True,
+                creation_metrics=CreationMetrics(status=SandboxStatus.PENDING),
+            )
+            for i in range(1, config.total_count + 1)
+        }
+    elif config.detect_existing:
         instances = provider.detect_from_ids()
         if instances is None:
             instances = provider.detect_existing()
         logger.info("\n[Phase 1] Detected existing sandboxes...")
     else:
         logger.info("\n[Phase 1] Creating sandboxes...")
-        instances = provider.create_all()
+        templates = _replay_template_map(config) if config.workflow_type == "replay" else None
+        instances = provider.create_all(templates=templates)
     instances = dict(instances)
 
     ready_count = sum(1 for s in instances.values() if s.ready)
@@ -249,17 +336,86 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     logger.info("\n[Phase 3] Starting stats collector...")
     stats_collector = StatsCollector(config, states, provider.name)
     stats_collector.start()
+    monitor = MonitorController(config, provider)
+    monitor.start()
+
+    # P2.5: lifecycle-mode-only per-step JSONL time series. Exec-only emits
+    # no file (lifecycle fields all-zero; nothing to curve).
+    series_writer: LifecycleSeriesWriter | None = None
+    series_path: Path | None = None
+    if config.workflow_type == "replay" and config.replay_mode in ("lifecycle", "trajectory"):
+        series_path = Path(config.output_dir) / f"{config.filename_prefix}_lifecycle_series.jsonl"
+        series_writer = LifecycleSeriesWriter(series_path)
+        logger.info(f"  Lifecycle series: {series_path}")
+
+    # P2.6: Admission controllers (lifecycle-only). Construct only when a knob
+    # is set; thread through both managers into the replay runners.
+    from bench_core.admission import Admission, LaunchPacer, QpsRateLimiter, RunningSlotScheduler
+
+    admission: Admission | None = None
+    admission_snapshot: dict | None = None
+    if config.workflow_type == "replay" and config.replay_mode in ("lifecycle", "trajectory"):
+        slots = None
+        qps_lim = None
+        if config.replay_running_concurrency is not None and config.replay_running_concurrency < config.total_count:
+            slots = RunningSlotScheduler(maximum=config.replay_running_concurrency, stop_event=stop_event)
+        if config.replay_control_plane_qps is not None:
+            cap = config.replay_control_plane_inflight_cap or min(64, config.total_count)
+            qps_lim = QpsRateLimiter(qps=config.replay_control_plane_qps, inflight_cap=cap, stop_event=stop_event)
+        if slots is not None or qps_lim is not None:
+            # If only qps is set, provide a pass-through slots scheduler (cap=total)
+            # so the runner's admission path (slot acquire/release + qps gating) runs.
+            admission = Admission(
+                slots=slots or RunningSlotScheduler(maximum=config.total_count, stop_event=stop_event),
+                qps=qps_lim,
+            )
+            admission_snapshot = {
+                "running": config.replay_running_concurrency or config.total_count,
+                "total": config.total_count,
+                "qps": config.replay_control_plane_qps or "off",
+                "peak_active": 0,
+                "avg_queue_wait_sec": 0.0,
+            }
+            logger.info(
+                f"  Admission: running={admission_snapshot['running']}/{config.total_count}, "
+                f"qps={admission_snapshot['qps']}"
+            )
+
+    # G5: shared no-catch-up launch pacer for trajectory mode (one per fleet).
+    # Paces trajectory starts so multiple workers don't burst-create in the
+    # same instant. The pacer's lock + deadline cell are shared across all
+    # workers (a per-runner field would let each read its own 0.0 and burst).
+    # None outside trajectory mode (no per-trajectory create).
+    trajectory_launch_pacer = LaunchPacer() if config.replay_mode == "trajectory" else None
 
     task_manager: TaskManager | None = None
     try:
+        monitor.begin_stress()
         if config.benchmark_mode == "round_robin":
             logger.info("\n[Phase 4] Starting round-robin tasks...")
-            round_robin = RoundRobinTaskManager(config, states, stop_event, stats_collector, provider)
+            round_robin = RoundRobinTaskManager(
+                config,
+                states,
+                stop_event,
+                stats_collector,
+                provider,
+                series=series_writer,
+                admission=admission,
+                launch_pacer=trajectory_launch_pacer,
+            )
             round_robin.run()
         else:
             workflow_label = config.workflow_type.capitalize()
             logger.info(f"\n[Phase 4] Starting {workflow_label} tasks...")
-            task_manager = TaskManager(config, states, stop_event, provider)
+            task_manager = TaskManager(
+                config,
+                states,
+                stop_event,
+                provider,
+                series=series_writer,
+                admission=admission,
+                launch_pacer=trajectory_launch_pacer,
+            )
             task_manager.start_all()
             logger.info(f"\n[Phase 5] Running for {config.test_duration} seconds...")
             try:
@@ -268,7 +424,11 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 logger.info("\nUser interrupt, stopping...")
     except Exception:
         stop_event.set()
+        monitor.end_stress()
+        monitor.stop()
         stats_collector.stop()
+        if series_writer is not None:
+            series_writer.close()
         if not config.detect_existing:
             provider.cleanup_all()
         raise
@@ -276,11 +436,16 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     # 7. Stop all components.
     logger.info("\n[Phase 6] Stopping...")
     stop_event.set()
+    monitor.end_stress()
     if task_manager is not None:
         try:
             task_manager.wait_all(timeout=5)
         except Exception:
+            monitor.end_stress()
+            monitor.stop()
             stats_collector.stop()
+            if series_writer is not None:
+                series_writer.close()
             if not config.detect_existing:
                 provider.cleanup_all()
             raise
@@ -289,6 +454,8 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     if config.workflow_type == "document":
         stats_collector._take_snapshot()
     stats_collector.stop()
+    if series_writer is not None:
+        series_writer.close()
 
     # Only tear down sandboxes the kernel created; detect mode leaves them running.
     if not config.detect_existing:
@@ -298,12 +465,62 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
 
     time.sleep(0.5)  # Let daemon threads finish writing output.
 
+    # Refresh admission snapshot from the controllers before the report.
+    if admission is not None:
+        snap = admission.slots.snapshot()
+        admission_snapshot["peak_active"] = snap["peak_active"]
+        admission_snapshot["avg_queue_wait_sec"] = snap["average_queue_wait_sec"]
+        admission_snapshot["running_slots"] = snap  # full sub-snapshot for the report/xlsx
+        if admission.qps is not None:
+            qps_snap = admission.qps.snapshot()
+            admission_snapshot["qps_dispatched"] = qps_snap["dispatched"]
+            admission_snapshot["qps_limiter"] = qps_snap  # full sub-snapshot
+        stats_collector.admission_snapshot = admission_snapshot
+
     # 8. Generate and save the report.
+    monitor.stop()
     report = stats_collector.generate_report()
     filepath = stats_collector.save_report(report)
+
+    # Phase 3.5: optional xlsx observability workbook (replay workflows only).
+    if config.workflow_type == "replay" and config.report_format in ("xlsx", "both"):
+        try:
+            from bench_core.observability.obs_xlsx import XlsxReportRenderer
+        except ImportError:  # openpyxl missing on a minimal install
+            logger.warning("openpyxl not installed; skipping xlsx report (txt only)")
+        else:
+            from bench_core.observability.replay_obs import ReplayObservability
+
+            wall_sec = (time.time() - stats_collector.start_time) if stats_collector.start_time else None
+            obs = ReplayObservability(
+                config,
+                stats_collector.sandbox_states,
+                admission_snapshot=admission_snapshot,
+                wall_sec=wall_sec,
+            )
+            xlsx_path = Path(config.output_dir) / f"{config.filename_prefix}_obs.xlsx"
+            XlsxReportRenderer(
+                obs,
+                series_path=series_path if series_writer else None,
+                host_xlsx=monitor.merge_source(),
+            ).render(xlsx_path)
+            logger.info(f"Xlsx report saved to: {xlsx_path}")
+
+    # Per-trajectory replay_result.json export (replay lifecycle/trajectory
+    # mode only; a no-op when the series file is absent). Emits one
+    # replay_result.json per trajectory + a trajectories/index.json catalog
+    # so a fleet of dozens/hundreds of trajectories is browsable without
+    # walking folders. Runs regardless of report_format (txt-only runs still
+    # get the per-trajectory JSON).
+    if series_path is not None and Path(series_path).exists():
+        from bench_core.observability.trajectory_export import export_trajectories
+
+        n_traj = export_trajectories(series_path, config.output_dir, filename_prefix=config.filename_prefix)
+        logger.info("Per-trajectory replay_result.json exported: %d trajectories", n_traj)
+
     logger.info("\n" + report)
     logger.info(f"\nReport saved to: {filepath}")
-    return {"report": report, "filepath": filepath}
+    return {"report": report, "filepath": filepath, "admission_snapshot": admission_snapshot}
 
 
 def load_config(path: str | Path) -> tuple[KernelConfig, dict[str, Any]]:
@@ -323,13 +540,21 @@ def load_config(path: str | Path) -> tuple[KernelConfig, dict[str, Any]]:
     return KernelConfig.from_raw(raw), raw
 
 
+def _apply_monitor_override(config: KernelConfig, args) -> None:
+    """Apply --vm-monitor / --no-vm-monitor CLI overrides to config.monitor.enabled."""
+    if getattr(args, "no_vm_monitor", False):
+        config.monitor.enabled = "false"
+    elif getattr(args, "vm_monitor", "auto") != "auto":
+        config.monitor.enabled = args.vm_monitor
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     """Host-agnostic CLI. Provider packages add their own flags on top."""
     parser = argparse.ArgumentParser(description="Host-agnostic benchmark kernel")
     parser.add_argument("--config", help="YAML config path")
-    parser.add_argument("--provider", default="fake", choices=["fake", "e2b", "docker"])
+    parser.add_argument("--provider", default="fake", choices=["fake", "e2b", "docker", "aenv"])
     parser.add_argument("-n", "--total-count", type=int)
-    parser.add_argument("--workflow-type", choices=["browser", "coding", "document"])
+    parser.add_argument("--workflow-type", choices=["browser", "coding", "document", "replay"])
     parser.add_argument("-bm", "--benchmark-mode", choices=["fixed", "round_robin"])
     parser.add_argument("--round-count", type=int)
     parser.add_argument("--round-size", type=int)
@@ -345,6 +570,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--create-only/--detect run that left them running), then exit",
     )
     parser.add_argument("-o", "--output-dir")
+    parser.add_argument(
+        "--report-format",
+        choices=["txt", "xlsx", "both"],
+        default=None,
+        help="report output format (default: txt; xlsx/both add an openpyxl workbook)",
+    )
+    parser.add_argument(
+        "--vm-monitor",
+        choices=["auto", "true", "false"],
+        default="auto",
+        help="Override vm_monitor auto-enable: auto (default, by provider vmm_type), true, false.",
+    )
+    parser.add_argument(
+        "--no-vm-monitor",
+        action="store_true",
+        help="Short-circuit vm_monitor off (overrides --vm-monitor and YAML).",
+    )
     return parser
 
 
@@ -365,6 +607,8 @@ def _build_provider(name: str, config: KernelConfig, raw_config: dict[str, Any])
         from env_provider.e2b import build_provider
     elif name == "docker":
         from env_provider.docker import build_provider
+    elif name == "aenv":
+        from env_provider.aenv import build_provider
     else:
         raise ValueError(f"Unknown provider: {name}")
     return build_provider(config, raw_config)
@@ -405,6 +649,24 @@ def main() -> None:
         config.cleanup_only = True
     if args.output_dir:
         config.output_dir = args.output_dir
+    if args.report_format:
+        config.report_format = args.report_format
+    _apply_monitor_override(config, args)
+
+    # Stamp each run into its own subdir so the log, lifecycle series, report,
+    # and vm_monitor outputs never overwrite a previous run (mirrors the
+    # runs/<name>-<timestamp>/ layout). Applies to every workflow; the report
+    # filename's own timestamp becomes redundant but harmless.
+    run_stamp = time.strftime("%Y%m%d-%H%M%S")
+    config.output_dir = str(Path(config.output_dir) / f"{config.filename_prefix}_{run_stamp}")
+
+    # Attach a file handler once config (and CLI overrides) are resolved.
+    # Stdout stays plaintext for live tailing; JSON lines go to the file only
+    # for lifecycle/trajectory replay modes.
+    log_dir = Path(config.output_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = str(log_dir / f"{config.filename_prefix}.log")
+    setup_logging(log_path=log_path, json_lines=config.replay_mode in ("lifecycle", "trajectory"))
 
     provider = _build_provider(args.provider, config, raw)
     run_benchmark(config, provider)

@@ -9,7 +9,7 @@ from __future__ import annotations
 import base64
 import threading
 
-from bench_core.coding_payload import DEFAULT_CODING_SOURCE_FILES
+from bench_core.payload.coding_payload import DEFAULT_CODING_SOURCE_FILES
 from bench_core.task_runner.coding import (
     CodingRoundRunner,
     CodingTaskRunner,

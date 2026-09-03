@@ -153,7 +153,7 @@ def _build_summary_sheet(writer, monitor, numa_nodes, overall_stats):
 
     # VM stats
     summary_data["Metric"].extend(
-        ["Total VMs", "Alive VMs at End", "VM Avg CPU", "VM Peak Total CPU", "Total Avg Memory"]
+        ["Total VMs", "Alive VMs at End", "VM Avg CPU", "VM Peak Total CPU", "Total Avg Memory", "VM Peak Total Memory"]
     )
     summary_data["Value"].extend(
         [
@@ -162,9 +162,10 @@ def _build_summary_sheet(writer, monitor, numa_nodes, overall_stats):
             overall_stats["overall_avg_cpu"],
             round(monitor.peak_total_cpu, 1),
             overall_stats["total_avg_memory_mb"],
+            round(monitor.peak_total_memory_mb, 1),
         ]
     )
-    summary_data["Unit"].extend(["", "", "%", "%", "MB"])
+    summary_data["Unit"].extend(["", "", "%", "%", "MB", "MB"])
 
     # Disk I/O + host memory detail peaks
     dirty_avg = (
@@ -280,19 +281,32 @@ def _build_numa_overview_sheet(writer, monitor):
 
 
 def _build_vm_stats_sheet(writer, vm_stats):
-    """Sheet 3: VM Statistics (one row per VM)."""
-    if vm_stats:
-        vm_data = {
-            "VM Name": [v["vm_name"] for v in vm_stats],
-            "PID": [v["pid"] for v in vm_stats],
-            "Samples": [v["sample_count"] for v in vm_stats],
-            "Avg CPU (%)": [v["avg_cpu"] for v in vm_stats],
-            "Max CPU (%)": [v["max_cpu"] for v in vm_stats],
-            "Avg Memory (MB)": [v["avg_memory_mb"] for v in vm_stats],
-            "Max Memory (MB)": [v["max_memory_mb"] for v in vm_stats],
-            "Avg Hugepage (MB)": [v.get("avg_huge_mb", 0) for v in vm_stats],
-        }
-        pd.DataFrame(vm_data).to_excel(writer, sheet_name="VM_Stats", index=False)
+    """Sheet 3: VM Statistics (one row per VM).
+
+    Carries the full per-VM summary calculate_vm_stats() computes, incl. the
+    min/last memory, max hugepage, and private/heap memory breakdowns the
+    legacy 8-column sheet dropped.
+    """
+    if not vm_stats:
+        return
+    vm_data = {
+        "VM Name": [v["vm_name"] for v in vm_stats],
+        "PID": [v["pid"] for v in vm_stats],
+        "Samples": [v["sample_count"] for v in vm_stats],
+        "Avg CPU (%)": [v["avg_cpu"] for v in vm_stats],
+        "Max CPU (%)": [v["max_cpu"] for v in vm_stats],
+        "Avg Memory (MB)": [v["avg_memory_mb"] for v in vm_stats],
+        "Max Memory (MB)": [v["max_memory_mb"] for v in vm_stats],
+        "Min Memory (MB)": [v.get("min_memory_mb", 0) for v in vm_stats],
+        "Last Memory (MB)": [v.get("last_memory_mb", 0) for v in vm_stats],
+        "Avg Hugepage (MB)": [v.get("avg_huge_mb", 0) for v in vm_stats],
+        "Max Hugepage (MB)": [v.get("max_huge_mb", 0) for v in vm_stats],
+        "Avg Private (MB)": [v.get("avg_private_mb", 0) for v in vm_stats],
+        "Max Private (MB)": [v.get("max_private_mb", 0) for v in vm_stats],
+        "Avg Heap (MB)": [v.get("avg_heap_mb", 0) for v in vm_stats],
+        "Max Heap (MB)": [v.get("max_heap_mb", 0) for v in vm_stats],
+    }
+    pd.DataFrame(vm_data).to_excel(writer, sheet_name="VM_Stats", index=False)
 
 
 def _write_timeline_sheet(writer, timeline_data, sheet_name):
@@ -312,42 +326,63 @@ def _write_timeline_sheet(writer, timeline_data, sheet_name):
 
 
 def _build_devkit_topdown_sheets(writer, parsed_logs):
-    """Sheets 4-5: DevKit Top-Down summary + TopDown timeline."""
+    """Sheets 4-5: DevKit Top-Down summary + TopDown timeline.
+
+    The summary sheet carries the _avg stats (rows 1-13, which the
+    _add_topdown_pie / _add_membound_bar charts index positionally) plus the
+    _max/_min stats the parser computes for cycles/instructions and every
+    top-down metric, appended at rows 14+ so the chart row references stay
+    valid.
+    """
     if "devkit_top_down" not in parsed_logs or "error" in parsed_logs["devkit_top_down"]:
         return
     td = parsed_logs["devkit_top_down"]
+    # Rows 1-13: averages (+ ipc max/min). Order is load-bearing -- the
+    # _add_topdown_pie / _add_membound_bar charts index these by row.
+    base_rows = [
+        ("Cycles Avg", "cycles_avg"),
+        ("Instructions Avg", "instructions_avg"),
+        ("IPC Avg", "ipc_avg"),
+        ("Bad Speculation (%)", "bad_speculation_avg"),
+        ("Frontend Bound (%)", "frontend_bound_avg"),
+        ("Retiring (%)", "retiring_avg"),
+        ("Backend Bound (%)", "backend_bound_avg"),
+        ("L3 Bound (%)", "l3_bound_avg"),
+        ("Mem Bound (%)", "mem_bound_avg"),
+        ("Latency Bound (%)", "mem_latency_bound_avg"),
+        ("Bandwidth Bound (%)", "mem_bandwidth_bound_avg"),
+        ("IPC Max", "ipc_max"),
+        ("IPC Min", "ipc_min"),
+    ]
+    # Rows 14+: max/min for cycles/instructions + the 8 top-down/memory metrics
+    # (parser computes all three of avg/max/min; only avg reached the sheet).
+    max_min_rows = [
+        ("Cycles Max", "cycles_max"),
+        ("Cycles Min", "cycles_min"),
+        ("Instructions Max", "instructions_max"),
+        ("Instructions Min", "instructions_min"),
+        ("Bad Speculation Max", "bad_speculation_max"),
+        ("Bad Speculation Min", "bad_speculation_min"),
+        ("Frontend Bound Max", "frontend_bound_max"),
+        ("Frontend Bound Min", "frontend_bound_min"),
+        ("Retiring Max", "retiring_max"),
+        ("Retiring Min", "retiring_min"),
+        ("Backend Bound Max", "backend_bound_max"),
+        ("Backend Bound Min", "backend_bound_min"),
+        ("L3 Bound Max", "l3_bound_max"),
+        ("L3 Bound Min", "l3_bound_min"),
+        ("Mem Bound Max", "mem_bound_max"),
+        ("Mem Bound Min", "mem_bound_min"),
+        ("Latency Bound Max", "mem_latency_bound_max"),
+        ("Latency Bound Min", "mem_latency_bound_min"),
+        ("Bandwidth Bound Max", "mem_bandwidth_bound_max"),
+        ("Bandwidth Bound Min", "mem_bandwidth_bound_min"),
+    ]
+    rows = base_rows + max_min_rows
     td_data = {
-        "Metric": [
-            "Cycles Avg",
-            "Instructions Avg",
-            "IPC Avg",
-            "Bad Speculation (%)",
-            "Frontend Bound (%)",
-            "Retiring (%)",
-            "Backend Bound (%)",
-            "L3 Bound (%)",
-            "Mem Bound (%)",
-            "Latency Bound (%)",
-            "Bandwidth Bound (%)",
-            "IPC Max",
-            "IPC Min",
-        ],
-        "Value": [
-            td.get("cycles_avg", 0),
-            td.get("instructions_avg", 0),
-            td.get("ipc_avg", 0),
-            td.get("bad_speculation_avg", 0),
-            td.get("frontend_bound_avg", 0),
-            td.get("retiring_avg", 0),
-            td.get("backend_bound_avg", 0),
-            td.get("l3_bound_avg", 0),
-            td.get("mem_bound_avg", 0),
-            td.get("mem_latency_bound_avg", 0),
-            td.get("mem_bandwidth_bound_avg", 0),
-            td.get("ipc_max", 0),
-            td.get("ipc_min", 0),
-        ],
-        "Report Count": [td.get("report_count", 0)] * 13,
+        "Metric": [label for label, _ in rows],
+        "Value": [td.get(key, 0) for _, key in rows],
+        "Report Count": [td.get("report_count", 0)] * len(rows),
     }
     pd.DataFrame(td_data).to_excel(writer, sheet_name="DevKit_TopDown", index=False)
 
@@ -568,7 +603,7 @@ def _build_getfre_sheets(writer, parsed_logs):
     if getfre_summary["NUMA"]:
         pd.DataFrame(getfre_summary).to_excel(writer, sheet_name="Getfre_Summary", index=False)
 
-    # Per-core sheet (per NUMA)
+    # Per-core summary sheet (per NUMA) + per-NUMA frequency timeline sheet
     for numa_id in sorted(getfre_data.keys()):
         gf = getfre_data[numa_id]
         if "error" not in gf:
@@ -583,19 +618,60 @@ def _build_getfre_sheets(writer, parsed_logs):
                 }
                 pd.DataFrame(core_data).to_excel(writer, sheet_name=f"Getfre_NUMA{numa_id}", index=False)
 
+            # Per-NUMA frequency timeline: timestamp rows x one column per core.
+            # parse_getfre returns timeline={timestamp: {core_id: freq_mhz}};
+            # surface it so frequency-throttling events over time are visible.
+            timeline = gf.get("timeline", {})
+            if timeline:
+                ts_order = sorted(timeline.keys())
+                core_ids = sorted({c for samples in timeline.values() for c in samples})
+                tl_data = {"Timestamp": ts_order}
+                for cid in core_ids:
+                    tl_data[f"Core {cid} (MHz)"] = [timeline[ts].get(cid, 0) for ts in ts_order]
+                pd.DataFrame(tl_data).to_excel(writer, sheet_name=f"Getfre_Timeline_NUMA{numa_id}", index=False)
+
 
 def _build_raw_vm_sheet(writer, monitor):
-    """Sheet: Raw VM Data time series (per-sample, per-VM)."""
-    if monitor.data:
-        raw_data = {
-            "Timestamp": [d["timestamp"] for d in monitor.data],
-            "VM Name": [d["vm_name"] for d in monitor.data],
-            "PID": [d["pid"] for d in monitor.data],
-            "CPU (%)": [d["cpu_percent"] for d in monitor.data],
-            "Memory (MB)": [d["memory_mb"] for d in monitor.data],
-            "Hugepage (MB)": [d.get("memory_huge_mb", 0) for d in monitor.data],
-        }
-        pd.DataFrame(raw_data).to_excel(writer, sheet_name="Raw_VM_Data", index=False)
+    """Sheet: Raw VM Data time series (per-sample, per-VM).
+
+    Mirrors export_raw_csv's full 12-field record schema: the per-VM scalars
+    (private/heap/swapcache) + status, plus the per-NUMA memory and swapcache
+    breakdowns spread to one column per NUMA node (union across samples) --
+    matching the per-NUMA-spread convention used by VM_Total_Memory_Timeline
+    and Disk_IO_Timeline. The legacy sheet wrote only 6 of the 12 fields.
+    """
+    if not monitor.data:
+        return
+    # Union of NUMA nodes across all samples (per-VM per-NUMA breakdown)
+    numa_nodes = sorted(
+        {n for d in monitor.data for n in d.get("memory_per_numa", {})}
+        | {n for d in monitor.data for n in d.get("memory_swapcache_per_numa", {})}
+    )
+    raw_data = {
+        "Timestamp": [d["timestamp"] for d in monitor.data],
+        "VM Name": [d["vm_name"] for d in monitor.data],
+        "PID": [d["pid"] for d in monitor.data],
+        "CPU (%)": [d["cpu_percent"] for d in monitor.data],
+        "Memory (MB)": [d["memory_mb"] for d in monitor.data],
+        "Hugepage (MB)": [d.get("memory_huge_mb", 0) for d in monitor.data],
+        "Private (MB)": [d.get("memory_private_mb", 0) for d in monitor.data],
+        "Heap (MB)": [d.get("memory_heap_mb", 0) for d in monitor.data],
+        "SwapCache (MB)": [d.get("memory_swapcache_mb", 0) for d in monitor.data],
+        "Status": [d.get("status", "") for d in monitor.data],
+    }
+    # Per-NUMA breakdowns grouped by metric (all NUMA memory, then all NUMA
+    # SwapCache) -- matches the per-NUMA-spread convention in
+    # VM_Total_Memory_Timeline / Disk_IO_Timeline. memory_per_numa =
+    # {node: {"total_mb": float}}; memory_swapcache_per_numa = {node: float}.
+    for nid in numa_nodes:
+        raw_data[f"NUMA{nid} Memory (MB)"] = [
+            d.get("memory_per_numa", {}).get(nid, {}).get("total_mb", 0) for d in monitor.data
+        ]
+    for nid in numa_nodes:
+        raw_data[f"NUMA{nid} SwapCache (MB)"] = [
+            d.get("memory_swapcache_per_numa", {}).get(nid, 0) for d in monitor.data
+        ]
+    pd.DataFrame(raw_data).to_excel(writer, sheet_name="Raw_VM_Data", index=False)
 
 
 def _build_swap_timeline_sheet(writer, monitor):
@@ -652,9 +728,13 @@ def _build_swap_timeline_sheet(writer, monitor):
 def _build_numa_memory_timeline_sheet(writer, monitor, numa_nodes):
     """Sheet: NUMA_Memory_Timeline (focus NUMA nodes: CLI-specified + remote).
 
-    The remote borrowing node (NUMA5 by default — the platform's designated
+    The remote borrowing node (NUMA5 by default -- the platform's designated
     cross-socket borrowing node) is added for free-memory monitoring; if it is
     not present on this system it is skipped.
+
+    Exposes the reclaim-pressure signals (active / inactive / file_pages) per
+    focus NUMA node that _NUMA_MEMINFO_FIELDS collects but the legacy 7-field
+    sheet dropped.
     """
     if not monitor.numa_memory_history:
         return
@@ -666,17 +746,23 @@ def _build_numa_memory_timeline_sheet(writer, monitor, numa_nodes):
     focus_numa_ids = sorted(set(candidates))
     focus_numa_ids = [nid for nid in focus_numa_ids if nid in all_numa_ids]
 
-    mem_timeline_data = {"Timestamp": []}
-    for nid in focus_numa_ids:
-        for field, label in [
+    def _focus_fields(nid):
+        return [
             ("total_mb", f"NUMA{nid} Total (MB)"),
             ("used_mb", f"NUMA{nid} Used (MB)"),
             ("free_mb", f"NUMA{nid} Free (MB)"),
             ("available_mb", f"NUMA{nid} Available (MB)"),
             ("swap_cached_mb", f"NUMA{nid} SwapCache (MB)"),
             ("anon_pages_mb", f"NUMA{nid} AnonPages (MB)"),
+            ("active_mb", f"NUMA{nid} Active (MB)"),
+            ("inactive_mb", f"NUMA{nid} Inactive (MB)"),
+            ("file_pages_mb", f"NUMA{nid} File Pages (MB)"),
             ("usage_pct", f"NUMA{nid} Usage (%)"),
-        ]:
+        ]
+
+    mem_timeline_data = {"Timestamp": []}
+    for nid in focus_numa_ids:
+        for _field, label in _focus_fields(nid):
             mem_timeline_data[label] = []
 
     for entry in monitor.numa_memory_history:
@@ -684,15 +770,7 @@ def _build_numa_memory_timeline_sheet(writer, monitor, numa_nodes):
         node_lookup = {n["node"]: n for n in entry["nodes"]}
         for nid in focus_numa_ids:
             node_data = node_lookup.get(nid, {})
-            for field, label in [
-                ("total_mb", f"NUMA{nid} Total (MB)"),
-                ("used_mb", f"NUMA{nid} Used (MB)"),
-                ("free_mb", f"NUMA{nid} Free (MB)"),
-                ("available_mb", f"NUMA{nid} Available (MB)"),
-                ("swap_cached_mb", f"NUMA{nid} SwapCache (MB)"),
-                ("anon_pages_mb", f"NUMA{nid} AnonPages (MB)"),
-                ("usage_pct", f"NUMA{nid} Usage (%)"),
-            ]:
+            for field, label in _focus_fields(nid):
                 mem_timeline_data[label].append(node_data.get(field, 0))
 
     if mem_timeline_data["Timestamp"]:
@@ -700,24 +778,38 @@ def _build_numa_memory_timeline_sheet(writer, monitor, numa_nodes):
 
 
 def _build_vm_total_memory_timeline_sheet(writer, monitor):
-    """Sheet: VM_Total_Memory_Timeline (aggregate VM memory + per-NUMA)."""
+    """Sheet: VM_Total_Memory_Timeline (aggregate VM memory + per-NUMA).
+
+    Carries the swapcache_mb total + per-NUMA swapcache aggregates that
+    collect_vm_total_memory computes each sample but the sheet dropped.
+    """
     if not monitor.vm_total_memory_history:
         return
-    all_vm_numa_ids = sorted(set(k for h in monitor.vm_total_memory_history for k in h.get("per_numa", {}).keys()))
+    # Union of NUMA nodes across per_numa (memory) + swapcache_per_numa
+    all_vm_numa_ids = sorted(
+        {k for h in monitor.vm_total_memory_history for k in h.get("per_numa", {})}
+        | {k for h in monitor.vm_total_memory_history for k in h.get("swapcache_per_numa", {})}
+    )
     vm_mem_data = {
         "Timestamp": [],
         "VM Total Memory (MB)": [],
         "VM Count": [],
+        "SwapCache (MB)": [],
     }
     for nid in all_vm_numa_ids:
         vm_mem_data[f"NUMA{nid} VM Memory (MB)"] = []
+    for nid in all_vm_numa_ids:
+        vm_mem_data[f"NUMA{nid} SwapCache (MB)"] = []
 
     for h in monitor.vm_total_memory_history:
         vm_mem_data["Timestamp"].append(h["ts"])
         vm_mem_data["VM Total Memory (MB)"].append(h["total_mb"])
         vm_mem_data["VM Count"].append(h["vm_count"])
+        vm_mem_data["SwapCache (MB)"].append(h.get("swapcache_mb", 0))
         for nid in all_vm_numa_ids:
             vm_mem_data[f"NUMA{nid} VM Memory (MB)"].append(h.get("per_numa", {}).get(nid, 0))
+        for nid in all_vm_numa_ids:
+            vm_mem_data[f"NUMA{nid} SwapCache (MB)"].append(h.get("swapcache_per_numa", {}).get(nid, 0))
 
     if vm_mem_data["Timestamp"]:
         pd.DataFrame(vm_mem_data).to_excel(writer, sheet_name="VM_Total_Memory_Timeline", index=False)
@@ -726,9 +818,11 @@ def _build_vm_total_memory_timeline_sheet(writer, monitor):
 def _build_disk_io_sheet(writer, monitor):
     """Sheet: Disk_IO_Timeline (per-device read/write MB/s, util%, inflight + ublk count).
 
-    One row per sample. Disk columns are spread per device in monitor.target_disks
+    One row per disk sub-sample. Disk columns are spread per device in monitor.target_disks
     order; devices missing from a sample's snapshot default to zero. ublk_devices is
-    aligned by sample index (collected in the same collect_sample cycle).
+    aligned by tick index -- disk and ublk are sub-sampled together at a 1-second
+    cadence (independent of the general sampling interval), so disk bandwidth is a
+    true per-second rate at any interval.
     """
     if not monitor.disk_history:
         return
@@ -755,7 +849,7 @@ def _build_disk_io_sheet(writer, monitor):
             disk_data[f"{dev} Queue Depth"].append(d.get("avg_queue_depth", 0))
             disk_data[f"{dev} Read Await (ms)"].append(d.get("read_await_ms", 0))
             disk_data[f"{dev} Write Await (ms)"].append(d.get("write_await_ms", 0))
-        # ublk_history shares the sample cadence; align by index, pad to 0
+        # ublk_history shares the 1s disk sub-sample cadence; align by index, pad to 0
         ublk = monitor.ublk_history[i]["ublk_devices"] if i < len(monitor.ublk_history) else 0
         disk_data["ublk Devices"].append(ublk)
 
@@ -801,18 +895,25 @@ def _build_host_pressure_sheet(writer, monitor):
     pd.DataFrame(pressure_data).to_excel(writer, sheet_name="Host_Pressure_Timeline", index=False)
 
 
-def _add_charts(output_file):
-    """Add charts to an already-written Excel file (non-critical: failures warn).
+def _add_charts(build_file):
+    """Add charts to the built workbook (non-critical: failures warn).
 
-    Thin dispatcher: opens the workbook, delegates each chart to an _add_*
-    helper (one per logical chart), then saves. openpyxl is imported at module
-    top behind OPENPYXL_AVAILABLE; when absent this is a no-op.
+    Operates on ``build_file`` (a temp path, NOT the final report path) and
+    re-saves it via an atomic temp+rename so a SIGTERM mid-save cannot
+    truncate the workbook. The caller (export_to_excel) then atomically
+    promotes ``build_file`` to the final analysis_report.xlsx -- so the final
+    path appears exactly once, complete with charts. This matters because
+    bench-core's MonitorController.stop() reaps the vm_monitor subprocess the
+    moment analysis_report.xlsx appears; if the final path were written twice
+    (pandas, then this re-save), that reap would SIGTERM wb.save mid-write and
+    leave a truncated zip that Excel rejects as corrupt.
     """
     if not OPENPYXL_AVAILABLE:
         print("[WARN] openpyxl not available; skipping Excel charts")
         return
+    tmp = build_file + ".chart.tmp"
     try:
-        wb = load_workbook(output_file)
+        wb = load_workbook(build_file)
         _add_topdown_pie(wb)
         _add_ipc_line(wb)
         _add_membound_bar(wb)
@@ -825,10 +926,21 @@ def _add_charts(output_file):
         _add_disk_write_line(wb)
         _add_dirty_writeback_line(wb)
         _add_host_pressure_line(wb)
-        wb.save(output_file)
+        _add_vm_stats_bar(wb)
+        _add_getfre_timeline_line(wb)
+        wb.save(tmp)
+        wb.close()
+        os.replace(tmp, build_file)  # atomic: build_file now carries charts
         print("[OK] Charts added to Excel report")
     except Exception as e:
         print(f"[WARN] Chart generation failed (non-critical): {e}")
+        # build_file stays as the pandas-built version (valid, no charts);
+        # drop any half-written chart temp so it does not linger in log_dir.
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _add_topdown_pie(wb):
@@ -953,12 +1065,19 @@ def _add_swap_inout_line(wb):
             in_col = col_idx
         elif header and "Out Rate" in header:
             out_col = col_idx
-    if in_col and out_col:
-        data = Reference(ws, min_col=in_col, min_row=1, max_col=out_col, max_row=ws.max_row)
-        cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
-        swap_line.add_data(data, titles_from_data=True)
-        swap_line.set_categories(cats)
-    ws.add_chart(swap_line, "H2")
+    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+    # Add each rate as its own series so a non-adjacent In/Out pair does not
+    # pull intervening columns (e.g. Swap Cached) into the chart.
+    for col in (in_col, out_col):
+        if col is not None:
+            data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+            swap_line.add_data(data, titles_from_data=True)
+    swap_line.set_categories(cats)
+    # An empty chart (zero series) writes an invalid <c:plotArea> with no
+    # <c:ser> children -> Excel shows a "unreadable content" repair prompt.
+    # Only embed the chart when it actually carries data.
+    if swap_line.series:
+        ws.add_chart(swap_line, "H2")
 
 
 def _add_swapcache_line(wb):
@@ -981,15 +1100,15 @@ def _add_swapcache_line(wb):
         header = ws.cell(row=1, column=col_idx).value
         if header and ("SwapCached" in header or "SwapCache" in header or "Cached" in header):
             sc_cols.append(col_idx)
-    if sc_cols:
-        # Build data reference across all SwapCache columns
-        min_sc_col = min(sc_cols)
-        max_sc_col = max(sc_cols)
-        data = Reference(ws, min_col=min_sc_col, min_row=1, max_col=max_sc_col, max_row=ws.max_row)
-        cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+    # Add each SwapCache column as its own series. A min..max span would
+    # capture non-SwapCache columns sitting between two SwapCache columns.
+    for col in sc_cols:
+        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
         sc_chart.add_data(data, titles_from_data=True)
-        sc_chart.set_categories(cats)
-    ws.add_chart(sc_chart, "H16")
+    sc_chart.set_categories(cats)
+    if sc_chart.series:
+        ws.add_chart(sc_chart, "H16")
 
 
 def _add_numa_memory_charts(wb):
@@ -1009,6 +1128,9 @@ def _add_numa_memory_charts(wb):
     avail_cols = []
     swapcache_cols = []
     usage_cols = []
+    active_cols = []
+    inactive_cols = []
+    filepages_cols = []
     for col_idx in range(2, ws.max_column + 1):
         header = ws.cell(row=1, column=col_idx).value
         if header and "Free" in header:
@@ -1021,6 +1143,12 @@ def _add_numa_memory_charts(wb):
             swapcache_cols.append(col_idx)
         elif header and "Usage" in header:
             usage_cols.append(col_idx)
+        elif header and "Active" in header:
+            active_cols.append(col_idx)
+        elif header and "Inactive" in header:
+            inactive_cols.append(col_idx)
+        elif header and "File Pages" in header:
+            filepages_cols.append(col_idx)
 
     cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
 
@@ -1033,7 +1161,8 @@ def _add_numa_memory_charts(wb):
     chart_8a.width = 22
     chart_8a.height = 12
 
-    # Add series in order: Free, Available, Used
+    # Add series in order: Free, Available, Used (one Reference each so
+    # non-contiguous focus-node columns are not spanned together).
     free_avail_used_cols = free_cols + avail_cols + used_cols
     for col in free_avail_used_cols:
         data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
@@ -1055,7 +1184,8 @@ def _add_numa_memory_charts(wb):
             s.graphicalProperties.line.solidFill = color
             s.graphicalProperties.line.width = width
 
-    ws.add_chart(chart_8a, "I2")
+    if chart_8a.series:
+        ws.add_chart(chart_8a, "I2")
 
     # Chart 8B: SwapCache & Usage% (SwapCache in MB, Usage in % — separate Y axes)
     chart_8b = LineChart()
@@ -1094,9 +1224,42 @@ def _add_numa_memory_charts(wb):
             s.graphicalProperties.line.solidFill = "0070C0"  # blue
             s.graphicalProperties.line.width = 15000
 
-    # Overlay the % chart on the MB chart (dual Y axis)
-    chart_8b += chart_8b_pct
-    ws.add_chart(chart_8b, "I16")
+    # Overlay the % chart on the MB chart (dual Y axis) only when at least
+    # one side has data; embedding a chart with zero series corrupts the file.
+    if chart_8b.series or chart_8b_pct.series:
+        chart_8b += chart_8b_pct
+        ws.add_chart(chart_8b, "I16")
+
+    # Chart 8C: reclaim-pressure composition (Active / Inactive / File Pages)
+    # per focus NUMA node -- the reclaimable-memory signals _NUMA_MEMINFO_FIELDS
+    # collects per sample. Stacked-grouped line so pressure trends are visible.
+    reclaim_cols = active_cols + inactive_cols + filepages_cols
+    chart_8c = LineChart()
+    chart_8c.title = "NUMA Reclaim Pressure (Active/Inactive/File Pages)"
+    chart_8c.style = 10
+    chart_8c.y_axis.title = "MB"
+    chart_8c.x_axis.title = "Time"
+    chart_8c.width = 22
+    chart_8c.height = 12
+    for col in reclaim_cols:
+        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+        chart_8c.add_data(data, titles_from_data=True)
+    chart_8c.set_categories(cats)
+    # Active=red, Inactive=blue, File Pages=green (per focus node)
+    rc_styles = []
+    for _ in active_cols:
+        rc_styles.append(("FF0000", 20000))
+    for _ in inactive_cols:
+        rc_styles.append(("0070C0", 20000))
+    for _ in filepages_cols:
+        rc_styles.append(("00B050", 20000))
+    for i, (color, width) in enumerate(rc_styles):
+        if i < len(chart_8c.series):
+            s = chart_8c.series[i]
+            s.graphicalProperties.line.solidFill = color
+            s.graphicalProperties.line.width = width
+    if chart_8c.series:
+        ws.add_chart(chart_8c, "I30")
 
 
 def _add_vm_total_line(wb):
@@ -1194,6 +1357,81 @@ def _add_host_pressure_line(wb):
     ws.add_chart(pressure_chart, f"{get_column_letter(anchor_col)}2")
 
 
+def _add_vm_stats_bar(wb):
+    """Chart: per-VM memory composition (Avg Memory / Private / Heap / Hugepage).
+
+    Grouped bar with one series per memory component and one category per VM,
+    so the RSS decomposition (how much is private vs heap vs hugepage) is
+    comparable across the fleet at a glance. Locates columns by header so it
+    is robust to the VM_Stats column set growing.
+    """
+    if "VM_Stats" not in wb.sheetnames:
+        return
+    ws = wb["VM_Stats"]
+    if ws.max_row <= 1:
+        return
+    wanted = ["Avg Memory (MB)", "Avg Private (MB)", "Avg Heap (MB)", "Avg Hugepage (MB)"]
+    col_idx = {}
+    name_col = None
+    for col in range(1, ws.max_column + 1):
+        header = ws.cell(row=1, column=col).value
+        if header in wanted:
+            col_idx[header] = col
+        elif header == "VM Name":
+            name_col = col
+    # Skip rather than draw a partial / misleading composition.
+    if len(col_idx) != len(wanted):
+        return
+    bar = BarChart()
+    bar.type = "col"
+    bar.grouping = "clustered"
+    bar.title = "Per-VM Memory Composition (Avg)"
+    bar.style = 10
+    bar.y_axis.title = "MB"
+    bar.x_axis.title = "VM"
+    bar.width = 18
+    bar.height = 10
+    for header in wanted:
+        data = Reference(ws, min_col=col_idx[header], min_row=1, max_row=ws.max_row)
+        bar.add_data(data, titles_from_data=True)
+    if name_col is not None:
+        cats = Reference(ws, min_col=name_col, min_row=2, max_row=ws.max_row)
+        bar.set_categories(cats)
+    anchor_col = ws.max_column + 2
+    ws.add_chart(bar, f"{get_column_letter(anchor_col)}2")
+
+
+def _add_getfre_timeline_line(wb):
+    """Chart: per-core frequency timeline, one line chart per Getfre_Timeline_NUMA{n} sheet.
+
+    The timeline sheet (one column per core, timestamp rows) is the natural fit
+    for a line chart: each core is a series, so frequency-throttling events over
+    time are immediately visible. Iterates sheet names so every NUMA timeline
+    sheet gets its own chart; sheets that were skipped (no timeline data) simply
+    are absent and thus skipped.
+    """
+    for sheet_name in wb.sheetnames:
+        if not sheet_name.startswith("Getfre_Timeline_NUMA"):
+            continue
+        ws = wb[sheet_name]
+        if ws.max_row <= 1 or ws.max_column < 2:
+            continue
+        numa_id = sheet_name.rsplit("NUMA", 1)[-1]
+        chart = LineChart()
+        chart.title = f"Per-core Frequency Over Time (NUMA{numa_id})"
+        chart.style = 12
+        chart.y_axis.title = "Frequency (MHz)"
+        chart.x_axis.title = "Time"
+        chart.width = 20
+        chart.height = 10
+        data = Reference(ws, min_col=2, min_row=1, max_col=ws.max_column, max_row=ws.max_row)
+        cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+        chart.add_data(data, titles_from_data=True)
+        chart.set_categories(cats)
+        anchor_col = ws.max_column + 2
+        ws.add_chart(chart, f"{get_column_letter(anchor_col)}2")
+
+
 def export_to_excel(
     monitor: "VMMonitorBase",
     log_dir: str,
@@ -1227,9 +1465,19 @@ def export_to_excel(
     # Parse log files
     parsed_logs = parse_all_logs(log_dir, numa_nodes)
 
+    # Write to a build path first, then atomically promote it onto output_file.
+    # This is not cosmetic: bench-core's MonitorController.stop() reaps this
+    # subprocess the instant analysis_report.xlsx appears (it polls the path,
+    # then SIGTERMs the process). If pandas wrote the final path directly, the
+    # reap could fire between the pandas write and _add_charts' re-save,
+    # truncating the workbook mid-write -- Excel then rejects it as corrupt.
+    # By building on a side path and os.replace-ing it onto output_file only
+    # after charts are done, the final path appears exactly once, complete.
+    build_file = output_file + ".build.xlsx"
+
     # Create writer for multi-sheet Excel (openpyxl required)
     try:
-        with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+        with pd.ExcelWriter(build_file, engine="openpyxl") as writer:
             vm_stats = monitor.calculate_vm_stats()
             overall_stats = monitor.calculate_overall_stats(vm_stats)
 
@@ -1252,12 +1500,31 @@ def export_to_excel(
     except ImportError:
         print("[WARN] openpyxl not available, skipping Excel export")
         print("  Install with: pip install openpyxl")
+        if os.path.exists(build_file):
+            try:
+                os.unlink(build_file)
+            except OSError:
+                pass
         return None
     except Exception as e:
         print(f"[WARN] Excel export failed: {e}")
+        if os.path.exists(build_file):
+            try:
+                os.unlink(build_file)
+            except OSError:
+                pass
         return None
 
-    _add_charts(output_file)
+    # Add charts to the build copy. Non-critical: _add_charts warns on its own
+    # failures, and we guard again here so a chart-phase crash still promotes
+    # the valid (chart-less) pandas workbook rather than propagating.
+    try:
+        _add_charts(build_file)
+    except Exception as e:
+        print(f"[WARN] Chart generation failed (non-critical): {e}")
+
+    # Atomic promotion: final path appears once, complete with charts.
+    os.replace(build_file, output_file)
     print(f"[OK] Excel report exported: {output_file}")
     return output_file
 

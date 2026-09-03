@@ -150,7 +150,12 @@ class Config:
     e2b_api_key: str = ""
     e2b_domain: str = "e2b.app"
     e2b_api_url: str = "http://localhost:3000"
-    e2b_http_ssl: str = "false"
+    e2b_http_ssl: str = "false"  # exported as E2B_HTTP_SSL (legacy; the SDK ignores it)
+    # Sandbox data-plane URL. When set, the SDK routes sandbox exec (envd) here
+    # verbatim instead of building ``https://49983-{id}.{domain}`` -- the knob a
+    # local AENV server needs (it proxies envd on a single host:port, no
+    # per-sandbox subdomain). Empty -> SDK uses its subdomain build (cloud e2b).
+    e2b_sandbox_url: str = ""
 
     # Sandbox creation knobs
     template: str = "openclaw-browser-v1"
@@ -165,26 +170,43 @@ class Config:
     # Sandbox IDs file (for save/load sandbox IDs across runs)
     sandbox_ids_file: str | None = None
 
-    @classmethod
-    def from_raw(cls, raw: dict[str, Any]) -> Config:
-        """Build from the unified YAML's ``e2b:`` block.
+    # AENV snapshot dir override. When set, the AenvProvider stats
+    # ``<snapshot_dir>/<sandbox_id>/`` for per-pause overlaybd snapshot sizes.
+    # None -> resolve from aenv_home_path / $AENV_HOME_PATH (see below), else
+    # the /var/lib/aenv default. See aenv._resolve_snapshot_base.
+    snapshot_dir: str | None = None
+    # AENV server home path (the ``aenv_home_path`` YAML field). The persisted-
+    # sandboxes tree lives under ``<home>/persisted-sandboxes/artifacts/``; this
+    # is the primary source for the snapshot-scan base, so the path stays in the
+    # YAML config alongside everything else (no shell env var to export).
+    # $AENV_HOME_PATH / $AENV_HOME are kept as a lower-priority fallback.
+    aenv_home_path: str | None = None
 
-        ``env`` nests under ``e2b:`` in the unified schema (E2B SDK env vars).
-        ``numa_bind`` is normalized to a canonical list/None. Missing keys fall
-        back to the dataclass defaults, so a minimal ``e2b:`` block still loads.
+    @classmethod
+    def from_raw(cls, raw: dict[str, Any], block: str = "e2b") -> Config:
+        """Build from the unified YAML's backend block (``e2b:`` by default).
+
+        ``block`` selects which top-level YAML key to read (``e2b`` for the
+        cloud e2b provider, ``aenv`` for the AENV provider, which reuses this
+        Config shape). ``env`` nests under the block. ``numa_bind`` is
+        normalized to a canonical list/None. Missing keys fall back to the
+        dataclass defaults, so a minimal block still loads.
         """
-        e2b = raw.get("e2b") or {}
-        env = e2b.get("env") or {}
+        backend = raw.get(block) or {}
+        env = backend.get("env") or {}
         return cls(
             e2b_access_token=env.get("E2B_ACCESS_TOKEN", ""),
             e2b_api_key=env.get("E2B_API_KEY", ""),
             e2b_domain=env.get("E2B_DOMAIN", "e2b.app"),
             e2b_api_url=env.get("E2B_API_URL", "http://localhost:3000"),
             e2b_http_ssl=env.get("E2B_HTTP_SSL", "false"),
-            template=e2b.get("template", "openclaw-browser-v1"),
-            create_timeout=e2b.get("create_timeout", 86400),
-            numa_bind=_normalize_numa_bind(e2b.get("numa_bind", 2)),
-            sandbox_ids_file=e2b.get("sandbox_ids_file"),
+            e2b_sandbox_url=env.get("E2B_SANDBOX_URL", ""),
+            template=backend.get("template", "openclaw-browser-v1"),
+            create_timeout=backend.get("create_timeout", 86400),
+            numa_bind=_normalize_numa_bind(backend.get("numa_bind", 2)),
+            sandbox_ids_file=backend.get("sandbox_ids_file"),
+            snapshot_dir=backend.get("snapshot_dir"),
+            aenv_home_path=backend.get("aenv_home_path"),
         )
 
     def setup_e2b_env(self) -> None:
@@ -211,3 +233,5 @@ class Config:
             os.environ["E2B_API_URL"] = self.e2b_api_url
         if self.e2b_http_ssl:
             os.environ["E2B_HTTP_SSL"] = self.e2b_http_ssl
+        if self.e2b_sandbox_url:
+            os.environ["E2B_SANDBOX_URL"] = self.e2b_sandbox_url

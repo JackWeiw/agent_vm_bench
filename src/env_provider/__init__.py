@@ -27,7 +27,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Mapping
+from typing import Mapping, Protocol, runtime_checkable
 
 
 class SandboxStatus(Enum):
@@ -100,6 +100,59 @@ class SandboxInstance:
     is_alive: bool = True
     warmup_done: bool = False
     creation_metrics: CreationMetrics = field(default_factory=CreationMetrics)
+    template: str | None = None  # concrete backend template this sandbox was created with
+
+
+@runtime_checkable
+class LifecycleCapable(Protocol):
+    """Provider that can pause (memory-snapshot) and resume (restore) a sandbox.
+
+    Replay's lifecycle mode calls these around each step's exec to measure
+    snapshot-restore overhead. Providers that don't implement it stay
+    exec-only; ``replay_mode: lifecycle`` on a non-capable provider fails fast.
+    """
+
+    def pause(self, inst: SandboxInstance) -> None:
+        ...
+
+    def resume(self, inst: SandboxInstance) -> None:
+        ...
+
+
+@runtime_checkable
+class EphemeralCapable(Protocol):
+    """Provider that can create/destroy a single sandbox on demand (trajectory mode).
+
+    Replay's trajectory mode creates one sandbox per trajectory and kills it at
+    the trajectory's end, placing create/kill under running-slot + QPS admission.
+    Providers that don't implement it stay on exec_only/lifecycle (persistent
+    pool); ``replay_mode: trajectory`` on a non-capable provider fails fast in
+    ``run_benchmark``. ``metadata`` carries runner/trajectory labels for operator
+    visibility only -- it is NOT a create-idempotency key (see the Phase 1 spec,
+    G3 deferred).
+    """
+
+    def create_one(
+        self, index: int, *, template: str | None = None, metadata: dict[str, str] | None = None
+    ) -> SandboxInstance:
+        ...
+
+    def kill_one(self, inst: SandboxInstance) -> None:
+        ...
+
+
+@runtime_checkable
+class SnapshotSizeCapable(Protocol):
+    """Provider that can stat overlaybd snapshot disk usage per paused sandbox.
+
+    Replay's lifecycle mode probes this right after :meth:`pause`; providers
+    that don't implement it skip snapshot-size collection (the snapshot sheet
+    stays header-only). Returns a dict of size fields or ``None`` when the
+    snapshot dir is absent/unreadable.
+    """
+
+    def snapshot_sizes(self, inst: SandboxInstance) -> dict | None:
+        ...
 
 
 class EnvironmentProvider(ABC):
@@ -112,15 +165,24 @@ class EnvironmentProvider(ABC):
     """
 
     name: str = "base"
+    default_replay_mode: str = "exec_only"  # replay workflow default; aenv overrides to "lifecycle"
+    # Host VMM process family for vm_monitor auto-enable (None = this backend has no VMM to sample).
+    # e2b/aenv -> "firecracker"; docker/fake -> None. Read by bench_core.MonitorController.
+    vmm_type: str | None = None
 
     # ------------------------------------------------------------------ lifecycle
     @abstractmethod
-    def create_all(self) -> Mapping[int, SandboxInstance]:
+    def create_all(self, *, templates: dict[int, str | None] | None = None) -> Mapping[int, SandboxInstance]:
         """Create all sandboxes and return ``{index: instance}``.
 
-        Ready-checks (port probing, command readiness) happen *inside* this
-        method before instances are returned, so the kernel only ever sees
-        ready instances.
+        ``templates`` maps 0-based request slots ``0..total_count-1`` to
+        concrete template names (None/absent = provider default). The provider
+        creates exactly one sandbox per slot, binds the slot's resolved template
+        to ``SandboxInstance.template``, and returns the list in slot order
+        (no reordering/reuse) -- template-affinity routing depends on the
+        slot↔template↔position binding being stable.
+
+        Ready-checks happen inside this method before instances are returned.
         """
 
     @abstractmethod
@@ -212,4 +274,7 @@ __all__ = [
     "CommandResult",
     "SandboxInstance",
     "EnvironmentProvider",
+    "LifecycleCapable",
+    "EphemeralCapable",
+    "SnapshotSizeCapable",
 ]

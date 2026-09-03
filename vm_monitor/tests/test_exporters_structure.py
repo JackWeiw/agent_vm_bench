@@ -53,6 +53,9 @@ def _full_monitor():
     m = DummyMonitor()
 
     # Raw VM samples (2 VMs, 2 samples each) -> VM_Stats + Raw_VM_Data
+    # Carries every field collect_sample() writes (base.py record schema),
+    # incl. the per-VM private/heap/swapcache scalars + per-NUMA breakdowns
+    # the legacy Raw_VM_Data sheet used to drop.
     m.data = [
         {
             "timestamp": "2026-08-14 10:00:00",
@@ -63,6 +66,10 @@ def _full_monitor():
             "memory_huge_mb": 1024.0,
             "memory_private_mb": 1000.0,
             "memory_heap_mb": 50.0,
+            "memory_swapcache_mb": 10.0,
+            "memory_per_numa": {0: {"total_mb": 1000.0}, 5: {"total_mb": 1048.0}},
+            "memory_swapcache_per_numa": {0: 4.0, 5: 6.0},
+            "status": "running",
         },
         {
             "timestamp": "2026-08-14 10:00:05",
@@ -73,6 +80,10 @@ def _full_monitor():
             "memory_huge_mb": 1024.0,
             "memory_private_mb": 1000.0,
             "memory_heap_mb": 50.0,
+            "memory_swapcache_mb": 20.0,
+            "memory_per_numa": {0: {"total_mb": 1000.0}, 5: {"total_mb": 1100.0}},
+            "memory_swapcache_per_numa": {0: 8.0, 5: 12.0},
+            "status": "running",
         },
         {
             "timestamp": "2026-08-14 10:00:00",
@@ -83,6 +94,10 @@ def _full_monitor():
             "memory_huge_mb": 2048.0,
             "memory_private_mb": 2000.0,
             "memory_heap_mb": 100.0,
+            "memory_swapcache_mb": 30.0,
+            "memory_per_numa": {0: {"total_mb": 2000.0}, 5: {"total_mb": 2096.0}},
+            "memory_swapcache_per_numa": {0: 10.0, 5: 20.0},
+            "status": "running",
         },
     ]
     m.last_vm_count = 2
@@ -119,6 +134,11 @@ def _full_monitor():
             "available_mb": 7000.0,
             "swap_cached_mb": 100.0,
             "anon_pages_mb": 500.0,
+            # Reclaim-pressure signals collected per NUMA node per sample
+            # (_NUMA_MEMINFO_FIELDS) but historically dropped from the xlsx.
+            "active_mb": round(used * 0.6, 2),
+            "inactive_mb": round(used * 0.3, 2),
+            "file_pages_mb": round(used * 0.2, 2),
             "usage_pct": usage,
         }
 
@@ -176,9 +196,25 @@ def _full_monitor():
     m.peak_swap_cached_mb = 60.0
 
     # VM total memory -> VM_Total_Memory_Timeline
+    # Carries swapcache_mb + swapcache_per_numa that collect_vm_total_memory
+    # aggregates each sample but the sheet used to drop.
     m.vm_total_memory_history = [
-        {"ts": "2026-08-14 10:00:00", "total_mb": 6144.0, "vm_count": 2, "per_numa": {0: 3072.0, 5: 3072.0}},
-        {"ts": "2026-08-14 10:00:05", "total_mb": 6200.0, "vm_count": 2, "per_numa": {0: 3100.0, 5: 3100.0}},
+        {
+            "ts": "2026-08-14 10:00:00",
+            "total_mb": 6144.0,
+            "vm_count": 2,
+            "per_numa": {0: 3072.0, 5: 3072.0},
+            "swapcache_mb": 40.0,
+            "swapcache_per_numa": {0: 14.0, 5: 26.0},
+        },
+        {
+            "ts": "2026-08-14 10:00:05",
+            "total_mb": 6200.0,
+            "vm_count": 2,
+            "per_numa": {0: 3100.0, 5: 3100.0},
+            "swapcache_mb": 20.0,
+            "swapcache_per_numa": {0: 8.0, 5: 12.0},
+        },
     ]
 
     # Disk I/O (sda/sdb/sdc) + ublk -> Disk_IO_Timeline
@@ -280,22 +316,45 @@ def _full_parsed_logs():
     parsed["devkit_mem"] = parse_devkit_mem(_DEVKIT_MEM_LOG, [0])
 
     # --- devkit_top_down ---
+    # Mirrors parse_devkit_top_down's real return: every metric carries
+    # _avg/_max/_min (parser computes all three); the sheet historically
+    # exported only _avg (+ ipc_max/min).
     parsed["devkit_top_down"] = {
         "report_count": 2,
         "cycles_avg": 1000000.0,
+        "cycles_max": 1200000.0,
+        "cycles_min": 800000.0,
         "instructions_avg": 500000.0,
+        "instructions_max": 600000.0,
+        "instructions_min": 400000.0,
         "ipc_avg": 0.5,
         "ipc_max": 0.6,
         "ipc_min": 0.4,
         "ipc": [0.5, 0.55],
         "bad_speculation_avg": 5.0,
+        "bad_speculation_max": 6.0,
+        "bad_speculation_min": 4.0,
         "frontend_bound_avg": 10.0,
+        "frontend_bound_max": 11.0,
+        "frontend_bound_min": 9.0,
         "retiring_avg": 20.0,
+        "retiring_max": 22.0,
+        "retiring_min": 18.0,
         "backend_bound_avg": 65.0,
+        "backend_bound_max": 68.0,
+        "backend_bound_min": 62.0,
         "l3_bound_avg": 15.0,
+        "l3_bound_max": 17.0,
+        "l3_bound_min": 13.0,
         "mem_bound_avg": 50.0,
+        "mem_bound_max": 55.0,
+        "mem_bound_min": 45.0,
         "mem_latency_bound_avg": 30.0,
+        "mem_latency_bound_max": 33.0,
+        "mem_latency_bound_min": 27.0,
         "mem_bandwidth_bound_avg": 20.0,
+        "mem_bandwidth_bound_max": 23.0,
+        "mem_bandwidth_bound_min": 17.0,
         "timestamps": ["2026-08-14 10:00:00", "2026-08-14 10:00:05"],
         "timeline": {
             "timestamp": ["2026-08-14 10:00:00", "2026-08-14 10:00:05"],
@@ -389,6 +448,8 @@ def _full_parsed_logs():
     }
 
     # --- getfre (2 NUMA nodes, each with 2 cores) ---
+    # Carries the `timeline` {timestamp: {core_id: freq_mhz}} that parse_getfre
+    # returns but no sheet used to surface (no Getfre_Timeline sheet existed).
     parsed["getfre"] = {
         0: {
             "numa_avg": 2400.0,
@@ -399,6 +460,10 @@ def _full_parsed_logs():
                 10: {"avg": 2400.0, "min": 2000.0, "max": 2800.0, "count": 5},
                 11: {"avg": 2500.0, "min": 2100.0, "max": 2900.0, "count": 5},
             },
+            "timeline": {
+                "2026-08-14 10:00:00": {10: 2400, 11: 2500},
+                "2026-08-14 10:00:05": {10: 2600, 11: 2700},
+            },
         },
         1: {
             "numa_avg": 2300.0,
@@ -406,6 +471,10 @@ def _full_parsed_logs():
             "numa_max": 2700.0,
             "sample_count": 10,
             "core_stats": {20: {"avg": 2300.0, "min": 1900.0, "max": 2700.0, "count": 5}},
+            "timeline": {
+                "2026-08-14 10:00:00": {20: 2300},
+                "2026-08-14 10:00:05": {20: 2500},
+            },
         },
     }
     return parsed
@@ -428,6 +497,23 @@ def _snapshot(output_file):
             chart_count += len(ws._charts)
         wb.close()
     return sheet_names, cols, rows, chart_count
+
+
+def _charts_by_sheet(output_file):
+    """Return ({sheet_name: chart_count}, {sheet_name: [series_count per chart]}).
+
+    Companion to _snapshot for chart-shape assertions: the snapshot only carries
+    a total chart count, but the dropped-metric charts land on specific sheets,
+    so per-sheet counts + per-chart series counts pin them precisely.
+    """
+    by_sheet = {}
+    series_by_sheet = {}
+    wb = load_workbook(output_file)
+    for ws in wb.worksheets:
+        by_sheet[ws.title] = len(ws._charts)
+        series_by_sheet[ws.title] = [len(c.series) for c in ws._charts]
+    wb.close()
+    return by_sheet, series_by_sheet
 
 
 @unittest.skipUnless(PANDAS_AVAILABLE and load_workbook is not None, "pandas/openpyxl required")
@@ -473,7 +559,9 @@ class TestExportStructure(unittest.TestCase):
                 "SMAPBW_Cycles",
                 "Getfre_Summary",
                 "Getfre_NUMA0",
+                "Getfre_Timeline_NUMA0",
                 "Getfre_NUMA1",
+                "Getfre_Timeline_NUMA1",
                 "Raw_VM_Data",
                 "Swap_Timeline",
                 "NUMA_Memory_Timeline",
@@ -509,7 +597,14 @@ class TestExportStructure(unittest.TestCase):
                 "Max CPU (%)",
                 "Avg Memory (MB)",
                 "Max Memory (MB)",
+                "Min Memory (MB)",
+                "Last Memory (MB)",
                 "Avg Hugepage (MB)",
+                "Max Hugepage (MB)",
+                "Avg Private (MB)",
+                "Max Private (MB)",
+                "Avg Heap (MB)",
+                "Max Heap (MB)",
             ],
             "DevKit_TopDown": ["Metric", "Value", "Report Count"],
             "DevKit_Memory": ["Metric", "Value", "Report Count"],
@@ -550,7 +645,24 @@ class TestExportStructure(unittest.TestCase):
                 "Max Frequency (MHz)",
                 "Sample Count",
             ],
-            "Raw_VM_Data": ["Timestamp", "VM Name", "PID", "CPU (%)", "Memory (MB)", "Hugepage (MB)"],
+            "Getfre_Timeline_NUMA0": ["Timestamp", "Core 10 (MHz)", "Core 11 (MHz)"],
+            "Getfre_Timeline_NUMA1": ["Timestamp", "Core 20 (MHz)"],
+            "Raw_VM_Data": [
+                "Timestamp",
+                "VM Name",
+                "PID",
+                "CPU (%)",
+                "Memory (MB)",
+                "Hugepage (MB)",
+                "Private (MB)",
+                "Heap (MB)",
+                "SwapCache (MB)",
+                "Status",
+                "NUMA0 Memory (MB)",
+                "NUMA5 Memory (MB)",
+                "NUMA0 SwapCache (MB)",
+                "NUMA5 SwapCache (MB)",
+            ],
             "Disk_IO_Timeline": [
                 "Timestamp",
                 "sda Read (MB/s)",
@@ -589,15 +701,50 @@ class TestExportStructure(unittest.TestCase):
                 "Procs Running",
                 "Procs Blocked",
             ],
+            "VM_Total_Memory_Timeline": [
+                "Timestamp",
+                "VM Total Memory (MB)",
+                "VM Count",
+                "SwapCache (MB)",
+                "NUMA0 VM Memory (MB)",
+                "NUMA5 VM Memory (MB)",
+                "NUMA0 SwapCache (MB)",
+                "NUMA5 SwapCache (MB)",
+            ],
+            "NUMA_Memory_Timeline": [
+                "Timestamp",
+                "NUMA0 Total (MB)",
+                "NUMA0 Used (MB)",
+                "NUMA0 Free (MB)",
+                "NUMA0 Available (MB)",
+                "NUMA0 SwapCache (MB)",
+                "NUMA0 AnonPages (MB)",
+                "NUMA0 Active (MB)",
+                "NUMA0 Inactive (MB)",
+                "NUMA0 File Pages (MB)",
+                "NUMA0 Usage (%)",
+                # Remote borrowing node (remote_numa_id=5) is a focus node too,
+                # so its reclaim-pressure fields land here as well.
+                "NUMA5 Total (MB)",
+                "NUMA5 Used (MB)",
+                "NUMA5 Free (MB)",
+                "NUMA5 Available (MB)",
+                "NUMA5 SwapCache (MB)",
+                "NUMA5 AnonPages (MB)",
+                "NUMA5 Active (MB)",
+                "NUMA5 Inactive (MB)",
+                "NUMA5 File Pages (MB)",
+                "NUMA5 Usage (%)",
+            ],
         }
         for sheet, expected in expected_cols.items():
             self.assertEqual(cols[sheet], expected, f"columns mismatch for {sheet}")
 
         expected_rows = {
-            "Summary": 38,  # meta(4)+host(4)+hugepage(4)+swap-cap(4)+swap-cache(3)+swap-act(6)+vm(5)+disk/mem(5)+pressure(3)
+            "Summary": 39,  # meta(4)+host(4)+hugepage(4)+swap-cap(4)+swap-cache(3)+swap-act(6)+vm(6)+disk/mem(5)+pressure(3)
             "NUMA_Overview": 2,
             "VM_Stats": 2,
-            "DevKit_TopDown": 13,
+            "DevKit_TopDown": 33,  # 13 base (avg + ipc max/min) + 20 max/min for cycles/instructions + 8 topdown metrics
             "NUMA_Bandwidth": 1,  # devkit_mem.log NUMA bandwidth filtered to numa_nodes=[0]
             "KSys": 11,  # 3+3+1+4
             "UBWatch_Latency": 8,
@@ -606,7 +753,9 @@ class TestExportStructure(unittest.TestCase):
             "SMAPBW_Cycles": 2,
             "Getfre_Summary": 2,
             "Getfre_NUMA0": 2,
+            "Getfre_Timeline_NUMA0": 2,
             "Getfre_NUMA1": 1,
+            "Getfre_Timeline_NUMA1": 2,
             "Raw_VM_Data": 3,
             "Swap_Timeline": 2,
             "NUMA_Memory_Timeline": 2,
@@ -622,9 +771,276 @@ class TestExportStructure(unittest.TestCase):
         self._export()
         _names, _cols, _rows, charts = _snapshot(self.output_file)
         # 1 DevKit pie + 1 IPC line + 1 MemBound bar + 1 DDR line + 1 CacheMiss bar
-        # + 2 Swap (in/out + SwapCache) + 2 NUMA_Memory_Timeline (8A + 8B) + 1 VM_Total
-        # + 1 Disk Write line + 1 Dirty+Writeback line + 1 Host Pressure line
-        self.assertEqual(charts, 13)
+        # + 2 Swap (in/out + SwapCache) + 3 NUMA_Memory_Timeline (8A + 8B + 8C reclaim)
+        # + 1 VM_Total + 1 Disk Write line + 1 Dirty+Writeback line + 1 Host Pressure line
+        # + 1 VM_Stats composition bar + 2 Getfre_Timeline (NUMA0 + NUMA1 freq lines)
+        self.assertEqual(charts, 17)
+
+
+@unittest.skipUnless(PANDAS_AVAILABLE and load_workbook is not None, "pandas/openpyxl required")
+class TestDroppedMetricsExported(unittest.TestCase):
+    """Value checks for metrics that were always collected (monitor histories
+    or parsed logs) but never reached the xlsx. The exporter now surfaces them;
+    these tests pin the values so a future refactor cannot silently drop them
+    again. No new collection -- every value below originates in _full_monitor()
+    / _full_parsed_logs(), which mirror the real base.py / parsers.py schemas.
+    """
+
+    def setUp(self):
+        self.monitor = _full_monitor()
+        self.parsed_logs = _full_parsed_logs()
+        self.log_dir = tempfile.mkdtemp(prefix="vm_monitor_dropped_")
+        self.output_file = os.path.join(self.log_dir, "analysis_report.xlsx")
+
+    def tearDown(self):
+        for f in os.listdir(self.log_dir):
+            try:
+                os.unlink(os.path.join(self.log_dir, f))
+            except PermissionError:
+                pass
+        os.rmdir(self.log_dir)
+
+    def _export(self):
+        with patch("vm_monitor.exporters.parse_all_logs", return_value=self.parsed_logs):
+            return export_to_excel(self.monitor, self.log_dir, numa_nodes=[0], output_file=self.output_file)
+
+    def test_raw_vm_data_carries_dropped_scalars_and_per_numa(self):
+        self._export()
+        df = pd.read_excel(self.output_file, sheet_name="Raw_VM_Data")
+        row0 = df.iloc[0]  # vm0 @ 10:00:00
+        # Per-VM scalars the legacy 6-column sheet dropped
+        self.assertAlmostEqual(row0["Private (MB)"], 1000.0)
+        self.assertAlmostEqual(row0["Heap (MB)"], 50.0)
+        self.assertAlmostEqual(row0["SwapCache (MB)"], 10.0)
+        self.assertEqual(row0["Status"], "running")
+        # Per-NUMA breakdown spread (vm0 sample1: NUMA0=1000, NUMA5=1048)
+        self.assertAlmostEqual(row0["NUMA0 Memory (MB)"], 1000.0)
+        self.assertAlmostEqual(row0["NUMA5 Memory (MB)"], 1048.0)
+        self.assertAlmostEqual(row0["NUMA0 SwapCache (MB)"], 4.0)
+        self.assertAlmostEqual(row0["NUMA5 SwapCache (MB)"], 6.0)
+
+    def test_vm_stats_carries_min_last_huge_private_heap(self):
+        self._export()
+        df = pd.read_excel(self.output_file, sheet_name="VM_Stats").sort_values("VM Name").reset_index(drop=True)
+        vm0 = df.iloc[0]  # memory [2048, 2100]
+        self.assertAlmostEqual(vm0["Min Memory (MB)"], 2048.0)
+        self.assertAlmostEqual(vm0["Last Memory (MB)"], 2100.0)
+        self.assertAlmostEqual(vm0["Max Hugepage (MB)"], 1024.0)
+        self.assertAlmostEqual(vm0["Avg Private (MB)"], 1000.0)
+        self.assertAlmostEqual(vm0["Max Private (MB)"], 1000.0)
+        self.assertAlmostEqual(vm0["Avg Heap (MB)"], 50.0)
+        self.assertAlmostEqual(vm0["Max Heap (MB)"], 50.0)
+        vm1 = df.iloc[1]  # memory [4096]
+        self.assertAlmostEqual(vm1["Min Memory (MB)"], 4096.0)
+        self.assertAlmostEqual(vm1["Last Memory (MB)"], 4096.0)
+        self.assertAlmostEqual(vm1["Max Hugepage (MB)"], 2048.0)
+        self.assertAlmostEqual(vm1["Max Private (MB)"], 2000.0)
+        self.assertAlmostEqual(vm1["Max Heap (MB)"], 100.0)
+
+    def test_vm_total_memory_timeline_carries_swapcache(self):
+        self._export()
+        df = pd.read_excel(self.output_file, sheet_name="VM_Total_Memory_Timeline")
+        row0 = df.iloc[0]
+        self.assertAlmostEqual(row0["SwapCache (MB)"], 40.0)
+        self.assertAlmostEqual(row0["NUMA0 SwapCache (MB)"], 14.0)
+        self.assertAlmostEqual(row0["NUMA5 SwapCache (MB)"], 26.0)
+
+    def test_numa_memory_timeline_carries_active_inactive_filepages(self):
+        self._export()
+        df = pd.read_excel(self.output_file, sheet_name="NUMA_Memory_Timeline")
+        row0 = df.iloc[0]  # node0 sample1 used=1000 -> active=600/inactive=300/file=200
+        self.assertAlmostEqual(row0["NUMA0 Active (MB)"], 600.0)
+        self.assertAlmostEqual(row0["NUMA0 Inactive (MB)"], 300.0)
+        self.assertAlmostEqual(row0["NUMA0 File Pages (MB)"], 200.0)
+
+    def test_summary_carries_vm_peak_total_memory(self):
+        self._export()
+        df = pd.read_excel(self.output_file, sheet_name="Summary")
+        peaks = dict(zip(df["Metric"], df["Value"]))
+        self.assertIn("VM Peak Total Memory", peaks)
+        self.assertAlmostEqual(peaks["VM Peak Total Memory"], 6144.0)
+
+    def test_devkit_topdown_carries_max_min_rows(self):
+        self._export()
+        df = pd.read_excel(self.output_file, sheet_name="DevKit_TopDown")
+        m = dict(zip(df["Metric"], df["Value"]))
+        self.assertAlmostEqual(m["Cycles Max"], 1200000.0)
+        self.assertAlmostEqual(m["Cycles Min"], 800000.0)
+        self.assertAlmostEqual(m["Instructions Max"], 600000.0)
+        self.assertAlmostEqual(m["Instructions Min"], 400000.0)
+        self.assertAlmostEqual(m["Bad Speculation Max"], 6.0)
+        self.assertAlmostEqual(m["Bad Speculation Min"], 4.0)
+        self.assertAlmostEqual(m["Bandwidth Bound Max"], 23.0)
+        self.assertAlmostEqual(m["Bandwidth Bound Min"], 17.0)
+
+    def test_getfre_timeline_numa0_carries_per_core_freq(self):
+        self._export()
+        df = pd.read_excel(self.output_file, sheet_name="Getfre_Timeline_NUMA0")
+        self.assertEqual(list(df.columns), ["Timestamp", "Core 10 (MHz)", "Core 11 (MHz)"])
+        self.assertEqual(len(df), 2)
+        row0 = df.iloc[0]  # 10:00:00
+        self.assertAlmostEqual(row0["Core 10 (MHz)"], 2400)
+        self.assertAlmostEqual(row0["Core 11 (MHz)"], 2500)
+        row1 = df.iloc[1]  # 10:00:05
+        self.assertAlmostEqual(row1["Core 10 (MHz)"], 2600)
+        self.assertAlmostEqual(row1["Core 11 (MHz)"], 2700)
+
+    def test_getfre_timeline_skipped_when_no_timeline(self):
+        """A getfre NUMA without a `timeline` (legacy/parse-fail) still emits
+        Getfre_NUMA{n} but omits the timeline sheet."""
+        parsed = _full_parsed_logs()
+        del parsed["getfre"][0]["timeline"]  # NUMA0 lacks timeline
+        with patch("vm_monitor.exporters.parse_all_logs", return_value=parsed):
+            export_to_excel(self.monitor, self.log_dir, numa_nodes=[0], output_file=self.output_file)
+        with pd.ExcelFile(self.output_file) as xl:
+            names = set(xl.sheet_names)
+        self.assertIn("Getfre_NUMA0", names)
+        self.assertNotIn("Getfre_Timeline_NUMA0", names)
+        # NUMA1 still has its timeline -> its sheet still appears
+        self.assertIn("Getfre_Timeline_NUMA1", names)
+
+
+@unittest.skipUnless(PANDAS_AVAILABLE and load_workbook is not None, "pandas/openpyxl required")
+class TestDroppedMetricCharts(unittest.TestCase):
+    """Charts for the metrics surfaced in the dropped-metrics PR. The data
+    already lands in the xlsx (TestDroppedMetricsExported pins the values);
+    these tests pin that each high-value dataset also gets a chart so it is
+    visually consumable, not just tabular.
+    """
+
+    def setUp(self):
+        self.monitor = _full_monitor()
+        self.parsed_logs = _full_parsed_logs()
+        self.log_dir = tempfile.mkdtemp(prefix="vm_monitor_charts_")
+        self.output_file = os.path.join(self.log_dir, "analysis_report.xlsx")
+
+    def tearDown(self):
+        for f in os.listdir(self.log_dir):
+            try:
+                os.unlink(os.path.join(self.log_dir, f))
+            except PermissionError:
+                pass
+        os.rmdir(self.log_dir)
+
+    def _export(self):
+        with patch("vm_monitor.exporters.parse_all_logs", return_value=self.parsed_logs):
+            return export_to_excel(self.monitor, self.log_dir, numa_nodes=[0], output_file=self.output_file)
+
+    def test_getfre_timeline_sheets_have_frequency_chart(self):
+        """Each Getfre_Timeline_NUMA{n} sheet gets a per-core frequency line;
+        series count tracks the number of cores in that NUMA's timeline."""
+        self._export()
+        by_sheet, series = _charts_by_sheet(self.output_file)
+        self.assertEqual(by_sheet.get("Getfre_Timeline_NUMA0"), 1)
+        self.assertEqual(by_sheet.get("Getfre_Timeline_NUMA1"), 1)
+        # NUMA0 timeline carries cores 10 + 11; NUMA1 carries core 20 only
+        self.assertEqual(series["Getfre_Timeline_NUMA0"], [2])
+        self.assertEqual(series["Getfre_Timeline_NUMA1"], [1])
+
+    def test_numa_memory_timeline_has_reclaim_pressure_chart(self):
+        """NUMA_Memory_Timeline gains a third chart (8C) for the
+        Active/Inactive/File Pages reclaim-pressure signals."""
+        self._export()
+        by_sheet, _series = _charts_by_sheet(self.output_file)
+        # 8A free/used + 8B swapcache/usage + 8C reclaim pressure
+        self.assertEqual(by_sheet.get("NUMA_Memory_Timeline"), 3)
+
+    def test_vm_stats_has_memory_composition_bar(self):
+        """VM_Stats gains a grouped bar of the avg memory composition
+        (Memory / Private / Heap / Hugepage) per VM."""
+        self._export()
+        by_sheet, series = _charts_by_sheet(self.output_file)
+        self.assertEqual(by_sheet.get("VM_Stats"), 1)
+        self.assertEqual(series["VM_Stats"], [4])
+
+    def test_getfre_timeline_without_timeline_has_no_chart(self):
+        """A NUMA whose timeline was deleted must not get a stray chart on a
+        sheet that does not exist -- the chart helper skips absent sheets."""
+        parsed = _full_parsed_logs()
+        del parsed["getfre"][0]["timeline"]  # NUMA0 lacks timeline -> no sheet
+        with patch("vm_monitor.exporters.parse_all_logs", return_value=parsed):
+            export_to_excel(self.monitor, self.log_dir, numa_nodes=[0], output_file=self.output_file)
+        by_sheet, _series = _charts_by_sheet(self.output_file)
+        self.assertNotIn("Getfre_Timeline_NUMA0", by_sheet)
+        # NUMA1 still charted
+        self.assertEqual(by_sheet.get("Getfre_Timeline_NUMA1"), 1)
+
+
+@unittest.skipUnless(PANDAS_AVAILABLE and load_workbook is not None, "pandas/openpyxl required")
+class TestAtomicReportWrite(unittest.TestCase):
+    """The final analysis_report.xlsx must appear exactly once, atomically,
+    complete with charts.
+
+    bench-core's MonitorController.stop() reaps the vm_monitor subprocess the
+    moment analysis_report.xlsx appears (it polls the path, then SIGTERMs the
+    process). export_to_excel used to write the final path TWICE: pandas wrote
+    it (sheets, no charts), then _add_charts did load_workbook + wb.save on the
+    SAME path. The reap fired after the pandas write and SIGTERMed the process
+    mid re-save -- truncating the zip -> 'corrupt, can't open' in Excel. The
+    fix: pandas builds to a temp, _add_charts re-saves the temp, and only an
+    atomic os.replace(temp -> final) at the very end creates the final path.
+    """
+
+    def setUp(self):
+        self.monitor = _full_monitor()
+        self.parsed_logs = _full_parsed_logs()
+        self.log_dir = tempfile.mkdtemp(prefix="vm_monitor_atomic_")
+        self.output_file = os.path.join(self.log_dir, "analysis_report.xlsx")
+
+    def tearDown(self):
+        for f in os.listdir(self.log_dir):
+            try:
+                os.unlink(os.path.join(self.log_dir, f))
+            except PermissionError:
+                pass
+        os.rmdir(self.log_dir)
+
+    def _export(self):
+        with patch("vm_monitor.exporters.parse_all_logs", return_value=self.parsed_logs):
+            return export_to_excel(self.monitor, self.log_dir, numa_nodes=[0], output_file=self.output_file)
+
+    def test_final_xlsx_absent_during_chart_phase(self):
+        """pandas must build to a temp; the final path may appear only via an
+        atomic rename AFTER charts are added. Asserts output_file does NOT
+        exist at the moment _add_charts runs."""
+        import vm_monitor.exporters as exp
+
+        seen = {}
+        orig = exp._add_charts
+
+        def spy(build_file):
+            seen["exists_at_chart_time"] = os.path.exists(self.output_file)
+            return orig(build_file)
+
+        with patch.object(exp, "_add_charts", spy):
+            self._export()
+        self.assertIn("exists_at_chart_time", seen, "_add_charts was never called")
+        self.assertFalse(
+            seen["exists_at_chart_time"],
+            "final analysis_report.xlsx must not exist during the chart phase "
+            "(MonitorController would reap + SIGTERM the wb.save mid-write -> corrupt zip)",
+        )
+
+    def test_final_xlsx_valid_when_charts_raise(self):
+        """If chart generation raises, the final file must still be a valid xlsx
+        (pandas-built sheets promoted) and export_to_excel must not propagate
+        the exception -- a MonitorController waiting on the path would otherwise
+        time out with no report at all."""
+        import vm_monitor.exporters as exp
+
+        with patch.object(exp, "_add_charts", side_effect=RuntimeError("boom")):
+            self._export()  # must not raise
+        self.assertTrue(os.path.exists(self.output_file))
+        wb = load_workbook(self.output_file)
+        self.assertIn("Summary", wb.sheetnames)
+        wb.close()
+
+    def test_no_build_temp_left_behind(self):
+        """After a successful export, no .build temp lingers in the log dir --
+        only the final analysis_report.xlsx (and unrelated CSVs)."""
+        self._export()
+        leftovers = [f for f in os.listdir(self.log_dir) if f.endswith(".xlsx") and f != "analysis_report.xlsx"]
+        self.assertEqual(leftovers, [], f"build temp left behind: {leftovers}")
 
 
 if __name__ == "__main__":

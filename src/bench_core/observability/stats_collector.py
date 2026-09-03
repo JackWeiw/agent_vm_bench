@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Any
 
 from bench_core.config import KernelConfig
+from bench_core.observability.replay_obs import ReplayObservability
 from env_provider import SandboxStatus
 from bench_core.schemas import (
     CODING_STEP_ORDER,
@@ -32,6 +33,46 @@ from bench_core.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+# P2.5 lifecycle overhead: slices below this are excluded from per-sample
+# overhead (prevents 1.0 / 0.0001-style explosion). The duration percentile
+# lists already exclude == 0 (synthesized failures); this additionally drops
+# pathologically-fast real slices.
+MIN_SLICE_SEC = 0.001
+
+
+def replay_pool_size(config: KernelConfig) -> int:
+    """Distinct-trajectory count in the replay pool, 0 if unresolvable.
+
+    ``load_pool`` is itself module-cached, so this is O(1) after the first
+    runner-thread call and shares one immutable tuple across the fleet. Used
+    by both the live snapshot (one-pass progress denominator) and the final
+    report's "One-pass Target" line. Returns 0 for non-replay workflows or
+    when the pool cannot be loaded (e.g. Mock configs in unit tests).
+    """
+    if config.workflow_type != "replay":
+        return 0
+    try:
+        from bench_core.payload.replay_payload import load_pool
+
+        return len(load_pool(config))
+    except Exception:
+        logger.debug("replay pool size unavailable", exc_info=True)
+        return 0
+
+
+# Replay lifecycle list accessors snapshotted per round so the per-round
+# overhead table can slice each sandbox's lists between round boundaries.
+# resume + pause over slice = lifecycle overhead; the three lists are
+# appended in lockstep per slice, so they stay index-aligned across a round.
+# running_slot_held_secs is sliced the same way for the per-round Slot held
+# column (only meaningful under an admission controller).
+_LIFECYCLE_ROUND_KEYS: tuple[str, ...] = (
+    "resume_secs",
+    "pause_secs",
+    "slice_total_secs",
+    "running_slot_held_secs",
+)
 
 # Error display order, selected by workflow_type. The shared ErrorClassifier
 # may bucket an error into a category this workflow does not display; such
@@ -157,10 +198,14 @@ class ReportFormatter:
         config: KernelConfig,
         sandbox_states: dict[int, BenchSandbox],
         provider_label: str = "",
+        admission_snapshot: dict | None = None,
+        wall_sec: float | None = None,
     ):
         self.config = config
         self.sandbox_states = sandbox_states
         self.provider_label = provider_label
+        self.admission_snapshot = admission_snapshot
+        self.wall_sec = wall_sec
 
     def format_config_section(self) -> list[str]:
         """Format test configuration section."""
@@ -211,7 +256,7 @@ class ReportFormatter:
         offline_states = [s for s in self.sandbox_states.values() if not s.is_alive and not s.stopped_by_cleanup]
 
         # Use workflow-specific labels
-        if self.config.workflow_type in {"coding", "document"}:
+        if self.config.workflow_type in {"coding", "document", "replay"}:
             command_ready = True
         elif self.config.workflow_type == "browser":
             command_ready = False
@@ -444,6 +489,336 @@ class ReportFormatter:
         lines.extend(TableFormatter.format_table(headers, rows))
         return lines
 
+    def format_replay_stats_section(self) -> list[str]:
+        """Format trajectory-replay task statistics section."""
+        all_latencies: list[float] = []
+        for s in self.sandbox_states.values():
+            all_latencies.extend(s.replay_metrics.latencies)
+
+        total_tasks = sum(s.replay_metrics.total_tasks for s in self.sandbox_states.values())
+        total_success = sum(s.replay_metrics.success_count for s in self.sandbox_states.values())
+        total_failed = sum(s.replay_metrics.failed_count for s in self.sandbox_states.values())
+        total_timeout = sum(s.replay_metrics.timeout_count for s in self.sandbox_states.values())
+        completions = sum(s.replay_metrics.trajectory_completions for s in self.sandbox_states.values())
+        # Delay fidelity is per-sandbox (actual/requested delay); average across sandboxes.
+        fidelity_values = [s.replay_metrics.delay_fidelity for s in self.sandbox_states.values()]
+        delay_fidelity = statistics.mean(fidelity_values) if fidelity_values else 0.0
+
+        lines = ["\n[Replay Task Statistics]"]
+        # Label+colon padded to the widest ("Trajectory Completions:") so every
+        # value starts in the same column; the colon stays contiguous with the
+        # label so ``"Label:"`` substring asserts keep working.
+        lines.append(f"  {'Total Steps:':<24}{total_tasks}")
+        lines.append(f"  {'Success:':<24}{total_success}")
+        lines.append(f"  {'Failed:':<24}{total_failed} (timeout: {total_timeout})")
+        lines.append(f"  {'Success Rate:':<24}{total_success / max(1, total_tasks) * 100:.1f}%")
+        lines.append(f"  {'Trajectory Completions:':<24}{completions}")
+        total_trajs = replay_pool_size(self.config) * len(self.sandbox_states)
+        if total_trajs:
+            lines.append(
+                f"  {'One-pass Target:':<24}{total_trajs} (pool {replay_pool_size(self.config)} x fleet {len(self.sandbox_states)})"
+            )
+        orphan_skipped = sum(s.replay_metrics.orphan_skip_count for s in self.sandbox_states.values())
+        if orphan_skipped:
+            lines.append(f"  {'Orphan Skipped:':<24}{orphan_skipped}")
+        # P2 lifecycle: one-time snapshot-creation pause (separate from per-step resume_sec).
+        initial_pauses = [
+            s.replay_metrics.initial_pause_sec
+            for s in self.sandbox_states.values()
+            if s.replay_metrics.initial_pause_sec > 0
+        ]
+        if initial_pauses:
+            noun = "sandbox" if len(initial_pauses) == 1 else "sandboxes"
+            lines.append(
+                f"  {'Initial Pause:':<24}{statistics.mean(initial_pauses):.3f}s (over {len(initial_pauses)} {noun})"
+            )
+        lines.append(f"  {'Delay Fidelity:':<24}{delay_fidelity:.2f}")
+
+        if all_latencies:
+            avg = statistics.mean(all_latencies)
+            p99 = calc_p99(all_latencies)
+            lines.append(f"  {'Avg Latency:':<24}{avg:.3f}s")
+            lines.append(f"  {'P99 Latency:':<24}{p99:.3f}s")
+
+        # P2.5 [Lifecycle Overhead] -- lifecycle + trajectory mode. Per-sample
+        # overhead_i = (resume_sec_i + pause_sec_i) / slice_total_sec_i
+        # (mean/P50/P95), plus an aggregate ratio. Near-zero slices
+        # (slice_total_sec < MIN_SLICE_SEC) are excluded from the per-sample
+        # overhead list; the duration percentile lists already exclude == 0.
+        if self.config.replay_mode in ("lifecycle", "trajectory"):
+            all_resume: list[float] = []
+            all_pause: list[float] = []
+            all_slice: list[float] = []
+            all_slot_held: list[float] = []
+            all_interaction: list[float] = []
+            for s in self.sandbox_states.values():
+                all_resume.extend(s.replay_metrics.resume_secs)
+                all_pause.extend(s.replay_metrics.pause_secs)
+                all_slice.extend(s.replay_metrics.slice_total_secs)
+                all_slot_held.extend(s.replay_metrics.running_slot_held_secs)
+                all_interaction.extend(s.replay_metrics.interaction_total_secs)
+            if all_slice:
+                lines.append("[Lifecycle Overhead]")
+                resume_stats = calc_percentiles(all_resume)
+                pause_stats = calc_percentiles(all_pause)
+                slice_stats = calc_percentiles(all_slice)
+                n = len(all_slice)
+                # Percentile lines aligned to the widest label in this group
+                # ("Interaction:") so the P50= column starts in one place.
+                lines.append(
+                    f"  {'Resume:':<13}P50={resume_stats['p50']:.3f}s "
+                    f"P95={resume_stats['p95']:.3f}s P99={resume_stats['p99']:.3f}s  (n={n})"
+                )
+                lines.append(
+                    f"  {'Pause:':<13}P50={pause_stats['p50']:.3f}s "
+                    f"P95={pause_stats['p95']:.3f}s P99={pause_stats['p99']:.3f}s  (n={n})"
+                )
+                lines.append(
+                    f"  {'Slice:':<13}P50={slice_stats['p50']:.3f}s "
+                    f"P95={slice_stats['p95']:.3f}s P99={slice_stats['p99']:.3f}s  (n={n})"
+                )
+                # L7: Slot held (overcommit-efficiency = lease release - acquire).
+                # slot_held ≡ slice by construction (the lease spans resume->pause;
+                # slot_contention_wait happens before acquire, so it is never in the
+                # lease). Only render when it materially diverges from slice -- e.g.
+                # trajectory-mode capacity_wait -- otherwise it restates Slice.
+                if all_slot_held and self.admission_snapshot is not None:
+                    held_diverges = any(abs(h - s) >= 0.001 for h, s in zip(all_slot_held, all_slice))
+                    if held_diverges:
+                        held_stats = calc_percentiles(all_slot_held)
+                        lines.append(
+                            f"  {'Slot held:':<13}P50={held_stats['p50']:.3f}s "
+                            f"P95={held_stats['p95']:.3f}s  (n={len(all_slot_held)})"
+                        )
+                if all_interaction:
+                    inter_stats = calc_percentiles(all_interaction)
+                    lines.append(
+                        f"  {'Interaction:':<13}P50={inter_stats['p50']:.3f}s "
+                        f"P95={inter_stats['p95']:.3f}s  (n={len(all_interaction)})"
+                    )
+                # per-sample overhead, near-zero guarded
+                overheads = [(r + p) / s for r, p, s in zip(all_resume, all_pause, all_slice) if s >= MIN_SLICE_SEC]
+                if overheads:
+                    oh_stats = calc_percentiles(overheads)
+                    lines.append(
+                        f"  Overhead per-sample: mean={oh_stats['avg'] * 100:.1f}% "
+                        f"P50={oh_stats['p50'] * 100:.1f}% P95={oh_stats['p95'] * 100:.1f}% "
+                        f"(n={len(overheads)})"
+                    )
+                # aggregate ratio (robust to per-sample outliers)
+                agg_slice = [s for s in all_slice if s >= MIN_SLICE_SEC]
+                agg_resume = [r for r, s in zip(all_resume, all_slice) if s >= MIN_SLICE_SEC]
+                agg_pause = [p for p, s in zip(all_pause, all_slice) if s >= MIN_SLICE_SEC]
+                if sum(agg_slice) > 0:
+                    agg = (sum(agg_resume) + sum(agg_pause)) / sum(agg_slice)
+                    lines.append(f"  Overhead aggregate:  {agg * 100:.1f}%")
+                # known caveat footer (resume_sec includes the post-resume ready-wait;
+                # the Resume decomp line below breaks resume_sec into api + ready_wait + qps_wait)
+                lines.append("  (resume_sec includes post-resume ready-wait; see Resume decomp)")
+
+                # Phase 3.3: retry-impact sub-block. Reads the ReplayMetrics
+                # accumulators (populated by the runner alongside retry_* series
+                # events), NOT the series JSONL -- ReplayMetrics is the report's
+                # consistent data source. retries/time lost always render; the
+                # per-slice P95 line only when retries actually occurred.
+                retry_count = sum(s.replay_metrics.retry_queued_count for s in self.sandbox_states.values())
+                retry_time_lost = sum(s.replay_metrics.time_lost_to_retry_sec for s in self.sandbox_states.values())
+                if retry_count > 0:
+                    all_retries_per_slice: list[int] = []
+                    for s in self.sandbox_states.values():
+                        all_retries_per_slice.extend(s.replay_metrics.retries_per_slice)
+                    rp95 = calc_percentiles(all_retries_per_slice)["p95"]
+                    lines.append(
+                        f"  Retry impact: retries={retry_count} "
+                        f"(time lost={retry_time_lost:.3f}s) "
+                        f"retries/slice P95={rp95:.2f}"
+                    )
+                else:
+                    lines.append(f"  Retry impact: retries={retry_count} " f"(time lost={retry_time_lost:.3f}s)")
+
+                # P2.6 decomposition sub-block: column-stable breakdown of
+                # resume/pause into their segment components. Columns are NEVER
+                # conditionally dropped (0.000s when inactive); only the Slot
+                # contention and Admission WHOLE LINES are conditional on an
+                # admission controller being present.
+                all_resume_api: list[float] = []
+                all_resume_ready_wait: list[float] = []
+                all_resume_queue_wait: list[float] = []
+                all_slot_contention: list[float] = []
+                all_pause_api: list[float] = []
+                for s in self.sandbox_states.values():
+                    all_resume_api.extend(s.replay_metrics.resume_api_secs)
+                    all_resume_ready_wait.extend(s.replay_metrics.resume_ready_wait_secs)
+                    all_resume_queue_wait.extend(s.replay_metrics.resume_queue_wait_secs)
+                    all_slot_contention.extend(s.replay_metrics.slot_contention_wait_secs)
+                    all_pause_api.extend(s.replay_metrics.pause_api_secs)
+
+                # Resume decomp line (always rendered when all_slice non-empty)
+                resume_api_stats = calc_percentiles(all_resume_api)
+                resume_ready_wait_stats = calc_percentiles(all_resume_ready_wait)
+                resume_queue_wait_stats = calc_percentiles(all_resume_queue_wait)
+                lines.append(
+                    f"  Resume decomp: api P50={resume_api_stats['p50']:.3f}s "
+                    f"P95={resume_api_stats['p95']:.3f}s | "
+                    f"ready_wait P50={resume_ready_wait_stats['p50']:.3f}s | "
+                    f"qps_wait P50={resume_queue_wait_stats['p50']:.3f}s  (n={n})"
+                )
+
+                # Pause decomp line (qps_wait shared from resume_queue_wait_secs
+                # since the limiter is shared; pause has no ready_wait)
+                pause_api_stats = calc_percentiles(all_pause_api)
+                lines.append(
+                    f"  Pause decomp:  api P50={pause_api_stats['p50']:.3f}s | "
+                    f"qps_wait P50={resume_queue_wait_stats['p50']:.3f}s  (n={n})"
+                )
+
+                # Conditional lines (only when admission controller was built)
+                if self.admission_snapshot is not None:
+                    slot_contention_stats = calc_percentiles(all_slot_contention)
+                    lines.append(
+                        f"  Slot contention: P50={slot_contention_stats['p50']:.3f}s "
+                        f"P95={slot_contention_stats['p95']:.3f}s  (n={len(all_slot_contention)})"
+                    )
+                    a = self.admission_snapshot
+                    lines.append("  Admission:")
+                    rs = a.get("running_slots") or {}
+                    if rs:
+                        lines.append(
+                            f"    Running slots: maximum={rs.get('maximum', 0)} "
+                            f"active={rs.get('active', 0)} peak_active={rs.get('peak_active', 0)} "
+                            f"granted={rs.get('granted', 0)} waiting={rs.get('waiting', 0)} "
+                            f"avg_queue_wait={rs.get('average_queue_wait_sec', 0.0):.3f}s"
+                        )
+                    ql = a.get("qps_limiter")
+                    if ql and a.get("qps") != "off":
+                        lines.append(
+                            f"    QPS limiter:   qps={ql.get('qps')} "
+                            f"inflight={ql.get('in_flight', 0)}/{ql.get('inflight_cap', 0)} "
+                            f"dispatched={ql.get('dispatched', 0)} "
+                            f"avg_wait={ql.get('average_wait_sec', 0.0):.1f}s "
+                            f"max_wait={ql.get('max_wait_sec', 0.0):.1f}s"
+                        )
+                        dbo = ql.get("dispatched_by_operation", {})
+                        lines.append(
+                            "    Dispatched by operation: "
+                            + " ".join(
+                                f"{op}={dbo.get(op, 0)}" for op in ("resume", "pause", "cleanup", "create", "command")
+                            )
+                        )
+                        wbo = ql.get("waiting_by_operation", {})
+                        # Suppress an all-zero waiting line -- it is pure noise
+                        # (no op is ever queued) and never adds information.
+                        if any(wbo.get(op, 0) for op in ("resume", "pause", "cleanup", "create", "command")):
+                            lines.append(
+                                "    Waiting by operation:    "
+                                + " ".join(
+                                    f"{op}={wbo.get(op, 0)}"
+                                    for op in ("resume", "pause", "cleanup", "create", "command")
+                                )
+                            )
+
+        return lines
+
+    def format_throughput_section(self) -> list[str]:
+        """[Throughput & Overcommit] -- throughput/efficiency from ReplayObservability.
+
+        Rendered for replay workflows. Wall-gated metrics (steps_per_sec,
+        effective_parallelism, exec_wall_utilization) render ``n/a (zero
+        wall-clock time)`` when wall_sec is None/<=0; overcommit_ratio is
+        always rendered (it does not depend on wall-clock).
+        """
+        obs = ReplayObservability(
+            self.config,
+            self.sandbox_states,
+            admission_snapshot=self.admission_snapshot,
+            wall_sec=self.wall_sec,
+        )
+        lines = ["\n[Throughput & Overcommit]"]
+        na = "n/a (zero wall-clock time)"
+        if self.wall_sec is not None and self.wall_sec > 0:
+            lines.append(f"  {'wall_sec:':<24}{self.wall_sec:.1f}")
+        sps = obs.steps_per_sec
+        lines.append(f"  {'steps_per_sec:':<24}{f'{sps:.2f}' if sps is not None else na}")
+        ep = obs.effective_parallelism
+        lines.append(f"  {'effective_parallelism:':<24}{f'{ep:.2f}' if ep is not None else na}")
+        eu = obs.exec_wall_utilization
+        lines.append(f"  {'exec_wall_utilization:':<24}{f'{eu * 100:.1f}%' if eu is not None else na}")
+        lines.append(f"  {'overcommit_ratio:':<24}{obs.overcommit_ratio:.1f}x")
+        return lines
+
+    def format_trajectory_summary_section(self) -> list[str]:
+        """[Trajectory Summary] -- create/kill/slot-held percentiles for trajectory mode.
+
+        Rendered only in trajectory mode AND when create_sec measurements exist
+        (create_secs is populated only in trajectory mode; empty otherwise). The
+        slot_held line reuses the same running_slot_held_secs list as
+        [Lifecycle Overhead] but shows P99 here too.
+        """
+        if self.config.replay_mode != "trajectory":
+            return []
+        obs = ReplayObservability(
+            self.config,
+            self.sandbox_states,
+            admission_snapshot=self.admission_snapshot,
+            wall_sec=self.wall_sec,
+        )
+        cs = obs.create_sec_stats
+        # Gate on non-empty create_secs (calc_percentiles returns all-0.0 for an empty list).
+        if cs["p99"] == 0.0 and cs["max"] == 0.0:
+            return []
+        ks = obs.kill_sec_stats
+        sh = obs.slot_held_stats
+        n_create = sum(len(s.replay_metrics.create_secs) for s in self.sandbox_states.values())
+        n_kill = sum(len(s.replay_metrics.kill_secs) for s in self.sandbox_states.values())
+        lines = ["\n[Trajectory Summary]"]
+        lines.append(f"  Create sec: P50={cs['p50']:.3f}s P95={cs['p95']:.3f}s P99={cs['p99']:.3f}s  (n={n_create})")
+        lines.append(f"  Kill sec:   P50={ks['p50']:.3f}s P95={ks['p95']:.3f}s P99={ks['p99']:.3f}s  (n={n_kill})")
+        if sh["max"] > 0.0:
+            lines.append(f"  Slot held:  P50={sh['p50']:.3f}s P95={sh['p95']:.3f}s P99={sh['p99']:.3f}s")
+        return lines
+
+    def format_replay_step_timing_table(self) -> list[str]:
+        """Format replay per-action-type timing as a table.
+
+        Replay's "step" axis is the recorded action's type (shell /
+        str_replace_editor / bash / other), bucketed by ``classify_action``.
+        """
+        all_step_times: dict[str, list[float]] = {}
+        for s in self.sandbox_states.values():
+            step_times_copy = s.replay_metrics.get_step_times_copy()
+            for step_name, times in step_times_copy.items():
+                all_step_times.setdefault(step_name, []).extend(times)
+
+        if not all_step_times:
+            return []
+
+        lines = ["\n[Step-Level Timing (Replay Mode)]"]
+        headers = ["Action", "Count", "Avg(s)", "P50(s)", "P95(s)", "P99(s)", "Tail"]
+        rows: list[list[str]] = []
+
+        for step_name in get_step_order("replay"):
+            if step_name in all_step_times and all_step_times[step_name]:
+                times = all_step_times[step_name]
+                stats = calc_percentiles(times)
+                tail_ratio = calc_tail_ratio(times)
+                severity = classify_tail_latency(tail_ratio)
+                rows.append(
+                    [
+                        step_name,
+                        str(len(times)),
+                        f"{stats['avg']:.3f}",
+                        f"{stats['p50']:.3f}",
+                        f"{stats['p95']:.3f}",
+                        f"{stats['p99']:.3f}",
+                        f"{tail_ratio:.2f}x ({severity})",
+                    ]
+                )
+
+        lines.extend(TableFormatter.format_table(headers, rows))
+        lines.append("\n  Tail Ratio: P99/P50 - indicates long-tail latency severity")
+        lines.append("  < 1.2x: minimal | 1.2-1.5x: moderate | > 1.5x: significant")
+        return lines
+
     def format_error_section(self) -> list[str]:
         """Format error details and classification section."""
         failed_sandbox_errors: list[tuple[int, int, str]] = []
@@ -478,6 +853,8 @@ class ReportFormatter:
             error_display_order = DOCUMENT_ERROR_DISPLAY
         elif self.config.workflow_type == "browser":
             error_display_order = BROWSER_ERROR_DISPLAY
+        elif self.config.workflow_type == "replay":
+            error_display_order = CODING_ERROR_DISPLAY
         else:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
@@ -505,15 +882,22 @@ class ReportFormatter:
         if not round_start_totals:
             return []
 
-        lines = ["\n" + "=" * 80, "[Round Comparison]", "=" * 80]
-
         # Calculate round finals (includes post-last-round sentinel with tasks=0)
         round_finals = self._calculate_round_finals(round_start_totals)
 
         # Filter out rounds with tasks=0 (post-last-round baseline sentinel)
         active_rounds = {k: v for k, v in round_finals.items() if v["tasks"] > 0}
+
+        # Single-round (or none): the per-round view is pure redundancy with
+        # the cumulative task statistics -- suppress it. This is the common
+        # replay case (round_count=1, round_size=total -> one all-concurrent
+        # pass). Genuine multi-round runs keep the table.
+        if len(active_rounds) <= 1:
+            return []
+
         total_tasks = sum(r["tasks"] for r in active_rounds.values())
 
+        lines = ["\n" + "=" * 80, "[Round Comparison]", "=" * 80]
         lines.append(f"\n  Summary: {total_tasks} tasks across {len(active_rounds)} rounds")
 
         headers = ["Round", "Tasks", "Success%", "Avg(s)", "P50(s)", "P95(s)", "P99(s)", "Tail"]
@@ -552,6 +936,78 @@ class ReportFormatter:
             )
 
         lines.extend(TableFormatter.format_table(headers, rows))
+
+        # Per-round lifecycle overhead: only replay lifecycle/trajectory have
+        # resume/pause data (exec_only has none -> lists empty -> skip). This
+        # is the per-round view the cumulative [Lifecycle Overhead] section
+        # cannot show -- e.g. whether the 2nd trajectory pass resumes slower.
+        if self.config.workflow_type == "replay" and self.config.replay_mode in ("lifecycle", "trajectory"):
+            lines.extend(self._format_lifecycle_overhead_by_round(active_rounds))
+
+        return lines
+
+    def _format_lifecycle_overhead_by_round(self, active_rounds: dict[int, dict[str, Any]]) -> list[str]:
+        """Per-round resume/pause/slice P50+P95 + aggregate overhead sub-table.
+
+        The lifecycle lists are index-aligned within each round (appended in
+        lockstep per slice), so the aggregate overhead ratio = (resume+pause)
+        /slice is computed over matching samples, with near-zero slices
+        excluded (same guard as the cumulative section).
+
+        Carries only the per-round comparison dimension (P50/P95 + overhead +
+        slot-held); the depth metrics (P99, per-sample overhead, decomp,
+        interaction) stay in the cumulative [Lifecycle Overhead] section to
+        avoid restating them per round. Slot held is meaningful only under an
+        admission controller, so its column is conditional on admission_snapshot.
+        """
+        has_admission = self.admission_snapshot is not None
+        lines = ["", "[Lifecycle Overhead by Round]"]
+        headers = [
+            "Round",
+            "n",
+            "Resume P50(s)",
+            "Resume P95(s)",
+            "Pause P50(s)",
+            "Pause P95(s)",
+            "Slice P50(s)",
+            "Slice P95(s)",
+        ]
+        if has_admission:
+            headers.append("Slot held P50(s)")
+        headers.append("Overhead%")
+        rows: list[list[str]] = []
+        for round_id in sorted(active_rounds.keys()):
+            resumes = active_rounds[round_id]["resume"]
+            pauses = active_rounds[round_id]["pause"]
+            slices = active_rounds[round_id]["slice"]
+            if not slices:
+                continue
+            r_stats = calc_percentiles(resumes)
+            p_stats = calc_percentiles(pauses)
+            s_stats = calc_percentiles(slices)
+            agg_slice = [sv for sv in slices if sv >= MIN_SLICE_SEC]
+            agg_resume = [rv for rv, sv in zip(resumes, slices) if sv >= MIN_SLICE_SEC]
+            agg_pause = [pv for pv, sv in zip(pauses, slices) if sv >= MIN_SLICE_SEC]
+            overhead = (sum(agg_resume) + sum(agg_pause)) / sum(agg_slice) if sum(agg_slice) > 0 else 0.0
+            row = [
+                str(round_id),
+                str(len(slices)),
+                f"{r_stats['p50']:.3f}",
+                f"{r_stats['p95']:.3f}",
+                f"{p_stats['p50']:.3f}",
+                f"{p_stats['p95']:.3f}",
+                f"{s_stats['p50']:.3f}",
+                f"{s_stats['p95']:.3f}",
+            ]
+            if has_admission:
+                slot_held = active_rounds[round_id].get("slot_held", [])
+                held_stats = calc_percentiles(slot_held) if slot_held else calc_percentiles([0.0])
+                row.append(f"{held_stats['p50']:.3f}")
+            row.append(f"{overhead * 100:.1f}")
+            rows.append(row)
+        if not rows:
+            return []
+        lines.extend(TableFormatter.format_table(headers, rows))
         return lines
 
     def _calculate_round_finals(self, round_start_totals: dict[int, dict[str, Any]]) -> dict[int, dict[str, Any]]:
@@ -561,27 +1017,38 @@ class ReportFormatter:
         final_task_total = sum(s.task_metrics.total_tasks for s in self.sandbox_states.values())
         final_task_success = sum(s.task_metrics.success_count for s in self.sandbox_states.values())
         final_sandbox_latency_counts = {s.index: len(s.task_metrics.latencies) for s in self.sandbox_states.values()}
+        # Final cumulative replay lifecycle list lengths (end boundary for the
+        # last round); mirrors the per-round snapshot taken in set_round.
+        final_replay_baselines: dict[int, dict[str, int]] = {}
+        if self.config.workflow_type == "replay":
+            for s in self.sandbox_states.values():
+                rm = s.replay_metrics
+                final_replay_baselines[s.index] = {k: len(getattr(rm, k)) for k in _LIFECYCLE_ROUND_KEYS}
 
         for round_id in sorted(round_start_totals.keys()):
             start_total = round_start_totals[round_id]["total"]
             start_success = round_start_totals[round_id]["success"]
             start_sandbox_latency_counts = round_start_totals[round_id]["sandbox_latency_counts"]
+            start_replay_baselines = round_start_totals[round_id].get("replay_baselines", {})
 
             # Determine end values
             if round_id == max(round_start_totals.keys()):
                 end_total = final_task_total
                 end_success = final_task_success
                 end_sandbox_latency_counts = final_sandbox_latency_counts
+                end_replay_baselines = final_replay_baselines
             else:
                 next_round = round_id + 1
                 if next_round in round_start_totals:
                     end_total = round_start_totals[next_round]["total"]
                     end_success = round_start_totals[next_round]["success"]
                     end_sandbox_latency_counts = round_start_totals[next_round]["sandbox_latency_counts"]
+                    end_replay_baselines = round_start_totals[next_round].get("replay_baselines", {})
                 else:
                     end_total = final_task_total
                     end_success = final_task_success
                     end_sandbox_latency_counts = final_sandbox_latency_counts
+                    end_replay_baselines = final_replay_baselines
 
             round_latencies: list[float] = []
             for s in self.sandbox_states.values():
@@ -590,12 +1057,37 @@ class ReportFormatter:
                 end_count = end_sandbox_latency_counts.get(sandbox_index, len(s.task_metrics.latencies))
                 round_latencies.extend(s.task_metrics.get_latencies_since(start_count)[: end_count - start_count])
 
+            # Per-round replay lifecycle slices (resume/pause/slice/slot_held),
+            # aligned by index within each sandbox. Empty for non-replay.
+            round_resume: list[float] = []
+            round_pause: list[float] = []
+            round_slice: list[float] = []
+            round_slot_held: list[float] = []
+            if self.config.workflow_type == "replay":
+                for s in self.sandbox_states.values():
+                    rm = s.replay_metrics
+                    rb_start = start_replay_baselines.get(s.index, {})
+                    rb_end = end_replay_baselines.get(s.index, {})
+                    for key, acc in (
+                        ("resume_secs", round_resume),
+                        ("pause_secs", round_pause),
+                        ("slice_total_secs", round_slice),
+                        ("running_slot_held_secs", round_slot_held),
+                    ):
+                        sn = rb_start.get(key, 0)
+                        en = rb_end.get(key, len(getattr(rm, key)))
+                        acc.extend(getattr(rm, key)[sn:en])
+
             tasks = end_total - start_total
             success = end_success - start_success
             round_finals[round_id] = {
                 "tasks": tasks,
                 "success": success,
                 "latencies": round_latencies,
+                "resume": round_resume,
+                "pause": round_pause,
+                "slice": round_slice,
+                "slot_held": round_slot_held,
             }
 
         return round_finals
@@ -613,6 +1105,7 @@ class StatsCollector:
         self.config = config
         self.sandbox_states = sandbox_states
         self.provider_label = provider_label
+        self.admission_snapshot: dict | None = None
         self.snapshots: list[Snapshot] = []
         self.start_time: float = 0.0
         self._stop = threading.Event()
@@ -657,6 +1150,16 @@ class StatsCollector:
         task_success = sum(s.task_metrics.success_count for s in self.sandbox_states.values())
         sandbox_latency_counts = {s.index: len(s.task_metrics.latencies) for s in self.sandbox_states.values()}
 
+        # Replay lifecycle per-round baselines: snapshot cumulative list
+        # lengths so the per-round overhead table can slice each sandbox's
+        # resume/pause/slice lists between consecutive round boundaries.
+        # No-op for non-replay workflows (the lists stay empty).
+        replay_baselines: dict[int, dict[str, int]] = {}
+        if self.config.workflow_type == "replay":
+            for s in self.sandbox_states.values():
+                rm = s.replay_metrics
+                replay_baselines[s.index] = {k: len(getattr(rm, k)) for k in _LIFECYCLE_ROUND_KEYS}
+
         # Switch to new round
         self.current_round = round_id
 
@@ -672,6 +1175,7 @@ class StatsCollector:
                     "total": task_total,
                     "success": task_success,
                     "sandbox_latency_counts": sandbox_latency_counts,
+                    "replay_baselines": replay_baselines,
                 }
 
     def _collect_loop(self) -> None:
@@ -820,6 +1324,38 @@ class StatsCollector:
                 round_total=round_total,
                 round_success=round_success,
             )
+        elif self.config.workflow_type == "replay":
+            task_total = sum(s.replay_metrics.total_tasks for s in self.sandbox_states.values())
+            task_success = sum(s.replay_metrics.success_count for s in self.sandbox_states.values())
+            if self.current_round is not None and self.current_round in self._round_start_totals:
+                start_total = self._round_start_totals[self.current_round]["total"]
+                start_success = self._round_start_totals[self.current_round]["success"]
+                round_total = task_total - start_total
+                round_success = task_success - start_success
+            else:
+                round_total = 0
+                round_success = 0
+            all_latencies = [
+                latency for state in self.sandbox_states.values() for latency in state.replay_metrics.latencies[-10:]
+            ]
+            traj_done = sum(s.replay_metrics.trajectory_completions for s in self.sandbox_states.values())
+            total_trajs = replay_pool_size(self.config) * len(self.sandbox_states)
+            snapshot = Snapshot(
+                timestamp=now,
+                elapsed=elapsed,
+                total_sandboxes=len(self.sandbox_states),
+                active_sandboxes=active_count,
+                offline_sandboxes=offline_count,
+                creation_stats=creation_stats,
+                replay_total=task_total,
+                replay_success=task_success,
+                replay_avg_latency=statistics.mean(all_latencies) if all_latencies else 0.0,
+                replay_p99_latency=calc_p99(all_latencies),
+                replay_traj_done=traj_done,
+                replay_total_trajs=total_trajs,
+                round_total=round_total,
+                round_success=round_success,
+            )
         else:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
@@ -854,13 +1390,42 @@ class StatsCollector:
                 f"  Browser:   {snapshot.browser_success:3d}/{snapshot.browser_total:3d}  "
                 f"avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s"
             )
+        elif self.config.workflow_type == "replay":
+            logger.info(
+                f"  Replay:    {snapshot.replay_success:3d}/{snapshot.replay_total:3d}  "
+                f"traj={snapshot.replay_traj_done}/{snapshot.replay_total_trajs}  "
+                f"avg={snapshot.replay_avg_latency:.2f}s  p99={snapshot.replay_p99_latency:.2f}s"
+            )
         else:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
         logger.info(f"{'─' * 70}")
 
+    def _resolved_wall_sec(self) -> float | None:
+        """Measured wall-clock since ``start()``, or None if ``start()`` was never called."""
+        if self.start_time:
+            return time.time() - self.start_time
+        return None
+
+    def format_replay_stats_section(self) -> list[str]:
+        """Delegate to ReportFormatter.format_replay_stats_section."""
+        formatter = ReportFormatter(
+            self.config,
+            self.sandbox_states,
+            self.provider_label,
+            admission_snapshot=self.admission_snapshot,
+            wall_sec=self._resolved_wall_sec(),
+        )
+        return formatter.format_replay_stats_section()
+
     def generate_report(self) -> str:
         """Generate final TXT report using ReportFormatter."""
-        formatter = ReportFormatter(self.config, self.sandbox_states, self.provider_label)
+        formatter = ReportFormatter(
+            self.config,
+            self.sandbox_states,
+            self.provider_label,
+            admission_snapshot=self.admission_snapshot,
+            wall_sec=self._resolved_wall_sec(),
+        )
 
         lines: list[str] = []
 
@@ -881,7 +1446,7 @@ class StatsCollector:
         ]
         create_desc = (
             "sandbox.create API call time, excluding ready check"
-            if self.config.workflow_type in {"coding", "document"}
+            if self.config.workflow_type in {"coding", "document", "replay"}
             else "sandbox.create API call time, excluding port wait"
         )
         lines.extend(formatter.format_percentile_section("Sandbox.create Performance", create_times, create_desc))
@@ -900,6 +1465,9 @@ class StatsCollector:
         elif self.config.workflow_type == "browser":
             ready_check_title = "Port Check Wait Performance"
             ready_check_desc = "Waiting for 18789 openclaw-gateway + 11436 llama-server ports"
+        elif self.config.workflow_type == "replay":
+            ready_check_title = "Ready Check Wait Performance"
+            ready_check_desc = "Waiting for 'uname -a' command response"
         else:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
@@ -908,7 +1476,7 @@ class StatsCollector:
         total_times = [s.creation_metrics.total_elapsed for s in ready_states if s.creation_metrics.total_elapsed > 0]
         total_desc = (
             "sandbox.create + ready check"
-            if self.config.workflow_type in {"coding", "document"}
+            if self.config.workflow_type in {"coding", "document", "replay"}
             else "sandbox.create + port wait"
         )
         lines.extend(formatter.format_percentile_section("Total Startup Performance", total_times, total_desc))
@@ -923,6 +1491,11 @@ class StatsCollector:
         elif self.config.workflow_type == "browser":
             lines.extend(formatter.format_browser_stats_section())
             lines.extend(formatter.format_step_timing_table())
+        elif self.config.workflow_type == "replay":
+            lines.extend(formatter.format_replay_stats_section())
+            lines.extend(formatter.format_throughput_section())
+            lines.extend(formatter.format_trajectory_summary_section())
+            lines.extend(formatter.format_replay_step_timing_table())
         else:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 

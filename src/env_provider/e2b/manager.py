@@ -22,7 +22,7 @@ except ImportError:
     # Mock for development/testing without E2B SDK
     class Sandbox:
         @staticmethod
-        def create(template, timeout=86400, envs=None):  # noqa: ARG001 - envs unused in mock
+        def create(template, timeout=86400, envs=None, metadata=None):  # noqa: ARG001 - mock ignores args
             class MockSandbox:
                 sandbox_id = "mock_sandbox_id"
 
@@ -115,14 +115,20 @@ class SandboxManager(BaseSandboxManager):
             workflow_type=self.kernel_config.workflow_type,
         )
 
-    def _create_single(self, state: SandboxState) -> dict:
+    def _create_single(
+        self, state: SandboxState, *, metadata: dict[str, str] | None = None, template: str | None = None
+    ) -> dict:
         """Create one sandbox; preserve the handle in ``state.sandbox_obj``.
 
         Records submit→create timing; the base runs the readiness probe after
         this returns success and maps the result onto ``creation_metrics``.
+        ``metadata`` is forwarded to the SDK for operator visibility (labels
+        only, not an idempotency key -- spec G3 deferred).
         """
         state.creation_metrics.status = BackendSandboxStatus.CREATING
         state.creation_metrics.submit_time = time.time()
+
+        resolved = template or self.config.template
 
         try:
             # Build envs with NUMA binding if configured. numa_bind is a
@@ -134,9 +140,10 @@ class SandboxManager(BaseSandboxManager):
                 envs["FC_BIND"] = str(numa_node)
 
             sbx = Sandbox.create(
-                self.config.template,
+                resolved,
                 timeout=self.config.create_timeout,
                 envs=envs if envs else None,
+                metadata=metadata,
             )
             state.sandbox_obj = sbx
             state.creation_metrics.create_ready_time = time.time()
@@ -144,10 +151,20 @@ class SandboxManager(BaseSandboxManager):
                 state.creation_metrics.create_ready_time - state.creation_metrics.submit_time
             )
             state.creation_metrics.status = BackendSandboxStatus.CREATED
-            return {"success": True, "create_elapsed": state.creation_metrics.create_elapsed, "error": ""}
+            return {
+                "success": True,
+                "create_elapsed": state.creation_metrics.create_elapsed,
+                "error": "",
+                "template": resolved,
+            }
         except Exception as e:
             state.creation_metrics.create_ready_time = time.time()
-            return {"success": False, "create_elapsed": 0.0, "error": str(e)}
+            return {
+                "success": False,
+                "create_elapsed": 0.0,
+                "error": str(e),
+                "template": resolved,
+            }
 
     def _list_existing(self) -> list:
         """List running sandboxes (flatten the E2B paginator)."""

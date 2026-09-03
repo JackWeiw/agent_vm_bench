@@ -5,13 +5,40 @@ task runners use them to compute latency statistics and format output.
 """
 from __future__ import annotations
 
+import json
 import logging
 import statistics
 import sys
 from datetime import datetime
 
 
-def setup_logging(level: int = logging.INFO) -> None:
+class JsonFormatter(logging.Formatter):
+    """One JSON object per line: {"ts","level","logger","msg"}.
+
+    ``msg`` is newline-escaped so each record is exactly one line (the
+    reference's job_log_line does this -- genuinely good). When ``json_lines=True``
+    on :func:`setup_logging`, the file handler uses this formatter; stdout
+    stays plaintext for live tailing.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        ts = datetime.fromtimestamp(record.created).astimezone().isoformat(timespec="milliseconds")
+        return json.dumps(
+            {
+                "ts": ts,
+                "level": record.levelname,
+                "logger": record.name,
+                "msg": record.getMessage().replace("\n", "\\n"),
+            }
+        )
+
+
+def setup_logging(
+    level: int = logging.INFO,
+    *,
+    log_path: str | None = None,
+    json_lines: bool = False,
+) -> None:
     """Configure root logging with a timestamped format.
 
     ``logging.basicConfig`` is a no-op once the root logger already has handlers
@@ -22,6 +49,14 @@ def setup_logging(level: int = logging.INFO) -> None:
     Output goes to stdout (not the logging default of stderr) to preserve the
     pre-refactor ``print`` destination: shell redirects and ``tee`` keep
     capturing the report echo and progress output.
+
+    When ``log_path`` is given, an additional :class:`logging.FileHandler` is
+    attached: JSON lines when ``json_lines=True`` (machine-queryable diagnostics),
+    plaintext otherwise. Stdout is always plaintext for live tailing.
+
+    The param is named ``json_lines`` (not ``json``) so it does not shadow the
+    ``json`` module import in this file -- a future edit adding ``json.dumps``
+    here would otherwise hit ``AttributeError: 'bool' has no attribute 'dumps'``.
     """
     logging.basicConfig(
         level=level,
@@ -30,6 +65,18 @@ def setup_logging(level: int = logging.INFO) -> None:
         stream=sys.stdout,
     )
     logging.getLogger().setLevel(level)
+    if log_path:
+        fh = logging.FileHandler(log_path, encoding="utf-8")
+        fh.setLevel(level)
+        fh.setFormatter(
+            JsonFormatter()
+            if json_lines
+            else logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
+        logging.getLogger().addHandler(fh)
 
     # Silence the SDK HTTP transport (httpx/httpcore), which logs every
     # request at INFO ("HTTP Request: POST <url> \"<status>\""). In replay

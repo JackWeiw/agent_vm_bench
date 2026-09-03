@@ -230,6 +230,10 @@ class VMMonitorBase(ABC):
         self.peak_swap_cached_mb = 0.0
         self._last_pswpin = None
         self._last_pswpout = None
+        # monotonic timestamp of the last /proc/vmstat read, so swap in/out
+        # rates divide by the ACTUAL elapsed window (not the nominal sampling
+        # interval). Same pattern as _last_disk_monotonic; not sub-sampled.
+        self._last_swap_monotonic = None
 
         # VM Total Memory Aggregation
         self.vm_total_memory_history = []
@@ -244,6 +248,10 @@ class VMMonitorBase(ABC):
         self.target_disks = _discover_block_devices()
         self.disk_history = []
         self._last_diskstats = None  # {dev: {sectors_read, sectors_written, ms_io, inflight}}
+        # monotonic timestamp of the last /sys/block/<dev>/stat read, so disk
+        # rates divide by the ACTUAL elapsed window (not the nominal sampling
+        # interval). Disk is sub-sampled at 1s regardless of self.interval.
+        self._last_disk_monotonic = None
         self.peak_disk_write_mb_s = 0.0
 
         # Host Memory Detail (cached / buffers / dirty / writeback from /proc/meminfo)
@@ -262,6 +270,9 @@ class VMMonitorBase(ABC):
         self.peak_page_reclaim_mib_s = 0.0
         self.peak_file_refault_mib_s = 0.0
         self._last_pressure = None  # cumulative vmstat page counters
+        # monotonic timestamp of the last /proc/vmstat read, so page-scan /
+        # reclaim / refault rates divide by ACTUAL elapsed (not self.interval).
+        self._last_pressure_monotonic = None
         self._last_cpu_total = None  # cumulative /proc/stat "cpu" total jiffies
         self._last_cpu_iowait = None  # cumulative /proc/stat iowait jiffies
         # Dirty-writeback throttle thresholds (MB); read lazily once from
@@ -621,7 +632,18 @@ class VMMonitorBase(ABC):
             pass
 
     # ===================== Collect Swap Usage =====================
-    def collect_swap_stats(self):
+    def collect_swap_stats(self, meminfo: dict | None = None, vmstat: dict | None = None):
+        """Collect swap usage, swap cache, and swap in/out activity.
+
+        ``meminfo`` / ``vmstat`` are the pre-read /proc/meminfo and /proc/vmstat
+        dicts shared across one collect_sample cycle (swap_stats,
+        host_mem_detail, host_pressure all consume them). When None (e.g. a
+        standalone call), each is read here. Swap in/out rates divide by the
+        ACTUAL monotonic elapsed window between samples (not the nominal
+        ``self.interval``), so the MiB/s label holds even when the sampling
+        cadence drifts from ``self.interval``. First sample (no prior
+        baseline) records zero rates.
+        """
         try:
             swap = psutil.swap_memory()
             swap_used_mb = round(swap.used / 1024 / 1024, 2)
@@ -629,33 +651,44 @@ class VMMonitorBase(ABC):
             swap_free_mb = round(swap.free / 1024 / 1024, 2)
             swap_usage = round(swap.percent, 1)
 
-            # Swap Cache from /proc/meminfo
-            meminfo = self._read_meminfo()
+            # Swap Cache from /proc/meminfo (shared read -- deduped per cycle)
+            if meminfo is None:
+                meminfo = self._read_meminfo()
             swap_cached_mb = meminfo.get("SwapCached", 0)
             swap_cached_ratio = round(swap_cached_mb / swap_used_mb * 100, 1) if swap_used_mb > 0 else 0.0
 
-            # Swap Activity from /proc/vmstat
-            vmstat = self._read_vmstat()
+            # Swap Activity from /proc/vmstat (shared read -- deduped per cycle)
+            if vmstat is None:
+                vmstat = self._read_vmstat()
             pswpin_now = vmstat.get("pswpin", 0)
             pswpout_now = vmstat.get("pswpout", 0)
 
-            # Delta and rate: first sample has no prior baseline -> rate=0
+            # Delta and rate: first sample has no prior baseline -> rate=0.
+            # Divide by the ACTUAL monotonic elapsed window (not self.interval)
+            # so the MiB/s rate is correct even when the sampling cadence
+            # drifts (collection overhead, jitter). Falls back to self.interval
+            # only when monotonic baseline is missing (first sample already
+            # returns 0 via the _last_pswpin guard, so this branch is unused).
+            now = time.monotonic()
             if self._last_pswpin is not None:
                 pswpin_delta = pswpin_now - self._last_pswpin
                 pswpout_delta = pswpout_now - self._last_pswpout
+                elapsed = now - self._last_swap_monotonic if self._last_swap_monotonic is not None else self.interval
+                if elapsed <= 0:
+                    elapsed = self.interval if self.interval > 0 else 1.0
                 # pswpin/pswpout are page counts (/proc/vmstat); convert to MiB/s
                 # via the host page size so the rate matches its "MiB/s" label.
                 mib_per_page = _PAGE_SIZE / 2**20
-                swap_in_rate = round(pswpin_delta * mib_per_page / self.interval, 2) if self.interval > 0 else 0
-                swap_out_rate = round(pswpout_delta * mib_per_page / self.interval, 2) if self.interval > 0 else 0
+                swap_in_rate = round(pswpin_delta * mib_per_page / elapsed, 2)
+                swap_out_rate = round(pswpout_delta * mib_per_page / elapsed, 2)
             else:
                 pswpin_delta = 0
                 pswpout_delta = 0
                 swap_in_rate = 0
                 swap_out_rate = 0
-
             self._last_pswpin = pswpin_now
             self._last_pswpout = pswpout_now
+            self._last_swap_monotonic = now
 
             self.swap_history.append(
                 {
@@ -695,10 +728,15 @@ class VMMonitorBase(ABC):
         Reads sectors read/written, inflight, busy-ms, I/O counts, I/O time,
         and weighted I/O time for each device in self.target_disks, then
         computes per-second rates + avg queue depth + per-I/O await latency
-        via deltas from the previous sample normalized by self.interval. First
-        sample (no prior baseline) records zero rates. Missing devices are
-        skipped silently. Bus (nvme vs sata) is classified by device name for
-        downstream grouping; it is not an AgentEnv-specific signal.
+        via deltas from the previous sample normalized by the ACTUAL elapsed
+        wall-clock time between reads (time.monotonic delta), not the nominal
+        self.interval. Disk is sub-sampled at a 1-second cadence by
+        _disk_subsample_sleep regardless of the general sampling interval, so
+        r_mb_s / w_mb_s reflect a true 1-second window -- burst peaks are not
+        smeared over a longer interval. First sample (no prior baseline)
+        records zero rates. Missing devices are skipped silently. Bus (nvme vs
+        sata) is classified by device name for downstream grouping; it is not
+        an AgentEnv-specific signal.
         """
         cur_stats = {}
         for dev in self.target_disks:
@@ -722,7 +760,17 @@ class VMMonitorBase(ABC):
             except (OSError, ValueError):
                 continue
 
-        rates = _compute_disk_io_rates(cur_stats, self._last_diskstats, self.interval)
+        # Divide by the real time between reads, not self.interval. The disk
+        # sub-sampler ticks at 1s, so this is a true per-second rate even when
+        # the general sampling interval is larger (3s/5s/...).
+        now = time.monotonic()
+        prev = self._last_diskstats
+        if prev is None:
+            elapsed = 0.0
+        else:
+            elapsed = now - (self._last_disk_monotonic if self._last_disk_monotonic is not None else now)
+        self._last_disk_monotonic = now
+        rates = _compute_disk_io_rates(cur_stats, prev, elapsed)
         self._last_diskstats = cur_stats
 
         peak_write = 0.0
@@ -735,14 +783,18 @@ class VMMonitorBase(ABC):
         self.disk_history.append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "disks": rates})
 
     # ===================== Collect Host Memory Detail =====================
-    def collect_host_mem_detail(self):
+    def collect_host_mem_detail(self, meminfo: dict | None = None):
         """Collect host memory breakdown (cached/buffers/dirty/writeback) from /proc/meminfo.
 
-        Reuses _read_meminfo(). cached = Cached + SReclaimable (page cache +
-        reclaimable slab). All values in MB.
+        ``meminfo`` is the pre-read /proc/meminfo dict shared across one
+        collect_sample cycle (also consumed by collect_swap_stats and
+        collect_host_pressure); read here when None. cached = Cached +
+        SReclaimable (page cache + reclaimable slab). All values in MB.
         """
         try:
-            mi = self._read_meminfo()
+            if meminfo is None:
+                meminfo = self._read_meminfo()
+            mi = meminfo
             cached_mb = round(mi.get("Cached", 0) + mi.get("SReclaimable", 0), 2)
             buffers_mb = round(mi.get("Buffers", 0), 2)
             dirty_mb = round(mi.get("Dirty", 0), 2)
@@ -778,28 +830,37 @@ class VMMonitorBase(ABC):
             pass
 
     # ===================== Collect Host Page-Cache Pressure =====================
-    def collect_host_pressure(self):
+    def collect_host_pressure(self, meminfo: dict | None = None, vmstat: dict | None = None):
         """Collect host page-cache pressure + runnable/blocked procs per sample.
 
         Sources (all generic /proc, no sandbox-runtime coupling):
         - /proc/meminfo: AnonPages, file cache (Cached+Buffers-Shmem),
-          SReclaimable. Reuses _read_meminfo() (also read by collect_swap_stats
-          and collect_host_mem_detail; one extra meminfo read per sample, <1ms).
+          SReclaimable. ``meminfo`` is the pre-read dict shared across one
+          collect_sample cycle (also consumed by collect_swap_stats and
+          collect_host_mem_detail); read here when None.
         - /proc/vmstat: pgscan_*/pgsteal_*/workingset_refault_file deltas ->
-          page_scan / page_reclaim / file_refault MiB/s. Reuses _read_vmstat().
+          page_scan / page_reclaim / file_refault MiB/s. ``vmstat`` is the
+          shared pre-read dict; read here when None. Rates divide by the
+          ACTUAL monotonic elapsed window between samples (not self.interval).
         - /proc/stat: "cpu" line -> instantaneous iowait% (delta vs prior
           sample's cumulative jiffies); "procs_running" / "procs_blocked".
         Also reads dirty throttle thresholds once (lazy) from /proc/sys/vm.
         First sample (no prior baseline) records zero rates.
         """
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        mi = self._read_meminfo()
+        if meminfo is None:
+            meminfo = self._read_meminfo()
+        mi = meminfo
         anon_mb = round(mi.get("AnonPages", 0), 2)
         sreclaimable_mb = round(mi.get("SReclaimable", 0), 2)
         file_cache_mb = round(max(0.0, mi.get("Cached", 0) + mi.get("Buffers", 0) - mi.get("Shmem", 0)), 2)
 
-        # Page-cache pressure from /proc/vmstat deltas
-        vs = self._read_vmstat()
+        # Page-cache pressure from /proc/vmstat deltas. Divide by ACTUAL
+        # monotonic elapsed (not self.interval) so MiB/s is correct even when
+        # the sampling cadence drifts. First sample: no prior baseline -> 0.
+        if vmstat is None:
+            vmstat = self._read_vmstat()
+        vs = vmstat
         cur_pressure = {
             "pgscan_kswapd": vs.get("pgscan_kswapd", 0),
             "pgscan_direct": vs.get("pgscan_direct", 0),
@@ -808,8 +869,16 @@ class VMMonitorBase(ABC):
             "pgsteal_direct": vs.get("pgsteal_direct", 0),
             "workingset_refault_file": vs.get("workingset_refault_file", 0),
         }
-        pressure = _compute_pressure_rates(cur_pressure, self._last_pressure, self.interval)
+        now = time.monotonic()
+        if self._last_pressure is not None and self._last_pressure_monotonic is not None:
+            elapsed = now - self._last_pressure_monotonic
+            if elapsed <= 0:
+                elapsed = self.interval if self.interval > 0 else 1.0
+        else:
+            elapsed = self.interval
+        pressure = _compute_pressure_rates(cur_pressure, self._last_pressure, elapsed)
         self._last_pressure = cur_pressure
+        self._last_pressure_monotonic = now
 
         # iowait% + runnable/blocked procs from /proc/stat (delta-based iowait)
         iowait_pct = 0.0
@@ -1455,15 +1524,24 @@ class VMMonitorBase(ABC):
 
     # ==================== Template Methods ====================
     def collect_sample(self):
-        """Collect one sample (full refresh each time)"""
+        """Collect one sample (full refresh each time).
+
+        Disk I/O and ublk device count are NOT collected here -- they are
+        sub-sampled at a 1-second cadence by _disk_subsample_sleep (called
+        during the main loop's sleep), so disk_history and ublk_history carry
+        true per-second bandwidth regardless of the general sampling interval.
+        """
         self.collect_hugepage_stats()
         self.collect_numa_cpu()
         self.collect_host_stats()
-        self.collect_swap_stats()
-        self.collect_disk_stats()
-        self.collect_host_mem_detail()
-        self.collect_ublk_count()
-        self.collect_host_pressure()
+        # /proc/meminfo + /proc/vmstat are shared across swap_stats,
+        # host_mem_detail, and host_pressure -- read once per cycle to avoid
+        # three redundant meminfo parses and two redundant vmstat parses.
+        meminfo = self._read_meminfo()
+        vmstat = self._read_vmstat()
+        self.collect_swap_stats(meminfo=meminfo, vmstat=vmstat)
+        self.collect_host_mem_detail(meminfo=meminfo)
+        self.collect_host_pressure(meminfo=meminfo, vmstat=vmstat)
         self.get_numa_nodes_memory()  # Collect NUMA meminfo in same cycle as swap/hugepage
         vms = self.get_vms_realtime()
         self.last_vm_count = len(vms)
@@ -1495,6 +1573,31 @@ class VMMonitorBase(ABC):
             sample_data.append(record)
             self.data.append(record)
         return sample_data
+
+    def _disk_subsample_sleep(self, seconds: float) -> None:
+        """Sleep for ``seconds``, sampling disk I/O + ublk count every 1s.
+
+        Disk bandwidth is computed over a 1-second window regardless of the
+        general sampling interval (``self.interval``), so r_mb_s / w_mb_s are
+        true per-second rates -- burst peaks are not smeared over a longer
+        interval. Disk and ublk are sampled together each tick so disk_history
+        and ublk_history stay index-aligned for the Disk_IO_Timeline sheet
+        (both carry real per-row timestamps, so the timeline x-axis is real
+        elapsed seconds, not ``index * interval``). Returns early when
+        ``self.running`` is cleared (stop signal). No-op when ``seconds <= 0``.
+        """
+        if seconds <= 0 or not self.running:
+            return
+        end = time.monotonic() + seconds
+        while self.running:
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(1.0, remaining))
+            if not self.running:
+                break
+            self.collect_disk_stats()
+            self.collect_ublk_count()
 
     def display_realtime_table(self, sample_data, elapsed_time, duration, check_method=""):
         """Display real-time table"""
@@ -1665,7 +1768,10 @@ class VMMonitorBase(ABC):
         print(f"Waiting for stress test to start... (Detection method: {check_type}={check_target})")
         self.interval = interval_seconds
         self._last_diskstats = None  # avoid stale disk deltas across monitoring restarts
+        self._last_disk_monotonic = None  # disk sub-sampler resets its own baseline
         self._last_pressure = None  # avoid stale vmstat pressure deltas
+        self._last_pressure_monotonic = None  # pressure rate divisor baseline
+        self._last_swap_monotonic = None  # swap rate divisor baseline
         self._last_cpu_total = None  # avoid stale /proc/stat iowait baseline
         self._dirty_limits_read = False  # re-read dirty sysctls on restart
         if duration_seconds:
@@ -1721,7 +1827,9 @@ class VMMonitorBase(ABC):
 
                 sl = max(0, interval_seconds - (time.time() - loop_start))
                 if sl > 0 and self.running:
-                    time.sleep(sl)
+                    # Disk bandwidth sub-samples at 1s during the sleep, so
+                    # r_mb_s / w_mb_s stay per-second-accurate at any interval.
+                    self._disk_subsample_sleep(sl)
         except KeyboardInterrupt:
             pass
         return self.data
@@ -1729,7 +1837,10 @@ class VMMonitorBase(ABC):
     def start_monitoring(self, duration_seconds=None, interval_seconds=5):
         self.interval = interval_seconds
         self._last_diskstats = None  # avoid stale disk deltas across monitoring restarts
+        self._last_disk_monotonic = None  # disk sub-sampler resets its own baseline
         self._last_pressure = None  # avoid stale vmstat pressure deltas
+        self._last_pressure_monotonic = None  # pressure rate divisor baseline
+        self._last_swap_monotonic = None  # swap rate divisor baseline
         self._last_cpu_total = None  # avoid stale /proc/stat iowait baseline
         self._dirty_limits_read = False  # re-read dirty sysctls on restart
         self.running = True
@@ -1765,7 +1876,9 @@ class VMMonitorBase(ABC):
 
                 sl = max(0, interval_seconds - (time.time() - loop_start))
                 if sl > 0 and self.running:
-                    time.sleep(sl)
+                    # Disk bandwidth sub-samples at 1s during the sleep, so
+                    # r_mb_s / w_mb_s stay per-second-accurate at any interval.
+                    self._disk_subsample_sleep(sl)
         except KeyboardInterrupt:
             pass
         return self.data

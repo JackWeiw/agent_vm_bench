@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 from vm_monitor.base import VMMonitorBase, _PAGE_SIZE
+import vm_monitor.base as base
 
 
 # Concrete subclass for testing (VMMonitorBase is abstract)
@@ -225,8 +226,13 @@ class TestCollectSwapStats(unittest.TestCase):
 
             mock_open.side_effect = open_side_effect
 
-            self.monitor.collect_swap_stats()
-            self.monitor.collect_swap_stats()
+            # swap in/out rate divides by ACTUAL monotonic elapsed (not the
+            # nominal self.interval=3). Patch monotonic so two calls span
+            # exactly 3s -> the /3 assertion below holds deterministically.
+            ticks = iter([1000.0, 1003.0])
+            with patch("vm_monitor.base.time.monotonic", lambda: next(ticks)):
+                self.monitor.collect_swap_stats()
+                self.monitor.collect_swap_stats()
 
         snapshot2 = self.monitor.swap_history[1]
         self.assertEqual(snapshot2["activity"]["pswpin_delta"], 120)

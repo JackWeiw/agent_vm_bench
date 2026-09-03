@@ -8,7 +8,7 @@ lifecycle state inherited from :class:`env_provider.SandboxInstance`.
 
 The coding/document *payload* data (replacement pairs, verify-script templates,
 language profiles) is also host-agnostic benchmark content -- it lives in
-:mod:`bench_core.coding_payload`. Only the metric *machinery* lives here.
+:mod:`bench_core.payload.coding_payload`. Only the metric *machinery* lives here.
 """
 from __future__ import annotations
 
@@ -39,6 +39,10 @@ DOCUMENT_PDF_STEP_ORDER = [
     "PDF-P03-process_publish",
     "PDF-P04-verify_deliver",
 ]
+# Trajectory replay action-type taxonomy (drives per-bucket metrics). Replay
+# has no fixed pipeline (unlike coding's find->read->edit->verify->diff); the
+# "step" axis is the recorded action's type, bucketed by classify_action.
+REPLAY_STEP_ORDER = ["shell", "str_replace_editor", "bash", "other"]
 
 
 def get_step_order(workflow_type: str, document_case_kind: str = "xlsx") -> list[str]:
@@ -53,6 +57,8 @@ def get_step_order(workflow_type: str, document_case_kind: str = "xlsx") -> list
         raise ValueError("document case_kind must be 'pdf' or 'xlsx'")
     if workflow_type == "browser":
         return BROWSER_STEP_ORDER
+    if workflow_type == "replay":
+        return REPLAY_STEP_ORDER
     raise ValueError(f"Unsupported workflow_type: {workflow_type}")
 
 
@@ -271,6 +277,308 @@ class DocumentMetrics(TaskMetricsBase):
     step_order = DOCUMENT_XLSX_STEP_ORDER
 
 
+class ReplayMetrics(TaskMetricsBase):
+    """Trajectory replay metrics; the "step" axis is the action_type bucket.
+
+    Unlike coding's fixed find->read->edit->verify->diff pipeline, a replay
+    step is one recorded action, so step-level timing is bucketed by
+    ``action_type`` (shell / str_replace_editor / bash / ...). Extends the base
+    with action-type latency buckets, delay-fidelity tracking, and trajectory
+    completion counting.
+
+    Success semantics: a step is successful iff ``exit_code == 0`` and not
+    timed out. ``trajectory_complete`` is True only when the runner executed
+    every step of a trajectory through to its end (a ``stop_on_error`` abort
+    mid-trajectory does NOT count as complete).
+    """
+
+    step_order = REPLAY_STEP_ORDER
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._action_type_latencies: dict[str, list[float]] = {}
+        self._delay_requested: float = 0.0
+        self._delay_actual: float = 0.0
+        self._trajectory_completions: int = 0
+        self.initial_pause_sec: float = (
+            0.0  # one-time snapshot-creation pause (single writer in _init_lifecycle; no lock)
+        )
+        self._resume_secs: list[float] = []
+        self._pause_secs: list[float] = []
+        self._slice_total_secs: list[float] = []
+        self._resume_api_secs: list[float] = []
+        self._resume_ready_wait_secs: list[float] = []
+        self._slot_contention_wait_secs: list[float] = []
+        self._pause_api_secs: list[float] = []
+        self._resume_queue_wait_secs: list[float] = []
+        self._running_slot_held_secs: list[float] = []
+        self._interaction_total_secs: list[float] = []
+        self._create_secs: list[float] = []  # trajectory mode only; empty otherwise
+        self._kill_secs: list[float] = []  # trajectory mode only; empty otherwise
+
+        # Phase 2/3: retry-event accumulators. ``record_retry_event`` is called
+        # by the runner each time it emits a retry_* event to the series, so the
+        # report reads aggregated retry impact from ReplayMetrics (its
+        # consistent data source), NOT by re-reading the series JSONL. The
+        # per-slice retry count is a SEPARATE concern: the runner appends it at
+        # slice-end via ``append_retries_per_slice`` (not through
+        # ``record_retry_event``) so it never double-counts the counter.
+        self._retry_queued_count: int = 0
+        self._retry_queued_count_by_op: dict[str, int] = {}
+        self._time_lost_to_retry_sec: float = 0.0
+        self._retries_per_slice: list[int] = []
+
+        # Task 7: orphan-skip counter. A sandbox whose template matches no
+        # trajectory in the pool is an "orphan" -- it skips the benchmark
+        # phase with a warning. Thread-safe (reuses self._lock).
+        self._orphan_skip_count: int = 0
+
+    def add(
+        self,
+        latency: float,
+        success: bool,
+        timeout: bool = False,
+        step_times: dict[str, float] | None = None,
+        *,
+        action_type: str = "shell",
+        requested_delay: float = 0.0,
+        actual_delay: float = 0.0,
+        trajectory_complete: bool = False,
+        resume_sec: float = 0.0,
+        pause_sec: float = 0.0,
+        slice_total_sec: float = 0.0,
+        resume_api_sec: float = 0.0,
+        resume_ready_wait_sec: float = 0.0,
+        slot_contention_wait_sec: float = 0.0,
+        pause_api_sec: float = 0.0,
+        resume_queue_wait_sec: float = 0.0,
+        running_slot_held_sec: float = 0.0,
+        interaction_total_sec: float = 0.0,
+        create_sec: float = 0.0,
+        kill_sec: float = 0.0,
+    ) -> None:
+        """Add a replay step result (thread-safe).
+
+        Base counters are inlined here (not via super().add()) so all updates
+        run under one Lock acquisition (threading.Lock is non-reentrant).
+        """
+        with self._lock:
+            self._total_tasks += 1
+            if timeout:
+                self._timeout_count += 1
+                self._failed_count += 1
+            elif success:
+                self._success_count += 1
+                self._latencies.append(latency)
+                self._action_type_latencies.setdefault(action_type, []).append(latency)
+            else:
+                self._failed_count += 1
+                self._action_type_latencies.setdefault(action_type, []).append(latency)
+
+            self._delay_requested += requested_delay
+            self._delay_actual += actual_delay
+            if trajectory_complete:
+                self._trajectory_completions += 1
+
+            if step_times:
+                for step_name, step_latency in step_times.items():
+                    self._step_times.setdefault(step_name, []).append(step_latency)
+
+            # Lifecycle duration lists (P2.5): aligned, failure-free for
+            # percentile math. slice_total_sec == 0 means the runner
+            # synthesized a zero-placeholder StepResult on an exception path
+            # (resume/exec/pause threw) -- not a measurement, so excluded
+            # from all lists to keep them length-aligned and avoid
+            # divide-by-zero in overhead math. P2.6 adds four segment lists
+            # (resume_api, resume_ready_wait, slot_contention_wait, pause_api)
+            # that must stay aligned with the original three. P2.6 Task 4 adds
+            # resume_queue_wait_secs (QPS limiter queue wait on resume) as the
+            # eighth list. L7 adds running_slot_held_secs, interaction_total_secs,
+            # create_secs, kill_secs as lists 9-12; all twelve append atomically.
+            if slice_total_sec > 0.0:
+                self._resume_secs.append(resume_sec)
+                self._pause_secs.append(pause_sec)
+                self._slice_total_secs.append(slice_total_sec)
+                self._resume_api_secs.append(resume_api_sec)
+                self._resume_ready_wait_secs.append(resume_ready_wait_sec)
+                self._slot_contention_wait_secs.append(slot_contention_wait_sec)
+                self._pause_api_secs.append(pause_api_sec)
+                self._resume_queue_wait_secs.append(resume_queue_wait_sec)
+                self._running_slot_held_secs.append(running_slot_held_sec)
+                self._interaction_total_secs.append(interaction_total_sec)
+                self._create_secs.append(create_sec)
+                self._kill_secs.append(kill_sec)
+
+    def record_retry_event(self, event_type: str, *, operation: str, time_lost_sec: float = 0.0) -> None:
+        """Record a retry_* event for the report's retry-impact block.
+
+        Thread-safe. Advances the retry counters only for ``retry_queued``
+        events (recovered/exhausted are series-only; their counts derive from
+        queued). Does NOT touch ``retries_per_slice`` -- the per-slice count
+        is appended separately at slice-end via :meth:`append_retries_per_slice`
+        so the counters never double-count.
+        """
+        with self._lock:
+            if event_type == "retry_queued":
+                self._retry_queued_count += 1
+                self._retry_queued_count_by_op[operation] = self._retry_queued_count_by_op.get(operation, 0) + 1
+                self._time_lost_to_retry_sec += time_lost_sec
+
+    def append_retries_per_slice(self, count: int) -> None:
+        """Append one slice's final retry count for percentile math.
+
+        Called by the runner at slice-end with the slice's retry_queued count
+        (a delta of :attr:`retry_queued_count` captured across the slice). Only
+        successful slices reach this call; synthesized-failure slices (where the
+        runner raises before slice-end) are excluded by the ``slice_total_sec >
+        0.0`` gate in :meth:`add`, so this list stays length-aligned with the
+        duration lists -- both exclude failure slices.
+        """
+        with self._lock:
+            self._retries_per_slice.append(count)
+
+    def record_orphan_skip(self) -> None:
+        """Record one orphan-sandbox skip (template affinity matched nothing).
+
+        Thread-safe. Called by the runner when a sandbox's template has no
+        matching trajectory in the pool -- the sandbox exits the benchmark
+        phase without running any trajectory.
+        """
+        with self._lock:
+            self._orphan_skip_count += 1
+
+    @property
+    def orphan_skip_count(self) -> int:
+        """Number of orphan sandboxes that skipped the benchmark phase."""
+        with self._lock:
+            return self._orphan_skip_count
+
+    @property
+    def action_type_latencies(self) -> dict[str, list[float]]:
+        """Per-action-type latency lists (copy under lock)."""
+        with self._lock:
+            return {k: list(v) for k, v in self._action_type_latencies.items()}
+
+    @property
+    def resume_secs(self) -> list[float]:
+        """Per-step resume durations, copy under lock (failure-free)."""
+        with self._lock:
+            return list(self._resume_secs)
+
+    @property
+    def pause_secs(self) -> list[float]:
+        """Per-step pause durations, copy under lock (failure-free)."""
+        with self._lock:
+            return list(self._pause_secs)
+
+    @property
+    def slice_total_secs(self) -> list[float]:
+        """Per-step slice totals, copy under lock (failure-free)."""
+        with self._lock:
+            return list(self._slice_total_secs)
+
+    @property
+    def resume_api_secs(self) -> list[float]:
+        """Per-step provider.resume() wall times, copy under lock (P2.6)."""
+        with self._lock:
+            return list(self._resume_api_secs)
+
+    @property
+    def resume_ready_wait_secs(self) -> list[float]:
+        """Per-step post-resume ready-probe waits, copy under lock (P2.6)."""
+        with self._lock:
+            return list(self._resume_ready_wait_secs)
+
+    @property
+    def slot_contention_wait_secs(self) -> list[float]:
+        """Per-step RunningSlotScheduler.acquire() queue waits, copy under lock (P2.6).
+
+        Phase 1 (G2): this is the total scheduler-imposed wait = natural_delay_sec
+        + capacity_wait_sec (the ready_at pre-delay + the FIFO capacity wait).
+        """
+        with self._lock:
+            return list(self._slot_contention_wait_secs)
+
+    @property
+    def pause_api_secs(self) -> list[float]:
+        """Per-step provider.pause() wall times, copy under lock (P2.6)."""
+        with self._lock:
+            return list(self._pause_api_secs)
+
+    @property
+    def resume_queue_wait_secs(self) -> list[float]:
+        """Per-step QPS limiter queue waits on resume, copy under lock (P2.6)."""
+        with self._lock:
+            return list(self._resume_queue_wait_secs)
+
+    @property
+    def running_slot_held_secs(self) -> list[float]:
+        """Per-step slot-hold durations, copy under lock (L7)."""
+        with self._lock:
+            return list(self._running_slot_held_secs)
+
+    @property
+    def interaction_total_secs(self) -> list[float]:
+        """Per-step full interaction budgets, copy under lock (L7)."""
+        with self._lock:
+            return list(self._interaction_total_secs)
+
+    @property
+    def create_secs(self) -> list[float]:
+        """Per-trajectory create durations (trajectory mode), copy under lock (L7)."""
+        with self._lock:
+            return list(self._create_secs)
+
+    @property
+    def kill_secs(self) -> list[float]:
+        """Per-trajectory kill durations (trajectory mode), copy under lock (L7)."""
+        with self._lock:
+            return list(self._kill_secs)
+
+    @property
+    def retry_queued_count(self) -> int:
+        """Total retry_queued events recorded (Phase 2/3)."""
+        with self._lock:
+            return self._retry_queued_count
+
+    @property
+    def retry_queued_count_by_op(self) -> dict[str, int]:
+        """retry_queued count per operation (resume/pause), copy under lock (Phase 2/3)."""
+        with self._lock:
+            return dict(self._retry_queued_count_by_op)
+
+    @property
+    def time_lost_to_retry_sec(self) -> float:
+        """Sum of time_lost_sec across all retry_queued events (Phase 2/3)."""
+        with self._lock:
+            return self._time_lost_to_retry_sec
+
+    @property
+    def retries_per_slice(self) -> list[int]:
+        """Per-slice retry_queued counts, copy under lock (Phase 2/3)."""
+        with self._lock:
+            return list(self._retries_per_slice)
+
+    @property
+    def delay_fidelity(self) -> float:
+        """sum(actual_delay) / sum(requested_delay); 0.0 when no delay requested."""
+        with self._lock:
+            if self._delay_requested <= 0.0:
+                return 0.0
+            return self._delay_actual / self._delay_requested
+
+    @property
+    def trajectory_completions(self) -> int:
+        with self._lock:
+            return self._trajectory_completions
+
+    def _mark_completion(self) -> None:
+        """Increment the completion counter (called by the runner when a
+        trajectory ran all its steps). Thread-safe."""
+        with self._lock:
+            self._trajectory_completions += 1
+
+
 @dataclass
 class BenchSandbox(SandboxInstance):
     """The kernel's working per-sandbox state.
@@ -287,10 +595,12 @@ class BenchSandbox(SandboxInstance):
     browser_metrics: BrowserMetrics = field(default_factory=BrowserMetrics)
     coding_metrics: CodingMetrics = field(default_factory=CodingMetrics)
     document_metrics: DocumentMetrics = field(default_factory=DocumentMetrics)
+    replay_metrics: ReplayMetrics = field(default_factory=ReplayMetrics)
 
     stopped_by_cleanup: bool = False  # cleanly stopped by normal benchmark cleanup
     consecutive_failures: int = 0  # consecutive task failures (used to flag a sandbox bad)
     last_task_time: float = 0.0  # wall-clock of the last completed task
+    lifecycle_paused: bool = False  # one-time initial pause done (P2 lifecycle); persists across rounds
     tab_ids: list[str] = field(default_factory=list)  # active tab IDs for browser round-robin
 
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
@@ -308,6 +618,8 @@ class BenchSandbox(SandboxInstance):
             return self.document_metrics
         if self.workflow_type == "browser":
             return self.browser_metrics
+        if self.workflow_type == "replay":
+            return self.replay_metrics
         raise ValueError(f"Unsupported workflow_type: {self.workflow_type}")
 
     def update_last_task_time(self, timestamp: float) -> None:
@@ -363,6 +675,16 @@ class Snapshot:
     document_success: int = 0
     document_avg_latency: float = 0.0
     document_p99_latency: float = 0.0
+    # Replay task metrics (workflow_type="replay")
+    replay_total: int = 0
+    replay_success: int = 0
+    replay_avg_latency: float = 0.0
+    replay_p99_latency: float = 0.0
+    # Trajectory-level progress: completions across the fleet vs the one-pass
+    # target (pool_size * fleet). done may exceed total once sandboxes cycle
+    # past their first pool pass -- >1.0 means "more than one full pass done".
+    replay_traj_done: int = 0
+    replay_total_trajs: int = 0
     # Round comparison fields
     round_total: int = 0
     round_success: int = 0
