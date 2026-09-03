@@ -112,7 +112,7 @@ YAML 里 `your_e2b_access_token_here` / `your_e2b_api_key_here` 是占位符。
 ## 3. CLI
 
 ```
-bench-core --config <yaml> --provider {fake,e2b,docker} [模式/参数]
+bench-core --config <yaml> --provider {fake,e2b,docker,aenv,cubesandbox} [模式/参数]
 ```
 
 | 参数 | 说明 |
@@ -259,8 +259,11 @@ coding 配置里的 `ubuntu-openclaw-coding-{ts,go,python}:24.04-arm64` 是占�
 
 `workflow_type: replay` 把录制的 SWE-bench agent 轨迹(有序 shell + `str_replace_editor`
 动作,带 per-step `delay_time`)通过 `provider.exec()` 原样回放。同一份压力曲线可跑在
-aenv(lifecycle pause/resume)或 e2b/docker(exec_only)上。`config/common/replay.yaml` 是
-aenv lifecycle 内存超卖压测的 1:1 基线配置。
+aenv 或 cubesandbox(均 lifecycle pause/resume)或 e2b/docker(exec_only)上。
+`config/common/replay.yaml` 是 aenv/cubesandbox lifecycle 内存超卖压测的 1:1 基线配置。
+cubesandbox 是 Cloud Hypervisor (KVM) microVM,原生 `pause(wait=True)`/`connect`-resume 带
+内存快照(与 aenv 同为 `LifecycleCapable` + `EphemeralCapable`);`snapshot_sizes` 暂返回
+`None`(SDK `SnapshotInfo` 无 size 字段,`snapshot_size` 事件跳过)。
 
 ### 8.1 三种 mode
 
@@ -269,8 +272,8 @@ aenv lifecycle 内存超卖压测的 1:1 基线配置。
 | mode | 沙箱生命周期 | 每 step 做什么 | 并发/超卖控制 | 何时用 |
 |------|------------|--------------|--------------|--------|
 | `exec_only` | 预创建后**长驻**,整轮不创不杀 | 仅 exec | 无 | 测纯轨迹回放(exec)开销基线;后端无 lifecycle/ephemeral 能力(e2b/docker/fake) |
-| `lifecycle` | 预创建后**长驻**,整轮不杀 | acquire slot→resume→exec→pause→release | pause 打快照释放内存,k×N 沙箱塞进 N slot(**内存超卖**) | 测 pause/resume 快照开销 + 内存 overcommit;需 LifecycleCapable(aenv) |
-| `trajectory` | **临时**,每条轨迹 create→…→kill | acquire slot(整条轨迹持有)→resume→exec→pause→release | M slot 限并发轨迹数,未开始的推迟 create(**排队限流,非内存复用**) | 测频繁建删沙箱的 create/kill 开销 + 启动节流;需 EphemeralCapable(aenv) |
+| `lifecycle` | 预创建后**长驻**,整轮不杀 | acquire slot→resume→exec→pause→release | pause 打快照释放内存,k×N 沙箱塞进 N slot(**内存超卖**) | 测 pause/resume 快照开销 + 内存 overcommit;需 LifecycleCapable(aenv/cubesandbox) |
+| `trajectory` | **临时**,每条轨迹 create→…→kill | acquire slot(整条轨迹持有)→resume→exec→pause→release | M slot 限并发轨迹数,未开始的推迟 create(**排队限流,非内存复用**) | 测频繁建删沙箱的 create/kill 开销 + 启动节流;需 EphemeralCapable(aenv/cubesandbox) |
 
 **exec_only vs trajectory 的区别不在"限流"**:
 
@@ -319,6 +322,8 @@ test:
 
 ```bash
 bench-core --provider aenv --config config/common/replay.yaml -n 768
+# cubesandbox 同为 lifecycle-capable,可直接换 --provider cubesandbox
+# (config/common/replay.yaml 的 cubesandbox: 块已配好 CUBE_* env + idle TTL)
 ```
 
 > 扫描多个 ratio 测退化曲线时,写个脚本循环改 `total_count` + `round_size` 跑即可。

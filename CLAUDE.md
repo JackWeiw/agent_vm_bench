@@ -7,6 +7,7 @@ This file provides project-specific conventions, architecture overview, and work
 Agent VM Bench is a performance-testing framework for virtualization scenarios. The **`bench_core` kernel + `env_provider` contract** (under `src/`) is the host-agnostic core: one stress profile drives any sandbox backend by swapping `--provider`, and the same `config/common/*.yaml` runs on either e2b or docker. Scenarios:
 
 - **E2B Sandbox** — Firecracker microVMs via the E2B API (`--provider e2b`)
+- **CubeSandbox** — Cloud Hypervisor (KVM) microVMs via the `cubesandbox` SDK, native pause/resume WITH memory snapshot (`--provider cubesandbox`; lifecycle-capable like aenv)
 - **Docker Containers** — browser automation in containerized environments (`--provider docker`)
 - **OpenStack VM Memory Overcommit** — QEMU/KVM VMs with `smap_tool` memory migration (legacy `vm_bench/` + `auto_vm_test.py`; not yet ported to the kernel)
 
@@ -29,7 +30,7 @@ ruff format --check .                # format check
 python -m pre_commit run --all-files # pre-commit hooks (run on staged files before committing)
 ```
 
-`pip install -e .` is sufficient — `pyproject.toml`'s `dependencies` declare the core stack (`psutil`, `paramiko`, `flask`, `PyYAML`, `pandas`, `openpyxl`, `e2b`, `aiohttp`); `requirements.txt` is a PyPI-publish superset and is redundant for the kernel. Backend SDKs are optional: `pip install e2b` and/or `pip install docker` only when using that provider; `--provider fake` needs none.
+`pip install -e .` is sufficient — `pyproject.toml`'s `dependencies` declare the core stack (`psutil`, `paramiko`, `flask`, `PyYAML`, `pandas`, `openpyxl`, `e2b`, `aiohttp`); `requirements.txt` is a PyPI-publish superset and is redundant for the kernel. Backend SDKs are optional extras (`[project.optional-dependencies]`): `pip install e2b` (e2b + aenv, which subclasses the e2b SDK), `pip install docker`, and/or `pip install cubesandbox` only when using that provider; `--provider fake` needs none.
 
 `pyproject.toml` sets `pythonpath = ["src"]` for pytest, so tests resolve `bench_core` / `env_provider` without an editable install. The `[project.scripts]` entries are `bench-core = "bench_core.bench:main"` and `vm-monitor = "vm_monitor.cli:main"`.
 
@@ -40,7 +41,7 @@ python -m pre_commit run --all-files # pre-commit hooks (run on staged files bef
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  CLI / entry                                                 │
-│  bench-core (bench_core.bench.main) --provider {fake,e2b,docker} │
+│  bench-core (bench_core.bench.main) --provider {fake,e2b,docker,aenv,cubesandbox} │
 └─────────────────────────────────────────────────────────────┘
                           │
             ┌─────────────┴─────────────┐
@@ -53,13 +54,15 @@ python -m pre_commit run --all-files # pre-commit hooks (run on staged files bef
 │  KernelConfig.from_raw  │   │  (SDK-free)                    │
 └────────────────────────┘   └──────────────────────────────┘
                                           │
-                          ┌───────────────┼───────────────┐
-                          ▼               ▼                 ▼
-                   env_provider.e2b  env_provider.docker  env_provider.fake
-                   (opt-in submodule, pulls e2b SDK)  (pulls docker SDK)  (no SDK)
+                          ┌──────────────────┼──────────────────┐
+                          ▼                  ▼                   ▼
+            env_provider.e2b/aenv   env_provider.docker   env_provider.fake
+            env_provider.cubesandbox
+            (opt-in leaf submodules — e2b/aenv pull the e2b SDK, docker pulls
+             the docker SDK, cubesandbox pulls the cubesandbox SDK, fake = no SDK)
 ```
 
-The kernel (`bench_core`) and every provider impl depend on the contract (`env_provider`); neither owns it. The contract stays **SDK-free** — `from env_provider import EnvironmentProvider` never imports the e2b or docker SDK. Providers are **opt-in leaf submodules** loaded only by `bench_core.bench._build_provider` when selected, so the kernel never loads a backend it does not use. Adding a backend (kata, agentenv, …) is one new `env_provider` submodule; contract + kernel untouched.
+The kernel (`bench_core`) and every provider impl depend on the contract (`env_provider`); neither owns it. The contract stays **SDK-free** — `from env_provider import EnvironmentProvider` never imports the e2b, docker, or cubesandbox SDK. Providers are **opt-in leaf submodules** loaded only by `bench_core.bench._build_provider` when selected, so the kernel never loads a backend it does not use. Adding a backend (kata, gvisor, …) is one new `env_provider` submodule; contract + kernel untouched.
 
 **`bench_core` kernel** (`src/bench_core/`):
 - `bench.py` — `run_benchmark(config, provider)` spine: `prepare_env → create/detect → (create-only | warmup-only | cleanup-only | benchmark) → stop → report`. `_build_provider` lazy-imports the selected provider submodule. `_promote` lifts provider `SandboxInstance` → kernel `BenchSandbox` (attaches workflow metrics).
@@ -77,7 +80,7 @@ The kernel (`bench_core`) and every provider impl depend on the contract (`env_p
 - `_ready.py` — `ReadyChecker`: workflow-driven poll-until-ready; backend supplies `_exec_probe`. browser=port scan (`ss|netstat grep :{port}`, ports `18789` openclaw-gateway + `11436` llama-server), coding=`uname -a`, document=`document-bench-validate` (non-zero exit = immediate image failure, not retried). Constants `READY_MAX_WAIT=300`, `READY_INTERVAL=5`.
 - `_base.py` — `BackendSandboxStatus` / `BackendCreationMetrics` (byte-identical across backends) + `BaseSandboxManager(ABC)` lifecycle template. Subclass supplies SDK seams (`_create_single`, `_list_existing`, `_external_id`, `_attach`, `_kill_one`, `_exec_probe`) + class attrs (`_handle_attr`, `_noun`, `_id_attr`, `_set_killed_on_cleanup`). `_ready_config` is a **concrete base method** returning shared constants — readiness is a workflow concern, so there are no per-backend readiness knobs and no `port_check` block in any YAML.
 
-**Provider impls**: `env_provider/e2b/` (`config.py` `setup_e2b_env` + placeholder-credential fallback to `~/.e2b/config.json`, `manager.py`, `schemas.py`), `env_provider/docker/` (`config.py` reads only image/prefix/resources, `manager.py`, `schemas.py`), `env_provider/fake.py` (in-memory, drives `run_benchmark` in unit tests with no SDK).
+**Provider impls**: `env_provider/e2b/` (`config.py` `setup_e2b_env` + placeholder-credential fallback to `~/.e2b/config.json`, `manager.py`, `schemas.py`; exec-only), `env_provider/aenv/` (subclasses `E2BProvider`, adds `pause`/`resume` (E2B `beta_pause`/`connect`) + `snapshot_sizes` (host stat scan) + `create_one`/`kill_one` — `LifecycleCapable` + `EphemeralCapable` + `SnapshotSizeCapable`), `env_provider/cubesandbox/` (Cloud Hypervisor microVM via the `cubesandbox` SDK; native `pause(wait=True)`/`connect`-resume, `SnapshotInfo` has no size fields so `snapshot_sizes` returns `None` for now; same lifecycle/ephemeral shape as aenv), `env_provider/docker/` (`config.py` reads only image/prefix/resources, `manager.py`, `schemas.py`), `env_provider/fake.py` (in-memory, drives `run_benchmark` in unit tests with no SDK).
 
 **Config layering**: one `config/common/*.yaml` per workflow carries **both** `e2b:` and `docker:` blocks; `--provider` selects which `Config.from_raw` reads. The kernel reads only the shared sections. Credential placeholders (`your_e2b_access_token_here` / `your_e2b_api_key_here`) are treated as unset → fall back to `~/.e2b/config.json`.
 
@@ -98,7 +101,7 @@ These have their own managers / stats / round-robin (`e2b_bench/run_benchmark` i
 | Package | Purpose | Key Files |
 |---------|---------|-----------|
 | `src/bench_core/` | host-agnostic kernel (recommended) | `bench.py`, `config.py`, `task_manager.py`, `round_robin.py`, `stats_collector.py`, `task_runner/{browser,coding,document}.py`, `coding_payload.py` |
-| `src/env_provider/` | provider contract + e2b/docker/fake impls | `__init__.py` (ABC), `_base.py`, `_ready.py`, `e2b/`, `docker/`, `fake.py` |
+| `src/env_provider/` | provider contract + e2b/aenv/docker/cubesandbox/fake impls | `__init__.py` (ABC + Protocols), `_base.py`, `_ready.py`, `e2b/`, `aenv/`, `docker/`, `cubesandbox/`, `fake.py` |
 | `vm_monitor/` | VMM monitoring (QEMU/Firecracker) | `base.py`, `qemu.py`, `firecracker.py`, `parsers.py`, `exporters.py` |
 | `e2b_bench/` | E2B sandbox testing (frozen legacy) | `bench.py`, `round_robin.py`, `task_runner.py`, `sandbox_manager.py`, `batch_scheduler.py`, `stats_collector.py` |
 | `docker_bench/` | Docker container testing (frozen legacy) | `bench.py`, `container_manager.py` |
@@ -123,15 +126,15 @@ These have their own managers / stats / round-robin (`e2b_bench/run_benchmark` i
 
 ### Host-level monitor (`monitor:` section)
 
-A top-level `monitor:` block (peer of `report:`) controls host-level `vm_monitor` collection during the stress phase. Default `enabled: auto` turns it on only for providers with a VMM (`vmm_type`): e2b/aenv → `firecracker`; docker/fake → skipped. `vm-monitor` runs as a local subprocess (stress-file sync) bracketing active stress; outputs (CSV + `analysis_report.xlsx` + SVG) land in `<report.output_dir>/vm_monitor/`. By default (`merge_report: false`) the replay result is **two separate files**: vm_monitor's `analysis_report.xlsx` (system resources) stands alone, and the replay `<prefix>_obs.xlsx` carries trajectory/replay metrics only (incl. a per-trajectory per-step detail sheet). Set `merge_report: true` to copy host sheets (`VM_Stats`/`NUMA_Overview`/`DevKit_TopDown`) into the obs workbook instead. `--no-vm-monitor` short-circuits it off. Never compromises the bench: missing binary/tools or an unwritable lock dir degrade to a warning + skip.
+A top-level `monitor:` block (peer of `report:`) controls host-level `vm_monitor` collection during the stress phase. Default `enabled: auto` turns it on only for providers with a VMM (`vmm_type`): e2b/aenv → `firecracker`; docker/fake/cubesandbox → skipped (cube's VMM process name — `cube-hypervisor` vs `cloud-hypervisor` — is unresolved; vm_monitor integration is a follow-on). `vm-monitor` runs as a local subprocess (stress-file sync) bracketing active stress; outputs (CSV + `analysis_report.xlsx` + SVG) land in `<report.output_dir>/vm_monitor/`. By default (`merge_report: false`) the replay result is **two separate files**: vm_monitor's `analysis_report.xlsx` (system resources) stands alone, and the replay `<prefix>_obs.xlsx` carries trajectory/replay metrics only (incl. a per-trajectory per-step detail sheet). Set `merge_report: true` to copy host sheets (`VM_Stats`/`NUMA_Overview`/`DevKit_TopDown`) into the obs workbook instead. `--no-vm-monitor` short-circuits it off. Never compromises the bench: missing binary/tools or an unwritable lock dir degrade to a warning + skip.
 
 ### Replay workflow (trajectory / lifecycle replay)
 
-`config/common/replay.yaml` drives the replay workflow (`workflow_type: replay`): deterministic replay of recorded SWE-bench trajectories against sandbox backends, primarily `--provider aenv` (lifecycle pause/resume) or `--provider e2b` (exec-only). `replay.yaml` ships as the aenv **lifecycle 1:1 (no-oversubscription) baseline**; see [docs/bench-core-usage-zh.md](docs/bench-core-usage-zh.md) §8 for the mode guide. Modes (per `replay.mode`, defaults to the provider's `default_replay_mode`):
+`config/common/replay.yaml` drives the replay workflow (`workflow_type: replay`): deterministic replay of recorded SWE-bench trajectories against sandbox backends, primarily `--provider aenv` or `--provider cubesandbox` (both lifecycle pause/resume) or `--provider e2b` (exec-only). `replay.yaml` ships as the aenv **lifecycle 1:1 (no-oversubscription) baseline**; see [docs/bench-core-usage-zh.md](docs/bench-core-usage-zh.md) §8 for the mode guide. Modes (per `replay.mode`, defaults to the provider's `default_replay_mode`):
 
 - `exec_only` — long-lived sandboxes, continuous exec of trajectory steps, no pause/resume. Baseline for pure exec-replay cost; used when the backend has no lifecycle capability (e2b/docker/fake).
-- `lifecycle` — long-lived sandboxes: `create_all` → pause once → per-step `provider.resume()`/`pause()` (aenv `LifecycleCapable`). Oversubscription = **snapshot memory reuse** — pause frees RAM, so `k×N` sandboxes fit in `running_concurrency = N` slots. Emits `initial_pause` + per-slice `pause`/`resume` segments and `snapshot_size` events (aenv `SnapshotSizeCapable`).
-- `trajectory` — ephemeral `create_one`/`kill_one` per trajectory (`EphemeralCapable`); per-step resume/pause still runs. Oversubscription = **queue limiting** (M slots gate concurrent trajectories; the rest defer `create`, not pause-to-free-memory). `launch_interval_sec` (per-sandbox create pacing) is **trajectory-only** — lifecycle pre-creates via `create_all` batches (`create_batch`, integer-second intervals), so it has no sub-second per-VM launch pacing.
+- `lifecycle` — long-lived sandboxes: `create_all` → pause once → per-step `provider.resume()`/`pause()` (aenv + cubesandbox, `LifecycleCapable`). Oversubscription = **snapshot memory reuse** — pause frees RAM, so `k×N` sandboxes fit in `running_concurrency = N` slots. Emits `initial_pause` + per-slice `pause`/`resume` segments and `snapshot_size` events (aenv `SnapshotSizeCapable` returns host-statted sizes; cubesandbox returns `None` for now — its `SnapshotInfo` has no size fields, so the `snapshot_size` event is skipped, not crashed).
+- `trajectory` — ephemeral `create_one`/`kill_one` per trajectory (`EphemeralCapable`; aenv + cubesandbox); per-step resume/pause still runs. Oversubscription = **queue limiting** (M slots gate concurrent trajectories; the rest defer `create`, not pause-to-free-memory). `launch_interval_sec` (per-sandbox create pacing) is **trajectory-only** — lifecycle pre-creates via `create_all` batches (`create_batch`, integer-second intervals), so it has no sub-second per-VM launch pacing.
 
 The three modes differ by **sandbox lifecycle** (long-lived exec-only / long-lived pause-resume / ephemeral create-kill), not by "whether a rate limiter is attached"; `launch_interval_sec` exists in trajectory only because frequent per-trajectory `create_one` calls need pacing. Oversubscription ratio: with a fixed host (e.g. 1.5 TiB / 4 GiB per VM → 384 baseline), `running_concurrency` stays at the baseline (N slots) and `total_count` scales to `k×384` for ratio `1:k` (1:2 → 768/384, 1:3 → 1152/384). Scale `round_size` with `total_count` (single group = all concurrent); each ratio is one run.
 
@@ -158,7 +161,7 @@ Multi-template routing: trajectories may declare per-file concrete templates via
 
 | Script | Purpose | CLI |
 |--------|---------|-----|
-| `bench-core` (`bench_core.bench:main`) | host-agnostic kernel (recommended) | `--config`, `--provider {fake,e2b,docker,aenv}`, `--create-only`, `--detect`, `--warmup-only`, `--cleanup`, `-n`, `-bm`, `--test-duration`, `--vm-monitor {auto,true,false}`, `--no-vm-monitor` |
+| `bench-core` (`bench_core.bench:main`) | host-agnostic kernel (recommended) | `--config`, `--provider {fake,e2b,docker,aenv,cubesandbox}`, `--create-only`, `--detect`, `--warmup-only`, `--cleanup`, `-n`, `-bm`, `--test-duration`, `--vm-monitor {auto,true,false}`, `--no-vm-monitor` |
 | `vm-monitor` (`vm_monitor.cli:main`) | VMM monitoring | `-t`, `-i`, `--vmm`, `--enable-capture` |
 | `vm_bench/__main__.py` | OpenStack VM browser/QA + create | `--create-only`, `--detect`, `-n`, `--start-ip`, `--browser-url` |
 | `auto_vm_test.py` | Single OpenStack test | `--config` |
@@ -168,7 +171,7 @@ Multi-template routing: trajectories may declare per-file concrete templates via
 
 ### bench-core phase ladder
 
-`--create-only` and `--detect` both leave sandboxes running; finish with `--cleanup`. Tier validation: Tier 0 `--provider fake` (no SDK) → Tier 1 docker (local daemon) → Tier 2 e2b (cloud). See [docs/bench-core-usage-zh.md](docs/bench-core-usage-zh.md).
+`--create-only` and `--detect` both leave sandboxes running; finish with `--cleanup`. Tier validation: Tier 0 `--provider fake` (no SDK) → Tier 1 docker (local daemon) → Tier 2 e2b/aenv/cubesandbox (cloud / lifecycle-capable microVM). See [docs/bench-core-usage-zh.md](docs/bench-core-usage-zh.md).
 
 ## External Tool Dependencies
 
@@ -253,13 +256,16 @@ See [docs/metrics-reference.md](docs/metrics-reference.md) for complete metric d
 
 ## Common Modifications
 
-### Adding a new provider (kata / agentenv / gvisor)
+### Adding a new provider (kata / gvisor / …)
 
-1. Create `src/env_provider/<name>.py` implementing `EnvironmentProvider` (lifecycle + `exec`); keep an internal `id → handle` table.
+The `cubesandbox` provider (`src/env_provider/cubesandbox/`) is the most recent worked example of this recipe — a full lifecycle backend (`LifecycleCapable` + `EphemeralCapable` + `SnapshotSizeCapable`) over the native `cubesandbox` SDK; mirror it for a new lifecycle-capable backend.
+
+1. Create `src/env_provider/<name>/` implementing `EnvironmentProvider` (lifecycle + `exec`); keep an internal `id → handle` table. For replay lifecycle/trajectory modes, also implement the `LifecycleCapable` / `EphemeralCapable` / `SnapshotSizeCapable` Protocols (structural — no base class needed; `isinstance` checks are runtime).
 2. If it has an SDK manager with create/detect/cleanup, subclass `BaseSandboxManager` (`_base.py`) and supply the SDK seams + class attrs; put config/schemas under `src/env_provider/<name>/`.
 3. Register the provider name in `bench_core.bench._build_provider` (lazy import).
 4. Add `config/common/*.yaml` blocks (`<name>:`) as needed — the kernel reads only shared sections.
-5. Add unit tests under `src/env_provider/tests/` (drive via `FakeProvider`-style stubs; no live SDK needed).
+5. Add the SDK to `[project.optional-dependencies]` in `pyproject.toml` (the module imports it under try/except; install only when using that provider).
+6. Add unit tests under `src/env_provider/tests/` (drive via `FakeProvider`-style stubs; no live SDK needed).
 
 ### Adding a new workflow
 
