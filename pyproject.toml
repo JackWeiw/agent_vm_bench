@@ -48,6 +48,10 @@ dev = [
 # matplotlib powers the replay-observability Gantt PNG (optional; the Gantt
 # sheet is skipped with a warning when absent -- the other 9 sheets still render).
 obs-gantt = ["matplotlib>=3.5"]
+# CubeSandbox provider SDK (Cloud Hypervisor microVM, lifecycle-capable). The
+# provider module imports it under try/except, so the kernel runs without it;
+# install only when using --provider cubesandbox.
+cubesandbox = ["cubesandbox>=0.7.0"]
 
 [project.scripts]
 vm-monitor = "vm_monitor.cli:main"

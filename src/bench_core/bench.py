@@ -552,7 +552,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     """Host-agnostic CLI. Provider packages add their own flags on top."""
     parser = argparse.ArgumentParser(description="Host-agnostic benchmark kernel")
     parser.add_argument("--config", help="YAML config path")
-    parser.add_argument("--provider", default="fake", choices=["fake", "e2b", "docker", "aenv"])
+    parser.add_argument(
+        "--provider",
+        default="fake",
+        choices=["fake", "e2b", "docker", "aenv", "cubesandbox"],
+    )
     parser.add_argument("-n", "--total-count", type=int)
     parser.add_argument("--workflow-type", choices=["browser", "coding", "document", "replay"])
     parser.add_argument("-bm", "--benchmark-mode", choices=["fixed", "round_robin"])
@@ -609,6 +613,8 @@ def _build_provider(name: str, config: KernelConfig, raw_config: dict[str, Any])
         from env_provider.docker import build_provider
     elif name == "aenv":
         from env_provider.aenv import build_provider
+    elif name == "cubesandbox":
+        from env_provider.cubesandbox import build_provider
     else:
         raise ValueError(f"Unknown provider: {name}")
     return build_provider(config, raw_config)
