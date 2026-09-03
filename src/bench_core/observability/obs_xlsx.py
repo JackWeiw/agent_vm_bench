@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openpyxl import Workbook
-from openpyxl.chart import LineChart, Reference
+from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.styles import Font, PatternFill
 
 from bench_core.utils import calc_percentiles
@@ -78,6 +78,34 @@ def _add_line_chart(
     cats = Reference(ws, min_col=cat_col, min_row=first_data_row, max_row=header_row + n_rows)
     ch.set_categories(cats)
     ws.add_chart(ch, anchor)
+
+
+def _add_trajectory_cost_chart(ws, header_row: int, n_traj: int) -> None:
+    """Stacked bar of per-trajectory exec / resume / pause sums (bar height ==
+    slice_total_sum) so the cost-attribution table's "where did each
+    trajectory's wall-clock go" reads at a glance.
+
+    Categories = trajectory_id (col 1); the three series take their titles from
+    the table header -- exec_sum_s (col 4) / resume_sum_s (col 5) /
+    pause_sum_s (col 6). Anchored to the right of the 12-column table so it
+    does not overlap the trailing create/kill percentile sub-table."""
+    if n_traj <= 0:
+        return
+    ch = BarChart()
+    ch.type = "col"
+    ch.grouping = "stacked"
+    ch.overlap = 100
+    ch.title = "Per-trajectory cost decomposition (s)"
+    ch.y_axis.title = "seconds"
+    ch.x_axis.title = "trajectory_id"
+    ch.height = 8
+    ch.width = 16
+    for col in (4, 5, 6):  # exec_sum_s / resume_sum_s / pause_sum_s
+        ref = Reference(ws, min_col=col, min_row=header_row, max_row=header_row + n_traj)
+        ch.add_data(ref, titles_from_data=True)
+    cats = Reference(ws, min_col=1, min_row=header_row + 1, max_row=header_row + n_traj)
+    ch.set_categories(cats)
+    ws.add_chart(ch, "N2")
 
 
 def _pcts_row(label: str, values: list[float]) -> list:
@@ -420,6 +448,7 @@ class XlsxReportRenderer:
                             round(avg_slice, 3),
                         ]
                     )
+                header_row = ws.max_row + 1  # row the header will land on
                 _write_table(
                     ws,
                     [
@@ -439,6 +468,7 @@ class XlsxReportRenderer:
                     rows,
                 )
                 wrote_profile = True
+                _add_trajectory_cost_chart(ws, header_row, len(rows))
         # Trajectory-mode-only: ephemeral create/kill lifecycle (not in any other
         # sheet). slot_held is intentionally omitted -- it is already pooled in
         # the Lifecycle overhead sheet.

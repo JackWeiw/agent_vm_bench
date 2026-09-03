@@ -696,3 +696,48 @@ def test_trajectory_summary_attributes_cost_per_instance(tmp_path):
     avg_col = headers.index("avg_slice_s") + 1
     assert ws.cell(2, n_col).value == 3
     assert ws.cell(2, avg_col).value == 0.7
+
+
+def test_trajectory_summary_has_stacked_cost_bar_chart(tmp_path):
+    """The per-trajectory cost-attribution sums get a stacked bar chart so the
+    "where did each trajectory's wall-clock go" table reads at a glance: exec /
+    resume / pause stacked per trajectory (bar height == slice_total_sum)."""
+    from unittest.mock import MagicMock
+
+    from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
+
+    sp = tmp_path / "s.jsonl"
+    w = LifecycleSeriesWriter(sp)
+    for tid, resume, pause in (("traj-a", 0.10, 0.20), ("traj-b", 0.50, 0.60)):
+        for i in range(3):
+            w.write(
+                {
+                    "event": "step",
+                    "sandbox_index": i,
+                    "trajectory_id": tid,
+                    "step_index": i,
+                    "exec_sec": 0.4,
+                    "resume_sec": resume,
+                    "pause_sec": pause,
+                    "slice_total_sec": round(resume + 0.4 + pause, 3),
+                    "interaction_total_sec": round(resume + 0.4 + pause + 0.05, 3),
+                }
+            )
+    w.close()
+
+    obs = MagicMock()
+    obs.config.replay_mode = "lifecycle"
+    r = XlsxReportRenderer(obs, series_path=sp)
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    r._sheet_trajectory_summary(wb)
+    out = tmp_path / "o.xlsx"
+    wb.save(out)
+    ws = openpyxl.load_workbook(out)["Trajectory summary"]
+    charts = ws._charts
+    assert charts, "expected a stacked bar chart on Trajectory summary"
+    ch = charts[0]
+    # three stacked cost-decomposition series: exec / resume / pause
+    assert len(ch.series) == 3, f"expected 3 cost series; got {len(ch.series)}"
