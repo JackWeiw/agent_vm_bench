@@ -335,21 +335,18 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
 ### 8.4 可观测性工作簿 (`*_obs.xlsx`)
 
 `report.format: xlsx|both` 时,除了文本报告 + JSONL lifecycle series,还会产出
-`<output_dir>/<prefix>_obs.xlsx`(11 张表,openpyxl 渲染)。所有时长列**统一为秒(s)**,
+`<output_dir>/<prefix>_obs.xlsx`(8 张表,openpyxl 渲染;Overview 为合并汇总看板——原 Admission & QPS / Throughput & overcommit / Retry impact 三张标量表已并入,数据名称栏填色加粗)。所有时长列**统一为秒(s)**,
 与参考实现的 `step-detail.csv` 单位一致;`Per-step timings` / `Lifecycle overhead`
 两张表的内嵌折图为可读性用毫秒(ms),表头会标注。无 lifecycle_series 文件时(如
 minimal install),依赖 series 的表只输出表头,不报错。
 
 | Sheet | 行粒度 | 内容 |
 |-------|--------|------|
-| Overview | 标量 | mode / total_count / running_concurrency / test_duration / wall_sec / steps / success / failed / overcommit_ratio |
+| Overview | 标量(合并汇总,分组着色) | **单表汇总**(原 Admission & QPS / Throughput & overcommit / Retry impact 三张标量表已并入此表):Run(mode/total_count/running_concurrency/test_duration/wall_sec/steps/success/failed/overcommit_ratio)+ Throughput(steps_per_sec/effective_parallelism/exec_wall_utilization/concurrency)+ Admission & QPS(running_slot 的 maximum/active/peak_active/granted/avg_queue_wait/waiting + QPS 限流 qps/inflight_cap/in_flight/dispatched/avg_wait/max_wait + per-operation 分发/等待子表)+ Retry(retry_count/time_lost_to_retry_sec/retries_per_slice_p95 + per-operation retry_queued)。数据名称栏(A 列)填色加粗,分组用 banner 行分隔 |
 | Per-step timings | 池化百分位 | 全 fleet `latency`(=纯 exec 耗时)的 n/min/max/avg/p50/p95/p99,按 `action_type` 分桶;附 per-step 折图(ms) |
 | Lifecycle overhead | 池化百分位 | `resume` / `pause` / `slice_total` / `slot_held` / `interaction` 五段的百分位;附 per-step 折图(ms)。仅 lifecycle/trajectory 模式 |
-| Admission & QPS | 标量 | running slot(maximum/active/peak_active/granted/avg_queue_wait)+ QPS 限流(qps/inflight_cap/in_flight/dispatched/avg_wait/max_wait)+ per-operation 分发/等待 |
-| Throughput & overcommit | 标量 | steps_per_sec / effective_parallelism / exec_wall_utilization / concurrency |
 | Trajectory summary | **每 trajectory 一行** | n_steps + 各段 sum(slice_total/exec/resume/pause/interaction_total/slot_wait/resume_queue_wait/pause_queue_wait/running_slot_held)+ avg_slice(秒)。按 trajectory_id 升序;trajectory 模式额外附 create_sec/kill_sec 百分位 |
 | Step detail | **每 step 事件一行** | 见下表;含成功与 `slice_failed` 合成行,按 (trajectory, sandbox, step) 排序,冻结首行 + autofilter |
-| Retry impact | 标量 | retry_count / time_lost_to_retry_sec / retries_per_slice_p95 + per-operation retry_queued 计数 |
 | Concurrency states | 每秒一行 | 每秒各 sandbox 的主导状态计数(pausing/paused/resuming/exec/active)+ 折图 |
 | Gantt | 图 | 每 sandbox 的 phase 时间线(resume/exec/pause),内嵌 PNG;大 fleet 自动缩小行高 |
 | Snapshot sizes | 每 pause 一行 | logical/disk/inherited/cumulative MiB + generations/files;附折图。仅 `SnapshotSizeCapable`(aenv) |

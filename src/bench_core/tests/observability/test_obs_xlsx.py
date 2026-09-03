@@ -86,57 +86,105 @@ def _seeded_observability(*, replay_mode="trajectory", with_retry=True) -> tuple
 
 class TestXlsxReportRenderer:
     def test_produces_all_expected_sheets(self, tmp_path):
+        # Admission & QPS / Throughput & overcommit / Retry impact were folded
+        # into Overview; the workbook now carries 8 base sheets and no standalone
+        # scalar tabs. (Host-merged sheets are conditional, asserted separately.)
         obs, _ = _seeded_observability()
         path = tmp_path / "obs.xlsx"
         XlsxReportRenderer(obs).render(str(path))
-        wb = load_workbook(str(path))
-        names = wb.sheetnames
+        names = load_workbook(str(path)).sheetnames
         for sheet in (
             "Overview",
             "Per-step timings",
             "Lifecycle overhead",
-            "Admission & QPS",
-            "Throughput & overcommit",
             "Trajectory summary",
             "Step detail",
-            "Retry impact",
+            "Concurrency states",
+            "Gantt",
+            "Snapshot sizes",
         ):
             assert sheet in names, f"missing sheet {sheet}; got {names}"
+        for removed in ("Admission & QPS", "Throughput & overcommit", "Retry impact"):
+            assert removed not in names, f"{removed} was folded into Overview; got {names}"
 
-    def test_admission_sheet_has_per_op_columns(self, tmp_path):
+    def test_overview_consolidates_admission_throughput_retry(self, tmp_path):
+        # The former Admission & QPS / Throughput & overcommit / Retry impact
+        # sheets' content now lives in Overview as grouped sections, so the
+        # whole run reads on one sheet instead of four tiny scalar tabs.
         obs, _ = _seeded_observability()
         path = tmp_path / "obs.xlsx"
         XlsxReportRenderer(obs).render(str(path))
         wb = load_workbook(str(path))
-        ws = wb["Admission & QPS"]
-        headers = [c.value for c in ws[1]]
-        assert "operation" in headers
-        assert "dispatched" in headers
-
-    def test_throughput_sheet_has_metrics(self, tmp_path):
-        obs, _ = _seeded_observability()
-        path = tmp_path / "obs.xlsx"
-        XlsxReportRenderer(obs).render(str(path))
-        wb = load_workbook(str(path))
-        ws = wb["Throughput & overcommit"]
-        rows = [[c.value for c in r] for r in ws.iter_rows()]
-        joined = " ".join(str(v) for row in rows for v in row)
-        # throughput-side metrics present
+        ws = wb["Overview"]
+        joined = " ".join(str(c.value) for row in ws.iter_rows() for c in row if c.value is not None)
+        # Throughput & overcommit scalars
         assert "steps_per_sec" in joined
-        assert "concurrency" in joined
-        # overcommit_ratio + wall_sec are Overview-only -- not duplicated here
-        assert "overcommit_ratio" not in joined
-        assert "wall_sec" not in joined
+        assert "effective_parallelism" in joined
+        # Admission & QPS scalars + the per-operation dispatched/waiting table
+        assert "qps" in joined
+        assert "operation" in joined and "dispatched" in joined
+        # Retry impact scalars
+        assert "retry_count" in joined
+        assert "time_lost_to_retry_sec" in joined
 
-    def test_retry_impact_sheet_present_when_retries_exist(self, tmp_path):
+    def test_overview_metric_name_column_is_colored(self, tmp_path):
+        # The data-name column (col A) carries a solid fill so metric labels
+        # stand out from their values; section banners delimit the groups.
+        obs, _ = _seeded_observability()
+        path = tmp_path / "obs.xlsx"
+        XlsxReportRenderer(obs).render(str(path))
+        wb = load_workbook(str(path))
+        ws = wb["Overview"]
+        name_cell = None
+        banner_cell = None
+        for row in ws.iter_rows():
+            if row[0].value == "workflow_type":
+                name_cell = row[0]
+            if row[0].value == "Run":
+                banner_cell = row[0]
+        assert name_cell is not None, "workflow_type metric row not found in Overview"
+        assert name_cell.fill.fill_type == "solid", "metric-name column must be color-filled"
+        assert name_cell.font.bold, "metric-name column must be bold"
+        assert banner_cell is not None, "Run section banner not found"
+        assert banner_cell.fill.fill_type == "solid", "section banner must be color-filled"
+
+    def test_overview_admission_has_per_op_table(self, tmp_path):
+        # The Admission per-operation dispatched/waiting table renders as a
+        # sub-table inside Overview (operation/dispatched/waiting header).
+        obs, _ = _seeded_observability()
+        path = tmp_path / "obs.xlsx"
+        XlsxReportRenderer(obs).render(str(path))
+        ws = load_workbook(str(path))["Overview"]
+        header_rows = [[c.value for c in r] for r in ws.iter_rows()]
+        assert ["operation", "dispatched", "waiting"] in header_rows
+
+    def test_overview_throughput_carries_values(self, tmp_path):
+        obs, _ = _seeded_observability()
+        path = tmp_path / "obs.xlsx"
+        XlsxReportRenderer(obs).render(str(path))
+        ws = load_workbook(str(path))["Overview"]
+        kv = {
+            r[0].value: r[1].value
+            for r in ws.iter_rows(min_col=1, max_col=2)
+            if r[0].value is not None and r[1].value is not None
+        }
+        assert kv.get("steps_per_sec") == obs.steps_per_sec
+        assert kv.get("concurrency") == obs.concurrency
+
+    def test_overview_retry_carries_values(self, tmp_path):
         obs, _ = _seeded_observability(with_retry=True)
         path = tmp_path / "obs.xlsx"
         XlsxReportRenderer(obs).render(str(path))
-        wb = load_workbook(str(path))
-        ws = wb["Retry impact"]
-        rows = [[c.value for c in r] for r in ws.iter_rows()]
-        joined = " ".join(str(v) for row in rows for v in row)
-        assert "retry_count" in joined
+        ws = load_workbook(str(path))["Overview"]
+        kv = {
+            r[0].value: r[1].value
+            for r in ws.iter_rows(min_col=1, max_col=2)
+            if r[0].value is not None and r[1].value is not None
+        }
+        assert kv.get("retry_count") == obs.retry_count
+        assert kv.get("time_lost_to_retry_sec") == obs.time_lost_to_retry_sec
+        # per-operation retry_queued:<op> rows are present
+        assert any(k.startswith("retry_queued:") for k in kv), kv
 
     def test_trajectory_sheet_omitted_content_when_not_trajectory(self, tmp_path):
         # lifecycle mode: Trajectory summary sheet exists but is empty/flagged
