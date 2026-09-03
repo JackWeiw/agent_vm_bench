@@ -12,14 +12,16 @@ by ``bench_core.bench._build_provider``, so ``bench_core`` itself never depends
 on the cubesandbox SDK -- the layering rule (kernel must not import provider
 packages) holds.
 
-Phase 1 (this module's exec-only surface): create / detect / check_alive /
-cleanup / exec / save_ids. ``default_replay_mode`` is ``exec_only`` and
+Full surface (Phase 2): create / detect / check_alive / cleanup / exec /
+save_ids (exec-only) PLUS ``pause`` / ``resume`` (native CubeSandbox
+pause/resume -- :class:`LifecycleCapable`), ``snapshot_sizes`` (returns
+``None`` for now -- the cube SDK's ``SnapshotInfo`` exposes no size fields, so
+the ``snapshot_size`` series event is skipped until size introspection lands),
+and ``create_one`` / ``kill_one`` (trajectory-mode ephemeral lifecycle --
+:class:`EphemeralCapable`). ``default_replay_mode`` is ``lifecycle``;
 ``vmm_type`` is ``None`` (vm_monitor integration is deferred; CubeSandbox's VMM
-process name -- ``cube-hypervisor`` vs ``cloud-hypervisor`` -- is unresolved and
-host-level monitoring is a follow-on phase). Phase 2 adds the
-:class:`LifecycleCapable` / :class:`EphemeralCapable` /
-:class:`SnapshotSizeCapable` methods and flips ``default_replay_mode`` to
-``lifecycle``.
+process name -- ``cube-hypervisor`` vs ``cloud-hypervisor`` -- is unresolved
+and host-level monitoring is a follow-on phase).
 """
 from __future__ import annotations
 
@@ -40,6 +42,21 @@ from .config import Config
 from .manager import CubesandboxManager
 from .schemas import CubeSandboxState
 from .schemas import SandboxStatus as CubeSandboxStatus
+
+try:
+    from cubesandbox import Sandbox
+except ImportError:
+    # Mock for unit tests / dev without the cubesandbox SDK. resume() uses
+    # Sandbox.connect(id); the manager has its own mock for create/list/kill.
+    # This mock keeps the provider module importable.
+    class Sandbox:  # type: ignore[no-redef]
+        @staticmethod
+        def connect(sandbox_id, *args, **kwargs):  # noqa: ARG004
+            class _Mock:
+                sandbox_id = sandbox_id
+
+            return _Mock()
+
 
 logger = logging.getLogger(__name__)
 
@@ -75,11 +92,14 @@ class CubesandboxProvider(EnvironmentProvider):
     """
 
     name = "cubesandbox"
-    # Phase 1: exec-only baseline (like cloud e2b). Phase 2 flips this to
-    # "lifecycle" once pause/resume + ephemeral + snapshot_sizes land.
-    default_replay_mode = "exec_only"
+    # CubeSandbox has native pause/resume WITH a memory snapshot (Cloud
+    # Hypervisor fork), so lifecycle is its natural replay mode -- the same
+    # memory-reuse oversubscription shape as aenv (pause frees RAM, so k*N
+    # sandboxes fit in N running slots).
+    default_replay_mode = "lifecycle"
     # vm_monitor integration deferred -- CubeSandbox's VMM process name is
-    # unresolved and host-level monitoring is a follow-on phase.
+    # unresolved (cube-hypervisor vs cloud-hypervisor) and host-level monitoring
+    # is a follow-on phase.
     vmm_type = None
 
     def __init__(self, kernel_config: KernelConfig, config: Config, stop_event: threading.Event) -> None:
@@ -192,6 +212,100 @@ class CubesandboxProvider(EnvironmentProvider):
             for sid in ids:
                 handle.write(f"{sid}\n")
         logger.info(f"Saved {len(ids)} sandbox IDs to: {path}")
+
+    # ------------------------------------------------------------------ lifecycle (replay)
+    def pause(self, inst: SandboxInstance) -> None:
+        """Memory-snapshot the sandbox (native CubeSandbox ``pause``).
+
+        CubeSandbox's ``pause(wait=True)`` blocks until the snapshot is stable
+        -- unlike E2B's beta_pause, it is a first-class native op (the Cloud
+        Hypervisor fork writes a memory snapshot the resume restores from), so
+        ``wait=True`` keeps the pause synchronous with the lifecycle runner's
+        per-step accounting.
+        """
+        state = self.manager.sandbox_states.get(inst.index)
+        if state is None or state.cube_sandbox is None:
+            raise RuntimeError(f"No CubeSandbox handle for sandbox index {inst.index}")
+        state.cube_sandbox.pause(wait=True)
+
+    def resume(self, inst: SandboxInstance) -> None:
+        """Restore the sandbox from its snapshot (``Sandbox.connect``).
+
+        ``connect`` attaches to an existing sandbox AND auto-resumes it if
+        paused (the cube SDK's standalone ``resume()`` is deprecated in favor
+        of ``connect``). It returns a fresh handle on the resumed sandbox; swap
+        it in (mirrors the cube manager's ``_attach``, which connects to
+        running sandboxes in detect mode). ``inst.id`` is the cube sandbox_id
+        (set at create via ``_to_instance``); it persists across pause/resume.
+        """
+        state = self.manager.sandbox_states.get(inst.index)
+        if state is None:
+            raise RuntimeError(f"No CubeSandbox handle for sandbox index {inst.index}")
+        state.cube_sandbox = Sandbox.connect(inst.id)
+
+    def snapshot_sizes(self, inst: SandboxInstance) -> dict | None:
+        """Stat the sandbox's snapshot disk usage -- ``None`` for now (deferred).
+
+        The cube SDK's ``SnapshotInfo`` exposes only ``snapshot_id`` + ``names``
+        (no size fields), so per-pause snapshot-size collection cannot be
+        satisfied from the control plane yet. Returning ``None`` keeps the
+        provider :class:`SnapshotSizeCapable` (the runner probes it right after
+        ``pause``) while signalling "no data" -- the ``snapshot_size`` series
+        event is skipped and the Snapshot-sizes sheet stays header-only, the
+        same shape as a provider that never implements the method. A follow-on
+        phase can stat the cube snapshot dir on the host (like aenv's
+        ``scan_snapshot_sizes``) once that path is verified.
+        """
+        return None
+
+    # ------------------------------------------------------------------ ephemeral (trajectory mode)
+    def create_one(
+        self, index: int, *, template: str | None = None, metadata: dict[str, str] | None = None
+    ) -> SandboxInstance:
+        """Create a single sandbox on demand (trajectory mode, EphemeralCapable).
+
+        Mirrors the single-sandbox path of ``create_all``: build a state, run
+        ``_create_single`` (forwarding ``metadata`` + ``template``), stamp
+        ``_slot_templates`` so ``_to_instance`` stamps the resolved template
+        onto ``SandboxInstance.template``, run the base readiness probe, and
+        map the result via ``_apply_ready`` -- so timing is consistent with
+        ``create_all``. The returned instance's ``creation_metrics`` reflects
+        this trajectory; the runner accumulates per-trajectory
+        ``create_sec``/``kill_sec`` into ``ReplayMetrics``.
+        """
+        from env_provider._base import BackendSandboxStatus
+
+        mgr = self.manager
+        state = mgr._new_state(index)
+        mgr._states[index] = state
+        result = mgr._create_single(state, metadata=metadata, template=template)
+        label = f"{mgr._noun}{index}"
+        if result["success"]:
+            mgr._slot_templates[index] = result.get("template")
+            ready = mgr._ready_checker().check(
+                mgr._handle_of(state),
+                self._kernel_config.workflow_type,
+                label,
+            )
+            mgr._apply_ready(state, ready, create_elapsed=result["create_elapsed"])
+        else:
+            state.creation_metrics.status = BackendSandboxStatus.FAILED
+            state.creation_metrics.error_msg = result["error"]
+            state.is_alive = False
+            raise RuntimeError(f"create_one({index}) failed: {result['error']}")
+        return self._to_instance(state)
+
+    def kill_one(self, inst: SandboxInstance) -> None:
+        """Tear down a single sandbox (trajectory mode, EphemeralCapable)."""
+        state = self.manager.sandbox_states.get(inst.index)
+        if state is None:
+            return  # never created (runner finally-path safety)
+        try:
+            if self.manager._handle_of(state) is not None:
+                self.manager._kill_one(state)
+        finally:
+            inst.is_alive = False
+            state.is_alive = False
 
     # ------------------------------------------------------------------ translation
     def _translate(self, states: Mapping[int, CubeSandboxState]) -> dict[int, SandboxInstance]:

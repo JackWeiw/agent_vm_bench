@@ -236,14 +236,14 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
             raise ValueError(
                 f"replay.mode=lifecycle requires a LifecycleCapable provider "
                 f"(pause/resume); provider '{provider.name}' does not support it. "
-                f"Use --provider aenv."
+                f"Use --provider aenv or --provider cubesandbox."
             )
     if config.workflow_type == "replay" and config.replay_mode == "trajectory":
         if not isinstance(provider, EphemeralCapable):
             raise ValueError(
                 f"replay.mode=trajectory requires an EphemeralCapable provider "
                 f"(create_one/kill_one); provider '{provider.name}' does not support it. "
-                f"Use --provider aenv."
+                f"Use --provider aenv or --provider cubesandbox."
             )
     # exec_only has no lifecycle calls; force the ready probe off regardless of
     # whether exec_only was explicit in YAML or resolved from the provider default.
