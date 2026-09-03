@@ -499,6 +499,23 @@ def _snapshot(output_file):
     return sheet_names, cols, rows, chart_count
 
 
+def _charts_by_sheet(output_file):
+    """Return ({sheet_name: chart_count}, {sheet_name: [series_count per chart]}).
+
+    Companion to _snapshot for chart-shape assertions: the snapshot only carries
+    a total chart count, but the dropped-metric charts land on specific sheets,
+    so per-sheet counts + per-chart series counts pin them precisely.
+    """
+    by_sheet = {}
+    series_by_sheet = {}
+    wb = load_workbook(output_file)
+    for ws in wb.worksheets:
+        by_sheet[ws.title] = len(ws._charts)
+        series_by_sheet[ws.title] = [len(c.series) for c in ws._charts]
+    wb.close()
+    return by_sheet, series_by_sheet
+
+
 @unittest.skipUnless(PANDAS_AVAILABLE and load_workbook is not None, "pandas/openpyxl required")
 class TestExportStructure(unittest.TestCase):
     """Snapshot of export_to_excel output, frozen to guard the refactor."""
@@ -754,9 +771,10 @@ class TestExportStructure(unittest.TestCase):
         self._export()
         _names, _cols, _rows, charts = _snapshot(self.output_file)
         # 1 DevKit pie + 1 IPC line + 1 MemBound bar + 1 DDR line + 1 CacheMiss bar
-        # + 2 Swap (in/out + SwapCache) + 2 NUMA_Memory_Timeline (8A + 8B) + 1 VM_Total
-        # + 1 Disk Write line + 1 Dirty+Writeback line + 1 Host Pressure line
-        self.assertEqual(charts, 13)
+        # + 2 Swap (in/out + SwapCache) + 3 NUMA_Memory_Timeline (8A + 8B + 8C reclaim)
+        # + 1 VM_Total + 1 Disk Write line + 1 Dirty+Writeback line + 1 Host Pressure line
+        # + 1 VM_Stats composition bar + 2 Getfre_Timeline (NUMA0 + NUMA1 freq lines)
+        self.assertEqual(charts, 17)
 
 
 @unittest.skipUnless(PANDAS_AVAILABLE and load_workbook is not None, "pandas/openpyxl required")
@@ -880,6 +898,72 @@ class TestDroppedMetricsExported(unittest.TestCase):
         self.assertNotIn("Getfre_Timeline_NUMA0", names)
         # NUMA1 still has its timeline -> its sheet still appears
         self.assertIn("Getfre_Timeline_NUMA1", names)
+
+
+@unittest.skipUnless(PANDAS_AVAILABLE and load_workbook is not None, "pandas/openpyxl required")
+class TestDroppedMetricCharts(unittest.TestCase):
+    """Charts for the metrics surfaced in the dropped-metrics PR. The data
+    already lands in the xlsx (TestDroppedMetricsExported pins the values);
+    these tests pin that each high-value dataset also gets a chart so it is
+    visually consumable, not just tabular.
+    """
+
+    def setUp(self):
+        self.monitor = _full_monitor()
+        self.parsed_logs = _full_parsed_logs()
+        self.log_dir = tempfile.mkdtemp(prefix="vm_monitor_charts_")
+        self.output_file = os.path.join(self.log_dir, "analysis_report.xlsx")
+
+    def tearDown(self):
+        for f in os.listdir(self.log_dir):
+            try:
+                os.unlink(os.path.join(self.log_dir, f))
+            except PermissionError:
+                pass
+        os.rmdir(self.log_dir)
+
+    def _export(self):
+        with patch("vm_monitor.exporters.parse_all_logs", return_value=self.parsed_logs):
+            return export_to_excel(self.monitor, self.log_dir, numa_nodes=[0], output_file=self.output_file)
+
+    def test_getfre_timeline_sheets_have_frequency_chart(self):
+        """Each Getfre_Timeline_NUMA{n} sheet gets a per-core frequency line;
+        series count tracks the number of cores in that NUMA's timeline."""
+        self._export()
+        by_sheet, series = _charts_by_sheet(self.output_file)
+        self.assertEqual(by_sheet.get("Getfre_Timeline_NUMA0"), 1)
+        self.assertEqual(by_sheet.get("Getfre_Timeline_NUMA1"), 1)
+        # NUMA0 timeline carries cores 10 + 11; NUMA1 carries core 20 only
+        self.assertEqual(series["Getfre_Timeline_NUMA0"], [2])
+        self.assertEqual(series["Getfre_Timeline_NUMA1"], [1])
+
+    def test_numa_memory_timeline_has_reclaim_pressure_chart(self):
+        """NUMA_Memory_Timeline gains a third chart (8C) for the
+        Active/Inactive/File Pages reclaim-pressure signals."""
+        self._export()
+        by_sheet, _series = _charts_by_sheet(self.output_file)
+        # 8A free/used + 8B swapcache/usage + 8C reclaim pressure
+        self.assertEqual(by_sheet.get("NUMA_Memory_Timeline"), 3)
+
+    def test_vm_stats_has_memory_composition_bar(self):
+        """VM_Stats gains a grouped bar of the avg memory composition
+        (Memory / Private / Heap / Hugepage) per VM."""
+        self._export()
+        by_sheet, series = _charts_by_sheet(self.output_file)
+        self.assertEqual(by_sheet.get("VM_Stats"), 1)
+        self.assertEqual(series["VM_Stats"], [4])
+
+    def test_getfre_timeline_without_timeline_has_no_chart(self):
+        """A NUMA whose timeline was deleted must not get a stray chart on a
+        sheet that does not exist -- the chart helper skips absent sheets."""
+        parsed = _full_parsed_logs()
+        del parsed["getfre"][0]["timeline"]  # NUMA0 lacks timeline -> no sheet
+        with patch("vm_monitor.exporters.parse_all_logs", return_value=parsed):
+            export_to_excel(self.monitor, self.log_dir, numa_nodes=[0], output_file=self.output_file)
+        by_sheet, _series = _charts_by_sheet(self.output_file)
+        self.assertNotIn("Getfre_Timeline_NUMA0", by_sheet)
+        # NUMA1 still charted
+        self.assertEqual(by_sheet.get("Getfre_Timeline_NUMA1"), 1)
 
 
 if __name__ == "__main__":

@@ -919,6 +919,8 @@ def _add_charts(output_file):
         _add_disk_write_line(wb)
         _add_dirty_writeback_line(wb)
         _add_host_pressure_line(wb)
+        _add_vm_stats_bar(wb)
+        _add_getfre_timeline_line(wb)
         wb.save(output_file)
         print("[OK] Charts added to Excel report")
     except Exception as e:
@@ -1110,6 +1112,9 @@ def _add_numa_memory_charts(wb):
     avail_cols = []
     swapcache_cols = []
     usage_cols = []
+    active_cols = []
+    inactive_cols = []
+    filepages_cols = []
     for col_idx in range(2, ws.max_column + 1):
         header = ws.cell(row=1, column=col_idx).value
         if header and "Free" in header:
@@ -1122,6 +1127,12 @@ def _add_numa_memory_charts(wb):
             swapcache_cols.append(col_idx)
         elif header and "Usage" in header:
             usage_cols.append(col_idx)
+        elif header and "Active" in header:
+            active_cols.append(col_idx)
+        elif header and "Inactive" in header:
+            inactive_cols.append(col_idx)
+        elif header and "File Pages" in header:
+            filepages_cols.append(col_idx)
 
     cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
 
@@ -1202,6 +1213,37 @@ def _add_numa_memory_charts(wb):
     if chart_8b.series or chart_8b_pct.series:
         chart_8b += chart_8b_pct
         ws.add_chart(chart_8b, "I16")
+
+    # Chart 8C: reclaim-pressure composition (Active / Inactive / File Pages)
+    # per focus NUMA node -- the reclaimable-memory signals _NUMA_MEMINFO_FIELDS
+    # collects per sample. Stacked-grouped line so pressure trends are visible.
+    reclaim_cols = active_cols + inactive_cols + filepages_cols
+    chart_8c = LineChart()
+    chart_8c.title = "NUMA Reclaim Pressure (Active/Inactive/File Pages)"
+    chart_8c.style = 10
+    chart_8c.y_axis.title = "MB"
+    chart_8c.x_axis.title = "Time"
+    chart_8c.width = 22
+    chart_8c.height = 12
+    for col in reclaim_cols:
+        data = Reference(ws, min_col=col, min_row=1, max_row=ws.max_row)
+        chart_8c.add_data(data, titles_from_data=True)
+    chart_8c.set_categories(cats)
+    # Active=red, Inactive=blue, File Pages=green (per focus node)
+    rc_styles = []
+    for _ in active_cols:
+        rc_styles.append(("FF0000", 20000))
+    for _ in inactive_cols:
+        rc_styles.append(("0070C0", 20000))
+    for _ in filepages_cols:
+        rc_styles.append(("00B050", 20000))
+    for i, (color, width) in enumerate(rc_styles):
+        if i < len(chart_8c.series):
+            s = chart_8c.series[i]
+            s.graphicalProperties.line.solidFill = color
+            s.graphicalProperties.line.width = width
+    if chart_8c.series:
+        ws.add_chart(chart_8c, "I30")
 
 
 def _add_vm_total_line(wb):
@@ -1297,6 +1339,81 @@ def _add_host_pressure_line(wb):
     pressure_chart.set_categories(cats)
     anchor_col = ws.max_column + 2
     ws.add_chart(pressure_chart, f"{get_column_letter(anchor_col)}2")
+
+
+def _add_vm_stats_bar(wb):
+    """Chart: per-VM memory composition (Avg Memory / Private / Heap / Hugepage).
+
+    Grouped bar with one series per memory component and one category per VM,
+    so the RSS decomposition (how much is private vs heap vs hugepage) is
+    comparable across the fleet at a glance. Locates columns by header so it
+    is robust to the VM_Stats column set growing.
+    """
+    if "VM_Stats" not in wb.sheetnames:
+        return
+    ws = wb["VM_Stats"]
+    if ws.max_row <= 1:
+        return
+    wanted = ["Avg Memory (MB)", "Avg Private (MB)", "Avg Heap (MB)", "Avg Hugepage (MB)"]
+    col_idx = {}
+    name_col = None
+    for col in range(1, ws.max_column + 1):
+        header = ws.cell(row=1, column=col).value
+        if header in wanted:
+            col_idx[header] = col
+        elif header == "VM Name":
+            name_col = col
+    # Skip rather than draw a partial / misleading composition.
+    if len(col_idx) != len(wanted):
+        return
+    bar = BarChart()
+    bar.type = "col"
+    bar.grouping = "clustered"
+    bar.title = "Per-VM Memory Composition (Avg)"
+    bar.style = 10
+    bar.y_axis.title = "MB"
+    bar.x_axis.title = "VM"
+    bar.width = 18
+    bar.height = 10
+    for header in wanted:
+        data = Reference(ws, min_col=col_idx[header], min_row=1, max_row=ws.max_row)
+        bar.add_data(data, titles_from_data=True)
+    if name_col is not None:
+        cats = Reference(ws, min_col=name_col, min_row=2, max_row=ws.max_row)
+        bar.set_categories(cats)
+    anchor_col = ws.max_column + 2
+    ws.add_chart(bar, f"{get_column_letter(anchor_col)}2")
+
+
+def _add_getfre_timeline_line(wb):
+    """Chart: per-core frequency timeline, one line chart per Getfre_Timeline_NUMA{n} sheet.
+
+    The timeline sheet (one column per core, timestamp rows) is the natural fit
+    for a line chart: each core is a series, so frequency-throttling events over
+    time are immediately visible. Iterates sheet names so every NUMA timeline
+    sheet gets its own chart; sheets that were skipped (no timeline data) simply
+    are absent and thus skipped.
+    """
+    for sheet_name in wb.sheetnames:
+        if not sheet_name.startswith("Getfre_Timeline_NUMA"):
+            continue
+        ws = wb[sheet_name]
+        if ws.max_row <= 1 or ws.max_column < 2:
+            continue
+        numa_id = sheet_name.rsplit("NUMA", 1)[-1]
+        chart = LineChart()
+        chart.title = f"Per-core Frequency Over Time (NUMA{numa_id})"
+        chart.style = 12
+        chart.y_axis.title = "Frequency (MHz)"
+        chart.x_axis.title = "Time"
+        chart.width = 20
+        chart.height = 10
+        data = Reference(ws, min_col=2, min_row=1, max_col=ws.max_column, max_row=ws.max_row)
+        cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+        chart.add_data(data, titles_from_data=True)
+        chart.set_categories(cats)
+        anchor_col = ws.max_column + 2
+        ws.add_chart(chart, f"{get_column_letter(anchor_col)}2")
 
 
 def export_to_excel(
