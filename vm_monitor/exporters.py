@@ -895,18 +895,25 @@ def _build_host_pressure_sheet(writer, monitor):
     pd.DataFrame(pressure_data).to_excel(writer, sheet_name="Host_Pressure_Timeline", index=False)
 
 
-def _add_charts(output_file):
-    """Add charts to an already-written Excel file (non-critical: failures warn).
+def _add_charts(build_file):
+    """Add charts to the built workbook (non-critical: failures warn).
 
-    Thin dispatcher: opens the workbook, delegates each chart to an _add_*
-    helper (one per logical chart), then saves. openpyxl is imported at module
-    top behind OPENPYXL_AVAILABLE; when absent this is a no-op.
+    Operates on ``build_file`` (a temp path, NOT the final report path) and
+    re-saves it via an atomic temp+rename so a SIGTERM mid-save cannot
+    truncate the workbook. The caller (export_to_excel) then atomically
+    promotes ``build_file`` to the final analysis_report.xlsx -- so the final
+    path appears exactly once, complete with charts. This matters because
+    bench-core's MonitorController.stop() reaps the vm_monitor subprocess the
+    moment analysis_report.xlsx appears; if the final path were written twice
+    (pandas, then this re-save), that reap would SIGTERM wb.save mid-write and
+    leave a truncated zip that Excel rejects as corrupt.
     """
     if not OPENPYXL_AVAILABLE:
         print("[WARN] openpyxl not available; skipping Excel charts")
         return
+    tmp = build_file + ".chart.tmp"
     try:
-        wb = load_workbook(output_file)
+        wb = load_workbook(build_file)
         _add_topdown_pie(wb)
         _add_ipc_line(wb)
         _add_membound_bar(wb)
@@ -921,10 +928,19 @@ def _add_charts(output_file):
         _add_host_pressure_line(wb)
         _add_vm_stats_bar(wb)
         _add_getfre_timeline_line(wb)
-        wb.save(output_file)
+        wb.save(tmp)
+        wb.close()
+        os.replace(tmp, build_file)  # atomic: build_file now carries charts
         print("[OK] Charts added to Excel report")
     except Exception as e:
         print(f"[WARN] Chart generation failed (non-critical): {e}")
+        # build_file stays as the pandas-built version (valid, no charts);
+        # drop any half-written chart temp so it does not linger in log_dir.
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _add_topdown_pie(wb):
@@ -1449,9 +1465,19 @@ def export_to_excel(
     # Parse log files
     parsed_logs = parse_all_logs(log_dir, numa_nodes)
 
+    # Write to a build path first, then atomically promote it onto output_file.
+    # This is not cosmetic: bench-core's MonitorController.stop() reaps this
+    # subprocess the instant analysis_report.xlsx appears (it polls the path,
+    # then SIGTERMs the process). If pandas wrote the final path directly, the
+    # reap could fire between the pandas write and _add_charts' re-save,
+    # truncating the workbook mid-write -- Excel then rejects it as corrupt.
+    # By building on a side path and os.replace-ing it onto output_file only
+    # after charts are done, the final path appears exactly once, complete.
+    build_file = output_file + ".build.xlsx"
+
     # Create writer for multi-sheet Excel (openpyxl required)
     try:
-        with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+        with pd.ExcelWriter(build_file, engine="openpyxl") as writer:
             vm_stats = monitor.calculate_vm_stats()
             overall_stats = monitor.calculate_overall_stats(vm_stats)
 
@@ -1474,12 +1500,31 @@ def export_to_excel(
     except ImportError:
         print("[WARN] openpyxl not available, skipping Excel export")
         print("  Install with: pip install openpyxl")
+        if os.path.exists(build_file):
+            try:
+                os.unlink(build_file)
+            except OSError:
+                pass
         return None
     except Exception as e:
         print(f"[WARN] Excel export failed: {e}")
+        if os.path.exists(build_file):
+            try:
+                os.unlink(build_file)
+            except OSError:
+                pass
         return None
 
-    _add_charts(output_file)
+    # Add charts to the build copy. Non-critical: _add_charts warns on its own
+    # failures, and we guard again here so a chart-phase crash still promotes
+    # the valid (chart-less) pandas workbook rather than propagating.
+    try:
+        _add_charts(build_file)
+    except Exception as e:
+        print(f"[WARN] Chart generation failed (non-critical): {e}")
+
+    # Atomic promotion: final path appears once, complete with charts.
+    os.replace(build_file, output_file)
     print(f"[OK] Excel report exported: {output_file}")
     return output_file
 
