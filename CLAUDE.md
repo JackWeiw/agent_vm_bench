@@ -153,6 +153,7 @@ Multi-template routing: trajectories may declare per-file concrete templates via
 - **Pre-commit before commit.** Run `python -m pre_commit run --files <files>` on the staged set; fix failures before committing.
 - **No Claude attribution.** Do not add `Co-Authored-By: Claude` or similar trailers.
 - **Commit messages** via heredoc `git commit -F - <<'EOF'`; Conventional Commit prefixes (`feat:`, `fix:`, `refactor:`, `docs:`, `ci:`, `chore:`).
+- **Squash-merge.** Multi-commit PRs are squash-merged into `main` — one commit per PR (PR title + body become the commit message) — so `main` stays linear and each PR is a single revertable unit. (`CONTRIBUTING.md` already declares this the default.)
 - **IP & secret scrubbing.** Private `192.168.x.x` addresses are OK to commit; scrub public IPs. Never commit real E2B access tokens / API keys — leave placeholders.
 - **Frozen legacy.** `e2b_bench/` and `docker_bench/` are frozen standalone legacy — do not refactor them into the kernel.
 
