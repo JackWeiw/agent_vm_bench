@@ -175,3 +175,83 @@ def test_compute_valid_failure_tolerance_allows_wrap_noise():
     s = _summary(total=768, succeeded=758, failed=10, wall_sec=950.0)
     assert compute_valid(s, return_code=0, n=384, test_duration=1000, failure_tolerance=0.05) is True
     assert compute_valid(s, return_code=0, n=384, test_duration=1000, failure_tolerance=0.0) is False
+
+
+from bench_core.oversub import aggregate_ratio_summary, trial_row, write_outputs
+
+
+def _trial_row(mode, ratio, repeat, *, wall=100.0, tps=10.0, peak=380, valid=True, failed=0, total=768):
+    s = _summary(total=total, succeeded=total - failed, failed=failed, wall_sec=wall, peak_active=peak, mode=mode)
+    s["throughput"]["tasks_per_sec"] = tps  # thread tps so throughput-degradation medians are non-zero
+    return trial_row(
+        mode=mode,
+        ratio=ratio,
+        repeat=repeat,
+        running_concurrency=384,
+        target_count=ratio * 384,
+        summary=s,
+        return_code=0,
+        valid=valid,
+        reused=False,
+        trial_dir="t",
+        run_summary_path="s.json",
+    )
+
+
+def test_trial_row_fields_match_csv_schema():
+    r = _trial_row("lifecycle", 2, 1)
+    assert r["mode"] == "lifecycle"
+    assert r["ratio"] == 2
+    assert r["oversubscription_ratio"] == 2
+    assert r["target_count"] == 768
+    assert r["running_concurrency"] == 384
+    assert r["failure_rate"] == 0.0
+    assert r["peak_active"] == 380
+    assert r["valid"] is True
+
+
+def test_aggregate_ratio_summary_medians_and_degradation():
+    trials = [
+        _trial_row("lifecycle", 1, 1, wall=100, tps=10),
+        _trial_row("lifecycle", 1, 2, wall=120, tps=9),
+        _trial_row("lifecycle", 2, 1, wall=200, tps=5),
+        _trial_row("lifecycle", 2, 2, wall=180, tps=6),
+    ]
+    rows = aggregate_ratio_summary(trials)
+    by = {(r["mode"], r["ratio"]): r for r in rows}
+    r1 = by[("lifecycle", 1)]
+    r2 = by[("lifecycle", 2)]
+    assert r1["attempted"] == 2 and r1["successful"] == 2
+    assert r1["median_wall_sec"] == 110.0  # median(100,120)
+    # k=2 baseline is k=1: degradation vs median_wall 110 -> (190-110)/110*100
+    assert abs(r2["median_wall_sec"] - 190.0) < 0.01
+    assert abs(r2["time_degradation_vs_1_1_pct"] - (190 - 110) / 110 * 100) < 0.01
+    # throughput gain: median(5,6)=5.5 vs 9.5 -> (5.5-9.5)/9.5*100
+    assert abs(r2["throughput_gain_vs_1_1_pct"] - (5.5 - 9.5) / 9.5 * 100) < 0.01
+
+
+def test_aggregate_ratio_summary_degradation_needs_k1_baseline():
+    """No k=1 in a mode -> degradation columns absent (0.0), not a crash."""
+    trials = [_trial_row("exec_only", 2, 1, wall=200, tps=5, peak=None)]
+    rows = aggregate_ratio_summary(trials)
+    assert len(rows) == 1
+    # No k=1 baseline -> degradation defaults to 0.0 (no baseline to compare).
+    assert rows[0]["time_degradation_vs_1_1_pct"] == 0.0
+
+
+def test_write_outputs_emits_all_four_files(tmp_path):
+    trials = [_trial_row("lifecycle", 1, 1), _trial_row("lifecycle", 2, 1, wall=200, tps=5)]
+    # Seed a fake trajectories/index.json in one trial's (fake) run_summary path dir.
+    write_outputs(trials, output_root=tmp_path)
+    assert (tmp_path / "trial-summary.csv").exists()
+    assert (tmp_path / "ratio-summary.csv").exists()
+    assert (tmp_path / "trajectory-detail.csv").exists()
+    assert (tmp_path / "benchmark-report.json").exists()
+    # trial-summary has one row per trial.
+    tsv = (tmp_path / "trial-summary.csv").read_text(encoding="utf-8").strip().splitlines()
+    assert len(tsv) == 1 + 2  # header + 2 trials
+    # benchmark-report.json is valid JSON with the trials array.
+    import json as _j
+
+    rep = _j.loads((tmp_path / "benchmark-report.json").read_text(encoding="utf-8"))
+    assert "configuration" in rep and "trials" in rep and "ratio_summary" in rep

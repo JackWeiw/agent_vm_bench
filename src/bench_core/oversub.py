@@ -18,7 +18,10 @@ them directly.
 from __future__ import annotations
 
 import copy
+import csv
 import json
+import statistics
+import time
 from pathlib import Path
 
 
@@ -130,3 +133,231 @@ def compute_valid(
     if failure_rate > failure_tolerance:
         return False
     return True
+
+
+# trial-summary.csv column order (mirrors the reference TRIAL_COLUMNS + the
+# sustained-mode failure_rate / test_duration columns).
+TRIAL_COLUMNS = [
+    "mode",
+    "ratio",
+    "oversubscription_ratio",
+    "repeat",
+    "running_concurrency",
+    "target_count",
+    "total",
+    "succeeded",
+    "failed",
+    "failure_rate",
+    "peak_active",
+    "granted",
+    "avg_queue_wait_sec",
+    "control_dispatched",
+    "test_duration",
+    "wall_sec",
+    "tasks_per_sec",
+    "steps_per_sec",
+    "lifecycle_overhead_pct",
+    "return_code",
+    "valid",
+    "reused",
+    "started_at",
+    "completed_at",
+    "error",
+    "trial_dir",
+    "run_summary_path",
+]
+
+RATIO_COLUMNS = [
+    "mode",
+    "ratio",
+    "attempted",
+    "successful",
+    "all_repeats_successful",
+    "median_wall_sec",
+    "median_tasks_per_sec",
+    "median_peak_active",
+    "median_queue_wait_sec",
+    "time_degradation_vs_1_1_pct",
+    "throughput_gain_vs_1_1_pct",
+]
+
+TRAJECTORY_COLUMNS = [
+    "mode",
+    "ratio",
+    "repeat",
+    "trajectory_id",
+    "sandbox_index",
+    "n_steps",
+    "n_failed",
+    "n_timeout",
+    "success_rate",
+    "elapsed_sec",
+    "create_error_type",
+    "kill_error_type",
+]
+
+
+def trial_row(
+    *,
+    mode: str,
+    ratio: int,
+    repeat: int,
+    running_concurrency: int,
+    target_count: int,
+    summary: dict,
+    return_code: int,
+    valid: bool,
+    reused: bool,
+    trial_dir: str,
+    run_summary_path: str,
+) -> dict:
+    """Build a trial-summary.csv row from a parsed run_summary + driver metadata."""
+    tp = summary.get("throughput") or {}
+    total = tp.get("total", 0)
+    failed = tp.get("failed", 0)
+    adm = summary.get("admission") or {}
+    lc = summary.get("lifecycle_overhead") or {}
+    return {
+        "mode": mode,
+        "ratio": ratio,
+        "oversubscription_ratio": ratio,
+        "repeat": repeat,
+        "running_concurrency": running_concurrency,
+        "target_count": target_count,
+        "total": total,
+        "succeeded": tp.get("succeeded", 0),
+        "failed": failed,
+        "failure_rate": round(failed / total, 4) if total else 0.0,
+        "peak_active": adm.get("peak_active"),
+        "granted": adm.get("granted"),
+        "avg_queue_wait_sec": adm.get("avg_queue_wait_sec"),
+        "control_dispatched": adm.get("control_dispatched"),
+        "test_duration": summary.get("test_duration") or summary.get("_test_duration") or 0,
+        "wall_sec": summary.get("wall_sec"),
+        "tasks_per_sec": tp.get("tasks_per_sec"),
+        "steps_per_sec": tp.get("steps_per_sec"),
+        "lifecycle_overhead_pct": lc.get("pct_of_slice_total"),
+        "return_code": return_code,
+        "valid": valid,
+        "reused": reused,
+        "started_at": summary.get("started_at"),
+        "completed_at": summary.get("completed_at"),
+        "error": summary.get("error"),
+        "trial_dir": trial_dir,
+        "run_summary_path": run_summary_path,
+    }
+
+
+def _median(vals: list[float]) -> float:
+    return statistics.median(vals) if vals else 0.0
+
+
+def aggregate_ratio_summary(trials: list[dict]) -> list[dict]:
+    """One row per ``(mode, ratio)``: medians across repeats + degradation vs k=1.
+
+    Degradation is computed **within a mode** vs that mode's ``k=1`` baseline,
+    so lifecycle and exec_only each get their own curve (memory-overcommit
+    overhead vs CPU-oversubscription degradation). When a mode has no k=1
+    trial, the degradation columns default to ``0.0`` (no baseline to compare).
+    """
+    by_key: dict[tuple[str, int], list[dict]] = {}
+    for t in trials:
+        by_key.setdefault((t["mode"], t["ratio"]), []).append(t)
+
+    rows: list[dict] = []
+    for (mode, ratio), group in sorted(by_key.items()):
+        walls = [g["wall_sec"] for g in group if g.get("wall_sec") is not None]
+        tps = [g["tasks_per_sec"] for g in group if g.get("tasks_per_sec") is not None]
+        peaks = [g["peak_active"] for g in group if g.get("peak_active") is not None]
+        waits = [g["avg_queue_wait_sec"] for g in group if g.get("avg_queue_wait_sec") is not None]
+        attempted = len(group)
+        successful = sum(1 for g in group if g["valid"])
+        rows.append(
+            {
+                "mode": mode,
+                "ratio": ratio,
+                "attempted": attempted,
+                "successful": successful,
+                "all_repeats_successful": successful == attempted,
+                "median_wall_sec": _median(walls),
+                "median_tasks_per_sec": _median(tps),
+                "median_peak_active": _median(peaks),
+                "median_queue_wait_sec": _median(waits),
+                "time_degradation_vs_1_1_pct": 0.0,
+                "throughput_gain_vs_1_1_pct": 0.0,
+            }
+        )
+
+    by_mode: dict[str, list[dict]] = {}
+    for r in rows:
+        by_mode.setdefault(r["mode"], []).append(r)
+    for mrows in by_mode.values():
+        base = next((r for r in mrows if r["ratio"] == 1), None)
+        if not base:
+            continue
+        for r in mrows:
+            bw = base["median_wall_sec"] or 0
+            r["time_degradation_vs_1_1_pct"] = round(((r["median_wall_sec"] - bw) / bw * 100) if bw else 0.0, 3)
+            bt = base["median_tasks_per_sec"] or 0
+            r["throughput_gain_vs_1_1_pct"] = round(((r["median_tasks_per_sec"] - bt) / bt * 100) if bt else 0.0, 3)
+    return rows
+
+
+def _write_csv(path: Path, columns: list[str], rows: list[dict]) -> None:
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+
+
+def _trajectory_rows(trials: list[dict]) -> list[dict]:
+    """One row per trajectory per trial (from each trial's trajectories/index.json)."""
+    out: list[dict] = []
+    for t in trials:
+        idx_path = t.get("run_summary_path")
+        if not idx_path:
+            continue
+        # run_summary lives in <trial_stamp_dir>/; index.json in <trial_stamp_dir>/trajectories/
+        idx = Path(idx_path).parent / "trajectories" / "index.json"
+        if not idx.exists():
+            continue
+        catalog = json.loads(idx.read_text(encoding="utf-8"))
+        for tr in catalog.get("trajectories", []):
+            out.append(
+                {
+                    "mode": t["mode"],
+                    "ratio": t["ratio"],
+                    "repeat": t["repeat"],
+                    "trajectory_id": tr.get("trajectory_id"),
+                    "sandbox_index": tr.get("sandbox_index"),
+                    "n_steps": tr.get("n_steps"),
+                    "n_failed": tr.get("n_failed"),
+                    "n_timeout": tr.get("n_timeout"),
+                    "success_rate": tr.get("success_rate"),
+                    "elapsed_sec": tr.get("elapsed_sec"),
+                    "create_error_type": tr.get("create_error_type"),
+                    "kill_error_type": tr.get("kill_error_type"),
+                }
+            )
+    return out
+
+
+def write_outputs(trials: list[dict], *, output_root: Path) -> None:
+    """Write trial/ratio/trajectory CSVs + benchmark-report.json (restart-safe).
+
+    Call after every trial so a killed driver leaves a complete partial set.
+    """
+    output_root.mkdir(parents=True, exist_ok=True)
+    _write_csv(output_root / "trial-summary.csv", TRIAL_COLUMNS, trials)
+    ratio_rows = aggregate_ratio_summary(trials)
+    _write_csv(output_root / "ratio-summary.csv", RATIO_COLUMNS, ratio_rows)
+    _write_csv(output_root / "trajectory-detail.csv", TRAJECTORY_COLUMNS, _trajectory_rows(trials))
+    report = {
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "configuration": {},
+        "trials": trials,
+        "ratio_summary": ratio_rows,
+        "trajectory_details": _trajectory_rows(trials),
+    }
+    (output_root / "benchmark-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
