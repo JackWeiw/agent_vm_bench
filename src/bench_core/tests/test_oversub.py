@@ -10,6 +10,9 @@ import json
 from pathlib import Path
 
 import yaml
+import os
+import subprocess
+import sys
 
 from bench_core.oversub import (
     build_trial_config,
@@ -317,3 +320,154 @@ def test_write_outputs_trajectory_detail_has_rows(tmp_path):
     rep = _j.loads((tmp_path / "benchmark-report.json").read_text(encoding="utf-8"))
     assert len(rep["trajectory_details"]) == 1
     assert rep["trajectory_details"][0]["trajectory_id"] == "t0"
+
+
+from bench_core.oversub import main
+
+
+def _write_stub_bench_core(stub_path: Path, prefix: str):
+    """Write a stub script that mimics bench-core: stamps a subdir, writes a
+    canned run_summary.json + trajectories/index.json, exits 0. The driver
+    invokes it via --bench-core-bin."""
+    stub_path.write_text(
+        f"""import json, os, sys, time
+from pathlib import Path
+import yaml
+cfg = yaml.safe_load(open(sys.argv[sys.argv.index('--config')+1]))
+pfx = cfg['report']['filename_prefix']
+out = Path(cfg['report']['output_dir'])
+stamp = time.strftime('%Y%m%d-%H%M%S')
+run_dir = out / f'{{pfx}}_{{stamp}}'
+run_dir.mkdir(parents=True, exist_ok=True)
+summary = {{
+  'schema_version': 1, 'workflow_type': 'replay',
+  'replay_mode': cfg['replay']['mode'], 'provider': 'stub',
+  'started_at': '2026-09-05T14:00:00+08:00',
+  'completed_at': '2026-09-05T14:18:00+08:00',
+  'started_epoch': 1000.0, 'completed_epoch': 2080.0, 'wall_sec': 1080.0,
+  'test_duration': cfg['test']['duration'],
+  'total_count': cfg['sandbox']['total_count'],
+  'running_concurrency': cfg['replay']['running_concurrency'],
+  'overcommit_ratio': cfg['sandbox']['total_count'] / cfg['replay']['running_concurrency'],
+  'throughput': {{'total': cfg['sandbox']['total_count'],
+                 'succeeded': cfg['sandbox']['total_count'],
+                 'failed': 0, 'total_steps': 10,
+                 'steps_per_sec': 0.01, 'tasks_per_sec': 0.7}},
+  'admission': None, 'lifecycle_overhead': None,
+  'paths': {{'report': None, 'obs_xlsx': None, 'lifecycle_series': None,
+            'trajectory_index': None, 'vm_monitor_dir': None}},
+  'error': None}}
+(run_dir / f'{{pfx}}_run_summary.json').write_text(json.dumps(summary, indent=2)+'\\n')
+(run_dir / 'trajectories').mkdir(parents=True, exist_ok=True)
+idx = {{'n_trajectories': 1, 'trajectories': [
+  {{'trajectory_id':'t0','sandbox_index':0,'n_steps':1,'n_failed':0,'n_timeout':0,
+   'success_rate':1.0,'elapsed_sec':1.0,'create_error_type':None,
+   'kill_error_type':None,'file':'t0/replay_result.json'}}]}}
+(run_dir / 'trajectories' / 'index.json').write_text(json.dumps(idx, indent=2)+'\\n')
+""",
+        encoding="utf-8",
+    )
+
+
+def test_dry_run_writes_trial_yamls_and_empty_outputs(tmp_path):
+    base = tmp_path / "base.yaml"
+    base.write_text(
+        yaml.safe_dump(
+            {
+                "workflow_type": "replay",
+                "sandbox": {"total_count": 4},
+                "replay": {"running_concurrency": 4, "mode": "lifecycle"},
+                "test": {"duration": 60, "round_size": 4, "round_count": 1, "benchmark_mode": "round_robin"},
+                "report": {"output_dir": "results/replay", "filename_prefix": "rb", "format": "both"},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    out_root = tmp_path / "sweep"
+    rc = main(
+        [
+            "--config",
+            str(base),
+            "--provider",
+            "aenv",
+            "--ratios",
+            "1,2",
+            "--modes",
+            "lifecycle",
+            "--repeats",
+            "1",
+            "--test-duration",
+            "60",
+            "--dry-run",
+            "--output-root",
+            str(out_root),
+        ]
+    )
+    assert rc == 0
+    # Two trial.yaml files generated (ratio 1 + 2).
+    yamls = sorted(out_root.glob("lifecycle/ratio-*/repeat-00/trial.yaml"))
+    assert len(yamls) == 2
+    # trial.yaml for ratio=2 carries total_count=8, round_size=8, round_count=0.
+    cfg2 = yaml.safe_load(yamls[1].read_text(encoding="utf-8"))
+    assert cfg2["sandbox"]["total_count"] == 8
+    assert cfg2["test"]["round_size"] == 8
+    assert cfg2["test"]["round_count"] == 0
+    assert (out_root / "benchmark-report.json").exists()
+
+
+def test_run_with_stub_aggregates_trials(tmp_path):
+    """End-to-end driver run using a stub bench-core (no real kernel/SDK)."""
+    stub = tmp_path / "stub_bench_core.py"
+    _write_stub_bench_core(stub, "rb")
+
+    base = tmp_path / "base.yaml"
+    base.write_text(
+        yaml.safe_dump(
+            {
+                "workflow_type": "replay",
+                "sandbox": {"total_count": 4},
+                "replay": {"running_concurrency": 4, "mode": "lifecycle"},
+                "test": {"duration": 60, "round_size": 4, "round_count": 1, "benchmark_mode": "round_robin"},
+                "report": {"output_dir": "results/replay", "filename_prefix": "rb", "format": "both"},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    out_root = tmp_path / "sweep"
+    rc = main(
+        [
+            "--config",
+            str(base),
+            "--provider",
+            "aenv",
+            "--ratios",
+            "1,2",
+            "--modes",
+            "lifecycle",
+            "--repeats",
+            "1",
+            "--test-duration",
+            "60",
+            "--output-root",
+            str(out_root),
+            "--bench-core-bin",
+            sys.executable,
+            str(stub),
+            "--no-vm-monitor",
+            "--cooldown-sec",
+            "0",
+            "--cleanup-between-trials",
+            "off",
+        ]
+    )
+    assert rc == 0
+    tsv = (out_root / "trial-summary.csv").read_text(encoding="utf-8").strip().splitlines()
+    assert len(tsv) == 1 + 2  # header + 2 trials
+    # Both trials valid (stub returns wall 1080 >= 0.9*60, total>0, no admission).
+    body = "\n".join(tsv[1:])
+    assert "True" in body
+    # trajectory-detail has 2 rows (one per stub trial).
+    trj = (out_root / "trajectory-detail.csv").read_text(encoding="utf-8").strip().splitlines()
+    assert len(trj) == 1 + 2

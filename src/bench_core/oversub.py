@@ -17,12 +17,16 @@ them directly.
 """
 from __future__ import annotations
 
+import argparse
 import copy
 import csv
 import json
 import statistics
+import subprocess
 import time
 from pathlib import Path
+
+import yaml
 
 
 def parse_ratios(text: str) -> list[int]:
@@ -343,7 +347,7 @@ def _trajectory_rows(trials: list[dict]) -> list[dict]:
     return out
 
 
-def write_outputs(trials: list[dict], *, output_root: Path) -> None:
+def write_outputs(trials: list[dict], *, output_root: Path, configuration: dict | None = None) -> None:
     """Write trial/ratio/trajectory CSVs + benchmark-report.json (restart-safe).
 
     Call after every trial so a killed driver leaves a complete partial set.
@@ -356,9 +360,231 @@ def write_outputs(trials: list[dict], *, output_root: Path) -> None:
     _write_csv(output_root / "trajectory-detail.csv", TRAJECTORY_COLUMNS, traj_rows)
     report = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "configuration": {},
+        "configuration": configuration or {},
         "trials": trials,
         "ratio_summary": ratio_rows,
         "trajectory_details": traj_rows,
     }
     (output_root / "benchmark-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="oversub-bench",
+        description="Sweep the bench-core replay kernel across oversubscription ratios.",
+    )
+    p.add_argument("--config", required=True, help="base replay.yaml")
+    p.add_argument("--provider", default="aenv", help="provider name (default aenv)")
+    p.add_argument(
+        "--running-concurrency",
+        type=int,
+        default=None,
+        help="N running slots; default = base replay.running_concurrency",
+    )
+    p.add_argument("--ratios", default="1,2,3", help="comma-separated k values (default 1,2,3)")
+    p.add_argument(
+        "--modes",
+        default="lifecycle,exec_only",
+        help="comma-separated replay modes to sweep (default lifecycle,exec_only)",
+    )
+    p.add_argument("--repeats", type=int, default=1, help="repeats per (mode,ratio)")
+    p.add_argument(
+        "--test-duration",
+        type=int,
+        default=None,
+        help="sustained measurement window per trial (default = base test.duration)",
+    )
+    p.add_argument("--failure-tolerance", type=float, default=0.0, help="max failure_rate for valid (0.0 = strict)")
+    p.add_argument("--cooldown-sec", type=int, default=30, help="settle time between trials")
+    p.add_argument(
+        "--cleanup-between-trials",
+        choices=["on", "off"],
+        default="on",
+        help="pre-trial teardown of leftovers (default on)",
+    )
+    p.add_argument(
+        "--trial-timeout-sec", type=int, default=0, help="outer wall-clock per trial; terminate->10s->kill (0 = off)"
+    )
+    p.add_argument("--output-root", default=None, help="default runs/oversub-N{N}-{ts}/")
+    p.add_argument("--reuse", action="store_true", help="skip trials whose run_summary exists & recomputes valid")
+    p.add_argument("--stop-on-failure", action="store_true", help="halt on first invalid trial (default off)")
+    p.add_argument("--dry-run", action="store_true", help="print all trial.yaml + commands, write empty outputs")
+    p.add_argument("--no-vm-monitor", action="store_true", help="pass --no-vm-monitor through to bench-core")
+    p.add_argument(
+        "--bench-core-bin",
+        nargs="+",
+        default=["bench-core"],
+        help="command for the kernel subprocess (default bench-core; tests point at a stub)",
+    )
+    return p
+
+
+def _run_subprocess(cmd: list[str], log_path: Path, timeout_sec: int) -> int:
+    """Run cmd, stream stdout+stderr to log_path; portable hard-kill on timeout.
+
+    ``terminate`` -> 10s grace -> ``kill`` (works on both Unix and Windows;
+    the bench targets Linux hosts, but the driver may run on a Windows dev box).
+    """
+    with open(log_path, "w", encoding="utf-8") as log:
+        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
+        try:
+            proc.wait(timeout=timeout_sec if timeout_sec else None)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+        return proc.returncode if proc.returncode is not None else -1
+
+
+def _run_trial(args, base_yaml: dict, mode: str, ratio: int, repeat: int, n: int, output_root: Path):
+    """Run one (mode,ratio,repeat) trial; return a trial_row dict or None (dry-run)."""
+    prefix = (base_yaml.get("report") or {}).get("filename_prefix", "replay_bench")
+    trial_dir = output_root / mode / f"ratio-{ratio:02d}" / f"repeat-{repeat:02d}"
+    trial_dir.mkdir(parents=True, exist_ok=True)
+    test_duration = args.test_duration or (base_yaml.get("test") or {}).get("duration", 600)
+
+    summary_glob = f"{prefix}_*/{prefix}_run_summary.json"
+
+    # --reuse: skip completed-valid trials (restart safety).
+    if args.reuse:
+        hits = sorted(trial_dir.glob(summary_glob))
+        if hits:
+            try:
+                s = parse_run_summary(hits[-1])
+                if compute_valid(s, 0, n=n, test_duration=test_duration, failure_tolerance=args.failure_tolerance):
+                    return trial_row(
+                        mode=mode,
+                        ratio=ratio,
+                        repeat=repeat,
+                        running_concurrency=n,
+                        target_count=ratio * n,
+                        summary=s,
+                        return_code=0,
+                        valid=True,
+                        reused=True,
+                        trial_dir=str(trial_dir),
+                        run_summary_path=str(hits[-1]),
+                    )
+            except Exception:
+                pass  # corrupt summary -> re-run
+
+    # Cooldown between trials (skip the very first trial; skip in dry-run).
+    first_mode = args.modes.split(",")[0].strip()
+    if args.cooldown_sec and not args.dry_run and not (ratio == 1 and repeat == 0 and mode == first_mode):
+        time.sleep(args.cooldown_sec)
+
+    # Pre-trial cleanup: tear down leftovers so they don't corrupt the ratio.
+    if args.cleanup_between_trials == "on" and not args.dry_run:
+        subprocess.run(
+            [*args.bench_core_bin, "--config", args.config, "--provider", args.provider, "--cleanup"],
+            capture_output=True,
+            timeout=args.trial_timeout_sec or None,
+        )
+
+    cfg = build_trial_config(
+        base_yaml,
+        mode=mode,
+        ratio=ratio,
+        n=n,
+        test_duration=test_duration,
+        trial_dir=str(trial_dir),
+        prefix=prefix,
+    )
+    trial_yaml = trial_dir / "trial.yaml"
+    trial_yaml.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+
+    cmd = [*args.bench_core_bin, "--config", str(trial_yaml), "--provider", args.provider]
+    if args.no_vm_monitor:
+        cmd.append("--no-vm-monitor")
+
+    if args.dry_run:
+        print(f"[dry-run] {' '.join(str(c) for c in cmd)}")
+        return None  # aggregated below; no trial row.
+
+    rc = _run_subprocess(cmd, trial_dir / "driver.log", args.trial_timeout_sec)
+
+    hits = sorted(trial_dir.glob(summary_glob))
+    if not hits:
+        return trial_row(
+            mode=mode,
+            ratio=ratio,
+            repeat=repeat,
+            running_concurrency=n,
+            target_count=ratio * n,
+            summary={"throughput": {}, "error": "no run_summary.json"},
+            return_code=rc,
+            valid=False,
+            reused=False,
+            trial_dir=str(trial_dir),
+            run_summary_path="",
+        )
+    summary = parse_run_summary(hits[-1])
+    valid = compute_valid(summary, rc, n=n, test_duration=test_duration, failure_tolerance=args.failure_tolerance)
+    row = trial_row(
+        mode=mode,
+        ratio=ratio,
+        repeat=repeat,
+        running_concurrency=n,
+        target_count=ratio * n,
+        summary=summary,
+        return_code=rc,
+        valid=valid,
+        reused=False,
+        trial_dir=str(trial_dir),
+        run_summary_path=str(hits[-1]),
+    )
+    return row
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_arg_parser().parse_args(argv)
+    base_yaml = yaml.safe_load(open(args.config, encoding="utf-8"))
+    n = args.running_concurrency or default_running_concurrency(base_yaml)
+    ratios = parse_ratios(args.ratios)
+    modes = [m.strip() for m in args.modes.split(",") if m.strip()]
+    test_duration = args.test_duration or (base_yaml.get("test") or {}).get("duration", 600)
+
+    if args.output_root:
+        output_root = Path(args.output_root)
+    else:
+        output_root = Path(f"runs/oversub-N{n}-{time.strftime('%Y%m%d-%H%M%S')}")
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    configuration = {
+        "base_config": args.config,
+        "provider": args.provider,
+        "running_concurrency": n,
+        "ratios": ratios,
+        "modes": modes,
+        "repeats": args.repeats,
+        "test_duration": test_duration,
+        "failure_tolerance": args.failure_tolerance,
+    }
+
+    # Natural trial order: for mode, for ratio, for repeat.
+    matrix = [(mode, ratio, repeat) for mode in modes for ratio in ratios for repeat in range(args.repeats)]
+
+    trials: list[dict] = []
+    try:
+        for mode, ratio, repeat in matrix:
+            row = _run_trial(args, base_yaml, mode, ratio, repeat, n, output_root)
+            if row is not None:
+                trials.append(row)
+            write_outputs(trials, output_root=output_root, configuration=configuration)
+            if args.stop_on_failure and row is not None and not row["valid"]:
+                print(f"[stop-on-failure] invalid trial {mode}/ratio-{ratio}/repeat-{repeat}; halting")
+                break
+    except KeyboardInterrupt:
+        write_outputs(trials, output_root=output_root, configuration=configuration)
+        print("\n[interrupted] partial results were preserved")
+        return 130
+
+    write_outputs(trials, output_root=output_root, configuration=configuration)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
