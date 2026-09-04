@@ -192,3 +192,84 @@ def test_run_summary_lifecycle_overhead_with_real_slices(tmp_path):
     assert lo["resume_sec_sum"] == 0.02
     assert lo["pause_sec_sum"] == 0.01
     assert lo["pct_of_slice_total"] == 3.0  # (0.02+0.01)/1.0*100; sub-MIN slice excluded
+
+
+# ---- end-to-end: run_benchmark actually emits run_summary.json ----
+
+
+def _seed_traj_pool(tmp_path):
+    """Two minimal trajectories under tmp_path/traj (FakeProvider exec_only)."""
+    import json as _json
+
+    traj = tmp_path / "traj"
+    traj.mkdir()
+    (traj / "a.replay.json").write_text(
+        _json.dumps({"instance_id": "a", "trajectory": [{"action": "echo a", "delay_time": 0}]}),
+        encoding="utf-8",
+    )
+    (traj / "b.replay.json").write_text(
+        _json.dumps({"instance_id": "b", "trajectory": [{"action": "echo b", "delay_time": 0}]}),
+        encoding="utf-8",
+    )
+
+
+def test_run_benchmark_emits_run_summary_exec_only(tmp_path):
+    from bench_core.bench import run_benchmark
+    from bench_core.payload.replay_payload import reset_pool_cache
+    from env_provider.fake import FakeProvider
+
+    _seed_traj_pool(tmp_path)
+    reset_pool_cache()
+    cfg = KernelConfig(
+        workflow_type="replay",
+        total_count=2,
+        benchmark_mode="fixed",
+        test_duration=1,
+        replay_trajectory_dir=str(tmp_path / "traj"),
+        replay_mode="exec_only",
+        replay_delay_scale=0.0,
+        output_dir=str(tmp_path),
+        filename_prefix="e2e",
+    )
+    run_benchmark(cfg, FakeProvider(count=2))
+    hits = list(tmp_path.glob("e2e_run_summary.json"))
+    assert len(hits) == 1, f"expected one run_summary.json, got {hits}"
+    data = json.loads(hits[0].read_text(encoding="utf-8"))
+    assert data["workflow_type"] == "replay"
+    assert data["replay_mode"] == "exec_only"
+    assert data["admission"] is None  # exec_only builds no admission controller
+
+
+def test_run_benchmark_emits_run_summary_lifecycle(tmp_path):
+    from bench_core.bench import run_benchmark
+    from bench_core.payload.replay_payload import reset_pool_cache
+    from env_provider.tests.lifecycle_fake import FakeLifecycleProvider
+
+    _seed_traj_pool(tmp_path)
+    reset_pool_cache()
+    cfg = KernelConfig(
+        workflow_type="replay",
+        total_count=4,
+        replay_running_concurrency=2,  # k=2 oversubscription -> admission built
+        benchmark_mode="round_robin",
+        round_size=4,
+        round_count=1,
+        round_interval=0,
+        test_duration=2,
+        replay_trajectory_dir=str(tmp_path / "traj"),
+        replay_mode="lifecycle",
+        replay_delay_scale=0.0,
+        replay_control_plane_qps=1000.0,
+        output_dir=str(tmp_path),
+        filename_prefix="lc",
+    )
+    run_benchmark(cfg, FakeLifecycleProvider(count=4))
+    hits = list(tmp_path.glob("lc_run_summary.json"))
+    assert len(hits) == 1
+    data = json.loads(hits[0].read_text(encoding="utf-8"))
+    assert data["replay_mode"] == "lifecycle"
+    assert data["running_concurrency"] == 2
+    assert data["overcommit_ratio"] == 2.0
+    assert data["admission"] is not None  # lifecycle k=2 + qps -> admission built
+    assert data["admission"]["maximum"] == 2
+    assert data["lifecycle_overhead"] is not None
