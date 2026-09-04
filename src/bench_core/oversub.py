@@ -40,7 +40,7 @@ def default_running_concurrency(base: dict) -> int:
     replay = base.get("replay") or {}
     n = replay.get("running_concurrency")
     if n is None:
-        n = (base.get("sandbox") or {}).get("total_count", 0)
+        n = (base.get("sandbox") or {}).get("total_count") or 0
     if n < 1:
         raise ValueError(f"running_concurrency must be >= 1, got {n}")
     return n

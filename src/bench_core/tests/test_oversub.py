@@ -104,3 +104,17 @@ def test_build_trial_config_round_yaml_round_trips():
     assert reloaded["test"]["round_size"] == 1152
     assert reloaded["test"]["round_count"] == 0
     assert reloaded["replay"]["running_concurrency"] == 384
+
+
+def test_default_running_concurrency_rejects_bad():
+    import pytest
+
+    # absent -> 0 -> ValueError
+    with pytest.raises(ValueError):
+        default_running_concurrency({})
+    # present-but-null total_count -> coerced to 0 -> ValueError (Fix 1)
+    with pytest.raises(ValueError):
+        default_running_concurrency({"sandbox": {"total_count": None}})
+    # explicit 0 -> ValueError
+    with pytest.raises(ValueError):
+        default_running_concurrency({"sandbox": {"total_count": 0}})
