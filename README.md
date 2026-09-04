@@ -24,7 +24,8 @@ they share no code with the new kernel.
 
 | Document | Description |
 |----------|-------------|
-| [bench-core 使用指南](docs/bench-core-usage-zh.md) | **src 内核压测（推荐）：安装→配置→CLI→清理** |
+| [bench-core Usage Guide](docs/bench-core-usage.md) | **src kernel benchmarking (recommended): install→config→CLI→cleanup** |
+| [bench-core 使用指南 (中文)](docs/bench-core-usage-zh.md) | 中文版 src 内核压测指南 |
 | [Design](docs/design.md) | System architecture and flow design |
 | [Design (EN)](docs/design-en.md) | English version of design doc |
 | [Metrics Reference](docs/metrics-reference.md) | bench_core + vm_monitor metrics, collection sources & formulas |
@@ -160,7 +161,7 @@ bench-core --provider e2b --config config/common/coding-ts.yaml --cleanup
 | `--detect --test-duration N` | full spine + report | kept (detect doesn't cleanup) |
 | `--cleanup` | list + teardown | removed |
 
-See the [bench-core usage guide](docs/bench-core-usage-zh.md) for the full
+See the [bench-core usage guide](docs/bench-core-usage.md) for the full
 install→config→troubleshooting walkthrough, and the
 [design doc](docs/superpowers/specs/2026-08-12-environment-provider-bench-core-design.md)
 for architecture.
