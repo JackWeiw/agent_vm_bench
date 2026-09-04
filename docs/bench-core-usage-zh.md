@@ -20,6 +20,8 @@
 
 editable 安装后,`bench-core` 和 `python -m bench_core` 都可直接用,**无需 `PYTHONPATH=src`**:
 
+> 需要 **Python 3.10+**(CI 跑 3.13;见 `pyproject.toml` 的 `requires-python`)。
+
 ```bash
 python3 -m venv venv
 source venv/bin/activate

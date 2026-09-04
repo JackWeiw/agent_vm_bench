@@ -38,6 +38,8 @@
 
 ### 1. 安装
 
+> 需要 **Python 3.10+**（CI 跑 3.13；见 `pyproject.toml` 的 `requires-python`）。
+
 ```bash
 python3 -m venv venv
 source venv/bin/activate

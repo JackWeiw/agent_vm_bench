@@ -98,8 +98,15 @@ def test_emit_snapshot_size_increments_pause_seq(tmp_path: Path) -> None:
 
 def test_emit_snapshot_size_skips_non_capable_provider(tmp_path: Path) -> None:
     series = LifecycleSeriesWriter(tmp_path / "s.jsonl")
-    # Plain MagicMock does NOT pass isinstance(..., SnapshotSizeCapable)
-    provider = MagicMock()
+    # spec=object: the mock exposes no snapshot_sizes attribute, so
+    # isinstance(..., SnapshotSizeCapable) is False on ALL Python versions.
+    # A plain no-spec MagicMock would PASS isinstance on Python <3.12:
+    # runtime_checkable protocols used hasattr-based duck-typing and MagicMock
+    # auto-creates any attribute -> isinstance True -> snapshot_sizes() returns
+    # a child mock (truthy, != None) -> an event was emitted, failing this
+    # test on CI (3.10) while passing on 3.12+ (where the check was tightened
+    # to inspect the type's MRO).
+    provider = MagicMock(spec=object)
     runner = _make_runner(series, provider, replay_mode="lifecycle")
     try:
         runner._emit_snapshot_size()
