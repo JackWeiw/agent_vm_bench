@@ -18,6 +18,8 @@ them directly.
 from __future__ import annotations
 
 import copy
+import json
+from pathlib import Path
 
 
 def parse_ratios(text: str) -> list[int]:
@@ -80,3 +82,51 @@ def build_trial_config(
     cfg["report"]["output_dir"] = trial_dir
     cfg["report"]["filename_prefix"] = prefix
     return cfg
+
+
+def parse_run_summary(path: Path | str) -> dict:
+    """Read a trial's ``run_summary.json`` (the kernel's raw-facts contract)."""
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def compute_valid(
+    summary: dict,
+    return_code: int,
+    *,
+    n: int,
+    test_duration: int,
+    failure_tolerance: float,
+) -> bool:
+    """Sustained-rotation validity (NOT the reference's ``succeeded==k*N`` bar).
+
+    A sustained sweep (``round_count=0``) completes many more than ``k*N``
+    trajectories and some may fail from dirty-state wrap (§6.1 of the spec);
+    those failures are surfaced via ``failure_rate`` in the CSV, not hidden
+    behind ``valid``. ``valid`` here means "the trial ran the full window,
+    did work, and did not over-admit":
+
+      * ``return_code == 0`` (the kernel subprocess succeeded),
+      * ``throughput.total > 0`` (it actually replayed something),
+      * ``wall_sec >= 0.9 * test_duration`` (it sustained the window, did not
+        crash/exit early),
+      * ``admission.peak_active <= N`` (it never ran more than N concurrent --
+        dropped for exec_only, which has no admission controller),
+      * ``failure_rate <= failure_tolerance`` (configurable wrap-noise allowance).
+    """
+    if return_code != 0:
+        return False
+    tp = summary.get("throughput") or {}
+    total = tp.get("total", 0)
+    if total <= 0:
+        return False
+    wall = summary.get("wall_sec") or 0
+    if test_duration > 0 and wall < 0.9 * test_duration:
+        return False
+    adm = summary.get("admission")
+    if adm and adm.get("peak_active") is not None and adm["peak_active"] > n:
+        return False
+    failed = tp.get("failed", 0)
+    failure_rate = failed / total if total else 1.0
+    if failure_rate > failure_tolerance:
+        return False
+    return True

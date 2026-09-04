@@ -118,3 +118,60 @@ def test_default_running_concurrency_rejects_bad():
     # explicit 0 -> ValueError
     with pytest.raises(ValueError):
         default_running_concurrency({"sandbox": {"total_count": 0}})
+
+
+from bench_core.oversub import compute_valid, parse_run_summary
+
+
+def _summary(total=768, succeeded=768, failed=0, wall_sec=940.0, peak_active=380, maximum=384, mode="lifecycle"):
+    return {
+        "replay_mode": mode,
+        "wall_sec": wall_sec,
+        "throughput": {"total": total, "succeeded": succeeded, "failed": failed},
+        "admission": {"maximum": maximum, "peak_active": peak_active} if peak_active is not None else None,
+    }
+
+
+def test_parse_run_summary_round_trips(tmp_path):
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(_summary()), encoding="utf-8")
+    assert parse_run_summary(p)["throughput"]["total"] == 768
+
+
+def test_compute_valid_happy_path():
+    s = _summary()
+    assert compute_valid(s, return_code=0, n=384, test_duration=1000, failure_tolerance=0.0) is True
+
+
+def test_compute_valid_nonzero_return_code():
+    s = _summary()
+    assert compute_valid(s, return_code=2, n=384, test_duration=1000, failure_tolerance=0.0) is False
+
+
+def test_compute_valid_no_work_done():
+    s = _summary(total=0, succeeded=0)
+    assert compute_valid(s, return_code=0, n=384, test_duration=1000, failure_tolerance=0.0) is False
+
+
+def test_compute_valid_exited_early_wall_below_threshold():
+    # wall_sec 100 < 0.9*1000 -> did not sustain the window -> invalid.
+    s = _summary(wall_sec=100.0)
+    assert compute_valid(s, return_code=0, n=384, test_duration=1000, failure_tolerance=0.0) is False
+
+
+def test_compute_valid_peak_active_exceeds_n():
+    s = _summary(peak_active=400)  # 400 > N=384 -> over-admitted -> invalid.
+    assert compute_valid(s, return_code=0, n=384, test_duration=1000, failure_tolerance=0.0) is False
+
+
+def test_compute_valid_exec_only_drops_peak_active_clause():
+    # exec_only: admission is null -> peak_active clause skipped; only wall+total+rc gate.
+    s = _summary(peak_active=None, mode="exec_only", wall_sec=950.0, total=10)
+    assert compute_valid(s, return_code=0, n=384, test_duration=1000, failure_tolerance=0.0) is True
+
+
+def test_compute_valid_failure_tolerance_allows_wrap_noise():
+    # 10 failures / 768 total = ~1.3%; tolerance 0.05 -> valid; tolerance 0.0 -> invalid.
+    s = _summary(total=768, succeeded=758, failed=10, wall_sec=950.0)
+    assert compute_valid(s, return_code=0, n=384, test_duration=1000, failure_tolerance=0.05) is True
+    assert compute_valid(s, return_code=0, n=384, test_duration=1000, failure_tolerance=0.0) is False
