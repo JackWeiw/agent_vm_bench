@@ -30,6 +30,8 @@ load curve on any backend**.
 After an editable install both `bench-core` and `python -m bench_core` work with **no
 `PYTHONPATH=src`**:
 
+> Requires **Python 3.10+** (CI runs 3.13; see `pyproject.toml` `requires-python`).
+
 ```bash
 python3 -m venv venv
 source venv/bin/activate

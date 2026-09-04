@@ -4,6 +4,8 @@ Thanks for contributing! This is a short guide to getting set up and opening a P
 
 ## Development setup
 
+> Requires **Python 3.10+** (CI runs 3.13; see `pyproject.toml` `requires-python`).
+
 ```bash
 python -m venv venv
 source venv/bin/activate            # Windows: venv\Scripts\activate

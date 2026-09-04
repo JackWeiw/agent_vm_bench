@@ -48,6 +48,8 @@ they share no code with the new kernel.
 
 ### 1. Install
 
+> Requires **Python 3.10+** (CI runs 3.13; see `pyproject.toml` `requires-python`).
+
 ```bash
 python3 -m venv venv
 source venv/bin/activate

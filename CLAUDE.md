@@ -16,6 +16,8 @@ The frozen-legacy `e2b_bench/`, `docker_bench/`, and OpenStack tools (`vm_bench/
 
 ## Build, Lint, Test Commands
 
+> Requires **Python 3.10+** (CI runs 3.13; `pyproject.toml` `requires-python = ">=3.10"`). Ruff `target-version` stays `py38` (a syntax/lint floor, separate from the runtime floor — do NOT bump it casually).
+
 ```bash
 python3 -m venv venv
 source venv/bin/activate
