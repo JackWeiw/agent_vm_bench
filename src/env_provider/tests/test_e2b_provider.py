@@ -403,10 +403,12 @@ class TestTemplatePassthrough:
         instances = provider.create_all(templates={0: "swb-a", 1: "swb-b", 2: "swb-a"})
 
         # (a) Sandbox.create receives the per-slot template as its first arg.
+        # The manager creates sandboxes in a thread pool, so Sandbox.create
+        # call order is non-deterministic across platforms/thread scheduling --
+        # assert the multiset of templates seen across calls; the per-slot
+        # mapping is pinned deterministically by _slot_templates in (c) below.
         assert len(fake.created) == 3
-        assert fake.created[0][0] == "swb-a"
-        assert fake.created[1][0] == "swb-b"
-        assert fake.created[2][0] == "swb-a"
+        assert sorted(t for t, *_ in fake.created) == ["swb-a", "swb-a", "swb-b"]
 
         # (b) SandboxInstance.template is stamped from _slot_templates.
         assert instances[1].template == "swb-a"
