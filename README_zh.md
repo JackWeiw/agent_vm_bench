@@ -15,6 +15,7 @@
 | 文档 | 说明 |
 |------|------|
 | [bench-core 使用指南](docs/bench-core-usage-zh.md) | **src 内核压测（推荐）：安装→配置→CLI→清理** |
+| [bench-core 使用指南 (英文)](docs/bench-core-usage.md) | 英文版 src 内核压测指南 |
 | [设计文档](docs/design.md) | 系统架构与流程设计 |
 | [设计文档 (英文)](docs/design-en.md) | 英文版设计文档 |
 | [指标参考](docs/metrics-reference.md) | bench_core + vm_monitor 指标、采集来源与计算公式 |
