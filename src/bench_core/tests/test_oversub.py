@@ -6,6 +6,7 @@ main() path is covered by the --dry-run integration test (Task 7).
 """
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 
@@ -330,7 +331,7 @@ def _write_stub_bench_core(stub_path: Path, prefix: str):
     canned run_summary.json + trajectories/index.json, exits 0. The driver
     invokes it via --bench-core-bin."""
     stub_path.write_text(
-        f"""import json, os, sys, time
+        f"""import json, sys, time
 from pathlib import Path
 import yaml
 cfg = yaml.safe_load(open(sys.argv[sys.argv.index('--config')+1]))
@@ -459,15 +460,15 @@ def test_run_with_stub_aggregates_trials(tmp_path):
             "--cooldown-sec",
             "0",
             "--cleanup-between-trials",
-            "off",
+            "off",  # stub always writes a summary even for --cleanup (semantically wrong); real bench-core handles --cleanup correctly.
         ]
     )
     assert rc == 0
-    tsv = (out_root / "trial-summary.csv").read_text(encoding="utf-8").strip().splitlines()
-    assert len(tsv) == 1 + 2  # header + 2 trials
     # Both trials valid (stub returns wall 1080 >= 0.9*60, total>0, no admission).
-    body = "\n".join(tsv[1:])
-    assert "True" in body
+    with open(out_root / "trial-summary.csv", newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 2  # 2 trials
+    assert all(r["valid"] == "True" for r in rows)
     # trajectory-detail has 2 rows (one per stub trial).
     trj = (out_root / "trajectory-detail.csv").read_text(encoding="utf-8").strip().splitlines()
     assert len(trj) == 1 + 2

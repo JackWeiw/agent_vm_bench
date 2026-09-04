@@ -11,9 +11,10 @@ Inspired by ``replay-aenv-main/scripts/run_pause_resume_oversubscription_benchma
 but leaner (~400 lines) because the kernel owns the per-trial lifecycle,
 admission, observability, trajectory export, and vm_monitor orchestration.
 
-The driver imports no kernel internals -- only the CLI, the YAML schema, and
-the ``run_summary.json`` schema. Pure helpers are module-level so tests import
-them directly.
+The driver imports no kernel data-path internals (lifecycle / admission /
+stats / observability) -- only the CLI, the YAML schema, the
+``run_summary.json`` schema, and the shared ``setup_logging`` CLI helper.
+Pure helpers are module-level so tests import them directly.
 """
 from __future__ import annotations
 
@@ -21,12 +22,17 @@ import argparse
 import copy
 import csv
 import json
+import logging
 import statistics
 import subprocess
 import time
 from pathlib import Path
 
 import yaml
+
+from bench_core.utils import setup_logging
+
+logger = logging.getLogger(__name__)
 
 
 def parse_ratios(text: str) -> list[int]:
@@ -436,10 +442,30 @@ def _run_subprocess(cmd: list[str], log_path: Path, timeout_sec: int) -> int:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=5)
+        except KeyboardInterrupt:
+            # Tear down the trial subprocess so Ctrl-C does not orphan a run
+            # managing hundreds of sandboxes + a vm_monitor host collector.
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=3)
+            raise
         return proc.returncode if proc.returncode is not None else -1
 
 
-def _run_trial(args, base_yaml: dict, mode: str, ratio: int, repeat: int, n: int, output_root: Path):
+def _run_trial(
+    args: argparse.Namespace,
+    base_yaml: dict,
+    mode: str,
+    ratio: int,
+    repeat: int,
+    n: int,
+    output_root: Path,
+    *,
+    is_first: bool = False,
+) -> dict | None:
     """Run one (mode,ratio,repeat) trial; return a trial_row dict or None (dry-run)."""
     prefix = (base_yaml.get("report") or {}).get("filename_prefix", "replay_bench")
     trial_dir = output_root / mode / f"ratio-{ratio:02d}" / f"repeat-{repeat:02d}"
@@ -472,17 +498,24 @@ def _run_trial(args, base_yaml: dict, mode: str, ratio: int, repeat: int, n: int
                 pass  # corrupt summary -> re-run
 
     # Cooldown between trials (skip the very first trial; skip in dry-run).
-    first_mode = args.modes.split(",")[0].strip()
-    if args.cooldown_sec and not args.dry_run and not (ratio == 1 and repeat == 0 and mode == first_mode):
+    if args.cooldown_sec and not args.dry_run and not is_first:
         time.sleep(args.cooldown_sec)
 
     # Pre-trial cleanup: tear down leftovers so they don't corrupt the ratio.
     if args.cleanup_between_trials == "on" and not args.dry_run:
-        subprocess.run(
+        # Dedicated cleanup timeout: cap at 300s so a hung `bench-core --cleanup`
+        # cannot block the sweep indefinitely; shrink to trial_timeout if smaller.
+        cleanup_timeout = min(args.trial_timeout_sec or 300, 300)
+        result = subprocess.run(
             [*args.bench_core_bin, "--config", args.config, "--provider", args.provider, "--cleanup"],
             capture_output=True,
-            timeout=args.trial_timeout_sec or None,
+            timeout=cleanup_timeout,
         )
+        if result.returncode != 0:
+            logger.warning(
+                "pre-trial cleanup returned %s; leftover sandboxes may corrupt the ratio",
+                result.returncode,
+            )
 
     cfg = build_trial_config(
         base_yaml,
@@ -501,7 +534,7 @@ def _run_trial(args, base_yaml: dict, mode: str, ratio: int, repeat: int, n: int
         cmd.append("--no-vm-monitor")
 
     if args.dry_run:
-        print(f"[dry-run] {' '.join(str(c) for c in cmd)}")
+        logger.info("[dry-run] %s", " ".join(str(c) for c in cmd))
         return None  # aggregated below; no trial row.
 
     rc = _run_subprocess(cmd, trial_dir / "driver.log", args.trial_timeout_sec)
@@ -540,8 +573,10 @@ def _run_trial(args, base_yaml: dict, mode: str, ratio: int, repeat: int, n: int
 
 
 def main(argv: list[str] | None = None) -> int:
+    setup_logging()
     args = build_arg_parser().parse_args(argv)
-    base_yaml = yaml.safe_load(open(args.config, encoding="utf-8"))
+    with open(args.config, encoding="utf-8") as f:
+        base_yaml = yaml.safe_load(f)
     n = args.running_concurrency or default_running_concurrency(base_yaml)
     ratios = parse_ratios(args.ratios)
     modes = [m.strip() for m in args.modes.split(",") if m.strip()]
@@ -568,18 +603,20 @@ def main(argv: list[str] | None = None) -> int:
     matrix = [(mode, ratio, repeat) for mode in modes for ratio in ratios for repeat in range(args.repeats)]
 
     trials: list[dict] = []
+    is_first = True
     try:
         for mode, ratio, repeat in matrix:
-            row = _run_trial(args, base_yaml, mode, ratio, repeat, n, output_root)
+            row = _run_trial(args, base_yaml, mode, ratio, repeat, n, output_root, is_first=is_first)
+            is_first = False
             if row is not None:
                 trials.append(row)
             write_outputs(trials, output_root=output_root, configuration=configuration)
             if args.stop_on_failure and row is not None and not row["valid"]:
-                print(f"[stop-on-failure] invalid trial {mode}/ratio-{ratio}/repeat-{repeat}; halting")
+                logger.warning("[stop-on-failure] invalid trial %s/ratio-%s/repeat-%s; halting", mode, ratio, repeat)
                 break
     except KeyboardInterrupt:
         write_outputs(trials, output_root=output_root, configuration=configuration)
-        print("\n[interrupted] partial results were preserved")
+        logger.warning("[interrupted] partial results were preserved")
         return 130
 
     write_outputs(trials, output_root=output_root, configuration=configuration)
