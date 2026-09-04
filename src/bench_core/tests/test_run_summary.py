@@ -238,6 +238,7 @@ def test_run_benchmark_emits_run_summary_exec_only(tmp_path):
     assert data["workflow_type"] == "replay"
     assert data["replay_mode"] == "exec_only"
     assert data["admission"] is None  # exec_only builds no admission controller
+    assert data["test_duration"] == cfg.test_duration
 
 
 def test_run_benchmark_emits_run_summary_lifecycle(tmp_path):
@@ -273,3 +274,4 @@ def test_run_benchmark_emits_run_summary_lifecycle(tmp_path):
     assert data["admission"] is not None  # lifecycle k=2 + qps -> admission built
     assert data["admission"]["maximum"] == 2
     assert data["lifecycle_overhead"] is not None
+    assert data["test_duration"] == cfg.test_duration

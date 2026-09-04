@@ -119,6 +119,7 @@ def write_run_summary(
         "completed_at": _iso(completed_epoch),
         "started_epoch": started_epoch,
         "completed_epoch": completed_epoch,
+        "test_duration": config.test_duration,
         "wall_sec": round(wall_sec, 3) if wall_sec is not None else None,
         "total_count": config.total_count,
         "running_concurrency": config.replay_running_concurrency,

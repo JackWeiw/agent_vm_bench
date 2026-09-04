@@ -232,7 +232,7 @@ def trial_row(
         "granted": adm.get("granted"),
         "avg_queue_wait_sec": adm.get("avg_queue_wait_sec"),
         "control_dispatched": adm.get("control_dispatched"),
-        "test_duration": summary.get("test_duration") or summary.get("_test_duration") or 0,
+        "test_duration": summary.get("test_duration") or 0,
         "wall_sec": summary.get("wall_sec"),
         "tasks_per_sec": tp.get("tasks_per_sec"),
         "steps_per_sec": tp.get("steps_per_sec"),
@@ -352,12 +352,13 @@ def write_outputs(trials: list[dict], *, output_root: Path) -> None:
     _write_csv(output_root / "trial-summary.csv", TRIAL_COLUMNS, trials)
     ratio_rows = aggregate_ratio_summary(trials)
     _write_csv(output_root / "ratio-summary.csv", RATIO_COLUMNS, ratio_rows)
-    _write_csv(output_root / "trajectory-detail.csv", TRAJECTORY_COLUMNS, _trajectory_rows(trials))
+    traj_rows = _trajectory_rows(trials)
+    _write_csv(output_root / "trajectory-detail.csv", TRAJECTORY_COLUMNS, traj_rows)
     report = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "configuration": {},
         "trials": trials,
         "ratio_summary": ratio_rows,
-        "trajectory_details": _trajectory_rows(trials),
+        "trajectory_details": traj_rows,
     }
     (output_root / "benchmark-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

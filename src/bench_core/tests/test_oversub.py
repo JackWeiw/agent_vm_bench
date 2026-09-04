@@ -123,9 +123,19 @@ def test_default_running_concurrency_rejects_bad():
 from bench_core.oversub import compute_valid, parse_run_summary
 
 
-def _summary(total=768, succeeded=768, failed=0, wall_sec=940.0, peak_active=380, maximum=384, mode="lifecycle"):
+def _summary(
+    total=768,
+    succeeded=768,
+    failed=0,
+    wall_sec=940.0,
+    peak_active=380,
+    maximum=384,
+    mode="lifecycle",
+    test_duration=1000,
+):
     return {
         "replay_mode": mode,
+        "test_duration": test_duration,
         "wall_sec": wall_sec,
         "throughput": {"total": total, "succeeded": succeeded, "failed": failed},
         "admission": {"maximum": maximum, "peak_active": peak_active} if peak_active is not None else None,
@@ -208,6 +218,7 @@ def test_trial_row_fields_match_csv_schema():
     assert r["failure_rate"] == 0.0
     assert r["peak_active"] == 380
     assert r["valid"] is True
+    assert r["test_duration"] == 1000
 
 
 def test_aggregate_ratio_summary_medians_and_degradation():
@@ -255,3 +266,54 @@ def test_write_outputs_emits_all_four_files(tmp_path):
 
     rep = _j.loads((tmp_path / "benchmark-report.json").read_text(encoding="utf-8"))
     assert "configuration" in rep and "trials" in rep and "ratio_summary" in rep
+
+
+def test_write_outputs_trajectory_detail_has_rows(tmp_path):
+    # Seed a trial dir with trajectories/index.json next to the run_summary path.
+    trial_stamp = tmp_path / "t" / "rb_20260905-140000"
+    traj_dir = trial_stamp / "trajectories"
+    traj_dir.mkdir(parents=True)
+    idx = {
+        "n_trajectories": 1,
+        "trajectories": [
+            {
+                "trajectory_id": "t0",
+                "sandbox_index": 0,
+                "n_steps": 3,
+                "n_failed": 0,
+                "n_timeout": 0,
+                "success_rate": 1.0,
+                "elapsed_sec": 1.5,
+                "create_error_type": None,
+                "kill_error_type": None,
+                "file": "t0/replay_result.json",
+            }
+        ],
+    }
+    (traj_dir / "index.json").write_text(json.dumps(idx), encoding="utf-8")
+    # Build a trial row whose run_summary_path points at the run_summary inside that stamp dir.
+    s = _summary(total=4, succeeded=4, failed=0, wall_sec=100.0, peak_active=380, mode="lifecycle", test_duration=1000)
+    s["throughput"]["tasks_per_sec"] = 10.0
+    row = trial_row(
+        mode="lifecycle",
+        ratio=2,
+        repeat=1,
+        running_concurrency=384,
+        target_count=768,
+        summary=s,
+        return_code=0,
+        valid=True,
+        reused=False,
+        trial_dir=str(trial_stamp),
+        run_summary_path=str(trial_stamp / "rb_run_summary.json"),
+    )
+    write_outputs([row], output_root=tmp_path)
+    detail = (tmp_path / "trajectory-detail.csv").read_text(encoding="utf-8").strip().splitlines()
+    assert len(detail) == 2  # header + 1 trajectory row
+    assert "t0" in detail[1]
+    # benchmark-report.json trajectory_details also populated
+    import json as _j
+
+    rep = _j.loads((tmp_path / "benchmark-report.json").read_text(encoding="utf-8"))
+    assert len(rep["trajectory_details"]) == 1
+    assert rep["trajectory_details"][0]["trajectory_id"] == "t0"
