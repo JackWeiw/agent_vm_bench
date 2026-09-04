@@ -60,10 +60,15 @@ def write_run_summary(
         wall_sec=wall_sec,
     )
 
-    # Throughput from the same ReplayMetrics accumulators the txt report reads.
-    total = sum(s.replay_metrics.total_tasks for s in sandbox_states.values())
-    succeeded = sum(s.replay_metrics.success_count for s in sandbox_states.values())
-    failed = sum(s.replay_metrics.failed_count for s in sandbox_states.values())
+    # Throughput is trajectory-level (spec §4; matches the txt report's
+    # "Trajectory Completions" line). In lifecycle/exec_only each sandbox runs
+    # one trajectory, so total = sandboxes that ran; succeeded = trajectories
+    # that ran all steps (replay_metrics.trajectory_completions); failed = the
+    # rest. Step-level counts stay distinct in total_steps / steps_per_sec
+    # (and the txt report's "Total Steps"), so the two axes never collapse.
+    total = len(sandbox_states)
+    succeeded = sum(s.replay_metrics.trajectory_completions for s in sandbox_states.values())
+    failed = total - succeeded
     tasks_per_sec = (succeeded / wall_sec) if wall_sec and wall_sec > 0 else None
     steps_per_sec = obs.steps_per_sec if (wall_sec and wall_sec > 0) else None
 

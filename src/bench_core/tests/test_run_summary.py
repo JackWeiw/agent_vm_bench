@@ -35,13 +35,16 @@ def _replay_config(tmp_path: Path, *, mode: str = "exec_only", total: int = 4, n
 def _stats_with_replay_metrics(config: KernelConfig, *, total: int, succeeded: int) -> StatsCollector:
     """Build a StatsCollector whose one sandbox carries replay metrics.
 
-    Drives exactly ``total`` ``add()`` calls so ``total_tasks == total``; the
-    first ``succeeded`` succeed, the rest fail (failed = total - succeeded).
-    SandboxInstance requires ``id`` (no default), hence ``id="s0"``.
+    Drives exactly ``total`` ``add()`` calls so ``total_tasks == total`` (step
+    count); the first ``succeeded`` steps succeed, the rest fail. The last
+    step marks ``trajectory_complete`` so the one trajectory is counted as
+    completed (``trajectory_completions == 1``). With one sandbox,
+    trajectory-level throughput is total=1, succeeded=1, failed=0. Requires
+    ``id`` (no default), hence ``id="s0"``.
     """
     state = BenchSandbox(id="s0", index=0, workflow_type="replay")
     for i in range(total):
-        state.replay_metrics.add(latency=0.1, success=(i < succeeded))
+        state.replay_metrics.add(latency=0.1, success=(i < succeeded), trajectory_complete=(i == total - 1))
     return StatsCollector(config, {0: state}, provider_label="fake")
 
 
@@ -64,9 +67,13 @@ def test_run_summary_has_required_fields(tmp_path):
     assert data["replay_mode"] == "exec_only"
     assert data["provider"] == "fake"
     assert data["total_count"] == 4
-    assert data["throughput"]["total"] == 4
-    assert data["throughput"]["succeeded"] == 4
+    # Throughput is trajectory-level (spec §4): 1 sandbox -> 1 trajectory
+    # attempted, which completed all 4 steps -> succeeded 1, failed 0.
+    # total_steps stays step-level (4) -- the two axes are distinct.
+    assert data["throughput"]["total"] == 1
+    assert data["throughput"]["succeeded"] == 1
     assert data["throughput"]["failed"] == 0
+    assert data["throughput"]["total_steps"] == 4
     assert "paths" in data and data["paths"]["report"] == "r.txt"
 
 

@@ -547,7 +547,7 @@ def _run_trial(
             repeat=repeat,
             running_concurrency=n,
             target_count=ratio * n,
-            summary={"throughput": {}, "error": "no run_summary.json"},
+            summary={"throughput": {}, "test_duration": test_duration, "error": "no run_summary.json"},
             return_code=rc,
             valid=False,
             reused=False,
@@ -597,6 +597,8 @@ def main(argv: list[str] | None = None) -> int:
         "repeats": args.repeats,
         "test_duration": test_duration,
         "failure_tolerance": args.failure_tolerance,
+        "cooldown_sec": args.cooldown_sec,
+        "trial_timeout_sec": args.trial_timeout_sec,
     }
 
     # Natural trial order: for mode, for ratio, for repeat.
