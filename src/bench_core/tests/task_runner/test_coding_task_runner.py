@@ -9,7 +9,9 @@ from __future__ import annotations
 import base64
 import threading
 
+from bench_core.config import KernelConfig
 from bench_core.payload.coding_payload import DEFAULT_CODING_SOURCE_FILES
+from bench_core.schemas import BenchSandbox
 from bench_core.task_runner.coding import (
     CodingRoundRunner,
     CodingTaskRunner,
@@ -17,9 +19,7 @@ from bench_core.task_runner.coding import (
     _build_edit_command,
     _run_verify,
 )
-from bench_core.config import KernelConfig
 from env_provider import CommandResult
-from bench_core.schemas import BenchSandbox
 from env_provider.fake import FakeProvider
 
 

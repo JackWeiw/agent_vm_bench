@@ -3,19 +3,17 @@ from __future__ import annotations
 
 import pytest
 
-from env_provider import SandboxInstance, SandboxStatus
 from bench_core.schemas import (
     BROWSER_STEP_ORDER,
     CODING_STEP_ORDER,
     BenchSandbox,
-    BrowserMetrics,
     CodingMetrics,
-    DocumentMetrics,
     ReplayMetrics,
-    TaskMetricsBase,
     Snapshot,
+    TaskMetricsBase,
     get_step_order,
 )
+from env_provider import SandboxInstance, SandboxStatus
 
 
 class TestTaskMetricsBase:

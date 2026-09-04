@@ -23,7 +23,6 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
 
 from .config import Config
 from .round_robin import RoundRobinTaskManager
@@ -343,7 +342,7 @@ class VmMonitorManager:
         self.process = None
 
 
-def append_sandbox_ids(config: Config, sandbox_states: Dict[int, SandboxState]) -> None:
+def append_sandbox_ids(config: Config, sandbox_states: dict[int, SandboxState]) -> None:
     """Append sandbox IDs to file (one ID per line)
 
     Called after each wave completes, supports incremental ID saving.

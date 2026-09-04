@@ -10,14 +10,14 @@ Currently supports browser-session JSONL format (Anthropic/Claude style).
 import json
 import os
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Type
+from typing import Any, Optional
 
-from .models import Turn, ToolCall, SessionMetadata
+from .models import SessionMetadata, ToolCall, Turn
 
 
-def _iso_to_ms(timestamp: Any) -> Optional[int]:
+def _iso_to_ms(timestamp: Any) -> int | None:
     """
     Convert timestamp to epoch milliseconds.
 
@@ -29,7 +29,7 @@ def _iso_to_ms(timestamp: Any) -> Optional[int]:
     if timestamp is None:
         return None
 
-    if isinstance(timestamp, (int, float)):
+    if isinstance(timestamp, int | float):
         return int(timestamp)
 
     # ISO8601 string
@@ -64,7 +64,7 @@ class SessionParser(ABC):
 
     @classmethod
     @abstractmethod
-    def parse(cls, path: str) -> List[Turn]:
+    def parse(cls, path: str) -> list[Turn]:
         """
         Parse the session file and extract turns.
 
@@ -131,7 +131,7 @@ class BrowserSessionParser(SessionParser):
             return False
 
     @classmethod
-    def parse(cls, path: str) -> List[Turn]:
+    def parse(cls, path: str) -> list[Turn]:
         """Parse browser-session JSONL file."""
         events = []
 
@@ -245,13 +245,13 @@ class OpenAISessionParser(SessionParser):
         return False
 
     @classmethod
-    def parse(cls, path: str) -> List[Turn]:  # noqa: ARG003
+    def parse(cls, path: str) -> list[Turn]:  # noqa: ARG003
         """Placeholder - not yet implemented."""
         raise NotImplementedError("OpenAI session parser not yet implemented")
 
 
 # Registry of all parsers
-PARSER_REGISTRY: List[Type[SessionParser]] = [
+PARSER_REGISTRY: list[type[SessionParser]] = [
     BrowserSessionParser,
     OpenAISessionParser,
 ]
@@ -277,7 +277,7 @@ def auto_detect_parser(path: str) -> SessionParser:
     raise ValueError(f"No parser found for session file: {path}")
 
 
-def parse_session(path: str, parser_type: Optional[str] = None) -> SessionMetadata:
+def parse_session(path: str, parser_type: str | None = None) -> SessionMetadata:
     """
     Parse a session file and return metadata with turns.
 
@@ -351,8 +351,8 @@ def parse_session(path: str, parser_type: Optional[str] = None) -> SessionMetada
 
 def load_sessions_from_directory(
     directory: str,
-    parser_type: Optional[str] = None,
-) -> Dict[str, SessionMetadata]:
+    parser_type: str | None = None,
+) -> dict[str, SessionMetadata]:
     """
     Load all session files from a directory.
 

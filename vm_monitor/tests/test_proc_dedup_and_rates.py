@@ -14,8 +14,7 @@ import io
 import unittest
 from unittest.mock import MagicMock, patch
 
-import vm_monitor.base as base
-from vm_monitor.base import VMMonitorBase, _PAGE_SIZE
+from vm_monitor.base import _PAGE_SIZE, VMMonitorBase
 
 
 class _DummyMonitor(VMMonitorBase):

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 from env_provider.aenv._snapshot import scan_snapshot_sizes

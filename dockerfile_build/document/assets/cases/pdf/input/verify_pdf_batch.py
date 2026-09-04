@@ -12,7 +12,6 @@ from typing import Any
 from PIL import Image, ImageChops
 from pypdf import PdfReader
 
-
 SENSITIVE_FIELDS = {
     "Social Security Number",
     "17a Applicants Signature",

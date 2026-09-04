@@ -9,13 +9,13 @@ allowing zero-copy response serving during runtime.
 
 import json
 import time
-from typing import List, Dict, Any, Optional
+from typing import Any, Optional
 
-from .models import Turn, ToolCall, PrebuiltTurn, PrebuiltSession, SessionMetadata
-from .parser import parse_session, load_sessions_from_directory
+from .models import PrebuiltSession, PrebuiltTurn, SessionMetadata, Turn
+from .parser import parse_session
 
 
-def _build_openai_completion(turn: Turn, request_model: Optional[str] = None) -> Dict[str, Any]:
+def _build_openai_completion(turn: Turn, request_model: str | None = None) -> dict[str, Any]:
     """
     Build OpenAI ChatCompletion response dict.
 
@@ -27,7 +27,7 @@ def _build_openai_completion(turn: Turn, request_model: Optional[str] = None) ->
         Dict representing OpenAI ChatCompletion response
     """
     # Build message
-    message: Dict[str, Any] = {"role": "assistant"}
+    message: dict[str, Any] = {"role": "assistant"}
 
     if turn.text:
         message["content"] = turn.text
@@ -58,8 +58,8 @@ def _build_openai_completion(turn: Turn, request_model: Optional[str] = None) ->
 
 def _build_openai_stream_chunks(
     turn: Turn,
-    request_model: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    request_model: str | None = None,
+) -> list[dict[str, Any]]:
     """
     Build OpenAI streaming SSE chunks.
 
@@ -74,7 +74,7 @@ def _build_openai_stream_chunks(
     created = int(time.time())
     model = request_model or turn.model
 
-    chunks: List[Dict[str, Any]] = []
+    chunks: list[dict[str, Any]] = []
 
     # First chunk: role
     chunks.append(
@@ -162,7 +162,7 @@ def _build_openai_stream_chunks(
     return chunks
 
 
-def prebuild_turn(turn: Turn, default_model: Optional[str] = None) -> PrebuiltTurn:
+def prebuild_turn(turn: Turn, default_model: str | None = None) -> PrebuiltTurn:
     """
     Pre-build all response formats for a turn.
 
@@ -222,8 +222,8 @@ class SessionPool:
     """
 
     def __init__(self):
-        self._sessions: Dict[str, PrebuiltSession] = {}
-        self._load_order: List[str] = []
+        self._sessions: dict[str, PrebuiltSession] = {}
+        self._load_order: list[str] = []
 
     def load_session(self, path: str) -> PrebuiltSession:
         """
@@ -244,7 +244,7 @@ class SessionPool:
         self._load_order.append(metadata.name)
         return prebuilt
 
-    def load_directory(self, directory: str) -> List[PrebuiltSession]:
+    def load_directory(self, directory: str) -> list[PrebuiltSession]:
         """
         Load all sessions from a directory.
 
@@ -277,7 +277,7 @@ class SessionPool:
 
         return loaded
 
-    def load_explicit(self, paths: List[str]) -> List[PrebuiltSession]:
+    def load_explicit(self, paths: list[str]) -> list[PrebuiltSession]:
         """
         Load explicit list of session files.
 
@@ -297,7 +297,7 @@ class SessionPool:
                 continue
         return loaded
 
-    def get_session(self, name: str) -> Optional[PrebuiltSession]:
+    def get_session(self, name: str) -> PrebuiltSession | None:
         """
         Get a session by name.
 
@@ -309,11 +309,11 @@ class SessionPool:
         """
         return self._sessions.get(name)
 
-    def get_all_sessions(self) -> Dict[str, PrebuiltSession]:
+    def get_all_sessions(self) -> dict[str, PrebuiltSession]:
         """Get all loaded sessions."""
         return self._sessions.copy()
 
-    def list_session_names(self) -> List[str]:
+    def list_session_names(self) -> list[str]:
         """Get list of all session names."""
         return self._load_order.copy()
 

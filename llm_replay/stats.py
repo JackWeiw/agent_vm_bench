@@ -9,18 +9,15 @@ to avoid blocking the request handling loop.
 
 import asyncio
 import json
-import os
-import time
-from collections import defaultdict
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Any, Optional
 
 # Try to import openpyxl for Excel export
 try:
     from openpyxl import Workbook
-    from openpyxl.styles import Font, Alignment, PatternFill
+    from openpyxl.styles import Alignment, Font, PatternFill
 
     HAS_OPENPYXL = True
 except ImportError:
@@ -37,9 +34,9 @@ class RequestRecord:
     llm_duration_ms: int
     actual_delay_ms: int
     response_type: str  # "completion" or "stream"
-    client_id: Optional[str] = None
+    client_id: str | None = None
     is_out_of_range: bool = False
-    error: Optional[str] = None
+    error: str | None = None
 
 
 @dataclass
@@ -54,7 +51,7 @@ class SessionStats:
     errors: int = 0
 
     # Per-turn distribution
-    turn_distribution: Dict[int, int] = field(default_factory=dict)  # turn_index -> count
+    turn_distribution: dict[int, int] = field(default_factory=dict)  # turn_index -> count
 
 
 @dataclass
@@ -62,7 +59,7 @@ class GlobalStats:
     """Global statistics across all sessions."""
 
     start_time: datetime
-    sessions: Dict[str, SessionStats] = field(default_factory=dict)
+    sessions: dict[str, SessionStats] = field(default_factory=dict)
 
     # Global counters
     total_requests: int = 0
@@ -109,11 +106,11 @@ class StatsCollector:
 
         # In-memory stats
         self.global_stats = GlobalStats(start_time=datetime.now())
-        self.request_records: List[RequestRecord] = []
+        self.request_records: list[RequestRecord] = []
 
         # Async state
         self._lock = asyncio.Lock()
-        self._write_task: Optional[asyncio.Task] = None
+        self._write_task: asyncio.Task | None = None
         self._running = False
 
     async def start(self):
@@ -145,9 +142,9 @@ class StatsCollector:
         llm_duration_ms: int,
         actual_delay_ms: int,
         response_type: str,
-        client_id: Optional[str] = None,
+        client_id: str | None = None,
         is_out_of_range: bool = False,
-        error: Optional[str] = None,
+        error: str | None = None,
     ):
         """
         Record a request.
@@ -217,7 +214,7 @@ class StatsCollector:
             if self.global_stats.active_connections > 0:
                 self.global_stats.active_connections -= 1
 
-    def get_summary(self) -> Dict[str, Any]:
+    def get_summary(self) -> dict[str, Any]:
         """Get current summary (no lock needed for read)."""
         return {
             "uptime_s": self.global_stats.uptime_seconds(),

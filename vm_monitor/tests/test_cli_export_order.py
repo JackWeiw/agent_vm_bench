@@ -17,8 +17,6 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock
 
-import pytest
-
 
 def test_cli_exports_svg_before_xlsx(monkeypatch, tmp_path):
     """export_svg_reports must run before export_to_excel so the xlsx is the

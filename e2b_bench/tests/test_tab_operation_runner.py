@@ -11,8 +11,6 @@ Tests for TabOperationRunner exception classification and failure handling:
 import threading
 from unittest.mock import Mock
 
-import pytest
-
 from e2b_bench.config import Config
 from e2b_bench.schemas import SandboxState
 from e2b_bench.task_runner import TabOperationRunner

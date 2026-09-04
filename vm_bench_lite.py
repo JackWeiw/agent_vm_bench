@@ -58,7 +58,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 import paramiko
 
@@ -102,7 +102,7 @@ class Config:
     browser_stress_percent: float = 1.0  # Percentage of VMs to run browser benchmark (in benchmark phase)
 
     # Browser warmup configuration
-    warmup_urls: List[str] = field(default_factory=list)  # Warmup page URL list
+    warmup_urls: list[str] = field(default_factory=list)  # Warmup page URL list
     warmup_loops: int = 2  # Warmup loop count
     warmup_delay: int = 10  # Delay between warmup pages (seconds)
 
@@ -148,7 +148,7 @@ class QAMetrics:
     success_count: int = 0
     failed_count: int = 0
     timeout_count: int = 0
-    latencies: List[float] = field(default_factory=list)
+    latencies: list[float] = field(default_factory=list)
     memory_init_done: bool = False
     memory_init_time: float = 0.0
     current_query_index: int = 0
@@ -187,8 +187,8 @@ class BrowserMetrics:
     success_count: int = 0
     failed_count: int = 0
     timeout_count: int = 0
-    latencies: List[float] = field(default_factory=list)
-    task_type_counts: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    latencies: list[float] = field(default_factory=list)
+    task_type_counts: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def add(self, latency: float, success: bool, timeout: bool = False, task_type: str = ""):
         self.total_tasks += 1
@@ -228,9 +228,9 @@ class StressMetrics:
 
     start_count: int = 0
     restart_count: int = 0
-    oom_events: Dict[OOMType, int] = field(default_factory=lambda: dict.fromkeys(OOMType, 0))
+    oom_events: dict[OOMType, int] = field(default_factory=lambda: dict.fromkeys(OOMType, 0))
     last_start_time: float = 0.0
-    current_pid: Optional[str] = None
+    current_pid: str | None = None
 
 
 @dataclass
@@ -241,7 +241,7 @@ class VMHealth:
     last_seen: float = 0.0
     consecutive_failures: int = 0
     last_error: str = ""
-    error_history: List[Tuple[float, str]] = field(default_factory=list)
+    error_history: list[tuple[float, str]] = field(default_factory=list)
 
     def mark_failure(self, error: str):
         self.consecutive_failures += 1
@@ -342,7 +342,7 @@ class VMConnection:
 
     def execute(
         self, command: str, timeout: int = 300, get_exit_code: bool = False
-    ) -> Tuple[bool, str, str, float, Optional[int]]:
+    ) -> tuple[bool, str, str, float, int | None]:
         """Execute command, optionally return exit code"""
         start = time.perf_counter()
         with self.lock:
@@ -420,7 +420,7 @@ class QATaskManager:
         self.config = config
         self._query_counter = 0  # Used to generate unique temporary filenames
 
-    def _execute_http_query(self, vm: VMConnection, content: str, timeout: int) -> Tuple[bool, float]:
+    def _execute_http_query(self, vm: VMConnection, content: str, timeout: int) -> tuple[bool, float]:
         """Execute QA query via HTTP gateway (curl method)"""
         self._query_counter += 1
         resp_file = f"/tmp/openclaw_resp_{self._query_counter}.json"
@@ -480,7 +480,7 @@ class QATaskManager:
             print(f"[VM{vm.vm_id}] Memory input failed: {stderr[:100]}")
             return False
 
-    def run_qa_query(self, vm: VMConnection, state: VMState) -> Tuple[bool, float]:
+    def run_qa_query(self, vm: VMConnection, state: VMState) -> tuple[bool, float]:
         """Execute QA query (round-robin)"""
         # Must complete memory input first
         if not state.qa_metrics.memory_init_done:
@@ -526,7 +526,7 @@ class StressTaskManager:
     def __init__(self, config: Config):
         self.config = config
 
-    def start_stress(self, vm: VMConnection, state: VMState) -> Tuple[bool, str]:
+    def start_stress(self, vm: VMConnection, state: VMState) -> tuple[bool, str]:
         """Start stress_tool, with retry checks"""
         log_id = f"stress_vm{state.vm_id}"
 
@@ -568,7 +568,7 @@ class StressTaskManager:
             state.record_stress_failure()
             return False, f"Start command execution failed: {stderr[:50]}"
 
-    def check_and_restart(self, vm: VMConnection, state: VMState) -> Tuple[bool, str]:
+    def check_and_restart(self, vm: VMConnection, state: VMState) -> tuple[bool, str]:
         """Check stress status, restart if needed, return (is_running, status_info)"""
         if not state.health.is_connected:
             return False, "VM offline, skip restart"
@@ -649,7 +649,7 @@ class BrowserTaskManager:
         self.config = config
         self._task_counter = 0
 
-    def _execute_http_browser(self, vm: VMConnection, prompt: str, timeout: int) -> Tuple[bool, float]:
+    def _execute_http_browser(self, vm: VMConnection, prompt: str, timeout: int) -> tuple[bool, float]:
         """Execute browser task via HTTP gateway (curl method, low CPU overhead)
 
         Send prompt via /v1/chat/completions, agent will automatically call browser tool.
@@ -678,13 +678,13 @@ class BrowserTaskManager:
                 latency = duration
         return success, latency
 
-    def _execute_cli_browser(self, vm: VMConnection, prompt: str, timeout: int) -> Tuple[bool, float]:
+    def _execute_cli_browser(self, vm: VMConnection, prompt: str, timeout: int) -> tuple[bool, float]:
         """Execute browser task via CLI (openclaw agent)"""
         cmd = f'/usr/local/node-v24.14.1-linux-arm64/bin/openclaw agent --agent main --timeout {timeout} -m "{prompt}"'
         success, stdout, stderr, duration, code = vm.execute(cmd, timeout=timeout + 30, get_exit_code=True)
         return success, duration
 
-    def _execute_direct_browser(self, vm: VMConnection, timeout: int) -> Tuple[bool, float]:
+    def _execute_direct_browser(self, vm: VMConnection, timeout: int) -> tuple[bool, float]:
         """Execute browser task directly (without LLM)
 
         Adds 10s to latency to simulate LLM response delay for realistic benchmarking.
@@ -694,7 +694,7 @@ class BrowserTaskManager:
         latency = duration + 10.0  # Simulate LLM delay
         return success, latency
 
-    def run_browser_task(self, vm: VMConnection, state: VMState) -> Tuple[bool, float, str]:
+    def run_browser_task(self, vm: VMConnection, state: VMState) -> tuple[bool, float, str]:
         """Execute single browser task, return (success, latency, task_type)"""
         idx = state.browser_metrics.total_tasks % len(BROWSER_TASKS)
         task_type, task_template = BROWSER_TASKS[idx]
@@ -772,13 +772,13 @@ class BrowserTaskManager:
 class OpenStackVMChecker:
     """Query VM status via OpenStack CLI, used to detect SHUTOFF due to memory overcommit"""
 
-    def __init__(self, vm_ips: Dict[int, str]):
-        self.ip_name_map: Dict[str, str] = {}  # ip -> name
+    def __init__(self, vm_ips: dict[int, str]):
+        self.ip_name_map: dict[str, str] = {}  # ip -> name
         self.os_env = self._load_os_env()
         self._available = self.os_env is not None
         self._build_ip_name_map(vm_ips)
 
-    def _load_os_env(self) -> Optional[dict]:
+    def _load_os_env(self) -> dict | None:
         """Load openrc environment variables"""
         openrc_path = os.path.expanduser("~/.admin-openrc")
         if not os.path.exists(openrc_path):
@@ -804,7 +804,7 @@ class OpenStackVMChecker:
             print(f"[OpenStack] Failed to load openrc: {e}")
             return None
 
-    def _build_ip_name_map(self, vm_ips: Dict[int, str]):
+    def _build_ip_name_map(self, vm_ips: dict[int, str]):
         """Get IP -> name mapping for all VMs at once"""
         if not self._available:
             return
@@ -835,7 +835,7 @@ class OpenStackVMChecker:
         except Exception as e:
             print(f"[OpenStack] Failed to build IP mapping: {e}")
 
-    def get_vm_status(self, vm_name: str) -> Optional[str]:
+    def get_vm_status(self, vm_name: str) -> str | None:
         """Query VM current status (ACTIVE/SHUTOFF/ERROR/...)"""
         if not self._available or not vm_name:
             return None
@@ -854,7 +854,7 @@ class OpenStackVMChecker:
             pass
         return None
 
-    def check_vm_offline(self, ip: str) -> Tuple[bool, str]:
+    def check_vm_offline(self, ip: str) -> tuple[bool, str]:
         """Check if VM has been shut down by hypervisor. Return (is_offline, reason)"""
         if not self._available:
             return False, ""
@@ -876,16 +876,16 @@ class HealthChecker:
     def __init__(
         self,
         config: Config,
-        vm_states: Dict[int, VMState],
-        vm_conns: Dict[int, VMConnection],
-        os_checker: Optional[OpenStackVMChecker] = None,
+        vm_states: dict[int, VMState],
+        vm_conns: dict[int, VMConnection],
+        os_checker: OpenStackVMChecker | None = None,
     ):
         self.config = config
         self.vm_states = vm_states
         self.vm_conns = vm_conns
         self.os_checker = os_checker
         self.stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self.offline_vms: set = set()
 
     def start(self):
@@ -939,14 +939,14 @@ class HealthChecker:
 class BatchController:
     """Batch Startup Controller"""
 
-    def __init__(self, config: Config, vm_ids: List[int]):
+    def __init__(self, config: Config, vm_ids: list[int]):
         self.config = config
         self.vm_ids = sorted(vm_ids)
 
         # Batch status
-        self.batch_ready: Dict[int, bool] = {}
-        self.batch_started_count: Dict[int, int] = {}
-        self.vm_batch_map: Dict[int, int] = {}
+        self.batch_ready: dict[int, bool] = {}
+        self.batch_started_count: dict[int, int] = {}
+        self.vm_batch_map: dict[int, int] = {}
 
         # Calculate batch allocation
         for i, vm_id in enumerate(self.vm_ids):
@@ -1009,17 +1009,17 @@ class TestSnapshot:
     browser_avg_latency: float = 0.0
     browser_p99_latency: float = 0.0
     stress_restart_count: int = 0
-    oom_events: Dict[OOMType, int] = field(default_factory=dict)
-    browser_type_stats: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    oom_events: dict[OOMType, int] = field(default_factory=dict)
+    browser_type_stats: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 class StatsCollector:
     """Stats Collector"""
 
-    def __init__(self, config: Config, vm_states: Dict[int, VMState]):
+    def __init__(self, config: Config, vm_states: dict[int, VMState]):
         self.config = config
         self.vm_states = vm_states
-        self.snapshots: List[TestSnapshot] = []
+        self.snapshots: list[TestSnapshot] = []
         self.start_time = time.time()
         self._stop = threading.Event()
 
@@ -1077,7 +1077,7 @@ class StatsCollector:
                 sorted_lat = sorted(all_lat)
                 p99 = sorted_lat[int(len(all_lat) * 0.99)] if len(all_lat) >= 100 else sorted_lat[-1]
 
-            type_stats: Dict[str, Dict[str, int]] = {}
+            type_stats: dict[str, dict[str, int]] = {}
             for s in vms:
                 for tname, tcounts in s.browser_metrics.task_type_counts.items():
                     if tname not in type_stats:
@@ -1300,7 +1300,7 @@ class VMTaskRunner(threading.Thread):
         qa_manager: QATaskManager,
         stress_manager: StressTaskManager,
         health_checker: HealthChecker,
-        browser_manager: Optional[BrowserTaskManager] = None,
+        browser_manager: BrowserTaskManager | None = None,
     ):
         super().__init__(daemon=True)
         self.vm = vm

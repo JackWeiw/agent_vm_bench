@@ -18,7 +18,6 @@ document bench, the page content is not bundled in the image.
 
 import re
 import time
-from typing import List
 
 from bench_looper.core import BenchScenario, IterationResult, _error_detail, _error_type, load_operations, run_shell
 
@@ -37,7 +36,7 @@ WARMUP_WAIT_TIMEOUT = 130
 PAGE_LOAD_TIMEOUT = 70  # wrapper around `--timeout 60000ms`
 
 
-def extract_element_refs(output: str) -> List[str]:
+def extract_element_refs(output: str) -> list[str]:
     """Extract element refs from agent-browser snapshot output (max 50)."""
     return ELEMENT_REF_RE.findall(output)[:50]
 
@@ -45,7 +44,7 @@ def extract_element_refs(output: str) -> List[str]:
 class BrowserBench(BenchScenario):
     name = "browser"
 
-    def __init__(self, warmup_urls: List[str], benchmark_urls: List[str], warmup: bool = True):
+    def __init__(self, warmup_urls: list[str], benchmark_urls: list[str], warmup: bool = True):
         self.warmup_urls = warmup_urls
         self.benchmark_urls = benchmark_urls
         self._do_warmup = warmup

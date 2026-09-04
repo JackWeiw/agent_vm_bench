@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from zipfile import ZipFile
 
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 
 from vm_monitor.exporters import (
     _add_numa_memory_charts,

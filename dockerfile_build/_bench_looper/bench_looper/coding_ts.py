@@ -21,10 +21,9 @@ one verify step in metrics (the agent's verify is one continuous action).
 """
 
 import time
-from typing import Dict, List, Tuple
 
+from bench_looper.coding_base import CodingBench
 from bench_looper.core import load_operations, run_shell
-from bench_looper.coding_base import CodingBench, IterationResult
 
 
 def stamp_body(template: str, assert_code: str, globals_block: str, import_block: str) -> str:
@@ -44,7 +43,7 @@ def stamp_body(template: str, assert_code: str, globals_block: str, import_block
 class CodingTsBench(CodingBench):
     name = "coding-ts"
 
-    def __init__(self, pairs, profile, pool: List[dict], verify_repeat: int, skip_verify: bool, verify_timeout: int):
+    def __init__(self, pairs, profile, pool: list[dict], verify_repeat: int, skip_verify: bool, verify_timeout: int):
         self.pairs = pairs
         self.skip_verify = skip_verify
         self.verify_timeout = verify_timeout
@@ -73,7 +72,7 @@ class CodingTsBench(CodingBench):
             getattr(args, "verify_timeout", profile.get("verify_timeout", 120)),
         )
 
-    def _step_verify(self, pair: dict, round_id: int, steps: Dict[str, float]) -> Tuple[bool, str, bool]:
+    def _step_verify(self, pair: dict, round_id: int, steps: dict[str, float]) -> tuple[bool, str, bool]:
         # Multi-process verify: N independent npx tsx processes chained in one
         # command. Each body is stamped from a pool template; offset by round
         # so consecutive rounds differ. Temp files are indexed so the i-th

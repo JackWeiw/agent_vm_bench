@@ -12,6 +12,7 @@ import json
 import threading
 
 from bench_core.config import KernelConfig
+from bench_core.schemas import BenchSandbox
 from bench_core.task_runner.document import (
     DocumentOperationExecutor,
     DocumentRoundRunner,
@@ -23,7 +24,6 @@ from bench_core.task_runner.document import (
     preflight_document,
 )
 from env_provider import CommandResult
-from bench_core.schemas import BenchSandbox
 from env_provider.fake import FakeProvider
 
 XLSX_PHASES = [

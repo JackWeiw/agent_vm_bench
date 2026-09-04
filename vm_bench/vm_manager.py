@@ -9,7 +9,7 @@ import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Event, Lock
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 import paramiko
 
@@ -26,7 +26,7 @@ class VMConnection:
         self.username = username
         self.password = password
         self.vm_id = vm_id
-        self.ssh: Optional[paramiko.SSHClient] = None
+        self.ssh: paramiko.SSHClient | None = None
         self.connected = False
         self.lock = Lock()
 
@@ -52,7 +52,7 @@ class VMConnection:
 
     def execute(
         self, command: str, timeout: int = 300, get_exit_code: bool = False
-    ) -> Tuple[bool, str, str, float, Optional[int]]:
+    ) -> tuple[bool, str, str, float, int | None]:
         """Execute command, optionally return exit code"""
         start = time.perf_counter()
         with self.lock:
@@ -104,14 +104,14 @@ class VMManager:
     def __init__(self, config: Config, stop_event: Event):
         self.config = config
         self.stop_event = stop_event
-        self.vm_states: Dict[int, VMState] = {}
-        self.vm_connections: Dict[int, VMConnection] = {}
+        self.vm_states: dict[int, VMState] = {}
+        self.vm_connections: dict[int, VMConnection] = {}
         self.os_env = config.get_os_env()
         self._openstack_available = bool(self.os_env)
 
     # === Phase 0: OpenStack VM Creation ===
 
-    def create_all(self) -> Dict[int, VMState]:
+    def create_all(self) -> dict[int, VMState]:
         """Batch create VMs via OpenStack API
 
         Strategy based on create_batch config:
@@ -125,7 +125,7 @@ class VMManager:
         else:
             return self._create_concurrent()
 
-    def _create_batched(self) -> Dict[int, VMState]:
+    def _create_batched(self) -> dict[int, VMState]:
         """Batched VM creation"""
         total = self.config.total_count
         batch_size = self.config.create_batch_size
@@ -161,7 +161,7 @@ class VMManager:
 
         return self.vm_states
 
-    def _create_concurrent(self) -> Dict[int, VMState]:
+    def _create_concurrent(self) -> dict[int, VMState]:
         """Full concurrent creation of all VMs"""
         total = self.config.total_count
         ips = self.config.get_ip_range()
@@ -174,9 +174,9 @@ class VMManager:
 
         return self._create_batch_concurrent(batch_id=0, start=0, end=total, ips=ips)
 
-    def _create_batch_concurrent(self, batch_id: int, start: int, end: int, ips: List[str]) -> Dict[int, VMState]:
+    def _create_batch_concurrent(self, batch_id: int, start: int, end: int, ips: list[str]) -> dict[int, VMState]:
         """Concurrent creation of one batch"""
-        states: Dict[int, VMState] = {}
+        states: dict[int, VMState] = {}
 
         with ThreadPoolExecutor(max_workers=end - start) as executor:
             futures = {}
@@ -214,7 +214,7 @@ class VMManager:
 
         return {i + 1: self.vm_states[i + 1] for i in range(start, end)}
 
-    def _create_single(self, state: VMState) -> Dict[str, any]:
+    def _create_single(self, state: VMState) -> dict[str, any]:
         """Create single VM via OpenStack CLI
 
         Returns: {'success': bool, 'elapsed': float, 'vm_uuid': str, 'error': str}
@@ -291,7 +291,7 @@ class VMManager:
 
     # === Phase 1: SSH Connection ===
 
-    def connect_all(self) -> Dict[int, VMState]:
+    def connect_all(self) -> dict[int, VMState]:
         """Batch connect to VMs via SSH
 
         Called after VMs are ACTIVE (Phase 0 complete)
@@ -309,7 +309,7 @@ class VMManager:
         else:
             return self._connect_concurrent(active_states)
 
-    def _connect_batched(self, active_states: Dict[int, VMState]) -> Dict[int, VMState]:
+    def _connect_batched(self, active_states: dict[int, VMState]) -> dict[int, VMState]:
         """Batched SSH connection"""
         vm_ids = list(active_states.keys())
         total = len(vm_ids)
@@ -342,7 +342,7 @@ class VMManager:
 
         return active_states
 
-    def _connect_concurrent(self, active_states: Dict[int, VMState]) -> Dict[int, VMState]:
+    def _connect_concurrent(self, active_states: dict[int, VMState]) -> dict[int, VMState]:
         """Full concurrent SSH connection"""
         print(f"\n{'=' * 60}")
         print("Concurrent SSH Connection")
@@ -424,7 +424,7 @@ class VMManager:
 
     # === Utility: Check OpenStack Status ===
 
-    def check_vm_status(self, vm_uuid: str) -> Optional[str]:
+    def check_vm_status(self, vm_uuid: str) -> str | None:
         """Query VM current status via OpenStack CLI"""
         if not self._openstack_available or not vm_uuid:
             return None
@@ -443,7 +443,7 @@ class VMManager:
             pass
         return None
 
-    def check_vm_shutoff(self, state: VMState) -> Tuple[bool, str]:
+    def check_vm_shutoff(self, state: VMState) -> tuple[bool, str]:
         """Check if VM is SHUTOFF or ERROR via OpenStack"""
         status = self.check_vm_status(state.vm_uuid)
         if status in ("SHUTOFF", "ERROR"):

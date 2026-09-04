@@ -26,7 +26,6 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple
 
 import psutil
 
@@ -52,7 +51,7 @@ _BYTES_PER_MIB = 2**20
 _VIRTUAL_DISK_PREFIXES = ("loop", "ram", "sr", "zram", "md", "dm")
 
 
-def _discover_block_devices() -> List[str]:
+def _discover_block_devices() -> list[str]:
     """Auto-discover physical block devices present on this host.
 
     Enumerates /sys/block and returns the sorted list of devices whose names do
@@ -61,7 +60,7 @@ def _discover_block_devices() -> List[str]:
     unreadable, so the monitor degrades gracefully (callers may still set
     ``target_disks`` explicitly).
     """
-    devices: List[str] = []
+    devices: list[str] = []
     try:
         entries = os.listdir("/sys/block")
     except (OSError, FileNotFoundError):
@@ -291,7 +290,7 @@ class VMMonitorBase(ABC):
 
     # ==================== Abstract Methods ====================
     @abstractmethod
-    def get_vms_realtime(self) -> List[Dict]:
+    def get_vms_realtime(self) -> list[dict]:
         """Get real-time information for all VMs of this VMM type.
 
         Returns:
@@ -309,7 +308,7 @@ class VMMonitorBase(ABC):
         pass
 
     @abstractmethod
-    def get_process_names(self) -> Tuple[str, ...]:
+    def get_process_names(self) -> tuple[str, ...]:
         """Get the process names to monitor for this VMM type.
 
         Returns:
@@ -933,7 +932,7 @@ class VMMonitorBase(ABC):
         if pressure["file_refault_mib_s"] > self.peak_file_refault_mib_s:
             self.peak_file_refault_mib_s = pressure["file_refault_mib_s"]
 
-    def _read_dirty_limits_mb(self, meminfo: dict) -> Tuple[float, float]:
+    def _read_dirty_limits_mb(self, meminfo: dict) -> tuple[float, float]:
         """Return (dirty_background_limit, dirty_limit) in MB.
 
         Reads /proc/sys/vm/dirty_bytes + dirty_background_bytes first (absolute
@@ -963,7 +962,7 @@ class VMMonitorBase(ABC):
         return 0.0, 0.0
 
     # ===================== Collect VM Total Memory =====================
-    def collect_vm_total_memory(self, vms: List[Dict]) -> Dict:
+    def collect_vm_total_memory(self, vms: list[dict]) -> dict:
         """Aggregate total memory consumption of all VMs per sample
 
         Sums memory_mb across all VMs and per_numa breakdown.
@@ -1303,7 +1302,7 @@ class VMMonitorBase(ABC):
         }
 
     def _finalize_vm_collection(
-        self, vms: List[Dict], current_pids: set, current_total_mem: float, current_total_cpu: float
+        self, vms: list[dict], current_pids: set, current_total_mem: float, current_total_cpu: float
     ):
         """Common post-processing: update peak trackers, clean dead PIDs from cache."""
         if current_total_mem > self.peak_total_memory_mb:
@@ -1317,7 +1316,7 @@ class VMMonitorBase(ABC):
             self.process_cache.pop(p, None)
 
     # ==================== Parallel VM Metrics Collection ====================
-    def _discover_vm_processes(self) -> List[Dict]:
+    def _discover_vm_processes(self) -> list[dict]:
         """Phase 1: Discover VM processes via psutil.process_iter (serial).
 
         Scans all system processes, filters by get_process_names(), and
@@ -1354,7 +1353,7 @@ class VMMonitorBase(ABC):
 
         return candidates
 
-    def _collect_vm_metrics_serial(self, vm_candidates: List[Dict]) -> List[Dict]:
+    def _collect_vm_metrics_serial(self, vm_candidates: list[dict]) -> list[dict]:
         """Phase 2 serial: collect per-VM metrics one by one.
 
         Used as fallback when VM count is small (<4) to avoid
@@ -1418,7 +1417,7 @@ class VMMonitorBase(ABC):
         self._finalize_vm_collection(vms, current_pids, current_total_mem, current_total_cpu)
         return vms
 
-    def _collect_vm_metrics_parallel(self, vm_candidates: List[Dict]) -> List[Dict]:
+    def _collect_vm_metrics_parallel(self, vm_candidates: list[dict]) -> list[dict]:
         """Phase 2 parallel: collect per-VM metrics using ThreadPoolExecutor.
 
         Step A (parallel): each thread reads numa_maps and seeds cpu_percent
@@ -1486,7 +1485,7 @@ class VMMonitorBase(ABC):
         self._finalize_vm_collection(vm_results, current_pids, current_total_mem, current_total_cpu)
         return vm_results
 
-    def _collect_single_vm(self, candidate: Dict) -> Tuple[Dict, object]:
+    def _collect_single_vm(self, candidate: dict) -> tuple[dict, object]:
         """Collect metrics for a single VM candidate (callable from ThreadPoolExecutor).
 
         Returns a tuple of (vm_result_dict, seed_process_or_None).

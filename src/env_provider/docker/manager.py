@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - SDK is an optional extra
     # SDK-backed construction test skips via ``pytest.importorskip("docker")``.
     docker = None  # type: ignore[assignment]
 
-from env_provider._base import BaseSandboxManager, BackendSandboxStatus
+from env_provider._base import BackendSandboxStatus, BaseSandboxManager
 
 from .config import Config
 from .schemas import ContainerState

@@ -24,7 +24,7 @@ import statistics
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 # Step order constants for workflow dispatch
 BROWSER_STEP_ORDER = ["open_tab", "page_load", "snapshot", "click", "screenshot"]
@@ -52,7 +52,7 @@ DOCUMENT_PDF_STEP_ORDER = [
 ]
 
 
-def get_step_order(workflow_type: str, document_case_kind: str = "xlsx") -> List[str]:
+def get_step_order(workflow_type: str, document_case_kind: str = "xlsx") -> list[str]:
     if workflow_type == "coding":
         return CODING_STEP_ORDER
     if workflow_type == "document":
@@ -429,7 +429,7 @@ class TaskMetricsBase:
     """
 
     # Override in subclass to define workflow-specific step names
-    step_order: List[str] = []
+    step_order: list[str] = []
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -437,11 +437,11 @@ class TaskMetricsBase:
         self._success_count: int = 0
         self._failed_count: int = 0
         self._timeout_count: int = 0
-        self._latencies: List[float] = []
+        self._latencies: list[float] = []
         self._last_error: str = ""
-        self._step_times: Dict[str, List[float]] = {}
+        self._step_times: dict[str, list[float]] = {}
 
-    def add(self, latency: float, success: bool, timeout: bool = False, step_times: Dict[str, float] = None) -> None:
+    def add(self, latency: float, success: bool, timeout: bool = False, step_times: dict[str, float] = None) -> None:
         """Add a task result (thread-safe).
 
         Args:
@@ -488,7 +488,7 @@ class TaskMetricsBase:
             return self._timeout_count
 
     @property
-    def latencies(self) -> List[float]:
+    def latencies(self) -> list[float]:
         with self._lock:
             return list(self._latencies)  # Return a copy for thread safety
 
@@ -519,7 +519,7 @@ class TaskMetricsBase:
                 return sorted_lat[int(len(sorted_lat) * 0.99)]
             return sorted_lat[-1]
 
-    def get_step_stats(self) -> Dict[str, Dict[str, float]]:
+    def get_step_stats(self) -> dict[str, dict[str, float]]:
         """Get statistics for each step (avg, p99, count).
 
         Returns:
@@ -540,7 +540,7 @@ class TaskMetricsBase:
                 }
             return result
 
-    def get_step_times_copy(self) -> Dict[str, List[float]]:
+    def get_step_times_copy(self) -> dict[str, list[float]]:
         """Get a thread-safe copy of all step times.
 
         Used for detailed tail latency analysis across all sandboxes.
@@ -551,7 +551,7 @@ class TaskMetricsBase:
         with self._lock:
             return {step_name: list(times) for step_name, times in self._step_times.items()}
 
-    def get_latencies_since(self, start_count: int) -> List[float]:
+    def get_latencies_since(self, start_count: int) -> list[float]:
         """Get latencies added after a certain count.
 
         Args:
@@ -599,7 +599,7 @@ class CodingMetrics(TaskMetricsBase):
         latency: float,
         success: bool,
         timeout: bool = False,
-        step_times: Dict[str, float] = None,
+        step_times: dict[str, float] = None,
         verify_success: bool = False,
         compile_only: bool = False,
     ) -> None:
@@ -666,7 +666,7 @@ class SandboxState:
     """Sandbox complete state"""
 
     sandbox_id: int  # Sequence number (1, 2, 3...)
-    sandbox_obj: Optional[object] = None  # E2B Sandbox object reference (handle)
+    sandbox_obj: object | None = None  # E2B Sandbox object reference (handle)
     batch_id: int = -1  # Batch ID
 
     workflow_type: str = "browser"  # Determines which metrics are primary
@@ -683,7 +683,7 @@ class SandboxState:
     warmup_done: bool = False  # Warmup phase completed flag
 
     # Tab state (for round_robin tab-switch mode)
-    tab_ids: List[str] = field(default_factory=list)  # Active tab IDs [t1, t2, ...]
+    tab_ids: list[str] = field(default_factory=list)  # Active tab IDs [t1, t2, ...]
 
     # Thread lock for last_task_time (not serialized)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
@@ -737,7 +737,7 @@ class TestSnapshot:
     total_sandboxes: int  # Total sandbox count
     active_sandboxes: int  # Active sandbox count
     offline_sandboxes: int  # Offline sandbox count
-    creation_stats: Dict[str, any] = field(
+    creation_stats: dict[str, any] = field(
         default_factory=dict
     )  # {"create": {...}, "port_wait": {...}, "total": {...}}
     # Browser task metrics
@@ -772,15 +772,15 @@ class BatchTask:
     ratio: int  # Memory migration ratio (%)
 
     # Runtime state (filled after execution)
-    result_dir: Optional[str] = None  # Result directory path
-    report_file: Optional[str] = None  # bench_report.txt path
-    analysis_file: Optional[str] = None  # analysis_report.xlsx path
-    browser_metrics: Optional[Dict[str, Any]] = None  # Extracted browser metrics
-    coding_metrics: Optional[Dict[str, Any]] = None  # Extracted coding metrics
-    document_metrics: Optional[Dict[str, Any]] = None  # Extracted PDF/XLSX metrics
-    vm_metrics: Optional[Dict[str, Any]] = None  # Extracted vm_monitor metrics
+    result_dir: str | None = None  # Result directory path
+    report_file: str | None = None  # bench_report.txt path
+    analysis_file: str | None = None  # analysis_report.xlsx path
+    browser_metrics: dict[str, Any] | None = None  # Extracted browser metrics
+    coding_metrics: dict[str, Any] | None = None  # Extracted coding metrics
+    document_metrics: dict[str, Any] | None = None  # Extracted PDF/XLSX metrics
+    vm_metrics: dict[str, Any] | None = None  # Extracted vm_monitor metrics
     success: bool = False
-    error_msg: Optional[str] = None
+    error_msg: str | None = None
 
 
 @dataclass
@@ -790,8 +790,8 @@ class TaskGroup:
     group_id: str  # Group ID, e.g. "tc10_ratio10"
     total_count: int  # Shared by all tasks in group
     ratio: int  # Shared by all tasks in group
-    tasks: List[BatchTask]  # Tasks with different benchmark_percent
+    tasks: list[BatchTask]  # Tasks with different benchmark_percent
 
     # Runtime state
-    sandbox_states: Optional[Dict[int, Any]] = None  # Shared sandbox states
-    smap_tool_manager: Optional[Any] = None  # Shared SmapToolManager
+    sandbox_states: dict[int, Any] | None = None  # Shared sandbox states
+    smap_tool_manager: Any | None = None  # Shared SmapToolManager

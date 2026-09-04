@@ -6,10 +6,9 @@ Helper functions for percentile calculation, timing, etc.
 
 import math
 import statistics
-from typing import Dict, List
 
 
-def calc_percentiles(values: List[float]) -> Dict[str, float]:
+def calc_percentiles(values: list[float]) -> dict[str, float]:
     """Calculate percentile statistics for a list of values
 
     Returns: {"min", "max", "avg", "p50", "p95", "p99", "count"}
@@ -43,7 +42,7 @@ def calc_percentiles(values: List[float]) -> Dict[str, float]:
     }
 
 
-def calc_p99(values: List[float]) -> float:
+def calc_p99(values: list[float]) -> float:
     """Calculate P99 latency"""
     if not values:
         return 0.0
@@ -53,6 +52,6 @@ def calc_p99(values: List[float]) -> float:
     return sorted_vals[-1]
 
 
-def calc_avg(values: List[float]) -> float:
+def calc_avg(values: list[float]) -> float:
     """Calculate average"""
     return statistics.mean(values) if values else 0.0

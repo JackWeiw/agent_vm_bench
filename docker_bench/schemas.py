@@ -7,7 +7,7 @@ Defines ContainerStatus, CreationMetrics, BrowserMetrics, ContainerState, TestSn
 import statistics
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Optional
 
 
 class ContainerStatus(Enum):
@@ -47,11 +47,11 @@ class BrowserMetrics:
     success_count: int = 0  # Successful queries
     failed_count: int = 0  # Failed queries
     timeout_count: int = 0  # Timeout queries
-    latencies: List[float] = field(default_factory=list)  # Query latencies (seconds)
-    step_latencies: Dict[str, List[float]] = field(default_factory=dict)  # Per-step latencies
+    latencies: list[float] = field(default_factory=list)  # Query latencies (seconds)
+    step_latencies: dict[str, list[float]] = field(default_factory=dict)  # Per-step latencies
     last_error: str = ""  # Last error message for debugging
 
-    def add(self, latency: float, success: bool, timeout: bool = False, step_times: Dict[str, float] = None) -> None:
+    def add(self, latency: float, success: bool, timeout: bool = False, step_times: dict[str, float] = None) -> None:
         """Add a task result
 
         Args:
@@ -104,7 +104,7 @@ class ContainerState:
 
     container_id: int  # Sequence number (1, 2, 3...)
     container_name: str = ""  # Docker container name
-    docker_container: Optional[object] = None  # Docker container object reference
+    docker_container: object | None = None  # Docker container object reference
     batch_id: int = -1  # Batch ID
 
     creation_metrics: CreationMetrics = field(default_factory=CreationMetrics)
@@ -126,7 +126,7 @@ class TestSnapshot:
     total_containers: int  # Total container count
     active_containers: int  # Active container count
     offline_containers: int  # Offline container count
-    creation_stats: Dict[str, any] = field(
+    creation_stats: dict[str, any] = field(
         default_factory=dict
     )  # {"create": {...}, "port_wait": {...}, "total": {...}}
     browser_total: int = 0  # Browser query total count

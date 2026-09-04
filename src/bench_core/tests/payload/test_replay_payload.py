@@ -92,6 +92,7 @@ def test_load_trajectory_instance_id_from_file_wins():
 
 def test_load_trajectory_missing_instance_id_uses_filename_stem(tmp_path):
     import json
+
     from bench_core.payload.replay_payload import load_trajectory
 
     p = tmp_path / "_no_id.json"
@@ -133,6 +134,7 @@ def test_find_trajectories_respects_glob():
 
 def test_load_pool_skips_corrupt_and_empty(caplog):
     import logging
+
     from bench_core.payload.replay_payload import Trajectory, load_pool, reset_pool_cache
 
     class _Cfg:
@@ -258,6 +260,7 @@ def test_load_pool_manifest_key_is_relpath_not_basename(tmp_path):
     one would collide under basename lookup; relpath keeps them distinct.
     """
     import json
+
     from bench_core.payload.replay_payload import load_pool, reset_pool_cache
 
     traj_dir = tmp_path / "traj"
@@ -278,6 +281,7 @@ def test_load_pool_manifest_key_is_relpath_not_basename(tmp_path):
 
 def test_load_pool_cache_invalidates_on_manifest_change(tmp_path):
     import json
+
     from bench_core.payload.replay_payload import load_pool, reset_pool_cache
 
     traj_dir = tmp_path / "traj"

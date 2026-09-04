@@ -8,7 +8,7 @@ Defines the core data structures for sessions, turns, and responses.
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Any, Optional
 
 
 @dataclass
@@ -19,7 +19,7 @@ class ToolCall:
     name: str
     arguments: str  # JSON-encoded arguments
 
-    def to_openai_dict(self) -> Dict[str, Any]:
+    def to_openai_dict(self) -> dict[str, Any]:
         """Convert to OpenAI tool_call format."""
         return {
             "id": self.id,
@@ -40,17 +40,17 @@ class Turn:
     """
 
     index: int
-    text: Optional[str] = None
-    tool_calls: List[ToolCall] = field(default_factory=list)
+    text: str | None = None
+    tool_calls: list[ToolCall] = field(default_factory=list)
     llm_duration_ms: int = 0
     model: str = "unknown"
     response_id: str = ""
-    usage: Dict[str, int] = field(default_factory=dict)
+    usage: dict[str, int] = field(default_factory=dict)
     stop_reason: str = "toolUse"
 
     # Timestamps relative to session start (for debugging)
-    inner_ts_rel: Optional[int] = None  # LLM call start
-    outer_ts_rel: Optional[int] = None  # LLM call end
+    inner_ts_rel: int | None = None  # LLM call start
+    outer_ts_rel: int | None = None  # LLM call end
 
     @property
     def finish_reason(self) -> str:
@@ -69,7 +69,7 @@ class Turn:
         return len(self.tool_calls) > 0
 
     @property
-    def tool_names(self) -> List[str]:
+    def tool_names(self) -> list[str]:
         """Get list of tool names in this turn."""
         return [tc.name for tc in self.tool_calls]
 
@@ -87,16 +87,16 @@ class SessionMetadata:
     total_turns: int = 0
     total_llm_time_ms: int = 0
     total_tool_calls: int = 0
-    unique_tools: List[str] = field(default_factory=list)
+    unique_tools: list[str] = field(default_factory=list)
     model: str = "unknown"
 
     # Validation
     is_valid: bool = True
-    errors: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     # Load info
-    load_time: Optional[datetime] = None
+    load_time: datetime | None = None
     load_duration_ms: int = 0
 
     def summary(self) -> str:
@@ -121,7 +121,7 @@ class PrebuiltTurn:
 
     # Pre-built JSON responses (bytes for zero-copy)
     completion_json: bytes = b""
-    stream_chunks_json: List[bytes] = field(default_factory=list)
+    stream_chunks_json: list[bytes] = field(default_factory=list)
 
     # Timing info (for sleep simulation)
     llm_duration_ms: int = 0
@@ -136,17 +136,17 @@ class PrebuiltSession:
     """
 
     metadata: SessionMetadata
-    turns: List[PrebuiltTurn] = field(default_factory=list)
+    turns: list[PrebuiltTurn] = field(default_factory=list)
 
     # Index for fast lookup
-    _turn_index: Dict[int, PrebuiltTurn] = field(default_factory=dict, repr=False)
+    _turn_index: dict[int, PrebuiltTurn] = field(default_factory=dict, repr=False)
 
     def __post_init__(self):
         """Build turn index after initialization."""
         for pt in self.turns:
             self._turn_index[pt.turn.index] = pt
 
-    def get_turn(self, index: int) -> Optional[PrebuiltTurn]:
+    def get_turn(self, index: int) -> PrebuiltTurn | None:
         """Get turn by index (O(1) lookup)."""
         return self._turn_index.get(index)
 
@@ -171,7 +171,7 @@ class RequestStats:
     llm_duration_ms: int
     actual_delay_ms: int  # Actual time waited
     response_type: str  # "completion" or "stream"
-    client_ip: Optional[str] = None
+    client_ip: str | None = None
     is_out_of_range: bool = False
 
 
@@ -188,9 +188,9 @@ class ConnectionStats:
     current_turn: int = 0
     total_requests: int = 0
     total_llm_time_ms: int = 0
-    start_time: Optional[datetime] = None
-    last_activity: Optional[datetime] = None
+    start_time: datetime | None = None
+    last_activity: datetime | None = None
     is_active: bool = True
 
     # Per-turn stats
-    turn_stats: List[RequestStats] = field(default_factory=list)
+    turn_stats: list[RequestStats] = field(default_factory=list)

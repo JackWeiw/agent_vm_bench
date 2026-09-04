@@ -12,15 +12,14 @@ import json
 import logging
 import random
 import time
-from typing import Dict, List, Optional, Any, Set
+from typing import Any, Optional
 
 from aiohttp import web
 
 from .config import Config
-from .models import PrebuiltSession, PrebuiltTurn
+from .models import PrebuiltTurn
 from .prebuilt import SessionPool
 from .stats import StatsCollector
-
 
 logger = logging.getLogger("llm_replay.server")
 
@@ -42,15 +41,15 @@ class FakeLLMServer:
     def __init__(self, config: Config, session_pool: SessionPool):
         self.config = config
         self.session_pool = session_pool
-        self.stats_collector: Optional[StatsCollector] = None
+        self.stats_collector: StatsCollector | None = None
 
         # Active connections tracking (for stats, not for locking)
-        self._active_connections: Set[str] = set()
+        self._active_connections: set[str] = set()
 
         # Server instance
-        self._app: Optional[web.Application] = None
-        self._runner: Optional[web.AppRunner] = None
-        self._site: Optional[web.TCPSite] = None
+        self._app: web.Application | None = None
+        self._runner: web.AppRunner | None = None
+        self._site: web.TCPSite | None = None
 
     async def start(self):
         """Start the server."""
@@ -434,7 +433,7 @@ class FakeLLMServer:
 
         return response
 
-    def get_stats_summary(self) -> Dict[str, Any]:
+    def get_stats_summary(self) -> dict[str, Any]:
         """Get current stats summary."""
         if self.stats_collector:
             return self.stats_collector.get_summary()

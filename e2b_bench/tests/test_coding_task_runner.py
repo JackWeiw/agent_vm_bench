@@ -2,8 +2,9 @@
 
 import threading
 import unittest
-from e2b_bench.config import Config, CODING_LANGUAGE_PROFILES, _find_name_clause, get_coding_profile
-from e2b_bench.schemas import CodingMetrics, CODING_STEP_ORDER, BROWSER_STEP_ORDER, SandboxState
+
+from e2b_bench.config import Config, _find_name_clause, get_coding_profile
+from e2b_bench.schemas import BROWSER_STEP_ORDER, CODING_STEP_ORDER, CodingMetrics, SandboxState
 
 
 class TestCodingMetrics(unittest.TestCase):
@@ -559,6 +560,7 @@ class TestBuildEditCommand(unittest.TestCase):
     def test_hugo_pair_with_pipe_and_brackets(self):
         """The hugo pair's find holds `|`, `[`, `]`, backticks - must not break the command."""
         import base64
+
         from e2b_bench.coding_task_runner import _build_edit_command
 
         find = "var gitHubAlertRe = regexp.MustCompile(`^<p>\\[!(NOTE|TIP|WARNING|IMPORTANT|CAUTION)\\]`)"
@@ -585,6 +587,7 @@ class TestBuildEditCommand(unittest.TestCase):
     def test_vuejs_pair_with_dot_and_parens(self):
         """vuejs/core pairs carry `.` and `()` - sed treated them as regex; literal replace is inert."""
         import base64
+
         from e2b_bench.coding_task_runner import _build_edit_command
 
         find = "export const NOOP = (): void => {}"

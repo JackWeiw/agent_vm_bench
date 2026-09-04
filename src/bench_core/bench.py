@@ -29,6 +29,13 @@ from pathlib import Path
 from typing import Any
 
 from bench_core.config import KernelConfig
+from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
+from bench_core.observability.monitor import MonitorController
+from bench_core.observability.stats_collector import StatsCollector
+from bench_core.round_robin import RoundRobinTaskManager
+from bench_core.schemas import BenchSandbox
+from bench_core.task_manager import TaskManager
+from bench_core.utils import calc_percentiles, setup_logging
 from env_provider import (
     CreationMetrics,
     EnvironmentProvider,
@@ -37,13 +44,6 @@ from env_provider import (
     SandboxInstance,
     SandboxStatus,
 )
-from bench_core.schemas import BenchSandbox
-from bench_core.observability.stats_collector import StatsCollector
-from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
-from bench_core.observability.monitor import MonitorController
-from bench_core.task_manager import TaskManager
-from bench_core.round_robin import RoundRobinTaskManager
-from bench_core.utils import calc_percentiles, setup_logging
 
 logger = logging.getLogger(__name__)
 

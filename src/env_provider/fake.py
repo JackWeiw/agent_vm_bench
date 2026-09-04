@@ -10,7 +10,7 @@ the minimal template for adding a new provider submodule alongside this one.
 """
 from __future__ import annotations
 
-from typing import Mapping
+from collections.abc import Mapping
 
 from env_provider import CommandResult, CreationMetrics, EnvironmentProvider, SandboxInstance, SandboxStatus
 

@@ -18,10 +18,9 @@ real agent trajectory, which never ran `go mod download`).
 """
 
 import time
-from typing import Dict, Tuple
 
+from bench_looper.coding_base import CodingBench
 from bench_looper.core import load_operations, run_shell
-from bench_looper.coding_base import CodingBench, IterationResult
 
 
 class CodingGoBench(CodingBench):
@@ -49,7 +48,7 @@ class CodingGoBench(CodingBench):
             ops["pairs"], profile, args.skip_verify, getattr(args, "verify_timeout", profile.get("verify_timeout", 120))
         )
 
-    def _step_verify(self, pair: dict, round_id: int, steps: Dict[str, float]) -> Tuple[bool, str, bool]:
+    def _step_verify(self, pair: dict, round_id: int, steps: dict[str, float]) -> tuple[bool, str, bool]:
         # Optional pre-verify cache clear (go only). Separate command so its
         # time is measured apart from the write+run (see module docstring).
         if self.pre_verify_cmd:

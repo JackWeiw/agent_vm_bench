@@ -26,7 +26,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 import paramiko
 import psutil
@@ -37,17 +37,17 @@ import yaml
 class TestContext:
     """Test execution context"""
 
-    config: Dict
+    config: dict
     result_dir: str
     log_file: str
-    smap_pid: Optional[int] = None
-    smap_stdout: Optional[object] = None
-    smap_stderr: Optional[object] = None
-    monitor_pid: Optional[int] = None
-    monitor_stdout: Optional[object] = None
-    monitor_stderr: Optional[object] = None
-    vm_ips: List[str] = field(default_factory=list)
-    qemu_pids: Dict[str, int] = field(default_factory=dict)
+    smap_pid: int | None = None
+    smap_stdout: object | None = None
+    smap_stderr: object | None = None
+    monitor_pid: int | None = None
+    monitor_stdout: object | None = None
+    monitor_stderr: object | None = None
+    vm_ips: list[str] = field(default_factory=list)
+    qemu_pids: dict[str, int] = field(default_factory=dict)
     start_time: float = 0.0
 
 
@@ -60,7 +60,7 @@ def log(ctx: TestContext, msg: str):
         f.write(line + "\n")
 
 
-def load_config(config_path: str) -> Dict:
+def load_config(config_path: str) -> dict:
     """Load and parse YAML config file"""
     with open(config_path) as f:
         config = yaml.safe_load(f)
@@ -97,7 +97,7 @@ def save_config_copy(ctx: TestContext, config_path: str):
     log(ctx, f"Config saved to {dest}")
 
 
-def create_result_dir(config: Dict) -> str:
+def create_result_dir(config: dict) -> str:
     """Create result directory with naming: vm{n}_ratio{ratio}_active{percent}_timestamp"""
     base_dir = config["result"]["base_dir"]
     vm_count = config["vm"]["count"]
@@ -117,7 +117,7 @@ def create_result_dir(config: Dict) -> str:
     return result_dir
 
 
-def setup_openstack_env(config: Dict) -> Dict:
+def setup_openstack_env(config: dict) -> dict:
     """Setup OpenStack environment variables from openrc file"""
     env = os.environ.copy()
     openrc_path = os.path.expanduser(config["openstack"]["openrc_path"])
@@ -146,7 +146,7 @@ def setup_openstack_env(config: Dict) -> Dict:
 # ==================== Step 2: Delete VMs ====================
 
 
-def delete_vms(ctx: TestContext, os_env: Dict) -> bool:
+def delete_vms(ctx: TestContext, os_env: dict) -> bool:
     """Delete all existing VMs and confirm deletion"""
     log(ctx, "Step 2: Deleting existing VMs...")
 
@@ -231,7 +231,7 @@ def delete_vms(ctx: TestContext, os_env: Dict) -> bool:
 # ==================== Step 3: Create VMs ====================
 
 
-def create_vms(ctx: TestContext, os_env: Dict) -> bool:
+def create_vms(ctx: TestContext, os_env: dict) -> bool:
     """Create VMs using vm_bench module
 
     Migrated from create_server.py to vm_bench.create_all()
@@ -305,7 +305,7 @@ def create_vms(ctx: TestContext, os_env: Dict) -> bool:
     return True
 
 
-def create_vms_legacy(ctx: TestContext, os_env: Dict) -> bool:
+def create_vms_legacy(ctx: TestContext, os_env: dict) -> bool:
     """Legacy fallback: Create VMs using create_server.py"""
     log(ctx, "Using legacy create_server.py...")
 
@@ -363,7 +363,7 @@ def create_vms_legacy(ctx: TestContext, os_env: Dict) -> bool:
 # ==================== Step 4: Start smap_tool ====================
 
 
-def get_qemu_pids(ctx: TestContext) -> Dict[str, int]:
+def get_qemu_pids(ctx: TestContext) -> dict[str, int]:
     """Get QEMU process PIDs and map to VM IPs"""
     result = subprocess.run(
         ["pidof", "qemu-kvm"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10
@@ -448,7 +448,7 @@ def start_smap_tool(ctx: TestContext) -> bool:
 # ==================== Step 5: Wait for VMs Ready ====================
 
 
-def check_vm_ready(ip: str, username: str, password: str, qemu_pid: int, cpu_threshold: int) -> Tuple[bool, str]:
+def check_vm_ready(ip: str, username: str, password: str, qemu_pid: int, cpu_threshold: int) -> tuple[bool, str]:
     """Check if single VM is ready (SSH, openclaw gateway, CPU utilization)"""
     try:
         # SSH connection
@@ -1080,7 +1080,7 @@ def collect_results(ctx: TestContext):
 # ==================== Step 10: Cleanup ====================
 
 
-def cleanup(ctx: TestContext, os_env: Dict):
+def cleanup(ctx: TestContext, os_env: dict):
     """Cleanup: stop smap_tool, delete VMs"""
     log(ctx, "Step 10: Cleanup...")
 

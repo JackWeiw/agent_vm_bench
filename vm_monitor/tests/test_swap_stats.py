@@ -3,10 +3,9 @@
 import os
 import tempfile
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from vm_monitor.base import VMMonitorBase, _PAGE_SIZE
-import vm_monitor.base as base
+from vm_monitor.base import _PAGE_SIZE, VMMonitorBase
 
 
 # Concrete subclass for testing (VMMonitorBase is abstract)

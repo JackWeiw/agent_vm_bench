@@ -15,7 +15,7 @@ import shlex
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from .config import Config
 from .helpers import wait_for_port_ready
@@ -47,7 +47,7 @@ def get_document_operations_path(case_kind: str) -> Path:
         raise SceneRecipeError("document case_kind must be 'pdf' or 'xlsx'") from None
 
 
-def load_scene_recipe(expected_case_kind: str) -> Dict[str, Any]:
+def load_scene_recipe(expected_case_kind: str) -> dict[str, Any]:
     """Load and validate a trace-derived scene recipe."""
     recipe_path = get_document_operations_path(expected_case_kind)
 
@@ -97,7 +97,7 @@ def load_scene_recipe(expected_case_kind: str) -> Dict[str, Any]:
     return recipe
 
 
-def preflight_document(config: Config) -> Dict[str, Any]:
+def preflight_document(config: Config) -> dict[str, Any]:
     """Validate Document config and its fixed recipe before any Sandbox access."""
     config.validate()
     if config.workflow_type != "document":
@@ -112,7 +112,7 @@ class DocumentOperationExecutor:
         self,
         state: SandboxState,
         config: Config,
-        stop_event: Optional[threading.Event] = None,
+        stop_event: threading.Event | None = None,
     ):
         self.state = state
         self.config = config
@@ -121,7 +121,7 @@ class DocumentOperationExecutor:
         self.phases = {item["operation_id"]: item for item in self.recipe["key_operations"]}
         # The scheduler stop event prevents a *new* complete task from starting.
         # It must not interrupt a recipe that has already begun.
-        self.deadline: Optional[float] = None
+        self.deadline: float | None = None
 
     def _check_cancelled(self) -> None:
         if self.deadline is not None and time.monotonic() >= self.deadline:
@@ -136,7 +136,7 @@ class DocumentOperationExecutor:
             self._check_cancelled()
         return max(1, min(maximum, math.ceil(remaining)))
 
-    def prepare_workspace(self, sbx) -> Tuple[bool, str]:
+    def prepare_workspace(self, sbx) -> tuple[bool, str]:
         """Restore the exact trace workspace from the immutable image seed."""
         self._check_cancelled()
         seed = shlex.quote(self.config.document_seed_dir)
@@ -151,11 +151,11 @@ class DocumentOperationExecutor:
             return False, self._result_error("workspace reset", result)
         return True, ""
 
-    def execute(self, sbx) -> Tuple[bool, float, Dict[str, float], bool, str]:
+    def execute(self, sbx) -> tuple[bool, float, dict[str, float], bool, str]:
         """Run the recipe's single fixed phase path."""
         started = time.perf_counter()
         self.deadline = time.monotonic() + self.config.document_task_timeout
-        step_times: Dict[str, float] = {}
+        step_times: dict[str, float] = {}
         timed_out = False
 
         try:
@@ -182,7 +182,7 @@ class DocumentOperationExecutor:
         finally:
             self.deadline = None
 
-    def _execute_phase(self, sbx, phase_id: str, step_times: Dict[str, float]) -> Tuple[bool, str]:
+    def _execute_phase(self, sbx, phase_id: str, step_times: dict[str, float]) -> tuple[bool, str]:
         started = time.perf_counter()
         try:
             self._check_cancelled()
@@ -197,7 +197,7 @@ class DocumentOperationExecutor:
         finally:
             step_times[phase_id] = step_times.get(phase_id, 0.0) + (time.perf_counter() - started)
 
-    def _execute_tool_call(self, sbx, function_name: str, arguments: Dict[str, Any]) -> Tuple[bool, str]:
+    def _execute_tool_call(self, sbx, function_name: str, arguments: dict[str, Any]) -> tuple[bool, str]:
         if function_name == "read":
             path = shlex.quote(arguments["path"])
             result = sbx.commands.run(
@@ -236,7 +236,7 @@ class DocumentOperationExecutor:
         self._check_cancelled()
         return True, ""
 
-    def _validate_business_result(self, sbx) -> Tuple[bool, str]:
+    def _validate_business_result(self, sbx) -> tuple[bool, str]:
         report = posixpath.join(self.config.document_workspace_dir, "output", "business_verification.json")
         report_q = shlex.quote(report)
         command = (

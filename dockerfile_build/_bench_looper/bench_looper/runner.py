@@ -27,8 +27,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from bench_looper.core import DEFAULT_LOOPS, DEFAULT_RESULTS_DIR, RESULTS_DIR_ENV, RUN_ID_ENV, BenchLooper
 from bench_looper import browser, coding_go, coding_ts
+from bench_looper.core import DEFAULT_LOOPS, DEFAULT_RESULTS_DIR, RESULTS_DIR_ENV, RUN_ID_ENV, BenchLooper
 
 SCENARIOS = {
     "browser": browser.BrowserBench,

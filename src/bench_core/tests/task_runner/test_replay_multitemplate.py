@@ -5,8 +5,6 @@ in both create_all (batch mode) and create_one (ephemeral/trajectory mode).
 """
 from __future__ import annotations
 
-import pytest
-
 from env_provider.fake import FakeProvider
 
 

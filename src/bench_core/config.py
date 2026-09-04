@@ -17,10 +17,9 @@ scalar fields plus the resolved replacement-pair list
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
 
-from bench_core.payload.coding_payload import CODING_LANGUAGE_DEFAULT_SOURCE_FILES, DEFAULT_CODING_SOURCE_FILES
 from bench_core.observability.monitor import MonitorConfig
+from bench_core.payload.coding_payload import CODING_LANGUAGE_DEFAULT_SOURCE_FILES, DEFAULT_CODING_SOURCE_FILES
 
 # In-sandbox scene layout per document case kind. These paths live inside the
 # sandbox image (the document seed is baked in by the provider's prepare hook);

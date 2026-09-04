@@ -18,14 +18,14 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from e2b import Sandbox
 
 from .common import compute_stats, load_env, print_summary, write_excel_report
 
 
-def load_active_snapshot_ids_from_json(data: Dict[str, Any], count: Optional[int] = None) -> List[str]:
+def load_active_snapshot_ids_from_json(data: dict[str, Any], count: int | None = None) -> list[str]:
     """Collect deletable snapshot IDs from a snapshots.json ledger.
 
     Skips entries with no snapshot_id and entries already marked deleted.
@@ -49,7 +49,7 @@ def load_active_snapshot_ids_from_json(data: Dict[str, Any], count: Optional[int
     return ids
 
 
-def delete_single_snapshot(snapshot_id: str, index: int, timeout: int = 86400) -> Dict[str, Any]:
+def delete_single_snapshot(snapshot_id: str, index: int, timeout: int = 86400) -> dict[str, Any]:
     """Delete one snapshot via the E2B SDK staticmethod.
 
     Args:
@@ -86,7 +86,7 @@ def delete_single_snapshot(snapshot_id: str, index: int, timeout: int = 86400) -
     return result
 
 
-def update_json_ledger(data: Dict[str, Any], results: List[Dict[str, Any]]) -> Dict[str, Any]:
+def update_json_ledger(data: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, Any]:
     """Mark ledger entries deleted/failed based on deletion results.
 
     Args:
@@ -106,7 +106,7 @@ def update_json_ledger(data: Dict[str, Any], results: List[Dict[str, Any]]) -> D
     return data
 
 
-def list_all_snapshot_ids(timeout: int = 86400) -> List[str]:
+def list_all_snapshot_ids(timeout: int = 86400) -> list[str]:
     """List every snapshot on the E2B server (global, paginated).
 
     Uses the SDK's static list path with sandbox_id=None.
@@ -117,7 +117,7 @@ def list_all_snapshot_ids(timeout: int = 86400) -> List[str]:
     Returns:
         Ordered list of all snapshot IDs on the server.
     """
-    ids: List[str] = []
+    ids: list[str] = []
     paginator = Sandbox._cls_list_snapshots(sandbox_id=None, request_timeout=timeout)
     # Fallback if a future SDK removes _cls_list_snapshots: construct paginator directly.
     while paginator.has_next:
@@ -127,7 +127,7 @@ def list_all_snapshot_ids(timeout: int = 86400) -> List[str]:
     return ids
 
 
-def _delete_concurrent(snapshot_ids: List[str], timeout: int, start_index: int) -> List[Dict[str, Any]]:
+def _delete_concurrent(snapshot_ids: list[str], timeout: int, start_index: int) -> list[dict[str, Any]]:
     """Concurrently delete a batch of snapshots.
 
     Args:
@@ -138,7 +138,7 @@ def _delete_concurrent(snapshot_ids: List[str], timeout: int, start_index: int) 
     Returns:
         Result dicts ordered by index.
     """
-    results: Dict[int, Dict[str, Any]] = {}
+    results: dict[int, dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=max(1, len(snapshot_ids))) as executor:
         futures = {}
         for i, snap_id in enumerate(snapshot_ids):
@@ -160,11 +160,11 @@ def _delete_concurrent(snapshot_ids: List[str], timeout: int, start_index: int) 
 
 
 def delete_batch(
-    snapshot_ids: List[str],
+    snapshot_ids: list[str],
     timeout: int,
-    batch_size: Optional[int] = None,
+    batch_size: int | None = None,
     batch_interval: int = 3,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Delete N snapshots, optionally in batches.
 
     Args:
@@ -177,7 +177,7 @@ def delete_batch(
         List of result dicts ordered by index.
     """
     count = len(snapshot_ids)
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
 
     if batch_size and batch_size > 0:
         num_batches = (count + batch_size - 1) // batch_size
@@ -215,7 +215,7 @@ def confirm(prompt: str, assume_yes: bool = False) -> bool:
     return answer == "y"
 
 
-def compute_summary(results: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def compute_summary(results: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Compute summary statistics dict from deletion results.
 
     success_rate counts success + not_found as non-failures (deleting an
@@ -230,7 +230,7 @@ def compute_summary(results: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return {"delete_snapshot_s": stats}
 
 
-def build_report(results: List[Dict[str, Any]], output_path: str) -> None:
+def build_report(results: list[dict[str, Any]], output_path: str) -> None:
     """Build Excel report from deletion results."""
     summary_data = compute_summary(results)
     snapshots_data = [

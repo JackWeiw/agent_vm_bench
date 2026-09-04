@@ -7,7 +7,6 @@ Common helper functions for statistics, formatting, and logging setup.
 import logging
 import statistics
 import sys
-from typing import Dict, List
 
 
 def setup_logging(level: int = logging.INFO) -> None:
@@ -37,7 +36,7 @@ def setup_logging(level: int = logging.INFO) -> None:
     logging.getLogger().setLevel(level)
 
 
-def calc_percentiles(values: List[float]) -> Dict[str, float]:
+def calc_percentiles(values: list[float]) -> dict[str, float]:
     """Calculate percentile statistics
 
     Args:
@@ -69,7 +68,7 @@ def calc_percentiles(values: List[float]) -> Dict[str, float]:
     }
 
 
-def calc_p99(values: List[float]) -> float:
+def calc_p99(values: list[float]) -> float:
     """Calculate P99 value
 
     Args:

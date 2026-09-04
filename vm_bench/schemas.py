@@ -8,7 +8,7 @@ StressMetrics, VMHealth, VMState, TestSnapshot, OOMType
 import statistics
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 
 class VMStatus(Enum):
@@ -78,7 +78,7 @@ class QAMetrics:
     success_count: int = 0
     failed_count: int = 0
     timeout_count: int = 0
-    latencies: List[float] = field(default_factory=list)
+    latencies: list[float] = field(default_factory=list)
     memory_init_done: bool = False
     memory_init_time: float = 0.0
     current_query_index: int = 0
@@ -118,8 +118,8 @@ class BrowserMetrics:
     success_count: int = 0
     failed_count: int = 0
     timeout_count: int = 0
-    latencies: List[float] = field(default_factory=list)
-    task_type_counts: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    latencies: list[float] = field(default_factory=list)
+    task_type_counts: dict[str, dict[str, int]] = field(default_factory=dict)
     last_error: str = ""
 
     def add(self, latency: float, success: bool, timeout: bool = False, task_type: str = ""):
@@ -162,9 +162,9 @@ class StressMetrics:
 
     start_count: int = 0
     restart_count: int = 0
-    oom_events: Dict[OOMType, int] = field(default_factory=lambda: dict.fromkeys(OOMType, 0))
+    oom_events: dict[OOMType, int] = field(default_factory=lambda: dict.fromkeys(OOMType, 0))
     last_start_time: float = 0.0
-    current_pid: Optional[str] = None
+    current_pid: str | None = None
 
 
 @dataclass
@@ -175,7 +175,7 @@ class VMHealth:
     last_seen: float = 0.0
     consecutive_failures: int = 0
     last_error: str = ""
-    error_history: List[Tuple[float, str]] = field(default_factory=list)
+    error_history: list[tuple[float, str]] = field(default_factory=list)
 
     def mark_failure(self, error: str):
         self.consecutive_failures += 1
@@ -206,7 +206,7 @@ class VMState:
 
     # Phase 1: Connection (SSH)
     connection_metrics: ConnectionMetrics = field(default_factory=ConnectionMetrics)
-    vm_connection: Optional[object] = None  # VMConnection handle (SSH client)
+    vm_connection: object | None = None  # VMConnection handle (SSH client)
 
     # Benchmark metrics
     qa_metrics: QAMetrics = field(default_factory=QAMetrics)
@@ -256,10 +256,10 @@ class TestSnapshot:
     total_failure_vms: int
 
     # Creation stats (Phase 0)
-    creation_stats: Dict[str, any] = field(default_factory=dict)
+    creation_stats: dict[str, any] = field(default_factory=dict)
 
     # Connection stats (Phase 1)
-    connection_stats: Dict[str, any] = field(default_factory=dict)
+    connection_stats: dict[str, any] = field(default_factory=dict)
 
     # Task stats
     qa_total: int = 0
@@ -271,7 +271,7 @@ class TestSnapshot:
     browser_success: int = 0
     browser_avg_latency: float = 0.0
     browser_p99_latency: float = 0.0
-    browser_type_stats: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    browser_type_stats: dict[str, dict[str, int]] = field(default_factory=dict)
 
     stress_restart_count: int = 0
-    oom_events: Dict[OOMType, int] = field(default_factory=dict)
+    oom_events: dict[OOMType, int] = field(default_factory=dict)

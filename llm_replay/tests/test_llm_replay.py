@@ -13,21 +13,19 @@ Tests cover:
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
-import shutil
-from datetime import datetime
 from pathlib import Path
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm_replay.models import Turn, ToolCall, SessionMetadata, PrebuiltTurn
-from llm_replay.parser import BrowserSessionParser, parse_session, _iso_to_ms
-from llm_replay.config import Config, create_default_config, merge_cli_args, LoggingConfig
-from llm_replay.prebuilt import prebuild_turn, SessionPool
-
+from llm_replay.config import Config, LoggingConfig, create_default_config, merge_cli_args
+from llm_replay.models import ToolCall, Turn
+from llm_replay.parser import BrowserSessionParser, _iso_to_ms, parse_session
+from llm_replay.prebuilt import SessionPool, prebuild_turn
 
 # Sample session data for testing
 # Note: event.timestamp (outer) should be > message.timestamp (inner) for positive LLM duration

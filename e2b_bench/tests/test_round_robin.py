@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 from e2b_bench.bench import run_benchmark
 from e2b_bench.config import Config
 from e2b_bench.round_robin import RoundRobinTaskManager
-from e2b_bench.schemas import BrowserMetrics, CreationMetrics, SandboxState, SandboxStatus
+from e2b_bench.schemas import CreationMetrics, SandboxState, SandboxStatus
 from e2b_bench.stats_collector import StatsCollector
 
 

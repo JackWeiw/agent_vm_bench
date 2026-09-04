@@ -23,7 +23,6 @@ import os
 import re
 import sys
 from datetime import datetime
-from typing import Dict, List
 
 import pandas as pd
 
@@ -37,7 +36,7 @@ except ImportError:
     VM_MONITOR_AVAILABLE = False
 
 
-def parse_devkit_top_down_offline(log_path: str) -> Dict:
+def parse_devkit_top_down_offline(log_path: str) -> dict:
     """Parse DevKit top-down log with CORRECT IPC formula
 
     This is the corrected version that uses:
@@ -174,7 +173,7 @@ def parse_devkit_top_down_offline(log_path: str) -> Dict:
     return avg_result
 
 
-def find_all_devkit_logs(result_base_dir: str) -> List[Dict]:
+def find_all_devkit_logs(result_base_dir: str) -> list[dict]:
     """Find all devkit_top_down.log files in batch result directory
 
     Returns:
@@ -216,7 +215,7 @@ def find_all_devkit_logs(result_base_dir: str) -> List[Dict]:
     return log_files
 
 
-def update_analysis_report(qemu_monitor_dir: str, parsed_data: Dict) -> bool:
+def update_analysis_report(qemu_monitor_dir: str, parsed_data: dict) -> bool:
     """Update analysis_report.xlsx with corrected IPC value
 
     Args:
@@ -296,7 +295,7 @@ def update_analysis_report(qemu_monitor_dir: str, parsed_data: Dict) -> bool:
         return False
 
 
-def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
+def extract_qemu_metrics_from_excel(result_dir: str) -> dict:
     """Extract all QEMU metrics from analysis_report.xlsx (for batch summary)
 
     This is a copy of the function from batch_test_scheduler.py
@@ -533,7 +532,7 @@ def regenerate_batch_summary(result_base_dir: str, output_path: str = None):
     print("\nKey: OLD formula = avg(IPC values), NEW formula = sum(instructions)/sum(cycles)")
 
 
-def generate_summary_excel(results: Dict, output_path: str):
+def generate_summary_excel(results: dict, output_path: str):
     """Generate batch_summary.xlsx with all metrics (copy from batch_test_scheduler.py)"""
     try:
         from openpyxl import Workbook

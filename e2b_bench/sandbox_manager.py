@@ -16,7 +16,6 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Event
-from typing import Dict
 
 try:
     from e2b import Sandbox
@@ -108,9 +107,9 @@ class SandboxManager:
         self.config = config
         self.config.validate()
         self.stop_event = stop_event
-        self.sandbox_states: Dict[int, SandboxState] = {}
+        self.sandbox_states: dict[int, SandboxState] = {}
 
-    def create_all(self) -> Dict[int, SandboxState]:
+    def create_all(self) -> dict[int, SandboxState]:
         """Batch create sandboxes
 
         Strategy based on create_batch config:
@@ -124,7 +123,7 @@ class SandboxManager:
         else:
             return self._create_concurrent()
 
-    def detect_existing(self) -> Dict[int, SandboxState]:
+    def detect_existing(self) -> dict[int, SandboxState]:
         """Detect existing running sandboxes
 
         Query E2B API for existing sandboxes, connect to them,
@@ -192,7 +191,7 @@ class SandboxManager:
 
         return self.sandbox_states
 
-    def detect_from_file(self, ids_file: str) -> Dict[int, SandboxState]:
+    def detect_from_file(self, ids_file: str) -> dict[int, SandboxState]:
         """Detect sandboxes from ID file with matching
 
         Read target IDs from file, get running sandboxes via Sandbox.list(),
@@ -304,7 +303,7 @@ class SandboxManager:
 
         return self.sandbox_states
 
-    def _create_batched(self) -> Dict[int, SandboxState]:
+    def _create_batched(self) -> dict[int, SandboxState]:
         """Batched sandbox creation"""
         total = self.config.total_count
         batch_size = self.config.create_batch_size
@@ -338,9 +337,9 @@ class SandboxManager:
 
         return self.sandbox_states
 
-    def _create_batch_concurrent(self, batch_id: int, start: int, end: int) -> Dict[int, SandboxState]:
+    def _create_batch_concurrent(self, batch_id: int, start: int, end: int) -> dict[int, SandboxState]:
         """Concurrent creation of one batch"""
-        states: Dict[int, SandboxState] = {}
+        states: dict[int, SandboxState] = {}
 
         with ThreadPoolExecutor(max_workers=end - start) as executor:
             futures = {}
@@ -394,7 +393,7 @@ class SandboxManager:
 
         return {i + 1: self.sandbox_states[i + 1] for i in range(start, end)}
 
-    def _create_concurrent(self) -> Dict[int, SandboxState]:
+    def _create_concurrent(self) -> dict[int, SandboxState]:
         """Full concurrent creation of all sandboxes"""
         total = self.config.total_count
 
@@ -405,7 +404,7 @@ class SandboxManager:
 
         return self._create_batch_concurrent(batch_id=0, start=0, end=total)
 
-    def _create_single(self, state: SandboxState) -> Dict[str, any]:
+    def _create_single(self, state: SandboxState) -> dict[str, any]:
         """Create single sandbox
 
         Key: Preserve sandbox handle in state.sandbox_obj
@@ -439,7 +438,7 @@ class SandboxManager:
             state.creation_metrics.create_ready_time = time.time()
             return {"success": False, "create_elapsed": 0.0, "error": str(e)}
 
-    def _check_ready(self, state: SandboxState) -> Dict[str, any]:
+    def _check_ready(self, state: SandboxState) -> dict[str, any]:
         """Check if sandbox is ready based on workflow type.
 
         - Browser workflow: Check ports 18789 + 11436
@@ -456,7 +455,7 @@ class SandboxManager:
             return self._check_ports(state)
         raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
-    def _check_document_ready(self, state: SandboxState) -> Dict[str, any]:
+    def _check_document_ready(self, state: SandboxState) -> dict[str, any]:
         """Validate the document runtime, retrying transient command API failures.
 
         A completed command with a non-zero exit code is a semantic image
@@ -533,7 +532,7 @@ class SandboxManager:
             "error": f"Timeout waiting for document runtime validation: {last_error[:200]}",
         }
 
-    def _check_command_ready(self, state: SandboxState) -> Dict[str, any]:
+    def _check_command_ready(self, state: SandboxState) -> dict[str, any]:
         """Check if sandbox is ready by executing a simple command.
 
         For coding workflow, sandbox is ready when it can execute 'uname -a'.
@@ -574,7 +573,7 @@ class SandboxManager:
         wait_elapsed = time.time() - start_time
         return {"success": False, "wait_elapsed": wait_elapsed, "error": "Timeout waiting for command response"}
 
-    def _check_ports(self, state: SandboxState) -> Dict[str, any]:
+    def _check_ports(self, state: SandboxState) -> dict[str, any]:
         """Check if sandbox ports are ready (browser workflow).
 
         Check 18789 (openclaw-gateway) and 11436 (llama-server)

@@ -25,7 +25,8 @@ from __future__ import annotations
 import logging
 import shlex
 import threading
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from bench_core.config import KernelConfig
 from env_provider import (

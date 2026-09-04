@@ -20,7 +20,6 @@ import random
 import re
 import threading
 import time
-from typing import Dict, List, Tuple
 
 from .config import Config
 from .helpers import wait_for_port_ready
@@ -29,7 +28,7 @@ from .schemas import SandboxState, SandboxStatus
 logger = logging.getLogger(__name__)
 
 
-def extract_element_refs(output: str) -> List[str]:
+def extract_element_refs(output: str) -> list[str]:
     """Extract element refs from agent-browser snapshot output.
 
     Args:
@@ -239,7 +238,7 @@ class BrowserTaskRunner(threading.Thread):
 
         logger.info(f"[Sandbox{self.state.sandbox_id}] Task runner ended")
 
-    def _run_single_task(self) -> Tuple[bool, float]:
+    def _run_single_task(self) -> tuple[bool, float]:
         """Execute single browser task
 
         Use state.sandbox_obj handle to execute command
@@ -295,14 +294,14 @@ class TaskManager:
     def __init__(
         self,
         config: Config,
-        sandbox_states: Dict[int, SandboxState],
+        sandbox_states: dict[int, SandboxState],
         stop_event: threading.Event,
     ):
         self.config = config
         self.sandbox_states = sandbox_states
         self.stop_event = stop_event
-        self.runners: List[threading.Thread] = []
-        self.warmup_runners: List[WarmupRunner] = []
+        self.runners: list[threading.Thread] = []
+        self.warmup_runners: list[WarmupRunner] = []
 
     def start_warmup(self) -> None:
         """Start warmup phase for all PORT_READY sandboxes
@@ -381,7 +380,7 @@ class TaskManager:
         else:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
-    def wait_warmup(self, timeout: float = 300.0) -> Tuple[int, int]:
+    def wait_warmup(self, timeout: float = 300.0) -> tuple[int, int]:
         """Wait for all warmup runners to complete
 
         Returns: (completed_count, failed_count)
@@ -465,7 +464,7 @@ class TaskManager:
         else:
             self._start_concurrent(benchmark_states)
 
-    def _start_batched(self, ready_states: List[SandboxState]) -> None:
+    def _start_batched(self, ready_states: list[SandboxState]) -> None:
         """Batched task execution start"""
         total = len(ready_states)
         batch_size = self.config.task_batch_size
@@ -506,7 +505,7 @@ class TaskManager:
 
         logger.info(f"\nStarted {len(self.runners)} task runners in {batch_count} batches")
 
-    def _start_concurrent(self, ready_states: List[SandboxState]) -> None:
+    def _start_concurrent(self, ready_states: list[SandboxState]) -> None:
         """Full concurrent task execution start"""
         workflow_label = self.config.workflow_type.capitalize()
 
@@ -627,7 +626,7 @@ class TabOperationRunner(threading.Thread):
         else:
             self._handle_failure(url, failed_step, error_detail)
 
-    def _execute_steps(self, sbx, url: str) -> Tuple[bool, Dict[str, float], str, str]:
+    def _execute_steps(self, sbx, url: str) -> tuple[bool, dict[str, float], str, str]:
         """Execute all steps: open new tab -> snapshot -> click -> screenshot.
 
         Args:
@@ -683,7 +682,7 @@ class TabOperationRunner(threading.Thread):
 
         return success, step_times, failed_step, error_detail
 
-    def _step_open_tab(self, sbx, url: str, step_times: Dict[str, float]) -> Tuple[bool, str]:
+    def _step_open_tab(self, sbx, url: str, step_times: dict[str, float]) -> tuple[bool, str]:
         """Step 1: Open new tab with URL and wait for page load.
 
         Records two separate timings:
@@ -722,7 +721,7 @@ class TabOperationRunner(threading.Thread):
 
         return True, ""
 
-    def _step_snapshot(self, sbx, step_times: Dict[str, float]) -> Tuple[bool, List[str], str]:
+    def _step_snapshot(self, sbx, step_times: dict[str, float]) -> tuple[bool, list[str], str]:
         """Step 2: DOM snapshot.
 
         Returns:
@@ -744,7 +743,7 @@ class TabOperationRunner(threading.Thread):
         elements = extract_element_refs(result.stdout)
         return True, elements, ""
 
-    def _step_click(self, sbx, elements: List[str], step_times: Dict[str, float]) -> Tuple[bool, str]:
+    def _step_click(self, sbx, elements: list[str], step_times: dict[str, float]) -> tuple[bool, str]:
         """Step 3: Element click (non-fatal).
 
         Args:
@@ -771,7 +770,7 @@ class TabOperationRunner(threading.Thread):
             return True, " | ".join(error_parts)
         return True, ""
 
-    def _step_screenshot(self, sbx, step_times: Dict[str, float]) -> Tuple[bool, str]:
+    def _step_screenshot(self, sbx, step_times: dict[str, float]) -> tuple[bool, str]:
         """Step 4: Screenshot (non-fatal).
 
         Args:
@@ -793,7 +792,7 @@ class TabOperationRunner(threading.Thread):
             return True, " | ".join(error_parts)
         return True, ""
 
-    def _classify_exception(self, e: Exception, step_times: Dict[str, float]) -> Tuple[str, str]:
+    def _classify_exception(self, e: Exception, step_times: dict[str, float]) -> tuple[str, str]:
         """Classify an exception to determine which step failed and why.
 
         Distinguishes:
@@ -821,7 +820,7 @@ class TabOperationRunner(threading.Thread):
         return "exception", f"exception: {error_str[:100]}"
 
     def _record_metrics(
-        self, start_time: float, success: bool, step_times: Dict[str, float], error_detail: str
+        self, start_time: float, success: bool, step_times: dict[str, float], error_detail: str
     ) -> float:
         """Record metrics for this operation.
 

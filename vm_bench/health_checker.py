@@ -8,7 +8,7 @@ import json
 import subprocess
 import threading
 import time
-from typing import Dict, Optional, Set
+from typing import Optional
 
 from .config import Config
 from .schemas import VMState
@@ -18,15 +18,15 @@ from .vm_manager import VMConnection
 class OpenStackVMChecker:
     """Query VM status via OpenStack CLI"""
 
-    def __init__(self, vm_ips: Dict[int, str], config: Config):
-        self.ip_name_map: Dict[str, str] = {}
+    def __init__(self, vm_ips: dict[int, str], config: Config):
+        self.ip_name_map: dict[str, str] = {}
         self.config = config
         self.os_env = config.get_os_env()
         self._available = bool(self.os_env)
         if self._available:
             self._build_ip_name_map(vm_ips)
 
-    def _build_ip_name_map(self, vm_ips: Dict[int, str]):
+    def _build_ip_name_map(self, vm_ips: dict[int, str]):
         """Build IP -> VM name mapping"""
         if not self._available:
             return
@@ -56,7 +56,7 @@ class OpenStackVMChecker:
         except Exception as e:
             print(f"[OpenStack] Failed to build IP mapping: {e}")
 
-    def get_vm_status(self, vm_name: str) -> Optional[str]:
+    def get_vm_status(self, vm_name: str) -> str | None:
         """Query VM current status"""
         if not self._available or not vm_name:
             return None
@@ -94,17 +94,17 @@ class HealthChecker:
     def __init__(
         self,
         config: Config,
-        vm_states: Dict[int, VMState],
-        vm_conns: Dict[int, VMConnection],
-        os_checker: Optional[OpenStackVMChecker] = None,
+        vm_states: dict[int, VMState],
+        vm_conns: dict[int, VMConnection],
+        os_checker: OpenStackVMChecker | None = None,
     ):
         self.config = config
         self.vm_states = vm_states
         self.vm_conns = vm_conns
         self.os_checker = os_checker
         self.stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self.offline_vms: Set[int] = set()
+        self._thread: threading.Thread | None = None
+        self.offline_vms: set[int] = set()
 
     def start(self):
         """Start health check thread"""

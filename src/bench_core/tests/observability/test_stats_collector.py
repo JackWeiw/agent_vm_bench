@@ -12,9 +12,9 @@ from unittest.mock import Mock
 import pytest
 
 from bench_core.config import KernelConfig
-from env_provider import SandboxStatus
-from bench_core.schemas import BenchSandbox
 from bench_core.observability.stats_collector import ErrorClassifier, ReportFormatter, StatsCollector
+from bench_core.schemas import BenchSandbox
+from env_provider import SandboxStatus
 
 
 class TestStatsCollectorErrorClassification:

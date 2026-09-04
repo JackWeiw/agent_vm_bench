@@ -7,7 +7,6 @@ import shutil
 import sys
 from pathlib import Path
 
-
 ROOT = Path("/opt/document-bench")
 REQUIRED_FILES = (
     "pdf/input/of306_aug2023.pdf",

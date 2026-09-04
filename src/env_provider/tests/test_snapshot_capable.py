@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from env_provider import SnapshotSizeCapable, SandboxInstance
+from env_provider import SandboxInstance, SnapshotSizeCapable
 
 
 def test_snapshot_size_capable_isinstance_check() -> None:

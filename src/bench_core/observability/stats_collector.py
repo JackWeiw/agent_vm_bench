@@ -18,7 +18,6 @@ from typing import Any
 
 from bench_core.config import KernelConfig
 from bench_core.observability.replay_obs import ReplayObservability
-from env_provider import SandboxStatus
 from bench_core.schemas import (
     CODING_STEP_ORDER,
     BenchSandbox,
@@ -31,6 +30,7 @@ from bench_core.utils import (
     calc_tail_ratio,
     classify_tail_latency,
 )
+from env_provider import SandboxStatus
 
 logger = logging.getLogger(__name__)
 

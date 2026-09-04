@@ -7,8 +7,8 @@ openpyxl = pytest.importorskip("openpyxl", reason="openpyxl is a core dep")
 from openpyxl import load_workbook  # noqa: E402
 
 from bench_core.config import KernelConfig  # noqa: E402
-from bench_core.observability.replay_obs import ReplayObservability  # noqa: E402
 from bench_core.observability.obs_xlsx import XlsxReportRenderer  # noqa: E402
+from bench_core.observability.replay_obs import ReplayObservability  # noqa: E402
 from bench_core.schemas import BenchSandbox, ReplayMetrics  # noqa: E402
 from env_provider import SandboxInstance  # noqa: E402
 
@@ -277,6 +277,7 @@ def test_renderer_accepts_series_path_and_draws_per_step_linechart(tmp_path):
 
 def test_per_step_linechart_references_all_data_rows(tmp_path):
     from unittest.mock import MagicMock
+
     from openpyxl import load_workbook
 
     obs = MagicMock()
@@ -957,6 +958,7 @@ def test_trajectory_summary_chart_anchor_clear_of_table(tmp_path):
     so the floating chart never sits on top of a data column. Regression guard."""
     import re
     from unittest.mock import MagicMock
+
     from openpyxl.utils import column_index_from_string
 
     sp = tmp_path / "s.jsonl"

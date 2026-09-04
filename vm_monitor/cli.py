@@ -13,6 +13,8 @@ import sys
 import time
 from datetime import datetime
 
+from .base import _discover_block_devices
+
 # Internal dependencies - all modules
 from .config import load_env_config, validate_and_prompt_missing
 from .exporters import export_to_excel, print_capture_summary
@@ -20,7 +22,6 @@ from .firecracker import FirecrackerMonitor
 from .log_capture import LogCapture
 from .qemu import QEMUMonitor
 from .svg_exporter import export_svg_reports
-from .base import _discover_block_devices
 
 # Try to import pandas for Excel availability check
 try:

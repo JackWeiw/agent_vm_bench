@@ -9,7 +9,7 @@ import logging
 import os
 import re
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +132,7 @@ class ReportAggregator:
     def __init__(self, output_dir: str = "results/e2b/batch"):
         self.output_dir = output_dir
 
-    def aggregate(self, metrics_data: List[Dict[str, Any]], output_filename: str = None) -> str:
+    def aggregate(self, metrics_data: list[dict[str, Any]], output_filename: str = None) -> str:
         """
         Aggregate all test metrics into Excel report
 
@@ -160,7 +160,7 @@ class ReportAggregator:
         logger.info(f"[ReportAggregator] Report saved to: {output_path}")
         return output_path
 
-    def _build_dataframe(self, metrics_data: List[Dict[str, Any]]) -> "pd.DataFrame":
+    def _build_dataframe(self, metrics_data: list[dict[str, Any]]) -> "pd.DataFrame":
         """Build DataFrame from metrics list"""
         import pandas as pd
 
@@ -276,7 +276,7 @@ class ReportAggregator:
         logger.info("  - Row 2: Column names")
         logger.info("  - Row 3+: Test data")
 
-    def _build_column_sources(self, df: "pd.DataFrame") -> List[tuple]:
+    def _build_column_sources(self, df: "pd.DataFrame") -> list[tuple]:
         """Build column source groups for merging
 
         Returns: List of (source_name, start_col, end_col) tuples (1-indexed)

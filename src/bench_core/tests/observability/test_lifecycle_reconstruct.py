@@ -6,7 +6,6 @@ from pathlib import Path
 
 from bench_core.observability.lifecycle_series import load_events
 
-
 # ---------------------------------------------------------------------------
 # Task 1: load_events
 # ---------------------------------------------------------------------------

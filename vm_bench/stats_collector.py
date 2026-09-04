@@ -9,7 +9,6 @@ import statistics
 import threading
 import time
 from datetime import datetime
-from typing import Dict, List
 
 from .config import Config
 from .schemas import TestSnapshot, VMState, VMStatus
@@ -19,10 +18,10 @@ from .utils import calc_p99, calc_percentiles
 class StatsCollector:
     """Statistics collector - real-time snapshot + final report"""
 
-    def __init__(self, config: Config, vm_states: Dict[int, VMState]):
+    def __init__(self, config: Config, vm_states: dict[int, VMState]):
         self.config = config
         self.vm_states = vm_states
-        self.snapshots: List[TestSnapshot] = []
+        self.snapshots: list[TestSnapshot] = []
         self.start_time: float = 0.0
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -92,7 +91,7 @@ class StatsCollector:
             browser_p99 = calc_p99(all_latencies)
 
             # Task type breakdown
-            browser_type_stats: Dict[str, Dict[str, int]] = {}
+            browser_type_stats: dict[str, dict[str, int]] = {}
             for s in self.vm_states.values():
                 for tname, tcounts in s.browser_metrics.task_type_counts.items():
                     if tname not in browser_type_stats:
@@ -191,7 +190,7 @@ class StatsCollector:
 
     def generate_report(self) -> str:
         """Generate final TXT report"""
-        lines: List[str] = []
+        lines: list[str] = []
         lines.append("=" * 80)
         lines.append("VM Bench - Performance Report")
         lines.append("=" * 80)

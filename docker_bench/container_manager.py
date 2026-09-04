@@ -10,7 +10,6 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Event
-from typing import Dict, Tuple
 
 import docker
 import docker.errors
@@ -27,10 +26,10 @@ class ContainerManager:
     def __init__(self, config: Config, stop_event: Event):
         self.config = config
         self.stop_event = stop_event
-        self.container_states: Dict[int, ContainerState] = {}
+        self.container_states: dict[int, ContainerState] = {}
         self.docker_client = docker.from_env()
 
-    def create_all(self) -> Dict[int, ContainerState]:
+    def create_all(self) -> dict[int, ContainerState]:
         """Batch create containers
 
         Strategy based on create_batch config:
@@ -44,7 +43,7 @@ class ContainerManager:
         else:
             return self._create_concurrent()
 
-    def detect_existing(self) -> Dict[int, ContainerState]:
+    def detect_existing(self) -> dict[int, ContainerState]:
         """Detect existing running containers
 
         Query Docker API for existing containers with matching prefix,
@@ -107,7 +106,7 @@ class ContainerManager:
 
         return self.container_states
 
-    def _create_batched(self) -> Dict[int, ContainerState]:
+    def _create_batched(self) -> dict[int, ContainerState]:
         """Batched container creation"""
         total = self.config.total_count
         batch_size = self.config.create_batch_size
@@ -143,9 +142,9 @@ class ContainerManager:
 
         return self.container_states
 
-    def _create_batch_concurrent(self, batch_id: int, start: int, end: int) -> Dict[int, ContainerState]:
+    def _create_batch_concurrent(self, batch_id: int, start: int, end: int) -> dict[int, ContainerState]:
         """Concurrent creation of one batch"""
-        states: Dict[int, ContainerState] = {}
+        states: dict[int, ContainerState] = {}
 
         with ThreadPoolExecutor(max_workers=end - start) as executor:
             futures = {}
@@ -196,7 +195,7 @@ class ContainerManager:
 
         return {i + 1: self.container_states[i + 1] for i in range(start, end)}
 
-    def _create_concurrent(self) -> Dict[int, ContainerState]:
+    def _create_concurrent(self) -> dict[int, ContainerState]:
         """Full concurrent creation of all containers"""
         total = self.config.total_count
 
@@ -209,7 +208,7 @@ class ContainerManager:
 
         return self._create_batch_concurrent(batch_id=0, start=0, end=total)
 
-    def _create_single(self, state: ContainerState) -> Dict[str, any]:
+    def _create_single(self, state: ContainerState) -> dict[str, any]:
         """Create single container
 
         Key: Preserve docker container handle in state.docker_container
@@ -252,7 +251,7 @@ class ContainerManager:
             state.creation_metrics.create_ready_time = time.time()
             return {"success": False, "create_elapsed": 0.0, "error": str(e)}
 
-    def _check_ports(self, state: ContainerState) -> Dict[str, any]:
+    def _check_ports(self, state: ContainerState) -> dict[str, any]:
         """Check if container ports are ready
 
         Check ports in self.config.required_ports (default: 18789 + 11436)
@@ -319,7 +318,7 @@ class ContainerManager:
         except Exception:
             return False
 
-    def start_browser_backend(self, state: ContainerState) -> Tuple[bool, str]:
+    def start_browser_backend(self, state: ContainerState) -> tuple[bool, str]:
         """Start OpenClaw browser backend (hot start)
 
         Execute: openclaw browser status && start

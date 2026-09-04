@@ -10,7 +10,7 @@ import json
 import math
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 def load_env(env_path: str, config_path: str, cli_api_key: str = None, cli_access_token: str = None) -> dict:
@@ -127,7 +127,7 @@ def load_env(env_path: str, config_path: str, cli_api_key: str = None, cli_acces
     }
 
 
-def compute_stats(values: List[float]) -> Dict[str, Any]:
+def compute_stats(values: list[float]) -> dict[str, Any]:
     """Compute summary statistics for a list of timing values.
 
     Uses percentile calculation without numpy dependency.
@@ -179,9 +179,9 @@ def compute_stats(values: List[float]) -> Dict[str, Any]:
 
 
 def write_excel_report(
-    raw_data: List[Dict[str, Any]],
-    summary_data: Dict[str, Dict[str, Any]],
-    snapshots_data: List[Dict[str, Any]],
+    raw_data: list[dict[str, Any]],
+    summary_data: dict[str, dict[str, Any]],
+    snapshots_data: list[dict[str, Any]],
     output_path: str,
     report_title: str,
 ) -> None:
@@ -300,7 +300,7 @@ def write_excel_report(
     print(f"  Excel report saved to {output_path}")
 
 
-def print_summary(summary_data: Dict[str, Dict[str, Any]], title: str) -> None:
+def print_summary(summary_data: dict[str, dict[str, Any]], title: str) -> None:
     """Print a paste-friendly stats table to the terminal.
 
     Renders the same summary_data that write_excel_report consumes

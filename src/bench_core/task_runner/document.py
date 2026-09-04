@@ -27,8 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from bench_core.config import KernelConfig
-from env_provider import EnvironmentProvider
 from bench_core.schemas import BenchSandbox, get_step_order
+from env_provider import EnvironmentProvider
 
 logger = logging.getLogger(__name__)
 

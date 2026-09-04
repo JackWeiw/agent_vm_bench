@@ -12,8 +12,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from bench_core.observability.trajectory_export import export_trajectories
 from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
+from bench_core.observability.trajectory_export import export_trajectories
 
 
 def _step(
