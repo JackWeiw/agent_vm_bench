@@ -53,6 +53,7 @@ obs-gantt = ["matplotlib>=3.5"]
 [project.scripts]
 vm-monitor = "vm_monitor.cli:main"
 bench-core = "bench_core.bench:main"
+oversub-bench = "bench_core.oversub:main"
 
 [tool.setuptools.packages.find]
 where = ["src", "."]
