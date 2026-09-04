@@ -135,7 +135,6 @@ class TestCountPhysicalCores(unittest.TestCase):
     def test_fallback_to_os_cpu_count(self):
         # No topology files at all -> os.cpu_count() fallback.
         files = {}
-        import os
 
         with mock.patch("vm_monitor.config.glob.glob", return_value=["/sys/devices/system/cpu/cpu0"]), mock.patch(
             "builtins.open", _open_text(files)

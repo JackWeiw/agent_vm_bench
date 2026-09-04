@@ -5,7 +5,6 @@ FirecrackerMonitor - Firecracker microVM Monitor
 Monitors firecracker processes (used in E2B, containerd environments).
 """
 
-from typing import Dict, List, Tuple
 
 from .base import VMMonitorBase
 
@@ -19,7 +18,7 @@ class FirecrackerMonitor(VMMonitorBase):
     # Process names to match
     PROCESS_NAMES = ("firecracker",)
 
-    def get_process_names(self) -> Tuple[str, ...]:
+    def get_process_names(self) -> tuple[str, ...]:
         """Return Firecracker process names to match"""
         return self.PROCESS_NAMES
 
@@ -39,7 +38,7 @@ class FirecrackerMonitor(VMMonitorBase):
         # TODO: Can extend to parse --id parameter or socket path
         return f"fc-{pid}"
 
-    def get_vms_realtime(self) -> List[Dict]:
+    def get_vms_realtime(self) -> list[dict]:
         """Get real-time information for all Firecracker microVMs.
 
         Uses two-phase collection:

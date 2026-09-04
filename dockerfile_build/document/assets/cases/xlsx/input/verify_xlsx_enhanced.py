@@ -14,7 +14,6 @@ from typing import Any
 
 from openpyxl import load_workbook
 
-
 BASE_SHEETS = [
     "Raw_Sample",
     "Hourly_Summary",
@@ -227,7 +226,7 @@ def verify_cached_values(
         values = {cell: executive[cell].value for cell in FORMULA_CELLS}
         numeric_cells = ("B5", "B6", "B7", "B8", "B13", "B14", "B15", "B16")
         numeric_ok = all(
-            isinstance(values[cell], (int, float)) and math.isfinite(float(values[cell])) for cell in numeric_cells
+            isinstance(values[cell], int | float) and math.isfinite(float(values[cell])) for cell in numeric_cells
         )
         add_check(checks, failures, "cached_numeric_values", numeric_ok, values)
         add_check(
@@ -286,7 +285,7 @@ def verify_recalc_report(
 
 
 def _csv_matches(actual: str, expected: Any) -> bool:
-    if isinstance(expected, (int, float)) and not isinstance(expected, bool):
+    if isinstance(expected, int | float) and not isinstance(expected, bool):
         try:
             return math.isclose(float(actual), float(expected), rel_tol=1e-9, abs_tol=1e-6)
         except ValueError:

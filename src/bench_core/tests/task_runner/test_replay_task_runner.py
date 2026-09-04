@@ -51,8 +51,8 @@ def test_slice_exec_verbatim_with_cwd_and_env():
 
 
 def test_warmup_loads_pool_and_probes_exec():
-    from bench_core.task_runner.replay import ReplayWarmupRunner
     from bench_core.payload.replay_payload import reset_pool_cache
+    from bench_core.task_runner.replay import ReplayWarmupRunner
 
     reset_pool_cache()
     config = KernelConfig(
@@ -67,8 +67,8 @@ def test_warmup_loads_pool_and_probes_exec():
 
 
 def test_fixed_runner_replays_pool_and_advances_cursor():
-    from bench_core.task_runner.replay import ReplayTaskRunner
     from bench_core.payload.replay_payload import reset_pool_cache
+    from bench_core.task_runner.replay import ReplayTaskRunner
 
     reset_pool_cache()
     config = KernelConfig(
@@ -98,8 +98,8 @@ def test_fixed_runner_replays_pool_and_advances_cursor():
 
 
 def test_fixed_runner_stop_on_error_advances_to_next_trajectory():
-    from bench_core.task_runner.replay import ReplayTaskRunner
     from bench_core.payload.replay_payload import reset_pool_cache
+    from bench_core.task_runner.replay import ReplayTaskRunner
     from env_provider import CommandResult
 
     reset_pool_cache()
@@ -136,8 +136,8 @@ def test_fixed_runner_stop_on_error_advances_to_next_trajectory():
 
 
 def test_round_runner_replays_one_trajectory_per_round():
-    from bench_core.task_runner.replay import ReplayRoundRunner
     from bench_core.payload.replay_payload import reset_pool_cache
+    from bench_core.task_runner.replay import ReplayRoundRunner
 
     reset_pool_cache()
     config = KernelConfig(
@@ -156,8 +156,8 @@ def test_round_runner_replays_one_trajectory_per_round():
 
 
 def test_round_runner_index_rotation_picks_different_trajectory():
-    from bench_core.task_runner.replay import ReplayRoundRunner
     from bench_core.payload.replay_payload import reset_pool_cache
+    from bench_core.task_runner.replay import ReplayRoundRunner
 
     reset_pool_cache()
     config = KernelConfig(

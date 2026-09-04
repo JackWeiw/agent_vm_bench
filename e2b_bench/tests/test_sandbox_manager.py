@@ -7,7 +7,7 @@ Tests for sandbox creation, detection, and ID file filtering
 import os
 import tempfile
 from threading import Event
-from unittest.mock import Mock, patch, call
+from unittest.mock import Mock, patch
 
 import pytest
 

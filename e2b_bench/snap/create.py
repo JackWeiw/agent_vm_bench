@@ -20,14 +20,14 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any
 
 from e2b import Sandbox
 
 from .common import compute_stats, load_env, print_summary, write_excel_report
 
 # Global list of created sandbox handles for cleanup on signal
-_created_sandboxes: List[Any] = []
+_created_sandboxes: list[Any] = []
 
 
 def _signal_handler(*_args):
@@ -42,7 +42,7 @@ def _signal_handler(*_args):
     sys.exit(1)
 
 
-def create_single_sandbox(template: str, timeout: int, index: int) -> Dict[str, Any]:
+def create_single_sandbox(template: str, timeout: int, index: int) -> dict[str, Any]:
     """Create a single sandbox and take a snapshot.
 
     Args:
@@ -106,7 +106,7 @@ def create_batch(
     timeout: int,
     batch_size: int = None,
     batch_interval: int = 3,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Create N sandboxes with snapshots in batches.
 
     Args:
@@ -119,7 +119,7 @@ def create_batch(
     Returns:
         List of result dicts from create_single_sandbox.
     """
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
 
     if batch_size and batch_size > 0:
         num_batches = (count + batch_size - 1) // batch_size
@@ -144,7 +144,7 @@ def create_batch(
     return results
 
 
-def _create_concurrent(template: str, timeout: int, start: int, end: int) -> List[Dict[str, Any]]:
+def _create_concurrent(template: str, timeout: int, start: int, end: int) -> list[dict[str, Any]]:
     """Concurrently create sandboxes in a range.
 
     Args:
@@ -156,7 +156,7 @@ def _create_concurrent(template: str, timeout: int, start: int, end: int) -> Lis
     Returns:
         List of result dicts, ordered by index.
     """
-    results: Dict[int, Dict[str, Any]] = {}
+    results: dict[int, dict[str, Any]] = {}
 
     with ThreadPoolExecutor(max_workers=end - start) as executor:
         futures = {}
@@ -202,7 +202,7 @@ def kill_all_sandboxes() -> int:
     return killed
 
 
-def save_snapshot_json(results: List[Dict[str, Any]], template: str, output_path: str) -> None:
+def save_snapshot_json(results: list[dict[str, Any]], template: str, output_path: str) -> None:
     """Save snapshot IDs to a JSON file.
 
     Only includes entries with status='success' (valid snapshots).
@@ -245,7 +245,7 @@ def save_snapshot_json(results: List[Dict[str, Any]], template: str, output_path
     print(f"  Snapshot IDs saved to {output_path} ({len(snapshots)} successful)")
 
 
-def compute_summary(results: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def compute_summary(results: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Compute summary statistics dict from creation results.
 
     Args:
@@ -280,7 +280,7 @@ def compute_summary(results: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     }
 
 
-def build_report(results: List[Dict[str, Any]], template: str, output_path: str) -> None:
+def build_report(results: list[dict[str, Any]], template: str, output_path: str) -> None:
     """Build Excel report from results.
 
     Args:

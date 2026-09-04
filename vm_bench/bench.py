@@ -9,7 +9,6 @@ Phase 0: Create VMs (OpenStack) -> Phase 1: Connect (SSH) -> Benchmark -> Report
 import argparse
 import threading
 import time
-from typing import Dict
 
 from .config import Config
 from .health_checker import HealthChecker, OpenStackVMChecker
@@ -27,9 +26,9 @@ class BatchController:
         self.config = config
         self.vm_ids = sorted(vm_ids)
 
-        self.batch_ready: Dict[int, bool] = {}
-        self.batch_started_count: Dict[int, int] = {}
-        self.vm_batch_map: Dict[int, int] = {}
+        self.batch_ready: dict[int, bool] = {}
+        self.batch_started_count: dict[int, int] = {}
+        self.vm_batch_map: dict[int, int] = {}
 
         batch_size = config.task_batch_size or config.total_count
         for i, vm_id in enumerate(self.vm_ids):

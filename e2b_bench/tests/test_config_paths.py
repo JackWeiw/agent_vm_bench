@@ -5,6 +5,7 @@ new location under config/e2b/ and load successfully via Config.load_from_yaml.
 """
 
 import os.path
+
 import pytest
 
 from e2b_bench.config import Config

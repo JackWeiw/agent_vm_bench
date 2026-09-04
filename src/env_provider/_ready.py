@@ -25,8 +25,9 @@ from __future__ import annotations
 import logging
 import math
 import time
+from collections.abc import Callable
 from threading import Event
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 

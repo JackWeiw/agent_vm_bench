@@ -19,8 +19,8 @@ import threading
 import time
 
 from bench_core.config import KernelConfig
-from env_provider import EnvironmentProvider, SandboxStatus
 from bench_core.schemas import BenchSandbox
+from env_provider import EnvironmentProvider
 
 logger = logging.getLogger(__name__)
 

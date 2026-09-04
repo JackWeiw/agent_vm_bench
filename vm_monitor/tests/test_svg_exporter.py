@@ -5,7 +5,6 @@ Asserts: pure helpers, well-formed SVG output, expected reports written, and
 that empty histories skip their report.
 """
 
-import math
 import os
 import tempfile
 import unittest

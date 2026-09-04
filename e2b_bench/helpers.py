@@ -6,8 +6,8 @@ Provides common patterns used across runner classes to eliminate duplication:
 """
 
 import logging
-import time
 import threading
+import time
 from typing import Optional
 
 from .schemas import SandboxState, SandboxStatus
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 def wait_for_port_ready(
     state: SandboxState,
-    stop_event: Optional[threading.Event] = None,
+    stop_event: threading.Event | None = None,
     check_interval: float = 0.5,
 ) -> bool:
     """Wait for a sandbox to reach PORT_READY status.

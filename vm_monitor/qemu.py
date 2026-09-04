@@ -6,7 +6,6 @@ Monitors qemu-kvm and qemu-system processes.
 """
 
 import re
-from typing import Dict, List, Tuple
 
 from .base import VMMonitorBase
 
@@ -20,7 +19,7 @@ class QEMUMonitor(VMMonitorBase):
     # Process names to match
     PROCESS_NAMES = ("qemu-kvm", "qemu-system")
 
-    def get_process_names(self) -> Tuple[str, ...]:
+    def get_process_names(self) -> tuple[str, ...]:
         """Return QEMU process names to match"""
         return self.PROCESS_NAMES
 
@@ -39,7 +38,7 @@ class QEMUMonitor(VMMonitorBase):
             return name_match.group(1)
         return f"vm-{pid}"
 
-    def get_vms_realtime(self) -> List[Dict]:
+    def get_vms_realtime(self) -> list[dict]:
         """Get real-time information for all QEMU VMs.
 
         Uses two-phase collection:

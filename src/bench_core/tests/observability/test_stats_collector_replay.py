@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from bench_core.config import KernelConfig
-from bench_core.schemas import BenchSandbox, ReplayMetrics
 from bench_core.observability.stats_collector import ReportFormatter
+from bench_core.schemas import BenchSandbox, ReplayMetrics
 from env_provider import SandboxInstance
 
 

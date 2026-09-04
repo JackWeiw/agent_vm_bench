@@ -32,11 +32,11 @@ import logging
 import random
 import threading
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 from .config import Config, _find_name_clause, get_coding_profile
 from .helpers import wait_for_port_ready
-from .schemas import SandboxState, SandboxStatus
+from .schemas import SandboxState
 
 logger = logging.getLogger(__name__)
 
@@ -89,10 +89,10 @@ def _run_verify(
     sbx,
     project_dir: str,
     config: Config,
-    pair: Dict[str, str],
-    step_times: Optional[Dict[str, float]] = None,
+    pair: dict[str, str],
+    step_times: dict[str, float] | None = None,
     round_id: int = 0,
-) -> Tuple[bool, str, bool]:
+) -> tuple[bool, str, bool]:
     """Write ad-hoc test file(s) to /tmp + run them - the trace-faithful verify step.
 
     ts path (multi-process): spins up `coding_verify_repeat` (default 3) independent
@@ -325,7 +325,7 @@ class CodingTaskRunner(threading.Thread):
 
         logger.info(f"[Sandbox{self.state.sandbox_id}] Coding task runner ended")
 
-    def _run_single_task(self) -> Tuple[bool, float, bool, bool, bool]:
+    def _run_single_task(self) -> tuple[bool, float, bool, bool, bool]:
         """Execute single coding task cycle (find -> read -> edit -> verify -> diff)
 
         Returns: (success, latency_seconds, verify_success, compile_only, timed_out)
@@ -351,7 +351,7 @@ class CodingTaskRunner(threading.Thread):
         verify_success = False
         compile_only = False
         timed_out = False
-        step_times: Dict[str, float] = {}
+        step_times: dict[str, float] = {}
 
         try:
             t0 = time.perf_counter()
@@ -496,7 +496,7 @@ class CodingRoundRunner(threading.Thread):
         else:
             self._handle_failure(pair["file"], failed_step, error_detail)
 
-    def _execute_steps(self, sbx, pair: Dict[str, str]) -> Tuple[bool, Dict[str, float], bool, str, str, bool, bool]:
+    def _execute_steps(self, sbx, pair: dict[str, str]) -> tuple[bool, dict[str, float], bool, str, str, bool, bool]:
         """Execute all steps: find -> read -> edit -> verify -> diff
 
         Args:
@@ -560,8 +560,8 @@ class CodingRoundRunner(threading.Thread):
         return success, step_times, verify_success, compile_only, failed_step, error_detail, timed_out
 
     def _step_find(
-        self, sbx, project_dir: str, target_file: str, find_str: str, replace_str: str, step_times: Dict[str, float]
-    ) -> Tuple[bool, str, str, str, str]:
+        self, sbx, project_dir: str, target_file: str, find_str: str, replace_str: str, step_times: dict[str, float]
+    ) -> tuple[bool, str, str, str, str]:
         """Step 0: Reset source files via git checkout + verify/locate the target file.
 
         Returns: (success, error_detail, resolved_file, resolved_find, resolved_replace)
@@ -598,15 +598,15 @@ class CodingRoundRunner(threading.Thread):
             )
         return False, "checkout/locate failed", target_file, find_str, replace_str
 
-    def _step_read(self, sbx, project_dir: str, target_file: str, step_times: Dict[str, float]) -> None:
+    def _step_read(self, sbx, project_dir: str, target_file: str, step_times: dict[str, float]) -> None:
         """Step 1: Read the target file (agent confirming context)."""
         step_start = time.perf_counter()
         sbx.commands.run(f"cd {project_dir} && head -20 {target_file}", timeout=15, user="root")
         step_times["read"] = time.perf_counter() - step_start
 
     def _step_edit(
-        self, sbx, project_dir: str, target_file: str, find_str: str, replace_str: str, step_times: Dict[str, float]
-    ) -> Tuple[bool, str]:
+        self, sbx, project_dir: str, target_file: str, find_str: str, replace_str: str, step_times: dict[str, float]
+    ) -> tuple[bool, str]:
         """Step 2: Apply the find->replace pair via literal string replace (real semantic edit).
 
         Uses python3 str.replace (see _build_edit_command) - literal, not sed
@@ -632,8 +632,8 @@ class CodingRoundRunner(threading.Thread):
         return True, ""
 
     def _step_verify(
-        self, sbx, project_dir: str, pair: Dict[str, str], step_times: Dict[str, float]
-    ) -> Tuple[bool, str, bool]:
+        self, sbx, project_dir: str, pair: dict[str, str], step_times: dict[str, float]
+    ) -> tuple[bool, str, bool]:
         """Step 3: Write ad-hoc test file(s) to /tmp + run them (trace-faithful verify).
 
         ts: N independent npx tsx processes chained in one command (raises steady-state
@@ -645,7 +645,7 @@ class CodingRoundRunner(threading.Thread):
         """
         return _run_verify(sbx, project_dir, self.config, pair, step_times=step_times, round_id=self.round_id)
 
-    def _step_diff(self, sbx, project_dir: str, step_times: Dict[str, float]) -> None:
+    def _step_diff(self, sbx, project_dir: str, step_times: dict[str, float]) -> None:
         """Step 5: Produce the verification artifact (git diff -> patch file)."""
         step_start = time.perf_counter()
         sbx.commands.run(
@@ -655,7 +655,7 @@ class CodingRoundRunner(threading.Thread):
         )
         step_times["diff"] = time.perf_counter() - step_start
 
-    def _classify_exception(self, e: Exception, step_times: Dict[str, float]) -> Tuple[str, str]:
+    def _classify_exception(self, e: Exception, step_times: dict[str, float]) -> tuple[str, str]:
         """Classify exception to determine which step failed"""
         error_str = str(e)
         if "context deadline exceeded" in error_str or "timed out" in error_str:
@@ -678,7 +678,7 @@ class CodingRoundRunner(threading.Thread):
         self,
         start_time: float,
         success: bool,
-        step_times: Dict[str, float],
+        step_times: dict[str, float],
         verify_success: bool,
         compile_only: bool,
         timed_out: bool,

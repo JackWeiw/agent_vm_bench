@@ -19,7 +19,6 @@ import random
 import re
 import threading
 import time
-from typing import Dict, List, Tuple
 
 from .config import Config
 from .schemas import ContainerState, ContainerStatus
@@ -111,7 +110,7 @@ class BrowserTaskRunner(threading.Thread):
 
         logger.info(f"[Container{self.state.container_id}] Task runner ended")
 
-    def _start_browser_backend(self) -> Tuple[bool, str]:
+    def _start_browser_backend(self) -> tuple[bool, str]:
         """Start agent-browser daemon (once per container test session)
 
         Don't close existing sessions - let browser stay running.
@@ -148,7 +147,7 @@ class BrowserTaskRunner(threading.Thread):
         except Exception as e:
             return False, str(e)
 
-    def _run_single_task(self) -> Tuple[bool, float, Dict[str, float], bool]:
+    def _run_single_task(self) -> tuple[bool, float, dict[str, float], bool]:
         """Execute single browser task (complete 4-step workflow)
 
         Returns: (success, latency_seconds, step_times, interrupted)
@@ -216,7 +215,7 @@ class BrowserTaskRunner(threading.Thread):
             interrupted = self.stop_event.is_set()
             return False, elapsed, step_times, interrupted
 
-    def _step_open(self, url: str) -> Tuple[bool, float]:
+    def _step_open(self, url: str) -> tuple[bool, float]:
         """Step 1: Open page using agent-browser with configurable timeout
 
         Uses domcontentloaded with configurable timeout (default 60s).
@@ -252,7 +251,7 @@ class BrowserTaskRunner(threading.Thread):
             self.state.browser_metrics.last_error = f"open exception: {str(e)}"
             return False, elapsed
 
-    def _step_snapshot(self) -> Tuple[bool, float, List[str]]:
+    def _step_snapshot(self) -> tuple[bool, float, list[str]]:
         """Step 2: DOM snapshot using agent-browser in clean environment
 
         Returns: (success, time_seconds, elements)
@@ -283,7 +282,7 @@ class BrowserTaskRunner(threading.Thread):
             self.state.browser_metrics.last_error = f"snapshot exception: {str(e)}"
             return False, elapsed, []
 
-    def _step_click(self, elements: List[str]) -> Tuple[bool, float]:
+    def _step_click(self, elements: list[str]) -> tuple[bool, float]:
         """Step 3: Element click using agent-browser
 
         Strategy:
@@ -383,7 +382,7 @@ class BrowserTaskRunner(threading.Thread):
             self.state.browser_metrics.last_error = "click failed: fresh snapshot failed"
             return False, elapsed
 
-    def _step_screenshot(self) -> Tuple[bool, float]:
+    def _step_screenshot(self) -> tuple[bool, float]:
         """Step 4: Screenshot using agent-browser in clean environment
 
         Returns: (success, time_seconds)
@@ -434,7 +433,7 @@ class BrowserTaskRunner(threading.Thread):
         except Exception:
             return False
 
-    def _extract_element_refs(self, output: str) -> List[str]:
+    def _extract_element_refs(self, output: str) -> list[str]:
         """Extract element refs from agent-browser snapshot output
 
         Returns: list of element refs (@e1, @e2, etc.)
@@ -451,13 +450,13 @@ class TaskManager:
     def __init__(
         self,
         config: Config,
-        container_states: Dict[int, ContainerState],
+        container_states: dict[int, ContainerState],
         stop_event: threading.Event,
     ):
         self.config = config
         self.container_states = container_states
         self.stop_event = stop_event
-        self.runners: List[BrowserTaskRunner] = []
+        self.runners: list[BrowserTaskRunner] = []
 
     def start_all(self) -> None:
         """Start task execution threads for PORT_READY containers
@@ -496,7 +495,7 @@ class TaskManager:
         else:
             self._start_concurrent(benchmark_states)
 
-    def _start_batched(self, ready_states: List[ContainerState]) -> None:
+    def _start_batched(self, ready_states: list[ContainerState]) -> None:
         """Batched task execution start"""
         total = len(ready_states)
         batch_size = self.config.task_batch_size
@@ -535,7 +534,7 @@ class TaskManager:
 
         logger.info(f"\nStarted {len(self.runners)} task runners in {batch_count} batches")
 
-    def _start_concurrent(self, ready_states: List[ContainerState]) -> None:
+    def _start_concurrent(self, ready_states: list[ContainerState]) -> None:
         """Full concurrent task execution start"""
         logger.info(f"\n{'=' * 60}")
         logger.info("Concurrent Task Execution Start")

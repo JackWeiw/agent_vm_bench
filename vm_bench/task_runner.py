@@ -8,7 +8,7 @@ Each VM has an independent thread
 import random
 import threading
 import time
-from typing import Optional, Tuple
+from typing import Optional
 
 from .config import Config
 from .constants import BROWSER_TASKS, QA_MEMORY_TEXT, QA_QUESTIONS, STRESS_TOOL_PATH
@@ -23,7 +23,7 @@ class QATaskManager:
         self.config = config
         self._query_counter = 0
 
-    def _execute_http_query(self, vm: VMConnection, content: str, timeout: int) -> Tuple[bool, float]:
+    def _execute_http_query(self, vm: VMConnection, content: str, timeout: int) -> tuple[bool, float]:
         """Execute QA query via HTTP gateway (curl method)"""
         self._query_counter += 1
         resp_file = f"/tmp/openclaw_resp_{self._query_counter}.json"
@@ -80,7 +80,7 @@ class QATaskManager:
             print(f"[VM{vm.vm_id}] Memory input failed: {stderr[:100]}")
             return False
 
-    def run_qa_query(self, vm: VMConnection, state: VMState) -> Tuple[bool, float]:
+    def run_qa_query(self, vm: VMConnection, state: VMState) -> tuple[bool, float]:
         """Execute QA query (round-robin)"""
         if not state.qa_metrics.memory_init_done:
             success = self.run_memory_init(vm, state)
@@ -118,7 +118,7 @@ class StressTaskManager:
     def __init__(self, config: Config):
         self.config = config
 
-    def start_stress(self, vm: VMConnection, state: VMState) -> Tuple[bool, str]:
+    def start_stress(self, vm: VMConnection, state: VMState) -> tuple[bool, str]:
         """Start stress_tool"""
         log_id = f"stress_vm{state.vm_id}"
 
@@ -156,7 +156,7 @@ class StressTaskManager:
             state.record_stress_failure()
             return False, f"Start command failed: {stderr[:50]}"
 
-    def check_and_restart(self, vm: VMConnection, state: VMState) -> Tuple[bool, str]:
+    def check_and_restart(self, vm: VMConnection, state: VMState) -> tuple[bool, str]:
         """Check stress status, restart if needed"""
         if not state.health.is_connected:
             return False, "VM offline"
@@ -218,7 +218,7 @@ class BrowserTaskManager:
         self.config = config
         self._task_counter = 0
 
-    def _execute_http_browser(self, vm: VMConnection, prompt: str, timeout: int) -> Tuple[bool, float]:
+    def _execute_http_browser(self, vm: VMConnection, prompt: str, timeout: int) -> tuple[bool, float]:
         """Execute browser task via HTTP gateway"""
         self._task_counter += 1
         resp_file = f"/tmp/browser_resp_{self._task_counter}.json"
@@ -243,20 +243,20 @@ class BrowserTaskManager:
                 latency = duration
         return success, latency
 
-    def _execute_cli_browser(self, vm: VMConnection, prompt: str, timeout: int) -> Tuple[bool, float]:
+    def _execute_cli_browser(self, vm: VMConnection, prompt: str, timeout: int) -> tuple[bool, float]:
         """Execute browser task via CLI"""
         cmd = f'/usr/local/node-v24.14.1-linux-arm64/bin/openclaw agent --agent main --timeout {timeout} -m "{prompt}"'
         success, stdout, stderr, duration, code = vm.execute(cmd, timeout=timeout + 30, get_exit_code=True)
         return success, duration
 
-    def _execute_direct_browser(self, vm: VMConnection, url: str, timeout: int) -> Tuple[bool, float]:
+    def _execute_direct_browser(self, vm: VMConnection, url: str, timeout: int) -> tuple[bool, float]:
         """Execute browser task directly"""
         cmd = f'openclaw browser --browser-profile openclaw open "{url}"'
         success, _, _, duration, _ = vm.execute(cmd, timeout=timeout + 30, get_exit_code=True)
         latency = duration + 10.0
         return success, latency
 
-    def run_browser_task(self, vm: VMConnection, state: VMState) -> Tuple[bool, float, str]:
+    def run_browser_task(self, vm: VMConnection, state: VMState) -> tuple[bool, float, str]:
         """Execute single browser task"""
         idx = state.browser_metrics.total_tasks % len(BROWSER_TASKS)
         task_type, task_template = BROWSER_TASKS[idx]
@@ -324,11 +324,11 @@ class VMTaskRunner(threading.Thread):
         state: VMState,
         config: Config,
         stop_event: threading.Event,
-        qa_manager: Optional[QATaskManager] = None,
-        stress_manager: Optional[StressTaskManager] = None,
-        browser_manager: Optional[BrowserTaskManager] = None,
-        batch_controller: Optional[object] = None,
-        health_checker: Optional[object] = None,
+        qa_manager: QATaskManager | None = None,
+        stress_manager: StressTaskManager | None = None,
+        browser_manager: BrowserTaskManager | None = None,
+        batch_controller: object | None = None,
+        health_checker: object | None = None,
     ):
         super().__init__(daemon=True)
         self.vm = vm

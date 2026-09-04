@@ -14,10 +14,10 @@ import threading
 import time
 
 from bench_core.config import KernelConfig
-from env_provider import CreationMetrics, SandboxStatus
+from bench_core.observability.stats_collector import StatsCollector
 from bench_core.round_robin import RoundRobinTaskManager
 from bench_core.schemas import BenchSandbox
-from bench_core.observability.stats_collector import StatsCollector
+from env_provider import CreationMetrics, SandboxStatus
 from env_provider.fake import FakeProvider
 
 
@@ -163,6 +163,7 @@ class TestRoundRobinReplayWorkflow:
     def test_start_round_with_replay_workflow(self):
         """Verify _start_round accepts workflow_type='replay' without raising ValueError."""
         import pathlib
+
         from bench_core.payload.replay_payload import reset_pool_cache
 
         reset_pool_cache()

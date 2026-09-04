@@ -8,8 +8,8 @@ Provides YAML-based configuration with CLI override support.
 
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Any, Optional
+
 import yaml
 
 
@@ -45,7 +45,7 @@ class SessionsConfig:
     parser_type: str = "auto"  # auto, browser-session, openai-session
 
     # Optional: explicit session list (overrides directory scan)
-    explicit_sessions: Optional[List[str]] = None
+    explicit_sessions: list[str] | None = None
 
 
 @dataclass
@@ -69,7 +69,7 @@ class LoggingConfig:
 
     # File logging
     file_enabled: bool = False
-    file_path: Optional[str] = None
+    file_path: str | None = None
 
 
 @dataclass
@@ -112,7 +112,7 @@ class Config:
         return cls._from_dict(data)
 
     @classmethod
-    def _from_dict(cls, data: Dict[str, Any]) -> "Config":
+    def _from_dict(cls, data: dict[str, Any]) -> "Config":
         """Build Config from dictionary."""
         server_data = data.get("server", {})
         timing_data = data.get("timing", {})

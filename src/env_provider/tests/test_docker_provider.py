@@ -15,8 +15,8 @@ import pytest
 
 from bench_core.config import KernelConfig
 from env_provider import CommandResult, SandboxInstance, SandboxStatus
-from env_provider.docker.config import Config
 from env_provider.docker import DockerProvider
+from env_provider.docker.config import Config
 from env_provider.docker.schemas import ContainerState
 from env_provider.docker.schemas import ContainerStatus as DockerStatus
 

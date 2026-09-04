@@ -13,8 +13,9 @@ skipped silently. Safe to call on QEMU / Firecracker / test-dummy monitors.
 
 import math
 import os
+from collections.abc import Iterable, Sequence
 from datetime import datetime
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Optional
 
 # Slate-tailwind accent palette (matches the agentenv reference look).
 _PALETTE = [
@@ -33,8 +34,8 @@ def _svg_escape(value: object) -> str:
     return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
-def _finite(values: Iterable[float]) -> List[float]:
-    return [v for v in values if isinstance(v, (int, float)) and math.isfinite(v)]
+def _finite(values: Iterable[float]) -> list[float]:
+    return [v for v in values if isinstance(v, int | float) and math.isfinite(v)]
 
 
 def _nice_max(value: float) -> float:
@@ -47,7 +48,7 @@ def _nice_max(value: float) -> float:
     return step * exponent
 
 
-def _memory_scale(value_mb: float) -> Tuple[float, str]:
+def _memory_scale(value_mb: float) -> tuple[float, str]:
     """Adaptive (divisor, unit label) for memory volumes stored in MiB.
 
     Picks the largest binary unit whose threshold the peak stays under, so a
@@ -63,7 +64,7 @@ def _memory_scale(value_mb: float) -> Tuple[float, str]:
     return 1.0, "MiB"
 
 
-def _elapsed_series(history: Sequence[dict], interval: float) -> List[float]:
+def _elapsed_series(history: Sequence[dict], interval: float) -> list[float]:
     """Return per-sample elapsed-seconds from a history's ``ts`` strings.
 
     Falls back to ``index * interval`` (interval clamped to >= 1s) when
@@ -72,7 +73,7 @@ def _elapsed_series(history: Sequence[dict], interval: float) -> List[float]:
     """
     if not history:
         return []
-    parsed: List[datetime] = []
+    parsed: list[datetime] = []
     fmt = "%Y-%m-%d %H:%M:%S"
     ok = True
     for row in history:
@@ -93,16 +94,16 @@ def _elapsed_series(history: Sequence[dict], interval: float) -> List[float]:
 
 
 def _line_chart(
-    rows: List[dict],
+    rows: list[dict],
     x: float,
     y: float,
     width: float,
     height: float,
     title: str,
     unit: str,
-    series: Sequence[Tuple[str, str, str]],
-    threshold: Optional[Tuple[float, str]] = None,
-    scale_family: Optional[str] = None,
+    series: Sequence[tuple[str, str, str]],
+    threshold: tuple[float, str] | None = None,
+    scale_family: str | None = None,
 ) -> str:
     """Render one chart panel as an SVG <g> string.
 
@@ -119,7 +120,7 @@ def _line_chart(
     plot_w, plot_h = width - left - right, height - top - bottom
     elapsed = [float(row["elapsed_s"]) for row in rows]
     x_max = max(elapsed, default=1.0) or 1.0
-    all_values: List[float] = []
+    all_values: list[float] = []
     for field, _label, _color in series:
         all_values.extend(_finite(float(row.get(field, math.nan)) for row in rows))
     if threshold:
@@ -179,7 +180,7 @@ def _line_chart(
     legend_x = plot_x
     legend_y = y + height - 14
     for field, label, color in series:
-        points: List[str] = []
+        points: list[str] = []
         for row in rows:
             raw = float(row.get(field, math.nan))
             if not math.isfinite(raw):
@@ -204,8 +205,8 @@ def _line_chart(
 def _render_report(
     target: str,
     title: str,
-    charts: Sequence[Tuple[str, str, Sequence[Tuple[str, str, str]], Optional[Tuple[float, str]]]],
-    rows_per_chart: Sequence[List[dict]],
+    charts: Sequence[tuple[str, str, Sequence[tuple[str, str, str]], tuple[float, str] | None]],
+    rows_per_chart: Sequence[list[dict]],
 ) -> None:
     """Compose several line charts into one dark-themed SVG file.
 
@@ -249,14 +250,14 @@ def _render_report(
 # ============================ row builders ============================
 
 
-def _disk_io_rows(monitor) -> List[dict]:
+def _disk_io_rows(monitor) -> list[dict]:
     """Flatten disk_history + ublk_history into rows keyed by elapsed_s."""
     if not monitor.disk_history and not monitor.ublk_history:
         return []
     base = monitor.disk_history if monitor.disk_history else monitor.ublk_history
     elapsed = _elapsed_series(base, getattr(monitor, "interval", 0))
     disks = list(getattr(monitor, "target_disks", []) or [])
-    rows: List[dict] = []
+    rows: list[dict] = []
     n = len(base)
     for i in range(n):
         row: dict = {"elapsed_s": elapsed[i] if i < len(elapsed) else i}
@@ -275,7 +276,7 @@ def _disk_io_rows(monitor) -> List[dict]:
     return rows
 
 
-def _host_resource_rows(monitor) -> List[dict]:
+def _host_resource_rows(monitor) -> list[dict]:
     """Merge host_cpu_history + host_mem_history + host_mem_detail_history +
     host_pressure_history by index. Carries the dirty-limit threshold as a
     flat field so the Dirty chart can draw a dashed throttle line."""
@@ -290,7 +291,7 @@ def _host_resource_rows(monitor) -> List[dict]:
     elapsed = _elapsed_series(ts_source, getattr(monitor, "interval", 0))
     n = max(len(cpu), len(mem), len(detail), len(pressure))
     dirty_limit = float(getattr(monitor, "dirty_limit_mb", 0.0) or 0.0)
-    rows: List[dict] = []
+    rows: list[dict] = []
     for i in range(n):
         row: dict = {"elapsed_s": elapsed[i] if i < len(elapsed) else i}
         if i < len(cpu):
@@ -319,11 +320,11 @@ def _host_resource_rows(monitor) -> List[dict]:
     return rows
 
 
-def _swap_rows(monitor) -> List[dict]:
+def _swap_rows(monitor) -> list[dict]:
     if not monitor.swap_history:
         return []
     elapsed = _elapsed_series(monitor.swap_history, getattr(monitor, "interval", 0))
-    rows: List[dict] = []
+    rows: list[dict] = []
     for i, s in enumerate(monitor.swap_history):
         rows.append(
             {
@@ -337,7 +338,7 @@ def _swap_rows(monitor) -> List[dict]:
     return rows
 
 
-def _numa_rows(monitor) -> Tuple[List[dict], List[int]]:
+def _numa_rows(monitor) -> tuple[list[dict], list[int]]:
     """Return (rows, sorted_numa_node_ids) for NUMA memory + CPU."""
     mem_hist = monitor.numa_memory_history
     cpu_hist = monitor.numa_cpu_history
@@ -351,7 +352,7 @@ def _numa_rows(monitor) -> Tuple[List[dict], List[int]]:
     nodes = sorted(n for n in node_ids if n is not None)
     elapsed = _elapsed_series(mem_hist, getattr(monitor, "interval", 0)) if mem_hist else []
     n = len(mem_hist) if mem_hist else max((len(v) for v in cpu_hist.values()), default=0)
-    rows: List[dict] = []
+    rows: list[dict] = []
     for i in range(n):
         row: dict = {"elapsed_s": elapsed[i] if i < len(elapsed) else i}
         if mem_hist and i < len(mem_hist):
@@ -368,11 +369,11 @@ def _numa_rows(monitor) -> Tuple[List[dict], List[int]]:
     return rows, nodes
 
 
-def _vm_total_rows(monitor) -> List[dict]:
+def _vm_total_rows(monitor) -> list[dict]:
     if not monitor.vm_total_memory_history:
         return []
     elapsed = _elapsed_series(monitor.vm_total_memory_history, getattr(monitor, "interval", 0))
-    rows: List[dict] = []
+    rows: list[dict] = []
     for i, v in enumerate(monitor.vm_total_memory_history):
         rows.append(
             {
@@ -529,7 +530,7 @@ def _vm_total_report(target, rows):
     _render_report(target, "VM Total Memory Time Curves", charts, [rows] * len(charts))
 
 
-def export_svg_reports(monitor, output_dir: str) -> List[str]:
+def export_svg_reports(monitor, output_dir: str) -> list[str]:
     """Render all SVG time-curve reports for a monitor into output_dir.
 
     Returns the list of written file paths. Reports whose source histories
@@ -537,7 +538,7 @@ def export_svg_reports(monitor, output_dir: str) -> List[str]:
     is safe to call on QEMU / Firecracker / test-dummy monitors alike.
     """
     os.makedirs(output_dir, exist_ok=True)
-    written: List[str] = []
+    written: list[str] = []
 
     def _path(name: str) -> str:
         return os.path.join(output_dir, name)

@@ -10,8 +10,8 @@ import tempfile
 
 import pytest
 
-from e2b_bench.config import Config, _normalize_numa_bind, numa_node_for_index
 from e2b_bench.bench import build_arg_parser
+from e2b_bench.config import Config, _normalize_numa_bind, numa_node_for_index
 
 
 class TestConfigDefaults:
@@ -1696,7 +1696,7 @@ class TestFieldSpecTable:
         """Every Config dataclass field has exactly one _FIELDS row and vice versa."""
         import dataclasses
 
-        from e2b_bench.config import Config, _FIELDS
+        from e2b_bench.config import _FIELDS, Config
 
         table_fields = {f.field for f in _FIELDS}
         dataclass_fields = {f.name for f in dataclasses.fields(Config)}

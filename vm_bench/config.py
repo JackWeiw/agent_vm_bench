@@ -9,7 +9,7 @@ import ipaddress
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 import yaml
 
@@ -46,8 +46,8 @@ class Config:
     ssh_execute_timeout: int = 300
 
     # === Connect Batch Control ===
-    connect_batch_size: Optional[int] = None
-    connect_batch_interval: Optional[int] = None
+    connect_batch_size: int | None = None
+    connect_batch_interval: int | None = None
 
     # === Task Batch Control ===
     task_batch_size: int = 10  # Default: 10 tasks per batch
@@ -57,7 +57,7 @@ class Config:
     task_mode: str = "browser"  # "qa", "stress", "browser", "mixed"
 
     # === Browser Task Configuration ===
-    browser_urls: List[str] = field(default_factory=lambda: ["http://192.168.110.10:8080/Weibo.html"])
+    browser_urls: list[str] = field(default_factory=lambda: ["http://192.168.110.10:8080/Weibo.html"])
     browser_timeout: int = 200
     browser_interval_min: float = 5.0  # Default: 5 seconds
     browser_interval_max: float = 10.0  # Default: 10 seconds
@@ -65,7 +65,7 @@ class Config:
     benchmark_percent: float = 1.0
 
     # Warmup configuration
-    warmup_urls: List[str] = field(default_factory=list)
+    warmup_urls: list[str] = field(default_factory=list)
     warmup_loops: int = 1  # Default: 1 loop
     warmup_delay: int = 3  # Default: 3 seconds delay
     warmup_only: bool = False
@@ -103,7 +103,7 @@ class Config:
         return cls._from_dict(data)
 
     @classmethod
-    def _from_dict(cls, data: Dict[str, Any]) -> "Config":
+    def _from_dict(cls, data: dict[str, Any]) -> "Config":
         """Build Config from dictionary"""
         openstack = data.get("openstack", {})
         vm_create = data.get("vm_create", {})
@@ -372,7 +372,7 @@ class Config:
         env.pop("HTTPS_PROXY", None)
         return env
 
-    def get_ip_range(self) -> List[str]:
+    def get_ip_range(self) -> list[str]:
         """Generate IP list based on start_ip and total_count"""
         start = ipaddress.IPv4Address(self.start_ip)
         return [str(start + i) for i in range(self.total_count)]

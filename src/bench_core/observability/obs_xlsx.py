@@ -591,8 +591,8 @@ class XlsxReportRenderer:
         if self.series_path is None or not Path(self.series_path).exists():
             _write_table(ws, headers, [])
             return
-        from bench_core.observability.lifecycle_series import load_events
         from bench_core.observability.lifecycle_reconstruct import reconstruct_concurrency
+        from bench_core.observability.lifecycle_series import load_events
 
         bins = reconstruct_concurrency(load_events(Path(self.series_path)))
         rows = [[b["second"], b["pausing"], b["paused"], b["resuming"], b["exec"], b["active"]] for b in bins]
@@ -615,8 +615,8 @@ class XlsxReportRenderer:
             ws.append(["matplotlib not installed; install with 'pip install matplotlib'"])
             return
 
-        from bench_core.observability.lifecycle_series import load_events
         from bench_core.observability.lifecycle_reconstruct import gantt_segments
+        from bench_core.observability.lifecycle_series import load_events
 
         rows = gantt_segments(load_events(Path(self.series_path)))
         if not rows:
@@ -673,8 +673,8 @@ class XlsxReportRenderer:
         if self.series_path is None or not Path(self.series_path).exists():
             _write_table(ws, headers, [])
             return
-        from bench_core.observability.lifecycle_series import load_events
         from bench_core.observability.lifecycle_reconstruct import snapshot_rows
+        from bench_core.observability.lifecycle_series import load_events
 
         rows = snapshot_rows(load_events(Path(self.series_path)))
         out = [

@@ -16,7 +16,7 @@ The frozen-legacy `e2b_bench/`, `docker_bench/`, and OpenStack tools (`vm_bench/
 
 ## Build, Lint, Test Commands
 
-> Requires **Python 3.10+** (CI runs 3.13; `pyproject.toml` `requires-python = ">=3.10"`). Ruff `target-version` stays `py38` (a syntax/lint floor, separate from the runtime floor — do NOT bump it casually).
+> Requires **Python 3.10+** (CI runs 3.13; `pyproject.toml` `requires-python = ">=3.10"`). Ruff `target-version = "py310"` aligns with the runtime floor (lint floor ≤ runtime floor; raising it needs raising `requires-python` first).
 
 ```bash
 python3 -m venv venv
@@ -26,7 +26,7 @@ python -m pip install -e .          # registers bench-core + pulls core deps fro
 bench-core --provider fake --config config/common/browser.yaml --create-only -n 1   # smoke (no SDK)
 python -m pytest                     # full suite (src/bench_core + src/env_provider + legacy packages)
 python -m pytest src/bench_core/tests src/env_provider/tests   # src kernel + providers only
-ruff check .                         # lint (target-version py38, line-length 120)
+ruff check .                         # lint (target-version py310, line-length 120)
 ruff format --check .                # format check
 python -m pre_commit run --all-files # pre-commit hooks (run on staged files before committing)
 ```

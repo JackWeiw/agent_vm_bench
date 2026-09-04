@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import io
 
-import pytest
-
 import vm_monitor.base as base
 from vm_monitor.base import VMMonitorBase
 

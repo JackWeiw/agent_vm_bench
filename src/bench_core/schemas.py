@@ -17,7 +17,7 @@ import threading
 from dataclasses import dataclass, field, fields
 from typing import Any
 
-from env_provider import SandboxInstance, SandboxStatus
+from env_provider import SandboxInstance
 
 # Step order constants for workflow dispatch.
 BROWSER_STEP_ORDER = ["open_tab", "page_load", "snapshot", "click", "screenshot"]

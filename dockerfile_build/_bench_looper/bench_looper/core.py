@@ -14,15 +14,13 @@ live in the plugins; this core never inspects them.
 import json
 import logging
 import math
-import os
 import random
 import subprocess
-import sys
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 logger = logging.getLogger("bench_looper")
 
@@ -41,12 +39,12 @@ class IterationResult:
 
     round_id: int
     success: bool
-    step_times: Dict[str, float] = field(default_factory=dict)
+    step_times: dict[str, float] = field(default_factory=dict)
     verify_success: bool = True
     compile_only: bool = False
-    failed_step: Optional[str] = None
-    error_type: Optional[str] = None  # "timeout" | "exit_code" | "exception"
-    error_message: Optional[str] = None
+    failed_step: str | None = None
+    error_type: str | None = None  # "timeout" | "exit_code" | "exception"
+    error_message: str | None = None
     timed_out: bool = False
 
 
@@ -69,7 +67,7 @@ def load_operations(filename: str) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def run_shell(command: str, timeout: float, cwd: Optional[str] = None) -> Tuple[int, str, str]:
+def run_shell(command: str, timeout: float, cwd: str | None = None) -> tuple[int, str, str]:
     """Run a shell command via bash, mirroring the host's E2B commands.run.
 
     Returns (exit_code, stdout, stderr). Exit 124 marks a timeout (the same
@@ -95,7 +93,7 @@ def run_shell(command: str, timeout: float, cwd: Optional[str] = None) -> Tuple[
         return 124, out, err
 
 
-def percentile(sorted_values: List[float], pct: float) -> float:
+def percentile(sorted_values: list[float], pct: float) -> float:
     """Nearest-rank percentile (pct in [0,100]) of an ascending-sorted list."""
     if not sorted_values:
         return 0.0
@@ -130,10 +128,10 @@ class BenchLooper:
         scenario: BenchScenario,
         *,
         loops: int,
-        duration: Optional[float],
+        duration: float | None,
         warmup: bool,
         results_dir: str,
-        run_id: Optional[str],
+        run_id: str | None,
         quiet: bool = False,
         interval_min: float = 0.0,
         interval_max: float = 0.0,
@@ -153,7 +151,7 @@ class BenchLooper:
         self._start = time.perf_counter()
         self._failures = 0
         self._successes = 0
-        self._records: List[dict] = []
+        self._records: list[dict] = []
 
     def run(self) -> int:
         """Run warmup + loops, write summary, return process exit code."""
@@ -244,7 +242,7 @@ class BenchLooper:
 
     def _write_summary(self) -> None:
         total_duration = time.perf_counter() - self._start
-        per_step: Dict[str, List[float]] = {}
+        per_step: dict[str, list[float]] = {}
         for record in self._records:
             for step, ms in record["steps"].items():
                 per_step.setdefault(step, []).append(ms)
@@ -258,7 +256,7 @@ class BenchLooper:
                 "p95_ms": round(percentile(ordered, 95), 3),
                 "p99_ms": round(percentile(ordered, 99), 3),
             }
-        failure_hist: Dict[str, int] = {}
+        failure_hist: dict[str, int] = {}
         for record in self._records:
             if not record["success"]:
                 key = f"{record['failed_step']}:{record['error_type']}"

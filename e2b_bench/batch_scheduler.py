@@ -14,7 +14,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 import yaml
 
@@ -41,17 +41,17 @@ class GroupRunner:
         self.batch_log_file = batch_log_file
 
         # Runtime managers (shared within group)
-        self.sandbox_manager: Optional[SandboxManager] = None
-        self.smap_tool: Optional[SmapToolManager] = None
-        self.sandbox_states: Dict[int, SandboxState] = {}
+        self.sandbox_manager: SandboxManager | None = None
+        self.smap_tool: SmapToolManager | None = None
+        self.sandbox_states: dict[int, SandboxState] = {}
 
         # Stop event
         self.stop_event = None
 
         # Group-level result directory (for smap_tool logs)
-        self.group_result_dir: Optional[Path] = None
+        self.group_result_dir: Path | None = None
 
-    def run(self) -> List[BatchTask]:
+    def run(self) -> list[BatchTask]:
         """
         Execute all tasks in the group
 
@@ -165,7 +165,7 @@ class GroupRunner:
         return results
 
     @staticmethod
-    def _document_metric_totals(sandbox_states: Dict[int, SandboxState]) -> Tuple[int, int]:
+    def _document_metric_totals(sandbox_states: dict[int, SandboxState]) -> tuple[int, int]:
         """Return cumulative Document task and failure counts for delta tracking."""
         return (
             sum(state.document_metrics.total_tasks for state in sandbox_states.values()),
@@ -173,9 +173,7 @@ class GroupRunner:
         )
 
     @staticmethod
-    def _evaluate_document_task_delta(
-        baseline: Tuple[int, int], current: Tuple[int, int]
-    ) -> Tuple[bool, Optional[str]]:
+    def _evaluate_document_task_delta(baseline: tuple[int, int], current: tuple[int, int]) -> tuple[bool, str | None]:
         """Evaluate only the Document results produced by the current BatchTask."""
         total_delta = current[0] - baseline[0]
         failed_delta = current[1] - baseline[1]
@@ -465,7 +463,7 @@ class BatchScheduler:
         self.template_config.setup_e2b_env()
 
         # Execute each group
-        all_results: List[BatchTask] = []
+        all_results: list[BatchTask] = []
 
         for idx, group in enumerate(groups):
             logger.info(f"\n{'=' * 80}")
@@ -545,7 +543,7 @@ class BatchScheduler:
         return report_path
 
 
-def scan_existing_results(result_base_dir: str) -> List[Dict[str, Any]]:
+def scan_existing_results(result_base_dir: str) -> list[dict[str, Any]]:
     """Scan existing E2B batch test result directories and extract metadata
 
     Directory structure:
@@ -619,7 +617,7 @@ def scan_existing_results(result_base_dir: str) -> List[Dict[str, Any]]:
 
 def _extract_task_info(
     task_path: str, task_id: str, total_count: int, ratio: float, benchmark_percent: float
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Extract task info from a single task directory"""
     # Check for required files
     config_file = None

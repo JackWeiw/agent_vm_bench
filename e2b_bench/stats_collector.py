@@ -11,10 +11,10 @@ import statistics
 import threading
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from .config import Config
-from .schemas import CODING_STEP_ORDER, BROWSER_STEP_ORDER, SandboxState, SandboxStatus, TestSnapshot, get_step_order
+from .schemas import CODING_STEP_ORDER, SandboxState, SandboxStatus, TestSnapshot, get_step_order
 from .utils import calc_p99, calc_percentiles, calc_tail_ratio, classify_tail_latency
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,7 @@ class ErrorClassifier:
         return "Other"
 
     @classmethod
-    def aggregate(cls, errors: List[Tuple[int, int, str]]) -> Tuple[Dict[str, int], Dict[str, List[int]]]:
+    def aggregate(cls, errors: list[tuple[int, int, str]]) -> tuple[dict[str, int], dict[str, list[int]]]:
         """Aggregate errors by type.
 
         Args:
@@ -92,8 +92,8 @@ class ErrorClassifier:
         Returns:
             Tuple of (error_counts, error_sandbox_ids)
         """
-        error_counts: Dict[str, int] = {}
-        error_sandbox_ids: Dict[str, List[int]] = {}
+        error_counts: dict[str, int] = {}
+        error_sandbox_ids: dict[str, list[int]] = {}
 
         for sid, count, error in errors:
             error_type = cls.classify(error)
@@ -109,7 +109,7 @@ class TableFormatter:
     """Simple table formatter for plain text output."""
 
     @staticmethod
-    def format_table(headers: List[str], rows: List[List[str]], title: str = "") -> List[str]:
+    def format_table(headers: list[str], rows: list[list[str]], title: str = "") -> list[str]:
         """Format a table with aligned columns."""
         if not rows:
             return []
@@ -143,11 +143,11 @@ class TableFormatter:
 class ReportFormatter:
     """Format statistics into human-readable reports."""
 
-    def __init__(self, config: Config, sandbox_states: Dict[int, SandboxState]):
+    def __init__(self, config: Config, sandbox_states: dict[int, SandboxState]):
         self.config = config
         self.sandbox_states = sandbox_states
 
-    def format_config_section(self) -> List[str]:
+    def format_config_section(self) -> list[str]:
         """Format test configuration section."""
         lines = ["=" * 80, "E2B Sandbox Bench - Performance Report", "=" * 80]
         lines.append("\n[Test Configuration]")
@@ -186,7 +186,7 @@ class ReportFormatter:
         lines.append(f"  Test Duration:   {self.config.test_duration}s")
         return lines
 
-    def format_sandbox_status_section(self) -> List[str]:
+    def format_sandbox_status_section(self) -> list[str]:
         """Format sandbox status section."""
         ready_states = [
             s for s in self.sandbox_states.values() if s.creation_metrics.status == SandboxStatus.PORT_READY
@@ -226,7 +226,7 @@ class ReportFormatter:
 
         return lines
 
-    def format_percentile_section(self, title: str, values: List[float], description: str = "") -> List[str]:
+    def format_percentile_section(self, title: str, values: list[float], description: str = "") -> list[str]:
         """Format a percentile statistics section."""
         if not values:
             return []
@@ -245,9 +245,9 @@ class ReportFormatter:
 
         return lines
 
-    def format_browser_stats_section(self) -> List[str]:
+    def format_browser_stats_section(self) -> list[str]:
         """Format browser task statistics section."""
-        all_latencies: List[float] = []
+        all_latencies: list[float] = []
         for s in self.sandbox_states.values():
             all_latencies.extend(s.browser_metrics.latencies)
 
@@ -270,10 +270,10 @@ class ReportFormatter:
 
         return lines
 
-    def format_step_timing_table(self) -> List[str]:
+    def format_step_timing_table(self) -> list[str]:
         """Format step-level timing as a table."""
         # Collect all step times
-        all_step_times: Dict[str, List[float]] = {}
+        all_step_times: dict[str, list[float]] = {}
         for s in self.sandbox_states.values():
             step_times_copy = s.browser_metrics.get_step_times_copy()
             for step_name, times in step_times_copy.items():
@@ -315,9 +315,9 @@ class ReportFormatter:
 
         return lines
 
-    def format_coding_stats_section(self) -> List[str]:
+    def format_coding_stats_section(self) -> list[str]:
         """Format coding task statistics section."""
-        all_latencies: List[float] = []
+        all_latencies: list[float] = []
         for s in self.sandbox_states.values():
             all_latencies.extend(s.coding_metrics.latencies)
 
@@ -350,10 +350,10 @@ class ReportFormatter:
 
         return lines
 
-    def format_coding_step_timing_table(self) -> List[str]:
+    def format_coding_step_timing_table(self) -> list[str]:
         """Format coding step-level timing as a table."""
         # Collect all coding step times
-        all_step_times: Dict[str, List[float]] = {}
+        all_step_times: dict[str, list[float]] = {}
         for s in self.sandbox_states.values():
             step_times_copy = s.coding_metrics.get_step_times_copy()
             for step_name, times in step_times_copy.items():
@@ -395,7 +395,7 @@ class ReportFormatter:
 
         return lines
 
-    def format_document_stats_section(self) -> List[str]:
+    def format_document_stats_section(self) -> list[str]:
         metrics = [state.document_metrics for state in self.sandbox_states.values()]
         all_latencies = [latency for metric in metrics for latency in metric.latencies]
         total_tasks = sum(metric.total_tasks for metric in metrics)
@@ -413,8 +413,8 @@ class ReportFormatter:
             lines.append(f"  P99 Latency:   {calc_p99(all_latencies) * 1000:.1f}ms")
         return lines
 
-    def format_document_step_timing_table(self) -> List[str]:
-        all_step_times: Dict[str, List[float]] = {}
+    def format_document_step_timing_table(self) -> list[str]:
+        all_step_times: dict[str, list[float]] = {}
         for state in self.sandbox_states.values():
             for step_name, times in state.document_metrics.get_step_times_copy().items():
                 all_step_times.setdefault(step_name, []).extend(times)
@@ -443,7 +443,7 @@ class ReportFormatter:
         lines.extend(TableFormatter.format_table(headers, rows))
         return lines
 
-    def format_error_section(self) -> List[str]:
+    def format_error_section(self) -> list[str]:
         """Format error details and classification section."""
         # Collect errors — dispatch based on workflow type
         failed_sandbox_errors = []
@@ -502,7 +502,7 @@ class ReportFormatter:
         lines.extend(TableFormatter.format_table(headers, rows))
         return lines
 
-    def format_round_comparison_table(self, round_start_totals: Dict[int, Dict[str, Any]]) -> List[str]:
+    def format_round_comparison_table(self, round_start_totals: dict[int, dict[str, Any]]) -> list[str]:
         """Format round comparison as a table."""
         if not round_start_totals:
             return []
@@ -558,9 +558,9 @@ class ReportFormatter:
         lines.extend(TableFormatter.format_table(headers, rows))
         return lines
 
-    def _calculate_round_finals(self, round_start_totals: Dict[int, Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    def _calculate_round_finals(self, round_start_totals: dict[int, dict[str, Any]]) -> dict[int, dict[str, Any]]:
         """Calculate final statistics for each round."""
-        round_finals: Dict[int, Dict[str, Any]] = {}
+        round_finals: dict[int, dict[str, Any]] = {}
 
         final_task_total = sum(s.task_metrics.total_tasks for s in self.sandbox_states.values())
         final_task_success = sum(s.task_metrics.success_count for s in self.sandbox_states.values())
@@ -589,7 +589,7 @@ class ReportFormatter:
                     end_success = final_task_success
                     end_sandbox_latency_counts = final_sandbox_latency_counts
 
-            round_latencies: List[float] = []
+            round_latencies: list[float] = []
             for s in self.sandbox_states.values():
                 sandbox_id = s.sandbox_id
                 start_count = start_sandbox_latency_counts.get(sandbox_id, 0)
@@ -610,22 +610,22 @@ class ReportFormatter:
 class StatsCollector:
     """Statistics collector - real-time snapshot + final report"""
 
-    def __init__(self, config: Config, sandbox_states: Dict[int, SandboxState]):
+    def __init__(self, config: Config, sandbox_states: dict[int, SandboxState]):
         self.config = config
         self.sandbox_states = sandbox_states
-        self.snapshots: List[TestSnapshot] = []
+        self.snapshots: list[TestSnapshot] = []
         self.start_time: float = 0.0
         self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
 
         # Round tracking for round-robin mode
-        self.current_round: Optional[int] = None
-        self.round_snapshots: Dict[int, List[TestSnapshot]] = {}
+        self.current_round: int | None = None
+        self.round_snapshots: dict[int, list[TestSnapshot]] = {}
 
         # Round start totals - recorded at round switch to decouple from snapshot timing
         # Key: round_id, Value: {"total": int, "success": int, "sandbox_latency_counts": Dict[int, int]}
         # sandbox_latency_counts: {sandbox_id: latency_count} - tracks how many latencies each sandbox has at round start
-        self._round_start_totals: Dict[int, Dict[str, any]] = {}
+        self._round_start_totals: dict[int, dict[str, any]] = {}
 
     def start(self) -> None:
         """Start background collection thread"""
@@ -639,7 +639,7 @@ class StatsCollector:
         if self._thread:
             self._thread.join(timeout=2)
 
-    def set_round(self, round_id: Optional[int]) -> None:
+    def set_round(self, round_id: int | None) -> None:
         """Set current round for statistics tracking.
 
         Called by RoundRobinTaskManager to mark which round is currently active.
@@ -735,7 +735,7 @@ class StatsCollector:
                 round_success = 0
 
             # Collect recent latency data (last 10 per sandbox)
-            all_latencies: List[float] = []
+            all_latencies: list[float] = []
             for s in self.sandbox_states.values():
                 all_latencies.extend(s.browser_metrics.latencies[-10:])
 
@@ -771,7 +771,7 @@ class StatsCollector:
                 round_total = 0
                 round_success = 0
 
-            all_latencies: List[float] = []
+            all_latencies: list[float] = []
             for s in self.sandbox_states.values():
                 all_latencies.extend(s.coding_metrics.latencies[-10:])
 
@@ -864,7 +864,7 @@ class StatsCollector:
         """Generate final TXT report using ReportFormatter."""
         formatter = ReportFormatter(self.config, self.sandbox_states)
 
-        lines: List[str] = []
+        lines: list[str] = []
 
         # Configuration section
         lines.extend(formatter.format_config_section())

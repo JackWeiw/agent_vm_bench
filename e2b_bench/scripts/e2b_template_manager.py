@@ -13,7 +13,7 @@ import os
 import signal
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 import requests
 
@@ -168,7 +168,7 @@ def setup_env_from_config(config_path: str, machine_ip: str = None) -> dict:
     }
 
 
-def _extract_templates(data: Any) -> List[Dict]:
+def _extract_templates(data: Any) -> list[dict]:
     """
     Extract template list from API response.
     Compatible with multiple response formats:
@@ -197,7 +197,7 @@ def _get_template_id(t: Any) -> str:
     return str(t) if t else "N/A"
 
 
-def _get_template_aliases(t: Any) -> List[str]:
+def _get_template_aliases(t: Any) -> list[str]:
     """Extract all aliases from template"""
     if isinstance(t, dict):
         aliases = t.get("aliases")
@@ -231,7 +231,7 @@ def _get_template_status(t: Any) -> str:
     return "unknown"
 
 
-def _find_template_by_alias(templates: List[Any], alias: str) -> Optional[Dict]:
+def _find_template_by_alias(templates: list[Any], alias: str) -> dict | None:
     """Find template by alias, returns first matching template"""
     alias_lower = alias.lower()
     for t in templates:
@@ -247,7 +247,7 @@ def _find_template_by_alias(templates: List[Any], alias: str) -> Optional[Dict]:
     return None
 
 
-def list_templates(env: dict) -> List[Dict]:
+def list_templates(env: dict) -> list[dict]:
     """
     Query all created templates (query first).
     """
@@ -320,7 +320,7 @@ def delete_template(env: dict, template_id: str, force: bool = False) -> bool:
         return False
 
 
-def print_templates(templates: List[Any]):
+def print_templates(templates: list[Any]):
     """Format and print template list, showing aliases and names"""
     if not templates:
         print("  (No templates)")
@@ -344,7 +344,7 @@ def print_templates(templates: List[Any]):
         print(f"  {idx:<4} {tid:<26} {alias:<22} {names_str:<26} {status:<10}")
 
 
-def delete_all_templates(env: dict, templates: List[Any], force: bool = False):
+def delete_all_templates(env: dict, templates: list[Any], force: bool = False):
     """Delete all templates"""
     if not templates:
         print("\n[!] No templates to delete")
@@ -374,7 +374,7 @@ def delete_all_templates(env: dict, templates: List[Any], force: bool = False):
     return deleted
 
 
-def delete_by_alias(env: dict, templates: List[Any], alias: str, force: bool = False):
+def delete_by_alias(env: dict, templates: list[Any], alias: str, force: bool = False):
     """Delete template by alias"""
     target = _find_template_by_alias(templates, alias)
 
@@ -394,7 +394,7 @@ def delete_by_alias(env: dict, templates: List[Any], alias: str, force: bool = F
     return delete_template(env, tid, force=force)
 
 
-def interactive_delete(env: dict, templates: List[Any]):
+def interactive_delete(env: dict, templates: list[Any]):
     """Interactive mode to select and delete templates"""
     if not templates:
         print("\n[!] No templates to delete")

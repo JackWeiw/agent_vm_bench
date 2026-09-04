@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import yaml
 
@@ -41,7 +41,7 @@ class TestTask:
     error_msg: str = ""
 
 
-def load_batch_config(config_path: str) -> Dict:
+def load_batch_config(config_path: str) -> dict:
     """Load batch config YAML file"""
     with open(config_path) as f:
         return yaml.safe_load(f)
@@ -52,7 +52,7 @@ def generate_task_id(vm_count: int, ratio: float, active_percent: float) -> str:
     return f"vm{vm_count}_ratio{ratio}_active{active_percent}"
 
 
-def generate_test_tasks(batch_config: Dict) -> List[TestTask]:
+def generate_test_tasks(batch_config: dict) -> list[TestTask]:
     """Generate all test tasks from parameter matrix"""
     matrix = batch_config["test_matrix"]
     fixed = batch_config["fixed_params"]
@@ -77,7 +77,7 @@ def generate_test_tasks(batch_config: Dict) -> List[TestTask]:
     return tasks
 
 
-def generate_temp_config(template_path: str, task: TestTask, fixed_params: Dict, base_dir: str, output_dir: str) -> str:
+def generate_temp_config(template_path: str, task: TestTask, fixed_params: dict, base_dir: str, output_dir: str) -> str:
     """Generate temporary config file for a test task"""
     # Load template
     with open(template_path) as f:
@@ -107,7 +107,7 @@ def generate_temp_config(template_path: str, task: TestTask, fixed_params: Dict,
     return temp_config_path
 
 
-def run_single_test(task: TestTask, config_file: str, batch_log_file: str) -> Tuple[bool, str]:
+def run_single_test(task: TestTask, config_file: str, batch_log_file: str) -> tuple[bool, str]:
     """Run single test via auto_vm_test.py"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -192,7 +192,7 @@ def move_config_to_result(config_file: str, result_dir: str, task_id: str):
     shutil.move(config_file, dest)
 
 
-def extract_browser_metrics_from_report(result_dir: str) -> Dict:
+def extract_browser_metrics_from_report(result_dir: str) -> dict:
     """Extract browser metrics from vm_bench_lite bench_report file"""
     vm_bench_dir = os.path.join(result_dir, "vm_bench_lite")
 
@@ -235,7 +235,7 @@ def extract_browser_metrics_from_report(result_dir: str) -> Dict:
     return metrics
 
 
-def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
+def extract_qemu_metrics_from_excel(result_dir: str) -> dict:
     """Extract QEMU and performance metrics from vm_monitor analysis_report.xlsx
 
     Extracts ALL metrics from:
@@ -852,7 +852,7 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> Dict:
     return metrics
 
 
-def collect_all_results(tasks: List[TestTask], base_dir: str) -> Dict[str, Any]:
+def collect_all_results(tasks: list[TestTask], base_dir: str) -> dict[str, Any]:
     """Collect results from all test runs by parsing raw result files"""
     all_metrics = []
 
@@ -914,7 +914,7 @@ def collect_all_results(tasks: List[TestTask], base_dir: str) -> Dict[str, Any]:
     }
 
 
-def generate_summary_report(results: Dict, output_path: str):
+def generate_summary_report(results: dict, output_path: str):
     """Generate Excel summary report with ALL metrics from all sheets
 
     Output format:
@@ -1218,7 +1218,7 @@ def generate_summary_report(results: Dict, output_path: str):
         print(f"Summary saved to: {json_path}")
 
 
-def scan_existing_results(result_base_dir: str) -> List[TestTask]:
+def scan_existing_results(result_base_dir: str) -> list[TestTask]:
     """Scan existing test result directories and create TestTask list"""
     tasks = []
 

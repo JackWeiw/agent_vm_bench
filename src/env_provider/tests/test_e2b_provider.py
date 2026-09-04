@@ -16,8 +16,8 @@ import pytest
 
 from bench_core.config import KernelConfig
 from env_provider import CommandResult, SandboxInstance, SandboxStatus
-from env_provider.e2b.config import Config
 from env_provider.e2b import E2BProvider
+from env_provider.e2b.config import Config
 from env_provider.e2b.schemas import SandboxState
 from env_provider.e2b.schemas import SandboxStatus as E2BSandboxStatus
 

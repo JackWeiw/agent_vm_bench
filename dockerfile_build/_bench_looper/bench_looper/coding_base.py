@@ -20,7 +20,6 @@ peaks overlapping, observed at the host level via vm_monitor/smap_tool.
 
 import base64
 import time
-from typing import Dict, List, Tuple
 
 from bench_looper.core import BenchScenario, IterationResult, run_shell
 
@@ -64,9 +63,9 @@ class CodingBench(BenchScenario):
     # --- profile fields (set by subclasses) ---
     project_dir: str = ""
     checkout_paths: str = ""
-    source_find_names: Tuple[str, ...] = ()
+    source_find_names: tuple[str, ...] = ()
     source_find_root: str = "packages"
-    pairs: List[dict] = []
+    pairs: list[dict] = []
     skip_verify: bool = False
     verify_timeout: int = 120
 
@@ -83,7 +82,7 @@ class CodingBench(BenchScenario):
         target_file = pair.get("file", "")
         find_str = pair.get("find", "")
         replace_str = pair.get("replace", "")
-        steps: Dict[str, float] = {}
+        steps: dict[str, float] = {}
 
         try:
             target_file, find_str, replace_str = self._step_find(target_file, find_str, replace_str, steps)
@@ -154,7 +153,7 @@ class CodingBench(BenchScenario):
         run_shell(f"cd {self.project_dir} && head -20 {target_file}", 15)
         steps["read"] = time.perf_counter() - t
 
-    def _step_edit(self, target_file, find_str, replace_str, steps) -> Tuple[bool, str]:
+    def _step_edit(self, target_file, find_str, replace_str, steps) -> tuple[bool, str]:
         t = time.perf_counter()
         code, out, err = run_shell(build_edit_command(self.project_dir, target_file, find_str, replace_str), 15)
         steps["edit"] = time.perf_counter() - t
@@ -171,6 +170,6 @@ class CodingBench(BenchScenario):
         run_shell(f"cd {self.project_dir} && git diff > /tmp/bench_round_{round_id}.patch", 15)
         steps["diff"] = time.perf_counter() - t
 
-    def _step_verify(self, pair: dict, round_id: int, steps: Dict[str, float]):
+    def _step_verify(self, pair: dict, round_id: int, steps: dict[str, float]):
         """Return (success, error_detail, compile_only). Override per language."""
         raise NotImplementedError

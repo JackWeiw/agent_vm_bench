@@ -12,7 +12,7 @@ import statistics
 import threading
 import time
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Optional
 
 from .config import Config
 from .schemas import ContainerState, ContainerStatus, TestSnapshot
@@ -24,13 +24,13 @@ logger = logging.getLogger(__name__)
 class StatsCollector:
     """Statistics collector - real-time snapshot + final report"""
 
-    def __init__(self, config: Config, container_states: Dict[int, ContainerState]):
+    def __init__(self, config: Config, container_states: dict[int, ContainerState]):
         self.config = config
         self.container_states = container_states
-        self.snapshots: List[TestSnapshot] = []
+        self.snapshots: list[TestSnapshot] = []
         self.start_time: float = 0.0
         self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         """Start background collection thread"""
@@ -97,7 +97,7 @@ class StatsCollector:
         browser_success = sum(s.browser_metrics.success_count for s in self.container_states.values())
 
         # Collect recent latency data (last 10 per container)
-        all_latencies: List[float] = []
+        all_latencies: list[float] = []
         for s in self.container_states.values():
             all_latencies.extend(s.browser_metrics.latencies[-10:])
 
@@ -155,7 +155,7 @@ class StatsCollector:
 
     def generate_report(self) -> str:
         """Generate final TXT report"""
-        lines: List[str] = []
+        lines: list[str] = []
         lines.append("=" * 80)
         lines.append("Docker Container Bench - Browser Automation Performance Report")
         lines.append("=" * 80)
@@ -278,7 +278,7 @@ class StatsCollector:
             lines.append(f"  P99:  {stats['p99']:.1f}s")
 
         # Browser task statistics (queries)
-        all_latencies: List[float] = []
+        all_latencies: list[float] = []
         for s in self.container_states.values():
             all_latencies.extend(s.browser_metrics.latencies)
 

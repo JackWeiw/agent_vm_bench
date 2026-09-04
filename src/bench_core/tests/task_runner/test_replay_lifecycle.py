@@ -970,7 +970,6 @@ def test_lifecycle_call_splits_queue_wait_from_api_sec():
     from bench_core.config import KernelConfig
     from bench_core.schemas import BenchSandbox
     from bench_core.task_runner.replay import ReplayBaseRunner
-    from env_provider import SandboxInstance
 
     cfg = KernelConfig(workflow_type="replay", replay_mode="lifecycle", replay_ready_probe=False)
     provider = FakeLifecycleProvider(count=1)
@@ -1017,7 +1016,6 @@ def test_lifecycle_call_shutdown_during_retry_bypasses_except():
     from bench_core.config import KernelConfig
     from bench_core.schemas import BenchSandbox
     from bench_core.task_runner.replay import ReplayBaseRunner
-    from env_provider import SandboxInstance
 
     cfg = KernelConfig(
         workflow_type="replay",

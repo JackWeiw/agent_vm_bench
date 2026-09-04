@@ -12,7 +12,7 @@ Supports both browser and coding workflow types:
 import logging
 import threading
 import time
-from typing import Dict, List, Optional
+from typing import Optional
 
 from .config import Config
 from .schemas import SandboxState, SandboxStatus, get_step_order
@@ -38,7 +38,7 @@ class RoundRobinTaskManager:
     def __init__(
         self,
         config: Config,
-        sandbox_states: Dict[int, SandboxState],
+        sandbox_states: dict[int, SandboxState],
         stop_event: threading.Event,
         stats_collector: StatsCollector,
     ):
@@ -56,14 +56,14 @@ class RoundRobinTaskManager:
         self.stats_collector = stats_collector
 
         # Sandbox groups for each round
-        self.all_ready_states: List[SandboxState] = []
-        self.sandbox_groups: List[List[SandboxState]] = []
+        self.all_ready_states: list[SandboxState] = []
+        self.sandbox_groups: list[list[SandboxState]] = []
 
         # Current round state
         self.current_round: int = 0
         self._planned_rounds: int = 0  # Total rounds planned to run
-        self.active_runners: List[TabOperationRunner] = []
-        self.round_stop_event: Optional[threading.Event] = None
+        self.active_runners: list[TabOperationRunner] = []
+        self.round_stop_event: threading.Event | None = None
 
     def run(self) -> None:
         """Execute the round-robin test.

@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 from env_provider import EphemeralCapable, SandboxInstance, SandboxStatus
-from env_provider import CreationMetrics
 from env_provider.fake import FakeProvider
-
 from env_provider.tests.test_lifecycle_capable import _Plain
 
 

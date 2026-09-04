@@ -7,11 +7,10 @@ import argparse
 import csv
 import os
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from openpyxl import load_workbook
-
 
 EXECUTIVE_ROWS = (
     ("Total Trips", "B5"),

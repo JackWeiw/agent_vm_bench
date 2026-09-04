@@ -81,7 +81,7 @@ except ImportError:
             return MockSandbox()
 
 
-from env_provider._base import BaseSandboxManager, BackendSandboxStatus
+from env_provider._base import BackendSandboxStatus, BaseSandboxManager
 
 from .config import Config, numa_node_for_index
 from .schemas import SandboxState

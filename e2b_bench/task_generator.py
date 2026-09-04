@@ -5,7 +5,7 @@ Generates TaskGroups and BatchTasks from test matrix configuration.
 Groups tasks by (total_count, ratio) for sandbox reuse.
 """
 
-from typing import Any, Dict, List
+from typing import Any
 
 from .schemas import BatchTask, TaskGroup
 
@@ -13,7 +13,7 @@ from .schemas import BatchTask, TaskGroup
 class TaskGenerator:
     """Generate test tasks from parameter matrix"""
 
-    def __init__(self, matrix_config: Dict[str, Any]):
+    def __init__(self, matrix_config: dict[str, Any]):
         """
         Initialize TaskGenerator with matrix configuration
 
@@ -27,7 +27,7 @@ class TaskGenerator:
         self.benchmark_percentages = self.matrix.get("benchmark_percentages", [1.0])
         self.ratios = self.matrix.get("ratios", [15])
 
-    def generate_groups(self) -> List[TaskGroup]:
+    def generate_groups(self) -> list[TaskGroup]:
         """
         Generate TaskGroups grouped by (total_count, ratio)
 
@@ -63,7 +63,7 @@ class TaskGenerator:
         return len(self.total_counts) * len(self.ratios)
 
 
-def load_matrix_config(path: str) -> Dict[str, Any]:
+def load_matrix_config(path: str) -> dict[str, Any]:
     """Load matrix configuration from YAML file"""
     import yaml
 

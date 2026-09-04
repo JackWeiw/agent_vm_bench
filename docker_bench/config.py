@@ -6,7 +6,7 @@ Supports YAML config file loading, CLI argument override, Docker configuration
 
 import argparse
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 import yaml
 
@@ -32,25 +32,25 @@ class Config:
     create_only: bool = False
 
     # Create batch control (for container creation, None means full concurrent)
-    create_batch_size: Optional[int] = None
-    create_batch_interval: Optional[int] = None
+    create_batch_size: int | None = None
+    create_batch_interval: int | None = None
 
     # Task batch control (for browser task execution, None means full concurrent)
-    task_batch_size: Optional[int] = None
-    task_batch_interval: Optional[int] = None
+    task_batch_size: int | None = None
+    task_batch_interval: int | None = None
 
     # Benchmark stress percent (percentage of containers to run benchmark)
     benchmark_percent: float = 1.0  # Percentage of containers for benchmark (default 100%)
 
     # Browser task configuration
-    browser_urls: List[str] = field(default_factory=lambda: ["http://192.168.110.10:8080/Weibo.html"])
+    browser_urls: list[str] = field(default_factory=lambda: ["http://192.168.110.10:8080/Weibo.html"])
     browser_timeout: int = 200  # Browser task timeout (seconds)
     browser_interval_min: float = 0.5  # Task interval minimum (seconds)
     browser_interval_max: float = 3.0  # Task interval maximum (seconds)
     browser_open_timeout: int = 60  # Browser open + wait timeout (seconds)
 
     # Port check configuration
-    required_ports: List[int] = field(default_factory=lambda: [18789, 11436])  # Ports to check
+    required_ports: list[int] = field(default_factory=lambda: [18789, 11436])  # Ports to check
     port_check_max_wait: int = 300  # Max wait time for ports (seconds)
     port_check_interval: int = 5  # Port check interval (seconds)
 
@@ -71,7 +71,7 @@ class Config:
         return cls._from_dict(data)
 
     @classmethod
-    def _from_dict(cls, data: Dict[str, Any]) -> "Config":
+    def _from_dict(cls, data: dict[str, Any]) -> "Config":
         """Build Config from dictionary"""
         docker = data.get("docker", {})
         container = data.get("container", {})

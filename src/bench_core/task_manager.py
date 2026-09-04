@@ -14,11 +14,11 @@ import random
 import threading
 import time
 
-from bench_core.config import KernelConfig
-from env_provider import EnvironmentProvider
 from bench_core.admission import Admission
+from bench_core.config import KernelConfig
 from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 from bench_core.schemas import BenchSandbox
+from env_provider import EnvironmentProvider
 
 logger = logging.getLogger(__name__)
 

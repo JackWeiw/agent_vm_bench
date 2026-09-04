@@ -13,9 +13,9 @@ import threading
 from pathlib import Path
 
 from bench_core.config import KernelConfig
-from bench_core.payload.replay_payload import Trajectory, ReplayStep, reset_pool_cache
+from bench_core.payload.replay_payload import ReplayStep, Trajectory, reset_pool_cache
 from bench_core.schemas import BenchSandbox, ReplayMetrics
-from bench_core.task_runner.replay import ReplayTaskRunner, ReplayRoundRunner
+from bench_core.task_runner.replay import ReplayRoundRunner, ReplayTaskRunner
 from env_provider import SandboxInstance
 from env_provider.fake import FakeProvider
 
@@ -253,7 +253,6 @@ def test_round_runner_affinity_filters(tmp_path, monkeypatch):
 
 def test_trajectory_create_one_passes_template(tmp_path, monkeypatch):
     """_run_trajectory passes template=traj.template to provider.create_one."""
-    from bench_core.task_runner.replay import StepResult
 
     provider = FakeProvider(count=1)
     create_calls: list[dict] = []

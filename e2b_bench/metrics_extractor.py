@@ -9,7 +9,7 @@ NUMA_Bandwidth, KSys, UBWatch_Latency, UBWatch_Bandwidth, SMAPBW, Getfre.
 import logging
 import os
 import re
-from typing import Any, Dict
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ class MetricsExtractor:
     def __init__(self):
         pass
 
-    def extract(self, analysis_file: str) -> Dict[str, Any]:
+    def extract(self, analysis_file: str) -> dict[str, Any]:
         """
         Extract all metrics from analysis_report.xlsx
 
@@ -60,7 +60,7 @@ class MetricsExtractor:
 
         return metrics
 
-    def _extract_summary(self, xls) -> Dict[str, Any]:
+    def _extract_summary(self, xls) -> dict[str, Any]:
         """Extract Summary sheet metrics (VM CPU)"""
         metrics = {}
         try:
@@ -78,7 +78,7 @@ class MetricsExtractor:
             pass
         return metrics
 
-    def _extract_devkit_topdown(self, xls) -> Dict[str, Any]:
+    def _extract_devkit_topdown(self, xls) -> dict[str, Any]:
         """Extract DevKit_TopDown sheet (13 metrics)"""
         metrics = {}
         try:
@@ -109,7 +109,7 @@ class MetricsExtractor:
             pass
         return metrics
 
-    def _extract_devkit_memory(self, xls) -> Dict[str, Any]:
+    def _extract_devkit_memory(self, xls) -> dict[str, Any]:
         """Extract DevKit_Memory sheet"""
         metrics = {}
         try:
@@ -138,7 +138,7 @@ class MetricsExtractor:
             pass
         return metrics
 
-    def _extract_numa_bandwidth(self, xls) -> Dict[str, Any]:
+    def _extract_numa_bandwidth(self, xls) -> dict[str, Any]:
         """Extract NUMA_Bandwidth sheet"""
         metrics = {}
         try:
@@ -162,7 +162,7 @@ class MetricsExtractor:
             pass
         return metrics
 
-    def _extract_ksys(self, xls) -> Dict[str, Any]:
+    def _extract_ksys(self, xls) -> dict[str, Any]:
         """Extract KSys sheet"""
         metrics = {}
         try:
@@ -191,7 +191,7 @@ class MetricsExtractor:
             pass
         return metrics
 
-    def _extract_ubwatch_latency(self, xls) -> Dict[str, Any]:
+    def _extract_ubwatch_latency(self, xls) -> dict[str, Any]:
         """Extract UBWatch_Latency sheet"""
         metrics = {}
         try:
@@ -219,7 +219,7 @@ class MetricsExtractor:
             pass
         return metrics
 
-    def _extract_ubwatch_bandwidth(self, xls) -> Dict[str, Any]:
+    def _extract_ubwatch_bandwidth(self, xls) -> dict[str, Any]:
         """Extract UBWatch_Bandwidth sheet"""
         metrics = {}
         try:
@@ -256,7 +256,7 @@ class MetricsExtractor:
             pass
         return metrics
 
-    def _extract_smapbw_summary(self, xls) -> Dict[str, Any]:
+    def _extract_smapbw_summary(self, xls) -> dict[str, Any]:
         """Extract SMAPBW_Summary sheet"""
         metrics = {}
         try:
@@ -279,7 +279,7 @@ class MetricsExtractor:
             pass
         return metrics
 
-    def _extract_smapbw_cycles(self, xls) -> Dict[str, Any]:
+    def _extract_smapbw_cycles(self, xls) -> dict[str, Any]:
         """Extract SMAPBW_Cycles sheet"""
         metrics = {}
         try:
@@ -296,7 +296,7 @@ class MetricsExtractor:
             pass
         return metrics
 
-    def _extract_getfre(self, xls) -> Dict[str, Any]:
+    def _extract_getfre(self, xls) -> dict[str, Any]:
         """Extract Getfre_Summary sheet"""
         metrics = {}
         try:
@@ -325,7 +325,7 @@ class MetricsExtractor:
         except (ValueError, TypeError):
             return 0.0
 
-    def extract_coding_metrics(self, report_file: str) -> Dict[str, Any]:
+    def extract_coding_metrics(self, report_file: str) -> dict[str, Any]:
         """Extract coding metrics from bench_report.txt
 
         Bug #9 fix: scoped to only search within [Coding Task Statistics] section
@@ -392,7 +392,7 @@ class MetricsExtractor:
 
         return metrics
 
-    def extract_browser_metrics(self, report_file: str) -> Dict[str, Any]:
+    def extract_browser_metrics(self, report_file: str) -> dict[str, Any]:
         """Extract browser metrics from bench_report.txt
 
         Bug #9 fix: scoped to only search within [Browser Task Statistics] section
@@ -451,9 +451,9 @@ class MetricsExtractor:
 
         return metrics
 
-    def extract_document_metrics(self, report_file: str) -> Dict[str, Any]:
+    def extract_document_metrics(self, report_file: str) -> dict[str, Any]:
         """Extract PDF/XLSX overall and phase-ID metrics."""
-        metrics: Dict[str, Any] = {}
+        metrics: dict[str, Any] = {}
         if not report_file or not os.path.exists(report_file):
             return metrics
         try:

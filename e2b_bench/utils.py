@@ -8,7 +8,6 @@ import logging
 import statistics
 import sys
 from datetime import datetime
-from typing import Dict, List
 
 
 def setup_logging(level: int = logging.INFO) -> None:
@@ -52,7 +51,7 @@ def format_duration(seconds: float) -> str:
         return f"{hours}h {mins}m"
 
 
-def calc_percentiles(values: List[float]) -> Dict[str, float]:
+def calc_percentiles(values: list[float]) -> dict[str, float]:
     """Calculate percentile statistics
 
     Returns: {"min": x, "max": x, "avg": x, "p50": x, "p95": x, "p99": x}
@@ -78,7 +77,7 @@ def calc_percentiles(values: List[float]) -> Dict[str, float]:
     }
 
 
-def calc_p99(values: List[float]) -> float:
+def calc_p99(values: list[float]) -> float:
     """Calculate P99 latency"""
     if not values:
         return 0.0
@@ -88,7 +87,7 @@ def calc_p99(values: List[float]) -> float:
     return sorted_vals[-1]
 
 
-def calc_tail_ratio(values: List[float]) -> float:
+def calc_tail_ratio(values: list[float]) -> float:
     """Calculate tail latency ratio (P99 / P50).
 
     Tail ratio indicates severity of long-tail latency:
@@ -129,7 +128,7 @@ def classify_tail_latency(tail_ratio: float) -> str:
         return "significant"
 
 
-def format_latency_distribution(values: List[float], unit: str = "ms") -> str:
+def format_latency_distribution(values: list[float], unit: str = "ms") -> str:
     """Format latency distribution as a compact string.
 
     Shows P50, P95, P99 and tail ratio for quick analysis.

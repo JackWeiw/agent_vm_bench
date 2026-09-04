@@ -19,7 +19,6 @@ from pathlib import Path
 
 from bench_core.config import KernelConfig
 from env_provider import EphemeralCapable, SandboxInstance
-
 from env_provider.aenv._snapshot import scan_snapshot_sizes
 from env_provider.e2b import E2BProvider
 from env_provider.e2b.config import Config

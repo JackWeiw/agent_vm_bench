@@ -10,12 +10,12 @@ import threading
 
 import pytest
 
+from bench_core.config import KernelConfig
 from env_provider import LifecycleCapable, SandboxInstance
 from env_provider.aenv import AenvProvider
 from env_provider.e2b import E2BProvider
 from env_provider.e2b.config import Config
 from env_provider.e2b.schemas import SandboxState
-from bench_core.config import KernelConfig
 
 
 class _FakeSbx:

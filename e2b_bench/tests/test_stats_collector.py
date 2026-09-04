@@ -5,7 +5,7 @@ Tests for statistics collection, error classification, round comparison,
 and tail latency analysis
 """
 
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 

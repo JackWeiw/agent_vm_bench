@@ -6,8 +6,9 @@ Supports YAML config file loading, CLI argument override, E2B environment variab
 
 import argparse
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Optional, Union
 
 import yaml
 
@@ -20,8 +21,7 @@ from .schemas import (
     DEFAULT_CODING_VERIFY_SCRIPT_PY,
 )
 
-
-DOCUMENT_SCENE_LAYOUTS: Dict[str, Dict[str, str]] = {
+DOCUMENT_SCENE_LAYOUTS: dict[str, dict[str, str]] = {
     "pdf": {
         "seed_dir": "/opt/document-bench/pdf",
         "workspace_dir": "/root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01",
@@ -33,14 +33,14 @@ DOCUMENT_SCENE_LAYOUTS: Dict[str, Dict[str, str]] = {
 }
 
 
-def document_scene_layout(case_kind: str) -> Dict[str, str]:
+def document_scene_layout(case_kind: str) -> dict[str, str]:
     try:
         return DOCUMENT_SCENE_LAYOUTS[case_kind]
     except KeyError:
         raise ValueError("document.case_kind must be 'pdf' or 'xlsx'") from None
 
 
-def _normalize_numa_bind(value: Any) -> Optional[List[int]]:
+def _normalize_numa_bind(value: Any) -> list[int] | None:
     """Normalize numa_bind input to a canonical list of node IDs or None.
 
     Accepts an int (single node), a list of ints, None, or an empty string.
@@ -61,7 +61,7 @@ def _normalize_numa_bind(value: Any) -> Optional[List[int]]:
     # List of ints: dedup preserving order, drop negative (node 0 is valid)
     if isinstance(value, list):
         seen = set()
-        normalized: List[int] = []
+        normalized: list[int] = []
         for item in value:
             # bool is a subclass of int; reject it explicitly
             if not isinstance(item, int) or isinstance(item, bool):
@@ -77,7 +77,7 @@ def _normalize_numa_bind(value: Any) -> Optional[List[int]]:
     raise TypeError(f"numa_bind must be int, list[int], or null, got {type(value).__name__}")
 
 
-def numa_node_for_index(index: int, nodes: Optional[Union[int, List[int]]]) -> Optional[int]:
+def numa_node_for_index(index: int, nodes: int | list[int] | None) -> int | None:
     """Return the NUMA node for a sandbox at the given 0-based index.
 
     Round-robins across `nodes`. Accepts a list of ints, a single int (treated
@@ -158,7 +158,7 @@ def _find_name_clause(names: tuple) -> str:
 # Extensible language registry. To add a language (cpp, rust, ...): add one
 # entry here + its DEFAULT_CODING_*_SOURCE_FILES + default verify script in
 # schemas.py. The runner reads the active profile via coding_language.
-CODING_LANGUAGE_PROFILES: Dict[str, CodingLanguageProfile] = {
+CODING_LANGUAGE_PROFILES: dict[str, CodingLanguageProfile] = {
     "ts": CodingLanguageProfile(
         temp_test_path="/tmp/bench_verify.mjs",
         heredoc_eof="EOF",
@@ -206,7 +206,7 @@ CODING_LANGUAGE_PROFILES: Dict[str, CodingLanguageProfile] = {
 }
 
 # Maps a language to its default replacement-pair list (DEFAULT_CODING_*_SOURCE_FILES).
-CODING_LANGUAGE_DEFAULT_SOURCE_FILES: Dict[str, list] = {
+CODING_LANGUAGE_DEFAULT_SOURCE_FILES: dict[str, list] = {
     "ts": DEFAULT_CODING_SOURCE_FILES,
     "go": DEFAULT_CODING_GO_SOURCE_FILES,
     "python": DEFAULT_CODING_PY_SOURCE_FILES,
@@ -218,7 +218,7 @@ def get_coding_profile(language: str) -> CodingLanguageProfile:
     return CODING_LANGUAGE_PROFILES.get(language, CODING_LANGUAGE_PROFILES["ts"])
 
 
-def _normalize_source_files(raw: Any) -> List[Dict[str, str]]:
+def _normalize_source_files(raw: Any) -> list[dict[str, str]]:
     """Normalize coding source files into a list of replacement pairs.
 
     Accepts:
@@ -239,7 +239,7 @@ def _normalize_source_files(raw: Any) -> List[Dict[str, str]]:
     if not isinstance(raw, list):
         return list(DEFAULT_CODING_SOURCE_FILES)
 
-    result: List[Dict[str, str]] = []
+    result: list[dict[str, str]] = []
     for item in raw:
         if isinstance(item, dict) and item.get("file"):
             pair = {
@@ -292,12 +292,12 @@ _SECTION_NAMES = (
 )
 
 
-def _sections(data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+def _sections(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Return every YAML section as a dict (absent or null section -> {})."""
     return {name: (data.get(name) or {}) for name in _SECTION_NAMES}
 
 
-def _extract_workflow_type(data: Dict[str, Any], sec: Dict[str, Dict[str, Any]]) -> Any:
+def _extract_workflow_type(data: dict[str, Any], sec: dict[str, dict[str, Any]]) -> Any:
     """workflow.type wins over the legacy top-level workflow_type; _MISSING if neither."""
     wf = data.get("workflow") or {}
     val = wf.get("type", _MISSING)
@@ -306,22 +306,22 @@ def _extract_workflow_type(data: Dict[str, Any], sec: Dict[str, Dict[str, Any]])
     return val
 
 
-def _verify_cmd_default(ctx: Dict[str, Any]) -> str:
+def _verify_cmd_default(ctx: dict[str, Any]) -> str:
     """Default coding_verify_cmd from the active language profile's run command."""
     return get_coding_profile(ctx.get("coding_language", "ts")).run_cmd
 
 
-def _source_files_default(ctx: Dict[str, Any]) -> List[Dict[str, str]]:
+def _source_files_default(ctx: dict[str, Any]) -> list[dict[str, str]]:
     """Default coding source-file pairs for the active language."""
     lang = ctx.get("coding_language", "ts")
     return CODING_LANGUAGE_DEFAULT_SOURCE_FILES.get(lang, DEFAULT_CODING_SOURCE_FILES)
 
 
-def _browser_urls_default(ctx: Dict[str, Any]) -> List[str]:
+def _browser_urls_default(ctx: dict[str, Any]) -> list[str]:
     return ["http://192.168.110.10:8080/Weibo.html"]
 
 
-def _empty_list(ctx: Dict[str, Any]) -> list:
+def _empty_list(ctx: dict[str, Any]) -> list:
     """Factory for list-valued defaults (avoids shared mutable defaults)."""
     return []
 
@@ -352,8 +352,8 @@ class _FieldSpec:
     cli: Any = _SAME
     y: Any = None
     d: Any = _MISSING
-    df: Optional[Callable[..., Any]] = None
-    t: Optional[Callable[..., Any]] = None
+    df: Callable[..., Any] | None = None
+    t: Callable[..., Any] | None = None
     m: str = "cli_or_yaml"
     fa: str = "none"
 
@@ -367,12 +367,12 @@ class _FieldSpec:
 _F = _FieldSpec
 
 
-def _default(spec: _FieldSpec, ctx: Dict[str, Any]) -> Any:
+def _default(spec: _FieldSpec, ctx: dict[str, Any]) -> Any:
     """Resolve a spec's default: dynamic (df) wins over static (d)."""
     return spec.df(ctx) if spec.df else spec.d
 
 
-def _yaml_val(spec: _FieldSpec, data: Dict[str, Any], sec: Dict[str, Dict[str, Any]]) -> Any:
+def _yaml_val(spec: _FieldSpec, data: dict[str, Any], sec: dict[str, dict[str, Any]]) -> Any:
     """Extract a field's value from raw YAML data, or _MISSING if absent."""
     y = spec.y
     if y is None:
@@ -386,7 +386,7 @@ def _yaml_val(spec: _FieldSpec, data: Dict[str, Any], sec: Dict[str, Dict[str, A
 # Order matters where a default depends on an earlier field: coding_language is
 # declared before coding_verify_cmd and coding_source_files, which read it from
 # the resolved-so-far context.
-_FIELDS: List[_FieldSpec] = [
+_FIELDS: list[_FieldSpec] = [
     # --- E2B environment ---
     _F("e2b_access_token", y=("e2b_env", "E2B_ACCESS_TOKEN"), d=""),
     _F("e2b_api_key", y=("e2b_env", "E2B_API_KEY"), d=""),
@@ -490,7 +490,7 @@ class Config:
     # Accepts an int (single node), a list of ints (round-robin across nodes),
     # or null (no binding). Defaults to node 2. Normalized to a list or None
     # at load time (see _normalize_numa_bind).
-    numa_bind: Optional[Union[int, List[int]]] = 2
+    numa_bind: int | list[int] | None = 2
 
     # Detect existing sandboxes mode
     detect_existing: bool = False  # Detect existing sandboxes instead of creating new ones
@@ -499,24 +499,24 @@ class Config:
     create_only: bool = False
 
     # Sandbox IDs file (for save/load sandbox IDs)
-    sandbox_ids_file: Optional[str] = None
+    sandbox_ids_file: str | None = None
 
     # Create batch control (for sandbox creation, None means full concurrent)
-    create_batch_size: Optional[int] = None
-    create_batch_interval: Optional[int] = None
+    create_batch_size: int | None = None
+    create_batch_interval: int | None = None
 
     # Task batch control (for browser task execution, None means full concurrent)
-    task_batch_size: Optional[int] = None
-    task_batch_interval: Optional[int] = None
+    task_batch_size: int | None = None
+    task_batch_interval: int | None = None
 
     # Benchmark stress percent (percentage of sandboxes to run benchmark)
     benchmark_percent: float = 1.0  # Percentage of sandboxes for benchmark (default 100%)
 
     # Round-robin mode configuration
     benchmark_mode: str = "fixed"  # "fixed" (default) or "round_robin"
-    round_count: Optional[
-        int
-    ] = None  # Max number of rounds to run (termination condition, coexists with round_size and duration)
+    round_count: int | None = (
+        None  # Max number of rounds to run (termination condition, coexists with round_size and duration)
+    )
     round_size: int = 5  # Sandboxes per round (determines group count, coexists with round_count)
     round_interval: int = 5  # Round interval in seconds for round_robin mode (default: 5s)
 
@@ -540,7 +540,7 @@ class Config:
     workflow_type: str = "browser"  # "browser", "coding", or "document"
 
     # Browser task
-    browser_urls: List[str] = field(default_factory=lambda: ["http://192.168.110.10:8080/Weibo.html"])
+    browser_urls: list[str] = field(default_factory=lambda: ["http://192.168.110.10:8080/Weibo.html"])
     browser_timeout: int = 200
     browser_interval_min: float = 0.5
     browser_interval_max: float = 3.0
@@ -574,7 +574,7 @@ class Config:
     # to the shared default verify script for the language. A bare file-path
     # string is accepted (CLI raw-file mode) and normalized to a generic
     # comment-marker pair so the single-file workflow still works.
-    coding_source_files: List[Dict[str, str]] = field(default_factory=lambda: list(DEFAULT_CODING_SOURCE_FILES))
+    coding_source_files: list[dict[str, str]] = field(default_factory=lambda: list(DEFAULT_CODING_SOURCE_FILES))
     coding_interval_min: float = 2.0  # Interval between coding tasks in fixed mode
     coding_interval_max: float = 10.0
 
@@ -588,7 +588,7 @@ class Config:
     document_interval_max: float = 10.0
 
     # Warmup phase configuration
-    warmup_urls: List[str] = field(default_factory=list)  # Warmup page URL list
+    warmup_urls: list[str] = field(default_factory=list)  # Warmup page URL list
     warmup_loops: int = 2  # Warmup loop count
     warmup_delay: int = 10  # Delay between warmup pages (seconds)
     warmup_only: bool = False  # Run warmup phase only, then exit
@@ -610,7 +610,7 @@ class Config:
         return cls._from_dict(data)
 
     @classmethod
-    def _from_dict(cls, data: Dict[str, Any]) -> "Config":
+    def _from_dict(cls, data: dict[str, Any]) -> "Config":
         """Build Config from dictionary"""
         document = data.get("document", {})
         forbidden_document_options = {
@@ -648,7 +648,7 @@ class Config:
         and dynamic language-dependent defaults).
         """
         sec = _sections(data) if data is not None else None
-        resolved: Dict[str, Any] = {}
+        resolved: dict[str, Any] = {}
         for spec in _FIELDS:
             resolved[spec.field] = cls._resolve_one(spec, data, sec, yaml_config, args, resolved)
         return cls(**resolved)

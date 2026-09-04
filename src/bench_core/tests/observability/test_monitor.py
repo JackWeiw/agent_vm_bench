@@ -1,10 +1,5 @@
 from __future__ import annotations
 
-import subprocess
-from pathlib import Path
-
-import pytest
-
 from bench_core.config import KernelConfig
 from bench_core.observability.monitor import MonitorConfig, MonitorController
 
