@@ -1,0 +1,28 @@
+# Template oversubscription sweep config. Copy to config/oversub/<name>.yaml and edit.
+#
+# Launch:
+#   oversub-bench --sweep-config config/oversub/<name>.yaml
+#
+# Precedence: CLI flag > this file > built-in default. Any knob below can also be
+# passed on the command line (run `oversub-bench --help`); CLI flags win.
+
+base_config: config/common/replay.yaml   # REQUIRED unless --config is passed
+
+provider: aenv                            # {aenv, e2b, docker, fake}
+# running_concurrency: 384               # N; default = base replay.running_concurrency
+
+ratios: [1, 2, 3]                         # k values (list) or "1,2,3" (string); total_count = k * N
+modes: [lifecycle, exec_only]             # lifecycle / exec_only / trajectory (or a subset)
+repeats: 1                               # repeats per (mode, ratio)
+
+test_duration: 600                        # null = inherit base test.duration
+failure_tolerance: 0.0                   # max failure_rate for valid (0.0 = strict)
+cooldown_sec: 30
+cleanup_between_trials: on               # {on, off}
+trial_timeout_sec: 0                     # 0 = off
+# output_root: runs/oversub-N384-...     # null = runs/oversub-N{N}-{ts}/
+
+reuse: false
+stop_on_failure: false
+no_vm_monitor: false
+bench_core_bin: [bench-core]

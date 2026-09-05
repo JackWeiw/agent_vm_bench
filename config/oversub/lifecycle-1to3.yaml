@@ -1,0 +1,36 @@
+# Oversubscription sweep: aenv lifecycle baseline, ratios 1:1 / 1:2 / 1:3.
+#
+# Launch (one short command):
+#   oversub-bench --sweep-config config/oversub/lifecycle-1to3.yaml
+#
+# Override a single knob on the CLI (CLI flags beat this file):
+#   oversub-bench --sweep-config config/oversub/lifecycle-1to3.yaml --ratios 4
+#
+# Precedence: CLI flag > this file > built-in default (see `oversub-bench --help`).
+
+# Path to the base replay stress profile. The driver deep-copies this and only
+# rewrites per-trial oversub fields (total_count, running_concurrency, mode,
+# round_size, round_count, duration, report output). Everything else passes through.
+base_config: config/common/replay.yaml
+
+provider: aenv
+
+# N running slots stays fixed; total_count = N * ratio scales per trial.
+# N defaults to base replay.running_concurrency (384 for the aenv 1.5 TiB host).
+# running_concurrency: 384   # uncomment to override N
+
+ratios: [1, 2, 3]              # k values: total_count = k * N per trial
+modes: [lifecycle, exec_only] # lifecycle = snapshot memory reuse; exec_only = pure CPU oversub
+repeats: 1                    # repeats per (mode, ratio) for medians
+
+test_duration: 600           # sustained window per trial (sec); null = base test.duration (3600)
+failure_tolerance: 0.0        # max failure_rate for a trial to count as valid (0.0 = strict)
+cooldown_sec: 30              # settle time between trials
+cleanup_between_trials: on    # pre-trial teardown of leftovers so they don't corrupt the ratio
+trial_timeout_sec: 0          # outer wall-clock per trial; 0 = off
+# output_root: null           # null = runs/oversub-N{N}-{timestamp}/
+
+reuse: false                  # skip completed-valid trials (restart safety)
+stop_on_failure: false        # halt on first invalid trial
+no_vm_monitor: false          # pass --no-vm-monitor through to bench-core
+bench_core_bin: [bench-core]  # kernel subprocess command (tests point at a stub)

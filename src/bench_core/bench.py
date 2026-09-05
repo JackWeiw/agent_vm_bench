@@ -483,6 +483,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     filepath = stats_collector.save_report(report)
 
     # Phase 3.5: optional xlsx observability workbook (replay workflows only).
+    obs_xlsx_path: Path | None = None
     if config.workflow_type == "replay" and config.report_format in ("xlsx", "both"):
         try:
             from bench_core.observability.obs_xlsx import XlsxReportRenderer
@@ -504,6 +505,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 series_path=series_path if series_writer else None,
                 host_xlsx=monitor.merge_source(),
             ).render(xlsx_path)
+            obs_xlsx_path = xlsx_path
             logger.info(f"Xlsx report saved to: {xlsx_path}")
 
     # Per-trajectory replay_result.json export (replay lifecycle/trajectory
@@ -517,6 +519,23 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
 
         n_traj = export_trajectories(series_path, config.output_dir, filename_prefix=config.filename_prefix)
         logger.info("Per-trajectory replay_result.json exported: %d trajectories", n_traj)
+
+    # Oversub driver contract: machine-readable run summary (replay only).
+    # Raw facts only; the driver computes experiment validity. Wrapped so a
+    # writer failure never breaks the kernel's primary report flow.
+    if config.workflow_type == "replay":
+        try:
+            from bench_core.observability.run_summary import write_run_summary
+
+            write_run_summary(
+                config,
+                stats_collector,
+                series_path=series_path,
+                obs_xlsx_path=obs_xlsx_path,
+                report_path=filepath,
+            )
+        except Exception:
+            logger.exception("run_summary.json write failed; continuing")
 
     logger.info("\n" + report)
     logger.info(f"\nReport saved to: {filepath}")
