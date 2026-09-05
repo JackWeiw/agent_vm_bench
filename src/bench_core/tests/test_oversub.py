@@ -288,6 +288,20 @@ def test_write_outputs_trajectory_detail_has_rows(tmp_path):
                 "n_timeout": 0,
                 "success_rate": 1.0,
                 "elapsed_sec": 1.5,
+                "time_breakdown_sec": {
+                    "slice_total": 1.2,
+                    "exec": 0.6,
+                    "resume": 0.3,
+                    "pause": 0.3,
+                    "requested_delay": 0.2,
+                    "create": 0.05,
+                    "kill": 0.05,
+                    "interaction_total": 1.4,
+                    "slot_contention_wait": 0.0,
+                    "resume_queue_wait": 0.0,
+                    "pause_queue_wait": 0.0,
+                    "running_slot_held": 1.2,
+                },
                 "create_error_type": None,
                 "kill_error_type": None,
                 "file": "t0/replay_result.json",
@@ -315,12 +329,78 @@ def test_write_outputs_trajectory_detail_has_rows(tmp_path):
     detail = (tmp_path / "trajectory-detail.csv").read_text(encoding="utf-8").strip().splitlines()
     assert len(detail) == 2  # header + 1 trajectory row
     assert "t0" in detail[1]
+    # the per-trajectory timing breakdown columns surface in the CSV with the
+    # seeded values -- a reader can attribute elapsed_sec to exec/resume/pause/...
+    reader = csv.DictReader((tmp_path / "trajectory-detail.csv").read_text(encoding="utf-8").splitlines())
+    r = list(reader)[0]
+    assert r["exec_sec"] == "0.6"
+    assert r["resume_sec"] == "0.3"
+    assert r["pause_sec"] == "0.3"
+    assert r["slice_total_sec"] == "1.2"
+    assert r["requested_delay_sec"] == "0.2"
+    assert r["create_sec"] == "0.05"
+    assert r["kill_sec"] == "0.05"
+    assert r["running_slot_held_sec"] == "1.2"
     # benchmark-report.json trajectory_details also populated
     import json as _j
 
     rep = _j.loads((tmp_path / "benchmark-report.json").read_text(encoding="utf-8"))
     assert len(rep["trajectory_details"]) == 1
-    assert rep["trajectory_details"][0]["trajectory_id"] == "t0"
+    td = rep["trajectory_details"][0]
+    assert td["trajectory_id"] == "t0"
+    assert td["exec_sec"] == 0.6
+    assert td["pause_sec"] == 0.3
+
+
+def test_write_outputs_trajectory_detail_blank_breakdown_for_old_index(tmp_path):
+    """An older trajectories/index.json (no time_breakdown_sec, e.g. produced
+    before this enrichment) must still yield a row -- the breakdown columns are
+    present in the header but blank -- rather than crash. Backward compat for
+    consuming pre-existing trial outputs."""
+    trial_stamp = tmp_path / "t" / "rb_20260905-150000"
+    (trial_stamp / "trajectories").mkdir(parents=True)
+    idx = {
+        "n_trajectories": 1,
+        "trajectories": [
+            {
+                "trajectory_id": "old0",
+                "sandbox_index": 0,
+                "n_steps": 1,
+                "n_failed": 0,
+                "n_timeout": 0,
+                "success_rate": 1.0,
+                "elapsed_sec": 2.0,
+                "create_error_type": None,
+                "kill_error_type": None,
+                "file": "old0/replay_result.json",
+            }
+        ],
+    }
+    (trial_stamp / "trajectories" / "index.json").write_text(json.dumps(idx), encoding="utf-8")
+    s = _summary(total=4, succeeded=4, failed=0, wall_sec=100.0, peak_active=380, mode="lifecycle", test_duration=1000)
+    s["throughput"]["tasks_per_sec"] = 10.0
+    row = trial_row(
+        mode="lifecycle",
+        ratio=1,
+        repeat=1,
+        running_concurrency=384,
+        target_count=384,
+        summary=s,
+        return_code=0,
+        valid=True,
+        reused=False,
+        trial_dir=str(trial_stamp),
+        run_summary_path=str(trial_stamp / "rb_run_summary.json"),
+    )
+    write_outputs([row], output_root=tmp_path)
+    reader = csv.DictReader((tmp_path / "trajectory-detail.csv").read_text(encoding="utf-8").splitlines())
+    rows = list(reader)
+    assert len(rows) == 1
+    assert rows[0]["trajectory_id"] == "old0"
+    # breakdown columns exist in the header but are blank (no source data).
+    assert "exec_sec" in reader.fieldnames
+    assert rows[0]["exec_sec"] in ("", None)
+    assert rows[0]["pause_sec"] in ("", None)
 
 
 from bench_core.oversub import main
@@ -362,8 +442,12 @@ summary = {{
 (run_dir / 'trajectories').mkdir(parents=True, exist_ok=True)
 idx = {{'n_trajectories': 1, 'trajectories': [
   {{'trajectory_id':'t0','sandbox_index':0,'n_steps':1,'n_failed':0,'n_timeout':0,
-   'success_rate':1.0,'elapsed_sec':1.0,'create_error_type':None,
-   'kill_error_type':None,'file':'t0/replay_result.json'}}]}}
+   'success_rate':1.0,'elapsed_sec':1.0,
+   'time_breakdown_sec':{{'slice_total':0.8,'exec':0.5,'resume':0.1,'pause':0.2,
+     'requested_delay':0.1,'create':0.05,'kill':0.05,'interaction_total':0.9,
+     'slot_contention_wait':0.0,'resume_queue_wait':0.0,'pause_queue_wait':0.0,
+     'running_slot_held':0.8}},
+   'create_error_type':None,'kill_error_type':None,'file':'t0/replay_result.json'}}]}}
 (run_dir / 'trajectories' / 'index.json').write_text(json.dumps(idx, indent=2)+'\\n')
 """,
         encoding="utf-8",
@@ -469,9 +553,18 @@ def test_run_with_stub_aggregates_trials(tmp_path):
         rows = list(csv.DictReader(f))
     assert len(rows) == 2  # 2 trials
     assert all(r["valid"] == "True" for r in rows)
-    # trajectory-detail has 2 rows (one per stub trial).
-    trj = (out_root / "trajectory-detail.csv").read_text(encoding="utf-8").strip().splitlines()
-    assert len(trj) == 1 + 2
+    # trajectory-detail has 2 rows (one per stub trial); the stub seeds a
+    # time_breakdown_sec so the breakdown columns must surface with its values.
+    with open(out_root / "trajectory-detail.csv", newline="", encoding="utf-8") as f:
+        trj = list(csv.DictReader(f))
+    assert len(trj) == 2
+    for r in trj:
+        assert r["trajectory_id"] == "t0"
+        assert r["exec_sec"] == "0.5"
+        assert r["resume_sec"] == "0.1"
+        assert r["pause_sec"] == "0.2"
+        assert r["slice_total_sec"] == "0.8"
+        assert r["create_sec"] == "0.05"
 
 
 # ---- sweep-config YAML (--sweep-config) ----

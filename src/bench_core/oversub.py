@@ -272,6 +272,41 @@ RATIO_COLUMNS = [
     "throughput_gain_vs_1_1_pct",
 ]
 
+# Per-trajectory timing breakdown columns. Sourced from the kernel-emitted
+# ``time_breakdown_sec`` sub-dict in trajectories/index.json; together they
+# decompose ``elapsed_sec`` into exec / lifecycle-API (resume+pause) /
+# inter-step think delay / create+kill cost / queueing waits, so a reader can
+# attribute where each trajectory's wall time went without opening replay_result.json.
+# index.json short key -> CSV column name (kept aligned with trajectory_export._index_row).
+_TRAJECTORY_BREAKDOWN_COLUMNS = [
+    "slice_total_sec",
+    "exec_sec",
+    "resume_sec",
+    "pause_sec",
+    "requested_delay_sec",
+    "create_sec",
+    "kill_sec",
+    "interaction_total_sec",
+    "slot_contention_wait_sec",
+    "resume_queue_wait_sec",
+    "pause_queue_wait_sec",
+    "running_slot_held_sec",
+]
+_BREAKDOWN_KEY_TO_COL = {
+    "slice_total": "slice_total_sec",
+    "exec": "exec_sec",
+    "resume": "resume_sec",
+    "pause": "pause_sec",
+    "requested_delay": "requested_delay_sec",
+    "create": "create_sec",
+    "kill": "kill_sec",
+    "interaction_total": "interaction_total_sec",
+    "slot_contention_wait": "slot_contention_wait_sec",
+    "resume_queue_wait": "resume_queue_wait_sec",
+    "pause_queue_wait": "pause_queue_wait_sec",
+    "running_slot_held": "running_slot_held_sec",
+}
+
 TRAJECTORY_COLUMNS = [
     "mode",
     "ratio",
@@ -283,6 +318,7 @@ TRAJECTORY_COLUMNS = [
     "n_timeout",
     "success_rate",
     "elapsed_sec",
+    *_TRAJECTORY_BREAKDOWN_COLUMNS,
     "create_error_type",
     "kill_error_type",
 ]
@@ -403,7 +439,14 @@ def _write_csv(path: Path, columns: list[str], rows: list[dict]) -> None:
 
 
 def _trajectory_rows(trials: list[dict]) -> list[dict]:
-    """One row per trajectory per trial (from each trial's trajectories/index.json)."""
+    """One row per trajectory per trial (from each trial's trajectories/index.json).
+
+    The kernel-emitted ``time_breakdown_sec`` sub-dict is surfaced as flat
+    columns (exec / resume / pause / waits / create+kill / requested_delay /
+    slice_total / interaction_total / running_slot_held) so a reader can
+    attribute each trajectory's ``elapsed_sec``. An older index.json without
+    the sub-dict yields blank breakdown columns (backward compat), not a crash.
+    """
     out: list[dict] = []
     for t in trials:
         idx_path = t.get("run_summary_path")
@@ -415,22 +458,24 @@ def _trajectory_rows(trials: list[dict]) -> list[dict]:
             continue
         catalog = json.loads(idx.read_text(encoding="utf-8"))
         for tr in catalog.get("trajectories", []):
-            out.append(
-                {
-                    "mode": t["mode"],
-                    "ratio": t["ratio"],
-                    "repeat": t["repeat"],
-                    "trajectory_id": tr.get("trajectory_id"),
-                    "sandbox_index": tr.get("sandbox_index"),
-                    "n_steps": tr.get("n_steps"),
-                    "n_failed": tr.get("n_failed"),
-                    "n_timeout": tr.get("n_timeout"),
-                    "success_rate": tr.get("success_rate"),
-                    "elapsed_sec": tr.get("elapsed_sec"),
-                    "create_error_type": tr.get("create_error_type"),
-                    "kill_error_type": tr.get("kill_error_type"),
-                }
-            )
+            bd = tr.get("time_breakdown_sec") or {}
+            row = {
+                "mode": t["mode"],
+                "ratio": t["ratio"],
+                "repeat": t["repeat"],
+                "trajectory_id": tr.get("trajectory_id"),
+                "sandbox_index": tr.get("sandbox_index"),
+                "n_steps": tr.get("n_steps"),
+                "n_failed": tr.get("n_failed"),
+                "n_timeout": tr.get("n_timeout"),
+                "success_rate": tr.get("success_rate"),
+                "elapsed_sec": tr.get("elapsed_sec"),
+                "create_error_type": tr.get("create_error_type"),
+                "kill_error_type": tr.get("kill_error_type"),
+            }
+            for short_key, col in _BREAKDOWN_KEY_TO_COL.items():
+                row[col] = bd.get(short_key)
+            out.append(row)
     return out
 
 

@@ -311,10 +311,62 @@ def test_export_writes_index_json_catalog(tmp_path):
             "n_timeout",
             "success_rate",
             "elapsed_sec",
+            "time_breakdown_sec",
             "create_error_type",
             "kill_error_type",
         ):
             assert k in r, f"catalog row missing {k}"
+        # time_breakdown_sec carries the per-trajectory timing components
+        assert set(r["time_breakdown_sec"]) == {
+            "slice_total",
+            "exec",
+            "resume",
+            "pause",
+            "requested_delay",
+            "create",
+            "kill",
+            "interaction_total",
+            "slot_contention_wait",
+            "resume_queue_wait",
+            "pause_queue_wait",
+            "running_slot_held",
+        }
+
+
+def test_export_index_row_breakdown_matches_sums(tmp_path):
+    # Two steps with known segment durations; the catalog row's
+    # time_breakdown_sec must carry the trajectory-level sums that compose
+    # elapsed_sec (so the oversub driver can attribute wall time per
+    # trajectory without walking replay_result.json).
+    sp = tmp_path / "s.jsonl"
+    _write(
+        sp,
+        [
+            _step("t", step_index=0, resume_sec=0.1, exec_sec=0.4, pause_sec=0.2, resume_start=10.0, pause_end=10.7),
+            _step("t", step_index=1, resume_sec=0.1, exec_sec=0.4, pause_sec=0.2, resume_start=11.0, pause_end=11.7),
+        ],
+    )
+    export_trajectories(sp, tmp_path)
+    idx = json.loads((tmp_path / "trajectories" / "index.json").read_text(encoding="utf-8"))
+    bd = idx["trajectories"][0]["time_breakdown_sec"]
+    # sums across the two steps (slice_total per step = resume+exec+pause = 0.7)
+    assert bd["exec"] == round(0.8, 6)
+    assert bd["resume"] == round(0.2, 6)
+    assert bd["pause"] == round(0.4, 6)
+    assert bd["slice_total"] == round(1.4, 6)
+    # interaction_total per step = slice + 0.05 = 0.75 -> sum 1.5
+    assert bd["interaction_total"] == round(1.5, 6)
+    # no trajectory_create/kill events -> create+kill lifecycle cost is 0
+    assert bd["create"] == 0.0 and bd["kill"] == 0.0
+    # requested_delay = the inter-step think gap (resume_start[1] - pause_end[0])
+    assert bd["requested_delay"] == round(0.3, 6)
+    # the breakdown sums + requested_delay + create/kill reconcile to elapsed_sec
+    # (elapsed = slice_total + requested_delay + create + kill when no wall-clock
+    # span reconstruction applies; here timestamps are present so elapsed uses the
+    # wall span, but the component sums still account for all the time).
+    rec = _records(tmp_path)["t"]
+    assert bd["slice_total"] == round(rec["sums"]["slice_total_sec"], 6)
+    assert bd["exec"] == round(rec["sums"]["exec_sec"], 6)
 
 
 def test_export_surfaces_create_kill_error(tmp_path):
