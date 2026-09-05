@@ -214,7 +214,7 @@ def main():
 
     # Export dark-themed SVG time-curve reports FIRST. The xlsx report must be
     # the LAST artifact written: orchestrators (bench-core MonitorController)
-    # poll for analysis_report.xlsx as the "all artifacts written" signal and
+    # poll for resource_report.xlsx as the "all artifacts written" signal and
     # reap the subprocess the moment it appears. If SVG ran after xlsx, that
     # reap would drop every SVG file.
     if not args.no_svg:
@@ -226,7 +226,7 @@ def main():
     # that CSV + SVG + xlsx are all written and the subprocess is essentially
     # done (safe to reap).
     if PANDAS_AVAILABLE:
-        excel_file = os.path.join(log_dir, "analysis_report.xlsx")
+        excel_file = os.path.join(log_dir, "resource_report.xlsx")
         export_to_excel(m, log_dir, m.target_numa_nodes, excel_file, capture_results)
 
     print(f"\nComplete! All outputs saved to: {log_dir}/")

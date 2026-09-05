@@ -2,7 +2,7 @@
 
 The bug: vm_monitor's CLI used to write the xlsx report BEFORE the SVG
 time-curve reports. bench-core's MonitorController polls for
-``analysis_report.xlsx`` as the "all artifacts written" signal and reaps the
+``resource_report.xlsx`` as the "all artifacts written" signal and reaps the
 subprocess the moment it appears -- so with the old order, the SVG export
 step (which ran AFTER xlsx) was killed, and every replay run came back with a
 vm_monitor/ dir that had the xlsx + CSVs but no ``*.svg`` files.

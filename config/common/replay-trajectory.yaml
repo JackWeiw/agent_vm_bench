@@ -159,8 +159,8 @@ monitor:
   stress_file: /dev/shm/bench_core_monitor.lock
   log_dir: null          # null = <report.output_dir>/vm_monitor
   # False (default): two separate files -- vm_monitor's system-resource report
-  # (analysis_report.xlsx) stands alone, and the replay obs workbook
-  # (<prefix>_obs.xlsx) carries trajectory/replay metrics only. Set true to copy
+  # (resource_report.xlsx) stands alone, and the replay obs workbook
+  # (<prefix>_replay_obs_report.xlsx) carries trajectory/replay metrics only. Set true to copy
   # VM_Stats/NUMA_Overview/DevKit_TopDown into the obs workbook instead.
   merge_report: false
   report_timeout: 300

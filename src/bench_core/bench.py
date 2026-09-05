@@ -498,7 +498,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 admission_snapshot=admission_snapshot,
                 wall_sec=wall_sec,
             )
-            xlsx_path = Path(config.output_dir) / f"{config.filename_prefix}_obs.xlsx"
+            xlsx_path = Path(config.output_dir) / f"{config.filename_prefix}_replay_obs_report.xlsx"
             XlsxReportRenderer(
                 obs,
                 series_path=series_path if series_writer else None,

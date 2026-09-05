@@ -89,7 +89,7 @@ results/e2b/batch/                              # output_dir
 │   │   └── vm_monitor/                         # vm_monitor 结果
 │   │       ├── monitor_stdout.log
 │   │       ├── monitor_stderr.log
-│   │       └── analysis_report.xlsx            # 性能指标报告
+│   │       └── resource_report.xlsx            # 性能指标报告
 │   ├── tc10_ratio10_bp0.75_20260629_143200/
 │   │   └── ...
 ├── tc10_ratio20_20260629_144000/               # 不同 ratio 的 Group
@@ -184,7 +184,7 @@ smap_tool:
 
 ## 指标提取
 
-从 `analysis_report.xlsx` 提取的指标：
+从 `resource_report.xlsx` 提取的指标：
 
 | 数据源 | Sheet | 指标数 |
 |--------|-------|--------|

@@ -555,7 +555,7 @@ def scan_existing_results(result_base_dir: str) -> list[dict[str, Any]]:
           test_log.txt
           bench_report.txt
           vm_monitor/
-            analysis_report.xlsx
+            resource_report.xlsx
 
     Returns list of dicts with task metadata and file paths
     """
@@ -626,7 +626,7 @@ def _extract_task_info(
             config_file = os.path.join(task_path, f)
             break
 
-    analysis_file = os.path.join(task_path, "vm_monitor", "analysis_report.xlsx")
+    analysis_file = os.path.join(task_path, "vm_monitor", "resource_report.xlsx")
     report_file = os.path.join(task_path, "bench_report.txt")
 
     # Check if task has valid results

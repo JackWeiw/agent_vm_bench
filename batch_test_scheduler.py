@@ -236,7 +236,7 @@ def extract_browser_metrics_from_report(result_dir: str) -> dict:
 
 
 def extract_qemu_metrics_from_excel(result_dir: str) -> dict:
-    """Extract QEMU and performance metrics from vm_monitor analysis_report.xlsx
+    """Extract QEMU and performance metrics from vm_monitor resource_report.xlsx
 
     Extracts ALL metrics from:
     - Summary sheet (VM CPU stats)
@@ -249,7 +249,11 @@ def extract_qemu_metrics_from_excel(result_dir: str) -> dict:
     # Backward compatibility: also check qemu_monitor directory
     if not os.path.exists(vm_dir):
         vm_dir = os.path.join(result_dir, "qemu_monitor")
-    excel_path = os.path.join(vm_dir, "analysis_report.xlsx")
+    excel_path = os.path.join(vm_dir, "resource_report.xlsx")
+    if not os.path.exists(excel_path):  # backward compat: results produced before the rename
+        legacy = os.path.join(vm_dir, "analysis_report.xlsx")
+        if os.path.exists(legacy):
+            excel_path = legacy
 
     if not os.path.exists(excel_path):
         return {}
@@ -866,7 +870,7 @@ def collect_all_results(tasks: list[TestTask], base_dir: str) -> dict[str, Any]:
         # Extract browser metrics from vm_bench_lite report
         browser_metrics = extract_browser_metrics_from_report(task.result_dir)
 
-        # Extract ALL QEMU and performance metrics from analysis_report.xlsx
+        # Extract ALL QEMU and performance metrics from resource_report.xlsx
         qemu_metrics = extract_qemu_metrics_from_excel(task.result_dir)
 
         # Try to get parameters from config.yaml in result dir
@@ -1243,8 +1247,11 @@ def scan_existing_results(result_base_dir: str) -> list[TestTask]:
             active_percent = float(match.group(3))
 
             # Check if result files exist (backward compatibility: check both vm_monitor and qemu_monitor)
-            has_vm = os.path.exists(os.path.join(entry_path, "vm_monitor", "analysis_report.xlsx")) or os.path.exists(
-                os.path.join(entry_path, "qemu_monitor", "analysis_report.xlsx")
+            has_vm = (
+                os.path.exists(os.path.join(entry_path, "vm_monitor", "resource_report.xlsx"))
+                or os.path.exists(os.path.join(entry_path, "vm_monitor", "analysis_report.xlsx"))  # legacy pre-rename
+                or os.path.exists(os.path.join(entry_path, "qemu_monitor", "resource_report.xlsx"))
+                or os.path.exists(os.path.join(entry_path, "qemu_monitor", "analysis_report.xlsx"))  # legacy pre-rename
             )
             has_bench = os.path.exists(os.path.join(entry_path, "vm_bench_lite"))
 

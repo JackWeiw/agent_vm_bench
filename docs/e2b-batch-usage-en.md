@@ -89,7 +89,7 @@ results/e2b/batch/                              # output_dir
 │   │   └── vm_monitor/                         # vm_monitor results
 │   │       ├── monitor_stdout.log
 │   │       ├── monitor_stderr.log
-│   │       └── analysis_report.xlsx            # Performance metrics report
+│   │       └── resource_report.xlsx            # Performance metrics report
 │   ├── tc10_ratio10_bp0.75_20260629_143200/
 │   │   └── ...
 ├── tc10_ratio20_20260629_144000/               # Different ratio group
@@ -187,7 +187,7 @@ Each group test flow:
 
 ## Metrics Extraction
 
-Metrics extracted from `analysis_report.xlsx`:
+Metrics extracted from `resource_report.xlsx`:
 
 | Data Source | Sheet | Metrics Count |
 |-------------|-------|---------------|

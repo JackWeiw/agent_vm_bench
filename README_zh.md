@@ -236,7 +236,7 @@ sudo "$(which vm-monitor)" --vmm firecracker -t 60 -i 2
 ### 产物
 
 - `<前缀>.csv`、`summary.csv`——逐采样原始数据 + 汇总统计。
-- `analysis_report.xlsx`——多 sheet 报告（Summary、NUMA、VM 统计、
+- `resource_report.xlsx`——多 sheet 报告（Summary、NUMA、VM 统计、
   DevKit_TopDown/Memory、KSys、UBWatch、SMAPBW、Getfre、Swap/NUMA/VM-total
   时间线、**Disk_IO_Timeline**、**Host_Mem_Timeline**、
   **Host_Pressure_Timeline**）附图表。

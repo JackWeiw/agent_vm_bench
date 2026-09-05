@@ -247,7 +247,7 @@ YAML section; `-o` overrides `output_dir`). Inside that subdir:
 |------|------|
 | `<prefix>.log` | always (JSON-lines for lifecycle/trajectory replay modes) |
 | `<prefix>_<timestamp>.txt` | always — the text report |
-| `<prefix>_obs.xlsx` | replay workflow + `--report-format xlsx|both` |
+| `<prefix>_replay_obs_report.xlsx` | replay workflow + `--report-format xlsx|both` |
 | `<prefix>_lifecycle_series.jsonl` | replay lifecycle **and** trajectory modes |
 | `replay_result.json` (per trajectory) + `trajectories/index.json` | when a series file exists |
 | `vm_monitor/` | auto-enabled for providers with a `vmm_type` (e2b/aenv → firecracker) |
@@ -411,10 +411,10 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
   count); trajectory mode passes `template=` into each `create_one`. A missing entry
   resolves to `None` (warning, provider default).
 
-### 8.4 Observability workbook (`*_obs.xlsx`)
+### 8.4 Observability workbook (`*_replay_obs_report.xlsx`)
 
 With `--report-format xlsx|both` (replay workflow), besides the text report and JSONL
-lifecycle series, bench-core emits `<run-dir>/<prefix>_obs.xlsx` — an 8-sheet observability
+lifecycle series, bench-core emits `<run-dir>/<prefix>_replay_obs_report.xlsx` — an 8-sheet observability
 workbook (openpyxl; `Overview` consolidates the former Admission & QPS / Throughput &
 overcommit / Retry scalar sheets into one grouped, color-coded dashboard). All duration
 columns are **seconds (s)**, matching the reference `step-detail.csv`; the embedded line
@@ -435,7 +435,7 @@ when the series is absent (e.g. a minimal install).
 
 > With `monitor.merge_report: true`, up to three host sheets (`VM_Stats` /
 > `NUMA_Overview` / `DevKit_TopDown`) are appended after `Snapshot sizes` (copied from the
-> vm_monitor `analysis_report.xlsx`). With the default `false`, the vm_monitor report stays
+> vm_monitor `resource_report.xlsx`). With the default `false`, the vm_monitor report stays
 > a separate file and the workbook carries only the 8 sheets above.
 
 #### Step detail columns (20, seconds)
@@ -497,5 +497,5 @@ sums but count as attempts, so `avg_slice` reflects per-attempt cost).
 > Finer resume/pause sub-segments (api_sec / ready_wait / queue_wait) per step live in
 > `Step detail`; per-second concurrency in `Concurrency states`; snapshot memory in
 > `Snapshot sizes`. Host-level system resources (CPU/memory/NUMA) are in the separate
-> vm_monitor `analysis_report.xlsx` (`monitor.merge_report: false`) or merged into this
+> vm_monitor `resource_report.xlsx` (`monitor.merge_report: false`) or merged into this
 > workbook's `VM_Stats` / `NUMA_Overview` / `DevKit_TopDown` sheets (`merge_report: true`).

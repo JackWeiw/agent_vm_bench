@@ -652,7 +652,7 @@ vm_monitor:
 - 压测阶段开始时创建stress文件（`touch /dev/shm/e2b_benchmark_lock`）
 - vm_monitor检测到stress文件后开始采集指标
 - 压测结束时删除stress文件
-- vm_monitor停止采样并生成 `analysis_report.xlsx`
+- vm_monitor停止采样并生成 `resource_report.xlsx`
 
 **传递给vm_monitor的CLI标志：**
 - `--vmm firecracker`（来自配置）
@@ -705,7 +705,7 @@ result:
       - 运行压测
       - 停止vm_monitor采样
       - 保存bench_report.txt
-      - 等待analysis_report.xlsx
+      - 等待resource_report.xlsx
    e. 清理：停止smap_tool，关闭沙箱
 3. 从所有结果提取指标
 4. 生成聚合Excel摘要（带样式和数据源分组）
@@ -726,7 +726,7 @@ results/e2b/batch/
 │   │   ├── test_log.txt
 │   │   ├── bench_report.txt
 │   │   └── vm_monitor/
-│   │       ├── analysis_report.xlsx
+│   │       ├── resource_report.xlsx
 │   │       ├── monitor_stdout.log
 │   │       └── monitor_stderr.log
 │   └── tc10_ratio10_bp0.75_.../
@@ -928,7 +928,7 @@ python -m e2b_bench --batch --help
         ├── 创建stress文件（开始采样）
         ├── 运行压测
         ├── 删除stress文件（停止采样）
-        ├── 等待analysis_report.xlsx
+        ├── 等待resource_report.xlsx
         └── 保存bench_report.txt
 
 阶段3：清理组（停止smap_tool，关闭沙箱）

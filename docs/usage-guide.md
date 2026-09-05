@@ -145,7 +145,7 @@ class MyVMMMonitor(VMMonitorBase):
 
 ## Log Collection Tools
 
-When using `--enable-capture`, vm_monitor.py invokes the following performance collection tools. These tools generate detailed metrics that are aggregated into `analysis_report.xlsx` and later extracted into batch summary.
+When using `--enable-capture`, vm_monitor.py invokes the following performance collection tools. These tools generate detailed metrics that are aggregated into `resource_report.xlsx` and later extracted into batch summary.
 
 ### Tool Overview
 
@@ -272,13 +272,13 @@ logs_20240601_143052/
 ├── getfre_NUMA0.log       # getfre NUMA 0 frequency data
 ├── getfre_NUMA1.log       # getfre NUMA 1 frequency data
 ├── *_report.json          # ksys generated reports
-└── analysis_report.xlsx   # Aggregated Excel report
+└── resource_report.xlsx   # Aggregated Excel report
 ```
 
 ### Metrics Flow
 
 ```
-Collection Tools          →  analysis_report.xlsx  →  batch_summary.xlsx
+Collection Tools          →  resource_report.xlsx  →  batch_summary.xlsx
 │                           │                        │
 ├─ devkit_top_down.log  →  DevKit_TopDown sheet  →  td_* columns (13)
 ├─ devkit_mem.log       →  DevKit_Memory sheet   →  mem_* columns (6)

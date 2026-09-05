@@ -200,7 +200,7 @@ class TestXlsxReportRenderer:
     def test_host_sheets_ingested_in_single_render(self, tmp_path):
         from openpyxl import Workbook as _Wb
 
-        host = tmp_path / "analysis_report.xlsx"
+        host = tmp_path / "resource_report.xlsx"
         src = _Wb()
         ws = src.active
         ws.title = "VM_Stats"

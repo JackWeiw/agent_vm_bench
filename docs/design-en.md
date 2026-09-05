@@ -304,7 +304,7 @@ Step 9: Wait for Monitor Natural Completion and Collect Results
   ├─ Verify monitor log file completeness
   │   - qemu_monitor.csv
   │   - summary.csv
-  │   - analysis_report.xlsx
+  │   - resource_report.xlsx
   │   - devkit_mem.log / devkit_top_down.log
   │   - ksys.log / ub_watch.log
   ├─ Clean up lock file
@@ -564,7 +564,7 @@ results/
 │   ├── qemu_monitor/                           # qemu_monitor output
 │   │   ├── qemu_monitor.csv                    # QEMU monitor data
 │   │   ├── summary.csv                         # Summary statistics
-│   │   ├── analysis_report.xlsx                # Analysis report (Excel)
+│   │   ├── resource_report.xlsx                # Analysis report (Excel)
 │   │   ├── devkit_mem.log                      # devkit memory log
 │   │   ├── devkit_top_down.log                 # devkit top-down log
 │   │   ├── ksys.log                            # ksys log

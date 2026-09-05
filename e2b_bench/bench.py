@@ -268,7 +268,7 @@ class VmMonitorManager:
             logger.info(f"[VmMonitor] Output redirected to: {monitor_stdout_log}")
 
             # Store expected analysis file path
-            self.analysis_file = str(log_path / "analysis_report.xlsx")
+            self.analysis_file = str(log_path / "resource_report.xlsx")
             return True
         except Exception as e:
             logger.error(f"[VmMonitor] Failed to start: {e}")
@@ -289,7 +289,7 @@ class VmMonitorManager:
 
     def wait_for_report(self, timeout: int = 300) -> str:
         """
-        Wait for analysis_report.xlsx to be generated
+        Wait for resource_report.xlsx to be generated
 
         Returns file path if found, None if timeout
         """

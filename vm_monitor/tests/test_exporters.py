@@ -95,7 +95,7 @@ class TestNumaOverviewSheet(unittest.TestCase):
         _populate_numa_data(self.monitor)
         # Empty log dir => parse_all_logs returns {} (no collection-tool sheets)
         self.log_dir = tempfile.mkdtemp(prefix="vm_monitor_export_")
-        self.output_file = os.path.join(self.log_dir, "analysis_report.xlsx")
+        self.output_file = os.path.join(self.log_dir, "resource_report.xlsx")
 
     def tearDown(self):
         for f in os.listdir(self.log_dir):

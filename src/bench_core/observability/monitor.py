@@ -33,11 +33,11 @@ class MonitorConfig:
     disks: str = "all"  # block devices for I/O, comma-separated (sda,nvme0n1); "all" auto-discovers
     stress_file: str = "/dev/shm/bench_core_monitor.lock"
     log_dir: str | None = None  # None -> <report.output_dir>/vm_monitor
-    # False = keep vm_monitor's system-resource report (analysis_report.xlsx) as a
+    # False = keep vm_monitor's system-resource report (resource_report.xlsx) as a
     # standalone file; the replay obs workbook stays a trajectory-metrics-only file.
     # True = copy VM_Stats/NUMA_Overview/DevKit_TopDown into the obs workbook.
     merge_report: bool = False
-    report_timeout: int = 300  # max wait for analysis_report.xlsx (seconds)
+    report_timeout: int = 300  # max wait for resource_report.xlsx (seconds)
 
     @classmethod
     def from_raw(cls, raw: dict | None) -> MonitorConfig:
@@ -183,7 +183,7 @@ class MonitorController:
             setattr(self, attr, None)
 
     def stop(self) -> list[Path]:
-        """Wait for vm_monitor's analysis_report.xlsx (up to report_timeout), then reap.
+        """Wait for vm_monitor's resource_report.xlsx (up to report_timeout), then reap.
 
         Does NOT merge -- the obs workbook does not exist yet at this point in
         run_benchmark. Call ``merge_into`` after the obs xlsx is rendered.
@@ -195,7 +195,7 @@ class MonitorController:
         """
         if not self._started:
             return []
-        xlsx = self._log_dir / "analysis_report.xlsx"
+        xlsx = self._log_dir / "resource_report.xlsx"
         deadline = time.time() + self._report_timeout
         while time.time() < deadline:
             if self.proc.poll() is not None and not xlsx.exists():
