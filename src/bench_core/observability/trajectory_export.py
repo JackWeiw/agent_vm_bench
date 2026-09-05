@@ -225,7 +225,19 @@ def _enrich_step(index: int, ev: dict, paused_sec: float) -> dict:
 
 
 def _index_row(rec: dict, sanitized: str) -> dict:
-    """Short summary row for trajectories/index.json (no steps[]/aggregates)."""
+    """Short summary row for trajectories/index.json (no steps[]/aggregates).
+
+    ``time_breakdown_sec`` carries the trajectory-level sums that decompose
+    ``elapsed_sec`` into exec / lifecycle-API (resume+pause) / inter-step think
+    delay / create+kill cost / queueing waits. Values are the sums already
+    rounded in ``_build_record`` (``rec["sums"]`` for the SEG_KEYS +
+    ``requested_delay_sec`` / ``create_sec`` / ``kill_sec`` at the record top
+    level). Surfacing them in the index -- not just in each replay_result.json --
+    lets downstream consumers (the oversub driver's trajectory-detail.csv)
+    attribute per-trajectory wall time from one file read per trial instead of
+    walking every replay_result.json.
+    """
+    sums = rec["sums"]
     return {
         "trajectory_id": rec["trajectory_id"],
         "sandbox_index": rec["sandbox_index"],
@@ -234,6 +246,20 @@ def _index_row(rec: dict, sanitized: str) -> dict:
         "n_timeout": rec["n_timeout"],
         "success_rate": rec["success_rate"],
         "elapsed_sec": rec["elapsed_sec"],
+        "time_breakdown_sec": {
+            "slice_total": sums["slice_total_sec"],
+            "exec": sums["exec_sec"],
+            "resume": sums["resume_sec"],
+            "pause": sums["pause_sec"],
+            "requested_delay": rec["requested_delay_sec"],
+            "create": rec["create_sec"],
+            "kill": rec["kill_sec"],
+            "interaction_total": sums["interaction_total_sec"],
+            "slot_contention_wait": sums["slot_contention_wait_sec"],
+            "resume_queue_wait": sums["resume_queue_wait_sec"],
+            "pause_queue_wait": sums["pause_queue_wait_sec"],
+            "running_slot_held": sums["running_slot_held_sec"],
+        },
         "create_error_type": rec["create_error_type"],
         "kill_error_type": rec["kill_error_type"],
         "file": f"{sanitized}/replay_result.json",
