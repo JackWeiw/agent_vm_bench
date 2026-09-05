@@ -75,6 +75,22 @@ def _coerce_modes(v) -> list[str]:
     raise ValueError(f"modes must be a list or string, got {type(v).__name__}")
 
 
+def _coerce_cmd(v) -> list[str]:
+    """Normalize a ``bench_core_bin`` value to a list of argv elements.
+
+    A YAML scalar (``bench_core_bin: bench-core``) is ONE argv element -- the
+    binary name -- not a shell line, so it is wrapped rather than split. Without
+    this, ``[*args.bench_core_bin, ...]`` would spread a scalar string into
+    chars (``['b', 'e', ...]``) and the driver would try to exec ``b``. Use a
+    list (``[python, -m, stub]``) for a multi-element command.
+    """
+    if isinstance(v, str):
+        return [v]
+    if isinstance(v, list | tuple):
+        return [str(x) for x in v]
+    raise ValueError(f"bench_core_bin must be a string or list, got {type(v).__name__}")
+
+
 def default_running_concurrency(base: dict) -> int:
     """N = ``replay.running_concurrency``, falling back to ``sandbox.total_count``."""
     replay = base.get("replay") or {}
@@ -696,7 +712,7 @@ def main(argv: list[str] | None = None) -> int:
     args.stop_on_failure = resolve("stop_on_failure")
     args.dry_run = resolve("dry_run")
     args.no_vm_monitor = resolve("no_vm_monitor")
-    args.bench_core_bin = resolve("bench_core_bin")
+    args.bench_core_bin = _coerce_cmd(resolve("bench_core_bin"))
 
     output_root_arg = resolve("output_root")
     if output_root_arg:

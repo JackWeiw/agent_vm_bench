@@ -479,6 +479,7 @@ def test_run_with_stub_aggregates_trials(tmp_path):
 import pytest  # noqa: E402
 
 from bench_core.oversub import (  # noqa: E402
+    _coerce_cmd,
     _coerce_modes,
     _coerce_ratios,
     load_sweep_config,
@@ -509,6 +510,15 @@ def test_coerce_modes_list_and_string():
     assert _coerce_modes("lifecycle, exec_only") == ["lifecycle", "exec_only"]
     with pytest.raises(ValueError):
         _coerce_modes(5)
+
+
+def test_coerce_cmd_scalar_not_char_spread():
+    # A YAML scalar ``bench_core_bin: bench-core`` must become a one-element
+    # argv list, NOT be spread into chars by ``[*args.bench_core_bin, ...]``.
+    assert _coerce_cmd("bench-core") == ["bench-core"]
+    assert _coerce_cmd(["python", "-m", "stub"]) == ["python", "-m", "stub"]
+    with pytest.raises(ValueError):
+        _coerce_cmd(5)
 
 
 def test_load_sweep_config_rejects_unknown_keys(tmp_path):
@@ -599,6 +609,29 @@ def test_main_config_flag_overrides_sweep_base_config(tmp_path):
     cfg = yaml.safe_load(sorted(out_root.glob("lifecycle/ratio-*/repeat-00/trial.yaml"))[0].read_text(encoding="utf-8"))
     # real.yaml (total_count 4) used, not decoy (99): 2*4 = 8, not 2*99.
     assert cfg["sandbox"]["total_count"] == 8
+
+
+def test_main_sweep_scalar_bench_core_bin_reaches_cmd(tmp_path, caplog):
+    """A scalar bench_core_bin in YAML must reach the dry-run cmd as one argv token
+    (proves ``_coerce_cmd`` wiring: not char-split by ``[*args.bench_core_bin, ...]``)."""
+    base = tmp_path / "base.yaml"
+    base.write_text(yaml.safe_dump(_base_yaml_dict(), sort_keys=False), encoding="utf-8")
+    sweep = tmp_path / "sweep.yaml"
+    sweep.write_text(
+        yaml.safe_dump(
+            {"base_config": str(base), "ratios": [1], "modes": ["lifecycle"], "bench_core_bin": "mybench"},
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    out_root = tmp_path / "sweep"
+    with caplog.at_level("INFO", logger="bench_core.oversub"):
+        rc = main(["--sweep-config", str(sweep), "--dry-run", "--output-root", str(out_root)])
+    assert rc == 0
+    dry = [r.message for r in caplog.records if "[dry-run]" in r.message]
+    assert dry, "expected a [dry-run] log line"
+    # "[dry-run] mybench --config ...": mybench is a single token, not m / y / b / ...
+    assert dry[0].split()[1] == "mybench"
 
 
 def test_main_missing_config_returns_error(tmp_path):
