@@ -28,7 +28,7 @@ failure_tolerance: 0.0        # max failure_rate for a trial to count as valid (
 cooldown_sec: 30              # settle time between trials
 cleanup_between_trials: on    # pre-trial teardown of leftovers so they don't corrupt the ratio
 trial_timeout_sec: 0          # outer wall-clock per trial; 0 = off
-# output_root: null           # null = runs/oversub-N{N}-{timestamp}/
+# output_root: null           # null = results/oversub/oversub-N{N}-{timestamp}/
 
 reuse: false                  # skip completed-valid trials (restart safety)
 stop_on_failure: false        # halt on first invalid trial
