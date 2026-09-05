@@ -92,7 +92,7 @@ class TestDiskIoAndHostMemSheets(unittest.TestCase):
         self.monitor = DummyMonitor()
         _populate(self.monitor)
         self.log_dir = tempfile.mkdtemp(prefix="vm_monitor_disk_")
-        self.output_file = os.path.join(self.log_dir, "analysis_report.xlsx")
+        self.output_file = os.path.join(self.log_dir, "resource_report.xlsx")
 
     def tearDown(self):
         for f in os.listdir(self.log_dir):

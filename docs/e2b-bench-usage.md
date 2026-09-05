@@ -652,7 +652,7 @@ vm_monitor:
 - When benchmark phase begins, stress file is created (`touch /dev/shm/e2b_benchmark_lock`)
 - vm_monitor detects stress file and starts collecting metrics
 - When benchmark ends, stress file is removed
-- vm_monitor stops sampling and generates `analysis_report.xlsx`
+- vm_monitor stops sampling and generates `resource_report.xlsx`
 
 **CLI flags passed to vm_monitor:**
 - `--vmm firecracker` (from config)
@@ -705,7 +705,7 @@ result:
       - Run benchmark
       - Stop vm_monitor sampling
       - Save bench_report.txt
-      - Wait for analysis_report.xlsx
+      - Wait for resource_report.xlsx
    e. Cleanup: stop smap_tool, kill sandboxes
 3. Extract metrics from all results
 4. Generate aggregated Excel summary (styled, with source grouping)
@@ -726,7 +726,7 @@ results/e2b/batch/
 │   │   ├── test_log.txt
 │   │   ├── bench_report.txt
 │   │   └── vm_monitor/
-│   │       ├── analysis_report.xlsx
+│   │       ├── resource_report.xlsx
 │   │       ├── monitor_stdout.log
 │   │       └── monitor_stderr.log
 │   └── tc10_ratio10_bp0.75_.../
@@ -928,7 +928,7 @@ Phase 2: For each group:
         ├── Trigger stress file (start sampling)
         ├── Run benchmark
         ├── Remove stress file (stop sampling)
-        ├── Wait for analysis_report.xlsx
+        ├── Wait for resource_report.xlsx
         └── Save bench_report.txt
 
 Phase 3: Cleanup group (stop smap_tool, kill sandboxes)

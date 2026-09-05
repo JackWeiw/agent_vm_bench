@@ -1,7 +1,7 @@
 """
 Metrics Extractor Module
 
-Extracts performance metrics from vm_monitor analysis_report.xlsx.
+Extracts performance metrics from vm_monitor resource_report.xlsx.
 Supports all sheet types: Summary, DevKit_TopDown, DevKit_Memory,
 NUMA_Bandwidth, KSys, UBWatch_Latency, UBWatch_Bandwidth, SMAPBW, Getfre.
 """
@@ -15,17 +15,17 @@ logger = logging.getLogger(__name__)
 
 
 class MetricsExtractor:
-    """Extract metrics from vm_monitor analysis_report.xlsx"""
+    """Extract metrics from vm_monitor resource_report.xlsx"""
 
     def __init__(self):
         pass
 
     def extract(self, analysis_file: str) -> dict[str, Any]:
         """
-        Extract all metrics from analysis_report.xlsx
+        Extract all metrics from resource_report.xlsx
 
         Args:
-            analysis_file: Path to analysis_report.xlsx
+            analysis_file: Path to resource_report.xlsx
 
         Returns:
             Dict containing all extracted metrics with prefixed keys

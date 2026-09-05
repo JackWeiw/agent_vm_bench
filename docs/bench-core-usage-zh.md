@@ -334,10 +334,10 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
 - `template_manifest` 是 `{trajectory相对路径: template}` 的 side JSON。多模板时,非 trajectory
   模式按 template 亲和路由(孤儿模板跳过计数);trajectory 模式 `create_one(template=)` 逐条带。
 
-### 8.4 可观测性工作簿 (`*_obs.xlsx`)
+### 8.4 可观测性工作簿 (`*_replay_obs_report.xlsx`)
 
 `report.format: xlsx|both` 时,除了文本报告 + JSONL lifecycle series,还会产出
-`<output_dir>/<prefix>_obs.xlsx`(8 张表,openpyxl 渲染;Overview 为合并汇总看板——原 Admission & QPS / Throughput & overcommit / Retry impact 三张标量表已并入,数据名称栏填色加粗)。所有时长列**统一为秒(s)**,
+`<output_dir>/<prefix>_replay_obs_report.xlsx`(8 张表,openpyxl 渲染;Overview 为合并汇总看板——原 Admission & QPS / Throughput & overcommit / Retry impact 三张标量表已并入,数据名称栏填色加粗)。所有时长列**统一为秒(s)**,
 与参考实现的 `step-detail.csv` 单位一致;`Per-step timings` / `Lifecycle overhead`
 两张表的内嵌折图为可读性用毫秒(ms),表头会标注。无 lifecycle_series 文件时(如
 minimal install),依赖 series 的表只输出表头,不报错。
@@ -405,5 +405,5 @@ minimal install),依赖 series 的表只输出表头,不报错。
 > per-second 并发状态见 `Concurrency states`;snapshot 内存见 `Snapshot sizes`。
 > per-instance 的 per-step 百分位分布不在本表——按 `trajectory_id` 在 `Step detail` 筛即可,
 > 池化百分位见 `Lifecycle overhead` / `Per-step timings`。
-> host 级系统资源(CPU/内存/NUMA)在独立的 vm_monitor `analysis_report.xlsx`(`monitor.merge_report: false` 时)或合并进
+> host 级系统资源(CPU/内存/NUMA)在独立的 vm_monitor `resource_report.xlsx`(`monitor.merge_report: false` 时)或合并进
 > 本工作簿的 `VM_Stats`/`NUMA_Overview`/`DevKit_TopDown` sheet(`merge_report: true` 时)。

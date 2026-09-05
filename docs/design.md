@@ -304,7 +304,7 @@ python auto_vm_test.py --config config/openstack/test_config_template.yaml
   ├─ 验证监控日志文件完整性
   │   - qemu_monitor.csv
   │   - summary.csv
-  │   - analysis_report.xlsx
+  │   - resource_report.xlsx
   │   - devkit_mem.log / devkit_top_down.log
   │   - ksys.log / ub_watch.log
   ├─ 清理锁文件
@@ -564,7 +564,7 @@ results/
 │   ├── qemu_monitor/                           # qemu_monitor 输出
 │   │   ├── qemu_monitor.csv                    # QEMU监控数据
 │   │   ├── summary.csv                         # 汇总统计
-│   │   ├── analysis_report.xlsx                # 分析报告(Excel)
+│   │   ├── resource_report.xlsx                # 分析报告(Excel)
 │   │   ├── devkit_mem.log                      # devkit内存日志
 │   │   ├── devkit_top_down.log                 # devkit top-down日志
 │   │   ├── ksys.log                            # ksys日志

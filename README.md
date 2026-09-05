@@ -264,7 +264,7 @@ Key flags:
 ### Outputs
 
 - `<prefix>.csv`, `summary.csv` — per-sample raw + summary stats.
-- `analysis_report.xlsx` — multi-sheet report (Summary, NUMA, VM stats,
+- `resource_report.xlsx` — multi-sheet report (Summary, NUMA, VM stats,
   DevKit_TopDown/Memory, KSys, UBWatch, SMAPBW, Getfre, Swap/NUMA/VM-total
   timelines, **Disk_IO_Timeline**, **Host_Mem_Timeline**,
   **Host_Pressure_Timeline**) with charts.

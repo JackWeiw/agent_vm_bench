@@ -774,7 +774,7 @@ class BatchTask:
     # Runtime state (filled after execution)
     result_dir: str | None = None  # Result directory path
     report_file: str | None = None  # bench_report.txt path
-    analysis_file: str | None = None  # analysis_report.xlsx path
+    analysis_file: str | None = None  # resource_report.xlsx path
     browser_metrics: dict[str, Any] | None = None  # Extracted browser metrics
     coding_metrics: dict[str, Any] | None = None  # Extracted coding metrics
     document_metrics: dict[str, Any] | None = None  # Extracted PDF/XLSX metrics

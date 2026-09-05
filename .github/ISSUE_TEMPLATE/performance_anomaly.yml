@@ -56,7 +56,7 @@ body:
     id: reports
     attributes:
       label: Relevant reports / logs
-      description: Excerpts from bench_report, analysis_report.xlsx summary, or test_log.txt.
+      description: Excerpts from bench_report, resource_report.xlsx summary, or test_log.txt.
       render: shell
     validations:
       required: false

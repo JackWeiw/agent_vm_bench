@@ -203,9 +203,9 @@ def test_stop_collects_report_and_closes_handles(monkeypatch, tmp_path):
     )
     mc.start()
     # pre-create the report so stop() finds it immediately
-    (tmp_path / "analysis_report.xlsx").write_text("x")
+    (tmp_path / "resource_report.xlsx").write_text("x")
     artifacts = mc.stop()
-    assert mc.report_xlsx == tmp_path / "analysis_report.xlsx"
+    assert mc.report_xlsx == tmp_path / "resource_report.xlsx"
     assert artifacts and artifacts[0] == mc.report_xlsx
     assert mc._stdout_fh is None and mc._stderr_fh is None  # closed
 
@@ -259,7 +259,7 @@ def _make_src_xlsx(path):
 
 def test_merge_source_returns_report_when_enabled(monkeypatch, tmp_path):
     monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
-    src = tmp_path / "analysis_report.xlsx"
+    src = tmp_path / "resource_report.xlsx"
     _make_src_xlsx(src)
     mc = MonitorController(
         _cfg(merge_report=True, stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path)),
@@ -278,7 +278,7 @@ def test_merge_source_none_when_no_report(monkeypatch, tmp_path):
 
 def test_merge_source_none_when_disabled(monkeypatch, tmp_path):
     monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
-    src = tmp_path / "analysis_report.xlsx"
+    src = tmp_path / "resource_report.xlsx"
     _make_src_xlsx(src)
     mc = MonitorController(
         _cfg(merge_report=False, stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path)),

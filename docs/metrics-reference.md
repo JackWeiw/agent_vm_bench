@@ -197,7 +197,7 @@ Assembled by `stats_collector.generate_report()` in this order:
 
 `vm-monitor` writes two artifact families into its `--log-dir` (default `logs_<timestamp>/`):
 
-- **`analysis_report.xlsx`** — the sheets below (sections 2.1–2.3) + embedded charts (2.4).
+- **`resource_report.xlsx`** — the sheets below (sections 2.1–2.3) + embedded charts (2.4).
 - **`*.svg`** — dark-themed time-curve reports (2.5).
 
 Sheets are **conditional**: a sheet is written only when its source history (or, for profiler sheets, the parsed tool log) is non-empty. Column/header strings below are exact.

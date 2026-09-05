@@ -901,10 +901,10 @@ def _add_charts(build_file):
     Operates on ``build_file`` (a temp path, NOT the final report path) and
     re-saves it via an atomic temp+rename so a SIGTERM mid-save cannot
     truncate the workbook. The caller (export_to_excel) then atomically
-    promotes ``build_file`` to the final analysis_report.xlsx -- so the final
+    promotes ``build_file`` to the final resource_report.xlsx -- so the final
     path appears exactly once, complete with charts. This matters because
     bench-core's MonitorController.stop() reaps the vm_monitor subprocess the
-    moment analysis_report.xlsx appears; if the final path were written twice
+    moment resource_report.xlsx appears; if the final path were written twice
     (pandas, then this re-save), that reap would SIGTERM wb.save mid-write and
     leave a truncated zip that Excel rejects as corrupt.
     """
@@ -1448,7 +1448,7 @@ def export_to_excel(
         monitor: QEMUMonitor instance with collected data
         log_dir: directory containing log files
         numa_nodes: list of NUMA nodes monitored
-        output_file: Excel output filename (default: analysis_report.xlsx in log_dir)
+        output_file: Excel output filename (default: resource_report.xlsx in log_dir)
         capture_results: LogCapture results (optional)
 
     Returns:
@@ -1460,14 +1460,14 @@ def export_to_excel(
         return None
 
     if output_file is None:
-        output_file = os.path.join(log_dir, "analysis_report.xlsx")
+        output_file = os.path.join(log_dir, "resource_report.xlsx")
 
     # Parse log files
     parsed_logs = parse_all_logs(log_dir, numa_nodes)
 
     # Write to a build path first, then atomically promote it onto output_file.
     # This is not cosmetic: bench-core's MonitorController.stop() reaps this
-    # subprocess the instant analysis_report.xlsx appears (it polls the path,
+    # subprocess the instant resource_report.xlsx appears (it polls the path,
     # then SIGTERMs the process). If pandas wrote the final path directly, the
     # reap could fire between the pandas write and _add_charts' re-save,
     # truncating the workbook mid-write -- Excel then rejects it as corrupt.
@@ -1699,7 +1699,7 @@ def print_capture_summary(results: dict, log_dir: str, numa_nodes: list = None):
 
 
 def add_l3_hit_rate_to_excel(result_dir: str, numa_nodes: list = None) -> bool:
-    """Offline fix: Add L3 Hit Rate to DevKit_Memory sheet in existing analysis_report.xlsx
+    """Offline fix: Add L3 Hit Rate to DevKit_Memory sheet in existing resource_report.xlsx
 
     Reads devkit_mem.log and extracts L3 hit rate, then adds it to DevKit_Memory sheet.
     Useful for updating legacy Excel files that were generated before L3 hit rate extraction.
@@ -1726,7 +1726,7 @@ def add_l3_hit_rate_to_excel(result_dir: str, numa_nodes: list = None) -> bool:
         print(f"[WARN] Monitor directory not found in {result_dir}")
         return False
 
-    excel_path = os.path.join(vm_dir, "analysis_report.xlsx")
+    excel_path = os.path.join(vm_dir, "resource_report.xlsx")
     devkit_mem_path = os.path.join(vm_dir, "devkit_mem.log")
 
     if not os.path.exists(excel_path):

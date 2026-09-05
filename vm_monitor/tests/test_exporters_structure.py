@@ -524,7 +524,7 @@ class TestExportStructure(unittest.TestCase):
         self.monitor = _full_monitor()
         self.parsed_logs = _full_parsed_logs()
         self.log_dir = tempfile.mkdtemp(prefix="vm_monitor_struct_")
-        self.output_file = os.path.join(self.log_dir, "analysis_report.xlsx")
+        self.output_file = os.path.join(self.log_dir, "resource_report.xlsx")
 
     def tearDown(self):
         for f in os.listdir(self.log_dir):
@@ -790,7 +790,7 @@ class TestDroppedMetricsExported(unittest.TestCase):
         self.monitor = _full_monitor()
         self.parsed_logs = _full_parsed_logs()
         self.log_dir = tempfile.mkdtemp(prefix="vm_monitor_dropped_")
-        self.output_file = os.path.join(self.log_dir, "analysis_report.xlsx")
+        self.output_file = os.path.join(self.log_dir, "resource_report.xlsx")
 
     def tearDown(self):
         for f in os.listdir(self.log_dir):
@@ -912,7 +912,7 @@ class TestDroppedMetricCharts(unittest.TestCase):
         self.monitor = _full_monitor()
         self.parsed_logs = _full_parsed_logs()
         self.log_dir = tempfile.mkdtemp(prefix="vm_monitor_charts_")
-        self.output_file = os.path.join(self.log_dir, "analysis_report.xlsx")
+        self.output_file = os.path.join(self.log_dir, "resource_report.xlsx")
 
     def tearDown(self):
         for f in os.listdir(self.log_dir):
@@ -968,11 +968,11 @@ class TestDroppedMetricCharts(unittest.TestCase):
 
 @unittest.skipUnless(PANDAS_AVAILABLE and load_workbook is not None, "pandas/openpyxl required")
 class TestAtomicReportWrite(unittest.TestCase):
-    """The final analysis_report.xlsx must appear exactly once, atomically,
+    """The final resource_report.xlsx must appear exactly once, atomically,
     complete with charts.
 
     bench-core's MonitorController.stop() reaps the vm_monitor subprocess the
-    moment analysis_report.xlsx appears (it polls the path, then SIGTERMs the
+    moment resource_report.xlsx appears (it polls the path, then SIGTERMs the
     process). export_to_excel used to write the final path TWICE: pandas wrote
     it (sheets, no charts), then _add_charts did load_workbook + wb.save on the
     SAME path. The reap fired after the pandas write and SIGTERMed the process
@@ -985,7 +985,7 @@ class TestAtomicReportWrite(unittest.TestCase):
         self.monitor = _full_monitor()
         self.parsed_logs = _full_parsed_logs()
         self.log_dir = tempfile.mkdtemp(prefix="vm_monitor_atomic_")
-        self.output_file = os.path.join(self.log_dir, "analysis_report.xlsx")
+        self.output_file = os.path.join(self.log_dir, "resource_report.xlsx")
 
     def tearDown(self):
         for f in os.listdir(self.log_dir):
@@ -1017,7 +1017,7 @@ class TestAtomicReportWrite(unittest.TestCase):
         self.assertIn("exists_at_chart_time", seen, "_add_charts was never called")
         self.assertFalse(
             seen["exists_at_chart_time"],
-            "final analysis_report.xlsx must not exist during the chart phase "
+            "final resource_report.xlsx must not exist during the chart phase "
             "(MonitorController would reap + SIGTERM the wb.save mid-write -> corrupt zip)",
         )
 
@@ -1037,9 +1037,9 @@ class TestAtomicReportWrite(unittest.TestCase):
 
     def test_no_build_temp_left_behind(self):
         """After a successful export, no .build temp lingers in the log dir --
-        only the final analysis_report.xlsx (and unrelated CSVs)."""
+        only the final resource_report.xlsx (and unrelated CSVs)."""
         self._export()
-        leftovers = [f for f in os.listdir(self.log_dir) if f.endswith(".xlsx") and f != "analysis_report.xlsx"]
+        leftovers = [f for f in os.listdir(self.log_dir) if f.endswith(".xlsx") and f != "resource_report.xlsx"]
         self.assertEqual(leftovers, [], f"build temp left behind: {leftovers}")
 
 
