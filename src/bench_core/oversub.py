@@ -50,6 +50,31 @@ def parse_ratios(text: str) -> list[int]:
     return vals
 
 
+def _coerce_ratios(v) -> list[int]:
+    """YAML list ``[1, 2, 3]`` or comma string ``"1,2,3"`` -> ``[1, 2, 3]``.
+
+    A sweep-config may carry either form (lists are idiomatic in YAML, strings
+    match the ``--ratios`` CLI flag); normalize to a validated list of ints.
+    """
+    if isinstance(v, str):
+        return parse_ratios(v)
+    if isinstance(v, list | tuple):
+        vals = [int(x) for x in v]
+        if not vals or any(x < 1 for x in vals):
+            raise ValueError(f"ratios must be positive, got {vals}")
+        return vals
+    raise ValueError(f"ratios must be a list or string, got {type(v).__name__}")
+
+
+def _coerce_modes(v) -> list[str]:
+    """YAML list or comma string -> stripped, non-empty mode names."""
+    if isinstance(v, str):
+        return [m.strip() for m in v.split(",") if m.strip()]
+    if isinstance(v, list | tuple):
+        return [str(m).strip() for m in v if str(m).strip()]
+    raise ValueError(f"modes must be a list or string, got {type(v).__name__}")
+
+
 def default_running_concurrency(base: dict) -> int:
     """N = ``replay.running_concurrency``, falling back to ``sandbox.total_count``."""
     replay = base.get("replay") or {}
@@ -59,6 +84,46 @@ def default_running_concurrency(base: dict) -> int:
     if n < 1:
         raise ValueError(f"running_concurrency must be >= 1, got {n}")
     return n
+
+
+# True defaults for the sweep knobs (used when neither a CLI flag nor a
+# sweep-config value is given). Mirrors build_arg_parser; main() resolves
+# CLI flag > sweep-config > these.
+_TRUE_DEFAULTS: dict[str, object] = {
+    "provider": "aenv",
+    "running_concurrency": None,
+    "ratios": "1,2,3",
+    "modes": "lifecycle,exec_only",
+    "repeats": 1,
+    "test_duration": None,
+    "failure_tolerance": 0.0,
+    "cooldown_sec": 30,
+    "cleanup_between_trials": "on",
+    "trial_timeout_sec": 0,
+    "output_root": None,
+    "reuse": False,
+    "stop_on_failure": False,
+    "dry_run": False,
+    "no_vm_monitor": False,
+    "bench_core_bin": ["bench-core"],
+}
+
+
+def load_sweep_config(path: Path | str) -> dict:
+    """Load a sweep-config YAML (mirrors the CLI knobs + ``base_config``).
+
+    Returns the raw mapping; ``ratios``/``modes`` stay in their YAML form and
+    are coerced later by main(). Unknown keys are rejected so a typo
+    (``repeat:`` vs ``repeats:``) fails loudly instead of being silently ignored.
+    """
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"sweep config must be a mapping, got {type(raw).__name__}")
+    known = set(_TRUE_DEFAULTS) | {"base_config"}
+    unknown = set(raw) - known
+    if unknown:
+        raise ValueError(f"unknown sweep-config key(s): {sorted(unknown)}")
+    return raw
 
 
 def build_trial_config(
@@ -379,48 +444,61 @@ def build_arg_parser() -> argparse.ArgumentParser:
         prog="oversub-bench",
         description="Sweep the bench-core replay kernel across oversubscription ratios.",
     )
-    p.add_argument("--config", required=True, help="base replay.yaml")
-    p.add_argument("--provider", default="aenv", help="provider name (default aenv)")
+    p.add_argument(
+        "--sweep-config", default=None, help="sweep-config YAML (all knobs + base_config); CLI flags override it"
+    )
+    p.add_argument("--config", default=None, help="base replay.yaml (required unless sweep-config sets base_config)")
+    p.add_argument("--provider", default=None, help="provider name (default aenv)")
     p.add_argument(
         "--running-concurrency",
         type=int,
         default=None,
-        help="N running slots; default = base replay.running_concurrency",
+        help="N running slots (default = base replay.running_concurrency)",
     )
-    p.add_argument("--ratios", default="1,2,3", help="comma-separated k values (default 1,2,3)")
+    p.add_argument("--ratios", default=None, help="comma-separated k values (default 1,2,3)")
+    p.add_argument("--modes", default=None, help="comma-separated replay modes (default lifecycle,exec_only)")
+    p.add_argument("--repeats", type=int, default=None, help="repeats per (mode,ratio) (default 1)")
     p.add_argument(
-        "--modes",
-        default="lifecycle,exec_only",
-        help="comma-separated replay modes to sweep (default lifecycle,exec_only)",
+        "--test-duration", type=int, default=None, help="sustained window per trial (default = base test.duration)"
     )
-    p.add_argument("--repeats", type=int, default=1, help="repeats per (mode,ratio)")
-    p.add_argument(
-        "--test-duration",
-        type=int,
-        default=None,
-        help="sustained measurement window per trial (default = base test.duration)",
-    )
-    p.add_argument("--failure-tolerance", type=float, default=0.0, help="max failure_rate for valid (0.0 = strict)")
-    p.add_argument("--cooldown-sec", type=int, default=30, help="settle time between trials")
+    p.add_argument("--failure-tolerance", type=float, default=None, help="max failure_rate for valid (default 0.0)")
+    p.add_argument("--cooldown-sec", type=int, default=None, help="settle time between trials (default 30)")
     p.add_argument(
         "--cleanup-between-trials",
         choices=["on", "off"],
-        default="on",
+        default=None,
         help="pre-trial teardown of leftovers (default on)",
     )
     p.add_argument(
-        "--trial-timeout-sec", type=int, default=0, help="outer wall-clock per trial; terminate->10s->kill (0 = off)"
+        "--trial-timeout-sec",
+        type=int,
+        default=None,
+        help="outer wall-clock per trial; terminate->10s->kill (0 = off, default 0)",
     )
     p.add_argument("--output-root", default=None, help="default runs/oversub-N{N}-{ts}/")
-    p.add_argument("--reuse", action="store_true", help="skip trials whose run_summary exists & recomputes valid")
-    p.add_argument("--stop-on-failure", action="store_true", help="halt on first invalid trial (default off)")
-    p.add_argument("--dry-run", action="store_true", help="print all trial.yaml + commands, write empty outputs")
-    p.add_argument("--no-vm-monitor", action="store_true", help="pass --no-vm-monitor through to bench-core")
     p.add_argument(
-        "--bench-core-bin",
-        nargs="+",
-        default=["bench-core"],
-        help="command for the kernel subprocess (default bench-core; tests point at a stub)",
+        "--reuse", action=argparse.BooleanOptionalAction, default=None, help="skip completed-valid trials (default off)"
+    )
+    p.add_argument(
+        "--stop-on-failure",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="halt on first invalid trial (default off)",
+    )
+    p.add_argument(
+        "--dry-run",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="print trial.yaml + commands, write empty outputs (default off)",
+    )
+    p.add_argument(
+        "--no-vm-monitor",
+        action="store_true",
+        default=None,
+        help="pass --no-vm-monitor through to bench-core (default off)",
+    )
+    p.add_argument(
+        "--bench-core-bin", nargs="+", default=None, help="command for the kernel subprocess (default bench-core)"
     )
     return p
 
@@ -575,26 +653,66 @@ def _run_trial(
 def main(argv: list[str] | None = None) -> int:
     setup_logging()
     args = build_arg_parser().parse_args(argv)
-    with open(args.config, encoding="utf-8") as f:
-        base_yaml = yaml.safe_load(f)
-    n = args.running_concurrency or default_running_concurrency(base_yaml)
-    ratios = parse_ratios(args.ratios)
-    modes = [m.strip() for m in args.modes.split(",") if m.strip()]
-    test_duration = args.test_duration or (base_yaml.get("test") or {}).get("duration", 600)
+    sweep = load_sweep_config(args.sweep_config) if args.sweep_config else {}
 
-    if args.output_root:
-        output_root = Path(args.output_root)
+    def resolve(key: str):
+        # CLI flag > sweep-config > built-in default. Sentinel ``None`` default on
+        # every arg means "not passed", so an explicit --ratios 4 beats the YAML.
+        cli = getattr(args, key, None)
+        if cli is not None:
+            return cli
+        return sweep.get(key, _TRUE_DEFAULTS[key])
+
+    # Base replay.yaml: --config wins, else sweep base_config, else fail.
+    base_config_path = args.config or sweep.get("base_config")
+    if not base_config_path:
+        logger.error("must provide --config or a sweep-config with base_config")
+        return 2
+    with open(base_config_path, encoding="utf-8") as f:
+        base_yaml = yaml.safe_load(f)
+
+    n = resolve("running_concurrency")
+    n = int(n) if n is not None else None
+    n = n or default_running_concurrency(base_yaml)
+    ratios = _coerce_ratios(resolve("ratios"))
+    modes = _coerce_modes(resolve("modes"))
+    repeats = int(resolve("repeats"))
+    td = resolve("test_duration")
+    test_duration = int(td) if td is not None else None
+    test_duration = test_duration or (base_yaml.get("test") or {}).get("duration", 600)
+
+    # Write resolved values back so _run_trial / _run_subprocess read them unchanged.
+    args.config = base_config_path
+    args.provider = resolve("provider")
+    args.ratios = ratios
+    args.modes = modes
+    args.repeats = repeats
+    args.test_duration = test_duration
+    args.failure_tolerance = float(resolve("failure_tolerance"))
+    args.cooldown_sec = int(resolve("cooldown_sec"))
+    args.cleanup_between_trials = resolve("cleanup_between_trials")
+    args.trial_timeout_sec = int(resolve("trial_timeout_sec"))
+    args.reuse = resolve("reuse")
+    args.stop_on_failure = resolve("stop_on_failure")
+    args.dry_run = resolve("dry_run")
+    args.no_vm_monitor = resolve("no_vm_monitor")
+    args.bench_core_bin = resolve("bench_core_bin")
+
+    output_root_arg = resolve("output_root")
+    if output_root_arg:
+        output_root = Path(output_root_arg)
     else:
         output_root = Path(f"runs/oversub-N{n}-{time.strftime('%Y%m%d-%H%M%S')}")
     output_root.mkdir(parents=True, exist_ok=True)
 
     configuration = {
-        "base_config": args.config,
+        "base_config": str(base_config_path),
+        "sweep_config": str(args.sweep_config) if args.sweep_config else None,
         "provider": args.provider,
         "running_concurrency": n,
         "ratios": ratios,
         "modes": modes,
-        "repeats": args.repeats,
+        "repeats": repeats,
         "test_duration": test_duration,
         "failure_tolerance": args.failure_tolerance,
         "cooldown_sec": args.cooldown_sec,
@@ -602,7 +720,7 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     # Natural trial order: for mode, for ratio, for repeat.
-    matrix = [(mode, ratio, repeat) for mode in modes for ratio in ratios for repeat in range(args.repeats)]
+    matrix = [(mode, ratio, repeat) for mode in modes for ratio in ratios for repeat in range(repeats)]
 
     trials: list[dict] = []
     is_first = True

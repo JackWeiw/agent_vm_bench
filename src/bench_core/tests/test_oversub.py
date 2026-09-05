@@ -472,3 +472,139 @@ def test_run_with_stub_aggregates_trials(tmp_path):
     # trajectory-detail has 2 rows (one per stub trial).
     trj = (out_root / "trajectory-detail.csv").read_text(encoding="utf-8").strip().splitlines()
     assert len(trj) == 1 + 2
+
+
+# ---- sweep-config YAML (--sweep-config) ----
+
+import pytest  # noqa: E402
+
+from bench_core.oversub import (  # noqa: E402
+    _coerce_modes,
+    _coerce_ratios,
+    load_sweep_config,
+)
+
+
+def _base_yaml_dict() -> dict:
+    return {
+        "workflow_type": "replay",
+        "sandbox": {"total_count": 4},
+        "replay": {"running_concurrency": 4, "mode": "lifecycle"},
+        "test": {"duration": 60, "round_size": 4, "round_count": 1, "benchmark_mode": "round_robin"},
+        "report": {"output_dir": "results/replay", "filename_prefix": "rb", "format": "both"},
+    }
+
+
+def test_coerce_ratios_list_and_string():
+    assert _coerce_ratios([1, 2, 3]) == [1, 2, 3]
+    assert _coerce_ratios("1,2,3") == [1, 2, 3]
+    with pytest.raises(ValueError):
+        _coerce_ratios([0, 1])  # non-positive
+    with pytest.raises(ValueError):
+        _coerce_ratios(5)  # wrong type
+
+
+def test_coerce_modes_list_and_string():
+    assert _coerce_modes(["lifecycle", "exec_only"]) == ["lifecycle", "exec_only"]
+    assert _coerce_modes("lifecycle, exec_only") == ["lifecycle", "exec_only"]
+    with pytest.raises(ValueError):
+        _coerce_modes(5)
+
+
+def test_load_sweep_config_rejects_unknown_keys(tmp_path):
+    p = tmp_path / "bad.yaml"
+    p.write_text("base_config: x.yaml\nrepeat: 1\n", encoding="utf-8")  # 'repeat' is a typo of 'repeats'
+    with pytest.raises(ValueError, match="unknown sweep-config key"):
+        load_sweep_config(p)
+
+
+def test_shipped_example_sweep_config_loads():
+    repo = Path(__file__).resolve().parents[3]  # repo root
+    cfg = load_sweep_config(repo / "config" / "oversub" / "lifecycle-1to3.yaml")
+    assert cfg["base_config"] == "config/common/replay.yaml"
+    assert cfg["ratios"] == [1, 2, 3]
+    assert cfg["modes"] == ["lifecycle", "exec_only"]
+    # template should load too (every key must be known).
+    load_sweep_config(repo / "config" / "oversub" / "template.yaml")
+
+
+def test_main_sweep_config_drives_trials(tmp_path):
+    """--sweep-config alone (base_config inside) drives the matrix via dry-run."""
+    base = tmp_path / "base.yaml"
+    base.write_text(yaml.safe_dump(_base_yaml_dict(), sort_keys=False), encoding="utf-8")
+    sweep = tmp_path / "sweep.yaml"
+    sweep.write_text(
+        yaml.safe_dump(
+            {"base_config": str(base), "ratios": [1, 2], "modes": ["lifecycle"], "test_duration": 60},
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    out_root = tmp_path / "sweep"
+    rc = main(["--sweep-config", str(sweep), "--dry-run", "--output-root", str(out_root)])
+    assert rc == 0
+    yamls = sorted(out_root.glob("lifecycle/ratio-*/repeat-00/trial.yaml"))
+    assert len(yamls) == 2
+    cfg2 = yaml.safe_load(yamls[1].read_text(encoding="utf-8"))
+    assert cfg2["sandbox"]["total_count"] == 8  # 2 * N(4)
+    assert cfg2["test"]["round_count"] == 0  # sustained
+    # configuration recorded both base_config + sweep_config in the report.
+    rep = json.loads((out_root / "benchmark-report.json").read_text(encoding="utf-8"))
+    assert rep["configuration"]["base_config"] == str(base)
+    assert rep["configuration"]["sweep_config"] == str(sweep)
+    assert rep["configuration"]["ratios"] == [1, 2]
+    assert rep["configuration"]["modes"] == ["lifecycle"]
+
+
+def test_main_cli_overrides_sweep_config(tmp_path):
+    """A CLI flag (--ratios 2) beats the sweep-config's ratios [1,2,3]."""
+    base = tmp_path / "base.yaml"
+    base.write_text(yaml.safe_dump(_base_yaml_dict(), sort_keys=False), encoding="utf-8")
+    sweep = tmp_path / "sweep.yaml"
+    sweep.write_text(
+        yaml.safe_dump(
+            {"base_config": str(base), "ratios": [1, 2, 3], "modes": ["lifecycle"], "test_duration": 60},
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    out_root = tmp_path / "sweep"
+    rc = main(["--sweep-config", str(sweep), "--ratios", "2", "--dry-run", "--output-root", str(out_root)])
+    assert rc == 0
+    # Only one ratio-2 trial.yaml (CLI --ratios 2 overrode the YAML's [1,2,3]).
+    yamls = sorted(out_root.glob("lifecycle/ratio-*/repeat-00/trial.yaml"))
+    assert len(yamls) == 1
+    cfg = yaml.safe_load(yamls[0].read_text(encoding="utf-8"))
+    assert cfg["sandbox"]["total_count"] == 8
+    rep = json.loads((out_root / "benchmark-report.json").read_text(encoding="utf-8"))
+    assert rep["configuration"]["ratios"] == [2]
+
+
+def test_main_config_flag_overrides_sweep_base_config(tmp_path):
+    """--config beats the sweep-config's base_config pointer."""
+    base_real = tmp_path / "real.yaml"
+    base_real.write_text(yaml.safe_dump(_base_yaml_dict(), sort_keys=False), encoding="utf-8")
+    base_decoy = tmp_path / "decoy.yaml"
+    decoy = _base_yaml_dict()
+    decoy["sandbox"]["total_count"] = 99  # if used, total_count would be 198
+    base_decoy.write_text(yaml.safe_dump(decoy, sort_keys=False), encoding="utf-8")
+    sweep = tmp_path / "sweep.yaml"
+    sweep.write_text(
+        yaml.safe_dump({"base_config": str(base_decoy), "ratios": [2], "modes": ["lifecycle"]}, sort_keys=False),
+        encoding="utf-8",
+    )
+    out_root = tmp_path / "sweep"
+    rc = main(["--sweep-config", str(sweep), "--config", str(base_real), "--dry-run", "--output-root", str(out_root)])
+    assert rc == 0
+    cfg = yaml.safe_load(sorted(out_root.glob("lifecycle/ratio-*/repeat-00/trial.yaml"))[0].read_text(encoding="utf-8"))
+    # real.yaml (total_count 4) used, not decoy (99): 2*4 = 8, not 2*99.
+    assert cfg["sandbox"]["total_count"] == 8
+
+
+def test_main_missing_config_returns_error(tmp_path):
+    # No --config and no --sweep-config.
+    assert main([]) == 2
+    # Sweep-config without base_config and no --config.
+    sweep = tmp_path / "sweep.yaml"
+    sweep.write_text(yaml.safe_dump({"ratios": [1, 2]}, sort_keys=False), encoding="utf-8")
+    assert main(["--sweep-config", str(sweep)]) == 2
