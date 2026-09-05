@@ -491,7 +491,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="outer wall-clock per trial; terminate->10s->kill (0 = off, default 0)",
     )
-    p.add_argument("--output-root", default=None, help="default runs/oversub-N{N}-{ts}/")
+    p.add_argument("--output-root", default=None, help="default results/oversub/oversub-N{N}-{ts}/")
     p.add_argument(
         "--reuse", action=argparse.BooleanOptionalAction, default=None, help="skip completed-valid trials (default off)"
     )
@@ -718,7 +718,7 @@ def main(argv: list[str] | None = None) -> int:
     if output_root_arg:
         output_root = Path(output_root_arg)
     else:
-        output_root = Path(f"runs/oversub-N{n}-{time.strftime('%Y%m%d-%H%M%S')}")
+        output_root = Path(f"results/oversub/oversub-N{n}-{time.strftime('%Y%m%d-%H%M%S')}")
     output_root.mkdir(parents=True, exist_ok=True)
 
     configuration = {

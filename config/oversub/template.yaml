@@ -20,7 +20,7 @@ failure_tolerance: 0.0                   # max failure_rate for valid (0.0 = str
 cooldown_sec: 30
 cleanup_between_trials: on               # {on, off}
 trial_timeout_sec: 0                     # 0 = off
-# output_root: runs/oversub-N384-...     # null = runs/oversub-N{N}-{ts}/
+# output_root: results/oversub/...     # null = results/oversub/oversub-N{N}-{ts}/
 
 reuse: false
 stop_on_failure: false

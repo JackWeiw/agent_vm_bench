@@ -634,6 +634,27 @@ def test_main_sweep_scalar_bench_core_bin_reaches_cmd(tmp_path, caplog):
     assert dry[0].split()[1] == "mybench"
 
 
+def test_main_default_output_root_lands_under_results(tmp_path, monkeypatch):
+    """With no --output-root, the sweep dir lives under results/oversub/ (the repo
+    convention for benchmark outputs), never under runs/."""
+    base = tmp_path / "base.yaml"
+    base.write_text(yaml.safe_dump(_base_yaml_dict(), sort_keys=False), encoding="utf-8")
+    sweep = tmp_path / "sweep.yaml"
+    sweep.write_text(
+        yaml.safe_dump({"base_config": str(base), "ratios": [1], "modes": ["lifecycle"]}, sort_keys=False),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)  # so the relative results/ path stays inside tmp_path
+    rc = main(["--sweep-config", str(sweep), "--dry-run"])
+    assert rc == 0
+    sweep_dirs = list((tmp_path / "results" / "oversub").glob("oversub-N4-*"))
+    assert sweep_dirs, "default output_root must land under results/oversub/"
+    assert list(
+        sweep_dirs[0].glob("lifecycle/ratio-*/repeat-00/trial.yaml")
+    ), "trial.yaml written under the default root"
+    assert not (tmp_path / "runs").exists(), "nothing should be written under runs/"
+
+
 def test_main_missing_config_returns_error(tmp_path):
     # No --config and no --sweep-config.
     assert main([]) == 2
