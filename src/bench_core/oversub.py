@@ -158,10 +158,14 @@ def build_trial_config(
     (stays fixed); ``replay.mode``; ``test.round_size = ratio*N`` (so all k*N
     sandboxes run concurrently in one group -- without this, k>=2 silently
     runs multiple sequential groups of N, corrupting the oversubscription
-    dynamics); ``test.round_count = 0`` (sustained until ``test.duration``);
-    ``test.duration``; ``report.output_dir``; ``report.filename_prefix``.
-    Everything else (backend blocks, create_batch, trajectory_dir, monitor,
-    task_batch) passes through unchanged.
+    dynamics); ``test.duration`` (the time ceiling); ``report.output_dir``;
+    ``report.filename_prefix``. Everything else passes through unchanged --
+    notably ``test.round_count`` (the work-amount knob: how many passes of the
+    fleet). A trial ends at whichever comes first: ``round_count`` rounds OR
+    ``test.duration`` seconds (the kernel's own ``round_count``/``duration``
+    whichever-first semantics; see config/common/replay.yaml). Set
+    ``round_count: 1`` (base default) for a bounded one-pass trial, ``0`` for a
+    sustained-until-duration window.
     """
     cfg = copy.deepcopy(base)
     target = ratio * n
@@ -170,7 +174,6 @@ def build_trial_config(
     cfg["replay"]["mode"] = mode
     cfg.setdefault("test", {})
     cfg["test"]["round_size"] = target
-    cfg["test"]["round_count"] = 0
     cfg["test"]["duration"] = test_duration
     cfg.setdefault("report", {})
     cfg["report"]["output_dir"] = trial_dir
@@ -188,22 +191,24 @@ def compute_valid(
     return_code: int,
     *,
     n: int,
-    test_duration: int,
     failure_tolerance: float,
 ) -> bool:
-    """Sustained-rotation validity (NOT the reference's ``succeeded==k*N`` bar).
+    """Run-to-completion validity (one pass of the k*N fleet).
 
-    A sustained sweep (``round_count=0``) completes many more than ``k*N``
-    trajectories and some may fail from dirty-state wrap (§6.1 of the spec);
-    those failures are surfaced via ``failure_rate`` in the CSV, not hidden
-    behind ``valid``. ``valid`` here means "the trial ran the full window,
-    did work, and did not over-admit":
+    A trial runs ONE round (``round_count = 1``) of ``round_size = k*N``
+    trajectories and is valid when it actually ran (close to) the full running
+    fleet without over-admitting:
 
       * ``return_code == 0`` (the kernel subprocess succeeded),
-      * ``throughput.total > 0`` (it actually replayed something),
-      * ``wall_sec >= 0.9 * test_duration`` (it sustained the window, did not
-        crash/exit early),
-      * ``admission.peak_active <= N`` (it never ran more than N concurrent --
+      * ``throughput.total >= 0.9 * N`` (it ran most of the N running slots -- a
+        crash/early-exit that only reached a few sandboxes fails here; the
+        kernel's own ``test.duration`` ceiling caps a stalled run, which then
+        also fails this gate). Mode-agnostic: lifecycle ``total`` ~= k*N and
+        exec_only ``total`` ~= N, both >= 0.9*N on a healthy run. Per-trajectory
+        completion is inspectable in trajectory-detail.csv (``total`` vs
+        ``target_count`` in trial-summary.csv) -- ``valid`` is the gross-failure
+        / over-admission gate, not a "every trajectory succeeded" bar,
+      * ``admission.peak_active <= N`` (never ran more than N concurrent --
         dropped for exec_only, which has no admission controller),
       * ``failure_rate <= failure_tolerance`` (configurable wrap-noise allowance).
     """
@@ -211,10 +216,7 @@ def compute_valid(
         return False
     tp = summary.get("throughput") or {}
     total = tp.get("total", 0)
-    if total <= 0:
-        return False
-    wall = summary.get("wall_sec") or 0
-    if test_duration > 0 and wall < 0.9 * test_duration:
+    if total < 0.9 * n:
         return False
     adm = summary.get("admission")
     if adm and adm.get("peak_active") is not None and adm["peak_active"] > n:
@@ -619,7 +621,7 @@ def _run_trial(
         if hits:
             try:
                 s = parse_run_summary(hits[-1])
-                if compute_valid(s, 0, n=n, test_duration=test_duration, failure_tolerance=args.failure_tolerance):
+                if compute_valid(s, 0, n=n, failure_tolerance=args.failure_tolerance):
                     return trial_row(
                         mode=mode,
                         ratio=ratio,
@@ -694,7 +696,7 @@ def _run_trial(
             run_summary_path="",
         )
     summary = parse_run_summary(hits[-1])
-    valid = compute_valid(summary, rc, n=n, test_duration=test_duration, failure_tolerance=args.failure_tolerance)
+    valid = compute_valid(summary, rc, n=n, failure_tolerance=args.failure_tolerance)
     row = trial_row(
         mode=mode,
         ratio=ratio,

@@ -15,7 +15,8 @@ ratios: [1, 2, 3]                         # k values (list) or "1,2,3" (string);
 modes: [lifecycle, exec_only]             # lifecycle / exec_only / trajectory (or a subset)
 repeats: 1                               # repeats per (mode, ratio)
 
-test_duration: 600                        # null = inherit base test.duration
+test_duration: 600                        # hard ceiling per trial (sec); ends when the fleet drains
+                                          # (round_count=1) or at this stall cap. null = inherit base test.duration
 failure_tolerance: 0.0                   # max failure_rate for valid (0.0 = strict)
 cooldown_sec: 30
 cleanup_between_trials: on               # {on, off}
