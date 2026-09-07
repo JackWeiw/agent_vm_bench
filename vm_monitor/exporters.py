@@ -38,6 +38,13 @@ try:
 except ImportError:  # pragma: no cover
     OPENPYXL_AVAILABLE = False
 
+# Excel hard limits (openpyxl refuses sheets beyond these dimensions).
+# Used to guard the per-VM-per-sample Raw_VM_Data sheet, which is the only
+# sheet that can realistically exceed the row cap (n_vms * n_samples rows;
+# e.g. 384 VMs * 14k samples ~= 5.4M rows). All other sheets are per-VM
+# (<= n_vms rows) or per-timestamp (~ n_samples rows), so they never overflow.
+_EXCEL_MAX_ROWS = 1_048_576
+
 # Internal dependency
 from .parsers import parse_all_logs
 
@@ -631,7 +638,7 @@ def _build_getfre_sheets(writer, parsed_logs):
                 pd.DataFrame(tl_data).to_excel(writer, sheet_name=f"Getfre_Timeline_NUMA{numa_id}", index=False)
 
 
-def _build_raw_vm_sheet(writer, monitor):
+def _build_raw_vm_sheet(writer, monitor, log_dir=None):
     """Sheet: Raw VM Data time series (per-sample, per-VM).
 
     Mirrors export_raw_csv's full 12-field record schema: the per-VM scalars
@@ -639,8 +646,27 @@ def _build_raw_vm_sheet(writer, monitor):
     breakdowns spread to one column per NUMA node (union across samples) --
     matching the per-NUMA-spread convention used by VM_Total_Memory_Timeline
     and Disk_IO_Timeline. The legacy sheet wrote only 6 of the 12 fields.
+
+    Row-overflow guard: this sheet carries one row per (sample, VM), so a
+    large fleet (e.g. 384 VMs * 14k samples ~= 5.4M rows) exceeds Excel's
+    1,048,576-row cap. Rather than letting the to_excel call raise inside the
+    shared ExcelWriter block -- which would abort the ENTIRE workbook (every
+    other sheet + charts lost because ONE sheet was too big) -- we skip just
+    this sheet and point at the raw CSV, which export_raw_csv already wrote
+    to ``log_dir`` with the same per-record schema and no row limit. No
+    truncation (the "raw" sheet's contract is completeness), no downsampling.
     """
     if not monitor.data:
+        return
+    n_rows = len(monitor.data)
+    if n_rows > _EXCEL_MAX_ROWS:
+        csv_hint = f" in {log_dir}" if log_dir else ""
+        print(
+            f"[WARN] Skipping 'Raw_VM_Data' sheet: {n_rows:,} rows exceed "
+            f"Excel's {_EXCEL_MAX_ROWS:,}-row limit. The raw CSV{csv_hint} "
+            f"carries the complete per-VM-per-sample data (same schema, no "
+            f"row limit). All other sheets + charts are unaffected."
+        )
         return
     # Union of NUMA nodes across all samples (per-VM per-NUMA breakdown)
     numa_nodes = sorted(
@@ -1490,7 +1516,7 @@ def export_to_excel(
             _build_ubwatch_sheets(writer, parsed_logs)
             _build_smapbw_sheets(writer, parsed_logs)
             _build_getfre_sheets(writer, parsed_logs)
-            _build_raw_vm_sheet(writer, monitor)
+            _build_raw_vm_sheet(writer, monitor, log_dir)
             _build_swap_timeline_sheet(writer, monitor)
             _build_numa_memory_timeline_sheet(writer, monitor, numa_nodes)
             _build_vm_total_memory_timeline_sheet(writer, monitor)
