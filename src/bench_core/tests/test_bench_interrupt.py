@@ -269,3 +269,66 @@ def test_atomic_write_leaves_prior_file_intact_on_mid_replace_kill(tmp_path, mon
     with pytest.raises(KeyboardInterrupt):
         _atomic_write_text(a, json.dumps({"file": "A", "v": 2}))
     assert json.loads(a.read_text(encoding="utf-8"))["v"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 5. export_trajectories throw on the happy path must not abort the run
+# ---------------------------------------------------------------------------
+
+
+def test_trajectory_export_failure_does_not_abort_run(tmp_path, monkeypatch, caplog):
+    """A throw from ``export_trajectories`` on the happy path must not crash
+    the run or skip ``run_summary.json``.
+
+    Previously the happy-path call was unguarded; an exception propagated to
+    ``except Exception`` -> ``raise`` -> ``finally``, which crashed
+    ``run_benchmark`` AFTER dispatch completed. That turned a non-critical
+    catalog-artifact failure (replay_result.json is a browsable extra, not the
+    driver contract) into an invalid oversub trial (non-zero exit). The guard
+    logs + continues, so the happy path still writes ``run_summary.json`` and
+    returns normally.
+
+    Uses lifecycle round-robin (not exec_only) because lifecycle writes step
+    events to the series, so the series file exists at step 8 and the guarded
+    ``export_trajectories`` call is actually reached (and patched to throw).
+    """
+    from bench_core.payload.replay_payload import reset_pool_cache
+    from env_provider.tests.lifecycle_fake import FakeLifecycleProvider
+    from bench_core.observability import trajectory_export
+
+    _seed_traj_pool(tmp_path)
+    reset_pool_cache()
+    cfg = KernelConfig(
+        workflow_type="replay",
+        total_count=4,
+        replay_running_concurrency=2,
+        benchmark_mode="round_robin",
+        round_size=4,
+        round_count=1,
+        round_interval=0,
+        test_duration=2,
+        replay_trajectory_dir=str(tmp_path / "traj"),
+        replay_mode="lifecycle",
+        replay_delay_scale=0.0,
+        replay_control_plane_qps=1000.0,
+        output_dir=str(tmp_path),
+        filename_prefix="exp",
+    )
+
+    def _boom_export(*args, **kwargs):
+        raise RuntimeError("export boom")
+
+    monkeypatch.setattr(trajectory_export, "export_trajectories", _boom_export)
+
+    with caplog.at_level("ERROR"):
+        result = run_benchmark(cfg, FakeLifecycleProvider(count=4))  # must NOT raise
+
+    # The run completed normally (clean return, not a crash that would mark
+    # an oversub trial invalid via non-zero exit).
+    assert result is not None
+    # run_summary.json was still written on the happy path -- the export
+    # failure did not skip the downstream write_run_summary call.
+    hits = list(tmp_path.glob("exp_run_summary.json"))
+    assert len(hits) == 1, f"expected run_summary.json despite export failure, got {hits}"
+    # The export failure is surfaced in the log, not swallowed silently.
+    assert any("trajectory export failed" in r.message for r in caplog.records)
