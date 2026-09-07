@@ -78,7 +78,7 @@ def test_build_trial_config_overrides_and_preserves_base():
     assert cfg["replay"]["running_concurrency"] == 384  # N stays fixed
     assert cfg["replay"]["mode"] == "exec_only"
     assert cfg["test"]["round_size"] == 768  # scale with total_count
-    assert cfg["test"]["round_count"] == 0  # sustained until duration
+    assert cfg["test"]["round_count"] == 1  # passed through from base (not overridden)
     assert cfg["test"]["duration"] == 600
     assert cfg["report"]["output_dir"] == "out/t1"
     assert cfg["report"]["filename_prefix"] == "replay_bench"
@@ -106,8 +106,23 @@ def test_build_trial_config_round_yaml_round_trips():
     reloaded = yaml.safe_load(text)
     assert reloaded["sandbox"]["total_count"] == 1152
     assert reloaded["test"]["round_size"] == 1152
-    assert reloaded["test"]["round_count"] == 0
+    assert reloaded["test"]["round_count"] == 1
     assert reloaded["replay"]["running_concurrency"] == 384
+
+
+def test_build_trial_config_passes_through_round_count():
+    """round_count is the user's work-amount knob (whichever-first with
+    test.duration); the driver must NOT override it. A base with round_count=3
+    must reach trial.yaml as 3 (so a user can request 3 passes, or 0 for a
+    sustained-until-duration window)."""
+    base = _base_yaml()
+    base["test"]["round_count"] = 3
+    cfg = build_trial_config(base, mode="lifecycle", ratio=2, n=384, test_duration=600, trial_dir="out", prefix="rb")
+    assert cfg["test"]["round_count"] == 3  # passed through, not reset
+    # and a sustained base (round_count=0) is respected too
+    base["test"]["round_count"] = 0
+    cfg = build_trial_config(base, mode="lifecycle", ratio=2, n=384, test_duration=600, trial_dir="out", prefix="rb")
+    assert cfg["test"]["round_count"] == 0
 
 
 def test_default_running_concurrency_rejects_bad():
@@ -154,41 +169,49 @@ def test_parse_run_summary_round_trips(tmp_path):
 
 def test_compute_valid_happy_path():
     s = _summary()
-    assert compute_valid(s, return_code=0, n=384, test_duration=1000, failure_tolerance=0.0) is True
+    assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is True
 
 
 def test_compute_valid_nonzero_return_code():
     s = _summary()
-    assert compute_valid(s, return_code=2, n=384, test_duration=1000, failure_tolerance=0.0) is False
+    assert compute_valid(s, return_code=2, n=384, failure_tolerance=0.0) is False
 
 
 def test_compute_valid_no_work_done():
     s = _summary(total=0, succeeded=0)
-    assert compute_valid(s, return_code=0, n=384, test_duration=1000, failure_tolerance=0.0) is False
+    assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is False
 
 
-def test_compute_valid_exited_early_wall_below_threshold():
-    # wall_sec 100 < 0.9*1000 -> did not sustain the window -> invalid.
-    s = _summary(wall_sec=100.0)
-    assert compute_valid(s, return_code=0, n=384, test_duration=1000, failure_tolerance=0.0) is False
+def test_compute_valid_ran_only_a_few_sandboxes():
+    # Run-to-completion: a trial that only reached a handful of the N running
+    # slots (crash/early-exit) fails the work floor `total >= 0.9 * N`.
+    s = _summary(total=50, succeeded=50, wall_sec=20.0)
+    assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is False
+
+
+def test_compute_valid_just_under_floor_still_invalid():
+    # total = 340 < 0.9*384 = 345.6 -> did not run most of the fleet -> invalid.
+    s = _summary(total=340, succeeded=340, wall_sec=50.0)
+    assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is False
 
 
 def test_compute_valid_peak_active_exceeds_n():
     s = _summary(peak_active=400)  # 400 > N=384 -> over-admitted -> invalid.
-    assert compute_valid(s, return_code=0, n=384, test_duration=1000, failure_tolerance=0.0) is False
+    assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is False
 
 
 def test_compute_valid_exec_only_drops_peak_active_clause():
-    # exec_only: admission is null -> peak_active clause skipped; only wall+total+rc gate.
-    s = _summary(peak_active=None, mode="exec_only", wall_sec=950.0, total=10)
-    assert compute_valid(s, return_code=0, n=384, test_duration=1000, failure_tolerance=0.0) is True
+    # exec_only: admission is null -> peak_active clause skipped; the work floor
+    # (total >= 0.9*N) still applies. A healthy exec_only run runs ~N sandboxes.
+    s = _summary(peak_active=None, mode="exec_only", wall_sec=950.0, total=384)
+    assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is True
 
 
 def test_compute_valid_failure_tolerance_allows_wrap_noise():
     # 10 failures / 768 total = ~1.3%; tolerance 0.05 -> valid; tolerance 0.0 -> invalid.
     s = _summary(total=768, succeeded=758, failed=10, wall_sec=950.0)
-    assert compute_valid(s, return_code=0, n=384, test_duration=1000, failure_tolerance=0.05) is True
-    assert compute_valid(s, return_code=0, n=384, test_duration=1000, failure_tolerance=0.0) is False
+    assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.05) is True
+    assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is False
 
 
 from bench_core.oversub import aggregate_ratio_summary, trial_row, write_outputs
@@ -497,7 +520,7 @@ def test_dry_run_writes_trial_yamls_and_empty_outputs(tmp_path):
     cfg2 = yaml.safe_load(yamls[1].read_text(encoding="utf-8"))
     assert cfg2["sandbox"]["total_count"] == 8
     assert cfg2["test"]["round_size"] == 8
-    assert cfg2["test"]["round_count"] == 0
+    assert cfg2["test"]["round_count"] == 1
     assert (out_root / "benchmark-report.json").exists()
 
 
@@ -650,7 +673,7 @@ def test_main_sweep_config_drives_trials(tmp_path):
     assert len(yamls) == 2
     cfg2 = yaml.safe_load(yamls[1].read_text(encoding="utf-8"))
     assert cfg2["sandbox"]["total_count"] == 8  # 2 * N(4)
-    assert cfg2["test"]["round_count"] == 0  # sustained
+    assert cfg2["test"]["round_count"] == 1  # one pass of the fleet
     # configuration recorded both base_config + sweep_config in the report.
     rep = json.loads((out_root / "benchmark-report.json").read_text(encoding="utf-8"))
     assert rep["configuration"]["base_config"] == str(base)
