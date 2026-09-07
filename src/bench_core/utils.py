@@ -7,9 +7,42 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import statistics
 import sys
+import tempfile
 from datetime import datetime
+
+
+def _atomic_write_text(path: str | os.PathLike, text: str, *, encoding: str = "utf-8") -> None:
+    """Write ``text`` to ``path`` atomically (temp file + ``os.replace``).
+
+    A crash (SIGTERM/SIGKILL/OOM) during the write leaves the destination at
+    its *previous* state -- either intact (a prior successful write) or absent
+    (first write) -- rather than a torn half-written file. The temp file is
+    created in the same directory so ``os.replace`` is an atomic rename on the
+    same filesystem (POSIX guarantees atomicity; Windows ``MoveFileEx`` with
+    ``MOVEFILE_REPLACE_EXISTING`` is likewise atomic for same-volume renames).
+
+    The run's artifact writers (``run_summary.json``, ``trajectories/index.json``,
+    per-trajectory ``replay_result.json``) use this so a second SIGTERM received
+    during the kernel's partial-flush ``finally`` cannot corrupt an artifact
+    that was already fully written. Completion is not guaranteed under a hard
+    kill, but integrity of already-written files is.
+    """
+    p = os.fspath(path)
+    dst_dir = os.path.dirname(p) or "."
+    os.makedirs(dst_dir, exist_ok=True)
+    # Named with a leading dot so a casual ``ls`` doesn't clutter the dir; the
+    # final ``os.replace`` moves the bytes in place. ``delete=False`` because we
+    # close + replace ourselves (NamedTemporaryFile would race on Windows if it
+    # reopened the path to delete).
+    with tempfile.NamedTemporaryFile(mode="w", encoding=encoding, dir=dst_dir, prefix=".tmp-", delete=False) as tmp:
+        tmp.write(text)
+        tmp.flush()
+        os.fsync(tmp.fileno())
+        tmp_name = tmp.name
+    os.replace(tmp_name, p)
 
 
 class JsonFormatter(logging.Formatter):

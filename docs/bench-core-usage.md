@@ -499,3 +499,33 @@ sums but count as attempts, so `avg_slice` reflects per-attempt cost).
 > `Snapshot sizes`. Host-level system resources (CPU/memory/NUMA) are in the separate
 > vm_monitor `resource_report.xlsx` (`monitor.merge_report: false`) or merged into this
 > workbook's `VM_Stats` / `NUMA_Overview` / `DevKit_TopDown` sheets (`merge_report: true`).
+
+### 8.5 Oversubscription sweep outputs (`oversub-bench`)
+
+The `oversub-bench` driver (`src/bench_core/oversub.py`) sweeps the replay kernel across
+oversubscription ratios (N slots fixed, `total_count = k×N` scaled per trial) and writes,
+after every trial (so a killed driver leaves a complete partial set), four files in
+`--output-root` (default `results/oversub/oversub-N{N}-{ts}/`):
+
+| file | granularity | key columns |
+|------|-------------|-------------|
+| `trial-summary.csv` | one row per `(mode, ratio, repeat)` trial | `total, succeeded, failed, failure_rate, peak_active, wall_sec, tasks_per_sec, steps_per_sec, lifecycle_overhead_pct, return_code, valid, target_count, test_duration` |
+| `ratio-summary.csv` | one row per `(mode, ratio)` (medians across repeats) | `attempted, successful, median_wall_sec, median_tasks_per_sec, time_degradation_vs_1_1_pct, throughput_gain_vs_1_1_pct` |
+| `trajectory-detail.csv` | one row per trajectory per trial (from `trajectories/index.json`) | `trajectory_id, sandbox_index, n_steps, n_failed, success_rate, elapsed_sec` + the 12 `*_sec` breakdown columns (exec/resume/pause/requested_delay/create/kill/slice_total/interaction_total/slot_contention_wait/resume_queue_wait/pause_queue_wait/running_slot_held) |
+| `benchmark-report.json` | full machine-readable report | `configuration, trials, ratio_summary, trajectory_details` |
+
+**Interrupted trials.** A trial halted mid-run by Ctrl-C / a driver-initiated SIGTERM is
+*not* dropped — the kernel's SIGTERM-cooperative `finally` flushes a **partial**
+`run_summary.json` + `trajectories/index.json` (artifacts are written atomically via
+temp-file + `os.replace`, so a second SIGTERM mid-flush leaves already-written files
+intact), and the driver captures it as a row with **`return_code == 130`** and
+`valid == False`. Its `total` / `wall_sec` reflect only what ran before the interrupt —
+which is itself the degradation signal (a ratio that stalls at 200/1152 trajectories in
+the stall window is the oversub breakdown point). An interrupted trial **ends the sweep**
+(the driver halts with exit 130); a *timed-out* trial (non-zero `return_code` ≠ 130) does
+**not** — the sweep continues to the next ratio unless `--stop-on-failure` is set.
+
+> `_interrupted` is an internal row sentinel (not a CSV column — `DictWriter` drops it)
+> that `main()` reads to distinguish "halt the sweep" (user interrupt) from "continue"
+> (trial timeout). Downstream analysis scripts should key off the committed
+> `return_code == 130` column, not the in-memory sentinel.

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import signal
 import threading
 import time
 from pathlib import Path
@@ -56,6 +57,39 @@ def _promote(instances: dict[int, SandboxInstance], workflow_type: str) -> dict[
     lifecycle fields generically, so the provider stays unaware of ``BenchSandbox``.
     """
     return {i: BenchSandbox.from_instance(s, workflow_type) for i, s in instances.items()}
+
+
+def _make_sigterm_handler(stop_event: threading.Event):
+    """Build a SIGTERM handler that cooperatively unwinds ``run_benchmark``.
+
+    Installs on the MAIN thread only (signal handlers must be registered from
+    the main thread; ``main()`` calls ``run_benchmark`` there). The handler:
+
+      1. sets ``stop_event`` so worker / runner threads wind down during the
+         finally's joins, and
+      2. raises ``KeyboardInterrupt`` so a blocked ``round_robin.run()`` round
+         (which only checks ``stop_event`` at round boundaries) or
+         ``time.sleep(test_duration)`` (which never polls ``stop_event``) unwinds
+         promptly into the ``finally`` partial-flush instead of a hard die.
+
+    ``KeyboardInterrupt`` is a ``BaseException``, so it bypasses the dispatch
+    ``except Exception`` block and propagates straight to the ``finally``.
+
+    Limitation: cooperative unwinding only happens when SIGTERM is received on
+    the main thread mid-run. A SECOND SIGTERM during the ``finally``
+    partial-flush cannot be cooperatively handled -- the kernel writes each
+    artifact atomically (temp file + ``os.replace``), so a mid-flush kill
+    leaves a previously fully-written artifact intact rather than torn.
+    Completion is not guaranteed under a hard kill; integrity of
+    already-written files is. The bench runs on Linux only; the Windows
+    ``TerminateProcess`` hard-kill path (no handler invocation) is out of scope.
+    """
+
+    def _handler(signum, frame):
+        stop_event.set()
+        raise KeyboardInterrupt
+
+    return _handler
 
 
 def _replay_template_map(config: KernelConfig) -> dict[int, str | None] | None:
@@ -388,6 +422,11 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     # None outside trajectory mode (no per-trajectory create).
     trajectory_launch_pacer = LaunchPacer() if config.replay_mode == "trajectory" else None
 
+    # Install a cooperative SIGTERM handler so a driver-initiated terminate
+    # (oversub _run_subprocess) unwinds into the finally below for a partial
+    # artifact flush instead of a hard die. Linux-only; see _make_sigterm_handler.
+    _prev_sigterm = signal.signal(signal.SIGTERM, _make_sigterm_handler(stop_event))
+    _artifacts_flushed = False
     task_manager: TaskManager | None = None
     try:
         monitor.begin_stress()
@@ -422,6 +461,105 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 time.sleep(config.test_duration)
             except KeyboardInterrupt:
                 logger.info("\nUser interrupt, stopping...")
+
+        # 7. Stop all components.
+        logger.info("\n[Phase 6] Stopping...")
+        stop_event.set()
+        monitor.end_stress()
+        if task_manager is not None:
+            task_manager.wait_all(timeout=5)
+        # Document workflow: force a final snapshot so the report captures the last
+        # task's metrics (document runners are one-shot per round / fixed iteration).
+        if config.workflow_type == "document":
+            stats_collector._take_snapshot()
+        stats_collector.stop()
+        if series_writer is not None:
+            series_writer.close()
+
+        # Only tear down sandboxes the kernel created; detect mode leaves them running.
+        if not config.detect_existing:
+            provider.cleanup_all()
+        else:
+            logger.info("Sandboxes left running (detect mode - not killing)")
+
+        time.sleep(0.5)  # Let daemon threads finish writing output.
+
+        # Refresh admission snapshot from the controllers before the report.
+        if admission is not None:
+            snap = admission.slots.snapshot()
+            admission_snapshot["peak_active"] = snap["peak_active"]
+            admission_snapshot["avg_queue_wait_sec"] = snap["average_queue_wait_sec"]
+            admission_snapshot["running_slots"] = snap  # full sub-snapshot for the report/xlsx
+            if admission.qps is not None:
+                qps_snap = admission.qps.snapshot()
+                admission_snapshot["qps_dispatched"] = qps_snap["dispatched"]
+                admission_snapshot["qps_limiter"] = qps_snap  # full sub-snapshot
+            stats_collector.admission_snapshot = admission_snapshot
+
+        # 8. Generate and save the report.
+        monitor.stop()
+        report = stats_collector.generate_report()
+        filepath = stats_collector.save_report(report)
+
+        # Phase 3.5: optional xlsx observability workbook (replay workflows only).
+        obs_xlsx_path: Path | None = None
+        if config.workflow_type == "replay" and config.report_format in ("xlsx", "both"):
+            try:
+                from bench_core.observability.obs_xlsx import XlsxReportRenderer
+            except ImportError:  # openpyxl missing on a minimal install
+                logger.warning("openpyxl not installed; skipping xlsx report (txt only)")
+            else:
+                from bench_core.observability.replay_obs import ReplayObservability
+
+                wall_sec = (time.time() - stats_collector.start_time) if stats_collector.start_time else None
+                obs = ReplayObservability(
+                    config,
+                    stats_collector.sandbox_states,
+                    admission_snapshot=admission_snapshot,
+                    wall_sec=wall_sec,
+                )
+                xlsx_path = Path(config.output_dir) / f"{config.filename_prefix}_replay_obs_report.xlsx"
+                XlsxReportRenderer(
+                    obs,
+                    series_path=series_path if series_writer else None,
+                    host_xlsx=monitor.merge_source(),
+                ).render(xlsx_path)
+                obs_xlsx_path = xlsx_path
+                logger.info(f"Xlsx report saved to: {xlsx_path}")
+
+        # Per-trajectory replay_result.json export (replay lifecycle/trajectory
+        # mode only; a no-op when the series file is absent). Emits one
+        # replay_result.json per trajectory + a trajectories/index.json catalog
+        # so a fleet of dozens/hundreds of trajectories is browsable without
+        # walking folders. Runs regardless of report_format (txt-only runs still
+        # get the per-trajectory JSON).
+        if series_path is not None and Path(series_path).exists():
+            from bench_core.observability.trajectory_export import export_trajectories
+
+            n_traj = export_trajectories(series_path, config.output_dir, filename_prefix=config.filename_prefix)
+            logger.info("Per-trajectory replay_result.json exported: %d trajectories", n_traj)
+
+        # Oversub driver contract: machine-readable run summary (replay only).
+        # Raw facts only; the driver computes experiment validity. Wrapped so a
+        # writer failure never breaks the kernel's primary report flow.
+        if config.workflow_type == "replay":
+            try:
+                from bench_core.observability.run_summary import write_run_summary
+
+                write_run_summary(
+                    config,
+                    stats_collector,
+                    series_path=series_path,
+                    obs_xlsx_path=obs_xlsx_path,
+                    report_path=filepath,
+                )
+            except Exception:
+                logger.exception("run_summary.json write failed; continuing")
+
+        _artifacts_flushed = True
+        logger.info("\n" + report)
+        logger.info(f"\nReport saved to: {filepath}")
+        return {"report": report, "filepath": filepath, "admission_snapshot": admission_snapshot}
     except Exception:
         stop_event.set()
         monitor.end_stress()
@@ -432,114 +570,48 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         if not config.detect_existing:
             provider.cleanup_all()
         raise
-
-    # 7. Stop all components.
-    logger.info("\n[Phase 6] Stopping...")
-    stop_event.set()
-    monitor.end_stress()
-    if task_manager is not None:
+    finally:
+        # Restore the default SIGTERM disposition for any post-run work.
+        signal.signal(signal.SIGTERM, _prev_sigterm)
+        # Fast, idempotent teardown so background threads join and the series
+        # flushes before readers touch it. Skips the slow monitor.stop() /
+        # cleanup_all (those ran on the happy/except paths; on a SIGTERM interrupt
+        # the driver's --cleanup-between-trials reaps leftover sandboxes).
         try:
-            task_manager.wait_all(timeout=5)
-        except Exception:
             monitor.end_stress()
-            monitor.stop()
-            stats_collector.stop()
-            if series_writer is not None:
-                series_writer.close()
-            if not config.detect_existing:
-                provider.cleanup_all()
-            raise
-    # Document workflow: force a final snapshot so the report captures the last
-    # task's metrics (document runners are one-shot per round / fixed iteration).
-    if config.workflow_type == "document":
-        stats_collector._take_snapshot()
-    stats_collector.stop()
-    if series_writer is not None:
-        series_writer.close()
-
-    # Only tear down sandboxes the kernel created; detect mode leaves them running.
-    if not config.detect_existing:
-        provider.cleanup_all()
-    else:
-        logger.info("Sandboxes left running (detect mode - not killing)")
-
-    time.sleep(0.5)  # Let daemon threads finish writing output.
-
-    # Refresh admission snapshot from the controllers before the report.
-    if admission is not None:
-        snap = admission.slots.snapshot()
-        admission_snapshot["peak_active"] = snap["peak_active"]
-        admission_snapshot["avg_queue_wait_sec"] = snap["average_queue_wait_sec"]
-        admission_snapshot["running_slots"] = snap  # full sub-snapshot for the report/xlsx
-        if admission.qps is not None:
-            qps_snap = admission.qps.snapshot()
-            admission_snapshot["qps_dispatched"] = qps_snap["dispatched"]
-            admission_snapshot["qps_limiter"] = qps_snap  # full sub-snapshot
-        stats_collector.admission_snapshot = admission_snapshot
-
-    # 8. Generate and save the report.
-    monitor.stop()
-    report = stats_collector.generate_report()
-    filepath = stats_collector.save_report(report)
-
-    # Phase 3.5: optional xlsx observability workbook (replay workflows only).
-    obs_xlsx_path: Path | None = None
-    if config.workflow_type == "replay" and config.report_format in ("xlsx", "both"):
-        try:
-            from bench_core.observability.obs_xlsx import XlsxReportRenderer
-        except ImportError:  # openpyxl missing on a minimal install
-            logger.warning("openpyxl not installed; skipping xlsx report (txt only)")
-        else:
-            from bench_core.observability.replay_obs import ReplayObservability
-
-            wall_sec = (time.time() - stats_collector.start_time) if stats_collector.start_time else None
-            obs = ReplayObservability(
-                config,
-                stats_collector.sandbox_states,
-                admission_snapshot=admission_snapshot,
-                wall_sec=wall_sec,
-            )
-            xlsx_path = Path(config.output_dir) / f"{config.filename_prefix}_replay_obs_report.xlsx"
-            XlsxReportRenderer(
-                obs,
-                series_path=series_path if series_writer else None,
-                host_xlsx=monitor.merge_source(),
-            ).render(xlsx_path)
-            obs_xlsx_path = xlsx_path
-            logger.info(f"Xlsx report saved to: {xlsx_path}")
-
-    # Per-trajectory replay_result.json export (replay lifecycle/trajectory
-    # mode only; a no-op when the series file is absent). Emits one
-    # replay_result.json per trajectory + a trajectories/index.json catalog
-    # so a fleet of dozens/hundreds of trajectories is browsable without
-    # walking folders. Runs regardless of report_format (txt-only runs still
-    # get the per-trajectory JSON).
-    if series_path is not None and Path(series_path).exists():
-        from bench_core.observability.trajectory_export import export_trajectories
-
-        n_traj = export_trajectories(series_path, config.output_dir, filename_prefix=config.filename_prefix)
-        logger.info("Per-trajectory replay_result.json exported: %d trajectories", n_traj)
-
-    # Oversub driver contract: machine-readable run summary (replay only).
-    # Raw facts only; the driver computes experiment validity. Wrapped so a
-    # writer failure never breaks the kernel's primary report flow.
-    if config.workflow_type == "replay":
-        try:
-            from bench_core.observability.run_summary import write_run_summary
-
-            write_run_summary(
-                config,
-                stats_collector,
-                series_path=series_path,
-                obs_xlsx_path=obs_xlsx_path,
-                report_path=filepath,
-            )
         except Exception:
-            logger.exception("run_summary.json write failed; continuing")
+            logger.exception("monitor.end_stress failed during teardown")
+        try:
+            stats_collector.stop()
+        except Exception:
+            logger.exception("stats_collector.stop failed during teardown")
+        if series_writer is not None:
+            try:
+                series_writer.close()
+            except Exception:
+                logger.exception("series_writer.close failed during teardown")
+        if not _artifacts_flushed:
+            logger.warning("Trial interrupted, writing partial artifacts, skipping full " "report/xlsx generation")
+            if config.workflow_type == "replay" and series_path is not None and Path(series_path).exists():
+                try:
+                    from bench_core.observability.trajectory_export import export_trajectories
 
-    logger.info("\n" + report)
-    logger.info(f"\nReport saved to: {filepath}")
-    return {"report": report, "filepath": filepath, "admission_snapshot": admission_snapshot}
+                    export_trajectories(series_path, config.output_dir, filename_prefix=config.filename_prefix)
+                except Exception:
+                    logger.exception("partial trajectory export failed")
+            if config.workflow_type == "replay":
+                try:
+                    from bench_core.observability.run_summary import write_run_summary
+
+                    write_run_summary(
+                        config,
+                        stats_collector,
+                        series_path=series_path,
+                        obs_xlsx_path=None,
+                        report_path=None,
+                    )
+                except Exception:
+                    logger.exception("partial run_summary write failed")
 
 
 def load_config(path: str | Path) -> tuple[KernelConfig, dict[str, Any]]:

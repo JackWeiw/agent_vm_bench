@@ -29,7 +29,7 @@ from pathlib import Path
 
 from bench_core.observability.lifecycle_series import load_events
 from bench_core.observability.trajectory_summary import SEG_KEYS, trajectory_summaries
-from bench_core.utils import calc_percentiles
+from bench_core.utils import _atomic_write_text, calc_percentiles
 
 # Fields excluded from the per-step distribution (aggregates). The 9 SEG_KEYS
 # are the durations worth distributing; flag/identity fields are not.
@@ -79,11 +79,11 @@ def export_trajectories(
         sanitized = _sanitize_tid(tid)
         sub = base / sanitized
         sub.mkdir(parents=True, exist_ok=True)
-        (sub / "replay_result.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        _atomic_write_text(sub / "replay_result.json", json.dumps(record, indent=2) + "\n")
         index_rows.append(_index_row(record, sanitized))
 
     index = {"n_trajectories": len(index_rows), "trajectories": index_rows}
-    (base / "index.json").write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
+    _atomic_write_text(base / "index.json", json.dumps(index, indent=2) + "\n")
     return len(index_rows)
 
 

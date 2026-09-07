@@ -230,6 +230,17 @@ def compute_valid(
 
 # trial-summary.csv column order (mirrors the reference TRIAL_COLUMNS + the
 # sustained-mode failure_rate / test_duration columns).
+#
+# Interrupted trials: a trial halted mid-run by Ctrl-C / driver SIGTERM (the
+# kernel's SIGTERM-cooperative `finally` flushes a PARTIAL run_summary.json +
+# trajectories/index.json) surfaces here as ``return_code == 130`` and
+# ``valid == False`` -- its ``total`` / ``wall_sec`` reflect only what ran
+# before the interrupt, which is itself the degradation signal (a ratio that
+# stalls at 200/1152 trajectories is exactly the oversub breakdown). An
+# interrupted trial is the END of the sweep (the driver halts); a timed-out
+# trial (non-zero rc, != 130) is NOT -- the sweep continues to the next ratio.
+# ``_interrupted`` is an internal row sentinel (not a column; DictWriter's
+# extrasaction="ignore" drops it) that `main` reads to decide halt-vs-continue.
 TRIAL_COLUMNS = [
     "mode",
     "ratio",
@@ -536,7 +547,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--trial-timeout-sec",
         type=int,
         default=None,
-        help="outer wall-clock per trial; terminate->10s->kill (0 = off, default 0)",
+        help="outer wall-clock per trial; terminate->30s->kill (0 = off, default 0)",
     )
     p.add_argument("--output-root", default=None, help="default results/oversub/oversub-N{N}-{ts}/")
     p.add_argument(
@@ -566,11 +577,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return p
 
 
+# Grace given to bench-core after SIGTERM (terminate) before the hard kill.
+# Must exceed the kernel's partial-flush wall time (series.close +
+# export_trajectories + write_run_summary -- seconds for a 1152-trajectory
+# fleet; larger fleets or vm_monitor-on may need more). Future: expose as a CLI
+# flag so a heavy aenv+vm_monitor trial can bump it without code change.
+_TERMINATE_GRACE_SEC = 30
+# Reaper wait after SIGKILL (the process is already dead; this just collects).
+_POSTKILL_GRACE_SEC = 5
+
+
 def _run_subprocess(cmd: list[str], log_path: Path, timeout_sec: int) -> int:
     """Run cmd, stream stdout+stderr to log_path; portable hard-kill on timeout.
 
-    ``terminate`` -> 10s grace -> ``kill`` (works on both Unix and Windows;
-    the bench targets Linux hosts, but the driver may run on a Windows dev box).
+    ``terminate`` -> ``_TERMINATE_GRACE_SEC`` grace -> ``kill``. The grace must
+    exceed the kernel's partial-flush wall time (``series.close`` +
+    ``export_trajectories`` + ``write_run_summary`` -- seconds for a
+    1152-trajectory fleet; larger fleets or vm_monitor-on may need more) so a
+    SIGTERM-triggered flush completes before the hard ``kill``. The bench
+    targets Linux hosts, but the driver may run on a Windows dev box.
     """
     with open(log_path, "w", encoding="utf-8") as log:
         proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
@@ -579,19 +604,22 @@ def _run_subprocess(cmd: list[str], log_path: Path, timeout_sec: int) -> int:
         except subprocess.TimeoutExpired:
             proc.terminate()
             try:
-                proc.wait(timeout=10)
+                proc.wait(timeout=_TERMINATE_GRACE_SEC)
             except subprocess.TimeoutExpired:
                 proc.kill()
-                proc.wait(timeout=5)
+                proc.wait(timeout=_POSTKILL_GRACE_SEC)
         except KeyboardInterrupt:
             # Tear down the trial subprocess so Ctrl-C does not orphan a run
-            # managing hundreds of sandboxes + a vm_monitor host collector.
+            # managing hundreds of sandboxes + a vm_monitor host collector. The
+            # generous grace lets the kernel's SIGTERM-cooperative handler flush
+            # partial artifacts (run_summary.json / trajectories/index.json)
+            # before the hard kill -- _run_trial then captures them as a row.
             proc.terminate()
             try:
-                proc.wait(timeout=5)
+                proc.wait(timeout=_TERMINATE_GRACE_SEC)
             except subprocess.TimeoutExpired:
                 proc.kill()
-                proc.wait(timeout=3)
+                proc.wait(timeout=_POSTKILL_GRACE_SEC)
             raise
         return proc.returncode if proc.returncode is not None else -1
 
@@ -678,11 +706,20 @@ def _run_trial(
         logger.info("[dry-run] %s", " ".join(str(c) for c in cmd))
         return None  # aggregated below; no trial row.
 
-    rc = _run_subprocess(cmd, trial_dir / "driver.log", args.trial_timeout_sec)
+    interrupted = False
+    try:
+        rc = _run_subprocess(cmd, trial_dir / "driver.log", args.trial_timeout_sec)
+    except KeyboardInterrupt:
+        # The kernel's SIGTERM-cooperative handler flushed partial artifacts
+        # (run_summary.json / trajectories/index.json) during the generous
+        # terminate-grace; fall through to capture them as an invalid row
+        # instead of orphaning the trial from the CSVs.
+        rc = 130
+        interrupted = True
 
     hits = sorted(trial_dir.glob(summary_glob))
     if not hits:
-        return trial_row(
+        row = trial_row(
             mode=mode,
             ratio=ratio,
             repeat=repeat,
@@ -695,21 +732,28 @@ def _run_trial(
             trial_dir=str(trial_dir),
             run_summary_path="",
         )
-    summary = parse_run_summary(hits[-1])
-    valid = compute_valid(summary, rc, n=n, failure_tolerance=args.failure_tolerance)
-    row = trial_row(
-        mode=mode,
-        ratio=ratio,
-        repeat=repeat,
-        running_concurrency=n,
-        target_count=ratio * n,
-        summary=summary,
-        return_code=rc,
-        valid=valid,
-        reused=False,
-        trial_dir=str(trial_dir),
-        run_summary_path=str(hits[-1]),
-    )
+    else:
+        summary = parse_run_summary(hits[-1])
+        valid = compute_valid(summary, rc, n=n, failure_tolerance=args.failure_tolerance)
+        row = trial_row(
+            mode=mode,
+            ratio=ratio,
+            repeat=repeat,
+            running_concurrency=n,
+            target_count=ratio * n,
+            summary=summary,
+            return_code=rc,
+            valid=valid,
+            reused=False,
+            trial_dir=str(trial_dir),
+            run_summary_path=str(hits[-1]),
+        )
+    # Sentinel for main(): a user-initiated interrupt (Ctrl-C/SIGTERM) halted
+    # this trial mid-run -- distinguish it from a trial-timeout (non-zero rc,
+    # but the sweep continues). Not a CSV column (extrasaction="ignore" drops
+    # it from trial-summary.csv); see _run_subprocess / main for the contract.
+    if interrupted:
+        row["_interrupted"] = True
     return row
 
 
@@ -797,6 +841,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.stop_on_failure and row is not None and not row["valid"]:
                 logger.warning("[stop-on-failure] invalid trial %s/ratio-%s/repeat-%s; halting", mode, ratio, repeat)
                 break
+            if row is not None and row.get("_interrupted"):
+                logger.warning("[interrupted] partial results preserved; halting sweep")
+                return 130
     except KeyboardInterrupt:
         write_outputs(trials, output_root=output_root, configuration=configuration)
         logger.warning("[interrupted] partial results were preserved")
