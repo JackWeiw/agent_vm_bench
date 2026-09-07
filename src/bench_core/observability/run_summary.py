@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bench_core.observability.replay_obs import ReplayObservability
+from bench_core.utils import _atomic_write_text
 
 if TYPE_CHECKING:
     from bench_core.config import KernelConfig
@@ -150,5 +151,5 @@ def write_run_summary(
     }
 
     path = output_dir / f"{config.filename_prefix}_run_summary.json"
-    path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    _atomic_write_text(path, json.dumps(summary, indent=2) + "\n")
     return path
