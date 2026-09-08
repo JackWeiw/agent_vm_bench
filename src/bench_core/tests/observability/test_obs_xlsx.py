@@ -471,16 +471,16 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
             "action_type": "shell",
             "slice_failed": False,
             # New invariants: resume_sec = inflight + api + ready (rate-pacing
-            # resume_queue_wait is PRE-lease, NOT in resume_sec); pause_sec =
-            # pause_queue_wait + pause_inflight + pause_api (rate-pacing IN-lease).
+            # resume_rate_pacing_wait is PRE-lease, NOT in resume_sec); pause_sec =
+            # pause_rate_pacing_wait + pause_inflight + pause_api (rate-pacing IN-lease).
             "resume_sec": 0.08,
-            "resume_queue_wait_sec": 0.02,  # rate-pacing, pre-lease
+            "resume_rate_pacing_wait_sec": 0.02,  # rate-pacing, pre-lease
             "resume_inflight_wait_sec": 0.0,
             "resume_api_sec": 0.05,
             "resume_ready_wait_sec": 0.03,
             "exec_sec": 0.5,
             "pause_sec": 0.20,
-            "pause_queue_wait_sec": 0.04,  # rate-pacing, in-lease
+            "pause_rate_pacing_wait_sec": 0.04,  # rate-pacing, in-lease
             "pause_inflight_wait_sec": 0.0,
             "pause_api_sec": 0.16,
             "slice_total_sec": 0.78,  # resume_sec + exec + pause_sec
@@ -505,13 +505,13 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
             "action_type": "edit",
             "slice_failed": False,
             "resume_sec": 0.06,
-            "resume_queue_wait_sec": 0.0,
+            "resume_rate_pacing_wait_sec": 0.0,
             "resume_inflight_wait_sec": 0.0,
             "resume_api_sec": 0.04,
             "resume_ready_wait_sec": 0.02,
             "exec_sec": 0.4,
             "pause_sec": 0.14,
-            "pause_queue_wait_sec": 0.03,
+            "pause_rate_pacing_wait_sec": 0.03,
             "pause_inflight_wait_sec": 0.0,
             "pause_api_sec": 0.11,
             "slice_total_sec": 0.60,
@@ -538,13 +538,13 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
             "action_type": "shell",
             "slice_failed": True,
             "resume_sec": 0.0,
-            "resume_queue_wait_sec": 0.0,
+            "resume_rate_pacing_wait_sec": 0.0,
             "resume_inflight_wait_sec": 0.0,
             "resume_api_sec": 0.0,
             "resume_ready_wait_sec": 0.0,
             "exec_sec": 0.0,
             "pause_sec": 0.0,
-            "pause_queue_wait_sec": 0.0,
+            "pause_rate_pacing_wait_sec": 0.0,
             "pause_inflight_wait_sec": 0.0,
             "pause_api_sec": 0.0,
             "slice_total_sec": 0.0,
@@ -579,10 +579,10 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
     assert "slice_failed" in headers
     # sub-decomposition columns (already emitted by the runner into the series)
     # are surfaced so the sum invariants are inspectable in the sheet itself.
-    assert "resume_queue_wait_sec" in headers
+    assert "resume_rate_pacing_wait_sec" in headers
     assert "resume_api_sec" in headers
     assert "resume_ready_wait_sec" in headers
-    assert "pause_queue_wait_sec" in headers
+    assert "pause_rate_pacing_wait_sec" in headers
     assert "pause_api_sec" in headers
     assert "running_slot_held_sec" in headers
     # wait-decoupling columns (the four independent components + per-phase inflight)
@@ -612,7 +612,7 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
     # Post-decoupling sum invariants on the success row (traj-a step1):
     #   resume_sec == resume_inflight + resume_api + resume_ready_wait
     #     (resume rate-pacing is PRE-lease, NOT in resume_sec -- the decoupling)
-    #   pause_sec == pause_queue_wait + pause_inflight + pause_api
+    #   pause_sec == pause_rate_pacing_wait + pause_inflight + pause_api
     #     (pause rate-pacing is IN-lease)
     rsm = ws.cell(3, headers.index("resume_sec") + 1).value
     ri = ws.cell(3, headers.index("resume_inflight_wait_sec") + 1).value
@@ -620,16 +620,16 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
     rr = ws.cell(3, headers.index("resume_ready_wait_sec") + 1).value
     assert rsm is not None and round((ri or 0) + (ra or 0) + (rr or 0), 3) == rsm
     psm = ws.cell(3, headers.index("pause_sec") + 1).value
-    pq = ws.cell(3, headers.index("pause_queue_wait_sec") + 1).value
+    pq = ws.cell(3, headers.index("pause_rate_pacing_wait_sec") + 1).value
     pi = ws.cell(3, headers.index("pause_inflight_wait_sec") + 1).value
     pa = ws.cell(3, headers.index("pause_api_sec") + 1).value
     assert psm is not None and round((pq or 0) + (pi or 0) + (pa or 0), 3) == psm
     # the resume rate-pacing that is excluded from resume_sec still shows up in
     # interaction_total (pre-lease wait is part of the full interaction budget).
-    # traj-b row (row 4): interaction_total = slice_total + resume_queue_wait.
+    # traj-b row (row 4): interaction_total = slice_total + resume_rate_pacing_wait.
     it = ws.cell(4, headers.index("interaction_total_sec") + 1).value
     st = ws.cell(4, headers.index("slice_total_sec") + 1).value
-    rqr = ws.cell(4, headers.index("resume_queue_wait_sec") + 1).value
+    rqr = ws.cell(4, headers.index("resume_rate_pacing_wait_sec") + 1).value
     assert it is not None and st is not None and round((st or 0) + (rqr or 0), 3) == it
     # frozen header + autofilter on the data range
     assert ws.freeze_panes == "A2"
@@ -677,8 +677,8 @@ def test_trajectory_summary_attributes_cost_per_instance(tmp_path):
                     "resume_sec": resume,
                     "pause_sec": pause,
                     "slot_contention_wait_sec": slot_wait,
-                    "resume_queue_wait_sec": 0.02,
-                    "pause_queue_wait_sec": 0.03,
+                    "resume_rate_pacing_wait_sec": 0.02,
+                    "pause_rate_pacing_wait_sec": 0.03,
                     "running_slot_held_sec": 0.9,
                     "slice_total_sec": round(resume + 0.4 + pause, 3),
                     "interaction_total_sec": round(resume + 0.4 + pause + 0.05, 3),
@@ -705,9 +705,9 @@ def test_trajectory_summary_attributes_cost_per_instance(tmp_path):
     assert "exec_sum_s" in headers
     assert "resume_sum_s" in headers
     assert "pause_sum_s" in headers
-    assert "slot_wait_sum_s" in headers
-    assert "resume_queue_wait_sum_s" in headers
-    assert "pause_queue_wait_sum_s" in headers
+    assert "slot_contention_wait_sum_s" in headers
+    assert "resume_rate_pacing_wait_sum_s" in headers
+    assert "pause_rate_pacing_wait_sum_s" in headers
     assert "running_slot_held_sum_s" in headers
     assert "avg_slice_s" in headers
     # no percentile columns remain (they live in Step detail / Lifecycle overhead)
@@ -723,7 +723,7 @@ def test_trajectory_summary_attributes_cost_per_instance(tmp_path):
     ps = headers.index("pause_sum_s") + 1
     es = headers.index("exec_sum_s") + 1
     ss = headers.index("slice_total_sum_s") + 1
-    sw = headers.index("slot_wait_sum_s") + 1
+    sw = headers.index("slot_contention_wait_sum_s") + 1
     assert ws.cell(2, rs).value == 0.3
     assert ws.cell(2, ps).value == 0.6
     assert ws.cell(2, es).value == 1.2
@@ -881,8 +881,8 @@ def _step_ev(
         "slice_total_sec": s,
         "interaction_total_sec": round(s + 0.05, 3),
         "slot_contention_wait_sec": slot_contention_wait_sec,
-        "resume_queue_wait_sec": 0.0,
-        "pause_queue_wait_sec": 0.0,
+        "resume_rate_pacing_wait_sec": 0.0,
+        "pause_rate_pacing_wait_sec": 0.0,
         "running_slot_held_sec": 0.0,
         "slice_failed": slice_failed,
         "timed_out": timed_out,
@@ -944,7 +944,7 @@ def test_trajectory_summary_has_failure_and_success_columns(tmp_path):
 
 
 def test_trajectory_summary_has_data_bars_and_failure_color_scale(tmp_path):
-    """Conditional formatting: data bars on slice_total_sum_s + slot_wait_sum_s
+    """Conditional formatting: data bars on slice_total_sum_s + slot_contention_wait_sum_s
     (longer bar = slower / more queueing) and a red color scale on n_failed --
     the at-a-glance outlier highlighting the reference's per-trial table lacks."""
     from unittest.mock import MagicMock
@@ -974,7 +974,7 @@ def test_trajectory_summary_has_data_bars_and_failure_color_scale(tmp_path):
     from openpyxl.utils import get_column_letter
 
     slice_col = get_column_letter(headers.index("slice_total_sum_s") + 1)
-    slot_col = get_column_letter(headers.index("slot_wait_sum_s") + 1)
+    slot_col = get_column_letter(headers.index("slot_contention_wait_sum_s") + 1)
     nf_col = get_column_letter(headers.index("n_failed") + 1)
 
     rule_cols = []  # (type, covered-column-letter)

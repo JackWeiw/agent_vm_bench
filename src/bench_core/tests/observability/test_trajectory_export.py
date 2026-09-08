@@ -2,7 +2,7 @@
 
 Aligns with the reference replay-aenv-main replay-result.json (steps[] +
 aggregates + pause_resume_overhead) but is a SUPERSET: it also carries the
-bench-core sub-segments (resume_queue_wait / pause_api / slot_contention /
+bench-core sub-segments (resume_rate_pacing_wait / pause_api / slot_contention /
 running_slot_held), the trajectory-level create/kill error string, and a
 trajectories/index.json catalog so a fleet of dozens/hundreds of trajectories
 is browsable without walking folders.
@@ -30,10 +30,10 @@ def _step(
     slot_contention_wait_sec=0.0,
     resume_start=None,
     pause_end=None,
-    resume_queue_wait_sec=0.0,
+    resume_rate_pacing_wait_sec=0.0,
     resume_api_sec=0.0,
     resume_ready_wait_sec=0.0,
-    pause_queue_wait_sec=0.0,
+    pause_rate_pacing_wait_sec=0.0,
     pause_api_sec=0.0,
     running_slot_held_sec=0.0,
 ):
@@ -56,10 +56,10 @@ def _step(
         "slice_total_sec": s,
         "interaction_total_sec": round(s + 0.05, 3),
         "slot_contention_wait_sec": slot_contention_wait_sec,
-        "resume_queue_wait_sec": resume_queue_wait_sec,
+        "resume_rate_pacing_wait_sec": resume_rate_pacing_wait_sec,
         "resume_api_sec": resume_api_sec,
         "resume_ready_wait_sec": resume_ready_wait_sec,
-        "pause_queue_wait_sec": pause_queue_wait_sec,
+        "pause_rate_pacing_wait_sec": pause_rate_pacing_wait_sec,
         "pause_api_sec": pause_api_sec,
         "running_slot_held_sec": running_slot_held_sec,
         "slice_failed": slice_failed,
@@ -147,10 +147,10 @@ def test_export_schema_matches_reference(tmp_path):
         assert k in st, f"missing step key {k}"
     assert st["stderr"] is None  # series excludes raw stderr by design
     for k in (
-        "resume_queue_wait_sec",
+        "resume_rate_pacing_wait_sec",
         "resume_api_sec",
         "resume_ready_wait_sec",
-        "pause_queue_wait_sec",
+        "pause_rate_pacing_wait_sec",
         "pause_api_sec",
         "slot_contention_wait_sec",
         "running_slot_held_sec",
@@ -332,8 +332,8 @@ def test_export_writes_index_json_catalog(tmp_path):
             "capacity_wait",
             "rate_pacing_wait",
             "inflight_wait",
-            "resume_queue_wait",
-            "pause_queue_wait",
+            "resume_rate_pacing_wait",
+            "pause_rate_pacing_wait",
             "resume_inflight_wait",
             "pause_inflight_wait",
             "running_slot_held",

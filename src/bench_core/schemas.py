@@ -310,8 +310,8 @@ class ReplayMetrics(TaskMetricsBase):
         self._resume_ready_wait_secs: list[float] = []
         self._slot_contention_wait_secs: list[float] = []
         self._pause_api_secs: list[float] = []
-        self._resume_queue_wait_secs: list[float] = []
-        self._pause_queue_wait_secs: list[float] = []  # was missing -> added with the rate-pacing split
+        self._resume_rate_pacing_wait_secs: list[float] = []
+        self._pause_rate_pacing_wait_secs: list[float] = []  # was missing -> added with the rate-pacing split
         self._running_slot_held_secs: list[float] = []
         self._interaction_total_secs: list[float] = []
         self._create_secs: list[float] = []  # trajectory mode only; empty otherwise
@@ -364,8 +364,8 @@ class ReplayMetrics(TaskMetricsBase):
         resume_ready_wait_sec: float = 0.0,
         slot_contention_wait_sec: float = 0.0,
         pause_api_sec: float = 0.0,
-        resume_queue_wait_sec: float = 0.0,
-        pause_queue_wait_sec: float = 0.0,
+        resume_rate_pacing_wait_sec: float = 0.0,
+        pause_rate_pacing_wait_sec: float = 0.0,
         running_slot_held_sec: float = 0.0,
         interaction_total_sec: float = 0.0,
         create_sec: float = 0.0,
@@ -410,10 +410,10 @@ class ReplayMetrics(TaskMetricsBase):
             # divide-by-zero in overhead math. P2.6 adds four segment lists
             # (resume_api, resume_ready_wait, slot_contention_wait, pause_api)
             # that must stay aligned with the original three. P2.6 Task 4 adds
-            # resume_queue_wait_secs (QPS limiter queue wait on resume) as the
+            # resume_rate_pacing_wait_secs (QPS limiter queue wait on resume) as the
             # eighth list. L7 adds running_slot_held_secs, interaction_total_secs,
             # create_secs, kill_secs as lists 9-12. The wait-decoupling change
-            # adds pause_queue_wait_secs (was missing) + the four-component
+            # adds pause_rate_pacing_wait_secs (was missing) + the four-component
             # split (natural_delay / capacity_wait / resume_inflight_wait /
             # pause_inflight_wait); rate_pacing_wait_secs and inflight_wait_secs
             # are derived (element-wise sums) -- all append atomically here.
@@ -425,8 +425,8 @@ class ReplayMetrics(TaskMetricsBase):
                 self._resume_ready_wait_secs.append(resume_ready_wait_sec)
                 self._slot_contention_wait_secs.append(slot_contention_wait_sec)
                 self._pause_api_secs.append(pause_api_sec)
-                self._resume_queue_wait_secs.append(resume_queue_wait_sec)
-                self._pause_queue_wait_secs.append(pause_queue_wait_sec)
+                self._resume_rate_pacing_wait_secs.append(resume_rate_pacing_wait_sec)
+                self._pause_rate_pacing_wait_secs.append(pause_rate_pacing_wait_sec)
                 self._running_slot_held_secs.append(running_slot_held_sec)
                 self._interaction_total_secs.append(interaction_total_sec)
                 self._create_secs.append(create_sec)
@@ -533,10 +533,10 @@ class ReplayMetrics(TaskMetricsBase):
             return list(self._pause_api_secs)
 
     @property
-    def resume_queue_wait_secs(self) -> list[float]:
+    def resume_rate_pacing_wait_secs(self) -> list[float]:
         """Per-step QPS limiter queue waits on resume, copy under lock (P2.6)."""
         with self._lock:
-            return list(self._resume_queue_wait_secs)
+            return list(self._resume_rate_pacing_wait_secs)
 
     @property
     def running_slot_held_secs(self) -> list[float]:
@@ -563,7 +563,7 @@ class ReplayMetrics(TaskMetricsBase):
             return list(self._kill_secs)
 
     @property
-    def pause_queue_wait_secs(self) -> list[float]:
+    def pause_rate_pacing_wait_secs(self) -> list[float]:
         """Per-step QPS rate-pacing wait on pause, copy under lock.
 
         Was previously absent from ReplayMetrics (written only to the series);
@@ -571,7 +571,7 @@ class ReplayMetrics(TaskMetricsBase):
         aggregated for the invariants and the ``rate_pacing_wait_secs`` total.
         """
         with self._lock:
-            return list(self._pause_queue_wait_secs)
+            return list(self._pause_rate_pacing_wait_secs)
 
     @property
     def natural_delay_secs(self) -> list[float]:
@@ -612,11 +612,11 @@ class ReplayMetrics(TaskMetricsBase):
 
         The third independent wait component (a RATE control: request-interval
         shaping). Derived as the element-wise sum of the per-phase rate-pacing
-        lists (``resume_queue_wait_secs`` + ``pause_queue_wait_secs``) so the
+        lists (``resume_rate_pacing_wait_secs`` + ``pause_rate_pacing_wait_secs``) so the
         per-phase invariants stay authoritative and no redundant list is stored.
         """
         with self._lock:
-            return [r + p for r, p in zip(self._resume_queue_wait_secs, self._pause_queue_wait_secs)]
+            return [r + p for r, p in zip(self._resume_rate_pacing_wait_secs, self._pause_rate_pacing_wait_secs)]
 
     @property
     def inflight_wait_secs(self) -> list[float]:

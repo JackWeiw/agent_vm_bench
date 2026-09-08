@@ -347,7 +347,7 @@ minimal install),依赖 series 的表只输出表头,不报错。
 | Overview | 标量(合并汇总,分组着色) | **单表汇总**(原 Admission & QPS / Throughput & overcommit / Retry impact 三张标量表已并入此表):Run(mode/total_count/running_concurrency/test_duration/wall_sec/steps/success/failed/overcommit_ratio)+ Throughput(steps_per_sec/effective_parallelism/exec_wall_utilization/concurrency)+ Admission & QPS(running_slot 的 maximum/active/peak_active/granted/avg_queue_wait/waiting + QPS 限流 qps/inflight_cap/in_flight/dispatched/avg_wait/max_wait + per-operation 分发/等待子表)+ Retry(retry_count/time_lost_to_retry_sec/retries_per_slice_p95 + per-operation retry_queued)。数据名称栏(A 列)填色加粗,分组用 banner 行分隔 |
 | Per-step timings | 池化百分位 | 全 fleet `latency`(=纯 exec 耗时)的 n/min/max/avg/p50/p95/p99,按 `action_type` 分桶;附 per-step 折图(ms) |
 | Lifecycle overhead | 池化百分位 | `resume` / `pause` / `slice_total` / `slot_held` / `interaction` 五段的百分位;附 per-step 折图(ms)。仅 lifecycle/trajectory 模式 |
-| Trajectory summary | **每 trajectory 一行** | n_steps + 各段 sum(slice_total/exec/resume/pause/interaction_total/slot_wait/resume_queue_wait/pause_queue_wait/running_slot_held)+ avg_slice(秒)。按 trajectory_id 升序;trajectory 模式额外附 create_sec/kill_sec 百分位 |
+| Trajectory summary | **每 trajectory 一行** | n_steps + 各段 sum(slice_total/exec/resume/pause/interaction_total/slot_contention_wait/resume_rate_pacing_wait/pause_rate_pacing_wait/running_slot_held)+ avg_slice(秒)。按 trajectory_id 升序;trajectory 模式额外附 create_sec/kill_sec 百分位 |
 | Step detail | **每 step 事件一行** | 见下表;含成功与 `slice_failed` 合成行,按 (trajectory, sandbox, step) 排序,冻结首行 + autofilter |
 | Concurrency states | 每秒一行 | 每秒各 sandbox 的主导状态计数(pausing/paused/resuming/exec/active)+ 折图 |
 | Gantt | 图 | 每 sandbox 的 phase 时间线(resume/exec/pause),内嵌 PNG;大 fleet 自动缩小行高 |
@@ -356,8 +356,8 @@ minimal install),依赖 series 的表只输出表头,不报错。
 #### Step detail 列(20 列,秒)
 
 子段紧贴其父总量,使和不变式可在表内直接验证:
-`resume_sec == resume_queue_wait_sec + resume_api_sec + resume_ready_wait_sec`,
-`pause_sec == pause_queue_wait_sec + pause_api_sec`。
+`resume_sec == resume_inflight_wait_sec + resume_api_sec + resume_ready_wait_sec`(rate-pacing 属 PRE-lease,被排除),
+`pause_sec == pause_rate_pacing_wait_sec + pause_inflight_wait_sec + pause_api_sec`(rate-pacing 属 IN-lease,被计入)。
 
 | 列 | 含义 |
 |----|------|
@@ -367,17 +367,17 @@ minimal install),依赖 series 的表只输出表头,不报错。
 | `step_index` | 轨迹内 step 序号(0-based) |
 | `action_type` | `shell`/`bash`/`str_replace_editor`/`submit`/`finish`/`done` |
 | `slice_failed` | runner 合成的失败 slice(异常/stop_on_error);True 时下面时长列全 0 |
-| `resume_sec` | resume 总时长 = queue + api + ready_wait |
-| `resume_queue_wait_sec` | QPS 限流器排队等待(resume) |
+| `resume_sec` | resume 总时长 = inflight + api + ready_wait(rate-pacing 被排除,属 pre-lease) |
+| `resume_rate_pacing_wait_sec` | QPS 限流器 1/qps 速率等待(resume,PRE-lease:不计入 resume_sec / running_slot_held) |
 | `resume_api_sec` | 纯 resume API 调用耗时 |
 | `resume_ready_wait_sec` | resume 后的就绪探测等待(lifecycle/trajectory 模式;exec_only 为 0) |
 | `exec_sec` | 纯 `provider.exec()` 墙钟耗时(= Per-step timings 的 latency) |
-| `pause_sec` | pause 总时长 = queue + api |
-| `pause_queue_wait_sec` | QPS 限流器排队等待(pause) |
+| `pause_sec` | pause 总时长 = rate-pacing + inflight + api(rate-pacing 被计入,属 in-lease) |
+| `pause_rate_pacing_wait_sec` | QPS 限流器 1/qps 速率等待(pause,IN-lease:计入 pause_sec / running_slot_held) |
 | `pause_api_sec` | 纯 pause API 调用耗时 |
 | `slice_total_sec` | resume + exec + pause;失败 slice 为 0(被排除出百分位计算) |
 | `interaction_total_sec` | 一次交互的完整预算 = resume + exec + pause + delay + natural_delay + capacity_wait(≥ slice_total) |
-| `slot_contention_wait_sec` | 获取 running slot 的竞争等待(admission) |
+| `slot_contention_wait_sec` | 派生复合量 = natural_delay + capacity_wait(FIFO running-slot 竞争;admission) |
 | `running_slot_held_sec` | running slot 持有总时长(acquire→release) |
 | `exit_code` | `provider.exec()` 退出码 |
 | `timed_out` | 是否命中超时退出码 |
@@ -395,9 +395,9 @@ minimal install),依赖 series 的表只输出表头,不报错。
 | `resume_sum_s` | resume 总耗时 |
 | `pause_sum_s` | pause 总耗时 |
 | `interaction_total_sum_s` | 含 delay + capacity_wait 的完整交互预算(≥ slice_total,超卖分析用) |
-| `slot_wait_sum_s` | admission slot 竞争等待总耗时 |
-| `resume_queue_wait_sum_s` | resume 的 QPS 限流排队总耗时 |
-| `pause_queue_wait_sum_s` | pause 的 QPS 限流排队总耗时 |
+| `slot_contention_wait_sum_s` | admission slot 竞争等待总耗时(派生 = natural_delay + capacity_wait) |
+| `resume_rate_pacing_wait_sum_s` | resume 的 QPS 限流 1/qps 速率等待总耗时(pre-lease) |
+| `pause_rate_pacing_wait_sum_s` | pause 的 QPS 限流 1/qps 速率等待总耗时(in-lease) |
 | `running_slot_held_sum_s` | running slot 持有总时长(slot 占用/超卖粒度) |
 | `avg_slice_s` | slice_total_sum / n_steps,典型单步成本 |
 

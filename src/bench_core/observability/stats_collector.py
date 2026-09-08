@@ -643,7 +643,7 @@ class ReportFormatter:
                 # admission controller being present.
                 all_resume_api: list[float] = []
                 all_resume_ready_wait: list[float] = []
-                all_resume_queue_wait: list[float] = []
+                all_resume_rate_pacing_wait: list[float] = []
                 all_slot_contention: list[float] = []
                 all_pause_api: list[float] = []
                 # Wait-decoupling components (rate pacing + inflight fuse + the
@@ -656,7 +656,7 @@ class ReportFormatter:
                 for s in self.sandbox_states.values():
                     all_resume_api.extend(s.replay_metrics.resume_api_secs)
                     all_resume_ready_wait.extend(s.replay_metrics.resume_ready_wait_secs)
-                    all_resume_queue_wait.extend(s.replay_metrics.resume_queue_wait_secs)
+                    all_resume_rate_pacing_wait.extend(s.replay_metrics.resume_rate_pacing_wait_secs)
                     all_slot_contention.extend(s.replay_metrics.slot_contention_wait_secs)
                     all_pause_api.extend(s.replay_metrics.pause_api_secs)
                     all_rate_pacing_wait.extend(s.replay_metrics.rate_pacing_wait_secs)
@@ -667,20 +667,20 @@ class ReportFormatter:
                 # Resume decomp line (always rendered when all_slice non-empty)
                 resume_api_stats = calc_percentiles(all_resume_api)
                 resume_ready_wait_stats = calc_percentiles(all_resume_ready_wait)
-                resume_queue_wait_stats = calc_percentiles(all_resume_queue_wait)
+                resume_rate_pacing_wait_stats = calc_percentiles(all_resume_rate_pacing_wait)
                 lines.append(
                     f"  Resume decomp: api P50={resume_api_stats['p50']:.3f}s "
                     f"P95={resume_api_stats['p95']:.3f}s | "
                     f"ready_wait P50={resume_ready_wait_stats['p50']:.3f}s | "
-                    f"qps_wait P50={resume_queue_wait_stats['p50']:.3f}s  (n={n})"
+                    f"qps_wait P50={resume_rate_pacing_wait_stats['p50']:.3f}s  (n={n})"
                 )
 
-                # Pause decomp line (qps_wait shared from resume_queue_wait_secs
+                # Pause decomp line (qps_wait shared from resume_rate_pacing_wait_secs
                 # since the limiter is shared; pause has no ready_wait)
                 pause_api_stats = calc_percentiles(all_pause_api)
                 lines.append(
                     f"  Pause decomp:  api P50={pause_api_stats['p50']:.3f}s | "
-                    f"qps_wait P50={resume_queue_wait_stats['p50']:.3f}s  (n={n})"
+                    f"qps_wait P50={resume_rate_pacing_wait_stats['p50']:.3f}s  (n={n})"
                 )
 
                 # Conditional lines (only when admission controller was built)
@@ -688,7 +688,7 @@ class ReportFormatter:
                     slot_contention_stats = calc_percentiles(all_slot_contention)
                     lines.append(
                         f"  Slot contention: P50={slot_contention_stats['p50']:.3f}s "
-                        f"P95={slot_contention_stats['p95']:.3f}s  (n={len(all_slot_contention)})"
+                        f"P95={slot_contention_stats['p95']:.3f}s  (n={len(all_slot_contention)})  [= nat + cap]"
                     )
                     # Three independent wait components (rate pacing, inflight
                     # fuse, and the slot-scheduler's natural/capacity split).

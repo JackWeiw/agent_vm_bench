@@ -427,7 +427,7 @@ when the series is absent (e.g. a minimal install).
 | Overview | scalar (consolidated, grouped/color-coded) | **single summary**: Run (mode/total_count/running_concurrency/test_duration/wall_sec/steps/success/failed/overcommit_ratio) + Throughput (steps_per_sec/effective_parallelism/exec_wall_utilization/concurrency) + Admission & QPS (running-slot maximum/active/peak_active/granted/avg_queue_wait/waiting + QPS limiter qps/inflight_cap/in_flight/dispatched/avg_wait/max_wait + per-operation dispatch/wait sub-tables) + Retry (retry_count/time_lost_to_retry_sec/retries_per_slice_p95 + per-operation retry_queued). Column A labels are bold/filled; groups separated by banner rows |
 | Per-step timings | pooled percentiles | fleet `latency` (= pure exec time) n/min/max/avg/p50/p95/p99, bucketed by `action_type`; embedded line chart (ms) |
 | Lifecycle overhead | pooled percentiles | `resume` / `pause` / `slice_total` / `slot_held` / `interaction` percentiles; embedded chart (ms). lifecycle/trajectory only |
-| Trajectory summary | one row per trajectory | n_steps + segment sums (slice_total/exec/resume/pause/interaction_total/slot_wait/resume_queue_wait/pause_queue_wait/running_slot_held) + avg_slice (seconds). Sorted by trajectory_id; trajectory mode also appends create/kill percentiles |
+| Trajectory summary | one row per trajectory | n_steps + segment sums (slice_total/exec/resume/pause/interaction_total/slot_contention_wait/resume_rate_pacing_wait/pause_rate_pacing_wait/running_slot_held) + avg_slice (seconds). Sorted by trajectory_id; trajectory mode also appends create/kill percentiles |
 | Step detail | one row per step event | 20 columns (see below); includes success and synthesized `slice_failed` rows; sorted by (trajectory, sandbox, step); frozen header + autofilter |
 | Concurrency states | one row per second | per-second dominant-state counts (pausing/paused/resuming/exec/active); chart |
 | Gantt | chart | per-sandbox phase timeline (resume/exec/pause), embedded PNG; auto-shrinks row height for large fleets |
@@ -441,8 +441,8 @@ when the series is absent (e.g. a minimal install).
 #### Step detail columns (20, seconds)
 
 Sub-segments nest under their parent so the sum invariant is verifiable in-sheet:
-`resume_sec == resume_queue_wait_sec + resume_api_sec + resume_ready_wait_sec`,
-`pause_sec == pause_queue_wait_sec + pause_api_sec`.
+`resume_sec == resume_inflight_wait_sec + resume_api_sec + resume_ready_wait_sec` (rate-pacing is PRE-lease, excluded),
+`pause_sec == pause_rate_pacing_wait_sec + pause_inflight_wait_sec + pause_api_sec` (rate-pacing is IN-lease, included).
 
 | column | meaning |
 |-------|---------|
@@ -452,17 +452,17 @@ Sub-segments nest under their parent so the sum invariant is verifiable in-sheet
 | `step_index` | step index within the trajectory (0-based) |
 | `action_type` | `shell` / `bash` / `str_replace_editor` / `submit` / `finish` / `done` |
 | `slice_failed` | runner-synthesized failed slice (exception/stop_on_error); when True the duration columns below are 0 |
-| `resume_sec` | total resume time = queue + api + ready_wait |
-| `resume_queue_wait_sec` | QPS-limiter queue wait (resume) |
+| `resume_sec` | total resume time = inflight + api + ready_wait (rate-pacing excluded, pre-lease) |
+| `resume_rate_pacing_wait_sec` | QPS-limiter 1/qps rate-pacing time-wait (resume, PRE-lease: excluded from resume_sec / running_slot_held) |
 | `resume_api_sec` | pure resume API call time |
 | `resume_ready_wait_sec` | post-resume readiness probe wait (lifecycle/trajectory; 0 in exec_only) |
 | `exec_sec` | pure `provider.exec()` wall time (= Per-step timings `latency`) |
-| `pause_sec` | total pause time = queue + api |
-| `pause_queue_wait_sec` | QPS-limiter queue wait (pause) |
+| `pause_sec` | total pause time = rate-pacing + inflight + api (rate-pacing included, in-lease) |
+| `pause_rate_pacing_wait_sec` | QPS-limiter 1/qps rate-pacing time-wait (pause, IN-lease: included in pause_sec / running_slot_held) |
 | `pause_api_sec` | pure pause API call time |
 | `slice_total_sec` | resume + exec + pause; 0 for failed slices (excluded from percentiles) |
 | `interaction_total_sec` | full interaction budget = resume + exec + pause + delay + natural_delay + capacity_wait (≥ slice_total) |
-| `slot_contention_wait_sec` | contention wait to acquire a running slot (admission) |
+| `slot_contention_wait_sec` | derived composite = natural_delay + capacity_wait (FIFO running-slot contention; admission) |
 | `running_slot_held_sec` | total running-slot hold time (acquire → release) |
 | `exit_code` | `provider.exec()` exit code |
 | `timed_out` | whether a timeout exit code was hit |
@@ -488,13 +488,13 @@ sums but count as attempts, so `avg_slice` reflects per-attempt cost).
 | `resume_sum_s` | total resume time |
 | `pause_sum_s` | total pause time |
 | `interaction_total_sum_s` | full interaction budget incl. delay + capacity_wait (≥ slice_total; for oversubscription analysis) |
-| `slot_wait_sum_s` | total admission slot-contention wait |
-| `resume_queue_wait_sum_s` | total QPS-limiter queue wait for resume |
-| `pause_queue_wait_sum_s` | total QPS-limiter queue wait for pause |
+| `slot_contention_wait_sum_s` | total admission slot-contention wait (derived = natural_delay + capacity_wait) |
+| `resume_rate_pacing_wait_sum_s` | total QPS-limiter 1/qps rate-pacing time-wait for resume (pre-lease) |
+| `pause_rate_pacing_wait_sum_s` | total QPS-limiter 1/qps rate-pacing time-wait for pause (in-lease) |
 | `running_slot_held_sum_s` | total running-slot hold time (slot occupancy / oversubscription granularity) |
 | `avg_slice_s` | slice_total_sum / n_steps, typical per-step cost |
 
-> Finer resume/pause sub-segments (api_sec / ready_wait / queue_wait) per step live in
+> Finer resume/pause sub-segments (api_sec / ready_wait / rate_pacing_wait) per step live in
 > `Step detail`; per-second concurrency in `Concurrency states`; snapshot memory in
 > `Snapshot sizes`. Host-level system resources (CPU/memory/NUMA) are in the separate
 > vm_monitor `resource_report.xlsx` (`monitor.merge_report: false`) or merged into this
@@ -511,7 +511,7 @@ after every trial (so a killed driver leaves a complete partial set), four files
 |------|-------------|-------------|
 | `trial-summary.csv` | one row per `(mode, ratio, repeat)` trial | `total, succeeded, failed, failure_rate, peak_active, wall_sec, tasks_per_sec, steps_per_sec, lifecycle_overhead_pct, return_code, valid, target_count, test_duration` |
 | `ratio-summary.csv` | one row per `(mode, ratio)` (medians across repeats) | `attempted, successful, median_wall_sec, median_tasks_per_sec, time_degradation_vs_1_1_pct, throughput_gain_vs_1_1_pct` |
-| `trajectory-detail.csv` | one row per trajectory per trial (from `trajectories/index.json`) | `trajectory_id, sandbox_index, n_steps, n_failed, success_rate, elapsed_sec` + the 12 `*_sec` breakdown columns (exec/resume/pause/requested_delay/create/kill/slice_total/interaction_total/slot_contention_wait/resume_queue_wait/pause_queue_wait/running_slot_held) |
+| `trajectory-detail.csv` | one row per trajectory per trial (from `trajectories/index.json`) | `trajectory_id, sandbox_index, n_steps, n_failed, success_rate, elapsed_sec` + the 12 `*_sec` breakdown columns (exec/resume/pause/requested_delay/create/kill/slice_total/interaction_total/slot_contention_wait/resume_rate_pacing_wait/pause_rate_pacing_wait/running_slot_held) |
 | `benchmark-report.json` | full machine-readable report | `configuration, trials, ratio_summary, trajectory_details` |
 
 **Interrupted trials.** A trial halted mid-run by Ctrl-C / a driver-initiated SIGTERM is

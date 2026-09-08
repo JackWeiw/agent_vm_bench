@@ -94,15 +94,15 @@ class StepResult:
     # parse-compat. Invariants (post-decoupling):
     #   resume_sec = resume_inflight_wait + resume_api + resume_ready_wait
     #     (resume rate-pacing is PRE-lease, NOT in resume_sec)
-    #   pause_sec = pause_queue_wait + pause_inflight_wait + pause_api
+    #   pause_sec = pause_rate_pacing_wait + pause_inflight_wait + pause_api
     #     (pause rate-pacing is IN-lease)
     #   running_slot_held = resume_sec + exec + pause_sec
     #     (excludes resume rate-pacing -- the decoupling)
     resume_api_sec: float = 0.0
     resume_ready_wait_sec: float = 0.0
     slot_contention_wait_sec: float = 0.0
-    resume_queue_wait_sec: float = 0.0
-    pause_queue_wait_sec: float = 0.0
+    resume_rate_pacing_wait_sec: float = 0.0
+    pause_rate_pacing_wait_sec: float = 0.0
     pause_api_sec: float = 0.0
     # L7 decomposition (Phase 1): slot hold + full interaction budget.
     running_slot_held_sec: float = 0.0
@@ -284,8 +284,8 @@ class ReplayBaseRunner(threading.Thread):
                 slot_contention_wait_sec=slot_contention_wait_sec,
                 # Per-phase rate-pacing (kept under the legacy "queue" names for
                 # downstream parse-compat): resume = pre-lease, pause = in-lease.
-                resume_queue_wait_sec=resume_rate_pacing_wait_sec,
-                pause_queue_wait_sec=pause_rate_pacing_wait_sec,
+                resume_rate_pacing_wait_sec=resume_rate_pacing_wait_sec,
+                pause_rate_pacing_wait_sec=pause_rate_pacing_wait_sec,
                 pause_api_sec=pause_api_sec,
                 running_slot_held_sec=((time.perf_counter() - slot_acquired_at) if slot_acquired_at else 0.0),
                 interaction_total_sec=(
@@ -329,11 +329,11 @@ class ReplayBaseRunner(threading.Thread):
                         "slot_contention_wait_sec": slot_contention_wait_sec,
                         "natural_delay_sec": natural_delay_sec,
                         "capacity_wait_sec": capacity_wait_sec,
-                        "resume_queue_wait_sec": resume_rate_pacing_wait_sec,
+                        "resume_rate_pacing_wait_sec": resume_rate_pacing_wait_sec,
                         "resume_api_sec": resume_api_sec,
                         "resume_ready_wait_sec": resume_ready_wait_sec,
                         "resume_inflight_wait_sec": resume_inflight_wait_sec,
-                        "pause_queue_wait_sec": pause_rate_pacing_wait_sec,
+                        "pause_rate_pacing_wait_sec": pause_rate_pacing_wait_sec,
                         "pause_api_sec": pause_api_sec,
                         "pause_inflight_wait_sec": pause_inflight_wait_sec,
                         "rate_pacing_wait_sec": rate_pacing_wait_sec,
@@ -690,8 +690,8 @@ class ReplayBaseRunner(threading.Thread):
             resume_ready_wait_sec=step_result.resume_ready_wait_sec,
             slot_contention_wait_sec=step_result.slot_contention_wait_sec,
             pause_api_sec=step_result.pause_api_sec,
-            resume_queue_wait_sec=step_result.resume_queue_wait_sec,
-            pause_queue_wait_sec=step_result.pause_queue_wait_sec,
+            resume_rate_pacing_wait_sec=step_result.resume_rate_pacing_wait_sec,
+            pause_rate_pacing_wait_sec=step_result.pause_rate_pacing_wait_sec,
             running_slot_held_sec=step_result.running_slot_held_sec,
             interaction_total_sec=step_result.interaction_total_sec,
             natural_delay_sec=step_result.natural_delay_sec,
@@ -956,10 +956,10 @@ class ReplayBaseRunner(threading.Thread):
             "timed_out": timed_out,
             "slice_failed": True,
             "slot_contention_wait_sec": 0.0,
-            "resume_queue_wait_sec": 0.0,
+            "resume_rate_pacing_wait_sec": 0.0,
             "resume_api_sec": 0.0,
             "resume_ready_wait_sec": 0.0,
-            "pause_queue_wait_sec": 0.0,
+            "pause_rate_pacing_wait_sec": 0.0,
             "pause_api_sec": 0.0,
             "running_slot_held_sec": 0.0,
             "interaction_total_sec": 0.0,

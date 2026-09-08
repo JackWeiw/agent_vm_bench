@@ -56,7 +56,7 @@ def _state(i):
 
 def _rate_pacing(sr):
     """Rate-pacing total = resume + pause 1/qps time-waits."""
-    return sr.resume_queue_wait_sec + sr.pause_queue_wait_sec
+    return sr.resume_rate_pacing_wait_sec + sr.pause_rate_pacing_wait_sec
 
 
 def _inflight(sr):
@@ -67,7 +67,7 @@ def _inflight(sr):
 def _assert_invariants(sr):
     """The wait-decoupling sum invariants must hold for every slice."""
     assert abs(sr.resume_sec - (sr.resume_inflight_wait_sec + sr.resume_api_sec + sr.resume_ready_wait_sec)) < 1e-6
-    assert abs(sr.pause_sec - (sr.pause_queue_wait_sec + sr.pause_inflight_wait_sec + sr.pause_api_sec)) < 1e-6
+    assert abs(sr.pause_sec - (sr.pause_rate_pacing_wait_sec + sr.pause_inflight_wait_sec + sr.pause_api_sec)) < 1e-6
     assert abs(sr.slice_total_sec - (sr.resume_sec + sr.exec_elapsed_sec + sr.pause_sec)) < 1e-6
     assert abs(sr.slot_contention_wait_sec - (sr.natural_delay_sec + sr.capacity_wait_sec)) < 1e-6
 
@@ -207,8 +207,8 @@ class TestSmokeMatrixConcurrent:
         assert max(_rate_pacing(sr) for sr in results) > 0.001, "rate pacing should delay 2nd/3rd resume"
         # Structural: every StepResult carries the four wait-component fields.
         for sr in results:
-            assert hasattr(sr, "resume_queue_wait_sec")
-            assert hasattr(sr, "pause_queue_wait_sec")
+            assert hasattr(sr, "resume_rate_pacing_wait_sec")
+            assert hasattr(sr, "pause_rate_pacing_wait_sec")
             assert hasattr(sr, "resume_inflight_wait_sec")
             assert hasattr(sr, "natural_delay_sec")
             assert hasattr(sr, "capacity_wait_sec")

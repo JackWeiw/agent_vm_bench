@@ -57,6 +57,25 @@ def _write_table(ws, headers: list[str], rows: list[list]) -> int:
     return header_row
 
 
+def _attach_rate_pacing_notes(ws, headers: list[str], header_row: int) -> None:
+    """Pin a concise fixed header note on the two rate-pacing columns flagging the
+    pre-lease / in-lease归属, so a reader does not sum resume rate-pacing into
+    ``resume_sec`` (resume excludes it; pause includes it). A cell comment is the
+    non-displacing Excel-native annotation -- the table layout (header row 1, data
+    from row 2, autofilter, freeze panes) is preserved.
+    """
+    resume_col = headers.index("resume_rate_pacing_wait_sec") + 1
+    pause_col = headers.index("pause_rate_pacing_wait_sec") + 1
+    ws.cell(header_row, resume_col).comment = Comment(
+        "PRE-lease: excluded from resume_sec + running_slot_held (sandbox paused, no memory demand).",
+        "bench-core",
+    )
+    ws.cell(header_row, pause_col).comment = Comment(
+        "IN-lease: included in pause_sec + running_slot_held (sandbox holds memory until pause confirms).",
+        "bench-core",
+    )
+
+
 def _add_line_chart(
     ws,
     title: str,
@@ -429,13 +448,13 @@ class XlsxReportRenderer:
                     "resume_sum_s",
                     "pause_sum_s",
                     "interaction_total_sum_s",
-                    "slot_wait_sum_s",
+                    "slot_contention_wait_sum_s",
                     "natural_delay_sum_s",
                     "capacity_wait_sum_s",
                     "rate_pacing_wait_sum_s",
                     "inflight_wait_sum_s",
-                    "resume_queue_wait_sum_s",
-                    "pause_queue_wait_sum_s",
+                    "resume_rate_pacing_wait_sum_s",
+                    "pause_rate_pacing_wait_sum_s",
                     "resume_inflight_wait_sum_s",
                     "pause_inflight_wait_sum_s",
                     "running_slot_held_sum_s",
@@ -483,7 +502,7 @@ class XlsxReportRenderer:
                     DataBarRule(start_type="min", end_type="max", color="638EC6"),
                 )
                 ws.conditional_formatting.add(
-                    _col_range(headers.index("slot_wait_sum_s") + 1),
+                    _col_range(headers.index("slot_contention_wait_sum_s") + 1),
                     DataBarRule(start_type="min", end_type="max", color="638EC6"),
                 )
                 ws.conditional_formatting.add(
@@ -525,9 +544,9 @@ class XlsxReportRenderer:
 
         * ``resume_sec == resume_inflight_wait_sec + resume_api_sec +
           resume_ready_wait_sec`` -- resume rate-pacing
-          (``resume_queue_wait_sec``) is PRE-lease, so it is NOT part of
+          (``resume_rate_pacing_wait_sec``) is PRE-lease, so it is NOT part of
           ``resume_sec`` (the decoupling: it cannot inflate running_slot_held).
-        * ``pause_sec == pause_queue_wait_sec + pause_inflight_wait_sec +
+        * ``pause_sec == pause_rate_pacing_wait_sec + pause_inflight_wait_sec +
           pause_api_sec`` -- pause rate-pacing is IN-lease (sandbox running
           until pause confirms), so it IS part of ``pause_sec``.
         * ``slot_contention_wait_sec == natural_delay_sec + capacity_wait_sec``
@@ -542,12 +561,12 @@ class XlsxReportRenderer:
             "action_type",
             "slice_failed",
             "resume_sec",
-            "resume_queue_wait_sec",
+            "resume_rate_pacing_wait_sec",
             "resume_api_sec",
             "resume_ready_wait_sec",
             "exec_sec",
             "pause_sec",
-            "pause_queue_wait_sec",
+            "pause_rate_pacing_wait_sec",
             "pause_api_sec",
             "slice_total_sec",
             "interaction_total_sec",
@@ -567,7 +586,7 @@ class XlsxReportRenderer:
             "timed_out",
         ]
         if self.series_path is None or not Path(self.series_path).exists():
-            _write_table(ws, headers, [])
+            _attach_rate_pacing_notes(ws, headers, _write_table(ws, headers, []))
             return
         from bench_core.observability.lifecycle_series import load_events
 
@@ -584,12 +603,12 @@ class XlsxReportRenderer:
                     ev.get("action_type") or "",
                     bool(ev.get("slice_failed")),
                     _round_or_none(ev.get("resume_sec")),
-                    _round_or_none(ev.get("resume_queue_wait_sec")),
+                    _round_or_none(ev.get("resume_rate_pacing_wait_sec")),
                     _round_or_none(ev.get("resume_api_sec")),
                     _round_or_none(ev.get("resume_ready_wait_sec")),
                     _round_or_none(ev.get("exec_sec")),
                     _round_or_none(ev.get("pause_sec")),
-                    _round_or_none(ev.get("pause_queue_wait_sec")),
+                    _round_or_none(ev.get("pause_rate_pacing_wait_sec")),
                     _round_or_none(ev.get("pause_api_sec")),
                     _round_or_none(ev.get("slice_total_sec")),
                     _round_or_none(ev.get("interaction_total_sec")),
@@ -608,7 +627,7 @@ class XlsxReportRenderer:
         # Sort by trajectory, then sandbox, then step -- so each trajectory's
         # steps read top-to-bottom in execution order.
         rows.sort(key=lambda r: (str(r[0]), r[1] if r[1] is not None else 0, r[3] if r[3] is not None else 0))
-        _write_table(ws, headers, rows)
+        _attach_rate_pacing_notes(ws, headers, _write_table(ws, headers, rows))
         if rows:
             # Freeze the header + enable autofilter so the user can pivot by
             # trajectory / action_type / exit_code without re-sorting in Excel.

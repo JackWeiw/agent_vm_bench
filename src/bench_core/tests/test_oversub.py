@@ -321,8 +321,8 @@ def test_write_outputs_trajectory_detail_has_rows(tmp_path):
                     "kill": 0.05,
                     "interaction_total": 1.4,
                     "slot_contention_wait": 0.0,
-                    "resume_queue_wait": 0.0,
-                    "pause_queue_wait": 0.0,
+                    "resume_rate_pacing_wait": 0.0,
+                    "pause_rate_pacing_wait": 0.0,
                     "running_slot_held": 1.2,
                 },
                 "create_error_type": None,
@@ -364,6 +364,14 @@ def test_write_outputs_trajectory_detail_has_rows(tmp_path):
     assert r["create_sec"] == "0.05"
     assert r["kill_sec"] == "0.05"
     assert r["running_slot_held_sec"] == "1.2"
+    # The renamed rate-pacing short keys must surface end-to-end: present in the
+    # index.json time_breakdown_sec (the canonical caliber) and emitted as their
+    # own trajectory-detail CSV columns; no legacy *_queue_wait names remain.
+    bd = idx["trajectories"][0]["time_breakdown_sec"]
+    assert "resume_rate_pacing_wait" in bd and "pause_rate_pacing_wait" in bd
+    assert "resume_queue_wait" not in bd and "pause_queue_wait" not in bd
+    assert "resume_rate_pacing_wait_sec" in r and "pause_rate_pacing_wait_sec" in r
+    assert "resume_queue_wait_sec" not in r and "pause_queue_wait_sec" not in r
     # benchmark-report.json trajectory_details also populated
     import json as _j
 
@@ -468,7 +476,7 @@ idx = {{'n_trajectories': 1, 'trajectories': [
    'success_rate':1.0,'elapsed_sec':1.0,
    'time_breakdown_sec':{{'slice_total':0.8,'exec':0.5,'resume':0.1,'pause':0.2,
      'requested_delay':0.1,'create':0.05,'kill':0.05,'interaction_total':0.9,
-     'slot_contention_wait':0.0,'resume_queue_wait':0.0,'pause_queue_wait':0.0,
+     'slot_contention_wait':0.0,'resume_rate_pacing_wait':0.0,'pause_rate_pacing_wait':0.0,
      'running_slot_held':0.8}},
    'create_error_type':None,'kill_error_type':None,'file':'t0/replay_result.json'}}]}}
 (run_dir / 'trajectories' / 'index.json').write_text(json.dumps(idx, indent=2)+'\\n')

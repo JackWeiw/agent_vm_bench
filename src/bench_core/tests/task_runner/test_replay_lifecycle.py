@@ -454,10 +454,10 @@ class TestRunSliceP26Decomposition:
 
     _SEGMENT_KEYS = (
         "slot_contention_wait_sec",
-        "resume_queue_wait_sec",
+        "resume_rate_pacing_wait_sec",
         "resume_api_sec",
         "resume_ready_wait_sec",
-        "pause_queue_wait_sec",
+        "pause_rate_pacing_wait_sec",
         "pause_api_sec",
         # Wait-decoupling split (the four independent components + per-phase inflight).
         "natural_delay_sec",
@@ -506,7 +506,8 @@ class TestRunSliceP26Decomposition:
         )
         assert (
             abs(
-                rec["pause_sec"] - (rec["pause_queue_wait_sec"] + rec["pause_inflight_wait_sec"] + rec["pause_api_sec"])
+                rec["pause_sec"]
+                - (rec["pause_rate_pacing_wait_sec"] + rec["pause_inflight_wait_sec"] + rec["pause_api_sec"])
             )
             < 1e-6
         )
@@ -515,7 +516,9 @@ class TestRunSliceP26Decomposition:
         assert abs(rec["slot_contention_wait_sec"] - (rec["natural_delay_sec"] + rec["capacity_wait_sec"])) < 1e-6
         # StepResult mirrors the record
         assert abs(sr.resume_sec - (sr.resume_inflight_wait_sec + sr.resume_api_sec + sr.resume_ready_wait_sec)) < 1e-6
-        assert abs(sr.pause_sec - (sr.pause_queue_wait_sec + sr.pause_inflight_wait_sec + sr.pause_api_sec)) < 1e-6
+        assert (
+            abs(sr.pause_sec - (sr.pause_rate_pacing_wait_sec + sr.pause_inflight_wait_sec + sr.pause_api_sec)) < 1e-6
+        )
         assert abs(sr.slice_total_sec - (sr.resume_sec + sr.exec_elapsed_sec + sr.pause_sec)) < 1e-6
         # resume_api captured the FakeLifecycleProvider sleep (measurably non-zero)
         assert sr.resume_api_sec > 0.0
@@ -557,27 +560,27 @@ class TestRunSliceP26Decomposition:
         series.close()
 
         # Both rate-pacing waits are non-zero (precondition: the归属 is observable).
-        assert sr.resume_queue_wait_sec > 0.0, "resume rate-pacing should be non-zero"
-        assert sr.pause_queue_wait_sec > 0.0, "pause rate-pacing should be non-zero"
+        assert sr.resume_rate_pacing_wait_sec > 0.0, "resume rate-pacing should be non-zero"
+        assert sr.pause_rate_pacing_wait_sec > 0.0, "pause rate-pacing should be non-zero"
 
         # EXCLUSION: running_slot_held spans [acquire, release]; acquire runs
         # AFTER the pre-lease resume time_wait, so resume rate-pacing sits OUTSIDE
         # the lease bracket. The gap between (resume_pacing + resume_sec + exec +
         # pause_sec) and running_slot_held IS the excluded pre-lease wait.
-        bracket = sr.resume_queue_wait_sec + sr.resume_sec + sr.exec_elapsed_sec + sr.pause_sec
+        bracket = sr.resume_rate_pacing_wait_sec + sr.resume_sec + sr.exec_elapsed_sec + sr.pause_sec
         excluded = bracket - sr.running_slot_held_sec
         assert excluded > 0.001, (
             f"resume rate-pacing must be EXCLUDED from running_slot_held; "
-            f"excluded={excluded:.5f} should ~= resume_queue_wait={sr.resume_queue_wait_sec:.5f}"
+            f"excluded={excluded:.5f} should ~= resume_rate_pacing_wait={sr.resume_rate_pacing_wait_sec:.5f}"
         )
         # The excluded portion IS the resume rate-pacing (within timing jitter).
-        assert abs(excluded - sr.resume_queue_wait_sec) < 0.02, (
-            f"excluded={excluded:.5f} should match resume_queue_wait="
-            f"{sr.resume_queue_wait_sec:.5f} (the pre-lease wait)"
+        assert abs(excluded - sr.resume_rate_pacing_wait_sec) < 0.02, (
+            f"excluded={excluded:.5f} should match resume_rate_pacing_wait="
+            f"{sr.resume_rate_pacing_wait_sec:.5f} (the pre-lease wait)"
         )
 
         # INCLUSION: pause rate-pacing is in pause_sec (in-lease) -> in slot_held.
-        assert sr.pause_sec >= sr.pause_queue_wait_sec
+        assert sr.pause_sec >= sr.pause_rate_pacing_wait_sec
         # running_slot_held == resume_sec + exec + pause_sec exactly (resume_sec
         # excludes resume rate-pacing; pause_sec includes pause rate-pacing).
         assert abs(sr.running_slot_held_sec - (sr.resume_sec + sr.exec_elapsed_sec + sr.pause_sec)) < 0.02
@@ -923,7 +926,7 @@ class TestL7DecompositionFields:
             m.resume_ready_wait_secs,
             m.slot_contention_wait_secs,
             m.pause_api_secs,
-            m.resume_queue_wait_secs,
+            m.resume_rate_pacing_wait_secs,
             m.running_slot_held_secs,
             m.interaction_total_secs,
             m.create_secs,
@@ -1261,7 +1264,7 @@ def test_report_renders_slot_held_line_in_trajectory_mode(tmp_path):
             slice_total_sec=1.0,
             resume_api_sec=0.05,
             resume_ready_wait_sec=0.0,
-            resume_queue_wait_sec=0.0,
+            resume_rate_pacing_wait_sec=0.0,
             slot_contention_wait_sec=0.0,
             pause_api_sec=0.05,
         )
