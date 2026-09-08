@@ -186,6 +186,20 @@ class TestNumaOverviewSheet(unittest.TestCase):
         sheets = self._sheet_names()
         self.assertNotIn("NUMA_Overview", sheets)
 
+    def test_stale_build_file_removed_before_export(self):
+        """A stale ``.build.xlsx`` left by a prior SIGKILL'd/OOM'd export must
+        not shadow the fresh build: clean-on-start unlinks it, and the new
+        export produces a valid (not corrupt) report at the final path.
+        """
+        build = self.output_file + ".build.xlsx"
+        with open(build, "w") as f:
+            f.write("partial corrupt bytes from a prior crashed export")
+        self._export()
+        self.assertFalse(os.path.exists(build))  # stale build gone (promoted away)
+        # the final report opens cleanly -- the stale corrupt bytes did not win
+        sheets = self._sheet_names()
+        self.assertIn("NUMA_Overview", sheets)
+
 
 if __name__ == "__main__":
     unittest.main()
