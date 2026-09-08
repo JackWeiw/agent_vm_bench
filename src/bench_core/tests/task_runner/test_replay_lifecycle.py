@@ -327,7 +327,9 @@ class TestLifecycleOverheadReport:
         report = result["report"]
         assert "Resume decomp:" in report
         assert "Pause decomp:" in report
-        assert "qps_wait" in report
+        assert "inflight_wait" in report  # both decomp lines carry the inflight fuse
+        assert "rate_pacing" in report  # Pause decomp carries pause rate-pacing (in-lease)
+        assert "qps_wait" not in report  # removed: it mis-attributed resume rate-pacing into resume_sec
         assert "ready_wait" in report
 
     def test_decomposition_columns_stable_when_probe_off(self, tmp_path):
@@ -388,6 +390,53 @@ class TestLifecycleOverheadReport:
         assert "Admission:" in joined
         assert "Running slots:" in joined
         assert "QPS limiter:" not in joined
+
+    def test_qps_pacing_delay_line_shows_per_phase_split(self, tmp_path):
+        from bench_core.observability.stats_collector import StatsCollector
+
+        inst = SandboxInstance(id="x", index=0)
+        state = BenchSandbox.from_instance(inst, workflow_type="replay")
+        config = _lifecycle_config(tmp_path)
+        m = state.replay_metrics
+        # Seed one slice with non-zero resume/pause rate-pacing so the QPS pacing
+        # delay line renders with the per-phase split (resume is pre-lease, moved
+        # off the Resume decomp line onto this summary line; pause is in-lease).
+        m.add(
+            latency=1.0,
+            success=True,
+            action_type="shell",
+            resume_sec=0.1,
+            pause_sec=0.1,
+            slice_total_sec=1.2,
+            slot_contention_wait_sec=0.05,
+            resume_rate_pacing_wait_sec=0.02,
+            pause_rate_pacing_wait_sec=0.03,
+        )
+        sc = StatsCollector(config, {0: state}, "fake")
+        sc.admission_snapshot = {
+            "running": 1,
+            "total": 3,
+            "qps": 10.0,  # != "off" -> QPS pacing delay line renders
+            "peak_active": 1,
+            "avg_queue_wait_sec": 0.01,
+            "running_slots": {
+                "maximum": 1,
+                "active": 0,
+                "peak_active": 1,
+                "granted": 3,
+                "average_queue_wait_sec": 0.01,
+                "waiting": 0,
+            },
+        }
+        lines = sc.format_replay_stats_section()
+        joined = "\n".join(lines)
+        # Enriched per-phase split on the summary line.
+        assert "QPS pacing delay:" in joined
+        assert "resume" in joined
+        assert "pause" in joined
+        assert "sum" in joined
+        # The stale qps_wait decomp label is gone from the whole section.
+        assert "qps_wait" not in joined
 
 
 class TestSeriesFileE2E:
