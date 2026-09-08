@@ -327,8 +327,15 @@ def test_export_writes_index_json_catalog(tmp_path):
             "kill",
             "interaction_total",
             "slot_contention_wait",
+            # wait-decoupling split (the four independent components + per-phase inflight)
+            "natural_delay",
+            "capacity_wait",
+            "rate_pacing_wait",
+            "inflight_wait",
             "resume_queue_wait",
             "pause_queue_wait",
+            "resume_inflight_wait",
+            "pause_inflight_wait",
             "running_slot_held",
         }
 

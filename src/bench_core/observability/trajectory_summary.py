@@ -14,12 +14,16 @@ pre-rounding here).
 """
 from __future__ import annotations
 
-# The nine per-step duration fields summed per trajectory. slice_total_sec is
+# The per-step duration fields summed per trajectory. slice_total_sec is
 # the invariant total (resume+exec+pause); interaction_total_sec adds delay +
-# capacity_wait (>= slice). The three wait sums (slot / resume_queue /
-# pause_queue) isolate non-productive time: admission contention + QPS-limiter
-# queueing. Exported so obs_xlsx imports it back instead of keeping a local copy
-# (DRY).
+# capacity_wait + resume rate-pacing (>= slice, since resume rate-pacing is
+# pre-lease and excluded from slice_total). The wait sums isolate the four
+# independent non-productive components: slot_contention (the natural_delay +
+# capacity_wait composite, kept for parse-compat) plus its split
+# (natural_delay / capacity_wait), rate_pacing (the 1/qps shaping, split across
+# resume_queue + pause_queue), and inflight (the fuse block, across
+# resume_inflight + pause_inflight). Exported so obs_xlsx imports it back
+# instead of keeping a local copy (DRY).
 SEG_KEYS = (
     "slice_total_sec",
     "exec_sec",
@@ -27,8 +31,14 @@ SEG_KEYS = (
     "pause_sec",
     "interaction_total_sec",
     "slot_contention_wait_sec",
+    "natural_delay_sec",
+    "capacity_wait_sec",
+    "rate_pacing_wait_sec",
+    "inflight_wait_sec",
     "resume_queue_wait_sec",
     "pause_queue_wait_sec",
+    "resume_inflight_wait_sec",
+    "pause_inflight_wait_sec",
     "running_slot_held_sec",
 )
 

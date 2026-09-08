@@ -30,6 +30,7 @@ _FULL_ADMISSION = {
     "running": 1,
     "total": 2,
     "qps": 100.0,
+    "inflight_cap": 4,
     "peak_active": 1,
     "avg_queue_wait_sec": 0.01,
     "qps_dispatched": 12,
@@ -51,6 +52,8 @@ _FULL_ADMISSION = {
         "dispatched_by_operation": {"resume": 3, "pause": 3, "cleanup": 0, "create": 3, "command": 3},
         "waiting": 0,
         "waiting_by_operation": {"resume": 0, "pause": 0, "cleanup": 0, "create": 0, "command": 0},
+        "inflight_dispatched": 8,
+        "average_inflight_wait_sec": 0.0005,
     },
 }
 
@@ -69,10 +72,14 @@ class TestAdmissionBlockRender:
         assert "Admission:" in joined
         assert "Running slots:" in joined
         assert "maximum=1" in joined and "granted=3" in joined and "waiting=0" in joined
-        assert "QPS limiter:" in joined
-        assert "inflight=0/4" in joined and "dispatched=12" in joined
+        # Rate pacing + inflight fuse are now separate sub-lines (decoupled):
+        # rate pacing shows dispatch/wait; inflight fuse shows cap/in_flight.
+        assert "Rate pacing:" in joined
+        assert "dispatched=12" in joined
         assert "Dispatched by operation:" in joined
         assert "resume=3" in joined and "command=3" in joined
+        assert "Inflight fuse:" in joined
+        assert "cap=4" in joined
         # All-zero waiting -> the line is suppressed (pure noise, no op queued).
         assert "Waiting by operation:" not in joined
 
@@ -89,11 +96,12 @@ class TestAdmissionBlockRender:
         assert "pause=1" in joined
 
     def test_qps_off_renders_only_running_slots(self):
-        snap = {**_FULL_ADMISSION, "qps": "off"}
+        snap = {**_FULL_ADMISSION, "qps": "off", "inflight_cap": "off"}
         snap.pop("qps_limiter")
         joined = _format(_state_with_slices(), admission_snapshot=snap, wall_sec=10.0)
         assert "Running slots:" in joined
-        assert "QPS limiter:" not in joined
+        assert "Rate pacing:" not in joined
+        assert "Inflight fuse:" not in joined
         assert "Dispatched by operation:" not in joined
 
 

@@ -311,10 +311,23 @@ class ReplayMetrics(TaskMetricsBase):
         self._slot_contention_wait_secs: list[float] = []
         self._pause_api_secs: list[float] = []
         self._resume_queue_wait_secs: list[float] = []
+        self._pause_queue_wait_secs: list[float] = []  # was missing -> added with the rate-pacing split
         self._running_slot_held_secs: list[float] = []
         self._interaction_total_secs: list[float] = []
         self._create_secs: list[float] = []  # trajectory mode only; empty otherwise
         self._kill_secs: list[float] = []  # trajectory mode only; empty otherwise
+        # Decoupled wait decomposition: four independent, non-overlapping
+        # components. ``slot_contention_wait_secs`` (above) stays as the
+        # composite = natural_delay + capacity_wait (kept for downstream
+        # parse-compat). The QPS limiter's contribution splits into rate pacing
+        # (a RATE control -- request-interval shaping) vs the inflight fuse (a
+        # CONCURRENCY control -- in-flight cap); merging them returns to the
+        # "mixed metric, can't diagnose" problem. Per-phase lists feed the
+        # resume_sec / pause_sec invariants; the totals are derived properties.
+        self._natural_delay_secs: list[float] = []  # think-time (ready_at pre-delay)
+        self._capacity_wait_secs: list[float] = []  # running-slot FIFO token contention
+        self._resume_inflight_wait_secs: list[float] = []  # resume inflight-fuse block
+        self._pause_inflight_wait_secs: list[float] = []  # pause inflight-fuse block
 
         # Phase 2/3: retry-event accumulators. ``record_retry_event`` is called
         # by the runner each time it emits a retry_* event to the series, so the
@@ -352,10 +365,15 @@ class ReplayMetrics(TaskMetricsBase):
         slot_contention_wait_sec: float = 0.0,
         pause_api_sec: float = 0.0,
         resume_queue_wait_sec: float = 0.0,
+        pause_queue_wait_sec: float = 0.0,
         running_slot_held_sec: float = 0.0,
         interaction_total_sec: float = 0.0,
         create_sec: float = 0.0,
         kill_sec: float = 0.0,
+        natural_delay_sec: float = 0.0,
+        capacity_wait_sec: float = 0.0,
+        resume_inflight_wait_sec: float = 0.0,
+        pause_inflight_wait_sec: float = 0.0,
     ) -> None:
         """Add a replay step result (thread-safe).
 
@@ -394,7 +412,11 @@ class ReplayMetrics(TaskMetricsBase):
             # that must stay aligned with the original three. P2.6 Task 4 adds
             # resume_queue_wait_secs (QPS limiter queue wait on resume) as the
             # eighth list. L7 adds running_slot_held_secs, interaction_total_secs,
-            # create_secs, kill_secs as lists 9-12; all twelve append atomically.
+            # create_secs, kill_secs as lists 9-12. The wait-decoupling change
+            # adds pause_queue_wait_secs (was missing) + the four-component
+            # split (natural_delay / capacity_wait / resume_inflight_wait /
+            # pause_inflight_wait); rate_pacing_wait_secs and inflight_wait_secs
+            # are derived (element-wise sums) -- all append atomically here.
             if slice_total_sec > 0.0:
                 self._resume_secs.append(resume_sec)
                 self._pause_secs.append(pause_sec)
@@ -404,10 +426,15 @@ class ReplayMetrics(TaskMetricsBase):
                 self._slot_contention_wait_secs.append(slot_contention_wait_sec)
                 self._pause_api_secs.append(pause_api_sec)
                 self._resume_queue_wait_secs.append(resume_queue_wait_sec)
+                self._pause_queue_wait_secs.append(pause_queue_wait_sec)
                 self._running_slot_held_secs.append(running_slot_held_sec)
                 self._interaction_total_secs.append(interaction_total_sec)
                 self._create_secs.append(create_sec)
                 self._kill_secs.append(kill_sec)
+                self._natural_delay_secs.append(natural_delay_sec)
+                self._capacity_wait_secs.append(capacity_wait_sec)
+                self._resume_inflight_wait_secs.append(resume_inflight_wait_sec)
+                self._pause_inflight_wait_secs.append(pause_inflight_wait_sec)
 
     def record_retry_event(self, event_type: str, *, operation: str, time_lost_sec: float = 0.0) -> None:
         """Record a retry_* event for the report's retry-impact block.
@@ -534,6 +561,72 @@ class ReplayMetrics(TaskMetricsBase):
         """Per-trajectory kill durations (trajectory mode), copy under lock (L7)."""
         with self._lock:
             return list(self._kill_secs)
+
+    @property
+    def pause_queue_wait_secs(self) -> list[float]:
+        """Per-step QPS rate-pacing wait on pause, copy under lock.
+
+        Was previously absent from ReplayMetrics (written only to the series);
+        added with the wait-decoupling split so pause-side rate pacing is
+        aggregated for the invariants and the ``rate_pacing_wait_secs`` total.
+        """
+        with self._lock:
+            return list(self._pause_queue_wait_secs)
+
+    @property
+    def natural_delay_secs(self) -> list[float]:
+        """Per-step think-time (ready_at pre-delay), copy under lock.
+
+        The first independent wait component (by-design, not contention).
+        """
+        with self._lock:
+            return list(self._natural_delay_secs)
+
+    @property
+    def capacity_wait_secs(self) -> list[float]:
+        """Per-step running-slot FIFO token-contention wait, copy under lock.
+
+        The second independent wait component (capacity-bound, memory oversub).
+        """
+        with self._lock:
+            return list(self._capacity_wait_secs)
+
+    @property
+    def resume_inflight_wait_secs(self) -> list[float]:
+        """Per-step inflight-fuse block on resume, copy under lock.
+
+        The fourth component, per-phase (resume). Pre-lease in the new order.
+        """
+        with self._lock:
+            return list(self._resume_inflight_wait_secs)
+
+    @property
+    def pause_inflight_wait_secs(self) -> list[float]:
+        """Per-step inflight-fuse block on pause, copy under lock (fourth component, pause-phase)."""
+        with self._lock:
+            return list(self._pause_inflight_wait_secs)
+
+    @property
+    def rate_pacing_wait_secs(self) -> list[float]:
+        """Per-step total QPS rate-pacing wait (resume + pause), copy under lock.
+
+        The third independent wait component (a RATE control: request-interval
+        shaping). Derived as the element-wise sum of the per-phase rate-pacing
+        lists (``resume_queue_wait_secs`` + ``pause_queue_wait_secs``) so the
+        per-phase invariants stay authoritative and no redundant list is stored.
+        """
+        with self._lock:
+            return [r + p for r, p in zip(self._resume_queue_wait_secs, self._pause_queue_wait_secs)]
+
+    @property
+    def inflight_wait_secs(self) -> list[float]:
+        """Per-step total inflight-fuse block wait (resume + pause), copy under lock.
+
+        The fourth independent wait component (a CONCURRENCY control: in-flight
+        cap). Derived as the element-wise sum of the per-phase inflight lists.
+        """
+        with self._lock:
+            return [r + p for r, p in zip(self._resume_inflight_wait_secs, self._pause_inflight_wait_secs)]
 
     @property
     def retry_queued_count(self) -> int:

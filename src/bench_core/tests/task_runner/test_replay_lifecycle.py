@@ -459,6 +459,13 @@ class TestRunSliceP26Decomposition:
         "resume_ready_wait_sec",
         "pause_queue_wait_sec",
         "pause_api_sec",
+        # Wait-decoupling split (the four independent components + per-phase inflight).
+        "natural_delay_sec",
+        "capacity_wait_sec",
+        "resume_inflight_wait_sec",
+        "pause_inflight_wait_sec",
+        "rate_pacing_wait_sec",
+        "inflight_wait_sec",
     )
 
     def test_step_record_has_six_segment_fields(self, tmp_path):
@@ -487,22 +494,93 @@ class TestRunSliceP26Decomposition:
             assert key in rec, f"missing segment key {key}"
             assert isinstance(rec[key], float), f"{key} is not a float"
 
-        # Invariants (P2.6 decomposition must sum exactly to totals).
+        # Invariants (wait-decoupling decomposition must sum exactly to totals).
+        # Post-decoupling: resume_sec EXCLUDES resume rate-pacing (pre-lease);
+        # pause_sec INCLUDES pause rate-pacing (in-lease) + pause inflight.
         assert (
             abs(
                 rec["resume_sec"]
-                - (rec["resume_queue_wait_sec"] + rec["resume_api_sec"] + rec["resume_ready_wait_sec"])
+                - (rec["resume_inflight_wait_sec"] + rec["resume_api_sec"] + rec["resume_ready_wait_sec"])
             )
             < 1e-6
         )
-        assert abs(rec["pause_sec"] - (rec["pause_queue_wait_sec"] + rec["pause_api_sec"])) < 1e-6
+        assert (
+            abs(
+                rec["pause_sec"] - (rec["pause_queue_wait_sec"] + rec["pause_inflight_wait_sec"] + rec["pause_api_sec"])
+            )
+            < 1e-6
+        )
+        assert abs(rec["slice_total_sec"] - (rec["resume_sec"] + rec["exec_sec"] + rec["pause_sec"])) < 1e-6
+        # slot_contention is the natural_delay + capacity_wait composite.
+        assert abs(rec["slot_contention_wait_sec"] - (rec["natural_delay_sec"] + rec["capacity_wait_sec"])) < 1e-6
         # StepResult mirrors the record
-        assert abs(sr.resume_sec - (sr.resume_queue_wait_sec + sr.resume_api_sec + sr.resume_ready_wait_sec)) < 1e-6
-        assert abs(sr.pause_sec - (sr.pause_queue_wait_sec + sr.pause_api_sec)) < 1e-6
+        assert abs(sr.resume_sec - (sr.resume_inflight_wait_sec + sr.resume_api_sec + sr.resume_ready_wait_sec)) < 1e-6
+        assert abs(sr.pause_sec - (sr.pause_queue_wait_sec + sr.pause_inflight_wait_sec + sr.pause_api_sec)) < 1e-6
         assert abs(sr.slice_total_sec - (sr.resume_sec + sr.exec_elapsed_sec + sr.pause_sec)) < 1e-6
         # resume_api captured the FakeLifecycleProvider sleep (measurably non-zero)
         assert sr.resume_api_sec > 0.0
         assert sr.pause_api_sec > 0.0
+
+    def test_resume_rate_pacing_excluded_pause_pacing_included_in_slot_held(self, tmp_path):
+        """Asymmetric wait-decoupling归属 regression (point 4 of the directive).
+
+        Resume rate-pacing runs PRE-lease (sandbox paused, no lease/memory
+        demand) so it is EXCLUDED from ``running_slot_held``. Pause rate-pacing
+        runs IN-lease (sandbox running, memory held until pause confirms) so it
+        IS included. A future dispatch deadline is injected so BOTH rate-pacing
+        waits are non-zero, making the归属 observable rather than a vacuous 0==0.
+        """
+        from bench_core.admission import Admission, QpsRateLimiter, RunningSlotScheduler
+
+        config = _lifecycle_config(tmp_path, replay_ready_probe=False)
+        provider = FakeLifecycleProvider(count=1)
+        stop = threading.Event()
+        inst = SandboxInstance(id="x", index=2)
+        state = BenchSandbox.from_instance(inst, workflow_type="replay")
+        state.ready = True
+        # qps=20 -> interval 0.05s; inflight_cap=4 (uncontended -> inflight_wait ~0,
+        # so rate-pacing is the only non-zero wait under test).
+        qps = QpsRateLimiter(qps=20.0, inflight_cap=4)
+        adm = Admission(slots=RunningSlotScheduler(maximum=1), qps=qps)
+        path = _series_path(tmp_path)
+        series = LifecycleSeriesWriter(path)
+        runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider, series=series, admission=adm)
+        runner._init_lifecycle()
+
+        # Inject a FUTURE dispatch deadline so the first resume time_wait sleeps
+        # (the limiter seeds _next_dispatch_at = construction time -> 0 delay on the
+        # first call). The deadline slides forward by interval (0.05s) per call, so
+        # the subsequent pause time_wait also lands in the future -> non-zero.
+        qps._next_dispatch_at = time.monotonic() + 0.04
+        step = ReplayStep(index=3, action_type="shell", action="true", delay_time_sec=0.0)
+        sr = runner._run_slice(step, trajectory_id="traj-abc")
+        series.close()
+
+        # Both rate-pacing waits are non-zero (precondition: the归属 is observable).
+        assert sr.resume_queue_wait_sec > 0.0, "resume rate-pacing should be non-zero"
+        assert sr.pause_queue_wait_sec > 0.0, "pause rate-pacing should be non-zero"
+
+        # EXCLUSION: running_slot_held spans [acquire, release]; acquire runs
+        # AFTER the pre-lease resume time_wait, so resume rate-pacing sits OUTSIDE
+        # the lease bracket. The gap between (resume_pacing + resume_sec + exec +
+        # pause_sec) and running_slot_held IS the excluded pre-lease wait.
+        bracket = sr.resume_queue_wait_sec + sr.resume_sec + sr.exec_elapsed_sec + sr.pause_sec
+        excluded = bracket - sr.running_slot_held_sec
+        assert excluded > 0.001, (
+            f"resume rate-pacing must be EXCLUDED from running_slot_held; "
+            f"excluded={excluded:.5f} should ~= resume_queue_wait={sr.resume_queue_wait_sec:.5f}"
+        )
+        # The excluded portion IS the resume rate-pacing (within timing jitter).
+        assert abs(excluded - sr.resume_queue_wait_sec) < 0.02, (
+            f"excluded={excluded:.5f} should match resume_queue_wait="
+            f"{sr.resume_queue_wait_sec:.5f} (the pre-lease wait)"
+        )
+
+        # INCLUSION: pause rate-pacing is in pause_sec (in-lease) -> in slot_held.
+        assert sr.pause_sec >= sr.pause_queue_wait_sec
+        # running_slot_held == resume_sec + exec + pause_sec exactly (resume_sec
+        # excludes resume rate-pacing; pause_sec includes pause rate-pacing).
+        assert abs(sr.running_slot_held_sec - (sr.resume_sec + sr.exec_elapsed_sec + sr.pause_sec)) < 0.02
 
     def test_ready_probe_runs_in_lifecycle(self, tmp_path):
         """In lifecycle mode, ``true`` is exec'd as a ready probe after resume."""
@@ -957,12 +1035,14 @@ def test_exec_is_qps_gated_in_lifecycle_mode():
 
 
 def test_lifecycle_call_splits_queue_wait_from_api_sec():
-    """P1-9: _lifecycle_call_with_retry surfaces (queue_wait, api_sec) separately,
-    un-folding the earlier G3 conflation that jammed the QPS wait into api_sec.
+    """Wait-decoupling: _lifecycle_call_with_retry returns
+    (rate_pacing_wait, inflight_wait, api_sec) separately, un-folding the
+    earlier G3 conflation that jammed the QPS wait into api_sec.
 
-    Forces the limiter's next dispatch deadline into the future so the queue wait
-    is deterministic (~the deadline gap) regardless of box speed, then asserts the
-    split: queue_wait carries the QPS time-wait, api_sec carries the pure call.
+    With rate_wait=True (default) the rate pacing is paid ONCE pre-loop;
+    inflight_wait is the fuse block (0 when uncontended); api_sec is the pure
+    call. Forces a future dispatch deadline so the rate wait is deterministic
+    (~the deadline gap) regardless of box speed.
     """
     import time
 
@@ -980,32 +1060,36 @@ def test_lifecycle_call_splits_queue_wait_from_api_sec():
     adm = Admission(slots=RunningSlotScheduler(maximum=1), qps=qps)
     runner = ReplayBaseRunner(state, cfg, stop, provider, admission=adm)
 
-    # Force a future dispatch deadline ~0.05s out so the queue wait is observable.
+    # Force a future dispatch deadline ~0.05s out so the rate wait is observable.
     qps._next_dispatch_at = time.monotonic() + 0.05
-    queue_wait, api = runner._lifecycle_call_with_retry("resume", lambda: provider.resume(state))
+    rate_wait, inflight_wait, api = runner._lifecycle_call_with_retry("resume", lambda: provider.resume(state))
 
-    # queue_wait captures the QPS time-wait (>= 0.04 tolerant lower bound); api_sec
-    # captures the pure resume call (FakeLifecycleProvider sleeps 0.02 -> >= 0.01).
-    assert queue_wait >= 0.04
+    # rate_wait captures the QPS time-wait (>= 0.04 tolerant lower bound);
+    # inflight_wait is ~0 (cap=4, uncontended -- only sub-ms acquire overhead);
+    # api_sec captures the pure resume call (FakeLifecycleProvider sleeps
+    # 0.02 -> >= 0.01).
+    assert rate_wait >= 0.04
+    assert inflight_wait < 0.001
     assert api >= 0.01
-    # Without a QPS limiter the queue wait is 0 and only the API duration is measured.
+    # Without an admission controller the waits are 0 and only the API duration
+    # is measured (returns a 3-tuple, all-zero waits).
     runner_noqps = ReplayBaseRunner(state, cfg, stop, provider, admission=None)
-    q2, a2 = runner_noqps._lifecycle_call_with_retry("pause", lambda: provider.pause(state))
-    assert q2 == 0.0
+    r2, inf2, a2 = runner_noqps._lifecycle_call_with_retry("pause", lambda: provider.pause(state))
+    assert r2 == 0.0 and inf2 == 0.0
     assert a2 >= 0.01
 
 
 def test_lifecycle_call_shutdown_during_retry_bypasses_except():
-    """P0-2: ShutdownInterrupted raised mid-retry (inside the QPS slot enter of
-    attempt 2) must bypass the ``except Exception`` retry handler and propagate
-    to the caller. This is the load-bearing BaseException-vs-Exception path: a
-    shutdown is not a retryable failure, so it must not be swallowed into a
-    retry loop or recorded as slice_failed.
+    """ShutdownInterrupted (BaseException) raised mid-retry must bypass the
+    ``except Exception`` retry handler and propagate to the caller. This is the
+    load-bearing BaseException-vs-Exception path: a shutdown is not retryable,
+    so it must not be swallowed into a retry loop or recorded as slice_failed.
 
-    Attempt 1 fails transiently (``503``) and is caught by ``except Exception``;
-    the QPS limiter's deadline is now ~0.5 s in the future (qps=2 -> 0.5 s
-    interval). Attempt 2's ``_stop_aware_sleep`` sees ``stop_event`` set and
-    raises ``ShutdownInterrupted`` before the body runs.
+    Post-decoupling, rate pacing is ONCE pre-loop (not per-attempt), so a
+    mid-loop shutdown surfaces from the call body. Attempt 1 raises a transient
+    503 (caught -> retry_queued); attempt 2 raises ShutdownInterrupted directly
+    (simulating an admission-layer shutdown during a nested call), which must
+    propagate unchanged -- no retry_exhausted event.
     """
     from bench_core.admission import (
         Admission,
@@ -1024,25 +1108,35 @@ def test_lifecycle_call_shutdown_during_retry_bypasses_except():
         replay_ready_probe=False,
     )
 
-    class _TransientProvider(FakeLifecycleProvider):
-        def resume(self, inst):
-            raise RuntimeError("503 gateway timeout")
+    class _TransientThenShutdownProvider(FakeLifecycleProvider):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self._n = 0
 
-    provider = _TransientProvider(count=1)
+        def resume(self, inst):
+            self._n += 1
+            if self._n == 1:
+                raise RuntimeError("503 gateway timeout")  # transient -> retried
+            raise ShutdownInterrupted("simulated admission shutdown on attempt 2")
+
+    provider = _TransientThenShutdownProvider(count=1)
     provider.create_all()
     state = BenchSandbox.from_instance(provider._instances[0], "replay")
     stop = threading.Event()
-    # qps=2 -> 0.5 s interval: after attempt 1's dispatch the next deadline is
-    # ~0.5 s out, so attempt 2's slot enter must sleep -> _stop_aware_sleep.
-    qps = QpsRateLimiter(qps=2.0, inflight_cap=4, stop_event=stop)
+    # qps=1000 -> 1ms interval (pre-loop rate pacing is a no-op delay on the
+    # first call: dispatch deadline is in the past). inflight_cap=4 so the fuse
+    # never blocks; the ShutdownInterrupted comes from the body, not admission.
+    qps = QpsRateLimiter(qps=1000.0, inflight_cap=4, stop_event=stop)
     adm = Admission(slots=RunningSlotScheduler(maximum=1, stop_event=stop), qps=qps)
     runner = ReplayBaseRunner(state, cfg, stop, provider, admission=adm)
 
-    stop.set()  # shutdown requested before the call
     with pytest.raises(ShutdownInterrupted):
         runner._lifecycle_call_with_retry("resume", lambda: provider.resume(state))
-    # Attempt 1 did dispatch (transient failure recorded in the retry loop).
-    assert qps.snapshot()["dispatched"] >= 1
+    # Pre-loop rate pacing dispatched once; both attempts acquired the inflight
+    # fuse before their bodies ran. No retry_exhausted (shutdown != retryable).
+    snap = qps.snapshot()
+    assert snap["dispatched"] >= 1
+    assert snap["inflight_dispatched"] >= 2
 
 
 def test_trajectory_mode_guard_rejects_non_ephemeral_provider():
@@ -1183,3 +1277,47 @@ def test_report_renders_slot_held_line_in_trajectory_mode(tmp_path):
     assert "[Lifecycle Overhead]" in report
     assert "Slot held:" in report
     assert "Interaction:" in report
+
+
+class TestAdmissionConstructionIntegration:
+    """bench.py admission construction is decoupled: the limiter is built when
+    EITHER knob is set (qps or inflight_cap), each function no-ops when its own
+    knob is None, and the two are NOT a forced pair. Drives the full
+    ``run_benchmark`` spine with FakeLifecycleProvider (lifecycle mode) and
+    asserts the returned ``admission_snapshot`` reports each knob per config.
+    """
+
+    def test_knobs_off_admission_is_none(self, tmp_path):
+        # 1:1 (no oversub) + both knobs unset -> admission not constructed.
+        config = _lifecycle_config(tmp_path, filename_prefix="adm-off")
+        result = run_benchmark(config, FakeLifecycleProvider(count=1))
+        assert result["admission_snapshot"] is None
+
+    def test_qps_only_snapshot_reports_qps_inflight_off(self, tmp_path):
+        config = _lifecycle_config(tmp_path, replay_control_plane_qps=100.0, filename_prefix="adm-qps")
+        result = run_benchmark(config, FakeLifecycleProvider(count=1))
+        snap = result["admission_snapshot"]
+        assert snap is not None
+        assert snap["qps"] == 100.0
+        assert snap["inflight_cap"] == "off"  # inflight fuse bypassed (cap unset)
+
+    def test_inflight_only_snapshot_reports_inflight_qps_off(self, tmp_path):
+        config = _lifecycle_config(tmp_path, replay_control_plane_inflight_cap=2, filename_prefix="adm-if")
+        result = run_benchmark(config, FakeLifecycleProvider(count=1))
+        snap = result["admission_snapshot"]
+        assert snap is not None
+        assert snap["qps"] == "off"  # rate pacing bypassed (qps unset)
+        assert snap["inflight_cap"] == 2
+
+    def test_both_knobs_snapshot_reports_both(self, tmp_path):
+        config = _lifecycle_config(
+            tmp_path,
+            replay_control_plane_qps=100.0,
+            replay_control_plane_inflight_cap=2,
+            filename_prefix="adm-both",
+        )
+        result = run_benchmark(config, FakeLifecycleProvider(count=1))
+        snap = result["admission_snapshot"]
+        assert snap is not None
+        assert snap["qps"] == 100.0
+        assert snap["inflight_cap"] == 2

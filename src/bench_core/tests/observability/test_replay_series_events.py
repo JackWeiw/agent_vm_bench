@@ -88,22 +88,35 @@ class TestRetryEvents:
         assert events[0]["retryable"] is False
 
     def test_shutdown_mid_retry_emits_no_retry_exhausted(self, tmp_path):
-        """Negative: ShutdownInterrupted bypasses except Exception -> no retry_exhausted."""
+        """Negative: ShutdownInterrupted (BaseException) raised mid-retry bypasses
+        ``except Exception`` -> no retry_exhausted. Post-decoupling, rate pacing
+        is ONCE pre-loop (not per-attempt), so a mid-loop shutdown surfaces from
+        the call body. Attempt 1 is transient (-> retry_queued); attempt 2 raises
+        ShutdownInterrupted, which must propagate unchanged."""
 
-        class _AlwaysTransient(FakeLifecycleProvider):
+        class _TransientThenShutdown(FakeLifecycleProvider):
+            def __init__(self):
+                super().__init__(count=1)
+                self._n = 0
+
             def resume(self, inst):
-                raise RuntimeError("503 gateway timeout")
+                self._n += 1
+                if self._n == 1:
+                    raise RuntimeError("503 gateway timeout")
+                raise ShutdownInterrupted("shutdown on attempt 2")
 
         stop = threading.Event()
-        runner, series, provider, state = self._runner(tmp_path, qps=2.0, stop=stop)
-        always = _AlwaysTransient()
-        runner.provider = always
-        stop.set()  # shutdown before call
+        runner, series, provider, state = self._runner(tmp_path, stop=stop)
+        tns = _TransientThenShutdown()
+        runner.provider = tns
         with pytest.raises(ShutdownInterrupted):
-            runner._lifecycle_call_with_retry("resume", lambda: always.resume(state))
+            runner._lifecycle_call_with_retry("resume", lambda: tns.resume(state))
         series.close()
-        events = [e for e in _series_events(tmp_path) if e["event"] == "retry_exhausted"]
-        assert events == []
+        events = _series_events(tmp_path)
+        assert [e for e in events if e["event"] == "retry_exhausted"] == []
+        # attempt 1 WAS transient -> retry_queued emitted (proves we entered the
+        # retry loop before the shutdown, i.e. the shutdown is genuinely mid-retry).
+        assert len([e for e in events if e["event"] == "retry_queued"]) == 1
 
     def test_first_attempt_success_emits_no_retry_event(self, tmp_path):
         runner, series, provider, state = self._runner(tmp_path)

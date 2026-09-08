@@ -393,12 +393,19 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         qps_lim = None
         if config.replay_running_concurrency is not None and config.replay_running_concurrency < config.total_count:
             slots = RunningSlotScheduler(maximum=config.replay_running_concurrency, stop_event=stop_event)
-        if config.replay_control_plane_qps is not None:
-            cap = config.replay_control_plane_inflight_cap or min(64, config.total_count)
-            qps_lim = QpsRateLimiter(qps=config.replay_control_plane_qps, inflight_cap=cap, stop_event=stop_event)
+        # Decoupled construction: build the limiter when EITHER knob is set; each
+        # function no-ops internally when its knob is None (qps=None -> time_wait
+        # is a no-op; inflight_cap=None -> the inflight fuse is a no-op). The two
+        # knobs are INDEPENDENT, not a pair -- omitting one bypasses only its own
+        # concern (rate pacing vs concurrency fuse), so e.g. inflight-only is a
+        # valid configuration with no rate shaping.
+        qps_val = config.replay_control_plane_qps
+        cap_val = config.replay_control_plane_inflight_cap
+        if qps_val is not None or cap_val is not None:
+            qps_lim = QpsRateLimiter(qps=qps_val, inflight_cap=cap_val, stop_event=stop_event)
         if slots is not None or qps_lim is not None:
-            # If only qps is set, provide a pass-through slots scheduler (cap=total)
-            # so the runner's admission path (slot acquire/release + qps gating) runs.
+            # If only the limiter is set (no oversub), provide a pass-through
+            # slots scheduler (cap=total) so the runner's admission path runs.
             admission = Admission(
                 slots=slots or RunningSlotScheduler(maximum=config.total_count, stop_event=stop_event),
                 qps=qps_lim,
@@ -406,13 +413,14 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
             admission_snapshot = {
                 "running": config.replay_running_concurrency or config.total_count,
                 "total": config.total_count,
-                "qps": config.replay_control_plane_qps or "off",
+                "qps": qps_val if qps_val is not None else "off",
+                "inflight_cap": cap_val if cap_val is not None else "off",
                 "peak_active": 0,
                 "avg_queue_wait_sec": 0.0,
             }
             logger.info(
                 f"  Admission: running={admission_snapshot['running']}/{config.total_count}, "
-                f"qps={admission_snapshot['qps']}"
+                f"qps={admission_snapshot['qps']}, inflight_cap={admission_snapshot['inflight_cap']}"
             )
 
     # G5: shared no-catch-up launch pacer for trajectory mode (one per fleet).
@@ -493,6 +501,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
             if admission.qps is not None:
                 qps_snap = admission.qps.snapshot()
                 admission_snapshot["qps_dispatched"] = qps_snap["dispatched"]
+                admission_snapshot["qps_inflight_dispatched"] = qps_snap.get("inflight_dispatched")
                 admission_snapshot["qps_limiter"] = qps_snap  # full sub-snapshot
             stats_collector.admission_snapshot = admission_snapshot
 

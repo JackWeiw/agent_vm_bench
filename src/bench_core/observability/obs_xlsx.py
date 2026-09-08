@@ -430,8 +430,14 @@ class XlsxReportRenderer:
                     "pause_sum_s",
                     "interaction_total_sum_s",
                     "slot_wait_sum_s",
+                    "natural_delay_sum_s",
+                    "capacity_wait_sum_s",
+                    "rate_pacing_wait_sum_s",
+                    "inflight_wait_sum_s",
                     "resume_queue_wait_sum_s",
                     "pause_queue_wait_sum_s",
+                    "resume_inflight_wait_sum_s",
+                    "pause_inflight_wait_sum_s",
                     "running_slot_held_sum_s",
                     "avg_slice_s",
                 ]
@@ -515,9 +521,17 @@ class XlsxReportRenderer:
         Duration columns are seconds (matching the reference step-detail.csv), not
         the milliseconds used by the Per-step/Lifecycle chart sheets. The
         sub-segments sit next to their parent total so the sum invariants are
-        visually verifiable: ``resume_sec == resume_queue_wait_sec +
-        resume_api_sec + resume_ready_wait_sec`` and ``pause_sec ==
-        pause_queue_wait_sec + pause_api_sec``.
+        visually verifiable. Post-decoupling:
+
+        * ``resume_sec == resume_inflight_wait_sec + resume_api_sec +
+          resume_ready_wait_sec`` -- resume rate-pacing
+          (``resume_queue_wait_sec``) is PRE-lease, so it is NOT part of
+          ``resume_sec`` (the decoupling: it cannot inflate running_slot_held).
+        * ``pause_sec == pause_queue_wait_sec + pause_inflight_wait_sec +
+          pause_api_sec`` -- pause rate-pacing is IN-lease (sandbox running
+          until pause confirms), so it IS part of ``pause_sec``.
+        * ``slot_contention_wait_sec == natural_delay_sec + capacity_wait_sec``
+          (the composite; the four-component split is the columns below it).
         """
         ws = wb.create_sheet("Step detail")
         headers = [
@@ -538,6 +552,16 @@ class XlsxReportRenderer:
             "slice_total_sec",
             "interaction_total_sec",
             "slot_contention_wait_sec",
+            # Wait-decomposition components (the four independent waits).
+            # slot_contention_wait_sec stays as the natural_delay+capacity_wait
+            # composite; the four below are the split. resume_sec excludes
+            # rate-pacing (pre-lease); pause_sec includes it (in-lease).
+            "natural_delay_sec",
+            "capacity_wait_sec",
+            "rate_pacing_wait_sec",
+            "inflight_wait_sec",
+            "resume_inflight_wait_sec",
+            "pause_inflight_wait_sec",
             "running_slot_held_sec",
             "exit_code",
             "timed_out",
@@ -570,6 +594,12 @@ class XlsxReportRenderer:
                     _round_or_none(ev.get("slice_total_sec")),
                     _round_or_none(ev.get("interaction_total_sec")),
                     _round_or_none(ev.get("slot_contention_wait_sec")),
+                    _round_or_none(ev.get("natural_delay_sec")),
+                    _round_or_none(ev.get("capacity_wait_sec")),
+                    _round_or_none(ev.get("rate_pacing_wait_sec")),
+                    _round_or_none(ev.get("inflight_wait_sec")),
+                    _round_or_none(ev.get("resume_inflight_wait_sec")),
+                    _round_or_none(ev.get("pause_inflight_wait_sec")),
                     _round_or_none(ev.get("running_slot_held_sec")),
                     ev.get("exit_code"),
                     bool(ev.get("timed_out")),

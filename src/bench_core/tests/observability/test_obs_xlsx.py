@@ -470,18 +470,27 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
             "step_index": 0,
             "action_type": "shell",
             "slice_failed": False,
-            "resume_sec": 0.1,
-            "resume_queue_wait_sec": 0.02,
+            # New invariants: resume_sec = inflight + api + ready (rate-pacing
+            # resume_queue_wait is PRE-lease, NOT in resume_sec); pause_sec =
+            # pause_queue_wait + pause_inflight + pause_api (rate-pacing IN-lease).
+            "resume_sec": 0.08,
+            "resume_queue_wait_sec": 0.02,  # rate-pacing, pre-lease
+            "resume_inflight_wait_sec": 0.0,
             "resume_api_sec": 0.05,
             "resume_ready_wait_sec": 0.03,
             "exec_sec": 0.5,
-            "pause_sec": 0.2,
-            "pause_queue_wait_sec": 0.04,
+            "pause_sec": 0.20,
+            "pause_queue_wait_sec": 0.04,  # rate-pacing, in-lease
+            "pause_inflight_wait_sec": 0.0,
             "pause_api_sec": 0.16,
-            "slice_total_sec": 0.8,
-            "interaction_total_sec": 0.8,
+            "slice_total_sec": 0.78,  # resume_sec + exec + pause_sec
+            "interaction_total_sec": 0.80,  # + resume rate-pacing (pre-lease)
             "slot_contention_wait_sec": 0.0,
-            "running_slot_held_sec": 0.7,
+            "natural_delay_sec": 0.0,
+            "capacity_wait_sec": 0.0,
+            "rate_pacing_wait_sec": 0.06,  # resume_queue + pause_queue
+            "inflight_wait_sec": 0.0,
+            "running_slot_held_sec": 0.78,
             "exit_code": 0,
             "timed_out": False,
         }
@@ -495,23 +504,30 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
             "step_index": 1,
             "action_type": "edit",
             "slice_failed": False,
-            "resume_sec": 0.1,
-            "resume_queue_wait_sec": 0.02,
-            "resume_api_sec": 0.05,
-            "resume_ready_wait_sec": 0.03,
+            "resume_sec": 0.06,
+            "resume_queue_wait_sec": 0.0,
+            "resume_inflight_wait_sec": 0.0,
+            "resume_api_sec": 0.04,
+            "resume_ready_wait_sec": 0.02,
             "exec_sec": 0.4,
-            "pause_sec": 0.2,
-            "pause_queue_wait_sec": 0.04,
-            "pause_api_sec": 0.16,
-            "slice_total_sec": 0.7,
-            "interaction_total_sec": 0.7,
+            "pause_sec": 0.14,
+            "pause_queue_wait_sec": 0.03,
+            "pause_inflight_wait_sec": 0.0,
+            "pause_api_sec": 0.11,
+            "slice_total_sec": 0.60,
+            "interaction_total_sec": 0.60,
             "slot_contention_wait_sec": 0.0,
-            "running_slot_held_sec": 0.6,
+            "natural_delay_sec": 0.0,
+            "capacity_wait_sec": 0.0,
+            "rate_pacing_wait_sec": 0.03,
+            "inflight_wait_sec": 0.0,
+            "running_slot_held_sec": 0.60,
             "exit_code": 0,
             "timed_out": False,
         }
     )
-    # a failed step (slice_failed=True) is still emitted as a row
+    # a failed step (slice_failed=True) is still emitted as a row, with all
+    # wait components honestly zeroed
     w.write(
         {
             "event": "step",
@@ -523,15 +539,21 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
             "slice_failed": True,
             "resume_sec": 0.0,
             "resume_queue_wait_sec": 0.0,
+            "resume_inflight_wait_sec": 0.0,
             "resume_api_sec": 0.0,
             "resume_ready_wait_sec": 0.0,
             "exec_sec": 0.0,
             "pause_sec": 0.0,
             "pause_queue_wait_sec": 0.0,
+            "pause_inflight_wait_sec": 0.0,
             "pause_api_sec": 0.0,
             "slice_total_sec": 0.0,
             "interaction_total_sec": 0.0,
             "slot_contention_wait_sec": 0.0,
+            "natural_delay_sec": 0.0,
+            "capacity_wait_sec": 0.0,
+            "rate_pacing_wait_sec": 0.0,
+            "inflight_wait_sec": 0.0,
             "running_slot_held_sec": 0.0,
             "exit_code": 1,
             "timed_out": True,
@@ -563,6 +585,13 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
     assert "pause_queue_wait_sec" in headers
     assert "pause_api_sec" in headers
     assert "running_slot_held_sec" in headers
+    # wait-decoupling columns (the four independent components + per-phase inflight)
+    assert "natural_delay_sec" in headers
+    assert "capacity_wait_sec" in headers
+    assert "rate_pacing_wait_sec" in headers
+    assert "inflight_wait_sec" in headers
+    assert "resume_inflight_wait_sec" in headers
+    assert "pause_inflight_wait_sec" in headers
     # header + 3 data rows (the snapshot_size event is dropped)
     assert ws.max_row == 4
     # sorted: traj-a step0, traj-a step1, traj-b step0
@@ -573,23 +602,35 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
     assert ws.cell(3, traj_col).value == "traj-a"
     assert ws.cell(3, step_col).value == 1
     assert ws.cell(4, traj_col).value == "traj-b"
-    # the failed step row carries slice_failed=True and timed_out=True
+    # the failed step row carries slice_failed=True and timed_out=True, and all
+    # wait components honestly zeroed.
     failed_col = headers.index("slice_failed") + 1
     timed_col = headers.index("timed_out") + 1
     assert ws.cell(2, failed_col).value is True
     assert ws.cell(2, timed_col).value is True
-    # sum invariant on the success row: resume_sec == queue + api + ready_wait
-    # (rounded to 3 dp), pause_sec == queue + api. Guards against column-order
-    # drift silently breaking the parent/child relationship.
+    assert ws.cell(2, headers.index("rate_pacing_wait_sec") + 1).value in (0.0, None)
+    # Post-decoupling sum invariants on the success row (traj-a step1):
+    #   resume_sec == resume_inflight + resume_api + resume_ready_wait
+    #     (resume rate-pacing is PRE-lease, NOT in resume_sec -- the decoupling)
+    #   pause_sec == pause_queue_wait + pause_inflight + pause_api
+    #     (pause rate-pacing is IN-lease)
     rsm = ws.cell(3, headers.index("resume_sec") + 1).value
-    rq = ws.cell(3, headers.index("resume_queue_wait_sec") + 1).value
+    ri = ws.cell(3, headers.index("resume_inflight_wait_sec") + 1).value
     ra = ws.cell(3, headers.index("resume_api_sec") + 1).value
     rr = ws.cell(3, headers.index("resume_ready_wait_sec") + 1).value
-    assert rsm is not None and round(rq + ra + rr, 3) == rsm
+    assert rsm is not None and round((ri or 0) + (ra or 0) + (rr or 0), 3) == rsm
     psm = ws.cell(3, headers.index("pause_sec") + 1).value
     pq = ws.cell(3, headers.index("pause_queue_wait_sec") + 1).value
+    pi = ws.cell(3, headers.index("pause_inflight_wait_sec") + 1).value
     pa = ws.cell(3, headers.index("pause_api_sec") + 1).value
-    assert psm is not None and round(pq + pa, 3) == psm
+    assert psm is not None and round((pq or 0) + (pi or 0) + (pa or 0), 3) == psm
+    # the resume rate-pacing that is excluded from resume_sec still shows up in
+    # interaction_total (pre-lease wait is part of the full interaction budget).
+    # traj-b row (row 4): interaction_total = slice_total + resume_queue_wait.
+    it = ws.cell(4, headers.index("interaction_total_sec") + 1).value
+    st = ws.cell(4, headers.index("slice_total_sec") + 1).value
+    rqr = ws.cell(4, headers.index("resume_queue_wait_sec") + 1).value
+    assert it is not None and st is not None and round((st or 0) + (rqr or 0), 3) == it
     # frozen header + autofilter on the data range
     assert ws.freeze_panes == "A2"
     assert ws.auto_filter.ref is not None

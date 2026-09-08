@@ -301,8 +301,15 @@ _TRAJECTORY_BREAKDOWN_COLUMNS = [
     "kill_sec",
     "interaction_total_sec",
     "slot_contention_wait_sec",
+    # Wait-decoupling split (the four independent components + per-phase inflight).
+    "natural_delay_sec",
+    "capacity_wait_sec",
+    "rate_pacing_wait_sec",
+    "inflight_wait_sec",
     "resume_queue_wait_sec",
     "pause_queue_wait_sec",
+    "resume_inflight_wait_sec",
+    "pause_inflight_wait_sec",
     "running_slot_held_sec",
 ]
 _BREAKDOWN_KEY_TO_COL = {
@@ -315,8 +322,14 @@ _BREAKDOWN_KEY_TO_COL = {
     "kill": "kill_sec",
     "interaction_total": "interaction_total_sec",
     "slot_contention_wait": "slot_contention_wait_sec",
+    "natural_delay": "natural_delay_sec",
+    "capacity_wait": "capacity_wait_sec",
+    "rate_pacing_wait": "rate_pacing_wait_sec",
+    "inflight_wait": "inflight_wait_sec",
     "resume_queue_wait": "resume_queue_wait_sec",
     "pause_queue_wait": "pause_queue_wait_sec",
+    "resume_inflight_wait": "resume_inflight_wait_sec",
+    "pause_inflight_wait": "pause_inflight_wait_sec",
     "running_slot_held": "running_slot_held_sec",
 }
 

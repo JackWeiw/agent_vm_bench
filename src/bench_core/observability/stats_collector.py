@@ -646,12 +646,23 @@ class ReportFormatter:
                 all_resume_queue_wait: list[float] = []
                 all_slot_contention: list[float] = []
                 all_pause_api: list[float] = []
+                # Wait-decoupling components (rate pacing + inflight fuse + the
+                # slot-scheduler's natural_delay/capacity splits). rate_pacing /
+                # inflight are the per-step sums across resume+pause.
+                all_rate_pacing_wait: list[float] = []
+                all_inflight_wait: list[float] = []
+                all_natural_delay: list[float] = []
+                all_capacity_wait: list[float] = []
                 for s in self.sandbox_states.values():
                     all_resume_api.extend(s.replay_metrics.resume_api_secs)
                     all_resume_ready_wait.extend(s.replay_metrics.resume_ready_wait_secs)
                     all_resume_queue_wait.extend(s.replay_metrics.resume_queue_wait_secs)
                     all_slot_contention.extend(s.replay_metrics.slot_contention_wait_secs)
                     all_pause_api.extend(s.replay_metrics.pause_api_secs)
+                    all_rate_pacing_wait.extend(s.replay_metrics.rate_pacing_wait_secs)
+                    all_inflight_wait.extend(s.replay_metrics.inflight_wait_secs)
+                    all_natural_delay.extend(s.replay_metrics.natural_delay_secs)
+                    all_capacity_wait.extend(s.replay_metrics.capacity_wait_secs)
 
                 # Resume decomp line (always rendered when all_slice non-empty)
                 resume_api_stats = calc_percentiles(all_resume_api)
@@ -679,7 +690,32 @@ class ReportFormatter:
                         f"  Slot contention: P50={slot_contention_stats['p50']:.3f}s "
                         f"P95={slot_contention_stats['p95']:.3f}s  (n={len(all_slot_contention)})"
                     )
+                    # Three independent wait components (rate pacing, inflight
+                    # fuse, and the slot-scheduler's natural/capacity split).
+                    # Each is shown only when its knob was active so an "off"
+                    # component does not add a noise 0.000s line.
                     a = self.admission_snapshot
+                    if a.get("qps") != "off":
+                        rp_stats = calc_percentiles(all_rate_pacing_wait)
+                        lines.append(
+                            f"  QPS pacing delay: P50={rp_stats['p50']:.3f}s "
+                            f"P95={rp_stats['p95']:.3f}s  (n={len(all_rate_pacing_wait)})"
+                        )
+                    if a.get("inflight_cap") not in (None, "off"):
+                        inf_stats = calc_percentiles(all_inflight_wait)
+                        lines.append(
+                            f"  Inflight wait:    P50={inf_stats['p50']:.3f}s "
+                            f"P95={inf_stats['p95']:.3f}s  (n={len(all_inflight_wait)})"
+                        )
+                    if all_natural_delay and any(v > 0 for v in all_natural_delay):
+                        nd_stats = calc_percentiles(all_natural_delay)
+                        lines.append(f"  Natural delay:    P50={nd_stats['p50']:.3f}s  (n={len(all_natural_delay)})")
+                    if all_capacity_wait and any(v > 0 for v in all_capacity_wait):
+                        cw_stats = calc_percentiles(all_capacity_wait)
+                        lines.append(
+                            f"  Capacity wait:    P50={cw_stats['p50']:.3f}s "
+                            f"P95={cw_stats['p95']:.3f}s  (n={len(all_capacity_wait)})"
+                        )
                     lines.append("  Admission:")
                     rs = a.get("running_slots") or {}
                     if rs:
@@ -690,31 +726,43 @@ class ReportFormatter:
                             f"avg_queue_wait={rs.get('average_queue_wait_sec', 0.0):.3f}s"
                         )
                     ql = a.get("qps_limiter")
-                    if ql and a.get("qps") != "off":
-                        lines.append(
-                            f"    QPS limiter:   qps={ql.get('qps')} "
-                            f"inflight={ql.get('in_flight', 0)}/{ql.get('inflight_cap', 0)} "
-                            f"dispatched={ql.get('dispatched', 0)} "
-                            f"avg_wait={ql.get('average_wait_sec', 0.0):.1f}s "
-                            f"max_wait={ql.get('max_wait_sec', 0.0):.1f}s"
-                        )
-                        dbo = ql.get("dispatched_by_operation", {})
-                        lines.append(
-                            "    Dispatched by operation: "
-                            + " ".join(
-                                f"{op}={dbo.get(op, 0)}" for op in ("resume", "pause", "cleanup", "create", "command")
-                            )
-                        )
-                        wbo = ql.get("waiting_by_operation", {})
-                        # Suppress an all-zero waiting line -- it is pure noise
-                        # (no op is ever queued) and never adds information.
-                        if any(wbo.get(op, 0) for op in ("resume", "pause", "cleanup", "create", "command")):
+                    # The limiter block renders when EITHER function is active
+                    # (the two knobs are independent). Rate-pacing detail shows
+                    # only when qps != off; inflight-fuse detail only when the
+                    # cap is set.
+                    if ql:
+                        if a.get("qps") != "off":
                             lines.append(
-                                "    Waiting by operation:    "
+                                f"    Rate pacing:   qps={ql.get('qps')} "
+                                f"dispatched={ql.get('dispatched', 0)} "
+                                f"avg_wait={ql.get('average_wait_sec', 0.0):.1f}s "
+                                f"max_wait={ql.get('max_wait_sec', 0.0):.1f}s"
+                            )
+                            dbo = ql.get("dispatched_by_operation", {})
+                            lines.append(
+                                "    Dispatched by operation: "
                                 + " ".join(
-                                    f"{op}={wbo.get(op, 0)}"
+                                    f"{op}={dbo.get(op, 0)}"
                                     for op in ("resume", "pause", "cleanup", "create", "command")
                                 )
+                            )
+                            wbo = ql.get("waiting_by_operation", {})
+                            # Suppress an all-zero waiting line -- it is pure noise
+                            # (no op is ever queued) and never adds information.
+                            if any(wbo.get(op, 0) for op in ("resume", "pause", "cleanup", "create", "command")):
+                                lines.append(
+                                    "    Waiting by operation:    "
+                                    + " ".join(
+                                        f"{op}={wbo.get(op, 0)}"
+                                        for op in ("resume", "pause", "cleanup", "create", "command")
+                                    )
+                                )
+                        if a.get("inflight_cap") not in (None, "off"):
+                            lines.append(
+                                f"    Inflight fuse: cap={ql.get('inflight_cap')} "
+                                f"in_flight={ql.get('in_flight', 0)} "
+                                f"dispatched={ql.get('inflight_dispatched', 0)} "
+                                f"avg_wait={ql.get('average_inflight_wait_sec', 0.0):.1f}s"
                             )
 
         return lines
