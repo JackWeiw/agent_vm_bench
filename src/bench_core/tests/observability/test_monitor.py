@@ -143,18 +143,22 @@ class _FakeProc:
     def __init__(self):
         self.returncode = None
         self.terminated = False
+        self.killed = False
 
     def poll(self):
         return self.returncode
 
     def terminate(self):
+        # Post-sampling vm_monitor ignores SIGTERM (the handler only breaks the
+        # sampling loop, already done), so SIGTERM alone does not stop the
+        # process -- returncode stays None, forcing the reaper to escalate.
         self.terminated = True
-        self.returncode = -15
 
     def wait(self, timeout=None):
         return self.returncode
 
     def kill(self):
+        self.killed = True
         self.returncode = -9
 
 
@@ -196,21 +200,25 @@ def test_begin_end_noop_when_not_started():
 
 def test_stop_collects_report_and_closes_handles(monkeypatch, tmp_path):
     monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
-    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: _FakeProc())
+    proc = _FakeProc()
+    proc.returncode = 0  # vm_monitor exited cleanly after producing the report
+    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: proc)
     mc = MonitorController(
         _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path), report_timeout=2),
         _StubProvider(vmm_type="firecracker"),
     )
     mc.start()
-    # pre-create the report so stop() finds it immediately
+    # the report is already on disk (vm_monitor wrote it before exiting)
     (tmp_path / "resource_report.xlsx").write_text("x")
     artifacts = mc.stop()
     assert mc.report_xlsx == tmp_path / "resource_report.xlsx"
     assert artifacts and artifacts[0] == mc.report_xlsx
+    assert proc.terminated is False  # clean exit -- no SIGTERM needed
     assert mc._stdout_fh is None and mc._stderr_fh is None  # closed
 
 
-def test_stop_kills_overdue_process(monkeypatch, tmp_path):
+def test_stop_terminates_then_kills_overdue_process(monkeypatch, tmp_path):
+    monkeypatch.setattr("bench_core.observability.monitor.time", _Clock())
     monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
     proc = _FakeProc()
     monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: proc)
@@ -219,9 +227,143 @@ def test_stop_kills_overdue_process(monkeypatch, tmp_path):
         _StubProvider(vmm_type="firecracker"),
     )
     mc.start()
-    # no xlsx ever appears; proc never exits on its own (poll() stays None)
+    # no xlsx ever appears; proc never exits and ignores SIGTERM (poll stays
+    # None) -- a genuine hang. The reaper must SIGTERM, then SIGKILL past grace.
     mc.stop()
-    assert proc.terminated is True  # terminate() called
+    assert proc.terminated is True  # SIGTERM fired at 2x report_timeout
+    assert proc.killed is True  # unresponsive past grace -> SIGKILL
+
+
+class _Clock:
+    """Deterministic clock so the mid-export grace path is timing-independent."""
+
+    def __init__(self):
+        self.t = 0.0
+
+    def time(self):
+        return self.t
+
+    def sleep(self, n):
+        self.t += n
+
+
+class _ExportingProc:
+    """Fake proc simulating vm_monitor finishing an xlsx export.
+
+    Stays alive (poll -> None) until ``promote_on_poll`` polls, then promotes
+    the build file to the final xlsx and exits cleanly (returncode 0). With
+    ``promote_on_poll=None`` it never finishes (a hung export).
+    """
+
+    def __init__(self, build_path, xlsx_path, *, promote_on_poll=None):
+        self._build = build_path
+        self._xlsx = xlsx_path
+        self._promote_on = promote_on_poll
+        self._polls = 0
+        self.returncode = None
+        self.terminated = False
+        self.killed = False
+
+    def poll(self):
+        self._polls += 1
+        if self._promote_on is not None and self._polls >= self._promote_on and self.returncode is None:
+            # export done: atomic build -> xlsx promote, then exit
+            if self._build.exists():
+                self._build.unlink()
+            self._xlsx.write_text("ok")
+            self.returncode = 0
+        return self.returncode
+
+    def terminate(self):
+        # SIGTERM does not interrupt an in-flight export (handler is moot
+        # post-sampling), so the process stays alive -- returncode unchanged.
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+
+def test_stop_waits_for_slow_export_no_sigterm(monkeypatch, tmp_path):
+    """A slow export that finishes within the 2x report_timeout window is never
+    SIGTERM'd -- the reaper waits for the process to exit on its own (the true
+    completion signal) and collects the report once it is promoted. This is the
+    core fix: the old code SIGTERM'd at report_timeout and SIGKILL'd mid-write
+    5s later, leaving a corrupt orphan ``.build.xlsx`` and no report.
+    """
+    monkeypatch.setattr("bench_core.observability.monitor.time", _Clock())
+    build = tmp_path / "resource_report.xlsx.build.xlsx"
+    xlsx = tmp_path / "resource_report.xlsx"
+    build.write_text("partial")  # export in flight
+    proc = _ExportingProc(build, xlsx, promote_on_poll=2)  # finishes inside the wait window
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: proc)
+    mc = MonitorController(
+        _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path), report_timeout=1),
+        _StubProvider(vmm_type="firecracker"),
+    )
+    mc.start()
+    artifacts = mc.stop()
+    assert proc.terminated is False  # finished inside the wait window -- no SIGTERM
+    assert proc.killed is False
+    assert mc.report_xlsx == xlsx  # report collected after the export finished
+    assert artifacts and artifacts[0] == xlsx
+    assert not build.exists()  # promoted away -- no corrupt orphan left behind
+
+
+def test_stop_grace_lets_sigterm_hit_export_finish(monkeypatch, tmp_path):
+    """When the export outlives the 2x report_timeout window, the reaper SIGTERMs
+    -- but SIGTERM does not interrupt the export (vm_monitor's handler only
+    breaks sampling, moot post-sampling). The polled post-SIGTERM grace lets
+    the export finish + exit, so the report is still collected and there is NO
+    SIGKILL mid-write. (The old 5s grace guaranteed a mid-write SIGKILL here.)
+    """
+    monkeypatch.setattr("bench_core.observability.monitor.time", _Clock())
+    build = tmp_path / "resource_report.xlsx.build.xlsx"
+    xlsx = tmp_path / "resource_report.xlsx"
+    build.write_text("partial")
+    proc = _ExportingProc(build, xlsx, promote_on_poll=4)  # finishes during the post-SIGTERM grace
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: proc)
+    mc = MonitorController(
+        _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path), report_timeout=1),
+        _StubProvider(vmm_type="firecracker"),
+    )
+    mc.start()
+    artifacts = mc.stop()
+    assert proc.terminated is True  # SIGTERM fired (export outlived 2x window)
+    assert proc.killed is False  # but the grace let it finish -- no SIGKILL
+    assert mc.report_xlsx == xlsx  # report still collected
+    assert artifacts and artifacts[0] == xlsx
+    assert not build.exists()  # promoted away -- no corrupt orphan
+
+
+def test_stop_kills_when_export_hung_past_grace(monkeypatch, tmp_path, caplog):
+    """A genuinely hung export (never finishes, ignores SIGTERM) is SIGKILL'd
+    past the grace -- a true hang must not block run_benchmark forever. This is
+    the rare degenerate case; the common slow-export case is covered above
+    without any SIGKILL. The orphan ``.build.xlsx`` this leaves is cleaned at
+    the start of the next export (exporters clean-on-start)."""
+    monkeypatch.setattr("bench_core.observability.monitor.time", _Clock())
+    build = tmp_path / "resource_report.xlsx.build.xlsx"
+    xlsx = tmp_path / "resource_report.xlsx"
+    build.write_text("partial")
+    proc = _ExportingProc(build, xlsx, promote_on_poll=None)  # never finishes
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: proc)
+    mc = MonitorController(
+        _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path), report_timeout=1),
+        _StubProvider(vmm_type="firecracker"),
+    )
+    mc.start()
+    mc.stop()
+    assert proc.terminated is True  # SIGTERM fired at 2x report_timeout
+    assert proc.killed is True  # unresponsive past grace -> SIGKILL
+    assert any("exceeded 2x report_timeout" in r.message.lower() for r in caplog.records)
+    assert any("sigkill" in r.message.lower() for r in caplog.records)
 
 
 def test_stop_noop_when_not_started():

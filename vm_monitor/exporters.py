@@ -1525,14 +1525,20 @@ def export_to_excel(
     parsed_logs = parse_all_logs(log_dir, numa_nodes)
 
     # Write to a build path first, then atomically promote it onto output_file.
-    # This is not cosmetic: bench-core's MonitorController.stop() reaps this
-    # subprocess the instant resource_report.xlsx appears (it polls the path,
-    # then SIGTERMs the process). If pandas wrote the final path directly, the
-    # reap could fire between the pandas write and _add_charts' re-save,
-    # truncating the workbook mid-write -- Excel then rejects it as corrupt.
-    # By building on a side path and os.replace-ing it onto output_file only
-    # after charts are done, the final path appears exactly once, complete.
+    # bench-core's MonitorController.stop() waits for THIS PROCESS TO EXIT (the
+    # true completion signal: it polls process exit, not the xlsx path), so the
+    # final path is never observed mid-write. The build path + atomic os.replace
+    # is the second line of defense: even a SIGKILL/OOM mid-build (a genuine hang
+    # past the reaper's grace) cannot leave a corrupt partial at the final path,
+    # because os.replace makes the final path appear exactly once, complete.
+    # Clean up a stale build from a prior crashed run first -- otherwise a
+    # leftover .build.xlsx from a SIGKILL'd export would shadow the fresh build.
     build_file = output_file + ".build.xlsx"
+    if os.path.exists(build_file):
+        try:
+            os.unlink(build_file)
+        except OSError:
+            pass
 
     # Create writer for multi-sheet Excel (openpyxl required)
     try:

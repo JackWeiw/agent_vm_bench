@@ -37,7 +37,7 @@ class MonitorConfig:
     # standalone file; the replay obs workbook stays a trajectory-metrics-only file.
     # True = copy VM_Stats/NUMA_Overview/DevKit_TopDown into the obs workbook.
     merge_report: bool = False
-    report_timeout: int = 300  # max wait for resource_report.xlsx (seconds)
+    report_timeout: int = 300  # vm_monitor exit/export budget (s): 2x = no-SIGTERM wait, 1x = post-SIGTERM grace
 
     @classmethod
     def from_raw(cls, raw: dict | None) -> MonitorConfig:
@@ -183,34 +183,71 @@ class MonitorController:
             setattr(self, attr, None)
 
     def stop(self) -> list[Path]:
-        """Wait for vm_monitor's resource_report.xlsx (up to report_timeout), then reap.
+        """Wait for vm_monitor to finish and produce resource_report.xlsx, then reap.
 
-        Does NOT merge -- the obs workbook does not exist yet at this point in
-        run_benchmark. Call ``merge_into`` after the obs xlsx is rendered.
+        The completion signal is the subprocess *exiting*, not the xlsx appearing:
+        vm_monitor writes its artifacts in order CSV -> SVG -> xlsx (last) then
+        exits, so process exit means every artifact is written. Polling the xlsx
+        only flags the report ready early -- its appearance is NOT a reap trigger.
 
-        The vm_monitor CLI writes its artifacts in order CSV -> SVG -> xlsx, so
-        the xlsx is the LAST artifact: its appearance means every file (CSV,
-        SVG, xlsx) is already written and the subprocess is essentially done.
-        Reaping at xlsx-appearance is therefore safe -- nothing is dropped.
+        We never SIGKILL a live export. vm_monitor's SIGTERM handler only breaks
+        the *sampling* loop (moot post-sampling), so a SIGTERM cannot stop an
+        in-flight export. The old code SIGTERM'd the instant report_timeout
+        elapsed, then waited 5s -- guaranteed to escalate to SIGKILL mid-write on
+        any slow post-stress pipeline (capture.wait / CSV / SVG / xlsx build),
+        leaving a corrupt orphan ``.build.xlsx`` Excel rejects as "format/
+        extension invalid" plus no ``resource_report.xlsx``. Now we wait for the
+        process to exit on its own across a 2x report_timeout window (no SIGTERM
+        at all for a normal or slow-but-progressing run), and only a genuine hang
+        past that window is SIGTERM'd -- followed by a *polled* report_timeout
+        grace (not a 5s cliff) so even an export hit by the SIGTERM can finish
+        and exit, since the SIGTERM does not interrupt it. SIGKILL is the last
+        resort for a process still unresponsive past that grace.
         """
         if not self._started:
             return []
         xlsx = self._log_dir / "resource_report.xlsx"
-        deadline = time.time() + self._report_timeout
-        while time.time() < deadline:
-            if self.proc.poll() is not None and not xlsx.exists():
-                logger.error("vm_monitor subprocess exited (code=%s) without report", self.proc.returncode)
-                break
-            if xlsx.exists():
+        # Wait for the subprocess to exit on its own -- the true completion
+        # signal. Covers the whole post-stress pipeline (capture.wait / CSV /
+        # SVG / xlsx build); we do NOT guess "still exporting" from the build
+        # file, which would miss every non-xlsx phase. The xlsx only flags the
+        # report ready early; it never triggers a reap.
+        exit_rc = self.proc.poll()
+        exit_deadline = time.time() + 2 * self._report_timeout
+        while exit_rc is None and time.time() < exit_deadline:
+            if xlsx.exists() and self.report_xlsx is None:
                 self.report_xlsx = xlsx
-                break
             time.sleep(1)
-        if self.proc.poll() is None:  # still running -> overdue
+            exit_rc = self.proc.poll()
+        if exit_rc is not None and not xlsx.exists():
+            logger.error("vm_monitor subprocess exited (code=%s) without report", exit_rc)
+        elif xlsx.exists() and self.report_xlsx is None:
+            self.report_xlsx = xlsx
+        # Genuine hang (still alive past 2x report_timeout) -> SIGTERM, then a
+        # *polled* grace. SIGTERM does not interrupt the export (the handler is
+        # moot post-sampling), so this grace is what lets a slow export hit by
+        # the SIGTERM finish + exit rather than be SIGKILLed mid-write. SIGKILL
+        # only for a process still unresponsive past the grace.
+        if exit_rc is None:
+            logger.warning("vm_monitor exceeded 2x report_timeout; terminating")
             self.proc.terminate()
+            grace_rc = self.proc.poll()
+            grace = time.time() + self._report_timeout
+            while grace_rc is None and time.time() < grace:
+                if xlsx.exists() and self.report_xlsx is None:
+                    self.report_xlsx = xlsx
+                time.sleep(1)
+                grace_rc = self.proc.poll()
+            if grace_rc is None:
+                logger.warning("vm_monitor unresponsive past grace; SIGKILL")
+                self.proc.kill()
+            # Reap the zombie (non-blocking; the process is dead or dying).
             try:
                 self.proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self.proc.kill()
+                pass
+            if xlsx.exists() and self.report_xlsx is None:
+                self.report_xlsx = xlsx
         self._close_handles()
         self._started = False
         return [self.report_xlsx] if self.report_xlsx is not None else []
