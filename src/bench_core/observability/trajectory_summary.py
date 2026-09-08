@@ -21,7 +21,7 @@ from __future__ import annotations
 # independent non-productive components: slot_contention (the natural_delay +
 # capacity_wait composite, kept for parse-compat) plus its split
 # (natural_delay / capacity_wait), rate_pacing (the 1/qps shaping, split across
-# resume_queue + pause_queue), and inflight (the fuse block, across
+# resume_rate_pacing_wait + pause_rate_pacing_wait), and inflight (the fuse block, across
 # resume_inflight + pause_inflight). Exported so obs_xlsx imports it back
 # instead of keeping a local copy (DRY).
 SEG_KEYS = (

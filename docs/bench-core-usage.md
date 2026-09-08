@@ -438,7 +438,7 @@ when the series is absent (e.g. a minimal install).
 > vm_monitor `resource_report.xlsx`). With the default `false`, the vm_monitor report stays
 > a separate file and the workbook carries only the 8 sheets above.
 
-#### Step detail columns (20, seconds)
+#### Step detail columns (26, seconds)
 
 Sub-segments nest under their parent so the sum invariant is verifiable in-sheet:
 `resume_sec == resume_inflight_wait_sec + resume_api_sec + resume_ready_wait_sec` (rate-pacing is PRE-lease, excluded),
@@ -463,14 +463,20 @@ Sub-segments nest under their parent so the sum invariant is verifiable in-sheet
 | `slice_total_sec` | resume + exec + pause; 0 for failed slices (excluded from percentiles) |
 | `interaction_total_sec` | full interaction budget = resume + exec + pause + delay + natural_delay + capacity_wait (≥ slice_total) |
 | `slot_contention_wait_sec` | derived composite = natural_delay + capacity_wait (FIFO running-slot contention; admission) |
+| `natural_delay_sec` | ready-at-in-future park wait (inter-step gap pacing; component of slot_contention_wait_sec) |
+| `capacity_wait_sec` | FIFO running-slot token contention -- the genuine queue wait (component of slot_contention_wait_sec) |
+| `rate_pacing_wait_sec` | per-step rate-pacing total = resume_rate_pacing_wait_sec + pause_rate_pacing_wait_sec (1/qps shaping, a RATE control; not the FIFO queue -- see capacity_wait_sec) |
+| `inflight_wait_sec` | per-step inflight-fuse block total = resume_inflight_wait_sec + pause_inflight_wait_sec (a CONCURRENCY control) |
+| `resume_inflight_wait_sec` | inflight-fuse block on resume (component of resume_sec) |
+| `pause_inflight_wait_sec` | inflight-fuse block on pause (component of pause_sec) |
 | `running_slot_held_sec` | total running-slot hold time (acquire → release) |
 | `exit_code` | `provider.exec()` exit code |
 | `timed_out` | whether a timeout exit code was hit |
 
-#### Trajectory summary columns (15, seconds, sum-based)
+#### Trajectory summary columns (21, seconds, sum-based)
 
 One row per trajectory (instance) for **cost attribution** — where this trajectory's total
-wall time went (pause vs. resume vs. exec vs. queue wait). Uses **sum, not percentiles**:
+wall time went (pause vs. resume vs. exec vs. the wait components). Uses **sum, not percentiles**:
 per-instance per-step distributions are already in `Step detail` (filter by `trajectory_id`)
 and `Lifecycle overhead` (pooled); this sheet answers "total breakdown + wasteful wait".
 `n_steps` counts all step events (including `slice_failed` steps — they contribute 0 to
@@ -489,12 +495,18 @@ sums but count as attempts, so `avg_slice` reflects per-attempt cost).
 | `pause_sum_s` | total pause time |
 | `interaction_total_sum_s` | full interaction budget incl. delay + capacity_wait (≥ slice_total; for oversubscription analysis) |
 | `slot_contention_wait_sum_s` | total admission slot-contention wait (derived = natural_delay + capacity_wait) |
+| `natural_delay_sum_s` | total ready-at-in-future park wait (component of slot_contention) |
+| `capacity_wait_sum_s` | total FIFO running-slot token contention (component of slot_contention) |
+| `rate_pacing_wait_sum_s` | total rate-pacing = resume_rate_pacing + pause_rate_pacing (1/qps shaping) |
+| `inflight_wait_sum_s` | total inflight-fuse block = resume_inflight + pause_inflight |
 | `resume_rate_pacing_wait_sum_s` | total QPS-limiter 1/qps rate-pacing time-wait for resume (pre-lease) |
 | `pause_rate_pacing_wait_sum_s` | total QPS-limiter 1/qps rate-pacing time-wait for pause (in-lease) |
+| `resume_inflight_wait_sum_s` | total inflight-fuse block on resume (component of resume) |
+| `pause_inflight_wait_sum_s` | total inflight-fuse block on pause (component of pause) |
 | `running_slot_held_sum_s` | total running-slot hold time (slot occupancy / oversubscription granularity) |
 | `avg_slice_s` | slice_total_sum / n_steps, typical per-step cost |
 
-> Finer resume/pause sub-segments (api_sec / ready_wait / rate_pacing_wait) per step live in
+> Finer resume/pause sub-segments (api_sec / ready_wait / inflight_wait / rate_pacing_wait) per step live in
 > `Step detail`; per-second concurrency in `Concurrency states`; snapshot memory in
 > `Snapshot sizes`. Host-level system resources (CPU/memory/NUMA) are in the separate
 > vm_monitor `resource_report.xlsx` (`monitor.merge_report: false`) or merged into this

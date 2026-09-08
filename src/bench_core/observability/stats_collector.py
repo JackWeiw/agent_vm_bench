@@ -613,7 +613,9 @@ class ReportFormatter:
                     agg = (sum(agg_resume) + sum(agg_pause)) / sum(agg_slice)
                     lines.append(f"  Overhead aggregate:  {agg * 100:.1f}%")
                 # known caveat footer (resume_sec includes the post-resume ready-wait;
-                # the Resume decomp line below breaks resume_sec into api + ready_wait + qps_wait)
+                # resume_sec = resume_inflight_wait + resume_api + resume_ready_wait --
+                # rate-pacing ("qps_wait" on the decomp line) is pre-lease, excluded;
+                # the resume+pause rate-pacing sum is the separate "QPS pacing delay".)
                 lines.append("  (resume_sec includes post-resume ready-wait; see Resume decomp)")
 
                 # Phase 3.3: retry-impact sub-block. Reads the ReplayMetrics
@@ -647,8 +649,10 @@ class ReportFormatter:
                 all_slot_contention: list[float] = []
                 all_pause_api: list[float] = []
                 # Wait-decoupling components (rate pacing + inflight fuse + the
-                # slot-scheduler's natural_delay/capacity splits). rate_pacing /
-                # inflight are the per-step sums across resume+pause.
+                # slot-scheduler's natural_delay/capacity splits). rate_pacing_wait =
+                # resume_rate_pacing_wait_sec + pause_rate_pacing_wait_sec; inflight_wait
+                # = resume_inflight_wait_sec + pause_inflight_wait_sec (per-step sums;
+                # see ReplayMetrics.*_secs properties).
                 all_rate_pacing_wait: list[float] = []
                 all_inflight_wait: list[float] = []
                 all_natural_delay: list[float] = []

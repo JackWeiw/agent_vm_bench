@@ -353,7 +353,7 @@ minimal install),依赖 series 的表只输出表头,不报错。
 | Gantt | 图 | 每 sandbox 的 phase 时间线(resume/exec/pause),内嵌 PNG;大 fleet 自动缩小行高 |
 | Snapshot sizes | 每 pause 一行 | logical/disk/inherited/cumulative MiB + generations/files;附折图。仅 `SnapshotSizeCapable`(aenv) |
 
-#### Step detail 列(20 列,秒)
+#### Step detail 列(26 列,秒)
 
 子段紧贴其父总量,使和不变式可在表内直接验证:
 `resume_sec == resume_inflight_wait_sec + resume_api_sec + resume_ready_wait_sec`(rate-pacing 属 PRE-lease,被排除),
@@ -378,30 +378,45 @@ minimal install),依赖 series 的表只输出表头,不报错。
 | `slice_total_sec` | resume + exec + pause;失败 slice 为 0(被排除出百分位计算) |
 | `interaction_total_sec` | 一次交互的完整预算 = resume + exec + pause + delay + natural_delay + capacity_wait(≥ slice_total) |
 | `slot_contention_wait_sec` | 派生复合量 = natural_delay + capacity_wait(FIFO running-slot 竞争;admission) |
+| `natural_delay_sec` | ready-at-in-future 停留等待(步间间隔节流;slot_contention 的分量) |
+| `capacity_wait_sec` | FIFO running-slot 令牌竞争——真正的排队等待(slot_contention 的分量) |
+| `rate_pacing_wait_sec` | 单步速率等待合计 = resume_rate_pacing_wait_sec + pause_rate_pacing_wait_sec(1/qps 整形,RATE 控制;非 FIFO 排队,真排队见 capacity_wait_sec) |
+| `inflight_wait_sec` | 单步 inflight 熔断阻塞合计 = resume_inflight_wait_sec + pause_inflight_wait_sec(CONCURRENCY 控制) |
+| `resume_inflight_wait_sec` | resume 的 inflight 熔断阻塞(resume_sec 的分量) |
+| `pause_inflight_wait_sec` | pause 的 inflight 熔断阻塞(pause_sec 的分量) |
 | `running_slot_held_sec` | running slot 持有总时长(acquire→release) |
 | `exit_code` | `provider.exec()` 退出码 |
 | `timed_out` | 是否命中超时退出码 |
 
-#### Trajectory summary 列(12 列,秒,sum-based)
+#### Trajectory summary 列(21 列,秒,sum-based)
 
-每条轨迹(instance)一行,做**成本归因**——这条轨迹的总墙钟花在哪了(pause vs resume vs exec vs 排队等待)。用 **sum 而非百分位**:per-instance 的 per-step 分布已在 `Step detail`(按 trajectory_id 筛)和 `Lifecycle overhead`(池化)里,这里只回答"总量分解 + 浪费性等待"。`n_steps` 计所有 step 事件(含 `slice_failed` 失败步,失败步对 sum 贡献 0 但计入尝试数,故 avg_slice 反映 per-attempt 成本)。
+每条轨迹(instance)一行,做**成本归因**——这条轨迹的总墙钟花在哪了(pause vs resume vs exec vs 各等待分量)。用 **sum 而非百分位**:per-instance 的 per-step 分布已在 `Step detail`(按 trajectory_id 筛)和 `Lifecycle overhead`(池化)里,这里只回答"总量分解 + 浪费性等待"。`n_steps` 计所有 step 事件(含 `slice_failed` 失败步,失败步对 sum 贡献 0 但计入尝试数,故 avg_slice 反映 per-attempt 成本)。
 
 | 列 | 含义 |
 |----|------|
 | `trajectory_id` | 实例 |
 | `n_steps` | 该轨迹累计回放的 step 总数(含失败步) |
+| `n_failed` | 失败 step 数 |
+| `n_timeout` | 命中超时退出码的 step 数 |
+| `success_rate` | 成功率(0 step 时为 None) |
 | `slice_total_sum_s` | 总活跃墙钟 = resume + exec + pause(和不变式) |
 | `exec_sum_s` | 纯命令执行总耗时 |
 | `resume_sum_s` | resume 总耗时 |
 | `pause_sum_s` | pause 总耗时 |
 | `interaction_total_sum_s` | 含 delay + capacity_wait 的完整交互预算(≥ slice_total,超卖分析用) |
 | `slot_contention_wait_sum_s` | admission slot 竞争等待总耗时(派生 = natural_delay + capacity_wait) |
+| `natural_delay_sum_s` | ready-at-in-future 停留等待总耗时(slot_contention 的分量) |
+| `capacity_wait_sum_s` | FIFO running-slot 令牌竞争总耗时(slot_contention 的分量) |
+| `rate_pacing_wait_sum_s` | 速率等待总耗时 = resume_rate_pacing + pause_rate_pacing(1/qps 整形) |
+| `inflight_wait_sum_s` | inflight 熔断阻塞总耗时 = resume_inflight + pause_inflight |
 | `resume_rate_pacing_wait_sum_s` | resume 的 QPS 限流 1/qps 速率等待总耗时(pre-lease) |
 | `pause_rate_pacing_wait_sum_s` | pause 的 QPS 限流 1/qps 速率等待总耗时(in-lease) |
+| `resume_inflight_wait_sum_s` | resume 的 inflight 熔断阻塞总耗时(resume 的分量) |
+| `pause_inflight_wait_sum_s` | pause 的 inflight 熔断阻塞总耗时(pause 的分量) |
 | `running_slot_held_sum_s` | running slot 持有总时长(slot 占用/超卖粒度) |
 | `avg_slice_s` | slice_total_sum / n_steps,典型单步成本 |
 
-> resume/pause 更细的子段(api_sec / ready_wait / queue_wait)per-step 值见 `Step detail`;
+> resume/pause 更细的子段(api_sec / ready_wait / inflight_wait / rate_pacing_wait)per-step 值见 `Step detail`;
 > per-second 并发状态见 `Concurrency states`;snapshot 内存见 `Snapshot sizes`。
 > per-instance 的 per-step 百分位分布不在本表——按 `trajectory_id` 在 `Step detail` 筛即可,
 > 池化百分位见 `Lifecycle overhead` / `Per-step timings`。

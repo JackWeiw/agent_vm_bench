@@ -488,7 +488,7 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
             "slot_contention_wait_sec": 0.0,
             "natural_delay_sec": 0.0,
             "capacity_wait_sec": 0.0,
-            "rate_pacing_wait_sec": 0.06,  # resume_queue + pause_queue
+            "rate_pacing_wait_sec": 0.06,  # resume_rate_pacing_wait + pause_rate_pacing_wait
             "inflight_wait_sec": 0.0,
             "running_slot_held_sec": 0.78,
             "exit_code": 0,
