@@ -532,12 +532,20 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         # replay_result.json per trajectory + a trajectories/index.json catalog
         # so a fleet of dozens/hundreds of trajectories is browsable without
         # walking folders. Runs regardless of report_format (txt-only runs still
-        # get the per-trajectory JSON).
+        # get the per-trajectory JSON). Guarded like write_run_summary below: this
+        # is a non-critical browsable catalog, so an export failure must NOT
+        # abort step 8 -- an unguarded throw here would skip write_run_summary on
+        # the happy path, leave _artifacts_flushed False, and (via the except->
+        # raise->finally path) crash the run AFTER dispatch completed, turning a
+        # cosmetic artifact failure into an invalid oversub trial. Log + continue.
         if series_path is not None and Path(series_path).exists():
-            from bench_core.observability.trajectory_export import export_trajectories
+            try:
+                from bench_core.observability.trajectory_export import export_trajectories
 
-            n_traj = export_trajectories(series_path, config.output_dir, filename_prefix=config.filename_prefix)
-            logger.info("Per-trajectory replay_result.json exported: %d trajectories", n_traj)
+                n_traj = export_trajectories(series_path, config.output_dir, filename_prefix=config.filename_prefix)
+                logger.info("Per-trajectory replay_result.json exported: %d trajectories", n_traj)
+            except Exception:
+                logger.exception("trajectory export failed; continuing (replay_result.json/index.json may be absent)")
 
         # Oversub driver contract: machine-readable run summary (replay only).
         # Raw facts only; the driver computes experiment validity. Wrapped so a
