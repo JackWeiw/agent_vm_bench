@@ -422,3 +422,112 @@ minimal install),依赖 series 的表只输出表头,不报错。
 > 池化百分位见 `Lifecycle overhead` / `Per-step timings`。
 > host 级系统资源(CPU/内存/NUMA)在独立的 vm_monitor `resource_report.xlsx`(`monitor.merge_report: false` 时)或合并进
 > 本工作簿的 `VM_Stats`/`NUMA_Overview`/`DevKit_TopDown` sheet(`merge_report: true` 时)。
+
+### 8.5 超卖扫描 (`oversub-bench`)
+
+`oversub-bench` driver(`src/bench_core/oversub.py`)把 replay kernel 跑过一组内存/CPU 超卖比:`running_concurrency`(N)固定(取自 base config),`total_count = k×N` 每个 trial 缩放。每个 trial 一次 `bench-core` 调用;driver 读每个 trial 的机器可读 `run_summary.json`,聚合 per-trial + per-ratio 退化曲线。
+
+**分层:kernel 出原始事实,driver 算 valid。** driver 不导入任何 kernel 数据路径内部(lifecycle / admission / stats / observability)——只用 CLI、YAML schema、`run_summary.json` schema 和共享的 `setup_logging` 助手。kernel 不知道自己是"扫描的第 k 个 ratio",它只输出发生了什么,由 driver 判定 trial 是否跑完。
+
+#### 调用
+
+```
+oversub-bench --sweep-config config/oversub/lifecycle-1to3.yaml
+oversub-bench --sweep-config config/oversub/lifecycle-1to3.yaml --ratios 4   # 覆盖单个旋钮
+oversub-bench --config config/common/replay.yaml --provider aenv --ratios 1,2,3   # 无 sweep-config
+```
+
+优先级:**CLI 旗标 > sweep-config > 内置默认**。`--sweep-config` 承载所有旋钮 + `base_config`;`--config` 仅在没有 sweep-config 设 `base_config` 时必填。完整旗标集见 `oversub-bench --help`(`--running-concurrency`、`--modes`、`--repeats`、`--test-duration`、`--failure-tolerance`、`--cooldown-sec`、`--cleanup-between-trials`、`--trial-timeout-sec`、`--output-root`、`--reuse`、`--stop-on-failure`、`--dry-run`、`--no-vm-monitor`、`--bench-core-bin`)。
+
+#### sweep-config 键
+
+`config/oversub/template.yaml` 是带注释的模板;`lifecycle-1to3.yaml` 是现成的 aenv lifecycle 1:1/1:2/1:3 扫描。复制其一再改。未知键**会被拒绝**(像 `repeat:` vs `repeats:` 这种笔误会直接报错)。
+
+| 键 | 默认 | 含义 |
+|-----|---------|---------|
+| `base_config` | —(必填) | base replay 压力 profile;每个 trial 深拷贝 |
+| `provider` | `aenv` | `{aenv, e2b, docker, fake}` |
+| `running_concurrency` | base `replay.running_concurrency` | N 个 running slot(跨 ratio 固定) |
+| `ratios` | `1,2,3` | k 值(list 或 `"1,2,3"`);`total_count = k×N` |
+| `modes` | `lifecycle,exec_only` | 要扫描的 replay mode(每个一条曲线) |
+| `repeats` | `1` | 每个 `(mode, ratio)` 的重复次数(取中位) |
+| `test_duration` | base `test.duration`(600) | 每个 trial 的硬上限(秒) |
+| `failure_tolerance` | `0.0` | trial 判 valid 时允许的最大 `failure_rate` |
+| `cooldown_sec` | `30` | trial 之间的沉淀时间 |
+| `cleanup_between_trials` | `on` | trial 前跑 `bench-core --cleanup` 拆除残留 |
+| `trial_timeout_sec` | `0` | 每个 trial 的外层墙钟;`0` = 关 |
+| `output_root` | `results/oversub/oversub-N{N}-{ts}/` | 扫描输出目录 |
+| `reuse` | `false` | 跳过已完成的 valid trial(重启安全) |
+| `stop_on_failure` | `false` | 遇首个 invalid trial 即停 |
+| `no_vm_monitor` | `false` | 透传 `--no-vm-monitor` 给 bench-core |
+| `bench_core_bin` | `[bench-core]` | kernel 子进程命令(测试指向 stub) |
+
+#### 每个 trial 的 config 覆盖
+
+driver 深拷贝 `base_config` 并只改写超卖字段;其余透传:
+
+| 字段 | 改成 | 原因 |
+|-------|--------|-----|
+| `sandbox.total_count` | `k×N` | 超卖目标 |
+| `replay.running_concurrency` | `N`(固定) | 基线 slot 数 |
+| `replay.mode` | 扫描的 mode | lifecycle / exec_only / trajectory |
+| `test.round_size` | `k×N` | 所有 k×N 沙箱一组并发——不设的话,k≥2 会静默地按 N 一组串行多组,破坏超卖动态 |
+| `test.duration` | `test_duration` | 时间上限 |
+| `report.output_dir` / `report.filename_prefix` | 每 trial 的目录/前缀 | 隔离各 trial 产物 |
+
+`test.round_count`(工作量旋钮:跑几遍整个 fleet)**透传**。trial 在两者先到时结束:`round_count` 轮 OR `test.duration` 秒(kernel 自带的先到为准语义)。`round_count: 1`(base 默认)= 有界单遍 trial;`0` = 持续到 duration 的窗口。
+
+#### `run_summary.json`(kernel → driver 契约)
+
+每个 trial 写 `{prefix}_run_summary.json`——kernel 与 driver 之间唯一的契约。只含原始事实(kernel 绝不为 driver 重算它需要的指标):
+
+| 字段 | 含义 |
+|-------|---------|
+| `schema_version` | `1` |
+| `replay_mode`、`provider` | 哪个 mode / 后端 |
+| `started_at`、`completed_at`(+ `_epoch`) | ISO 本地 + epoch 秒 |
+| `test_duration`、`wall_sec` | 配置上限 vs 实际墙钟 |
+| `total_count`、`running_concurrency`、`overcommit_ratio` | 该 trial 的 k×N / N / k |
+| `throughput` | `total, succeeded, failed, total_steps, steps_per_sec, tasks_per_sec`(`total` = 跑过的沙箱数;`succeeded` = 跑完全部 step 的轨迹数) |
+| `admission` | `maximum, peak_active, granted, avg_queue_wait_sec, control_qps, control_dispatched`——exec_only 为 `null`(无 admission 控制器) |
+| `lifecycle_overhead` | `pause_sec_sum, resume_sec_sum, pct_of_slice_total`——仅 lifecycle/trajectory |
+| `paths` | `report, obs_xlsx, lifecycle_series, trajectory_index, vm_monitor_dir` |
+| `error` | trial 出错时的错误串 |
+
+#### 有效性(`compute_valid`)
+
+一个 trial(跑一遍 k×N fleet,`round_count=1`)在"跑(接近)满 running fleet 且未过量准入"时判 **valid**:
+
+- `return_code == 0`(kernel 子进程成功);
+- `throughput.total >= 0.9 * N`(跑满了 N 个 running slot 的大多数——崩溃/早退在此失败;`test.duration` 上限会盖住一个卡住的 run,随后也在此失败)。mode 无关:lifecycle `total` ≈ k×N、exec_only `total` ≈ N,健康 run 都 ≥ 0.9×N;
+- `admission.peak_active <= N`(从不超过 N 并发——exec_only 跳过);
+- `failure_rate <= failure_tolerance`(可配置的包装噪声容忍)。
+
+`valid` 是"粗失败 / 过量准入"门槛,**不是**"每条轨迹都成功"——逐轨迹完成度在 `trajectory-detail.csv` 看(`trial-summary.csv` 里 `total` 对 `target_count`)。
+
+#### 输出
+
+每个 trial 后写入(这样被杀的 driver 也留下完整部分结果)到 `--output-root`(默认 `results/oversub/oversub-N{N}-{ts}/`):
+
+| 文件 | 粒度 | 关键列 |
+|------|-------------|-------------|
+| `trial-summary.csv` | 每个 `(mode, ratio, repeat)` trial 一行 | `total, succeeded, failed, failure_rate, peak_active, wall_sec, tasks_per_sec, steps_per_sec, lifecycle_overhead_pct, return_code, valid, target_count, test_duration` |
+| `ratio-summary.csv` | 每个 `(mode, ratio)` 一行(跨 repeat 取中位) | `attempted, successful, median_wall_sec, median_tasks_per_sec, time_degradation_vs_1_1_pct, throughput_gain_vs_1_1_pct` |
+| `trajectory-detail.csv` | 每 trial 每条轨迹一行(取自 `trajectories/index.json`) | `trajectory_id, sandbox_index, n_steps, n_failed, success_rate, elapsed_sec` + 18 个 `*_sec` 分解列(exec/resume/pause/requested_delay/create/kill/slice_total/interaction_total/slot_contention_wait/natural_delay/capacity_wait/rate_pacing_wait/inflight_wait/resume_rate_pacing_wait/pause_rate_pacing_wait/resume_inflight_wait/pause_inflight_wait/running_slot_held) |
+| `benchmark-report.json` | 完整机器可读报告 | `configuration, trials, ratio_summary, trajectory_details` |
+
+退化在**一个 mode 内**对该 mode 的 `k=1` 基线计算,所以 lifecycle 和 exec_only 各得一条曲线(内存 overcommit 开销 vs CPU 超卖退化)。某 mode 无 `k=1` trial 时,退化列默认 `0.0`。
+
+#### trial 顺序、reuse、cooldown
+
+- **顺序:** `for mode, for ratio, for repeat`——自然的退化曲线(k 在一个 mode 内递增)。
+- **`reuse`:** 跳过其既有 `run_summary.json` 已 valid 的 `(mode, ratio, repeat)`——Ctrl-C 后重启从上一个 good trial 继续。
+- **`cooldown_sec`:** trial 之间的沉淀时间(首个 trial 和 `--dry-run` 时跳过)。
+- **`cleanup_between_trials: on`:** 每 trial 前跑 `bench-core --cleanup`(拆除残留),免得上一 ratio 的幸存者污染下一个。
+- **`--dry-run`:** 打印每个 `trial.yaml` + bench-core 命令并写空输出——不跑子进程。
+
+#### 中断 vs 超时的 trial
+
+被 Ctrl-C / driver 发起的 SIGTERM 中途打断的 trial **不丢弃**——kernel 的 SIGTERM 协作 `finally` flush 出一份**部分** `run_summary.json` + `trajectories/index.json`(产物经 temp-file + `os.replace` 原子写,所以 flush 中途再来一次 SIGTERM,已写的文件仍完好),driver 把它捕获为一行,**`return_code == 130`** 且 `valid == False`。其 `total` / `wall_sec` 只反映打断前跑掉的部分——这本身就是退化信号(一个 ratio 在停滞窗口里卡在 200/1152 条轨迹,正是超卖崩溃点)。被打断的 trial **结束整个扫描**(driver 以 exit 130 停);而**超时**的 trial(非零 `return_code` ≠ 130)**不会**——扫描继续下一个 ratio,除非设了 `--stop-on-failure`。
+
+> `_interrupted` 是内部行哨兵(非 CSV 列——`DictWriter` 丢弃它),`main()` 读它来区分"停扫描"(用户中断)还是"继续"(trial 超时)。下游分析脚本应按落盘的 `return_code == 130` 列判断,而非内存哨兵。

@@ -512,32 +512,111 @@ sums but count as attempts, so `avg_slice` reflects per-attempt cost).
 > vm_monitor `resource_report.xlsx` (`monitor.merge_report: false`) or merged into this
 > workbook's `VM_Stats` / `NUMA_Overview` / `DevKit_TopDown` sheets (`merge_report: true`).
 
-### 8.5 Oversubscription sweep outputs (`oversub-bench`)
+### 8.5 Oversubscription sweep (`oversub-bench`)
 
-The `oversub-bench` driver (`src/bench_core/oversub.py`) sweeps the replay kernel across
-oversubscription ratios (N slots fixed, `total_count = k×N` scaled per trial) and writes,
-after every trial (so a killed driver leaves a complete partial set), four files in
-`--output-root` (default `results/oversub/oversub-N{N}-{ts}/`):
+The `oversub-bench` driver (`src/bench_core/oversub.py`) sweeps the replay kernel across memory/CPU oversubscription ratios: `running_concurrency` (N) stays fixed (from the base config), `total_count = k×N` scales per trial. One `bench-core` invocation per trial; the driver reads each trial's machine-readable `run_summary.json` and aggregates per-trial + per-ratio degradation curves.
+
+**Layering: kernel emits raw facts, driver computes valid.** The driver imports no kernel data-path internals — only the CLI, the YAML schema, the `run_summary.json` schema, and the shared `setup_logging` helper. The kernel does not know it is "ratio k of a sweep"; it emits what happened, the driver decides whether a trial ran to completion.
+
+#### Invocation
+
+```
+oversub-bench --sweep-config config/oversub/lifecycle-1to3.yaml
+oversub-bench --sweep-config config/oversub/lifecycle-1to3.yaml --ratios 4   # override one knob
+oversub-bench --config config/common/replay.yaml --provider aenv --ratios 1,2,3   # no sweep-config
+```
+
+Precedence: **CLI flag > sweep-config > built-in default**. `--sweep-config` carries every knob plus `base_config`; `--config` is required only when no sweep-config sets `base_config`. Run `oversub-bench --help` for the full flag set (`--running-concurrency`, `--modes`, `--repeats`, `--test-duration`, `--failure-tolerance`, `--cooldown-sec`, `--cleanup-between-trials`, `--trial-timeout-sec`, `--output-root`, `--reuse`, `--stop-on-failure`, `--dry-run`, `--no-vm-monitor`, `--bench-core-bin`).
+
+#### sweep-config keys
+
+`config/oversub/template.yaml` is the annotated template; `lifecycle-1to3.yaml` is a ready aenv lifecycle 1:1/1:2/1:3 sweep. Copy either and edit. Unknown keys are **rejected** (a typo like `repeat:` vs `repeats:` fails loudly).
+
+| key | default | meaning |
+|-----|---------|---------|
+| `base_config` | — (required) | base replay stress profile; deep-copied per trial |
+| `provider` | `aenv` | `{aenv, e2b, docker, fake}` |
+| `running_concurrency` | base `replay.running_concurrency` | N running slots (fixed across ratios) |
+| `ratios` | `1,2,3` | k values (list or `"1,2,3"`); `total_count = k×N` |
+| `modes` | `lifecycle,exec_only` | replay modes to sweep (one curve each) |
+| `repeats` | `1` | repeats per `(mode, ratio)` for medians |
+| `test_duration` | base `test.duration` (600) | hard ceiling per trial (sec) |
+| `failure_tolerance` | `0.0` | max `failure_rate` for a trial to count valid |
+| `cooldown_sec` | `30` | settle time between trials |
+| `cleanup_between_trials` | `on` | pre-trial `bench-core --cleanup` teardown of leftovers |
+| `trial_timeout_sec` | `0` | outer wall-clock per trial; `0` = off |
+| `output_root` | `results/oversub/oversub-N{N}-{ts}/` | sweep output dir |
+| `reuse` | `false` | skip completed-valid trials (restart safety) |
+| `stop_on_failure` | `false` | halt on first invalid trial |
+| `no_vm_monitor` | `false` | pass `--no-vm-monitor` through to bench-core |
+| `bench_core_bin` | `[bench-core]` | kernel subprocess command (tests point at a stub) |
+
+#### Per-trial config overrides
+
+The driver deep-copies `base_config` and rewrites only the oversub fields; everything else passes through:
+
+| field | set to | why |
+|-------|--------|-----|
+| `sandbox.total_count` | `k×N` | the oversubscription target |
+| `replay.running_concurrency` | `N` (fixed) | the baseline slot count |
+| `replay.mode` | the sweep mode | lifecycle / exec_only / trajectory |
+| `test.round_size` | `k×N` | all k×N sandboxes run in one group — without this, k≥2 silently runs sequential groups of N, corrupting the oversubscription dynamics |
+| `test.duration` | `test_duration` | the time ceiling |
+| `report.output_dir` / `report.filename_prefix` | per-trial dir/prefix | isolate each trial's artifacts |
+
+`test.round_count` (the work-amount knob: how many passes of the fleet) **passes through**. A trial ends at whichever comes first: `round_count` rounds OR `test.duration` seconds (the kernel's own whichever-first semantics). Set `round_count: 1` (base default) for a bounded one-pass trial, `0` for a sustained-until-duration window.
+
+#### `run_summary.json` (kernel → driver contract)
+
+Each trial writes `{prefix}_run_summary.json` — the only contract between kernel and driver. RAW FACTS ONLY (the kernel never recomputes a metric the driver needs):
+
+| field | meaning |
+|-------|---------|
+| `schema_version` | `1` |
+| `replay_mode`, `provider` | which mode / backend |
+| `started_at`, `completed_at` (+ `_epoch`) | ISO local + epoch seconds |
+| `test_duration`, `wall_sec` | configured ceiling vs actual wall |
+| `total_count`, `running_concurrency`, `overcommit_ratio` | the trial's k×N / N / k |
+| `throughput` | `total, succeeded, failed, total_steps, steps_per_sec, tasks_per_sec` (`total` = sandboxes that ran; `succeeded` = trajectories that ran all steps) |
+| `admission` | `maximum, peak_active, granted, avg_queue_wait_sec, control_qps, control_dispatched` — `null` for exec_only (no admission controller) |
+| `lifecycle_overhead` | `pause_sec_sum, resume_sec_sum, pct_of_slice_total` — lifecycle/trajectory only |
+| `paths` | `report, obs_xlsx, lifecycle_series, trajectory_index, vm_monitor_dir` |
+| `error` | error string if the trial errored |
+
+#### Validity (`compute_valid`)
+
+A trial (one pass of the k×N fleet, `round_count=1`) is **valid** when it ran (close to) the full running fleet without over-admitting:
+
+- `return_code == 0` (the kernel subprocess succeeded);
+- `throughput.total >= 0.9 * N` (it ran most of the N running slots — a crash/early-exit fails here; the `test.duration` ceiling caps a stalled run, which then also fails this gate). Mode-agnostic: lifecycle `total` ≈ k×N and exec_only `total` ≈ N, both ≥ 0.9×N on a healthy run;
+- `admission.peak_active <= N` (never ran more than N concurrent — dropped for exec_only);
+- `failure_rate <= failure_tolerance` (configurable wrap-noise allowance).
+
+`valid` is the gross-failure / over-admission gate, **not** a "every trajectory succeeded" bar — per-trajectory completion is inspectable in `trajectory-detail.csv` (`total` vs `target_count` in `trial-summary.csv`).
+
+#### Outputs
+
+Written after every trial (so a killed driver leaves a complete partial set) into `--output-root` (default `results/oversub/oversub-N{N}-{ts}/`):
 
 | file | granularity | key columns |
 |------|-------------|-------------|
 | `trial-summary.csv` | one row per `(mode, ratio, repeat)` trial | `total, succeeded, failed, failure_rate, peak_active, wall_sec, tasks_per_sec, steps_per_sec, lifecycle_overhead_pct, return_code, valid, target_count, test_duration` |
 | `ratio-summary.csv` | one row per `(mode, ratio)` (medians across repeats) | `attempted, successful, median_wall_sec, median_tasks_per_sec, time_degradation_vs_1_1_pct, throughput_gain_vs_1_1_pct` |
-| `trajectory-detail.csv` | one row per trajectory per trial (from `trajectories/index.json`) | `trajectory_id, sandbox_index, n_steps, n_failed, success_rate, elapsed_sec` + the 12 `*_sec` breakdown columns (exec/resume/pause/requested_delay/create/kill/slice_total/interaction_total/slot_contention_wait/resume_rate_pacing_wait/pause_rate_pacing_wait/running_slot_held) |
+| `trajectory-detail.csv` | one row per trajectory per trial (from `trajectories/index.json`) | `trajectory_id, sandbox_index, n_steps, n_failed, success_rate, elapsed_sec` + the 18 `*_sec` breakdown columns (exec/resume/pause/requested_delay/create/kill/slice_total/interaction_total/slot_contention_wait/natural_delay/capacity_wait/rate_pacing_wait/inflight_wait/resume_rate_pacing_wait/pause_rate_pacing_wait/resume_inflight_wait/pause_inflight_wait/running_slot_held) |
 | `benchmark-report.json` | full machine-readable report | `configuration, trials, ratio_summary, trajectory_details` |
 
-**Interrupted trials.** A trial halted mid-run by Ctrl-C / a driver-initiated SIGTERM is
-*not* dropped — the kernel's SIGTERM-cooperative `finally` flushes a **partial**
-`run_summary.json` + `trajectories/index.json` (artifacts are written atomically via
-temp-file + `os.replace`, so a second SIGTERM mid-flush leaves already-written files
-intact), and the driver captures it as a row with **`return_code == 130`** and
-`valid == False`. Its `total` / `wall_sec` reflect only what ran before the interrupt —
-which is itself the degradation signal (a ratio that stalls at 200/1152 trajectories in
-the stall window is the oversub breakdown point). An interrupted trial **ends the sweep**
-(the driver halts with exit 130); a *timed-out* trial (non-zero `return_code` ≠ 130) does
-**not** — the sweep continues to the next ratio unless `--stop-on-failure` is set.
+Degradation is computed **within a mode** vs that mode's `k=1` baseline, so lifecycle and exec_only each get their own curve (memory-overcommit overhead vs CPU-oversubscription degradation). When a mode has no `k=1` trial, the degradation columns default to `0.0`.
 
-> `_interrupted` is an internal row sentinel (not a CSV column — `DictWriter` drops it)
-> that `main()` reads to distinguish "halt the sweep" (user interrupt) from "continue"
-> (trial timeout). Downstream analysis scripts should key off the committed
-> `return_code == 130` column, not the in-memory sentinel.
+#### Trial order, reuse, cooldown
+
+- **Order:** `for mode, for ratio, for repeat` — the natural degradation curve (k ascends within a mode).
+- **`reuse`:** skip a `(mode, ratio, repeat)` whose prior `run_summary.json` is already valid — restart after a Ctrl-C resumes from the last good trial.
+- **`cooldown_sec`:** settle time between trials (skipped for the first trial and in `--dry-run`).
+- **`cleanup_between_trials: on`:** runs `bench-core --cleanup` (teardown of leftovers) before each trial so survivors from a prior ratio don't corrupt the next.
+- **`--dry-run`:** prints each `trial.yaml` + the bench-core command and writes empty outputs — no subprocess runs.
+
+#### Interrupted vs timed-out trials
+
+A trial halted mid-run by Ctrl-C / a driver-initiated SIGTERM is *not* dropped — the kernel's SIGTERM-cooperative `finally` flushes a **partial** `run_summary.json` + `trajectories/index.json` (artifacts are written atomically via temp-file + `os.replace`, so a second SIGTERM mid-flush leaves already-written files intact), and the driver captures it as a row with **`return_code == 130`** and `valid == False`. Its `total` / `wall_sec` reflect only what ran before the interrupt — which is itself the degradation signal (a ratio that stalls at 200/1152 trajectories in the stall window is the oversub breakdown point). An interrupted trial **ends the sweep** (the driver halts with exit 130); a *timed-out* trial (non-zero `return_code` ≠ 130) does **not** — the sweep continues to the next ratio unless `--stop-on-failure` is set.
+
+> `_interrupted` is an internal row sentinel (not a CSV column — `DictWriter` drops it) that `main()` reads to distinguish "halt the sweep" (user interrupt) from "continue" (trial timeout). Downstream analysis scripts should key off the committed `return_code == 130` column, not the in-memory sentinel.
