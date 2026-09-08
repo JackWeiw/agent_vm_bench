@@ -39,10 +39,11 @@ except ImportError:  # pragma: no cover
     OPENPYXL_AVAILABLE = False
 
 # Excel hard limits (openpyxl refuses sheets beyond these dimensions).
-# Used to guard the per-VM-per-sample Raw_VM_Data sheet, which is the only
-# sheet that can realistically exceed the row cap (n_vms * n_samples rows;
-# e.g. 384 VMs * 14k samples ~= 5.4M rows). All other sheets are per-VM
-# (<= n_vms rows) or per-timestamp (~ n_samples rows), so they never overflow.
+# Guards every per-sample timeline sheet (memory/disk/pressure/swap/NUMA +
+# parsed-log TopDown/Memory/Getfre timelines): each carries one row per sample,
+# so a very long collection (e.g. days at a 1-2s interval) can exceed the row
+# cap. Per-VM aggregated sheets (Summary/VM_Stats/DevKit_*/KSys/...) stay small
+# (<= n_vms or <= a few dozen rows) and are never guarded.
 _EXCEL_MAX_ROWS = 1_048_576
 
 # Internal dependency
@@ -51,6 +52,36 @@ from .parsers import parse_all_logs
 # Type checking import (avoid circular dependency)
 if TYPE_CHECKING:
     from .base import VMMonitorBase
+
+
+def _safe_write_sheet(writer, df, sheet_name, *, log_dir=None):
+    """Write ``df`` to an xlsx sheet, guarding Excel's row limit.
+
+    A per-sample timeline sheet (swap/memory/disk/pressure/...) can exceed
+    Excel's 1,048,576-row cap on a very long collection. Without a guard, the
+    ``to_excel`` raises inside the shared ``ExcelWriter`` block and aborts the
+    ENTIRE workbook (every other sheet + charts lost because ONE sheet was too
+    big). When the DataFrame exceeds the cap, this skips the sheet (so the
+    workbook survives) and, when ``log_dir`` is given, writes the full data to
+    ``<log_dir>/<sheet_name>.csv`` instead -- CSV has no row limit, so no data
+    is lost. At or below the cap it is a plain ``to_excel``.
+    """
+    if len(df) > _EXCEL_MAX_ROWS:
+        if log_dir:
+            csv_path = os.path.join(log_dir, f"{sheet_name}.csv")
+            df.to_csv(csv_path, index=False)
+            print(
+                f"[WARN] Skipping '{sheet_name}' sheet: {len(df):,} rows exceed "
+                f"Excel's {_EXCEL_MAX_ROWS:,}-row limit. Full data written to "
+                f"CSV: {csv_path}"
+            )
+        else:
+            print(
+                f"[WARN] Skipping '{sheet_name}' sheet: {len(df):,} rows exceed "
+                f"Excel's {_EXCEL_MAX_ROWS:,}-row limit."
+            )
+        return
+    df.to_excel(writer, sheet_name=sheet_name, index=False)
 
 
 def _build_summary_sheet(writer, monitor, numa_nodes, overall_stats):
@@ -316,23 +347,25 @@ def _build_vm_stats_sheet(writer, vm_stats):
     pd.DataFrame(vm_data).to_excel(writer, sheet_name="VM_Stats", index=False)
 
 
-def _write_timeline_sheet(writer, timeline_data, sheet_name):
+def _write_timeline_sheet(writer, timeline_data, sheet_name, *, log_dir=None):
     """Truncate all arrays in a timeline dict to a common length, then write.
 
     Some parsed timelines carry arrays of unequal length; DataFrame would
-    otherwise raise or pad inconsistently. We truncate to the shortest.
+    otherwise raise or pad inconsistently. We truncate to the shortest, then
+    hand off to ``_safe_write_sheet`` so a very long collection (n_samples
+    rows) degrades to a CSV fallback instead of aborting the workbook.
     """
     try:
         min_len = min(len(timeline_data.get(k, [])) for k in timeline_data.keys())
         for k in timeline_data:
             if isinstance(timeline_data[k], list):
                 timeline_data[k] = timeline_data[k][:min_len]
-        pd.DataFrame(timeline_data).to_excel(writer, sheet_name=sheet_name, index=False)
+        _safe_write_sheet(writer, pd.DataFrame(timeline_data), sheet_name, log_dir=log_dir)
     except Exception as e:
         print(f"  Warning: {sheet_name} creation failed: {e}")
 
 
-def _build_devkit_topdown_sheets(writer, parsed_logs):
+def _build_devkit_topdown_sheets(writer, parsed_logs, *, log_dir=None):
     """Sheets 4-5: DevKit Top-Down summary + TopDown timeline.
 
     The summary sheet carries the _avg stats (rows 1-13, which the
@@ -394,10 +427,10 @@ def _build_devkit_topdown_sheets(writer, parsed_logs):
     pd.DataFrame(td_data).to_excel(writer, sheet_name="DevKit_TopDown", index=False)
 
     if td.get("timeline") and td["timeline"].get("timestamp"):
-        _write_timeline_sheet(writer, td["timeline"], "TopDown_Timeline")
+        _write_timeline_sheet(writer, td["timeline"], "TopDown_Timeline", log_dir=log_dir)
 
 
-def _build_devkit_memory_sheets(writer, parsed_logs):
+def _build_devkit_memory_sheets(writer, parsed_logs, *, log_dir=None):
     """Sheets 6-8: DevKit Memory summary + NUMA Bandwidth + Memory timeline."""
     if "devkit_mem" not in parsed_logs or "error" in parsed_logs["devkit_mem"]:
         return
@@ -437,7 +470,7 @@ def _build_devkit_memory_sheets(writer, parsed_logs):
 
     # Memory Timeline sheet (with safety check)
     if mem.get("timeline") and mem["timeline"].get("timestamp"):
-        _write_timeline_sheet(writer, mem["timeline"], "Memory_Timeline")
+        _write_timeline_sheet(writer, mem["timeline"], "Memory_Timeline", log_dir=log_dir)
 
 
 def _build_ksys_sheet(writer, parsed_logs):
@@ -582,7 +615,7 @@ def _build_smapbw_sheets(writer, parsed_logs):
         pd.DataFrame(cycle_data).to_excel(writer, sheet_name="SMAPBW_Cycles", index=False)
 
 
-def _build_getfre_sheets(writer, parsed_logs):
+def _build_getfre_sheets(writer, parsed_logs, *, log_dir=None):
     """Sheets 14+: getfre core frequency summary + one per-NUMA per-core sheet."""
     if "getfre" not in parsed_logs:
         return
@@ -635,7 +668,7 @@ def _build_getfre_sheets(writer, parsed_logs):
                 tl_data = {"Timestamp": ts_order}
                 for cid in core_ids:
                     tl_data[f"Core {cid} (MHz)"] = [timeline[ts].get(cid, 0) for ts in ts_order]
-                pd.DataFrame(tl_data).to_excel(writer, sheet_name=f"Getfre_Timeline_NUMA{numa_id}", index=False)
+                _safe_write_sheet(writer, pd.DataFrame(tl_data), f"Getfre_Timeline_NUMA{numa_id}", log_dir=log_dir)
 
 
 def _build_raw_vm_sheet(writer, monitor, log_dir=None):
@@ -700,7 +733,7 @@ def _build_raw_vm_sheet(writer, monitor, log_dir=None):
     pd.DataFrame(raw_data).to_excel(writer, sheet_name="Raw_VM_Data", index=False)
 
 
-def _build_swap_timeline_sheet(writer, monitor):
+def _build_swap_timeline_sheet(writer, monitor, *, log_dir=None):
     """Sheet: Swap_Timeline (swap partition + per-NUMA SwapCache, unified).
 
     Both swap_history and numa_memory_history are collected in the same
@@ -748,10 +781,10 @@ def _build_swap_timeline_sheet(writer, monitor):
             for nid in all_numa_ids:
                 swap_timeline_data[f"NUMA{nid} SwapCache (MB)"].append(0)
 
-    pd.DataFrame(swap_timeline_data).to_excel(writer, sheet_name="Swap_Timeline", index=False)
+    _safe_write_sheet(writer, pd.DataFrame(swap_timeline_data), "Swap_Timeline", log_dir=log_dir)
 
 
-def _build_numa_memory_timeline_sheet(writer, monitor, numa_nodes):
+def _build_numa_memory_timeline_sheet(writer, monitor, numa_nodes, *, log_dir=None):
     """Sheet: NUMA_Memory_Timeline (focus NUMA nodes: CLI-specified + remote).
 
     The remote borrowing node (NUMA5 by default -- the platform's designated
@@ -800,10 +833,10 @@ def _build_numa_memory_timeline_sheet(writer, monitor, numa_nodes):
                 mem_timeline_data[label].append(node_data.get(field, 0))
 
     if mem_timeline_data["Timestamp"]:
-        pd.DataFrame(mem_timeline_data).to_excel(writer, sheet_name="NUMA_Memory_Timeline", index=False)
+        _safe_write_sheet(writer, pd.DataFrame(mem_timeline_data), "NUMA_Memory_Timeline", log_dir=log_dir)
 
 
-def _build_vm_total_memory_timeline_sheet(writer, monitor):
+def _build_vm_total_memory_timeline_sheet(writer, monitor, *, log_dir=None):
     """Sheet: VM_Total_Memory_Timeline (aggregate VM memory + per-NUMA).
 
     Carries the swapcache_mb total + per-NUMA swapcache aggregates that
@@ -838,10 +871,10 @@ def _build_vm_total_memory_timeline_sheet(writer, monitor):
             vm_mem_data[f"NUMA{nid} SwapCache (MB)"].append(h.get("swapcache_per_numa", {}).get(nid, 0))
 
     if vm_mem_data["Timestamp"]:
-        pd.DataFrame(vm_mem_data).to_excel(writer, sheet_name="VM_Total_Memory_Timeline", index=False)
+        _safe_write_sheet(writer, pd.DataFrame(vm_mem_data), "VM_Total_Memory_Timeline", log_dir=log_dir)
 
 
-def _build_disk_io_sheet(writer, monitor):
+def _build_disk_io_sheet(writer, monitor, *, log_dir=None):
     """Sheet: Disk_IO_Timeline (per-device read/write MB/s, util%, inflight + ublk count).
 
     One row per disk sub-sample. Disk columns are spread per device in monitor.target_disks
@@ -879,10 +912,10 @@ def _build_disk_io_sheet(writer, monitor):
         ublk = monitor.ublk_history[i]["ublk_devices"] if i < len(monitor.ublk_history) else 0
         disk_data["ublk Devices"].append(ublk)
 
-    pd.DataFrame(disk_data).to_excel(writer, sheet_name="Disk_IO_Timeline", index=False)
+    _safe_write_sheet(writer, pd.DataFrame(disk_data), "Disk_IO_Timeline", log_dir=log_dir)
 
 
-def _build_host_mem_timeline_sheet(writer, monitor):
+def _build_host_mem_timeline_sheet(writer, monitor, *, log_dir=None):
     """Sheet: Host_Mem_Timeline (cached / buffers / dirty / writeback MB per sample)."""
     if not monitor.host_mem_detail_history:
         return
@@ -893,10 +926,10 @@ def _build_host_mem_timeline_sheet(writer, monitor):
         "Dirty (MB)": [h["dirty_mb"] for h in monitor.host_mem_detail_history],
         "Writeback (MB)": [h["writeback_mb"] for h in monitor.host_mem_detail_history],
     }
-    pd.DataFrame(mem_data).to_excel(writer, sheet_name="Host_Mem_Timeline", index=False)
+    _safe_write_sheet(writer, pd.DataFrame(mem_data), "Host_Mem_Timeline", log_dir=log_dir)
 
 
-def _build_host_pressure_sheet(writer, monitor):
+def _build_host_pressure_sheet(writer, monitor, *, log_dir=None):
     """Sheet: Host_Pressure_Timeline (page-cache pressure + anon/file cache + iowait/procs).
 
     One row per sample from monitor.host_pressure_history. Covers the generic
@@ -918,7 +951,7 @@ def _build_host_pressure_sheet(writer, monitor):
         "Procs Running": [h["procs_running"] for h in monitor.host_pressure_history],
         "Procs Blocked": [h["procs_blocked"] for h in monitor.host_pressure_history],
     }
-    pd.DataFrame(pressure_data).to_excel(writer, sheet_name="Host_Pressure_Timeline", index=False)
+    _safe_write_sheet(writer, pd.DataFrame(pressure_data), "Host_Pressure_Timeline", log_dir=log_dir)
 
 
 def _add_charts(build_file):
@@ -1510,19 +1543,19 @@ def export_to_excel(
             _build_summary_sheet(writer, monitor, numa_nodes, overall_stats)
             _build_numa_overview_sheet(writer, monitor)
             _build_vm_stats_sheet(writer, vm_stats)
-            _build_devkit_topdown_sheets(writer, parsed_logs)
-            _build_devkit_memory_sheets(writer, parsed_logs)
+            _build_devkit_topdown_sheets(writer, parsed_logs, log_dir=log_dir)
+            _build_devkit_memory_sheets(writer, parsed_logs, log_dir=log_dir)
             _build_ksys_sheet(writer, parsed_logs)
             _build_ubwatch_sheets(writer, parsed_logs)
             _build_smapbw_sheets(writer, parsed_logs)
-            _build_getfre_sheets(writer, parsed_logs)
+            _build_getfre_sheets(writer, parsed_logs, log_dir=log_dir)
             _build_raw_vm_sheet(writer, monitor, log_dir)
-            _build_swap_timeline_sheet(writer, monitor)
-            _build_numa_memory_timeline_sheet(writer, monitor, numa_nodes)
-            _build_vm_total_memory_timeline_sheet(writer, monitor)
-            _build_disk_io_sheet(writer, monitor)
-            _build_host_mem_timeline_sheet(writer, monitor)
-            _build_host_pressure_sheet(writer, monitor)
+            _build_swap_timeline_sheet(writer, monitor, log_dir=log_dir)
+            _build_numa_memory_timeline_sheet(writer, monitor, numa_nodes, log_dir=log_dir)
+            _build_vm_total_memory_timeline_sheet(writer, monitor, log_dir=log_dir)
+            _build_disk_io_sheet(writer, monitor, log_dir=log_dir)
+            _build_host_mem_timeline_sheet(writer, monitor, log_dir=log_dir)
+            _build_host_pressure_sheet(writer, monitor, log_dir=log_dir)
     except ImportError:
         print("[WARN] openpyxl not available, skipping Excel export")
         print("  Install with: pip install openpyxl")
