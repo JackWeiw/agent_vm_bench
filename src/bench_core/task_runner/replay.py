@@ -85,16 +85,33 @@ class StepResult:
     resume_sec: float
     pause_sec: float
     requested_delay_sec: float
-    # P2.6 segment decomposition (sum to resume_sec / pause_sec respectively)
+    # P2.6 segment decomposition. The wait-decoupling change splits the QPS
+    # limiter's contribution into rate pacing (``*_queue_wait_sec`` -- the 1/qps
+    # time-wait; a RATE control) and the inflight fuse (``*_inflight_wait_sec``;
+    # a CONCURRENCY control), and exposes the slot-scheduler's two components
+    # (natural_delay / capacity_wait) separately. ``slot_contention_wait_sec``
+    # stays as the composite (natural_delay + capacity_wait) for downstream
+    # parse-compat. Invariants (post-decoupling):
+    #   resume_sec = resume_inflight_wait + resume_api + resume_ready_wait
+    #     (resume rate-pacing is PRE-lease, NOT in resume_sec)
+    #   pause_sec = pause_rate_pacing_wait + pause_inflight_wait + pause_api
+    #     (pause rate-pacing is IN-lease)
+    #   running_slot_held = resume_sec + exec + pause_sec
+    #     (excludes resume rate-pacing -- the decoupling)
     resume_api_sec: float = 0.0
     resume_ready_wait_sec: float = 0.0
     slot_contention_wait_sec: float = 0.0
-    resume_queue_wait_sec: float = 0.0
-    pause_queue_wait_sec: float = 0.0
+    resume_rate_pacing_wait_sec: float = 0.0
+    pause_rate_pacing_wait_sec: float = 0.0
     pause_api_sec: float = 0.0
     # L7 decomposition (Phase 1): slot hold + full interaction budget.
     running_slot_held_sec: float = 0.0
     interaction_total_sec: float = 0.0
+    # Wait-decoupling split: the four independent components.
+    natural_delay_sec: float = 0.0
+    capacity_wait_sec: float = 0.0
+    resume_inflight_wait_sec: float = 0.0
+    pause_inflight_wait_sec: float = 0.0
 
 
 class ReplayBaseRunner(threading.Thread):
@@ -134,31 +151,64 @@ class ReplayBaseRunner(threading.Thread):
 
     # --- the slice (the spine P2 plugs into) ---
     def _run_slice(self, step: ReplayStep, *, trajectory_id: str = "", lease_already_held: bool = False) -> StepResult:
-        """One resume -> execute -> pause cycle.
+        """One resume -> execute -> pause cycle (wait-decoupled order).
 
-        P2.6: slot.acquire -> resume(QPS) -> ready_probe -> exec -> pause(QPS) ->
-        slot.release. Six segment durations (slot_contention / resume_queue /
-        resume_api / resume_ready_wait / pause_queue / pause_api) written to the
-        series + fed into ReplayMetrics. resume_sec/pause_sec totals preserved
-        (sum of their segments). Lease release in finally so mid-slice exceptions
-        don't leak the running slot.
+        Order (the running lease brackets only the memory-held window; resume
+        rate pacing is PRE-lease so it cannot inflate ``running_slot_held``)::
+
+            [resume rate-pacing] -> slots.acquire(natural_delay + capacity_wait,
+            grant) -> [resume inflight + resume API] -> [ready] -> [exec] ->
+            [pause rate-pacing + inflight + API] -> slots.release
+
+        Lifecycle strategy (asymmetric, by resource state):
+
+        * **resume rate-pacing is PRE-lease**: the sandbox is still PAUSED (no
+          memory demand, no lease needed), so pacing here cannot inflate the
+          running-slot hold. Under oversub the dispatch slot is consumed before
+          the FIFO grants, so resumes may bunch after a FIFO release --
+          acceptable because under oversub the slot capacity (not uniform
+          spacing) is the bottleneck, and at the default (qps off) this is moot.
+        * **pause rate-pacing is IN-lease**: the sandbox is RUNNING and holds
+          memory until pause CONFIRMS, so the lease must stay held through the
+          pause call (releasing first would let an oversub peer resume into
+          un-freed memory).
+
+        Four independent wait components are persisted: ``natural_delay``
+        (think-time), ``capacity_wait`` (FIFO token contention),
+        ``rate_pacing_wait`` (QPS 1/qps shaping), ``inflight_wait`` (fuse
+        semaphore block). ``slot_contention_wait_sec`` stays as the composite
+        (natural_delay + capacity_wait) for downstream parse-compat. Lease
+        release in finally so mid-slice exceptions don't leak the running slot.
         """
-        # Acquire running slot (if admission configured AND no trajectory-level
-        # lease already held). In trajectory mode _run_trajectory acquires the
-        # lease once for the whole trajectory and passes lease_already_held=True
-        # so _run_slice does NOT double-acquire.
         lease = None
-        slot_contention_wait_sec = 0.0
         natural_delay_sec = 0.0
         capacity_wait_sec = 0.0
         slot_acquired_at = 0.0
+        resume_rate_pacing_wait_sec = 0.0
+
+        # PRE-LEASE resume rate-pacing (sandbox paused; no lease/memory demand).
+        # Done before slots.acquire so it does NOT inflate running_slot_held.
+        # In trajectory mode (lease_already_held) there is no per-step acquire,
+        # but the pacing still applies to the resume API; per-step
+        # running_slot_held is 0 there (overlaid at trajectory level), so the
+        # attribution concern is lifecycle-only.
+        if (
+            self.admission is not None
+            and self.admission.qps is not None
+            and self.config.replay_mode in ("lifecycle", "trajectory")
+        ):
+            resume_rate_pacing_wait_sec = self.admission.qps.time_wait("resume")
+
+        # Acquire per-step running slot (non-trajectory; trajectory holds a
+        # trajectory-level lease). natural_delay (think-time) + capacity_wait
+        # (FIFO) are surfaced separately from the composite.
         if self.admission is not None and not lease_already_held:
             ready_at = self._compute_ready_at(step)
             lease = self.admission.slots.acquire(f"sbx{self.state.index}_step{step.index}", ready_at=ready_at)
             natural_delay_sec = lease.natural_delay_sec
             capacity_wait_sec = lease.queue_wait_sec
-            slot_contention_wait_sec = natural_delay_sec + capacity_wait_sec
             slot_acquired_at = lease.acquired_at
+        slot_contention_wait_sec = natural_delay_sec + capacity_wait_sec
 
         if lease is not None:
             self._series_write(
@@ -177,13 +227,13 @@ class ReplayBaseRunner(threading.Thread):
         retry_count_before = self.state.replay_metrics.retry_queued_count
 
         try:
-            # Resume phase (QPS-gated inside _resume with G3 retry). P1-9 un-folds
-            # the queue wait from the API duration: _lifecycle_call_with_retry
-            # returns (queue_wait, api) so resume_queue_wait_sec carries the real
-            # QPS time-wait and resume_api_sec the pure call. The sum invariant
-            # (resume_sec = queue + api + ready_wait) holds exactly.
+            # Resume phase. Rate pacing was done PRE-lease above
+            # (resume_rate_pacing_wait_sec); _resume passes rate_wait=False so
+            # only the inflight fuse is re-acquired per retry attempt (a
+            # transient retry never re-pays the 1/qps delay). The returned
+            # first element is always 0 here (pre-lease caller owns it).
             resume_start_ts = time.time()
-            resume_queue_wait_sec, resume_api_sec = self._resume()
+            _, resume_inflight_wait_sec, resume_api_sec = self._resume()
 
             # Ready probe (post-resume, not QPS-gated; config-gated + lifecycle/trajectory)
             resume_ready_wait_sec = 0.0
@@ -193,8 +243,9 @@ class ReplayBaseRunner(threading.Thread):
             ):
                 resume_ready_wait_sec = self._probe_ready()
 
-            # resume_sec = sum of segments (exact, no double-counting)
-            resume_sec = resume_queue_wait_sec + resume_api_sec + resume_ready_wait_sec
+            # resume_sec = inflight + api + ready_wait (rate pacing is
+            # pre-lease, NOT in resume_sec -- the decoupling).
+            resume_sec = resume_inflight_wait_sec + resume_api_sec + resume_ready_wait_sec
             resume_end_ts = time.time()
 
             # Exec phase
@@ -205,17 +256,19 @@ class ReplayBaseRunner(threading.Thread):
             exec_end_ts = time.time()
             exec_elapsed = exec_end - exec_start
 
-            # Pause phase (QPS-gated inside _pause with G3 retry). P1-9 un-folds
-            # the queue wait from the API duration, mirroring resume.
+            # Pause phase. Rate pacing is IN-lease (sandbox running, memory held
+            # until pause confirms), so _pause passes rate_wait=True. Returns
+            # (rate_pacing, inflight, api).
             pause_start_ts = time.time()
-            pause_queue_wait_sec, pause_api_sec = self._pause()
-
-            # pause_sec = sum of segments (exact, no double-counting)
-            pause_sec = pause_queue_wait_sec + pause_api_sec
+            pause_rate_pacing_wait_sec, pause_inflight_wait_sec, pause_api_sec = self._pause()
+            pause_sec = pause_rate_pacing_wait_sec + pause_inflight_wait_sec + pause_api_sec
             pause_end_ts = time.time()
 
             # P-snap: collect overlaybd snapshot sizes when the provider can.
             self._emit_snapshot_size()
+
+            rate_pacing_wait_sec = resume_rate_pacing_wait_sec + pause_rate_pacing_wait_sec
+            inflight_wait_sec = resume_inflight_wait_sec + pause_inflight_wait_sec
 
             sr = StepResult(
                 step_index=step.index,
@@ -229,18 +282,25 @@ class ReplayBaseRunner(threading.Thread):
                 resume_api_sec=resume_api_sec,
                 resume_ready_wait_sec=resume_ready_wait_sec,
                 slot_contention_wait_sec=slot_contention_wait_sec,
-                resume_queue_wait_sec=resume_queue_wait_sec,
-                pause_queue_wait_sec=pause_queue_wait_sec,
+                # Per-phase rate-pacing (kept under the legacy "queue" names for
+                # downstream parse-compat): resume = pre-lease, pause = in-lease.
+                resume_rate_pacing_wait_sec=resume_rate_pacing_wait_sec,
+                pause_rate_pacing_wait_sec=pause_rate_pacing_wait_sec,
                 pause_api_sec=pause_api_sec,
                 running_slot_held_sec=((time.perf_counter() - slot_acquired_at) if slot_acquired_at else 0.0),
                 interaction_total_sec=(
-                    resume_sec
+                    resume_rate_pacing_wait_sec
+                    + resume_sec
                     + exec_elapsed
                     + pause_sec
                     + step.delay_time_sec * self.config.replay_delay_scale
                     + natural_delay_sec
                     + capacity_wait_sec
                 ),
+                natural_delay_sec=natural_delay_sec,
+                capacity_wait_sec=capacity_wait_sec,
+                resume_inflight_wait_sec=resume_inflight_wait_sec,
+                pause_inflight_wait_sec=pause_inflight_wait_sec,
             )
             # Success-path record. On exception _run_slice raises (no record here);
             # the caller's except block emits a slice_failed=True record instead.
@@ -267,11 +327,17 @@ class ReplayBaseRunner(threading.Thread):
                         "timed_out": result.exit_code == TIMEOUT_EXIT_CODE,
                         "slice_failed": False,
                         "slot_contention_wait_sec": slot_contention_wait_sec,
-                        "resume_queue_wait_sec": resume_queue_wait_sec,
+                        "natural_delay_sec": natural_delay_sec,
+                        "capacity_wait_sec": capacity_wait_sec,
+                        "resume_rate_pacing_wait_sec": resume_rate_pacing_wait_sec,
                         "resume_api_sec": resume_api_sec,
                         "resume_ready_wait_sec": resume_ready_wait_sec,
-                        "pause_queue_wait_sec": pause_queue_wait_sec,
+                        "resume_inflight_wait_sec": resume_inflight_wait_sec,
+                        "pause_rate_pacing_wait_sec": pause_rate_pacing_wait_sec,
                         "pause_api_sec": pause_api_sec,
+                        "pause_inflight_wait_sec": pause_inflight_wait_sec,
+                        "rate_pacing_wait_sec": rate_pacing_wait_sec,
+                        "inflight_wait_sec": inflight_wait_sec,
                         "running_slot_held_sec": sr.running_slot_held_sec,
                         "interaction_total_sec": sr.interaction_total_sec,
                     }
@@ -311,28 +377,34 @@ class ReplayBaseRunner(threading.Thread):
         return prev + step.delay_time_sec * self.config.replay_delay_scale + extra
 
     # --- lifecycle hooks (lifecycle/trajectory: real call + G3 retry; exec_only: no-op) ---
-    def _resume(self) -> tuple[float, float]:
+    def _resume(self) -> tuple[float, float, float]:
         """Resume the sandbox (restore from snapshot) before exec.
 
-        lifecycle/trajectory: real call with G3 transient retry. Each retry
-        attempt is QPS-gated (re-enters the limiter). Returns
-        ``(queue_wait_sec, api_sec)`` -- the QPS time-wait split from the pure
-        API call. exec_only: no-op so the baseline (resume ~= 0) stays
-        comparable.
+        lifecycle/trajectory: real call with G3 transient retry. Rate pacing is
+        PRE-lease (done by ``_run_slice`` before the slot acquire), so this
+        passes ``rate_wait=False`` -- only the inflight fuse is re-acquired per
+        retry attempt (a transient retry never re-pays the 1/qps delay).
+        Returns ``(rate_pacing_wait_sec, inflight_wait_sec, api_sec)`` where the
+        first element is always 0 here (the pre-lease caller owns it).
+        exec_only: no-op so the baseline (resume ~= 0) stays comparable.
         """
         if self.config.replay_mode not in ("lifecycle", "trajectory"):
-            return 0.0, 0.0
-        return self._lifecycle_call_with_retry("resume", lambda: self.provider.resume(self.state))
+            return 0.0, 0.0, 0.0
+        return self._lifecycle_call_with_retry("resume", lambda: self.provider.resume(self.state), rate_wait=False)
 
-    def _pause(self) -> tuple[float, float]:
+    def _pause(self) -> tuple[float, float, float]:
         """Pause the sandbox (memory-snapshot) after exec.
 
-        lifecycle/trajectory: real call with G3 transient retry. Returns
-        ``(queue_wait_sec, api_sec)``. exec_only: no-op.
+        lifecycle/trajectory: real call with G3 transient retry. Rate pacing is
+        IN-lease (the sandbox is RUNNING and holds memory until pause confirms,
+        so the lease must stay held through the pause call), so this passes
+        ``rate_wait=True`` -- the 1/qps delay is paid ONCE before the retry
+        loop, never re-paid per attempt. Returns
+        ``(rate_pacing_wait_sec, inflight_wait_sec, api_sec)``. exec_only: no-op.
         """
         if self.config.replay_mode not in ("lifecycle", "trajectory"):
-            return 0.0, 0.0
-        return self._lifecycle_call_with_retry("pause", lambda: self.provider.pause(self.state))
+            return 0.0, 0.0, 0.0
+        return self._lifecycle_call_with_retry("pause", lambda: self.provider.pause(self.state), rate_wait=True)
 
     def _series_write(self, record: dict) -> None:
         """Best-effort series write; a logging failure must never change control flow."""
@@ -381,39 +453,55 @@ class ReplayBaseRunner(threading.Thread):
             }
         )
 
-    def _lifecycle_call_with_retry(self, operation: str, fn) -> tuple[float, float]:
-        """Run a lifecycle call with transient-error retry (G3) + structured
-        retry events (Phase 2).
+    def _lifecycle_call_with_retry(self, operation: str, fn, *, rate_wait: bool = True) -> tuple[float, float, float]:
+        """Run a lifecycle call with transient-error retry (G3) + retry events.
 
-        Returns ``(queue_wait_sec, api_sec)``. Emits ``retry_queued`` /
-        ``retry_recovered`` / ``retry_exhausted`` events to the series and
-        advances the ReplayMetrics retry accumulators. Series writes are
-        best-effort (never mask the lifecycle exception). ``ShutdownInterrupted``
-        (BaseException) bypasses the ``except Exception`` retry path, so no
-        ``retry_exhausted`` is emitted for a shutdown.
+        Returns ``(rate_pacing_wait_sec, inflight_wait_sec, api_sec)``. Rate
+        pacing is done ONCE (when ``rate_wait``) before the retry loop, NOT per
+        attempt -- a transient retry re-acquires only the inflight fuse, never
+        re-paying the 1/qps delay (the previous per-attempt ``slot()`` re-paid
+        it on every retry, inflating ``time_lost_to_retry`` and the queue-wait
+        metrics). For resume the caller does the PRE-lease ``time_wait`` itself
+        and passes ``rate_wait=False``; for pause ``rate_wait=True`` (IN-lease).
+        Emits ``retry_queued`` / ``retry_recovered`` / ``retry_exhausted`` events;
+        series writes are best-effort. ``ShutdownInterrupted`` (BaseException)
+        bypasses the ``except Exception`` retry path, so no ``retry_exhausted``
+        is emitted for a shutdown.
         """
         retries = getattr(self.config, "replay_lifecycle_retries", 0)
-        total_queue_wait = 0.0
+        rate_pacing_wait = 0.0
+        if rate_wait and self.admission is not None and self.admission.qps is not None:
+            rate_pacing_wait = self.admission.qps.time_wait(operation)
+        total_inflight = 0.0
         total_api = 0.0
         had_transient = False
         last_exc: BaseException | None = None
         for attempt in range(retries + 1):
+            inflight_wait = 0.0
+            api = 0.0
             try:
                 if self.admission is not None and self.admission.qps is not None:
-                    t_qps_start = time.perf_counter()
-                    with self.admission.qps.slot(operation):
+                    # Inflight fuse around the API only (rate pacing was done
+                    # once above; the permit is released even if fn() raises).
+                    ctx = self.admission.qps.inflight(operation)
+                    ctx.__enter__()
+                    inflight_wait = ctx.wait_sec
+                    try:
                         t_api_start = time.perf_counter()
-                        total_queue_wait += t_api_start - t_qps_start
                         try:
                             fn()
                         finally:
-                            total_api += time.perf_counter() - t_api_start
+                            api = time.perf_counter() - t_api_start
+                    finally:
+                        ctx.__exit__(None, None, None)
                 else:
                     t_api_start = time.perf_counter()
                     try:
                         fn()
                     finally:
-                        total_api += time.perf_counter() - t_api_start
+                        api = time.perf_counter() - t_api_start
+                total_inflight += inflight_wait
+                total_api += api
                 if had_transient:
                     self._series_write(
                         {
@@ -422,12 +510,17 @@ class ReplayBaseRunner(threading.Thread):
                             "timestamp": time.time(),
                             "operation": operation,
                             "attempt": attempt + 1,
-                            "total_queue_wait_sec": total_queue_wait,
+                            "total_rate_pacing_wait_sec": rate_pacing_wait,
+                            "total_inflight_wait_sec": total_inflight,
                             "total_api_sec": total_api,
                         }
                     )
-                return total_queue_wait, total_api
+                return rate_pacing_wait, total_inflight, total_api
             except Exception as e:  # noqa: BLE001 - classify + retry/re-raise
+                # Account this attempt's waits even on failure (the inflight
+                # permit was held + the partial API time ran before the raise).
+                total_inflight += inflight_wait
+                total_api += api
                 last_exc = e
                 transient = is_transient_sandbox_error(e)
                 if attempt >= retries or not transient:
@@ -455,15 +548,17 @@ class ReplayBaseRunner(threading.Thread):
                         "max_attempts": retries + 1,
                         "error_type": type(e).__name__,
                         "error": str(e)[:120],
-                        "accumulated_queue_wait_sec": total_queue_wait,
+                        "accumulated_rate_pacing_wait_sec": rate_pacing_wait,
+                        "accumulated_inflight_wait_sec": total_inflight,
                         "accumulated_api_sec": total_api,
                     }
                 )
-                # Advance the report accumulator; time_lost = accumulated time across all attempts so far.
+                # Advance the report accumulator; time_lost = all wait + api
+                # accumulated across attempts so far (rate pacing is paid once).
                 self.state.replay_metrics.record_retry_event(
                     "retry_queued",
                     operation=operation,
-                    time_lost_sec=total_queue_wait + total_api,
+                    time_lost_sec=rate_pacing_wait + total_inflight + total_api,
                 )
                 logger.warning(
                     f"[Sandbox{self.state.index}] {operation} transient error "
@@ -471,7 +566,7 @@ class ReplayBaseRunner(threading.Thread):
                 )
         if last_exc is not None:
             raise last_exc
-        return 0.0, 0.0  # pragma: no cover - unreachable
+        return 0.0, 0.0, 0.0  # pragma: no cover - unreachable
 
     def _init_lifecycle(self) -> None:
         """One-time transition into the paused state before the first slice.
@@ -595,9 +690,14 @@ class ReplayBaseRunner(threading.Thread):
             resume_ready_wait_sec=step_result.resume_ready_wait_sec,
             slot_contention_wait_sec=step_result.slot_contention_wait_sec,
             pause_api_sec=step_result.pause_api_sec,
-            resume_queue_wait_sec=step_result.resume_queue_wait_sec,
+            resume_rate_pacing_wait_sec=step_result.resume_rate_pacing_wait_sec,
+            pause_rate_pacing_wait_sec=step_result.pause_rate_pacing_wait_sec,
             running_slot_held_sec=step_result.running_slot_held_sec,
             interaction_total_sec=step_result.interaction_total_sec,
+            natural_delay_sec=step_result.natural_delay_sec,
+            capacity_wait_sec=step_result.capacity_wait_sec,
+            resume_inflight_wait_sec=step_result.resume_inflight_wait_sec,
+            pause_inflight_wait_sec=step_result.pause_inflight_wait_sec,
             create_sec=0.0,  # populated by _run_trajectory (trajectory mode)
             kill_sec=0.0,
         )
@@ -856,13 +956,20 @@ class ReplayBaseRunner(threading.Thread):
             "timed_out": timed_out,
             "slice_failed": True,
             "slot_contention_wait_sec": 0.0,
-            "resume_queue_wait_sec": 0.0,
+            "resume_rate_pacing_wait_sec": 0.0,
             "resume_api_sec": 0.0,
             "resume_ready_wait_sec": 0.0,
-            "pause_queue_wait_sec": 0.0,
+            "pause_rate_pacing_wait_sec": 0.0,
             "pause_api_sec": 0.0,
             "running_slot_held_sec": 0.0,
             "interaction_total_sec": 0.0,
+            # Wait-decoupling components: honestly zeroed on the failure path.
+            "natural_delay_sec": 0.0,
+            "capacity_wait_sec": 0.0,
+            "resume_inflight_wait_sec": 0.0,
+            "pause_inflight_wait_sec": 0.0,
+            "rate_pacing_wait_sec": 0.0,
+            "inflight_wait_sec": 0.0,
         }
 
     def _record_trajectory_failure(self, traj: Trajectory, *, create_sec: float, kill_sec: float) -> None:

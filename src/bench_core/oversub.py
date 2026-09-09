@@ -102,6 +102,16 @@ def default_running_concurrency(base: dict) -> int:
     return n
 
 
+# Default outer wall-clock per trial (seconds). A defense-in-depth safety net: a
+# hung kernel subprocess (e.g. a pathological post-kill render) cannot block the
+# sweep indefinitely. 21600s = 6h -- generous enough that a legitimate large
+# lifecycle trial (1152 trajectories, replay + render) completes well within it,
+# while still catching a multi-hour hang instead of waiting forever. Override per
+# sweep (--trial-timeout-sec) or disable with 0. The render-path caps (Gantt
+# segment cap, per-step/overhead downsample) are the primary fix; this is the
+# backstop so a future uncapped path cannot wedge the sweep again.
+DEFAULT_TRIAL_TIMEOUT_SEC = 21600
+
 # True defaults for the sweep knobs (used when neither a CLI flag nor a
 # sweep-config value is given). Mirrors build_arg_parser; main() resolves
 # CLI flag > sweep-config > these.
@@ -115,7 +125,7 @@ _TRUE_DEFAULTS: dict[str, object] = {
     "failure_tolerance": 0.0,
     "cooldown_sec": 30,
     "cleanup_between_trials": "on",
-    "trial_timeout_sec": 0,
+    "trial_timeout_sec": DEFAULT_TRIAL_TIMEOUT_SEC,
     "output_root": None,
     "reuse": False,
     "stop_on_failure": False,
@@ -301,8 +311,15 @@ _TRAJECTORY_BREAKDOWN_COLUMNS = [
     "kill_sec",
     "interaction_total_sec",
     "slot_contention_wait_sec",
-    "resume_queue_wait_sec",
-    "pause_queue_wait_sec",
+    # Wait-decoupling split (the four independent components + per-phase inflight).
+    "natural_delay_sec",
+    "capacity_wait_sec",
+    "rate_pacing_wait_sec",
+    "inflight_wait_sec",
+    "resume_rate_pacing_wait_sec",
+    "pause_rate_pacing_wait_sec",
+    "resume_inflight_wait_sec",
+    "pause_inflight_wait_sec",
     "running_slot_held_sec",
 ]
 _BREAKDOWN_KEY_TO_COL = {
@@ -315,8 +332,14 @@ _BREAKDOWN_KEY_TO_COL = {
     "kill": "kill_sec",
     "interaction_total": "interaction_total_sec",
     "slot_contention_wait": "slot_contention_wait_sec",
-    "resume_queue_wait": "resume_queue_wait_sec",
-    "pause_queue_wait": "pause_queue_wait_sec",
+    "natural_delay": "natural_delay_sec",
+    "capacity_wait": "capacity_wait_sec",
+    "rate_pacing_wait": "rate_pacing_wait_sec",
+    "inflight_wait": "inflight_wait_sec",
+    "resume_rate_pacing_wait": "resume_rate_pacing_wait_sec",
+    "pause_rate_pacing_wait": "pause_rate_pacing_wait_sec",
+    "resume_inflight_wait": "resume_inflight_wait_sec",
+    "pause_inflight_wait": "pause_inflight_wait_sec",
     "running_slot_held": "running_slot_held_sec",
 }
 
@@ -547,7 +570,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--trial-timeout-sec",
         type=int,
         default=None,
-        help="outer wall-clock per trial; terminate->30s->kill (0 = off, default 0)",
+        help=f"outer wall-clock per trial; terminate->{_TERMINATE_GRACE_SEC}s->kill "
+        f"(0 = off; default {DEFAULT_TRIAL_TIMEOUT_SEC}s = {DEFAULT_TRIAL_TIMEOUT_SEC // 3600}h)",
     )
     p.add_argument("--output-root", default=None, help="default results/oversub/oversub-N{N}-{ts}/")
     p.add_argument(

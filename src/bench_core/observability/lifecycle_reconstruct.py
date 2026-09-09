@@ -37,10 +37,19 @@ _LIFECYCLE_EVENTS = frozenset({"initial_pause", "trajectory_create", "trajectory
 def _segment(a, b, phase: str) -> tuple[float, float, str] | None:
     """A ``(start, end, phase)`` tuple only when the interval has positive
     width; ``None`` for missing timestamps or non-positive / empty intervals
-    (covers all-zero failed-step timestamps and degenerate no-op calls)."""
+    (covers all-zero failed-step timestamps and degenerate no-op calls).
+
+    ``a <= 0`` is rejected too: real series timestamps are ``time.time()``
+    epochs (~1.8e9, always positive), so a zero/negative start is always a
+    missing/failed sentinel. Without this guard a failed step's zeroed
+    ``pause_end`` (a=0) paired with the next valid step's epoch
+    ``resume_start`` (b~1.8e9) became a ~1.8e9-second "paused" cross-step gap
+    -> ``reconstruct_concurrency``'s ``n_sec`` hit ~1.8e9 -> the per-sandbox
+    ``dur`` matrix alone was ~157GB -> 24h hang / OOM on a 384-sandbox run.
+    """
     if a is None or b is None:
         return None
-    if b <= 0 or b <= a:
+    if a <= 0 or b <= 0 or b <= a:
         return None
     return (a, b, phase)
 

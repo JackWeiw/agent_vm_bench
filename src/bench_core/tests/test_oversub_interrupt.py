@@ -68,7 +68,7 @@ idx = {{'n_trajectories': 1, 'trajectories': [
    'success_rate':1.0,'elapsed_sec':1.0,
    'time_breakdown_sec':{{'slice_total':0.8,'exec':0.5,'resume':0.1,'pause':0.2,
      'requested_delay':0.1,'create':0.05,'kill':0.05,'interaction_total':0.9,
-     'slot_contention_wait':0.0,'resume_queue_wait':0.0,'pause_queue_wait':0.0,
+     'slot_contention_wait':0.0,'resume_rate_pacing_wait':0.0,'pause_rate_pacing_wait':0.0,
      'running_slot_held':0.8}},
    'create_error_type':None,'kill_error_type':None,'file':'t0/replay_result.json'}}]}}
 (run_dir / 'trajectories' / 'index.json').write_text(json.dumps(idx, indent=2)+'\\n')

@@ -343,6 +343,122 @@ def test_per_step_linechart_references_all_data_rows(tmp_path):
     assert found, "no LineChart series referenced the latency_ms (B) column"
 
 
+def _mock_obs_with_n_steps(n: int, replay_mode: str = "lifecycle"):
+    """A MagicMock observability with one sandbox carrying n recorded steps.
+
+    Used by the large-series downsample tests (n well above MAX_PERSTEP_POINTS)
+    so the per-step detail line charts would otherwise reference all n rows.
+    """
+    from unittest.mock import MagicMock
+
+    obs = MagicMock()
+    obs.config.workflow_type = "replay"
+    obs.config.replay_mode = replay_mode
+    obs.config.total_count = 1
+    obs.config.replay_running_concurrency = 1
+    obs.config.test_duration = 10
+    obs.wall_sec = 10.0
+    obs.total_steps = n
+    obs.overcommit_ratio = 1.0
+    obs.concurrency = 1
+    obs.steps_per_sec = float(n) / 10.0
+    obs.effective_parallelism = 1.0
+    obs.exec_wall_utilization = 1.0
+    obs.retry_count = 0
+    obs.retry_count_by_op = {}
+    obs.time_lost_to_retry_sec = 0.0
+    obs.retries_per_slice_p95 = 0.0
+    obs.create_sec_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
+    obs.kill_sec_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
+    obs.slot_held_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
+    obs.admission_snapshot = None
+    m = MagicMock()
+    m.latencies = [0.1 + (i % 10) * 0.01 for i in range(n)]
+    m.action_type_latencies = {}
+    m.resume_secs = [0.1] * n
+    m.pause_secs = [0.1] * n
+    m.slice_total_secs = [0.5] * n
+    m.running_slot_held_secs = [0.4] * n
+    m.interaction_total_secs = [0.5] * n
+    m.create_secs = []
+    m.kill_secs = []
+    m.success_count = n
+    m.failed_count = 0
+    state = MagicMock()
+    state.replay_metrics = m
+    obs.states = {0: state}
+    return obs
+
+
+def test_downsample_indices_bounds_and_preserves_endpoints():
+    """Per-step line charts are downsampled to <= MAX_PERSTEP_POINTS so openpyxl
+    does not inline a numCache for 150k referenced cells at save time (the
+    1:1/384-sandbox run's Per-step + Lifecycle overhead charts each spanned
+    ~150k rows). First + last steps are always kept so the chart x-range still
+    spans the full run."""
+    from bench_core.observability.obs_xlsx import MAX_PERSTEP_POINTS, _downsample_indices
+
+    idxs = _downsample_indices(5000, 2000)
+    assert len(idxs) <= 2000
+    assert idxs[0] == 0  # first step kept
+    assert idxs[-1] == 4999  # last step kept
+    assert idxs == sorted(idxs)  # monotonic (chart x-axis order)
+    # under cap: identity (every index kept, no downsampling)
+    assert _downsample_indices(100, 2000) == list(range(100))
+    assert 0 < MAX_PERSTEP_POINTS < 5000  # shipped cap is a real, finite bound
+
+
+def test_per_step_linechart_downsamples_large_series(tmp_path):
+    from bench_core.observability.obs_xlsx import MAX_PERSTEP_POINTS
+
+    n = MAX_PERSTEP_POINTS + 500  # well over the cap
+    obs = _mock_obs_with_n_steps(n)
+    out = tmp_path / "obs.xlsx"
+    XlsxReportRenderer(obs, series_path=None).render(out)
+    ws = openpyxl.load_workbook(out)["Per-step timings"]
+    charts = ws._charts
+    assert charts, "expected a LineChart on Per-step timings"
+    # every latency_ms (B) series references <= MAX_PERSTEP_POINTS rows, not n
+    import re
+
+    for ch in charts:
+        for s in ch.series:
+            ref = getattr(s.val, "numRef", None)
+            f = ref.f if ref is not None else None
+            if f and "$B$" in f:
+                m_ = re.search(r"\$B\$(\d+):\$B\$(\d+)", f)
+                assert m_, f"unexpected val ref format: {f}"
+                span = int(m_.group(2)) - int(m_.group(1)) + 1
+                assert span <= MAX_PERSTEP_POINTS, f"per-step chart references {span} rows, cap {MAX_PERSTEP_POINTS}"
+
+
+def test_lifecycle_overhead_linechart_downsamples_large_series(tmp_path):
+    from bench_core.observability.obs_xlsx import MAX_PERSTEP_POINTS
+
+    n = MAX_PERSTEP_POINTS + 500
+    obs = _mock_obs_with_n_steps(n)
+    out = tmp_path / "obs.xlsx"
+    XlsxReportRenderer(obs, series_path=None).render(out)
+    ws = openpyxl.load_workbook(out)["Lifecycle overhead"]
+    charts = ws._charts
+    assert charts, "expected a LineChart on Lifecycle overhead"
+    # the resume_ms series (col B) references <= MAX_PERSTEP_POINTS rows, not n
+    import re
+
+    found = False
+    for ch in charts:
+        for s in ch.series:
+            ref = getattr(s.val, "numRef", None)
+            f = ref.f if ref is not None else None
+            if f and "$B$" in f:
+                m_ = re.search(r"\$B\$(\d+):\$B\$(\d+)", f)
+                assert m_, f"unexpected val ref format: {f}"
+                span = int(m_.group(2)) - int(m_.group(1)) + 1
+                assert span <= MAX_PERSTEP_POINTS, f"lifecycle chart references {span} rows, cap {MAX_PERSTEP_POINTS}"
+                found = True
+    assert found, "no LineChart series referenced the resume_ms (B) column"
+
+
 def test_concurrency_states_sheet_from_series(tmp_path):
     from unittest.mock import MagicMock
 
@@ -416,6 +532,41 @@ def test_gantt_sheet_embeds_png(tmp_path):
     assert (tmp_path / "gantt.png").exists()
 
 
+def test_cap_gantt_segments_downsamples_when_over_cap():
+    """Total Gantt segments above the cap are stride-downsampled per sandbox.
+
+    A 1:1/384-sandbox lifecycle run yields ~600k phase segments; the renderer
+    drew one ``ax.barh`` Patch per segment and hung for 24h. The cap bounds the
+    count (``broken_barh`` in ``_sheet_gantt`` bounds the per-artist cost); the
+    full-resolution timeline still lives in the Step detail sheet, so the
+    overview Gantt losing resolution at extreme scale is acceptable.
+    """
+    from bench_core.observability.obs_xlsx import MAX_GANTT_SEGMENTS, _cap_gantt_segments
+
+    # 3 sandboxes x 100 segments = 300 total; cap at a small value to exercise it.
+    rows = [
+        (f"sbx{i}", [(j, j + 1, ph) for j, ph in enumerate(["exec", "paused", "resuming", "pausing"] * 25)])
+        for i in range(3)
+    ]
+    capped = _cap_gantt_segments(rows, max_segments=50)
+    total = sum(len(segs) for _, segs in capped)
+    assert total <= 50, f"segment cap not enforced: {total} > 50"
+    # [::stride] preserves index 0 (each sandbox keeps its earliest segment)
+    for (name, segs), (_, orig) in zip(capped, rows):
+        assert segs[0] == orig[0]
+    # labels + order preserved
+    assert [n for n, _ in capped] == ["sbx0", "sbx1", "sbx2"]
+    # the shipped cap is a real, finite bound
+    assert 0 < MAX_GANTT_SEGMENTS < 600_000
+
+
+def test_cap_gantt_segments_noop_under_cap():
+    from bench_core.observability.obs_xlsx import _cap_gantt_segments
+
+    rows = [("sbx0", [(0, 1, "exec"), (1, 2, "paused")])]
+    assert _cap_gantt_segments(rows, max_segments=10_000) == rows
+
+
 def test_snapshot_sizes_sheet(tmp_path):
     from unittest.mock import MagicMock
 
@@ -470,18 +621,27 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
             "step_index": 0,
             "action_type": "shell",
             "slice_failed": False,
-            "resume_sec": 0.1,
-            "resume_queue_wait_sec": 0.02,
+            # New invariants: resume_sec = inflight + api + ready (rate-pacing
+            # resume_rate_pacing_wait is PRE-lease, NOT in resume_sec); pause_sec =
+            # pause_rate_pacing_wait + pause_inflight + pause_api (rate-pacing IN-lease).
+            "resume_sec": 0.08,
+            "resume_rate_pacing_wait_sec": 0.02,  # rate-pacing, pre-lease
+            "resume_inflight_wait_sec": 0.0,
             "resume_api_sec": 0.05,
             "resume_ready_wait_sec": 0.03,
             "exec_sec": 0.5,
-            "pause_sec": 0.2,
-            "pause_queue_wait_sec": 0.04,
+            "pause_sec": 0.20,
+            "pause_rate_pacing_wait_sec": 0.04,  # rate-pacing, in-lease
+            "pause_inflight_wait_sec": 0.0,
             "pause_api_sec": 0.16,
-            "slice_total_sec": 0.8,
-            "interaction_total_sec": 0.8,
+            "slice_total_sec": 0.78,  # resume_sec + exec + pause_sec
+            "interaction_total_sec": 0.80,  # + resume rate-pacing (pre-lease)
             "slot_contention_wait_sec": 0.0,
-            "running_slot_held_sec": 0.7,
+            "natural_delay_sec": 0.0,
+            "capacity_wait_sec": 0.0,
+            "rate_pacing_wait_sec": 0.06,  # resume_rate_pacing_wait + pause_rate_pacing_wait
+            "inflight_wait_sec": 0.0,
+            "running_slot_held_sec": 0.78,
             "exit_code": 0,
             "timed_out": False,
         }
@@ -495,23 +655,30 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
             "step_index": 1,
             "action_type": "edit",
             "slice_failed": False,
-            "resume_sec": 0.1,
-            "resume_queue_wait_sec": 0.02,
-            "resume_api_sec": 0.05,
-            "resume_ready_wait_sec": 0.03,
+            "resume_sec": 0.06,
+            "resume_rate_pacing_wait_sec": 0.0,
+            "resume_inflight_wait_sec": 0.0,
+            "resume_api_sec": 0.04,
+            "resume_ready_wait_sec": 0.02,
             "exec_sec": 0.4,
-            "pause_sec": 0.2,
-            "pause_queue_wait_sec": 0.04,
-            "pause_api_sec": 0.16,
-            "slice_total_sec": 0.7,
-            "interaction_total_sec": 0.7,
+            "pause_sec": 0.14,
+            "pause_rate_pacing_wait_sec": 0.03,
+            "pause_inflight_wait_sec": 0.0,
+            "pause_api_sec": 0.11,
+            "slice_total_sec": 0.60,
+            "interaction_total_sec": 0.60,
             "slot_contention_wait_sec": 0.0,
-            "running_slot_held_sec": 0.6,
+            "natural_delay_sec": 0.0,
+            "capacity_wait_sec": 0.0,
+            "rate_pacing_wait_sec": 0.03,
+            "inflight_wait_sec": 0.0,
+            "running_slot_held_sec": 0.60,
             "exit_code": 0,
             "timed_out": False,
         }
     )
-    # a failed step (slice_failed=True) is still emitted as a row
+    # a failed step (slice_failed=True) is still emitted as a row, with all
+    # wait components honestly zeroed
     w.write(
         {
             "event": "step",
@@ -522,16 +689,22 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
             "action_type": "shell",
             "slice_failed": True,
             "resume_sec": 0.0,
-            "resume_queue_wait_sec": 0.0,
+            "resume_rate_pacing_wait_sec": 0.0,
+            "resume_inflight_wait_sec": 0.0,
             "resume_api_sec": 0.0,
             "resume_ready_wait_sec": 0.0,
             "exec_sec": 0.0,
             "pause_sec": 0.0,
-            "pause_queue_wait_sec": 0.0,
+            "pause_rate_pacing_wait_sec": 0.0,
+            "pause_inflight_wait_sec": 0.0,
             "pause_api_sec": 0.0,
             "slice_total_sec": 0.0,
             "interaction_total_sec": 0.0,
             "slot_contention_wait_sec": 0.0,
+            "natural_delay_sec": 0.0,
+            "capacity_wait_sec": 0.0,
+            "rate_pacing_wait_sec": 0.0,
+            "inflight_wait_sec": 0.0,
             "running_slot_held_sec": 0.0,
             "exit_code": 1,
             "timed_out": True,
@@ -557,12 +730,19 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
     assert "slice_failed" in headers
     # sub-decomposition columns (already emitted by the runner into the series)
     # are surfaced so the sum invariants are inspectable in the sheet itself.
-    assert "resume_queue_wait_sec" in headers
+    assert "resume_rate_pacing_wait_sec" in headers
     assert "resume_api_sec" in headers
     assert "resume_ready_wait_sec" in headers
-    assert "pause_queue_wait_sec" in headers
+    assert "pause_rate_pacing_wait_sec" in headers
     assert "pause_api_sec" in headers
     assert "running_slot_held_sec" in headers
+    # wait-decoupling columns (the four independent components + per-phase inflight)
+    assert "natural_delay_sec" in headers
+    assert "capacity_wait_sec" in headers
+    assert "rate_pacing_wait_sec" in headers
+    assert "inflight_wait_sec" in headers
+    assert "resume_inflight_wait_sec" in headers
+    assert "pause_inflight_wait_sec" in headers
     # header + 3 data rows (the snapshot_size event is dropped)
     assert ws.max_row == 4
     # sorted: traj-a step0, traj-a step1, traj-b step0
@@ -573,23 +753,35 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
     assert ws.cell(3, traj_col).value == "traj-a"
     assert ws.cell(3, step_col).value == 1
     assert ws.cell(4, traj_col).value == "traj-b"
-    # the failed step row carries slice_failed=True and timed_out=True
+    # the failed step row carries slice_failed=True and timed_out=True, and all
+    # wait components honestly zeroed.
     failed_col = headers.index("slice_failed") + 1
     timed_col = headers.index("timed_out") + 1
     assert ws.cell(2, failed_col).value is True
     assert ws.cell(2, timed_col).value is True
-    # sum invariant on the success row: resume_sec == queue + api + ready_wait
-    # (rounded to 3 dp), pause_sec == queue + api. Guards against column-order
-    # drift silently breaking the parent/child relationship.
+    assert ws.cell(2, headers.index("rate_pacing_wait_sec") + 1).value in (0.0, None)
+    # Post-decoupling sum invariants on the success row (traj-a step1):
+    #   resume_sec == resume_inflight + resume_api + resume_ready_wait
+    #     (resume rate-pacing is PRE-lease, NOT in resume_sec -- the decoupling)
+    #   pause_sec == pause_rate_pacing_wait + pause_inflight + pause_api
+    #     (pause rate-pacing is IN-lease)
     rsm = ws.cell(3, headers.index("resume_sec") + 1).value
-    rq = ws.cell(3, headers.index("resume_queue_wait_sec") + 1).value
+    ri = ws.cell(3, headers.index("resume_inflight_wait_sec") + 1).value
     ra = ws.cell(3, headers.index("resume_api_sec") + 1).value
     rr = ws.cell(3, headers.index("resume_ready_wait_sec") + 1).value
-    assert rsm is not None and round(rq + ra + rr, 3) == rsm
+    assert rsm is not None and round((ri or 0) + (ra or 0) + (rr or 0), 3) == rsm
     psm = ws.cell(3, headers.index("pause_sec") + 1).value
-    pq = ws.cell(3, headers.index("pause_queue_wait_sec") + 1).value
+    pq = ws.cell(3, headers.index("pause_rate_pacing_wait_sec") + 1).value
+    pi = ws.cell(3, headers.index("pause_inflight_wait_sec") + 1).value
     pa = ws.cell(3, headers.index("pause_api_sec") + 1).value
-    assert psm is not None and round(pq + pa, 3) == psm
+    assert psm is not None and round((pq or 0) + (pi or 0) + (pa or 0), 3) == psm
+    # the resume rate-pacing that is excluded from resume_sec still shows up in
+    # interaction_total (pre-lease wait is part of the full interaction budget).
+    # traj-b row (row 4): interaction_total = slice_total + resume_rate_pacing_wait.
+    it = ws.cell(4, headers.index("interaction_total_sec") + 1).value
+    st = ws.cell(4, headers.index("slice_total_sec") + 1).value
+    rqr = ws.cell(4, headers.index("resume_rate_pacing_wait_sec") + 1).value
+    assert it is not None and st is not None and round((st or 0) + (rqr or 0), 3) == it
     # frozen header + autofilter on the data range
     assert ws.freeze_panes == "A2"
     assert ws.auto_filter.ref is not None
@@ -636,8 +828,8 @@ def test_trajectory_summary_attributes_cost_per_instance(tmp_path):
                     "resume_sec": resume,
                     "pause_sec": pause,
                     "slot_contention_wait_sec": slot_wait,
-                    "resume_queue_wait_sec": 0.02,
-                    "pause_queue_wait_sec": 0.03,
+                    "resume_rate_pacing_wait_sec": 0.02,
+                    "pause_rate_pacing_wait_sec": 0.03,
                     "running_slot_held_sec": 0.9,
                     "slice_total_sec": round(resume + 0.4 + pause, 3),
                     "interaction_total_sec": round(resume + 0.4 + pause + 0.05, 3),
@@ -664,9 +856,9 @@ def test_trajectory_summary_attributes_cost_per_instance(tmp_path):
     assert "exec_sum_s" in headers
     assert "resume_sum_s" in headers
     assert "pause_sum_s" in headers
-    assert "slot_wait_sum_s" in headers
-    assert "resume_queue_wait_sum_s" in headers
-    assert "pause_queue_wait_sum_s" in headers
+    assert "slot_contention_wait_sum_s" in headers
+    assert "resume_rate_pacing_wait_sum_s" in headers
+    assert "pause_rate_pacing_wait_sum_s" in headers
     assert "running_slot_held_sum_s" in headers
     assert "avg_slice_s" in headers
     # no percentile columns remain (they live in Step detail / Lifecycle overhead)
@@ -682,7 +874,7 @@ def test_trajectory_summary_attributes_cost_per_instance(tmp_path):
     ps = headers.index("pause_sum_s") + 1
     es = headers.index("exec_sum_s") + 1
     ss = headers.index("slice_total_sum_s") + 1
-    sw = headers.index("slot_wait_sum_s") + 1
+    sw = headers.index("slot_contention_wait_sum_s") + 1
     assert ws.cell(2, rs).value == 0.3
     assert ws.cell(2, ps).value == 0.6
     assert ws.cell(2, es).value == 1.2
@@ -840,8 +1032,8 @@ def _step_ev(
         "slice_total_sec": s,
         "interaction_total_sec": round(s + 0.05, 3),
         "slot_contention_wait_sec": slot_contention_wait_sec,
-        "resume_queue_wait_sec": 0.0,
-        "pause_queue_wait_sec": 0.0,
+        "resume_rate_pacing_wait_sec": 0.0,
+        "pause_rate_pacing_wait_sec": 0.0,
         "running_slot_held_sec": 0.0,
         "slice_failed": slice_failed,
         "timed_out": timed_out,
@@ -903,7 +1095,7 @@ def test_trajectory_summary_has_failure_and_success_columns(tmp_path):
 
 
 def test_trajectory_summary_has_data_bars_and_failure_color_scale(tmp_path):
-    """Conditional formatting: data bars on slice_total_sum_s + slot_wait_sum_s
+    """Conditional formatting: data bars on slice_total_sum_s + slot_contention_wait_sum_s
     (longer bar = slower / more queueing) and a red color scale on n_failed --
     the at-a-glance outlier highlighting the reference's per-trial table lacks."""
     from unittest.mock import MagicMock
@@ -933,7 +1125,7 @@ def test_trajectory_summary_has_data_bars_and_failure_color_scale(tmp_path):
     from openpyxl.utils import get_column_letter
 
     slice_col = get_column_letter(headers.index("slice_total_sum_s") + 1)
-    slot_col = get_column_letter(headers.index("slot_wait_sum_s") + 1)
+    slot_col = get_column_letter(headers.index("slot_contention_wait_sum_s") + 1)
     nf_col = get_column_letter(headers.index("n_failed") + 1)
 
     rule_cols = []  # (type, covered-column-letter)

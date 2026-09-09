@@ -1,29 +1,47 @@
 """Thread-based admission controllers for replay lifecycle overcommit (P2.6).
 
-Two independent controllers govern running-sandbox concurrency and control-plane
-dispatch rate. The replay runner constructs them only in ``lifecycle`` mode;
-exec-only has no lifecycle calls and needs no admission.
+Two **independent** controllers govern running-sandbox concurrency and
+control-plane dispatch. They are NOT a forced pair: either, both, or neither
+may be constructed (each knob is independently bypassed when ``None``).
 
-``RunningSlotScheduler`` — FIFO admission for complete resume→(probe)→exec→pause
-slices. A slot is reserved before resume and held until pause is confirmed, so
-client-side admission never exceeds ``maximum`` even while lifecycle calls are in
-flight.
+``RunningSlotScheduler`` — FIFO admission for complete resume->(probe)->exec->
+pause slices. A slot is reserved before resume and held until pause is
+confirmed, so client-side admission never exceeds ``maximum`` even while
+lifecycle calls are in flight. The lease carries ``natural_delay_sec`` (the
+ready_at think-time pre-delay) separate from ``queue_wait_sec`` (the FIFO
+capacity-contention wait) so the two never conflate.
 
-``QpsRateLimiter`` — smooth FIFO dispatch with a bounded in-flight fuse for
-non-create lifecycle calls (pause/resume/cleanup). One global queue; operation
-type is metrics-only (no priority differentiation). The ``slot()`` enter order is
-load-bearing:
+``QpsRateLimiter`` — two **independently-enabled** functions exposed as a single
+class for shared metrics; they solve two different bottlenecks and must not be
+conflated:
 
-1. QPS time-wait FIRST (sleep for the smooth dispatch delay)
-2. inflight semaphore acquire AFTER the wait
-3. ``__exit__`` (finally): release the inflight semaphore even if the body raised
+* ``time_wait(operation)`` — **rate pacing** (request-interval shaping). Sleeps
+  for the smooth 1/qps dispatch delay. Solves "how closely together may requests
+  be *dispatched*?" A RATE control, not a concurrency control.
+* ``inflight(operation)`` — **concurrency fuse** (in-flight cap). A bounded
+  semaphore around the API call. Solves "how many requests may be *in flight*
+  at once?" A CONCURRENCY control, not a rate control.
 
-**Forbidden**: acquire inflight THEN sleep — threads would hold inflight slots
+Each function no-ops when its own knob is ``None`` (``qps=None`` -> ``time_wait``
+returns 0; ``inflight_cap=None`` -> ``inflight`` is a no-op context with wait 0).
+``slot()`` is the combined time_wait+inflight context for one-shot operations
+(create/cleanup); retried lifecycle calls use ``time_wait`` **once** (pre-lease
+for resume) + ``inflight`` per attempt, so a transient retry does NOT re-pay the
+rate-pacing delay.
+
+**Forbidden**: acquire inflight THEN sleep — threads would hold inflight permits
 while parked, exhausting the fuse and deadlocking on slow-backend accumulation.
+``time_wait`` always runs before ``inflight`` within a combined ``slot()``.
+
+The ``clock`` / ``sleep_fn`` constructor seams are for deterministic unit tests
+of the no-catch-up dispatch curve (a real clock can only assert inequalities,
+never the exact 1/qps spacing). Production leaves them at the ``time.*``
+defaults.
 
 Both classes use plain ``threading`` (``Condition``/``Semaphore``/``Lock``,
-``time.perf_counter``/``time.monotonic``). No asyncio — the kernel is thread-based
-and the sibling toolkit's async controllers cannot be imported here.
+``time.perf_counter``/``time.monotonic``). No asyncio — the kernel is
+thread-based and the sibling toolkit's async controllers cannot be imported
+here.
 """
 from __future__ import annotations
 
@@ -255,155 +273,247 @@ class RunningSlotScheduler:
 
 
 class QpsRateLimiter:
-    """Smooth FIFO dispatch with a bounded in-flight fuse.
+    """Rate pacing + concurrency fuse (two independently-enabled functions).
 
-    One global queue for all non-create lifecycle calls (pause/resume/cleanup).
-    Operation type is metrics-only (no priority differentiation).
+    The two functions solve **different** bottlenecks and are independently
+    bypassed when their knob is ``None``:
 
-    The ``slot()`` context manager enforces the load-bearing enter order:
+    * :meth:`time_wait` — **rate pacing**. Smooth 1/qps dispatch delay with
+      no-catch-up (``next_dispatch_at = max(now, dispatch_at) + interval``;
+      never bursts to catch up). A RATE control. ``qps=None`` bypasses it
+      (returns 0.0, no sleep, no metrics).
+    * :meth:`inflight` — **concurrency fuse**. A bounded semaphore around the
+      API call. A CONCURRENCY control. ``inflight_cap=None`` bypasses it
+      (no-op context, wait 0.0).
+    * :meth:`slot` — the combined time_wait+inflight context for one-shot
+      operations (create/cleanup). Retried lifecycle calls instead call
+      ``time_wait`` **once** (pre-lease for resume) + ``inflight`` per attempt
+      so a transient retry does NOT re-pay the rate-pacing delay.
 
-    1. QPS time-wait FIRST (sleep for the smooth dispatch delay, computed from
-       ``next_dispatch_at + 1/qps``).
-    2. inflight semaphore acquire AFTER the wait.
-    3. ``__exit__`` (finally): release the inflight semaphore even if the body
-       raised.
-
-    Smooth **no-catch-up**: if the scheduler falls behind (dispatch_at is in the
-    past), slide the deadline forward from the actual dispatch time rather than
-    bursting. Concretely: ``next_dispatch_at = max(now, dispatch_at) + interval``
-    — never let multiple ops dispatch in the same instant to "catch up".
+    API-contract boundary (locked): ``time_wait`` owns arrival pacing and
+    touches NOTHING about concurrency; ``inflight`` owns the in-flight cap and
+    touches NOTHING about spacing. Within a combined ``slot()``, ``time_wait``
+    always runs first (forbidden: inflight-then-sleep would park threads on
+    held permits and deadlock the fuse on slow backends).
 
     Args:
-        qps: Target queries-per-second dispatch rate. Must be > 0.
-        inflight_cap: Maximum concurrent in-flight operations. Must be >= 1.
+        qps: Target dispatch rate. ``None`` bypasses rate pacing. Must be > 0
+            when set.
+        inflight_cap: Max concurrent in-flight ops. ``None`` bypasses the fuse.
+            Must be >= 1 when set.
+        stop_event: When set, admission waits raise :class:`ShutdownInterrupted`.
+        clock: Injectable monotonic clock (default ``time.monotonic``) for
+            deterministic no-catch-up unit tests. Production uses the default.
+        sleep_fn: Injectable sleep (default ``time.sleep``) used by
+            ``time_wait`` only when ``stop_event`` is None. Tests pass a no-op
+            and advance the injected clock manually.
 
     Raises:
-        ValueError: ``qps <= 0`` or ``inflight_cap < 1``.
+        ValueError: ``qps`` set and ``<= 0``; ``inflight_cap`` set and ``< 1``.
     """
 
-    def __init__(self, qps: float, inflight_cap: int, *, stop_event: threading.Event | None = None) -> None:
-        if qps <= 0:
-            raise ValueError(f"qps must be > 0, got {qps}")
-        if inflight_cap < 1:
-            raise ValueError(f"inflight_cap must be >= 1, got {inflight_cap}")
+    def __init__(
+        self,
+        qps: float | None,
+        inflight_cap: int | None,
+        *,
+        stop_event: threading.Event | None = None,
+        clock=time.monotonic,
+        sleep_fn=time.sleep,
+    ) -> None:
+        if qps is not None and qps <= 0:
+            raise ValueError(f"qps must be > 0 or None, got {qps}")
+        if inflight_cap is not None and inflight_cap < 1:
+            raise ValueError(f"inflight_cap must be >= 1 or None, got {inflight_cap}")
         self._qps = qps
         self._inflight_cap = inflight_cap
-        self._interval = 1.0 / qps
-        self._inflight = threading.Semaphore(inflight_cap)
-        self._next_dispatch_at = time.monotonic()
+        self._interval = (1.0 / qps) if qps is not None else 0.0
+        self._inflight = threading.Semaphore(inflight_cap) if inflight_cap is not None else None
+        self._next_dispatch_at = clock()
         self._dispatch_lock = threading.Lock()
         self._stop_event = stop_event
-        # Metrics
+        self._clock = clock
+        self._sleep_fn = sleep_fn
+        # Rate-pacing metrics (time_wait callers).
         self._dispatched = 0
         self._total_wait = 0.0
         self._max_wait = 0.0
         self._dispatched_by_op: dict[str, int] = {op: 0 for op in _OPERATION_TYPES}
-        self._waiting = 0  # threads parked in the QPS time-wait
+        self._waiting = 0  # threads parked in the rate-pacing sleep
         self._waiting_by_op: dict[str, int] = {op: 0 for op in _OPERATION_TYPES}
+        # Fuse metrics (inflight callers).
+        self._inflight_dispatched = 0
+        self._total_inflight_wait = 0.0
+
+    def time_wait(self, operation: str) -> float:
+        """Sleep the 1/qps rate-pacing delay; return the wait (0.0 if qps=None).
+
+        No inflight permit is acquired -- call :meth:`inflight` separately for
+        the fuse. Smooth no-catch-up: if the scheduler fell behind
+        (``dispatch_at`` in the past), slide the deadline forward from the
+        actual dispatch time (``max(now, dispatch_at) + interval``) rather than
+        bursting. The ``clock``/``sleep_fn`` seams make this deterministic in
+        tests: inject a fake clock + no-op sleep, advance the clock between
+        calls, and assert the exact returned curve.
+        """
+        if self._qps is None:
+            return 0.0
+        now = self._clock()
+        with self._dispatch_lock:
+            dispatch_at = self._next_dispatch_at
+            if dispatch_at > now:
+                delay = dispatch_at - now
+                # Slide forward from the scheduled dispatch time (no catch-up).
+                self._next_dispatch_at = dispatch_at + self._interval
+            else:
+                # dispatch_at is in the past; slide forward from now.
+                delay = 0.0
+                self._next_dispatch_at = now + self._interval
+            if delay > 0:
+                self._waiting += 1
+                self._waiting_by_op[operation] = self._waiting_by_op.get(operation, 0) + 1
+        if delay > 0:
+            try:
+                if self._stop_event is not None:
+                    _stop_aware_sleep(delay, self._stop_event)
+                else:
+                    self._sleep_fn(delay)
+            finally:
+                with self._dispatch_lock:
+                    self._waiting -= 1
+                    self._waiting_by_op[operation] = max(0, self._waiting_by_op.get(operation, 0) - 1)
+        with self._dispatch_lock:
+            self._dispatched += 1
+            self._total_wait += delay
+            if delay > self._max_wait:
+                self._max_wait = delay
+            self._dispatched_by_op[operation] = self._dispatched_by_op.get(operation, 0) + 1
+        return delay
+
+    def inflight(self, operation: str) -> _InflightCtx:
+        """Return the concurrency-fuse context manager.
+
+        Acquires the inflight semaphore on enter (blocking at the cap), releases
+        on exit (even if the body raised). No rate pacing -- call
+        :meth:`time_wait` separately. No-op (``wait_sec`` 0.0) when
+        ``inflight_cap`` is None. The resulting context exposes ``wait_sec``
+        (the semaphore-block time, 0.0 when uncontended or bypassed) so the
+        runner can attribute fuse contention separately from rate pacing.
+        """
+        return _InflightCtx(self, operation)
 
     def slot(self, operation: str, *, hold_inflight: bool = True) -> _QpsSlot:
-        """Return a context manager that enforces QPS rate + inflight cap.
+        """Combined rate-pacing + fuse context for one-shot operations.
+
+        Calls :meth:`time_wait` then :meth:`inflight` (when ``hold_inflight``).
+        Used for create/cleanup (one call, no retry). For retried lifecycle
+        calls (resume/pause), call ``time_wait`` once + ``inflight`` per attempt
+        instead so a transient retry does not re-pay the rate-pacing delay.
 
         Args:
-            operation: Operation type for metrics (``"resume"``, ``"pause"``,
-                ``"cleanup"``, ``"create"``, ``"command"``, or a custom string).
-            hold_inflight: When False, apply only the QPS time-wait and do NOT
-                acquire an inflight permit. Used for the ``"command"`` bucket in
-                bench_core: ``provider.exec`` is a monolithic blocking RPC with no
-                stream handle, so holding an inflight permit for the whole body
-                would serialize long commands behind the cap. Lifecycle calls
-                (resume/pause/cleanup/create) are short RPCs and keep the default
-                (True) so the inflight fuse still bounds concurrent dispatch.
+            operation: Operation type for metrics.
+            hold_inflight: When False, apply rate pacing only (no fuse permit).
+                Used for the ``"command"`` bucket: ``provider.exec`` is a
+                monolithic blocking RPC with no stream handle, so holding a fuse
+                permit for the whole body would serialize long commands behind
+                the cap.
         """
         return _QpsSlot(self, operation, hold_inflight=hold_inflight)
 
     def snapshot(self) -> dict[str, Any]:
-        """Return dispatch metrics.
+        """Return dispatch + fuse metrics.
 
-        Returns:
-            ``{"qps", "inflight_cap", "in_flight", "dispatched",
-            "average_wait_sec", "max_wait_sec", "dispatched_by_operation",
-            "waiting", "waiting_by_operation"}``.
+        Rate-pacing group: ``qps``, ``dispatched``, ``average_wait_sec``,
+        ``max_wait_sec``, ``dispatched_by_operation``, ``waiting``,
+        ``waiting_by_operation``. Fuse group: ``inflight_cap``, ``in_flight``,
+        ``inflight_dispatched``, ``average_inflight_wait_sec``. Each group is
+        zeros when its knob is ``None`` (that function was bypassed).
         """
-        # in_flight = inflight_cap - current semaphore value
         with self._dispatch_lock:
             return {
                 "qps": self._qps,
                 "inflight_cap": self._inflight_cap,
-                "in_flight": self._inflight_cap - self._inflight._value,
+                "in_flight": (self._inflight_cap - self._inflight._value) if self._inflight_cap is not None else 0,
                 "dispatched": self._dispatched,
                 "average_wait_sec": self._total_wait / self._dispatched if self._dispatched else 0.0,
                 "max_wait_sec": self._max_wait,
                 "dispatched_by_operation": dict(self._dispatched_by_op),
                 "waiting": self._waiting,
                 "waiting_by_operation": dict(self._waiting_by_op),
+                "inflight_dispatched": self._inflight_dispatched,
+                "average_inflight_wait_sec": (
+                    self._total_inflight_wait / self._inflight_dispatched if self._inflight_dispatched else 0.0
+                ),
             }
 
 
+class _InflightCtx:
+    """Context manager for :meth:`QpsRateLimiter.inflight` (fuse only).
+
+    Enter: block on the inflight semaphore (unless ``inflight_cap`` is None, in
+    which case this is a no-op and ``wait_sec`` is 0.0). Exit: release the
+    permit only if one was acquired. The block time is exposed as
+    ``wait_sec`` so the runner can attribute fuse contention separately from
+    rate pacing.
+    """
+
+    def __init__(self, limiter: QpsRateLimiter, operation: str) -> None:
+        self._lim = limiter
+        self._op = operation
+        self.wait_sec = 0.0
+        self._acquired = False
+
+    def __enter__(self) -> _InflightCtx:
+        if self._lim._inflight_cap is None:
+            return self
+        t0 = self._lim._clock()
+        _stop_aware_acquire(self._lim._inflight, self._lim._stop_event)
+        self._acquired = True
+        self.wait_sec = self._lim._clock() - t0
+        with self._lim._dispatch_lock:
+            self._lim._inflight_dispatched += 1
+            self._lim._total_inflight_wait += self.wait_sec
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if self._acquired:
+            self._lim._inflight.release()
+
+
 class _QpsSlot:
-    """Context manager for :meth:`QpsRateLimiter.slot`.
+    """Combined rate-pacing + fuse context for :meth:`QpsRateLimiter.slot`.
 
-    Enter order (load-bearing):
-
-    1. Compute dispatch time under ``_dispatch_lock``; sleep for the rate delay
-       **before** acquiring inflight (so we don't hold a permit while parked).
-    2. Acquire inflight semaphore -- UNLESS ``hold_inflight`` is False (the
-       ``"command"`` bucket), in which case the body runs concurrent without a
-       permit, matching the reference's "rate-limit stream-open only" intent.
-    3. Record metrics.
-
-    Exit (finally): release inflight only if it was acquired.
+    Delegates to :meth:`time_wait` (rate pacing) then :meth:`inflight` (fuse)
+    so the two functions share one metrics path. Exposes ``rate_wait_sec``
+    and ``inflight_wait_sec`` for callers that need the split (one-shot
+    create/cleanup). The load-bearing order -- time_wait FIRST, inflight AFTER
+    -- is inherited from the method order; inflight-then-sleep would park
+    threads on held permits and deadlock the fuse on slow backends.
     """
 
     def __init__(self, limiter: QpsRateLimiter, operation: str, *, hold_inflight: bool = True) -> None:
         self._lim = limiter
         self._op = operation
         self._hold_inflight = hold_inflight
-        self._wait_started_at = 0.0
-        self._acquired_inflight = False
+        self.rate_wait_sec = 0.0
+        self.inflight_wait_sec = 0.0
+        self._inflight_ctx: _InflightCtx | None = None
 
-    def __enter__(self) -> None:
-        self._wait_started_at = time.monotonic()
-        # Step 1: QPS time-wait FIRST (no inflight permit held yet).
-        with self._lim._dispatch_lock:
-            now = time.monotonic()
-            dispatch_at = self._lim._next_dispatch_at
-            if dispatch_at > now:
-                delay = dispatch_at - now
-                # Slide forward from actual dispatch time (no catch-up burst).
-                self._lim._next_dispatch_at = dispatch_at + self._lim._interval
-            else:
-                # dispatch_at is in the past; slide forward from now.
-                delay = 0.0
-                self._lim._next_dispatch_at = now + self._lim._interval
-            if delay > 0:
-                self._lim._waiting += 1
-                self._lim._waiting_by_op[self._op] = self._lim._waiting_by_op.get(self._op, 0) + 1
-        if delay > 0:
-            try:
-                _stop_aware_sleep(delay, self._lim._stop_event)
-            finally:
-                with self._lim._dispatch_lock:
-                    self._lim._waiting -= 1
-                    self._lim._waiting_by_op[self._op] = max(0, self._lim._waiting_by_op.get(self._op, 0) - 1)
-        # Step 2: inflight semaphore acquire AFTER the wait (skipped for the
-        # command bucket, whose body may outlive a reasonable inflight permit).
+    def __enter__(self) -> _QpsSlot:
+        # Step 1: rate pacing FIRST (no inflight permit held while parked).
+        self.rate_wait_sec = self._lim.time_wait(self._op)
+        # Step 2: inflight fuse AFTER the wait (skipped for the command bucket,
+        # whose body may outlive a reasonable inflight permit).
         if self._hold_inflight:
-            _stop_aware_acquire(self._lim._inflight, self._lim._stop_event)
-            self._acquired_inflight = True
-        # Step 3: record metrics.
-        wait_sec = time.monotonic() - self._wait_started_at
-        with self._lim._dispatch_lock:
-            self._lim._dispatched += 1
-            self._lim._total_wait += wait_sec
-            if wait_sec > self._lim._max_wait:
-                self._lim._max_wait = wait_sec
-            self._lim._dispatched_by_op[self._op] = self._lim._dispatched_by_op.get(self._op, 0) + 1
+            self._inflight_ctx = self._lim.inflight(self._op)
+            self._inflight_ctx.__enter__()
+            self.inflight_wait_sec = self._inflight_ctx.wait_sec
+        return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        # Finally: release inflight only if we acquired it (command bucket did not).
-        if self._acquired_inflight:
-            self._lim._inflight.release()
+        # Finally: release the inflight permit only if one was acquired.
+        if self._inflight_ctx is not None:
+            self._inflight_ctx.__exit__(exc_type, exc_val, exc_tb)
 
 
 @dataclass(slots=True)

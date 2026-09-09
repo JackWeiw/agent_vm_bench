@@ -327,16 +327,17 @@ class TestQpsRateLimiterInflightCap:
 
 
 class TestQpsRateLimiterOrdering:
-    def test_inflight_not_held_during_rate_wait(self, monkeypatch):
+    def test_inflight_not_held_during_rate_wait(self):
         """ORDERING INVARIANT: during the QPS time-wait sleep, NO inflight
-        permit is held. The rate-wait MUST precede the inflight acquire; the
-        inverse ordering would hold permits during the sleep and deadlock the
-        fuse on slow-backend accumulation.
+        permit is held. The rate-wait MUST precede the inflight acquire (slot()
+        enter does time_wait FIRST, then inflight); the inverse ordering would
+        hold permits during the sleep and deadlock the fuse on slow-backend
+        accumulation. Uses the injected ``sleep_fn`` seam so the spy actually
+        observes the call (the default ``time.sleep`` is bound at construction
+        and a later monkeypatch would not reach it).
         """
-        lim = QpsRateLimiter(qps=5, inflight_cap=3)  # interval=0.2s
         observations = [0]
         spy_error: list[BaseException] = []
-
         original_sleep = time.sleep
 
         def sleep_spy(duration: float) -> None:
@@ -345,8 +346,8 @@ class TestQpsRateLimiterOrdering:
             if duration > 0.01:
                 observations[0] += 1
                 try:
-                    # All inflight_cap permits must be available during the sleep:
-                    # no thread can be holding one while we park for rate dispatch.
+                    # All inflight_cap permits must be available during the
+                    # sleep: no thread can be holding one while we park.
                     assert lim._inflight._value == 3, (
                         f"inflight not full during rate-wait sleep: " f"_value={lim._inflight._value}, cap=3"
                     )
@@ -354,17 +355,13 @@ class TestQpsRateLimiterOrdering:
                     spy_error.append(e)
             original_sleep(duration)
 
-        monkeypatch.setattr("bench_core.admission.time.sleep", sleep_spy)
-
-        try:
-            with lim.slot("resume"):
-                time.sleep(0.01)
-            with lim.slot("resume"):
-                time.sleep(0.01)
-            with lim.slot("pause"):
-                time.sleep(0.01)
-        finally:
-            monkeypatch.undo()
+        lim = QpsRateLimiter(qps=5, inflight_cap=3, sleep_fn=sleep_spy)  # interval=0.2s
+        with lim.slot("resume"):
+            time.sleep(0.01)
+        with lim.slot("resume"):
+            time.sleep(0.01)
+        with lim.slot("pause"):
+            time.sleep(0.01)
 
         assert observations[0] >= 1, "spy did not observe any rate-wait sleep"
         if spy_error:
@@ -394,16 +391,130 @@ class TestQpsRateLimiterSnapshot:
             "dispatched_by_operation",
             "waiting",
             "waiting_by_operation",
+            # Fuse group (inflight callers).
+            "inflight_dispatched",
+            "average_inflight_wait_sec",
         }
         assert snap["qps"] == 10
         assert snap["inflight_cap"] == 3
         assert snap["in_flight"] == 0
         assert snap["dispatched"] == 0
+        assert snap["inflight_dispatched"] == 0
+        assert snap["average_inflight_wait_sec"] == 0.0
 
     def test_snapshot_dispatched_by_operation_initial_keys(self):
         lim = QpsRateLimiter(qps=10, inflight_cap=3)
         snap = lim.snapshot()
         assert set(snap["dispatched_by_operation"].keys()) >= {"resume", "pause", "cleanup"}
+
+
+# -------------------------------------------------------------- Clock seam
+class TestQpsRateLimiterClockSeam:
+    """Deterministic no-catch-up / inflight-fuse tests via the injected clock.
+
+    The clock/sleep_fn seams let unit tests assert EXACT returned curves instead
+    of flaky ``> 0`` inequalities: a fake clock the test advances manually
+    reproduces the limiter's no-catch-up dispatch spacing without real time.
+    """
+
+    @staticmethod
+    def _limiter(qps, *, inflight_cap=None, stop=None, advance_on_sleep=True):
+        """Build a limiter with a mutable fake clock + recording sleep.
+
+        ``advance_on_sleep``: when True (the realistic model), sleep_fn advances
+        the clock by ``delay``; when False, models sustained overload (simultaneous
+        arrival -- real time did not pass while parked).
+        """
+        now = [0.0]
+        sleeps: list[float] = []
+
+        def clock():
+            return now[0]
+
+        def sleep_fn(delay):
+            sleeps.append(delay)
+            if advance_on_sleep:
+                now[0] += delay
+
+        lim = QpsRateLimiter(qps=qps, inflight_cap=inflight_cap, stop_event=stop, clock=clock, sleep_fn=sleep_fn)
+        return lim, now, sleeps
+
+    def test_time_wait_noop_when_qps_none(self):
+        lim, _now, sleeps = self._limiter(qps=None)
+        assert lim.time_wait("resume") == 0.0
+        assert sleeps == []  # no sleep
+        assert lim.snapshot()["dispatched"] == 0  # no-op: not counted as a dispatch
+
+    def test_no_catch_up_dispatch_spacing(self):
+        """qps=10 -> interval=0.1. Three back-to-back calls with a clock that
+        advances on sleep: the 1st has a past deadline (delay 0); the 2nd/3rd
+        each wait exactly 0.1. Dispatches are 1/qps apart -- no burst."""
+        lim, _now, _sleeps = self._limiter(qps=10.0)
+        waits = [lim.time_wait("resume") for _ in range(3)]
+        assert waits[0] == 0.0
+        assert abs(waits[1] - 0.1) < 1e-9
+        assert abs(waits[2] - 0.1) < 1e-9
+        assert lim.snapshot()["dispatched"] == 3
+
+    def test_no_catch_up_wait_grows_under_sustained_overload(self):
+        """No-catch-up under sustained overload: with the clock NOT advancing
+        on sleep (simultaneous arrival, real time frozen), each later caller
+        waits its full turn -- the wait GROWS monotonically rather than bursting
+        to catch up. A catch-up limiter would keep the wait flat (= interval)."""
+        lim, _now, _sleeps = self._limiter(qps=10.0, advance_on_sleep=False)
+        waits = [lim.time_wait("resume") for _ in range(4)]
+        # 1st: past deadline -> 0; then 0.1, 0.2, 0.3 (deadline slides forward
+        # by interval each call; real time did not advance, so the gap grows).
+        assert waits[0] == 0.0
+        assert abs(waits[1] - 0.1) < 1e-9
+        assert abs(waits[2] - 0.2) < 1e-9
+        assert abs(waits[3] - 0.3) < 1e-9
+        # Monotonic non-decreasing (no catch-up burst).
+        assert waits == sorted(waits)
+
+    def test_inflight_noop_when_cap_none(self):
+        lim, _now, _sleeps = self._limiter(qps=None, inflight_cap=None)
+        ctx = lim.inflight("resume")
+        ctx.__enter__()
+        assert ctx.wait_sec == 0.0
+        ctx.__exit__(None, None, None)
+        assert lim.snapshot()["inflight_dispatched"] == 0  # no-op: not counted
+
+    def test_inflight_dispatched_and_released(self):
+        lim, _now, _sleeps = self._limiter(qps=None, inflight_cap=2)
+        ctx = lim.inflight("resume")
+        ctx.__enter__()
+        assert ctx.wait_sec < 0.001  # uncontended
+        assert lim.snapshot()["in_flight"] == 1  # one permit held
+        ctx.__exit__(None, None, None)
+        snap = lim.snapshot()
+        assert snap["in_flight"] == 0  # released
+        assert snap["inflight_dispatched"] == 1
+
+    def test_inflight_released_on_body_exception(self):
+        lim, _now, _sleeps = self._limiter(qps=None, inflight_cap=2)
+        ctx = lim.inflight("resume")
+        ctx.__enter__()
+        # Simulate the body raising; exit must still release the permit.
+        ctx.__exit__(ValueError, ValueError("boom"), None)
+        assert lim.snapshot()["in_flight"] == 0
+
+    def test_snapshot_per_knob_combination(self):
+        # qps set, inflight None -> inflight group zeroed.
+        lim_qps, _now, _sleeps = self._limiter(qps=10.0, inflight_cap=None)
+        lim_qps.time_wait("resume")
+        snap = lim_qps.snapshot()
+        assert snap["dispatched"] == 1
+        assert snap["inflight_dispatched"] == 0
+        assert snap["average_inflight_wait_sec"] == 0.0
+        # qps None, inflight set -> rate group zeroed.
+        lim_inf, _now2, _sleeps2 = self._limiter(qps=None, inflight_cap=2)
+        with lim_inf.inflight("resume"):
+            pass
+        snap2 = lim_inf.snapshot()
+        assert snap2["dispatched"] == 0  # no rate pacing
+        assert snap2["average_wait_sec"] == 0.0
+        assert snap2["inflight_dispatched"] == 1
 
 
 # -------------------------------------------------------------- Admission holder

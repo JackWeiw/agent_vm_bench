@@ -347,17 +347,17 @@ minimal install),依赖 series 的表只输出表头,不报错。
 | Overview | 标量(合并汇总,分组着色) | **单表汇总**(原 Admission & QPS / Throughput & overcommit / Retry impact 三张标量表已并入此表):Run(mode/total_count/running_concurrency/test_duration/wall_sec/steps/success/failed/overcommit_ratio)+ Throughput(steps_per_sec/effective_parallelism/exec_wall_utilization/concurrency)+ Admission & QPS(running_slot 的 maximum/active/peak_active/granted/avg_queue_wait/waiting + QPS 限流 qps/inflight_cap/in_flight/dispatched/avg_wait/max_wait + per-operation 分发/等待子表)+ Retry(retry_count/time_lost_to_retry_sec/retries_per_slice_p95 + per-operation retry_queued)。数据名称栏(A 列)填色加粗,分组用 banner 行分隔 |
 | Per-step timings | 池化百分位 | 全 fleet `latency`(=纯 exec 耗时)的 n/min/max/avg/p50/p95/p99,按 `action_type` 分桶;附 per-step 折图(ms) |
 | Lifecycle overhead | 池化百分位 | `resume` / `pause` / `slice_total` / `slot_held` / `interaction` 五段的百分位;附 per-step 折图(ms)。仅 lifecycle/trajectory 模式 |
-| Trajectory summary | **每 trajectory 一行** | n_steps + 各段 sum(slice_total/exec/resume/pause/interaction_total/slot_wait/resume_queue_wait/pause_queue_wait/running_slot_held)+ avg_slice(秒)。按 trajectory_id 升序;trajectory 模式额外附 create_sec/kill_sec 百分位 |
+| Trajectory summary | **每 trajectory 一行** | n_steps + 各段 sum(slice_total/exec/resume/pause/interaction_total/slot_contention_wait/resume_rate_pacing_wait/pause_rate_pacing_wait/running_slot_held)+ avg_slice(秒)。按 trajectory_id 升序;trajectory 模式额外附 create_sec/kill_sec 百分位 |
 | Step detail | **每 step 事件一行** | 见下表;含成功与 `slice_failed` 合成行,按 (trajectory, sandbox, step) 排序,冻结首行 + autofilter |
 | Concurrency states | 每秒一行 | 每秒各 sandbox 的主导状态计数(pausing/paused/resuming/exec/active)+ 折图 |
 | Gantt | 图 | 每 sandbox 的 phase 时间线(resume/exec/pause),内嵌 PNG;大 fleet 自动缩小行高 |
 | Snapshot sizes | 每 pause 一行 | logical/disk/inherited/cumulative MiB + generations/files;附折图。仅 `SnapshotSizeCapable`(aenv) |
 
-#### Step detail 列(20 列,秒)
+#### Step detail 列(26 列,秒)
 
 子段紧贴其父总量,使和不变式可在表内直接验证:
-`resume_sec == resume_queue_wait_sec + resume_api_sec + resume_ready_wait_sec`,
-`pause_sec == pause_queue_wait_sec + pause_api_sec`。
+`resume_sec == resume_inflight_wait_sec + resume_api_sec + resume_ready_wait_sec`(rate-pacing 属 PRE-lease,被排除),
+`pause_sec == pause_rate_pacing_wait_sec + pause_inflight_wait_sec + pause_api_sec`(rate-pacing 属 IN-lease,被计入)。
 
 | 列 | 含义 |
 |----|------|
@@ -367,43 +367,167 @@ minimal install),依赖 series 的表只输出表头,不报错。
 | `step_index` | 轨迹内 step 序号(0-based) |
 | `action_type` | `shell`/`bash`/`str_replace_editor`/`submit`/`finish`/`done` |
 | `slice_failed` | runner 合成的失败 slice(异常/stop_on_error);True 时下面时长列全 0 |
-| `resume_sec` | resume 总时长 = queue + api + ready_wait |
-| `resume_queue_wait_sec` | QPS 限流器排队等待(resume) |
+| `resume_sec` | resume 总时长 = inflight + api + ready_wait(rate-pacing 被排除,属 pre-lease) |
+| `resume_rate_pacing_wait_sec` | QPS 限流器 1/qps 速率等待(resume,PRE-lease:不计入 resume_sec / running_slot_held) |
 | `resume_api_sec` | 纯 resume API 调用耗时 |
 | `resume_ready_wait_sec` | resume 后的就绪探测等待(lifecycle/trajectory 模式;exec_only 为 0) |
 | `exec_sec` | 纯 `provider.exec()` 墙钟耗时(= Per-step timings 的 latency) |
-| `pause_sec` | pause 总时长 = queue + api |
-| `pause_queue_wait_sec` | QPS 限流器排队等待(pause) |
+| `pause_sec` | pause 总时长 = rate-pacing + inflight + api(rate-pacing 被计入,属 in-lease) |
+| `pause_rate_pacing_wait_sec` | QPS 限流器 1/qps 速率等待(pause,IN-lease:计入 pause_sec / running_slot_held) |
 | `pause_api_sec` | 纯 pause API 调用耗时 |
 | `slice_total_sec` | resume + exec + pause;失败 slice 为 0(被排除出百分位计算) |
 | `interaction_total_sec` | 一次交互的完整预算 = resume + exec + pause + delay + natural_delay + capacity_wait(≥ slice_total) |
-| `slot_contention_wait_sec` | 获取 running slot 的竞争等待(admission) |
+| `slot_contention_wait_sec` | 派生复合量 = natural_delay + capacity_wait(FIFO running-slot 竞争;admission) |
+| `natural_delay_sec` | ready-at-in-future 停留等待(步间间隔节流;slot_contention 的分量) |
+| `capacity_wait_sec` | FIFO running-slot 令牌竞争——真正的排队等待(slot_contention 的分量) |
+| `rate_pacing_wait_sec` | 单步速率等待合计 = resume_rate_pacing_wait_sec + pause_rate_pacing_wait_sec(1/qps 整形,RATE 控制;非 FIFO 排队,真排队见 capacity_wait_sec) |
+| `inflight_wait_sec` | 单步 inflight 熔断阻塞合计 = resume_inflight_wait_sec + pause_inflight_wait_sec(CONCURRENCY 控制) |
+| `resume_inflight_wait_sec` | resume 的 inflight 熔断阻塞(resume_sec 的分量) |
+| `pause_inflight_wait_sec` | pause 的 inflight 熔断阻塞(pause_sec 的分量) |
 | `running_slot_held_sec` | running slot 持有总时长(acquire→release) |
 | `exit_code` | `provider.exec()` 退出码 |
 | `timed_out` | 是否命中超时退出码 |
 
-#### Trajectory summary 列(12 列,秒,sum-based)
+#### Trajectory summary 列(21 列,秒,sum-based)
 
-每条轨迹(instance)一行,做**成本归因**——这条轨迹的总墙钟花在哪了(pause vs resume vs exec vs 排队等待)。用 **sum 而非百分位**:per-instance 的 per-step 分布已在 `Step detail`(按 trajectory_id 筛)和 `Lifecycle overhead`(池化)里,这里只回答"总量分解 + 浪费性等待"。`n_steps` 计所有 step 事件(含 `slice_failed` 失败步,失败步对 sum 贡献 0 但计入尝试数,故 avg_slice 反映 per-attempt 成本)。
+每条轨迹(instance)一行,做**成本归因**——这条轨迹的总墙钟花在哪了(pause vs resume vs exec vs 各等待分量)。用 **sum 而非百分位**:per-instance 的 per-step 分布已在 `Step detail`(按 trajectory_id 筛)和 `Lifecycle overhead`(池化)里,这里只回答"总量分解 + 浪费性等待"。`n_steps` 计所有 step 事件(含 `slice_failed` 失败步,失败步对 sum 贡献 0 但计入尝试数,故 avg_slice 反映 per-attempt 成本)。
 
 | 列 | 含义 |
 |----|------|
 | `trajectory_id` | 实例 |
 | `n_steps` | 该轨迹累计回放的 step 总数(含失败步) |
+| `n_failed` | 失败 step 数 |
+| `n_timeout` | 命中超时退出码的 step 数 |
+| `success_rate` | 成功率(0 step 时为 None) |
 | `slice_total_sum_s` | 总活跃墙钟 = resume + exec + pause(和不变式) |
 | `exec_sum_s` | 纯命令执行总耗时 |
 | `resume_sum_s` | resume 总耗时 |
 | `pause_sum_s` | pause 总耗时 |
 | `interaction_total_sum_s` | 含 delay + capacity_wait 的完整交互预算(≥ slice_total,超卖分析用) |
-| `slot_wait_sum_s` | admission slot 竞争等待总耗时 |
-| `resume_queue_wait_sum_s` | resume 的 QPS 限流排队总耗时 |
-| `pause_queue_wait_sum_s` | pause 的 QPS 限流排队总耗时 |
+| `slot_contention_wait_sum_s` | admission slot 竞争等待总耗时(派生 = natural_delay + capacity_wait) |
+| `natural_delay_sum_s` | ready-at-in-future 停留等待总耗时(slot_contention 的分量) |
+| `capacity_wait_sum_s` | FIFO running-slot 令牌竞争总耗时(slot_contention 的分量) |
+| `rate_pacing_wait_sum_s` | 速率等待总耗时 = resume_rate_pacing + pause_rate_pacing(1/qps 整形) |
+| `inflight_wait_sum_s` | inflight 熔断阻塞总耗时 = resume_inflight + pause_inflight |
+| `resume_rate_pacing_wait_sum_s` | resume 的 QPS 限流 1/qps 速率等待总耗时(pre-lease) |
+| `pause_rate_pacing_wait_sum_s` | pause 的 QPS 限流 1/qps 速率等待总耗时(in-lease) |
+| `resume_inflight_wait_sum_s` | resume 的 inflight 熔断阻塞总耗时(resume 的分量) |
+| `pause_inflight_wait_sum_s` | pause 的 inflight 熔断阻塞总耗时(pause 的分量) |
 | `running_slot_held_sum_s` | running slot 持有总时长(slot 占用/超卖粒度) |
 | `avg_slice_s` | slice_total_sum / n_steps,典型单步成本 |
 
-> resume/pause 更细的子段(api_sec / ready_wait / queue_wait)per-step 值见 `Step detail`;
+> resume/pause 更细的子段(api_sec / ready_wait / inflight_wait / rate_pacing_wait)per-step 值见 `Step detail`;
 > per-second 并发状态见 `Concurrency states`;snapshot 内存见 `Snapshot sizes`。
 > per-instance 的 per-step 百分位分布不在本表——按 `trajectory_id` 在 `Step detail` 筛即可,
 > 池化百分位见 `Lifecycle overhead` / `Per-step timings`。
 > host 级系统资源(CPU/内存/NUMA)在独立的 vm_monitor `resource_report.xlsx`(`monitor.merge_report: false` 时)或合并进
 > 本工作簿的 `VM_Stats`/`NUMA_Overview`/`DevKit_TopDown` sheet(`merge_report: true` 时)。
+
+### 8.5 超卖扫描 (`oversub-bench`)
+
+`oversub-bench` driver(`src/bench_core/oversub.py`)把 replay kernel 跑过一组内存/CPU 超卖比:`running_concurrency`(N)固定(取自 base config),`total_count = k×N` 每个 trial 缩放。每个 trial 一次 `bench-core` 调用;driver 读每个 trial 的机器可读 `run_summary.json`,聚合 per-trial + per-ratio 退化曲线。
+
+**分层:kernel 出原始事实,driver 算 valid。** driver 不导入任何 kernel 数据路径内部(lifecycle / admission / stats / observability)——只用 CLI、YAML schema、`run_summary.json` schema 和共享的 `setup_logging` 助手。kernel 不知道自己是"扫描的第 k 个 ratio",它只输出发生了什么,由 driver 判定 trial 是否跑完。
+
+#### 调用
+
+```
+oversub-bench --sweep-config config/oversub/lifecycle-1to3.yaml
+oversub-bench --sweep-config config/oversub/lifecycle-1to3.yaml --ratios 4   # 覆盖单个旋钮
+oversub-bench --config config/common/replay.yaml --provider aenv --ratios 1,2,3   # 无 sweep-config
+```
+
+优先级:**CLI 旗标 > sweep-config > 内置默认**。`--sweep-config` 承载所有旋钮 + `base_config`;`--config` 仅在没有 sweep-config 设 `base_config` 时必填。完整旗标集见 `oversub-bench --help`(`--running-concurrency`、`--modes`、`--repeats`、`--test-duration`、`--failure-tolerance`、`--cooldown-sec`、`--cleanup-between-trials`、`--trial-timeout-sec`、`--output-root`、`--reuse`、`--stop-on-failure`、`--dry-run`、`--no-vm-monitor`、`--bench-core-bin`)。
+
+#### sweep-config 键
+
+`config/oversub/template.yaml` 是带注释的模板;`lifecycle-1to3.yaml` 是现成的 aenv lifecycle 1:1/1:2/1:3 扫描。复制其一再改。未知键**会被拒绝**(像 `repeat:` vs `repeats:` 这种笔误会直接报错)。
+
+| 键 | 默认 | 含义 |
+|-----|---------|---------|
+| `base_config` | —(必填) | base replay 压力 profile;每个 trial 深拷贝 |
+| `provider` | `aenv` | `{aenv, e2b, docker, fake}` |
+| `running_concurrency` | base `replay.running_concurrency` | N 个 running slot(跨 ratio 固定) |
+| `ratios` | `1,2,3` | k 值(list 或 `"1,2,3"`);`total_count = k×N` |
+| `modes` | `lifecycle,exec_only` | 要扫描的 replay mode(每个一条曲线) |
+| `repeats` | `1` | 每个 `(mode, ratio)` 的重复次数(取中位) |
+| `test_duration` | base `test.duration`(600) | 每个 trial 的硬上限(秒) |
+| `failure_tolerance` | `0.0` | trial 判 valid 时允许的最大 `failure_rate` |
+| `cooldown_sec` | `30` | trial 之间的沉淀时间 |
+| `cleanup_between_trials` | `on` | trial 前跑 `bench-core --cleanup` 拆除残留 |
+| `trial_timeout_sec` | `0` | 每个 trial 的外层墙钟;`0` = 关 |
+| `output_root` | `results/oversub/oversub-N{N}-{ts}/` | 扫描输出目录 |
+| `reuse` | `false` | 跳过已完成的 valid trial(重启安全) |
+| `stop_on_failure` | `false` | 遇首个 invalid trial 即停 |
+| `no_vm_monitor` | `false` | 透传 `--no-vm-monitor` 给 bench-core |
+| `bench_core_bin` | `[bench-core]` | kernel 子进程命令(测试指向 stub) |
+
+#### 每个 trial 的 config 覆盖
+
+driver 深拷贝 `base_config` 并只改写超卖字段;其余透传:
+
+| 字段 | 改成 | 原因 |
+|-------|--------|-----|
+| `sandbox.total_count` | `k×N` | 超卖目标 |
+| `replay.running_concurrency` | `N`(固定) | 基线 slot 数 |
+| `replay.mode` | 扫描的 mode | lifecycle / exec_only / trajectory |
+| `test.round_size` | `k×N` | 所有 k×N 沙箱一组并发——不设的话,k≥2 会静默地按 N 一组串行多组,破坏超卖动态 |
+| `test.duration` | `test_duration` | 时间上限 |
+| `report.output_dir` / `report.filename_prefix` | 每 trial 的目录/前缀 | 隔离各 trial 产物 |
+
+`test.round_count`(工作量旋钮:跑几遍整个 fleet)**透传**。trial 在两者先到时结束:`round_count` 轮 OR `test.duration` 秒(kernel 自带的先到为准语义)。`round_count: 1`(base 默认)= 有界单遍 trial;`0` = 持续到 duration 的窗口。
+
+#### `run_summary.json`(kernel → driver 契约)
+
+每个 trial 写 `{prefix}_run_summary.json`——kernel 与 driver 之间唯一的契约。只含原始事实(kernel 绝不为 driver 重算它需要的指标):
+
+| 字段 | 含义 |
+|-------|---------|
+| `schema_version` | `1` |
+| `replay_mode`、`provider` | 哪个 mode / 后端 |
+| `started_at`、`completed_at`(+ `_epoch`) | ISO 本地 + epoch 秒 |
+| `test_duration`、`wall_sec` | 配置上限 vs 实际墙钟 |
+| `total_count`、`running_concurrency`、`overcommit_ratio` | 该 trial 的 k×N / N / k |
+| `throughput` | `total, succeeded, failed, total_steps, steps_per_sec, tasks_per_sec`(`total` = 跑过的沙箱数;`succeeded` = 跑完全部 step 的轨迹数) |
+| `admission` | `maximum, peak_active, granted, avg_queue_wait_sec, control_qps, control_dispatched`——exec_only 为 `null`(无 admission 控制器) |
+| `lifecycle_overhead` | `pause_sec_sum, resume_sec_sum, pct_of_slice_total`——仅 lifecycle/trajectory |
+| `paths` | `report, obs_xlsx, lifecycle_series, trajectory_index, vm_monitor_dir` |
+| `error` | trial 出错时的错误串 |
+
+#### 有效性(`compute_valid`)
+
+一个 trial(跑一遍 k×N fleet,`round_count=1`)在"跑(接近)满 running fleet 且未过量准入"时判 **valid**:
+
+- `return_code == 0`(kernel 子进程成功);
+- `throughput.total >= 0.9 * N`(跑满了 N 个 running slot 的大多数——崩溃/早退在此失败;`test.duration` 上限会盖住一个卡住的 run,随后也在此失败)。mode 无关:lifecycle `total` ≈ k×N、exec_only `total` ≈ N,健康 run 都 ≥ 0.9×N;
+- `admission.peak_active <= N`(从不超过 N 并发——exec_only 跳过);
+- `failure_rate <= failure_tolerance`(可配置的包装噪声容忍)。
+
+`valid` 是"粗失败 / 过量准入"门槛,**不是**"每条轨迹都成功"——逐轨迹完成度在 `trajectory-detail.csv` 看(`trial-summary.csv` 里 `total` 对 `target_count`)。
+
+#### 输出
+
+每个 trial 后写入(这样被杀的 driver 也留下完整部分结果)到 `--output-root`(默认 `results/oversub/oversub-N{N}-{ts}/`):
+
+| 文件 | 粒度 | 关键列 |
+|------|-------------|-------------|
+| `trial-summary.csv` | 每个 `(mode, ratio, repeat)` trial 一行 | `total, succeeded, failed, failure_rate, peak_active, wall_sec, tasks_per_sec, steps_per_sec, lifecycle_overhead_pct, return_code, valid, target_count, test_duration` |
+| `ratio-summary.csv` | 每个 `(mode, ratio)` 一行(跨 repeat 取中位) | `attempted, successful, median_wall_sec, median_tasks_per_sec, time_degradation_vs_1_1_pct, throughput_gain_vs_1_1_pct` |
+| `trajectory-detail.csv` | 每 trial 每条轨迹一行(取自 `trajectories/index.json`) | `trajectory_id, sandbox_index, n_steps, n_failed, success_rate, elapsed_sec` + 18 个 `*_sec` 分解列(exec/resume/pause/requested_delay/create/kill/slice_total/interaction_total/slot_contention_wait/natural_delay/capacity_wait/rate_pacing_wait/inflight_wait/resume_rate_pacing_wait/pause_rate_pacing_wait/resume_inflight_wait/pause_inflight_wait/running_slot_held) |
+| `benchmark-report.json` | 完整机器可读报告 | `configuration, trials, ratio_summary, trajectory_details` |
+
+退化在**一个 mode 内**对该 mode 的 `k=1` 基线计算,所以 lifecycle 和 exec_only 各得一条曲线(内存 overcommit 开销 vs CPU 超卖退化)。某 mode 无 `k=1` trial 时,退化列默认 `0.0`。
+
+#### trial 顺序、reuse、cooldown
+
+- **顺序:** `for mode, for ratio, for repeat`——自然的退化曲线(k 在一个 mode 内递增)。
+- **`reuse`:** 跳过其既有 `run_summary.json` 已 valid 的 `(mode, ratio, repeat)`——Ctrl-C 后重启从上一个 good trial 继续。
+- **`cooldown_sec`:** trial 之间的沉淀时间(首个 trial 和 `--dry-run` 时跳过)。
+- **`cleanup_between_trials: on`:** 每 trial 前跑 `bench-core --cleanup`(拆除残留),免得上一 ratio 的幸存者污染下一个。
+- **`--dry-run`:** 打印每个 `trial.yaml` + bench-core 命令并写空输出——不跑子进程。
+
+#### 中断 vs 超时的 trial
+
+被 Ctrl-C / driver 发起的 SIGTERM 中途打断的 trial **不丢弃**——kernel 的 SIGTERM 协作 `finally` flush 出一份**部分** `run_summary.json` + `trajectories/index.json`(产物经 temp-file + `os.replace` 原子写,所以 flush 中途再来一次 SIGTERM,已写的文件仍完好),driver 把它捕获为一行,**`return_code == 130`** 且 `valid == False`。其 `total` / `wall_sec` 只反映打断前跑掉的部分——这本身就是退化信号(一个 ratio 在停滞窗口里卡在 200/1152 条轨迹,正是超卖崩溃点)。被打断的 trial **结束整个扫描**(driver 以 exit 130 停);而**超时**的 trial(非零 `return_code` ≠ 130)**不会**——扫描继续下一个 ratio,除非设了 `--stop-on-failure`。
+
+> `_interrupted` 是内部行哨兵(非 CSV 列——`DictWriter` 丢弃它),`main()` 读它来区分"停扫描"(用户中断)还是"继续"(trial 超时)。下游分析脚本应按落盘的 `return_code == 130` 列判断,而非内存哨兵。

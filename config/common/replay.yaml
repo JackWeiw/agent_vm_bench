@@ -89,7 +89,7 @@ replay:
   # template_manifest: "trajectories/swe-bench/inst463-trajectory-templates.json"
   workdir: "/"                            # exec cwd (no shell wrap); "/" = run at root
   env: {}                                   # optional {PAGER: cat, ...} via exec env param
-  action_timeout: 300                       # per-action exec timeout (lifecycle timeouts below)
+  action_timeout: 10                       # per-action exec timeout (lifecycle timeouts below)
   delay_scale: 1.0                          # 1.0=realtime; 0=no delay; 0.1=10x compressed
   stop_on_error: false                      # abort current trajectory, advance to next (not the sandbox)
 
@@ -101,8 +101,19 @@ replay:
 
   running_concurrency: 384    # N running slots. Stays at the baseline VM count for any
                                # ratio 1:k; total_count grows to k*384.
-  control_plane_qps: 1000.0           # lifecycle control-plane QPS; omit = unlimited
-  control_plane_inflight_cap: 1024     # max concurrent lifecycle calls; omit = min(64, total_count)
+  # The two control-plane knobs below are INDEPENDENT, not a pair: omitting one
+  # bypasses only its own concern. Default (both omitted): no rate shaping, no
+  # concurrency fuse -- the kernel paces nothing. Enable either alone or both.
+  # control_plane_qps: 1000.0          # rate-pacing 1/qps dispatch shaping (a RATE
+                                        # control). Omit = unlimited (default). Enable to
+                                        # smooth bursty control-plane traffic; calibrate
+                                        # above ~3 * running_concurrency / slice_duration so
+                                        # it does not bottleneck steady-state throughput.
+  # control_plane_inflight_cap: 1024    # concurrency fuse: max concurrent in-flight
+                                        # lifecycle calls (a CONCURRENCY control, distinct
+                                        # from qps spacing). Omit = no fuse (default).
+                                        # Enable to bound simultaneous in-flight API calls
+                                        # against a slow backend or limited control-plane.
   pause_duration_sec: 0.0     # extra pause beyond recorded think-time
   ready_probe: true           # post-resume `true` probe (lifecycle only)
   lifecycle_retries: 2        # transient resume/pause retry attempts (0 = no retry)

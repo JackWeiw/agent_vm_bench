@@ -215,11 +215,22 @@ def _enrich_step(index: int, ev: dict, paused_sec: float) -> dict:
         "slice_total_sec": _f("slice_total_sec"),
         "interaction_total_sec": _f("interaction_total_sec"),
         "slot_contention_wait_sec": _f("slot_contention_wait_sec"),
-        "resume_queue_wait_sec": _f("resume_queue_wait_sec"),
+        # Wait-decoupling split (the four independent components + per-phase
+        # inflight). slot_contention_wait_sec stays as the natural_delay +
+        # capacity_wait composite; rate_pacing/inflight are the QPS limiter's
+        # rate-shaping / fuse-block contributions (resume rate-pacing is
+        # pre-lease, so NOT in resume_sec; pause rate-pacing is in-lease).
+        "natural_delay_sec": _f("natural_delay_sec"),
+        "capacity_wait_sec": _f("capacity_wait_sec"),
+        "rate_pacing_wait_sec": _f("rate_pacing_wait_sec"),
+        "inflight_wait_sec": _f("inflight_wait_sec"),
+        "resume_rate_pacing_wait_sec": _f("resume_rate_pacing_wait_sec"),
         "resume_api_sec": _f("resume_api_sec"),
         "resume_ready_wait_sec": _f("resume_ready_wait_sec"),
-        "pause_queue_wait_sec": _f("pause_queue_wait_sec"),
+        "resume_inflight_wait_sec": _f("resume_inflight_wait_sec"),
+        "pause_rate_pacing_wait_sec": _f("pause_rate_pacing_wait_sec"),
         "pause_api_sec": _f("pause_api_sec"),
+        "pause_inflight_wait_sec": _f("pause_inflight_wait_sec"),
         "running_slot_held_sec": _f("running_slot_held_sec"),
     }
 
@@ -256,8 +267,14 @@ def _index_row(rec: dict, sanitized: str) -> dict:
             "kill": rec["kill_sec"],
             "interaction_total": sums["interaction_total_sec"],
             "slot_contention_wait": sums["slot_contention_wait_sec"],
-            "resume_queue_wait": sums["resume_queue_wait_sec"],
-            "pause_queue_wait": sums["pause_queue_wait_sec"],
+            "natural_delay": sums["natural_delay_sec"],
+            "capacity_wait": sums["capacity_wait_sec"],
+            "rate_pacing_wait": sums["rate_pacing_wait_sec"],
+            "inflight_wait": sums["inflight_wait_sec"],
+            "resume_rate_pacing_wait": sums["resume_rate_pacing_wait_sec"],
+            "pause_rate_pacing_wait": sums["pause_rate_pacing_wait_sec"],
+            "resume_inflight_wait": sums["resume_inflight_wait_sec"],
+            "pause_inflight_wait": sums["pause_inflight_wait_sec"],
             "running_slot_held": sums["running_slot_held_sec"],
         },
         "create_error_type": rec["create_error_type"],

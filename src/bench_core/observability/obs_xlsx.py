@@ -34,6 +34,68 @@ if TYPE_CHECKING:
 # would drop every chart and PNG embedded by this renderer).
 _MERGE_SHEETS = ("VM_Stats", "NUMA_Overview", "DevKit_TopDown")
 
+# Gantt render cost scales with total phase segments (a 1:1/384-sandbox
+# lifecycle run yields ~600k; drawing one ax.barh Patch per segment hung the
+# 1:1 run for 24h). broken_barh (one PolyCollection per sandbox/phase) kills
+# the per-Patch cost; this cap bounds the rectangle count itself, stride-
+# sampling per sandbox when exceeded. The Step detail sheet keeps the full-
+# resolution timeline, so the overview Gantt losing resolution at extreme
+# scale is acceptable.
+MAX_GANTT_SEGMENTS = 200_000
+
+
+def _cap_gantt_segments(
+    rows: list[tuple[str, list[tuple[float, float, str]]]],
+    max_segments: int = MAX_GANTT_SEGMENTS,
+) -> list[tuple[str, list[tuple[float, float, str]]]]:
+    """Bound total Gantt segments via per-sandbox stride-sampling when over cap.
+
+    Returns the input unchanged when the total is within the bound (the common
+    case) or when the sandbox count itself meets/exceeds the cap (each sandbox
+    needs >=1 segment, so nothing can be dropped without hiding a row).
+    Otherwise strides each sandbox's segments so the result total stays at or
+    below the cap: with ``stride = ceil(total / (cap - n))`` the per-sandbox
+    ceil-rounding slack sums to ``<= total/stride + n <= cap``. ``[::stride]``
+    keeps index 0, so each sandbox keeps its earliest segment + row order.
+    """
+    n = len(rows)
+    total = sum(len(segs) for _, segs in rows)
+    if total <= max_segments or n >= max_segments:
+        return rows
+    stride = (total + (max_segments - n) - 1) // (max_segments - n)
+    return [(name, segs[::stride]) for name, segs in rows]
+
+
+# Per-step line charts (Per-step timings + Lifecycle overhead sheets) are
+# downsampled to this many points. An uncapped reference makes openpyxl inline
+# a numCache for every referenced cell at save time -- a 1:1/384-sandbox run
+# yields ~150k steps, so each sheet's chart spanned ~150k rows and wb.save
+# exploded. The Step detail sheet keeps every step (filterable), so capping the
+# overview chart loses no data.
+MAX_PERSTEP_POINTS = 2000
+
+
+def _downsample_indices(n: int, max_points: int = MAX_PERSTEP_POINTS) -> list[int]:
+    """Indices to stride-sample a length-n series down to <= max_points.
+
+    Returns ``range(n)`` (every index) when ``n <= max_points``. Otherwise
+    strides by ``ceil(n / max_points)`` and forces the last index (``n-1``) in
+    so the chart x-range still spans the full run; if that endpoint append
+    overshoots by one, the second-to-last sampled index is dropped so the result
+    stays within the cap while always keeping first + last. The result is
+    monotonic. The same index list is reused across the resume/pause/slice
+    series so the Lifecycle overhead chart's series stay aligned.
+    """
+    if n <= max_points:
+        return list(range(n))
+    stride = (n + max_points - 1) // max_points
+    idxs = list(range(0, n, stride))
+    if idxs[-1] != n - 1:
+        idxs.append(n - 1)
+    if len(idxs) > max_points:  # the endpoint append overflowed by one
+        del idxs[-2]
+    return idxs
+
 
 def _write_table(ws, headers: list[str], rows: list[list]) -> int:
     """Write a header row (bold) + data rows to a worksheet; return the row the
@@ -55,6 +117,25 @@ def _write_table(ws, headers: list[str], rows: list[list]) -> int:
     for row in rows:
         ws.append(row)
     return header_row
+
+
+def _attach_rate_pacing_notes(ws, headers: list[str], header_row: int) -> None:
+    """Pin a concise fixed header note on the two rate-pacing columns flagging the
+    pre-lease / in-lease归属, so a reader does not sum resume rate-pacing into
+    ``resume_sec`` (resume excludes it; pause includes it). A cell comment is the
+    non-displacing Excel-native annotation -- the table layout (header row 1, data
+    from row 2, autofilter, freeze panes) is preserved.
+    """
+    resume_col = headers.index("resume_rate_pacing_wait_sec") + 1
+    pause_col = headers.index("pause_rate_pacing_wait_sec") + 1
+    ws.cell(header_row, resume_col).comment = Comment(
+        "PRE-lease: excluded from resume_sec + running_slot_held (sandbox paused, no memory demand).",
+        "bench-core",
+    )
+    ws.cell(header_row, pause_col).comment = Comment(
+        "IN-lease: included in pause_sec + running_slot_held (sandbox holds memory until pause confirms).",
+        "bench-core",
+    )
 
 
 def _add_line_chart(
@@ -329,7 +410,11 @@ class XlsxReportRenderer:
             rows.append(_pcts_row(act, by_action[act]))
         _write_table(ws, ["bucket", "n", "min", "max", "avg", "p50", "p95", "p99"], rows)
         # Per-step detail rows (latency per step, concatenated across sandboxes).
-        step_rows = [[i + 1, round(v * 1000, 1)] for i, v in enumerate(all_lat)]
+        # Downsampled: openpyxl inlines a numCache for every charted cell at save
+        # time, so an uncapped 150k-point chart makes wb.save explode. The Step
+        # detail sheet keeps every step; the x-axis still uses real step indices.
+        idxs = _downsample_indices(len(all_lat))
+        step_rows = [[i + 1, round(all_lat[i] * 1000, 1)] for i in idxs]
         if step_rows:
             ws.append([])
             ws.append(["step_index", "latency_ms"])
@@ -377,7 +462,10 @@ class XlsxReportRenderer:
             hdr = ws.max_row
             for c in ws[hdr]:
                 c.font = Font(bold=True)
-            for i in range(n):
+            # Same downsampled indices across all three series so the chart's
+            # resume/pause/slice lines stay aligned (see Per-step timings note).
+            idxs = _downsample_indices(n)
+            for i in idxs:
                 ws.append(
                     [
                         i + 1,
@@ -392,7 +480,7 @@ class XlsxReportRenderer:
                 "ms",
                 1,
                 [2, 3, 4],
-                n,
+                len(idxs),
                 f"A{ws.max_row + 2}",
                 header_row=hdr,
                 first_data_row=hdr + 1,
@@ -429,9 +517,15 @@ class XlsxReportRenderer:
                     "resume_sum_s",
                     "pause_sum_s",
                     "interaction_total_sum_s",
-                    "slot_wait_sum_s",
-                    "resume_queue_wait_sum_s",
-                    "pause_queue_wait_sum_s",
+                    "slot_contention_wait_sum_s",
+                    "natural_delay_sum_s",
+                    "capacity_wait_sum_s",
+                    "rate_pacing_wait_sum_s",
+                    "inflight_wait_sum_s",
+                    "resume_rate_pacing_wait_sum_s",
+                    "pause_rate_pacing_wait_sum_s",
+                    "resume_inflight_wait_sum_s",
+                    "pause_inflight_wait_sum_s",
                     "running_slot_held_sum_s",
                     "avg_slice_s",
                 ]
@@ -477,7 +571,7 @@ class XlsxReportRenderer:
                     DataBarRule(start_type="min", end_type="max", color="638EC6"),
                 )
                 ws.conditional_formatting.add(
-                    _col_range(headers.index("slot_wait_sum_s") + 1),
+                    _col_range(headers.index("slot_contention_wait_sum_s") + 1),
                     DataBarRule(start_type="min", end_type="max", color="638EC6"),
                 )
                 ws.conditional_formatting.add(
@@ -515,9 +609,17 @@ class XlsxReportRenderer:
         Duration columns are seconds (matching the reference step-detail.csv), not
         the milliseconds used by the Per-step/Lifecycle chart sheets. The
         sub-segments sit next to their parent total so the sum invariants are
-        visually verifiable: ``resume_sec == resume_queue_wait_sec +
-        resume_api_sec + resume_ready_wait_sec`` and ``pause_sec ==
-        pause_queue_wait_sec + pause_api_sec``.
+        visually verifiable. Post-decoupling:
+
+        * ``resume_sec == resume_inflight_wait_sec + resume_api_sec +
+          resume_ready_wait_sec`` -- resume rate-pacing
+          (``resume_rate_pacing_wait_sec``) is PRE-lease, so it is NOT part of
+          ``resume_sec`` (the decoupling: it cannot inflate running_slot_held).
+        * ``pause_sec == pause_rate_pacing_wait_sec + pause_inflight_wait_sec +
+          pause_api_sec`` -- pause rate-pacing is IN-lease (sandbox running
+          until pause confirms), so it IS part of ``pause_sec``.
+        * ``slot_contention_wait_sec == natural_delay_sec + capacity_wait_sec``
+          (the composite; the four-component split is the columns below it).
         """
         ws = wb.create_sheet("Step detail")
         headers = [
@@ -528,22 +630,32 @@ class XlsxReportRenderer:
             "action_type",
             "slice_failed",
             "resume_sec",
-            "resume_queue_wait_sec",
+            "resume_rate_pacing_wait_sec",
             "resume_api_sec",
             "resume_ready_wait_sec",
             "exec_sec",
             "pause_sec",
-            "pause_queue_wait_sec",
+            "pause_rate_pacing_wait_sec",
             "pause_api_sec",
             "slice_total_sec",
             "interaction_total_sec",
             "slot_contention_wait_sec",
+            # Wait-decomposition components (the four independent waits).
+            # slot_contention_wait_sec stays as the natural_delay+capacity_wait
+            # composite; the four below are the split. resume_sec excludes
+            # rate-pacing (pre-lease); pause_sec includes it (in-lease).
+            "natural_delay_sec",
+            "capacity_wait_sec",
+            "rate_pacing_wait_sec",
+            "inflight_wait_sec",
+            "resume_inflight_wait_sec",
+            "pause_inflight_wait_sec",
             "running_slot_held_sec",
             "exit_code",
             "timed_out",
         ]
         if self.series_path is None or not Path(self.series_path).exists():
-            _write_table(ws, headers, [])
+            _attach_rate_pacing_notes(ws, headers, _write_table(ws, headers, []))
             return
         from bench_core.observability.lifecycle_series import load_events
 
@@ -560,16 +672,22 @@ class XlsxReportRenderer:
                     ev.get("action_type") or "",
                     bool(ev.get("slice_failed")),
                     _round_or_none(ev.get("resume_sec")),
-                    _round_or_none(ev.get("resume_queue_wait_sec")),
+                    _round_or_none(ev.get("resume_rate_pacing_wait_sec")),
                     _round_or_none(ev.get("resume_api_sec")),
                     _round_or_none(ev.get("resume_ready_wait_sec")),
                     _round_or_none(ev.get("exec_sec")),
                     _round_or_none(ev.get("pause_sec")),
-                    _round_or_none(ev.get("pause_queue_wait_sec")),
+                    _round_or_none(ev.get("pause_rate_pacing_wait_sec")),
                     _round_or_none(ev.get("pause_api_sec")),
                     _round_or_none(ev.get("slice_total_sec")),
                     _round_or_none(ev.get("interaction_total_sec")),
                     _round_or_none(ev.get("slot_contention_wait_sec")),
+                    _round_or_none(ev.get("natural_delay_sec")),
+                    _round_or_none(ev.get("capacity_wait_sec")),
+                    _round_or_none(ev.get("rate_pacing_wait_sec")),
+                    _round_or_none(ev.get("inflight_wait_sec")),
+                    _round_or_none(ev.get("resume_inflight_wait_sec")),
+                    _round_or_none(ev.get("pause_inflight_wait_sec")),
                     _round_or_none(ev.get("running_slot_held_sec")),
                     ev.get("exit_code"),
                     bool(ev.get("timed_out")),
@@ -578,7 +696,7 @@ class XlsxReportRenderer:
         # Sort by trajectory, then sandbox, then step -- so each trajectory's
         # steps read top-to-bottom in execution order.
         rows.sort(key=lambda r: (str(r[0]), r[1] if r[1] is not None else 0, r[3] if r[3] is not None else 0))
-        _write_table(ws, headers, rows)
+        _attach_rate_pacing_notes(ws, headers, _write_table(ws, headers, rows))
         if rows:
             # Freeze the header + enable autofilter so the user can pivot by
             # trajectory / action_type / exit_code without re-sorting in Excel.
@@ -618,7 +736,7 @@ class XlsxReportRenderer:
         from bench_core.observability.lifecycle_reconstruct import gantt_segments
         from bench_core.observability.lifecycle_series import load_events
 
-        rows = gantt_segments(load_events(Path(self.series_path)))
+        rows = _cap_gantt_segments(gantt_segments(load_events(Path(self.series_path))))
         if not rows:
             ws.append(["no step events"])
             return
@@ -631,8 +749,16 @@ class XlsxReportRenderer:
         fig, ax = plt.subplots(figsize=(28, fig_h))
         t0 = min(a for _, segs in rows for a, _, _ in segs)
         for yi, (name, segs) in enumerate(rows):
+            # Group segments by phase -> one broken_barh (PolyCollection) per phase,
+            # not one Patch per segment. A 1:1/384-sandbox lifecycle run yields
+            # ~600k segments; 600k ax.barh Patches hung the report for 24h.
+            # broken_barh vectorizes the same rectangles into a few collections.
+            by_phase: dict[str, list[tuple[float, float]]] = {ph: [] for ph in color}
             for a, b, ph in segs:
-                ax.barh(yi, b - a, left=a - t0, height=0.75, color=color[ph], edgecolor="none", zorder=3)
+                by_phase[ph].append((a - t0, b - a))
+            for ph, xranges in by_phase.items():
+                if xranges:
+                    ax.broken_barh(xranges, (yi - 0.375, 0.75), facecolors=color[ph], edgecolor="none", zorder=3)
         ax.set_yticks(range(n))
         ax.set_yticklabels([r[0] for r in rows])
         # Cramped fleets: shrink the per-row label so 768 rows stay legible.

@@ -321,8 +321,8 @@ def test_write_outputs_trajectory_detail_has_rows(tmp_path):
                     "kill": 0.05,
                     "interaction_total": 1.4,
                     "slot_contention_wait": 0.0,
-                    "resume_queue_wait": 0.0,
-                    "pause_queue_wait": 0.0,
+                    "resume_rate_pacing_wait": 0.0,
+                    "pause_rate_pacing_wait": 0.0,
                     "running_slot_held": 1.2,
                 },
                 "create_error_type": None,
@@ -364,6 +364,14 @@ def test_write_outputs_trajectory_detail_has_rows(tmp_path):
     assert r["create_sec"] == "0.05"
     assert r["kill_sec"] == "0.05"
     assert r["running_slot_held_sec"] == "1.2"
+    # The renamed rate-pacing short keys must surface end-to-end: present in the
+    # index.json time_breakdown_sec (the canonical caliber) and emitted as their
+    # own trajectory-detail CSV columns; no legacy *_queue_wait names remain.
+    bd = idx["trajectories"][0]["time_breakdown_sec"]
+    assert "resume_rate_pacing_wait" in bd and "pause_rate_pacing_wait" in bd
+    assert "resume_queue_wait" not in bd and "pause_queue_wait" not in bd
+    assert "resume_rate_pacing_wait_sec" in r and "pause_rate_pacing_wait_sec" in r
+    assert "resume_queue_wait_sec" not in r and "pause_queue_wait_sec" not in r
     # benchmark-report.json trajectory_details also populated
     import json as _j
 
@@ -468,7 +476,7 @@ idx = {{'n_trajectories': 1, 'trajectories': [
    'success_rate':1.0,'elapsed_sec':1.0,
    'time_breakdown_sec':{{'slice_total':0.8,'exec':0.5,'resume':0.1,'pause':0.2,
      'requested_delay':0.1,'create':0.05,'kill':0.05,'interaction_total':0.9,
-     'slot_contention_wait':0.0,'resume_queue_wait':0.0,'pause_queue_wait':0.0,
+     'slot_contention_wait':0.0,'resume_rate_pacing_wait':0.0,'pause_rate_pacing_wait':0.0,
      'running_slot_held':0.8}},
    'create_error_type':None,'kill_error_type':None,'file':'t0/replay_result.json'}}]}}
 (run_dir / 'trajectories' / 'index.json').write_text(json.dumps(idx, indent=2)+'\\n')
@@ -652,6 +660,38 @@ def test_shipped_example_sweep_config_loads():
     assert cfg["modes"] == ["lifecycle", "exec_only"]
     # template should load too (every key must be known).
     load_sweep_config(repo / "config" / "oversub" / "template.yaml")
+
+
+def test_main_default_trial_timeout_is_nonzero(tmp_path):
+    """The built-in trial_timeout_sec default is nonzero: a safety net so a
+    hung kernel subprocess cannot block the sweep indefinitely. A 1:1/384-
+    sandbox run hung for ~24h because the shipped config set 0 (= off) and
+    _run_subprocess did proc.wait(timeout=None). 0 stays a valid explicit
+    opt-out; the default just is no longer 0."""
+    base = tmp_path / "base.yaml"
+    base.write_text(yaml.safe_dump(_base_yaml_dict(), sort_keys=False), encoding="utf-8")
+    sweep = tmp_path / "sweep.yaml"
+    # no trial_timeout_sec key -> resolves to the built-in default
+    sweep.write_text(
+        yaml.safe_dump({"base_config": str(base), "ratios": [1], "modes": ["lifecycle"]}, sort_keys=False),
+        encoding="utf-8",
+    )
+    out_root = tmp_path / "sweep"
+    rc = main(["--sweep-config", str(sweep), "--dry-run", "--output-root", str(out_root)])
+    assert rc == 0
+    rep = json.loads((out_root / "benchmark-report.json").read_text(encoding="utf-8"))
+    # built-in default (no CLI flag, no sweep-config value) is nonzero
+    assert rep["configuration"]["trial_timeout_sec"] != 0
+    assert rep["configuration"]["trial_timeout_sec"] > 0
+
+
+def test_shipped_lifecycle_sweep_does_not_disable_trial_timeout():
+    """The shipped 1:1/1:2/1:3 sweep must not force trial_timeout_sec: 0 (a
+    hung kernel would block the sweep forever). Omitting it inherits the
+    nonzero built-in default."""
+    repo = Path(__file__).resolve().parents[3]
+    cfg = load_sweep_config(repo / "config" / "oversub" / "lifecycle-1to3.yaml")
+    assert cfg.get("trial_timeout_sec", 1) != 0
 
 
 def test_main_sweep_config_drives_trials(tmp_path):
