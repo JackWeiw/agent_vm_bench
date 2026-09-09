@@ -416,6 +416,41 @@ def test_gantt_sheet_embeds_png(tmp_path):
     assert (tmp_path / "gantt.png").exists()
 
 
+def test_cap_gantt_segments_downsamples_when_over_cap():
+    """Total Gantt segments above the cap are stride-downsampled per sandbox.
+
+    A 1:1/384-sandbox lifecycle run yields ~600k phase segments; the renderer
+    drew one ``ax.barh`` Patch per segment and hung for 24h. The cap bounds the
+    count (``broken_barh`` in ``_sheet_gantt`` bounds the per-artist cost); the
+    full-resolution timeline still lives in the Step detail sheet, so the
+    overview Gantt losing resolution at extreme scale is acceptable.
+    """
+    from bench_core.observability.obs_xlsx import MAX_GANTT_SEGMENTS, _cap_gantt_segments
+
+    # 3 sandboxes x 100 segments = 300 total; cap at a small value to exercise it.
+    rows = [
+        (f"sbx{i}", [(j, j + 1, ph) for j, ph in enumerate(["exec", "paused", "resuming", "pausing"] * 25)])
+        for i in range(3)
+    ]
+    capped = _cap_gantt_segments(rows, max_segments=50)
+    total = sum(len(segs) for _, segs in capped)
+    assert total <= 50, f"segment cap not enforced: {total} > 50"
+    # [::stride] preserves index 0 (each sandbox keeps its earliest segment)
+    for (name, segs), (_, orig) in zip(capped, rows):
+        assert segs[0] == orig[0]
+    # labels + order preserved
+    assert [n for n, _ in capped] == ["sbx0", "sbx1", "sbx2"]
+    # the shipped cap is a real, finite bound
+    assert 0 < MAX_GANTT_SEGMENTS < 600_000
+
+
+def test_cap_gantt_segments_noop_under_cap():
+    from bench_core.observability.obs_xlsx import _cap_gantt_segments
+
+    rows = [("sbx0", [(0, 1, "exec"), (1, 2, "paused")])]
+    assert _cap_gantt_segments(rows, max_segments=10_000) == rows
+
+
 def test_snapshot_sizes_sheet(tmp_path):
     from unittest.mock import MagicMock
 

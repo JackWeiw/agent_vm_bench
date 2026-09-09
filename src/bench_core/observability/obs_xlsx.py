@@ -34,6 +34,37 @@ if TYPE_CHECKING:
 # would drop every chart and PNG embedded by this renderer).
 _MERGE_SHEETS = ("VM_Stats", "NUMA_Overview", "DevKit_TopDown")
 
+# Gantt render cost scales with total phase segments (a 1:1/384-sandbox
+# lifecycle run yields ~600k; drawing one ax.barh Patch per segment hung the
+# 1:1 run for 24h). broken_barh (one PolyCollection per sandbox/phase) kills
+# the per-Patch cost; this cap bounds the rectangle count itself, stride-
+# sampling per sandbox when exceeded. The Step detail sheet keeps the full-
+# resolution timeline, so the overview Gantt losing resolution at extreme
+# scale is acceptable.
+MAX_GANTT_SEGMENTS = 200_000
+
+
+def _cap_gantt_segments(
+    rows: list[tuple[str, list[tuple[float, float, str]]]],
+    max_segments: int = MAX_GANTT_SEGMENTS,
+) -> list[tuple[str, list[tuple[float, float, str]]]]:
+    """Bound total Gantt segments via per-sandbox stride-sampling when over cap.
+
+    Returns the input unchanged when the total is within the bound (the common
+    case) or when the sandbox count itself meets/exceeds the cap (each sandbox
+    needs >=1 segment, so nothing can be dropped without hiding a row).
+    Otherwise strides each sandbox's segments so the result total stays at or
+    below the cap: with ``stride = ceil(total / (cap - n))`` the per-sandbox
+    ceil-rounding slack sums to ``<= total/stride + n <= cap``. ``[::stride]``
+    keeps index 0, so each sandbox keeps its earliest segment + row order.
+    """
+    n = len(rows)
+    total = sum(len(segs) for _, segs in rows)
+    if total <= max_segments or n >= max_segments:
+        return rows
+    stride = (total + (max_segments - n) - 1) // (max_segments - n)
+    return [(name, segs[::stride]) for name, segs in rows]
+
 
 def _write_table(ws, headers: list[str], rows: list[list]) -> int:
     """Write a header row (bold) + data rows to a worksheet; return the row the
@@ -667,7 +698,7 @@ class XlsxReportRenderer:
         from bench_core.observability.lifecycle_reconstruct import gantt_segments
         from bench_core.observability.lifecycle_series import load_events
 
-        rows = gantt_segments(load_events(Path(self.series_path)))
+        rows = _cap_gantt_segments(gantt_segments(load_events(Path(self.series_path))))
         if not rows:
             ws.append(["no step events"])
             return
@@ -680,8 +711,16 @@ class XlsxReportRenderer:
         fig, ax = plt.subplots(figsize=(28, fig_h))
         t0 = min(a for _, segs in rows for a, _, _ in segs)
         for yi, (name, segs) in enumerate(rows):
+            # Group segments by phase -> one broken_barh (PolyCollection) per phase,
+            # not one Patch per segment. A 1:1/384-sandbox lifecycle run yields
+            # ~600k segments; 600k ax.barh Patches hung the report for 24h.
+            # broken_barh vectorizes the same rectangles into a few collections.
+            by_phase: dict[str, list[tuple[float, float]]] = {ph: [] for ph in color}
             for a, b, ph in segs:
-                ax.barh(yi, b - a, left=a - t0, height=0.75, color=color[ph], edgecolor="none", zorder=3)
+                by_phase[ph].append((a - t0, b - a))
+            for ph, xranges in by_phase.items():
+                if xranges:
+                    ax.broken_barh(xranges, (yi - 0.375, 0.75), facecolors=color[ph], edgecolor="none", zorder=3)
         ax.set_yticks(range(n))
         ax.set_yticklabels([r[0] for r in rows])
         # Cramped fleets: shrink the per-row label so 768 rows stay legible.
