@@ -181,7 +181,16 @@ class ReplayBaseRunner(threading.Thread):
         release in finally so mid-slice exceptions don't leak the running slot.
         """
         lease = None
-        natural_delay_sec = 0.0
+        # The recorded think-delay (inter-step pacing) is slept by the run
+        # loop's _sleep_delay BEFORE this slice, so by the time slots.acquire
+        # runs the scheduler's ready_at pre-park is only the residual
+        # (replay_pause_duration) -- lease.natural_delay_sec alone is ~0.
+        # Attribute the full slept think-delay to natural_delay here (it IS
+        # think-time) so interaction_total's think-delay term is decomposed;
+        # otherwise the decomposition column reads 0 while interaction_total
+        # carries hundreds of seconds of unattributed delay (observed 1:1
+        # lifecycle: interaction_total=568, natural_delay=0).
+        natural_delay_sec = step.delay_time_sec * self.config.replay_delay_scale
         capacity_wait_sec = 0.0
         slot_acquired_at = 0.0
         resume_rate_pacing_wait_sec = 0.0
@@ -205,7 +214,7 @@ class ReplayBaseRunner(threading.Thread):
         if self.admission is not None and not lease_already_held:
             ready_at = self._compute_ready_at(step)
             lease = self.admission.slots.acquire(f"sbx{self.state.index}_step{step.index}", ready_at=ready_at)
-            natural_delay_sec = lease.natural_delay_sec
+            natural_delay_sec += lease.natural_delay_sec  # residual ready_at park (replay_pause_duration)
             capacity_wait_sec = lease.queue_wait_sec
             slot_acquired_at = lease.acquired_at
         slot_contention_wait_sec = natural_delay_sec + capacity_wait_sec
@@ -288,12 +297,15 @@ class ReplayBaseRunner(threading.Thread):
                 pause_rate_pacing_wait_sec=pause_rate_pacing_wait_sec,
                 pause_api_sec=pause_api_sec,
                 running_slot_held_sec=((time.perf_counter() - slot_acquired_at) if slot_acquired_at else 0.0),
+                # interaction_total = slice + resume_rate_pacing + natural_delay
+                # (the slept think-delay) + capacity_wait. The think-delay lives
+                # in natural_delay (set above), NOT a separate + delay term --
+                # adding both would double-count once natural_delay is populated.
                 interaction_total_sec=(
                     resume_rate_pacing_wait_sec
                     + resume_sec
                     + exec_elapsed
                     + pause_sec
-                    + step.delay_time_sec * self.config.replay_delay_scale
                     + natural_delay_sec
                     + capacity_wait_sec
                 ),
