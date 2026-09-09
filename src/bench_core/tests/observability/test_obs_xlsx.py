@@ -343,6 +343,122 @@ def test_per_step_linechart_references_all_data_rows(tmp_path):
     assert found, "no LineChart series referenced the latency_ms (B) column"
 
 
+def _mock_obs_with_n_steps(n: int, replay_mode: str = "lifecycle"):
+    """A MagicMock observability with one sandbox carrying n recorded steps.
+
+    Used by the large-series downsample tests (n well above MAX_PERSTEP_POINTS)
+    so the per-step detail line charts would otherwise reference all n rows.
+    """
+    from unittest.mock import MagicMock
+
+    obs = MagicMock()
+    obs.config.workflow_type = "replay"
+    obs.config.replay_mode = replay_mode
+    obs.config.total_count = 1
+    obs.config.replay_running_concurrency = 1
+    obs.config.test_duration = 10
+    obs.wall_sec = 10.0
+    obs.total_steps = n
+    obs.overcommit_ratio = 1.0
+    obs.concurrency = 1
+    obs.steps_per_sec = float(n) / 10.0
+    obs.effective_parallelism = 1.0
+    obs.exec_wall_utilization = 1.0
+    obs.retry_count = 0
+    obs.retry_count_by_op = {}
+    obs.time_lost_to_retry_sec = 0.0
+    obs.retries_per_slice_p95 = 0.0
+    obs.create_sec_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
+    obs.kill_sec_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
+    obs.slot_held_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
+    obs.admission_snapshot = None
+    m = MagicMock()
+    m.latencies = [0.1 + (i % 10) * 0.01 for i in range(n)]
+    m.action_type_latencies = {}
+    m.resume_secs = [0.1] * n
+    m.pause_secs = [0.1] * n
+    m.slice_total_secs = [0.5] * n
+    m.running_slot_held_secs = [0.4] * n
+    m.interaction_total_secs = [0.5] * n
+    m.create_secs = []
+    m.kill_secs = []
+    m.success_count = n
+    m.failed_count = 0
+    state = MagicMock()
+    state.replay_metrics = m
+    obs.states = {0: state}
+    return obs
+
+
+def test_downsample_indices_bounds_and_preserves_endpoints():
+    """Per-step line charts are downsampled to <= MAX_PERSTEP_POINTS so openpyxl
+    does not inline a numCache for 150k referenced cells at save time (the
+    1:1/384-sandbox run's Per-step + Lifecycle overhead charts each spanned
+    ~150k rows). First + last steps are always kept so the chart x-range still
+    spans the full run."""
+    from bench_core.observability.obs_xlsx import MAX_PERSTEP_POINTS, _downsample_indices
+
+    idxs = _downsample_indices(5000, 2000)
+    assert len(idxs) <= 2000
+    assert idxs[0] == 0  # first step kept
+    assert idxs[-1] == 4999  # last step kept
+    assert idxs == sorted(idxs)  # monotonic (chart x-axis order)
+    # under cap: identity (every index kept, no downsampling)
+    assert _downsample_indices(100, 2000) == list(range(100))
+    assert 0 < MAX_PERSTEP_POINTS < 5000  # shipped cap is a real, finite bound
+
+
+def test_per_step_linechart_downsamples_large_series(tmp_path):
+    from bench_core.observability.obs_xlsx import MAX_PERSTEP_POINTS
+
+    n = MAX_PERSTEP_POINTS + 500  # well over the cap
+    obs = _mock_obs_with_n_steps(n)
+    out = tmp_path / "obs.xlsx"
+    XlsxReportRenderer(obs, series_path=None).render(out)
+    ws = openpyxl.load_workbook(out)["Per-step timings"]
+    charts = ws._charts
+    assert charts, "expected a LineChart on Per-step timings"
+    # every latency_ms (B) series references <= MAX_PERSTEP_POINTS rows, not n
+    import re
+
+    for ch in charts:
+        for s in ch.series:
+            ref = getattr(s.val, "numRef", None)
+            f = ref.f if ref is not None else None
+            if f and "$B$" in f:
+                m_ = re.search(r"\$B\$(\d+):\$B\$(\d+)", f)
+                assert m_, f"unexpected val ref format: {f}"
+                span = int(m_.group(2)) - int(m_.group(1)) + 1
+                assert span <= MAX_PERSTEP_POINTS, f"per-step chart references {span} rows, cap {MAX_PERSTEP_POINTS}"
+
+
+def test_lifecycle_overhead_linechart_downsamples_large_series(tmp_path):
+    from bench_core.observability.obs_xlsx import MAX_PERSTEP_POINTS
+
+    n = MAX_PERSTEP_POINTS + 500
+    obs = _mock_obs_with_n_steps(n)
+    out = tmp_path / "obs.xlsx"
+    XlsxReportRenderer(obs, series_path=None).render(out)
+    ws = openpyxl.load_workbook(out)["Lifecycle overhead"]
+    charts = ws._charts
+    assert charts, "expected a LineChart on Lifecycle overhead"
+    # the resume_ms series (col B) references <= MAX_PERSTEP_POINTS rows, not n
+    import re
+
+    found = False
+    for ch in charts:
+        for s in ch.series:
+            ref = getattr(s.val, "numRef", None)
+            f = ref.f if ref is not None else None
+            if f and "$B$" in f:
+                m_ = re.search(r"\$B\$(\d+):\$B\$(\d+)", f)
+                assert m_, f"unexpected val ref format: {f}"
+                span = int(m_.group(2)) - int(m_.group(1)) + 1
+                assert span <= MAX_PERSTEP_POINTS, f"lifecycle chart references {span} rows, cap {MAX_PERSTEP_POINTS}"
+                found = True
+    assert found, "no LineChart series referenced the resume_ms (B) column"
+
+
 def test_concurrency_states_sheet_from_series(tmp_path):
     from unittest.mock import MagicMock
 
