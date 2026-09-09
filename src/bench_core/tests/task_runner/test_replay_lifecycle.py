@@ -573,6 +573,57 @@ class TestRunSliceP26Decomposition:
         assert sr.resume_api_sec > 0.0
         assert sr.pause_api_sec > 0.0
 
+    def test_think_delay_attributed_to_natural_delay_not_doubled(self, tmp_path):
+        # Regression: a step's recorded think-delay (delay_time_sec * scale) is
+        # real inter-step pacing slept by the run loop's _sleep_delay BEFORE
+        # _run_slice. It must be attributed to natural_delay_sec (the "think-time"
+        # column), and interaction_total must add it exactly ONCE -- via
+        # natural_delay -- never twice.
+        #
+        # Bug: natural_delay was sourced only from lease.natural_delay_sec, which
+        # is ~0 because _sleep_delay pre-consumes the think-delay so the
+        # scheduler's ready_at pre-park is a no-op. The think-delay then appeared
+        # ONLY in interaction_total via a separate + step.delay_time_sec term,
+        # so the decomposition column read 0 while interaction_total carried the
+        # full think-delay (observed 1:1 lifecycle: interaction_total=568,
+        # natural_delay=0 -- ~528s unattributed).
+        config = _lifecycle_config(tmp_path, replay_delay_scale=1.0)  # the prod default
+        provider = FakeLifecycleProvider(count=1)
+        stop = threading.Event()
+        inst = SandboxInstance(id="x", index=2)
+        state = BenchSandbox.from_instance(inst, workflow_type="replay")
+        state.ready = True
+        path = _series_path(tmp_path)
+        series = LifecycleSeriesWriter(path)
+        runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider, series=series)
+        runner._init_lifecycle()
+
+        think = 2.0
+        step = ReplayStep(index=3, action_type="shell", action="true", delay_time_sec=think)
+        runner._run_slice(step, trajectory_id="traj-abc")
+        series.close()
+
+        rec = [r for r in (json.loads(line) for line in path.read_text().splitlines()) if r["event"] == "step"][0]
+
+        # The think-delay is attributed to natural_delay (not lost to 0).
+        assert abs(rec["natural_delay_sec"] - think) < 1e-6, rec["natural_delay_sec"]
+        # The slot_contention composite carries it too.
+        assert abs(rec["slot_contention_wait_sec"] - (rec["natural_delay_sec"] + rec["capacity_wait_sec"])) < 1e-6
+        # INV7: interaction_total = slice + natural_delay + capacity_wait +
+        # resume_rate_pacing -- the think-delay lives in natural_delay, NOT in a
+        # second + step.delay_time_sec term (that would double-count once
+        # natural_delay is correctly populated).
+        expected_interaction = (
+            rec["slice_total_sec"]
+            + rec["natural_delay_sec"]
+            + rec["capacity_wait_sec"]
+            + rec["resume_rate_pacing_wait_sec"]
+        )
+        assert abs(rec["interaction_total_sec"] - expected_interaction) < 1e-6, (
+            rec["interaction_total_sec"],
+            expected_interaction,
+        )
+
     def test_resume_rate_pacing_excluded_pause_pacing_included_in_slot_held(self, tmp_path):
         """Asymmetric wait-decoupling归属 regression (point 4 of the directive).
 
