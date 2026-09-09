@@ -38,7 +38,7 @@ def test_load_events_missing_file(tmp_path: Path) -> None:
 # Task 2: reconstruct_concurrency
 # ---------------------------------------------------------------------------
 
-from bench_core.observability.lifecycle_reconstruct import reconstruct_concurrency
+from bench_core.observability.lifecycle_reconstruct import _segment, reconstruct_concurrency
 
 
 def _step(idx: int, rs: float, re: float, xs: float, xe: float, ps: float, pe: float) -> dict:
@@ -57,14 +57,16 @@ def _step(idx: int, rs: float, re: float, xs: float, xe: float, ps: float, pe: f
 
 
 def test_reconstruct_concurrency_single_sandbox_one_second() -> None:
-    # one sandbox: resume 0.0-0.5, exec 0.5-1.5, pause 1.5-2.0
-    events = [_step(0, 0.0, 0.5, 0.5, 1.5, 1.5, 2.0)]
+    # one sandbox: resume 1000.0-1000.5, exec 1000.5-1001.5, pause 1001.5-1002.0.
+    # Timestamps use a positive epoch-style base (real series are time.time()
+    # ~1.8e9; 0.0 is the failed-step sentinel, rejected by _segment).
+    events = [_step(0, 1000.0, 1000.5, 1000.5, 1001.5, 1001.5, 1002.0)]
     bins = reconstruct_concurrency(events)
-    # second 0 (0.0-1.0): resuming [0,0.5)=0.5s vs exec [0.5,1.0)=0.5s
+    # second 0 (1000.0-1001.0): resuming [1000,1000.5)=0.5s vs exec [1000.5,1001.0)=0.5s
     # tie -> max() returns first maximal index: PHASES[2]=resuming beats PHASES[3]=exec
     assert bins[0]["second"] == 0
     assert bins[0]["resuming"] == 1
-    # second 1 (1.0-2.0): exec [1.0,1.5)=0.5s vs pausing [1.5,2.0)=0.5s
+    # second 1 (1001.0-1002.0): exec [1001.0,1001.5)=0.5s vs pausing [1001.5,1002.0)=0.5s
     # tie -> PHASES[0]=pausing beats PHASES[3]=exec (earliest index wins)
     assert bins[1]["pausing"] == 1
     assert bins[1]["active"] == 1
@@ -76,22 +78,60 @@ def test_reconstruct_concurrency_filters_zeroed_timestamps() -> None:
     assert reconstruct_concurrency(events) == []
 
 
-def test_reconstruct_concurrency_active_excludes_paused() -> None:
-    # sandbox A: only pausing 0-1 (pause_start=0, pause_end=1)
-    # sandbox B: only exec 0-1 (resume_end=0, exec_end=1)
+def test_segment_rejects_zero_or_negative_start() -> None:
+    # Real series timestamps are time.time() epochs (~1.8e9, always positive).
+    # A zero/negative start is always a missing/failed-step sentinel. The
+    # cross-step "paused" gap pairs a failed step's zeroed pause_end (a=0) with
+    # the next valid step's epoch resume_start (b~1.8e9); without this guard the
+    # gap becomes a ~1.8e9-second segment -> reconstruct_concurrency's n_sec hits
+    # ~1.8e9 -> the per-sandbox dur matrix alone is ~157GB -> 24h hang / OOM on a
+    # 384-sandbox lifecycle run (observed: 3692 fully-zeroed failed steps).
+    assert _segment(0.0, 1_788_922_438.0, "paused") is None
+    assert _segment(-1.0, 1_788_922_438.0, "paused") is None
+    # a valid epoch pair still passes
+    assert _segment(1_788_922_000.0, 1_788_922_005.0, "exec") == (
+        1_788_922_000.0,
+        1_788_922_005.0,
+        "exec",
+    )
+
+
+def test_reconstruct_concurrency_drops_zeroed_pause_end_cross_gap() -> None:
+    # A failed step leaves pause_end=0.0; the cross-step paused gap from it to the
+    # next valid step's resume_start must be DROPPED (not span 0->epoch). Small
+    # numbers here so the buggy path fails the assertion cleanly instead of OOM-
+    # ing the suite; the real run used an epoch resume_start -> n_sec ~1.8e9 ->
+    # 24h hang. The gap from a VALID pause boundary (initial_pause.end -> step0
+    # resume) must still surface.
     events = [
-        _step(0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),  # pausing [0,1)
+        _initial_pause(0, 100.0, 101.0),
+        _step(0, 102.0, 103.0, 103.0, 104.0, 104.0, 0.0),  # pause_end zeroed (failed)
+        _step(1, 110.0, 111.0, 111.0, 112.0, 112.0, 113.0),  # gap 0->110 was the bomb
+    ]
+    bins = reconstruct_concurrency(events)
+    # with the bug: bogus (0, 110) paused segment -> t0=0 -> 115 bins
+    # with the fix: gap dropped -> t0=100 -> 15 bins
+    assert len(bins) == 15, len(bins)
+    # the real paused gap (initial_pause.end 101 -> step0.resume 102) survives
+    assert any(b["paused"] > 0 for b in bins), bins
+
+
+def test_reconstruct_concurrency_active_excludes_paused() -> None:
+    # sandbox A: only pausing 1000-1001 (pause_start=1000, pause_end=1001)
+    # sandbox B: only exec 1000-1001 (resume_end=1000, exec_end=1001)
+    events = [
+        _step(0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0, 1001.0),  # pausing [1000,1001)
         {
             "event": "step",
             "sandbox_index": 1,
             "step_index": 0,
-            "resume_start": 0.0,
-            "resume_end": 0.0,
-            "exec_start": 0.0,
-            "exec_end": 1.0,
-            "pause_start": 1.0,
-            "pause_end": 1.0,
-        },  # exec [0,1)
+            "resume_start": 1000.0,
+            "resume_end": 1000.0,
+            "exec_start": 1000.0,
+            "exec_end": 1001.0,
+            "pause_start": 1001.0,
+            "pause_end": 1001.0,
+        },  # exec [1000,1001)
     ]
     bins = reconstruct_concurrency(events)
     assert bins[0]["pausing"] == 1  # sandbox A: pausing (not "paused")
@@ -161,15 +201,15 @@ def test_reconstruct_concurrency_cross_step_paused_gap() -> None:
 
 
 def test_reconstruct_concurrency_initial_pause_leads_paused() -> None:
-    # The initial pause's API call (0.0..0.5) is "pausing"; the idle from its
-    # pause_end (0.5) to step0.resume_start (2.0) is "paused" (no CPU).
+    # The initial pause's API call (1000.0..1000.5) is "pausing"; the idle from
+    # its pause_end (1000.5) to step0.resume_start (1002.0) is "paused" (no CPU).
     events = [
-        _initial_pause(0, 0.0, 0.5),
-        _step(0, 2.0, 2.5, 2.5, 3.0, 3.0, 3.5),
+        _initial_pause(0, 1000.0, 1000.5),
+        _step(0, 1002.0, 1002.5, 1002.5, 1003.0, 1003.0, 1003.5),
     ]
     bins = reconstruct_concurrency(events)
     assert bins[0]["pausing"] == 1, bins[0]  # initial pause API call
-    assert bins[1]["paused"] == 1, bins[1]  # 1.0..2.0 fully inside 0.5..2.0
+    assert bins[1]["paused"] == 1, bins[1]  # 1001.0..1002.0 fully inside 1000.5..1002.0
 
 
 def test_reconstruct_concurrency_exec_only_no_false_paused() -> None:
@@ -219,17 +259,17 @@ from bench_core.observability.lifecycle_reconstruct import gantt_segments
 def test_gantt_segments_groups_by_sandbox_sorted_by_start() -> None:
     # sandbox 1 starts earlier than sandbox 0 -> sorted first
     events = [
-        _step(0, 5.0, 5.5, 5.5, 6.5, 6.5, 7.0),  # sbx 0
+        _step(0, 1005.0, 1005.5, 1005.5, 1006.5, 1006.5, 1007.0),  # sbx 0
         {
             "event": "step",
             "sandbox_index": 1,
             "step_index": 0,
-            "resume_start": 1.0,
-            "resume_end": 1.5,
-            "exec_start": 1.5,
-            "exec_end": 2.0,
-            "pause_start": 0.0,
-            "pause_end": 1.0,
+            "resume_start": 1001.0,
+            "resume_end": 1001.5,
+            "exec_start": 1001.5,
+            "exec_end": 1002.0,
+            "pause_start": 1000.0,
+            "pause_end": 1001.0,
         },
     ]
     rows = gantt_segments(events)
