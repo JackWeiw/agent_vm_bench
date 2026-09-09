@@ -442,7 +442,8 @@ when the series is absent (e.g. a minimal install).
 
 Sub-segments nest under their parent so the sum invariant is verifiable in-sheet:
 `resume_sec == resume_inflight_wait_sec + resume_api_sec + resume_ready_wait_sec` (rate-pacing is PRE-lease, excluded),
-`pause_sec == pause_rate_pacing_wait_sec + pause_inflight_wait_sec + pause_api_sec` (rate-pacing is IN-lease, included).
+`pause_sec == pause_rate_pacing_wait_sec + pause_inflight_wait_sec + pause_api_sec` (rate-pacing is IN-lease, included),
+`interaction_total_sec == slice_total_sec + natural_delay_sec + capacity_wait_sec + resume_rate_pacing_wait_sec` (the inter-step think-delay lives in `natural_delay_sec`, counted once — not a separate delay term). `natural_delay_sec` itself is the think-delay actually slept by the runner before the slice (`step.delay_time_sec * replay_delay_scale`) plus the scheduler's residual `ready_at` park (`replay_pause_duration`), so it is nonzero whenever the trajectory has inter-step gaps and `delay_scale > 0`.
 
 | column | meaning |
 |-------|---------|
@@ -461,9 +462,9 @@ Sub-segments nest under their parent so the sum invariant is verifiable in-sheet
 | `pause_rate_pacing_wait_sec` | QPS-limiter 1/qps rate-pacing time-wait (pause, IN-lease: included in pause_sec / running_slot_held) |
 | `pause_api_sec` | pure pause API call time |
 | `slice_total_sec` | resume + exec + pause; 0 for failed slices (excluded from percentiles) |
-| `interaction_total_sec` | full interaction budget = resume + exec + pause + delay + natural_delay + capacity_wait (≥ slice_total) |
+| `interaction_total_sec` | full interaction budget = slice_total + natural_delay + capacity_wait + resume_rate_pacing (≥ slice_total; the think-delay is in `natural_delay_sec`, counted once) |
 | `slot_contention_wait_sec` | derived composite = natural_delay + capacity_wait (FIFO running-slot contention; admission) |
-| `natural_delay_sec` | ready-at-in-future park wait (inter-step gap pacing; component of slot_contention_wait_sec) |
+| `natural_delay_sec` | inter-step think-delay — `step.delay_time_sec * replay_delay_scale` slept by the runner before the slice, plus the scheduler's residual `ready_at` park (= `replay_pause_duration`); the inter-step gap pacing (component of slot_contention_wait_sec) |
 | `capacity_wait_sec` | FIFO running-slot token contention -- the genuine queue wait (component of slot_contention_wait_sec) |
 | `rate_pacing_wait_sec` | per-step rate-pacing total = resume_rate_pacing_wait_sec + pause_rate_pacing_wait_sec (1/qps shaping, a RATE control; not the FIFO queue -- see capacity_wait_sec) |
 | `inflight_wait_sec` | per-step inflight-fuse block total = resume_inflight_wait_sec + pause_inflight_wait_sec (a CONCURRENCY control) |
@@ -493,9 +494,9 @@ sums but count as attempts, so `avg_slice` reflects per-attempt cost).
 | `exec_sum_s` | total pure command-execution time |
 | `resume_sum_s` | total resume time |
 | `pause_sum_s` | total pause time |
-| `interaction_total_sum_s` | full interaction budget incl. delay + capacity_wait (≥ slice_total; for oversubscription analysis) |
+| `interaction_total_sum_s` | full interaction budget = slice_total + natural_delay + capacity_wait + resume_rate_pacing (≥ slice_total; the think-delay is in natural_delay, not a separate term) |
 | `slot_contention_wait_sum_s` | total admission slot-contention wait (derived = natural_delay + capacity_wait) |
-| `natural_delay_sum_s` | total ready-at-in-future park wait (component of slot_contention) |
+| `natural_delay_sum_s` | total inter-step think-delay + residual park (component of slot_contention) |
 | `capacity_wait_sum_s` | total FIFO running-slot token contention (component of slot_contention) |
 | `rate_pacing_wait_sum_s` | total rate-pacing = resume_rate_pacing + pause_rate_pacing (1/qps shaping) |
 | `inflight_wait_sum_s` | total inflight-fuse block = resume_inflight + pause_inflight |
@@ -505,6 +506,12 @@ sums but count as attempts, so `avg_slice` reflects per-attempt cost).
 | `pause_inflight_wait_sum_s` | total inflight-fuse block on pause (component of pause) |
 | `running_slot_held_sum_s` | total running-slot hold time (slot occupancy / oversubscription granularity) |
 | `avg_slice_s` | slice_total_sum / n_steps, typical per-step cost |
+
+At 1:1 (no oversubscription) with the QPS / inflight-fuse knobs unset, `capacity_wait`,
+`rate_pacing`, `inflight`, and the resume/pause rate-pacing/inflight splits are legitimately
+0 — they only turn nonzero under oversubscription + control-plane limiting. `natural_delay`
+(the think-delay) is nonzero whenever the trajectory has inter-step gaps and `delay_scale > 0`;
+it is the dominant non-productive term at 1:1, so `interaction_total` ≫ `slice_total` there.
 
 > Finer resume/pause sub-segments (api_sec / ready_wait / inflight_wait / rate_pacing_wait) per step live in
 > `Step detail`; per-second concurrency in `Concurrency states`; snapshot memory in
