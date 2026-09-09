@@ -662,6 +662,38 @@ def test_shipped_example_sweep_config_loads():
     load_sweep_config(repo / "config" / "oversub" / "template.yaml")
 
 
+def test_main_default_trial_timeout_is_nonzero(tmp_path):
+    """The built-in trial_timeout_sec default is nonzero: a safety net so a
+    hung kernel subprocess cannot block the sweep indefinitely. A 1:1/384-
+    sandbox run hung for ~24h because the shipped config set 0 (= off) and
+    _run_subprocess did proc.wait(timeout=None). 0 stays a valid explicit
+    opt-out; the default just is no longer 0."""
+    base = tmp_path / "base.yaml"
+    base.write_text(yaml.safe_dump(_base_yaml_dict(), sort_keys=False), encoding="utf-8")
+    sweep = tmp_path / "sweep.yaml"
+    # no trial_timeout_sec key -> resolves to the built-in default
+    sweep.write_text(
+        yaml.safe_dump({"base_config": str(base), "ratios": [1], "modes": ["lifecycle"]}, sort_keys=False),
+        encoding="utf-8",
+    )
+    out_root = tmp_path / "sweep"
+    rc = main(["--sweep-config", str(sweep), "--dry-run", "--output-root", str(out_root)])
+    assert rc == 0
+    rep = json.loads((out_root / "benchmark-report.json").read_text(encoding="utf-8"))
+    # built-in default (no CLI flag, no sweep-config value) is nonzero
+    assert rep["configuration"]["trial_timeout_sec"] != 0
+    assert rep["configuration"]["trial_timeout_sec"] > 0
+
+
+def test_shipped_lifecycle_sweep_does_not_disable_trial_timeout():
+    """The shipped 1:1/1:2/1:3 sweep must not force trial_timeout_sec: 0 (a
+    hung kernel would block the sweep forever). Omitting it inherits the
+    nonzero built-in default."""
+    repo = Path(__file__).resolve().parents[3]
+    cfg = load_sweep_config(repo / "config" / "oversub" / "lifecycle-1to3.yaml")
+    assert cfg.get("trial_timeout_sec", 1) != 0
+
+
 def test_main_sweep_config_drives_trials(tmp_path):
     """--sweep-config alone (base_config inside) drives the matrix via dry-run."""
     base = tmp_path / "base.yaml"
