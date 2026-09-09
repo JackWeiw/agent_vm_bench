@@ -614,8 +614,9 @@ class ReportFormatter:
                     lines.append(f"  Overhead aggregate:  {agg * 100:.1f}%")
                 # known caveat footer (resume_sec includes the post-resume ready-wait;
                 # resume_sec = resume_inflight_wait + resume_api + resume_ready_wait --
-                # rate-pacing ("qps_wait" on the decomp line) is pre-lease, excluded;
-                # the resume+pause rate-pacing sum is the separate "QPS pacing delay".)
+                # rate-pacing is PRE-lease, excluded, so it is absent from the Resume
+                # decomp line; the per-phase rate-pacing percentiles live on the
+                # separate "QPS pacing delay" admission-block line.)
                 lines.append("  (resume_sec includes post-resume ready-wait; see Resume decomp)")
 
                 # Phase 3.3: retry-impact sub-block. Reads the ReplayMetrics
@@ -645,14 +646,20 @@ class ReportFormatter:
                 # admission controller being present.
                 all_resume_api: list[float] = []
                 all_resume_ready_wait: list[float] = []
+                all_resume_inflight_wait: list[float] = []
                 all_resume_rate_pacing_wait: list[float] = []
                 all_slot_contention: list[float] = []
                 all_pause_api: list[float] = []
+                all_pause_inflight_wait: list[float] = []
+                all_pause_rate_pacing_wait: list[float] = []
                 # Wait-decoupling components (rate pacing + inflight fuse + the
-                # slot-scheduler's natural_delay/capacity splits). rate_pacing_wait =
-                # resume_rate_pacing_wait_sec + pause_rate_pacing_wait_sec; inflight_wait
-                # = resume_inflight_wait_sec + pause_inflight_wait_sec (per-step sums;
-                # see ReplayMetrics.*_secs properties).
+                # slot-scheduler's natural_delay/capacity splits). The per-phase
+                # *_inflight_wait / *_rate_pacing_wait lists feed the Resume/Pause
+                # decomp lines, aligned to the invariants (resume_sec = inflight +
+                # api + ready_wait; pause_sec = rate_pacing + inflight + api); the
+                # element-wise sum properties (rate_pacing_wait_secs /
+                # inflight_wait_secs) feed the "QPS pacing delay" / "Inflight wait"
+                # admission-block summary lines.
                 all_rate_pacing_wait: list[float] = []
                 all_inflight_wait: list[float] = []
                 all_natural_delay: list[float] = []
@@ -660,31 +667,43 @@ class ReportFormatter:
                 for s in self.sandbox_states.values():
                     all_resume_api.extend(s.replay_metrics.resume_api_secs)
                     all_resume_ready_wait.extend(s.replay_metrics.resume_ready_wait_secs)
+                    all_resume_inflight_wait.extend(s.replay_metrics.resume_inflight_wait_secs)
                     all_resume_rate_pacing_wait.extend(s.replay_metrics.resume_rate_pacing_wait_secs)
                     all_slot_contention.extend(s.replay_metrics.slot_contention_wait_secs)
                     all_pause_api.extend(s.replay_metrics.pause_api_secs)
+                    all_pause_inflight_wait.extend(s.replay_metrics.pause_inflight_wait_secs)
+                    all_pause_rate_pacing_wait.extend(s.replay_metrics.pause_rate_pacing_wait_secs)
                     all_rate_pacing_wait.extend(s.replay_metrics.rate_pacing_wait_secs)
                     all_inflight_wait.extend(s.replay_metrics.inflight_wait_secs)
                     all_natural_delay.extend(s.replay_metrics.natural_delay_secs)
                     all_capacity_wait.extend(s.replay_metrics.capacity_wait_secs)
 
-                # Resume decomp line (always rendered when all_slice non-empty)
+                # Resume decomp line -- the three components that sum to resume_sec
+                # (resume_sec = resume_inflight_wait + resume_api + resume_ready_wait).
+                # Rate-pacing is PRE-lease, excluded from resume_sec, so it is NOT
+                # listed here; its per-phase percentile lives on the "QPS pacing
+                # delay" admission-block line. Always rendered when all_slice non-empty.
                 resume_api_stats = calc_percentiles(all_resume_api)
                 resume_ready_wait_stats = calc_percentiles(all_resume_ready_wait)
-                resume_rate_pacing_wait_stats = calc_percentiles(all_resume_rate_pacing_wait)
+                resume_inflight_wait_stats = calc_percentiles(all_resume_inflight_wait)
                 lines.append(
                     f"  Resume decomp: api P50={resume_api_stats['p50']:.3f}s "
                     f"P95={resume_api_stats['p95']:.3f}s | "
                     f"ready_wait P50={resume_ready_wait_stats['p50']:.3f}s | "
-                    f"qps_wait P50={resume_rate_pacing_wait_stats['p50']:.3f}s  (n={n})"
+                    f"inflight_wait P50={resume_inflight_wait_stats['p50']:.3f}s  (n={n})"
                 )
 
-                # Pause decomp line (qps_wait shared from resume_rate_pacing_wait_secs
-                # since the limiter is shared; pause has no ready_wait)
+                # Pause decomp line -- the three components that sum to pause_sec
+                # (pause_sec = pause_rate_pacing_wait + pause_inflight_wait + pause_api).
+                # Rate-pacing is IN-lease, so it IS listed here, using pause's own
+                # rate-pacing stat -- not the resume stat the pre-split code reused.
                 pause_api_stats = calc_percentiles(all_pause_api)
+                pause_inflight_wait_stats = calc_percentiles(all_pause_inflight_wait)
+                pause_rate_pacing_wait_stats = calc_percentiles(all_pause_rate_pacing_wait)
                 lines.append(
                     f"  Pause decomp:  api P50={pause_api_stats['p50']:.3f}s | "
-                    f"qps_wait P50={resume_rate_pacing_wait_stats['p50']:.3f}s  (n={n})"
+                    f"rate_pacing P50={pause_rate_pacing_wait_stats['p50']:.3f}s | "
+                    f"inflight_wait P50={pause_inflight_wait_stats['p50']:.3f}s  (n={n})"
                 )
 
                 # Conditional lines (only when admission controller was built)
@@ -700,10 +719,21 @@ class ReportFormatter:
                     # component does not add a noise 0.000s line.
                     a = self.admission_snapshot
                     if a.get("qps") != "off":
-                        rp_stats = calc_percentiles(all_rate_pacing_wait)
+                        # Per-phase split: resume rate-pacing is PRE-lease (removed
+                        # from the Resume decomp line, which only carries resume_sec
+                        # components), so it is surfaced here alongside pause's own
+                        # rate-pacing and the element-wise sum -- the rate-pacing cost
+                        # stays visible per phase without mis-attributing resume's into
+                        # resume_sec. (Percentiles do not add; sum P50 != resume P50
+                        # + pause P50 in general.)
+                        resume_rp_stats = calc_percentiles(all_resume_rate_pacing_wait)
+                        pause_rp_stats = calc_percentiles(all_pause_rate_pacing_wait)
+                        sum_rp_stats = calc_percentiles(all_rate_pacing_wait)
                         lines.append(
-                            f"  QPS pacing delay: P50={rp_stats['p50']:.3f}s "
-                            f"P95={rp_stats['p95']:.3f}s  (n={len(all_rate_pacing_wait)})"
+                            f"  QPS pacing delay: resume P50={resume_rp_stats['p50']:.3f}s | "
+                            f"pause P50={pause_rp_stats['p50']:.3f}s | "
+                            f"sum P50={sum_rp_stats['p50']:.3f}s P95={sum_rp_stats['p95']:.3f}s  "
+                            f"(n={len(all_rate_pacing_wait)})"
                         )
                     if a.get("inflight_cap") not in (None, "off"):
                         inf_stats = calc_percentiles(all_inflight_wait)
