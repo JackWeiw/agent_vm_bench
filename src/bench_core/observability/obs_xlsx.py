@@ -34,6 +34,68 @@ if TYPE_CHECKING:
 # would drop every chart and PNG embedded by this renderer).
 _MERGE_SHEETS = ("VM_Stats", "NUMA_Overview", "DevKit_TopDown")
 
+# Gantt render cost scales with total phase segments (a 1:1/384-sandbox
+# lifecycle run yields ~600k; drawing one ax.barh Patch per segment hung the
+# 1:1 run for 24h). broken_barh (one PolyCollection per sandbox/phase) kills
+# the per-Patch cost; this cap bounds the rectangle count itself, stride-
+# sampling per sandbox when exceeded. The Step detail sheet keeps the full-
+# resolution timeline, so the overview Gantt losing resolution at extreme
+# scale is acceptable.
+MAX_GANTT_SEGMENTS = 200_000
+
+
+def _cap_gantt_segments(
+    rows: list[tuple[str, list[tuple[float, float, str]]]],
+    max_segments: int = MAX_GANTT_SEGMENTS,
+) -> list[tuple[str, list[tuple[float, float, str]]]]:
+    """Bound total Gantt segments via per-sandbox stride-sampling when over cap.
+
+    Returns the input unchanged when the total is within the bound (the common
+    case) or when the sandbox count itself meets/exceeds the cap (each sandbox
+    needs >=1 segment, so nothing can be dropped without hiding a row).
+    Otherwise strides each sandbox's segments so the result total stays at or
+    below the cap: with ``stride = ceil(total / (cap - n))`` the per-sandbox
+    ceil-rounding slack sums to ``<= total/stride + n <= cap``. ``[::stride]``
+    keeps index 0, so each sandbox keeps its earliest segment + row order.
+    """
+    n = len(rows)
+    total = sum(len(segs) for _, segs in rows)
+    if total <= max_segments or n >= max_segments:
+        return rows
+    stride = (total + (max_segments - n) - 1) // (max_segments - n)
+    return [(name, segs[::stride]) for name, segs in rows]
+
+
+# Per-step line charts (Per-step timings + Lifecycle overhead sheets) are
+# downsampled to this many points. An uncapped reference makes openpyxl inline
+# a numCache for every referenced cell at save time -- a 1:1/384-sandbox run
+# yields ~150k steps, so each sheet's chart spanned ~150k rows and wb.save
+# exploded. The Step detail sheet keeps every step (filterable), so capping the
+# overview chart loses no data.
+MAX_PERSTEP_POINTS = 2000
+
+
+def _downsample_indices(n: int, max_points: int = MAX_PERSTEP_POINTS) -> list[int]:
+    """Indices to stride-sample a length-n series down to <= max_points.
+
+    Returns ``range(n)`` (every index) when ``n <= max_points``. Otherwise
+    strides by ``ceil(n / max_points)`` and forces the last index (``n-1``) in
+    so the chart x-range still spans the full run; if that endpoint append
+    overshoots by one, the second-to-last sampled index is dropped so the result
+    stays within the cap while always keeping first + last. The result is
+    monotonic. The same index list is reused across the resume/pause/slice
+    series so the Lifecycle overhead chart's series stay aligned.
+    """
+    if n <= max_points:
+        return list(range(n))
+    stride = (n + max_points - 1) // max_points
+    idxs = list(range(0, n, stride))
+    if idxs[-1] != n - 1:
+        idxs.append(n - 1)
+    if len(idxs) > max_points:  # the endpoint append overflowed by one
+        del idxs[-2]
+    return idxs
+
 
 def _write_table(ws, headers: list[str], rows: list[list]) -> int:
     """Write a header row (bold) + data rows to a worksheet; return the row the
@@ -348,7 +410,11 @@ class XlsxReportRenderer:
             rows.append(_pcts_row(act, by_action[act]))
         _write_table(ws, ["bucket", "n", "min", "max", "avg", "p50", "p95", "p99"], rows)
         # Per-step detail rows (latency per step, concatenated across sandboxes).
-        step_rows = [[i + 1, round(v * 1000, 1)] for i, v in enumerate(all_lat)]
+        # Downsampled: openpyxl inlines a numCache for every charted cell at save
+        # time, so an uncapped 150k-point chart makes wb.save explode. The Step
+        # detail sheet keeps every step; the x-axis still uses real step indices.
+        idxs = _downsample_indices(len(all_lat))
+        step_rows = [[i + 1, round(all_lat[i] * 1000, 1)] for i in idxs]
         if step_rows:
             ws.append([])
             ws.append(["step_index", "latency_ms"])
@@ -396,7 +462,10 @@ class XlsxReportRenderer:
             hdr = ws.max_row
             for c in ws[hdr]:
                 c.font = Font(bold=True)
-            for i in range(n):
+            # Same downsampled indices across all three series so the chart's
+            # resume/pause/slice lines stay aligned (see Per-step timings note).
+            idxs = _downsample_indices(n)
+            for i in idxs:
                 ws.append(
                     [
                         i + 1,
@@ -411,7 +480,7 @@ class XlsxReportRenderer:
                 "ms",
                 1,
                 [2, 3, 4],
-                n,
+                len(idxs),
                 f"A{ws.max_row + 2}",
                 header_row=hdr,
                 first_data_row=hdr + 1,
@@ -667,7 +736,7 @@ class XlsxReportRenderer:
         from bench_core.observability.lifecycle_reconstruct import gantt_segments
         from bench_core.observability.lifecycle_series import load_events
 
-        rows = gantt_segments(load_events(Path(self.series_path)))
+        rows = _cap_gantt_segments(gantt_segments(load_events(Path(self.series_path))))
         if not rows:
             ws.append(["no step events"])
             return
@@ -680,8 +749,16 @@ class XlsxReportRenderer:
         fig, ax = plt.subplots(figsize=(28, fig_h))
         t0 = min(a for _, segs in rows for a, _, _ in segs)
         for yi, (name, segs) in enumerate(rows):
+            # Group segments by phase -> one broken_barh (PolyCollection) per phase,
+            # not one Patch per segment. A 1:1/384-sandbox lifecycle run yields
+            # ~600k segments; 600k ax.barh Patches hung the report for 24h.
+            # broken_barh vectorizes the same rectangles into a few collections.
+            by_phase: dict[str, list[tuple[float, float]]] = {ph: [] for ph in color}
             for a, b, ph in segs:
-                ax.barh(yi, b - a, left=a - t0, height=0.75, color=color[ph], edgecolor="none", zorder=3)
+                by_phase[ph].append((a - t0, b - a))
+            for ph, xranges in by_phase.items():
+                if xranges:
+                    ax.broken_barh(xranges, (yi - 0.375, 0.75), facecolors=color[ph], edgecolor="none", zorder=3)
         ax.set_yticks(range(n))
         ax.set_yticklabels([r[0] for r in rows])
         # Cramped fleets: shrink the per-row label so 768 rows stay legible.

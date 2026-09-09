@@ -20,7 +20,8 @@ test_duration: 600                        # hard ceiling per trial (sec); ends w
 failure_tolerance: 0.0                   # max failure_rate for valid (0.0 = strict)
 cooldown_sec: 30
 cleanup_between_trials: on               # {on, off}
-trial_timeout_sec: 0                     # 0 = off
+# trial_timeout_sec: 0                     # omit -> inherits the 6h built-in default (defense-in-depth
+                                          # backstop so a hung kernel cannot block the sweep). 0 = off.
 # output_root: results/oversub/...     # null = results/oversub/oversub-N{N}-{ts}/
 
 reuse: false
