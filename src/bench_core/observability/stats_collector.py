@@ -46,9 +46,9 @@ def replay_pool_size(config: KernelConfig) -> int:
 
     ``load_pool`` is itself module-cached, so this is O(1) after the first
     runner-thread call and shares one immutable tuple across the fleet. Used
-    by both the live snapshot (one-pass progress denominator) and the final
-    report's "One-pass Target" line. Returns 0 for non-replay workflows or
-    when the pool cannot be loaded (e.g. Mock configs in unit tests).
+    only for the final report's "One-pass Target" line as the distinct-trajectory
+    pool size (context, not the completion target). Returns 0 for non-replay
+    workflows or when the pool cannot be loaded (e.g. Mock configs in unit tests).
     """
     if config.workflow_type != "replay":
         return 0
@@ -59,6 +59,23 @@ def replay_pool_size(config: KernelConfig) -> int:
     except Exception:
         logger.debug("replay pool size unavailable", exc_info=True)
         return 0
+
+
+def _replay_traj_target(config: KernelConfig) -> int:
+    """Expected trajectory completions for the whole run (the live ``traj=`` denominator).
+
+    Replay runs one trajectory per sandbox per round (all concurrent), so over
+    ``round_count`` rounds the fleet completes ``round_count * total_count``
+    trajectories -- the cumulative ceiling the snapshot's ``traj=done/total``
+    divides into. When ``round_count`` is None/0 (sustained-until-duration)
+    there is no fixed ceiling, so returns 0 and the snapshot prints a bare
+    ``traj={done}`` count instead of a misleading ratio. Distinct from the
+    per-round ``One-pass Target`` (= ``total_count``) in the final report.
+    """
+    rc = config.round_count
+    if not rc:  # None or 0 -> unlimited/sustained: no fixed ceiling
+        return 0
+    return rc * config.total_count
 
 
 # Replay lifecycle list accessors snapshotted per round so the per-round
@@ -513,11 +530,11 @@ class ReportFormatter:
         lines.append(f"  {'Failed:':<24}{total_failed} (timeout: {total_timeout})")
         lines.append(f"  {'Success Rate:':<24}{total_success / max(1, total_tasks) * 100:.1f}%")
         lines.append(f"  {'Trajectory Completions:':<24}{completions}")
-        total_trajs = replay_pool_size(self.config) * len(self.sandbox_states)
-        if total_trajs:
-            lines.append(
-                f"  {'One-pass Target:':<24}{total_trajs} (pool {replay_pool_size(self.config)} x fleet {len(self.sandbox_states)})"
-            )
+        fleet = self.config.total_count
+        if fleet:
+            pool = replay_pool_size(self.config)
+            pool_note = f"; pool {pool} distinct" if pool else ""
+            lines.append(f"  {'One-pass Target:':<24}{fleet} (1 trajectory/sandbox per round{pool_note})")
         orphan_skipped = sum(s.replay_metrics.orphan_skip_count for s in self.sandbox_states.values())
         if orphan_skipped:
             lines.append(f"  {'Orphan Skipped:':<24}{orphan_skipped}")
@@ -1421,7 +1438,7 @@ class StatsCollector:
                 latency for state in self.sandbox_states.values() for latency in state.replay_metrics.latencies[-10:]
             ]
             traj_done = sum(s.replay_metrics.trajectory_completions for s in self.sandbox_states.values())
-            total_trajs = replay_pool_size(self.config) * len(self.sandbox_states)
+            total_trajs = _replay_traj_target(self.config)
             snapshot = Snapshot(
                 timestamp=now,
                 elapsed=elapsed,
@@ -1473,10 +1490,14 @@ class StatsCollector:
                 f"avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s"
             )
         elif self.config.workflow_type == "replay":
+            traj = (
+                f"traj={snapshot.replay_traj_done}/{snapshot.replay_total_trajs}"
+                if snapshot.replay_total_trajs
+                else f"traj={snapshot.replay_traj_done}"
+            )
             logger.info(
                 f"  Replay:    {snapshot.replay_success:3d}/{snapshot.replay_total:3d}  "
-                f"traj={snapshot.replay_traj_done}/{snapshot.replay_total_trajs}  "
-                f"avg={snapshot.replay_avg_latency:.2f}s  p99={snapshot.replay_p99_latency:.2f}s"
+                f"{traj}  avg={snapshot.replay_avg_latency:.2f}s  p99={snapshot.replay_p99_latency:.2f}s"
             )
         else:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")

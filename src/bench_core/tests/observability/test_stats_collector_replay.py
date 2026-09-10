@@ -1,8 +1,11 @@
 """Phase 3: enriched admission block + [Throughput & Overcommit] rendering."""
 from __future__ import annotations
 
+import logging
+import time
+
 from bench_core.config import KernelConfig
-from bench_core.observability.stats_collector import ReportFormatter
+from bench_core.observability.stats_collector import ReportFormatter, StatsCollector
 from bench_core.schemas import BenchSandbox, ReplayMetrics
 from env_provider import SandboxInstance
 
@@ -199,3 +202,107 @@ class TestTrajectorySummarySection:
     def test_trajectory_mode_no_create_secs_skips_summary(self):
         joined = self._report(replay_mode="trajectory", with_create=False)
         assert joined == ""
+
+
+class TestOnePassTargetReport:
+    """The report's 'One-pass Target' must be the fleet size (one
+    trajectory/sandbox/round), not the meaningless ``pool x fleet`` product.
+    """
+
+    def _report(self, *, total_count, round_count=1):
+        state = _state_with_slices()
+        cfg = KernelConfig(
+            workflow_type="replay",
+            replay_mode="lifecycle",
+            total_count=total_count,
+            replay_running_concurrency=1,
+            test_duration=1,
+            round_count=round_count,
+        )
+        f = ReportFormatter(cfg, {0: state}, "fake")
+        return "\n".join(f.format_replay_stats_section())
+
+    def test_target_is_fleet_size_not_pool_times_fleet(self):
+        joined = self._report(total_count=4)
+        line = [ln for ln in joined.splitlines() if "One-pass Target:" in ln]
+        assert line, "One-pass Target line missing"
+        assert "4 (1 trajectory/sandbox per round" in line[0]
+        assert "x fleet" not in line[0]  # old pool*fleet product must be gone
+
+    def test_pool_note_shown_when_pool_resolvable(self, monkeypatch):
+        import bench_core.observability.stats_collector as mod
+
+        # pool(401) > fleet(384): the user's 1:1 aenv run. Target stays 384
+        # (one trajectory/sandbox), pool is context only -- not a multiplier.
+        monkeypatch.setattr(mod, "replay_pool_size", lambda cfg: 401)
+        joined = self._report(total_count=384)
+        line = [ln for ln in joined.splitlines() if "One-pass Target:" in ln][0]
+        assert "384 (1 trajectory/sandbox per round; pool 401 distinct)" in line
+
+
+class TestReplaySnapshotTrajDenominator:
+    """Live snapshot ``traj=done/total`` denominator = round_count * total_count
+    (cumulative ceiling), 0 (bare count) when sustained."""
+
+    def _snapshot(self, *, total_count, round_count, completions=2):
+        cfg = KernelConfig(
+            workflow_type="replay",
+            replay_mode="lifecycle",
+            total_count=total_count,
+            replay_running_concurrency=total_count,
+            test_duration=60,
+            round_count=round_count,
+        )
+        state = BenchSandbox.from_instance(SandboxInstance(id="x", index=0), "replay")
+        for _ in range(completions):
+            state.replay_metrics.add(0.1, True, trajectory_complete=True)
+        sc = StatsCollector(cfg, {0: state})
+        sc.start_time = time.time()  # set without spawning the collect thread
+        sc._take_snapshot()
+        return sc.snapshots[-1]
+
+    def test_bounded_single_round_denominator_is_fleet(self):
+        snap = self._snapshot(total_count=4, round_count=1)
+        assert snap.replay_traj_done == 2
+        assert snap.replay_total_trajs == 4  # 1 round * 4 fleet, NOT pool*fleet
+
+    def test_multi_round_denominator_scales(self):
+        snap = self._snapshot(total_count=4, round_count=3)
+        assert snap.replay_total_trajs == 12  # 3 rounds * 4 fleet
+
+    def test_sustained_denominator_is_zero(self):
+        # round_count=None (default) -> sustained-until-duration, no fixed ceiling
+        snap = self._snapshot(total_count=4, round_count=None)
+        assert snap.replay_total_trajs == 0
+
+
+class TestReplaySnapshotTrajPrint:
+    """The printed ``traj=`` line shows a ratio when bounded, a bare count when sustained."""
+
+    def _take_and_msgs(self, *, total_count, round_count, caplog):
+        cfg = KernelConfig(
+            workflow_type="replay",
+            replay_mode="lifecycle",
+            total_count=total_count,
+            replay_running_concurrency=total_count,
+            test_duration=60,
+            round_count=round_count,
+        )
+        state = BenchSandbox.from_instance(SandboxInstance(id="x", index=0), "replay")
+        state.replay_metrics.add(0.1, True, trajectory_complete=True)
+        sc = StatsCollector(cfg, {0: state})
+        sc.start_time = time.time()
+        with caplog.at_level(logging.INFO):
+            sc._take_snapshot()
+        return [r.message for r in caplog.records if "traj=" in r.message]
+
+    def test_bounded_prints_ratio(self, caplog):
+        msgs = self._take_and_msgs(total_count=4, round_count=1, caplog=caplog)
+        assert msgs, "no traj= line captured"
+        assert "traj=1/4" in msgs[0]
+
+    def test_sustained_prints_bare_count(self, caplog):
+        msgs = self._take_and_msgs(total_count=4, round_count=None, caplog=caplog)
+        assert msgs, "no traj= line captured"
+        assert "traj=1/" not in msgs[0]  # no denominator when sustained
+        assert "traj=1 " in msgs[0]  # bare count then column gap
