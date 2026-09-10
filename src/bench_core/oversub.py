@@ -30,7 +30,7 @@ from pathlib import Path
 
 import yaml
 
-from bench_core.utils import setup_logging
+from bench_core.utils import format_duration, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -657,7 +657,8 @@ def _run_trial(
     n: int,
     output_root: Path,
     *,
-    is_first: bool = False,
+    index: int,
+    total: int,
 ) -> dict | None:
     """Run one (mode,ratio,repeat) trial; return a trial_row dict or None (dry-run)."""
     prefix = (base_yaml.get("report") or {}).get("filename_prefix", "replay_bench")
@@ -667,6 +668,18 @@ def _run_trial(
 
     summary_glob = f"{prefix}_*/{prefix}_run_summary.json"
 
+    logger.info(
+        "[%s/%s] %s ratio=%d repeat=%d: target=%d, duration=%ss; driver.log=%s",
+        index,
+        total,
+        mode,
+        ratio,
+        repeat,
+        ratio * n,
+        test_duration,
+        trial_dir / "driver.log",
+    )
+
     # --reuse: skip completed-valid trials (restart safety).
     if args.reuse:
         hits = sorted(trial_dir.glob(summary_glob))
@@ -674,6 +687,14 @@ def _run_trial(
             try:
                 s = parse_run_summary(hits[-1])
                 if compute_valid(s, 0, n=n, failure_tolerance=args.failure_tolerance):
+                    logger.info(
+                        "[%s/%s] %s ratio=%d repeat=%d: reused completed-valid trial -- skipped",
+                        index,
+                        total,
+                        mode,
+                        ratio,
+                        repeat,
+                    )
                     return trial_row(
                         mode=mode,
                         ratio=ratio,
@@ -691,7 +712,8 @@ def _run_trial(
                 pass  # corrupt summary -> re-run
 
     # Cooldown between trials (skip the very first trial; skip in dry-run).
-    if args.cooldown_sec and not args.dry_run and not is_first:
+    if args.cooldown_sec and not args.dry_run and index != 1:
+        logger.info("cooldown %ds...", args.cooldown_sec)
         time.sleep(args.cooldown_sec)
 
     # Pre-trial cleanup: tear down leftovers so they don't corrupt the ratio.
@@ -699,6 +721,7 @@ def _run_trial(
         # Dedicated cleanup timeout: cap at 300s so a hung `bench-core --cleanup`
         # cannot block the sweep indefinitely; shrink to trial_timeout if smaller.
         cleanup_timeout = min(args.trial_timeout_sec or 300, 300)
+        logger.info("pre-trial cleanup: tearing down leftovers (timeout %ss)...", cleanup_timeout)
         result = subprocess.run(
             [*args.bench_core_bin, "--config", args.config, "--provider", args.provider, "--cleanup"],
             capture_output=True,
@@ -772,6 +795,21 @@ def _run_trial(
             trial_dir=str(trial_dir),
             run_summary_path=str(hits[-1]),
         )
+    wall = row.get("wall_sec")
+    logger.info(
+        "[%s/%s] %s ratio=%d repeat=%d done in %s: valid=%s, total=%s, succeeded=%s, failed=%s, peak_active=%s",
+        index,
+        total,
+        mode,
+        ratio,
+        repeat,
+        format_duration(wall) if wall else "n/a",
+        row["valid"],
+        row["total"],
+        row["succeeded"],
+        row["failed"],
+        row.get("peak_active"),
+    )
     # Sentinel for main(): a user-initiated interrupt (Ctrl-C/SIGTERM) halted
     # this trial mid-run -- distinguish it from a trial-timeout (non-zero rc,
     # but the sweep continues). Not a CSV column (extrasaction="ignore" drops
@@ -854,11 +892,20 @@ def main(argv: list[str] | None = None) -> int:
     matrix = [(mode, ratio, repeat) for mode in modes for ratio in ratios for repeat in range(repeats)]
 
     trials: list[dict] = []
-    is_first = True
+    total_trials = len(matrix)
+    logger.info(
+        "oversub sweep: provider=%s N=%d ratios=%s modes=%s repeats=%d -> %d trial(s); output=%s",
+        args.provider,
+        n,
+        ratios,
+        modes,
+        repeats,
+        total_trials,
+        output_root,
+    )
     try:
-        for mode, ratio, repeat in matrix:
-            row = _run_trial(args, base_yaml, mode, ratio, repeat, n, output_root, is_first=is_first)
-            is_first = False
+        for index, (mode, ratio, repeat) in enumerate(matrix, 1):
+            row = _run_trial(args, base_yaml, mode, ratio, repeat, n, output_root, index=index, total=total_trials)
             if row is not None:
                 trials.append(row)
             write_outputs(trials, output_root=output_root, configuration=configuration)
@@ -874,6 +921,13 @@ def main(argv: list[str] | None = None) -> int:
         return 130
 
     write_outputs(trials, output_root=output_root, configuration=configuration)
+    valid_count = sum(1 for t in trials if t.get("valid"))
+    logger.info(
+        "oversub sweep done: %d/%d trial(s) valid; report=%s",
+        valid_count,
+        len(trials),
+        output_root / "benchmark-report.json",
+    )
     return 0
 
 
