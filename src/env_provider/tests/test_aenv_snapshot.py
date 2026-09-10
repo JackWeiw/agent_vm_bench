@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from env_provider.aenv._snapshot import scan_snapshot_sizes
+from env_provider.aenv._snapshot import reset_snapshot_cache, scan_snapshot_sizes
 
 
 def _write(path: Path, size: int) -> None:
@@ -70,6 +70,103 @@ def test_scan_empty_dir_returns_none(tmp_path: Path) -> None:
     empty = tmp_path / "empty-sandbox"
     empty.mkdir()
     assert scan_snapshot_sizes(empty) is None
+
+
+# ------------------------------------------------------------------ incremental scan (no re-walk)
+
+
+def test_incremental_scan_walks_only_new_generation(tmp_path: Path, monkeypatch) -> None:
+    """Regression guard for the O(steps^2) scan pathology: each step added a
+    generation but the scan re-walked ALL generations every call -> cost grew
+    O(K) per step. Generations are immutable (overlaybd COW hardlinks), so the
+    scan caches the seen-set + per-gen results per sandbox and walks ONLY the
+    newest generation on each call after the first.
+
+    Proves "no re-walk" deterministically by counting os.walk invocations:
+    first call walks N gens; after one new gen, the second call walks exactly 1.
+    """
+    from env_provider.aenv import _snapshot
+
+    for i in range(3):
+        g = tmp_path / f"g{i}-uuid"
+        g.mkdir()
+        (g / "layer.bin").write_bytes(b"\0" * 1024)
+
+    real_walk = os.walk
+    walked: list[str] = []
+
+    def counting_walk(top, *args, **kwargs):
+        walked.append(str(top))
+        yield from real_walk(top, *args, **kwargs)
+
+    monkeypatch.setattr(_snapshot.os, "walk", counting_walk)
+    reset_snapshot_cache()
+
+    out1 = scan_snapshot_sizes(tmp_path)  # primes cache: walks all 3 gens
+    assert out1 is not None and out1["generations"] == 3
+    assert len(walked) == 3  # first call walks every generation
+
+    # Add a new generation (mirrors one more pause step).
+    g3 = tmp_path / "g3-uuid"
+    g3.mkdir()
+    (g3 / "layer.bin").write_bytes(b"\0" * 1024)
+    walked.clear()
+
+    out2 = scan_snapshot_sizes(tmp_path)  # incremental: walks ONLY gen3
+    assert out2 is not None and out2["generations"] == 4
+    assert len(walked) == 1  # only the new generation -- not all 4
+    assert walked[0] == str(g3)
+
+
+def test_incremental_scan_cumulative_matches_stateless(tmp_path: Path) -> None:
+    """Incremental cumulative_bytes must equal a fresh full scan's cumulative,
+    no matter how many generations are added between calls."""
+    reset_snapshot_cache()
+    cumulative_seen = 0
+    for i in range(5):
+        g = tmp_path / f"g{i}-uuid"
+        g.mkdir()
+        (g / f"layer{i}.bin").write_bytes(b"\0" * (1024 * (i + 1)))
+        out = scan_snapshot_sizes(tmp_path)
+        assert out is not None
+        # cumulative must be monotonic non-decreasing as gens are added.
+        assert out["cumulative_bytes"] >= cumulative_seen
+        cumulative_seen = out["cumulative_bytes"]
+
+    # A fresh stateless scan (cleared cache) must agree on the final cumulative.
+    reset_snapshot_cache()
+    fresh = scan_snapshot_sizes(tmp_path)
+    assert fresh is not None
+    assert fresh["cumulative_bytes"] == cumulative_seen
+    assert fresh["generations"] == 5
+
+
+def test_reset_snapshot_cache_rewalks_all(tmp_path: Path, monkeypatch) -> None:
+    """After reset, the next scan re-primes (walks all gens), not just new ones."""
+    from env_provider.aenv import _snapshot
+
+    for i in range(2):
+        g = tmp_path / f"g{i}-uuid"
+        g.mkdir()
+        (g / "layer.bin").write_bytes(b"\0" * 512)
+
+    real_walk = os.walk
+    walked: list[str] = []
+
+    def counting_walk(top, *args, **kwargs):
+        walked.append(str(top))
+        yield from real_walk(top, *args, **kwargs)
+
+    monkeypatch.setattr(_snapshot.os, "walk", counting_walk)
+    reset_snapshot_cache()
+    scan_snapshot_sizes(tmp_path)
+    assert len(walked) == 2  # primes: both gens
+    walked.clear()
+    scan_snapshot_sizes(tmp_path)
+    assert len(walked) == 0  # cached: nothing new -> no walk
+    reset_snapshot_cache()
+    scan_snapshot_sizes(tmp_path)
+    assert len(walked) == 2  # reset -> re-primes both gens
 
 
 # ------------------------------------------------------------------ Config + provider integration

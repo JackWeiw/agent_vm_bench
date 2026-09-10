@@ -19,6 +19,7 @@ def _make_runner(series: LifecycleSeriesWriter, provider, replay_mode: str) -> R
     runner.config = cfg
     runner.provider = provider
     runner.series = series
+    runner.scanner = None
     runner._pause_seq = 0
     return runner
 
@@ -126,5 +127,26 @@ def test_emit_snapshot_size_handles_exception(tmp_path: Path) -> None:
         runner._emit_snapshot_size()
     finally:
         series.close()
+    events = load_events(tmp_path / "s.jsonl")
+    assert [e for e in events if e.get("event") == "snapshot_size"] == []
+
+
+def test_emit_snapshot_size_uses_scanner_when_present(tmp_path: Path) -> None:
+    # When a SnapshotSizeScanner is wired in, the scan + emit move OFF the step
+    # path: _emit_snapshot_size assigns pause_seq and hands the request to the
+    # scanner (a non-blocking enqueue) WITHOUT touching provider.snapshot_sizes
+    # or the series on the hot path.
+    series = LifecycleSeriesWriter(tmp_path / "s.jsonl")
+    provider = MagicMock(spec=SnapshotSizeCapable)
+    scanner = MagicMock()
+    runner = _make_runner(series, provider, replay_mode="lifecycle")
+    runner.scanner = scanner
+    try:
+        runner._emit_snapshot_size()
+    finally:
+        series.close()
+    # Handed to the scanner with the assigned pause_seq; no sync scan / emit.
+    scanner.request.assert_called_once_with(runner.state, 1)
+    provider.snapshot_sizes.assert_not_called()
     events = load_events(tmp_path / "s.jsonl")
     assert [e for e in events if e.get("event") == "snapshot_size"] == []

@@ -21,6 +21,7 @@ import time
 from bench_core.admission import Admission
 from bench_core.config import KernelConfig
 from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
+from bench_core.observability.snapshot_scanner import SnapshotSizeScanner
 from bench_core.observability.stats_collector import StatsCollector
 from bench_core.schemas import BenchSandbox, get_step_order
 from env_provider import EnvironmentProvider
@@ -48,6 +49,7 @@ class RoundRobinTaskManager:
         series: LifecycleSeriesWriter | None = None,
         admission: Admission | None = None,
         launch_pacer=None,
+        scanner: SnapshotSizeScanner | None = None,
     ):
         self.config = config
         self.sandbox_states = sandbox_states
@@ -55,6 +57,7 @@ class RoundRobinTaskManager:
         self.stats_collector = stats_collector
         self.provider = provider
         self.series = series
+        self.scanner = scanner
         self.admission = admission
         self.launch_pacer = launch_pacer
 
@@ -229,6 +232,7 @@ class RoundRobinTaskManager:
                     series=self.series,
                     admission=self.admission,
                     launch_pacer=self.launch_pacer,
+                    scanner=self.scanner,
                 )
                 self.active_runners.append(runner)
                 runner.start()

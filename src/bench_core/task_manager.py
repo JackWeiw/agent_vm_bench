@@ -17,6 +17,7 @@ import time
 from bench_core.admission import Admission
 from bench_core.config import KernelConfig
 from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
+from bench_core.observability.snapshot_scanner import SnapshotSizeScanner
 from bench_core.schemas import BenchSandbox
 from env_provider import EnvironmentProvider
 
@@ -36,12 +37,14 @@ class TaskManager:
         series: LifecycleSeriesWriter | None = None,
         admission: Admission | None = None,
         launch_pacer=None,
+        scanner: SnapshotSizeScanner | None = None,
     ):
         self.config = config
         self.sandbox_states = sandbox_states
         self.stop_event = stop_event
         self.provider = provider
         self.series = series
+        self.scanner = scanner
         self.admission = admission
         self.launch_pacer = launch_pacer
         self.runners: list[threading.Thread] = []
@@ -290,6 +293,7 @@ class TaskManager:
                 series=self.series,
                 admission=self.admission,
                 launch_pacer=self.launch_pacer,
+                scanner=self.scanner,
             )
         raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
