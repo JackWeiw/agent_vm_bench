@@ -247,7 +247,7 @@ YAML section; `-o` overrides `output_dir`). Inside that subdir:
 |------|------|
 | `<prefix>.log` | always (JSON-lines for lifecycle/trajectory replay modes) |
 | `<prefix>_<timestamp>.txt` | always — the text report |
-| `<prefix>_replay_obs_report.xlsx` | replay workflow + `--report-format xlsx|both` |
+| `<prefix>_obs.xlsx` | replay workflow + `--report-format xlsx|both` |
 | `<prefix>_lifecycle_series.jsonl` | replay lifecycle **and** trajectory modes |
 | `replay_result.json` (per trajectory) + `trajectories/index.json` | when a series file exists |
 | `vm_monitor/` | auto-enabled for providers with a `vmm_type` (e2b/aenv → firecracker) |
@@ -411,10 +411,10 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
   count); trajectory mode passes `template=` into each `create_one`. A missing entry
   resolves to `None` (warning, provider default).
 
-### 8.4 Observability workbook (`*_replay_obs_report.xlsx`)
+### 8.4 Observability workbook (`*_obs.xlsx`)
 
 With `--report-format xlsx|both` (replay workflow), besides the text report and JSONL
-lifecycle series, bench-core emits `<run-dir>/<prefix>_replay_obs_report.xlsx` — an 8-sheet observability
+lifecycle series, bench-core emits `<run-dir>/<prefix>_obs.xlsx` — an 8-sheet observability
 workbook (openpyxl; `Overview` consolidates the former Admission & QPS / Throughput &
 overcommit / Retry scalar sheets into one grouped, color-coded dashboard). All duration
 columns are **seconds (s)**, matching the reference `step-detail.csv`; the embedded line
