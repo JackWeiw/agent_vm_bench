@@ -32,6 +32,7 @@ from typing import Any
 from bench_core.config import KernelConfig
 from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 from bench_core.observability.monitor import MonitorController
+from bench_core.observability.snapshot_scanner import SnapshotSizeScanner
 from bench_core.observability.stats_collector import StatsCollector
 from bench_core.round_robin import RoundRobinTaskManager
 from bench_core.schemas import BenchSandbox
@@ -44,6 +45,7 @@ from env_provider import (
     LifecycleCapable,
     SandboxInstance,
     SandboxStatus,
+    SnapshotSizeCapable,
 )
 
 logger = logging.getLogger(__name__)
@@ -382,6 +384,22 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         series_writer = LifecycleSeriesWriter(series_path)
         logger.info(f"  Lifecycle series: {series_path}")
 
+    # P2.7: off-hot-path snapshot-size collector. The per-step scan moved off
+    # the sandbox step path to a background drain thread (see SnapshotSizeScanner)
+    # so a slow scan under heavy aenv snapshot I/O never stalls a resume. Built
+    # only when the provider actually stat-s snapshot dirs (SnapshotSizeCapable);
+    # otherwise the runner's _emit_snapshot_size early-returns. Closed BEFORE the
+    # series writer so every queued snapshot_size event is drained into the series
+    # before the series file is flushed + closed.
+    snapshot_scanner: SnapshotSizeScanner | None = None
+    if (
+        series_writer is not None
+        and isinstance(provider, SnapshotSizeCapable)
+        and config.replay_mode in ("lifecycle", "trajectory")
+    ):
+        snapshot_scanner = SnapshotSizeScanner(provider, series_writer)
+        logger.info("  Snapshot-size scanner: background drain (off step path)")
+
     # P2.6: Admission controllers (lifecycle-only). Construct only when a knob
     # is set; thread through both managers into the replay runners.
     from bench_core.admission import Admission, LaunchPacer, QpsRateLimiter, RunningSlotScheduler
@@ -449,6 +467,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 series=series_writer,
                 admission=admission,
                 launch_pacer=trajectory_launch_pacer,
+                scanner=snapshot_scanner,
             )
             round_robin.run()
         else:
@@ -462,6 +481,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 series=series_writer,
                 admission=admission,
                 launch_pacer=trajectory_launch_pacer,
+                scanner=snapshot_scanner,
             )
             task_manager.start_all()
             logger.info(f"\n[Phase 5] Running for {config.test_duration} seconds...")
@@ -481,6 +501,8 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         if config.workflow_type == "document":
             stats_collector._take_snapshot()
         stats_collector.stop()
+        if snapshot_scanner is not None:
+            snapshot_scanner.close()  # drain snapshot_size events into the series first
         if series_writer is not None:
             series_writer.close()
 
@@ -582,6 +604,8 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         monitor.end_stress()
         monitor.stop()
         stats_collector.stop()
+        if snapshot_scanner is not None:
+            snapshot_scanner.close()
         if series_writer is not None:
             series_writer.close()
         if not config.detect_existing:
@@ -602,6 +626,11 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
             stats_collector.stop()
         except Exception:
             logger.exception("stats_collector.stop failed during teardown")
+        if snapshot_scanner is not None:
+            try:
+                snapshot_scanner.close()
+            except Exception:
+                logger.exception("snapshot_scanner.close failed during teardown")
         if series_writer is not None:
             try:
                 series_writer.close()

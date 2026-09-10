@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from bench_core.admission import Admission, LaunchPacer, ShutdownInterrupted
 from bench_core.config import KernelConfig
 from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
+from bench_core.observability.snapshot_scanner import SnapshotSizeScanner
 from bench_core.payload.replay_payload import ReplayStep, Trajectory, load_pool
 from bench_core.schemas import BenchSandbox
 from bench_core.transients import is_transient_sandbox_error
@@ -133,6 +134,7 @@ class ReplayBaseRunner(threading.Thread):
         series: LifecycleSeriesWriter | None = None,
         admission: Admission | None = None,
         launch_pacer: LaunchPacer | None = None,
+        scanner: SnapshotSizeScanner | None = None,
     ) -> None:
         super().__init__(daemon=True)
         self.state = state
@@ -140,6 +142,7 @@ class ReplayBaseRunner(threading.Thread):
         self.stop_event = stop_event
         self.provider = provider
         self.series = series
+        self.scanner = scanner
         self.admission = admission
         self._prev_pause_end_monotonic: float | None = None
         # G5: shared no-catch-up launch pacer (trajectory mode). One LaunchPacer
@@ -441,11 +444,23 @@ class ReplayBaseRunner(threading.Thread):
         the :class:`SnapshotSizeCapable` capability; a ``None`` result (dir
         absent) or a scan error is skipped silently so non-aenv backends and
         missing snapshot dirs are unaffected. Best-effort: never raises.
+
+        When a :class:`SnapshotSizeScanner` is wired in (lifecycle/trajectory on
+        a SnapshotSizeCapable provider), the scan + emit move OFF this step
+        path: this method assigns the per-sandbox ``pause_seq`` and hands the
+        request to the scanner's background drain thread (a non-blocking enqueue
+        -- no scan, no I/O wait here). Without a scanner, falls back to the
+        synchronous incremental scan + series write.
         """
         if self.config.replay_mode not in ("lifecycle", "trajectory"):
             return
         if not isinstance(self.provider, SnapshotSizeCapable):
             return
+        self._pause_seq += 1
+        if self.scanner is not None:
+            self.scanner.request(self.state, self._pause_seq)  # non-blocking; drained off-path
+            return
+        # Fallback (no scanner): synchronous incremental scan + write.
         try:
             snap = self.provider.snapshot_sizes(self.state)
         except Exception as e:  # noqa: BLE001 - best-effort, never fail the slice
@@ -453,7 +468,6 @@ class ReplayBaseRunner(threading.Thread):
             return
         if snap is None:
             return
-        self._pause_seq += 1
         self._series_write(
             {
                 "event": "snapshot_size",
@@ -1061,9 +1075,17 @@ class ReplayTaskRunner(ReplayBaseRunner):
         series: LifecycleSeriesWriter | None = None,
         admission: Admission | None = None,
         launch_pacer: LaunchPacer | None = None,
+        scanner: SnapshotSizeScanner | None = None,
     ) -> None:
         super().__init__(
-            state, config, stop_event, provider, series=series, admission=admission, launch_pacer=launch_pacer
+            state,
+            config,
+            stop_event,
+            provider,
+            series=series,
+            admission=admission,
+            launch_pacer=launch_pacer,
+            scanner=scanner,
         )
         self.consecutive_errors = 0
 
@@ -1194,9 +1216,17 @@ class ReplayRoundRunner(ReplayBaseRunner):
         series: LifecycleSeriesWriter | None = None,
         admission: Admission | None = None,
         launch_pacer: LaunchPacer | None = None,
+        scanner: SnapshotSizeScanner | None = None,
     ) -> None:
         super().__init__(
-            state, config, stop_event, provider, series=series, admission=admission, launch_pacer=launch_pacer
+            state,
+            config,
+            stop_event,
+            provider,
+            series=series,
+            admission=admission,
+            launch_pacer=launch_pacer,
+            scanner=scanner,
         )
         self.round_id = round_id
 
