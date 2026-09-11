@@ -251,7 +251,13 @@ class BaseSandboxManager(ABC):
 
         return self._detect_each(listed, word="all")
 
-    def _detect_each(self, listed: list, *, word: str = "matched") -> dict[int, BackendState]:
+    def _detect_each(
+        self,
+        listed: list,
+        *,
+        word: str = "matched",
+        id_to_template: dict[str, str | None] | None = None,
+    ) -> dict[int, BackendState]:
         """Per-item detect loop: attach + ready-check + status mapping.
 
         Shared by :meth:`detect_existing` (``word="all"``) and a backend's own
@@ -259,6 +265,12 @@ class BaseSandboxManager(ABC):
         itself, then calls this with ``word="matched"``. Reuses
         :meth:`_apply_ready` (``create_elapsed=None`` -- no creation timing on
         detect) so the create and detect paths share one ready->status mapping.
+
+        ``id_to_template`` recovers the create-time template binding (multi-
+        template replay) so affinity routing survives the create->detect
+        boundary; only ``detect_from_file`` supplies it (the IDs file carries
+        the template). ``detect_existing`` has no source -> template stays
+        None (legacy single-template path).
         """
         logger.info(f"  Processing {word}...")
         for i, item in enumerate(listed):
@@ -267,6 +279,9 @@ class BaseSandboxManager(ABC):
             label = f"{self._noun}{index}"
             state = self._new_state(index, external_id=ext_id)
             self._states[index] = state
+
+            if id_to_template is not None:
+                self._slot_templates[index] = id_to_template.get(ext_id)
 
             logger.info(f"\n[{label}] {ext_id}...")
 

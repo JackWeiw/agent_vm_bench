@@ -233,6 +233,32 @@ class TestDetectFromFile:
         with pytest.raises(FileNotFoundError):
             mgr.detect_from_file("/no/such/ids.txt")
 
+    def test_recovers_template_binding_from_id_file(self, monkeypatch, tmp_path):
+        # Multi-template replay persists "<id>\t<template>" in the IDs file;
+        # detect_from_file must stamp the recovered template onto
+        # _slot_templates so _to_instance re-binds it (affinity routing
+        # otherwise sees template=None and orphan-skips every trajectory).
+        fake = _patch(monkeypatch, _FakeSandboxCls())
+        fake.list_items = [_FakeListed("sbx-a"), _FakeListed("sbx-b")]
+        ids = tmp_path / "ids.txt"
+        ids.write_text("sbx-a\tswb-a\nsbx-b\tswb-b\n")
+        mgr = SandboxManager(_kc(), Config(), Event())
+        states = mgr.detect_from_file(str(ids))
+        assert sorted(states) == [1, 2]
+        assert mgr._slot_templates[1] == "swb-a"
+        assert mgr._slot_templates[2] == "swb-b"
+
+    def test_bare_id_line_leaves_template_none(self, monkeypatch, tmp_path):
+        # Legacy IDs file (no template column) -> template stays None, so the
+        # legacy single-template path is unchanged.
+        fake = _patch(monkeypatch, _FakeSandboxCls())
+        fake.list_items = [_FakeListed("sbx-a")]
+        ids = tmp_path / "ids.txt"
+        ids.write_text("sbx-a\n")
+        mgr = SandboxManager(_kc(), Config(), Event())
+        mgr.detect_from_file(str(ids))
+        assert mgr._slot_templates[1] is None
+
 
 # --------------------------------------------------------------------- cleanup_existing
 class TestCleanupExisting:

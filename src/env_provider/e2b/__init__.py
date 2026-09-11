@@ -177,16 +177,24 @@ class E2BProvider(EnvironmentProvider):
         path = ids_file or self._config.sandbox_ids_file
         if not path:
             return
-        ids = [inst.id for inst in instances.values() if inst.ready and inst.id]
-        if not ids:
+        entries = [(inst.id, inst.template) for inst in instances.values() if inst.ready and inst.id]
+        if not entries:
             logger.warning(f"No ready sandbox IDs to save to {path}")
             return
         # Overwrite: each kernel run owns the file (wave-append is a
         # batch-scheduler concern, deferred to a follow-on phase).
+        # Persist ``<id>\t<template>`` when a concrete template was bound
+        # (multi-template replay); bare ``<id>`` otherwise. detect_from_file
+        # recovers the template so affinity routing survives the
+        # create->detect boundary (without it, detected sandboxes have
+        # template=None and orphan-skip out of every manifest trajectory).
         with open(path, "w") as handle:
-            for sid in ids:
-                handle.write(f"{sid}\n")
-        logger.info(f"Saved {len(ids)} sandbox IDs to: {path}")
+            for sid, template in entries:
+                if template:
+                    handle.write(f"{sid}\t{template}\n")
+                else:
+                    handle.write(f"{sid}\n")
+        logger.info(f"Saved {len(entries)} sandbox IDs to: {path}")
 
     # ------------------------------------------------------------------ translation
     def _translate(self, states: Mapping[int, SandboxState]) -> dict[int, SandboxInstance]:
