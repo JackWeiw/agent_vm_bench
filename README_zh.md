@@ -14,22 +14,22 @@
 
 | 文档 | 说明 |
 |------|------|
-| [bench-core 使用指南](docs/bench-core-usage-zh.md) | **src 内核压测（推荐）：安装→配置→CLI→清理** |
-| [bench-core 使用指南 (英文)](docs/bench-core-usage.md) | 英文版 src 内核压测指南 |
-| [设计文档](docs/design.md) | 系统架构与流程设计 |
-| [设计文档 (英文)](docs/design-en.md) | 英文版设计文档 |
-| [指标参考](docs/metrics-reference.md) | bench_core + vm_monitor 指标、采集来源与计算公式 |
-| [使用指南](docs/usage-guide.md) | 详细工具使用与配置 |
-| [vm_bench 使用指南](docs/vm_bench-usage-guide-zh.md) | 模块化 vm_bench（OpenStack） |
-| [E2B Bench 使用指南](docs/e2b-bench-usage-zh.md) | E2B 沙箱批量性能测试 |
-| [Docker Bench 使用指南](docs/docker-bench-usage-zh.md) | Docker 容器浏览器自动化性能测试 |
+| [bench-core 使用指南](docs/guide/bench-core-usage-zh.md) | **src 内核压测（推荐）：安装→配置→CLI→清理** |
+| [bench-core 使用指南 (英文)](docs/guide/bench-core-usage.md) | 英文版 src 内核压测指南 |
+| [设计文档](docs/architecture/design.md) | 系统架构与流程设计 |
+| [设计文档 (英文)](docs/architecture/design-en.md) | 英文版设计文档 |
+| [指标参考](docs/dev/metrics-reference.md) | bench_core + vm_monitor 指标、采集来源与计算公式 |
+| [使用指南](docs/guide/usage-guide.md) | 详细工具使用与配置 |
+| [vm_bench 使用指南](docs/guide/vm_bench-usage-guide-zh.md) | 模块化 vm_bench（OpenStack） |
+| [E2B Bench 使用指南](docs/guide/e2b-bench-usage-zh.md) | E2B 沙箱批量性能测试 |
+| [Docker Bench 使用指南](docs/guide/docker-bench-usage-zh.md) | Docker 容器浏览器自动化性能测试 |
 
 ## 贡献与社区
 
 - [贡献指南](CONTRIBUTING.md) — 开发环境搭建、测试与提交流程
 - [行为准则](CODE_OF_CONDUCT.md) — 参与标准
 - [获取帮助](SUPPORT.md) — 提问、反馈与建议渠道
-- [RFC 流程](docs/rfcs/README.md) — 用于重大设计变更
+- [RFC 流程](docs/dev/rfcs/README.md) — 用于重大设计变更
 - [Issue 模板](.github/ISSUE_TEMPLATE/) — Bug、Feature 与性能异常表单
 
 ---
@@ -143,7 +143,7 @@ bench-core --provider e2b --config config/common/coding-ts.yaml --cleanup
 | `--detect --test-duration N` | 全脊柱 + report | 保留（detect 不清理） |
 | `--cleanup` | list + 销毁 | 清除 |
 
-完整安装→配置→排错见 [bench-core 使用指南](docs/bench-core-usage-zh.md)；架构原理见
+完整安装→配置→排错见 [bench-core 使用指南](docs/guide/bench-core-usage-zh.md)；架构原理见
 [设计文档](docs/superpowers/specs/2026-08-12-environment-provider-bench-core-design.md)。
 
 ---
@@ -154,9 +154,9 @@ bench-core --provider e2b --config config/common/coding-ts.yaml --cleanup
 
 | 后端 | 入口 | 指南 |
 |------|------|------|
-| E2B batch（旧） | `python -m e2b_bench --config config/e2b/bench.yaml` | [E2B Bench 使用指南](docs/e2b-bench-usage-zh.md) |
-| Docker（旧） | `python -m docker_bench --config config/docker/docker_bench.yaml` | [Docker Bench 使用指南](docs/docker-bench-usage-zh.md) |
-| OpenStack VM | `python -m vm_bench --config config/openstack/vm_bench.yaml` | [vm_bench 使用指南](docs/vm_bench-usage-guide-zh.md) |
+| E2B batch（旧） | `python -m e2b_bench --config config/e2b/bench.yaml` | [E2B Bench 使用指南](docs/guide/e2b-bench-usage-zh.md) |
+| Docker（旧） | `python -m docker_bench --config config/docker/docker_bench.yaml` | [Docker Bench 使用指南](docs/guide/docker-bench-usage-zh.md) |
+| OpenStack VM | `python -m vm_bench --config config/openstack/vm_bench.yaml` | [vm_bench 使用指南](docs/guide/vm_bench-usage-guide-zh.md) |
 | OpenStack batch | `python3 batch_test_scheduler.py --config config/openstack/batch_config.yaml` | — |
 
 ### PDF / XLSX 文档场景

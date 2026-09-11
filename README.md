@@ -24,22 +24,22 @@ they share no code with the new kernel.
 
 | Document | Description |
 |----------|-------------|
-| [bench-core Usage Guide](docs/bench-core-usage.md) | **src kernel benchmarking (recommended): install→config→CLI→cleanup** |
-| [bench-core 使用指南 (中文)](docs/bench-core-usage-zh.md) | 中文版 src 内核压测指南 |
-| [Design](docs/design.md) | System architecture and flow design |
-| [Design (EN)](docs/design-en.md) | English version of design doc |
-| [Metrics Reference](docs/metrics-reference.md) | bench_core + vm_monitor metrics, collection sources & formulas |
-| [Usage Guide](docs/usage-guide.md) | Detailed tool usage and configuration |
-| [vm_bench Usage](docs/vm_bench-usage-guide.md) | Modular vm_bench package (OpenStack) |
-| [E2B Bench Usage](docs/e2b-bench-usage.md) | E2B Sandbox batch performance testing |
-| [Docker Bench Usage](docs/docker-bench-usage.md) | Docker container browser automation testing |
+| [bench-core Usage Guide](docs/guide/bench-core-usage.md) | **src kernel benchmarking (recommended): install→config→CLI→cleanup** |
+| [bench-core 使用指南 (中文)](docs/guide/bench-core-usage-zh.md) | 中文版 src 内核压测指南 |
+| [Design](docs/architecture/design.md) | System architecture and flow design |
+| [Design (EN)](docs/architecture/design-en.md) | English version of design doc |
+| [Metrics Reference](docs/dev/metrics-reference.md) | bench_core + vm_monitor metrics, collection sources & formulas |
+| [Usage Guide](docs/guide/usage-guide.md) | Detailed tool usage and configuration |
+| [vm_bench Usage](docs/guide/vm_bench-usage-guide.md) | Modular vm_bench package (OpenStack) |
+| [E2B Bench Usage](docs/guide/e2b-bench-usage.md) | E2B Sandbox batch performance testing |
+| [Docker Bench Usage](docs/guide/docker-bench-usage.md) | Docker container browser automation testing |
 
 ## Contributing & Community
 
 - [Contributing guide](CONTRIBUTING.md) — dev setup, tests, and how to open a PR
 - [Code of Conduct](CODE_OF_CONDUCT.md) — standards for participation
 - [Getting help](SUPPORT.md) — where to ask, report, or propose changes
-- [RFC process](docs/rfcs/README.md) — for non-trivial design changes
+- [RFC process](docs/dev/rfcs/README.md) — for non-trivial design changes
 - [Issue templates](.github/ISSUE_TEMPLATE/) — bug, feature, and performance-anomaly forms
 
 ---
@@ -163,7 +163,7 @@ bench-core --provider e2b --config config/common/coding-ts.yaml --cleanup
 | `--detect --test-duration N` | full spine + report | kept (detect doesn't cleanup) |
 | `--cleanup` | list + teardown | removed |
 
-See the [bench-core usage guide](docs/bench-core-usage.md) for the full
+See the [bench-core usage guide](docs/guide/bench-core-usage.md) for the full
 install→config→troubleshooting walkthrough, and the
 [design doc](docs/superpowers/specs/2026-08-12-environment-provider-bench-core-design.md)
 for architecture.
@@ -178,9 +178,9 @@ vm_monitor integration):
 
 | Backend | Entry | Guide |
 |---------|-------|-------|
-| E2B batch (legacy) | `python -m e2b_bench --config config/e2b/bench.yaml` | [E2B Bench Usage](docs/e2b-bench-usage.md) |
-| Docker (legacy) | `python -m docker_bench --config config/docker/docker_bench.yaml` | [Docker Bench Usage](docs/docker-bench-usage.md) |
-| OpenStack VM | `python -m vm_bench --config config/openstack/vm_bench.yaml` | [vm_bench Usage](docs/vm_bench-usage-guide.md) |
+| E2B batch (legacy) | `python -m e2b_bench --config config/e2b/bench.yaml` | [E2B Bench Usage](docs/guide/e2b-bench-usage.md) |
+| Docker (legacy) | `python -m docker_bench --config config/docker/docker_bench.yaml` | [Docker Bench Usage](docs/guide/docker-bench-usage.md) |
+| OpenStack VM | `python -m vm_bench --config config/openstack/vm_bench.yaml` | [vm_bench Usage](docs/guide/vm_bench-usage-guide.md) |
 | OpenStack batch | `python3 batch_test_scheduler.py --config config/openstack/batch_config.yaml` | — |
 
 ### PDF / XLSX document benchmarks

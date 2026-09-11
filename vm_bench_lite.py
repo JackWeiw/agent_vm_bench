@@ -1617,7 +1617,7 @@ def main():
     import warnings
 
     warnings.warn(
-        "vm_bench_lite.py is deprecated. Use 'python -m vm_bench' instead. See docs/vm_bench-usage-guide.md",
+        "vm_bench_lite.py is deprecated. Use 'python -m vm_bench' instead. See docs/guide/vm_bench-usage-guide.md",
         DeprecationWarning,
         stacklevel=2,
     )
