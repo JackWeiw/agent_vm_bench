@@ -182,6 +182,15 @@ class Config:
     # $AENV_HOME_PATH / $AENV_HOME are kept as a lower-priority fallback.
     aenv_home_path: str | None = None
 
+    # Firecracker CPU pinning for cold-start trajectory perf measurement.
+    # Comma-separated host CPU list, e.g. "2,3" for a 2-vCPU sandbox. None ->
+    # no pinning. Discovery (pgrep) + pin (taskset) run on the AENV server host;
+    # when the bench runs remotely, set pin_cmd_prefix to "ssh user@host" so the
+    # commands reach the server. Best-effort: failure logs and does NOT fail
+    # sandbox creation. See AenvProvider._pin_firecracker.
+    pin_cpus: str | None = None
+    pin_cmd_prefix: str = ""  # "" = local, "ssh user@host" = remote AENV server
+
     @classmethod
     def from_raw(cls, raw: dict[str, Any], block: str = "e2b") -> Config:
         """Build from the unified YAML's backend block (``e2b:`` by default).
@@ -207,6 +216,8 @@ class Config:
             sandbox_ids_file=backend.get("sandbox_ids_file"),
             snapshot_dir=backend.get("snapshot_dir"),
             aenv_home_path=backend.get("aenv_home_path"),
+            pin_cpus=backend.get("pin_cpus"),
+            pin_cmd_prefix=backend.get("pin_cmd_prefix", ""),
         )
 
     def setup_e2b_env(self) -> None:
