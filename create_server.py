@@ -179,7 +179,7 @@ def main():
 
     warnings.warn(
         "create_server.py is deprecated. "
-        "Use 'python -m vm_bench --create-only' instead. See docs/vm_bench-usage-guide.md",
+        "Use 'python -m vm_bench --create-only' instead. See docs/guide/vm_bench-usage-guide.md",
         DeprecationWarning,
         stacklevel=2,
     )

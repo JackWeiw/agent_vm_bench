@@ -129,7 +129,7 @@ A top-level `monitor:` block (peer of `report:`) controls host-level `vm_monitor
 
 ### Replay workflow (trajectory / lifecycle replay)
 
-`config/common/replay.yaml` drives the replay workflow (`workflow_type: replay`): deterministic replay of recorded SWE-bench trajectories against sandbox backends, primarily `--provider aenv` (lifecycle pause/resume) or `--provider e2b` (exec-only). `replay.yaml` ships as the aenv **lifecycle 1:1 (no-oversubscription) baseline**; see [docs/bench-core-usage-zh.md](docs/bench-core-usage-zh.md) §8 for the mode guide. Modes (per `replay.mode`, defaults to the provider's `default_replay_mode`):
+`config/common/replay.yaml` drives the replay workflow (`workflow_type: replay`): deterministic replay of recorded SWE-bench trajectories against sandbox backends, primarily `--provider aenv` (lifecycle pause/resume) or `--provider e2b` (exec-only). `replay.yaml` ships as the aenv **lifecycle 1:1 (no-oversubscription) baseline**; see [docs/guide/bench-core-usage-zh.md](docs/guide/bench-core-usage-zh.md) §8 for the mode guide. Modes (per `replay.mode`, defaults to the provider's `default_replay_mode`):
 
 - `exec_only` — long-lived sandboxes, continuous exec of trajectory steps, no pause/resume. Baseline for pure exec-replay cost; used when the backend has no lifecycle capability (e2b/docker/fake).
 - `lifecycle` — long-lived sandboxes: `create_all` → pause once → per-step `provider.resume()`/`pause()` (aenv `LifecycleCapable`). Oversubscription = **snapshot memory reuse** — pause frees RAM, so `k×N` sandboxes fit in `running_concurrency = N` slots. Emits `initial_pause` + per-slice `pause`/`resume` segments and `snapshot_size` events (aenv `SnapshotSizeCapable`).
@@ -171,7 +171,7 @@ Multi-template routing: trajectories may declare per-file concrete templates via
 
 ### bench-core phase ladder
 
-`--create-only` and `--detect` both leave sandboxes running; finish with `--cleanup`. Tier validation: Tier 0 `--provider fake` (no SDK) → Tier 1 docker (local daemon) → Tier 2 e2b (cloud). See [docs/bench-core-usage-zh.md](docs/bench-core-usage-zh.md).
+`--create-only` and `--detect` both leave sandboxes running; finish with `--cleanup`. Tier validation: Tier 0 `--provider fake` (no SDK) → Tier 1 docker (local daemon) → Tier 2 e2b (cloud). See [docs/guide/bench-core-usage-zh.md](docs/guide/bench-core-usage-zh.md).
 
 ## External Tool Dependencies
 
@@ -241,7 +241,7 @@ Each tool produces logs parsed by `vm_monitor/parsers.py`:
 
 ## Metrics Reference
 
-See [docs/metrics-reference.md](docs/metrics-reference.md) for complete metric descriptions — `bench_core` kernel timing/task metrics, every `vm_monitor` sheet, and the `/proc`+`/sys` collection sources & calculation formulas.
+See [docs/dev/metrics-reference.md](docs/dev/metrics-reference.md) for complete metric descriptions — `bench_core` kernel timing/task metrics, every `vm_monitor` sheet, and the `/proc`+`/sys` collection sources & calculation formulas.
 
 ### Key metrics to watch
 
@@ -276,14 +276,14 @@ See [docs/metrics-reference.md](docs/metrics-reference.md) for complete metric d
 2. Add parser in `vm_monitor/parsers.py`
 3. Add exporter in `vm_monitor/exporters.py`
 4. Add metric extraction in `batch_test_scheduler.py` or `e2b_bench/metrics_extractor.py`
-5. Update `docs/metrics-reference.md`
+5. Update `docs/dev/metrics-reference.md`
 
 ### Adding a new VMM type
 
 1. Create class in `vm_monitor/` extending `VMMonitorBase`
 2. Implement: `get_process_names()`, `extract_vm_id()`, `get_vms_realtime()`
 3. Register in `vm_monitor/__init__.py`; add CLI flag in `vm_monitor/cli.py`
-4. Update `docs/usage-guide.md`
+4. Update `docs/guide/usage-guide.md`
 
 ## File Locations
 
@@ -327,9 +327,9 @@ config/
 
 ## Related Documentation
 
-- [docs/bench-core-usage-zh.md](docs/bench-core-usage-zh.md) — src kernel usage (install→config→CLI→cleanup→troubleshooting)
+- [docs/guide/bench-core-usage-zh.md](docs/guide/bench-core-usage-zh.md) — src kernel usage (install→config→CLI→cleanup→troubleshooting)
 - [docs/superpowers/specs/2026-08-12-environment-provider-bench-core-design.md](docs/superpowers/specs/2026-08-12-environment-provider-bench-core-design.md) — EnvironmentProvider + bench_core design (local working doc)
-- [docs/design.md](docs/design.md) / [docs/design-en.md](docs/design-en.md) — system architecture (CN/EN)
-- [docs/metrics-reference.md](docs/metrics-reference.md) — bench_core kernel + vm_monitor sheet metrics, /proc & /sys collection sources, calculation formulas
-- [docs/usage-guide.md](docs/usage-guide.md) — detailed legacy tool usage
-- [docs/e2b-bench-usage.md](docs/e2b-bench-usage.md) / [docs/docker-bench-usage.md](docs/docker-bench-usage.md) — frozen legacy backend guides
+- [docs/architecture/design.md](docs/architecture/design.md) / [docs/architecture/design-en.md](docs/architecture/design-en.md) — system architecture (CN/EN)
+- [docs/dev/metrics-reference.md](docs/dev/metrics-reference.md) — bench_core kernel + vm_monitor sheet metrics, /proc & /sys collection sources, calculation formulas
+- [docs/guide/usage-guide.md](docs/guide/usage-guide.md) — detailed legacy tool usage
+- [docs/guide/e2b-bench-usage.md](docs/guide/e2b-bench-usage.md) / [docs/guide/docker-bench-usage.md](docs/guide/docker-bench-usage.md) — frozen legacy backend guides

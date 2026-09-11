@@ -48,7 +48,7 @@ pytest llm_replay/tests -v --tb=short
 ## When to write an RFC
 
 Non-trivial design changes (new scenarios, cross-package interfaces, breaking
-schema changes) need an **RFC** before code. See [docs/rfcs/README.md](docs/rfcs/README.md).
+schema changes) need an **RFC** before code. See [docs/dev/rfcs/README.md](docs/dev/rfcs/README.md).
 Small changes go straight to a PR.
 
 ## Reporting bugs & security
