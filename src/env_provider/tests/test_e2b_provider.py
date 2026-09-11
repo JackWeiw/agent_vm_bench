@@ -64,6 +64,7 @@ def _provider_with(
     provider = E2BProvider(kcfg, cfg, Event())
     manager = Mock()
     manager.sandbox_states = dict(states)
+    manager._slot_templates = {}  # real manager keys index->template; empty = unbound
     manager.create_all.return_value = manager.sandbox_states
     manager.detect_existing.return_value = manager.sandbox_states
     manager.detect_from_file.return_value = manager.sandbox_states
@@ -333,6 +334,23 @@ class TestSaveIds:
             provider.save_ids({1: failed}, ids_file=path)
             # No ready IDs -> file untouched (stays empty / as-created).
             assert caplog.text == "" or "No ready" in caplog.text
+        finally:
+            os.unlink(path)
+
+    def test_persists_template_column_when_bound(self):
+        # Multi-template replay: a ready sandbox with a concrete template is
+        # written as "<id>\t<template>" so detect_from_file can recover it.
+        config = Config()
+        config.sandbox_ids_file = None  # set per-call
+        provider, _ = _provider_with({}, config=config)
+        inst = SandboxInstance(id="sbx-9", index=1, ready=True, template="swb-a")
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            path = f.name
+        try:
+            provider.save_ids({1: inst}, ids_file=path)
+            with open(path) as fh:
+                assert fh.read() == "sbx-9\tswb-a\n"
         finally:
             os.unlink(path)
 

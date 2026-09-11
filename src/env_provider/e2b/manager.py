@@ -203,11 +203,22 @@ class SandboxManager(BaseSandboxManager):
             raise FileNotFoundError(f"Sandbox IDs file not found: {ids_file}")
 
         target_ids: set[str] = set()
+        id_to_template: dict[str, str | None] = {}
         with open(ids_file) as f:
             for line in f:
                 line = line.strip()
-                if line:
-                    target_ids.add(line)
+                if not line:
+                    continue
+                # "<id>\t<template>" (multi-template replay) or bare "<id>".
+                if "\t" in line:
+                    sid, _, template = line.partition("\t")
+                    sid = sid.strip()
+                    template = template.strip() or None
+                else:
+                    sid, template = line, None
+                if sid:
+                    target_ids.add(sid)
+                    id_to_template[sid] = template
 
         if not target_ids:
             logger.warning(f"  No IDs found in {ids_file}")
@@ -248,7 +259,7 @@ class SandboxManager(BaseSandboxManager):
             logger.info("  No matched sandboxes to benchmark")
             return {}
 
-        return self._detect_each(matched)
+        return self._detect_each(matched, id_to_template=id_to_template)
 
     def check_alive(self, state: SandboxState) -> bool:
         """Liveness via an exec probe (e2b has no container.reload)."""
