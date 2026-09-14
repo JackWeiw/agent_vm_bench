@@ -3,14 +3,15 @@
 # Collect Firecracker-process perf metrics for a pinned FC PID, ARM vs x86.
 #   - usr/sys/guest time : pidstat -u  (%usr %system %guest; %guest is filled
 #                          for a VMM like firecracker since it runs the KVM guest).
-#   - on-CPU             : perf stat -e cycles,instructions -p PID  ("oncputime
-#                          直接采集 cycles" -- cycles + instructions give CPI =
-#                          on-CPU cost/instruction; no BCC cpudist).
-#   - off-CPU            : perf record sched:sched_stat_sleep +
-#                          sched:sched_switch + sched:sched_process_exit, -a -g,
-#                          perf inject -s (synthesize sleep period), then fold to
-#                          an off-CPU flamegraph via stackcollapse.pl/flamegraph.pl.
-#                          Needs /proc/sys/kernel/sched_schedstats=1 (set best-effort).
+#   - on/off-CPU         : perf stat -e cycles,instructions,task-clock,
+#                          context-switches,cpu-migrations -p PID. "oncputime
+#                          直接采集 cycles" -- cycles+instructions give CPI; the
+#                          "<d> seconds time elapsed" line perf prints is walltime,
+#                          task-clock is on-CPU time -> off-CPU ≈ walltime -
+#                          task-clock. No BCC, no off-CPU flamegraph. NOTE: for a
+#                          multi-thread VMM task-clock sums on-CPU time across
+#                          vcpu threads, so off-CPU estimate is single-thread
+#                          basis: negative ≈ cores saturated (task-clock > wall).
 #   - topdown L1         : x86 -> AMDuProfPcm -m topdown -c core=<CORES> -p PID
 #                          (PCM topdown, PID attach -- unlike the old AMDuProfCLI
 #                          `assess` config, PCM takes -p PID directly).
@@ -33,8 +34,6 @@
 # -c CORES: pin-core spec in the topdown tool's native format -- x86 AMDuProfPcm
 #   takes a comma list like `2,,3` (script wraps it as core=<CORES>); arm devkit
 #   takes a range like `2-3` (passed to --cpu). Omit to collect without core filter.
-# Off-CPU flamegraph needs stackcollapse.pl + flamegraph.pl in CWD (github.com/
-# brendangregg/FlameGraph); without them the raw perf.data is still produced.
 set -euo pipefail
 
 PID=""; DURATION=30; OUTDIR="./fc-perf"; ARCH=""; CORES=""
@@ -74,47 +73,35 @@ else
   echo "[fc-perf] WARN: pidstat not found -> usr/sys/guest skipped (pkg: sysstat)" >&2
 fi
 
-# ----------------------------------------------------------- 2. on-CPU cycles
-# "oncputime 直接采集 cycles": perf stat -p PID counting cycles + instructions
-# (CPI = cycles/instructions = on-CPU cost per instruction). No BCC cpudist.
-if command -v perf >/dev/null 2>&1; then
-  perf stat -e cycles,instructions -p "$PID" -- sleep "$DURATION" \
-    >"$OUTDIR/perf_oncpu.txt" 2>&1 &
-else
-  echo "[fc-perf] WARN: perf not found -> on-CPU cycles skipped" >&2
-fi
-
-# ----------------------------------------------------------- 3. off-CPU flamegraph
-# sched:sched_stat_sleep carries the off-CPU sleep duration as :period, but only
-# after `perf inject -s` synthesizes it from sched_switch state. Enable
-# sched_schedstats so the sleep events carry real durations. Record is system-wide
-# (-a) with -g callgraph; filter to the FC PID in the flamegraph fold step if
-# needed (perf script post-processing). Runs as a background subshell so it
-# overlaps the other collectors; total wall ~= DURATION.
+# ----------------------------------------------------------- 2. on/off-CPU (perf stat)
+# "oncputime 直接采集 cycles" + context management: one perf stat counts cycles,
+# instructions (CPI), task-clock (on-CPU time), context-switches, cpu-migrations.
+# perf prints "<d> seconds time elapsed" walltime; off-CPU ≈ walltime - task-clock.
+# Multi-thread FC: task-clock sums on-CPU time across vcpu threads -> off-CPU
+# estimate is single-thread basis (negative ≈ cores saturated). Subshell so it
+# overlaps pidstat + topdown; the awk appends the estimate to the same file.
 if command -v perf >/dev/null 2>&1; then
   (
     set +e
-    echo 1 > /proc/sys/kernel/sched_schedstats 2>/dev/null
-    perf record -e sched:sched_stat_sleep -e sched:sched_switch -e sched:sched_process_exit \
-      -a -g -o "$OUTDIR/perf.data.raw" sleep "$DURATION"
-    perf inject -v -s -i "$OUTDIR/perf.data.raw" -o "$OUTDIR/perf.data"
-    if [[ -x ./stackcollapse.pl && -x ./flamegraph.pl ]]; then
-      perf script -F comm,pid,tid,cpu,time,period,event,ip,sym,dso,trace -i "$OUTDIR/perf.data" \
-        | awk 'NF > 4 { exec = $1; period_ms = int($5 / 1000000) }
-               NF > 1 && NF <= 4 && period_ms > 0 { print $2 }
-               NF < 2 && period_ms > 0 { printf "%s\n%d\n\n", exec, period_ms }' \
-        | ./stackcollapse.pl \
-        | ./flamegraph.pl --countname=ms --title="Off-CPU Time Flame Graph" --colors=io \
-          > "$OUTDIR/offcpu.svg"
-    else
-      echo "stackcollapse.pl/flamegraph.pl not in CWD -> raw perf.data left; get them from https://github.com/brendangregg/FlameGraph"
-    fi
-  ) >"$OUTDIR/offcpu.log" 2>&1 &
+    out=$(perf stat -e cycles,instructions,task-clock,context-switches,cpu-migrations \
+        -p "$PID" -- sleep "$DURATION" 2>&1)
+    printf '%s\n' "$out"
+    printf '%s\n' "$out" | awk '
+      { gsub(/,/, "") }
+      /task-clock/ { v=$1+0; if (/msec|mseconds/) v=v/1000; tc=v }
+      /seconds time elapsed/ { el=$1+0 }
+      END {
+        if (el>0 && tc>0)
+          printf "\n[on/off-cpu est] wall=%.3f s  task-clock(on-CPU)=%.3f s  off-cpu≈%.3f s (single-thread basis; neg=saturated)\n", el, tc, el-tc
+        else
+          print "\n[on/off-cpu est] parse failed; compute wall - task-clock manually"
+      }'
+  ) >"$OUTDIR/perf_oncpu.txt" 2>&1 &
 else
-  echo "[fc-perf] WARN: perf not found -> off-CPU skipped" >&2
+  echo "[fc-perf] WARN: perf not found -> on/off-CPU skipped" >&2
 fi
 
-# ----------------------------------------------------------- 4. topdown L1
+# ----------------------------------------------------------- 3. topdown L1
 case "$ARCH" in
   x86)
     # AMD uProf PCM topdown. PCM (AMDuProfPcm) is distinct from AMDuProfCLI and
