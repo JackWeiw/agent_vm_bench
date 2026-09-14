@@ -1,33 +1,40 @@
 #!/usr/bin/env bash
 # fc-perf-collect.sh
 # Collect Firecracker-process perf metrics for a pinned FC PID, ARM vs x86.
-#   - onCPU/offCPU time   : BCC cpudist (on-CPU run-length hist) + offcputime
-#                           (off-CPU time + stacks); perf stat fallback
-#                           (task-clock / ctx-switches) if no BCC.
-#   - usr/sys/guest time  : pidstat -u  (%usr %system %guest; %guest is filled
-#                           for a VMM like firecracker since it runs the KVM guest).
-#   - topdown L1          : x86 -> AMD uProf `profile --config assess`, system-wide
-#                           on the pinned cores (-a -c <CORES>); the FC is already
-#                           pinned there so system-wide == FC's topdown. (-p PID
-#                           attach is unreliable for the `assess` config; uProf
-#                           notes -p is "CpuProfiler specific reports" only.)
-#                           arm -> devkit topdown (user-supplied, see ARM block).
+#   - usr/sys/guest time : pidstat -u  (%usr %system %guest; %guest is filled
+#                          for a VMM like firecracker since it runs the KVM guest).
+#   - on-CPU             : perf stat -e cycles,instructions -p PID  ("oncputime
+#                          直接采集 cycles" -- cycles + instructions give CPI =
+#                          on-CPU cost/instruction; no BCC cpudist).
+#   - off-CPU            : perf record sched:sched_stat_sleep +
+#                          sched:sched_switch + sched:sched_process_exit, -a -g,
+#                          perf inject -s (synthesize sleep period), then fold to
+#                          an off-CPU flamegraph via stackcollapse.pl/flamegraph.pl.
+#                          Needs /proc/sys/kernel/sched_schedstats=1 (set best-effort).
+#   - topdown L1         : x86 -> AMDuProfPcm -m topdown -c core=<CORES> -p PID
+#                          (PCM topdown, PID attach -- unlike the old AMDuProfCLI
+#                          `assess` config, PCM takes -p PID directly).
+#                          arm -> devkit tuner top-down --cpu <CORES>
+#                          (system-wide on the pin cores; FC is pinned there).
+#                          Both emit the same four L1 buckets (retiring /
+#                          frontend / backend / bad-spec) -> cross-ISA comparable.
 #
 # Arch is auto-detected (uname -m) so the SAME script deploys to both the ARM
-# and the x86 box unchanged; it just picks the right topdown collector. The
-# two topdown backends emit the same four L1 buckets (retiring /
-# frontend-bound / backend-bound / bad-speculation) -> cross-ISA comparable.
+# and the x86 box unchanged; it just picks the right topdown collector.
 #
 # The bench's `[aenv-pin] PINNED OK pid=...` log (from --create-only) gives the
 # PID to pass here. Pin is already verified before this runs.
 #
 # Usage:
 #   ./fc-perf-collect.sh -p <PID> -d <SECONDS> -o <OUTDIR> [-a arm|x86] [-c <CORES>]
-# Example (match the 2vCPU pin CPUs 2,3, capture for 60s):
-#   ./fc-perf-collect.sh -p $(pgrep -fn firecracker) -d 60 -o ./fc-perf-run1 -c 2,3
-# -c CORES: comma list of the FC pin CPUs (x86 topdown collects system-wide on
-#   these; required for a clean L1 topdown on x86 -- omit and the script falls
-#   back to -p PID, which uProf may reject for the `assess` config).
+# Examples (2vCPU pin on cores 2,3, capture 60s):
+#   x86: ./fc-perf-collect.sh -p $(pgrep -fn firecracker) -d 60 -o ./fc-perf-run1 -c '2,,3'
+#   arm: ./fc-perf-collect.sh -p $(pgrep -fn firecracker) -d 60 -o ./fc-perf-run1 -c '2-3'
+# -c CORES: pin-core spec in the topdown tool's native format -- x86 AMDuProfPcm
+#   takes a comma list like `2,,3` (script wraps it as core=<CORES>); arm devkit
+#   takes a range like `2-3` (passed to --cpu). Omit to collect without core filter.
+# Off-CPU flamegraph needs stackcollapse.pl + flamegraph.pl in CWD (github.com/
+# brendangregg/FlameGraph); without them the raw perf.data is still produced.
 set -euo pipefail
 
 PID=""; DURATION=30; OUTDIR="./fc-perf"; ARCH=""; CORES=""
@@ -38,7 +45,7 @@ while getopts "p:d:o:a:c:h" opt; do
     o) OUTDIR=$OPTARG ;;
     a) ARCH=$OPTARG ;;
     c) CORES=$OPTARG ;;
-    h) sed -n '2,25p' "$0"; exit 0 ;;
+    h) sed -n '2,30p' "$0"; exit 0 ;;
     *) exit 2 ;;
   esac
 done
@@ -67,90 +74,77 @@ else
   echo "[fc-perf] WARN: pidstat not found -> usr/sys/guest skipped (pkg: sysstat)" >&2
 fi
 
-# ----------------------------------------------------------- 2. onCPU/offCPU
-# BCC on/off-CPU: BCC 0.31 (Debian 13) dropped the single `onoffcpu` tool, so
-# use the two successors it ships: cpudist (on-CPU run-length histogram) +
-# offcputime (off-CPU time, with stack traces), both as `-p PID`. Debian/Ubuntu
-# ships them as `cpudist-bpfcc` / `offcputime-bpfcc`. Duration is driven by
-# `timeout -s INT $DURATION`, NOT a positional arg: cpudist's positional is
-# (interval [count]), so `cpudist $DURATION` would print every DURATION s
-# forever and never exit -> `wait` hangs. timeout sends SIGINT at DURATION,
-# which BCC catches to flush the histogram then exit -- uniform across both
-# tools regardless of each tool's positional-arg semantics. NOTE: BCC prints
-# its startup banner to stderr (unbuffered) but the histogram to stdout, which
-# Python block-buffers when redirected to a file -> on SIGINT exit the
-# histogram sits in the 4KB buffer and never lands in the file. PYTHONUNBUFFERED=1
-# forces stdout unbuffered so the SIGINT-triggered print flushes immediately.
-# ponytail: single-tool on+off is gone -> two tools, two files. If BCC is
-# absent, fall back to perf stat (task-clock = on-CPU s; context-switches =
-# off-CPU event count; off-CPU time ~ wall*threads - task-clock).
-export PYTHONUNBUFFERED=1
-ONOFF_OK=0
-if command -v cpudist-bpfcc >/dev/null 2>&1; then
-  timeout -s INT "$DURATION" cpudist-bpfcc -p "$PID" >"$OUTDIR/cpudist.txt" 2>&1 &
-  ONOFF_OK=1
-elif command -v cpudist >/dev/null 2>&1; then
-  timeout -s INT "$DURATION" cpudist -p "$PID" >"$OUTDIR/cpudist.txt" 2>&1 &
-  ONOFF_OK=1
-fi
-if command -v offcputime-bpfcc >/dev/null 2>&1; then
-  timeout -s INT "$DURATION" offcputime-bpfcc -p "$PID" >"$OUTDIR/offcputime.txt" 2>&1 &
-  ONOFF_OK=1
-elif command -v offcputime >/dev/null 2>&1; then
-  timeout -s INT "$DURATION" offcputime -p "$PID" >"$OUTDIR/offcputime.txt" 2>&1 &
-  ONOFF_OK=1
-fi
-if [[ "$ONOFF_OK" -eq 0 ]]; then
-  if command -v perf >/dev/null 2>&1; then
-    perf stat -e task-clock,context-switches,cpu-migrations -p "$PID" -- sleep "$DURATION" \
-      >"$OUTDIR/perf_oncpu.txt" 2>&1 &
-    echo "[fc-perf] NOTE: bcc cpudist/offcputime missing -> perf stat fallback (on-CPU only, no distribution)" >&2
-  else
-    echo "[fc-perf] WARN: neither bcc nor perf found -> on/off-CPU skipped" >&2
-  fi
+# ----------------------------------------------------------- 2. on-CPU cycles
+# "oncputime 直接采集 cycles": perf stat -p PID counting cycles + instructions
+# (CPI = cycles/instructions = on-CPU cost per instruction). No BCC cpudist.
+if command -v perf >/dev/null 2>&1; then
+  perf stat -e cycles,instructions -p "$PID" -- sleep "$DURATION" \
+    >"$OUTDIR/perf_oncpu.txt" 2>&1 &
+else
+  echo "[fc-perf] WARN: perf not found -> on-CPU cycles skipped" >&2
 fi
 
-# ----------------------------------------------------------- 3. topdown L1
+# ----------------------------------------------------------- 3. off-CPU flamegraph
+# sched:sched_stat_sleep carries the off-CPU sleep duration as :period, but only
+# after `perf inject -s` synthesizes it from sched_switch state. Enable
+# sched_schedstats so the sleep events carry real durations. Record is system-wide
+# (-a) with -g callgraph; filter to the FC PID in the flamegraph fold step if
+# needed (perf script post-processing). Runs as a background subshell so it
+# overlaps the other collectors; total wall ~= DURATION.
+if command -v perf >/dev/null 2>&1; then
+  (
+    set +e
+    echo 1 > /proc/sys/kernel/sched_schedstats 2>/dev/null
+    perf record -e sched:sched_stat_sleep -e sched:sched_switch -e sched:sched_process_exit \
+      -a -g -o "$OUTDIR/perf.data.raw" sleep "$DURATION"
+    perf inject -v -s -i "$OUTDIR/perf.data.raw" -o "$OUTDIR/perf.data"
+    if [[ -x ./stackcollapse.pl && -x ./flamegraph.pl ]]; then
+      perf script -F comm,pid,tid,cpu,time,period,event,ip,sym,dso,trace -i "$OUTDIR/perf.data" \
+        | awk 'NF > 4 { exec = $1; period_ms = int($5 / 1000000) }
+               NF > 1 && NF <= 4 && period_ms > 0 { print $2 }
+               NF < 2 && period_ms > 0 { printf "%s\n%d\n\n", exec, period_ms }' \
+        | ./stackcollapse.pl \
+        | ./flamegraph.pl --countname=ms --title="Off-CPU Time Flame Graph" --colors=io \
+          > "$OUTDIR/offcpu.svg"
+    else
+      echo "stackcollapse.pl/flamegraph.pl not in CWD -> raw perf.data left; get them from https://github.com/brendangregg/FlameGraph"
+    fi
+  ) >"$OUTDIR/offcpu.log" 2>&1 &
+else
+  echo "[fc-perf] WARN: perf not found -> off-CPU skipped" >&2
+fi
+
+# ----------------------------------------------------------- 4. topdown L1
 case "$ARCH" in
   x86)
-    # AMD uProf topdown (frontend/backend-bound, bad-speculation, retiring).
-    # v5.2 .deb installs the CLI as `AMDuProfCLI` under a versioned dir:
-    # /opt/AMDuProf_5.2-606/bin/AMDuProfCLI. Install + symlink:
-    #   sudo dpkg -i amduprof_*.deb
-    #   sudo ln -sf /opt/AMDuProf_5.2-606/bin/AMDuProfCLI /usr/local/bin/AMDuProfCLI
-    # `profile` = collect + report in one shot (vs `collect`, which needs a
-    # separate `report` pass). `--config assess` is AMD's top-down breakdown
-    # (the "Assess Performance" config: the 8 PMU events listed by
-    # `AMDuProfCLI info --list collect-configs` are exactly the L1 four-bucket
-    # set). `-d` seconds; `-o` output dir; `--stdout` echoes the report into
-    # uprof.log so the four L1 buckets are visible immediately. Requires
-    # perf_event_paranoid = 0/-1. The Power Profiler driver warning at install
-    # time is irrelevant (power metrics only).
-    #
-    # Collection target: the FC is already pinned to the bench's pin CPUs, so
-    # system-wide on those cores (`-a -c "$CORES"`) == the FC's own topdown --
-    # and `-p PID` attach is unreliable for `assess` anyway (profile help notes
-    # -p is "CpuProfiler specific reports" only). Pass `-c` the same core list
-    # the bench pinned. If `-c` is omitted, fall back to `-p $PID` and warn.
-    if command -v AMDuProfCLI >/dev/null 2>&1; then
+    # AMD uProf PCM topdown. PCM (AMDuProfPcm) is distinct from AMDuProfCLI and
+    # takes -p PID directly for -m topdown (the CLI `assess` config did not).
+    # -c core=<list> filters to the pin cores; -d seconds. Output is stdout.
+    # Install: sudo dpkg -i amduprof_*.deb (ships AMDuProfPcm in /opt/AMDuProf_*/bin).
+    if command -v AMDuProfPcm >/dev/null 2>&1; then
       if [[ -n "$CORES" ]]; then
-        AMDuProfCLI profile --config assess -a -c "$CORES" -d "$DURATION" \
-          -o "$OUTDIR/uprof" --stdout >"$OUTDIR/uprof.log" 2>&1 &
+        AMDuProfPcm -m topdown -c "core=$CORES" -p "$PID" -d "$DURATION" \
+          >"$OUTDIR/uprof_topdown.txt" 2>&1 &
       else
-        echo "[fc-perf] NOTE: -c CORES not set -> falling back to -p $PID (uProf may reject -p for the assess config); pass -c <pin cores> for a clean L1 topdown" >&2
-        AMDuProfCLI profile --config assess -p "$PID" -d "$DURATION" \
-          -o "$OUTDIR/uprof" --stdout >"$OUTDIR/uprof.log" 2>&1 &
+        AMDuProfPcm -m topdown -p "$PID" -d "$DURATION" \
+          >"$OUTDIR/uprof_topdown.txt" 2>&1 &
       fi
     else
-      echo "[fc-perf] ERR: AMDuProfCLI not in PATH; install the .deb and symlink /opt/AMDuProf_5.2-606/bin/AMDuProfCLI into /usr/local/bin" >&2
+      echo "[fc-perf] ERR: AMDuProfPcm not in PATH; install the AMD uProf .deb (PCM CLI)" >&2
     fi
     ;;
   arm)
-    # ARM topdown via devkit (user-supplied). If your devkit flags differ from
-    # `-p PID -d DURATION`, edit the command below -- the rest of the script is
-    # arch-agnostic. Same four L1 buckets as x86 uProf above.
+    # ARM topdown via devkit tuner top-down, system-wide on the pin cores (the FC
+    # is already pinned there). --cpu takes a range (e.g. 2-3); -d seconds, -i
+    # sample interval. Same four L1 buckets as x86 uProf above.
     if command -v devkit >/dev/null 2>&1; then
-      devkit topdown -p "$PID" -d "$DURATION" >"$OUTDIR/devkit_topdown.txt" 2>&1 &
+      if [[ -n "$CORES" ]]; then
+        devkit tuner top-down -d "$DURATION" -i 1 --cpu "$CORES" \
+          >"$OUTDIR/devkit_topdown.txt" 2>&1 &
+      else
+        devkit tuner top-down -d "$DURATION" -i 1 \
+          >"$OUTDIR/devkit_topdown.txt" 2>&1 &
+      fi
     else
       echo "[fc-perf] ERR: devkit not in PATH; set your ARM topdown tool" >&2
     fi
