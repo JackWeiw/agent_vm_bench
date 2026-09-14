@@ -290,6 +290,41 @@ def test_export_reconstructs_paused_sec_and_elapsed(tmp_path):
     assert rec["elapsed_sec"] == 3.0
 
 
+def test_export_failed_step_zeroed_timestamps_do_not_poison_elapsed(tmp_path):
+    # A failed step carries sentinel resume_start/pause_end = 0.0 (not None) per
+    # _failed_series_record; real series stamps are time.time() epochs (~1.8e9).
+    # The elapsed span (max(pause_end) - min(resume_start)) and the cross-step
+    # paused gap must drop the 0.0 sentinel or they compute ~1.8e9-second gaps
+    # (the same bug class lifecycle_reconstruct._segment guards against).
+    epoch = 1789012000.0
+    sp = tmp_path / "s.jsonl"
+    _write(
+        sp,
+        [
+            _step(
+                "t",
+                step_index=0,
+                slice_failed=True,
+                exit_code=1,
+                resume_sec=0.0,
+                exec_sec=0.0,
+                pause_sec=0.0,
+                resume_start=0.0,
+                pause_end=0.0,
+            ),
+            _step("t", step_index=1, resume_start=epoch, pause_end=epoch + 5.0),
+        ],
+    )
+    export_trajectories(sp, tmp_path)
+    rec = _records(tmp_path)["t"]
+    # elapsed = (epoch+5) - epoch = 5.0; NOT ~1.789e9 (epoch - 0.0).
+    assert rec["elapsed_sec"] == 5.0
+    # cross-step gap from the failed step's pause_end=0 to step1's resume_start
+    # must be 0 (sentinel dropped), NOT ~1.789e9.
+    assert rec["steps"][1]["paused_sec"] == 0.0
+    assert rec["requested_delay_sec"] == 0.0
+
+
 def test_export_writes_index_json_catalog(tmp_path):
     sp = tmp_path / "s.jsonl"
     _write(sp, [_step("traj-a"), _step("traj-b")])
