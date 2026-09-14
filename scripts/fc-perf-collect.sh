@@ -12,9 +12,10 @@
 #                          multi-thread VMM task-clock sums on-CPU time across
 #                          vcpu threads, so off-CPU estimate is single-thread
 #                          basis: negative ≈ cores saturated (task-clock > wall).
-#   - topdown L1         : x86 -> AMDuProfPcm -m topdown -c core=<CORES> -p PID
-#                          (PCM topdown, PID attach -- unlike the old AMDuProfCLI
-#                          `assess` config, PCM takes -p PID directly).
+#   - topdown L1         : x86 -> AMDuProfPcm -m topdown -c core=<CORES>
+#                          (system-wide on the pin cores; -p and -c are mutually
+#                          exclusive in PCM, so -c wins -- the FC is pinned there).
+#                          Fall back to -p PID when -c not given.
 #                          arm -> devkit tuner top-down --cpu <CORES>
 #                          (system-wide on the pin cores; FC is pinned there).
 #                          Both emit the same four L1 buckets (retiring /
@@ -83,8 +84,14 @@ fi
 if command -v perf >/dev/null 2>&1; then
   (
     set +e
+    # The NMI watchdog reserves PMU registers -> perf stat counts come back
+    # blank ("Some events weren't counted"). Turn it off for the capture, restore
+    # after. Best-effort; root or perf_event_paranoid<=0 needed.
+    nmi_was=$(cat /proc/sys/kernel/nmi_watchdog 2>/dev/null || true)
+    echo 0 > /proc/sys/kernel/nmi_watchdog 2>/dev/null || true
     out=$(perf stat -e cycles,instructions,task-clock,context-switches,cpu-migrations \
         -p "$PID" -- sleep "$DURATION" 2>&1)
+    [[ -n "$nmi_was" ]] && echo "$nmi_was" > /proc/sys/kernel/nmi_watchdog 2>/dev/null || true
     printf '%s\n' "$out"
     printf '%s\n' "$out" | awk '
       { gsub(/,/, "") }
@@ -93,6 +100,8 @@ if command -v perf >/dev/null 2>&1; then
       END {
         if (el>0 && tc>0)
           printf "\n[on/off-cpu est] wall=%.3f s  task-clock(on-CPU)=%.3f s  off-cpu≈%.3f s (single-thread basis; neg=saturated)\n", el, tc, el-tc
+        else if (el>0)
+          printf "\n[on/off-cpu est] wall=%.3f s  task-clock=0 -> process idle or counters unavailable (workload running? NMI watchdog off?)\n", el
         else
           print "\n[on/off-cpu est] parse failed; compute wall - task-clock manually"
       }'
@@ -104,13 +113,15 @@ fi
 # ----------------------------------------------------------- 3. topdown L1
 case "$ARCH" in
   x86)
-    # AMD uProf PCM topdown. PCM (AMDuProfPcm) is distinct from AMDuProfCLI and
-    # takes -p PID directly for -m topdown (the CLI `assess` config did not).
-    # -c core=<list> filters to the pin cores; -d seconds. Output is stdout.
+    # AMD uProf PCM topdown. PCM (AMDuProfPcm) is distinct from AMDuProfCLI.
+    # -p and -c are MUTUALLY EXCLUSIVE (AMDuProfPcm errors: "Option '-p' is not
+    # supported with '-c'"). Since the FC is pinned to the requested cores,
+    # system-wide on those cores (-c core=<list>) == the FC's own topdown; only
+    # fall back to -p PID when no cores given. -d seconds; stdout output.
     # Install: sudo dpkg -i amduprof_*.deb (ships AMDuProfPcm in /opt/AMDuProf_*/bin).
     if command -v AMDuProfPcm >/dev/null 2>&1; then
       if [[ -n "$CORES" ]]; then
-        AMDuProfPcm -m topdown -c "core=$CORES" -p "$PID" -d "$DURATION" \
+        AMDuProfPcm -m topdown -c "core=$CORES" -d "$DURATION" \
           >"$OUTDIR/uprof_topdown.txt" 2>&1 &
       else
         AMDuProfPcm -m topdown -p "$PID" -d "$DURATION" \
