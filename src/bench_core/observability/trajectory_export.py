@@ -113,6 +113,11 @@ def _build_record(s: dict, steps: list[dict]) -> dict:
 
     # Inter-step think gaps (the reference's paused_sec). step i>0 ->
     # max(0, resume_start[i] - pause_end[i-1]); step 0 -> 0.0.
+    #
+    # Sentinel guard: a failed step's resume_start/pause_end are 0.0 (not None,
+    # see _failed_series_record), while real series stamps are time.time()
+    # epochs (~1.8e9, always positive). Drop <=0 sentinels or the cross-step
+    # gap becomes ~1.8e9s (same bug class lifecycle_reconstruct._segment guards).
     paused_secs: list[float] = []
     for i, ev in enumerate(steps):
         gap = 0.0
@@ -120,16 +125,18 @@ def _build_record(s: dict, steps: list[dict]) -> dict:
             prev = steps[i - 1]
             pe = prev.get("pause_end")
             rs = ev.get("resume_start")
-            if pe is not None and rs is not None:
+            if pe is not None and rs is not None and float(pe) > 0 and float(rs) > 0:
                 gap = max(0.0, float(rs) - float(pe))
         paused_secs.append(gap)
     requested_delay = sum(paused_secs)
 
     # elapsed: prefer wall-clock span from first resume_start to last pause_end;
     # add create+kill lifecycle cost. Fall back to slice_total + idle when
-    # timestamps are absent (exec-only / synthetic series).
-    resume_starts = [float(e["resume_start"]) for e in steps if e.get("resume_start") is not None]
-    pause_ends = [float(e["pause_end"]) for e in steps if e.get("pause_end") is not None]
+    # timestamps are absent (exec-only / synthetic series). Same <=0 sentinel
+    # guard as above so a failed step's zeroed stamps don't collapse the span
+    # to ~1.8e9s.
+    resume_starts = [float(e["resume_start"]) for e in steps if e.get("resume_start") and float(e["resume_start"]) > 0]
+    pause_ends = [float(e["pause_end"]) for e in steps if e.get("pause_end") and float(e["pause_end"]) > 0]
     create_kill = s["create_sec"] + s["kill_sec"]
     if resume_starts and pause_ends:
         elapsed = max(pause_ends) - min(resume_starts) + create_kill
