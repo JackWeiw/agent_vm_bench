@@ -4,7 +4,7 @@ title: Workflow plugin architecture — TaskRunner ABC + registry to make adding
 status: Active
 author: "@JackWeiw"
 shepherd: ""
-areas: [e2b, docker]
+areas: [e2b, docker, aenv]
 created: 2026-09-15
 updated: 2026-09-15
 ---

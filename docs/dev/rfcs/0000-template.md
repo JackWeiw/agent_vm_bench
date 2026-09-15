@@ -4,7 +4,7 @@ title: <short, descriptive title>
 status: Draft
 author: "@your-github-handle"
 shepherd: "@reviewer-handle"
-areas: [openstack | e2b | docker | vm_monitor | tooling | docs]
+areas: [openstack | e2b | docker | aenv | vm_monitor | tooling | docs]
 created: 2026-08-12
 updated: 2026-08-12
 ---
