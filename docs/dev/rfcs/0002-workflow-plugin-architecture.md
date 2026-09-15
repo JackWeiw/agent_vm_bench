@@ -365,3 +365,37 @@ incrementally.
   declare capability Protocols — symmetric to the provider side.
 - The registry + spec pattern becomes the single seam both providers and workflows plug into, making
   the kernel a true two-axis plugin host.
+
+## Implementation notes (Phase 0)
+
+Phase 0 shipped `src/bench_core/workflow_registry.py` (`RunContext` + `TaskRunner` ABC +
+`WorkflowSpec` + `WorkflowConfigBase` + `ReportFormatters` Protocol + `register_workflow` /
+`WORKFLOW_REGISTRY`) and the 4 in-tree workflows self-register at module import. No dispatch
+change, no runner migration, no behavior change (the full `FakeProvider` suite stays green).
+Two new tests guard the phase: `test_workflow_registry.py` (4 specs registered + duplicate /
+issubclass rejection) and `test_config_compat.py` (golden resolved-field values for every
+shipped `config/common/*.yaml`, the regression gate for Phase 2).
+
+Three deviations from the RFC text above, flagged here for review (each is a deliberate
+resolution of a tension the RFC glossed over, not a silent deviation):
+
+1. **Runner-issubclass gate deferred (P0 → P1).** The 12 existing runners subclass
+   `threading.Thread` and take positional `(state, config, stop_event, provider, …)`, not
+   `RunContext`. Migrating their constructors ⟹ changing every call site = the dispatch
+   collapse (Phase 1). So Phase 0 `register_workflow` validates runner fields as
+   `issubclass(cls, threading.Thread)` and tightens to `TaskRunner` in Phase 1 once the
+   runners migrate. `metrics_cls` / `config_cls` issubclass checks are enforced now.
+
+2. **`TaskRunner` exposes opt-in shared helpers, not a rigid template-method `run()`.**
+   §2 says all shared guards lift into `run()` and subclasses implement only `do_run()`.
+   In practice the guards diverge by runner kind — warmup is one-shot (ready gate only),
+   task loops (ready gate + `consecutive_errors >= 3` breaker), round carries
+   `step_times` + `_classify_exception` / `_record_metrics`. One `run()` shape would
+   force-fit three shapes. `TaskRunner` therefore defines `__init__(ctx)` + `@abstractmethod
+   do_run()` + opt-in helpers (`_gate_ready`, `_mark_offline_on_consecutive`) that each kind
+   calls where applicable. `run()` delegates to `do_run()` so the contract has one seam.
+
+3. **`config_cls` / `report_formatters` are optional in P0.** Their implementations land in
+   Phase 2 (typed config views) / Phase 3 (report formatters). `WorkflowSpec` makes both
+   `… | None = None`; `register_workflow` skips their issubclass check when `None`. The
+   fields tighten to required when the implementations land.

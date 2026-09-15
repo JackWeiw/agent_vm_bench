@@ -27,7 +27,13 @@ from pathlib import Path
 from typing import Any
 
 from bench_core.config import KernelConfig
-from bench_core.schemas import BenchSandbox, get_step_order
+from bench_core.schemas import (
+    DOCUMENT_XLSX_STEP_ORDER,
+    BenchSandbox,
+    DocumentMetrics,
+    get_step_order,
+)
+from bench_core.workflow_registry import WorkflowSpec, register_workflow
 from env_provider import EnvironmentProvider
 
 logger = logging.getLogger(__name__)
@@ -409,3 +415,19 @@ class DocumentRoundRunner(threading.Thread):
             f"[Sandbox{self.state.index}] {self.config.document_case_kind.upper()} "
             f"round {self.round_id} {outcome} ({latency:.2f}s)"
         )
+
+
+register_workflow(
+    WorkflowSpec(
+        name="document",
+        warmup_runner=DocumentWarmupRunner,
+        task_runner=DocumentTaskRunner,
+        round_runner=DocumentRoundRunner,
+        metrics_cls=DocumentMetrics,
+        # document step_order is case_kind-dependent (xlsx/pdf); the xlsx order is
+        # the default. Phase 1 resolves the pdf variant at the call site (get_step_order
+        # still takes case_kind), so a single tuple here is the P0 placeholder.
+        step_order=tuple(DOCUMENT_XLSX_STEP_ORDER),
+        config_section="document",
+    )
+)
