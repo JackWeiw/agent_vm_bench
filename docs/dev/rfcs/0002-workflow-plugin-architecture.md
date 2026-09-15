@@ -82,22 +82,43 @@ an `agent:` section is ~5 edits in `config.py` alone, plus `validate()`, `__post
 A single registration table replaces every `if/elif` chain:
 
 ```python
-@dataclass
+@dataclass(frozen=True)            # immutable spec metadata — no runtime mutation, no implicit coupling
 class WorkflowSpec:
     name: str                              # "browser" | "coding" | "document" | "replay"
     warmup_runner: type[TaskRunner]
     task_runner: type[TaskRunner]
     round_runner: type[TaskRunner]
     metrics_cls: type[TaskMetricsBase]
-    step_order: list[str]
-    ready_probe: ReadyProbe | None         # None => exec-based default probe
+    step_order: tuple[str, ...]            # immutable; tuple matches the frozen spec
+    ready_probe: ReadyProbe | None        # None => exec-based default probe
     config_section: str                    # YAML key, e.g. "agent"
     config_cls: type[WorkflowConfigBase]   # typed per-workflow view (from_raw + validate), see §3
-    report_formatters: ReportFormatters    # snapshot / step-timing / overview, see §4
+    report_formatters: ReportFormatters   # snapshot / step-timing / overview, see §4
+
+class RegistrationError(ValueError):
+    """Duplicate or invalid workflow registration."""
 
 WORKFLOW_REGISTRY: dict[str, WorkflowSpec] = {}
 
-def register_workflow(spec: WorkflowSpec) -> None:   # called at import of task_runner/<wf>.py
+def register_workflow(spec: WorkflowSpec, *, force: bool = False) -> None:
+    """Called at the bottom of each task_runner/<wf>.py.
+
+    Fails fast at startup: issubclass-checks every class field and rejects duplicate names, so a
+    miswired spec surfaces as a clear error at import time, not a deferred AttributeError mid-bench.
+    `force=True` is for tests/dev hot-reload only.
+    """
+    if not isinstance(spec, WorkflowSpec):
+        raise TypeError(f"expected WorkflowSpec, got {type(spec).__name__}")
+    for attr, base in (("warmup_runner", TaskRunner), ("task_runner", TaskRunner),
+                       ("round_runner", TaskRunner), ("config_cls", WorkflowConfigBase),
+                       ("metrics_cls", TaskMetricsBase)):
+        if not issubclass(getattr(spec, attr), base):
+            raise TypeError(f"{spec.name}.{attr} must subclass {base.__name__}")
+    if not isinstance(spec.report_formatters, ReportFormatters):   # @runtime_checkable Protocol, see §4
+        raise TypeError(f"{spec.name}.report_formatters must satisfy ReportFormatters")
+    if spec.name in WORKFLOW_REGISTRY and not force:
+        raise RegistrationError(
+            f"workflow '{spec.name}' already registered; use force=True to override")
     WORKFLOW_REGISTRY[spec.name] = spec
 ```
 
@@ -111,28 +132,46 @@ The constructor-signature divergence (replay's extra kwargs) is the blocker for 
 Solve it with a context object every runner takes:
 
 ```python
-@dataclass
+@dataclass(frozen=True)            # runners must not rebind ctx.config / ctx.stop_event
 class RunContext:
     state: BenchSandbox
     config: KernelConfig
     provider: EnvironmentProvider
     stop_event: threading.Event
     round_id: int | None = None
-    # replay-only knobs, ignored by non-replay runners:
+    # replay-only knobs, ignored by non-replay runners (narrow with `assert ctx.x is not None`):
     series: LifecycleSeriesWriter | None = None
     admission: AdmissionController | None = None
     launch_pacer: LaunchPacer | None = None
     scanner: SnapshotScanner | None = None
+    # bloat speed-bump: future workflow-specific params go here first; promote to a typed
+    # field when one workflow has >3 of a kind, or to a RunContext subclass when a family
+    # needs structurally-typed extras. See Design decisions §3.
+    ext: dict[str, object] = field(default_factory=dict)
 
 class TaskRunner(threading.Thread, ABC):
+    """Template method: `run()` is concrete, subclasses implement `do_run()`.
+
+    Guards (ready gate, consecutive-errors breaker, perf_counter timing, exception
+    classification, metrics recording) live in `run()`, so a subclass cannot bypass
+    them by overriding run.
+    """
     def __init__(self, ctx: RunContext) -> None: ...
+    def run(self) -> None:
+        # ready gate -> offline-breaker -> timing -> self.do_run() -> _classify_exception
+        # / _record_metrics  (all shared, all here)
+        self.do_run()
     @abstractmethod
-    def run(self) -> None: ...
+    def do_run(self) -> None: ...
 ```
 
 Replay passes the extra knobs; browser/coding/document leave them `None`. The shared runner-level
 copy-paste (the `if not self.state.ready` gate, the `consecutive_errors >= 3 -> is_alive = False`
-offline rule, `_classify_exception`, `_record_metrics`) lifts into `TaskRunner`.
+offline rule, `_classify_exception`, `_record_metrics`) lifts into `TaskRunner.run()` as the template
+method — subclasses implement only `do_run()`, so the guards cannot be bypassed by an overridden
+`run()`. `RunContext` is frozen so a runner cannot rebind `config` / `stop_event`; the `ext` dict is
+the designated buffer for future workflow-specific params, slowing `RunContext` bloat (mutable contents
+like `stop_event` stay mutable by design — `frozen` blocks field *rebinding*, not in-place mutation).
 
 ### 3. Open, type-safe config path
 
@@ -142,29 +181,46 @@ layer (the same risk class as the `Snapshot` dict rejected in §4). Each workflo
 view behind an ABC, and `KernelConfig` triggers validation uniformly:
 
 ```python
+class WorkflowConfigError(ValueError):
+    """Unified config-validation failure — one type for the upper layer to catch."""
+
 class WorkflowConfigBase(ABC):
     @classmethod
     @abstractmethod
+    def migrate(cls, raw: dict) -> dict:
+        """Forward-compat transform for legacy YAML fields (renames, defaults, deprecations).
+        Centralizes compat so each workflow's from_raw does not re-implement it."""
+        ...
+    @classmethod
+    @abstractmethod
     def from_raw(cls, raw: dict) -> "WorkflowConfigBase":
-        """Parse this workflow's YAML section into the typed view."""
+        """Parse this workflow's YAML section into the typed view (call migrate first)."""
         ...
     @abstractmethod
-    def validate(self) -> None:
-        """Raise ValueError on an invalid config."""
+    def validate(self, kernel_config: KernelConfig | None = None) -> None:
+        """Raise WorkflowConfigError on an invalid config. The optional kernel_config
+        enables cross-section checks (port conflicts, resource limits vs sandbox batch)."""
         ...
 
 # in KernelConfig.from_raw:
 wf_spec = WORKFLOW_REGISTRY[wf]
-section = raw.get(wf_spec.config_section) or {}
+section = wf_spec.config_cls.migrate(raw.get(wf_spec.config_section) or {})
 workflow_config = wf_spec.config_cls.from_raw(section)   # typed, not dict
-workflow_config.validate()                               # uniform validation hook
+workflow_config.validate(kernel_config=self)             # uniform hook incl. cross-section
 ```
 
 The per-workflow dataclass fields (`coding_*`, `document_*`, `replay_*`, `browser_*`) move into each
 workflow's own typed view class (e.g. `CodingConfig(WorkflowConfigBase)`, `ReplayConfig(...)`). The
 `__post_init__` replay-specific validation moves onto `ReplayConfig.validate()`. `validate()`'s
 hardcoded allowed-set becomes `WORKFLOW_REGISTRY.keys()`. Type safety is preserved: the kernel holds a
-`WorkflowConfigBase` reference, each workflow holds its own concrete subclass.
+`WorkflowConfigBase` reference, each workflow holds its own concrete subclass. **Access convention**:
+only the workflow's own runner/formatter downcast — at entry, e.g.
+`assert isinstance(ctx.config.workflow_config, ReplayConfig)` — localizing the cast to the code that
+owns the concrete type (same pattern as the `RunContext` narrowing). The alternative — a spec-level
+typed binding with base-side safe conversion — is noted but rejected as premature until >1 workflow
+needs it. Validation failures raise `WorkflowConfigError` (a `ValueError` subclass) so the upper layer
+catches one type, and `migrate()` centralizes forward-compat so legacy YAML keeps working across
+versions.
 
 ### 4. Snapshot + report via the metrics polymorphism
 
@@ -181,22 +237,36 @@ touch point entirely: adding a workflow no longer adds `Snapshot` fields.
 methods, all taking `TaskMetricsBase`:
 
 ```python
+@runtime_checkable
 class ReportFormatters(Protocol):
     def format_snapshot(self, metrics: TaskMetricsBase, snap: Snapshot) -> str:
-        """Per-workflow snapshot section (today's format_<wf>_stats_section)."""
+        """Per-workflow snapshot section (today's format_<wf>_stats_section).
+
+        - `snap` is READ-ONLY: read generic fields only; all workflow-specific data comes
+          from `metrics`. Do NOT add fields to `snap` — that is the regressed path §4 removes.
+        - The impl may downcast `metrics` to its concrete subclass at entry; the kernel
+          guarantees `type(metrics) is spec.metrics_cls`, so the cast is safe — no defensive checks.
+        - Return plain text (the report is a .txt); include the section heading.
+        """
         ...
     def format_step_timing(self, metrics: TaskMetricsBase) -> str:
-        """Per-workflow step-timing table (today's format_<wf>_step_timing_table)."""
+        """Per-workflow step-timing table (today's format_<wf>_step_timing_table).
+        Plain text, includes the table heading; same downcast contract as format_snapshot."""
         ...
     def format_overview(self, metrics: TaskMetricsBase, rounds: int) -> str:
-        """Overview / run-summary section."""
+        """Overview / run-summary section. `rounds` = number of rounds COMPLETED
+        (0 during a fixed-duration single-round run). Plain text, includes heading."""
         ...
 ```
 
 Splitting the contract into three named methods (rather than a single fuzzy formatter) pins the
-abstraction and prevents leakage: a workflow cannot silently drop one of the three report surfaces,
-and each method's signature guarantees the formatter reads only the metrics object — no hidden coupling
-to `workflow_type` strings or private snapshot internals.
+abstraction and prevents leakage: a workflow cannot silently drop one of the three report surfaces.
+The contract is explicit on three counts: (1) `snap` is read-only and carries only generic fields —
+the regressed "stuff business fields into `Snapshot`" path is forbidden at the contract level; (2) the
+impl owns the `metrics` downcast, and the kernel guarantees the type matches `spec.metrics_cls`, so no
+per-impl defensive checks; (3) return format is pinned — plain text matching today's `.txt` report
+(the xlsx/obs workbook path is separate and not these formatters' concern), and each method emits its
+own heading so sections compose consistently across workflows.
 
 ### Phasing (each step independently mergeable, mirrors RFC 0001)
 
@@ -225,8 +295,9 @@ to `workflow_type` strings or private snapshot internals.
 
 - Largest structural refactor since the kernel landed; touches the dispatch hot path in `bench.py` /
   `task_manager` / `stats_collector`.
-- Risk of over-abstracting `RunContext` (replay-only knobs leaking onto every runner) — mitigated by
-  keeping them `None`-defaulted and optional.
+- Risk of `RunContext` bloat (replay-only knobs leaking onto every runner) — mitigated by
+  `None`-defaults, the `frozen` rebinding block, and the `ext` buffer that funnels future params
+  through one designated field instead of N flat ones.
 - The metrics/Snapshot polymorphism is only *partial* today; completing it (Phase 3) may surface
   per-workflow metric-shape divergence that the elif chains currently hide.
 
@@ -266,12 +337,16 @@ incrementally.
    `_build_provider` lazy-import style. Entry-points (`importlib.metadata`) are open-closed but hide
    registration and add packaging complexity only justified when *third-party* packages ship workflows
    — not the case (all workflows are in-tree). Revisit if external workflow plugins ever materialize.
-3. **`RunContext`: flat dataclass with `None`-defaulted replay knobs, not a subclass.** A
+3. **`RunContext`: flat + frozen + `ext` buffer, not a subclass.** A
    `ReplayRunContext(RunContext)` would force the replay runner to downcast and break the uniform
    factory `spec.task_runner(ctx)`. Flat keeps the factory uniform; non-replay runners simply ignore
-   the `None` fields. Replay narrows locally (`assert ctx.series is not None` at entry) — type-safe
-   where it matters, no structural smell. Ceiling: if replay-only context grows past ~6 knobs,
-   revisit a typed subclass carried via the spec.
+   the `None` fields; replay narrows locally (`assert ctx.series is not None` at entry) — type-safe
+   where it matters, no structural smell. Two refinements: `frozen=True` blocks field rebinding (a
+   runner cannot rebind `config` / `stop_event`); an `ext: dict` buffer is the designated home for
+   future workflow-specific params, so the next workflow does not bolt another flat field on — promote
+   to a typed field when one workflow has >3 of a kind, or to a `RunContext` subclass when a family
+   needs structurally-typed extras. (Mutable contents like `stop_event` stay mutable by design —
+   `frozen` blocks rebinding, not in-place mutation.)
 4. **`Snapshot`: workflow-agnostic + typed; per-workflow data stays on typed metrics subclasses.**
    Reject both extremes — neither per-workflow `Snapshot` fields (re-introduces the `schemas.py` touch
    point) nor a metrics-driven `dict` (sacrifices type safety, the same risk class as the opaque config
