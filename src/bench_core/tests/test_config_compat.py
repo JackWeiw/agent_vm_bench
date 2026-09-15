@@ -11,12 +11,18 @@ expected dict HERE to read from the new view (the test then re-pins the new shap
 """
 from __future__ import annotations
 
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
 import yaml
 
 from bench_core.config import KernelConfig
+from bench_core.task_runner.browser import BrowserConfig
+from bench_core.task_runner.coding import CodingConfig
+from bench_core.task_runner.document import DocumentConfig
+from bench_core.task_runner.replay import ReplayConfig
+from bench_core.workflow_registry import WorkflowConfigError
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "config" / "common"
 
@@ -176,3 +182,84 @@ def test_coding_source_files_resolved_by_post_init(name: str):
     """coding_source_files omitted -> __post_init__ fills the canonical pairs."""
     cfg = _load(name)
     assert cfg.coding_source_files is not None and len(cfg.coding_source_files) > 0
+
+
+# --- Phase 2 (P2-1): typed-view seam ---------------------------------------
+# The view is built ALONGSIDE the flat fields (dual population, behavior-identical).
+# These prove view == flat for every shipped YAML, then pin the contract's failure
+# modes. P2-2 flips the equivalence to read from the view (flat fields removed).
+
+_VIEW_BY_WORKFLOW = {
+    "browser": BrowserConfig,
+    "coding": CodingConfig,
+    "document": DocumentConfig,
+    "replay": ReplayConfig,
+}
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED))
+def test_workflow_config_view_matches_flat_fields(name: str):
+    """Every typed-view field == the flat KernelConfig field (dual population).
+
+    Iterates ``dataclasses.fields(view)`` so adding a view field auto-extends this
+    (no manual list to forget). ``warmup_only`` is shared (D3), so it is not a
+    BrowserConfig field and is correctly absent here."""
+    cfg = _load(name)
+    expected_cls = _VIEW_BY_WORKFLOW[cfg.workflow_type]
+    assert isinstance(cfg.workflow_config, expected_cls), (
+        f"{name}: workflow_config is {type(cfg.workflow_config).__name__}, " f"expected {expected_cls.__name__}"
+    )
+    view = cfg.workflow_config
+    for f in fields(view):
+        assert getattr(view, f.name) == getattr(
+            cfg, f.name
+        ), f"{name}: view.{f.name}={getattr(view, f.name)!r} != flat {getattr(cfg, f.name)!r}"
+
+
+def test_document_config_from_inline_dict():
+    """D4: no shipped document.yaml, so DocumentConfig is covered by an inline dict."""
+    cfg = KernelConfig.from_raw(
+        {
+            "workflow_type": "document",
+            "document": {"case_kind": "pdf", "operation_timeout": 1200, "recalc_timeout": 700},
+        }
+    )
+    assert isinstance(cfg.workflow_config, DocumentConfig)
+    assert cfg.workflow_config.document_case_kind == "pdf"
+    assert cfg.workflow_config.document_operation_timeout == 1200
+    assert cfg.workflow_config.document_recalc_timeout == 700
+    assert cfg.workflow_config.document_task_timeout == 1800  # default
+    for f in fields(cfg.workflow_config):
+        assert getattr(cfg.workflow_config, f.name) == getattr(cfg, f.name)
+
+
+def test_illegal_workflow_type_raises():
+    """Unknown workflow_type -> friendly WorkflowConfigError (from_raw registry miss)."""
+    raw = {"workflow_type": "nonexistent", "sandbox": {"total_count": 1}}
+    with pytest.raises(WorkflowConfigError, match="Unsupported workflow_type"):
+        KernelConfig.from_raw(raw)
+
+
+def test_replay_invalid_qps_raises():
+    """Invalid per-workflow value raises the ValueError family pre- and post-view
+    (P2-1: flat __post_init__ fires; P2-2: view.validate fires -- both ValueError)."""
+    raw = {"workflow_type": "replay", "sandbox": {"total_count": 10}, "replay": {"control_plane_qps": 0}}
+    with pytest.raises(ValueError, match="replay_control_plane_qps"):
+        KernelConfig.from_raw(raw)
+
+
+def test_replay_config_validate_cross_section():
+    """The sole cross-section check (running_concurrency <= total_count) lives on the view."""
+    view = ReplayConfig(replay_running_concurrency=50)
+    cfg = KernelConfig(total_count=10)  # direct construction -> workflow_config stays None
+    with pytest.raises(WorkflowConfigError, match="must be <= total_count"):
+        view.validate(cfg)
+
+
+def test_cli_workflow_type_override_selects_right_view():
+    """D7: --workflow-type applies to raw before from_raw so the right config_cls view is built."""
+    from bench_core.bench import load_config
+
+    cfg, _ = load_config(CONFIG_DIR / "browser.yaml", workflow_type_override="coding")
+    assert cfg.workflow_type == "coding"
+    assert isinstance(cfg.workflow_config, CodingConfig)

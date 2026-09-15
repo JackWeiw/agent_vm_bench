@@ -35,16 +35,25 @@ import logging
 import random
 import threading
 import time
+from dataclasses import dataclass
 
 from bench_core.config import KernelConfig
 from bench_core.payload.coding_payload import (
+    CODING_LANGUAGE_DEFAULT_SOURCE_FILES,
+    DEFAULT_CODING_SOURCE_FILES,
     DEFAULT_VERIFY_TEMPLATES,
     _find_name_clause,
     _stamp_verify_body,
     get_coding_profile,
 )
 from bench_core.schemas import CODING_STEP_ORDER, BenchSandbox, CodingMetrics
-from bench_core.workflow_registry import RunContext, TaskRunner, WorkflowSpec, register_workflow
+from bench_core.workflow_registry import (
+    RunContext,
+    TaskRunner,
+    WorkflowConfigBase,
+    WorkflowSpec,
+    register_workflow,
+)
 from env_provider import EnvironmentProvider, SandboxInstance
 
 logger = logging.getLogger(__name__)
@@ -704,6 +713,51 @@ class CodingRoundRunner(TaskRunner):
             self.state.is_alive = False
 
 
+@dataclass
+class CodingConfig(WorkflowConfigBase):
+    """Typed view of the ``coding:`` YAML section."""
+
+    coding_project_dir: str = "/opt/coding-bench"
+    coding_language: str = "ts"
+    coding_source_files: list[dict] | None = None  # filled from language default when omitted
+    coding_verify_cmd: str = "npx tsx /tmp/bench_verify.mjs"
+    coding_verify_timeout: int = 120
+    coding_skip_verify: bool = False
+    coding_verify_repeat: int = 3
+    coding_interval_min: float = 2.0
+    coding_interval_max: float = 10.0
+
+    @classmethod
+    def migrate(cls, raw: dict) -> dict:
+        """Forward-compat: no legacy ``coding:`` renames yet."""
+        return raw
+
+    @classmethod
+    def from_raw(cls, raw: dict) -> CodingConfig:
+        c = raw or {}
+        view = cls(
+            coding_project_dir=c.get("project_dir", "/opt/coding-bench"),
+            coding_language=c.get("language", "ts"),
+            coding_source_files=c.get("source_files"),
+            coding_verify_cmd=c.get("verify_cmd", "npx tsx /tmp/bench_verify.mjs"),
+            coding_verify_timeout=c.get("verify_timeout", 120),
+            coding_skip_verify=c.get("skip_verify", False),
+            coding_verify_repeat=c.get("verify_repeat", 3),
+            coding_interval_min=c.get("interval_min", 2.0),
+            coding_interval_max=c.get("interval_max", 10.0),
+        )
+        # Block 1: fill source_files from the language default when omitted (mirrors
+        # KernelConfig.__post_init__). A copy so the view never aliases the shared list.
+        if view.coding_source_files is None:
+            default = CODING_LANGUAGE_DEFAULT_SOURCE_FILES.get(view.coding_language, DEFAULT_CODING_SOURCE_FILES)
+            view.coding_source_files = [dict(p) for p in default]
+        return view
+
+    def validate(self, kernel_config: KernelConfig) -> None:
+        """No cross-section checks today (coding knobs are self-contained)."""
+        return None
+
+
 register_workflow(
     WorkflowSpec(
         name="coding",
@@ -713,5 +767,6 @@ register_workflow(
         metrics_cls=CodingMetrics,
         step_order=tuple(CODING_STEP_ORDER),
         config_section="coding",
+        config_cls=CodingConfig,
     )
 )
