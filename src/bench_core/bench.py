@@ -22,6 +22,7 @@ live in ``e2b_bench`` / ``docker_bench``, which build their provider and call
 from __future__ import annotations
 
 import argparse
+import importlib
 import logging
 import signal
 import threading
@@ -49,6 +50,22 @@ from env_provider import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Roster of provider names -> (submodule, provider class). Single source of
+# truth for the ``--provider`` argparse choices and the capability hint in
+# run_benchmark; construction stays in _build_provider (provider build
+# callables differ, so the dispatch is explicit there). Adding a provider = add
+# an entry here (choices + hint) AND a branch in _build_provider (construction);
+# both touch points are documented in CLAUDE.md "Adding a new provider".
+# Submodules guard their optional SDK imports, so the lazy imports in
+# _capability_hint are side-effect-free without an SDK installed.
+_PROVIDERS: dict[str, tuple[str, str]] = {
+    "fake": ("env_provider.fake", "FakeProvider"),
+    "e2b": ("env_provider.e2b", "E2BProvider"),
+    "docker": ("env_provider.docker", "DockerProvider"),
+    "aenv": ("env_provider.aenv", "AenvProvider"),
+}
 
 
 def _promote(instances: dict[int, SandboxInstance], workflow_type: str) -> dict[int, BenchSandbox]:
@@ -272,14 +289,14 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
             raise ValueError(
                 f"replay.mode=lifecycle requires a LifecycleCapable provider "
                 f"(pause/resume); provider '{provider.name}' does not support it. "
-                f"Use --provider aenv."
+                f"Providers that support it: {_capability_hint(LifecycleCapable)}."
             )
     if config.workflow_type == "replay" and config.replay_mode == "trajectory":
         if not isinstance(provider, EphemeralCapable):
             raise ValueError(
                 f"replay.mode=trajectory requires an EphemeralCapable provider "
                 f"(create_one/kill_one); provider '{provider.name}' does not support it. "
-                f"Use --provider aenv."
+                f"Providers that support it: {_capability_hint(EphemeralCapable)}."
             )
     # exec_only has no lifecycle calls; force the ready probe off regardless of
     # whether exec_only was explicit in YAML or resolved from the provider default.
@@ -689,7 +706,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     """Host-agnostic CLI. Provider packages add their own flags on top."""
     parser = argparse.ArgumentParser(description="Host-agnostic benchmark kernel")
     parser.add_argument("--config", help="YAML config path")
-    parser.add_argument("--provider", default="fake", choices=["fake", "e2b", "docker", "aenv"])
+    parser.add_argument("--provider", default="fake", choices=list(_PROVIDERS))
     parser.add_argument("-n", "--total-count", type=int)
     parser.add_argument("--workflow-type", choices=["browser", "coding", "document", "replay"])
     parser.add_argument("-bm", "--benchmark-mode", choices=["fixed", "round_robin"])
@@ -727,14 +744,34 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _capability_hint(protocol_cls: type) -> str:
+    """Comma-joined ``--provider`` names whose class satisfies ``protocol_cls``.
+
+    Class-level mirror of the ``isinstance(provider, protocol_cls)`` gate in
+    :func:`run_benchmark`: the lifecycle/trajectory errors list every
+    registered provider implementing the required capability instead of a
+    hardcoded name. Lazy-imports each submodule (their SDK imports are
+    guarded, so this never forces an SDK install) and checks ``issubclass``.
+    """
+    capable: list[str] = []
+    for name, (module_path, class_name) in _PROVIDERS.items():
+        cls = getattr(importlib.import_module(module_path), class_name, None)
+        if isinstance(cls, type) and issubclass(cls, protocol_cls):
+            capable.append(name)
+    return ", ".join(capable) or "none"
+
+
 def _build_provider(name: str, config: KernelConfig, raw_config: dict[str, Any]) -> EnvironmentProvider:
     """Construct a provider by name.
 
     All providers live as submodules of ``env_provider`` (``e2b``, ``docker``,
-    ``fake``) and are lazy-imported here -- the kernel never imports a backend
-    statically, so the layering rule (bench_core must not import e2b_bench /
-    docker_bench) holds. ``env_provider``'s contract stays SDK-free; loading a
-    provider submodule is what pulls in that backend's SDK.
+    ``fake``, ``aenv``) and are lazy-imported here -- the kernel never imports a
+    backend statically, so the layering rule (bench_core must not import
+    e2b_bench / docker_bench) holds. ``env_provider``'s contract stays
+    SDK-free; loading a provider submodule is what pulls in that backend's SDK.
+
+    The name set is shared with ``_PROVIDERS`` (argparse choices + capability
+    hint); keep the two in sync -- see CLAUDE.md "Adding a new provider".
     """
     if name == "fake":
         from env_provider.fake import FakeProvider

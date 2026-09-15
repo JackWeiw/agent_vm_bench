@@ -279,6 +279,35 @@ def test_build_arg_parser_includes_aenv_provider():
     assert args.provider == "aenv"
 
 
+def test_provider_choices_match_roster():
+    """argparse --provider choices derive from _PROVIDERS (no drift): every rostered
+    name is accepted, and any other name is rejected."""
+    from bench_core.bench import _PROVIDERS, build_arg_parser
+
+    parser = build_arg_parser()
+    for name in _PROVIDERS:
+        assert parser.parse_args(["--provider", name]).provider == name
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--provider", "nonexistent"])
+
+
+def test_capability_hint_lists_capable_providers():
+    """_capability_hint names providers implementing the Protocol, not a hardcoded name."""
+    from bench_core.bench import _capability_hint
+    from env_provider import EphemeralCapable, LifecycleCapable
+
+    lifecycle = _capability_hint(LifecycleCapable)
+    assert "aenv" in lifecycle
+    for exec_only in ("fake", "e2b", "docker"):
+        assert exec_only not in lifecycle
+
+    ephemeral = _capability_hint(EphemeralCapable)
+    assert "aenv" in ephemeral
+    assert "fake" in ephemeral  # FakeProvider implements create_one/kill_one
+    assert "e2b" not in ephemeral
+    assert "docker" not in ephemeral
+
+
 def test_load_config_replay_yaml_has_aenv_block():
     from bench_core.bench import load_config
 

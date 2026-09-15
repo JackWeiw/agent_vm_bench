@@ -260,7 +260,9 @@ See [docs/dev/metrics-reference.md](docs/dev/metrics-reference.md) for complete 
 
 1. Create `src/env_provider/<name>.py` implementing `EnvironmentProvider` (lifecycle + `exec`); keep an internal `id → handle` table.
 2. If it has an SDK manager with create/detect/cleanup, subclass `BaseSandboxManager` (`_base.py`) and supply the SDK seams + class attrs; put config/schemas under `src/env_provider/<name>/`. For a lifecycle-capable backend that reuses an existing SDK, subclass that provider directly (see `env_provider/aenv/` — `AenvProvider` subclasses `E2BProvider` and only adds `pause`/`resume`/`snapshot_sizes`/`create_one`/`kill_one`, no new manager).
-3. Register the provider name in `bench_core.bench._build_provider` (lazy import).
+3. Register the provider in **two** places in `bench_core.bench` (both must be kept in sync):
+   - the `_PROVIDERS` roster — drives the `--provider` argparse `choices` and the lifecycle/trajectory capability hint (`_capability_hint`);
+   - the `_build_provider` dispatch (lazy import — the kernel never imports a backend statically).
 4. Add `config/common/*.yaml` blocks (`<name>:`) as needed — the kernel reads only shared sections.
 5. Add unit tests under `src/env_provider/tests/` (drive via `FakeProvider`-style stubs; no live SDK needed).
 
