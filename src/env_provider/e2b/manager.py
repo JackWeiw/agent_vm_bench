@@ -15,7 +15,8 @@ import os
 import shlex
 import subprocess
 import time
-from threading import Event
+from contextlib import nullcontext
+from threading import Event, Lock
 from typing import Any
 
 try:
@@ -108,6 +109,9 @@ class SandboxManager(BaseSandboxManager):
     def __init__(self, kernel_config, e2b_config: Config, stop_event: Event) -> None:
         super().__init__(kernel_config, stop_event)
         self.config = e2b_config
+        # Serializes create+pin when pin_cpus is set so pgrep -fn reliably returns
+        # THIS sandbox's just-spawned FC (see _pin_and_verify_fc). Inert otherwise.
+        self._pin_lock = Lock()
 
     # --------------------------------------------------------- subclass seams
     def _new_state(self, index: int, *, batch_id: int = -1, external_id: str = "") -> SandboxState:
@@ -126,34 +130,45 @@ class SandboxManager(BaseSandboxManager):
         this returns success and maps the result onto ``creation_metrics``.
         ``metadata`` is forwarded to the SDK for operator visibility (labels
         only, not an idempotency key -- spec G3 deferred).
+
+        When ``pin_cpus`` is set, create+pin run under ``_pin_lock``: concurrent
+        ``_create_single`` calls would otherwise both ``pgrep -fn firecracker``
+        the same globally-newest FC, so one would pin/verify/print the WRONG pid
+        and the other's actual FC would be left unpinned. The lock guarantees no
+        other FC spawns between this sandbox's create-return and its pgrep.
+        Serializing is correct here -- pin_cpus is single-FC cold-start perf
+        mode, not oversub concurrency (which leaves pin_cpus unset).
         """
         state.creation_metrics.status = BackendSandboxStatus.CREATING
         state.creation_metrics.submit_time = time.time()
 
         resolved = template or self.config.template
+        pin_cpus = self.config.pin_cpus
+        lock = self._pin_lock if pin_cpus else nullcontext()
 
         try:
-            # Build envs with NUMA binding if configured. numa_bind is a
-            # normalized list of nodes (or None); round-robin across them by
-            # sandbox index so sandboxes spread evenly.
-            numa_node = numa_node_for_index(state.sandbox_id - 1, self.config.numa_bind)
-            envs: dict[str, str] = {}
-            if numa_node is not None:
-                envs["FC_BIND"] = str(numa_node)
+            with lock:
+                # Build envs with NUMA binding if configured. numa_bind is a
+                # normalized list of nodes (or None); round-robin across them by
+                # sandbox index so sandboxes spread evenly.
+                numa_node = numa_node_for_index(state.sandbox_id - 1, self.config.numa_bind)
+                envs: dict[str, str] = {}
+                if numa_node is not None:
+                    envs["FC_BIND"] = str(numa_node)
 
-            sbx = Sandbox.create(
-                resolved,
-                timeout=self.config.create_timeout,
-                envs=envs if envs else None,
-                metadata=metadata,
-            )
-            state.sandbox_obj = sbx
-            state.creation_metrics.create_ready_time = time.time()
-            state.creation_metrics.create_elapsed = (
-                state.creation_metrics.create_ready_time - state.creation_metrics.submit_time
-            )
-            state.creation_metrics.status = BackendSandboxStatus.CREATED
-            pin_err = self._pin_and_verify_fc()
+                sbx = Sandbox.create(
+                    resolved,
+                    timeout=self.config.create_timeout,
+                    envs=envs if envs else None,
+                    metadata=metadata,
+                )
+                state.sandbox_obj = sbx
+                state.creation_metrics.create_ready_time = time.time()
+                state.creation_metrics.create_elapsed = (
+                    state.creation_metrics.create_ready_time - state.creation_metrics.submit_time
+                )
+                state.creation_metrics.status = BackendSandboxStatus.CREATED
+                pin_err = self._pin_and_verify_fc() if pin_cpus else None
             if pin_err:
                 return {
                     "success": False,
@@ -219,9 +234,12 @@ class SandboxManager(BaseSandboxManager):
         ``success=False`` so ``--create-only`` aborts before any ``--detect``
         stress runs on an unpinned FC.
 
-        ponytail: single-FC assumption (pgrep -fn = newest firecracker).
-        Concurrent sandboxes need per-sandbox PID match by api-sock path.
         ``pin_cmd_prefix`` ("ssh user@host" remote, "" local) routes commands.
+
+        The caller (_create_single) holds ``_pin_lock`` across create+pin, so no
+        other FC can spawn between this sandbox's create-return and the pgrep ->
+        ``pgrep -fn firecracker`` reliably returns THIS sandbox's just-spawned FC
+        even though _create_single otherwise runs on a ThreadPoolExecutor.
         """
         cpus = self.config.pin_cpus
         if not cpus:
