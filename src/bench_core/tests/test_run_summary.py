@@ -15,6 +15,7 @@ from bench_core.config import KernelConfig
 from bench_core.observability.run_summary import write_run_summary
 from bench_core.observability.stats_collector import StatsCollector
 from bench_core.schemas import BenchSandbox
+from bench_core.task_runner.replay import ReplayConfig
 
 
 def _replay_config(tmp_path: Path, *, mode: str = "exec_only", total: int = 4, n: int | None = None) -> KernelConfig:
@@ -23,12 +24,12 @@ def _replay_config(tmp_path: Path, *, mode: str = "exec_only", total: int = 4, n
         total_count=total,
         benchmark_mode="fixed",
         test_duration=1,
-        replay_mode=mode,
         output_dir=str(tmp_path),
         filename_prefix="rs",
+        workflow_config=ReplayConfig(replay_mode=mode),
     )
     if n is not None:
-        cfg.replay_running_concurrency = n
+        cfg.workflow_config.replay_running_concurrency = n
     return cfg
 
 
@@ -232,11 +233,13 @@ def test_run_benchmark_emits_run_summary_exec_only(tmp_path):
         total_count=2,
         benchmark_mode="fixed",
         test_duration=1,
-        replay_trajectory_dir=str(tmp_path / "traj"),
-        replay_mode="exec_only",
-        replay_delay_scale=0.0,
         output_dir=str(tmp_path),
         filename_prefix="e2e",
+        workflow_config=ReplayConfig(
+            replay_trajectory_dir=str(tmp_path / "traj"),
+            replay_mode="exec_only",
+            replay_delay_scale=0.0,
+        ),
     )
     run_benchmark(cfg, FakeProvider(count=2))
     hits = list(tmp_path.glob("e2e_run_summary.json"))
@@ -258,18 +261,20 @@ def test_run_benchmark_emits_run_summary_lifecycle(tmp_path):
     cfg = KernelConfig(
         workflow_type="replay",
         total_count=4,
-        replay_running_concurrency=2,  # k=2 oversubscription -> admission built
         benchmark_mode="round_robin",
         round_size=4,
         round_count=1,
         round_interval=0,
         test_duration=2,
-        replay_trajectory_dir=str(tmp_path / "traj"),
-        replay_mode="lifecycle",
-        replay_delay_scale=0.0,
-        replay_control_plane_qps=1000.0,
         output_dir=str(tmp_path),
         filename_prefix="lc",
+        workflow_config=ReplayConfig(
+            replay_running_concurrency=2,
+            replay_trajectory_dir=str(tmp_path / "traj"),
+            replay_mode="lifecycle",
+            replay_delay_scale=0.0,
+            replay_control_plane_qps=1000.0,
+        ),
     )
     run_benchmark(cfg, FakeLifecycleProvider(count=4))
     hits = list(tmp_path.glob("lc_run_summary.json"))

@@ -39,6 +39,7 @@ from bench_core.bench import _make_sigterm_handler, run_benchmark
 from bench_core.config import KernelConfig
 from bench_core.round_robin import RoundRobinTaskManager
 from bench_core.task_manager import TaskManager
+from bench_core.task_runner.replay import ReplayConfig
 from bench_core.utils import _atomic_write_text
 
 
@@ -98,11 +99,13 @@ def test_partial_run_summary_flushed_on_dispatch_exception(tmp_path, monkeypatch
         total_count=2,
         benchmark_mode="fixed",
         test_duration=1,
-        replay_trajectory_dir=str(tmp_path / "traj"),
-        replay_mode="exec_only",
-        replay_delay_scale=0.0,
         output_dir=str(tmp_path),
         filename_prefix="irq",
+        workflow_config=ReplayConfig(
+            replay_trajectory_dir=str(tmp_path / "traj"),
+            replay_mode="exec_only",
+            replay_delay_scale=0.0,
+        ),
     )
 
     def _boom(self, *args, **kwargs):
@@ -148,18 +151,20 @@ def test_partial_trajectory_index_flushed_on_lifecycle_exception(tmp_path, monke
     cfg = KernelConfig(
         workflow_type="replay",
         total_count=4,
-        replay_running_concurrency=2,
         benchmark_mode="round_robin",
         round_size=4,
         round_count=1,
         round_interval=0,
         test_duration=2,
-        replay_trajectory_dir=str(tmp_path / "traj"),
-        replay_mode="lifecycle",
-        replay_delay_scale=0.0,
-        replay_control_plane_qps=1000.0,
         output_dir=str(tmp_path),
         filename_prefix="lc",
+        workflow_config=ReplayConfig(
+            replay_running_concurrency=2,
+            replay_trajectory_dir=str(tmp_path / "traj"),
+            replay_mode="lifecycle",
+            replay_delay_scale=0.0,
+            replay_control_plane_qps=1000.0,
+        ),
     )
 
     def _run_partial_then_die(self):
@@ -301,18 +306,20 @@ def test_trajectory_export_failure_does_not_abort_run(tmp_path, monkeypatch, cap
     cfg = KernelConfig(
         workflow_type="replay",
         total_count=4,
-        replay_running_concurrency=2,
         benchmark_mode="round_robin",
         round_size=4,
         round_count=1,
         round_interval=0,
         test_duration=2,
-        replay_trajectory_dir=str(tmp_path / "traj"),
-        replay_mode="lifecycle",
-        replay_delay_scale=0.0,
-        replay_control_plane_qps=1000.0,
         output_dir=str(tmp_path),
         filename_prefix="exp",
+        workflow_config=ReplayConfig(
+            replay_running_concurrency=2,
+            replay_trajectory_dir=str(tmp_path / "traj"),
+            replay_mode="lifecycle",
+            replay_delay_scale=0.0,
+            replay_control_plane_qps=1000.0,
+        ),
     )
 
     def _boom_export(*args, **kwargs):

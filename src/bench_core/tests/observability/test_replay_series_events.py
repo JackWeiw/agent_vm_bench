@@ -12,7 +12,7 @@ from bench_core.config import KernelConfig
 from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 from bench_core.payload.replay_payload import ReplayStep, Trajectory
 from bench_core.schemas import BenchSandbox
-from bench_core.task_runner.replay import ReplayBaseRunner
+from bench_core.task_runner.replay import ReplayBaseRunner, ReplayConfig
 from bench_core.workflow_registry import RunContext
 from env_provider import SandboxInstance
 from env_provider.tests.lifecycle_fake import FakeLifecycleProvider
@@ -26,9 +26,11 @@ class TestRetryEvents:
     def _runner(self, tmp_path, *, retries=2, qps=100.0, stop=None):
         cfg = KernelConfig(
             workflow_type="replay",
-            replay_mode="lifecycle",
-            replay_lifecycle_retries=retries,
-            replay_ready_probe=False,
+            workflow_config=ReplayConfig(
+                replay_mode="lifecycle",
+                replay_lifecycle_retries=retries,
+                replay_ready_probe=False,
+            ),
         )
         provider = FakeLifecycleProvider(count=1)
         provider.create_all()
@@ -131,7 +133,9 @@ class TestRetryEvents:
 
 class TestAdmissionEvents:
     def _runner(self, tmp_path, *, mode="lifecycle", admission=True):
-        cfg = KernelConfig(workflow_type="replay", replay_mode=mode, replay_ready_probe=False)
+        cfg = KernelConfig(
+            workflow_type="replay", workflow_config=ReplayConfig(replay_mode=mode, replay_ready_probe=False)
+        )
         provider = FakeLifecycleProvider(count=1)
         provider.create_all()
         state = BenchSandbox.from_instance(provider._instances[0], "replay")
@@ -181,11 +185,13 @@ class TestTrajectoryEvents:
 
         cfg = KernelConfig(
             workflow_type="replay",
-            replay_mode="trajectory",
             total_count=1,
-            replay_running_concurrency=1,
-            replay_control_plane_qps=100.0,
-            replay_ready_probe=False,
+            workflow_config=ReplayConfig(
+                replay_mode="trajectory",
+                replay_running_concurrency=1,
+                replay_control_plane_qps=100.0,
+                replay_ready_probe=False,
+            ),
         )
         provider = _Provider()
         stop = threading.Event()
@@ -225,11 +231,13 @@ class TestTrajectoryEvents:
 
         cfg = KernelConfig(
             workflow_type="replay",
-            replay_mode="trajectory",
             total_count=1,
-            replay_running_concurrency=1,
-            replay_control_plane_qps=100.0,
-            replay_ready_probe=False,
+            workflow_config=ReplayConfig(
+                replay_mode="trajectory",
+                replay_running_concurrency=1,
+                replay_control_plane_qps=100.0,
+                replay_ready_probe=False,
+            ),
         )
         provider = _FailCreate()
         stop = threading.Event()
@@ -271,11 +279,13 @@ class TestTrajectoryEvents:
 
         cfg = KernelConfig(
             workflow_type="replay",
-            replay_mode="trajectory",
             total_count=1,
-            replay_running_concurrency=1,
-            replay_control_plane_qps=100.0,
-            replay_ready_probe=False,
+            workflow_config=ReplayConfig(
+                replay_mode="trajectory",
+                replay_running_concurrency=1,
+                replay_control_plane_qps=100.0,
+                replay_ready_probe=False,
+            ),
         )
         provider = _FailKill()
         stop = threading.Event()

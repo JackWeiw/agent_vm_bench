@@ -16,11 +16,12 @@ from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 from bench_core.schemas import BenchSandbox
 from bench_core.task_runner.replay import (
     ReplayBaseRunner,
+    ReplayConfig,
     ReplayRoundRunner,
     ReplayTaskRunner,
     ReplayWarmupRunner,
 )
-from bench_core.workflow_registry import RunContext
+from bench_core.workflow_registry import RunContext, WorkflowConfigError
 from env_provider import SandboxInstance
 from env_provider.tests.lifecycle_fake import FakeLifecycleProvider
 
@@ -28,19 +29,44 @@ REPLAY_FIXTURES = Path(__file__).parent.parent / "fixtures" / "replay"
 
 
 def _lifecycle_config(tmp_path, **kw):
-    base = dict(
+    shared_keys = {
+        "workflow_type",
+        "total_count",
+        "benchmark_mode",
+        "test_duration",
+        "round_size",
+        "output_dir",
+        "filename_prefix",
+        "warmup_only",
+        "detect_existing",
+        "create_only",
+        "create_batch_size",
+        "task_batch_size",
+        "task_batch_interval",
+        "benchmark_percent",
+        "stats_interval",
+        "provider_label",
+    }
+    shared = dict(
         workflow_type="replay",
         total_count=1,
         benchmark_mode="fixed",
         test_duration=1,
-        replay_trajectory_dir=str(REPLAY_FIXTURES),
-        replay_mode="lifecycle",
-        replay_delay_scale=0.0,
         output_dir=str(tmp_path),
         filename_prefix="lc",
     )
-    base.update(kw)
-    return KernelConfig(**base)
+    replay = dict(
+        replay_trajectory_dir=str(REPLAY_FIXTURES),
+        replay_mode="lifecycle",
+        replay_delay_scale=0.0,
+    )
+    for k, v in kw.items():
+        if k in shared_keys:
+            shared[k] = v
+        else:
+            replay[k] = v
+    shared["workflow_config"] = ReplayConfig(**replay)
+    return KernelConfig(**shared)
 
 
 class TestLifecycleE2E:
@@ -349,7 +375,7 @@ class TestLifecycleOverheadReport:
         config = _lifecycle_config(tmp_path)
         # Task 5 adds replay_ready_probe as a real config field; for Task 4
         # we set it directly so the test runs without Task 5's field.
-        config.replay_ready_probe = False  # type: ignore[attr-defined]
+        config.workflow_config.replay_ready_probe = False  # type: ignore[union-attr]
         provider = FakeLifecycleProvider(count=1)
         result = run_benchmark(config, provider)
         report = result["report"]
@@ -967,6 +993,7 @@ class TestConfigP26Knobs:
 
     def test_from_raw_reads_admission_knobs(self):
         raw = {
+            "workflow_type": "replay",
             "replay": {
                 "running_concurrency": 4,
                 "control_plane_qps": 20.0,
@@ -976,27 +1003,28 @@ class TestConfigP26Knobs:
             "sandbox": {"total_count": 10},
         }
         config = KernelConfig.from_raw(raw)
-        assert config.replay_running_concurrency == 4
-        assert config.replay_control_plane_qps == 20.0
-        assert config.replay_control_plane_inflight_cap == 64
-        assert config.replay_ready_probe is False
+        assert config.workflow_config.replay_running_concurrency == 4
+        assert config.workflow_config.replay_control_plane_qps == 20.0
+        assert config.workflow_config.replay_control_plane_inflight_cap == 64
+        assert config.workflow_config.replay_ready_probe is False
 
     def test_validation_rejects_running_concurrency_over_total(self):
-        with pytest.raises(ValueError, match="replay_running_concurrency.*must be <="):
-            KernelConfig(total_count=5, replay_running_concurrency=6)
+        cfg = KernelConfig(total_count=5, workflow_config=ReplayConfig(replay_running_concurrency=6))
+        with pytest.raises(WorkflowConfigError, match="replay_running_concurrency.*must be <="):
+            cfg.workflow_config.validate(cfg)
 
     def test_validation_rejects_zero_qps(self):
-        with pytest.raises(ValueError, match="replay_control_plane_qps must be > 0"):
-            KernelConfig(replay_control_plane_qps=0.0)
+        cfg = KernelConfig(workflow_config=ReplayConfig(replay_control_plane_qps=0.0))
+        with pytest.raises(WorkflowConfigError, match="replay_control_plane_qps must be > 0"):
+            cfg.workflow_config.validate(cfg)
 
     def test_exec_only_forces_ready_probe_false(self):
         config = KernelConfig(
             total_count=2,
             workflow_type="replay",
-            replay_mode="exec_only",
-            replay_ready_probe=True,
+            workflow_config=ReplayConfig(replay_mode="exec_only", replay_ready_probe=True),
         )
-        assert config.replay_ready_probe is False
+        assert config.workflow_config.replay_ready_probe is False
 
 
 class TestL7DecompositionFields:
@@ -1155,7 +1183,10 @@ def test_exec_is_qps_gated_in_lifecycle_mode():
             calls.append(command)
             return CommandResult(exit_code=0, stdout="ok", stderr="")
 
-    cfg = KernelConfig(workflow_type="replay", replay_mode="lifecycle", replay_ready_probe=False)
+    cfg = KernelConfig(
+        workflow_type="replay",
+        workflow_config=ReplayConfig(replay_mode="lifecycle", replay_ready_probe=False),
+    )
     provider = _RecordingProvider(count=1)
     provider.create_all()
     state = BenchSandbox.from_instance(provider._instances[0], "replay")
@@ -1187,7 +1218,10 @@ def test_lifecycle_call_splits_queue_wait_from_api_sec():
     from bench_core.config import KernelConfig
     from bench_core.schemas import BenchSandbox
 
-    cfg = KernelConfig(workflow_type="replay", replay_mode="lifecycle", replay_ready_probe=False)
+    cfg = KernelConfig(
+        workflow_type="replay",
+        workflow_config=ReplayConfig(replay_mode="lifecycle", replay_ready_probe=False),
+    )
     provider = FakeLifecycleProvider(count=1)
     provider.create_all()
     state = BenchSandbox.from_instance(provider._instances[0], "replay")
@@ -1240,9 +1274,11 @@ def test_lifecycle_call_shutdown_during_retry_bypasses_except():
 
     cfg = KernelConfig(
         workflow_type="replay",
-        replay_mode="lifecycle",
-        replay_lifecycle_retries=2,
-        replay_ready_probe=False,
+        workflow_config=ReplayConfig(
+            replay_mode="lifecycle",
+            replay_lifecycle_retries=2,
+            replay_ready_probe=False,
+        ),
     )
 
     class _TransientThenShutdownProvider(FakeLifecycleProvider):
@@ -1284,7 +1320,11 @@ def test_trajectory_mode_guard_rejects_non_ephemeral_provider():
     class _Plain:
         name = "plain"
 
-    cfg = KernelConfig(workflow_type="replay", replay_mode="trajectory", total_count=1)
+    cfg = KernelConfig(
+        workflow_type="replay",
+        total_count=1,
+        workflow_config=ReplayConfig(replay_mode="trajectory"),
+    )
     with pytest.raises(ValueError, match="EphemeralCapable"):
         run_benchmark(cfg, _Plain())  # type: ignore[arg-type]
 
@@ -1301,9 +1341,9 @@ def test_trajectory_mode_skips_create_all_and_builds_shells():
 
     cfg = KernelConfig(
         workflow_type="replay",
-        replay_mode="trajectory",
         total_count=3,
         create_only=True,
+        workflow_config=ReplayConfig(replay_mode="trajectory"),
     )
     provider = FakeProvider(count=0)
     called = {"create_all": False}
@@ -1341,12 +1381,14 @@ def test_run_trajectory_creates_runs_kills_with_lease(tmp_path):
 
     cfg = KernelConfig(
         workflow_type="replay",
-        replay_mode="trajectory",
         total_count=1,
-        replay_running_concurrency=1,
-        replay_control_plane_qps=100.0,
-        replay_lifecycle_retries=2,
-        replay_ready_probe=False,
+        workflow_config=ReplayConfig(
+            replay_mode="trajectory",
+            replay_running_concurrency=1,
+            replay_control_plane_qps=100.0,
+            replay_lifecycle_retries=2,
+            replay_ready_probe=False,
+        ),
     )
     provider = _Provider()
     stop = threading.Event()
@@ -1386,7 +1428,10 @@ def test_report_renders_slot_held_line_in_trajectory_mode(tmp_path):
     """L7: trajectory mode renders [Lifecycle Overhead] with Slot held + Interaction lines."""
     from bench_core.observability.stats_collector import ReportFormatter
 
-    cfg = KernelConfig(workflow_type="replay", replay_mode="trajectory", replay_running_concurrency=1)
+    cfg = KernelConfig(
+        workflow_type="replay",
+        workflow_config=ReplayConfig(replay_mode="trajectory", replay_running_concurrency=1),
+    )
     state = BenchSandbox.from_instance(SandboxInstance(id="s1", index=1), workflow_type="replay")
     m = state.replay_metrics
     # Seed two aligned samples so all 12 lists stay length-consistent.

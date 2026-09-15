@@ -107,7 +107,7 @@ def _run_verify(
     provider: EnvironmentProvider,
     inst: SandboxInstance,
     project_dir: str,
-    config: KernelConfig,
+    config: CodingConfig,
     pair: dict[str, str],
     step_times: dict[str, float] | None = None,
     round_id: int = 0,
@@ -211,6 +211,8 @@ class CodingWarmupRunner(TaskRunner):
 
     def __init__(self, ctx: RunContext) -> None:
         super().__init__(ctx)
+        assert isinstance(ctx.config.workflow_config, CodingConfig), "coding runner requires a CodingConfig view"
+        self.cfg = ctx.config.workflow_config
 
     def do_run(self) -> None:
         """Execute warmup phase for this sandbox -- one initial verify (no resident process)."""
@@ -223,12 +225,12 @@ class CodingWarmupRunner(TaskRunner):
             return
 
         sid = self.state.id
-        project_dir = self.config.coding_project_dir
+        project_dir = self.cfg.coding_project_dir
 
         project_marker = (
             "go.mod"
-            if self.config.coding_language == "go"
-            else ("pyproject.toml" if self.config.coding_language == "python" else "package.json")
+            if self.cfg.coding_language == "go"
+            else ("pyproject.toml" if self.cfg.coding_language == "python" else "package.json")
         )
         try:
             result = self.provider.exec(self.state, f"ls {project_dir}/{project_marker}", timeout=30)
@@ -241,7 +243,7 @@ class CodingWarmupRunner(TaskRunner):
             self.state.warmup_done = True
             return
 
-        profile = get_coding_profile(self.config.coding_language)
+        profile = get_coding_profile(self.cfg.coding_language)
         try:
             result = self.provider.exec(
                 self.state,
@@ -261,13 +263,11 @@ class CodingWarmupRunner(TaskRunner):
 
         # One initial verify warms esbuild/node or Go compiler caches and confirms
         # project health. No resident dev server -- none in the trace.
-        if not self.config.coding_skip_verify:
+        if not self.cfg.coding_skip_verify:
             try:
                 logger.info(f"[Sandbox{self.state.index}] Running initial verify...")
-                pair = self.config.coding_source_files[0] if self.config.coding_source_files else {}
-                ok, err, _compile_only = _run_verify(
-                    self.provider, self.state, project_dir, self.config, pair, round_id=0
-                )
+                pair = self.cfg.coding_source_files[0] if self.cfg.coding_source_files else {}
+                ok, err, _compile_only = _run_verify(self.provider, self.state, project_dir, self.cfg, pair, round_id=0)
                 if ok:
                     logger.info(f"[Sandbox{self.state.index}] Initial verify: success")
                 else:
@@ -289,6 +289,8 @@ class CodingTaskRunner(TaskRunner):
 
     def __init__(self, ctx: RunContext) -> None:
         super().__init__(ctx)
+        assert isinstance(ctx.config.workflow_config, CodingConfig), "coding runner requires a CodingConfig view"
+        self.cfg = ctx.config.workflow_config
 
     def do_run(self) -> None:
         """Task execution main loop."""
@@ -323,7 +325,7 @@ class CodingTaskRunner(TaskRunner):
                     logger.warning(f"[Sandbox{self.state.index}] Marked offline (3 consecutive failures)")
                     break
 
-            sleep_time = random.uniform(self.config.coding_interval_min, self.config.coding_interval_max)
+            sleep_time = random.uniform(self.cfg.coding_interval_min, self.cfg.coding_interval_max)
             time.sleep(sleep_time)
 
         logger.info(f"[Sandbox{self.state.index}] Coding task runner ended")
@@ -336,9 +338,9 @@ class CodingTaskRunner(TaskRunner):
         if not self.state.is_alive:
             return False, 0.0, False, False, False
 
-        project_dir = self.config.coding_project_dir
-        source_files = self.config.coding_source_files
-        profile = get_coding_profile(self.config.coding_language)
+        project_dir = self.cfg.coding_project_dir
+        source_files = self.cfg.coding_source_files
+        profile = get_coding_profile(self.cfg.coding_language)
 
         if not source_files:
             return False, 0.0, False, False, False
@@ -377,7 +379,7 @@ class CodingTaskRunner(TaskRunner):
                     target_file = found[0]
                     # Python source uses '#' comments (not '//'); pick the marker
                     # style so a locate-fallback edit still lands as a real edit.
-                    comment = "#" if self.config.coding_language == "python" else "//"
+                    comment = "#" if self.cfg.coding_language == "python" else "//"
                     find_str, replace_str = f"{comment} bench marker", f"{comment} bench round\n{comment} bench marker"
 
             t1 = time.perf_counter()
@@ -395,13 +397,13 @@ class CodingTaskRunner(TaskRunner):
                 self.state.coding_metrics.last_error = f"edit failed: exit_code={edit_result.exit_code}"
                 return False, time.perf_counter() - start_time, verify_success, compile_only, timed_out
 
-            if not self.config.coding_skip_verify:
+            if not self.cfg.coding_skip_verify:
                 t3 = time.perf_counter()
                 verify_success, err, compile_only = _run_verify(
                     self.provider,
                     self.state,
                     project_dir,
-                    self.config,
+                    self.cfg,
                     pair,
                     round_id=self.state.coding_metrics.total_tasks,
                 )
@@ -420,7 +422,7 @@ class CodingTaskRunner(TaskRunner):
             step_times["diff"] = time.perf_counter() - t4
 
             elapsed = time.perf_counter() - start_time
-            success = self.config.coding_skip_verify or verify_success
+            success = self.cfg.coding_skip_verify or verify_success
 
             return success, elapsed, verify_success, compile_only, timed_out
 
@@ -461,6 +463,8 @@ class CodingRoundRunner(TaskRunner):
 
     def __init__(self, ctx: RunContext) -> None:
         super().__init__(ctx)
+        assert isinstance(ctx.config.workflow_config, CodingConfig), "coding runner requires a CodingConfig view"
+        self.cfg = ctx.config.workflow_config
         self.round_id = ctx.round_id
 
     def do_run(self) -> None:
@@ -469,7 +473,7 @@ class CodingRoundRunner(TaskRunner):
             logger.info(f"[Sandbox{self.state.index}] Not ready/alive for coding round")
             return
 
-        source_files = self.config.coding_source_files
+        source_files = self.cfg.coding_source_files
         if not source_files:
             logger.info(f"[Sandbox{self.state.index}] No coding source files configured")
             return
@@ -512,7 +516,7 @@ class CodingRoundRunner(TaskRunner):
         verify_success = False
         compile_only = False
         timed_out = False
-        project_dir = self.config.coding_project_dir
+        project_dir = self.cfg.coding_project_dir
         target_file = pair["file"]
         find_str = pair["find"]
         replace_str = pair["replace"]
@@ -537,7 +541,7 @@ class CodingRoundRunner(TaskRunner):
                 success = False
                 return success, step_times, verify_success, compile_only, failed_step, error_detail, timed_out
 
-            if not self.config.coding_skip_verify:
+            if not self.cfg.coding_skip_verify:
                 verify_success, verify_error, compile_only = self._step_verify(project_dir, pair, step_times)
                 if not verify_success:
                     failed_step = "verify"
@@ -564,7 +568,7 @@ class CodingRoundRunner(TaskRunner):
         - checkout/locate failure is non-fatal; on miss it falls back to a located file
         with a generic comment-marker pair so the round still produces a verify peak.
         """
-        profile = get_coding_profile(self.config.coding_language)
+        profile = get_coding_profile(self.cfg.coding_language)
         step_start = time.perf_counter()
         self.provider.exec(
             self.state,
@@ -584,7 +588,7 @@ class CodingRoundRunner(TaskRunner):
         )
         found = (fallback.stdout or "").strip().splitlines()
         if found:
-            comment = "#" if self.config.coding_language == "python" else "//"
+            comment = "#" if self.cfg.coding_language == "python" else "//"
             return (
                 False,
                 f"target not found, fell back to {found[0]}",
@@ -640,7 +644,7 @@ class CodingRoundRunner(TaskRunner):
         CODING_STEP_ORDER). Returns (success, error_detail, compile_only).
         """
         return _run_verify(
-            self.provider, self.state, project_dir, self.config, pair, step_times=step_times, round_id=self.round_id
+            self.provider, self.state, project_dir, self.cfg, pair, step_times=step_times, round_id=self.round_id
         )
 
     def _step_diff(self, project_dir: str, step_times: dict[str, float]) -> None:
@@ -664,7 +668,7 @@ class CodingRoundRunner(TaskRunner):
             elif "edit" not in step_times:
                 return "edit", "edit timed out"
             elif "verify" not in step_times:
-                return "verify", f"verify timed out after {self.config.coding_verify_timeout}s"
+                return "verify", f"verify timed out after {self.cfg.coding_verify_timeout}s"
             elif "diff" not in step_times:
                 return "diff", "diff timed out"
             else:
@@ -727,6 +731,16 @@ class CodingConfig(WorkflowConfigBase):
     coding_interval_min: float = 2.0
     coding_interval_max: float = 10.0
 
+    def __post_init__(self) -> None:
+        # Fill source_files from the language default when omitted. Lives on the
+        # view (not KernelConfig.__post_init__) so both from_raw and direct
+        # construction (tests) resolve the default -- KernelConfig.__post_init__'s
+        # coding block is deleted in P2-2. A copy so the view never aliases the
+        # shared CODING_LANGUAGE_DEFAULT_SOURCE_FILES list.
+        if self.coding_source_files is None:
+            default = CODING_LANGUAGE_DEFAULT_SOURCE_FILES.get(self.coding_language, DEFAULT_CODING_SOURCE_FILES)
+            self.coding_source_files = [dict(p) for p in default]
+
     @classmethod
     def migrate(cls, raw: dict) -> dict:
         """Forward-compat: no legacy ``coding:`` renames yet."""
@@ -735,7 +749,7 @@ class CodingConfig(WorkflowConfigBase):
     @classmethod
     def from_raw(cls, raw: dict) -> CodingConfig:
         c = raw or {}
-        view = cls(
+        return cls(
             coding_project_dir=c.get("project_dir", "/opt/coding-bench"),
             coding_language=c.get("language", "ts"),
             coding_source_files=c.get("source_files"),
@@ -746,12 +760,6 @@ class CodingConfig(WorkflowConfigBase):
             coding_interval_min=c.get("interval_min", 2.0),
             coding_interval_max=c.get("interval_max", 10.0),
         )
-        # Block 1: fill source_files from the language default when omitted (mirrors
-        # KernelConfig.__post_init__). A copy so the view never aliases the shared list.
-        if view.coding_source_files is None:
-            default = CODING_LANGUAGE_DEFAULT_SOURCE_FILES.get(view.coding_language, DEFAULT_CODING_SOURCE_FILES)
-            view.coding_source_files = [dict(p) for p in default]
-        return view
 
     def validate(self, kernel_config: KernelConfig) -> None:
         """No cross-section checks today (coding knobs are self-contained)."""

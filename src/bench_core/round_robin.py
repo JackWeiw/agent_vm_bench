@@ -24,6 +24,7 @@ from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 from bench_core.observability.snapshot_scanner import SnapshotSizeScanner
 from bench_core.observability.stats_collector import StatsCollector
 from bench_core.schemas import BenchSandbox, get_step_order
+from bench_core.task_runner.document import DocumentConfig
 from bench_core.workflow_registry import (
     RunContext,
     WORKFLOW_REGISTRY,
@@ -272,7 +273,9 @@ class RoundRobinTaskManager:
         runner_count = len(self.active_runners)
         if runner_count > 0 and step_totals:
             avg_parts = []
-            step_order = get_step_order(self.config.workflow_type, self.config.document_case_kind)
+            wf_cfg = self.config.workflow_config
+            case_kind = wf_cfg.document_case_kind if isinstance(wf_cfg, DocumentConfig) else None
+            step_order = get_step_order(self.config.workflow_type, case_kind)
             for step_name in step_order:
                 if step_name in step_totals:
                     avg_ms = (step_totals[step_name]["total"] / max(1, step_totals[step_name]["count"])) * 1000
@@ -295,7 +298,9 @@ class RoundRobinTaskManager:
             return
         if self.config.workflow_type != "document":
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
-        deadline = time.monotonic() + self.config.document_task_timeout + 5
+        cfg = self.config.workflow_config
+        assert isinstance(cfg, DocumentConfig), "document round requires a DocumentConfig view"
+        deadline = time.monotonic() + cfg.document_task_timeout + 5
         for runner in self.active_runners:
             runner.join(timeout=max(0.0, deadline - time.monotonic()))
         alive = [runner.name for runner in self.active_runners if runner.is_alive()]

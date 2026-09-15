@@ -17,6 +17,7 @@ def _make_runner(series: LifecycleSeriesWriter, provider, replay_mode: str) -> R
     runner = ReplayBaseRunner.__new__(ReplayBaseRunner)
     runner.state = state
     runner.config = cfg
+    runner.cfg = cfg  # P2-2: _emit_snapshot_size reads the view (self.cfg.replay_mode)
     runner.provider = provider
     runner.series = series
     runner.scanner = None

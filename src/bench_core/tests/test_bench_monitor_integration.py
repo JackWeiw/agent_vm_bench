@@ -4,6 +4,7 @@ from __future__ import annotations
 import bench_core.bench as bench_mod
 from bench_core.bench import run_benchmark
 from bench_core.config import KernelConfig
+from bench_core.task_runner.browser import BrowserConfig
 from env_provider.fake import FakeProvider
 
 
@@ -43,7 +44,7 @@ def test_run_benchmark_brackets_monitor_around_stress(monkeypatch, tmp_path):
         total_count=2,
         benchmark_mode="fixed",
         test_duration=1,
-        browser_urls=["http://x"],
+        workflow_config=BrowserConfig(browser_urls=["http://x"]),
         output_dir=str(tmp_path),
         filename_prefix="mon",
     )

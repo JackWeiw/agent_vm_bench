@@ -19,6 +19,10 @@ from bench_core.config import KernelConfig
 from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 from bench_core.observability.snapshot_scanner import SnapshotSizeScanner
 from bench_core.schemas import BenchSandbox
+from bench_core.task_runner.browser import BrowserConfig
+from bench_core.task_runner.coding import CodingConfig
+from bench_core.task_runner.document import DocumentConfig
+from bench_core.task_runner.replay import ReplayConfig
 from bench_core.workflow_registry import (
     RunContext,
     TaskRunner,
@@ -96,13 +100,15 @@ class TaskManager:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
         if self.config.workflow_type == "coding":
-            if not self.config.coding_skip_verify:
+            cfg = self.config.workflow_config
+            assert isinstance(cfg, CodingConfig)
+            if not cfg.coding_skip_verify:
                 logger.info(f"\n{'=' * 60}")
                 logger.info("Coding Warmup Phase Starting")
                 logger.info(f"  Total: {len(ready_states)} sandboxes")
-                logger.info(f"  Project: {self.config.coding_project_dir}")
-                logger.info(f"  Language: {self.config.coding_language}")
-                logger.info(f"  Initial verify: {'enabled' if not self.config.coding_skip_verify else 'skipped'}")
+                logger.info(f"  Project: {cfg.coding_project_dir}")
+                logger.info(f"  Language: {cfg.coding_language}")
+                logger.info(f"  Initial verify: {'enabled' if not cfg.coding_skip_verify else 'skipped'}")
                 logger.info(f"{'=' * 60}")
 
                 for state in ready_states:
@@ -114,18 +120,22 @@ class TaskManager:
                 for state in ready_states:
                     state.warmup_done = True
         elif self.config.workflow_type == "document":
+            cfg = self.config.workflow_config
+            assert isinstance(cfg, DocumentConfig)
             logger.info(f"\n{'=' * 60}")
             logger.info("Document Warmup Phase Starting")
             logger.info(f"  Total: {len(ready_states)} sandboxes")
-            logger.info(f"  Case kind: {self.config.document_case_kind}")
-            logger.info(f"  Seed: {self.config.document_seed_dir}")
+            logger.info(f"  Case kind: {cfg.document_case_kind}")
+            logger.info(f"  Seed: {cfg.document_seed_dir}")
             logger.info(f"{'=' * 60}")
             for state in ready_states:
                 runner = spec.warmup_runner(self._run_context(state))
                 self.warmup_runners.append(runner)
                 runner.start()
         elif self.config.workflow_type == "browser":
-            if not self.config.warmup_urls:
+            cfg = self.config.workflow_config
+            assert isinstance(cfg, BrowserConfig)
+            if not cfg.warmup_urls:
                 logger.info("No warmup URLs configured, skipping warmup")
                 for state in ready_states:
                     state.warmup_done = True
@@ -134,9 +144,9 @@ class TaskManager:
             logger.info(f"\n{'=' * 60}")
             logger.info("Warmup Phase Starting")
             logger.info(f"  Total: {len(ready_states)} sandboxes")
-            logger.info(f"  Warmup pages: {len(self.config.warmup_urls)}")
-            logger.info(f"  Loop count: {self.config.warmup_loops}")
-            logger.info(f"  Page delay: {self.config.warmup_delay}s")
+            logger.info(f"  Warmup pages: {len(cfg.warmup_urls)}")
+            logger.info(f"  Loop count: {cfg.warmup_loops}")
+            logger.info(f"  Page delay: {cfg.warmup_delay}s")
             logger.info(f"{'=' * 60}")
 
             for state in ready_states:
@@ -144,11 +154,13 @@ class TaskManager:
                 self.warmup_runners.append(runner)
                 runner.start()
         elif self.config.workflow_type == "replay":
+            cfg = self.config.workflow_config
+            assert isinstance(cfg, ReplayConfig)
             logger.info(f"\n{'=' * 60}")
             logger.info("Replay Warmup Phase Starting")
             logger.info(f"  Total: {len(ready_states)} sandboxes")
-            logger.info(f"  Trajectory dir: {self.config.replay_trajectory_dir}")
-            logger.info(f"  Mode: {self.config.replay_mode}")
+            logger.info(f"  Trajectory dir: {cfg.replay_trajectory_dir}")
+            logger.info(f"  Mode: {cfg.replay_mode}")
             logger.info(f"{'=' * 60}")
             for state in ready_states:
                 runner = spec.warmup_runner(self._run_context(state))
@@ -298,7 +310,9 @@ class TaskManager:
     def wait_all(self, timeout: float = 5.0) -> None:
         """Wait for all task threads to end."""
         if self.config.workflow_type == "document":
-            deadline = time.monotonic() + self.config.document_task_timeout + 5
+            cfg = self.config.workflow_config
+            assert isinstance(cfg, DocumentConfig)
+            deadline = time.monotonic() + cfg.document_task_timeout + 5
             for runner in self.runners:
                 remaining = max(0.0, deadline - time.monotonic())
                 runner.join(timeout=remaining)

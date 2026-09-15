@@ -14,7 +14,9 @@ import threading
 from bench_core.config import KernelConfig
 from bench_core.schemas import BenchSandbox
 from bench_core.task_manager import TaskManager
-from bench_core.task_runner.browser import BrowserTaskRunner
+from bench_core.task_runner.browser import BrowserConfig, BrowserTaskRunner
+from bench_core.task_runner.coding import CodingConfig
+from bench_core.task_runner.replay import ReplayConfig
 from env_provider import CreationMetrics, SandboxStatus
 from env_provider.fake import FakeProvider
 
@@ -36,7 +38,10 @@ def _states(n: int, *, warmup_done: bool = False) -> dict[int, BenchSandbox]:
 
 class TestStartWarmup:
     def test_browser_creates_warmup_runners(self):
-        config = KernelConfig(workflow_type="browser", warmup_urls=["http://x"], warmup_delay=0, warmup_loops=1)
+        config = KernelConfig(
+            workflow_type="browser",
+            workflow_config=BrowserConfig(warmup_urls=["http://x"], warmup_delay=0, warmup_loops=1),
+        )
         provider = FakeProvider(count=3)
         states = _states(3)
         mgr = TaskManager(config, states, threading.Event(), provider)
@@ -50,7 +55,7 @@ class TestStartWarmup:
         assert all(s.warmup_done for s in states.values())
 
     def test_browser_skips_when_no_warmup_urls(self):
-        config = KernelConfig(workflow_type="browser", warmup_urls=[])
+        config = KernelConfig(workflow_type="browser", workflow_config=BrowserConfig(warmup_urls=[]))
         provider = FakeProvider(count=2)
         states = _states(2)
         mgr = TaskManager(config, states, threading.Event(), provider)
@@ -61,7 +66,7 @@ class TestStartWarmup:
         assert all(s.warmup_done for s in states.values())  # marked done without runners
 
     def test_coding_creates_warmup_runners(self):
-        config = KernelConfig(workflow_type="coding", coding_language="ts")
+        config = KernelConfig(workflow_type="coding", workflow_config=CodingConfig(coding_language="ts"))
         provider = FakeProvider(count=2)
         states = _states(2)
         mgr = TaskManager(config, states, threading.Event(), provider)
@@ -73,7 +78,7 @@ class TestStartWarmup:
         assert all(s.warmup_done for s in states.values())
 
     def test_coding_skip_verify_marks_done_without_runners(self):
-        config = KernelConfig(workflow_type="coding", coding_skip_verify=True)
+        config = KernelConfig(workflow_type="coding", workflow_config=CodingConfig(coding_skip_verify=True))
         provider = FakeProvider(count=2)
         states = _states(2)
         mgr = TaskManager(config, states, threading.Event(), provider)
@@ -86,7 +91,7 @@ class TestStartWarmup:
 
 class TestStartAll:
     def test_creates_browser_task_runners(self):
-        config = KernelConfig(workflow_type="browser", browser_urls=["http://x"])
+        config = KernelConfig(workflow_type="browser", workflow_config=BrowserConfig(browser_urls=["http://x"]))
         provider = FakeProvider(count=3)
         states = _states(3, warmup_done=True)
         stop = threading.Event()
@@ -100,7 +105,9 @@ class TestStartAll:
         mgr.wait_all(timeout=5)
 
     def test_subset_by_benchmark_percent(self):
-        config = KernelConfig(workflow_type="browser", browser_urls=["http://x"], benchmark_percent=0.5)
+        config = KernelConfig(
+            workflow_type="browser", workflow_config=BrowserConfig(browser_urls=["http://x"]), benchmark_percent=0.5
+        )
         provider = FakeProvider(count=4)
         states = _states(4, warmup_done=True)
         stop = threading.Event()
@@ -114,7 +121,7 @@ class TestStartAll:
         mgr.wait_all(timeout=5)
 
     def test_skips_when_not_warmed(self):
-        config = KernelConfig(workflow_type="browser", browser_urls=["http://x"])
+        config = KernelConfig(workflow_type="browser", workflow_config=BrowserConfig(browser_urls=["http://x"]))
         provider = FakeProvider(count=2)
         states = _states(2, warmup_done=False)  # not warmed up
         mgr = TaskManager(config, states, threading.Event(), provider)
@@ -126,7 +133,7 @@ class TestStartAll:
     def test_batched_start(self):
         config = KernelConfig(
             workflow_type="browser",
-            browser_urls=["http://x"],
+            workflow_config=BrowserConfig(browser_urls=["http://x"]),
             task_batch_size=2,
             task_batch_interval=0,
         )
@@ -145,7 +152,7 @@ class TestStartAll:
 
 class TestReplay:
     def test_task_manager_creates_replay_task_runner(self):
-        config = KernelConfig(workflow_type="replay")
+        config = KernelConfig(workflow_type="replay", workflow_config=ReplayConfig())
         state = _ready_sbx(0, warmup_done=True)
         state.workflow_type = "replay"
         tm = TaskManager(config, {0: state}, threading.Event(), FakeProvider(count=1))
@@ -157,7 +164,7 @@ class TestReplay:
         assert isinstance(runner, ReplayTaskRunner)
 
     def test_task_manager_replay_wait_all_join_group(self):
-        config = KernelConfig(workflow_type="replay")
+        config = KernelConfig(workflow_type="replay", workflow_config=ReplayConfig())
         state = _ready_sbx(0, warmup_done=True)
         state.workflow_type = "replay"
         tm = TaskManager(config, {0: state}, threading.Event(), FakeProvider(count=1))
