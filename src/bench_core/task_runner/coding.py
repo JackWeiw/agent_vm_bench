@@ -44,7 +44,7 @@ from bench_core.payload.coding_payload import (
     get_coding_profile,
 )
 from bench_core.schemas import CODING_STEP_ORDER, BenchSandbox, CodingMetrics
-from bench_core.workflow_registry import WorkflowSpec, register_workflow
+from bench_core.workflow_registry import RunContext, TaskRunner, WorkflowSpec, register_workflow
 from env_provider import EnvironmentProvider, SandboxInstance
 
 logger = logging.getLogger(__name__)
@@ -191,7 +191,7 @@ def _run_verify(
     return True, "", compile_only
 
 
-class CodingWarmupRunner(threading.Thread):
+class CodingWarmupRunner(TaskRunner):
     """Warmup phase runner for coding workflow -- runs one initial verify.
 
     No resident dev server (none in the real traces). Warmup runs one initial
@@ -200,18 +200,10 @@ class CodingWarmupRunner(threading.Thread):
     warm state without a fabricated background process.
     """
 
-    def __init__(
-        self,
-        state: BenchSandbox,
-        config: KernelConfig,
-        provider: EnvironmentProvider,
-    ):
-        super().__init__(daemon=True)
-        self.state = state
-        self.config = config
-        self.provider = provider
+    def __init__(self, ctx: RunContext) -> None:
+        super().__init__(ctx)
 
-    def run(self) -> None:
+    def do_run(self) -> None:
         """Execute warmup phase for this sandbox -- one initial verify (no resident process)."""
         # Gate on readiness. The provider's create_all runs the readiness check
         # before returning, so a non-ready instance never reaches warmup.
@@ -278,7 +270,7 @@ class CodingWarmupRunner(threading.Thread):
         logger.info(f"[Sandbox{self.state.index}] (id:{sid}) Coding warmup completed")
 
 
-class CodingTaskRunner(threading.Thread):
+class CodingTaskRunner(TaskRunner):
     """Coding task runner for fixed mode -- one independent thread per sandbox.
 
     Each iteration: find -> read -> edit -> verify -> diff (one replacement
@@ -286,21 +278,10 @@ class CodingTaskRunner(threading.Thread):
     goes offline.
     """
 
-    def __init__(
-        self,
-        state: BenchSandbox,
-        config: KernelConfig,
-        stop_event: threading.Event,
-        provider: EnvironmentProvider,
-    ):
-        super().__init__(daemon=True)
-        self.state = state
-        self.config = config
-        self.stop_event = stop_event
-        self.provider = provider
-        self.consecutive_errors = 0
+    def __init__(self, ctx: RunContext) -> None:
+        super().__init__(ctx)
 
-    def run(self) -> None:
+    def do_run(self) -> None:
         """Task execution main loop."""
         if not self.state.ready:
             logger.warning(
@@ -443,7 +424,7 @@ class CodingTaskRunner(threading.Thread):
             return False, elapsed, verify_success, compile_only, timed_out
 
 
-class CodingRoundRunner(threading.Thread):
+class CodingRoundRunner(TaskRunner):
     """Runner for coding operations in round-robin benchmark mode.
 
     Each round applies a different pre-configured replacement pair (a real,
@@ -469,23 +450,11 @@ class CodingRoundRunner(threading.Thread):
         provider: Environment backend (exec-only contract)
     """
 
-    def __init__(
-        self,
-        state: BenchSandbox,
-        config: KernelConfig,
-        stop_event: threading.Event,
-        round_id: int,
-        provider: EnvironmentProvider,
-    ):
-        super().__init__(daemon=True)
-        self.state = state
-        self.config = config
-        self.stop_event = stop_event
-        self.round_id = round_id
-        self.provider = provider
-        self.consecutive_errors = 0
+    def __init__(self, ctx: RunContext) -> None:
+        super().__init__(ctx)
+        self.round_id = ctx.round_id
 
-    def run(self) -> None:
+    def do_run(self) -> None:
         """Execute coding operations for this round."""
         if not self.state.ready or not self.state.is_alive:
             logger.info(f"[Sandbox{self.state.index}] Not ready/alive for coding round")

@@ -399,3 +399,81 @@ resolution of a tension the RFC glossed over, not a silent deviation):
    Phase 2 (typed config views) / Phase 3 (report formatters). `WorkflowSpec` makes both
    `… | None = None`; `register_workflow` skips their issubclass check when `None`. The
    fields tighten to required when the implementations land.
+
+## Implementation notes (Phase 1)
+
+Phase 1 migrated the 12 runners onto the `TaskRunner` contract and collapsed the three
+construction-dispatch sites to registry lookups. The kernel now builds every runner through
+`WORKFLOW_REGISTRY[wf].{warmup,task,round}_runner(RunContext(...))`; the per-workflow
+if/elif chains that selected a runner class are gone from `_create_task_runner` and
+`round_robin._start_round`, and the warmup construction line is de-dispatched in
+`start_warmup`.
+
+What shipped:
+
+- All 12 runners (`browser` / `coding` / `document` / `replay` × warmup / task / round)
+  now subclass `TaskRunner`, take `__init__(ctx: RunContext)`, and implement `do_run()`
+  (the old per-class `run` body, unchanged). `TaskRunner.__init__` sets the common attrs
+  (`state` / `config` / `provider` / `stop_event` / `consecutive_errors`); each runner
+  pulls its extras from `ctx` (`round_id`, replay `series` / `admission` / `launch_pacer` /
+  `scanner`, the document `executor`).
+- `register_workflow`'s runner issubclass gate tightened from `threading.Thread` to
+  `TaskRunner` (Phase 0 deviation 1 resolved); `WorkflowSpec` runner fields are
+  `type[TaskRunner]`.
+- `_create_task_runner` (fixed mode) and `_start_round` (round-robin) are single registry
+  lookups — the 4-way if/elif is gone. `start_warmup` keeps its elif (deviation 2 below).
+- `ensure_workflow_registered(name)` imports the active workflow's `task_runner/<wf>.py`
+  module so its `register_workflow` fires before the first dispatch. Called in
+  `TaskManager` / `RoundRobinTaskManager` `__init__`. Preserves the package's lazy-load
+  principle (`task_runner/__init__.py` stays a pure namespace): a browser-only run imports
+  only `browser`, not coding / document / replay.
+- `ReplayBaseRunner` (replay's internal slice-machinery base, shared by its 3 runners)
+  gets a run-hostile `do_run` stub. Subclassing `TaskRunner` (abstract `do_run`) would
+  have made the base uninstantiable, breaking ~24 unit tests that legitimately construct
+  it (via `__init__` and `__new__`) to drive its slice / lifecycle / admission helpers in
+  isolation. The raising stub restores that instantiability — the base stays a testable
+  helper, not a runnable runner — while honestly signaling "not meant to run directly":
+  the 3 concrete replay runners override `do_run` with their loops; the bare base's
+  `do_run` raises `NotImplementedError`. (A pure-ABC base + per-test doubles was rejected:
+  it would paper 24 test sites with stand-ins for a base whose non-`do_run` methods are
+  the intended unit-test surface.)
+
+Deviations from the RFC text, flagged for review:
+
+1. **The opt-in helpers (`_gate_ready` / `_mark_offline_on_consecutive`, Phase 0 deviation 2)
+   are NOT adopted in Phase 1.** Reading all 12 guards after migration, they do not share a
+   uniform shape: warmup runners set `warmup_done` (and document warmup sets a metric, no
+   warning); round runners composite-guard on `ready or is_alive`; replay warns "not ready"
+   and sets `warmup_done`. A single helper would either force-fit or homogenise the
+   per-workflow log prefixes ("Cannot start warmup" / "Cannot start tasks" / "Cannot start
+   replay") — a behavior change. The helpers remain as opt-in contract surface; adopting
+   them (and unifying the log prefix) is a separate cleanup PR. Phase 1 is a
+   behavior-identical migration: same guards, same log text, only the constructor + dispatch
+   seam changed.
+
+2. **`start_warmup`'s elif on `workflow_type` is retained, not collapsed.** That elif
+   carries per-workflow logging banners + skip guards (browser no-urls early return, coding
+   skip-verify) — presentation / orchestration, not object construction. Only the
+   construction line was de-dispatched (`spec.warmup_runner(ctx)`); the elif skeleton stays.
+   The RFC §2 anticipated this (start_warmup is interleaved with workflow-specific
+   orchestration). A future cleanup can data-drive the banners once Phase 2's typed config
+   views own the per-workflow fields.
+
+3. **Three metadata-dispatch sites are deferred out of Phase 1**, each for a concrete
+   reason. `_ready.check` (the `ready_probe` field): the probes are `ReadyChecker` instance
+   methods using `self._exec` / `self._max_wait`, so `spec.ready_probe` cannot hold a bound
+   method — porting needs a probe abstraction (a `ReadyProbe` Protocol or free-function
+   refactor of `_ready.py`), its own review. `_print_header`: its branches are
+   config-field-specific (coding `project` / `language`, replay `traj` / `mode`), which
+   reads cleanly off Phase 2's typed config views, not off the registry. `get_step_order`:
+   collapsing it onto the registry would invert the layering (the lower `schemas` layer
+   importing the registry seam), and document's `case_kind` (xlsx / pdf) variant means it
+   is not a pure lookup. None of these build workflow-specific objects, so they are not on
+   the dispatch-collapse critical path.
+
+What is NOT done (deferred): adopting the opt-in guards; `ready_probe`; Phase 2 typed
+`WorkflowConfigBase` views (route `KernelConfig.from_raw` through
+`config_cls.migrate` / `from_raw` / `validate`, move ~70 config fields off
+`KernelConfig`, gated by `test_config_compat`); Phase 3 `ReportFormatters` (move
+per-workflow totals off `Snapshot`). Status stays **Active** (not Implemented) until
+Phase 3 lands.

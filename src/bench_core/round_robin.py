@@ -24,6 +24,11 @@ from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 from bench_core.observability.snapshot_scanner import SnapshotSizeScanner
 from bench_core.observability.stats_collector import StatsCollector
 from bench_core.schemas import BenchSandbox, get_step_order
+from bench_core.workflow_registry import (
+    RunContext,
+    WORKFLOW_REGISTRY,
+    ensure_workflow_registered,
+)
 from env_provider import EnvironmentProvider
 
 logger = logging.getLogger(__name__)
@@ -70,6 +75,27 @@ class RoundRobinTaskManager:
         self._planned_rounds: int = 0  # Total rounds planned to run
         self.active_runners: list[threading.Thread] = []
         self.round_stop_event: threading.Event | None = None
+        # Import the active workflow's task_runner module so its spec self-registers
+        # before the first dispatch (lazy: only this workflow's module loads).
+        ensure_workflow_registered(self.config.workflow_type)
+
+    def _run_context(self, state: BenchSandbox, round_id: int) -> RunContext:
+        """Build the frozen runner context for one round-robin round.
+
+        ``round_stop_event`` is set by ``_start_round`` immediately before this is
+        called, so the Optional is resolved by call order (no runtime None).
+        """
+        return RunContext(
+            state=state,
+            config=self.config,
+            provider=self.provider,
+            stop_event=self.round_stop_event,  # set in _start_round just above
+            round_id=round_id,
+            series=self.series,
+            admission=self.admission,
+            launch_pacer=self.launch_pacer,
+            scanner=self.scanner,
+        )
 
     def run(self) -> None:
         """Execute the round-robin test.
@@ -198,46 +224,13 @@ class RoundRobinTaskManager:
         self.round_stop_event = threading.Event()
         self.active_runners = []
 
-        if self.config.workflow_type == "coding":
-            from bench_core.task_runner.coding import CodingRoundRunner
-
-            for state in current_states:
-                runner = CodingRoundRunner(state, self.config, self.round_stop_event, round_id, self.provider)
-                self.active_runners.append(runner)
-                runner.start()
-        elif self.config.workflow_type == "document":
-            from bench_core.task_runner.document import DocumentRoundRunner
-
-            for state in current_states:
-                runner = DocumentRoundRunner(state, self.config, self.round_stop_event, round_id, self.provider)
-                self.active_runners.append(runner)
-                runner.start()
-        elif self.config.workflow_type == "browser":
-            from bench_core.task_runner.browser import TabOperationRunner
-
-            for state in current_states:
-                runner = TabOperationRunner(state, self.config, self.round_stop_event, round_id, self.provider)
-                self.active_runners.append(runner)
-                runner.start()
-        elif self.config.workflow_type == "replay":
-            from bench_core.task_runner.replay import ReplayRoundRunner
-
-            for state in current_states:
-                runner = ReplayRoundRunner(
-                    state,
-                    self.config,
-                    self.round_stop_event,
-                    round_id,
-                    self.provider,
-                    series=self.series,
-                    admission=self.admission,
-                    launch_pacer=self.launch_pacer,
-                    scanner=self.scanner,
-                )
-                self.active_runners.append(runner)
-                runner.start()
-        else:
+        spec = WORKFLOW_REGISTRY.get(self.config.workflow_type)
+        if spec is None:
             raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
+        for state in current_states:
+            runner = spec.round_runner(self._run_context(state, round_id))
+            self.active_runners.append(runner)
+            runner.start()
 
         self.current_round = round_id
 

@@ -33,7 +33,7 @@ from bench_core.schemas import (
     DocumentMetrics,
     get_step_order,
 )
-from bench_core.workflow_registry import WorkflowSpec, register_workflow
+from bench_core.workflow_registry import RunContext, TaskRunner, WorkflowSpec, register_workflow
 from env_provider import EnvironmentProvider
 
 logger = logging.getLogger(__name__)
@@ -311,16 +311,13 @@ class DocumentOperationExecutor:
         return f"{label} failed (exit_code={result.exit_code}): {detail}"
 
 
-class DocumentWarmupRunner(threading.Thread):
+class DocumentWarmupRunner(TaskRunner):
     """Validate image assets and prepare an initial clean document workspace."""
 
-    def __init__(self, state: BenchSandbox, config: KernelConfig, provider: EnvironmentProvider):
-        super().__init__(daemon=True)
-        self.state = state
-        self.config = config
-        self.provider = provider
+    def __init__(self, ctx: RunContext) -> None:
+        super().__init__(ctx)
 
-    def run(self) -> None:
+    def do_run(self) -> None:
         # Gate on readiness. The provider's create_all runs the readiness check
         # before returning, so a non-ready instance never reaches warmup.
         if not self.state.ready:
@@ -345,25 +342,14 @@ class DocumentWarmupRunner(threading.Thread):
             self.state.warmup_done = True
 
 
-class DocumentTaskRunner(threading.Thread):
+class DocumentTaskRunner(TaskRunner):
     """Continuously execute one fresh trace-derived document task per cycle."""
 
-    def __init__(
-        self,
-        state: BenchSandbox,
-        config: KernelConfig,
-        stop_event: threading.Event,
-        provider: EnvironmentProvider,
-    ):
-        super().__init__(daemon=True)
-        self.state = state
-        self.config = config
-        self.stop_event = stop_event
-        self.provider = provider
-        self.executor = DocumentOperationExecutor(state, config, provider)
-        self.consecutive_errors = 0
+    def __init__(self, ctx: RunContext) -> None:
+        super().__init__(ctx)
+        self.executor = DocumentOperationExecutor(self.state, self.config, self.provider)
 
-    def run(self) -> None:
+    def do_run(self) -> None:
         if not self.state.ready:
             logger.warning(
                 f"[Sandbox{self.state.index}] Cannot start tasks: {self.state.creation_metrics.status.value}"
@@ -381,25 +367,14 @@ class DocumentTaskRunner(threading.Thread):
             self.stop_event.wait(random.uniform(self.config.document_interval_min, self.config.document_interval_max))
 
 
-class DocumentRoundRunner(threading.Thread):
+class DocumentRoundRunner(TaskRunner):
     """Execute exactly one complete PDF or XLSX task in round-robin mode."""
 
-    def __init__(
-        self,
-        state: BenchSandbox,
-        config: KernelConfig,
-        stop_event: threading.Event,
-        round_id: int,
-        provider: EnvironmentProvider,
-    ):
-        super().__init__(daemon=True)
-        self.state = state
-        self.config = config
-        self.stop_event = stop_event
-        self.round_id = round_id
-        self.provider = provider
+    def __init__(self, ctx: RunContext) -> None:
+        super().__init__(ctx)
+        self.round_id = ctx.round_id
 
-    def run(self) -> None:
+    def do_run(self) -> None:
         if not self.state.ready or not self.state.is_alive:
             logger.info(f"[Sandbox{self.state.index}] Not ready/alive for document round")
             return
