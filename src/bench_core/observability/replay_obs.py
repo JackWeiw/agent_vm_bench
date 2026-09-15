@@ -58,7 +58,10 @@ class ReplayObservability:
 
     @property
     def concurrency(self) -> int:
-        rc = getattr(self.config, "replay_running_concurrency", None)
+        from bench_core.task_runner.replay import ReplayConfig
+
+        rcfg = self.config.workflow_config
+        rc = rcfg.replay_running_concurrency if isinstance(rcfg, ReplayConfig) else None
         return rc or self.config.total_count
 
     @property

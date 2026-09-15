@@ -17,6 +17,8 @@ from bench_core.config import KernelConfig
 from bench_core.observability.stats_collector import StatsCollector
 from bench_core.round_robin import RoundRobinTaskManager
 from bench_core.schemas import BenchSandbox
+from bench_core.task_runner.browser import BrowserConfig
+from bench_core.task_runner.replay import ReplayConfig
 from env_provider import CreationMetrics, SandboxStatus
 from env_provider.fake import FakeProvider
 
@@ -44,7 +46,9 @@ def _new_stats(config: KernelConfig, states: dict[int, BenchSandbox]) -> StatsCo
 
 class TestPrepareSandboxGroups:
     def test_even_split(self):
-        config = KernelConfig(workflow_type="browser", round_size=2, browser_urls=["http://x"])
+        config = KernelConfig(
+            workflow_type="browser", round_size=2, workflow_config=BrowserConfig(browser_urls=["http://x"])
+        )
         states = _states(4)
         mgr = RoundRobinTaskManager(config, states, threading.Event(), _new_stats(config, states), FakeProvider())
 
@@ -54,7 +58,9 @@ class TestPrepareSandboxGroups:
         assert [len(g) for g in mgr.sandbox_groups] == [2, 2]
 
     def test_remainder_distributed_front_loaded(self):
-        config = KernelConfig(workflow_type="browser", round_size=2, browser_urls=["http://x"])
+        config = KernelConfig(
+            workflow_type="browser", round_size=2, workflow_config=BrowserConfig(browser_urls=["http://x"])
+        )
         states = _states(5)
         mgr = RoundRobinTaskManager(config, states, threading.Event(), _new_stats(config, states), FakeProvider())
 
@@ -64,7 +70,9 @@ class TestPrepareSandboxGroups:
         assert [len(g) for g in mgr.sandbox_groups] == [2, 2, 1]
 
     def test_empty_when_none_ready(self):
-        config = KernelConfig(workflow_type="browser", round_size=2, browser_urls=["http://x"])
+        config = KernelConfig(
+            workflow_type="browser", round_size=2, workflow_config=BrowserConfig(browser_urls=["http://x"])
+        )
         states = _states(3)
         for s in states.values():
             s.ready = False
@@ -78,7 +86,9 @@ class TestPrepareSandboxGroups:
 
 class TestCalculateRounds:
     def test_explicit_round_count(self):
-        config = KernelConfig(workflow_type="browser", round_count=3, browser_urls=["http://x"])
+        config = KernelConfig(
+            workflow_type="browser", round_count=3, workflow_config=BrowserConfig(browser_urls=["http://x"])
+        )
         mgr = RoundRobinTaskManager(
             config, _states(2), threading.Event(), _new_stats(config, _states(2)), FakeProvider()
         )
@@ -86,7 +96,9 @@ class TestCalculateRounds:
 
     def test_none_falls_back_to_large_sentinel(self):
         # round_count=None relies on the duration check in run() to stop.
-        config = KernelConfig(workflow_type="browser", round_count=None, browser_urls=["http://x"])
+        config = KernelConfig(
+            workflow_type="browser", round_count=None, workflow_config=BrowserConfig(browser_urls=["http://x"])
+        )
         mgr = RoundRobinTaskManager(
             config, _states(2), threading.Event(), _new_stats(config, _states(2)), FakeProvider()
         )
@@ -101,7 +113,7 @@ class TestRunTwoRoundsBrowser:
             round_size=2,
             round_interval=0,
             test_duration=60,
-            browser_urls=["http://x"],
+            workflow_config=BrowserConfig(browser_urls=["http://x"]),
         )
         states = _states(5)
         stats = _new_stats(config, states)
@@ -126,7 +138,7 @@ class TestRunTwoRoundsBrowser:
             round_size=2,
             round_interval=0,
             test_duration=60,
-            browser_urls=["http://x"],
+            workflow_config=BrowserConfig(browser_urls=["http://x"]),
         )
         states = _states(4)
         stop = threading.Event()
@@ -145,7 +157,7 @@ class TestRunTwoRoundsBrowser:
             workflow_type="browser",
             round_count=2,
             round_size=2,
-            browser_urls=["http://x"],
+            workflow_config=BrowserConfig(browser_urls=["http://x"]),
         )
         states = _states(3)
         for s in states.values():
@@ -174,9 +186,11 @@ class TestRoundRobinReplayWorkflow:
             round_size=1,
             round_count=1,
             test_duration=5,
-            replay_trajectory_dir=str(fixtures_dir),
-            replay_trajectory_glob="no_terminal.json",
-            replay_delay_scale=0.0,
+            workflow_config=ReplayConfig(
+                replay_trajectory_dir=str(fixtures_dir),
+                replay_trajectory_glob="no_terminal.json",
+                replay_delay_scale=0.0,
+            ),
         )
         states = _states(1)
         # Set workflow_type on the sandbox so task_metrics resolves correctly

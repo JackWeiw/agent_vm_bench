@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 from dataclasses import dataclass
 
-from bench_core.config import KernelConfig
+from bench_core.config import KernelConfig, document_scene_layout
 from bench_core.schemas import (
     DOCUMENT_XLSX_STEP_ORDER,
     BenchSandbox,
@@ -137,8 +137,10 @@ def preflight_document(config: KernelConfig) -> dict[str, Any]:
     config.validate()
     if config.workflow_type != "document":
         raise ValueError("document preflight requires workflow_type='document'")
-    recipe_path = Path(config.document_recipe_path) if config.document_recipe_path else None
-    return load_scene_recipe(config.document_case_kind, recipe_path)
+    cfg = config.workflow_config
+    assert isinstance(cfg, DocumentConfig)
+    recipe_path = Path(cfg.document_recipe_path) if cfg.document_recipe_path else None
+    return load_scene_recipe(cfg.document_case_kind, recipe_path)
 
 
 def _build_write_command(path: str, content: str) -> str:
@@ -166,16 +168,15 @@ class DocumentOperationExecutor:
     def __init__(
         self,
         state: BenchSandbox,
-        config: KernelConfig,
+        cfg: DocumentConfig,
         provider: EnvironmentProvider,
         stop_event: threading.Event | None = None,
     ):
         self.state = state
-        self.config = config
+        self.cfg = cfg
         self.provider = provider
-        config.validate()
-        recipe_path = Path(config.document_recipe_path) if config.document_recipe_path else None
-        self.recipe = load_scene_recipe(config.document_case_kind, recipe_path)
+        recipe_path = Path(cfg.document_recipe_path) if cfg.document_recipe_path else None
+        self.recipe = load_scene_recipe(cfg.document_case_kind, recipe_path)
         self.phases = {item["operation_id"]: item for item in self.recipe["key_operations"]}
         # The scheduler stop event prevents a *new* complete task from starting.
         # It must not interrupt a recipe that has already begun.
@@ -183,7 +184,7 @@ class DocumentOperationExecutor:
 
     def _check_cancelled(self) -> None:
         if self.deadline is not None and time.monotonic() >= self.deadline:
-            raise DocumentTaskTimeout(f"document task exceeded {self.config.document_task_timeout} seconds")
+            raise DocumentTaskTimeout(f"document task exceeded {self.cfg.document_task_timeout} seconds")
 
     def _command_timeout(self, maximum: int) -> int:
         self._check_cancelled()
@@ -197,9 +198,9 @@ class DocumentOperationExecutor:
     def prepare_workspace(self) -> tuple[bool, str]:
         """Restore the exact trace workspace from the immutable image seed."""
         self._check_cancelled()
-        seed = shlex.quote(self.config.document_seed_dir)
-        workspace = shlex.quote(self.config.document_workspace_dir)
-        parent = shlex.quote(posixpath.dirname(self.config.document_workspace_dir))
+        seed = shlex.quote(self.cfg.document_seed_dir)
+        workspace = shlex.quote(self.cfg.document_workspace_dir)
+        parent = shlex.quote(posixpath.dirname(self.cfg.document_workspace_dir))
         command = (
             f"test -d {seed}/input && mkdir -p {parent} && "
             f"rm -rf {workspace} && cp -a {seed} {workspace} && mkdir -p {workspace}/output"
@@ -212,7 +213,7 @@ class DocumentOperationExecutor:
     def execute(self) -> tuple[bool, float, dict[str, float], bool, str]:
         """Run the recipe's single fixed phase path."""
         started = time.perf_counter()
-        self.deadline = time.monotonic() + self.config.document_task_timeout
+        self.deadline = time.monotonic() + self.cfg.document_task_timeout
         step_times: dict[str, float] = {}
         timed_out = False
 
@@ -274,7 +275,7 @@ class DocumentOperationExecutor:
             result = self.provider.exec(
                 self.state,
                 _build_write_command(path, arguments["content"]),
-                timeout=self._command_timeout(int(self.config.document_operation_timeout)),
+                timeout=self._command_timeout(int(self.cfg.document_operation_timeout)),
             )
             self._check_cancelled()
             if result.exit_code != 0:
@@ -284,10 +285,8 @@ class DocumentOperationExecutor:
             # Per-call timeouts are retained as source-trace metadata only. A
             # single benchmark timeout prevents old 10/60 second trace values
             # from killing valid work on constrained sandboxes.
-            timeout = self._command_timeout(int(self.config.document_operation_timeout))
-            command = arguments["command"].replace(
-                "__DOCUMENT_RECALC_TIMEOUT__", str(self.config.document_recalc_timeout)
-            )
+            timeout = self._command_timeout(int(self.cfg.document_operation_timeout))
+            command = arguments["command"].replace("__DOCUMENT_RECALC_TIMEOUT__", str(self.cfg.document_recalc_timeout))
             result = self.provider.exec(self.state, command, timeout=timeout)
         else:  # guarded by recipe validation
             return False, f"unsupported tool call: {function_name}"
@@ -298,7 +297,7 @@ class DocumentOperationExecutor:
         return True, ""
 
     def _validate_business_result(self) -> tuple[bool, str]:
-        report = posixpath.join(self.config.document_workspace_dir, "output", "business_verification.json")
+        report = posixpath.join(self.cfg.document_workspace_dir, "output", "business_verification.json")
         report_q = shlex.quote(report)
         command = (
             'python3 -c "import json,sys; d=json.load(open(sys.argv[1])); '
@@ -323,6 +322,8 @@ class DocumentWarmupRunner(TaskRunner):
 
     def __init__(self, ctx: RunContext) -> None:
         super().__init__(ctx)
+        assert isinstance(ctx.config.workflow_config, DocumentConfig), "document runner requires a DocumentConfig view"
+        self.cfg = ctx.config.workflow_config
 
     def do_run(self) -> None:
         # Gate on readiness. The provider's create_all runs the readiness check
@@ -332,15 +333,14 @@ class DocumentWarmupRunner(TaskRunner):
             self.state.warmup_done = True
             return
         try:
-            executor = DocumentOperationExecutor(self.state, self.config, self.provider)
+            executor = DocumentOperationExecutor(self.state, self.cfg, self.provider)
             ok, detail = executor.prepare_workspace()
             if not ok:
                 self.state.document_metrics.last_error = detail
                 logger.error(f"[Sandbox{self.state.index}] Document warmup failed: {detail}")
             else:
                 logger.info(
-                    f"[Sandbox{self.state.index}] "
-                    f"{self.config.document_case_kind.upper()} document warmup completed"
+                    f"[Sandbox{self.state.index}] " f"{self.cfg.document_case_kind.upper()} document warmup completed"
                 )
         except Exception as exc:
             self.state.document_metrics.last_error = str(exc)
@@ -354,7 +354,9 @@ class DocumentTaskRunner(TaskRunner):
 
     def __init__(self, ctx: RunContext) -> None:
         super().__init__(ctx)
-        self.executor = DocumentOperationExecutor(self.state, self.config, self.provider)
+        assert isinstance(ctx.config.workflow_config, DocumentConfig), "document runner requires a DocumentConfig view"
+        self.cfg = ctx.config.workflow_config
+        self.executor = DocumentOperationExecutor(self.state, self.cfg, self.provider)
 
     def do_run(self) -> None:
         if not self.state.ready:
@@ -371,7 +373,7 @@ class DocumentTaskRunner(TaskRunner):
             if self.consecutive_errors >= 3:
                 self.state.is_alive = False
                 break
-            self.stop_event.wait(random.uniform(self.config.document_interval_min, self.config.document_interval_max))
+            self.stop_event.wait(random.uniform(self.cfg.document_interval_min, self.cfg.document_interval_max))
 
 
 class DocumentRoundRunner(TaskRunner):
@@ -379,13 +381,15 @@ class DocumentRoundRunner(TaskRunner):
 
     def __init__(self, ctx: RunContext) -> None:
         super().__init__(ctx)
+        assert isinstance(ctx.config.workflow_config, DocumentConfig), "document runner requires a DocumentConfig view"
+        self.cfg = ctx.config.workflow_config
         self.round_id = ctx.round_id
 
     def do_run(self) -> None:
         if not self.state.ready or not self.state.is_alive:
             logger.info(f"[Sandbox{self.state.index}] Not ready/alive for document round")
             return
-        executor = DocumentOperationExecutor(self.state, self.config, self.provider)
+        executor = DocumentOperationExecutor(self.state, self.cfg, self.provider)
         success, latency, step_times, timed_out, detail = executor.execute()
         self.state.document_metrics.add(latency, success and not timed_out, timed_out, step_times)
         self.state.update_last_task_time(time.time())
@@ -394,7 +398,7 @@ class DocumentRoundRunner(TaskRunner):
             self.state.is_alive = False
         outcome = "completed" if success else f"failed: {detail[:160]}"
         logger.info(
-            f"[Sandbox{self.state.index}] {self.config.document_case_kind.upper()} "
+            f"[Sandbox{self.state.index}] {self.cfg.document_case_kind.upper()} "
             f"round {self.round_id} {outcome} ({latency:.2f}s)"
         )
 
@@ -428,6 +432,16 @@ class DocumentConfig(WorkflowConfigBase):
             document_interval_min=d.get("interval_min", 3.0),
             document_interval_max=d.get("interval_max", 10.0),
         )
+
+    @property
+    def document_seed_dir(self) -> str:
+        """In-sandbox seed dir for the active document case kind."""
+        return document_scene_layout(self.document_case_kind)["seed_dir"]
+
+    @property
+    def document_workspace_dir(self) -> str:
+        """In-sandbox workspace dir for the active document case kind."""
+        return document_scene_layout(self.document_case_kind)["workspace_dir"]
 
     def validate(self, kernel_config: KernelConfig) -> None:
         """No cross-section checks today (document knobs are self-contained)."""

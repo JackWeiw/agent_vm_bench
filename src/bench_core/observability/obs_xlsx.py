@@ -315,6 +315,7 @@ class XlsxReportRenderer:
         ws = wb.create_sheet("Overview")
         obs = self.obs
         cfg = obs.config
+        rcfg = cfg.workflow_config
         total_success = sum(s.replay_metrics.success_count for s in obs.states.values())
         total_failed = sum(s.replay_metrics.failed_count for s in obs.states.values())
         na = "n/a"
@@ -323,9 +324,9 @@ class XlsxReportRenderer:
         _overview_banner(ws, "Run")
         for name, value in (
             ("workflow_type", cfg.workflow_type),
-            ("replay_mode", cfg.replay_mode),
+            ("replay_mode", rcfg.replay_mode),
             ("total_count", cfg.total_count),
-            ("running_concurrency", cfg.replay_running_concurrency),
+            ("running_concurrency", rcfg.replay_running_concurrency),
             ("test_duration", cfg.test_duration),
             ("wall_sec", obs.wall_sec),
             ("total_steps", obs.total_steps),
@@ -587,7 +588,7 @@ class XlsxReportRenderer:
         # Trajectory-mode-only: ephemeral create/kill lifecycle (not in any other
         # sheet). slot_held is intentionally omitted -- it is already pooled in
         # the Lifecycle overhead sheet.
-        if getattr(obs.config, "replay_mode", None) == "trajectory" and any(
+        if obs.config.workflow_config.replay_mode == "trajectory" and any(
             s.replay_metrics.create_secs for s in obs.states.values()
         ):
             if wrote_profile:

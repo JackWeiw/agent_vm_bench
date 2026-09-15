@@ -133,6 +133,8 @@ class ReplayBaseRunner(TaskRunner):
 
     def __init__(self, ctx: RunContext) -> None:
         super().__init__(ctx)
+        assert isinstance(ctx.config.workflow_config, ReplayConfig), "replay runner requires a ReplayConfig view"
+        self.cfg = ctx.config.workflow_config
         self.series = ctx.series
         self.scanner = ctx.scanner
         self.admission = ctx.admission
@@ -200,7 +202,7 @@ class ReplayBaseRunner(TaskRunner):
         # otherwise the decomposition column reads 0 while interaction_total
         # carries hundreds of seconds of unattributed delay (observed 1:1
         # lifecycle: interaction_total=568, natural_delay=0).
-        natural_delay_sec = step.delay_time_sec * self.config.replay_delay_scale
+        natural_delay_sec = step.delay_time_sec * self.cfg.replay_delay_scale
         capacity_wait_sec = 0.0
         slot_acquired_at = 0.0
         resume_rate_pacing_wait_sec = 0.0
@@ -214,7 +216,7 @@ class ReplayBaseRunner(TaskRunner):
         if (
             self.admission is not None
             and self.admission.qps is not None
-            and self.config.replay_mode in ("lifecycle", "trajectory")
+            and self.cfg.replay_mode in ("lifecycle", "trajectory")
         ):
             resume_rate_pacing_wait_sec = self.admission.qps.time_wait("resume")
 
@@ -256,7 +258,7 @@ class ReplayBaseRunner(TaskRunner):
 
             # Ready probe (post-resume, not QPS-gated; config-gated + lifecycle/trajectory)
             resume_ready_wait_sec = 0.0
-            if getattr(self.config, "replay_ready_probe", True) and self.config.replay_mode in (
+            if self.cfg.replay_ready_probe and self.cfg.replay_mode in (
                 "lifecycle",
                 "trajectory",
             ):
@@ -395,8 +397,8 @@ class ReplayBaseRunner(TaskRunner):
         prev = self._prev_pause_end_monotonic
         if prev is None:
             return None
-        extra = self.config.replay_pause_duration_sec or 0.0
-        return prev + step.delay_time_sec * self.config.replay_delay_scale + extra
+        extra = self.cfg.replay_pause_duration_sec or 0.0
+        return prev + step.delay_time_sec * self.cfg.replay_delay_scale + extra
 
     # --- lifecycle hooks (lifecycle/trajectory: real call + G3 retry; exec_only: no-op) ---
     def _resume(self) -> tuple[float, float, float]:
@@ -410,7 +412,7 @@ class ReplayBaseRunner(TaskRunner):
         first element is always 0 here (the pre-lease caller owns it).
         exec_only: no-op so the baseline (resume ~= 0) stays comparable.
         """
-        if self.config.replay_mode not in ("lifecycle", "trajectory"):
+        if self.cfg.replay_mode not in ("lifecycle", "trajectory"):
             return 0.0, 0.0, 0.0
         return self._lifecycle_call_with_retry("resume", lambda: self.provider.resume(self.state), rate_wait=False)
 
@@ -424,7 +426,7 @@ class ReplayBaseRunner(TaskRunner):
         loop, never re-paid per attempt. Returns
         ``(rate_pacing_wait_sec, inflight_wait_sec, api_sec)``. exec_only: no-op.
         """
-        if self.config.replay_mode not in ("lifecycle", "trajectory"):
+        if self.cfg.replay_mode not in ("lifecycle", "trajectory"):
             return 0.0, 0.0, 0.0
         return self._lifecycle_call_with_retry("pause", lambda: self.provider.pause(self.state), rate_wait=True)
 
@@ -459,7 +461,7 @@ class ReplayBaseRunner(TaskRunner):
         -- no scan, no I/O wait here). Without a scanner, falls back to the
         synchronous incremental scan + series write.
         """
-        if self.config.replay_mode not in ("lifecycle", "trajectory"):
+        if self.cfg.replay_mode not in ("lifecycle", "trajectory"):
             return
         if not isinstance(self.provider, SnapshotSizeCapable):
             return
@@ -501,7 +503,7 @@ class ReplayBaseRunner(TaskRunner):
         bypasses the ``except Exception`` retry path, so no ``retry_exhausted``
         is emitted for a shutdown.
         """
-        retries = getattr(self.config, "replay_lifecycle_retries", 0)
+        retries = self.cfg.replay_lifecycle_retries
         rate_pacing_wait = 0.0
         if rate_wait and self.admission is not None and self.admission.qps is not None:
             rate_pacing_wait = self.admission.qps.time_wait(operation)
@@ -618,7 +620,7 @@ class ReplayBaseRunner(TaskRunner):
         a sandbox ready for ``resume``; whether resume is a no-op or a real
         restore is provider-defined and out of scope for the runner).
         """
-        if self.config.replay_mode == "lifecycle" and not self.state.lifecycle_paused:
+        if self.cfg.replay_mode == "lifecycle" and not self.state.lifecycle_paused:
             pause_start_ts = time.time()
             t0 = time.perf_counter()
             self.provider.pause(self.state)
@@ -677,16 +679,16 @@ class ReplayBaseRunner(TaskRunner):
                 return self.provider.exec(
                     self.state,
                     step.action,
-                    cwd=self.config.replay_workdir or None,
-                    env=self.config.replay_env or None,
-                    timeout=self.config.replay_action_timeout,
+                    cwd=self.cfg.replay_workdir or None,
+                    env=self.cfg.replay_env or None,
+                    timeout=self.cfg.replay_action_timeout,
                 )
         return self.provider.exec(
             self.state,
             step.action,
-            cwd=self.config.replay_workdir or None,
-            env=self.config.replay_env or None,
-            timeout=self.config.replay_action_timeout,
+            cwd=self.cfg.replay_workdir or None,
+            env=self.cfg.replay_env or None,
+            timeout=self.cfg.replay_action_timeout,
         )
 
     # --- shared metric recording ---
@@ -738,7 +740,7 @@ class ReplayBaseRunner(TaskRunner):
 
     def _sleep_delay(self, step: ReplayStep) -> None:
         """Honour the recorded think-time gap, scaled. First step's delay applies."""
-        gap = step.delay_time_sec * self.config.replay_delay_scale
+        gap = step.delay_time_sec * self.cfg.replay_delay_scale
         if gap > 0 and not self.stop_event.is_set():
             self.stop_event.wait(gap)
 
@@ -754,7 +756,7 @@ class ReplayBaseRunner(TaskRunner):
         """
         if self._launch_pacer is None:
             return
-        interval = getattr(self.config, "replay_launch_interval_sec", 0.0) or 0.0
+        interval = self.cfg.replay_launch_interval_sec or 0.0
         if interval <= 0:
             return
         wait_until = self._launch_pacer.claim_turn(interval)
@@ -818,7 +820,7 @@ class ReplayBaseRunner(TaskRunner):
                         )
                     create_sec = time.perf_counter() - t0
                     # Post-create ready probe (lifecycle concern; not QPS-gated).
-                    if getattr(self.config, "replay_ready_probe", True) and self.config.replay_mode in (
+                    if self.cfg.replay_ready_probe and self.cfg.replay_mode in (
                         "lifecycle",
                         "trajectory",
                     ):
@@ -882,7 +884,7 @@ class ReplayBaseRunner(TaskRunner):
                     trajectory_id=traj.instance_id,
                 )
                 if sr.exit_code != 0 or timed_out:
-                    if self.config.replay_stop_on_error:
+                    if self.cfg.replay_stop_on_error:
                         completed = False
                         break
             # Mirror the non-trajectory paths: a trajectory whose every step
@@ -1079,7 +1081,7 @@ class ReplayTaskRunner(ReplayBaseRunner):
 
         logger.info(f"[Sandbox{self.state.index}] Replay task runner started ({len(pool)} trajectories)")
 
-        if self.config.replay_mode == "trajectory":
+        if self.cfg.replay_mode == "trajectory":
             # Shared trajectory queue: cycle the pool to total_count trajectories.
             # _run_trajectory owns per-trajectory lifecycle setup (create/kill);
             # _init_lifecycle is a no-op in trajectory mode (skips initial pause),
@@ -1160,7 +1162,7 @@ class ReplayTaskRunner(ReplayBaseRunner):
                     self.state.is_alive = False
                     logger.warning(f"[Sandbox{self.state.index}] Marked offline (3 consecutive replay failures)")
                     return
-                if self.config.replay_stop_on_error:
+                if self.cfg.replay_stop_on_error:
                     aborted = True
                     break
             else:
@@ -1197,7 +1199,7 @@ class ReplayRoundRunner(ReplayBaseRunner):
             logger.info(f"[Sandbox{self.state.index}] Replay pool empty; skipping round {self.round_id}")
             return
 
-        if self.config.replay_mode == "trajectory":
+        if self.cfg.replay_mode == "trajectory":
             # Trajectory mode: cycle the WHOLE pool (not affinity-filtered).
             # Each trajectory brings its own template via create_one(template=).
             idx = (self.state.index + self.round_id) % len(pool)
@@ -1257,7 +1259,7 @@ class ReplayRoundRunner(ReplayBaseRunner):
                 trajectory_complete=False,
                 trajectory_id=traj.instance_id,
             )
-            if (sr.exit_code != 0 or timed_out) and self.config.replay_stop_on_error:
+            if (sr.exit_code != 0 or timed_out) and self.cfg.replay_stop_on_error:
                 aborted = True
                 break
 
@@ -1273,7 +1275,7 @@ class ReplayConfig(WorkflowConfigBase):
     knobs) and the ``replay_mode`` allowed-set live in ``validate`` -- the sole view
     with real cross-section checks (``running_concurrency <= total_count`` reads
     ``kernel_config``). The ``exec_only -> ready_probe=False`` normalization lives
-    in ``from_raw`` (mirrors ``KernelConfig.__post_init__`` Block 8)."""
+    in ``__post_init__``."""
 
     replay_trajectory_dir: str = "trajectories"
     replay_trajectory_glob: str = "*.replay.json"
@@ -1292,6 +1294,13 @@ class ReplayConfig(WorkflowConfigBase):
     replay_launch_interval_sec: float = 0.0
     replay_pause_duration_sec: float = 0.0
 
+    def __post_init__(self) -> None:
+        # exec_only has no lifecycle calls; the ready probe is meaningless there.
+        # Fires for both from_raw and direct construction so the invariant holds
+        # without depending on the parsing path.
+        if self.replay_mode == "exec_only":
+            self.replay_ready_probe = False
+
     @classmethod
     def migrate(cls, raw: dict) -> dict:
         """Forward-compat: no legacy ``replay:`` renames yet."""
@@ -1300,7 +1309,7 @@ class ReplayConfig(WorkflowConfigBase):
     @classmethod
     def from_raw(cls, raw: dict) -> ReplayConfig:
         r = raw or {}
-        view = cls(
+        return cls(
             replay_trajectory_dir=r.get("trajectory_dir", "trajectories"),
             replay_trajectory_glob=r.get("trajectory_glob", "*.replay.json"),
             replay_template_manifest=r.get("template_manifest"),
@@ -1318,11 +1327,6 @@ class ReplayConfig(WorkflowConfigBase):
             replay_launch_interval_sec=r.get("launch_interval_sec", 0.0),
             replay_pause_duration_sec=r.get("pause_duration_sec", 0.0),
         )
-        # Block 8: exec_only has no lifecycle calls; the ready probe is meaningless
-        # there. Mirrors KernelConfig.__post_init__.
-        if view.replay_mode == "exec_only":
-            view.replay_ready_probe = False
-        return view
 
     def validate(self, kernel_config: KernelConfig) -> None:
         """Range checks + the sole cross-section (running_concurrency <= total_count)."""

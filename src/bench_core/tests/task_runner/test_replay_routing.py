@@ -15,7 +15,7 @@ from pathlib import Path
 from bench_core.config import KernelConfig
 from bench_core.payload.replay_payload import ReplayStep, Trajectory, reset_pool_cache
 from bench_core.schemas import BenchSandbox, ReplayMetrics
-from bench_core.task_runner.replay import ReplayRoundRunner, ReplayTaskRunner
+from bench_core.task_runner.replay import ReplayConfig, ReplayRoundRunner, ReplayTaskRunner
 from bench_core.workflow_registry import RunContext
 from env_provider import SandboxInstance
 from env_provider.fake import FakeProvider
@@ -55,8 +55,8 @@ def _seed(tmp_path: Path, entries: list[tuple[str, str, str | None]]) -> KernelC
         if tmpl is not None:
             manifest[name] = tmpl
             has_any_template = True
-    kwargs: dict = dict(
-        workflow_type="replay",
+    shared: dict = dict(workflow_type="replay")
+    replay: dict = dict(
         replay_trajectory_dir=str(traj_dir),
         replay_delay_scale=0.0,
         replay_stop_on_error=False,
@@ -64,8 +64,8 @@ def _seed(tmp_path: Path, entries: list[tuple[str, str, str | None]]) -> KernelC
     if has_any_template:
         m = tmp_path / "manifest.json"
         m.write_text(json.dumps(manifest), encoding="utf-8")
-        kwargs["replay_template_manifest"] = str(m)
-    return KernelConfig(**kwargs)
+        replay["replay_template_manifest"] = str(m)
+    return KernelConfig(**shared, workflow_config=ReplayConfig(**replay))
 
 
 # ---------------------------------------------------------------------------
@@ -193,8 +193,10 @@ def test_legacy_no_manifest_routes_whole_pool(tmp_path, monkeypatch):
     )
     cfg = KernelConfig(
         workflow_type="replay",
-        replay_trajectory_dir=str(traj_dir),
-        replay_delay_scale=0.0,
+        workflow_config=ReplayConfig(
+            replay_trajectory_dir=str(traj_dir),
+            replay_delay_scale=0.0,
+        ),
     )
     stop = threading.Event()
     provider = FakeProvider(count=1)
@@ -271,7 +273,10 @@ def test_trajectory_create_one_passes_template(tmp_path, monkeypatch):
 
     provider.create_one = _spy_create_one  # type: ignore[method-assign]
 
-    cfg = KernelConfig(workflow_type="replay", replay_mode="trajectory", replay_delay_scale=0.0)
+    cfg = KernelConfig(
+        workflow_type="replay",
+        workflow_config=ReplayConfig(replay_mode="trajectory", replay_delay_scale=0.0),
+    )
     state = _sandbox(0, "swb-a")
     state.ready = True
     stop = threading.Event()
@@ -313,7 +318,10 @@ def test_trajectory_create_one_none_template(tmp_path, monkeypatch):
 
     provider.create_one = _spy_create_one  # type: ignore[method-assign]
 
-    cfg = KernelConfig(workflow_type="replay", replay_mode="trajectory", replay_delay_scale=0.0)
+    cfg = KernelConfig(
+        workflow_type="replay",
+        workflow_config=ReplayConfig(replay_mode="trajectory", replay_delay_scale=0.0),
+    )
     state = _sandbox(0, None)
     state.ready = True
     stop = threading.Event()
@@ -349,7 +357,7 @@ def test_replay_report_renders_orphan_skipped_line():
     """
     from bench_core.observability.stats_collector import StatsCollector
 
-    cfg = KernelConfig(workflow_type="replay", replay_delay_scale=0.0)
+    cfg = KernelConfig(workflow_type="replay", workflow_config=ReplayConfig(replay_delay_scale=0.0))
     state_a = BenchSandbox(id="a", index=0, workflow_type="replay")
     state_b = BenchSandbox(id="b", index=1, workflow_type="replay")
     state_a.replay_metrics.record_orphan_skip()
@@ -373,7 +381,7 @@ def test_replay_report_omits_orphan_skipped_when_zero():
     conditional-render pattern used for ``initial_pauses``)."""
     from bench_core.observability.stats_collector import StatsCollector
 
-    cfg = KernelConfig(workflow_type="replay", replay_delay_scale=0.0)
+    cfg = KernelConfig(workflow_type="replay", workflow_config=ReplayConfig(replay_delay_scale=0.0))
     state = BenchSandbox(id="a", index=0, workflow_type="replay")
 
     sc = StatsCollector(cfg, {0: state}, "fake")

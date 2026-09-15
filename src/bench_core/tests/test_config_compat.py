@@ -6,8 +6,10 @@ This pins current behavior so Phase 2's per-workflow config-field moves onto typ
 ``WorkflowConfigBase`` views cannot silently shift a resolved value: same YAML in,
 identical resolved config out.
 
-When Phase 2 moves a field off ``KernelConfig`` onto a per-workflow view, update the
-expected dict HERE to read from the new view (the test then re-pins the new shape).
+P2-2 moved the per-workflow fields off ``KernelConfig`` onto the typed views, so the
+golden dict splits each entry into ``shared`` (read off ``cfg``) and ``view`` (read
+off ``cfg.workflow_config``). ``test_moved_fields_are_gone_from_kernel_config`` pins
+that the moved names no longer surface on ``KernelConfig`` (zombie-field guard).
 """
 from __future__ import annotations
 
@@ -32,162 +34,175 @@ def _load(name: str) -> KernelConfig:
     return KernelConfig.from_raw(raw)
 
 
-# Each entry: the resolved fields that today live flat on KernelConfig, pinned to the
-# YAML's stated values. Shared fields + the workflow-specific field set per config.
+# Each entry: ``shared`` = resolved kernel fields (read off ``cfg``); ``view`` =
+# resolved per-workflow fields (read off ``cfg.workflow_config``). ``warmup_only``
+# stays shared (D3); the warmup URLs/loops/delay moved onto BrowserConfig.
 EXPECTED = {
     "browser.yaml": dict(
-        workflow_type="browser",
-        total_count=100,
-        create_batch_size=20,
-        create_batch_interval=3,
-        task_batch_size=10,
-        task_batch_interval=5,
-        browser_urls=["http://192.168.110.10:8080/Hubble_Space_Telescope.html"],
-        browser_timeout=200,
-        browser_interval_min=5,
-        browser_interval_max=15,
-        warmup_loops=1,
-        warmup_delay=5,
-        warmup_only=False,
-        test_duration=160,
-        benchmark_mode="round_robin",
-        round_size=5,
-        round_count=5,
-        round_interval=5,
-        output_dir="results/browser",
-        filename_prefix="browser_bench",
-        report_format="txt",
+        shared=dict(
+            workflow_type="browser",
+            total_count=100,
+            create_batch_size=20,
+            create_batch_interval=3,
+            task_batch_size=10,
+            task_batch_interval=5,
+            warmup_only=False,
+            test_duration=160,
+            benchmark_mode="round_robin",
+            round_size=5,
+            round_count=5,
+            round_interval=5,
+            output_dir="results/browser",
+            filename_prefix="browser_bench",
+            report_format="txt",
+        ),
+        view=dict(
+            browser_urls=["http://192.168.110.10:8080/Hubble_Space_Telescope.html"],
+            browser_timeout=200,
+            browser_interval_min=5,
+            browser_interval_max=15,
+            warmup_loops=1,
+            warmup_delay=5,
+        ),
     ),
     "docker.yaml": dict(
-        workflow_type="browser",
-        total_count=10,
-        create_batch_size=5,
-        create_batch_interval=10,
-        browser_urls=["http://192.168.110.10:8080/Weibo.html"],
-        browser_timeout=200,
-        browser_interval_min=5,
-        browser_interval_max=15,
-        # No warmup_urls block -> defaults (empty list, loops=2, delay=10).
-        warmup_urls=[],
-        warmup_loops=2,
-        warmup_delay=10,
-        test_duration=160,
-        benchmark_mode="fixed",
-        round_size=5,
-        output_dir="results/docker",
-        filename_prefix="docker_bench",
-        report_format="txt",
+        shared=dict(
+            workflow_type="browser",
+            total_count=10,
+            create_batch_size=5,
+            create_batch_interval=10,
+            test_duration=160,
+            benchmark_mode="fixed",
+            round_size=5,
+            output_dir="results/docker",
+            filename_prefix="docker_bench",
+            report_format="txt",
+        ),
+        view=dict(
+            browser_urls=["http://192.168.110.10:8080/Weibo.html"],
+            browser_timeout=200,
+            browser_interval_min=5,
+            browser_interval_max=15,
+            # No warmup_urls block -> defaults (empty list, loops=2, delay=10).
+            warmup_urls=[],
+            warmup_loops=2,
+            warmup_delay=10,
+        ),
     ),
     "coding-ts.yaml": dict(
-        workflow_type="coding",
-        total_count=10,
-        coding_language="ts",
-        coding_project_dir="/opt/coding-bench",
-        coding_verify_cmd="npx tsx /tmp/bench_verify.mjs",
-        coding_verify_timeout=120,
-        coding_verify_repeat=3,
-        coding_skip_verify=False,
-        coding_interval_min=2.0,
-        coding_interval_max=10.0,
-        benchmark_mode="round_robin",
-        round_count=20,
-        round_interval=3,
-        output_dir="results/coding/ts",
-        filename_prefix="coding_ts_bench",
+        shared=dict(
+            workflow_type="coding",
+            total_count=10,
+            benchmark_mode="round_robin",
+            round_count=20,
+            round_interval=3,
+            output_dir="results/coding/ts",
+            filename_prefix="coding_ts_bench",
+        ),
+        view=dict(
+            coding_language="ts",
+            coding_project_dir="/opt/coding-bench",
+            coding_verify_cmd="npx tsx /tmp/bench_verify.mjs",
+            coding_verify_timeout=120,
+            coding_verify_repeat=3,
+            coding_skip_verify=False,
+            coding_interval_min=2.0,
+            coding_interval_max=10.0,
+        ),
     ),
     "coding-go.yaml": dict(
-        workflow_type="coding",
-        total_count=10,
-        coding_language="go",
-        coding_verify_cmd="go run /tmp/bench_verify.go",
-        coding_verify_repeat=1,
-        coding_interval_min=2.0,
-        coding_interval_max=10.0,
-        output_dir="results/coding/go",
-        filename_prefix="coding_go_bench",
+        shared=dict(
+            workflow_type="coding",
+            total_count=10,
+            output_dir="results/coding/go",
+            filename_prefix="coding_go_bench",
+        ),
+        view=dict(
+            coding_language="go",
+            coding_verify_cmd="go run /tmp/bench_verify.go",
+            coding_verify_repeat=1,
+            coding_interval_min=2.0,
+            coding_interval_max=10.0,
+        ),
     ),
     "coding-python.yaml": dict(
-        workflow_type="coding",
-        total_count=10,
-        coding_language="python",
-        coding_verify_cmd="python3 /tmp/bench_verify.py",
-        coding_verify_repeat=1,
-        output_dir="results/coding/python",
-        filename_prefix="coding_python_bench",
+        shared=dict(
+            workflow_type="coding",
+            total_count=10,
+            output_dir="results/coding/python",
+            filename_prefix="coding_python_bench",
+        ),
+        view=dict(
+            coding_language="python",
+            coding_verify_cmd="python3 /tmp/bench_verify.py",
+            coding_verify_repeat=1,
+        ),
     ),
     "replay.yaml": dict(
-        workflow_type="replay",
-        total_count=384,
-        replay_trajectory_dir="trajectories/swe-bench",
-        replay_trajectory_glob="*.replay.json",
-        replay_workdir="/",
-        replay_action_timeout=10,
-        replay_delay_scale=1.0,
-        replay_stop_on_error=False,
-        replay_mode="lifecycle",
-        replay_running_concurrency=384,
-        replay_ready_probe=True,  # lifecycle keeps the probe
-        replay_lifecycle_retries=2,
-        replay_pause_duration_sec=0.0,
-        benchmark_mode="round_robin",
-        round_size=384,
-        round_count=1,
-        round_interval=0,
-        output_dir="results/replay",
-        filename_prefix="replay_bench",
-        report_format="both",
+        shared=dict(
+            workflow_type="replay",
+            total_count=384,
+            benchmark_mode="round_robin",
+            round_size=384,
+            round_count=1,
+            round_interval=0,
+            output_dir="results/replay",
+            filename_prefix="replay_bench",
+            report_format="both",
+        ),
+        view=dict(
+            replay_trajectory_dir="trajectories/swe-bench",
+            replay_trajectory_glob="*.replay.json",
+            replay_workdir="/",
+            replay_action_timeout=10,
+            replay_delay_scale=1.0,
+            replay_stop_on_error=False,
+            replay_mode="lifecycle",
+            replay_running_concurrency=384,
+            replay_ready_probe=True,  # lifecycle keeps the probe
+            replay_lifecycle_retries=2,
+            replay_pause_duration_sec=0.0,
+        ),
     ),
     "replay-exec-only.yaml": dict(
-        workflow_type="replay",
-        total_count=384,
-        replay_mode="exec_only",
-        replay_action_timeout=300,
-        replay_running_concurrency=384,
-        replay_control_plane_qps=1000.0,
-        replay_control_plane_inflight_cap=1024,
-        # __post_init__ force-disables the ready probe in exec_only.
-        replay_ready_probe=False,
-        replay_lifecycle_retries=2,
-        output_dir="results/replay-exec-only",
-        filename_prefix="replay_exec_only_bench",
-        report_format="both",
+        shared=dict(
+            workflow_type="replay",
+            total_count=384,
+            output_dir="results/replay-exec-only",
+            filename_prefix="replay_exec_only_bench",
+            report_format="both",
+        ),
+        view=dict(
+            replay_mode="exec_only",
+            replay_action_timeout=300,
+            replay_running_concurrency=384,
+            replay_control_plane_qps=1000.0,
+            replay_control_plane_inflight_cap=1024,
+            # ReplayConfig.__post_init__ force-disables the ready probe in exec_only.
+            replay_ready_probe=False,
+            replay_lifecycle_retries=2,
+        ),
     ),
     "replay-trajectory.yaml": dict(
-        workflow_type="replay",
-        total_count=384,
-        replay_mode="trajectory",
-        replay_action_timeout=300,
-        replay_running_concurrency=384,
-        replay_control_plane_qps=1000.0,
-        replay_control_plane_inflight_cap=1024,
-        replay_launch_interval_sec=0.5,
-        replay_ready_probe=True,
-        output_dir="results/replay-trajectory",
-        filename_prefix="replay_trajectory_bench",
-        report_format="both",
+        shared=dict(
+            workflow_type="replay",
+            total_count=384,
+            output_dir="results/replay-trajectory",
+            filename_prefix="replay_trajectory_bench",
+            report_format="both",
+        ),
+        view=dict(
+            replay_mode="trajectory",
+            replay_action_timeout=300,
+            replay_running_concurrency=384,
+            replay_control_plane_qps=1000.0,
+            replay_control_plane_inflight_cap=1024,
+            replay_launch_interval_sec=0.5,
+            replay_ready_probe=True,
+        ),
     ),
 }
 
-
-@pytest.mark.parametrize("name", sorted(EXPECTED))
-def test_config_resolves_to_golden_values(name: str):
-    cfg = _load(name)
-    for field_name, expected in EXPECTED[name].items():
-        actual = getattr(cfg, field_name)
-        assert actual == expected, f"{name}: {field_name} = {actual!r}, expected {expected!r}"
-
-
-@pytest.mark.parametrize("name", ["browser.yaml", "coding-ts.yaml", "coding-go.yaml", "coding-python.yaml"])
-def test_coding_source_files_resolved_by_post_init(name: str):
-    """coding_source_files omitted -> __post_init__ fills the canonical pairs."""
-    cfg = _load(name)
-    assert cfg.coding_source_files is not None and len(cfg.coding_source_files) > 0
-
-
-# --- Phase 2 (P2-1): typed-view seam ---------------------------------------
-# The view is built ALONGSIDE the flat fields (dual population, behavior-identical).
-# These prove view == flat for every shipped YAML, then pin the contract's failure
-# modes. P2-2 flips the equivalence to read from the view (flat fields removed).
 
 _VIEW_BY_WORKFLOW = {
     "browser": BrowserConfig,
@@ -198,22 +213,84 @@ _VIEW_BY_WORKFLOW = {
 
 
 @pytest.mark.parametrize("name", sorted(EXPECTED))
-def test_workflow_config_view_matches_flat_fields(name: str):
-    """Every typed-view field == the flat KernelConfig field (dual population).
-
-    Iterates ``dataclasses.fields(view)`` so adding a view field auto-extends this
-    (no manual list to forget). ``warmup_only`` is shared (D3), so it is not a
-    BrowserConfig field and is correctly absent here."""
+def test_config_resolves_to_golden_values(name: str):
     cfg = _load(name)
-    expected_cls = _VIEW_BY_WORKFLOW[cfg.workflow_type]
-    assert isinstance(cfg.workflow_config, expected_cls), (
-        f"{name}: workflow_config is {type(cfg.workflow_config).__name__}, " f"expected {expected_cls.__name__}"
-    )
-    view = cfg.workflow_config
-    for f in fields(view):
-        assert getattr(view, f.name) == getattr(
-            cfg, f.name
-        ), f"{name}: view.{f.name}={getattr(view, f.name)!r} != flat {getattr(cfg, f.name)!r}"
+    assert isinstance(cfg.workflow_config, _VIEW_BY_WORKFLOW[cfg.workflow_type])
+    for field_name, expected in EXPECTED[name]["shared"].items():
+        actual = getattr(cfg, field_name)
+        assert actual == expected, f"{name}: {field_name} = {actual!r}, expected {expected!r}"
+    for field_name, expected in EXPECTED[name]["view"].items():
+        actual = getattr(cfg.workflow_config, field_name)
+        assert actual == expected, f"{name}: view.{field_name} = {actual!r}, expected {expected!r}"
+
+
+@pytest.mark.parametrize("name", ["coding-ts.yaml", "coding-go.yaml", "coding-python.yaml"])
+def test_coding_source_files_resolved_by_post_init(name: str):
+    """coding_source_files omitted -> CodingConfig.__post_init__ fills the canonical pairs."""
+    cfg = _load(name)
+    assert isinstance(cfg.workflow_config, CodingConfig)
+    assert cfg.workflow_config.coding_source_files is not None
+    assert len(cfg.workflow_config.coding_source_files) > 0
+
+
+# P2-2: the per-workflow fields moved off KernelConfig onto the typed views. A
+# forgotten flat def (zombie) surfaces here as a leftover attribute on cfg.
+_MOVED_FLAT_FIELDS = (
+    "browser_urls",
+    "browser_timeout",
+    "browser_interval_min",
+    "browser_interval_max",
+    "warmup_urls",
+    "warmup_loops",
+    "warmup_delay",
+    "coding_project_dir",
+    "coding_language",
+    "coding_source_files",
+    "coding_verify_cmd",
+    "coding_verify_timeout",
+    "coding_skip_verify",
+    "coding_verify_repeat",
+    "coding_interval_min",
+    "coding_interval_max",
+    "document_case_kind",
+    "document_recipe_path",
+    "document_operation_timeout",
+    "document_recalc_timeout",
+    "document_task_timeout",
+    "document_interval_min",
+    "document_interval_max",
+    "document_seed_dir",
+    "document_workspace_dir",
+    "replay_trajectory_dir",
+    "replay_trajectory_glob",
+    "replay_template_manifest",
+    "replay_workdir",
+    "replay_env",
+    "replay_action_timeout",
+    "replay_delay_scale",
+    "replay_stop_on_error",
+    "replay_mode",
+    "replay_running_concurrency",
+    "replay_control_plane_qps",
+    "replay_control_plane_inflight_cap",
+    "replay_ready_probe",
+    "replay_lifecycle_retries",
+    "replay_launch_interval_sec",
+    "replay_pause_duration_sec",
+)
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED))
+def test_moved_fields_are_gone_from_kernel_config(name: str):
+    """P2-2: the per-workflow fields moved off KernelConfig onto the views.
+
+    A zombie flat def (forgotten deletion) surfaces here as a leftover attribute.
+    ``warmup_only`` stays shared (D3), so it is the one name asserted present.
+    """
+    cfg = _load(name)
+    for field_name in _MOVED_FLAT_FIELDS:
+        assert not hasattr(cfg, field_name), f"{name}: KernelConfig still carries {field_name}"
+    assert hasattr(cfg, "warmup_only")
 
 
 def test_document_config_from_inline_dict():
@@ -229,8 +306,6 @@ def test_document_config_from_inline_dict():
     assert cfg.workflow_config.document_operation_timeout == 1200
     assert cfg.workflow_config.document_recalc_timeout == 700
     assert cfg.workflow_config.document_task_timeout == 1800  # default
-    for f in fields(cfg.workflow_config):
-        assert getattr(cfg.workflow_config, f.name) == getattr(cfg, f.name)
 
 
 def test_illegal_workflow_type_raises():
@@ -241,10 +316,10 @@ def test_illegal_workflow_type_raises():
 
 
 def test_replay_invalid_qps_raises():
-    """Invalid per-workflow value raises the ValueError family pre- and post-view
-    (P2-1: flat __post_init__ fires; P2-2: view.validate fires -- both ValueError)."""
+    """Invalid per-workflow value raises WorkflowConfigError (ReplayConfig.validate fires
+    at from_raw; P2-2 moved the range checks off the deleted flat __post_init__)."""
     raw = {"workflow_type": "replay", "sandbox": {"total_count": 10}, "replay": {"control_plane_qps": 0}}
-    with pytest.raises(ValueError, match="replay_control_plane_qps"):
+    with pytest.raises(WorkflowConfigError, match="replay_control_plane_qps"):
         KernelConfig.from_raw(raw)
 
 

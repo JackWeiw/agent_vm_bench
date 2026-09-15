@@ -7,6 +7,7 @@ openpyxl = pytest.importorskip("openpyxl", reason="openpyxl is a core dep")
 from openpyxl import load_workbook  # noqa: E402
 
 from bench_core.config import KernelConfig  # noqa: E402
+from bench_core.task_runner.replay import ReplayConfig  # noqa: E402
 from bench_core.observability.obs_xlsx import XlsxReportRenderer  # noqa: E402
 from bench_core.observability.replay_obs import ReplayObservability  # noqa: E402
 from bench_core.schemas import BenchSandbox, ReplayMetrics  # noqa: E402
@@ -35,10 +36,9 @@ def _seeded_observability(*, replay_mode="trajectory", with_retry=True) -> tuple
     state.replay_metrics = m
     cfg = KernelConfig(
         workflow_type="replay",
-        replay_mode=replay_mode,
         total_count=2,
-        replay_running_concurrency=1,
         test_duration=300,
+        workflow_config=ReplayConfig(replay_mode=replay_mode, replay_running_concurrency=1),
     )
     obs = ReplayObservability(
         cfg,
@@ -231,9 +231,9 @@ def test_renderer_accepts_series_path_and_draws_per_step_linechart(tmp_path):
 
     obs = MagicMock()
     obs.config.workflow_type = "replay"
-    obs.config.replay_mode = "lifecycle"
+    obs.config.workflow_config.replay_mode = "lifecycle"
     obs.config.total_count = 1
-    obs.config.replay_running_concurrency = 1
+    obs.config.workflow_config.replay_running_concurrency = 1
     obs.config.test_duration = 10
     obs.wall_sec = 10.0
     obs.total_steps = 1
@@ -282,9 +282,9 @@ def test_per_step_linechart_references_all_data_rows(tmp_path):
 
     obs = MagicMock()
     obs.config.workflow_type = "replay"
-    obs.config.replay_mode = "lifecycle"
+    obs.config.workflow_config.replay_mode = "lifecycle"
     obs.config.total_count = 1
-    obs.config.replay_running_concurrency = 1
+    obs.config.workflow_config.replay_running_concurrency = 1
     obs.config.test_duration = 10
     obs.wall_sec = 10.0
     obs.total_steps = 3
@@ -353,9 +353,9 @@ def _mock_obs_with_n_steps(n: int, replay_mode: str = "lifecycle"):
 
     obs = MagicMock()
     obs.config.workflow_type = "replay"
-    obs.config.replay_mode = replay_mode
+    obs.config.workflow_config.replay_mode = replay_mode
     obs.config.total_count = 1
-    obs.config.replay_running_concurrency = 1
+    obs.config.workflow_config.replay_running_concurrency = 1
     obs.config.test_duration = 10
     obs.wall_sec = 10.0
     obs.total_steps = n
@@ -838,7 +838,7 @@ def test_trajectory_summary_attributes_cost_per_instance(tmp_path):
     w.close()
 
     obs = MagicMock()
-    obs.config.replay_mode = "lifecycle"
+    obs.config.workflow_config.replay_mode = "lifecycle"
     r = XlsxReportRenderer(obs, series_path=sp)
     from openpyxl import Workbook
 
@@ -919,7 +919,7 @@ def test_trajectory_summary_has_stacked_cost_bar_chart(tmp_path):
     w.close()
 
     obs = MagicMock()
-    obs.config.replay_mode = "lifecycle"
+    obs.config.workflow_config.replay_mode = "lifecycle"
     r = XlsxReportRenderer(obs, series_path=sp)
     from openpyxl import Workbook
 
@@ -970,7 +970,7 @@ def test_trajectory_summary_chart_legend_uses_header_names(tmp_path):
     w.close()
 
     obs = MagicMock()
-    obs.config.replay_mode = "lifecycle"
+    obs.config.workflow_config.replay_mode = "lifecycle"
     r = XlsxReportRenderer(obs, series_path=sp)
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
@@ -1064,7 +1064,7 @@ def test_trajectory_summary_has_failure_and_success_columns(tmp_path):
     )
 
     obs = MagicMock()
-    obs.config.replay_mode = "lifecycle"
+    obs.config.workflow_config.replay_mode = "lifecycle"
     r = XlsxReportRenderer(obs, series_path=sp)
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
@@ -1112,7 +1112,7 @@ def test_trajectory_summary_has_data_bars_and_failure_color_scale(tmp_path):
     )
 
     obs = MagicMock()
-    obs.config.replay_mode = "lifecycle"
+    obs.config.workflow_config.replay_mode = "lifecycle"
     r = XlsxReportRenderer(obs, series_path=sp)
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
@@ -1157,7 +1157,7 @@ def test_trajectory_summary_chart_anchor_clear_of_table(tmp_path):
     _traj_series_file(sp, [_step_ev("traj-a"), _step_ev("traj-b")])
 
     obs = MagicMock()
-    obs.config.replay_mode = "lifecycle"
+    obs.config.workflow_config.replay_mode = "lifecycle"
     r = XlsxReportRenderer(obs, series_path=sp)
     wb = openpyxl.Workbook()
     wb.remove(wb.active)

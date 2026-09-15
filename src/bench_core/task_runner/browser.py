@@ -60,6 +60,8 @@ class WarmupRunner(TaskRunner):
 
     def __init__(self, ctx: RunContext) -> None:
         super().__init__(ctx)
+        assert isinstance(ctx.config.workflow_config, BrowserConfig), "browser runner requires a BrowserConfig view"
+        self.cfg = ctx.config.workflow_config
 
     def do_run(self) -> None:
         """Execute warmup for this sandbox -- open one tab per warmup URL."""
@@ -76,11 +78,11 @@ class WarmupRunner(TaskRunner):
         failed_urls: list[str] = []
 
         # Warn if warmup_loops > 1 (not applicable in tab mode) -- only once.
-        if self.config.warmup_loops > 1:
+        if self.cfg.warmup_loops > 1:
             with WarmupRunner._warn_lock:
                 if not WarmupRunner._warmup_loops_warned:
                     logger.info(
-                        f"[Warmup] Note: warmup_loops={self.config.warmup_loops} is ignored (each URL opened once)"
+                        f"[Warmup] Note: warmup_loops={self.cfg.warmup_loops} is ignored (each URL opened once)"
                     )
                     WarmupRunner._warmup_loops_warned = True
 
@@ -96,7 +98,7 @@ class WarmupRunner(TaskRunner):
             self.state.warmup_done = True
             return
 
-        for i, url in enumerate(self.config.warmup_urls):
+        for i, url in enumerate(self.cfg.warmup_urls):
             if not url.strip():
                 continue
 
@@ -122,7 +124,7 @@ class WarmupRunner(TaskRunner):
 
                 self.state.tab_ids.append(f"t{i + 1}")
                 self._execute_tab_operations(i + 1)
-                time.sleep(self.config.warmup_delay)
+                time.sleep(self.cfg.warmup_delay)
             except Exception as e:
                 # Non-fatal: the failed URL is recorded in failed_urls and
                 # summarized at WARNING below; other tabs still warm up.
@@ -169,6 +171,8 @@ class BrowserTaskRunner(TaskRunner):
 
     def __init__(self, ctx: RunContext) -> None:
         super().__init__(ctx)
+        assert isinstance(ctx.config.workflow_config, BrowserConfig), "browser runner requires a BrowserConfig view"
+        self.cfg = ctx.config.workflow_config
 
     def do_run(self) -> None:
         """Task execution main loop."""
@@ -185,7 +189,7 @@ class BrowserTaskRunner(TaskRunner):
 
             success, latency = self._run_single_task()
 
-            timeout = latency > self.config.browser_timeout
+            timeout = latency > self.cfg.browser_timeout
             self.state.browser_metrics.add(latency, success and not timeout, timeout)
             self.state.update_last_task_time(time.time())
 
@@ -199,7 +203,7 @@ class BrowserTaskRunner(TaskRunner):
                     break
 
             # Random interval to avoid request spikes against the target server.
-            sleep_time = random.uniform(self.config.browser_interval_min, self.config.browser_interval_max)
+            sleep_time = random.uniform(self.cfg.browser_interval_min, self.cfg.browser_interval_max)
             time.sleep(sleep_time)
 
         logger.info(f"[Sandbox{self.state.index}] Task runner ended")
@@ -215,14 +219,14 @@ class BrowserTaskRunner(TaskRunner):
 
         sid = self.state.id
         # Round-robin URL selection across the configured set.
-        url_idx = self.state.browser_metrics.total_tasks % len(self.config.browser_urls)
-        url = self.config.browser_urls[url_idx]
+        url_idx = self.state.browser_metrics.total_tasks % len(self.cfg.browser_urls)
+        url = self.cfg.browser_urls[url_idx]
 
         cmd = f"openclaw browser --browser-profile openclaw open '{url}'"
 
         start_time = time.perf_counter()
         try:
-            result = self.provider.exec(self.state, cmd, timeout=self.config.browser_timeout + 30)
+            result = self.provider.exec(self.state, cmd, timeout=self.cfg.browser_timeout + 30)
             elapsed = time.perf_counter() - start_time + 10  # simulate llm response time
 
             success = result.exit_code == 0
@@ -259,6 +263,8 @@ class TabOperationRunner(TaskRunner):
 
     def __init__(self, ctx: RunContext) -> None:
         super().__init__(ctx)
+        assert isinstance(ctx.config.workflow_config, BrowserConfig), "browser runner requires a BrowserConfig view"
+        self.cfg = ctx.config.workflow_config
         self.round_id = ctx.round_id
 
     def do_run(self) -> None:
@@ -267,12 +273,12 @@ class TabOperationRunner(TaskRunner):
             logger.info(f"[Sandbox{self.state.index}] Not ready/alive for tab operations")
             return
 
-        if not self.config.browser_urls:
+        if not self.cfg.browser_urls:
             logger.info(f"[Sandbox{self.state.index}] No browser_urls configured")
             return
 
-        url_index = self.round_id % len(self.config.browser_urls)
-        url = self.config.browser_urls[url_index]
+        url_index = self.round_id % len(self.cfg.browser_urls)
+        url = self.cfg.browser_urls[url_index]
 
         start_time = time.perf_counter()
         success, step_times, failed_step, error_detail = self._execute_steps(url)
@@ -440,7 +446,7 @@ class TabOperationRunner(TaskRunner):
     ) -> float:
         """Record metrics for this operation; return elapsed seconds."""
         elapsed = time.perf_counter() - start_time
-        timeout = elapsed > self.config.browser_timeout
+        timeout = elapsed > self.cfg.browser_timeout
         self.state.browser_metrics.add(elapsed, success and not timeout, timeout, step_times=step_times)
         self.state.update_last_task_time(time.time())
         if not success and error_detail:
