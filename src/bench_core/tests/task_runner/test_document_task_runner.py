@@ -23,6 +23,7 @@ from bench_core.task_runner.document import (
     load_scene_recipe,
     preflight_document,
 )
+from bench_core.workflow_registry import RunContext
 from env_provider import CommandResult
 from env_provider.fake import FakeProvider
 
@@ -279,7 +280,9 @@ class TestDocumentWarmupRunner:
         config = _config(path)
         provider = FakeProvider()
         state = _ready_sandbox()
-        DocumentWarmupRunner(state, config, provider).run()
+        DocumentWarmupRunner(
+            RunContext(state=state, config=config, stop_event=threading.Event(), provider=provider)
+        ).run()
         assert state.warmup_done is True
         assert state.document_metrics.last_error == ""
 
@@ -287,7 +290,9 @@ class TestDocumentWarmupRunner:
         path = _make_recipe(tmp_path / "r.json")
         config = _config(path)
         state = BenchSandbox(id="fake-0", index=0, ready=False)
-        DocumentWarmupRunner(state, config, FakeProvider()).run()
+        DocumentWarmupRunner(
+            RunContext(state=state, config=config, stop_event=threading.Event(), provider=FakeProvider())
+        ).run()
         assert state.warmup_done is True
         assert "runtime-ready" in state.document_metrics.last_error
 
@@ -298,7 +303,9 @@ class TestDocumentTaskRunner:
         config = _config(path)
         provider = _FailOnProvider("test -d")  # workspace prep always fails
         state = _ready_sandbox()
-        runner = DocumentTaskRunner(state, config, threading.Event(), provider)
+        runner = DocumentTaskRunner(
+            RunContext(state=state, config=config, stop_event=threading.Event(), provider=provider)
+        )
 
         runner.run()  # loop runs until 3 failures -> is_alive False -> break
 
@@ -313,7 +320,7 @@ class TestDocumentTaskRunner:
         state = _ready_sandbox()
         stop = threading.Event()
         stop.set()
-        runner = DocumentTaskRunner(state, config, stop, FakeProvider())
+        runner = DocumentTaskRunner(RunContext(state=state, config=config, stop_event=stop, provider=FakeProvider()))
         runner.run()
         assert state.document_metrics.total_tasks == 0
 
@@ -324,7 +331,9 @@ class TestDocumentRoundRunner:
         config = _config(path)
         provider = FakeProvider()
         state = _ready_sandbox()
-        runner = DocumentRoundRunner(state, config, threading.Event(), round_id=0, provider=provider)
+        runner = DocumentRoundRunner(
+            RunContext(state=state, config=config, stop_event=threading.Event(), round_id=0, provider=provider)
+        )
 
         runner.run()
 
@@ -338,6 +347,8 @@ class TestDocumentRoundRunner:
         path = _make_recipe(tmp_path / "r.json")
         config = _config(path)
         state = BenchSandbox(id="fake-0", index=0, ready=False)
-        runner = DocumentRoundRunner(state, config, threading.Event(), 0, FakeProvider())
+        runner = DocumentRoundRunner(
+            RunContext(state=state, config=config, stop_event=threading.Event(), round_id=0, provider=FakeProvider())
+        )
         runner.run()
         assert state.document_metrics.total_tasks == 0

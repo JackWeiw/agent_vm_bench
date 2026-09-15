@@ -12,6 +12,8 @@ import time
 from bench_core.config import KernelConfig
 from bench_core.payload.replay_payload import ReplayStep
 from bench_core.schemas import BenchSandbox
+from bench_core.workflow_registry import RunContext
+from bench_core.task_runner.replay import ReplayBaseRunner
 from env_provider import CommandResult
 from env_provider.fake import FakeProvider
 
@@ -21,8 +23,6 @@ def _make_state() -> BenchSandbox:
 
 
 def test_slice_exec_verbatim_with_cwd_and_env():
-    from bench_core.task_runner.replay import ReplayBaseRunner
-
     provider = FakeProvider(count=1)
     captured: list[dict] = []
 
@@ -33,7 +33,9 @@ def test_slice_exec_verbatim_with_cwd_and_env():
 
     spy = _SpyProvider(count=1)
     config = KernelConfig(workflow_type="replay", replay_workdir="/testbed", replay_env={"PAGER": "cat"})
-    runner = ReplayBaseRunner(_make_state(), config, threading.Event(), spy)
+    runner = ReplayBaseRunner(
+        RunContext(state=_make_state(), config=config, stop_event=threading.Event(), provider=spy)
+    )
 
     step = ReplayStep(index=0, action="find /testbed -name x", delay_time_sec=1.0, action_type="shell")
     result = runner._run_slice(step)
@@ -61,7 +63,9 @@ def test_warmup_loads_pool_and_probes_exec():
         replay_trajectory_glob="*",
     )
     state = _make_state()
-    runner = ReplayWarmupRunner(state, config, FakeProvider(count=1))
+    runner = ReplayWarmupRunner(
+        RunContext(state=state, config=config, stop_event=threading.Event(), provider=FakeProvider(count=1))
+    )
     runner.run()
     assert state.warmup_done is True
 
@@ -88,7 +92,7 @@ def test_fixed_runner_replays_pool_and_advances_cursor():
 
     threading.Thread(target=_stop_after_some_steps).start()
 
-    runner = ReplayTaskRunner(state, config, stop, FakeProvider(count=1))
+    runner = ReplayTaskRunner(RunContext(state=state, config=config, stop_event=stop, provider=FakeProvider(count=1)))
     runner.run()
 
     # 2 steps replayed, both succeeded on FakeProvider (exit 0).
@@ -127,7 +131,7 @@ def test_fixed_runner_stop_on_error_advances_to_next_trajectory():
 
     threading.Thread(target=_stop_soon).start()
 
-    runner = ReplayTaskRunner(state, config, stop, _FailProvider(count=1))
+    runner = ReplayTaskRunner(RunContext(state=state, config=config, stop_event=stop, provider=_FailProvider(count=1)))
     runner.run()
     # stop_on_error aborts the trajectory on the first failing step, so no
     # trajectory completes, but the runner kept running (did not crash).
@@ -148,7 +152,9 @@ def test_round_runner_replays_one_trajectory_per_round():
     )
     state = _make_state()  # index=0 -> (0 + 0) % 2 = 0
     stop = threading.Event()
-    runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=FakeProvider(count=1))
+    runner = ReplayRoundRunner(
+        RunContext(state=state, config=config, stop_event=stop, round_id=0, provider=FakeProvider(count=1))
+    )
     runner.run()
     # The chosen trajectory has either 2 steps (no_terminal) -> replayed fully.
     assert state.replay_metrics.total_tasks >= 2
@@ -169,7 +175,9 @@ def test_round_runner_index_rotation_picks_different_trajectory():
     stop = threading.Event()
     # sandbox index=1, round_id=0 -> (1 + 0) % 2 = 1 -> the other trajectory
     state = BenchSandbox(id="fake-1", index=1, workflow_type="replay", ready=True)
-    runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=FakeProvider(count=1))
+    runner = ReplayRoundRunner(
+        RunContext(state=state, config=config, stop_event=stop, round_id=0, provider=FakeProvider(count=1))
+    )
     runner.run()
     # the with_terminal trajectory has 2 executable steps.
     assert state.replay_metrics.total_tasks >= 2
@@ -177,13 +185,12 @@ def test_round_runner_index_rotation_picks_different_trajectory():
 
 def test_run_slice_p1_noop_hooks_measure_near_zero():
     """P1 baseline: no-op _resume/_pause add no lifecycle overhead; slice ~= exec."""
-    from bench_core.task_runner.replay import ReplayBaseRunner
 
     config = KernelConfig(workflow_type="replay")
     state = _make_state()
     stop_event = threading.Event()
     provider = FakeProvider(count=1)
-    runner = ReplayBaseRunner(state, config, stop_event, provider)
+    runner = ReplayBaseRunner(RunContext(state=state, config=config, stop_event=stop_event, provider=provider))
     step = ReplayStep(index=0, action="echo hi", delay_time_sec=0.0, action_type="shell")
 
     sr = runner._run_slice(step)
@@ -197,7 +204,6 @@ def test_run_slice_p1_noop_hooks_measure_near_zero():
 def test_run_slice_p2_override_flows_timing_through_hooks():
     """P2 pluggability: overriding only _resume/_pause (not _run_slice) flows
     lifecycle timings into resume_sec / pause_sec / slice_total_sec."""
-    from bench_core.task_runner.replay import ReplayBaseRunner
 
     class _LifecycleRunner(ReplayBaseRunner):
         RESUME_DUR = 0.02
@@ -217,7 +223,7 @@ def test_run_slice_p2_override_flows_timing_through_hooks():
     state = _make_state()
     stop_event = threading.Event()
     provider = FakeProvider(count=1)
-    runner = _LifecycleRunner(state, config, stop_event, provider)
+    runner = _LifecycleRunner(RunContext(state=state, config=config, stop_event=stop_event, provider=provider))
     step = ReplayStep(index=0, action="echo hi", delay_time_sec=0.0, action_type="shell")
 
     sr = runner._run_slice(step)
