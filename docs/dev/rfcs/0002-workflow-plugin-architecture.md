@@ -63,8 +63,8 @@ an `agent:` section is ~5 edits in `config.py` alone, plus `validate()`, `__post
   to `bench.py` / `task_manager.py` / `round_robin.py` / `stats_collector.py` / `_ready.py` /
   `schemas.py` / `config.py`.
 - A `TaskRunner` ABC that enforces the runner contract (replaces copy-paste-learned convention).
-- An open config path: `from_raw` reads an arbitrary `workflow_type` and routes its section through
-  the registry.
+- An open, type-safe config path: `from_raw` reads an arbitrary `workflow_type` and routes its
+  section through a typed per-workflow config view (no opaque `dict` at the core layer).
 - No behavior change for the existing 4 workflows — pure structural refactor, validated by the
   existing ~270 `FakeProvider`-driven tests.
 
@@ -92,7 +92,8 @@ class WorkflowSpec:
     step_order: list[str]
     ready_probe: ReadyProbe | None         # None => exec-based default probe
     config_section: str                    # YAML key, e.g. "agent"
-    report_formatters: ReportFormatters    # stats-section + step-timing formatters
+    config_cls: type[WorkflowConfigBase]   # typed per-workflow view (from_raw + validate), see §3
+    report_formatters: ReportFormatters    # snapshot / step-timing / overview, see §4
 
 WORKFLOW_REGISTRY: dict[str, WorkflowSpec] = {}
 
@@ -133,37 +134,92 @@ Replay passes the extra knobs; browser/coding/document leave them `None`. The sh
 copy-paste (the `if not self.state.ready` gate, the `consecutive_errors >= 3 -> is_alive = False`
 offline rule, `_classify_exception`, `_record_metrics`) lifts into `TaskRunner`.
 
-### 3. Open config path
+### 3. Open, type-safe config path
 
-`KernelConfig.from_raw` reads `workflow_type`, looks up
-`WORKFLOW_REGISTRY[workflow_type].config_section`, and stores the section opaquely:
+`KernelConfig.from_raw` reads `workflow_type`, looks up the spec, and builds the workflow's **typed**
+config view — not an opaque `dict`. An opaque block would lose static type-checking at the core config
+layer (the same risk class as the `Snapshot` dict rejected in §4). Each workflow implements a config
+view behind an ABC, and `KernelConfig` triggers validation uniformly:
 
 ```python
+class WorkflowConfigBase(ABC):
+    @classmethod
+    @abstractmethod
+    def from_raw(cls, raw: dict) -> "WorkflowConfigBase":
+        """Parse this workflow's YAML section into the typed view."""
+        ...
+    @abstractmethod
+    def validate(self) -> None:
+        """Raise ValueError on an invalid config."""
+        ...
+
+# in KernelConfig.from_raw:
 wf_spec = WORKFLOW_REGISTRY[wf]
-workflow_config = raw.get(wf_spec.config_section) or {}
+section = raw.get(wf_spec.config_section) or {}
+workflow_config = wf_spec.config_cls.from_raw(section)   # typed, not dict
+workflow_config.validate()                               # uniform validation hook
 ```
 
 The per-workflow dataclass fields (`coding_*`, `document_*`, `replay_*`, `browser_*`) move into each
-workflow's own typed config view (`wf_spec.config_view(workflow_config)`). The `__post_init__`
-replay-specific validation moves onto that view. `validate()`'s hardcoded set becomes
-`WORKFLOW_REGISTRY.keys()`.
+workflow's own typed view class (e.g. `CodingConfig(WorkflowConfigBase)`, `ReplayConfig(...)`). The
+`__post_init__` replay-specific validation moves onto `ReplayConfig.validate()`. `validate()`'s
+hardcoded allowed-set becomes `WORKFLOW_REGISTRY.keys()`. Type safety is preserved: the kernel holds a
+`WorkflowConfigBase` reference, each workflow holds its own concrete subclass.
 
 ### 4. Snapshot + report via the metrics polymorphism
 
-`Snapshot`'s per-workflow fields (`browser_total`, `coding_total`, ... `replay_*`) project from
-`BenchSandbox.task_metrics` — the polymorphism already exists. `stats_collector._take_snapshot` /
-`_print_snapshot` / `generate_report` stop branching on `workflow_type` and instead call
-`spec.report_formatters` and read `task_metrics`. The per-workflow `format_*_stats_section` /
-`format_*_step_timing_table` methods register on the spec.
+`Snapshot` becomes **workflow-agnostic**: the per-workflow totals (`browser_total`, `coding_total`,
+... `replay_*`) move off `Snapshot` and project from `BenchSandbox.task_metrics` instead. `Snapshot`
+keeps only the generic, typed fields (creation / ready / timing / error counts). The per-workflow
+breakdown lives on the typed metrics subclasses (`BrowserMetrics` / `CodingMetrics` /
+`ReplayMetrics`, already `TaskMetricsBase` subclasses) — that is where type safety belongs, and those
+subclasses are owned by the workflow module, not the kernel. This removes the `schemas.py` Snapshot
+touch point entirely: adding a workflow no longer adds `Snapshot` fields.
+
+`stats_collector._take_snapshot` / `_print_snapshot` / `generate_report` stop branching on
+`workflow_type` and call `spec.report_formatters`. The formatter contract is explicit — three standard
+methods, all taking `TaskMetricsBase`:
+
+```python
+class ReportFormatters(Protocol):
+    def format_snapshot(self, metrics: TaskMetricsBase, snap: Snapshot) -> str:
+        """Per-workflow snapshot section (today's format_<wf>_stats_section)."""
+        ...
+    def format_step_timing(self, metrics: TaskMetricsBase) -> str:
+        """Per-workflow step-timing table (today's format_<wf>_step_timing_table)."""
+        ...
+    def format_overview(self, metrics: TaskMetricsBase, rounds: int) -> str:
+        """Overview / run-summary section."""
+        ...
+```
+
+Splitting the contract into three named methods (rather than a single fuzzy formatter) pins the
+abstraction and prevents leakage: a workflow cannot silently drop one of the three report surfaces,
+and each method's signature guarantees the formatter reads only the metrics object — no hidden coupling
+to `workflow_type` strings or private snapshot internals.
 
 ### Phasing (each step independently mergeable, mirrors RFC 0001)
 
-- **Phase 0** — Introduce `TaskRunner` ABC + `RunContext` + `WorkflowSpec` + registry; route the
-  existing 4 workflows through it. No elif removal yet, no behavior change. Tests stay green.
+- **Phase 0** — Introduce `TaskRunner` ABC + `RunContext` + `WorkflowSpec` + `WorkflowConfigBase` +
+  registry; route the existing 4 workflows through it. No elif removal yet, no behavior change. The
+  ~270 `FakeProvider` tests stay green; add a **config-compatibility test** (see Testing) before any
+  config field moves.
 - **Phase 1** — Collapse the dispatch elif chains in `task_manager` / `round_robin` /
-  `bench._print_header` / `_ready.check` / `schemas.get_step_order` to registry lookups.
-- **Phase 2** — Config section registry; move per-workflow config fields to per-workflow views.
-- **Phase 3** — `stats_collector` snapshot/report via `spec.report_formatters` + metrics polymorphism.
+  `bench._print_header` / `_ready.check` / `schemas.get_step_order` to registry lookups; drive
+  `--workflow-type` CLI choices from `WORKFLOW_REGISTRY.keys()`.
+- **Phase 2** — Move per-workflow config fields onto typed `WorkflowConfigBase` views; route
+  `KernelConfig.from_raw` through `config_cls.from_raw().validate()`.
+- **Phase 3** — `stats_collector` snapshot/report via `spec.report_formatters` (3-method contract) +
+  the metrics polymorphism; move per-workflow totals off `Snapshot`.
+
+### Testing
+
+- **Config compatibility**: a golden-config test loads every shipped `config/common/*.yaml`, builds
+  `KernelConfig` before and after each phase, and asserts the resolved per-workflow config view
+  reproduces the legacy field values bit-for-bit — same YAML in, identical resolved config out. Guards
+  backward compatibility of every shipped config file across the refactor.
+- **Runner behavior**: the existing `FakeProvider`-driven suite (~270 tests) is the regression gate at
+  every phase; no phase merges with a red test.
 
 ## Drawbacks
 
@@ -196,22 +252,34 @@ incrementally.
 - `round_robin.py` docstring — admits it "drops most per-workflow dispatch" via `task_metrics`; the
   dispatch was applied to metrics but never to runner construction.
 
-## Unresolved questions
+## Design decisions (resolving the open questions)
 
-- **Protocol vs ABC** for `TaskRunner` — ABC enforces the contract and gives shared
-  `__init__`/offline-rule; Protocol is lighter. Lean ABC (shared runner copy-paste is the thing to
-  kill).
-- **Registration mechanism** — explicit `WORKFLOW_REGISTRY` dict populated by `task_runner/<wf>.py`
-  import, vs Python entry-points (`bench_core.workflows` group). Explicit dict is simpler and
-  visible; entry-points are open-closed but hide registration. Lean dict until >6 workflows.
-- **`RunContext` vs per-workflow context subclass** — replay's extra knobs: flat `None`-defaulted
-  fields on `RunContext`, or a `ReplayRunContext(RunContext)` subclass the replay runner downcasts?
-  Flat is simpler; subclass is cleaner-typed. Open.
-- **Snapshot shape** — keep per-workflow `Snapshot` fields (typed, status quo) or move to a
-  metrics-driven `dict`? Typed is safer; elif removal still works via `spec.report_formatters`.
-  Lean typed.
-- **CLI** — does the registry drive `--workflow-type` choices (today hardcoded at `bench.py:694`)?
-  Likely yes in Phase 1.
+1. **`TaskRunner`: ABC, not Protocol.** `TaskRunner(threading.Thread, ABC)` owns the shared concrete
+   code (`__init__`, the `consecutive_errors >= 3` offline rule, `_classify_exception`,
+   `_record_metrics`) — that is the whole point of lifting the copy-paste. A `Protocol` is structural
+   only: it types the shape but provides no shared implementation, so it would not kill the
+   duplication. `threading.Thread` already requires inheritance (override `run`), so ABC is the
+   Python-idiomatic fit on both counts. `@abstractmethod def run` enforces the one true seam.
+2. **Registration: explicit `WORKFLOW_REGISTRY` dict, not entry-points.** `register_workflow()` is
+   called at the bottom of each `task_runner/<wf>.py`; the kernel imports those modules at startup.
+   Explicit registration is greppable, needs no packaging metadata, and matches the existing
+   `_build_provider` lazy-import style. Entry-points (`importlib.metadata`) are open-closed but hide
+   registration and add packaging complexity only justified when *third-party* packages ship workflows
+   — not the case (all workflows are in-tree). Revisit if external workflow plugins ever materialize.
+3. **`RunContext`: flat dataclass with `None`-defaulted replay knobs, not a subclass.** A
+   `ReplayRunContext(RunContext)` would force the replay runner to downcast and break the uniform
+   factory `spec.task_runner(ctx)`. Flat keeps the factory uniform; non-replay runners simply ignore
+   the `None` fields. Replay narrows locally (`assert ctx.series is not None` at entry) — type-safe
+   where it matters, no structural smell. Ceiling: if replay-only context grows past ~6 knobs,
+   revisit a typed subclass carried via the spec.
+4. **`Snapshot`: workflow-agnostic + typed; per-workflow data stays on typed metrics subclasses.**
+   Reject both extremes — neither per-workflow `Snapshot` fields (re-introduces the `schemas.py` touch
+   point) nor a metrics-driven `dict` (sacrifices type safety, the same risk class as the opaque config
+   block). Instead: `Snapshot` holds generic typed fields only; per-workflow breakdown lives on the
+   typed `TaskMetricsBase` subclasses (`BrowserMetrics` etc.), projected by `spec.report_formatters`.
+   Type safety lives on the metrics subclasses, owned by each workflow module.
+5. **CLI: registry-driven.** `--workflow-type choices=list(WORKFLOW_REGISTRY)` (Phase 1) so adding a
+   workflow auto-updates the CLI — no separate touch point.
 
 ## Future possibilities
 
