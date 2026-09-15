@@ -16,6 +16,7 @@ from bench_core.config import KernelConfig
 from bench_core.payload.replay_payload import ReplayStep, Trajectory, reset_pool_cache
 from bench_core.schemas import BenchSandbox, ReplayMetrics
 from bench_core.task_runner.replay import ReplayRoundRunner, ReplayTaskRunner
+from bench_core.workflow_registry import RunContext
 from env_provider import SandboxInstance
 from env_provider.fake import FakeProvider
 
@@ -141,7 +142,9 @@ def test_orphan_sandbox_skipped_with_count(tmp_path, monkeypatch):
     stop = threading.Event()
     provider = FakeProvider(count=1)
     monkeypatch.setattr(ReplayTaskRunner, "_replay_trajectory", lambda self, t: None)
-    runner = ReplayTaskRunner(_sandbox(1, "swb-other"), cfg, stop, provider)
+    runner = ReplayTaskRunner(
+        RunContext(state=_sandbox(1, "swb-other"), config=cfg, stop_event=stop, provider=provider)
+    )
     runner.run()
     assert runner.state.replay_metrics.orphan_skip_count == 1
 
@@ -166,7 +169,7 @@ def test_affinity_routes_only_matching_template(tmp_path, monkeypatch):
         stop.set()
 
     monkeypatch.setattr(ReplayTaskRunner, "_replay_trajectory", _spy)
-    runner = ReplayTaskRunner(_sandbox(1, "swb-a"), cfg, stop, provider)
+    runner = ReplayTaskRunner(RunContext(state=_sandbox(1, "swb-a"), config=cfg, stop_event=stop, provider=provider))
     runner.run()
     assert "b" not in ran
     assert set(ran).issubset({"a", "c"})
@@ -202,7 +205,7 @@ def test_legacy_no_manifest_routes_whole_pool(tmp_path, monkeypatch):
         stop.set()
 
     monkeypatch.setattr(ReplayTaskRunner, "_replay_trajectory", _spy)
-    runner = ReplayTaskRunner(_sandbox(1, None), cfg, stop, provider)
+    runner = ReplayTaskRunner(RunContext(state=_sandbox(1, None), config=cfg, stop_event=stop, provider=provider))
     runner.run()
     assert ran == ["a"]
     assert runner.state.replay_metrics.orphan_skip_count == 0
@@ -220,7 +223,9 @@ def test_round_runner_orphan_skip(tmp_path, monkeypatch):
     stop = threading.Event()
     provider = FakeProvider(count=1)
     monkeypatch.setattr(ReplayRoundRunner, "_replay_round_loop", lambda self, t: None)
-    runner = ReplayRoundRunner(_sandbox(1, "swb-other"), cfg, stop, 0, provider)
+    runner = ReplayRoundRunner(
+        RunContext(state=_sandbox(1, "swb-other"), config=cfg, stop_event=stop, round_id=0, provider=provider)
+    )
     runner.run()
     assert runner.state.replay_metrics.orphan_skip_count == 1
 
@@ -240,7 +245,9 @@ def test_round_runner_affinity_filters(tmp_path, monkeypatch):
     provider = FakeProvider(count=1)
     captured: list[str] = []
     monkeypatch.setattr(ReplayRoundRunner, "_replay_round_loop", lambda self, t: captured.append(t.instance_id))
-    runner = ReplayRoundRunner(_sandbox(0, "swb-a"), cfg, stop, 0, provider)
+    runner = ReplayRoundRunner(
+        RunContext(state=_sandbox(0, "swb-a"), config=cfg, stop_event=stop, round_id=0, provider=provider)
+    )
     runner.run()
     assert len(captured) == 1
     assert captured[0] in ("a", "c")
@@ -272,7 +279,9 @@ def test_trajectory_create_one_passes_template(tmp_path, monkeypatch):
 
     # launch_pacer=None keeps _wait_for_launch_turn a no-op; explicit so a
     # future default pacer can't silently break or hang this test.
-    runner = ReplayTaskRunner(state, cfg, stop, provider, launch_pacer=None)
+    runner = ReplayTaskRunner(
+        RunContext(state=state, config=cfg, stop_event=stop, provider=provider, launch_pacer=None)
+    )
 
     # Bypass post-create machinery that FakeProvider doesn't implement.
     monkeypatch.setattr(runner, "_probe_ready", lambda: 0.0)
@@ -310,7 +319,7 @@ def test_trajectory_create_one_none_template(tmp_path, monkeypatch):
     stop = threading.Event()
     stop.set()
 
-    runner = ReplayTaskRunner(state, cfg, stop, provider)
+    runner = ReplayTaskRunner(RunContext(state=state, config=cfg, stop_event=stop, provider=provider))
     monkeypatch.setattr(runner, "_probe_ready", lambda: 0.0)
 
     traj = Trajectory(

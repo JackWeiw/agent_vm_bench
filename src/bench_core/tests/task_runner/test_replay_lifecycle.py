@@ -20,6 +20,7 @@ from bench_core.task_runner.replay import (
     ReplayTaskRunner,
     ReplayWarmupRunner,
 )
+from bench_core.workflow_registry import RunContext
 from env_provider import SandboxInstance
 from env_provider.tests.lifecycle_fake import FakeLifecycleProvider
 
@@ -74,7 +75,9 @@ class TestInitLifecycleIdempotency:
         stop = threading.Event()
         inst = SandboxInstance(id="x", index=0)
         state = BenchSandbox.from_instance(inst, workflow_type="replay")
-        runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider)
+        runner = ReplayRoundRunner(
+            RunContext(state=state, config=config, stop_event=stop, round_id=0, provider=provider)
+        )
 
         runner._init_lifecycle()
         first_pause = provider.pause_calls
@@ -98,7 +101,7 @@ class TestWarmupStaysExecOnly:
         inst = SandboxInstance(id="x", index=0)
         state = BenchSandbox.from_instance(inst, workflow_type="replay")
         state.ready = True
-        runner = ReplayWarmupRunner(state, config, provider)
+        runner = ReplayWarmupRunner(RunContext(state=state, config=config, stop_event=stop, provider=provider))
         runner.run()
 
         # Warmup probes exec directly; lifecycle hooks must NOT fire.
@@ -120,7 +123,9 @@ class TestRunSliceSeriesRecord:
         state.ready = True
         path = _series_path(tmp_path)
         series = LifecycleSeriesWriter(path)
-        runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider, series=series)
+        runner = ReplayRoundRunner(
+            RunContext(state=state, config=config, stop_event=stop, round_id=0, provider=provider, series=series)
+        )
         runner._init_lifecycle()
 
         # drive one slice via the real _run_slice using a fixture step
@@ -158,7 +163,9 @@ class TestRunSliceSeriesRecord:
         state = BenchSandbox.from_instance(inst, workflow_type="replay")
         path = _series_path(tmp_path)
         series = LifecycleSeriesWriter(path)
-        runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider, series=series)
+        runner = ReplayRoundRunner(
+            RunContext(state=state, config=config, stop_event=stop, round_id=0, provider=provider, series=series)
+        )
         runner._init_lifecycle()
         series.close()
 
@@ -185,7 +192,7 @@ class TestRunSliceSeriesRecord:
         state = BenchSandbox.from_instance(inst, workflow_type="replay")
         path = _series_path(tmp_path)
         series = LifecycleSeriesWriter(path)
-        runner = _BoomRunner(state, config, stop, provider, series=series)
+        runner = _BoomRunner(RunContext(state=state, config=config, stop_event=stop, provider=provider, series=series))
         from bench_core.payload.replay_payload import ReplayStep
 
         step = ReplayStep(index=0, action_type="shell", action="true", delay_time_sec=0.0)
@@ -207,7 +214,9 @@ class TestRunSliceSeriesRecord:
         state.ready = True
         path = _series_path(tmp_path)
         series = LifecycleSeriesWriter(path)
-        runner = _BoomRunner(state, config, stop, round_id=0, provider=provider, series=series)
+        runner = _BoomRunner(
+            RunContext(state=state, config=config, stop_event=stop, round_id=0, provider=provider, series=series)
+        )
         runner.run()
         series.close()
 
@@ -233,7 +242,9 @@ class TestRecordStepPassesDurations:
         stop = threading.Event()
         inst = SandboxInstance(id="x", index=0)
         state = BenchSandbox.from_instance(inst, workflow_type="replay")
-        runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider)
+        runner = ReplayRoundRunner(
+            RunContext(state=state, config=config, stop_event=stop, round_id=0, provider=provider)
+        )
         sr = StepResult(
             step_index=0,
             action_type="shell",
@@ -258,7 +269,9 @@ class TestExecOnlySkipsSeries:
         stop = threading.Event()
         inst = SandboxInstance(id="x", index=0)
         state = BenchSandbox.from_instance(inst, workflow_type="replay")
-        runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider)
+        runner = ReplayRoundRunner(
+            RunContext(state=state, config=config, stop_event=stop, round_id=0, provider=provider)
+        )
         assert runner.series is None
 
 
@@ -526,7 +539,9 @@ class TestRunSliceP26Decomposition:
         state.ready = True
         path = _series_path(tmp_path)
         series = LifecycleSeriesWriter(path)
-        runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider, series=series)
+        runner = ReplayRoundRunner(
+            RunContext(state=state, config=config, stop_event=stop, round_id=0, provider=provider, series=series)
+        )
         runner._init_lifecycle()
 
         step = ReplayStep(index=3, action_type="shell", action="true", delay_time_sec=0.0)
@@ -595,7 +610,9 @@ class TestRunSliceP26Decomposition:
         state.ready = True
         path = _series_path(tmp_path)
         series = LifecycleSeriesWriter(path)
-        runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider, series=series)
+        runner = ReplayRoundRunner(
+            RunContext(state=state, config=config, stop_event=stop, round_id=0, provider=provider, series=series)
+        )
         runner._init_lifecycle()
 
         think = 2.0
@@ -647,7 +664,11 @@ class TestRunSliceP26Decomposition:
         adm = Admission(slots=RunningSlotScheduler(maximum=1), qps=qps)
         path = _series_path(tmp_path)
         series = LifecycleSeriesWriter(path)
-        runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider, series=series, admission=adm)
+        runner = ReplayRoundRunner(
+            RunContext(
+                state=state, config=config, stop_event=stop, round_id=0, provider=provider, series=series, admission=adm
+            )
+        )
         runner._init_lifecycle()
 
         # Inject a FUTURE dispatch deadline so the first resume time_wait sleeps
@@ -705,7 +726,9 @@ class TestRunSliceP26Decomposition:
             inst = SandboxInstance(id="x", index=0)
             state = BenchSandbox.from_instance(inst, workflow_type="replay")
             state.ready = True
-            runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider)
+            runner = ReplayRoundRunner(
+                RunContext(state=state, config=config, stop_event=stop, round_id=0, provider=provider)
+            )
             runner._init_lifecycle()
             step = ReplayStep(index=0, action_type="shell", action="echo hi", delay_time_sec=0.0)
             sr = runner._run_slice(step)
@@ -735,7 +758,9 @@ class TestRunSliceP26Decomposition:
             inst = SandboxInstance(id="x", index=0)
             state = BenchSandbox.from_instance(inst, workflow_type="replay")
             state.ready = True
-            runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider)
+            runner = ReplayRoundRunner(
+                RunContext(state=state, config=config, stop_event=stop, round_id=0, provider=provider)
+            )
             step = ReplayStep(index=0, action_type="shell", action="echo hi", delay_time_sec=0.0)
             runner._run_slice(step)
         finally:
@@ -766,7 +791,9 @@ class TestRunSliceP26Decomposition:
             state.ready = True
             path = _series_path(tmp_path)
             series = LifecycleSeriesWriter(path)
-            runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider, series=series)
+            runner = ReplayRoundRunner(
+                RunContext(state=state, config=config, stop_event=stop, round_id=0, provider=provider, series=series)
+            )
             runner.run()
             series.close()
         finally:
@@ -805,7 +832,11 @@ class TestRunSliceP26Decomposition:
                 inst = SandboxInstance(id=f"x{i}", index=i)
                 state = BenchSandbox.from_instance(inst, workflow_type="replay")
                 state.ready = True
-                r = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider, admission=admission)
+                r = ReplayRoundRunner(
+                    RunContext(
+                        state=state, config=config, stop_event=stop, round_id=0, provider=provider, admission=admission
+                    )
+                )
                 runners.append(r)
             for r in runners:
                 r.start()
@@ -835,7 +866,9 @@ class TestRunSliceP26Decomposition:
         stop = threading.Event()
         inst = SandboxInstance(id="x", index=0)
         state = BenchSandbox.from_instance(inst, workflow_type="replay")
-        runner = _BoomRunner(state, config, stop, provider, admission=admission)
+        runner = _BoomRunner(
+            RunContext(state=state, config=config, stop_event=stop, provider=provider, admission=admission)
+        )
         step = ReplayStep(index=0, action_type="shell", action="true", delay_time_sec=0.0)
         with pytest.raises(RuntimeError):
             runner._run_slice(step, trajectory_id="t")
@@ -853,7 +886,9 @@ class TestExecOnlyBuildsNoAdmission:
         stop = threading.Event()
         inst = SandboxInstance(id="x", index=0)
         state = BenchSandbox.from_instance(inst, workflow_type="replay")
-        runner = ReplayRoundRunner(state, config, stop, round_id=0, provider=provider)
+        runner = ReplayRoundRunner(
+            RunContext(state=state, config=config, stop_event=stop, round_id=0, provider=provider)
+        )
         assert runner.admission is None
 
 
@@ -1111,7 +1146,6 @@ def test_exec_is_qps_gated_in_lifecycle_mode():
     from bench_core.config import KernelConfig
     from bench_core.payload.replay_payload import ReplayStep
     from bench_core.schemas import BenchSandbox
-    from bench_core.task_runner.replay import ReplayBaseRunner
     from env_provider import CommandResult
 
     calls = []
@@ -1128,7 +1162,7 @@ def test_exec_is_qps_gated_in_lifecycle_mode():
     stop = threading.Event()
     qps = QpsRateLimiter(qps=100.0, inflight_cap=4)
     adm = Admission(slots=RunningSlotScheduler(maximum=1), qps=qps)
-    runner = ReplayBaseRunner(state, cfg, stop, provider, admission=adm)
+    runner = ReplayBaseRunner(RunContext(state=state, config=cfg, stop_event=stop, provider=provider, admission=adm))
     step = ReplayStep(index=0, action_type="shell", action="true", delay_time_sec=0.0)
     runner._run_slice(step, trajectory_id="t1")
     snap = qps.snapshot()
@@ -1152,7 +1186,6 @@ def test_lifecycle_call_splits_queue_wait_from_api_sec():
     from bench_core.admission import Admission, QpsRateLimiter, RunningSlotScheduler
     from bench_core.config import KernelConfig
     from bench_core.schemas import BenchSandbox
-    from bench_core.task_runner.replay import ReplayBaseRunner
 
     cfg = KernelConfig(workflow_type="replay", replay_mode="lifecycle", replay_ready_probe=False)
     provider = FakeLifecycleProvider(count=1)
@@ -1161,7 +1194,7 @@ def test_lifecycle_call_splits_queue_wait_from_api_sec():
     stop = threading.Event()
     qps = QpsRateLimiter(qps=100.0, inflight_cap=4)
     adm = Admission(slots=RunningSlotScheduler(maximum=1), qps=qps)
-    runner = ReplayBaseRunner(state, cfg, stop, provider, admission=adm)
+    runner = ReplayBaseRunner(RunContext(state=state, config=cfg, stop_event=stop, provider=provider, admission=adm))
 
     # Force a future dispatch deadline ~0.05s out so the rate wait is observable.
     qps._next_dispatch_at = time.monotonic() + 0.05
@@ -1176,7 +1209,9 @@ def test_lifecycle_call_splits_queue_wait_from_api_sec():
     assert api >= 0.01
     # Without an admission controller the waits are 0 and only the API duration
     # is measured (returns a 3-tuple, all-zero waits).
-    runner_noqps = ReplayBaseRunner(state, cfg, stop, provider, admission=None)
+    runner_noqps = ReplayBaseRunner(
+        RunContext(state=state, config=cfg, stop_event=stop, provider=provider, admission=None)
+    )
     r2, inf2, a2 = runner_noqps._lifecycle_call_with_retry("pause", lambda: provider.pause(state))
     assert r2 == 0.0 and inf2 == 0.0
     assert a2 >= 0.01
@@ -1202,7 +1237,6 @@ def test_lifecycle_call_shutdown_during_retry_bypasses_except():
     )
     from bench_core.config import KernelConfig
     from bench_core.schemas import BenchSandbox
-    from bench_core.task_runner.replay import ReplayBaseRunner
 
     cfg = KernelConfig(
         workflow_type="replay",
@@ -1231,7 +1265,7 @@ def test_lifecycle_call_shutdown_during_retry_bypasses_except():
     # never blocks; the ShutdownInterrupted comes from the body, not admission.
     qps = QpsRateLimiter(qps=1000.0, inflight_cap=4, stop_event=stop)
     adm = Admission(slots=RunningSlotScheduler(maximum=1, stop_event=stop), qps=qps)
-    runner = ReplayBaseRunner(state, cfg, stop, provider, admission=adm)
+    runner = ReplayBaseRunner(RunContext(state=state, config=cfg, stop_event=stop, provider=provider, admission=adm))
 
     with pytest.raises(ShutdownInterrupted):
         runner._lifecycle_call_with_retry("resume", lambda: provider.resume(state))
@@ -1322,7 +1356,9 @@ def test_run_trajectory_creates_runs_kills_with_lease(tmp_path):
     state.is_alive = True
     series = LifecycleSeriesWriter(tmp_path / "series.jsonl")
     adm = Admission(slots=RunningSlotScheduler(maximum=1), qps=QpsRateLimiter(qps=100.0, inflight_cap=4))
-    runner = ReplayTaskRunner(state, cfg, stop, provider, series=series, admission=adm)
+    runner = ReplayTaskRunner(
+        RunContext(state=state, config=cfg, stop_event=stop, provider=provider, series=series, admission=adm)
+    )
 
     traj = Trajectory(
         path=Path("tr-1"),

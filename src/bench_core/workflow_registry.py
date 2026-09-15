@@ -7,12 +7,12 @@ if/elif chain, so a new workload is one new ``task_runner/<wf>.py`` module + one
 / replay) self-register at module import; the kernel imports those modules at
 startup so registration fires before the first dispatch.
 
-Phase 0 (this module): the seam EXISTS and is populated; the existing elif
-dispatch and the 12 runners are not yet migrated (that is Phase 1). Two checks
-are deliberately deferred: the runner fields are validated as
-``threading.Thread`` subclasses here and tightened to ``TaskRunner`` once the
-runners migrate, and ``config_cls`` / ``report_formatters`` are optional until
-Phases 2/3 land their implementations. See ``docs/dev/rfcs/0002``.
+Phase 0 (this module): the seam EXISTS and is populated. Phase 1 migrates the
+12 runners to ``TaskRunner`` + ``do_run`` and collapses the construction
+dispatch (``_create_task_runner`` / ``start_warmup`` / ``round_robin``) to
+registry lookups; runner fields are validated as ``TaskRunner`` subclasses.
+``config_cls`` / ``report_formatters`` remain optional until Phases 2/3 land
+their implementations. See ``docs/dev/rfcs/0002``.
 
 Design notes (deviations from RFC §2, all flagged in the RFC living doc):
 
@@ -146,14 +146,13 @@ class WorkflowSpec:
 
     ``config_cls`` / ``report_formatters`` are ``None`` until Phases 2/3 land their
     implementations; ``register_workflow`` skips their issubclass check when ``None``.
-    Runner fields are ``type[threading.Thread]`` in Phase 0 and tighten to
-    ``type[TaskRunner]`` once the 12 runners migrate (Phase 1).
+    Runner fields are ``type[TaskRunner]`` (the 12 in-tree runners migrated in Phase 1).
     """
 
     name: str
-    warmup_runner: type[threading.Thread]
-    task_runner: type[threading.Thread]
-    round_runner: type[threading.Thread]
+    warmup_runner: type[TaskRunner]
+    task_runner: type[TaskRunner]
+    round_runner: type[TaskRunner]
     metrics_cls: type  # type[TaskMetricsBase] — imported lazily to avoid a cycle
     step_order: tuple[str, ...]
     config_section: str
@@ -232,9 +231,8 @@ def register_workflow(spec: WorkflowSpec, *, force: bool = False) -> None:
         raise TypeError(f"{spec.name}.metrics_cls must subclass TaskMetricsBase")
     for attr in ("warmup_runner", "task_runner", "round_runner"):
         cls = getattr(spec, attr)
-        # Phase 0: runners still subclass threading.Thread; Phase 1 tightens to TaskRunner.
-        if not isinstance(cls, type) or not issubclass(cls, threading.Thread):
-            raise TypeError(f"{spec.name}.{attr} must subclass threading.Thread")
+        if not isinstance(cls, type) or not issubclass(cls, TaskRunner):
+            raise TypeError(f"{spec.name}.{attr} must subclass TaskRunner")
     if spec.config_cls is not None and (
         not isinstance(spec.config_cls, type) or not issubclass(spec.config_cls, WorkflowConfigBase)
     ):
@@ -247,3 +245,16 @@ def register_workflow(spec: WorkflowSpec, *, force: bool = False) -> None:
     if spec.name in WORKFLOW_REGISTRY and not force:
         raise RegistrationError(f"workflow '{spec.name}' already registered; use force=True to override")
     WORKFLOW_REGISTRY[spec.name] = spec
+
+
+def ensure_workflow_registered(name: str) -> None:
+    """Import the named workflow's ``task_runner`` module so its register_workflow fires.
+
+    Preserves the package's lazy-load principle (``task_runner/__init__.py`` is a
+    pure namespace): a browser-only run imports only ``bench_core.task_runner.browser``,
+    not coding/document/replay. The dispatch managers call this at construction so the
+    registry holds the active workflow's spec before the first runner is built.
+    """
+    import importlib
+
+    importlib.import_module(f"bench_core.task_runner.{name}")

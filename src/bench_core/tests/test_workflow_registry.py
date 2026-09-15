@@ -60,11 +60,11 @@ def test_each_spec_carries_valid_metadata():
         # config_cls / report_formatters are None in Phase 0 (land in Phases 2/3).
         assert spec.config_cls is None
         assert spec.report_formatters is None
-        # Phase 0: runner fields are threading.Thread subclasses (tightened to
-        # TaskRunner in Phase 1 once the 12 runners migrate).
+        # Phase 1: runner fields are TaskRunner subclasses (the 12 in-tree
+        # runners migrated to TaskRunner(ctx) + do_run).
         for attr in ("warmup_runner", "task_runner", "round_runner"):
             cls = getattr(spec, attr)
-            assert issubclass(cls, threading.Thread)
+            assert issubclass(cls, TaskRunner)
 
 
 def test_duplicate_registration_rejected():
@@ -92,11 +92,11 @@ def test_non_metrics_cls_rejected():
     assert "__test_bad_metrics__" not in WORKFLOW_REGISTRY
 
 
-def test_non_thread_runner_rejected():
-    class _NotAThread:
+def test_non_task_runner_rejected():
+    class _NotARunner:
         pass
 
-    spec = _dummy_spec(name="__test_bad_runner__", task_runner=_NotAThread)
+    spec = _dummy_spec(name="__test_bad_runner__", task_runner=_NotARunner)
     with pytest.raises(TypeError):
         register_workflow(spec)
     assert "__test_bad_runner__" not in WORKFLOW_REGISTRY
@@ -125,8 +125,8 @@ def _dummy_spec(
 ) -> WorkflowSpec:
     """Build a minimal valid spec for rejection/override tests."""
 
-    class _T(threading.Thread):
-        def run(self) -> None:  # pragma: no cover - never started
+    class _T(TaskRunner):
+        def do_run(self) -> None:  # pragma: no cover - never started
             ...
 
     return WorkflowSpec(
