@@ -17,9 +17,16 @@ scalar fields plus the resolved replacement-pair list
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from bench_core.observability.monitor import MonitorConfig
 from bench_core.payload.coding_payload import CODING_LANGUAGE_DEFAULT_SOURCE_FILES, DEFAULT_CODING_SOURCE_FILES
+from bench_core.workflow_registry import WORKFLOW_REGISTRY, WorkflowConfigError, ensure_workflow_registered
+
+if TYPE_CHECKING:
+    # Annotation-only (the field is a string under `from __future__ import
+    # annotations`); never imported at runtime, so no config <-> registry cycle.
+    from bench_core.workflow_registry import WorkflowConfigBase
 
 # In-sandbox scene layout per document case kind. These paths live inside the
 # sandbox image (the document seed is baked in by the provider's prepare hook);
@@ -69,6 +76,12 @@ class KernelConfig:
 
     # --- workflow axis (orthogonal to the environment axis) ---
     workflow_type: str = "browser"  # "browser" | "coding" | "document" | "replay"
+
+    # Phase 2: the workflow's typed config view. Built by ``from_raw`` via the
+    # active spec's ``config_cls`` (``migrate -> from_raw -> validate``); ``None``
+    # only when constructed directly (not via ``from_raw``). Runners narrow at
+    # entry: ``assert isinstance(ctx.config.workflow_config, CodingConfig)``.
+    workflow_config: WorkflowConfigBase | None = None
 
     # --- browser ---
     browser_urls: list[str] = field(default_factory=lambda: ["http://192.168.110.10:8080/Weibo.html"])
@@ -246,7 +259,25 @@ class KernelConfig:
         if wf is None:
             wf = (raw.get("workflow") or {}).get("type", "browser")
 
-        return cls(
+        # Phase 2: build the workflow's typed config view. ``ensure_workflow_registered``
+        # imports the active workflow's ``task_runner`` module (idempotent via the
+        # importlib cache) so its ``register_workflow`` fires and ``config_cls`` is set
+        # before the lookup. The flat per-workflow fields below are still populated from
+        # the same raw sections (dual population, behavior-identical); P2-2 removes them.
+        # ponytail: keep the ensure call inside from_raw -- runner modules import config
+        # at runtime, so config is fully loaded before from_raw runs; hoisting this to
+        # module top-level would re-enter config mid-load (ImportError).
+        try:
+            ensure_workflow_registered(wf)
+        except ModuleNotFoundError:
+            raise WorkflowConfigError(f"Unsupported workflow_type: {wf!r}") from None
+        spec = WORKFLOW_REGISTRY[wf]
+        view = None
+        if spec.config_cls is not None:
+            section = spec.config_cls.migrate(raw.get(spec.config_section) or {})
+            view = spec.config_cls.from_raw(section)
+
+        config = cls(
             # --- sandbox control ---
             total_count=sandbox.get("total_count", 100),
             detect_existing=sandbox.get("detect_existing", False),
@@ -318,4 +349,10 @@ class KernelConfig:
             report_format=report.get("format", "txt"),
             # --- monitor ---
             monitor=MonitorConfig.from_raw(monitor),
+            workflow_config=view,
         )
+        if view is not None:
+            # Cross-section checks (e.g. replay_running_concurrency <= total_count)
+            # run after the dataclass is built, so kernel_config is available.
+            view.validate(config)
+        return config

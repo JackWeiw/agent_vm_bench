@@ -17,10 +17,17 @@ import random
 import re
 import threading
 import time
+from dataclasses import dataclass, field
 
 from bench_core.config import KernelConfig
 from bench_core.schemas import BROWSER_STEP_ORDER, BenchSandbox, BrowserMetrics
-from bench_core.workflow_registry import RunContext, TaskRunner, WorkflowSpec, register_workflow
+from bench_core.workflow_registry import (
+    RunContext,
+    TaskRunner,
+    WorkflowConfigBase,
+    WorkflowSpec,
+    register_workflow,
+)
 from env_provider import EnvironmentProvider
 
 logger = logging.getLogger(__name__)
@@ -451,6 +458,46 @@ class TabOperationRunner(TaskRunner):
             self.state.is_alive = False
 
 
+@dataclass
+class BrowserConfig(WorkflowConfigBase):
+    """Typed view of the ``browser:`` YAML section (browser + warmup *content* knobs).
+
+    ``warmup_only`` is a bench-mode toggle (``--warmup-only``), consumed by the
+    orchestrator, so it stays on ``KernelConfig``; the warmup *content* knobs
+    (urls / loops / delay) live here with the browser knobs they accompany.
+    """
+
+    browser_urls: list[str] = field(default_factory=lambda: ["http://192.168.110.10:8080/Weibo.html"])
+    browser_timeout: int = 200
+    browser_interval_min: float = 0.5
+    browser_interval_max: float = 3.0
+    warmup_urls: list[str] = field(default_factory=list)
+    warmup_loops: int = 2
+    warmup_delay: int = 10
+
+    @classmethod
+    def migrate(cls, raw: dict) -> dict:
+        """Forward-compat: no legacy ``browser:`` renames yet."""
+        return raw
+
+    @classmethod
+    def from_raw(cls, raw: dict) -> BrowserConfig:
+        b = raw or {}
+        return cls(
+            browser_urls=b.get("urls", ["http://192.168.110.10:8080/Weibo.html"]),
+            browser_timeout=b.get("task_timeout", 200),
+            browser_interval_min=b.get("interval_min", 0.5),
+            browser_interval_max=b.get("interval_max", 3.0),
+            warmup_urls=b.get("warmup_urls", []),
+            warmup_loops=b.get("warmup_loops", 2),
+            warmup_delay=b.get("warmup_delay", 10),
+        )
+
+    def validate(self, kernel_config: KernelConfig) -> None:
+        """No cross-section checks today (browser / warmup are self-contained)."""
+        return None
+
+
 register_workflow(
     WorkflowSpec(
         name="browser",
@@ -460,5 +507,6 @@ register_workflow(
         metrics_cls=BrowserMetrics,
         step_order=tuple(BROWSER_STEP_ORDER),
         config_section="browser",
+        config_cls=BrowserConfig,
     )
 )

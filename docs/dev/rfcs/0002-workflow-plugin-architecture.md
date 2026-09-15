@@ -477,3 +477,102 @@ What is NOT done (deferred): adopting the opt-in guards; `ready_probe`; Phase 2 
 `KernelConfig`, gated by `test_config_compat`); Phase 3 `ReportFormatters` (move
 per-workflow totals off `Snapshot`). Status stays **Active** (not Implemented) until
 Phase 3 lands.
+
+## Implementation notes (Phase 2)
+
+Phase 2 opens the type-safe config path from RFC §3. `KernelConfig.from_raw` now looks up the
+active workflow's `WorkflowSpec.config_cls`, builds the typed view via
+`migrate → from_raw → validate`, and attaches it as `KernelConfig.workflow_config`. Four typed
+views ship — `BrowserConfig` / `CodingConfig` / `DocumentConfig` / `ReplayConfig` — each owned
+by its `task_runner/<wf>.py` module (RFC: views are "owned by the workflow module").
+
+**P2 is a 2-PR sub-stack** (`P2-1` additive seam, then `P2-2` field move) so the move's blast
+radius (165 production + ~30 test access sites) is gated by a proven equivalence check, not done
+in one risky commit.
+
+What shipped in **P2-1** (this PR):
+
+- The four `<Workflow>Config(WorkflowConfigBase)` views, each a mutable `@dataclass` (matches
+  `KernelConfig`, which is mutable; `RunContext` is frozen, the views are not). Fields:
+  `BrowserConfig` 7, `CodingConfig` 9, `DocumentConfig` 7, `ReplayConfig` 16 (40 total — the
+  per-workflow fields that today live flat on `KernelConfig`).
+- `WorkflowSpec.config_cls` wired on all four specs; `register_workflow`'s issubclass gate
+  (`WorkflowConfigBase`) now runs for real (Phase 0 left it `None`).
+- `KernelConfig.workflow_config: WorkflowConfigBase | None` field (annotation-only import of
+  `WorkflowConfigBase` under `TYPE_CHECKING` — no runtime cycle).
+- `KernelConfig.from_raw` builds the view **alongside** the flat fields (dual population,
+  behavior-identical): the flat per-workflow fields are still populated exactly as today, and
+  `__post_init__` / `validate()` are unchanged. The view is a typed mirror, not the source of
+  truth yet — `P2-2` flips it.
+- `WorkflowConfigBase` ABC contract standardized (see "Plugin contract" below): `migrate`
+  returns a raw dict (forward-compat only); `from_raw` owns typed parsing + post-parse
+  defaulting/normalization; `validate(self, kernel_config: KernelConfig)` is a **required**
+  param (cross-section checks read it, self-contained checks ignore it) — no per-impl
+  signature drift.
+- The gate (`test_config_compat.py`) extended: a `dataclasses.fields()`-driven equivalence test
+  asserts every view field == the flat field for every shipped YAML (auto-extends when a field
+  is added), plus negative tests — illegal `workflow_type` raises `WorkflowConfigError`; an
+  invalid `replay_control_plane_qps` raises the same `ValueError` family pre- and post-view
+  (consistency); `ReplayConfig.validate` cross-section `replay_running_concurrency <=
+  total_count` raises; CLI `--workflow-type` override selects the right view.
+- `bench.py` `--workflow-type` override is routed through `raw` **before** `from_raw`
+  (`load_config(path, workflow_type_override=...)`), not post-hoc on the built config — setting
+  it post-hoc would leave the typed view bound to the YAML's workflow (D7).
+
+Deviations from the RFC text, each with reason + follow-up:
+
+1. **`warmup_only` stays shared on `KernelConfig`** (D3). Reason: it is a bench-mode toggle
+   (`--warmup-only`, consumed by `bench.py` orchestration), not a browser-runner field;
+   `warmup_urls` / `warmup_loops` / `warmup_delay` (warmup *content*) did move to
+   `BrowserConfig`. Follow-up: none — `warmup_only` is orthogonal to the workflow axis.
+
+2. **`document` has no shipped YAML** (D4). Reason: `config/common/document*.yaml` is empty, so
+   the golden gate pins no `DocumentConfig` values. `DocumentConfig` is covered by an inline-dict
+   unit test instead. Follow-up: ship a `document.yaml` later → hook it into the golden gate's
+   `EXPECTED` and the equivalence test.
+
+3. **`ensure_workflow_registered(wf)` is called inside `from_raw`'s method body, never at
+   `config.py` module top-level** (D6). Reason: the runner modules import `config` at runtime;
+   hoisting the call to module top-level would re-enter `config` mid-load → `ImportError`. A
+   `# ponytail:` comment marks this non-obvious ceiling. Follow-up: none — structural.
+
+4. **Dual validation in P2-1** (transient). Both the flat `__post_init__` / `validate()` blocks
+   and `view.validate(config)` run, checking the same values. Reason: P2-1 is additive and
+   behavior-identical; removing the flat blocks in the same PR would mix the seam with the field
+   move. Follow-up: P2-2 removes the flat `__post_init__` per-workflow blocks and the
+   `validate()` hardcoded `workflow_type` set (reads `WORKFLOW_REGISTRY.keys()` or drops —
+   `from_raw`'s registry lookup is the authoritative gate), leaving `view.validate` as the sole
+   check.
+
+What is NOT done (deferred to P2-2): remove the 40 flat per-workflow fields from `KernelConfig`;
+migrate the 165 production + ~30 test access sites to the view (runner-internal → cross-workflow
+branches → unguarded cross sites, risk-ascending for easy locate/rollback); add `isinstance`
+guards at the 6 unguarded cross-cutting sites (D5 — real guards, not `__getattr__` delegation,
+which would defeat the static-typing goal); the zombie-field test (`assert not
+hasattr(cfg, "browser_urls")` for the moved fields). P3 `ReportFormatters` (move per-workflow
+totals off `Snapshot`) follows. Status stays **Active** (not Implemented) until P3 lands.
+
+## Plugin contract — a workflow's config view
+
+A new workflow's config view is one class in `task_runner/<wf>.py`, registered via
+`config_cls=` on its `WorkflowSpec`. The `WorkflowConfigBase` ABC pins three responsibilities:
+
+- **`migrate(cls, raw: dict) -> dict`** — forward-compat only. Owns legacy shape repair (field
+  renames, deprecated-key defaults, format upgrades) and returns a raw dict (not a typed
+  object), so `from_raw` stays the single typed-parsing step. Identity (`return raw`) when there
+  is nothing to migrate yet. A future YAML rename touches `migrate` alone — never the base class
+  or a runner.
+- **`from_raw(cls, raw: dict) -> <Workflow>Config`** — typed parsing + post-parse
+  defaulting/normalization (e.g. filling a list from a language default, force-disabling a knob
+  in a given mode). Does **not** mutate `kernel_config`; cross-section checks belong to
+  `validate`.
+- **`validate(self, kernel_config: KernelConfig) -> None`** — raise `WorkflowConfigError` on an
+  invalid config. `kernel_config` is always passed (the view is validated after the dataclass is
+  built); cross-section checks read it, self-contained checks ignore it. Required param — no
+  per-impl signature drift.
+
+Naming: `<Workflow>Config` (e.g. `BrowserConfig`). Registration: set
+`config_cls=<Workflow>Config` in the module's `register_workflow(WorkflowSpec(...))` call. The
+view is mutable (`@dataclass`, not frozen) to match `KernelConfig`. Runners narrow at entry:
+`assert isinstance(ctx.config.workflow_config, <Workflow>Config)` (the `RunContext`-narrowing
+pattern) — restoring static type-checking at the core config layer, the RFC's whole point.

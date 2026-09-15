@@ -173,18 +173,36 @@ class WorkflowConfigBase(ABC):
     @classmethod
     @abstractmethod
     def migrate(cls, raw: dict) -> dict:
-        """Forward-compat transform for legacy YAML fields (renames/defaults/deprecations)."""
+        """Forward-compat transform: input raw dict -> output transformed raw dict.
+
+        Owns *only* legacy shape repair (field renames, deprecated-key defaults,
+        format upgrades) and returns a raw dict (not a typed object), so ``from_raw``
+        stays the single typed-parsing step. Centralizing compat here means a future
+        YAML rename touches ``migrate`` alone -- never the base class or a runner.
+        Identity (``return raw``) when there is nothing to migrate yet.
+        """
         ...
 
     @classmethod
     @abstractmethod
     def from_raw(cls, raw: dict) -> WorkflowConfigBase:
-        """Parse this workflow's YAML section into the typed view (call migrate first)."""
+        """Parse this workflow's post-``migrate`` YAML section into the typed view.
+
+        Owns typed parsing + post-parse defaulting/normalization (e.g. filling a list
+        from a language default, force-disabling a knob in a given mode). Does NOT
+        mutate ``kernel_config`` -- cross-section checks belong to ``validate``.
+        """
         ...
 
     @abstractmethod
-    def validate(self, kernel_config: KernelConfig | None = None) -> None:
-        """Raise WorkflowConfigError on an invalid config (optional cross-section check)."""
+    def validate(self, kernel_config: KernelConfig) -> None:
+        """Raise ``WorkflowConfigError`` on an invalid config.
+
+        ``kernel_config`` is always passed (``KernelConfig.from_raw`` calls
+        ``view.validate(config)`` once the dataclass is built): cross-section checks
+        (e.g. a per-workflow cap against ``kernel_config.total_count``) read it;
+        self-contained checks ignore it. Required param -- no per-impl signature drift.
+        """
         ...
 
 

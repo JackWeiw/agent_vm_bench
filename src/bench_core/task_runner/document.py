@@ -25,6 +25,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from dataclasses import dataclass
 
 from bench_core.config import KernelConfig
 from bench_core.schemas import (
@@ -33,7 +34,13 @@ from bench_core.schemas import (
     DocumentMetrics,
     get_step_order,
 )
-from bench_core.workflow_registry import RunContext, TaskRunner, WorkflowSpec, register_workflow
+from bench_core.workflow_registry import (
+    RunContext,
+    TaskRunner,
+    WorkflowConfigBase,
+    WorkflowSpec,
+    register_workflow,
+)
 from env_provider import EnvironmentProvider
 
 logger = logging.getLogger(__name__)
@@ -392,6 +399,41 @@ class DocumentRoundRunner(TaskRunner):
         )
 
 
+@dataclass
+class DocumentConfig(WorkflowConfigBase):
+    """Typed view of the ``document:`` YAML section."""
+
+    document_case_kind: str = "xlsx"
+    document_recipe_path: str | None = None
+    document_operation_timeout: int = 900
+    document_recalc_timeout: int = 600
+    document_task_timeout: int = 1800
+    document_interval_min: float = 3.0
+    document_interval_max: float = 10.0
+
+    @classmethod
+    def migrate(cls, raw: dict) -> dict:
+        """Forward-compat: no legacy ``document:`` renames yet."""
+        return raw
+
+    @classmethod
+    def from_raw(cls, raw: dict) -> DocumentConfig:
+        d = raw or {}
+        return cls(
+            document_case_kind=d.get("case_kind", "xlsx"),
+            document_recipe_path=d.get("recipe_path"),
+            document_operation_timeout=d.get("operation_timeout", 900),
+            document_recalc_timeout=d.get("recalc_timeout", 600),
+            document_task_timeout=d.get("task_timeout", 1800),
+            document_interval_min=d.get("interval_min", 3.0),
+            document_interval_max=d.get("interval_max", 10.0),
+        )
+
+    def validate(self, kernel_config: KernelConfig) -> None:
+        """No cross-section checks today (document knobs are self-contained)."""
+        return None
+
+
 register_workflow(
     WorkflowSpec(
         name="document",
@@ -404,5 +446,6 @@ register_workflow(
         # still takes case_kind), so a single tuple here is the P0 placeholder.
         step_order=tuple(DOCUMENT_XLSX_STEP_ORDER),
         config_section="document",
+        config_cls=DocumentConfig,
     )
 )
