@@ -42,7 +42,7 @@ python -m pre_commit run --all-files # pre-commit hooks (run on staged files bef
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  CLI / entry                                                 │
-│  bench-core (bench_core.bench.main) --provider {fake,e2b,docker} │
+│  bench-core (bench_core.bench.main) --provider {fake,e2b,docker,aenv} │
 └─────────────────────────────────────────────────────────────┘
                           │
             ┌─────────────┴─────────────┐
@@ -73,15 +73,15 @@ The kernel (`bench_core`) and every provider impl depend on the contract (`env_p
 - `monitor.py` — `MonitorController` + `MonitorConfig`: host-level `vm-monitor` orchestration around the stress phase (stress-file sync subprocess; auto-enable by provider `vmm_type`; outputs to `report.output_dir/vm_monitor/`; optional host-sheet merge into replay obs xlsx).
 - `schemas.py` (`BenchSandbox`), `utils.py` (`calc_percentiles`, `setup_logging`).
 
-**`env_provider` contract** (`src/env_provider/__init__.py`): `EnvironmentProvider` ABC (`create_all`, `detect_existing`, `detect_from_ids`, `save_ids`, `check_alive`, `cleanup_all`, `cleanup_existing`, `prepare_env`, `prepare`, `exec`) + `SandboxInstance` / `CreationMetrics` / `CommandResult` / `SandboxStatus`. `exec()` is the **sole command primitive** — file writes go through `exec` as a heredoc, no separate upload method, so adding a provider is implementing `exec`. The provider keeps any SDK handle internally (`id → handle`); the kernel holds only the host-agnostic `SandboxInstance`.
+**`env_provider` contract** (`src/env_provider/__init__.py`): `EnvironmentProvider` ABC (`create_all`, `detect_existing`, `detect_from_ids`, `save_ids`, `check_alive`, `cleanup_all`, `cleanup_existing`, `prepare_env`, `prepare`, `exec`) + `SandboxInstance` / `CreationMetrics` / `CommandResult` / `SandboxStatus`. `exec()` is the **sole command primitive** — file writes go through `exec` as a heredoc, no separate upload method, so adding a provider is implementing `exec`. The provider keeps any SDK handle internally (`id → handle`); the kernel holds only the host-agnostic `SandboxInstance`. Optional capability Protocols (replay workflow) gate lifecycle features: `LifecycleCapable` (`pause`/`resume`), `EphemeralCapable` (`create_one`/`kill_one`), `SnapshotSizeCapable` (`snapshot_sizes`) — `aenv` satisfies all three; `e2b`/`docker`/`fake` are exec-only.
 
 **Shared backend infra** (`src/env_provider/_base.py`, `_ready.py`) — the e2b/docker managers' duplicated create/detect/cleanup skeletons were lifted here:
 - `_ready.py` — `ReadyChecker`: workflow-driven poll-until-ready; backend supplies `_exec_probe`. browser=port scan (`ss|netstat grep :{port}`, ports `18789` openclaw-gateway + `11436` llama-server), coding=`uname -a`, document=`document-bench-validate` (non-zero exit = immediate image failure, not retried). Constants `READY_MAX_WAIT=300`, `READY_INTERVAL=5`.
 - `_base.py` — `BackendSandboxStatus` / `BackendCreationMetrics` (byte-identical across backends) + `BaseSandboxManager(ABC)` lifecycle template. Subclass supplies SDK seams (`_create_single`, `_list_existing`, `_external_id`, `_attach`, `_kill_one`, `_exec_probe`) + class attrs (`_handle_attr`, `_noun`, `_id_attr`, `_set_killed_on_cleanup`). `_ready_config` is a **concrete base method** returning shared constants — readiness is a workflow concern, so there are no per-backend readiness knobs and no `port_check` block in any YAML.
 
-**Provider impls**: `env_provider/e2b/` (`config.py` `setup_e2b_env` + placeholder-credential fallback to `~/.e2b/config.json`, `manager.py`, `schemas.py`), `env_provider/docker/` (`config.py` reads only image/prefix/resources, `manager.py`, `schemas.py`), `env_provider/fake.py` (in-memory, drives `run_benchmark` in unit tests with no SDK).
+**Provider impls**: `env_provider/e2b/` (`config.py` `setup_e2b_env` + placeholder-credential fallback to `~/.e2b/config.json`, `manager.py`, `schemas.py`), `env_provider/docker/` (`config.py` reads only image/prefix/resources, `manager.py`, `schemas.py`), `env_provider/aenv/` (`__init__.py` `AenvProvider` subclasses `E2BProvider` and reuses the E2B `SandboxManager` handle table + SDK — AENV has no separate SDK, it is the E2B SDK pointed at an AENV server via `E2B_API_URL`; adds `pause`/`resume` (E2B `beta_pause`/`Sandbox.connect`), `snapshot_sizes` (scans the persisted-sandboxes tree), `create_one`/`kill_one` (trajectory mode); `default_replay_mode = "lifecycle"`; reads the `aenv:` config block, same shape as `e2b:` + optional `aenv.snapshot_dir` / `aenv.aenv_home_path`), `env_provider/fake.py` (in-memory, drives `run_benchmark` in unit tests with no SDK).
 
-**Config layering**: one `config/common/*.yaml` per workflow carries **both** `e2b:` and `docker:` blocks; `--provider` selects which `Config.from_raw` reads. The kernel reads only the shared sections. Credential placeholders (`your_e2b_access_token_here` / `your_e2b_api_key_here`) are treated as unset → fall back to `~/.e2b/config.json`.
+**Config layering**: one `config/common/*.yaml` per workflow carries the per-backend blocks it drives; `--provider` selects which `Config.from_raw` reads. Browser/coding/document configs carry **both** `e2b:` and `docker:` blocks; `config/common/replay.yaml` (the aenv lifecycle/snapshot backend) carries `aenv:` + `docker:` blocks (aenv subclasses the e2b `Config` and reads its own block). The kernel reads only the shared sections. Credential placeholders (`your_e2b_access_token_here` / `your_e2b_api_key_here`) are treated as unset → fall back to `~/.e2b/config.json`.
 
 ### Legacy tiers (frozen, share no code with the kernel)
 
@@ -100,7 +100,7 @@ These have their own managers / stats / round-robin (`e2b_bench/run_benchmark` i
 | Package | Purpose | Key Files |
 |---------|---------|-----------|
 | `src/bench_core/` | host-agnostic kernel (recommended) | `bench.py`, `config.py`, `task_manager.py`, `round_robin.py`, `stats_collector.py`, `task_runner/{browser,coding,document}.py`, `coding_payload.py` |
-| `src/env_provider/` | provider contract + e2b/docker/fake impls | `__init__.py` (ABC), `_base.py`, `_ready.py`, `e2b/`, `docker/`, `fake.py` |
+| `src/env_provider/` | provider contract + e2b/docker/aenv/fake impls | `__init__.py` (ABC + capability Protocols), `_base.py`, `_ready.py`, `e2b/`, `docker/`, `aenv/`, `fake.py` |
 | `vm_monitor/` | VMM monitoring (QEMU/Firecracker) | `base.py`, `qemu.py`, `firecracker.py`, `parsers.py`, `exporters.py` |
 | `e2b_bench/` | E2B sandbox testing (frozen legacy) | `bench.py`, `round_robin.py`, `task_runner.py`, `sandbox_manager.py`, `batch_scheduler.py`, `stats_collector.py` |
 | `docker_bench/` | Docker container testing (frozen legacy) | `bench.py`, `container_manager.py` |
@@ -259,7 +259,7 @@ See [docs/dev/metrics-reference.md](docs/dev/metrics-reference.md) for complete 
 ### Adding a new provider (kata / agentenv / gvisor)
 
 1. Create `src/env_provider/<name>.py` implementing `EnvironmentProvider` (lifecycle + `exec`); keep an internal `id → handle` table.
-2. If it has an SDK manager with create/detect/cleanup, subclass `BaseSandboxManager` (`_base.py`) and supply the SDK seams + class attrs; put config/schemas under `src/env_provider/<name>/`.
+2. If it has an SDK manager with create/detect/cleanup, subclass `BaseSandboxManager` (`_base.py`) and supply the SDK seams + class attrs; put config/schemas under `src/env_provider/<name>/`. For a lifecycle-capable backend that reuses an existing SDK, subclass that provider directly (see `env_provider/aenv/` — `AenvProvider` subclasses `E2BProvider` and only adds `pause`/`resume`/`snapshot_sizes`/`create_one`/`kill_one`, no new manager).
 3. Register the provider name in `bench_core.bench._build_provider` (lazy import).
 4. Add `config/common/*.yaml` blocks (`<name>:`) as needed — the kernel reads only shared sections.
 5. Add unit tests under `src/env_provider/tests/` (drive via `FakeProvider`-style stubs; no live SDK needed).
