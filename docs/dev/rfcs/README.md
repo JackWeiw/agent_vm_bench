@@ -40,7 +40,7 @@ When in doubt, open a short issue first and ask.
 | # | Title | Status | Owner |
 |---|---|---|---|
 | 0001 | Abstract EnvironmentProvider layer | Active | @JackWeiw |
-| 0002 | Workflow plugin architecture (TaskRunner ABC + registry) | Draft | @JackWeiw |
+| 0002 | Workflow plugin architecture (TaskRunner ABC + registry) | Active | @JackWeiw |
 
 <!--
 Index format (keep sorted by number):
