@@ -24,6 +24,8 @@ from bench_core.schemas import (
     Snapshot,
     get_step_order,
 )
+from bench_core.task_runner.document import DocumentConfig
+from bench_core.task_runner.replay import ReplayConfig
 from bench_core.utils import (
     calc_p99,
     calc_percentiles,
@@ -231,8 +233,10 @@ class ReportFormatter:
         lines.append(f"  Backend:        {self.provider_label}")
         lines.append(f"  Total Sandboxes: {self.config.total_count}")
         if self.config.workflow_type == "document":
+            cfg = self.config.workflow_config
+            assert isinstance(cfg, DocumentConfig), "document config requires a DocumentConfig view"
             lines.append(f"  Workflow:        {self.config.workflow_type}")
-            lines.append(f"  Document Case:   {self.config.document_case_kind}")
+            lines.append(f"  Document Case:   {cfg.document_case_kind}")
 
         # Mode
         if self.config.detect_existing:
@@ -458,6 +462,8 @@ class ReportFormatter:
 
     def format_document_stats_section(self) -> list[str]:
         """Format document task statistics section."""
+        cfg = self.config.workflow_config
+        assert isinstance(cfg, DocumentConfig), "document stats require a DocumentConfig view"
         metrics = [state.document_metrics for state in self.sandbox_states.values()]
         all_latencies = [latency for metric in metrics for latency in metric.latencies]
         total_tasks = sum(metric.total_tasks for metric in metrics)
@@ -465,7 +471,7 @@ class ReportFormatter:
         total_failed = sum(metric.failed_count for metric in metrics)
         total_timeout = sum(metric.timeout_count for metric in metrics)
         lines = ["\n[Document Task Statistics]"]
-        lines.append(f"  Case Kind:     {self.config.document_case_kind}")
+        lines.append(f"  Case Kind:     {cfg.document_case_kind}")
         lines.append(f"  Total Tasks:   {total_tasks}")
         lines.append(f"  Success:       {total_success}")
         lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
@@ -477,16 +483,18 @@ class ReportFormatter:
 
     def format_document_step_timing_table(self) -> list[str]:
         """Format document step-level timing as a table."""
+        cfg = self.config.workflow_config
+        assert isinstance(cfg, DocumentConfig), "document step timing requires a DocumentConfig view"
         all_step_times: dict[str, list[float]] = {}
         for state in self.sandbox_states.values():
             for step_name, times in state.document_metrics.get_step_times_copy().items():
                 all_step_times.setdefault(step_name, []).extend(times)
         if not all_step_times:
             return []
-        lines = [f"\n[Step-Level Timing (Document {self.config.document_case_kind.upper()} Mode)]"]
+        lines = [f"\n[Step-Level Timing (Document {cfg.document_case_kind.upper()} Mode)]"]
         headers = ["Step", "Count", "Avg(ms)", "P50(ms)", "P95(ms)", "P99(ms)", "Tail"]
         rows: list[list[str]] = []
-        for step_name in get_step_order("document", self.config.document_case_kind):
+        for step_name in get_step_order("document", cfg.document_case_kind):
             times = all_step_times.get(step_name, [])
             if not times:
                 continue
@@ -508,6 +516,8 @@ class ReportFormatter:
 
     def format_replay_stats_section(self) -> list[str]:
         """Format trajectory-replay task statistics section."""
+        rcfg = self.config.workflow_config
+        assert isinstance(rcfg, ReplayConfig), "replay stats require a ReplayConfig view"
         all_latencies: list[float] = []
         for s in self.sandbox_states.values():
             all_latencies.extend(s.replay_metrics.latencies)
@@ -562,7 +572,7 @@ class ReportFormatter:
         # (mean/P50/P95), plus an aggregate ratio. Near-zero slices
         # (slice_total_sec < MIN_SLICE_SEC) are excluded from the per-sample
         # overhead list; the duration percentile lists already exclude == 0.
-        if self.config.replay_mode in ("lifecycle", "trajectory"):
+        if rcfg.replay_mode in ("lifecycle", "trajectory"):
             all_resume: list[float] = []
             all_pause: list[float] = []
             all_slice: list[float] = []
@@ -853,7 +863,9 @@ class ReportFormatter:
         slot_held line reuses the same running_slot_held_secs list as
         [Lifecycle Overhead] but shows P99 here too.
         """
-        if self.config.replay_mode != "trajectory":
+        rcfg = self.config.workflow_config
+        assert isinstance(rcfg, ReplayConfig), "trajectory summary requires a ReplayConfig view"
+        if rcfg.replay_mode != "trajectory":
             return []
         obs = ReplayObservability(
             self.config,
@@ -1040,8 +1052,11 @@ class ReportFormatter:
         # resume/pause data (exec_only has none -> lists empty -> skip). This
         # is the per-round view the cumulative [Lifecycle Overhead] section
         # cannot show -- e.g. whether the 2nd trajectory pass resumes slower.
-        if self.config.workflow_type == "replay" and self.config.replay_mode in ("lifecycle", "trajectory"):
-            lines.extend(self._format_lifecycle_overhead_by_round(active_rounds))
+        if self.config.workflow_type == "replay":
+            rcfg = self.config.workflow_config
+            assert isinstance(rcfg, ReplayConfig), "replay round comparison requires a ReplayConfig view"
+            if rcfg.replay_mode in ("lifecycle", "trajectory"):
+                lines.extend(self._format_lifecycle_overhead_by_round(active_rounds))
 
         return lines
 

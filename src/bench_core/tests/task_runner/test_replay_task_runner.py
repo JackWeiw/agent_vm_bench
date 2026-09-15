@@ -12,8 +12,8 @@ import time
 from bench_core.config import KernelConfig
 from bench_core.payload.replay_payload import ReplayStep
 from bench_core.schemas import BenchSandbox
+from bench_core.task_runner.replay import ReplayBaseRunner, ReplayConfig
 from bench_core.workflow_registry import RunContext
-from bench_core.task_runner.replay import ReplayBaseRunner
 from env_provider import CommandResult
 from env_provider.fake import FakeProvider
 
@@ -32,7 +32,10 @@ def test_slice_exec_verbatim_with_cwd_and_env():
             return CommandResult(exit_code=0, stdout="ok\n", stderr="")
 
     spy = _SpyProvider(count=1)
-    config = KernelConfig(workflow_type="replay", replay_workdir="/testbed", replay_env={"PAGER": "cat"})
+    config = KernelConfig(
+        workflow_type="replay",
+        workflow_config=ReplayConfig(replay_workdir="/testbed", replay_env={"PAGER": "cat"}),
+    )
     runner = ReplayBaseRunner(
         RunContext(state=_make_state(), config=config, stop_event=threading.Event(), provider=spy)
     )
@@ -59,8 +62,10 @@ def test_warmup_loads_pool_and_probes_exec():
     reset_pool_cache()
     config = KernelConfig(
         workflow_type="replay",
-        replay_trajectory_dir=str(__import__("pathlib").Path(__file__).parent.parent / "fixtures" / "replay"),
-        replay_trajectory_glob="*",
+        workflow_config=ReplayConfig(
+            replay_trajectory_dir=str(__import__("pathlib").Path(__file__).parent.parent / "fixtures" / "replay"),
+            replay_trajectory_glob="*",
+        ),
     )
     state = _make_state()
     runner = ReplayWarmupRunner(
@@ -77,9 +82,11 @@ def test_fixed_runner_replays_pool_and_advances_cursor():
     reset_pool_cache()
     config = KernelConfig(
         workflow_type="replay",
-        replay_trajectory_dir=str(__import__("pathlib").Path(__file__).parent.parent / "fixtures" / "replay"),
-        replay_trajectory_glob="no_terminal.json",  # one trajectory, 2 steps
-        replay_delay_scale=0.0,  # no real sleep in tests
+        workflow_config=ReplayConfig(
+            replay_trajectory_dir=str(__import__("pathlib").Path(__file__).parent.parent / "fixtures" / "replay"),
+            replay_trajectory_glob="no_terminal.json",  # one trajectory, 2 steps
+            replay_delay_scale=0.0,  # no real sleep in tests
+        ),
     )
     state = _make_state()
     stop = threading.Event()
@@ -115,10 +122,12 @@ def test_fixed_runner_stop_on_error_advances_to_next_trajectory():
 
     config = KernelConfig(
         workflow_type="replay",
-        replay_trajectory_dir=str(__import__("pathlib").Path(__file__).parent.parent / "fixtures" / "replay"),
-        replay_trajectory_glob="no_terminal.json",
-        replay_delay_scale=0.0,
-        replay_stop_on_error=True,
+        workflow_config=ReplayConfig(
+            replay_trajectory_dir=str(__import__("pathlib").Path(__file__).parent.parent / "fixtures" / "replay"),
+            replay_trajectory_glob="no_terminal.json",
+            replay_delay_scale=0.0,
+            replay_stop_on_error=True,
+        ),
     )
     state = _make_state()
     stop = threading.Event()
@@ -146,9 +155,11 @@ def test_round_runner_replays_one_trajectory_per_round():
     reset_pool_cache()
     config = KernelConfig(
         workflow_type="replay",
-        replay_trajectory_dir=str(__import__("pathlib").Path(__file__).parent.parent / "fixtures" / "replay"),
-        replay_trajectory_glob="*",  # 2 valid trajectories in fixtures
-        replay_delay_scale=0.0,
+        workflow_config=ReplayConfig(
+            replay_trajectory_dir=str(__import__("pathlib").Path(__file__).parent.parent / "fixtures" / "replay"),
+            replay_trajectory_glob="*",  # 2 valid trajectories in fixtures
+            replay_delay_scale=0.0,
+        ),
     )
     state = _make_state()  # index=0 -> (0 + 0) % 2 = 0
     stop = threading.Event()
@@ -168,9 +179,11 @@ def test_round_runner_index_rotation_picks_different_trajectory():
     reset_pool_cache()
     config = KernelConfig(
         workflow_type="replay",
-        replay_trajectory_dir=str(__import__("pathlib").Path(__file__).parent.parent / "fixtures" / "replay"),
-        replay_trajectory_glob="*",
-        replay_delay_scale=0.0,
+        workflow_config=ReplayConfig(
+            replay_trajectory_dir=str(__import__("pathlib").Path(__file__).parent.parent / "fixtures" / "replay"),
+            replay_trajectory_glob="*",
+            replay_delay_scale=0.0,
+        ),
     )
     stop = threading.Event()
     # sandbox index=1, round_id=0 -> (1 + 0) % 2 = 1 -> the other trajectory
@@ -186,7 +199,7 @@ def test_round_runner_index_rotation_picks_different_trajectory():
 def test_run_slice_p1_noop_hooks_measure_near_zero():
     """P1 baseline: no-op _resume/_pause add no lifecycle overhead; slice ~= exec."""
 
-    config = KernelConfig(workflow_type="replay")
+    config = KernelConfig(workflow_type="replay", workflow_config=ReplayConfig())
     state = _make_state()
     stop_event = threading.Event()
     provider = FakeProvider(count=1)
@@ -219,7 +232,7 @@ def test_run_slice_p2_override_flows_timing_through_hooks():
             time.sleep(self.PAUSE_DUR)
             return 0.0, 0.0, time.perf_counter() - t
 
-    config = KernelConfig(workflow_type="replay")
+    config = KernelConfig(workflow_type="replay", workflow_config=ReplayConfig())
     state = _make_state()
     stop_event = threading.Event()
     provider = FakeProvider(count=1)

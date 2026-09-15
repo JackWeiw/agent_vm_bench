@@ -13,6 +13,8 @@ import pytest
 
 from bench_core.bench import run_benchmark
 from bench_core.config import KernelConfig
+from bench_core.task_runner.browser import BrowserConfig
+from bench_core.task_runner.replay import ReplayConfig
 from env_provider import CreationMetrics, SandboxStatus
 from env_provider.fake import FakeProvider
 
@@ -41,7 +43,7 @@ class TestRunBenchmarkRoundRobin:
             round_size=2,
             round_interval=0,
             test_duration=60,
-            browser_urls=["http://x"],
+            workflow_config=BrowserConfig(browser_urls=["http://x"]),
             output_dir=str(tmp_path),
             filename_prefix="rr",
         )
@@ -65,7 +67,7 @@ class TestRunBenchmarkFixed:
             total_count=2,
             benchmark_mode="fixed",
             test_duration=1,
-            browser_urls=["http://x"],
+            workflow_config=BrowserConfig(browser_urls=["http://x"]),
             output_dir=str(tmp_path),
             filename_prefix="fixed",
         )
@@ -103,9 +105,7 @@ class TestRunBenchmarkWarmupOnly:
             workflow_type="browser",
             total_count=2,
             warmup_only=True,
-            warmup_urls=["http://x"],
-            warmup_delay=0,
-            warmup_loops=1,
+            workflow_config=BrowserConfig(warmup_urls=["http://x"], warmup_delay=0, warmup_loops=1),
             output_dir=str(tmp_path),
         )
         provider = FakeProvider(count=2)
@@ -168,10 +168,10 @@ def test_load_config_replay_yaml():
 
     config, raw = load_config("config/common/replay.yaml")
     assert config.workflow_type == "replay"
-    assert config.replay_trajectory_dir == "trajectories/swe-bench"
+    assert config.workflow_config.replay_trajectory_dir == "trajectories/swe-bench"
     # replay.yaml ships as the explicit lifecycle 1:1 baseline (aenv default,
     # set explicitly so the same config is unambiguous on any provider).
-    assert config.replay_mode == "lifecycle"
+    assert config.workflow_config.replay_mode == "lifecycle"
 
 
 class TestRunBenchmarkReplayRoundRobin:
@@ -184,9 +184,11 @@ class TestRunBenchmarkReplayRoundRobin:
             round_size=2,
             round_interval=0,
             test_duration=60,
-            replay_trajectory_dir=str(REPLAY_FIXTURES),
-            replay_mode="exec_only",
-            replay_delay_scale=0.0,
+            workflow_config=ReplayConfig(
+                replay_trajectory_dir=str(REPLAY_FIXTURES),
+                replay_mode="exec_only",
+                replay_delay_scale=0.0,
+            ),
             output_dir=str(tmp_path),
             filename_prefix="rr_replay",
         )
@@ -209,9 +211,11 @@ class TestRunBenchmarkReplayFixed:
             total_count=2,
             benchmark_mode="fixed",
             test_duration=1,
-            replay_trajectory_dir=str(REPLAY_FIXTURES),
-            replay_mode="exec_only",
-            replay_delay_scale=0.0,
+            workflow_config=ReplayConfig(
+                replay_trajectory_dir=str(REPLAY_FIXTURES),
+                replay_mode="exec_only",
+                replay_delay_scale=0.0,
+            ),
             output_dir=str(tmp_path),
             filename_prefix="fixed_replay",
         )
@@ -242,9 +246,11 @@ class TestRunBenchmarkReplayLifecycleStartup:
             total_count=1,
             benchmark_mode="fixed",
             test_duration=1,
-            replay_trajectory_dir=str(REPLAY_FIXTURES),
-            replay_mode="lifecycle",
-            replay_delay_scale=0.0,
+            workflow_config=ReplayConfig(
+                replay_trajectory_dir=str(REPLAY_FIXTURES),
+                replay_mode="lifecycle",
+                replay_delay_scale=0.0,
+            ),
             output_dir=str(tmp_path),
             filename_prefix="lc_fail",
         )
@@ -258,9 +264,11 @@ class TestRunBenchmarkReplayLifecycleStartup:
             total_count=1,
             benchmark_mode="fixed",
             test_duration=1,
-            replay_trajectory_dir=str(REPLAY_FIXTURES),
-            replay_mode=None,  # sentinel -> resolve to provider default
-            replay_delay_scale=0.0,
+            workflow_config=ReplayConfig(
+                replay_trajectory_dir=str(REPLAY_FIXTURES),
+                replay_mode=None,  # sentinel -> resolve to provider default
+                replay_delay_scale=0.0,
+            ),
             output_dir=str(tmp_path),
             filename_prefix="lc_resolve",
         )
@@ -269,7 +277,7 @@ class TestRunBenchmarkReplayLifecycleStartup:
         # so lifecycle validation passes and the run completes.
         result = run_benchmark(config, provider)
         assert "Replay Task Statistics" in result["report"]
-        assert config.replay_mode == "exec_only"  # resolved from provider default
+        assert config.workflow_config.replay_mode == "exec_only"  # resolved from provider default
 
 
 def test_build_arg_parser_includes_aenv_provider():

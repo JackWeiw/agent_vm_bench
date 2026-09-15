@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bench_core.observability.replay_obs import ReplayObservability
+from bench_core.task_runner.replay import ReplayConfig
 from bench_core.utils import _atomic_write_text
 
 if TYPE_CHECKING:
@@ -49,6 +50,9 @@ def write_run_summary(
     """
     if config.workflow_type != "replay":
         return None
+
+    rcfg = config.workflow_config
+    assert isinstance(rcfg, ReplayConfig), "run_summary requires a ReplayConfig view"
 
     admission_snapshot = stats_collector.admission_snapshot
     sandbox_states = stats_collector.sandbox_states
@@ -86,7 +90,7 @@ def write_run_summary(
     pause_sum = sum(p for _, p, _ in agg)
     slice_sum = sum(s for _, _, s in agg)
     lifecycle_overhead = None
-    if config.replay_mode in ("lifecycle", "trajectory") and slice_sum > 0:
+    if rcfg.replay_mode in ("lifecycle", "trajectory") and slice_sum > 0:
         lifecycle_overhead = {
             "pause_sec_sum": round(pause_sum, 6),
             "resume_sec_sum": round(resume_sum, 6),
@@ -119,7 +123,7 @@ def write_run_summary(
     summary = {
         "schema_version": SCHEMA_VERSION,
         "workflow_type": config.workflow_type,
-        "replay_mode": config.replay_mode,
+        "replay_mode": rcfg.replay_mode,
         "provider": stats_collector.provider_label or None,
         "started_at": _iso(started_epoch) if started_epoch else None,
         "completed_at": _iso(completed_epoch),
@@ -128,7 +132,7 @@ def write_run_summary(
         "test_duration": config.test_duration,
         "wall_sec": round(wall_sec, 3) if wall_sec is not None else None,
         "total_count": config.total_count,
-        "running_concurrency": config.replay_running_concurrency,
+        "running_concurrency": rcfg.replay_running_concurrency,
         "overcommit_ratio": round(obs.overcommit_ratio, 3),
         "throughput": {
             "total": total,

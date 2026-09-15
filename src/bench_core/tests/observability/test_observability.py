@@ -6,6 +6,7 @@ import pytest
 from bench_core.config import KernelConfig
 from bench_core.observability.replay_obs import ReplayObservability
 from bench_core.schemas import BenchSandbox, ReplayMetrics
+from bench_core.task_runner.replay import ReplayConfig
 from env_provider import SandboxInstance
 
 
@@ -31,7 +32,9 @@ def _state_with_metrics() -> BenchSandbox:
 
 def test_throughput_metrics():
     state = _state_with_metrics()
-    cfg = KernelConfig(workflow_type="replay", total_count=2, replay_running_concurrency=1)
+    cfg = KernelConfig(
+        workflow_type="replay", total_count=2, workflow_config=ReplayConfig(replay_running_concurrency=1)
+    )
     obs = ReplayObservability(cfg, {0: state}, wall_sec=10.0)
     assert obs.total_steps == 3
     assert obs.steps_per_sec == pytest.approx(0.3)  # 3 / 10
@@ -120,7 +123,7 @@ def test_trajectory_summary_stats():
             kill_sec=ks,
         )
     state.replay_metrics = m
-    cfg = KernelConfig(workflow_type="replay", replay_mode="trajectory", total_count=1)
+    cfg = KernelConfig(workflow_type="replay", total_count=1, workflow_config=ReplayConfig(replay_mode="trajectory"))
     obs = ReplayObservability(cfg, {0: state})
     cs_stats = obs.create_sec_stats
     assert cs_stats["min"] == 1.0 and cs_stats["max"] == 3.0
@@ -132,7 +135,7 @@ def test_trajectory_summary_stats():
 def test_trajectory_stats_empty_when_no_create_secs():
     state = BenchSandbox.from_instance(SandboxInstance(id="x", index=0), "replay")
     state.replay_metrics = ReplayMetrics()  # no slices -> empty create_secs
-    cfg = KernelConfig(workflow_type="replay", replay_mode="trajectory", total_count=1)
+    cfg = KernelConfig(workflow_type="replay", total_count=1, workflow_config=ReplayConfig(replay_mode="trajectory"))
     obs = ReplayObservability(cfg, {0: state})
     assert obs.create_sec_stats == {"min": 0.0, "max": 0.0, "avg": 0.0, "p50": 0.0, "p95": 0.0, "p99": 0.0}
     assert obs.kill_sec_stats["p50"] == 0.0

@@ -2,6 +2,8 @@
 import pytest
 
 from bench_core.config import KernelConfig
+from bench_core.task_runner.browser import BrowserConfig
+from bench_core.task_runner.replay import ReplayConfig
 
 
 def test_defaults():
@@ -25,6 +27,8 @@ def test_benchmark_count_floor_is_one():
 
 
 def test_validation_rejects_bad_workflow():
+    # V1 reads WORKFLOW_REGISTRY (populated by the task_runner imports above);
+    # an unknown workflow_type is rejected.
     with pytest.raises(ValueError):
         KernelConfig(workflow_type="bogus").validate()
 
@@ -93,11 +97,13 @@ def test_from_raw_reads_nested_sections():
     assert c.create_batch_interval == 3
     assert c.task_batch_size == 10
     assert c.task_batch_interval == 5
-    # browser (incl warmup)
-    assert c.browser_urls == ["http://x/page.html"]
-    assert c.browser_timeout == 200
-    assert c.warmup_urls == ["http://x/w.html"]
-    assert c.warmup_loops == 1
+    # browser (incl warmup) -> BrowserConfig view
+    assert isinstance(c.workflow_config, BrowserConfig)
+    bc = c.workflow_config
+    assert bc.browser_urls == ["http://x/page.html"]
+    assert bc.browser_timeout == 200
+    assert bc.warmup_urls == ["http://x/w.html"]
+    assert bc.warmup_loops == 1
     # test (incl round-robin)
     assert c.test_duration == 160
     assert c.stats_interval == 10
@@ -168,88 +174,101 @@ def test_from_raw_replay_section():
     }
     cfg = KernelConfig.from_raw(raw)
     assert cfg.workflow_type == "replay"
-    assert cfg.replay_trajectory_dir == "trajectories/swe"
-    assert cfg.replay_trajectory_glob == "*.replay.json"
-    assert cfg.replay_workdir == "/testbed"
-    assert cfg.replay_env == {"PAGER": "cat"}
-    assert cfg.replay_action_timeout == 120
-    assert cfg.replay_delay_scale == 0.5
-    assert cfg.replay_stop_on_error is True
-    assert cfg.replay_mode == "exec_only"
+    assert isinstance(cfg.workflow_config, ReplayConfig)
+    rc = cfg.workflow_config
+    assert rc.replay_trajectory_dir == "trajectories/swe"
+    assert rc.replay_trajectory_glob == "*.replay.json"
+    assert rc.replay_workdir == "/testbed"
+    assert rc.replay_env == {"PAGER": "cat"}
+    assert rc.replay_action_timeout == 120
+    assert rc.replay_delay_scale == 0.5
+    assert rc.replay_stop_on_error is True
+    assert rc.replay_mode == "exec_only"
+    # exec_only normalizes the ready-probe off (Block 8, now on the view).
+    assert rc.replay_ready_probe is False
 
 
 def test_validate_accepts_replay():
+    # Direct construction (no from_raw -> workflow_config stays None); validate()
+    # only checks shared fields + the workflow_type registry set. replay_mode
+    # validation lives on ReplayConfig.validate (exercised via from_raw below).
     cfg = KernelConfig(workflow_type="replay")
     cfg.validate()  # must not raise
 
 
 def test_replay_defaults():
-    cfg = KernelConfig(workflow_type="replay")
-    assert cfg.replay_trajectory_dir == "trajectories"
-    assert cfg.replay_trajectory_glob == "*.replay.json"
-    assert cfg.replay_workdir == "/"
-    assert cfg.replay_env == {}
-    assert cfg.replay_action_timeout == 300
-    assert cfg.replay_delay_scale == 1.0
-    assert cfg.replay_stop_on_error is False
-    assert cfg.replay_mode is None
+    cfg = KernelConfig.from_raw({"workflow_type": "replay"})
+    assert isinstance(cfg.workflow_config, ReplayConfig)
+    rc = cfg.workflow_config
+    assert rc.replay_trajectory_dir == "trajectories"
+    assert rc.replay_trajectory_glob == "*.replay.json"
+    assert rc.replay_workdir == "/"
+    assert rc.replay_env == {}
+    assert rc.replay_action_timeout == 300
+    assert rc.replay_delay_scale == 1.0
+    assert rc.replay_stop_on_error is False
+    assert rc.replay_mode is None
 
 
 def test_validate_accepts_replay_lifecycle():
-    cfg = KernelConfig(workflow_type="replay", replay_mode="lifecycle")
+    cfg = KernelConfig.from_raw({"workflow_type": "replay", "replay": {"mode": "lifecycle"}})
     cfg.validate()  # must not raise
 
 
 def test_validate_accepts_replay_none_sentinel():
-    cfg = KernelConfig(workflow_type="replay", replay_mode=None)
+    cfg = KernelConfig.from_raw({"workflow_type": "replay"})
+    assert cfg.workflow_config.replay_mode is None
     cfg.validate()  # must not raise (None = pre-resolution sentinel)
 
 
 def test_validate_rejects_bad_replay_mode():
-    cfg = KernelConfig(workflow_type="replay", replay_mode="bogus")
     with pytest.raises(ValueError, match="replay_mode"):
-        cfg.validate()
+        KernelConfig.from_raw({"workflow_type": "replay", "replay": {"mode": "bogus"}})
 
 
 def test_from_raw_replay_mode_none_when_absent():
-    raw = {"workflow_type": "replay", "replay": {"trajectory_dir": "t"}}
-    cfg = KernelConfig.from_raw(raw)
-    assert cfg.replay_mode is None
+    cfg = KernelConfig.from_raw({"workflow_type": "replay", "replay": {"trajectory_dir": "t"}})
+    assert cfg.workflow_config.replay_mode is None
 
 
 # --- replay lifecycle / trajectory knobs (P1 Task 2) ---
 
 
 def test_config_defaults_trajectory_retries_and_pacing():
-    cfg = KernelConfig()
-    assert cfg.replay_lifecycle_retries == 2
-    assert cfg.replay_launch_interval_sec == 0.0
-    assert cfg.replay_pause_duration_sec == 0.0
+    rc = ReplayConfig()
+    assert rc.replay_lifecycle_retries == 2
+    assert rc.replay_launch_interval_sec == 0.0
+    assert rc.replay_pause_duration_sec == 0.0
 
 
 def test_config_validates_trajectory_mode():
-    cfg = KernelConfig(workflow_type="replay", replay_mode="trajectory")
+    cfg = KernelConfig.from_raw({"workflow_type": "replay", "replay": {"mode": "trajectory"}})
     cfg.validate()  # must not raise
 
 
 def test_config_rejects_negative_retries():
     with pytest.raises(ValueError):
-        KernelConfig(replay_lifecycle_retries=-1)
+        KernelConfig.from_raw({"workflow_type": "replay", "replay": {"lifecycle_retries": -1}})
 
 
 def test_config_rejects_negative_launch_interval():
     with pytest.raises(ValueError):
-        KernelConfig(replay_launch_interval_sec=-0.1)
+        KernelConfig.from_raw({"workflow_type": "replay", "replay": {"launch_interval_sec": -0.1}})
 
 
 def test_config_rejects_negative_pause_duration():
     with pytest.raises(ValueError):
-        KernelConfig(replay_pause_duration_sec=-0.5)
+        KernelConfig.from_raw({"workflow_type": "replay", "replay": {"pause_duration_sec": -0.5}})
 
 
 def test_config_from_raw_reads_trajectory_knobs():
-    raw = {"replay": {"mode": "trajectory", "lifecycle_retries": 5, "launch_interval_sec": 1.5}}
+    raw = {
+        "workflow_type": "replay",
+        "replay": {"mode": "trajectory", "lifecycle_retries": 5, "launch_interval_sec": 1.5},
+    }
     cfg = KernelConfig.from_raw(raw)
-    assert cfg.replay_mode == "trajectory"
-    assert cfg.replay_lifecycle_retries == 5
-    assert cfg.replay_launch_interval_sec == 1.5
+    assert isinstance(cfg.workflow_config, ReplayConfig)
+    rc = cfg.workflow_config
+    assert rc.replay_mode == "trajectory"
+    assert rc.replay_lifecycle_retries == 5
+    assert rc.replay_launch_interval_sec == 1.5

@@ -146,16 +146,20 @@ def find_trajectories(directory: Path, glob: str = "*.replay.json") -> list[Path
 def load_pool(config: KernelConfig) -> tuple[Trajectory, ...]:
     """Load + cache the shared trajectory pool from ``config``.
 
-    When ``config.replay_template_manifest`` is set, each trajectory's
-    ``template`` is attached from the manifest (keyed by path relative to
-    ``replay_trajectory_dir``); a missing entry leaves ``template=None`` with a
-    WARNING. A missing/unreadable manifest file is a hard error (an explicit
+    When ``config.workflow_config.replay_template_manifest`` is set, each
+    trajectory's ``template`` is attached from the manifest (keyed by path
+    relative to ``config.workflow_config.replay_trajectory_dir``); a missing
+    entry leaves ``template=None`` with a WARNING. A missing/unreadable manifest file is a hard error (an explicit
     manifest the user asked for must be readable). Returns a cached frozen tuple
     so repeat calls from different runner threads share one immutable object.
     """
-    directory = config.replay_trajectory_dir
-    glob = config.replay_trajectory_glob
-    manifest_path = config.replay_template_manifest
+    from bench_core.task_runner.replay import ReplayConfig
+
+    rcfg = config.workflow_config
+    assert isinstance(rcfg, ReplayConfig), "load_pool requires a ReplayConfig view"
+    directory = rcfg.replay_trajectory_dir
+    glob = rcfg.replay_trajectory_glob
+    manifest_path = rcfg.replay_template_manifest
     cache_key = (str(directory), glob, str(manifest_path or ""))
     if cache_key in _POOL_CACHE:
         return _POOL_CACHE[cache_key]

@@ -24,7 +24,7 @@ from bench_core.admission import Admission, QpsRateLimiter, RunningSlotScheduler
 from bench_core.config import KernelConfig
 from bench_core.payload.replay_payload import ReplayStep
 from bench_core.schemas import BenchSandbox
-from bench_core.task_runner.replay import ReplayRoundRunner
+from bench_core.task_runner.replay import ReplayConfig, ReplayRoundRunner
 from bench_core.workflow_registry import RunContext
 from env_provider import SandboxInstance
 from env_provider.tests.lifecycle_fake import FakeLifecycleProvider
@@ -33,20 +33,28 @@ REPLAY_FIXTURES = Path(__file__).parent.parent / "fixtures" / "replay"
 
 
 def _config(tmp_path, **kw):
-    base = dict(
+    # Shared (stays on KernelConfig) vs per-workflow (goes to ReplayConfig).
+    shared = dict(
         workflow_type="replay",
         total_count=1,
         benchmark_mode="fixed",
         test_duration=1,
+        output_dir=str(tmp_path),
+        filename_prefix="smoke",
+    )
+    replay = dict(
         replay_trajectory_dir=str(REPLAY_FIXTURES),
         replay_mode="lifecycle",
         replay_delay_scale=0.0,
         replay_ready_probe=False,
-        output_dir=str(tmp_path),
-        filename_prefix="smoke",
     )
-    base.update(kw)
-    return KernelConfig(**base)
+    # Route overrides to the right bucket.
+    for k, v in kw.items():
+        if k.startswith("replay_"):
+            replay[k] = v
+        else:
+            shared[k] = v
+    return KernelConfig(**shared, workflow_config=ReplayConfig(**replay))
 
 
 def _state(i):
