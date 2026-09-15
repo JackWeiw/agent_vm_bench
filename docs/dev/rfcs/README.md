@@ -22,25 +22,25 @@ When in doubt, open a short issue first and ask.
 
 | Status | Meaning |
 |---|---|
-| **Draft** | PR open for discussion (`0000-<name>.md`) |
-| **Active** | Merged and accepted; renamed to `NNNN-<name>.md` |
+| **Draft** | PR open for discussion (numbered on creation, `NNNN-<name>.md`) |
+| **Active** | Merged and accepted; status flipped, number retained |
 | **Implemented** | Shipped in code; the implementing PR references the RFC # |
 | **Declined / Withdrawn / Superseded** | Rejected or replaced; reason recorded in the file |
 
 ## How to submit
 
-1. Copy `0000-template.md` → `docs/rfcs/0000-<short-name>.md`.
+1. Copy `0000-template.md` → `docs/dev/rfcs/<NNNN>-<short-name>.md` (NNNN = next free number; see the index below).
 2. Fill it in. Keep it concise — design over prose.
 3. Open a PR. Discussion happens on the PR.
-4. On merge, a maintainer renames the file to the next number
-   (`NNNN-<short-name>.md`), sets status to **Active**, and adds a row to the
-   index below.
+4. On merge, a maintainer sets status to **Active** and adds a row to the
+   index below (the file keeps its creation-time number).
 
 ## Index
 
 | # | Title | Status | Owner |
 |---|---|---|---|
 | 0001 | Abstract EnvironmentProvider layer | Active | @JackWeiw |
+| 0002 | Workflow plugin architecture (TaskRunner ABC + registry) | Draft | @JackWeiw |
 
 <!--
 Index format (keep sorted by number):
