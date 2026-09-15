@@ -1,7 +1,7 @@
 ---
 rfc: 0002
 title: Workflow plugin architecture — TaskRunner ABC + registry to make adding a workload a one-file change
-status: Draft
+status: Active
 author: "@JackWeiw"
 shepherd: ""
 areas: [e2b, docker]
@@ -12,7 +12,9 @@ updated: 2026-09-15
 # Workflow plugin architecture — TaskRunner ABC + registry
 
 > Refactor RFC: records the direction to end shotgun-surgery workflow extensibility. Not for
-> immediate merge-as-code; a phased implementation plan follows acceptance.
+> immediate merge-as-code; a phased implementation plan follows acceptance. **Living document**:
+> amended per implementation phase (see Phasing) — status flips to **Implemented** when all phases
+> ship.
 
 ## Summary
 
