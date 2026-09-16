@@ -32,8 +32,9 @@ from bench_core.config import KernelConfig
 from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 from bench_core.observability.snapshot_scanner import SnapshotSizeScanner
 from bench_core.payload.replay_payload import ReplayStep, Trajectory, load_pool
-from bench_core.schemas import BenchSandbox
+from bench_core.schemas import REPLAY_STEP_ORDER, BenchSandbox, ReplayMetrics
 from bench_core.transients import is_transient_sandbox_error
+from bench_core.workflow_registry import WorkflowSpec, register_workflow
 from env_provider import CommandResult, EnvironmentProvider, EphemeralCapable, SnapshotSizeCapable
 
 logger = logging.getLogger(__name__)
@@ -1306,3 +1307,16 @@ class ReplayRoundRunner(ReplayBaseRunner):
 
         if not aborted and not self.stop_event.is_set():
             self.state.replay_metrics._mark_completion()
+
+
+register_workflow(
+    WorkflowSpec(
+        name="replay",
+        warmup_runner=ReplayWarmupRunner,
+        task_runner=ReplayTaskRunner,
+        round_runner=ReplayRoundRunner,
+        metrics_cls=ReplayMetrics,
+        step_order=tuple(REPLAY_STEP_ORDER),
+        config_section="replay",
+    )
+)

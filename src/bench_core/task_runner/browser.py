@@ -19,7 +19,8 @@ import threading
 import time
 
 from bench_core.config import KernelConfig
-from bench_core.schemas import BenchSandbox
+from bench_core.schemas import BROWSER_STEP_ORDER, BenchSandbox, BrowserMetrics
+from bench_core.workflow_registry import WorkflowSpec, register_workflow
 from env_provider import EnvironmentProvider
 
 logger = logging.getLogger(__name__)
@@ -474,3 +475,16 @@ class TabOperationRunner(threading.Thread):
         self.consecutive_errors += 1
         if self.consecutive_errors >= 3:
             self.state.is_alive = False
+
+
+register_workflow(
+    WorkflowSpec(
+        name="browser",
+        warmup_runner=WarmupRunner,
+        task_runner=BrowserTaskRunner,
+        round_runner=TabOperationRunner,
+        metrics_cls=BrowserMetrics,
+        step_order=tuple(BROWSER_STEP_ORDER),
+        config_section="browser",
+    )
+)

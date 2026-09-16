@@ -43,7 +43,8 @@ from bench_core.payload.coding_payload import (
     _stamp_verify_body,
     get_coding_profile,
 )
-from bench_core.schemas import BenchSandbox
+from bench_core.schemas import CODING_STEP_ORDER, BenchSandbox, CodingMetrics
+from bench_core.workflow_registry import WorkflowSpec, register_workflow
 from env_provider import EnvironmentProvider, SandboxInstance
 
 logger = logging.getLogger(__name__)
@@ -732,3 +733,16 @@ class CodingRoundRunner(threading.Thread):
         self.consecutive_errors += 1
         if self.consecutive_errors >= 3:
             self.state.is_alive = False
+
+
+register_workflow(
+    WorkflowSpec(
+        name="coding",
+        warmup_runner=CodingWarmupRunner,
+        task_runner=CodingTaskRunner,
+        round_runner=CodingRoundRunner,
+        metrics_cls=CodingMetrics,
+        step_order=tuple(CODING_STEP_ORDER),
+        config_section="coding",
+    )
+)
