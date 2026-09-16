@@ -4,15 +4,17 @@ This is the workflow-side counterpart to RFC 0001's provider ABC: a single
 ``WORKFLOW_REGISTRY`` of :class:`WorkflowSpec` replaces every ``workflow_type``
 if/elif chain, so a new workload is one new ``task_runner/<wf>.py`` module + one
 ``register_workflow`` call. The 4 in-tree workflows (browser / coding / document
-/ replay) self-register at module import; the kernel imports those modules at
-startup so registration fires before the first dispatch.
+/ replay) self-register at module import; the dispatch managers call
+``ensure_workflow_registered`` at construction, which lazy-imports only the
+active workflow's module (preserving the package's lazy-load principle), so
+registration fires before the first dispatch.
 
-Phase 0 (this module): the seam EXISTS and is populated. Phase 1 migrates the
-12 runners to ``TaskRunner`` + ``do_run`` and collapses the construction
-dispatch (``_create_task_runner`` / ``start_warmup`` / ``round_robin``) to
-registry lookups; runner fields are validated as ``TaskRunner`` subclasses.
-``config_cls`` / ``report_formatters`` remain optional until Phases 2/3 land
-their implementations. See ``docs/dev/rfcs/0002``.
+The seam is fully populated across P0–P3: the 12 runners subclass ``TaskRunner``
++ ``do_run`` and the construction dispatch (``_create_task_runner`` /
+``start_warmup`` / ``round_robin``) collapsed to registry lookups (P1); the 4
+typed ``config_cls`` views own per-workflow config (P2); and the per-workflow
+``report_formatters`` strategies own the report surfaces (P3). See
+``docs/dev/rfcs/0002``.
 
 Design notes (deviations from RFC §2, all flagged in the RFC living doc):
 
