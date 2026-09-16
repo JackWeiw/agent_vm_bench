@@ -19,6 +19,7 @@ from bench_core.task_runner.coding import (
     _build_edit_command,
     _run_verify,
 )
+from bench_core.workflow_registry import RunContext
 from env_provider import CommandResult
 from env_provider.fake import FakeProvider
 
@@ -110,7 +111,9 @@ class TestCodingWarmupRunner:
         config = KernelConfig(coding_language="ts")
         provider = FakeProvider()
         state = _ready_sandbox()
-        CodingWarmupRunner(state, config, provider).run()
+        CodingWarmupRunner(
+            RunContext(state=state, config=config, stop_event=threading.Event(), provider=provider)
+        ).run()
 
         assert state.warmup_done is True
 
@@ -120,7 +123,9 @@ class TestCodingWarmupRunner:
         config = KernelConfig(coding_language="ts")
         provider = FakeProvider()
         state = BenchSandbox(id="fake-0", index=0, ready=False)
-        CodingWarmupRunner(state, config, provider).run()
+        CodingWarmupRunner(
+            RunContext(state=state, config=config, stop_event=threading.Event(), provider=provider)
+        ).run()
         assert state.warmup_done is False
 
     def test_skips_when_project_marker_missing(self):
@@ -129,7 +134,9 @@ class TestCodingWarmupRunner:
             exec_results={"ls /opt/coding-bench/package.json": CommandResult(1, "", "no such file")}
         )
         state = _ready_sandbox()
-        CodingWarmupRunner(state, config, provider).run()
+        CodingWarmupRunner(
+            RunContext(state=state, config=config, stop_event=threading.Event(), provider=provider)
+        ).run()
         # Project missing -> warmup bails out, but still marks itself done.
         assert state.warmup_done is True
 
@@ -137,7 +144,9 @@ class TestCodingWarmupRunner:
         config = KernelConfig(coding_language="ts", coding_skip_verify=True)
         provider = _VerifyFailingProvider()  # verify would fail, but it's skipped
         state = _ready_sandbox()
-        CodingWarmupRunner(state, config, provider).run()
+        CodingWarmupRunner(
+            RunContext(state=state, config=config, stop_event=threading.Event(), provider=provider)
+        ).run()
         assert state.warmup_done is True
 
 
@@ -146,7 +155,9 @@ class TestCodingTaskRunner:
         config = KernelConfig(coding_language="ts")
         provider = FakeProvider()
         state = _ready_sandbox()
-        runner = CodingTaskRunner(state, config, threading.Event(), provider)
+        runner = CodingTaskRunner(
+            RunContext(state=state, config=config, stop_event=threading.Event(), provider=provider)
+        )
 
         success, latency, verify_success, compile_only, timed_out = runner._run_single_task()
 
@@ -162,7 +173,9 @@ class TestCodingTaskRunner:
         edit_cmd = _build_edit_command(config.coding_project_dir, pair["file"], pair["find"], pair["replace"])
         provider = FakeProvider(exec_results={edit_cmd: CommandResult(1, "", "edit boom")})
         state = _ready_sandbox()
-        runner = CodingTaskRunner(state, config, threading.Event(), provider)
+        runner = CodingTaskRunner(
+            RunContext(state=state, config=config, stop_event=threading.Event(), provider=provider)
+        )
 
         success, _latency, verify_success, _compile_only, _timed_out = runner._run_single_task()
 
@@ -173,7 +186,9 @@ class TestCodingTaskRunner:
     def test_offline_sandbox_yields_no_task(self):
         state = _ready_sandbox()
         state.is_alive = False
-        runner = CodingTaskRunner(state, KernelConfig(), threading.Event(), FakeProvider())
+        runner = CodingTaskRunner(
+            RunContext(state=state, config=KernelConfig(), stop_event=threading.Event(), provider=FakeProvider())
+        )
         success, latency, verify_success, compile_only, timed_out = runner._run_single_task()
         assert success is False
         assert latency == 0.0
@@ -187,7 +202,9 @@ class TestCodingRoundRunner:
         config = KernelConfig(coding_language="ts")
         provider = FakeProvider()
         state = _ready_sandbox()
-        runner = CodingRoundRunner(state, config, threading.Event(), round_id=0, provider=provider)
+        runner = CodingRoundRunner(
+            RunContext(state=state, config=config, stop_event=threading.Event(), round_id=0, provider=provider)
+        )
 
         runner.run()  # one round, synchronous
 
@@ -205,7 +222,9 @@ class TestCodingRoundRunner:
         edit_cmd = _build_edit_command(config.coding_project_dir, pair["file"], pair["find"], pair["replace"])
         provider = FakeProvider(exec_results={edit_cmd: CommandResult(1, "", "edit boom")})
         state = _ready_sandbox()
-        runner = CodingRoundRunner(state, config, threading.Event(), round_id=0, provider=provider)
+        runner = CodingRoundRunner(
+            RunContext(state=state, config=config, stop_event=threading.Event(), round_id=0, provider=provider)
+        )
 
         runner.run()
 
@@ -219,7 +238,9 @@ class TestCodingRoundRunner:
         config = KernelConfig(coding_language="ts")
         provider = _VerifyFailingProvider()
         state = _ready_sandbox()
-        runner = CodingRoundRunner(state, config, threading.Event(), round_id=0, provider=provider)
+        runner = CodingRoundRunner(
+            RunContext(state=state, config=config, stop_event=threading.Event(), round_id=0, provider=provider)
+        )
 
         runner.run()
 
@@ -233,6 +254,10 @@ class TestCodingRoundRunner:
 
     def test_skips_when_not_ready(self):
         state = BenchSandbox(id="fake-0", index=0, ready=False)
-        runner = CodingRoundRunner(state, KernelConfig(), threading.Event(), 0, FakeProvider())
+        runner = CodingRoundRunner(
+            RunContext(
+                state=state, config=KernelConfig(), stop_event=threading.Event(), round_id=0, provider=FakeProvider()
+            )
+        )
         runner.run()
         assert state.coding_metrics.total_tasks == 0

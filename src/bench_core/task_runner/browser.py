@@ -20,7 +20,7 @@ import time
 
 from bench_core.config import KernelConfig
 from bench_core.schemas import BROWSER_STEP_ORDER, BenchSandbox, BrowserMetrics
-from bench_core.workflow_registry import WorkflowSpec, register_workflow
+from bench_core.workflow_registry import RunContext, TaskRunner, WorkflowSpec, register_workflow
 from env_provider import EnvironmentProvider
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ def extract_element_refs(output: str) -> list[str]:
     return matches[:50]
 
 
-class WarmupRunner(threading.Thread):
+class WarmupRunner(TaskRunner):
     """Warmup phase runner -- opens multiple tabs using agent-browser.
 
     Opens each warmup URL as a separate tab, then runs snapshot -> click ->
@@ -51,13 +51,10 @@ class WarmupRunner(threading.Thread):
     _warmup_loops_warned = False
     _warn_lock = threading.Lock()
 
-    def __init__(self, state: BenchSandbox, config: KernelConfig, provider: EnvironmentProvider):
-        super().__init__(daemon=True)
-        self.state = state
-        self.config = config
-        self.provider = provider
+    def __init__(self, ctx: RunContext) -> None:
+        super().__init__(ctx)
 
-    def run(self) -> None:
+    def do_run(self) -> None:
         """Execute warmup for this sandbox -- open one tab per warmup URL."""
         # Gate on readiness. The provider's create_all runs the readiness check
         # (port probe for browser) before returning, so a non-ready instance
@@ -160,24 +157,13 @@ class WarmupRunner(threading.Thread):
             logger.warning(f"[Sandbox{self.state.index}] Tab {tab_num}: screenshot failed")
 
 
-class BrowserTaskRunner(threading.Thread):
+class BrowserTaskRunner(TaskRunner):
     """Browser task runner (one independent thread per sandbox, fixed mode)."""
 
-    def __init__(
-        self,
-        state: BenchSandbox,
-        config: KernelConfig,
-        stop_event: threading.Event,
-        provider: EnvironmentProvider,
-    ):
-        super().__init__(daemon=True)
-        self.state = state
-        self.config = config
-        self.stop_event = stop_event
-        self.provider = provider
-        self.consecutive_errors = 0
+    def __init__(self, ctx: RunContext) -> None:
+        super().__init__(ctx)
 
-    def run(self) -> None:
+    def do_run(self) -> None:
         """Task execution main loop."""
         if not self.state.ready:
             logger.warning(
@@ -250,7 +236,7 @@ class BrowserTaskRunner(threading.Thread):
             return False, elapsed
 
 
-class TabOperationRunner(threading.Thread):
+class TabOperationRunner(TaskRunner):
     """One round-robin round: open a NEW tab, then snapshot -> click -> screenshot.
 
     Each round opens a new tab (round-robin URL from ``browser_urls``), which
@@ -264,23 +250,11 @@ class TabOperationRunner(threading.Thread):
     OPEN_TAB_TIMEOUT = 60  # `agent-browser tab new`
     SNAPSHOT_TIMEOUT = 60  # `agent-browser snapshot -i`
 
-    def __init__(
-        self,
-        state: BenchSandbox,
-        config: KernelConfig,
-        stop_event: threading.Event,
-        round_id: int,
-        provider: EnvironmentProvider,
-    ):
-        super().__init__(daemon=True)
-        self.state = state
-        self.config = config
-        self.stop_event = stop_event
-        self.round_id = round_id
-        self.provider = provider
-        self.consecutive_errors = 0
+    def __init__(self, ctx: RunContext) -> None:
+        super().__init__(ctx)
+        self.round_id = ctx.round_id
 
-    def run(self) -> None:
+    def do_run(self) -> None:
         """Execute tab operations for this round."""
         if not self.state.ready or not self.state.is_alive:
             logger.info(f"[Sandbox{self.state.index}] Not ready/alive for tab operations")

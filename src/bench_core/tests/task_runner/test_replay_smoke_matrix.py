@@ -25,6 +25,7 @@ from bench_core.config import KernelConfig
 from bench_core.payload.replay_payload import ReplayStep
 from bench_core.schemas import BenchSandbox
 from bench_core.task_runner.replay import ReplayRoundRunner
+from bench_core.workflow_registry import RunContext
 from env_provider import SandboxInstance
 from env_provider.tests.lifecycle_fake import FakeLifecycleProvider
 
@@ -81,7 +82,9 @@ class TestSmokeMatrixSingle:
         config = _config(tmp_path)
         provider = FakeLifecycleProvider(count=1)
         stop = threading.Event()
-        runner = ReplayRoundRunner(_state(0), config, stop, round_id=0, provider=provider)
+        runner = ReplayRoundRunner(
+            RunContext(state=_state(0), config=config, stop_event=stop, round_id=0, provider=provider)
+        )
         runner._init_lifecycle()
         step = ReplayStep(index=0, action_type="shell", action="true", delay_time_sec=0.0)
         sr = runner._run_slice(step, trajectory_id="t0")
@@ -100,7 +103,9 @@ class TestSmokeMatrixSingle:
         stop = threading.Event()
         qps = QpsRateLimiter(qps=20.0, inflight_cap=None)
         adm = Admission(slots=RunningSlotScheduler(maximum=1), qps=qps)
-        runner = ReplayRoundRunner(_state(0), config, stop, round_id=0, provider=provider, admission=adm)
+        runner = ReplayRoundRunner(
+            RunContext(state=_state(0), config=config, stop_event=stop, round_id=0, provider=provider, admission=adm)
+        )
         runner._init_lifecycle()
         # Inject a future dispatch deadline so the first resume time_wait sleeps
         # (the limiter seeds _next_dispatch_at = construction time -> 0 on the
@@ -123,7 +128,9 @@ class TestSmokeMatrixSingle:
         stop = threading.Event()
         # Slots present (so acquire runs and measures natural_delay), no QPS fuse.
         adm = Admission(slots=RunningSlotScheduler(maximum=1), qps=None)
-        runner = ReplayRoundRunner(_state(0), config, stop, round_id=0, provider=provider, admission=adm)
+        runner = ReplayRoundRunner(
+            RunContext(state=_state(0), config=config, stop_event=stop, round_id=0, provider=provider, admission=adm)
+        )
         runner._init_lifecycle()
         # 1st slice: _prev_pause_end_monotonic is None -> ready_at=None -> no
         # pre-delay park; it seeds prev_pause_end for the 2nd slice.
@@ -149,7 +156,9 @@ def _run_concurrent(n, *, adm, config, provider, delay_time=0.0):
     barrier = threading.Barrier(n + 1)  # +1 for the main thread release
 
     def _work(i):
-        runner = ReplayRoundRunner(_state(i), config, stop, round_id=0, provider=provider, admission=adm)
+        runner = ReplayRoundRunner(
+            RunContext(state=_state(i), config=config, stop_event=stop, round_id=0, provider=provider, admission=adm)
+        )
         runner._init_lifecycle()
         barrier.wait()  # all sandboxes paused -> simultaneous slice start
         step = ReplayStep(index=0, action_type="shell", action="true", delay_time_sec=delay_time)

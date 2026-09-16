@@ -16,6 +16,7 @@ from bench_core.task_runner.browser import (
     WarmupRunner,
     extract_element_refs,
 )
+from bench_core.workflow_registry import RunContext
 from env_provider import CommandResult
 from env_provider.fake import FakeProvider
 
@@ -43,7 +44,7 @@ class TestWarmupRunner:
         # snapshot must return element refs so the click step runs.
         provider = FakeProvider(exec_results={"agent-browser snapshot -i": CommandResult(0, "[ref=e1]\n", "")})
         state = _ready_sandbox()
-        runner = WarmupRunner(state, config, provider)
+        runner = WarmupRunner(RunContext(state=state, config=config, stop_event=threading.Event(), provider=provider))
 
         runner.run()  # synchronous, not start()
 
@@ -58,7 +59,7 @@ class TestWarmupRunner:
         config = KernelConfig(warmup_urls=["http://x"], warmup_delay=0)
         provider = FakeProvider()
         state = BenchSandbox(id="fake-0", index=0, ready=False)
-        WarmupRunner(state, config, provider).run()
+        WarmupRunner(RunContext(state=state, config=config, stop_event=threading.Event(), provider=provider)).run()
         assert state.warmup_done is False
         assert state.tab_ids == []
 
@@ -66,7 +67,7 @@ class TestWarmupRunner:
         config = KernelConfig(warmup_urls=["http://x"], warmup_delay=0)
         provider = FakeProvider(exec_results={"agent-browser --version": CommandResult(1, "", "not found")})
         state = _ready_sandbox()
-        WarmupRunner(state, config, provider).run()
+        WarmupRunner(RunContext(state=state, config=config, stop_event=threading.Event(), provider=provider)).run()
         assert state.warmup_done is True
         assert state.tab_ids == []
 
@@ -76,7 +77,9 @@ class TestBrowserTaskRunner:
         config = KernelConfig(browser_urls=["http://x"])
         provider = FakeProvider()
         state = _ready_sandbox()
-        runner = BrowserTaskRunner(state, config, threading.Event(), provider)
+        runner = BrowserTaskRunner(
+            RunContext(state=state, config=config, stop_event=threading.Event(), provider=provider)
+        )
 
         success, latency = runner._run_single_task()
 
@@ -90,7 +93,9 @@ class TestBrowserTaskRunner:
         fail_cmd = "openclaw browser --browser-profile openclaw open 'http://x'"
         provider = FakeProvider(exec_results={fail_cmd: CommandResult(1, "", "boom")})
         state = _ready_sandbox()
-        runner = BrowserTaskRunner(state, config, threading.Event(), provider)
+        runner = BrowserTaskRunner(
+            RunContext(state=state, config=config, stop_event=threading.Event(), provider=provider)
+        )
 
         success, latency = runner._run_single_task()
 
@@ -100,7 +105,9 @@ class TestBrowserTaskRunner:
     def test_offline_sandbox_yields_no_task(self):
         state = _ready_sandbox()
         state.is_alive = False
-        runner = BrowserTaskRunner(state, KernelConfig(), threading.Event(), FakeProvider())
+        runner = BrowserTaskRunner(
+            RunContext(state=state, config=KernelConfig(), stop_event=threading.Event(), provider=FakeProvider())
+        )
         success, latency = runner._run_single_task()
         assert success is False
         assert latency == 0.0
@@ -112,7 +119,9 @@ class TestTabOperationRunner:
         provider = FakeProvider(exec_results={"agent-browser snapshot -i": CommandResult(0, "[ref=e1]\n[e2]\n", "")})
         state = _ready_sandbox()
         stop = threading.Event()
-        runner = TabOperationRunner(state, config, stop, round_id=0, provider=provider)
+        runner = TabOperationRunner(
+            RunContext(state=state, config=config, stop_event=stop, round_id=0, provider=provider)
+        )
 
         runner.run()  # one round, synchronous
 
@@ -137,7 +146,9 @@ class TestTabOperationRunner:
             }
         )
         state = _ready_sandbox()
-        runner = TabOperationRunner(state, config, threading.Event(), round_id=0, provider=provider)
+        runner = TabOperationRunner(
+            RunContext(state=state, config=config, stop_event=threading.Event(), round_id=0, provider=provider)
+        )
 
         runner.run()
 
@@ -148,6 +159,10 @@ class TestTabOperationRunner:
 
     def test_skips_when_not_ready(self):
         state = BenchSandbox(id="fake-0", index=0, ready=False)
-        runner = TabOperationRunner(state, KernelConfig(), threading.Event(), 0, FakeProvider())
+        runner = TabOperationRunner(
+            RunContext(
+                state=state, config=KernelConfig(), stop_event=threading.Event(), round_id=0, provider=FakeProvider()
+            )
+        )
         runner.run()
         assert state.browser_metrics.total_tasks == 0

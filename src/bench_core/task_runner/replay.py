@@ -34,7 +34,7 @@ from bench_core.observability.snapshot_scanner import SnapshotSizeScanner
 from bench_core.payload.replay_payload import ReplayStep, Trajectory, load_pool
 from bench_core.schemas import REPLAY_STEP_ORDER, BenchSandbox, ReplayMetrics
 from bench_core.transients import is_transient_sandbox_error
-from bench_core.workflow_registry import WorkflowSpec, register_workflow
+from bench_core.workflow_registry import RunContext, TaskRunner, WorkflowSpec, register_workflow
 from env_provider import CommandResult, EnvironmentProvider, EphemeralCapable, SnapshotSizeCapable
 
 logger = logging.getLogger(__name__)
@@ -116,42 +116,41 @@ class StepResult:
     pause_inflight_wait_sec: float = 0.0
 
 
-class ReplayBaseRunner(threading.Thread):
+class ReplayBaseRunner(TaskRunner):
     """Slice base shared by the three replay runners.
 
-    Subclasses (warmup / fixed / round) implement ``run()``; they share the
-    slice + exec plumbing here. The constructor signature matches the kernel's
-    structural protocol for task runners; warmup uses the 3-arg form
-    ``(state, config, provider)``.
+    Subclasses (warmup / fixed / round) implement ``do_run()``; they share the
+    slice + exec plumbing here. The runner contract is ``__init__(ctx)`` +
+    ``do_run()``; warmup / task / round pull what they need from ``ctx``.
     """
 
-    def __init__(
-        self,
-        state: BenchSandbox,
-        config: KernelConfig,
-        stop_event: threading.Event,
-        provider: EnvironmentProvider,
-        *,
-        series: LifecycleSeriesWriter | None = None,
-        admission: Admission | None = None,
-        launch_pacer: LaunchPacer | None = None,
-        scanner: SnapshotSizeScanner | None = None,
-    ) -> None:
-        super().__init__(daemon=True)
-        self.state = state
-        self.config = config
-        self.stop_event = stop_event
-        self.provider = provider
-        self.series = series
-        self.scanner = scanner
-        self.admission = admission
+    def __init__(self, ctx: RunContext) -> None:
+        super().__init__(ctx)
+        self.series = ctx.series
+        self.scanner = ctx.scanner
+        self.admission = ctx.admission
         self._prev_pause_end_monotonic: float | None = None
         # G5: shared no-catch-up launch pacer (trajectory mode). One LaunchPacer
         # instance is shared across the whole fleet by the spine so the
         # next-launch deadline is visible to every worker.
-        self._launch_pacer = launch_pacer
+        self._launch_pacer = ctx.launch_pacer
         # Per-sandbox 1-based pause counter for snapshot_size events.
         self._pause_seq = 0
+
+    def do_run(self) -> None:
+        """Run-hostile stub: this is a slice-machinery helper base, not a runner.
+
+        The base stays instantiable (unlike a pure ABC) so unit tests can drive
+        its slice / lifecycle / admission helpers directly -- ``_run_slice``,
+        ``_lifecycle_call_with_retry``, ``_emit_snapshot_size`` -- without
+        spinning a concrete subclass's loop. The three real runners (warmup /
+        task / round) override this with their loop; calling it on the bare
+        base is a wiring bug, so it raises loudly instead of silent-no-op'ing.
+        """
+        raise NotImplementedError(
+            "ReplayBaseRunner is a slice-machinery base; instantiate a concrete "
+            "runner (ReplayWarmupRunner / ReplayTaskRunner / ReplayRoundRunner) to run"
+        )
 
     # --- the slice (the spine P2 plugs into) ---
     def _run_slice(self, step: ReplayStep, *, trajectory_id: str = "", lease_already_held: bool = False) -> StepResult:
@@ -1017,7 +1016,7 @@ class ReplayBaseRunner(threading.Thread):
             self.state.is_alive = False
 
 
-class ReplayWarmupRunner(threading.Thread):
+class ReplayWarmupRunner(TaskRunner):
     """Warmup phase runner for replay -- load + validate the shared pool, probe exec.
 
     Lightweight: loads the trajectory pool (cached, shared across sandboxes),
@@ -1025,18 +1024,10 @@ class ReplayWarmupRunner(threading.Thread):
     and marks the sandbox warmed up. No resident process (none needed).
     """
 
-    def __init__(
-        self,
-        state: BenchSandbox,
-        config: KernelConfig,
-        provider: EnvironmentProvider,
-    ) -> None:
-        super().__init__(daemon=True)
-        self.state = state
-        self.config = config
-        self.provider = provider
+    def __init__(self, ctx: RunContext) -> None:
+        super().__init__(ctx)
 
-    def run(self) -> None:
+    def do_run(self) -> None:
         if not self.state.ready:
             logger.warning(f"[Sandbox{self.state.index}] Cannot start replay warmup: not ready")
             self.state.warmup_done = True
@@ -1066,31 +1057,10 @@ class ReplayTaskRunner(ReplayBaseRunner):
     advances to the next -- it does NOT stop the sandbox or the benchmark.
     """
 
-    def __init__(
-        self,
-        state: BenchSandbox,
-        config: KernelConfig,
-        stop_event: threading.Event,
-        provider: EnvironmentProvider,
-        *,
-        series: LifecycleSeriesWriter | None = None,
-        admission: Admission | None = None,
-        launch_pacer: LaunchPacer | None = None,
-        scanner: SnapshotSizeScanner | None = None,
-    ) -> None:
-        super().__init__(
-            state,
-            config,
-            stop_event,
-            provider,
-            series=series,
-            admission=admission,
-            launch_pacer=launch_pacer,
-            scanner=scanner,
-        )
-        self.consecutive_errors = 0
+    def __init__(self, ctx: RunContext) -> None:
+        super().__init__(ctx)
 
-    def run(self) -> None:
+    def do_run(self) -> None:
         if not self.state.ready:
             logger.warning(f"[Sandbox{self.state.index}] Cannot start replay: not ready")
             return
@@ -1206,32 +1176,11 @@ class ReplayRoundRunner(ReplayBaseRunner):
     is held across rounds (round_id encodes the position).
     """
 
-    def __init__(
-        self,
-        state: BenchSandbox,
-        config: KernelConfig,
-        stop_event: threading.Event,
-        round_id: int,
-        provider: EnvironmentProvider,
-        *,
-        series: LifecycleSeriesWriter | None = None,
-        admission: Admission | None = None,
-        launch_pacer: LaunchPacer | None = None,
-        scanner: SnapshotSizeScanner | None = None,
-    ) -> None:
-        super().__init__(
-            state,
-            config,
-            stop_event,
-            provider,
-            series=series,
-            admission=admission,
-            launch_pacer=launch_pacer,
-            scanner=scanner,
-        )
-        self.round_id = round_id
+    def __init__(self, ctx: RunContext) -> None:
+        super().__init__(ctx)
+        self.round_id = ctx.round_id
 
-    def run(self) -> None:
+    def do_run(self) -> None:
         if not self.state.ready or not self.state.is_alive:
             logger.info(f"[Sandbox{self.state.index}] Not ready/alive for replay round")
             return

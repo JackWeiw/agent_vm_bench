@@ -13,6 +13,7 @@ from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 from bench_core.payload.replay_payload import ReplayStep, Trajectory
 from bench_core.schemas import BenchSandbox
 from bench_core.task_runner.replay import ReplayBaseRunner
+from bench_core.workflow_registry import RunContext
 from env_provider import SandboxInstance
 from env_provider.tests.lifecycle_fake import FakeLifecycleProvider
 
@@ -38,7 +39,9 @@ class TestRetryEvents:
             slots=RunningSlotScheduler(maximum=1, stop_event=stop),
             qps=QpsRateLimiter(qps=qps, inflight_cap=4, stop_event=stop),
         )
-        runner = ReplayBaseRunner(state, cfg, stop, provider, admission=adm, series=series)
+        runner = ReplayBaseRunner(
+            RunContext(state=state, config=cfg, stop_event=stop, provider=provider, series=series, admission=adm)
+        )
         return runner, series, provider, state
 
     def test_retry_queued_and_recovered_on_transient_then_success(self, tmp_path):
@@ -140,7 +143,9 @@ class TestAdmissionEvents:
                 slots=RunningSlotScheduler(maximum=1, stop_event=stop),
                 qps=QpsRateLimiter(qps=1000.0, inflight_cap=4, stop_event=stop),
             )
-        runner = ReplayBaseRunner(state, cfg, stop, provider, admission=adm, series=series)
+        runner = ReplayBaseRunner(
+            RunContext(state=state, config=cfg, stop_event=stop, provider=provider, series=series, admission=adm)
+        )
         return runner, series, provider, state
 
     def test_slot_acquire_and_release_emitted(self, tmp_path):
@@ -192,7 +197,9 @@ class TestTrajectoryEvents:
             slots=RunningSlotScheduler(maximum=1, stop_event=stop),
             qps=QpsRateLimiter(qps=100.0, inflight_cap=4, stop_event=stop),
         )
-        runner = ReplayBaseRunner(state, cfg, stop, provider, series=series, admission=adm)
+        runner = ReplayBaseRunner(
+            RunContext(state=state, config=cfg, stop_event=stop, provider=provider, series=series, admission=adm)
+        )
         traj = Trajectory(
             path=Path("tr-1"),
             instance_id="tr-1",
@@ -234,7 +241,9 @@ class TestTrajectoryEvents:
             slots=RunningSlotScheduler(maximum=1, stop_event=stop),
             qps=QpsRateLimiter(qps=100.0, inflight_cap=4, stop_event=stop),
         )
-        runner = ReplayBaseRunner(state, cfg, stop, provider, series=series, admission=adm)
+        runner = ReplayBaseRunner(
+            RunContext(state=state, config=cfg, stop_event=stop, provider=provider, series=series, admission=adm)
+        )
         traj = Trajectory(
             path=Path("tr-1"),
             instance_id="tr-1",
@@ -278,7 +287,9 @@ class TestTrajectoryEvents:
             slots=RunningSlotScheduler(maximum=1, stop_event=stop),
             qps=QpsRateLimiter(qps=100.0, inflight_cap=4, stop_event=stop),
         )
-        runner = ReplayBaseRunner(state, cfg, stop, provider, series=series, admission=adm)
+        runner = ReplayBaseRunner(
+            RunContext(state=state, config=cfg, stop_event=stop, provider=provider, series=series, admission=adm)
+        )
         traj = Trajectory(
             path=Path("tr-1"),
             instance_id="tr-1",

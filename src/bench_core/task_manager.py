@@ -19,6 +19,12 @@ from bench_core.config import KernelConfig
 from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 from bench_core.observability.snapshot_scanner import SnapshotSizeScanner
 from bench_core.schemas import BenchSandbox
+from bench_core.workflow_registry import (
+    RunContext,
+    TaskRunner,
+    WORKFLOW_REGISTRY,
+    ensure_workflow_registered,
+)
 from env_provider import EnvironmentProvider
 
 logger = logging.getLogger(__name__)
@@ -49,16 +55,35 @@ class TaskManager:
         self.launch_pacer = launch_pacer
         self.runners: list[threading.Thread] = []
         self.warmup_runners: list[threading.Thread] = []
+        # Import the active workflow's task_runner module so its spec self-registers
+        # before the first dispatch (lazy: only this workflow's module loads).
+        ensure_workflow_registered(self.config.workflow_type)
+
+    def _run_context(self, state: BenchSandbox, *, round_id: int | None = None) -> RunContext:
+        """Build the frozen runner context (uniform across all 4 workflows).
+
+        Replay knobs are ``None`` for browser/coding/document (unused there);
+        replay narrows locally. ``round_id`` is ``None`` for warmup / fixed.
+        """
+        return RunContext(
+            state=state,
+            config=self.config,
+            provider=self.provider,
+            stop_event=self.stop_event,
+            round_id=round_id,
+            series=self.series,
+            admission=self.admission,
+            launch_pacer=self.launch_pacer,
+            scanner=self.scanner,
+        )
 
     def start_warmup(self) -> None:
         """Start warmup phase for all ready sandboxes.
 
-        Warmup preheats memory before the benchmark. Dispatches based on
-        workflow_type:
-        - "browser":  WarmupRunner (opens browser tabs)
-        - "coding":   CodingWarmupRunner (one initial verify, no resident process)
-        - "document": DocumentWarmupRunner (validates and restores the PDF/XLSX seed)
-        - "replay":   ReplayWarmupRunner (loads trajectory pool, probe exec)
+        Warmup preheats memory before the benchmark. The warmup runner is built via
+        a registry lookup (``spec.warmup_runner(ctx)``); the elif below retains only
+        the per-workflow logging + skip guards (browser no-urls, coding
+        skip-verify), which are presentation/orchestration, not dispatch.
         """
         ready_states = [s for s in self.sandbox_states.values() if s.ready]
 
@@ -66,9 +91,11 @@ class TaskManager:
             logger.info("No sandboxes ready for warmup")
             return
 
-        if self.config.workflow_type == "coding":
-            from bench_core.task_runner.coding import CodingWarmupRunner
+        spec = WORKFLOW_REGISTRY.get(self.config.workflow_type)
+        if spec is None:
+            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 
+        if self.config.workflow_type == "coding":
             if not self.config.coding_skip_verify:
                 logger.info(f"\n{'=' * 60}")
                 logger.info("Coding Warmup Phase Starting")
@@ -79,7 +106,7 @@ class TaskManager:
                 logger.info(f"{'=' * 60}")
 
                 for state in ready_states:
-                    runner = CodingWarmupRunner(state, self.config, self.provider)
+                    runner = spec.warmup_runner(self._run_context(state))
                     self.warmup_runners.append(runner)
                     runner.start()
             else:
@@ -87,8 +114,6 @@ class TaskManager:
                 for state in ready_states:
                     state.warmup_done = True
         elif self.config.workflow_type == "document":
-            from bench_core.task_runner.document import DocumentWarmupRunner
-
             logger.info(f"\n{'=' * 60}")
             logger.info("Document Warmup Phase Starting")
             logger.info(f"  Total: {len(ready_states)} sandboxes")
@@ -96,12 +121,10 @@ class TaskManager:
             logger.info(f"  Seed: {self.config.document_seed_dir}")
             logger.info(f"{'=' * 60}")
             for state in ready_states:
-                runner = DocumentWarmupRunner(state, self.config, self.provider)
+                runner = spec.warmup_runner(self._run_context(state))
                 self.warmup_runners.append(runner)
                 runner.start()
         elif self.config.workflow_type == "browser":
-            from bench_core.task_runner.browser import WarmupRunner
-
             if not self.config.warmup_urls:
                 logger.info("No warmup URLs configured, skipping warmup")
                 for state in ready_states:
@@ -117,12 +140,10 @@ class TaskManager:
             logger.info(f"{'=' * 60}")
 
             for state in ready_states:
-                runner = WarmupRunner(state, self.config, self.provider)
+                runner = spec.warmup_runner(self._run_context(state))
                 self.warmup_runners.append(runner)
                 runner.start()
         elif self.config.workflow_type == "replay":
-            from bench_core.task_runner.replay import ReplayWarmupRunner
-
             logger.info(f"\n{'=' * 60}")
             logger.info("Replay Warmup Phase Starting")
             logger.info(f"  Total: {len(ready_states)} sandboxes")
@@ -130,7 +151,7 @@ class TaskManager:
             logger.info(f"  Mode: {self.config.replay_mode}")
             logger.info(f"{'=' * 60}")
             for state in ready_states:
-                runner = ReplayWarmupRunner(state, self.config, self.provider)
+                runner = spec.warmup_runner(self._run_context(state))
                 self.warmup_runners.append(runner)
                 runner.start()
         else:
@@ -261,41 +282,18 @@ class TaskManager:
 
         logger.info(f"\nStarted {len(self.runners)} task runners")
 
-    def _create_task_runner(self, state: BenchSandbox) -> threading.Thread:
-        """Create the workflow-specific task runner (fixed mode).
+    def _create_task_runner(self, state: BenchSandbox) -> TaskRunner:
+        """Create the workflow's task runner (fixed mode) via a registry lookup.
 
-        Args:
-            state: Sandbox state for the runner.
-
-        Returns:
-            Task runner thread (BrowserTaskRunner / CodingTaskRunner / DocumentTaskRunner / ReplayTaskRunner).
+        The if/elif workflow_type dispatch collapses to a single dict lookup: each
+        workflow's task-runner class is registered at import of its
+        ``task_runner/<wf>.py`` module (``ensure_workflow_registered`` fired in
+        ``__init__``), so a new workflow needs no edit here.
         """
-        if self.config.workflow_type == "coding":
-            from bench_core.task_runner.coding import CodingTaskRunner
-
-            return CodingTaskRunner(state, self.config, self.stop_event, self.provider)
-        if self.config.workflow_type == "document":
-            from bench_core.task_runner.document import DocumentTaskRunner
-
-            return DocumentTaskRunner(state, self.config, self.stop_event, self.provider)
-        if self.config.workflow_type == "browser":
-            from bench_core.task_runner.browser import BrowserTaskRunner
-
-            return BrowserTaskRunner(state, self.config, self.stop_event, self.provider)
-        if self.config.workflow_type == "replay":
-            from bench_core.task_runner.replay import ReplayTaskRunner
-
-            return ReplayTaskRunner(
-                state,
-                self.config,
-                self.stop_event,
-                self.provider,
-                series=self.series,
-                admission=self.admission,
-                launch_pacer=self.launch_pacer,
-                scanner=self.scanner,
-            )
-        raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
+        spec = WORKFLOW_REGISTRY.get(self.config.workflow_type)
+        if spec is None:
+            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
+        return spec.task_runner(self._run_context(state))
 
     def wait_all(self, timeout: float = 5.0) -> None:
         """Wait for all task threads to end."""
