@@ -33,11 +33,12 @@ from __future__ import annotations
 import base64
 import logging
 import random
-import threading
+import statistics
 import time
 from dataclasses import dataclass
 
 from bench_core.config import KernelConfig
+from bench_core.observability.report_helpers import CODING_ERROR_DISPLAY, TableFormatter
 from bench_core.payload.coding_payload import (
     CODING_LANGUAGE_DEFAULT_SOURCE_FILES,
     DEFAULT_CODING_SOURCE_FILES,
@@ -46,8 +47,16 @@ from bench_core.payload.coding_payload import (
     _stamp_verify_body,
     get_coding_profile,
 )
-from bench_core.schemas import CODING_STEP_ORDER, BenchSandbox, CodingMetrics
+from bench_core.schemas import CODING_STEP_ORDER, CodingMetrics
+from bench_core.utils import (
+    calc_p99,
+    calc_percentiles,
+    calc_tail_ratio,
+    classify_tail_latency,
+)
 from bench_core.workflow_registry import (
+    ReportContext,
+    ReportFormatters,
     RunContext,
     TaskRunner,
     WorkflowConfigBase,
@@ -766,6 +775,98 @@ class CodingConfig(WorkflowConfigBase):
         return None
 
 
+class CodingReportFormatter(ReportFormatters):
+    """Coding workflow report surfaces (Phase 3: ported byte-for-byte from
+    ``ReportFormatter.format_coding_stats_section`` / ``format_coding_step_timing_table``).
+
+    Inherits the command-ready defaults (coding uses a ``uname -a`` command probe,
+    not a port check) -- only ``error_display_order`` and the section bodies differ.
+    """
+
+    error_display_order = CODING_ERROR_DISPLAY
+
+    def format_snapshot_line(self, snap, sandbox_states, config) -> str:
+        return (
+            f"  Coding:    {snap.task_success:3d}/{snap.task_total:3d}  "
+            f"avg={snap.recent_avg_latency:.2f}s  p99={snap.recent_p99_latency:.2f}s"
+        )
+
+    def format_stats_section(self, ctx: ReportContext) -> list[str]:
+        """Format coding task statistics section."""
+        states = ctx.sandbox_states
+        all_latencies: list[float] = []
+        for s in states.values():
+            all_latencies.extend(s.coding_metrics.latencies)
+
+        total_tasks = sum(s.coding_metrics.total_tasks for s in states.values())
+        total_success = sum(s.coding_metrics.success_count for s in states.values())
+        total_failed = sum(s.coding_metrics.failed_count for s in states.values())
+        total_timeout = sum(s.coding_metrics.timeout_count for s in states.values())
+        verify_success = sum(s.coding_metrics.verify_success_count for s in states.values())
+        compile_only = sum(s.coding_metrics.compile_only_count for s in states.values())
+
+        lines = ["\n[Coding Task Statistics]"]
+        lines.append(f"  Total Tasks:   {total_tasks}")
+        lines.append(f"  Success:       {total_success}")
+        lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
+        lines.append(f"  Success Rate:  {total_success / max(1, total_tasks) * 100:.1f}%")
+        # Verify is split: real-assertion passes vs compile-only passes (no
+        # assertion). Kept separate so a compile-only pass is never read as an
+        # assertion pass - the distinction a strong reviewer checks.
+        lines.append(
+            f"  Verify Success: {verify_success}/{total_tasks} "
+            f"({verify_success / max(1, total_tasks) * 100:.1f}%) "
+            f"[assert: {verify_success}, compile-only: {compile_only}]"
+        )
+
+        if all_latencies:
+            avg_ms = statistics.mean(all_latencies) * 1000
+            p99_ms = calc_p99(all_latencies) * 1000
+            lines.append(f"  Avg Latency:   {avg_ms:.1f}ms")
+            lines.append(f"  P99 Latency:   {p99_ms:.1f}ms")
+
+        return lines
+
+    def format_step_timing(self, ctx: ReportContext) -> list[str]:
+        """Format coding step-level timing as a table."""
+        states = ctx.sandbox_states
+        all_step_times: dict[str, list[float]] = {}
+        for s in states.values():
+            step_times_copy = s.coding_metrics.get_step_times_copy()
+            for step_name, times in step_times_copy.items():
+                all_step_times.setdefault(step_name, []).extend(times)
+
+        if not all_step_times:
+            return []
+
+        lines = ["\n[Step-Level Timing (Coding Mode)]"]
+        headers = ["Step", "Count", "Avg(ms)", "P50(ms)", "P95(ms)", "P99(ms)", "Tail"]
+        rows: list[list[str]] = []
+
+        for step_name in CODING_STEP_ORDER:
+            if step_name in all_step_times and all_step_times[step_name]:
+                times = all_step_times[step_name]
+                stats = calc_percentiles(times)
+                tail_ratio = calc_tail_ratio(times)
+                severity = classify_tail_latency(tail_ratio)
+                rows.append(
+                    [
+                        step_name,
+                        str(len(times)),
+                        f"{stats['avg'] * 1000:.1f}",
+                        f"{stats['p50'] * 1000:.1f}",
+                        f"{stats['p95'] * 1000:.1f}",
+                        f"{stats['p99'] * 1000:.1f}",
+                        f"{tail_ratio:.2f}x ({severity})",
+                    ]
+                )
+
+        lines.extend(TableFormatter.format_table(headers, rows))
+        lines.append("\n  Tail Ratio: P99/P50 - indicates long-tail latency severity")
+        lines.append("  < 1.2x: minimal | 1.2-1.5x: moderate | > 1.5x: significant")
+        return lines
+
+
 register_workflow(
     WorkflowSpec(
         name="coding",
@@ -776,5 +877,6 @@ register_workflow(
         step_order=tuple(CODING_STEP_ORDER),
         config_section="coding",
         config_cls=CodingConfig,
+        report_formatters=CodingReportFormatter(),
     )
 )

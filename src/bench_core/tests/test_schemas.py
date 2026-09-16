@@ -136,7 +136,10 @@ class TestStepOrder:
 class TestSnapshot:
     def test_defaults(self):
         snap = Snapshot(timestamp=0.0, elapsed=0.0, total_sandboxes=0, active_sandboxes=0, offline_sandboxes=0)
-        assert snap.browser_total == 0
+        assert snap.task_total == 0
+        assert snap.task_success == 0
+        assert snap.recent_avg_latency == 0.0
+        assert snap.recent_p99_latency == 0.0
         assert snap.creation_stats == {}
         assert snap.round_total == 0
 
@@ -188,16 +191,21 @@ def test_bench_sandbox_replay_metrics_dispatch():
     assert sb.task_metrics.step_order == ["shell", "str_replace_editor", "bash", "other"]
 
 
-def test_snapshot_has_replay_fields():
+def test_snapshot_has_generic_task_fields():
+    """P3: Snapshot is workflow-agnostic -- cumulative task totals + a recent
+    latency window projected from the polymorphic task_metrics. Per-workflow
+    narrows (replay traj, browser ports) render live via format_snapshot_line,
+    not on Snapshot."""
     from bench_core.schemas import Snapshot
 
     snap = Snapshot(timestamp=0.0, elapsed=0.0, total_sandboxes=1, active_sandboxes=1, offline_sandboxes=0)
-    assert snap.replay_total == 0
-    assert snap.replay_success == 0
-    assert snap.replay_avg_latency == 0.0
-    assert snap.replay_p99_latency == 0.0
-    assert snap.replay_traj_done == 0
-    assert snap.replay_total_trajs == 0
+    assert snap.task_total == 0
+    assert snap.task_success == 0
+    assert snap.recent_avg_latency == 0.0
+    assert snap.recent_p99_latency == 0.0
+    # The old per-workflow snapshot fields are gone (P3 slim).
+    assert not hasattr(snap, "replay_total")
+    assert not hasattr(snap, "browser_total")
 
 
 def test_bench_sandbox_lifecycle_paused_default_false():

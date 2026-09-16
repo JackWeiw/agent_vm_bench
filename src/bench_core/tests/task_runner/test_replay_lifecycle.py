@@ -349,7 +349,7 @@ class TestLifecycleOverheadReport:
             slice_total_sec=1.2,
         )
 
-        lines = sc.format_replay_stats_section()
+        lines = sc.format_stats_section()
         joined = "\n".join(lines)
         assert "[Lifecycle Overhead]" in joined
         # the tiny slice's overhead is (0.00001+0.00001)/0.0001 = 20.0% -- it
@@ -423,7 +423,7 @@ class TestLifecycleOverheadReport:
                 "waiting": 0,
             },
         }
-        lines = sc.format_replay_stats_section()
+        lines = sc.format_stats_section()
         joined = "\n".join(lines)
         assert "Slot contention:" in joined
         assert "Admission:" in joined
@@ -467,7 +467,7 @@ class TestLifecycleOverheadReport:
                 "waiting": 0,
             },
         }
-        lines = sc.format_replay_stats_section()
+        lines = sc.format_stats_section()
         joined = "\n".join(lines)
         # Enriched per-phase split on the summary line.
         assert "QPS pacing delay:" in joined
@@ -1457,7 +1457,7 @@ def test_report_renders_slot_held_line_in_trajectory_mode(tmp_path):
         {1: state},
         admission_snapshot={"running": 1, "total": 1, "qps": "off", "peak_active": 1, "avg_queue_wait_sec": 0.0},
     )
-    report = "\n".join(fmt.format_replay_stats_section())
+    report = "\n".join(fmt.format_stats_section())
     assert "[Lifecycle Overhead]" in report
     assert "Slot held:" in report
     assert "Interaction:" in report

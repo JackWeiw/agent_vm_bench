@@ -27,14 +27,25 @@ from pathlib import Path
 from typing import Any
 from dataclasses import dataclass
 
+import statistics
+
 from bench_core.config import KernelConfig, document_scene_layout
+from bench_core.observability.report_helpers import DOCUMENT_ERROR_DISPLAY, TableFormatter
 from bench_core.schemas import (
     DOCUMENT_XLSX_STEP_ORDER,
     BenchSandbox,
     DocumentMetrics,
     get_step_order,
 )
+from bench_core.utils import (
+    calc_p99,
+    calc_percentiles,
+    calc_tail_ratio,
+    classify_tail_latency,
+)
 from bench_core.workflow_registry import (
+    ReportContext,
+    ReportFormatters,
     RunContext,
     TaskRunner,
     WorkflowConfigBase,
@@ -448,6 +459,90 @@ class DocumentConfig(WorkflowConfigBase):
         return None
 
 
+class DocumentReportFormatter(ReportFormatters):
+    """Document workflow report surfaces (Phase 3: ported byte-for-byte from
+    ``ReportFormatter.format_document_stats_section`` /
+    ``format_document_step_timing_table`` + the document lines of
+    ``format_config_section``).
+
+    Overrides the ready-check labels (document probes via
+    ``document-bench-validate``, not ``uname -a``); inherits the create/total
+    descs and ``command_ready=True`` defaults.
+    """
+
+    error_display_order = DOCUMENT_ERROR_DISPLAY
+    ready_check_title = "Document Asset Check Performance"
+    ready_check_desc = "Running document-bench-validate inside the sandbox"
+
+    def format_config_extras(self, ctx: ReportContext) -> list[str]:
+        cfg = ctx.config.workflow_config
+        assert isinstance(cfg, DocumentConfig), "document config extras require a DocumentConfig view"
+        return [
+            f"  Workflow:        {ctx.config.workflow_type}",
+            f"  Document Case:   {cfg.document_case_kind}",
+        ]
+
+    def format_snapshot_line(self, snap, sandbox_states, config) -> str:
+        return (
+            f"  Document:  {snap.task_success:3d}/{snap.task_total:3d}  "
+            f"avg={snap.recent_avg_latency:.2f}s  p99={snap.recent_p99_latency:.2f}s"
+        )
+
+    def format_stats_section(self, ctx: ReportContext) -> list[str]:
+        """Format document task statistics section."""
+        cfg = ctx.config.workflow_config
+        assert isinstance(cfg, DocumentConfig), "document stats require a DocumentConfig view"
+        metrics = [state.document_metrics for state in ctx.sandbox_states.values()]
+        all_latencies = [latency for metric in metrics for latency in metric.latencies]
+        total_tasks = sum(metric.total_tasks for metric in metrics)
+        total_success = sum(metric.success_count for metric in metrics)
+        total_failed = sum(metric.failed_count for metric in metrics)
+        total_timeout = sum(metric.timeout_count for metric in metrics)
+        lines = ["\n[Document Task Statistics]"]
+        lines.append(f"  Case Kind:     {cfg.document_case_kind}")
+        lines.append(f"  Total Tasks:   {total_tasks}")
+        lines.append(f"  Success:       {total_success}")
+        lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
+        lines.append(f"  Success Rate:  {total_success / max(1, total_tasks) * 100:.1f}%")
+        if all_latencies:
+            lines.append(f"  Avg Latency:   {statistics.mean(all_latencies) * 1000:.1f}ms")
+            lines.append(f"  P99 Latency:   {calc_p99(all_latencies) * 1000:.1f}ms")
+        return lines
+
+    def format_step_timing(self, ctx: ReportContext) -> list[str]:
+        """Format document step-level timing as a table."""
+        cfg = ctx.config.workflow_config
+        assert isinstance(cfg, DocumentConfig), "document step timing requires a DocumentConfig view"
+        all_step_times: dict[str, list[float]] = {}
+        for state in ctx.sandbox_states.values():
+            for step_name, times in state.document_metrics.get_step_times_copy().items():
+                all_step_times.setdefault(step_name, []).extend(times)
+        if not all_step_times:
+            return []
+        lines = [f"\n[Step-Level Timing (Document {cfg.document_case_kind.upper()} Mode)]"]
+        headers = ["Step", "Count", "Avg(ms)", "P50(ms)", "P95(ms)", "P99(ms)", "Tail"]
+        rows: list[list[str]] = []
+        for step_name in get_step_order("document", cfg.document_case_kind):
+            times = all_step_times.get(step_name, [])
+            if not times:
+                continue
+            stats = calc_percentiles(times)
+            tail_ratio = calc_tail_ratio(times)
+            rows.append(
+                [
+                    step_name,
+                    str(len(times)),
+                    f"{stats['avg'] * 1000:.1f}",
+                    f"{stats['p50'] * 1000:.1f}",
+                    f"{stats['p95'] * 1000:.1f}",
+                    f"{stats['p99'] * 1000:.1f}",
+                    f"{tail_ratio:.2f}x ({classify_tail_latency(tail_ratio)})",
+                ]
+            )
+        lines.extend(TableFormatter.format_table(headers, rows))
+        return lines
+
+
 register_workflow(
     WorkflowSpec(
         name="document",
@@ -461,5 +556,6 @@ register_workflow(
         step_order=tuple(DOCUMENT_XLSX_STEP_ORDER),
         config_section="document",
         config_cls=DocumentConfig,
+        report_formatters=DocumentReportFormatter(),
     )
 )

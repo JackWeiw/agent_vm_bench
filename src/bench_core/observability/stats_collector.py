@@ -5,6 +5,21 @@ Host-agnostic port of ``e2b_bench.stats_collector``. The collector reads
 knows nothing about e2b or docker. The only provider-specific input is the
 ``provider_label`` string (e.g. ``"e2b"`` / ``"docker"``) shown in the report
 header, threaded in by the benchmark spine.
+
+RFC 0002 P3: per-workflow report rendering has collapsed onto the typed
+``ReportFormatters`` strategy carried by each ``WorkflowSpec``. This host class
+keeps only the workflow-agnostic scaffolding (config / status / percentile /
+error / round-comparison sections, snapshot collection, generic ``Snapshot``
+projection) and delegates every per-workflow surface
+(``format_stats_section`` / ``format_step_timing`` / ``format_throughput_section``
+/ ``format_trajectory_summary_section`` / ``format_round_extras`` /
+``format_config_extras`` / ``format_snapshot_line``) to
+``WORKFLOW_REGISTRY[config.workflow_type].report_formatters`` via a
+:class:`ReportContext`. There is no ``workflow_type`` if/elif dispatch left in
+the report path. Shared helpers (``ErrorClassifier``, ``TableFormatter``) live
+in :mod:`bench_core.observability.report_helpers`; the import cycle into
+``task_runner.*`` is dissolved because the per-workflow narrows no longer live
+here.
 """
 from __future__ import annotations
 
@@ -17,68 +32,18 @@ from datetime import datetime
 from typing import Any
 
 from bench_core.config import KernelConfig
-from bench_core.observability.replay_obs import ReplayObservability
-from bench_core.schemas import (
-    CODING_STEP_ORDER,
-    BenchSandbox,
-    Snapshot,
-    get_step_order,
-)
-from bench_core.task_runner.document import DocumentConfig
-from bench_core.task_runner.replay import ReplayConfig
+from bench_core.observability.report_helpers import ErrorClassifier, TableFormatter
+from bench_core.schemas import BenchSandbox, Snapshot
 from bench_core.utils import (
     calc_p99,
     calc_percentiles,
     calc_tail_ratio,
     classify_tail_latency,
 )
+from bench_core.workflow_registry import WORKFLOW_REGISTRY, ReportContext, ensure_workflow_registered
 from env_provider import SandboxStatus
 
 logger = logging.getLogger(__name__)
-
-# P2.5 lifecycle overhead: slices below this are excluded from per-sample
-# overhead (prevents 1.0 / 0.0001-style explosion). The duration percentile
-# lists already exclude == 0 (synthesized failures); this additionally drops
-# pathologically-fast real slices.
-MIN_SLICE_SEC = 0.001
-
-
-def replay_pool_size(config: KernelConfig) -> int:
-    """Distinct-trajectory count in the replay pool, 0 if unresolvable.
-
-    ``load_pool`` is itself module-cached, so this is O(1) after the first
-    runner-thread call and shares one immutable tuple across the fleet. Used
-    only for the final report's "One-pass Target" line as the distinct-trajectory
-    pool size (context, not the completion target). Returns 0 for non-replay
-    workflows or when the pool cannot be loaded (e.g. Mock configs in unit tests).
-    """
-    if config.workflow_type != "replay":
-        return 0
-    try:
-        from bench_core.payload.replay_payload import load_pool
-
-        return len(load_pool(config))
-    except Exception:
-        logger.debug("replay pool size unavailable", exc_info=True)
-        return 0
-
-
-def _replay_traj_target(config: KernelConfig) -> int:
-    """Expected trajectory completions for the whole run (the live ``traj=`` denominator).
-
-    Replay runs one trajectory per sandbox per round (all concurrent), so over
-    ``round_count`` rounds the fleet completes ``round_count * total_count``
-    trajectories -- the cumulative ceiling the snapshot's ``traj=done/total``
-    divides into. When ``round_count`` is None/0 (sustained-until-duration)
-    there is no fixed ceiling, so returns 0 and the snapshot prints a bare
-    ``traj={done}`` count instead of a misleading ratio. Distinct from the
-    per-round ``One-pass Target`` (= ``total_count``) in the final report.
-    """
-    rc = config.round_count
-    if not rc:  # None or 0 -> unlimited/sustained: no fixed ceiling
-        return 0
-    return rc * config.total_count
-
 
 # Replay lifecycle list accessors snapshotted per round so the per-round
 # overhead table can slice each sandbox's lists between round boundaries.
@@ -93,124 +58,15 @@ _LIFECYCLE_ROUND_KEYS: tuple[str, ...] = (
     "running_slot_held_secs",
 )
 
-# Error display order, selected by workflow_type. The shared ErrorClassifier
-# may bucket an error into a category this workflow does not display; such
-# categories fold into "Other" so the report schema stays consistent.
-BROWSER_ERROR_DISPLAY = [
-    "Open tab failed",
-    "Page load failed",
-    "Snapshot failed",
-    "Click failed",
-    "Screenshot failed",
-    "Chrome start failed",
-    "D-Bus connection error",
-    "Gateway connection error",
-    "Sandbox unreachable",
-    "Timeout",
-    "Other",
-]
-
-CODING_ERROR_DISPLAY = [
-    "Checkout failed",
-    "Edit failed",
-    "Verify failed",
-    "OOM",
-    "Sandbox unreachable",
-    "Timeout",
-    "Other",
-]
-DOCUMENT_ERROR_DISPLAY = ["Read failed", "Write failed", "Verifier failed", "Timeout", "Other"]
-
-
-class ErrorClassifier:
-    """Error type classification for sandbox failures."""
-
-    # Error type definitions with patterns (order matters - first match wins).
-    ERROR_TYPES: list[tuple[str, list[str]]] = [
-        # Browser errors
-        ("Open tab failed", ["open_tab failed"]),
-        ("Page load failed", ["page_load failed"]),
-        ("Snapshot failed", ["snapshot failed"]),
-        ("Click failed", ["click failed"]),
-        ("Screenshot failed", ["screenshot failed"]),
-        ("Chrome start failed", ["failed to start chrome", "chrome_start"]),
-        ("D-Bus connection error", ["d-bus", "dbus", "failed to connect to the bus"]),
-        ("Gateway connection error", ["gateway", "cdp", "http_unreachable"]),
-        ("Sandbox unreachable", ["failed to route", "sandbox unreachable"]),
-        # Coding errors
-        ("Find failed", ["find failed", "git checkout", "locate failed"]),
-        ("Read failed", ["read failed", "head failed"]),
-        ("Edit failed", ["edit failed", "sed failed"]),
-        ("Verify failed", ["verify failed", "npx tsx", "go run", "exit code"]),
-        ("Diff failed", ["diff failed", "git diff"]),
-        ("Write failed", ["write failed", "create write directory"]),
-        ("Verifier failed", ["verification", "verifier", "business_verification"]),
-        ("OOM", ["oom", "out of memory", "cannot allocate"]),
-        ("Timeout", ["timeout", "timed out"]),
-    ]
-
-    @classmethod
-    def classify(cls, error: str) -> str:
-        """Classify an error message into an error type."""
-        error_lower = error.lower()
-        for error_type, patterns in cls.ERROR_TYPES:
-            if any(pattern in error_lower for pattern in patterns):
-                return error_type
-        return "Other"
-
-    @classmethod
-    def aggregate(cls, errors: list[tuple[int, int, str]]) -> tuple[dict[str, int], dict[str, list[int]]]:
-        """Aggregate errors by type.
-
-        Args:
-            errors: List of (sandbox_index, count, error_message).
-
-        Returns:
-            Tuple of (error_counts, error_sandbox_ids).
-        """
-        error_counts: dict[str, int] = {}
-        error_sandbox_ids: dict[str, list[int]] = {}
-
-        for sid, count, error in errors:
-            error_type = cls.classify(error)
-            error_counts[error_type] = error_counts.get(error_type, 0) + count
-            error_sandbox_ids.setdefault(error_type, []).append(sid)
-
-        return error_counts, error_sandbox_ids
-
-
-class TableFormatter:
-    """Simple table formatter for plain text output."""
-
-    @staticmethod
-    def format_table(headers: list[str], rows: list[list[str]], title: str = "") -> list[str]:
-        """Format a table with aligned columns."""
-        if not rows:
-            return []
-
-        lines: list[str] = []
-        if title:
-            lines.append(title)
-
-        # Calculate column widths
-        widths = [len(h) for h in headers]
-        for row in rows:
-            for i, cell in enumerate(row):
-                widths[i] = max(widths[i], len(cell))
-
-        # Header row
-        lines.append("  ".join(h.ljust(w) for h, w in zip(headers, widths)))
-        # Separator
-        lines.append("  ".join("-" * w for w in widths))
-        # Data rows
-        for row in rows:
-            lines.append("  ".join(cell.ljust(w) for cell, w in zip(row, widths)))
-
-        return lines
-
 
 class ReportFormatter:
-    """Format statistics into a human-readable report."""
+    """Format statistics into a human-readable report.
+
+    Host facade: renders the workflow-agnostic sections itself and delegates
+    every per-workflow surface to ``self._fmt`` (the ``ReportFormatters``
+    strategy from ``WORKFLOW_REGISTRY``), threading state through a frozen
+    :class:`ReportContext` so the strategies never reach back into this class.
+    """
 
     def __init__(
         self,
@@ -225,6 +81,24 @@ class ReportFormatter:
         self.provider_label = provider_label
         self.admission_snapshot = admission_snapshot
         self.wall_sec = wall_sec
+        # Lazy-register the active workflow's task_runner module so its spec (and
+        # ReportFormatters strategy) is in WORKFLOW_REGISTRY before the lookup.
+        # No-op for real runs (config.from_raw already registered it); fires the
+        # import for tests that construct a config without going through from_raw.
+        ensure_workflow_registered(config.workflow_type)
+        self._fmt = WORKFLOW_REGISTRY[config.workflow_type].report_formatters
+
+    @property
+    def _ctx(self) -> ReportContext:
+        """Frozen view of everything a per-workflow strategy needs to render."""
+        return ReportContext(
+            config=self.config,
+            sandbox_states=self.sandbox_states,
+            admission_snapshot=self.admission_snapshot,
+            wall_sec=self.wall_sec,
+        )
+
+    # ---- workflow-agnostic sections ----------------------------------------
 
     def format_config_section(self) -> list[str]:
         """Format test configuration section."""
@@ -232,11 +106,9 @@ class ReportFormatter:
         lines.append("\n[Test Configuration]")
         lines.append(f"  Backend:        {self.provider_label}")
         lines.append(f"  Total Sandboxes: {self.config.total_count}")
-        if self.config.workflow_type == "document":
-            cfg = self.config.workflow_config
-            assert isinstance(cfg, DocumentConfig), "document config requires a DocumentConfig view"
-            lines.append(f"  Workflow:        {self.config.workflow_type}")
-            lines.append(f"  Document Case:   {cfg.document_case_kind}")
+        # Per-workflow extras (e.g. document emits the Workflow + Document Case
+        # lines); non-document formatters return [] so the section is unchanged.
+        lines.extend(self._fmt.format_config_extras(self._ctx))
 
         # Mode
         if self.config.detect_existing:
@@ -276,13 +148,9 @@ class ReportFormatter:
         ]
         offline_states = [s for s in self.sandbox_states.values() if not s.is_alive and not s.stopped_by_cleanup]
 
-        # Use workflow-specific labels
-        if self.config.workflow_type in {"coding", "document", "replay"}:
-            command_ready = True
-        elif self.config.workflow_type == "browser":
-            command_ready = False
-        else:
-            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
+        # command_ready is a per-workflow class attr (browser probes ports,
+        # coding/document/replay probe a command). No if/elif.
+        command_ready = self._fmt.command_ready
         ready_label = "Command Ready" if command_ready else "Ports Ready"
         check_failed_label = "Ready Check Failed" if command_ready else "Port Check Failed"
         failed_ids_label = "Ready Failed IDs" if command_ready else "Port Failed IDs"
@@ -324,612 +192,6 @@ class ReportFormatter:
 
         return lines
 
-    def format_browser_stats_section(self) -> list[str]:
-        """Format browser task statistics section."""
-        all_latencies: list[float] = []
-        for s in self.sandbox_states.values():
-            all_latencies.extend(s.browser_metrics.latencies)
-
-        total_tasks = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
-        total_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
-        total_failed = sum(s.browser_metrics.failed_count for s in self.sandbox_states.values())
-        total_timeout = sum(s.browser_metrics.timeout_count for s in self.sandbox_states.values())
-
-        lines = ["\n[Browser Task Statistics]"]
-        lines.append(f"  Total Tasks:   {total_tasks}")
-        lines.append(f"  Success:       {total_success}")
-        lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
-        lines.append(f"  Success Rate:  {total_success / max(1, total_tasks) * 100:.1f}%")
-
-        if all_latencies:
-            avg_ms = statistics.mean(all_latencies) * 1000
-            p99_ms = calc_p99(all_latencies) * 1000
-            lines.append(f"  Avg Latency:   {avg_ms:.1f}ms")
-            lines.append(f"  P99 Latency:   {p99_ms:.1f}ms")
-
-        return lines
-
-    def format_step_timing_table(self) -> list[str]:
-        """Format step-level timing as a table."""
-        all_step_times: dict[str, list[float]] = {}
-        for s in self.sandbox_states.values():
-            step_times_copy = s.browser_metrics.get_step_times_copy()
-            for step_name, times in step_times_copy.items():
-                all_step_times.setdefault(step_name, []).extend(times)
-
-        if not all_step_times:
-            return []
-
-        lines = ["\n[Step-Level Timing (Tab-Switch Mode)]"]
-        headers = ["Step", "Count", "Avg(ms)", "P50(ms)", "P95(ms)", "P99(ms)", "Tail"]
-        rows: list[list[str]] = []
-
-        for step_name in ["open_tab", "page_load", "snapshot", "click", "screenshot"]:
-            if step_name in all_step_times and all_step_times[step_name]:
-                times = all_step_times[step_name]
-                stats = calc_percentiles(times)
-                tail_ratio = calc_tail_ratio(times)
-                severity = classify_tail_latency(tail_ratio)
-                rows.append(
-                    [
-                        step_name,
-                        str(len(times)),
-                        f"{stats['avg'] * 1000:.1f}",
-                        f"{stats['p50'] * 1000:.1f}",
-                        f"{stats['p95'] * 1000:.1f}",
-                        f"{stats['p99'] * 1000:.1f}",
-                        f"{tail_ratio:.2f}x ({severity})",
-                    ]
-                )
-
-        lines.extend(TableFormatter.format_table(headers, rows))
-        lines.append("\n  Tail Ratio: P99/P50 - indicates long-tail latency severity")
-        lines.append("  < 1.2x: minimal | 1.2-1.5x: moderate | > 1.5x: significant")
-        return lines
-
-    def format_coding_stats_section(self) -> list[str]:
-        """Format coding task statistics section."""
-        all_latencies: list[float] = []
-        for s in self.sandbox_states.values():
-            all_latencies.extend(s.coding_metrics.latencies)
-
-        total_tasks = sum(s.coding_metrics.total_tasks for s in self.sandbox_states.values())
-        total_success = sum(s.coding_metrics.success_count for s in self.sandbox_states.values())
-        total_failed = sum(s.coding_metrics.failed_count for s in self.sandbox_states.values())
-        total_timeout = sum(s.coding_metrics.timeout_count for s in self.sandbox_states.values())
-        verify_success = sum(s.coding_metrics.verify_success_count for s in self.sandbox_states.values())
-        compile_only = sum(s.coding_metrics.compile_only_count for s in self.sandbox_states.values())
-
-        lines = ["\n[Coding Task Statistics]"]
-        lines.append(f"  Total Tasks:   {total_tasks}")
-        lines.append(f"  Success:       {total_success}")
-        lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
-        lines.append(f"  Success Rate:  {total_success / max(1, total_tasks) * 100:.1f}%")
-        # Verify is split: real-assertion passes vs compile-only passes (no
-        # assertion). Kept separate so a compile-only pass is never read as an
-        # assertion pass - the distinction a strong reviewer checks.
-        lines.append(
-            f"  Verify Success: {verify_success}/{total_tasks} "
-            f"({verify_success / max(1, total_tasks) * 100:.1f}%) "
-            f"[assert: {verify_success}, compile-only: {compile_only}]"
-        )
-
-        if all_latencies:
-            avg_ms = statistics.mean(all_latencies) * 1000
-            p99_ms = calc_p99(all_latencies) * 1000
-            lines.append(f"  Avg Latency:   {avg_ms:.1f}ms")
-            lines.append(f"  P99 Latency:   {p99_ms:.1f}ms")
-
-        return lines
-
-    def format_coding_step_timing_table(self) -> list[str]:
-        """Format coding step-level timing as a table."""
-        all_step_times: dict[str, list[float]] = {}
-        for s in self.sandbox_states.values():
-            step_times_copy = s.coding_metrics.get_step_times_copy()
-            for step_name, times in step_times_copy.items():
-                all_step_times.setdefault(step_name, []).extend(times)
-
-        if not all_step_times:
-            return []
-
-        lines = ["\n[Step-Level Timing (Coding Mode)]"]
-        headers = ["Step", "Count", "Avg(ms)", "P50(ms)", "P95(ms)", "P99(ms)", "Tail"]
-        rows: list[list[str]] = []
-
-        for step_name in CODING_STEP_ORDER:
-            if step_name in all_step_times and all_step_times[step_name]:
-                times = all_step_times[step_name]
-                stats = calc_percentiles(times)
-                tail_ratio = calc_tail_ratio(times)
-                severity = classify_tail_latency(tail_ratio)
-                rows.append(
-                    [
-                        step_name,
-                        str(len(times)),
-                        f"{stats['avg'] * 1000:.1f}",
-                        f"{stats['p50'] * 1000:.1f}",
-                        f"{stats['p95'] * 1000:.1f}",
-                        f"{stats['p99'] * 1000:.1f}",
-                        f"{tail_ratio:.2f}x ({severity})",
-                    ]
-                )
-
-        lines.extend(TableFormatter.format_table(headers, rows))
-        lines.append("\n  Tail Ratio: P99/P50 - indicates long-tail latency severity")
-        lines.append("  < 1.2x: minimal | 1.2-1.5x: moderate | > 1.5x: significant")
-        return lines
-
-    def format_document_stats_section(self) -> list[str]:
-        """Format document task statistics section."""
-        cfg = self.config.workflow_config
-        assert isinstance(cfg, DocumentConfig), "document stats require a DocumentConfig view"
-        metrics = [state.document_metrics for state in self.sandbox_states.values()]
-        all_latencies = [latency for metric in metrics for latency in metric.latencies]
-        total_tasks = sum(metric.total_tasks for metric in metrics)
-        total_success = sum(metric.success_count for metric in metrics)
-        total_failed = sum(metric.failed_count for metric in metrics)
-        total_timeout = sum(metric.timeout_count for metric in metrics)
-        lines = ["\n[Document Task Statistics]"]
-        lines.append(f"  Case Kind:     {cfg.document_case_kind}")
-        lines.append(f"  Total Tasks:   {total_tasks}")
-        lines.append(f"  Success:       {total_success}")
-        lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
-        lines.append(f"  Success Rate:  {total_success / max(1, total_tasks) * 100:.1f}%")
-        if all_latencies:
-            lines.append(f"  Avg Latency:   {statistics.mean(all_latencies) * 1000:.1f}ms")
-            lines.append(f"  P99 Latency:   {calc_p99(all_latencies) * 1000:.1f}ms")
-        return lines
-
-    def format_document_step_timing_table(self) -> list[str]:
-        """Format document step-level timing as a table."""
-        cfg = self.config.workflow_config
-        assert isinstance(cfg, DocumentConfig), "document step timing requires a DocumentConfig view"
-        all_step_times: dict[str, list[float]] = {}
-        for state in self.sandbox_states.values():
-            for step_name, times in state.document_metrics.get_step_times_copy().items():
-                all_step_times.setdefault(step_name, []).extend(times)
-        if not all_step_times:
-            return []
-        lines = [f"\n[Step-Level Timing (Document {cfg.document_case_kind.upper()} Mode)]"]
-        headers = ["Step", "Count", "Avg(ms)", "P50(ms)", "P95(ms)", "P99(ms)", "Tail"]
-        rows: list[list[str]] = []
-        for step_name in get_step_order("document", cfg.document_case_kind):
-            times = all_step_times.get(step_name, [])
-            if not times:
-                continue
-            stats = calc_percentiles(times)
-            tail_ratio = calc_tail_ratio(times)
-            rows.append(
-                [
-                    step_name,
-                    str(len(times)),
-                    f"{stats['avg'] * 1000:.1f}",
-                    f"{stats['p50'] * 1000:.1f}",
-                    f"{stats['p95'] * 1000:.1f}",
-                    f"{stats['p99'] * 1000:.1f}",
-                    f"{tail_ratio:.2f}x ({classify_tail_latency(tail_ratio)})",
-                ]
-            )
-        lines.extend(TableFormatter.format_table(headers, rows))
-        return lines
-
-    def format_replay_stats_section(self) -> list[str]:
-        """Format trajectory-replay task statistics section."""
-        rcfg = self.config.workflow_config
-        assert isinstance(rcfg, ReplayConfig), "replay stats require a ReplayConfig view"
-        all_latencies: list[float] = []
-        for s in self.sandbox_states.values():
-            all_latencies.extend(s.replay_metrics.latencies)
-
-        total_tasks = sum(s.replay_metrics.total_tasks for s in self.sandbox_states.values())
-        total_success = sum(s.replay_metrics.success_count for s in self.sandbox_states.values())
-        total_failed = sum(s.replay_metrics.failed_count for s in self.sandbox_states.values())
-        total_timeout = sum(s.replay_metrics.timeout_count for s in self.sandbox_states.values())
-        completions = sum(s.replay_metrics.trajectory_completions for s in self.sandbox_states.values())
-        # Delay fidelity is per-sandbox (actual/requested delay); average across sandboxes.
-        fidelity_values = [s.replay_metrics.delay_fidelity for s in self.sandbox_states.values()]
-        delay_fidelity = statistics.mean(fidelity_values) if fidelity_values else 0.0
-
-        lines = ["\n[Replay Task Statistics]"]
-        # Label+colon padded to the widest ("Trajectory Completions:") so every
-        # value starts in the same column; the colon stays contiguous with the
-        # label so ``"Label:"`` substring asserts keep working.
-        lines.append(f"  {'Total Steps:':<24}{total_tasks}")
-        lines.append(f"  {'Success:':<24}{total_success}")
-        lines.append(f"  {'Failed:':<24}{total_failed} (timeout: {total_timeout})")
-        lines.append(f"  {'Success Rate:':<24}{total_success / max(1, total_tasks) * 100:.1f}%")
-        lines.append(f"  {'Trajectory Completions:':<24}{completions}")
-        fleet = self.config.total_count
-        if fleet:
-            pool = replay_pool_size(self.config)
-            pool_note = f"; pool {pool} distinct" if pool else ""
-            lines.append(f"  {'One-pass Target:':<24}{fleet} (1 trajectory/sandbox per round{pool_note})")
-        orphan_skipped = sum(s.replay_metrics.orphan_skip_count for s in self.sandbox_states.values())
-        if orphan_skipped:
-            lines.append(f"  {'Orphan Skipped:':<24}{orphan_skipped}")
-        # P2 lifecycle: one-time snapshot-creation pause (separate from per-step resume_sec).
-        initial_pauses = [
-            s.replay_metrics.initial_pause_sec
-            for s in self.sandbox_states.values()
-            if s.replay_metrics.initial_pause_sec > 0
-        ]
-        if initial_pauses:
-            noun = "sandbox" if len(initial_pauses) == 1 else "sandboxes"
-            lines.append(
-                f"  {'Initial Pause:':<24}{statistics.mean(initial_pauses):.3f}s (over {len(initial_pauses)} {noun})"
-            )
-        lines.append(f"  {'Delay Fidelity:':<24}{delay_fidelity:.2f}")
-
-        if all_latencies:
-            avg = statistics.mean(all_latencies)
-            p99 = calc_p99(all_latencies)
-            lines.append(f"  {'Avg Latency:':<24}{avg:.3f}s")
-            lines.append(f"  {'P99 Latency:':<24}{p99:.3f}s")
-
-        # P2.5 [Lifecycle Overhead] -- lifecycle + trajectory mode. Per-sample
-        # overhead_i = (resume_sec_i + pause_sec_i) / slice_total_sec_i
-        # (mean/P50/P95), plus an aggregate ratio. Near-zero slices
-        # (slice_total_sec < MIN_SLICE_SEC) are excluded from the per-sample
-        # overhead list; the duration percentile lists already exclude == 0.
-        if rcfg.replay_mode in ("lifecycle", "trajectory"):
-            all_resume: list[float] = []
-            all_pause: list[float] = []
-            all_slice: list[float] = []
-            all_slot_held: list[float] = []
-            all_interaction: list[float] = []
-            for s in self.sandbox_states.values():
-                all_resume.extend(s.replay_metrics.resume_secs)
-                all_pause.extend(s.replay_metrics.pause_secs)
-                all_slice.extend(s.replay_metrics.slice_total_secs)
-                all_slot_held.extend(s.replay_metrics.running_slot_held_secs)
-                all_interaction.extend(s.replay_metrics.interaction_total_secs)
-            if all_slice:
-                lines.append("[Lifecycle Overhead]")
-                resume_stats = calc_percentiles(all_resume)
-                pause_stats = calc_percentiles(all_pause)
-                slice_stats = calc_percentiles(all_slice)
-                n = len(all_slice)
-                # Percentile lines aligned to the widest label in this group
-                # ("Interaction:") so the P50= column starts in one place.
-                lines.append(
-                    f"  {'Resume:':<13}P50={resume_stats['p50']:.3f}s "
-                    f"P95={resume_stats['p95']:.3f}s P99={resume_stats['p99']:.3f}s  (n={n})"
-                )
-                lines.append(
-                    f"  {'Pause:':<13}P50={pause_stats['p50']:.3f}s "
-                    f"P95={pause_stats['p95']:.3f}s P99={pause_stats['p99']:.3f}s  (n={n})"
-                )
-                lines.append(
-                    f"  {'Slice:':<13}P50={slice_stats['p50']:.3f}s "
-                    f"P95={slice_stats['p95']:.3f}s P99={slice_stats['p99']:.3f}s  (n={n})"
-                )
-                # L7: Slot held (overcommit-efficiency = lease release - acquire).
-                # slot_held ≡ slice by construction (the lease spans resume->pause;
-                # slot_contention_wait happens before acquire, so it is never in the
-                # lease). Only render when it materially diverges from slice -- e.g.
-                # trajectory-mode capacity_wait -- otherwise it restates Slice.
-                if all_slot_held and self.admission_snapshot is not None:
-                    held_diverges = any(abs(h - s) >= 0.001 for h, s in zip(all_slot_held, all_slice))
-                    if held_diverges:
-                        held_stats = calc_percentiles(all_slot_held)
-                        lines.append(
-                            f"  {'Slot held:':<13}P50={held_stats['p50']:.3f}s "
-                            f"P95={held_stats['p95']:.3f}s  (n={len(all_slot_held)})"
-                        )
-                if all_interaction:
-                    inter_stats = calc_percentiles(all_interaction)
-                    lines.append(
-                        f"  {'Interaction:':<13}P50={inter_stats['p50']:.3f}s "
-                        f"P95={inter_stats['p95']:.3f}s  (n={len(all_interaction)})"
-                    )
-                # per-sample overhead, near-zero guarded
-                overheads = [(r + p) / s for r, p, s in zip(all_resume, all_pause, all_slice) if s >= MIN_SLICE_SEC]
-                if overheads:
-                    oh_stats = calc_percentiles(overheads)
-                    lines.append(
-                        f"  Overhead per-sample: mean={oh_stats['avg'] * 100:.1f}% "
-                        f"P50={oh_stats['p50'] * 100:.1f}% P95={oh_stats['p95'] * 100:.1f}% "
-                        f"(n={len(overheads)})"
-                    )
-                # aggregate ratio (robust to per-sample outliers)
-                agg_slice = [s for s in all_slice if s >= MIN_SLICE_SEC]
-                agg_resume = [r for r, s in zip(all_resume, all_slice) if s >= MIN_SLICE_SEC]
-                agg_pause = [p for p, s in zip(all_pause, all_slice) if s >= MIN_SLICE_SEC]
-                if sum(agg_slice) > 0:
-                    agg = (sum(agg_resume) + sum(agg_pause)) / sum(agg_slice)
-                    lines.append(f"  Overhead aggregate:  {agg * 100:.1f}%")
-                # known caveat footer (resume_sec includes the post-resume ready-wait;
-                # resume_sec = resume_inflight_wait + resume_api + resume_ready_wait --
-                # rate-pacing is PRE-lease, excluded, so it is absent from the Resume
-                # decomp line; the per-phase rate-pacing percentiles live on the
-                # separate "QPS pacing delay" admission-block line.)
-                lines.append("  (resume_sec includes post-resume ready-wait; see Resume decomp)")
-
-                # Phase 3.3: retry-impact sub-block. Reads the ReplayMetrics
-                # accumulators (populated by the runner alongside retry_* series
-                # events), NOT the series JSONL -- ReplayMetrics is the report's
-                # consistent data source. retries/time lost always render; the
-                # per-slice P95 line only when retries actually occurred.
-                retry_count = sum(s.replay_metrics.retry_queued_count for s in self.sandbox_states.values())
-                retry_time_lost = sum(s.replay_metrics.time_lost_to_retry_sec for s in self.sandbox_states.values())
-                if retry_count > 0:
-                    all_retries_per_slice: list[int] = []
-                    for s in self.sandbox_states.values():
-                        all_retries_per_slice.extend(s.replay_metrics.retries_per_slice)
-                    rp95 = calc_percentiles(all_retries_per_slice)["p95"]
-                    lines.append(
-                        f"  Retry impact: retries={retry_count} "
-                        f"(time lost={retry_time_lost:.3f}s) "
-                        f"retries/slice P95={rp95:.2f}"
-                    )
-                else:
-                    lines.append(f"  Retry impact: retries={retry_count} " f"(time lost={retry_time_lost:.3f}s)")
-
-                # P2.6 decomposition sub-block: column-stable breakdown of
-                # resume/pause into their segment components. Columns are NEVER
-                # conditionally dropped (0.000s when inactive); only the Slot
-                # contention and Admission WHOLE LINES are conditional on an
-                # admission controller being present.
-                all_resume_api: list[float] = []
-                all_resume_ready_wait: list[float] = []
-                all_resume_inflight_wait: list[float] = []
-                all_resume_rate_pacing_wait: list[float] = []
-                all_slot_contention: list[float] = []
-                all_pause_api: list[float] = []
-                all_pause_inflight_wait: list[float] = []
-                all_pause_rate_pacing_wait: list[float] = []
-                # Wait-decoupling components (rate pacing + inflight fuse + the
-                # slot-scheduler's natural_delay/capacity splits). The per-phase
-                # *_inflight_wait / *_rate_pacing_wait lists feed the Resume/Pause
-                # decomp lines, aligned to the invariants (resume_sec = inflight +
-                # api + ready_wait; pause_sec = rate_pacing + inflight + api); the
-                # element-wise sum properties (rate_pacing_wait_secs /
-                # inflight_wait_secs) feed the "QPS pacing delay" / "Inflight wait"
-                # admission-block summary lines.
-                all_rate_pacing_wait: list[float] = []
-                all_inflight_wait: list[float] = []
-                all_natural_delay: list[float] = []
-                all_capacity_wait: list[float] = []
-                for s in self.sandbox_states.values():
-                    all_resume_api.extend(s.replay_metrics.resume_api_secs)
-                    all_resume_ready_wait.extend(s.replay_metrics.resume_ready_wait_secs)
-                    all_resume_inflight_wait.extend(s.replay_metrics.resume_inflight_wait_secs)
-                    all_resume_rate_pacing_wait.extend(s.replay_metrics.resume_rate_pacing_wait_secs)
-                    all_slot_contention.extend(s.replay_metrics.slot_contention_wait_secs)
-                    all_pause_api.extend(s.replay_metrics.pause_api_secs)
-                    all_pause_inflight_wait.extend(s.replay_metrics.pause_inflight_wait_secs)
-                    all_pause_rate_pacing_wait.extend(s.replay_metrics.pause_rate_pacing_wait_secs)
-                    all_rate_pacing_wait.extend(s.replay_metrics.rate_pacing_wait_secs)
-                    all_inflight_wait.extend(s.replay_metrics.inflight_wait_secs)
-                    all_natural_delay.extend(s.replay_metrics.natural_delay_secs)
-                    all_capacity_wait.extend(s.replay_metrics.capacity_wait_secs)
-
-                # Resume decomp line -- the three components that sum to resume_sec
-                # (resume_sec = resume_inflight_wait + resume_api + resume_ready_wait).
-                # Rate-pacing is PRE-lease, excluded from resume_sec, so it is NOT
-                # listed here; its per-phase percentile lives on the "QPS pacing
-                # delay" admission-block line. Always rendered when all_slice non-empty.
-                resume_api_stats = calc_percentiles(all_resume_api)
-                resume_ready_wait_stats = calc_percentiles(all_resume_ready_wait)
-                resume_inflight_wait_stats = calc_percentiles(all_resume_inflight_wait)
-                lines.append(
-                    f"  Resume decomp: api P50={resume_api_stats['p50']:.3f}s "
-                    f"P95={resume_api_stats['p95']:.3f}s | "
-                    f"ready_wait P50={resume_ready_wait_stats['p50']:.3f}s | "
-                    f"inflight_wait P50={resume_inflight_wait_stats['p50']:.3f}s  (n={n})"
-                )
-
-                # Pause decomp line -- the three components that sum to pause_sec
-                # (pause_sec = pause_rate_pacing_wait + pause_inflight_wait + pause_api).
-                # Rate-pacing is IN-lease, so it IS listed here, using pause's own
-                # rate-pacing stat -- not the resume stat the pre-split code reused.
-                pause_api_stats = calc_percentiles(all_pause_api)
-                pause_inflight_wait_stats = calc_percentiles(all_pause_inflight_wait)
-                pause_rate_pacing_wait_stats = calc_percentiles(all_pause_rate_pacing_wait)
-                lines.append(
-                    f"  Pause decomp:  api P50={pause_api_stats['p50']:.3f}s | "
-                    f"rate_pacing P50={pause_rate_pacing_wait_stats['p50']:.3f}s | "
-                    f"inflight_wait P50={pause_inflight_wait_stats['p50']:.3f}s  (n={n})"
-                )
-
-                # Conditional lines (only when admission controller was built)
-                if self.admission_snapshot is not None:
-                    slot_contention_stats = calc_percentiles(all_slot_contention)
-                    lines.append(
-                        f"  Slot contention: P50={slot_contention_stats['p50']:.3f}s "
-                        f"P95={slot_contention_stats['p95']:.3f}s  (n={len(all_slot_contention)})  [= nat + cap]"
-                    )
-                    # Three independent wait components (rate pacing, inflight
-                    # fuse, and the slot-scheduler's natural/capacity split).
-                    # Each is shown only when its knob was active so an "off"
-                    # component does not add a noise 0.000s line.
-                    a = self.admission_snapshot
-                    if a.get("qps") != "off":
-                        # Per-phase split: resume rate-pacing is PRE-lease (removed
-                        # from the Resume decomp line, which only carries resume_sec
-                        # components), so it is surfaced here alongside pause's own
-                        # rate-pacing and the element-wise sum -- the rate-pacing cost
-                        # stays visible per phase without mis-attributing resume's into
-                        # resume_sec. (Percentiles do not add; sum P50 != resume P50
-                        # + pause P50 in general.)
-                        resume_rp_stats = calc_percentiles(all_resume_rate_pacing_wait)
-                        pause_rp_stats = calc_percentiles(all_pause_rate_pacing_wait)
-                        sum_rp_stats = calc_percentiles(all_rate_pacing_wait)
-                        lines.append(
-                            f"  QPS pacing delay: resume P50={resume_rp_stats['p50']:.3f}s | "
-                            f"pause P50={pause_rp_stats['p50']:.3f}s | "
-                            f"sum P50={sum_rp_stats['p50']:.3f}s P95={sum_rp_stats['p95']:.3f}s  "
-                            f"(n={len(all_rate_pacing_wait)})"
-                        )
-                    if a.get("inflight_cap") not in (None, "off"):
-                        inf_stats = calc_percentiles(all_inflight_wait)
-                        lines.append(
-                            f"  Inflight wait:    P50={inf_stats['p50']:.3f}s "
-                            f"P95={inf_stats['p95']:.3f}s  (n={len(all_inflight_wait)})"
-                        )
-                    if all_natural_delay and any(v > 0 for v in all_natural_delay):
-                        nd_stats = calc_percentiles(all_natural_delay)
-                        lines.append(f"  Natural delay:    P50={nd_stats['p50']:.3f}s  (n={len(all_natural_delay)})")
-                    if all_capacity_wait and any(v > 0 for v in all_capacity_wait):
-                        cw_stats = calc_percentiles(all_capacity_wait)
-                        lines.append(
-                            f"  Capacity wait:    P50={cw_stats['p50']:.3f}s "
-                            f"P95={cw_stats['p95']:.3f}s  (n={len(all_capacity_wait)})"
-                        )
-                    lines.append("  Admission:")
-                    rs = a.get("running_slots") or {}
-                    if rs:
-                        lines.append(
-                            f"    Running slots: maximum={rs.get('maximum', 0)} "
-                            f"active={rs.get('active', 0)} peak_active={rs.get('peak_active', 0)} "
-                            f"granted={rs.get('granted', 0)} waiting={rs.get('waiting', 0)} "
-                            f"avg_queue_wait={rs.get('average_queue_wait_sec', 0.0):.3f}s"
-                        )
-                    ql = a.get("qps_limiter")
-                    # The limiter block renders when EITHER function is active
-                    # (the two knobs are independent). Rate-pacing detail shows
-                    # only when qps != off; inflight-fuse detail only when the
-                    # cap is set.
-                    if ql:
-                        if a.get("qps") != "off":
-                            lines.append(
-                                f"    Rate pacing:   qps={ql.get('qps')} "
-                                f"dispatched={ql.get('dispatched', 0)} "
-                                f"avg_wait={ql.get('average_wait_sec', 0.0):.1f}s "
-                                f"max_wait={ql.get('max_wait_sec', 0.0):.1f}s"
-                            )
-                            dbo = ql.get("dispatched_by_operation", {})
-                            lines.append(
-                                "    Dispatched by operation: "
-                                + " ".join(
-                                    f"{op}={dbo.get(op, 0)}"
-                                    for op in ("resume", "pause", "cleanup", "create", "command")
-                                )
-                            )
-                            wbo = ql.get("waiting_by_operation", {})
-                            # Suppress an all-zero waiting line -- it is pure noise
-                            # (no op is ever queued) and never adds information.
-                            if any(wbo.get(op, 0) for op in ("resume", "pause", "cleanup", "create", "command")):
-                                lines.append(
-                                    "    Waiting by operation:    "
-                                    + " ".join(
-                                        f"{op}={wbo.get(op, 0)}"
-                                        for op in ("resume", "pause", "cleanup", "create", "command")
-                                    )
-                                )
-                        if a.get("inflight_cap") not in (None, "off"):
-                            lines.append(
-                                f"    Inflight fuse: cap={ql.get('inflight_cap')} "
-                                f"in_flight={ql.get('in_flight', 0)} "
-                                f"dispatched={ql.get('inflight_dispatched', 0)} "
-                                f"avg_wait={ql.get('average_inflight_wait_sec', 0.0):.1f}s"
-                            )
-
-        return lines
-
-    def format_throughput_section(self) -> list[str]:
-        """[Throughput & Overcommit] -- throughput/efficiency from ReplayObservability.
-
-        Rendered for replay workflows. Wall-gated metrics (steps_per_sec,
-        effective_parallelism, exec_wall_utilization) render ``n/a (zero
-        wall-clock time)`` when wall_sec is None/<=0; overcommit_ratio is
-        always rendered (it does not depend on wall-clock).
-        """
-        obs = ReplayObservability(
-            self.config,
-            self.sandbox_states,
-            admission_snapshot=self.admission_snapshot,
-            wall_sec=self.wall_sec,
-        )
-        lines = ["\n[Throughput & Overcommit]"]
-        na = "n/a (zero wall-clock time)"
-        if self.wall_sec is not None and self.wall_sec > 0:
-            lines.append(f"  {'wall_sec:':<24}{self.wall_sec:.1f}")
-        sps = obs.steps_per_sec
-        lines.append(f"  {'steps_per_sec:':<24}{f'{sps:.2f}' if sps is not None else na}")
-        ep = obs.effective_parallelism
-        lines.append(f"  {'effective_parallelism:':<24}{f'{ep:.2f}' if ep is not None else na}")
-        eu = obs.exec_wall_utilization
-        lines.append(f"  {'exec_wall_utilization:':<24}{f'{eu * 100:.1f}%' if eu is not None else na}")
-        lines.append(f"  {'overcommit_ratio:':<24}{obs.overcommit_ratio:.1f}x")
-        return lines
-
-    def format_trajectory_summary_section(self) -> list[str]:
-        """[Trajectory Summary] -- create/kill/slot-held percentiles for trajectory mode.
-
-        Rendered only in trajectory mode AND when create_sec measurements exist
-        (create_secs is populated only in trajectory mode; empty otherwise). The
-        slot_held line reuses the same running_slot_held_secs list as
-        [Lifecycle Overhead] but shows P99 here too.
-        """
-        rcfg = self.config.workflow_config
-        assert isinstance(rcfg, ReplayConfig), "trajectory summary requires a ReplayConfig view"
-        if rcfg.replay_mode != "trajectory":
-            return []
-        obs = ReplayObservability(
-            self.config,
-            self.sandbox_states,
-            admission_snapshot=self.admission_snapshot,
-            wall_sec=self.wall_sec,
-        )
-        cs = obs.create_sec_stats
-        # Gate on non-empty create_secs (calc_percentiles returns all-0.0 for an empty list).
-        if cs["p99"] == 0.0 and cs["max"] == 0.0:
-            return []
-        ks = obs.kill_sec_stats
-        sh = obs.slot_held_stats
-        n_create = sum(len(s.replay_metrics.create_secs) for s in self.sandbox_states.values())
-        n_kill = sum(len(s.replay_metrics.kill_secs) for s in self.sandbox_states.values())
-        lines = ["\n[Trajectory Summary]"]
-        lines.append(f"  Create sec: P50={cs['p50']:.3f}s P95={cs['p95']:.3f}s P99={cs['p99']:.3f}s  (n={n_create})")
-        lines.append(f"  Kill sec:   P50={ks['p50']:.3f}s P95={ks['p95']:.3f}s P99={ks['p99']:.3f}s  (n={n_kill})")
-        if sh["max"] > 0.0:
-            lines.append(f"  Slot held:  P50={sh['p50']:.3f}s P95={sh['p95']:.3f}s P99={sh['p99']:.3f}s")
-        return lines
-
-    def format_replay_step_timing_table(self) -> list[str]:
-        """Format replay per-action-type timing as a table.
-
-        Replay's "step" axis is the recorded action's type (shell /
-        str_replace_editor / bash / other), bucketed by ``classify_action``.
-        """
-        all_step_times: dict[str, list[float]] = {}
-        for s in self.sandbox_states.values():
-            step_times_copy = s.replay_metrics.get_step_times_copy()
-            for step_name, times in step_times_copy.items():
-                all_step_times.setdefault(step_name, []).extend(times)
-
-        if not all_step_times:
-            return []
-
-        lines = ["\n[Step-Level Timing (Replay Mode)]"]
-        headers = ["Action", "Count", "Avg(s)", "P50(s)", "P95(s)", "P99(s)", "Tail"]
-        rows: list[list[str]] = []
-
-        for step_name in get_step_order("replay"):
-            if step_name in all_step_times and all_step_times[step_name]:
-                times = all_step_times[step_name]
-                stats = calc_percentiles(times)
-                tail_ratio = calc_tail_ratio(times)
-                severity = classify_tail_latency(tail_ratio)
-                rows.append(
-                    [
-                        step_name,
-                        str(len(times)),
-                        f"{stats['avg']:.3f}",
-                        f"{stats['p50']:.3f}",
-                        f"{stats['p95']:.3f}",
-                        f"{stats['p99']:.3f}",
-                        f"{tail_ratio:.2f}x ({severity})",
-                    ]
-                )
-
-        lines.extend(TableFormatter.format_table(headers, rows))
-        lines.append("\n  Tail Ratio: P99/P50 - indicates long-tail latency severity")
-        lines.append("  < 1.2x: minimal | 1.2-1.5x: moderate | > 1.5x: significant")
-        return lines
-
     def format_error_section(self) -> list[str]:
         """Format error details and classification section."""
         failed_sandbox_errors: list[tuple[int, int, str]] = []
@@ -958,21 +220,10 @@ class ReportFormatter:
         headers = ["Error Type", "Count", "Sandboxes"]
         rows: list[list[str]] = []
 
-        if self.config.workflow_type == "coding":
-            error_display_order = CODING_ERROR_DISPLAY
-        elif self.config.workflow_type == "document":
-            error_display_order = DOCUMENT_ERROR_DISPLAY
-        elif self.config.workflow_type == "browser":
-            error_display_order = BROWSER_ERROR_DISPLAY
-        elif self.config.workflow_type == "replay":
-            error_display_order = CODING_ERROR_DISPLAY
-        else:
-            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
-
-        # The classifier is shared by all workflows, so a Document-specific
-        # pattern can also match text emitted by Browser/Coding.  Preserve the
-        # current workflow's report schema by folding categories it does not
-        # display into Other instead of silently dropping them from the table.
+        # error_display_order is a per-workflow class attr; the shared classifier
+        # may bucket an error into a category this workflow does not display, so
+        # fold those into Other instead of silently dropping them from the table.
+        error_display_order = self._fmt.error_display_order
         unsupported_types = [error_type for error_type in error_counts if error_type not in error_display_order]
         for error_type in unsupported_types:
             error_counts["Other"] = error_counts.get("Other", 0) + error_counts.pop(error_type)
@@ -1048,80 +299,13 @@ class ReportFormatter:
 
         lines.extend(TableFormatter.format_table(headers, rows))
 
-        # Per-round lifecycle overhead: only replay lifecycle/trajectory have
-        # resume/pause data (exec_only has none -> lists empty -> skip). This
-        # is the per-round view the cumulative [Lifecycle Overhead] section
-        # cannot show -- e.g. whether the 2nd trajectory pass resumes slower.
-        if self.config.workflow_type == "replay":
-            rcfg = self.config.workflow_config
-            assert isinstance(rcfg, ReplayConfig), "replay round comparison requires a ReplayConfig view"
-            if rcfg.replay_mode in ("lifecycle", "trajectory"):
-                lines.extend(self._format_lifecycle_overhead_by_round(active_rounds))
+        # Per-round lifecycle overhead sub-table is a per-workflow strategy
+        # surface (replay renders resume/pause/slice; others return []). The
+        # active_rounds buckets for non-replay workflows simply lack the
+        # resume/pause/slice keys, but the non-replay strategies never reach
+        # for them -- the ABC default returns [].
+        lines.extend(self._fmt.format_round_extras(self._ctx, active_rounds))
 
-        return lines
-
-    def _format_lifecycle_overhead_by_round(self, active_rounds: dict[int, dict[str, Any]]) -> list[str]:
-        """Per-round resume/pause/slice P50+P95 + aggregate overhead sub-table.
-
-        The lifecycle lists are index-aligned within each round (appended in
-        lockstep per slice), so the aggregate overhead ratio = (resume+pause)
-        /slice is computed over matching samples, with near-zero slices
-        excluded (same guard as the cumulative section).
-
-        Carries only the per-round comparison dimension (P50/P95 + overhead +
-        slot-held); the depth metrics (P99, per-sample overhead, decomp,
-        interaction) stay in the cumulative [Lifecycle Overhead] section to
-        avoid restating them per round. Slot held is meaningful only under an
-        admission controller, so its column is conditional on admission_snapshot.
-        """
-        has_admission = self.admission_snapshot is not None
-        lines = ["", "[Lifecycle Overhead by Round]"]
-        headers = [
-            "Round",
-            "n",
-            "Resume P50(s)",
-            "Resume P95(s)",
-            "Pause P50(s)",
-            "Pause P95(s)",
-            "Slice P50(s)",
-            "Slice P95(s)",
-        ]
-        if has_admission:
-            headers.append("Slot held P50(s)")
-        headers.append("Overhead%")
-        rows: list[list[str]] = []
-        for round_id in sorted(active_rounds.keys()):
-            resumes = active_rounds[round_id]["resume"]
-            pauses = active_rounds[round_id]["pause"]
-            slices = active_rounds[round_id]["slice"]
-            if not slices:
-                continue
-            r_stats = calc_percentiles(resumes)
-            p_stats = calc_percentiles(pauses)
-            s_stats = calc_percentiles(slices)
-            agg_slice = [sv for sv in slices if sv >= MIN_SLICE_SEC]
-            agg_resume = [rv for rv, sv in zip(resumes, slices) if sv >= MIN_SLICE_SEC]
-            agg_pause = [pv for pv, sv in zip(pauses, slices) if sv >= MIN_SLICE_SEC]
-            overhead = (sum(agg_resume) + sum(agg_pause)) / sum(agg_slice) if sum(agg_slice) > 0 else 0.0
-            row = [
-                str(round_id),
-                str(len(slices)),
-                f"{r_stats['p50']:.3f}",
-                f"{r_stats['p95']:.3f}",
-                f"{p_stats['p50']:.3f}",
-                f"{p_stats['p95']:.3f}",
-                f"{s_stats['p50']:.3f}",
-                f"{s_stats['p95']:.3f}",
-            ]
-            if has_admission:
-                slot_held = active_rounds[round_id].get("slot_held", [])
-                held_stats = calc_percentiles(slot_held) if slot_held else calc_percentiles([0.0])
-                row.append(f"{held_stats['p50']:.3f}")
-            row.append(f"{overhead * 100:.1f}")
-            rows.append(row)
-        if not rows:
-            return []
-        lines.extend(TableFormatter.format_table(headers, rows))
         return lines
 
     def _calculate_round_finals(self, round_start_totals: dict[int, dict[str, Any]]) -> dict[int, dict[str, Any]]:
@@ -1206,6 +390,23 @@ class ReportFormatter:
 
         return round_finals
 
+    # ---- per-workflow delegating facades -----------------------------------
+    # One-liners that thread the frozen ReportContext into the strategy carried
+    # by this workflow's WorkflowSpec. Kept on the host so tests and callers
+    # that already hold a ReportFormatter keep working through the generic names.
+
+    def format_stats_section(self) -> list[str]:
+        return self._fmt.format_stats_section(self._ctx)
+
+    def format_step_timing(self) -> list[str]:
+        return self._fmt.format_step_timing(self._ctx)
+
+    def format_throughput_section(self) -> list[str]:
+        return self._fmt.format_throughput_section(self._ctx)
+
+    def format_trajectory_summary_section(self) -> list[str]:
+        return self._fmt.format_trajectory_summary_section(self._ctx)
+
 
 class StatsCollector:
     """Statistics collector - real-time snapshot + final report."""
@@ -1219,6 +420,9 @@ class StatsCollector:
         self.config = config
         self.sandbox_states = sandbox_states
         self.provider_label = provider_label
+        # _print_snapshot looks the strategy up directly (no ReportFormatter),
+        # so ensure the workflow is registered here too. Idempotent.
+        ensure_workflow_registered(config.workflow_type)
         self.admission_snapshot: dict | None = None
         self.snapshots: list[Snapshot] = []
         self.start_time: float = 0.0
@@ -1299,7 +503,16 @@ class StatsCollector:
             time.sleep(self.config.stats_interval)
 
     def _take_snapshot(self) -> None:
-        """Collect current snapshot."""
+        """Collect current snapshot.
+
+        Generic over workflow: projects cumulative task totals / success /
+        recent-latency stats from the polymorphic ``s.task_metrics`` (one of
+        Browser/Coding/Document/Replay metrics) onto the slim generic
+        :class:`Snapshot`. Per-workflow narrows (browser ports, coding verify,
+        replay trajectory) are no longer snapshotted -- the per-workflow
+        ``format_snapshot_line`` strategy reads them live from
+        ``sandbox_states`` at render time.
+        """
         now = time.time()
         elapsed = now - self.start_time
 
@@ -1337,141 +550,42 @@ class StatsCollector:
             "total": calc_percentiles(total_times),
         }
 
-        # Task statistics (cumulative) -- only for the active workflow
-        if self.config.workflow_type == "browser":
-            task_total = sum(s.browser_metrics.total_tasks for s in self.sandbox_states.values())
-            task_success = sum(s.browser_metrics.success_count for s in self.sandbox_states.values())
+        # Task statistics (cumulative) -- generic projection from the
+        # polymorphic task_metrics. task_total / task_success / the last-10
+        # latency window are workflow-agnostic; the per-workflow snapshot line
+        # (traj=, ports, etc.) is rendered by the strategy at print time.
+        task_total = sum(s.task_metrics.total_tasks for s in self.sandbox_states.values())
+        task_success = sum(s.task_metrics.success_count for s in self.sandbox_states.values())
 
-            if self.current_round is not None and self.current_round in self._round_start_totals:
-                start_total = self._round_start_totals[self.current_round]["total"]
-                start_success = self._round_start_totals[self.current_round]["success"]
-                round_total = task_total - start_total
-                round_success = task_success - start_success
-            else:
-                round_total = 0
-                round_success = 0
-
-            all_latencies: list[float] = []
-            for s in self.sandbox_states.values():
-                all_latencies.extend(s.browser_metrics.latencies[-10:])
-
-            avg_latency = statistics.mean(all_latencies) if all_latencies else 0.0
-            p99_latency = calc_p99(all_latencies)
-
-            snapshot = Snapshot(
-                timestamp=now,
-                elapsed=elapsed,
-                total_sandboxes=len(self.sandbox_states),
-                active_sandboxes=active_count,
-                offline_sandboxes=offline_count,
-                creation_stats=creation_stats,
-                browser_total=task_total,
-                browser_success=task_success,
-                browser_avg_latency=avg_latency,
-                browser_p99_latency=p99_latency,
-                round_total=round_total,
-                round_success=round_success,
-            )
-        elif self.config.workflow_type == "coding":
-            task_total = sum(s.coding_metrics.total_tasks for s in self.sandbox_states.values())
-            task_success = sum(s.coding_metrics.success_count for s in self.sandbox_states.values())
-            coding_verify_success = sum(s.coding_metrics.verify_success_count for s in self.sandbox_states.values())
-            coding_compile_only = sum(s.coding_metrics.compile_only_count for s in self.sandbox_states.values())
-
-            if self.current_round is not None and self.current_round in self._round_start_totals:
-                start_total = self._round_start_totals[self.current_round]["total"]
-                start_success = self._round_start_totals[self.current_round]["success"]
-                round_total = task_total - start_total
-                round_success = task_success - start_success
-            else:
-                round_total = 0
-                round_success = 0
-
-            all_latencies = []
-            for s in self.sandbox_states.values():
-                all_latencies.extend(s.coding_metrics.latencies[-10:])
-
-            avg_latency = statistics.mean(all_latencies) if all_latencies else 0.0
-            p99_latency = calc_p99(all_latencies)
-
-            snapshot = Snapshot(
-                timestamp=now,
-                elapsed=elapsed,
-                total_sandboxes=len(self.sandbox_states),
-                active_sandboxes=active_count,
-                offline_sandboxes=offline_count,
-                creation_stats=creation_stats,
-                coding_total=task_total,
-                coding_success=task_success,
-                coding_verify_success=coding_verify_success,
-                coding_compile_only=coding_compile_only,
-                coding_avg_latency=avg_latency,
-                coding_p99_latency=p99_latency,
-                round_total=round_total,
-                round_success=round_success,
-            )
-        elif self.config.workflow_type == "document":
-            task_total = sum(s.document_metrics.total_tasks for s in self.sandbox_states.values())
-            task_success = sum(s.document_metrics.success_count for s in self.sandbox_states.values())
-            if self.current_round is not None and self.current_round in self._round_start_totals:
-                start_total = self._round_start_totals[self.current_round]["total"]
-                start_success = self._round_start_totals[self.current_round]["success"]
-                round_total = task_total - start_total
-                round_success = task_success - start_success
-            else:
-                round_total = 0
-                round_success = 0
-            all_latencies = [
-                latency for state in self.sandbox_states.values() for latency in state.document_metrics.latencies[-10:]
-            ]
-            snapshot = Snapshot(
-                timestamp=now,
-                elapsed=elapsed,
-                total_sandboxes=len(self.sandbox_states),
-                active_sandboxes=active_count,
-                offline_sandboxes=offline_count,
-                creation_stats=creation_stats,
-                document_total=task_total,
-                document_success=task_success,
-                document_avg_latency=statistics.mean(all_latencies) if all_latencies else 0.0,
-                document_p99_latency=calc_p99(all_latencies),
-                round_total=round_total,
-                round_success=round_success,
-            )
-        elif self.config.workflow_type == "replay":
-            task_total = sum(s.replay_metrics.total_tasks for s in self.sandbox_states.values())
-            task_success = sum(s.replay_metrics.success_count for s in self.sandbox_states.values())
-            if self.current_round is not None and self.current_round in self._round_start_totals:
-                start_total = self._round_start_totals[self.current_round]["total"]
-                start_success = self._round_start_totals[self.current_round]["success"]
-                round_total = task_total - start_total
-                round_success = task_success - start_success
-            else:
-                round_total = 0
-                round_success = 0
-            all_latencies = [
-                latency for state in self.sandbox_states.values() for latency in state.replay_metrics.latencies[-10:]
-            ]
-            traj_done = sum(s.replay_metrics.trajectory_completions for s in self.sandbox_states.values())
-            total_trajs = _replay_traj_target(self.config)
-            snapshot = Snapshot(
-                timestamp=now,
-                elapsed=elapsed,
-                total_sandboxes=len(self.sandbox_states),
-                active_sandboxes=active_count,
-                offline_sandboxes=offline_count,
-                creation_stats=creation_stats,
-                replay_total=task_total,
-                replay_success=task_success,
-                replay_avg_latency=statistics.mean(all_latencies) if all_latencies else 0.0,
-                replay_p99_latency=calc_p99(all_latencies),
-                replay_traj_done=traj_done,
-                replay_total_trajs=total_trajs,
-                round_total=round_total,
-                round_success=round_success,
-            )
+        if self.current_round is not None and self.current_round in self._round_start_totals:
+            start_total = self._round_start_totals[self.current_round]["total"]
+            start_success = self._round_start_totals[self.current_round]["success"]
+            round_total = task_total - start_total
+            round_success = task_success - start_success
         else:
-            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
+            round_total = 0
+            round_success = 0
+
+        all_latencies: list[float] = [
+            latency for state in self.sandbox_states.values() for latency in state.task_metrics.latencies[-10:]
+        ]
+        avg_latency = statistics.mean(all_latencies) if all_latencies else 0.0
+        p99_latency = calc_p99(all_latencies)
+
+        snapshot = Snapshot(
+            timestamp=now,
+            elapsed=elapsed,
+            total_sandboxes=len(self.sandbox_states),
+            active_sandboxes=active_count,
+            offline_sandboxes=offline_count,
+            creation_stats=creation_stats,
+            task_total=task_total,
+            task_success=task_success,
+            recent_avg_latency=avg_latency,
+            recent_p99_latency=p99_latency,
+            round_total=round_total,
+            round_success=round_success,
+        )
 
         self.snapshots.append(snapshot)
 
@@ -1483,39 +597,20 @@ class StatsCollector:
         self._print_snapshot(snapshot)
 
     def _print_snapshot(self, snapshot: Snapshot) -> None:
-        """Emit real-time snapshot to the log stream."""
+        """Emit real-time snapshot to the log stream.
+
+        The per-workflow status line (Coding:/Document:/Browser:/Replay: + the
+        ratio + avg/p99) is rendered by ``format_snapshot_line`` on the
+        workflow's ReportFormatters strategy, reading recent_avg_latency /
+        recent_p99_latency / task_total / task_success off the slim generic
+        Snapshot (plus live per-workflow state like trajectory completions).
+        """
+        fmt = WORKFLOW_REGISTRY[self.config.workflow_type].report_formatters
         logger.info(f"\n{'─' * 70}")
         logger.info(f"T+{snapshot.elapsed:6.1f}s  Status Snapshot")
         logger.info(f"{'─' * 70}")
         logger.info(f"  Sandboxes: {snapshot.active_sandboxes:3d} ready / {snapshot.offline_sandboxes:2d} offline")
-
-        if self.config.workflow_type == "coding":
-            logger.info(
-                f"  Coding:    {snapshot.coding_success:3d}/{snapshot.coding_total:3d}  "
-                f"avg={snapshot.coding_avg_latency:.2f}s  p99={snapshot.coding_p99_latency:.2f}s"
-            )
-        elif self.config.workflow_type == "document":
-            logger.info(
-                f"  Document:  {snapshot.document_success:3d}/{snapshot.document_total:3d}  "
-                f"avg={snapshot.document_avg_latency:.2f}s  p99={snapshot.document_p99_latency:.2f}s"
-            )
-        elif self.config.workflow_type == "browser":
-            logger.info(
-                f"  Browser:   {snapshot.browser_success:3d}/{snapshot.browser_total:3d}  "
-                f"avg={snapshot.browser_avg_latency:.2f}s  p99={snapshot.browser_p99_latency:.2f}s"
-            )
-        elif self.config.workflow_type == "replay":
-            traj = (
-                f"traj={snapshot.replay_traj_done}/{snapshot.replay_total_trajs}"
-                if snapshot.replay_total_trajs
-                else f"traj={snapshot.replay_traj_done}"
-            )
-            logger.info(
-                f"  Replay:    {snapshot.replay_success:3d}/{snapshot.replay_total:3d}  "
-                f"{traj}  avg={snapshot.replay_avg_latency:.2f}s  p99={snapshot.replay_p99_latency:.2f}s"
-            )
-        else:
-            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
+        logger.info(fmt.format_snapshot_line(snapshot, self.sandbox_states, self.config))
         logger.info(f"{'─' * 70}")
 
     def _resolved_wall_sec(self) -> float | None:
@@ -1524,8 +619,8 @@ class StatsCollector:
             return time.time() - self.start_time
         return None
 
-    def format_replay_stats_section(self) -> list[str]:
-        """Delegate to ReportFormatter.format_replay_stats_section."""
+    def format_stats_section(self) -> list[str]:
+        """Delegate to ReportFormatter.format_stats_section (per-workflow strategy)."""
         formatter = ReportFormatter(
             self.config,
             self.sandbox_states,
@@ -1533,10 +628,16 @@ class StatsCollector:
             admission_snapshot=self.admission_snapshot,
             wall_sec=self._resolved_wall_sec(),
         )
-        return formatter.format_replay_stats_section()
+        return formatter.format_stats_section()
 
     def generate_report(self) -> str:
-        """Generate final TXT report using ReportFormatter."""
+        """Generate final TXT report.
+
+        No per-workflow if/elif: every workflow-variant surface is delegated to
+        the ``ReportFormatters`` strategy on ``WORKFLOW_REGISTRY``. Non-replay
+        strategies return ``[]`` for throughput / trajectory / round-extras, so
+        those calls are unconditional and simply contribute nothing.
+        """
         formatter = ReportFormatter(
             self.config,
             self.sandbox_states,
@@ -1544,16 +645,17 @@ class StatsCollector:
             admission_snapshot=self.admission_snapshot,
             wall_sec=self._resolved_wall_sec(),
         )
+        fmt = formatter._fmt
 
         lines: list[str] = []
 
-        # Configuration section
+        # Configuration + sandbox status sections
         lines.extend(formatter.format_config_section())
-
-        # Sandbox status section
         lines.extend(formatter.format_sandbox_status_section())
 
-        # Creation performance sections
+        # Creation performance sections. The title/description strings are
+        # per-workflow class attrs on the strategy (browser = port-wait
+        # wording; coding/document/replay = command-ready-check wording).
         ready_states = [s for s in self.sandbox_states.values() if s.creation_metrics.status == SandboxStatus.READY]
 
         create_times = [
@@ -1562,65 +664,31 @@ class StatsCollector:
             if s.creation_metrics.create_elapsed > 0
             and s.creation_metrics.status not in (SandboxStatus.FAILED, SandboxStatus.PENDING, SandboxStatus.CREATING)
         ]
-        create_desc = (
-            "sandbox.create API call time, excluding ready check"
-            if self.config.workflow_type in {"coding", "document", "replay"}
-            else "sandbox.create API call time, excluding port wait"
-        )
-        lines.extend(formatter.format_percentile_section("Sandbox.create Performance", create_times, create_desc))
+        lines.extend(formatter.format_percentile_section("Sandbox.create Performance", create_times, fmt.create_desc))
 
         ready_check_times = [
             s.creation_metrics.ready_check_elapsed for s in ready_states if s.creation_metrics.ready_check_elapsed > 0
         ]
-
-        # Use workflow-specific labels for ready-check performance
-        if self.config.workflow_type == "coding":
-            ready_check_title = "Ready Check Wait Performance"
-            ready_check_desc = "Waiting for 'uname -a' command response"
-        elif self.config.workflow_type == "document":
-            ready_check_title = "Document Asset Check Performance"
-            ready_check_desc = "Running document-bench-validate inside the sandbox"
-        elif self.config.workflow_type == "browser":
-            ready_check_title = "Port Check Wait Performance"
-            ready_check_desc = "Waiting for 18789 openclaw-gateway + 11436 llama-server ports"
-        elif self.config.workflow_type == "replay":
-            ready_check_title = "Ready Check Wait Performance"
-            ready_check_desc = "Waiting for 'uname -a' command response"
-        else:
-            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
-
-        lines.extend(formatter.format_percentile_section(ready_check_title, ready_check_times, ready_check_desc))
+        lines.extend(
+            formatter.format_percentile_section(fmt.ready_check_title, ready_check_times, fmt.ready_check_desc)
+        )
 
         total_times = [s.creation_metrics.total_elapsed for s in ready_states if s.creation_metrics.total_elapsed > 0]
-        total_desc = (
-            "sandbox.create + ready check"
-            if self.config.workflow_type in {"coding", "document", "replay"}
-            else "sandbox.create + port wait"
-        )
-        lines.extend(formatter.format_percentile_section("Total Startup Performance", total_times, total_desc))
+        lines.extend(formatter.format_percentile_section("Total Startup Performance", total_times, fmt.total_desc))
 
-        # Task statistics -- dispatch based on workflow type
-        if self.config.workflow_type == "coding":
-            lines.extend(formatter.format_coding_stats_section())
-            lines.extend(formatter.format_coding_step_timing_table())
-        elif self.config.workflow_type == "document":
-            lines.extend(formatter.format_document_stats_section())
-            lines.extend(formatter.format_document_step_timing_table())
-        elif self.config.workflow_type == "browser":
-            lines.extend(formatter.format_browser_stats_section())
-            lines.extend(formatter.format_step_timing_table())
-        elif self.config.workflow_type == "replay":
-            lines.extend(formatter.format_replay_stats_section())
-            lines.extend(formatter.format_throughput_section())
-            lines.extend(formatter.format_trajectory_summary_section())
-            lines.extend(formatter.format_replay_step_timing_table())
-        else:
-            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
+        # Per-workflow task statistics / step timing / (replay-only) throughput
+        # + trajectory summary. All unconditional -- non-replay strategies
+        # return [] for the replay-only surfaces.
+        lines.extend(formatter.format_stats_section())
+        lines.extend(formatter.format_step_timing())
+        lines.extend(formatter.format_throughput_section())
+        lines.extend(formatter.format_trajectory_summary_section())
 
-        # Error details
+        # Error details (per-workflow error_display_order on the strategy)
         lines.extend(formatter.format_error_section())
 
-        # Round comparison
+        # Round comparison (renders the per-round lifecycle sub-table via the
+        # strategy's format_round_extras; [] for non-replay)
         lines.extend(formatter.format_round_comparison_table(self._round_start_totals))
 
         lines.append("\n" + "=" * 80)

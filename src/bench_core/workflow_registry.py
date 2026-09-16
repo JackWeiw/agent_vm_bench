@@ -28,13 +28,13 @@ from __future__ import annotations
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # annotations only — keeps the seam SDK-free + cycle-free at runtime
     from bench_core.config import KernelConfig
-    from bench_core.observability.admission import Admission  # noqa: F401 (replay knob)
+    from bench_core.admission import Admission  # noqa: F401 (replay knob)
     from bench_core.observability.run_summary import LifecycleSeriesWriter
-    from bench_core.schemas import BenchSandbox, Snapshot, TaskMetricsBase
+    from bench_core.schemas import BenchSandbox, Snapshot
     from env_provider import EnvironmentProvider
 
 
@@ -158,7 +158,7 @@ class WorkflowSpec:
     config_section: str
     ready_probe: object | None = None  # Phase 1: port _ready.check dispatch onto this
     config_cls: type | None = None  # Phase 2: type[WorkflowConfigBase]
-    report_formatters: object | None = None  # Phase 3: ReportFormatters impl
+    report_formatters: ReportFormatters | None = None  # Phase 3: ReportFormatters impl
 
 
 class WorkflowConfigBase(ABC):
@@ -206,25 +206,94 @@ class WorkflowConfigBase(ABC):
         ...
 
 
-@runtime_checkable
-class ReportFormatters(Protocol):
-    """Per-workflow plain-text report surfaces (Phase 3 target).
+@dataclass(frozen=True)
+class ReportContext:
+    """Fleet snapshot a ``ReportFormatters`` method needs to render a section.
 
-    Three named methods pin the contract so a workflow cannot silently drop one
-    surface. ``snap`` is READ-ONLY (generic fields only); all workflow-specific data
-    comes from ``metrics``. Each method emits its own heading so sections compose
-    consistently across workflows. The impl may downcast ``metrics`` to its concrete
-    subclass at entry — the kernel guarantees ``type(metrics) is spec.metrics_cls``.
+    The host (``ReportFormatter``) builds one and hands it to each delegated
+    method, so a per-workflow formatter never imports or references the host
+    class -- the dependency runs one way (``task_runner`` -> ``observability``,
+    never the reverse). Frozen so a formatter cannot rebind the fleet/config it
+    was handed. ``admission_snapshot`` / ``wall_sec`` are replay-only (None for
+    browser/coding/document; the replay formatter reads them for the lifecycle
+    overhead + throughput blocks).
     """
 
-    def format_snapshot(self, metrics: TaskMetricsBase, snap: Snapshot) -> str:
+    config: KernelConfig
+    sandbox_states: dict[int, BenchSandbox]
+    admission_snapshot: dict | None = None
+    wall_sec: float | None = None
+
+
+class ReportFormatters(ABC):
+    """Per-workflow plain-text report surfaces (Phase 3 contract).
+
+    The host calls these for every workflow-varying surface; each workflow
+    overrides what it needs. This is the report-layer counterpart to P1's runner
+    dispatch collapse: just as ``spec.task_runner(ctx)`` replaced the
+    ``_create_task_runner`` elif chain, ``spec.report_formatters.<method>(ctx)``
+    replaces the ``generate_report`` / ``_print_snapshot`` / ``format_error_section``
+    elif chains -- a new workflow adds one ``*ReportFormatter`` class and edits
+    nothing in ``stats_collector``.
+
+    Constants default to the common "command-ready" case (only browser overrides
+    the port-check labels); optional section methods default to no-op (only
+    replay/document override). The three required section methods are abstract so
+    a workflow missing one fails at instantiation -- which happens at
+    ``register_workflow`` time, surfacing a miswired spec at import rather than
+    mid-bench. ``snap`` carries generic fields only; all workflow-specific data
+    comes from ``ctx.sandbox_states`` + ``ctx.config`` (the formatter downcasts
+    ``ctx.config.workflow_config`` to its concrete view at entry).
+    """
+
+    # --- constants: data that varies by workflow (defaults = command-ready case) ---
+    # Each workflow sets ``error_display_order``; the ready-check labels default to
+    # the command-probe case (coding/document/replay) -- only browser overrides.
+    error_display_order: tuple[str, ...] = ()
+    ready_check_title: str = "Ready Check Wait Performance"
+    ready_check_desc: str = "Waiting for 'uname -a' command response"
+    create_desc: str = "sandbox.create API call time, excluding ready check"
+    total_desc: str = "sandbox.create + ready check"
+    command_ready: bool = True
+
+    # --- required section methods (each workflow implements) ---
+    @abstractmethod
+    def format_snapshot_line(
+        self, snap: Snapshot, sandbox_states: dict[int, BenchSandbox], config: KernelConfig
+    ) -> str:
+        """Real-time one-liner for ``_print_snapshot`` (the workflow-specific line).
+
+        Reads generic fields off ``snap`` (counts, recent avg/p99); replay also
+        projects ``traj=done/total`` from ``sandbox_states`` + ``config`` (no
+        per-workflow fields live on ``Snapshot``)."""
         ...
 
-    def format_step_timing(self, metrics: TaskMetricsBase) -> str:
+    @abstractmethod
+    def format_stats_section(self, ctx: ReportContext) -> list[str]:
+        """The workflow's ``[... Task Statistics]`` body."""
         ...
 
-    def format_overview(self, metrics: TaskMetricsBase, rounds: int) -> str:
+    @abstractmethod
+    def format_step_timing(self, ctx: ReportContext) -> list[str]:
+        """The workflow's ``[Step-Level Timing]`` table."""
         ...
+
+    # --- optional section methods (default no-op; replay/document override) ---
+    def format_throughput_section(self, ctx: ReportContext) -> list[str]:
+        """``[Throughput & Overcommit]`` (replay only)."""
+        return []
+
+    def format_trajectory_summary_section(self, ctx: ReportContext) -> list[str]:
+        """``[Trajectory Summary]`` (replay trajectory mode only)."""
+        return []
+
+    def format_config_extras(self, ctx: ReportContext) -> list[str]:
+        """Extra lines in ``[Test Configuration]`` (document: Workflow + Document Case)."""
+        return []
+
+    def format_round_extras(self, ctx: ReportContext, active_rounds: dict[int, dict[str, Any]]) -> list[str]:
+        """Extra sub-tables under ``[Round Comparison]`` (replay: Lifecycle Overhead by Round)."""
+        return []
 
 
 WORKFLOW_REGISTRY: dict[str, WorkflowSpec] = {}
@@ -255,6 +324,8 @@ def register_workflow(spec: WorkflowSpec, *, force: bool = False) -> None:
         not isinstance(spec.config_cls, type) or not issubclass(spec.config_cls, WorkflowConfigBase)
     ):
         raise TypeError(f"{spec.name}.config_cls must subclass WorkflowConfigBase or be None")
+    if spec.report_formatters is not None and not isinstance(spec.report_formatters, ReportFormatters):
+        raise TypeError(f"{spec.name}.report_formatters must be a ReportFormatters instance or None")
     if not isinstance(spec.step_order, tuple):
         raise TypeError(f"{spec.name}.step_order must be a tuple")
     if not spec.name:
