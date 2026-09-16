@@ -1,12 +1,12 @@
 ---
 rfc: 0002
 title: Workflow plugin architecture — TaskRunner ABC + registry to make adding a workload a one-file change
-status: Active
+status: Implemented
 author: "@JackWeiw"
 shepherd: ""
 areas: [e2b, docker, aenv]
 created: 2026-09-15
-updated: 2026-09-15
+updated: 2026-09-16
 ---
 
 # Workflow plugin architecture — TaskRunner ABC + registry
@@ -551,6 +551,70 @@ guards at the 6 unguarded cross-cutting sites (D5 — real guards, not `__getatt
 which would defeat the static-typing goal); the zombie-field test (`assert not
 hasattr(cfg, "browser_urls")` for the moved fields). P3 `ReportFormatters` (move per-workflow
 totals off `Snapshot`) follows. Status stays **Active** (not Implemented) until P3 lands.
+
+## Implementation notes (Phase 3)
+
+P3 lands the report-layer collapse — the final phase. `stats_collector` (1641 → ~580
+lines) no longer branches on `workflow_type` anywhere in the report path:
+`generate_report` / `_print_snapshot` / `_take_snapshot` / `format_error_section` /
+`format_sandbox_status_section` / `format_round_comparison_table` all read
+`spec.report_formatters` (the `ReportFormatters` strategy on each `WorkflowSpec`).
+`_take_snapshot` projects cumulative task totals + a recent-latency window from the
+polymorphic `BenchSandbox.task_metrics`; per-workflow narrows (replay trajectory
+progress, browser ports, coding verify) are rendered live by
+`format_snapshot_line` at print time, not snapshotted. `ErrorClassifier` /
+`TableFormatter` / `*_ERROR_DISPLAY` / `replay_pool_size` / `replay_traj_target` /
+`MIN_SLICE_SEC` lifted into `report_helpers` (neutral leaf) so the per-workflow
+formatters (in `task_runner/<wf>.py`, co-located with runner + config + spec) import
+shared helpers without reaching into the host — the `stats_collector → task_runner.*`
+import edge (and the `DocumentConfig` / `ReplayConfig` narrows) is gone, dissolving
+the cycle the helpers-extraction broke. The per-workflow formatters port the existing
+`format_*_stats_section` / `format_*_step_timing_table` / (replay)
+`format_throughput_section` / `format_trajectory_summary_section` /
+`_format_lifecycle_overhead_by_round` bodies byte-for-byte (`self.X → ctx.X`).
+
+Behavior gate: a fixed-fixture `generate_report()` across all 4 workflows (including
+the full replay lifecycle / admission / throughput / trajectory sections) is
+byte-identical to the P2 base (golden diff = 0); the ~864-test `FakeProvider` suite
+stays green; ruff + pre-commit clean.
+
+Deviations from the RFC text, each with reason + follow-up:
+
+1. **`ReportFormatter` keeps 1-line delegating facades** (D8). The host retains
+   generic `format_stats_section` / `format_step_timing` / `format_throughput_section`
+   / `format_trajectory_summary_section` methods that delegate to
+   `self._fmt.<same>(self._ctx)`, rather than forcing every caller/tests to reach into
+   `WORKFLOW_REGISTRY` directly. Reason: minimizes test churn (existing tests construct
+   `ReportFormatter(config, states)` and call methods on it); the facade names are
+   *generic* (not per-workflow), so the dispatch-collapse goal — no `workflow_type`
+   if/elif in the report path — is still met. Follow-up: none — the facades are the
+   host's stable surface; a future caller may use the registry directly.
+
+2. **`ensure_workflow_registered` fires at `StatsCollector` / `ReportFormatter`
+   construction, not only in `config.from_raw`** (D9). Reason: the registry is
+   populated by `task_runner` module import side-effects, and Mock-config tests bypass
+   `from_raw`, so the strategy lookup would `KeyError` without the lazy ensure. The
+   call is idempotent (no-op for real runs where `from_raw` already registered).
+   Follow-up: none — structural (D6's reasoning applies).
+
+3. **`ReportFormatters` is an ABC with default no-op methods, not a
+   `runtime_checkable Protocol`** (D10). The original RFC text specified a 3-method
+   Protocol; the implementation uses an ABC with 3 `@abstractmethod`s + 4 default
+   no-op methods (`format_throughput_section` / `format_trajectory_summary_section` /
+   `format_config_extras` / `format_round_extras` return `[]`) + 5 class-attr
+   constants. Reason: the strategy has shared defaults (non-replay surfaces return
+   `[]`), which an ABC expresses naturally (a Protocol cannot supply bodies); the ABC
+   also enforces the contract at registration via `isinstance` in `register_workflow`,
+   stronger than a Protocol's structural check. Follow-up: none.
+
+4. **`ReportContext` is a frozen dataclass, decoupling formatters from the host class**
+   (D11). Carries `(config, sandbox_states, admission_snapshot, wall_sec)`. Reason:
+   the formatters live in `task_runner` modules; they must not hold a back-reference
+   to the `ReportFormatter` host instance (that would re-create the cycle the
+   helpers-extraction broke) — the dependency stays one-directional
+   (`task_runner → observability`, never reverse). Follow-up: none.
+
+All four phases (P0–P3) now shipped. Status flips **Active → Implemented**.
 
 ## Plugin contract — a workflow's config view
 
