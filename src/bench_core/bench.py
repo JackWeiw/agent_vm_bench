@@ -38,6 +38,9 @@ from bench_core.observability.stats_collector import StatsCollector
 from bench_core.round_robin import RoundRobinTaskManager
 from bench_core.schemas import BenchSandbox
 from bench_core.task_manager import TaskManager
+from bench_core.task_runner.coding import CodingConfig
+from bench_core.task_runner.document import DocumentConfig
+from bench_core.task_runner.replay import ReplayConfig
 from bench_core.utils import calc_percentiles, setup_logging
 from env_provider import (
     CreationMetrics,
@@ -121,7 +124,11 @@ def _replay_template_map(config: KernelConfig) -> dict[int, str | None] | None:
     The ``load_pool`` import is function-local to avoid a circular import at
     module load time (``replay_payload`` imports ``config``, not ``bench``).
     """
-    if config.workflow_type != "replay" or not config.replay_template_manifest:
+    if config.workflow_type != "replay":
+        return None
+    cfg = config.workflow_config
+    assert isinstance(cfg, ReplayConfig)
+    if not cfg.replay_template_manifest:
         return None
     from bench_core.payload.replay_payload import load_pool
 
@@ -147,17 +154,23 @@ def _print_header(config: KernelConfig, provider: EnvironmentProvider) -> None:
     lines.append(f"  Total:     {config.total_count} sandboxes")
 
     if config.workflow_type == "coding":
-        lines.append(f"  Project:   {config.coding_project_dir}")
-        lines.append(f"  Language:  {config.coding_language}")
-        lines.append(f"  Verify:    {'enabled' if not config.coding_skip_verify else 'skipped'}")
+        cfg = config.workflow_config
+        assert isinstance(cfg, CodingConfig)
+        lines.append(f"  Project:   {cfg.coding_project_dir}")
+        lines.append(f"  Language:  {cfg.coding_language}")
+        lines.append(f"  Verify:    {'enabled' if not cfg.coding_skip_verify else 'skipped'}")
     elif config.workflow_type == "document":
-        lines.append(f"  Case:      {config.document_case_kind.upper()}")
-        lines.append(f"  Workspace: {config.document_workspace_dir}")
+        cfg = config.workflow_config
+        assert isinstance(cfg, DocumentConfig)
+        lines.append(f"  Case:      {cfg.document_case_kind.upper()}")
+        lines.append(f"  Workspace: {cfg.document_workspace_dir}")
     elif config.workflow_type == "replay":
-        lines.append(f"  Traj dir:  {config.replay_trajectory_dir}")
-        lines.append(f"  Workdir:   {config.replay_workdir}")
-        lines.append(f"  Mode:      {config.replay_mode}")
-        lines.append(f"  Delay:     {config.replay_delay_scale}x")
+        cfg = config.workflow_config
+        assert isinstance(cfg, ReplayConfig)
+        lines.append(f"  Traj dir:  {cfg.replay_trajectory_dir}")
+        lines.append(f"  Workdir:   {cfg.replay_workdir}")
+        lines.append(f"  Mode:      {cfg.replay_mode}")
+        lines.append(f"  Delay:     {cfg.replay_delay_scale}x")
     elif config.workflow_type != "browser":
         raise ValueError(f"Unsupported workflow_type: {config.workflow_type}")
 
@@ -280,18 +293,29 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         the merged running-slot + QPS-limiter snapshot (``None`` outside
         lifecycle/trajectory replay modes).
     """
+    # Narrow to the typed replay view once (None outside replay). The view is the
+    # source of truth for replay knobs; ``rcfg is not None`` short-circuits every
+    # replay read for non-replay configs (behavior-identical to the old flat-default
+    # None, which never matched a real mode).
+    rcfg: ReplayConfig | None
+    if config.workflow_type == "replay":
+        rcfg = config.workflow_config
+        assert isinstance(rcfg, ReplayConfig), "replay workflow requires a ReplayConfig view"
+    else:
+        rcfg = None
+
     # Resolve replay_mode sentinel -> provider default before validation.
-    if config.workflow_type == "replay" and config.replay_mode is None:
-        config.replay_mode = getattr(provider, "default_replay_mode", "exec_only")
+    if rcfg is not None and rcfg.replay_mode is None:
+        rcfg.replay_mode = getattr(provider, "default_replay_mode", "exec_only")
     config.validate()
-    if config.workflow_type == "replay" and config.replay_mode == "lifecycle":
+    if rcfg is not None and rcfg.replay_mode == "lifecycle":
         if not isinstance(provider, LifecycleCapable):
             raise ValueError(
                 f"replay.mode=lifecycle requires a LifecycleCapable provider "
                 f"(pause/resume); provider '{provider.name}' does not support it. "
                 f"Providers that support it: {_capability_hint(LifecycleCapable)}."
             )
-    if config.workflow_type == "replay" and config.replay_mode == "trajectory":
+    if rcfg is not None and rcfg.replay_mode == "trajectory":
         if not isinstance(provider, EphemeralCapable):
             raise ValueError(
                 f"replay.mode=trajectory requires an EphemeralCapable provider "
@@ -300,8 +324,8 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
             )
     # exec_only has no lifecycle calls; force the ready probe off regardless of
     # whether exec_only was explicit in YAML or resolved from the provider default.
-    if config.workflow_type == "replay" and config.replay_mode == "exec_only":
-        config.replay_ready_probe = False
+    if rcfg is not None and rcfg.replay_mode == "exec_only":
+        rcfg.replay_ready_probe = False
     if config.workflow_type == "document":
         from bench_core.task_runner.document import preflight_document
 
@@ -328,7 +352,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     # trajectory creates/kills its own sandbox in-runner); build N lightweight
     # shells the workers fill per trajectory. detect mode is incompatible with
     # trajectory (no persistent pool to detect).
-    if config.replay_mode == "trajectory":
+    if rcfg is not None and rcfg.replay_mode == "trajectory":
         if config.detect_existing:
             logger.info("\n[Phase 1] detect mode incompatible with trajectory mode; building shells.")
         logger.info(f"\n[Phase 1] Trajectory mode: {config.total_count} worker shells (no pre-create).")
@@ -396,7 +420,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     # no file (lifecycle fields all-zero; nothing to curve).
     series_writer: LifecycleSeriesWriter | None = None
     series_path: Path | None = None
-    if config.workflow_type == "replay" and config.replay_mode in ("lifecycle", "trajectory"):
+    if rcfg is not None and rcfg.replay_mode in ("lifecycle", "trajectory"):
         series_path = Path(config.output_dir) / f"{config.filename_prefix}_lifecycle_series.jsonl"
         series_writer = LifecycleSeriesWriter(series_path)
         logger.info(f"  Lifecycle series: {series_path}")
@@ -412,7 +436,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     if (
         series_writer is not None
         and isinstance(provider, SnapshotSizeCapable)
-        and config.replay_mode in ("lifecycle", "trajectory")
+        and rcfg.replay_mode in ("lifecycle", "trajectory")
     ):
         snapshot_scanner = SnapshotSizeScanner(provider, series_writer)
         logger.info("  Snapshot-size scanner: background drain (off step path)")
@@ -423,19 +447,19 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
 
     admission: Admission | None = None
     admission_snapshot: dict | None = None
-    if config.workflow_type == "replay" and config.replay_mode in ("lifecycle", "trajectory"):
+    if rcfg is not None and rcfg.replay_mode in ("lifecycle", "trajectory"):
         slots = None
         qps_lim = None
-        if config.replay_running_concurrency is not None and config.replay_running_concurrency < config.total_count:
-            slots = RunningSlotScheduler(maximum=config.replay_running_concurrency, stop_event=stop_event)
+        if rcfg.replay_running_concurrency is not None and rcfg.replay_running_concurrency < config.total_count:
+            slots = RunningSlotScheduler(maximum=rcfg.replay_running_concurrency, stop_event=stop_event)
         # Decoupled construction: build the limiter when EITHER knob is set; each
         # function no-ops internally when its knob is None (qps=None -> time_wait
         # is a no-op; inflight_cap=None -> the inflight fuse is a no-op). The two
         # knobs are INDEPENDENT, not a pair -- omitting one bypasses only its own
         # concern (rate pacing vs concurrency fuse), so e.g. inflight-only is a
         # valid configuration with no rate shaping.
-        qps_val = config.replay_control_plane_qps
-        cap_val = config.replay_control_plane_inflight_cap
+        qps_val = rcfg.replay_control_plane_qps
+        cap_val = rcfg.replay_control_plane_inflight_cap
         if qps_val is not None or cap_val is not None:
             qps_lim = QpsRateLimiter(qps=qps_val, inflight_cap=cap_val, stop_event=stop_event)
         if slots is not None or qps_lim is not None:
@@ -446,7 +470,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 qps=qps_lim,
             )
             admission_snapshot = {
-                "running": config.replay_running_concurrency or config.total_count,
+                "running": rcfg.replay_running_concurrency or config.total_count,
                 "total": config.total_count,
                 "qps": qps_val if qps_val is not None else "off",
                 "inflight_cap": cap_val if cap_val is not None else "off",
@@ -463,7 +487,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     # same instant. The pacer's lock + deadline cell are shared across all
     # workers (a per-runner field would let each read its own 0.0 and burst).
     # None outside trajectory mode (no per-trajectory create).
-    trajectory_launch_pacer = LaunchPacer() if config.replay_mode == "trajectory" else None
+    trajectory_launch_pacer = LaunchPacer() if (rcfg is not None and rcfg.replay_mode == "trajectory") else None
 
     # Install a cooperative SIGTERM handler so a driver-initiated terminate
     # (oversub _run_subprocess) unwinds into the finally below for a partial
@@ -849,7 +873,11 @@ def main() -> None:
     log_dir = Path(config.output_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = str(log_dir / f"{config.filename_prefix}.log")
-    setup_logging(log_path=log_path, json_lines=config.replay_mode in ("lifecycle", "trajectory"))
+    setup_logging(
+        log_path=log_path,
+        json_lines=isinstance(config.workflow_config, ReplayConfig)
+        and config.workflow_config.replay_mode in ("lifecycle", "trajectory"),
+    )
 
     provider = _build_provider(args.provider, config, raw)
     run_benchmark(config, provider)

@@ -12,6 +12,7 @@ from pathlib import Path
 from bench_core.bench import _replay_template_map, run_benchmark
 from bench_core.config import KernelConfig
 from bench_core.payload.replay_payload import reset_pool_cache
+from bench_core.task_runner.replay import ReplayConfig
 from env_provider.fake import FakeProvider
 
 
@@ -49,11 +50,13 @@ def test_replay_template_map_round_robin(tmp_path):
         total_count=4,
         benchmark_mode="fixed",
         test_duration=1,
-        replay_trajectory_dir=str(tmp_path / "traj"),
-        replay_template_manifest=str(manifest),
-        replay_mode="exec_only",
         output_dir=str(tmp_path),
         filename_prefix="mt",
+        workflow_config=ReplayConfig(
+            replay_trajectory_dir=str(tmp_path / "traj"),
+            replay_template_manifest=str(manifest),
+            replay_mode="exec_only",
+        ),
     )
     result = _replay_template_map(cfg)
     assert result == {0: "swb-a", 1: "swb-b", 2: "swb-a", 3: "swb-b"}
@@ -67,10 +70,12 @@ def test_replay_template_map_none_when_no_manifest(tmp_path):
         total_count=4,
         benchmark_mode="fixed",
         test_duration=1,
-        replay_trajectory_dir=str(tmp_path / "traj"),
-        replay_mode="exec_only",
         output_dir=str(tmp_path),
         filename_prefix="mt",
+        workflow_config=ReplayConfig(
+            replay_trajectory_dir=str(tmp_path / "traj"),
+            replay_mode="exec_only",
+        ),
     )
     assert _replay_template_map(cfg) is None
 
@@ -101,12 +106,14 @@ def test_run_benchmark_passes_template_map_to_create_all(tmp_path):
         total_count=4,
         benchmark_mode="fixed",
         test_duration=1,
-        replay_trajectory_dir=str(tmp_path / "traj"),
-        replay_template_manifest=str(manifest),
-        replay_mode="exec_only",
-        replay_delay_scale=0.0,
         output_dir=str(tmp_path),
         filename_prefix="mt",
+        workflow_config=ReplayConfig(
+            replay_trajectory_dir=str(tmp_path / "traj"),
+            replay_template_manifest=str(manifest),
+            replay_mode="exec_only",
+            replay_delay_scale=0.0,
+        ),
     )
     provider = FakeProvider(count=4)
     run_benchmark(cfg, provider)

@@ -14,6 +14,8 @@ import pytest
 from bench_core.config import KernelConfig
 from bench_core.observability.stats_collector import ErrorClassifier, ReportFormatter, StatsCollector
 from bench_core.schemas import BenchSandbox
+from bench_core.task_runner.document import DocumentConfig
+from bench_core.task_runner.replay import ReplayConfig
 from env_provider import SandboxStatus
 
 
@@ -189,9 +191,10 @@ class TestStatsCollectorErrorClassification:
 class TestStatsCollectorConfigurationCompatibility:
     @staticmethod
     def _generate_report(workflow_type: str) -> str:
-        config = KernelConfig(workflow_type=workflow_type)
-        if workflow_type == "document":
-            config.document_case_kind = "pdf"
+        config = KernelConfig(
+            workflow_type=workflow_type,
+            workflow_config=DocumentConfig(document_case_kind="pdf") if workflow_type == "document" else None,
+        )
         state = BenchSandbox(id="sbx-1", index=1, workflow_type=workflow_type)
         return StatsCollector(config, {1: state}).generate_report()
 
@@ -212,7 +215,7 @@ class TestStatsCollectorConfigurationCompatibility:
 class TestSandboxRuntimeStatusReporting:
     @staticmethod
     def _format_status(state: BenchSandbox) -> str:
-        config = KernelConfig(workflow_type="document", document_case_kind="pdf")
+        config = KernelConfig(workflow_type="document", workflow_config=DocumentConfig(document_case_kind="pdf"))
         return "\n".join(ReportFormatter(config, {state.index: state}).format_sandbox_status_section())
 
     def test_normal_cleanup_is_not_reported_as_runtime_offline(self):
@@ -673,7 +676,7 @@ class TestReplayInitialPauseReport:
         cfg.output_dir = "/tmp/test"
         cfg.filename_prefix = "test"
         cfg.stats_interval = 5
-        cfg.replay_running_concurrency = None
+        cfg.workflow_config = ReplayConfig(replay_running_concurrency=None)
         return cfg
 
     def test_initial_pause_line_rendered_when_set(self):
@@ -713,7 +716,6 @@ class TestReplayLifecycleOverheadByRound:
     def _config(self, replay_mode: str = "lifecycle") -> KernelConfig:
         cfg = Mock(spec=KernelConfig)
         cfg.workflow_type = "replay"
-        cfg.replay_mode = replay_mode
         cfg.total_count = 1
         cfg.detect_existing = False
         cfg.create_only = False
@@ -723,7 +725,7 @@ class TestReplayLifecycleOverheadByRound:
         cfg.output_dir = "/tmp/test"
         cfg.filename_prefix = "test"
         cfg.stats_interval = 5
-        cfg.replay_running_concurrency = None
+        cfg.workflow_config = ReplayConfig(replay_mode=replay_mode, replay_running_concurrency=None)
         return cfg
 
     @staticmethod

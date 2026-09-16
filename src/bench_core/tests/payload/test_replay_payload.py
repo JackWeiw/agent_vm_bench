@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from bench_core.payload.replay_payload import ReplayStep, Trajectory, classify_action, load_trajectory
+from bench_core.task_runner.replay import ReplayConfig
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "replay"
 
@@ -138,9 +139,11 @@ def test_load_pool_skips_corrupt_and_empty(caplog):
     from bench_core.payload.replay_payload import Trajectory, load_pool, reset_pool_cache
 
     class _Cfg:
-        replay_trajectory_dir = str(FIXTURES)
-        replay_trajectory_glob = "*"
-        replay_template_manifest = None
+        workflow_config = ReplayConfig(
+            replay_trajectory_dir=str(FIXTURES),
+            replay_trajectory_glob="*",
+            replay_template_manifest=None,
+        )
 
     reset_pool_cache()
     caplog.set_level(logging.WARNING)
@@ -156,9 +159,11 @@ def test_load_pool_is_cached():
     from bench_core.payload.replay_payload import load_pool, reset_pool_cache
 
     class _Cfg:
-        replay_trajectory_dir = str(FIXTURES)
-        replay_trajectory_glob = "*"
-        replay_template_manifest = None
+        workflow_config = ReplayConfig(
+            replay_trajectory_dir=str(FIXTURES),
+            replay_trajectory_glob="*",
+            replay_template_manifest=None,
+        )
 
     reset_pool_cache()
     a = load_pool(_Cfg())  # type: ignore[arg-type]
@@ -174,15 +179,18 @@ def test_load_pool_is_cached():
 def _cfg_for_manifest(tmp_path: Path, *, manifest: str | None = None, glob: str = "*.replay.json") -> KernelConfig:
     """Minimal KernelConfig for manifest tests; all other fields use defaults."""
     from bench_core.config import KernelConfig
+    from bench_core.task_runner.replay import ReplayConfig
 
     return KernelConfig(
         workflow_type="replay",
         total_count=2,
         benchmark_mode="fixed",
         test_duration=1,
-        replay_trajectory_dir=str(tmp_path / "traj"),
-        replay_trajectory_glob=glob,
-        replay_template_manifest=manifest,
+        workflow_config=ReplayConfig(
+            replay_trajectory_dir=str(tmp_path / "traj"),
+            replay_trajectory_glob=glob,
+            replay_template_manifest=manifest,
+        ),
     )
 
 

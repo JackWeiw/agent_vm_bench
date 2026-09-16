@@ -7,6 +7,7 @@ import time
 from bench_core.config import KernelConfig
 from bench_core.observability.stats_collector import ReportFormatter, StatsCollector
 from bench_core.schemas import BenchSandbox, ReplayMetrics
+from bench_core.task_runner.replay import ReplayConfig
 from env_provider import SandboxInstance
 
 
@@ -63,7 +64,10 @@ _FULL_ADMISSION = {
 
 def _format(state, *, admission_snapshot=None, wall_sec=None) -> str:
     cfg = KernelConfig(
-        workflow_type="replay", replay_mode="lifecycle", total_count=2, replay_running_concurrency=1, test_duration=1
+        workflow_type="replay",
+        total_count=2,
+        test_duration=1,
+        workflow_config=ReplayConfig(replay_mode="lifecycle", replay_running_concurrency=1),
     )
     f = ReportFormatter(cfg, {0: state}, "fake", admission_snapshot=admission_snapshot, wall_sec=wall_sec)
     return "\n".join(f.format_replay_stats_section())
@@ -113,10 +117,9 @@ class TestThroughputSection:
         state = _state_with_slices()
         cfg = KernelConfig(
             workflow_type="replay",
-            replay_mode="lifecycle",
             total_count=2,
-            replay_running_concurrency=1,
             test_duration=1,
+            workflow_config=ReplayConfig(replay_mode="lifecycle", replay_running_concurrency=1),
         )
         f = ReportFormatter(cfg, {0: state}, "fake", wall_sec=wall_sec)
         return "\n".join(f.format_throughput_section())
@@ -180,10 +183,9 @@ class TestTrajectorySummarySection:
                 )
         cfg = KernelConfig(
             workflow_type="replay",
-            replay_mode=replay_mode,
             total_count=1,
-            replay_running_concurrency=1,
             test_duration=1,
+            workflow_config=ReplayConfig(replay_mode=replay_mode, replay_running_concurrency=1),
         )
         f = ReportFormatter(cfg, {0: state}, "fake", wall_sec=10.0)
         return "\n".join(f.format_trajectory_summary_section())
@@ -213,11 +215,10 @@ class TestOnePassTargetReport:
         state = _state_with_slices()
         cfg = KernelConfig(
             workflow_type="replay",
-            replay_mode="lifecycle",
             total_count=total_count,
-            replay_running_concurrency=1,
             test_duration=1,
             round_count=round_count,
+            workflow_config=ReplayConfig(replay_mode="lifecycle", replay_running_concurrency=1),
         )
         f = ReportFormatter(cfg, {0: state}, "fake")
         return "\n".join(f.format_replay_stats_section())
@@ -247,11 +248,10 @@ class TestReplaySnapshotTrajDenominator:
     def _snapshot(self, *, total_count, round_count, completions=2):
         cfg = KernelConfig(
             workflow_type="replay",
-            replay_mode="lifecycle",
             total_count=total_count,
-            replay_running_concurrency=total_count,
             test_duration=60,
             round_count=round_count,
+            workflow_config=ReplayConfig(replay_mode="lifecycle", replay_running_concurrency=total_count),
         )
         state = BenchSandbox.from_instance(SandboxInstance(id="x", index=0), "replay")
         for _ in range(completions):
@@ -282,11 +282,10 @@ class TestReplaySnapshotTrajPrint:
     def _take_and_msgs(self, *, total_count, round_count, caplog):
         cfg = KernelConfig(
             workflow_type="replay",
-            replay_mode="lifecycle",
             total_count=total_count,
-            replay_running_concurrency=total_count,
             test_duration=60,
             round_count=round_count,
+            workflow_config=ReplayConfig(replay_mode="lifecycle", replay_running_concurrency=total_count),
         )
         state = BenchSandbox.from_instance(SandboxInstance(id="x", index=0), "replay")
         state.replay_metrics.add(0.1, True, trajectory_complete=True)

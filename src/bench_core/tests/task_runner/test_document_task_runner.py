@@ -14,6 +14,7 @@ import threading
 from bench_core.config import KernelConfig
 from bench_core.schemas import BenchSandbox
 from bench_core.task_runner.document import (
+    DocumentConfig,
     DocumentOperationExecutor,
     DocumentRoundRunner,
     DocumentTaskRunner,
@@ -69,10 +70,12 @@ def _ready_sandbox(index: int = 0) -> BenchSandbox:
 def _config(recipe_path) -> KernelConfig:
     return KernelConfig(
         workflow_type="document",
-        document_case_kind="xlsx",
-        document_recipe_path=str(recipe_path),
-        document_interval_min=0,
-        document_interval_max=0,
+        workflow_config=DocumentConfig(
+            document_case_kind="xlsx",
+            document_recipe_path=str(recipe_path),
+            document_interval_min=0,
+            document_interval_max=0,
+        ),
     )
 
 
@@ -190,7 +193,7 @@ class TestDocumentOperationExecutor:
         config = _config(path)
         provider = FakeProvider()
         state = _ready_sandbox()
-        executor = DocumentOperationExecutor(state, config, provider)
+        executor = DocumentOperationExecutor(state, config.workflow_config, provider)
 
         success, latency, step_times, timed_out, detail = executor.execute()
 
@@ -206,7 +209,7 @@ class TestDocumentOperationExecutor:
         # Fail the workspace reset (test -d {seed}/input ...).
         provider = _FailOnProvider("test -d")
         state = _ready_sandbox()
-        executor = DocumentOperationExecutor(state, config, provider)
+        executor = DocumentOperationExecutor(state, config.workflow_config, provider)
 
         success, _latency, step_times, _timed_out, detail = executor.execute()
 
@@ -262,7 +265,7 @@ class TestDocumentOperationExecutor:
         config = _config(recipe_path)
         provider = _RecordingProvider()
         state = _ready_sandbox()
-        executor = DocumentOperationExecutor(state, config, provider)
+        executor = DocumentOperationExecutor(state, config.workflow_config, provider)
 
         success, _latency, _step_times, _timed_out, _detail = executor.execute()
 

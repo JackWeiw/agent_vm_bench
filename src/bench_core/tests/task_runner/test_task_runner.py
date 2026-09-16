@@ -11,6 +11,7 @@ import threading
 from bench_core.config import KernelConfig
 from bench_core.schemas import BenchSandbox
 from bench_core.task_runner.browser import (
+    BrowserConfig,
     BrowserTaskRunner,
     TabOperationRunner,
     WarmupRunner,
@@ -40,7 +41,9 @@ class TestExtractElementRefs:
 
 class TestWarmupRunner:
     def test_opens_tabs_and_marks_done(self):
-        config = KernelConfig(warmup_urls=["http://x", "http://y"], warmup_delay=0, warmup_loops=1)
+        config = KernelConfig(
+            workflow_config=BrowserConfig(warmup_urls=["http://x", "http://y"], warmup_delay=0, warmup_loops=1)
+        )
         # snapshot must return element refs so the click step runs.
         provider = FakeProvider(exec_results={"agent-browser snapshot -i": CommandResult(0, "[ref=e1]\n", "")})
         state = _ready_sandbox()
@@ -56,7 +59,7 @@ class TestWarmupRunner:
         # A non-ready instance is skipped before the command-issuing body; it is
         # NOT marked warmup_done (the readiness gate failed) -- matching the
         # original wait_for_port_ready early-return.
-        config = KernelConfig(warmup_urls=["http://x"], warmup_delay=0)
+        config = KernelConfig(workflow_config=BrowserConfig(warmup_urls=["http://x"], warmup_delay=0))
         provider = FakeProvider()
         state = BenchSandbox(id="fake-0", index=0, ready=False)
         WarmupRunner(RunContext(state=state, config=config, stop_event=threading.Event(), provider=provider)).run()
@@ -64,7 +67,7 @@ class TestWarmupRunner:
         assert state.tab_ids == []
 
     def test_skips_when_agent_browser_missing(self):
-        config = KernelConfig(warmup_urls=["http://x"], warmup_delay=0)
+        config = KernelConfig(workflow_config=BrowserConfig(warmup_urls=["http://x"], warmup_delay=0))
         provider = FakeProvider(exec_results={"agent-browser --version": CommandResult(1, "", "not found")})
         state = _ready_sandbox()
         WarmupRunner(RunContext(state=state, config=config, stop_event=threading.Event(), provider=provider)).run()
@@ -74,7 +77,7 @@ class TestWarmupRunner:
 
 class TestBrowserTaskRunner:
     def test_single_task_success(self):
-        config = KernelConfig(browser_urls=["http://x"])
+        config = KernelConfig(workflow_config=BrowserConfig(browser_urls=["http://x"]))
         provider = FakeProvider()
         state = _ready_sandbox()
         runner = BrowserTaskRunner(
@@ -88,7 +91,7 @@ class TestBrowserTaskRunner:
         assert latency >= 10.0
 
     def test_single_task_failure_records_error(self):
-        config = KernelConfig(browser_urls=["http://x"])
+        config = KernelConfig(workflow_config=BrowserConfig(browser_urls=["http://x"]))
         # Match the exact command the runner builds.
         fail_cmd = "openclaw browser --browser-profile openclaw open 'http://x'"
         provider = FakeProvider(exec_results={fail_cmd: CommandResult(1, "", "boom")})
@@ -106,7 +109,12 @@ class TestBrowserTaskRunner:
         state = _ready_sandbox()
         state.is_alive = False
         runner = BrowserTaskRunner(
-            RunContext(state=state, config=KernelConfig(), stop_event=threading.Event(), provider=FakeProvider())
+            RunContext(
+                state=state,
+                config=KernelConfig(workflow_config=BrowserConfig()),
+                stop_event=threading.Event(),
+                provider=FakeProvider(),
+            )
         )
         success, latency = runner._run_single_task()
         assert success is False
@@ -115,7 +123,7 @@ class TestBrowserTaskRunner:
 
 class TestTabOperationRunner:
     def test_round_records_all_step_timings(self):
-        config = KernelConfig(browser_urls=["http://x"])
+        config = KernelConfig(workflow_config=BrowserConfig(browser_urls=["http://x"]))
         provider = FakeProvider(exec_results={"agent-browser snapshot -i": CommandResult(0, "[ref=e1]\n[e2]\n", "")})
         state = _ready_sandbox()
         stop = threading.Event()
@@ -139,7 +147,7 @@ class TestTabOperationRunner:
         assert state.get_last_task_time() > 0.0
 
     def test_open_tab_failure_is_recorded(self):
-        config = KernelConfig(browser_urls=["http://x"])
+        config = KernelConfig(workflow_config=BrowserConfig(browser_urls=["http://x"]))
         provider = FakeProvider(
             exec_results={
                 'agent-browser tab new "http://x"': CommandResult(1, "", "no tab"),
@@ -161,7 +169,11 @@ class TestTabOperationRunner:
         state = BenchSandbox(id="fake-0", index=0, ready=False)
         runner = TabOperationRunner(
             RunContext(
-                state=state, config=KernelConfig(), stop_event=threading.Event(), round_id=0, provider=FakeProvider()
+                state=state,
+                config=KernelConfig(workflow_config=BrowserConfig()),
+                stop_event=threading.Event(),
+                round_id=0,
+                provider=FakeProvider(),
             )
         )
         runner.run()

@@ -13,6 +13,7 @@ from bench_core.config import KernelConfig
 from bench_core.payload.coding_payload import DEFAULT_CODING_SOURCE_FILES
 from bench_core.schemas import BenchSandbox
 from bench_core.task_runner.coding import (
+    CodingConfig,
     CodingRoundRunner,
     CodingTaskRunner,
     CodingWarmupRunner,
@@ -58,14 +59,14 @@ class TestBuildEditCommand:
 
 class TestRunVerify:
     def test_ts_success_records_verify_timing(self):
-        config = KernelConfig(coding_language="ts", coding_verify_repeat=2)
+        config = KernelConfig(workflow_config=CodingConfig(coding_language="ts", coding_verify_repeat=2))
         pair = DEFAULT_CODING_SOURCE_FILES[0]
         provider = FakeProvider()
         state = _ready_sandbox()
         step_times: dict[str, float] = {}
 
         ok, err, compile_only = _run_verify(
-            provider, state, "/opt/coding-bench", config, pair, step_times=step_times, round_id=0
+            provider, state, "/opt/coding-bench", config.workflow_config, pair, step_times=step_times, round_id=0
         )
 
         assert ok is True
@@ -77,14 +78,14 @@ class TestRunVerify:
         assert "verify_clean" not in step_times
 
     def test_go_records_verify_clean_then_verify(self):
-        config = KernelConfig(coding_language="go")
-        pair = config.coding_source_files[0]  # hugo pair with its own verify_script
+        config = KernelConfig(workflow_config=CodingConfig(coding_language="go"))
+        pair = config.workflow_config.coding_source_files[0]  # hugo pair with its own verify_script
         provider = FakeProvider()
         state = _ready_sandbox()
         step_times: dict[str, float] = {}
 
         ok, _err, compile_only = _run_verify(
-            provider, state, "/opt/coding-bench", config, pair, step_times=step_times, round_id=0
+            provider, state, "/opt/coding-bench", config.workflow_config, pair, step_times=step_times, round_id=0
         )
 
         assert ok is True
@@ -94,12 +95,14 @@ class TestRunVerify:
         assert "verify" in step_times
 
     def test_verify_failure_returns_error(self):
-        config = KernelConfig(coding_language="ts", coding_verify_repeat=1)
+        config = KernelConfig(workflow_config=CodingConfig(coding_language="ts", coding_verify_repeat=1))
         pair = DEFAULT_CODING_SOURCE_FILES[0]
         provider = _VerifyFailingProvider()
         state = _ready_sandbox()
 
-        ok, err, _compile_only = _run_verify(provider, state, "/opt/coding-bench", config, pair, round_id=0)
+        ok, err, _compile_only = _run_verify(
+            provider, state, "/opt/coding-bench", config.workflow_config, pair, round_id=0
+        )
 
         assert ok is False
         assert "verify failed" in err
@@ -108,7 +111,7 @@ class TestRunVerify:
 
 class TestCodingWarmupRunner:
     def test_runs_initial_verify_and_marks_done(self):
-        config = KernelConfig(coding_language="ts")
+        config = KernelConfig(workflow_config=CodingConfig(coding_language="ts"))
         provider = FakeProvider()
         state = _ready_sandbox()
         CodingWarmupRunner(
@@ -120,7 +123,7 @@ class TestCodingWarmupRunner:
     def test_skips_when_not_ready(self):
         # A non-ready instance is skipped before the command-issuing body; it is
         # NOT marked warmup_done -- matching the readiness-gate early-return.
-        config = KernelConfig(coding_language="ts")
+        config = KernelConfig(workflow_config=CodingConfig(coding_language="ts"))
         provider = FakeProvider()
         state = BenchSandbox(id="fake-0", index=0, ready=False)
         CodingWarmupRunner(
@@ -129,7 +132,7 @@ class TestCodingWarmupRunner:
         assert state.warmup_done is False
 
     def test_skips_when_project_marker_missing(self):
-        config = KernelConfig(coding_language="ts")
+        config = KernelConfig(workflow_config=CodingConfig(coding_language="ts"))
         provider = FakeProvider(
             exec_results={"ls /opt/coding-bench/package.json": CommandResult(1, "", "no such file")}
         )
@@ -141,7 +144,7 @@ class TestCodingWarmupRunner:
         assert state.warmup_done is True
 
     def test_skip_verify_still_marks_done(self):
-        config = KernelConfig(coding_language="ts", coding_skip_verify=True)
+        config = KernelConfig(workflow_config=CodingConfig(coding_language="ts", coding_skip_verify=True))
         provider = _VerifyFailingProvider()  # verify would fail, but it's skipped
         state = _ready_sandbox()
         CodingWarmupRunner(
@@ -152,7 +155,7 @@ class TestCodingWarmupRunner:
 
 class TestCodingTaskRunner:
     def test_single_task_success(self):
-        config = KernelConfig(coding_language="ts")
+        config = KernelConfig(workflow_config=CodingConfig(coding_language="ts"))
         provider = FakeProvider()
         state = _ready_sandbox()
         runner = CodingTaskRunner(
@@ -168,9 +171,11 @@ class TestCodingTaskRunner:
         assert latency > 0.0
 
     def test_edit_failure_records_error(self):
-        config = KernelConfig(coding_language="ts")
-        pair = config.coding_source_files[0]
-        edit_cmd = _build_edit_command(config.coding_project_dir, pair["file"], pair["find"], pair["replace"])
+        config = KernelConfig(workflow_config=CodingConfig(coding_language="ts"))
+        pair = config.workflow_config.coding_source_files[0]
+        edit_cmd = _build_edit_command(
+            config.workflow_config.coding_project_dir, pair["file"], pair["find"], pair["replace"]
+        )
         provider = FakeProvider(exec_results={edit_cmd: CommandResult(1, "", "edit boom")})
         state = _ready_sandbox()
         runner = CodingTaskRunner(
@@ -187,7 +192,12 @@ class TestCodingTaskRunner:
         state = _ready_sandbox()
         state.is_alive = False
         runner = CodingTaskRunner(
-            RunContext(state=state, config=KernelConfig(), stop_event=threading.Event(), provider=FakeProvider())
+            RunContext(
+                state=state,
+                config=KernelConfig(workflow_config=CodingConfig()),
+                stop_event=threading.Event(),
+                provider=FakeProvider(),
+            )
         )
         success, latency, verify_success, compile_only, timed_out = runner._run_single_task()
         assert success is False
@@ -199,7 +209,7 @@ class TestCodingTaskRunner:
 
 class TestCodingRoundRunner:
     def test_round_records_all_step_timings(self):
-        config = KernelConfig(coding_language="ts")
+        config = KernelConfig(workflow_config=CodingConfig(coding_language="ts"))
         provider = FakeProvider()
         state = _ready_sandbox()
         runner = CodingRoundRunner(
@@ -217,9 +227,11 @@ class TestCodingRoundRunner:
         assert state.get_last_task_time() > 0.0
 
     def test_edit_failure_is_recorded(self):
-        config = KernelConfig(coding_language="ts")
-        pair = config.coding_source_files[0]
-        edit_cmd = _build_edit_command(config.coding_project_dir, pair["file"], pair["find"], pair["replace"])
+        config = KernelConfig(workflow_config=CodingConfig(coding_language="ts"))
+        pair = config.workflow_config.coding_source_files[0]
+        edit_cmd = _build_edit_command(
+            config.workflow_config.coding_project_dir, pair["file"], pair["find"], pair["replace"]
+        )
         provider = FakeProvider(exec_results={edit_cmd: CommandResult(1, "", "edit boom")})
         state = _ready_sandbox()
         runner = CodingRoundRunner(
@@ -235,7 +247,7 @@ class TestCodingRoundRunner:
         assert "edit failed" in metrics.last_error
 
     def test_verify_failure_records_failed_step(self):
-        config = KernelConfig(coding_language="ts")
+        config = KernelConfig(workflow_config=CodingConfig(coding_language="ts"))
         provider = _VerifyFailingProvider()
         state = _ready_sandbox()
         runner = CodingRoundRunner(
@@ -256,7 +268,11 @@ class TestCodingRoundRunner:
         state = BenchSandbox(id="fake-0", index=0, ready=False)
         runner = CodingRoundRunner(
             RunContext(
-                state=state, config=KernelConfig(), stop_event=threading.Event(), round_id=0, provider=FakeProvider()
+                state=state,
+                config=KernelConfig(workflow_config=CodingConfig()),
+                stop_event=threading.Event(),
+                round_id=0,
+                provider=FakeProvider(),
             )
         )
         runner.run()
