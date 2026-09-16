@@ -677,7 +677,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                     logger.exception("partial run_summary write failed")
 
 
-def load_config(path: str | Path) -> tuple[KernelConfig, dict[str, Any]]:
+def load_config(path: str | Path, *, workflow_type_override: str | None = None) -> tuple[KernelConfig, dict[str, Any]]:
     """Load a :class:`KernelConfig` from a YAML file (unified schema).
 
     Reads the shared stress sections via :meth:`KernelConfig.from_raw`, so the
@@ -685,12 +685,19 @@ def load_config(path: str | Path) -> tuple[KernelConfig, dict[str, Any]]:
     instead of running on defaults. Returns the config plus the raw YAML dict;
     backend blocks (``e2b:`` / ``docker:``) are passed through for the provider
     to read -- the kernel never reads them.
+
+    ``workflow_type_override`` is applied to ``raw`` *before* ``from_raw`` (not
+    post-hoc on the built config) so ``from_raw`` selects the right
+    ``config_cls`` view; setting it on the built config later would leave the
+    typed view bound to the YAML's workflow (RFC 0002 P2-1).
     """
     import yaml
 
     with open(path, encoding="utf-8") as handle:
         raw: dict[str, Any] = yaml.safe_load(handle) or {}
 
+    if workflow_type_override is not None:
+        raw["workflow_type"] = workflow_type_override
     return KernelConfig.from_raw(raw), raw
 
 
@@ -794,15 +801,17 @@ def main() -> None:
     args = build_arg_parser().parse_args()
 
     if args.config:
-        config, raw = load_config(args.config)
+        config, raw = load_config(args.config, workflow_type_override=args.workflow_type or None)
     else:
         config, raw = KernelConfig(), {}
+        if args.workflow_type:
+            # No --config path skips from_raw, so the typed view is not built; apply
+            # the override directly (degenerate -- a real run uses --config).
+            config.workflow_type = args.workflow_type
 
     # CLI overrides (only when explicitly set).
     if args.total_count is not None:
         config.total_count = args.total_count
-    if args.workflow_type:
-        config.workflow_type = args.workflow_type
     if args.benchmark_mode:
         config.benchmark_mode = args.benchmark_mode
     if args.round_count is not None:

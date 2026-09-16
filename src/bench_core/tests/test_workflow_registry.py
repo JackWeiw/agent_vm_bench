@@ -57,8 +57,9 @@ def test_each_spec_carries_valid_metadata():
         assert spec.name == name
         assert issubclass(spec.metrics_cls, TaskMetricsBase)
         assert isinstance(spec.step_order, tuple) and len(spec.step_order) > 0
-        # config_cls / report_formatters are None in Phase 0 (land in Phases 2/3).
-        assert spec.config_cls is None
+        # Phase 2: config_cls is a WorkflowConfigBase subclass (the typed config
+        # view); report_formatters stays None until Phase 3.
+        assert spec.config_cls is not None and issubclass(spec.config_cls, WorkflowConfigBase)
         assert spec.report_formatters is None
         # Phase 1: runner fields are TaskRunner subclasses (the 12 in-tree
         # runners migrated to TaskRunner(ctx) + do_run).
