@@ -349,7 +349,7 @@ def test_trajectory_create_one_none_template(tmp_path, monkeypatch):
 
 
 def test_replay_report_renders_orphan_skipped_line():
-    """format_replay_stats_section renders 'Orphan Skipped: N' when > 0.
+    """format_stats_section renders 'Orphan Skipped: N' when > 0.
 
     Task 8 of the multi-template replay plan. The renderer must aggregate
     ``replay_metrics.orphan_skip_count`` across all sandbox states and emit a
@@ -365,7 +365,7 @@ def test_replay_report_renders_orphan_skipped_line():
     state_b.replay_metrics.record_orphan_skip()
 
     sc = StatsCollector(cfg, {0: state_a, 1: state_b}, "fake")
-    lines = sc.format_replay_stats_section()
+    lines = sc.format_stats_section()
     joined = "\n".join(lines)
 
     # Label is column-aligned (padded), so match the label and the count
@@ -385,7 +385,7 @@ def test_replay_report_omits_orphan_skipped_when_zero():
     state = BenchSandbox(id="a", index=0, workflow_type="replay")
 
     sc = StatsCollector(cfg, {0: state}, "fake")
-    lines = sc.format_replay_stats_section()
+    lines = sc.format_stats_section()
     joined = "\n".join(lines)
 
     assert "Orphan Skipped" not in joined

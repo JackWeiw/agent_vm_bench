@@ -12,6 +12,7 @@ import pytest
 from bench_core.schemas import TaskMetricsBase
 from bench_core.workflow_registry import (
     RegistrationError,
+    ReportFormatters,
     RunContext,
     TaskRunner,
     WorkflowConfigBase,
@@ -58,9 +59,9 @@ def test_each_spec_carries_valid_metadata():
         assert issubclass(spec.metrics_cls, TaskMetricsBase)
         assert isinstance(spec.step_order, tuple) and len(spec.step_order) > 0
         # Phase 2: config_cls is a WorkflowConfigBase subclass (the typed config
-        # view); report_formatters stays None until Phase 3.
+        # view); Phase 3: report_formatters is a ReportFormatters strategy instance.
         assert spec.config_cls is not None and issubclass(spec.config_cls, WorkflowConfigBase)
-        assert spec.report_formatters is None
+        assert isinstance(spec.report_formatters, ReportFormatters)
         # Phase 1: runner fields are TaskRunner subclasses (the 12 in-tree
         # runners migrated to TaskRunner(ctx) + do_run).
         for attr in ("warmup_runner", "task_runner", "round_runner"):

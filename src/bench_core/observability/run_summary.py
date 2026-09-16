@@ -81,7 +81,7 @@ def write_run_summary(
     # Matches the txt report's "Overhead aggregate" exactly: slices below
     # MIN_SLICE_SEC (synthesized zero-placeholders on exception paths) are
     # excluded so a consumer cross-checking JSON vs txt sees identical numbers.
-    from bench_core.observability.stats_collector import MIN_SLICE_SEC
+    from bench_core.observability.report_helpers import MIN_SLICE_SEC
 
     metrics = [s.replay_metrics for s in sandbox_states.values()]
     slice_triples = [(r, p, s) for m in metrics for r, p, s in zip(m.resume_secs, m.pause_secs, m.slice_total_secs)]

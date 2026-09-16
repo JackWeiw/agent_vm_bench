@@ -15,13 +15,23 @@ from __future__ import annotations
 import logging
 import random
 import re
+import statistics
 import threading
 import time
 from dataclasses import dataclass, field
 
 from bench_core.config import KernelConfig
+from bench_core.observability.report_helpers import BROWSER_ERROR_DISPLAY, TableFormatter
 from bench_core.schemas import BROWSER_STEP_ORDER, BenchSandbox, BrowserMetrics
+from bench_core.utils import (
+    calc_p99,
+    calc_percentiles,
+    calc_tail_ratio,
+    classify_tail_latency,
+)
 from bench_core.workflow_registry import (
+    ReportContext,
+    ReportFormatters,
     RunContext,
     TaskRunner,
     WorkflowConfigBase,
@@ -504,6 +514,89 @@ class BrowserConfig(WorkflowConfigBase):
         return None
 
 
+class BrowserReportFormatter(ReportFormatters):
+    """Browser workflow report surfaces (Phase 3: ported byte-for-byte from
+    ``ReportFormatter.format_browser_stats_section`` / ``format_step_timing_table``)."""
+
+    error_display_order = BROWSER_ERROR_DISPLAY
+    ready_check_title = "Port Check Wait Performance"
+    ready_check_desc = "Waiting for 18789 openclaw-gateway + 11436 llama-server ports"
+    create_desc = "sandbox.create API call time, excluding port wait"
+    total_desc = "sandbox.create + port wait"
+    command_ready = False
+
+    def format_snapshot_line(self, snap, sandbox_states, config) -> str:
+        return (
+            f"  Browser:   {snap.task_success:3d}/{snap.task_total:3d}  "
+            f"avg={snap.recent_avg_latency:.2f}s  p99={snap.recent_p99_latency:.2f}s"
+        )
+
+    def format_stats_section(self, ctx: ReportContext) -> list[str]:
+        """Format browser task statistics section."""
+        states = ctx.sandbox_states
+        all_latencies: list[float] = []
+        for s in states.values():
+            all_latencies.extend(s.browser_metrics.latencies)
+
+        total_tasks = sum(s.browser_metrics.total_tasks for s in states.values())
+        total_success = sum(s.browser_metrics.success_count for s in states.values())
+        total_failed = sum(s.browser_metrics.failed_count for s in states.values())
+        total_timeout = sum(s.browser_metrics.timeout_count for s in states.values())
+
+        lines = ["\n[Browser Task Statistics]"]
+        lines.append(f"  Total Tasks:   {total_tasks}")
+        lines.append(f"  Success:       {total_success}")
+        lines.append(f"  Failed:        {total_failed} (timeout: {total_timeout})")
+        lines.append(f"  Success Rate:  {total_success / max(1, total_tasks) * 100:.1f}%")
+
+        if all_latencies:
+            avg_ms = statistics.mean(all_latencies) * 1000
+            p99_ms = calc_p99(all_latencies) * 1000
+            lines.append(f"  Avg Latency:   {avg_ms:.1f}ms")
+            lines.append(f"  P99 Latency:   {p99_ms:.1f}ms")
+
+        return lines
+
+    def format_step_timing(self, ctx: ReportContext) -> list[str]:
+        """Format step-level timing as a table."""
+        states = ctx.sandbox_states
+        all_step_times: dict[str, list[float]] = {}
+        for s in states.values():
+            step_times_copy = s.browser_metrics.get_step_times_copy()
+            for step_name, times in step_times_copy.items():
+                all_step_times.setdefault(step_name, []).extend(times)
+
+        if not all_step_times:
+            return []
+
+        lines = ["\n[Step-Level Timing (Tab-Switch Mode)]"]
+        headers = ["Step", "Count", "Avg(ms)", "P50(ms)", "P95(ms)", "P99(ms)", "Tail"]
+        rows: list[list[str]] = []
+
+        for step_name in ["open_tab", "page_load", "snapshot", "click", "screenshot"]:
+            if step_name in all_step_times and all_step_times[step_name]:
+                times = all_step_times[step_name]
+                stats = calc_percentiles(times)
+                tail_ratio = calc_tail_ratio(times)
+                severity = classify_tail_latency(tail_ratio)
+                rows.append(
+                    [
+                        step_name,
+                        str(len(times)),
+                        f"{stats['avg'] * 1000:.1f}",
+                        f"{stats['p50'] * 1000:.1f}",
+                        f"{stats['p95'] * 1000:.1f}",
+                        f"{stats['p99'] * 1000:.1f}",
+                        f"{tail_ratio:.2f}x ({severity})",
+                    ]
+                )
+
+        lines.extend(TableFormatter.format_table(headers, rows))
+        lines.append("\n  Tail Ratio: P99/P50 - indicates long-tail latency severity")
+        lines.append("  < 1.2x: minimal | 1.2-1.5x: moderate | > 1.5x: significant")
+        return lines
+
+
 register_workflow(
     WorkflowSpec(
         name="browser",
@@ -514,5 +607,6 @@ register_workflow(
         step_order=tuple(BROWSER_STEP_ORDER),
         config_section="browser",
         config_cls=BrowserConfig,
+        report_formatters=BrowserReportFormatter(),
     )
 )

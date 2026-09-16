@@ -8,6 +8,7 @@ from bench_core.config import KernelConfig
 from bench_core.observability.stats_collector import ReportFormatter, StatsCollector
 from bench_core.schemas import BenchSandbox, ReplayMetrics
 from bench_core.task_runner.replay import ReplayConfig
+from bench_core.workflow_registry import WORKFLOW_REGISTRY
 from env_provider import SandboxInstance
 
 
@@ -70,7 +71,7 @@ def _format(state, *, admission_snapshot=None, wall_sec=None) -> str:
         workflow_config=ReplayConfig(replay_mode="lifecycle", replay_running_concurrency=1),
     )
     f = ReportFormatter(cfg, {0: state}, "fake", admission_snapshot=admission_snapshot, wall_sec=wall_sec)
-    return "\n".join(f.format_replay_stats_section())
+    return "\n".join(f.format_stats_section())
 
 
 class TestAdmissionBlockRender:
@@ -221,7 +222,7 @@ class TestOnePassTargetReport:
             workflow_config=ReplayConfig(replay_mode="lifecycle", replay_running_concurrency=1),
         )
         f = ReportFormatter(cfg, {0: state}, "fake")
-        return "\n".join(f.format_replay_stats_section())
+        return "\n".join(f.format_stats_section())
 
     def test_target_is_fleet_size_not_pool_times_fleet(self):
         joined = self._report(total_count=4)
@@ -231,11 +232,14 @@ class TestOnePassTargetReport:
         assert "x fleet" not in line[0]  # old pool*fleet product must be gone
 
     def test_pool_note_shown_when_pool_resolvable(self, monkeypatch):
-        import bench_core.observability.stats_collector as mod
+        import bench_core.task_runner.replay as replay_mod
 
         # pool(401) > fleet(384): the user's 1:1 aenv run. Target stays 384
         # (one trajectory/sandbox), pool is context only -- not a multiplier.
-        monkeypatch.setattr(mod, "replay_pool_size", lambda cfg: 401)
+        # P3: replay_pool_size was lifted out of stats_collector into
+        # report_helpers and is imported by the replay formatter module, so
+        # patch the name the formatter actually resolves.
+        monkeypatch.setattr(replay_mod, "replay_pool_size", lambda cfg: 401)
         joined = self._report(total_count=384)
         line = [ln for ln in joined.splitlines() if "One-pass Target:" in ln][0]
         assert "384 (1 trajectory/sandbox per round; pool 401 distinct)" in line
@@ -243,9 +247,15 @@ class TestOnePassTargetReport:
 
 class TestReplaySnapshotTrajDenominator:
     """Live snapshot ``traj=done/total`` denominator = round_count * total_count
-    (cumulative ceiling), 0 (bare count) when sustained."""
+    (cumulative ceiling), 0 (bare count) when sustained.
 
-    def _snapshot(self, *, total_count, round_count, completions=2):
+    P3: the trajectory fields left ``Snapshot`` -- the denominator is rendered
+    by ``ReplayReportFormatter.format_snapshot_line`` (projecting completions
+    from ``replay_metrics`` + ``replay_traj_target(config)``), so these assert
+    on the rendered line rather than on removed snapshot fields.
+    """
+
+    def _snapshot_line(self, *, total_count, round_count, completions=2):
         cfg = KernelConfig(
             workflow_type="replay",
             total_count=total_count,
@@ -259,21 +269,23 @@ class TestReplaySnapshotTrajDenominator:
         sc = StatsCollector(cfg, {0: state})
         sc.start_time = time.time()  # set without spawning the collect thread
         sc._take_snapshot()
-        return sc.snapshots[-1]
+        snap = sc.snapshots[-1]
+        fmt = WORKFLOW_REGISTRY["replay"].report_formatters
+        return fmt.format_snapshot_line(snap, {0: state}, cfg)
 
     def test_bounded_single_round_denominator_is_fleet(self):
-        snap = self._snapshot(total_count=4, round_count=1)
-        assert snap.replay_traj_done == 2
-        assert snap.replay_total_trajs == 4  # 1 round * 4 fleet, NOT pool*fleet
+        line = self._snapshot_line(total_count=4, round_count=1)
+        assert "traj=2/4" in line  # 1 round * 4 fleet, NOT pool*fleet
 
     def test_multi_round_denominator_scales(self):
-        snap = self._snapshot(total_count=4, round_count=3)
-        assert snap.replay_total_trajs == 12  # 3 rounds * 4 fleet
+        line = self._snapshot_line(total_count=4, round_count=3)
+        assert "traj=2/12" in line  # 3 rounds * 4 fleet
 
     def test_sustained_denominator_is_zero(self):
         # round_count=None (default) -> sustained-until-duration, no fixed ceiling
-        snap = self._snapshot(total_count=4, round_count=None)
-        assert snap.replay_total_trajs == 0
+        line = self._snapshot_line(total_count=4, round_count=None)
+        assert "traj=2/" not in line  # no denominator when sustained
+        assert "traj=2 " in line  # bare count then column gap
 
 
 class TestReplaySnapshotTrajPrint:

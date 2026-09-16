@@ -741,7 +741,15 @@ class BenchSandbox(SandboxInstance):
 
 @dataclass
 class Snapshot:
-    """A point-in-time sample of the running benchmark, collected by StatsCollector."""
+    """A point-in-time sample of the running benchmark, collected by StatsCollector.
+
+    Slim and workflow-agnostic (RFC 0002 P3): the cumulative task totals and a
+    recent-latency window are projected from the polymorphic
+    ``BenchSandbox.task_metrics``. Per-workflow narrows (browser ports, coding
+    verify, replay trajectory progress) are rendered live by the workflow's
+    ``ReportFormatters.format_snapshot_line`` at print time, not snapshotted --
+    so adding a workflow no longer touches ``Snapshot``.
+    """
 
     timestamp: float  # snapshot wall-clock
     elapsed: float  # seconds since benchmark start
@@ -751,34 +759,12 @@ class Snapshot:
     creation_stats: dict[str, Any] = field(
         default_factory=dict
     )  # {"create": {...}, "ready_check": {...}, "total": {...}}
-    # Browser task metrics
-    browser_total: int = 0
-    browser_success: int = 0
-    browser_avg_latency: float = 0.0
-    browser_p99_latency: float = 0.0
-    # Coding task metrics (workflow_type="coding")
-    coding_total: int = 0
-    coding_success: int = 0
-    coding_verify_success: int = 0  # real-assertion verify_script passed
-    coding_compile_only: int = 0  # compile_only verify passed (no assertion)
-    coding_avg_latency: float = 0.0
-    coding_p99_latency: float = 0.0
-    # Document task metrics (workflow_type="document")
-    document_total: int = 0
-    document_success: int = 0
-    document_avg_latency: float = 0.0
-    document_p99_latency: float = 0.0
-    # Replay task metrics (workflow_type="replay")
-    replay_total: int = 0
-    replay_success: int = 0
-    replay_avg_latency: float = 0.0
-    replay_p99_latency: float = 0.0
-    # Trajectory-level progress: completions across the fleet vs the cumulative
-    # ceiling (round_count * total_count; 0 = sustained, no fixed ceiling). The
-    # per-round One-pass Target in the report is total_count (1 trajectory/
-    # sandbox/round); done may exceed that once sandboxes cycle past round 1.
-    replay_traj_done: int = 0
-    replay_total_trajs: int = 0
+    # Generic cumulative task metrics (projected from s.task_metrics).
+    task_total: int = 0
+    task_success: int = 0
+    # Recent-latency window: mean + p99 of the last 10 latencies per sandbox.
+    recent_avg_latency: float = 0.0
+    recent_p99_latency: float = 0.0
     # Round comparison fields
     round_total: int = 0
     round_success: int = 0
