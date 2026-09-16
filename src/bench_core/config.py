@@ -118,13 +118,21 @@ class KernelConfig:
         return (self.total_count + self.task_batch_size - 1) // self.task_batch_size
 
     def validate(self) -> None:
-        """Raise ``ValueError`` for invalid settings; call after construction."""
-        if self.workflow_type not in {"browser", "coding", "document", "replay"}:
-            raise ValueError(f"Unsupported workflow_type: {self.workflow_type}")
+        """Raise :class:`WorkflowConfigError` for invalid settings; call after construction.
+
+        The ``workflow_type`` gate is registry-driven: a newly-registered
+        workflow passes without editing a hardcoded set here. ``from_raw``'s
+        ``ensure_workflow_registered`` lookup is the authoritative gate (it
+        fires before this is ever called on a ``from_raw`` config), so an
+        unknown workflow is rejected here too; the per-view
+        ``WorkflowConfigBase.validate`` owns cross-section checks.
+        """
+        if self.workflow_type not in WORKFLOW_REGISTRY:
+            raise WorkflowConfigError(f"Unsupported workflow_type: {self.workflow_type!r}")
         if self.round_size <= 0:
-            raise ValueError(f"round_size must be > 0, got {self.round_size}")
+            raise WorkflowConfigError(f"round_size must be > 0, got {self.round_size}")
         if self.benchmark_mode not in {"fixed", "round_robin"}:
-            raise ValueError(f"benchmark_mode must be fixed or round_robin, got {self.benchmark_mode}")
+            raise WorkflowConfigError(f"benchmark_mode must be fixed or round_robin, got {self.benchmark_mode}")
 
     @classmethod
     def from_raw(cls, raw: dict) -> KernelConfig:
