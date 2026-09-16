@@ -24,14 +24,12 @@ from __future__ import annotations
 
 import logging
 import statistics
-import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from bench_core.admission import Admission, LaunchPacer, ShutdownInterrupted
+from bench_core.admission import ShutdownInterrupted
 from bench_core.config import KernelConfig
-from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 from bench_core.observability.replay_obs import ReplayObservability
 from bench_core.observability.report_helpers import (
     CODING_ERROR_DISPLAY,
@@ -40,9 +38,8 @@ from bench_core.observability.report_helpers import (
     replay_pool_size,
     replay_traj_target,
 )
-from bench_core.observability.snapshot_scanner import SnapshotSizeScanner
 from bench_core.payload.replay_payload import ReplayStep, Trajectory, load_pool
-from bench_core.schemas import REPLAY_STEP_ORDER, BenchSandbox, ReplayMetrics
+from bench_core.schemas import REPLAY_STEP_ORDER, ReplayMetrics
 from bench_core.transients import is_transient_sandbox_error
 from bench_core.utils import (
     calc_p99,
@@ -60,7 +57,7 @@ from bench_core.workflow_registry import (
     WorkflowSpec,
     register_workflow,
 )
-from env_provider import CommandResult, EnvironmentProvider, EphemeralCapable, SnapshotSizeCapable
+from env_provider import CommandResult, EphemeralCapable, SnapshotSizeCapable
 
 logger = logging.getLogger(__name__)
 

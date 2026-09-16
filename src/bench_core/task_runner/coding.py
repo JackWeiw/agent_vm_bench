@@ -34,7 +34,6 @@ import base64
 import logging
 import random
 import statistics
-import threading
 import time
 from dataclasses import dataclass
 
@@ -48,7 +47,7 @@ from bench_core.payload.coding_payload import (
     _stamp_verify_body,
     get_coding_profile,
 )
-from bench_core.schemas import CODING_STEP_ORDER, BenchSandbox, CodingMetrics
+from bench_core.schemas import CODING_STEP_ORDER, CodingMetrics
 from bench_core.utils import (
     calc_p99,
     calc_percentiles,

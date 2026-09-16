@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # annotations only — keeps the seam SDK-free + cycle-free at runtime
     from bench_core.config import KernelConfig
-    from bench_core.observability.admission import Admission  # noqa: F401 (replay knob)
+    from bench_core.admission import Admission  # noqa: F401 (replay knob)
     from bench_core.observability.run_summary import LifecycleSeriesWriter
     from bench_core.schemas import BenchSandbox, Snapshot
     from env_provider import EnvironmentProvider

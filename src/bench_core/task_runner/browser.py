@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 
 from bench_core.config import KernelConfig
 from bench_core.observability.report_helpers import BROWSER_ERROR_DISPLAY, TableFormatter
-from bench_core.schemas import BROWSER_STEP_ORDER, BenchSandbox, BrowserMetrics
+from bench_core.schemas import BROWSER_STEP_ORDER, BrowserMetrics
 from bench_core.utils import (
     calc_p99,
     calc_percentiles,
@@ -38,7 +38,6 @@ from bench_core.workflow_registry import (
     WorkflowSpec,
     register_workflow,
 )
-from env_provider import EnvironmentProvider
 
 logger = logging.getLogger(__name__)
 
