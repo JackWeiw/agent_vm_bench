@@ -51,6 +51,26 @@ _BYTES_PER_MIB = 2**20
 _VIRTUAL_DISK_PREFIXES = ("loop", "ram", "sr", "zram", "md", "dm")
 
 
+# Names of the /proc-based resource collectors collect_sample / _disk_subsample_sleep
+# can gate off via --no-X (see vm_monitor/cli.py COLLECTOR_FLAGS). The default
+# enabled set is the full set (backward-compat: all collectors on). Internal names
+# are the snake_case collector method stems; cli.py maps hyphenated flag stems to these.
+_ALL_SAMPLE_COLLECTORS = frozenset(
+    {
+        "hugepage",
+        "numa_cpu",
+        "host_stats",
+        "swap",
+        "host_mem_detail",
+        "pressure",
+        "numa_memory",
+        "vm_total",
+        "disk",
+        "ublk",
+    }
+)
+
+
 def _discover_block_devices() -> list[str]:
     """Auto-discover physical block devices present on this host.
 
@@ -297,6 +317,25 @@ class VMMonitorBase(ABC):
         self.available_numa_nodes = self.get_available_numa_nodes()
         # Effective remote-borrowing node; override from CLI --remote-numa.
         self.remote_numa_id = self.DEFAULT_REMOTE_NUMA_ID
+
+        # Per-collector enable set. Default = every collector on (backward-compat).
+        # --no-X flags (forwarded by bench_core monitor.skip) remove names here via
+        # disable_collectors(); _collects() gates each call in collect_sample /
+        # _disk_subsample_sleep. A disabled collector leaves its history empty so
+        # every downstream consumer (exporters / svg_exporter / realtime table /
+        # summary) already degrades to omitting that sheet/SVG (verified: no
+        # unguarded consumers exist).
+        self.enabled_collectors: set[str] = set(_ALL_SAMPLE_COLLECTORS)
+
+    def _collects(self, name: str) -> bool:
+        """True if collector ``name`` is currently enabled."""
+        return name in self.enabled_collectors
+
+    def disable_collectors(self, names) -> None:
+        """Disable the named /proc collectors. Unknown names are silently ignored
+        here (the CLI/YAML layer warns before calling, so a stray token never
+        reaches this method in practice)."""
+        self.enabled_collectors -= {n for n in names if n in _ALL_SAMPLE_COLLECTORS}
 
     # ==================== Abstract Methods ====================
     @abstractmethod
@@ -1540,23 +1579,34 @@ class VMMonitorBase(ABC):
         during the main loop's sleep), so disk_history and ublk_history carry
         true per-second bandwidth regardless of the general sampling interval.
         """
-        self.collect_hugepage_stats()
-        self.collect_numa_cpu()
-        self.collect_host_stats()
+        if self._collects("hugepage"):
+            self.collect_hugepage_stats()
+        if self._collects("numa_cpu"):
+            self.collect_numa_cpu()
+        if self._collects("host_stats"):
+            self.collect_host_stats()
         # /proc/meminfo + /proc/vmstat are shared across swap_stats,
         # host_mem_detail, and host_pressure -- read once per cycle to avoid
-        # three redundant meminfo parses and two redundant vmstat parses.
-        meminfo = self._read_meminfo()
-        vmstat = self._read_vmstat()
-        self.collect_swap_stats(meminfo=meminfo, vmstat=vmstat)
-        self.collect_host_mem_detail(meminfo=meminfo)
-        self.collect_host_pressure(meminfo=meminfo, vmstat=vmstat)
-        self.get_numa_nodes_memory()  # Collect NUMA meminfo in same cycle as swap/hugepage
+        # three redundant meminfo parses and two redundant vmstat parses. Skip
+        # both reads entirely when every consumer is disabled.
+        need_meminfo = self._collects("swap") or self._collects("host_mem_detail") or self._collects("pressure")
+        need_vmstat = self._collects("swap") or self._collects("pressure")
+        meminfo = self._read_meminfo() if need_meminfo else {}
+        vmstat = self._read_vmstat() if need_vmstat else {}
+        if self._collects("swap"):
+            self.collect_swap_stats(meminfo=meminfo, vmstat=vmstat)
+        if self._collects("host_mem_detail"):
+            self.collect_host_mem_detail(meminfo=meminfo)
+        if self._collects("pressure"):
+            self.collect_host_pressure(meminfo=meminfo, vmstat=vmstat)
+        if self._collects("numa_memory"):
+            self.get_numa_nodes_memory()  # Collect NUMA meminfo in same cycle as swap/hugepage
         vms = self.get_vms_realtime()
         self.last_vm_count = len(vms)
 
         # Aggregate VM total memory
-        self.collect_vm_total_memory(vms)
+        if self._collects("vm_total"):
+            self.collect_vm_total_memory(vms)
 
         timestamp = datetime.now()
         sample_data = []
@@ -1605,8 +1655,10 @@ class VMMonitorBase(ABC):
             time.sleep(min(1.0, remaining))
             if not self.running:
                 break
-            self.collect_disk_stats()
-            self.collect_ublk_count()
+            if self._collects("disk"):
+                self.collect_disk_stats()
+            if self._collects("ublk"):
+                self.collect_ublk_count()
 
     def display_realtime_table(self, sample_data, elapsed_time, duration, check_method=""):
         """Display real-time table"""

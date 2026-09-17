@@ -610,6 +610,57 @@ sampled — noted here so the formulas above are reproducible on any host:
 | NUMA nodes | `/sys/devices/system/node/node{N}` | `numa_nodes` default, focus-set construction |
 | Physical cores (per node / host-wide) | `node{N}/cpulist` + per-CPU `topology/thread_siblings_list` (keeps the lowest sibling ID, so each physical core appears once) | `numa_to_physical_cores`, getfre `total_cores` default |
 
+### 2.8 Disabling collectors (`--no-X`, `monitor.skip`)
+
+By default every `/proc`-based resource collector runs (backward-compat). Opt
+out with `--no-<collector>` flags (default ON; disabling degrades gracefully —
+the collector's history stays empty, so its timeline sheet/SVG is omitted and
+`Summary` shows that row at 0). VM discovery (`get_vms_realtime` + the per-VM
+record loop) is always on; only the auxiliary resource collectors toggle.
+
+| `--no-X` flag | Collector / sub-tool | Omitted when disabled |
+|---|---|---|
+| `--no-hugepage` | `collect_hugepage_stats` | Hugepage rows (Summary) |
+| `--no-numa-cpu` | `collect_numa_cpu` | NUMA_Overview CPU% |
+| `--no-host-stats` | `collect_host_stats` | host_resources.svg |
+| `--no-swap` | `collect_swap_stats` | Swap_Timeline / swap.svg |
+| `--no-host-mem-detail` | `collect_host_mem_detail` | Host_Mem_Timeline |
+| `--no-pressure` | `collect_host_pressure` | Host_Pressure_Timeline / host_pressure.svg |
+| `--no-numa-memory` | `get_numa_nodes_memory` | NUMA_Memory_Timeline / numa.svg |
+| `--no-vm-total` | `collect_vm_total_memory` | VM_Total_Memory_Timeline / vm_total.svg |
+| `--no-disk` | `collect_disk_stats` | Disk_IO_Timeline / disk_io.svg / disk_latency.svg |
+| `--no-ublk` | `collect_ublk_count` | `ublk Devices` column (on Disk_IO_Timeline) |
+| `--no-devkit-mem` | `devkit_mem` sub-tool | DevKit_Memory / NUMA_Bandwidth |
+| `--no-devkit-topdown` | `devkit_top_down` sub-tool | DevKit_TopDown |
+
+The devkit split is necessary because `devkit_path` is shared by both sub-tools
+— `.env` path control cannot run only one. The other external profilers
+(ksys / ub_watch / smap_bw / getfre) stay `.env`-path-controlled (a missing
+path already skips them).
+
+`ublk` and `disk` are independent histories. Disabling `disk` alone leaves ublk
+data captured (in `ublk_history`) but not rendered — `Disk_IO_Timeline` is
+skipped whenever `disk_history` is empty, so the `ublk Devices` column only
+appears when `disk` is also on.
+
+From bench-core, the same switches forward through a single `monitor.skip`
+list (hyphenated stems):
+
+```yaml
+monitor:
+  skip: [swap, hugepage, devkit-mem]   # -> vm-monitor --no-swap --no-hugepage --no-devkit-mem
+```
+
+A YAML list is preferred; a comma string (`skip: swap, hugepage`) is also
+accepted (whitespace stripped). Unknown names log
+`Unknown collector name: <name>, skip ignored` and are dropped — never a
+silent no-op, never a crash on a typo.
+
+A `Summary` row at `0` for a disabled collector means "no samples collected"
+(the collector never ran), which is indistinguishable from "the metric
+genuinely measured 0" in the exported value alone — consult the corresponding
+timeline sheet's presence to tell them apart (absent sheet = not collected).
+
 ---
 
 ## 3. Using metrics for bottleneck identification

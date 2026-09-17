@@ -20,6 +20,29 @@ logger = logging.getLogger(__name__)
 
 _VM_MONITOR_BIN = "vm-monitor"
 
+# Valid ``monitor.skip`` tokens (hyphenated flag stems). These forward to the
+# vm-monitor CLI as ``--no-{stem}``. bench_core wraps vm-monitor as an opaque
+# subprocess, so this literal is the contract with
+# ``vm_monitor/cli.py COLLECTOR_FLAGS`` stems -- keep them in sync. An unknown
+# token is warned + dropped (never silently no-op, never crash the bench on a
+# typo). Runtime WARNING surfaces any drift between this set and the CLI.
+_VALID_SKIP_STEMS = frozenset(
+    {
+        "hugepage",
+        "numa-cpu",
+        "host-stats",
+        "swap",
+        "host-mem-detail",
+        "pressure",
+        "numa-memory",
+        "vm-total",
+        "disk",
+        "ublk",
+        "devkit-mem",
+        "devkit-topdown",
+    }
+)
+
 
 @dataclass
 class MonitorConfig:
@@ -38,11 +61,23 @@ class MonitorConfig:
     # True = copy VM_Stats/NUMA_Overview/DevKit_TopDown into the obs workbook.
     merge_report: bool = False
     report_timeout: int = 300  # vm_monitor exit/export budget (s): 2x = no-SIGTERM wait, 1x = post-SIGTERM grace
+    # Collectors/devkit sub-tools to skip, forwarded to vm-monitor as --no-X.
+    # Accepts a YAML list ("skip: [swap, hugepage]") or a comma string
+    # ("skip: swap, hugepage"). Tokens are hyphenated flag stems; unknown names
+    # are warned + dropped in _build_cmd. Default empty = all collectors on.
+    skip: list[str] | None = None
 
     @classmethod
     def from_raw(cls, raw: dict | None) -> MonitorConfig:
         if not raw:
             return cls()
+        raw_skip = raw.get("skip")
+        if raw_skip is None:
+            skip: list[str] | None = None
+        elif isinstance(raw_skip, str):
+            skip = [t.strip() for t in raw_skip.split(",") if t.strip()]
+        else:
+            skip = [str(t).strip() for t in raw_skip if str(t).strip()]
         return cls(
             enabled=str(raw.get("enabled", "auto")),
             vmm=str(raw.get("vmm", "auto")),
@@ -54,6 +89,7 @@ class MonitorConfig:
             log_dir=raw.get("log_dir"),
             merge_report=bool(raw.get("merge_report", False)),
             report_timeout=int(raw.get("report_timeout", 300)),
+            skip=skip,
         )
 
 
@@ -104,6 +140,13 @@ class MonitorController:
         ]
         if self._capture_on:
             cmd += ["--enable-capture", "--auto-skip"]
+        # Forward monitor.skip as --no-X flags. Unknown tokens are warned + dropped
+        # (never silently no-op; never crash the bench on a YAML typo).
+        for token in self._config.monitor.skip or []:
+            if token in _VALID_SKIP_STEMS:
+                cmd += [f"--no-{token}"]
+            else:
+                logger.warning("Unknown collector name: %s, skip ignored", token)
         # Hard upper bound: vm_monitor exits after this even if the lock is never
         # removed (SIGKILL/OOM on the kernel side cannot reap the subprocess).
         hard_t = getattr(self._config, "test_duration", self._report_timeout) + 60

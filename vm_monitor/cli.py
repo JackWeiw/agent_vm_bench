@@ -8,6 +8,7 @@ Supports multiple VMM types: QEMU, Firecracker.
 """
 
 import argparse
+import logging
 import os
 import sys
 import time
@@ -23,33 +24,33 @@ from .log_capture import LogCapture
 from .qemu import QEMUMonitor
 from .svg_exporter import export_svg_reports
 
-# Try to import pandas for Excel availability check
-try:
-    import pandas as pd
+logger = logging.getLogger(__name__)
 
-    PANDAS_AVAILABLE = True
-except ImportError:
-    PANDAS_AVAILABLE = False
+# Unified flag_stem -> internal_name map (user refinement: single source of
+# truth for stem<->internal translation). target "base" disables a
+# VMMonitorBase /proc collector via m.disable_collectors(); "devkit" disables
+# a LogCapture devkit sub-tool via its disabled_devkit set. Stems are hyphenated
+# (the CLI/YAML surface); internal names are snake_case (the method/attribute
+# surface). bench_core forwards monitor.skip tokens as --no-{stem}; unknown
+# tokens are warned + dropped there.
+COLLECTOR_FLAGS = [
+    ("hugepage", "hugepage", "base"),
+    ("numa-cpu", "numa_cpu", "base"),
+    ("host-stats", "host_stats", "base"),
+    ("swap", "swap", "base"),
+    ("host-mem-detail", "host_mem_detail", "base"),
+    ("pressure", "pressure", "base"),
+    ("numa-memory", "numa_memory", "base"),
+    ("vm-total", "vm_total", "base"),
+    ("disk", "disk", "base"),
+    ("ublk", "ublk", "base"),
+    ("devkit-mem", "devkit_mem", "devkit"),
+    ("devkit-topdown", "devkit_top_down", "devkit"),
+]
 
 
-def resolve_numa_nodes(numa_arg: str, available_nodes: list[int]) -> list[int]:
-    """Resolve a --numa argument to a concrete list of NUMA node IDs.
-
-    "all" -> every node the host exposes (``available_nodes``); falls back to
-    [0] when the host is non-NUMA (no /sys/devices/system/node nodeN dirs) so a
-    default "all" never yields an empty focus set. A comma-separated int list
-    ("0,1") is parsed verbatim; an unparseable value falls back to [0].
-    """
-    if numa_arg.strip().lower() == "all":
-        return list(available_nodes) if available_nodes else [0]
-    try:
-        return list(map(int, numa_arg.split(",")))
-    except ValueError:
-        return [0]
-
-
-def main():
-    """Main entry point for VM monitoring tool"""
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the vm-monitor CLI parser (extracted for unit testing)."""
     parser = argparse.ArgumentParser(
         description="VM Monitoring Tool (supports QEMU and Firecracker)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -69,6 +70,13 @@ def main():
 [VMM Types]
   --vmm qemu         Monitor QEMU VMs (qemu-kvm, qemu-system)
   --vmm firecracker  Monitor Firecracker microVMs
+
+[Selective Collectors]
+  --no-swap / --no-hugepage / --no-pressure / --no-host-mem-detail /
+  --no-numa-memory / --no-numa-cpu / --no-host-stats / --no-vm-total /
+  --no-disk / --no-ublk : skip a /proc collector (its sheet/SVG is omitted).
+  --no-devkit-mem / --no-devkit-topdown : run only one devkit sub-tool.
+  All default ON; disabling degrades gracefully (empty history -> sheet skipped).
         """,
     )
 
@@ -134,6 +142,66 @@ def main():
         help="Timeout for ksys data parsing phase in seconds (default: 600s, increase for large VM counts)",
     )
 
+    # Selective /proc collectors + devkit split (default all ON). The dest is
+    # derived from the hyphenated STEM so --no-host-mem-detail lands on
+    # args.no_host_mem_detail (NOT a broken internal-name-derived dest).
+    for stem, _internal, _target in COLLECTOR_FLAGS:
+        parser.add_argument(
+            f"--no-{stem}",
+            action="store_true",
+            dest=f"no_{stem.replace('-', '_')}",
+            default=False,
+            help=f"Skip the {stem} collector (default: enabled)",
+        )
+
+    return parser
+
+
+def collect_disabled(args) -> tuple[set[str], set[str]]:
+    """Translate parsed --no-X args into (disabled base collectors, disabled devkit).
+
+    Routes each set flag to its internal name + target via COLLECTOR_FLAGS.
+    """
+    disabled_collectors: set[str] = set()
+    disabled_devkit: set[str] = set()
+    for stem, internal, target in COLLECTOR_FLAGS:
+        if getattr(args, f"no_{stem.replace('-', '_')}", False):
+            if target == "base":
+                disabled_collectors.add(internal)
+            else:
+                disabled_devkit.add(internal)
+    return disabled_collectors, disabled_devkit
+
+
+# Try to import pandas for Excel availability check
+try:
+    import pandas as pd
+
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
+
+
+def resolve_numa_nodes(numa_arg: str, available_nodes: list[int]) -> list[int]:
+    """Resolve a --numa argument to a concrete list of NUMA node IDs.
+
+    "all" -> every node the host exposes (``available_nodes``); falls back to
+    [0] when the host is non-NUMA (no /sys/devices/system/node nodeN dirs) so a
+    default "all" never yields an empty focus set. A comma-separated int list
+    ("0,1") is parsed verbatim; an unparseable value falls back to [0].
+    """
+    if numa_arg.strip().lower() == "all":
+        return list(available_nodes) if available_nodes else [0]
+    try:
+        return list(map(int, numa_arg.split(",")))
+    except ValueError:
+        return [0]
+
+
+def main():
+    """Main entry point for VM monitoring tool"""
+    parser = build_arg_parser()
+
     args = parser.parse_args()
 
     # Check root permission
@@ -176,11 +244,25 @@ def main():
     else:
         m.target_disks = [d.strip() for d in args.disks.split(",") if d.strip()]
 
+    # Selective /proc collectors + devkit split (--no-X flags; default all ON).
+    disabled_collectors, disabled_devkit = collect_disabled(args)
+    if disabled_collectors:
+        m.disable_collectors(disabled_collectors)
+        logger.debug("enabled_collectors after --no-X: %s", m.enabled_collectors)
+        print(f"[INFO] Disabled collectors: {', '.join(sorted(disabled_collectors))}")
+    if disabled_devkit:
+        print(f"[INFO] Disabled devkit: {', '.join(sorted(disabled_devkit))}")
+
     # Start log capture (parallel with monitor)
     if args.enable_capture:
         print("\nStarting log collection tools...")
         capture = LogCapture(
-            config, args.time, log_dir, m.target_numa_nodes, ksys_parse_timeout=args.ksys_parse_timeout
+            config,
+            args.time,
+            log_dir,
+            m.target_numa_nodes,
+            ksys_parse_timeout=args.ksys_parse_timeout,
+            disabled_devkit=disabled_devkit,
         )
         capture.start()
         print(f"[OK] Log collection tools started in background (duration={args.time}s)")
