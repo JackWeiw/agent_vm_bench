@@ -346,6 +346,45 @@ class XlsxReportRenderer:
             ("concurrency", obs.concurrency),
         ):
             _overview_kv(ws, name, value)
+        # Lifecycle overhead % (lifecycle/trajectory only -- exec_only has no
+        # pause/resume; parity with the txt report's [Lifecycle Overhead] block).
+        # The model owns the ratio (semantic metric); this only renders it.
+        if rcfg.replay_mode in ("lifecycle", "trajectory"):
+            oh = obs.lifecycle_overhead
+            if oh is not None:
+                for name, value in (
+                    ("lifecycle_overhead_aggregate_pct", round(oh["aggregate_pct"], 1)),
+                    ("lifecycle_overhead_mean_pct", round(oh["mean_pct"], 1)),
+                    ("lifecycle_overhead_p95_pct", round(oh["p95_pct"], 1)),
+                ):
+                    _overview_kv(ws, name, value)
+
+        # --- Per-step timing (the 4 phases of each step) ---
+        # exec derived = slice_total - resume - pause; think = natural_delay (LLM).
+        # The duration lists are length-aligned (all appended under slice_total>0
+        # in ReplayMetrics.add), so zip is safe. The Lifecycle overhead sheet
+        # carries resume/pause/slice_total/slot_held/interaction percentiles for
+        # the overhead-ratio lens (slice_total as denominator); this Overview
+        # subtable is the per-step time-decomposition lens the reference's
+        # make_obs_xlsx.py puts in its Overview (exec/think/pause/resume).
+        timing: dict[str, list[float]] = {"exec": [], "think": [], "pause": [], "resume": []}
+        for s in obs.states.values():
+            m = s.replay_metrics
+            if m is None:
+                continue
+            rs, ps, ss = m.resume_secs, m.pause_secs, m.slice_total_secs
+            timing["resume"].extend(rs)
+            timing["pause"].extend(ps)
+            timing["think"].extend(m.natural_delay_secs)
+            timing["exec"].extend(t - r - p for t, r, p in zip(ss, rs, ps))
+        if timing["resume"]:
+            ws.append([])
+            _overview_banner(ws, "Per-step timing")
+            _overview_subtable(
+                ws,
+                ["segment", "n", "min", "max", "avg", "p50", "p95", "p99"],
+                [_pcts_row(k, v) for k, v in timing.items() if v],
+            )
 
         # --- Admission & QPS (running-slot lease + QPS rate limiter) ---
         snap = obs.admission_snapshot or {}

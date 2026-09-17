@@ -87,6 +87,42 @@ class ReplayObservability:
     def overcommit_ratio(self) -> float:
         return self.config.total_count / self.concurrency if self.concurrency else 0.0
 
+    @property
+    def lifecycle_overhead(self) -> dict | None:
+        """Lifecycle overhead ratio (resume + pause) / slice_total, as a model-owned
+        semantic metric. Matches the txt report's "Overhead aggregate" /
+        "Overhead per-sample" and run_summary's ``lifecycle_overhead.pct_of_slice_total``
+        exactly: near-zero slices (``< MIN_SLICE_SEC``, synthesized zero-placeholders
+        on exception paths) are excluded so a tiny slice cannot explode the per-sample
+        ratio. Returns ``None`` when no qualifying slices (exec_only with no recorded
+        steps, or a fully-failed run) so the Overview section is skipped. Per the
+        obs_xlsx layering rule (semantic metrics in the model), the xlsx Overview reads
+        this rather than recomputing inline; run_summary + the txt report still carry
+        their own inline copies (a separate DRY cleanup).
+        """
+        from bench_core.observability.report_helpers import MIN_SLICE_SEC
+
+        agg = [
+            (r, p, s)
+            for m in self._metrics_lists
+            for r, p, s in zip(m.resume_secs, m.pause_secs, m.slice_total_secs)
+            if s >= MIN_SLICE_SEC
+        ]
+        slice_sum = sum(s for _, _, s in agg)
+        if slice_sum <= 0:
+            return None
+        resume_sum = sum(r for r, _, _ in agg)
+        pause_sum = sum(p for _, p, _ in agg)
+        per_sample = [(r + p) / s for r, p, s in agg]
+        sp = calc_percentiles(per_sample)
+        return {
+            "aggregate_pct": (resume_sum + pause_sum) / slice_sum * 100,
+            "mean_pct": sp["avg"] * 100,
+            "p50_pct": sp["p50"] * 100,
+            "p95_pct": sp["p95"] * 100,
+            "n": len(agg),
+        }
+
     # --- Phase 3.3: retry-impact (read from ReplayMetrics accumulators, not the series) ---
 
     @property
