@@ -894,6 +894,9 @@ def _build_disk_io_sheet(writer, monitor, *, log_dir=None):
         disk_data[f"{dev} Queue Depth"] = []
         disk_data[f"{dev} Read Await (ms)"] = []
         disk_data[f"{dev} Write Await (ms)"] = []
+        disk_data[f"{dev} Read IOPS"] = []
+        disk_data[f"{dev} Write IOPS"] = []
+        disk_data[f"{dev} Avg Rq Sz (sectors)"] = []
     disk_data["ublk Devices"] = []
 
     for i, entry in enumerate(monitor.disk_history):
@@ -908,6 +911,9 @@ def _build_disk_io_sheet(writer, monitor, *, log_dir=None):
             disk_data[f"{dev} Queue Depth"].append(d.get("avg_queue_depth", 0))
             disk_data[f"{dev} Read Await (ms)"].append(d.get("read_await_ms", 0))
             disk_data[f"{dev} Write Await (ms)"].append(d.get("write_await_ms", 0))
+            disk_data[f"{dev} Read IOPS"].append(d.get("r_iops", 0))
+            disk_data[f"{dev} Write IOPS"].append(d.get("w_iops", 0))
+            disk_data[f"{dev} Avg Rq Sz (sectors)"].append(d.get("avg_rq_sz", 0))
         # ublk_history shares the 1s disk sub-sample cadence; align by index, pad to 0
         ublk = monitor.ublk_history[i]["ublk_devices"] if i < len(monitor.ublk_history) else 0
         disk_data["ublk Devices"].append(ublk)

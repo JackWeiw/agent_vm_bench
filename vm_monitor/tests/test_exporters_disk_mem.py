@@ -43,7 +43,7 @@ def _populate(monitor):
     """Populate disk / host-mem-detail / ublk / pressure histories (2 samples, 2 disks)."""
     monitor.target_disks = ["sda", "sdb"]
 
-    def dr(r, w, util, ifl, q, ra, wa):
+    def dr(r, w, util, ifl, q, ra, wa, ri=0.0, wi=0.0, ars=0.0):
         return {
             "r_mb_s": r,
             "w_mb_s": w,
@@ -54,21 +54,24 @@ def _populate(monitor):
             "avg_queue_depth": q,
             "read_await_ms": ra,
             "write_await_ms": wa,
+            "r_iops": ri,
+            "w_iops": wi,
+            "avg_rq_sz": ars,
         }
 
     monitor.disk_history = [
         {
             "ts": "2026-08-14 10:00:00",
             "disks": {
-                "sda": dr(10.0, 20.0, 5.0, 1, 0.5, 2.0, 3.0),
-                "sdb": dr(5.0, 15.0, 3.0, 2, 1.0, 4.0, 5.0),
+                "sda": dr(10.0, 20.0, 5.0, 1, 0.5, 2.0, 3.0, 100.0, 80.0, 12.5),
+                "sdb": dr(5.0, 15.0, 3.0, 2, 1.0, 4.0, 5.0, 50.0, 60.0, 8.0),
             },
         },
         {
             "ts": "2026-08-14 10:00:05",
             "disks": {
-                "sda": dr(12.0, 25.0, 6.0, 1, 0.8, 2.5, 3.5),
-                "sdb": dr(6.0, 18.0, 4.0, 3, 1.2, 4.5, 5.5),
+                "sda": dr(12.0, 25.0, 6.0, 1, 0.8, 2.5, 3.5, 110.0, 90.0, 13.0),
+                "sdb": dr(6.0, 18.0, 4.0, 3, 1.2, 4.5, 5.5, 55.0, 70.0, 9.0),
             },
         },
     ]
@@ -120,6 +123,9 @@ class TestDiskIoAndHostMemSheets(unittest.TestCase):
                 "sda Queue Depth",
                 "sda Read Await (ms)",
                 "sda Write Await (ms)",
+                "sda Read IOPS",
+                "sda Write IOPS",
+                "sda Avg Rq Sz (sectors)",
                 "sdb Read (MB/s)",
                 "sdb Write (MB/s)",
                 "sdb Util (%)",
@@ -127,6 +133,9 @@ class TestDiskIoAndHostMemSheets(unittest.TestCase):
                 "sdb Queue Depth",
                 "sdb Read Await (ms)",
                 "sdb Write Await (ms)",
+                "sdb Read IOPS",
+                "sdb Write IOPS",
+                "sdb Avg Rq Sz (sectors)",
                 "ublk Devices",
             ],
         )
@@ -137,10 +146,15 @@ class TestDiskIoAndHostMemSheets(unittest.TestCase):
         self.assertEqual(row0["sda Inflight"], 1)
         self.assertAlmostEqual(row0["sda Queue Depth"], 0.5)
         self.assertAlmostEqual(row0["sda Read Await (ms)"], 2.0)
+        self.assertAlmostEqual(row0["sda Read IOPS"], 100.0)
+        self.assertAlmostEqual(row0["sda Write IOPS"], 80.0)
+        self.assertAlmostEqual(row0["sda Avg Rq Sz (sectors)"], 12.5)
+        self.assertAlmostEqual(row0["sdb Avg Rq Sz (sectors)"], 8.0)
         self.assertEqual(row0["ublk Devices"], 3)
         row1 = df.iloc[1]
         self.assertAlmostEqual(row1["sda Write (MB/s)"], 25.0)
         self.assertAlmostEqual(row1["sdb Queue Depth"], 1.2)
+        self.assertAlmostEqual(row1["sdb Write IOPS"], 70.0)
         self.assertEqual(row1["ublk Devices"], 4)
 
     def test_host_pressure_sheet_omitted_when_empty(self):

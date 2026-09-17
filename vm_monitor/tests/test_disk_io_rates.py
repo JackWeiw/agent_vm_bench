@@ -120,6 +120,34 @@ class TestComputeDiskIoRates(unittest.TestCase):
         self.assertEqual(r["read_await_ms"], 0.0)
         self.assertEqual(r["write_await_ms"], 0.0)
 
+    def test_iops_and_avg_rq_sz_normal_delta(self):
+        # 100 reads + 50 writes over 1s; _full_snap uses 2 sectors/read & 2 sectors/write
+        cur = {"sda": self._full_snap(100, 50, 200, 100, 3000, 1000, 2)}
+        prev = {"sda": self._full_snap(0, 0, 0, 0, 0, 0, 0)}
+        r = _compute_disk_io_rates(cur, prev, 1.0)["sda"]
+        self.assertAlmostEqual(r["r_iops"], 100.0)
+        self.assertAlmostEqual(r["w_iops"], 50.0)
+        # 100 reads * 2 sectors + 50 writes * 2 sectors = 300 sectors / 150 I/Os = 2.0
+        self.assertAlmostEqual(r["avg_rq_sz"], 2.0)
+
+    def test_iops_and_avg_rq_sz_zero_interval(self):
+        cur = {"sda": self._full_snap(100, 50, 200, 100, 3000, 1000, 2)}
+        prev = {"sda": self._full_snap(0, 0, 0, 0, 0, 0, 0)}
+        for interval in (0, None, -1):
+            r = _compute_disk_io_rates(cur, prev, interval)["sda"]
+            self.assertEqual(r["r_iops"], 0.0)
+            self.assertEqual(r["w_iops"], 0.0)
+            self.assertEqual(r["avg_rq_sz"], 0.0)
+
+    def test_avg_rq_sz_zero_when_no_io(self):
+        # no completed I/Os in interval -> avg_rq_sz 0 (no div-by-zero)
+        cur = {"sda": self._full_snap(0, 0, 0, 0, 0, 0, 1)}
+        prev = {"sda": self._full_snap(0, 0, 0, 0, 0, 0, 0)}
+        r = _compute_disk_io_rates(cur, prev, 1.0)["sda"]
+        self.assertEqual(r["r_iops"], 0.0)
+        self.assertEqual(r["w_iops"], 0.0)
+        self.assertEqual(r["avg_rq_sz"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -80,7 +80,8 @@ def _compute_disk_io_rates(cur: dict, prev: dict, interval: float) -> dict:
     on non-Linux hosts. Each snapshot is {dev: {sectors_read, sectors_written,
     reads_completed, read_ms, writes_completed, write_ms, ms_io, weighted_ms,
     inflight}}. Returns {dev: {r_mb_s, w_mb_s, util_pct, inflight, r_mb, w_mb,
-    avg_queue_depth, read_await_ms, write_await_ms}}.
+    avg_queue_depth, read_await_ms, write_await_ms, r_iops, w_iops,
+    avg_rq_sz}}.
 
     Sector size is 512 bytes (kernel block-layer stat sector size). util_pct is
     the fraction of wall-time the device spent servicing I/O: ms_io ticks at
@@ -88,9 +89,12 @@ def _compute_disk_io_rates(cur: dict, prev: dict, interval: float) -> dict:
     100. avg_queue_depth is the mean in-flight request count over the interval
     (weighted_ms / 1000 / interval, where weighted_ms is I/O-time weighted by
     queue depth). read/write_await_ms is mean latency per completed I/O
-    (read_ms / reads_completed). A zero/None interval or missing previous
-    snapshot yields zero rates (first sample has no baseline). Snapshot fields
-    are read via .get so partial snapshots (older callers) do not raise.
+    (read_ms / reads_completed). r_iops/w_iops are completed read/write I/Os
+    per second (delta reads/writes / interval). avg_rq_sz is the iostat-style
+    average request size in 512-byte sectors = total sectors / total I/Os over
+    the interval. A zero/None interval or missing previous snapshot yields
+    zero rates (first sample has no baseline). Snapshot fields are read via
+    .get so partial snapshots (older callers) do not raise.
     """
     rates = {}
     if not cur or not prev or not interval or interval <= 0:
@@ -105,6 +109,9 @@ def _compute_disk_io_rates(cur: dict, prev: dict, interval: float) -> dict:
                 "avg_queue_depth": 0.0,
                 "read_await_ms": 0.0,
                 "write_await_ms": 0.0,
+                "r_iops": 0.0,
+                "w_iops": 0.0,
+                "avg_rq_sz": 0.0,
             }
         return rates
     for dev, c in cur.items():
@@ -130,6 +137,9 @@ def _compute_disk_io_rates(cur: dict, prev: dict, interval: float) -> dict:
             "avg_queue_depth": round(d_weighted_ms / 1000.0 / interval, 3),
             "read_await_ms": round(d_read_ms / d_reads, 3) if d_reads > 0 else 0.0,
             "write_await_ms": round(d_write_ms / d_writes, 3) if d_writes > 0 else 0.0,
+            "r_iops": round(d_reads / interval, 2),
+            "w_iops": round(d_writes / interval, 2),
+            "avg_rq_sz": round((d_read + d_write) / (d_reads + d_writes), 2) if (d_reads + d_writes) > 0 else 0.0,
         }
     return rates
 
