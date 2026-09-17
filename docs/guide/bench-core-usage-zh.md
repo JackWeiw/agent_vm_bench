@@ -344,14 +344,39 @@ minimal install),依赖 series 的表只输出表头,不报错。
 
 | Sheet | 行粒度 | 内容 |
 |-------|--------|------|
-| Overview | 标量(合并汇总,分组着色) | **单表汇总**(原 Admission & QPS / Throughput & overcommit / Retry impact 三张标量表已并入此表):Run(mode/total_count/running_concurrency/test_duration/wall_sec/steps/success/failed/overcommit_ratio)+ Throughput(steps_per_sec/effective_parallelism/exec_wall_utilization/concurrency)+ Admission & QPS(running_slot 的 maximum/active/peak_active/granted/avg_queue_wait/waiting + QPS 限流 qps/inflight_cap/in_flight/dispatched/avg_wait/max_wait + per-operation 分发/等待子表)+ Retry(retry_count/time_lost_to_retry_sec/retries_per_slice_p95 + per-operation retry_queued)。数据名称栏(A 列)填色加粗,分组用 banner 行分隔 |
-| Per-step timings | 池化百分位 | 全 fleet `latency`(=纯 exec 耗时)的 n/min/max/avg/p50/p95/p99,按 `action_type` 分桶;附 per-step 折图(ms) |
-| Lifecycle overhead | 池化百分位 | `resume` / `pause` / `slice_total` / `slot_held` / `interaction` 五段的百分位;附 per-step 折图(ms)。仅 lifecycle/trajectory 模式 |
+| Overview | 标量(合并汇总,分组着色) | **单表汇总**(原 Admission & QPS / Throughput & overcommit / Retry impact 三张标量表已并入此表):Run(mode/total_count/running_concurrency/test_duration/wall_sec/steps/success/failed/overcommit_ratio)+ Throughput(steps_per_sec/effective_parallelism/exec_wall_utilization/concurrency)+ Admission & QPS(running_slot 的 maximum/active/peak_active/granted/avg_queue_wait/waiting + QPS 限流 qps/inflight_cap/in_flight/dispatched/avg_wait/max_wait + per-operation 分发/等待子表)+ Retry(retry_count/time_lost_to_retry_sec/retries_per_slice_p95 + per-operation retry_queued)+ **Lifecycle overhead %**(lifecycle/trajectory;aggregate/mean/p95 三比率)+ **Per-step timing** 子表(exec/think/pause/resume 四相的池化百分位)。Lifecycle overhead % 与 Per-step timing 两段的字段含义见下"Overview 字段说明"。数据名称栏(A 列)填色加粗,分组用 banner 行分隔 |
+| Per-step timings | 池化百分位 | 全 fleet `latency`(=纯 exec 耗时)的 n/min/max/avg/p50/p95/p99,按 `action_type` 分桶;附 per-step 折图(ms)。**注意命名**:此 sheet 按"动作类型(shell/bash/…)分桶纯 exec 延迟";Overview 的 **Per-step timing** 段则是按"相位(exec/think/pause/resume)池化"——两者口径不同,别混淆 |
+| Lifecycle overhead | 池化百分位 | `resume`/`pause`/`slice_total`/`slot_held`/`interaction` 五段的百分位(**原始秒**);附 per-step 折图(ms)。仅 lifecycle/trajectory 模式。**注意**:本 sheet 是秒/毫秒的绝对时长;开销**比率(%)**不在本 sheet,而在 Overview 的 `lifecycle_overhead_*_pct` 标量 |
 | Trajectory summary | **每 trajectory 一行** | n_steps + 各段 sum(slice_total/exec/resume/pause/interaction_total/slot_contention_wait/resume_rate_pacing_wait/pause_rate_pacing_wait/running_slot_held)+ avg_slice(秒)。按 trajectory_id 升序;trajectory 模式额外附 create_sec/kill_sec 百分位 |
 | Step detail | **每 step 事件一行** | 见下表;含成功与 `slice_failed` 合成行,按 (trajectory, sandbox, step) 排序,冻结首行 + autofilter |
 | Concurrency states | 每秒一行 | 每秒各 sandbox 的主导状态计数(pausing/paused/resuming/exec/active)+ 折图 |
 | Gantt | 图 | 每 sandbox 的 phase 时间线(resume/exec/pause),内嵌 PNG;大 fleet 自动缩小行高 |
 | Snapshot sizes | 每 pause 一行 | logical/disk/inherited/cumulative MiB + generations/files;附折图。仅 `SnapshotSizeCapable`(aenv) |
+
+#### Overview 字段说明
+
+Overview 看板按 Run → Throughput → Admission & QPS → Retry → Lifecycle overhead % → Per-step timing 顺序分组(A 列填色加粗 + banner 分隔)。其中 Lifecycle overhead % 与 Per-step timing 两段仅 lifecycle/trajectory 模式出现(exec_only/全失败 run 无)。
+
+**① Lifecycle overhead %**(标量 kv——开销**比率**,非秒):
+
+| 字段 | 是什么(干啥) | 看什么 / 有啥用 |
+|------|----------------|-----------------|
+| `lifecycle_overhead_aggregate_pct` | (resume+pause 总和)/ slice_total 总和 ×100 | 整体生命周期开销占比;高值=resume/pause 吃掉大份额、exec 占比低 |
+| `lifecycle_overhead_mean_pct` | 各 slice 比率的均值 | 典型单步开销率;与 aggregate 对比可知是否被少数长尾拉偏 |
+| `lifecycle_overhead_p95_pct` | 各 slice 比率的 p95 | 尾部最差开销率;高 p95 + 低均值=少数 slice 极端 |
+
+> 近零 slice(`< MIN_SLICE_SEC`,如异常路径的零占位)被排除,免得一个极小 slice 炸高 per-sample 比率。该比率亦见于文本报告 `[Lifecycle Overhead]` 块与 `run_summary.json` 的 `lifecycle_overhead.pct_of_slice_total`。`Lifecycle overhead` sheet 的段表为**原始秒**(折图为 ms)——比率与秒是两个视角,别混。
+
+**② Per-step timing**(子表——单步四相分解的池化百分位,列=`segment/n/min/max/avg/p50/p95/p99`):
+
+| 字段 | 是什么(干啥) | 看什么 / 有啥用 |
+|------|----------------|-----------------|
+| `exec` | 派生 = slice_total − resume − pause,纯命令执行墙钟 | 真正"干活"的耗时;exec 占比高=效率好 |
+| `think` | = `natural_delay_secs`,步间 LLM/思考延迟 | 非生产性间隔;高值提示轨迹步间 gap 大或 `delay_scale>0` |
+| `pause` | pause 段:API + rate-pacing + inflight | 暂停开销;oversub / snapshot 重用下走高 |
+| `resume` | resume 段:API + ready_wait + inflight | 恢复开销;oversub / snapshot 重用下走高 |
+
+> 命名辨析:Overview 的 **Per-step timing** 段按**相位**(exec/think/pause/resume)在**全 fleet 池化**取百分位;`Per-step timings` **sheet** 则是 `latency`(=纯 exec)按**动作类型**(`action_type`)分桶取百分位——前者"按相位",后者"按动作类型"。
 
 #### Step detail 列(26 列,秒)
 
@@ -360,62 +385,62 @@ minimal install),依赖 series 的表只输出表头,不报错。
 `pause_sec == pause_rate_pacing_wait_sec + pause_inflight_wait_sec + pause_api_sec`(rate-pacing 属 IN-lease,被计入),
 `interaction_total_sec == slice_total_sec + natural_delay_sec + capacity_wait_sec + resume_rate_pacing_wait_sec`(步间 think-delay 计入 `natural_delay_sec`,只算一次,不另设 delay 项)。`natural_delay_sec` 本身 = runner 在 slice 前实际睡掉的 think-delay(`step.delay_time_sec * replay_delay_scale`)+ 调度器残余 `ready_at` park(`replay_pause_duration`),故只要轨迹有步间间隔且 `delay_scale > 0` 即非 0。
 
-| 列 | 含义 |
-|----|------|
-| `trajectory_id` | 该 step 所属轨迹的 instance_id |
-| `sandbox_index` | 执行沙箱在 fleet 内的下标(0..N-1),非后端 sandbox_id |
-| `round_id` | round_robin 轮次号;fixed/trajectory 模式为空 |
-| `step_index` | 轨迹内 step 序号(0-based) |
-| `action_type` | `shell`/`bash`/`str_replace_editor`/`submit`/`finish`/`done` |
-| `slice_failed` | runner 合成的失败 slice(异常/stop_on_error);True 时下面时长列全 0 |
-| `resume_sec` | resume 总时长 = inflight + api + ready_wait(rate-pacing 被排除,属 pre-lease) |
-| `resume_rate_pacing_wait_sec` | QPS 限流器 1/qps 速率等待(resume,PRE-lease:不计入 resume_sec / running_slot_held) |
-| `resume_api_sec` | 纯 resume API 调用耗时 |
-| `resume_ready_wait_sec` | resume 后的就绪探测等待(lifecycle/trajectory 模式;exec_only 为 0) |
-| `exec_sec` | 纯 `provider.exec()` 墙钟耗时(= Per-step timings 的 latency) |
-| `pause_sec` | pause 总时长 = rate-pacing + inflight + api(rate-pacing 被计入,属 in-lease) |
-| `pause_rate_pacing_wait_sec` | QPS 限流器 1/qps 速率等待(pause,IN-lease:计入 pause_sec / running_slot_held) |
-| `pause_api_sec` | 纯 pause API 调用耗时 |
-| `slice_total_sec` | resume + exec + pause;失败 slice 为 0(被排除出百分位计算) |
-| `interaction_total_sec` | 一次交互的完整预算 = slice_total + natural_delay + capacity_wait + resume_rate_pacing(≥ slice_total;think-delay 计入 natural_delay,只算一次) |
-| `slot_contention_wait_sec` | 派生复合量 = natural_delay + capacity_wait(FIFO running-slot 竞争;admission) |
-| `natural_delay_sec` | 步间 think-delay——runner 在 slice 前睡掉的 `step.delay_time_sec * replay_delay_scale` + 调度器残余 `ready_at` park(= `replay_pause_duration`);步间间隔节流(slot_contention 的分量) |
-| `capacity_wait_sec` | FIFO running-slot 令牌竞争——真正的排队等待(slot_contention 的分量) |
-| `rate_pacing_wait_sec` | 单步速率等待合计 = resume_rate_pacing_wait_sec + pause_rate_pacing_wait_sec(1/qps 整形,RATE 控制;非 FIFO 排队,真排队见 capacity_wait_sec) |
-| `inflight_wait_sec` | 单步 inflight 熔断阻塞合计 = resume_inflight_wait_sec + pause_inflight_wait_sec(CONCURRENCY 控制) |
-| `resume_inflight_wait_sec` | resume 的 inflight 熔断阻塞(resume_sec 的分量) |
-| `pause_inflight_wait_sec` | pause 的 inflight 熔断阻塞(pause_sec 的分量) |
-| `running_slot_held_sec` | running slot 持有总时长(acquire→release) |
-| `exit_code` | `provider.exec()` 退出码 |
-| `timed_out` | 是否命中超时退出码 |
+| 列 | 是什么(干啥) | 看什么 / 有啥用 |
+|----|----------------|----------------|
+| `trajectory_id` | 该 step 所属轨迹的 instance_id | 按 trajectory 筛/分组的主键;定位"哪条轨迹" |
+| `sandbox_index` | 执行沙箱在 fleet 内的下标(0..N-1),非后端 sandbox_id | 定位"哪个沙箱在跑";对应 Gantt/concurrency 表的行 |
+| `round_id` | round_robin 轮次号;fixed/trajectory 模式为空 | 判断该步属第几轮并发组;排查轮次间退化 |
+| `step_index` | 轨迹内 step 序号(0-based) | 该轨迹第几步;对齐原 trajectory 的步骤序 |
+| `action_type` | `shell`/`bash`/`str_replace_editor`/`submit`/`finish`/`done` | 按 action 类别估耗时量级;对应 `Per-step timings` 分桶 |
+| `slice_failed` | runner 合成的失败 slice(异常/stop_on_error);True 时下面时长列全 0 | 失败标记;筛出失败步看其 `exit_code`,失败步不进百分位 |
+| `resume_sec` | resume 总时长 = inflight + api + ready_wait(rate-pacing 被排除,属 pre-lease) | 恢复开销;oversub/snapshot 重用下是主要非 exec 项 |
+| `resume_rate_pacing_wait_sec` | QPS 限流器 1/qps 速率等待(resume,PRE-lease:不计入 resume_sec / running_slot_held) | 限流整形压力;非零说明 QPS 上限在生效 |
+| `resume_api_sec` | 纯 resume API 调用耗时 | 后端 resume 本身的固有成本;剥离等待看裸 API |
+| `resume_ready_wait_sec` | resume 后的就绪探测等待(lifecycle/trajectory 模式;exec_only 为 0) | 就绪探活耗时;高值=后端 resume 后仍慢启动 |
+| `exec_sec` | 纯 `provider.exec()` 墙钟耗时(= Per-step timings 的 latency) | 真正"干活"的耗时;效率核心指标 |
+| `pause_sec` | pause 总时长 = rate-pacing + inflight + api(rate-pacing 被计入,属 in-lease) | 暂停开销;snapshot 重用/lifecycle 下随 oversub 走高 |
+| `pause_rate_pacing_wait_sec` | QPS 限流器 1/qps 速率等待(pause,IN-lease:计入 pause_sec / running_slot_held) | 限流整形压力(暂停侧);非零=QPS 限流在生效 |
+| `pause_api_sec` | 纯 pause API 调用耗时 | 后端 pause 本身的固有成本;剥离等待看裸 API |
+| `slice_total_sec` | resume + exec + pause;失败 slice 为 0(被排除出百分位计算) | 单步活跃墙钟;overhead 比率的分母、`avg_slice` 的分子 |
+| `interaction_total_sec` | 一次交互的完整预算 = slice_total + natural_delay + capacity_wait + resume_rate_pacing(≥ slice_total;think-delay 计入 natural_delay,只算一次) | 含步间思考/等待的"广义墙钟";比 slice_total 多出的部分=非生产性开销 |
+| `slot_contention_wait_sec` | 派生复合量 = natural_delay + capacity_wait(FIFO running-slot 竞争;admission) | 准入竞争总等待;高值=running slot 争抢/步间 gap 大 |
+| `natural_delay_sec` | 步间 think-delay——runner 在 slice 前睡掉的 `step.delay_time_sec * replay_delay_scale` + 调度器残余 `ready_at` park(= `replay_pause_duration`);步间间隔节流(slot_contention 的分量) | 步间思考/间隔;1:1 下主要非生产项,故 interaction_total ≫ slice_total |
+| `capacity_wait_sec` | FIFO running-slot 令牌竞争——真正的排队等待(slot_contention 的分量) | 真排队耗时;非零=running slot 不够用(超卖信号) |
+| `rate_pacing_wait_sec` | 单步速率等待合计 = resume_rate_pacing_wait_sec + pause_rate_pacing_wait_sec(1/qps 整形,RATE 控制;非 FIFO 排队,真排队见 capacity_wait_sec) | 限流整形总等待;和 capacity_wait 区分"整形"vs"排队" |
+| `inflight_wait_sec` | 单步 inflight 熔断阻塞合计 = resume_inflight_wait_sec + pause_inflight_wait_sec(CONCURRENCY 控制) | 并发熔断等待;非零=inflight 上限在生效 |
+| `resume_inflight_wait_sec` | resume 的 inflight 熔断阻塞(resume_sec 的分量) | 恢复侧并发阻塞;拆分看阻塞来源 |
+| `pause_inflight_wait_sec` | pause 的 inflight 熔断阻塞(pause_sec 的分量) | 暂停侧并发阻塞;拆分看阻塞来源 |
+| `running_slot_held_sec` | running slot 持有总时长(acquire→release) | slot 占用时长;= effective_parallelism 的分子、超卖粒度 |
+| `exit_code` | `provider.exec()` 退出码 | 成败/超时判定依据;配合 `slice_failed`/`timed_out` |
+| `timed_out` | 是否命中超时退出码 | 超时标记;筛出超时步算 timeout 率 |
 
 #### Trajectory summary 列(21 列,秒,sum-based)
 
 每条轨迹(instance)一行,做**成本归因**——这条轨迹的总墙钟花在哪了(pause vs resume vs exec vs 各等待分量)。用 **sum 而非百分位**:per-instance 的 per-step 分布已在 `Step detail`(按 trajectory_id 筛)和 `Lifecycle overhead`(池化)里,这里只回答"总量分解 + 浪费性等待"。`n_steps` 计所有 step 事件(含 `slice_failed` 失败步,失败步对 sum 贡献 0 但计入尝试数,故 avg_slice 反映 per-attempt 成本)。
 
-| 列 | 含义 |
-|----|------|
-| `trajectory_id` | 实例 |
-| `n_steps` | 该轨迹累计回放的 step 总数(含失败步) |
-| `n_failed` | 失败 step 数 |
-| `n_timeout` | 命中超时退出码的 step 数 |
-| `success_rate` | 成功率(0 step 时为 None) |
-| `slice_total_sum_s` | 总活跃墙钟 = resume + exec + pause(和不变式) |
-| `exec_sum_s` | 纯命令执行总耗时 |
-| `resume_sum_s` | resume 总耗时 |
-| `pause_sum_s` | pause 总耗时 |
-| `interaction_total_sum_s` | 完整交互预算 = slice_total + natural_delay + capacity_wait + resume_rate_pacing(≥ slice_total;think-delay 计入 natural_delay,不另设 delay 项) |
-| `slot_contention_wait_sum_s` | admission slot 竞争等待总耗时(派生 = natural_delay + capacity_wait) |
-| `natural_delay_sum_s` | 步间 think-delay + 残余 park 总耗时(slot_contention 的分量) |
-| `capacity_wait_sum_s` | FIFO running-slot 令牌竞争总耗时(slot_contention 的分量) |
-| `rate_pacing_wait_sum_s` | 速率等待总耗时 = resume_rate_pacing + pause_rate_pacing(1/qps 整形) |
-| `inflight_wait_sum_s` | inflight 熔断阻塞总耗时 = resume_inflight + pause_inflight |
-| `resume_rate_pacing_wait_sum_s` | resume 的 QPS 限流 1/qps 速率等待总耗时(pre-lease) |
-| `pause_rate_pacing_wait_sum_s` | pause 的 QPS 限流 1/qps 速率等待总耗时(in-lease) |
-| `resume_inflight_wait_sum_s` | resume 的 inflight 熔断阻塞总耗时(resume 的分量) |
-| `pause_inflight_wait_sum_s` | pause 的 inflight 熔断阻塞总耗时(pause 的分量) |
-| `running_slot_held_sum_s` | running slot 持有总时长(slot 占用/超卖粒度) |
-| `avg_slice_s` | slice_total_sum / n_steps,典型单步成本 |
+| 列 | 是什么(干啥) | 看什么 / 有啥用 |
+|----|----------------|----------------|
+| `trajectory_id` | 实例 | 每轨迹成本归因的主键;按轨迹横向比开销结构 |
+| `n_steps` | 该轨迹累计回放的 step 总数(含失败步) | 工作量;分母——配合 sum 看单位成本 |
+| `n_failed` | 失败 step 数 | 该轨迹的失败计数;高=轨迹不稳 |
+| `n_timeout` | 命中超时退出码的 step 数 | 超时计数;高=该轨迹卡在慢命令 |
+| `success_rate` | 成功率(0 step 时为 None) | 轨迹健康度;低=该轨迹大量失败 |
+| `slice_total_sum_s` | 总活跃墙钟 = resume + exec + pause(和不变式) | 该轨迹活跃墙钟;overhead 比率分母、成本基线 |
+| `exec_sum_s` | 纯命令执行总耗时 | "干活"总量;exec 占比=该轨迹效率 |
+| `resume_sum_s` | resume 总耗时 | 恢复开销;oversub/snapshot 重用下走高 |
+| `pause_sum_s` | pause 总耗时 | 暂停开销;snapshot 重用/lifecycle 下走高 |
+| `interaction_total_sum_s` | 完整交互预算 = slice_total + natural_delay + capacity_wait + resume_rate_pacing(≥ slice_total;think-delay 计入 natural_delay,不另设 delay 项) | 含步间思考/等待的广义墙钟;减 slice_total=非生产性开销 |
+| `slot_contention_wait_sum_s` | admission slot 竞争等待总耗时(派生 = natural_delay + capacity_wait) | 准入竞争总等待;高=slot 争抢或步间 gap 大 |
+| `natural_delay_sum_s` | 步间 think-delay + 残余 park 总耗时(slot_contention 的分量) | 思考/间隔总量;1:1 下主要非生产项 |
+| `capacity_wait_sum_s` | FIFO running-slot 令牌竞争总耗时(slot_contention 的分量) | 真排队总量;非零=running slot 不够(超卖信号) |
+| `rate_pacing_wait_sum_s` | 速率等待总耗时 = resume_rate_pacing + pause_rate_pacing(1/qps 整形) | 限流整形总等待;和 capacity 区分"整形"vs"排队" |
+| `inflight_wait_sum_s` | inflight 熔断阻塞总耗时 = resume_inflight + pause_inflight | 并发熔断总等待;非零=inflight 上限在生效 |
+| `resume_rate_pacing_wait_sum_s` | resume 的 QPS 限流 1/qps 速率等待总耗时(pre-lease) | 恢复侧整形压力;拆分看限流来源 |
+| `pause_rate_pacing_wait_sum_s` | pause 的 QPS 限流 1/qps 速率等待总耗时(in-lease) | 暂停侧整形压力;拆分看限流来源 |
+| `resume_inflight_wait_sum_s` | resume 的 inflight 熔断阻塞总耗时(resume 的分量) | 恢复侧并发阻塞;拆分看阻塞来源 |
+| `pause_inflight_wait_sum_s` | pause 的 inflight 熔断阻塞总耗时(pause 的分量) | 暂停侧并发阻塞;拆分看阻塞来源 |
+| `running_slot_held_sum_s` | running slot 持有总时长(slot 占用/超卖粒度) | slot 占用总量;effective_parallelism 分母校验 |
+| `avg_slice_s` | slice_total_sum / n_steps,典型单步成本 | per-attempt 单步成本;跨轨迹比"贵不贵" |
 
 1:1(无超卖)且 QPS / inflight 熔断旋钮未设时,`capacity_wait`、`rate_pacing`、`inflight` 及 resume/pause 的 rate-pacing/inflight 分量合理地为 0——只在超卖 + 控制面限流时才非 0。`natural_delay`(think-delay)只要轨迹有步间间隔且 `delay_scale > 0` 即非 0;它是 1:1 下的主要非生产性项,故 `interaction_total` ≫ `slice_total`。
 
@@ -484,18 +509,18 @@ driver 深拷贝 `base_config` 并只改写超卖字段;其余透传:
 
 每个 trial 写 `{prefix}_run_summary.json`——kernel 与 driver 之间唯一的契约。只含原始事实(kernel 绝不为 driver 重算它需要的指标):
 
-| 字段 | 含义 |
-|-------|---------|
-| `schema_version` | `1` |
-| `replay_mode`、`provider` | 哪个 mode / 后端 |
-| `started_at`、`completed_at`(+ `_epoch`) | ISO 本地 + epoch 秒 |
-| `test_duration`、`wall_sec` | 配置上限 vs 实际墙钟 |
-| `total_count`、`running_concurrency`、`overcommit_ratio` | 该 trial 的 k×N / N / k |
-| `throughput` | `total, succeeded, failed, total_steps, steps_per_sec, tasks_per_sec`(`total` = 跑过的沙箱数;`succeeded` = 跑完全部 step 的轨迹数) |
-| `admission` | `maximum, peak_active, granted, avg_queue_wait_sec, control_qps, control_dispatched`——exec_only 为 `null`(无 admission 控制器) |
-| `lifecycle_overhead` | `pause_sec_sum, resume_sec_sum, pct_of_slice_total`——仅 lifecycle/trajectory |
-| `paths` | `report, obs_xlsx, lifecycle_series, trajectory_index, vm_monitor_dir` |
-| `error` | trial 出错时的错误串 |
+| 字段 | 是什么(干啥) | 看什么 / 有啥用 |
+|-------|----------------|----------------|
+| `schema_version` | `1` | 契约版本;driver 据此判 schema 兼容 |
+| `replay_mode`、`provider` | 哪个 mode / 后端 | 区分 lifecycle/exec_only/trajectory 曲线与后端 |
+| `started_at`、`completed_at`(+ `_epoch`) | ISO 本地 + epoch 秒 | 起止时间;epoch 用于与 vm_monitor 对齐 join |
+| `test_duration`、`wall_sec` | 配置上限 vs 实际墙钟 | 上限是否被吃满;wall ≪ duration=提前停/卡死 |
+| `total_count`、`running_concurrency`、`overcommit_ratio` | 该 trial 的 k×N / N / k | 超卖参数;ratio=k 是扫描横轴 |
+| `throughput` | `total, succeeded, failed, total_steps, steps_per_sec, tasks_per_sec`(`total` = 跑过的沙箱数;`succeeded` = 跑完全部 step 的轨迹数) | 产出/成败统计;steps_per_sec=吞吐,driver valid 门槛用 `total` |
+| `admission` | `maximum, peak_active, granted, avg_queue_wait_sec, control_qps, control_dispatched`——exec_only 为 `null`(无 admission 控制器) | 准入控制面状态;`peak_active≤N` 是 valid 门槛;exec_only 无 |
+| `lifecycle_overhead` | `pause_sec_sum, resume_sec_sum, pct_of_slice_total`——仅 lifecycle/trajectory;`pct_of_slice_total` 即开销比率(%,与 Overview `lifecycle_overhead_aggregate_pct` 同源) | 生命周期开销绝对量+比率;driver 写入 `trial-summary.csv` 的 `lifecycle_overhead_pct` 列 |
+| `paths` | `report, obs_xlsx, lifecycle_series, trajectory_index, vm_monitor_dir` | 各产物路径;driver 据此聚合/取 detail |
+| `error` | trial 出错时的错误串 | 失败原因;非空=`return_code≠0` 的根因线索 |
 
 #### 有效性(`compute_valid`)
 
