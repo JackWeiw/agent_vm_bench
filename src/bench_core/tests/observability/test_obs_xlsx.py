@@ -14,7 +14,9 @@ from bench_core.schemas import BenchSandbox, ReplayMetrics  # noqa: E402
 from env_provider import SandboxInstance  # noqa: E402
 
 
-def _seeded_observability(*, replay_mode="trajectory", with_retry=True) -> tuple[ReplayObservability, KernelConfig]:
+def _seeded_observability(
+    *, replay_mode="trajectory", with_retry=True, natural_delay_sec=0.0
+) -> tuple[ReplayObservability, KernelConfig]:
     state = BenchSandbox.from_instance(SandboxInstance(id="x", index=0), "replay")
     m = ReplayMetrics()
     for i in range(3):
@@ -29,6 +31,7 @@ def _seeded_observability(*, replay_mode="trajectory", with_retry=True) -> tuple
             interaction_total_sec=1.0,
             create_sec=1.0 + i * 0.5,
             kill_sec=0.5 + i * 0.1,
+            natural_delay_sec=natural_delay_sec,
         )
     if with_retry:
         m.record_retry_event("retry_queued", operation="resume", time_lost_sec=0.05)
@@ -150,13 +153,15 @@ class TestXlsxReportRenderer:
 
     def test_overview_admission_has_per_op_table(self, tmp_path):
         # The Admission per-operation dispatched/waiting table renders as a
-        # sub-table inside Overview (operation/dispatched/waiting header).
+        # sub-table inside Overview (operation/dispatched/waiting header). Compare
+        # the first 3 cells: the Per-step timing subtable widens the sheet to 8
+        # cols, so a 3-col header row is padded with trailing Nones.
         obs, _ = _seeded_observability()
         path = tmp_path / "obs.xlsx"
         XlsxReportRenderer(obs).render(str(path))
         ws = load_workbook(str(path))["Overview"]
         header_rows = [[c.value for c in r] for r in ws.iter_rows()]
-        assert ["operation", "dispatched", "waiting"] in header_rows
+        assert any(row[:3] == ["operation", "dispatched", "waiting"] for row in header_rows)
 
     def test_overview_throughput_carries_values(self, tmp_path):
         obs, _ = _seeded_observability()
@@ -250,6 +255,7 @@ def test_renderer_accepts_series_path_and_draws_per_step_linechart(tmp_path):
     obs.kill_sec_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
     obs.slot_held_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
     obs.admission_snapshot = None
+    obs.lifecycle_overhead = None  # Overview reads the model property; skip here
     # one sandbox with one step's durations
     m = MagicMock()
     m.latencies = [0.5]
@@ -261,6 +267,7 @@ def test_renderer_accepts_series_path_and_draws_per_step_linechart(tmp_path):
     m.interaction_total_secs = [0.8]
     m.create_secs = []
     m.kill_secs = []
+    m.natural_delay_secs = []  # Overview per-step timing reads this
     m.success_count = 1
     m.failed_count = 0
     state = MagicMock()
@@ -301,6 +308,7 @@ def test_per_step_linechart_references_all_data_rows(tmp_path):
     obs.kill_sec_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
     obs.slot_held_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
     obs.admission_snapshot = None
+    obs.lifecycle_overhead = None  # Overview reads the model property; skip here
     m = MagicMock()
     m.latencies = [0.1, 0.2, 0.3]  # THREE steps
     m.action_type_latencies = {}
@@ -311,6 +319,7 @@ def test_per_step_linechart_references_all_data_rows(tmp_path):
     m.interaction_total_secs = [0.5, 0.6, 0.7]
     m.create_secs = []
     m.kill_secs = []
+    m.natural_delay_secs = []  # Overview per-step timing reads this
     m.success_count = 3
     m.failed_count = 0
     state = MagicMock()
@@ -380,6 +389,7 @@ def _mock_obs_with_n_steps(n: int, replay_mode: str = "lifecycle"):
     m.slice_total_secs = [0.5] * n
     m.running_slot_held_secs = [0.4] * n
     m.interaction_total_secs = [0.5] * n
+    m.natural_delay_secs = []  # Overview per-step timing reads this (think/LLM)
     m.create_secs = []
     m.kill_secs = []
     m.success_count = n
@@ -387,6 +397,9 @@ def _mock_obs_with_n_steps(n: int, replay_mode: str = "lifecycle"):
     state = MagicMock()
     state.replay_metrics = m
     obs.states = {0: state}
+    # Overview reads obs.lifecycle_overhead (model property); stub to None so the
+    # overhead kv section is skipped (these tests target other sheets).
+    obs.lifecycle_overhead = None
     return obs
 
 
@@ -1189,3 +1202,88 @@ def test_trajectory_summary_cf_absent_without_series(tmp_path):
     assert ws.max_row == 1
     rules = [r for cf in ws.conditional_formatting for r in cf.rules]
     assert rules == [], f"no CF rules expected without a series; got {rules}"
+
+
+def test_lifecycle_overhead_property_aggregates_ratio():
+    """ReplayObservability.lifecycle_overhead exposes the (resume+pause)/slice
+    ratio the txt report + run_summary compute inline, as a model-owned
+    semantic metric (per the obs_xlsx layering rule: semantic metrics in the
+    model, renderer only flattens raw series). Near-zero slices excluded."""
+    obs, _ = _seeded_observability()  # trajectory; resume=0.05 pause=0.05 slice=1.0 x3
+    oh = obs.lifecycle_overhead
+    assert oh is not None
+    assert oh["n"] == 3
+    # (0.05 + 0.05) / 1.0 = 10% on every step -> aggregate/mean/p95 all 10%
+    assert round(oh["aggregate_pct"], 3) == 10.0
+    assert round(oh["mean_pct"], 3) == 10.0
+    assert round(oh["p50_pct"], 3) == 10.0
+    assert round(oh["p95_pct"], 3) == 10.0
+
+
+def test_lifecycle_overhead_property_none_without_slices():
+    """No sandboxes -> no slices -> None; the Overview section is skipped
+    (exec_only with no recorded steps, or a fully-failed run)."""
+    cfg = KernelConfig(
+        workflow_type="replay",
+        total_count=1,
+        test_duration=10,
+        workflow_config=ReplayConfig(replay_mode="exec_only", replay_running_concurrency=1),
+    )
+    obs = ReplayObservability(cfg, {})
+    assert obs.lifecycle_overhead is None
+
+
+def test_overview_renders_per_step_timing_section(tmp_path):
+    """Overview gains a Per-step timing subtable (exec / think / pause / resume)
+    so the 4 phases of each step read on the summary sheet -- the reference
+    make_obs_xlsx.py puts this in its Overview; bench-core now matches. exec is
+    derived as slice_total - resume - pause; think is natural_delay (LLM)."""
+    obs, _ = _seeded_observability(natural_delay_sec=0.2)  # resume=0.05 pause=0.05 slice=1.0 think=0.2
+    path = tmp_path / "obs.xlsx"
+    XlsxReportRenderer(obs).render(str(path))
+    ws = load_workbook(str(path))["Overview"]
+    all_rows = [[c.value for c in r] for r in ws.iter_rows()]
+    # The Admission per-op subtable also carries "pause"/"resume" rows (operation
+    # names), so read the Per-step timing subtable positionally from its banner,
+    # not by col-A key (which would collide).
+    start = next(i for i, r in enumerate(all_rows) if r and r[0] == "Per-step timing")
+    assert all_rows[start + 1][:8] == ["segment", "n", "min", "max", "avg", "p50", "p95", "p99"]
+    seg_rows = {r[0]: r for r in all_rows[start + 2 : start + 6]}
+    for seg in ("exec", "think", "pause", "resume"):
+        assert seg in seg_rows, f"{seg} row missing from Per-step timing"
+        assert seg_rows[seg][1] == 3, f"{seg} n != 3"
+    assert round(seg_rows["exec"][4], 3) == 0.9  # 1.0 - 0.05 - 0.05
+    assert round(seg_rows["think"][4], 3) == 0.2  # natural_delay (LLM)
+    assert round(seg_rows["pause"][4], 3) == 0.05
+    assert round(seg_rows["resume"][4], 3) == 0.05
+
+
+def test_overview_renders_lifecycle_overhead_kv(tmp_path):
+    """Overview gains lifecycle_overhead_% kv rows (aggregate / mean / p95) read
+    from the model property -- the ratio the txt report has but xlsx lacked."""
+    obs, _ = _seeded_observability()  # trajectory -> 10%
+    path = tmp_path / "obs.xlsx"
+    XlsxReportRenderer(obs).render(str(path))
+    ws = load_workbook(str(path))["Overview"]
+    kv = {
+        r[0].value: r[1].value
+        for r in ws.iter_rows(min_col=1, max_col=2)
+        if r[0].value is not None and r[1].value is not None
+    }
+    assert "lifecycle_overhead_aggregate_pct" in kv
+    assert round(kv["lifecycle_overhead_aggregate_pct"], 3) == 10.0
+    assert "lifecycle_overhead_mean_pct" in kv
+    assert "lifecycle_overhead_p95_pct" in kv
+    assert round(kv["lifecycle_overhead_p95_pct"], 3) == 10.0
+
+
+def test_overview_skips_lifecycle_overhead_in_exec_only(tmp_path):
+    """exec_only has no pause/resume lifecycle; the overhead ratio is gated off
+    (parity with the txt report's [Lifecycle Overhead] block, lifecycle/trajectory
+    only). Per-step timing still renders (exec dominates there)."""
+    obs, _ = _seeded_observability(replay_mode="exec_only")
+    path = tmp_path / "obs.xlsx"
+    XlsxReportRenderer(obs).render(str(path))
+    ws = load_workbook(str(path))["Overview"]
+    keys = [r[0].value for r in ws.iter_rows(min_col=1, max_col=1) if r[0].value is not None]
+    assert not any(k.startswith("lifecycle_overhead") for k in keys), keys
