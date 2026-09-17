@@ -277,9 +277,9 @@ One row per sampling interval. These sheets do **not** require external tools �
 
 ### `Disk_IO_Timeline`
 
-Per-device columns are emitted in `monitor.target_disks` order (auto-discovered from `/sys/block` by default; override with `--disks`). 7 columns per device:
+Per-device columns are emitted in `monitor.target_disks` order (auto-discovered from `/sys/block` by default; override with `--disks`). 10 columns per device:
 
-`Timestamp` · `{dev} Read (MB/s)` · `{dev} Write (MB/s)` · `{dev} Util (%)` · `{dev} Inflight` · `{dev} Queue Depth` · `{dev} Read Await (ms)` · `{dev} Write Await (ms)` · `ublk Devices`
+`Timestamp` · `{dev} Read (MB/s)` · `{dev} Write (MB/s)` · `{dev} Util (%)` · `{dev} Inflight` · `{dev} Queue Depth` · `{dev} Read Await (ms)` · `{dev} Write Await (ms)` · `{dev} Read IOPS` · `{dev} Write IOPS` · `{dev} Avg Rq Sz (sectors)` · `ublk Devices`
 
 > Sectors→MiB uses `_SECTOR_SIZE_BYTES = 512` (kernel block-layer stat is always 512-byte sectors). Virtual/software layers (`loop`/`ram`/`sr`/`zram`/`md`/`dm`) are excluded from auto-discovery.
 
@@ -451,7 +451,7 @@ What each sample dict contains (drives the sheet columns above):
 
 | History list | Entry keys |
 |--------------|------------|
-| `disk_history` | `ts`, `disks` → per-dev: `r_mb_s`, `w_mb_s`, `util_pct`, `inflight`, `r_mb`, `w_mb`, `avg_queue_depth`, `read_await_ms`, `write_await_ms` |
+| `disk_history` | `ts`, `disks` → per-dev: `r_mb_s`, `w_mb_s`, `util_pct`, `inflight`, `r_mb`, `w_mb`, `avg_queue_depth`, `read_await_ms`, `write_await_ms`, `r_iops`, `w_iops`, `avg_rq_sz` |
 | `numa_memory_history` | `ts`, `nodes` → per-node: `node`, `total_mb`, `free_mb`, `available_mb`, `swap_cached_mb`, `active_mb`, `inactive_mb`, `anon_pages_mb`, `file_pages_mb`, `used_mb`, `usage_pct` (+ back-compat aliases `total`/`used`/`free`/`usage`) |
 | `swap_history` | `ts`, `capacity` {`total_mb`, `free_mb`, `used_mb`, `usage_pct`}, `cache` {`cached_mb`, `cached_ratio_pct`}, `activity` {`pswpin_delta`, `pswpout_delta`, `swap_in_rate`, `swap_out_rate`, `pswpin_cumulative`, `pswpout_cumulative`} |
 | `host_cpu_history` | plain list of floats (no dict, no `ts`) |
@@ -507,6 +507,9 @@ previous (first sample has no baseline → zero rates).
 | `Queue Depth` = `avg_queue_depth` | `Δweighted_ms / 1000 / interval` — `weighted_ms` is I/O-time weighted by queue depth, so this is the mean in-flight request count over the interval. |
 | `Read Await (ms)` = `read_await_ms` | `Δread_ms / Δreads_completed` (0 when no reads completed) — mean latency per completed read I/O. |
 | `Write Await (ms)` = `write_await_ms` | `Δwrite_ms / Δwrites_completed` (0 when no writes completed) |
+| `Read IOPS` = `r_iops` | `Δreads_completed / interval` — completed read I/Os per second. |
+| `Write IOPS` = `w_iops` | `Δwrites_completed / interval` — completed write I/Os per second. |
+| `Avg Rq Sz (sectors)` = `avg_rq_sz` | `(Δsectors_read + Δsectors_written) / (Δreads_completed + Δwrites_completed)` (0 when no I/O completed) — iostat-style average request size in 512-byte sectors; small ≈ random small I/O, large ≈ sequential. |
 
 ### Swap (`collect_swap_stats`)
 
