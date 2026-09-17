@@ -424,9 +424,9 @@ when the series is absent (e.g. a minimal install).
 
 | Sheet | row granularity | content |
 |-------|-----------------|---------|
-| Overview | scalar (consolidated, grouped/color-coded) | **single summary**: Run (mode/total_count/running_concurrency/test_duration/wall_sec/steps/success/failed/overcommit_ratio) + Throughput (steps_per_sec/effective_parallelism/exec_wall_utilization/concurrency) + Admission & QPS (running-slot maximum/active/peak_active/granted/avg_queue_wait/waiting + QPS limiter qps/inflight_cap/in_flight/dispatched/avg_wait/max_wait + per-operation dispatch/wait sub-tables) + Retry (retry_count/time_lost_to_retry_sec/retries_per_slice_p95 + per-operation retry_queued). Column A labels are bold/filled; groups separated by banner rows |
-| Per-step timings | pooled percentiles | fleet `latency` (= pure exec time) n/min/max/avg/p50/p95/p99, bucketed by `action_type`; embedded line chart (ms) |
-| Lifecycle overhead | pooled percentiles | `resume` / `pause` / `slice_total` / `slot_held` / `interaction` percentiles; embedded chart (ms). lifecycle/trajectory only |
+| Overview | scalar (consolidated, grouped/color-coded) | **single summary**: Run (mode/total_count/running_concurrency/test_duration/wall_sec/steps/success/failed/overcommit_ratio) + Throughput (steps_per_sec/effective_parallelism/exec_wall_utilization/concurrency) + Admission & QPS (running-slot maximum/active/peak_active/granted/avg_queue_wait/waiting + QPS limiter qps/inflight_cap/in_flight/dispatched/avg_wait/max_wait + per-operation dispatch/wait sub-tables) + Retry (retry_count/time_lost_to_retry_sec/retries_per_slice_p95 + per-operation retry_queued) + **Lifecycle overhead %** (lifecycle/trajectory; aggregate/mean/p95 ratios) + **Per-step timing** sub-table (exec/think/pause/resume pooled percentiles). See "Overview fields" below for the Lifecycle overhead % and Per-step timing fields. Column A labels are bold/filled; groups separated by banner rows |
+| Per-step timings | pooled percentiles | fleet `latency` (= pure exec time) n/min/max/avg/p50/p95/p99, bucketed by `action_type`; embedded line chart (ms). **Naming note**: this sheet buckets *pure exec latency* by *action type* (shell/bash/…); the Overview **Per-step timing** section pools by *phase* (exec/think/pause/resume) — different lens, do not conflate |
+| Lifecycle overhead | pooled percentiles | `resume` / `pause` / `slice_total` / `slot_held` / `interaction` percentiles (**raw seconds**); embedded chart (ms). lifecycle/trajectory only. **Note**: this sheet is absolute durations in seconds (chart in ms); the overhead **ratio (%)** is not here — it lives in the Overview `lifecycle_overhead_*_pct` scalars |
 | Trajectory summary | one row per trajectory | n_steps + segment sums (slice_total/exec/resume/pause/interaction_total/slot_contention_wait/resume_rate_pacing_wait/pause_rate_pacing_wait/running_slot_held) + avg_slice (seconds). Sorted by trajectory_id; trajectory mode also appends create/kill percentiles |
 | Step detail | one row per step event | 20 columns (see below); includes success and synthesized `slice_failed` rows; sorted by (trajectory, sandbox, step); frozen header + autofilter |
 | Concurrency states | one row per second | per-second dominant-state counts (pausing/paused/resuming/exec/active); chart |
@@ -438,6 +438,31 @@ when the series is absent (e.g. a minimal install).
 > vm_monitor `resource_report.xlsx`). With the default `false`, the vm_monitor report stays
 > a separate file and the workbook carries only the 8 sheets above.
 
+#### Overview fields
+
+The Overview dashboard is grouped in order Run → Throughput → Admission & QPS → Retry → Lifecycle overhead % → Per-step timing (Column A bold/filled + banner-separated). The Lifecycle overhead % and Per-step timing groups appear in lifecycle/trajectory mode only (absent in exec_only or a fully-failed run).
+
+**① Lifecycle overhead %** (scalar kvs — the overhead **ratio**, not seconds):
+
+| field | what it is | what to read / why it matters |
+|-------|------------|------------------------------|
+| `lifecycle_overhead_aggregate_pct` | (resume+pause summed) / slice_total summed ×100 | overall lifecycle-overhead share; high = resume/pause dominate, exec share is small |
+| `lifecycle_overhead_mean_pct` | mean of per-slice ratios | typical per-step overhead rate; vs aggregate tells if a few long tails skew it |
+| `lifecycle_overhead_p95_pct` | p95 of per-slice ratios | tail-worst overhead rate; high p95 + low mean = a few extreme slices |
+
+> Near-zero slices (`< MIN_SLICE_SEC`, e.g. zero-placeholders on exception paths) are excluded so a tiny slice cannot explode the per-sample ratio. This ratio also appears in the text report's `[Lifecycle Overhead]` block and `run_summary.json`'s `lifecycle_overhead.pct_of_slice_total`. The `Lifecycle overhead` sheet's segment table is **raw seconds** (chart in ms) — ratio vs seconds are two lenses, don't conflate.
+
+**② Per-step timing** (sub-table — the four phases of each step, pooled percentiles; columns = `segment/n/min/max/avg/p50/p95/p99`):
+
+| field | what it is | what to read / why it matters |
+|-------|------------|------------------------------|
+| `exec` | derived = slice_total − resume − pause, pure command-execution wall | the "real work" time; a high exec share = good efficiency |
+| `think` | = `natural_delay_secs`, inter-step LLM/think delay | non-productive gap; high = large inter-step gaps or `delay_scale>0` |
+| `pause` | pause phase: API + rate-pacing + inflight | pause cost; rises under oversub / snapshot reuse |
+| `resume` | resume phase: API + ready_wait + inflight | resume cost; rises under oversub / snapshot reuse |
+
+> Naming disambiguation: the Overview **Per-step timing** section pools by **phase** (exec/think/pause/resume) across the **whole fleet**; the `Per-step timings` **sheet** buckets `latency` (= pure exec) by **action type** (`action_type`) — the former is "by phase", the latter "by action type".
+
 #### Step detail columns (26, seconds)
 
 Sub-segments nest under their parent so the sum invariant is verifiable in-sheet:
@@ -445,34 +470,34 @@ Sub-segments nest under their parent so the sum invariant is verifiable in-sheet
 `pause_sec == pause_rate_pacing_wait_sec + pause_inflight_wait_sec + pause_api_sec` (rate-pacing is IN-lease, included),
 `interaction_total_sec == slice_total_sec + natural_delay_sec + capacity_wait_sec + resume_rate_pacing_wait_sec` (the inter-step think-delay lives in `natural_delay_sec`, counted once — not a separate delay term). `natural_delay_sec` itself is the think-delay actually slept by the runner before the slice (`step.delay_time_sec * replay_delay_scale`) plus the scheduler's residual `ready_at` park (`replay_pause_duration`), so it is nonzero whenever the trajectory has inter-step gaps and `delay_scale > 0`.
 
-| column | meaning |
-|-------|---------|
-| `trajectory_id` | instance_id of the trajectory this step belongs to |
-| `sandbox_index` | index of the executing sandbox in the fleet (0..N-1), not the backend sandbox_id |
-| `round_id` | round-robin round number; empty for fixed/trajectory modes |
-| `step_index` | step index within the trajectory (0-based) |
-| `action_type` | `shell` / `bash` / `str_replace_editor` / `submit` / `finish` / `done` |
-| `slice_failed` | runner-synthesized failed slice (exception/stop_on_error); when True the duration columns below are 0 |
-| `resume_sec` | total resume time = inflight + api + ready_wait (rate-pacing excluded, pre-lease) |
-| `resume_rate_pacing_wait_sec` | QPS-limiter 1/qps rate-pacing time-wait (resume, PRE-lease: excluded from resume_sec / running_slot_held) |
-| `resume_api_sec` | pure resume API call time |
-| `resume_ready_wait_sec` | post-resume readiness probe wait (lifecycle/trajectory; 0 in exec_only) |
-| `exec_sec` | pure `provider.exec()` wall time (= Per-step timings `latency`) |
-| `pause_sec` | total pause time = rate-pacing + inflight + api (rate-pacing included, in-lease) |
-| `pause_rate_pacing_wait_sec` | QPS-limiter 1/qps rate-pacing time-wait (pause, IN-lease: included in pause_sec / running_slot_held) |
-| `pause_api_sec` | pure pause API call time |
-| `slice_total_sec` | resume + exec + pause; 0 for failed slices (excluded from percentiles) |
-| `interaction_total_sec` | full interaction budget = slice_total + natural_delay + capacity_wait + resume_rate_pacing (≥ slice_total; the think-delay is in `natural_delay_sec`, counted once) |
-| `slot_contention_wait_sec` | derived composite = natural_delay + capacity_wait (FIFO running-slot contention; admission) |
-| `natural_delay_sec` | inter-step think-delay — `step.delay_time_sec * replay_delay_scale` slept by the runner before the slice, plus the scheduler's residual `ready_at` park (= `replay_pause_duration`); the inter-step gap pacing (component of slot_contention_wait_sec) |
-| `capacity_wait_sec` | FIFO running-slot token contention -- the genuine queue wait (component of slot_contention_wait_sec) |
-| `rate_pacing_wait_sec` | per-step rate-pacing total = resume_rate_pacing_wait_sec + pause_rate_pacing_wait_sec (1/qps shaping, a RATE control; not the FIFO queue -- see capacity_wait_sec) |
-| `inflight_wait_sec` | per-step inflight-fuse block total = resume_inflight_wait_sec + pause_inflight_wait_sec (a CONCURRENCY control) |
-| `resume_inflight_wait_sec` | inflight-fuse block on resume (component of resume_sec) |
-| `pause_inflight_wait_sec` | inflight-fuse block on pause (component of pause_sec) |
-| `running_slot_held_sec` | total running-slot hold time (acquire → release) |
-| `exit_code` | `provider.exec()` exit code |
-| `timed_out` | whether a timeout exit code was hit |
+| column | what it is | what to read / why it matters |
+|-------|------------|------------------------------|
+| `trajectory_id` | instance_id of the trajectory this step belongs to | primary key to filter/group by trajectory; answers "which trajectory" |
+| `sandbox_index` | index of the executing sandbox in the fleet (0..N-1), not the backend sandbox_id | locates "which sandbox ran it"; aligns with Gantt/concurrency rows |
+| `round_id` | round-robin round number; empty for fixed/trajectory modes | which concurrent group this step belongs to; spot inter-round degradation |
+| `step_index` | step index within the trajectory (0-based) | ordinal of this step in its trajectory; aligns to the original trajectory |
+| `action_type` | `shell` / `bash` / `str_replace_editor` / `submit` / `finish` / `done` | estimates latency by action class; matches `Per-step timings` buckets |
+| `slice_failed` | runner-synthesized failed slice (exception/stop_on_error); when True the duration columns below are 0 | failure flag; filter failed steps to their `exit_code`; excluded from percentiles |
+| `resume_sec` | total resume time = inflight + api + ready_wait (rate-pacing excluded, pre-lease) | resume overhead; a major non-exec term under oversub/snapshot reuse |
+| `resume_rate_pacing_wait_sec` | QPS-limiter 1/qps rate-pacing time-wait (resume, PRE-lease: excluded from resume_sec / running_slot_held) | shaping pressure; nonzero = the QPS cap is binding |
+| `resume_api_sec` | pure resume API call time | the backend's intrinsic resume cost; strips waits to see the bare API |
+| `resume_ready_wait_sec` | post-resume readiness probe wait (lifecycle/trajectory; 0 in exec_only) | readiness-probe cost; high = slow warm-up after resume |
+| `exec_sec` | pure `provider.exec()` wall time (= Per-step timings `latency`) | the "real work" time; the core efficiency metric |
+| `pause_sec` | total pause time = rate-pacing + inflight + api (rate-pacing included, in-lease) | pause cost; rises with snapshot reuse / lifecycle oversub |
+| `pause_rate_pacing_wait_sec` | QPS-limiter 1/qps rate-pacing time-wait (pause, IN-lease: included in pause_sec / running_slot_held) | shaping pressure (pause side); nonzero = the QPS cap is binding |
+| `pause_api_sec` | pure pause API call time | the backend's intrinsic pause cost; strips waits to see the bare API |
+| `slice_total_sec` | resume + exec + pause; 0 for failed slices (excluded from percentiles) | per-step active wall; denominator of the overhead ratio, numerator of `avg_slice` |
+| `interaction_total_sec` | full interaction budget = slice_total + natural_delay + capacity_wait + resume_rate_pacing (≥ slice_total; the think-delay is in `natural_delay_sec`, counted once) | broad wall incl. think/wait; the excess over slice_total = non-productive overhead |
+| `slot_contention_wait_sec` | derived composite = natural_delay + capacity_wait (FIFO running-slot contention; admission) | admission contention total; high = slot contention or large inter-step gaps |
+| `natural_delay_sec` | inter-step think-delay — `step.delay_time_sec * replay_delay_scale` slept by the runner before the slice, plus the scheduler's residual `ready_at` park (= `replay_pause_duration`); the inter-step gap pacing (component of slot_contention_wait_sec) | inter-step think/gap; the dominant non-productive term at 1:1, so interaction_total ≫ slice_total |
+| `capacity_wait_sec` | FIFO running-slot token contention -- the genuine queue wait (component of slot_contention_wait_sec) | genuine queueing; nonzero = not enough running slots (oversub signal) |
+| `rate_pacing_wait_sec` | per-step rate-pacing total = resume_rate_pacing_wait_sec + pause_rate_pacing_wait_sec (1/qps shaping, a RATE control; not the FIFO queue -- see capacity_wait_sec) | total shaping wait; distinguishes "shaping" from "queueing" vs capacity_wait |
+| `inflight_wait_sec` | per-step inflight-fuse block total = resume_inflight_wait_sec + pause_inflight_wait_sec (a CONCURRENCY control) | concurrency-fuse wait; nonzero = the inflight cap is binding |
+| `resume_inflight_wait_sec` | inflight-fuse block on resume (component of resume_sec) | resume-side concurrency block; splits the block source |
+| `pause_inflight_wait_sec` | inflight-fuse block on pause (component of pause_sec) | pause-side concurrency block; splits the block source |
+| `running_slot_held_sec` | total running-slot hold time (acquire → release) | slot occupancy duration; numerator of effective_parallelism, oversub granularity |
+| `exit_code` | `provider.exec()` exit code | success/failure/timeout verdict; pairs with `slice_failed`/`timed_out` |
+| `timed_out` | whether a timeout exit code was hit | timeout flag; filter timeouts to compute the timeout rate |
 
 #### Trajectory summary columns (21, seconds, sum-based)
 
@@ -483,29 +508,29 @@ and `Lifecycle overhead` (pooled); this sheet answers "total breakdown + wastefu
 `n_steps` counts all step events (including `slice_failed` steps — they contribute 0 to
 sums but count as attempts, so `avg_slice` reflects per-attempt cost).
 
-| column | meaning |
-|-------|---------|
-| `trajectory_id` | instance |
-| `n_steps` | total steps replayed for this trajectory (including failed) |
-| `n_failed` | number of failed steps |
-| `n_timeout` | number of steps that hit a timeout exit code |
-| `success_rate` | success ratio (None when 0 steps attempted) |
-| `slice_total_sum_s` | total active wall time = resume + exec + pause (sum invariant) |
-| `exec_sum_s` | total pure command-execution time |
-| `resume_sum_s` | total resume time |
-| `pause_sum_s` | total pause time |
-| `interaction_total_sum_s` | full interaction budget = slice_total + natural_delay + capacity_wait + resume_rate_pacing (≥ slice_total; the think-delay is in natural_delay, not a separate term) |
-| `slot_contention_wait_sum_s` | total admission slot-contention wait (derived = natural_delay + capacity_wait) |
-| `natural_delay_sum_s` | total inter-step think-delay + residual park (component of slot_contention) |
-| `capacity_wait_sum_s` | total FIFO running-slot token contention (component of slot_contention) |
-| `rate_pacing_wait_sum_s` | total rate-pacing = resume_rate_pacing + pause_rate_pacing (1/qps shaping) |
-| `inflight_wait_sum_s` | total inflight-fuse block = resume_inflight + pause_inflight |
-| `resume_rate_pacing_wait_sum_s` | total QPS-limiter 1/qps rate-pacing time-wait for resume (pre-lease) |
-| `pause_rate_pacing_wait_sum_s` | total QPS-limiter 1/qps rate-pacing time-wait for pause (in-lease) |
-| `resume_inflight_wait_sum_s` | total inflight-fuse block on resume (component of resume) |
-| `pause_inflight_wait_sum_s` | total inflight-fuse block on pause (component of pause) |
-| `running_slot_held_sum_s` | total running-slot hold time (slot occupancy / oversubscription granularity) |
-| `avg_slice_s` | slice_total_sum / n_steps, typical per-step cost |
+| column | what it is | what to read / why it matters |
+|-------|------------|------------------------------|
+| `trajectory_id` | instance | per-trajectory cost-attribution key; compare overhead structure across trajectories |
+| `n_steps` | total steps replayed for this trajectory (including failed) | work volume; the denominator — pair with sums for unit cost |
+| `n_failed` | number of failed steps | this trajectory's failure count; high = unstable trajectory |
+| `n_timeout` | number of steps that hit a timeout exit code | timeout count; high = this trajectory is stuck on slow commands |
+| `success_rate` | success ratio (None when 0 steps attempted) | trajectory health; low = heavy failure on this trajectory |
+| `slice_total_sum_s` | total active wall time = resume + exec + pause (sum invariant) | this trajectory's active wall; denominator of overhead ratio, the cost baseline |
+| `exec_sum_s` | total pure command-execution time | "real work" total; exec share = this trajectory's efficiency |
+| `resume_sum_s` | total resume time | resume overhead; rises under oversub/snapshot reuse |
+| `pause_sum_s` | total pause time | pause overhead; rises with snapshot reuse / lifecycle |
+| `interaction_total_sum_s` | full interaction budget = slice_total + natural_delay + capacity_wait + resume_rate_pacing (≥ slice_total; the think-delay is in natural_delay, not a separate term) | broad wall incl. think/wait; minus slice_total = non-productive overhead |
+| `slot_contention_wait_sum_s` | total admission slot-contention wait (derived = natural_delay + capacity_wait) | admission contention total; high = slot contention or large inter-step gaps |
+| `natural_delay_sum_s` | total inter-step think-delay + residual park (component of slot_contention) | think/gap total; the dominant non-productive term at 1:1 |
+| `capacity_wait_sum_s` | total FIFO running-slot token contention (component of slot_contention) | genuine queueing total; nonzero = not enough running slots (oversub signal) |
+| `rate_pacing_wait_sum_s` | total rate-pacing = resume_rate_pacing + pause_rate_pacing (1/qps shaping) | total shaping wait; distinguishes "shaping" from "queueing" vs capacity |
+| `inflight_wait_sum_s` | total inflight-fuse block = resume_inflight + pause_inflight | concurrency-fuse total; nonzero = the inflight cap is binding |
+| `resume_rate_pacing_wait_sum_s` | total QPS-limiter 1/qps rate-pacing time-wait for resume (pre-lease) | resume-side shaping pressure; splits the shaping source |
+| `pause_rate_pacing_wait_sum_s` | total QPS-limiter 1/qps rate-pacing time-wait for pause (in-lease) | pause-side shaping pressure; splits the shaping source |
+| `resume_inflight_wait_sum_s` | total inflight-fuse block on resume (component of resume) | resume-side concurrency block; splits the block source |
+| `pause_inflight_wait_sum_s` | total inflight-fuse block on pause (component of pause) | pause-side concurrency block; splits the block source |
+| `running_slot_held_sum_s` | total running-slot hold time (slot occupancy / oversubscription granularity) | slot occupancy total; cross-check for effective_parallelism |
+| `avg_slice_s` | slice_total_sum / n_steps, typical per-step cost | per-attempt step cost; compare "expensiveness" across trajectories |
 
 At 1:1 (no oversubscription) with the QPS / inflight-fuse knobs unset, `capacity_wait`,
 `rate_pacing`, `inflight`, and the resume/pause rate-pacing/inflight splits are legitimately
@@ -577,18 +602,18 @@ The driver deep-copies `base_config` and rewrites only the oversub fields; every
 
 Each trial writes `{prefix}_run_summary.json` — the only contract between kernel and driver. RAW FACTS ONLY (the kernel never recomputes a metric the driver needs):
 
-| field | meaning |
-|-------|---------|
-| `schema_version` | `1` |
-| `replay_mode`, `provider` | which mode / backend |
-| `started_at`, `completed_at` (+ `_epoch`) | ISO local + epoch seconds |
-| `test_duration`, `wall_sec` | configured ceiling vs actual wall |
-| `total_count`, `running_concurrency`, `overcommit_ratio` | the trial's k×N / N / k |
-| `throughput` | `total, succeeded, failed, total_steps, steps_per_sec, tasks_per_sec` (`total` = sandboxes that ran; `succeeded` = trajectories that ran all steps) |
-| `admission` | `maximum, peak_active, granted, avg_queue_wait_sec, control_qps, control_dispatched` — `null` for exec_only (no admission controller) |
-| `lifecycle_overhead` | `pause_sec_sum, resume_sec_sum, pct_of_slice_total` — lifecycle/trajectory only |
-| `paths` | `report, obs_xlsx, lifecycle_series, trajectory_index, vm_monitor_dir` |
-| `error` | error string if the trial errored |
+| field | what it is | what to read / why it matters |
+|-------|------------|------------------------------|
+| `schema_version` | `1` | contract version; the driver keys schema compat off this |
+| `replay_mode`, `provider` | which mode / backend | separates the lifecycle/exec_only/trajectory curves and the backend |
+| `started_at`, `completed_at` (+ `_epoch`) | ISO local + epoch seconds | start/end times; epoch joins with vm_monitor host samples |
+| `test_duration`, `wall_sec` | configured ceiling vs actual wall | whether the ceiling was hit; wall ≪ duration = early stop/stall |
+| `total_count`, `running_concurrency`, `overcommit_ratio` | the trial's k×N / N / k | oversub params; ratio=k is the sweep's x-axis |
+| `throughput` | `total, succeeded, failed, total_steps, steps_per_sec, tasks_per_sec` (`total` = sandboxes that ran; `succeeded` = trajectories that ran all steps) | output/failure stats; steps_per_sec=throughput; `total` is the driver's valid gate |
+| `admission` | `maximum, peak_active, granted, avg_queue_wait_sec, control_qps, control_dispatched` — `null` for exec_only (no admission controller) | admission control-plane state; `peak_active≤N` is the valid gate; null for exec_only |
+| `lifecycle_overhead` | `pause_sec_sum, resume_sec_sum, pct_of_slice_total` — lifecycle/trajectory only; `pct_of_slice_total` is the overhead ratio (%, same source as Overview's `lifecycle_overhead_aggregate_pct`) | lifecycle overhead in absolute + ratio; the driver writes this to `trial-summary.csv`'s `lifecycle_overhead_pct` |
+| `paths` | `report, obs_xlsx, lifecycle_series, trajectory_index, vm_monitor_dir` | artifact paths; the driver aggregates / pulls detail from these |
+| `error` | error string if the trial errored | failure reason; non-empty = root-cause lead for a non-zero `return_code` |
 
 #### Validity (`compute_valid`)
 
