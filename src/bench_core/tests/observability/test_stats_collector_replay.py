@@ -232,14 +232,16 @@ class TestOnePassTargetReport:
         assert "x fleet" not in line[0]  # old pool*fleet product must be gone
 
     def test_pool_note_shown_when_pool_resolvable(self, monkeypatch):
-        import bench_core.task_runner.replay as replay_mod
+        import bench_core.task_runner.replay_formatter as fmt_mod
 
         # pool(401) > fleet(384): the user's 1:1 aenv run. Target stays 384
         # (one trajectory/sandbox), pool is context only -- not a multiplier.
         # P3: replay_pool_size was lifted out of stats_collector into
         # report_helpers and is imported by the replay formatter module, so
-        # patch the name the formatter actually resolves.
-        monkeypatch.setattr(replay_mod, "replay_pool_size", lambda cfg: 401)
+        # patch the name the formatter actually resolves. The formatter now
+        # lives in replay_formatter (split out of replay), so patch its module
+        # global, not replay's.
+        monkeypatch.setattr(fmt_mod, "replay_pool_size", lambda cfg: 401)
         joined = self._report(total_count=384)
         line = [ln for ln in joined.splitlines() if "One-pass Target:" in ln][0]
         assert "384 (1 trajectory/sandbox per round; pool 401 distinct)" in line
