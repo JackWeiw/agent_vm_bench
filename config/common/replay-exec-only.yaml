@@ -146,6 +146,12 @@ monitor:
   # VM_Stats/NUMA_Overview/DevKit_TopDown into the obs workbook instead.
   merge_report: false
   report_timeout: 300
+  # Skip the xlsx chart phase (forwards vm-monitor --no-charts). For huge runs
+  # (many sandboxes x long sampling) the openpyxl chart build (load_workbook +
+  # ~14 chart builders + full re-save) dominates export time and can exceed the
+  # courtesy wait in stop(); enabling still writes every sheet, just without
+  # charts. Default off (charts on); uncomment for oversub-scale runs.
+  # skip_charts: true
   # Uncomment `skip:` and the `- <collector>` lines for the collectors to
   # disable (each forwards a vm-monitor --no-X flag; that collector's sheet/SVG
   # is then omitted). Default: all commented = all collectors on. Leave a line

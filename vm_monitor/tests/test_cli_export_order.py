@@ -24,13 +24,15 @@ def test_cli_exports_svg_before_xlsx(monkeypatch, tmp_path):
     import vm_monitor.cli as cli
 
     call_order: list[str] = []
+    recorded: dict = {}
 
     def fake_svg(monitor, log_dir):
         call_order.append("svg")
         return []
 
-    def fake_xlsx(monitor, log_dir, numa_nodes, output_file, capture_results=None):
+    def fake_xlsx(monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False):
         call_order.append("xlsx")
+        recorded["skip_charts"] = skip_charts
 
     monkeypatch.setattr(cli, "export_svg_reports", fake_svg)
     monkeypatch.setattr(cli, "export_to_excel", fake_xlsx)
@@ -61,3 +63,44 @@ def test_cli_exports_svg_before_xlsx(monkeypatch, tmp_path):
     cli.main()
 
     assert call_order == ["svg", "xlsx"], f"expected SVG before xlsx (xlsx must be the LAST artifact); got {call_order}"
+    # Default (no --no-charts) builds charts: skip_charts forwarded as False.
+    assert recorded.get("skip_charts") is False
+
+
+def test_cli_no_charts_forwards_skip_charts(monkeypatch, tmp_path):
+    """--no-charts forwards skip_charts=True to export_to_excel (skips the slow
+    openpyxl chart phase on huge runs); without it the default is False (charts
+    built)."""
+    import vm_monitor.cli as cli
+
+    recorded: dict = {}
+
+    def fake_xlsx(monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False):
+        recorded["skip_charts"] = skip_charts
+
+    monkeypatch.setattr(cli, "export_to_excel", fake_xlsx)
+    monkeypatch.setattr(cli, "export_svg_reports", lambda m, d: [])
+    monkeypatch.setattr(cli, "PANDAS_AVAILABLE", True)
+
+    fake_m = MagicMock()
+    fake_m.available_numa_nodes = [0]
+    monkeypatch.setattr(cli, "FirecrackerMonitor", lambda: fake_m)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "vm-monitor",
+            "--vmm",
+            "firecracker",
+            "--time",
+            "0",
+            "--disks",
+            "",
+            "--log-dir",
+            str(tmp_path),
+            "--no-charts",
+        ],
+    )
+    cli.main()
+    assert recorded.get("skip_charts") is True
