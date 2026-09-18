@@ -326,3 +326,36 @@ def test_snapshot_rows_filters_snapshot_events_and_converts_mb() -> None:
     assert r["disk_mb"] == 1.0
     assert r["inherited_mb"] == 0.5
     assert r["cumulative_mb"] == 3.0
+
+
+# ---------------------------------------------------------------------------
+# exec_only: step events with zero-width resume/pause (no-ops) + a real exec
+# interval must yield `exec` segments only. exec_only now writes a series (see
+# bench.py writer gate); these segments feed the Concurrency states / Gantt
+# sheets that were previously header-only for exec_only runs.
+# ---------------------------------------------------------------------------
+
+
+def test_reconstruct_concurrency_exec_only_zero_width_resume_pause() -> None:
+    """exec_only's resume/pause are no-ops (zero-width) but exec is real, so
+    only `exec` segments survive _segment's guards; resuming/pausing/paused
+    must NOT appear (the sandbox never snapshotted -> no paused state)."""
+    # _step(idx, rs, re, xs, xe, ps, pe): resume 1000->1000 (0 width), exec
+    # 1000->1005 (5s), pause 1005->1005 (0 width) -- mirrors exec_only's
+    # time.time() timestamps around no-op resume/pause + a real exec call.
+    events = [_step(0, 1000.0, 1000.0, 1000.0, 1005.0, 1005.0, 1005.0)]
+    bins = reconstruct_concurrency(events)
+    assert bins, "expected at least one concurrency bin"
+    assert any(b["exec"] == 1 for b in bins)
+    # zero-width resume/pause + no initial_pause => no resuming/pausing/paused
+    assert not any(b["resuming"] or b["pausing"] or b["paused"] for b in bins)
+
+
+def test_gantt_segments_exec_only_zero_width_resume_pause() -> None:
+    """exec_only step events render a single `exec` segment per sandbox
+    (resume/pause no-ops drop out), so the Gantt sheet populates for exec_only."""
+    events = [_step(0, 1000.0, 1000.0, 1000.0, 1005.0, 1005.0, 1005.0)]
+    rows = gantt_segments(events)
+    assert len(rows) == 1
+    assert rows[0][0] == "sbx0"
+    assert rows[0][1] == [(1000.0, 1005.0, "exec")]

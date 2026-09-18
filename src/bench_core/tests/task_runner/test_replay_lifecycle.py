@@ -497,12 +497,30 @@ class TestSeriesFileE2E:
                 for f in ("resume_start", "resume_end", "exec_start", "exec_end", "pause_start", "pause_end"):
                     assert f in e
 
-    def test_exec_only_run_emits_no_series_file(self, tmp_path):
+    def test_exec_only_run_emits_step_only_series(self, tmp_path):
+        # exec_only now writes a series too: the step event carries real exec
+        # timings (resume/pause are no-ops, but exec_sec / exec_end / the six
+        # timestamps are genuine time.time() epochs), feeding the obs workbook's
+        # Step detail / Trajectory summary / Concurrency states / Gantt sheets.
+        # Only lifecycle/trajectory emit pause/resume/initial_pause/snapshot_size
+        # -- exec_only emits step events only.
         config = _lifecycle_config(tmp_path, replay_mode="exec_only", filename_prefix="eo")
         provider = FakeLifecycleProvider(count=1)
         result = run_benchmark(config, provider)
         series_path = Path(config.output_dir) / f"{config.filename_prefix}_lifecycle_series.jsonl"
-        assert not series_path.exists()
+        assert series_path.exists()
+        events = [json.loads(l) for l in series_path.read_text().splitlines()]
+        step_records = [e for e in events if e["event"] == "step"]
+        assert len(step_records) >= 1
+        # exec_only emits step events only -- no lifecycle/trajectory signals.
+        assert not any(e["event"] == "initial_pause" for e in events)
+        assert not any(e["event"] == "snapshot_size" for e in events)
+        assert not any(e["event"] in ("trajectory_create", "trajectory_kill") for e in events)
+        # every step record carries the six timestamps (real epochs even though
+        # resume/pause are no-ops -- resume_start_ts / exec_end_ts = time.time()).
+        for e in step_records:
+            for f in ("resume_start", "resume_end", "exec_start", "exec_end", "pause_start", "pause_end"):
+                assert f in e
 
     def test_round_robin_lifecycle_emits_series(self, tmp_path):
         config = _lifecycle_config(tmp_path, benchmark_mode="round_robin", total_count=2, filename_prefix="rr")
@@ -965,8 +983,10 @@ class TestOvercommitE2E:
 
     def test_exec_only_regression_unchanged(self, tmp_path):
         """exec_only must IGNORE admission knobs: no lifecycle calls, no
-        series file, no lifecycle/admission report lines. Byte-for-byte
-        P2.5 regression.
+        lifecycle/admission report lines. It now writes a step-only series
+        (the exec_only-observability fix) but still emits no pause/resume /
+        initial_pause / snapshot_size events even with admission knobs set.
+        Byte-for-byte P2.5 regression modulo the series file now existing.
         """
         config = _lifecycle_config(
             tmp_path,
@@ -985,7 +1005,13 @@ class TestOvercommitE2E:
         assert provider.pause_calls == 0
         assert provider.resume_calls == 0
         series_path = Path(config.output_dir) / f"{config.filename_prefix}_lifecycle_series.jsonl"
-        assert not series_path.exists()
+        assert series_path.exists()  # exec_only now writes a step-only series
+        events = [json.loads(l) for l in series_path.read_text().splitlines()]
+        assert any(e["event"] == "step" for e in events)
+        # admission knobs ignored: no lifecycle/trajectory events despite the knobs
+        assert not any(
+            e["event"] in ("initial_pause", "snapshot_size", "trajectory_create", "trajectory_kill") for e in events
+        )
 
 
 class TestConfigP26Knobs:

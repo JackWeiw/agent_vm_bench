@@ -84,8 +84,9 @@ def test_partial_run_summary_flushed_on_dispatch_exception(tmp_path, monkeypatch
     """An exception during dispatch still yields a partial run_summary.json.
 
     The ``finally`` gap-fill (``_artifacts_flushed`` False) calls
-    ``write_run_summary`` on the partial stats. No trajectory index is written
-    here (exec_only has no lifecycle series); the lifecycle case below covers
+    ``write_run_summary`` on the partial stats. No trajectory index is asserted
+    here (dispatch booms before any step runs, so even though exec_only now
+    writes a series it is empty); the lifecycle case below covers a populated
     index.json. The interruption WARNING is logged so users can distinguish a
     clean run from an interrupted partial save.
     """

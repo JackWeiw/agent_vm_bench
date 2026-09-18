@@ -416,11 +416,19 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     monitor = MonitorController(config, provider)
     monitor.start()
 
-    # P2.5: lifecycle-mode-only per-step JSONL time series. Exec-only emits
-    # no file (lifecycle fields all-zero; nothing to curve).
+    # Per-step JSONL time series for every replay run. The ``step`` event
+    # carries real exec timings in every mode -- exec_only included (resume/
+    # pause are no-ops there, but exec_sec / exec_end / the six timestamps are
+    # genuine epochs). The series feeds the obs workbook's Step detail /
+    # Trajectory summary / Concurrency states / Gantt sheets; lifecycle /
+    # trajectory additionally emit pause/resume/initial_pause/snapshot_size
+    # events (exec_only emits step events only, so its Lifecycle-overhead and
+    # Snapshot-sizes sheets stay sparse). Without a writer those 4 sheets render
+    # header-only -- the old lifecycle/trajectory-only gate threw exec_only's
+    # real per-step data out with its (genuinely empty) lifecycle fields.
     series_writer: LifecycleSeriesWriter | None = None
     series_path: Path | None = None
-    if rcfg is not None and rcfg.replay_mode in ("lifecycle", "trajectory"):
+    if rcfg is not None:
         series_path = Path(config.output_dir) / f"{config.filename_prefix}_lifecycle_series.jsonl"
         series_writer = LifecycleSeriesWriter(series_path)
         logger.info(f"  Lifecycle series: {series_path}")

@@ -20,9 +20,12 @@ lifecycle-replay wall-clock ~4x under high sandbox concurrency (the lock was
 held through ``flush`` for every one of the ~2-3 writes per step across all
 384 threads, costing ~25s/step of invisible inter-step wait).
 
-Constructed by run_benchmark only when ``replay_mode == "lifecycle"``
-(exec-only emits no file -- its lifecycle fields are all-zero, nothing to
-curve, and its per-step exec timing already lives in the text report).
+Constructed by ``run_benchmark`` for every replay mode (``rcfg is not None``).
+The ``step`` event carries real exec timings in every mode, so exec_only's
+per-step data populates the obs workbook's Step detail / Trajectory summary /
+Concurrency / Gantt sheets; lifecycle/trajectory additionally emit pause/resume/
+initial_pause/snapshot_size events, so their Lifecycle-overhead and Snapshot-sizes
+sheets are populated while exec_only's stay sparse (no lifecycle events to curve).
 """
 from __future__ import annotations
 
