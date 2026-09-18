@@ -164,3 +164,21 @@ monitor:
   # VM_Stats/NUMA_Overview/DevKit_TopDown into the obs workbook instead.
   merge_report: false
   report_timeout: 300
+  # Uncomment `skip:` and the `- <collector>` lines for the collectors to
+  # disable (each forwards a vm-monitor --no-X flag; that collector's sheet/SVG
+  # is then omitted). Default: all commented = all collectors on. Leave a line
+  # commented (or delete it) to keep that collector enabled. Unknown names are
+  # warned + ignored.
+  # skip:
+  #   - hugepage
+  #   - numa-cpu
+  #   - host-stats
+  #   - swap
+  #   - host-mem-detail
+  #   - pressure
+  #   - numa-memory
+  #   - vm-total
+  #   - disk
+  #   - ublk
+  #   - devkit-mem
+  #   - devkit-topdown
