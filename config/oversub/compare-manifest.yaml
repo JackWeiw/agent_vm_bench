@@ -1,0 +1,46 @@
+# Cross-architecture / cross-config comparison manifest for oversub sweeps.
+#
+# Lists one entry per sweep output dir produced by `oversub-bench`. The
+# baseline_series is the reference all deltas are computed against (ARM by
+# convention; any series works). `caps` is informational -- surfaced in the
+# Overview sheet + series labels -- it is NOT parsed; host-level freq/L3
+# caps are set outside the benchmark (BIOS / cpufreq / l3cat / boot), so you
+# declare what each dir represents rather than letting the tool sniff it.
+#
+# Launch:
+#   oversub-compare --manifest config/oversub/compare-manifest.yaml
+#
+# Relative `dir` paths resolve against this file's parent (portable).
+# `output_dir` resolves against the current working directory.
+
+baseline_series: arm-ampere
+# output_dir: results/oversub/comparison-2026-09-19/   # null = results/oversub/comparison-<ts>/
+
+series:
+  - label: arm-ampere
+    arch: arm
+    dir: results/oversub/arm/
+    caps:
+      l3_mb: 256          # informational; declared, not parsed
+
+  - label: x86-base
+    arch: x86
+    dir: results/oversub/x86-base/
+    caps:
+      freq_ghz: 3.0
+      l3_mb: 64
+
+  # Add one entry per x86 freq/L3 configuration. Reconfigure the host, run a
+  # sweep per config, then declare it here. Example:
+  # - label: x86-freq-2.0
+  #   arch: x86
+  #   dir: results/oversub/x86-freq2/
+  #   caps:
+  #     freq_ghz: 2.0
+  #     l3_mb: 64
+  # - label: x86-l3-32
+  #   arch: x86
+  #   dir: results/oversub/x86-l3half/
+  #   caps:
+  #     freq_ghz: 3.0
+  #     l3_mb: 32
