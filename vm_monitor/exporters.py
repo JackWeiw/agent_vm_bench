@@ -1503,6 +1503,7 @@ def export_to_excel(
     numa_nodes: list = None,
     output_file: str = None,
     capture_results: dict = None,
+    skip_charts: bool = False,
 ) -> str:
     """Export all monitoring and parsed log data to Excel.
 
@@ -1515,6 +1516,10 @@ def export_to_excel(
         numa_nodes: list of NUMA nodes monitored
         output_file: Excel output filename (default: resource_report.xlsx in log_dir)
         capture_results: LogCapture results (optional)
+        skip_charts: skip the xlsx chart phase (load_workbook + ~14 chart
+            builders + full re-save) -- for huge runs it dominates export time;
+            sheets are still written, just without charts. (Forwards --no-charts
+            from the CLI.)
 
     Returns:
         Path to generated Excel file
@@ -1589,12 +1594,19 @@ def export_to_excel(
     # Add charts to the build copy. Non-critical: _add_charts warns on its own
     # failures, and we guard again here so a chart-phase crash still promotes
     # the valid (chart-less) pandas workbook rather than propagating.
-    try:
-        _add_charts(build_file)
-    except Exception as e:
-        print(f"[WARN] Chart generation failed (non-critical): {e}")
+    # skip_charts (--no-charts): for huge runs the chart phase (load_workbook +
+    # ~14 chart builders + full re-save) dominates export time; skipping still
+    # promotes a complete (chart-less) workbook fast. Charts are a rendering
+    # convenience -- every underlying sheet is already written above.
+    if skip_charts:
+        print("[INFO] Charts skipped (--no-charts); resource_report.xlsx written without charts")
+    else:
+        try:
+            _add_charts(build_file)
+        except Exception as e:
+            print(f"[WARN] Chart generation failed (non-critical): {e}")
 
-    # Atomic promotion: final path appears once, complete with charts.
+    # Atomic promotion: final path appears once, complete (with charts unless skipped).
     os.replace(build_file, output_file)
     print(f"[OK] Excel report exported: {output_file}")
     return output_file

@@ -66,6 +66,12 @@ class MonitorConfig:
     # ("skip: swap, hugepage"). Tokens are hyphenated flag stems; unknown names
     # are warned + dropped in _build_cmd. Default empty = all collectors on.
     skip: list[str] | None = None
+    # Skip the xlsx chart phase in vm_monitor's export (forwards --no-charts).
+    # For huge runs (many VMs x long sampling) the openpyxl chart build (load +
+    # ~14 chart builders + full re-save) dominates export time and can exceed
+    # the courtesy wait in stop(); skipping still writes every sheet, just
+    # without charts. Default false (charts on); opt-in for oversub-scale runs.
+    skip_charts: bool = False
 
     @classmethod
     def from_raw(cls, raw: dict | None) -> MonitorConfig:
@@ -90,6 +96,7 @@ class MonitorConfig:
             merge_report=bool(raw.get("merge_report", False)),
             report_timeout=int(raw.get("report_timeout", 300)),
             skip=skip,
+            skip_charts=bool(raw.get("skip_charts", False)),
         )
 
 
@@ -117,6 +124,7 @@ class MonitorController:
         self._end_ts: float | None = None
         self.report_xlsx: Path | None = None
         self._started = False
+        self._detached = False  # stop() set this: vm_monitor left running to finish async
         self._cmd = self._build_cmd()
 
     def _build_cmd(self) -> list[str]:
@@ -147,6 +155,10 @@ class MonitorController:
                 cmd += [f"--no-{token}"]
             else:
                 logger.warning("Unknown collector name: %s, skip ignored", token)
+        # Skip the xlsx chart phase (forwards --no-charts). Opt-in for huge runs
+        # where the openpyxl chart build dominates export time.
+        if self._config.monitor.skip_charts:
+            cmd += ["--no-charts"]
         # Hard upper bound: vm_monitor exits after this even if the lock is never
         # removed (SIGKILL/OOM on the kernel side cannot reap the subprocess).
         hard_t = getattr(self._config, "test_duration", self._report_timeout) + 60
@@ -178,7 +190,16 @@ class MonitorController:
             logger.warning("vm_monitor disabled: cannot write log_dir %s: %s", self._log_dir, e)
             return
         try:
-            self.proc = subprocess.Popen(self._cmd, stdout=self._stdout_fh, stderr=self._stderr_fh)
+            # start_new_session: if stop() later detaches (vm_monitor still
+            # exporting past the courtesy wait), it must survive bench/shell exit
+            # to finish the xlsx build + os.replace async. Own session = immune to
+            # group signals (SIGHUP/SIGTERM) sent to the bench's process group.
+            self.proc = subprocess.Popen(
+                self._cmd,
+                stdout=self._stdout_fh,
+                stderr=self._stderr_fh,
+                start_new_session=True,
+            )
         except OSError as e:
             logger.error("vm_monitor failed to spawn: %s", e)
             self._close_handles()
@@ -226,72 +247,66 @@ class MonitorController:
             setattr(self, attr, None)
 
     def stop(self) -> list[Path]:
-        """Wait for vm_monitor to finish and produce resource_report.xlsx, then reap.
+        """Wait briefly for vm_monitor to finish + write ``resource_report.xlsx``;
+        if it isn't done, **detach** -- never kill.
 
-        The completion signal is the subprocess *exiting*, not the xlsx appearing:
-        vm_monitor writes its artifacts in order CSV -> SVG -> xlsx (last) then
-        exits, so process exit means every artifact is written. Polling the xlsx
-        only flags the report ready early -- its appearance is NOT a reap trigger.
+        Killing is what loses the report. The xlsx is the LAST artifact
+        (``export_to_excel`` after CSV/SVG), and for a large run the openpyxl
+        build alone can exceed any fixed kill budget. SIGTERM cannot interrupt
+        it (the handler only flags the sampling loop, already done), so a kill
+        cliff escalates SIGTERM -> SIGKILL mid-build, leaving an orphan
+        ``.build.xlsx`` and no ``resource_report.xlsx``. The atomic
+        ``build -> os.replace`` only prevents a *corrupt* final file; a kill
+        *before* the rename produces no report at all.
 
-        We never SIGKILL a live export. vm_monitor's SIGTERM handler only breaks
-        the *sampling* loop (moot post-sampling), so a SIGTERM cannot stop an
-        in-flight export. The old code SIGTERM'd the instant report_timeout
-        elapsed, then waited 5s -- guaranteed to escalate to SIGKILL mid-write on
-        any slow post-stress pipeline (capture.wait / CSV / SVG / xlsx build),
-        leaving a corrupt orphan ``.build.xlsx`` Excel rejects as "format/
-        extension invalid" plus no ``resource_report.xlsx``. Now we wait for the
-        process to exit on its own across a 2x report_timeout window (no SIGTERM
-        at all for a normal or slow-but-progressing run), and only a genuine hang
-        past that window is SIGTERM'd -- followed by a *polled* report_timeout
-        grace (not a 5s cliff) so even an export hit by the SIGTERM can finish
-        and exit, since the SIGTERM does not interrupt it. SIGKILL is the last
-        resort for a process still unresponsive past that grace.
+        So we do not kill. We block the bench only for a courtesy
+        ``report_timeout`` window hoping to collect the report inline (small
+        runs finish in seconds; ``merge_report`` still works). If vm_monitor
+        is still exporting past that, we detach: it keeps running in its own
+        session (``start_new_session`` at spawn) and finishes the build +
+        ``os.replace`` asynchronously, writing ``resource_report.xlsx`` on its
+        own. ``-t`` (sampling) + ``capture.wait``'s internal timeouts bound
+        collection; the export then runs to completion. ``_emergency_kill``
+        skips detached procs so a normal bench exit does not reap it.
+
+        This also unblocks the bench's own ``obs.xlsx`` (rendered right after
+        this returns instead of after a 15-min kill cliff); ``merge_source``
+        is None-graceful when the report isn't ready yet.
         """
         if not self._started:
             return []
         xlsx = self._log_dir / "resource_report.xlsx"
-        # Wait for the subprocess to exit on its own -- the true completion
-        # signal. Covers the whole post-stress pipeline (capture.wait / CSV /
-        # SVG / xlsx build); we do NOT guess "still exporting" from the build
-        # file, which would miss every non-xlsx phase. The xlsx only flags the
-        # report ready early; it never triggers a reap.
+        # Courtesy wait for a clean exit + synchronous report collection. This
+        # is NOT a kill cliff (there is no kill); it is only how long we block
+        # the bench hoping to collect the report inline.
         exit_rc = self.proc.poll()
-        exit_deadline = time.time() + 2 * self._report_timeout
-        while exit_rc is None and time.time() < exit_deadline:
+        deadline = time.time() + self._report_timeout
+        while exit_rc is None and time.time() < deadline:
             if xlsx.exists() and self.report_xlsx is None:
                 self.report_xlsx = xlsx
             time.sleep(1)
             exit_rc = self.proc.poll()
-        if exit_rc is not None and not xlsx.exists():
-            logger.error("vm_monitor subprocess exited (code=%s) without report", exit_rc)
-        elif xlsx.exists() and self.report_xlsx is None:
-            self.report_xlsx = xlsx
-        # Genuine hang (still alive past 2x report_timeout) -> SIGTERM, then a
-        # *polled* grace. SIGTERM does not interrupt the export (the handler is
-        # moot post-sampling), so this grace is what lets a slow export hit by
-        # the SIGTERM finish + exit rather than be SIGKILLed mid-write. SIGKILL
-        # only for a process still unresponsive past the grace.
-        if exit_rc is None:
-            logger.warning("vm_monitor exceeded 2x report_timeout; terminating")
-            self.proc.terminate()
-            grace_rc = self.proc.poll()
-            grace = time.time() + self._report_timeout
-            while grace_rc is None and time.time() < grace:
-                if xlsx.exists() and self.report_xlsx is None:
-                    self.report_xlsx = xlsx
-                time.sleep(1)
-                grace_rc = self.proc.poll()
-            if grace_rc is None:
-                logger.warning("vm_monitor unresponsive past grace; SIGKILL")
-                self.proc.kill()
-            # Reap the zombie (non-blocking; the process is dead or dying).
-            try:
-                self.proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-            if xlsx.exists() and self.report_xlsx is None:
+        if exit_rc is not None:
+            # Process exited on its own -- collect the report if it produced one.
+            if not xlsx.exists():
+                logger.error("vm_monitor subprocess exited (code=%s) without report", exit_rc)
+            elif self.report_xlsx is None:
                 self.report_xlsx = xlsx
-        self._close_handles()
+            self._close_handles()
+            self._started = False
+            return [self.report_xlsx] if self.report_xlsx is not None else []
+        # Still running -- DETACH. Never kill: the xlsx is written last and a
+        # kill now (or at any cliff) lands mid-build and loses the report --
+        # the orphan ``.build.xlsx`` such a kill leaves is exactly the bug we
+        # are removing. vm_monitor finishes the build + os.replace async.
+        logger.warning(
+            "vm_monitor still exporting after %ds; detaching -- it will write %s "
+            "asynchronously (not killed: a kill mid-build loses the report)",
+            self._report_timeout,
+            xlsx,
+        )
+        self._detached = True
+        self._close_handles()  # bench releases its fds; vm_monitor keeps inherited copies
         self._started = False
         return [self.report_xlsx] if self.report_xlsx is not None else []
 
@@ -314,7 +329,11 @@ class MonitorController:
 
     def _emergency_kill(self) -> None:
         """atexit backstop. Does NOT run on SIGKILL/OOM -- documented limitation;
-        vm_monitor's own -t timer is the hard back-stop in those cases."""
+        vm_monitor's own -t timer is the hard back-stop in those cases. Skipped
+        when stop() detached vm_monitor: reaping it on bench exit would lose the
+        report it is still asynchronously writing."""
+        if self._detached:
+            return  # detached: let it finish + os.replace; do not reap
         if self.proc is not None and self.proc.poll() is None:
             try:
                 self.proc.terminate()

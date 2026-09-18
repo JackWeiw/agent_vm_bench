@@ -128,6 +128,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Skip writing dark-themed SVG time-curve reports (disk_io / host_resources / swap / numa / vm_total .svg)",
     )
 
+    # Skip the xlsx chart phase (chart builders + full openpyxl re-save). For
+    # huge runs the chart phase dominates export time; sheets are still written,
+    # just without charts. bench-core forwards this via monitor.skip_charts.
+    parser.add_argument(
+        "--no-charts",
+        action="store_true",
+        help="Skip the xlsx chart phase (saves export time on huge runs; sheets are still written)",
+    )
+
     # Log capture options
     parser.add_argument(
         "--enable-capture", action="store_true", help="Enable parallel log collection with devkit/ksys/ub_watch/smap_bw"
@@ -309,6 +318,6 @@ def main():
     # done (safe to reap).
     if PANDAS_AVAILABLE:
         excel_file = os.path.join(log_dir, "resource_report.xlsx")
-        export_to_excel(m, log_dir, m.target_numa_nodes, excel_file, capture_results)
+        export_to_excel(m, log_dir, m.target_numa_nodes, excel_file, capture_results, skip_charts=args.no_charts)
 
     print(f"\nComplete! All outputs saved to: {log_dir}/")

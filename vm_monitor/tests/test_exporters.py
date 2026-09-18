@@ -201,5 +201,76 @@ class TestNumaOverviewSheet(unittest.TestCase):
         self.assertIn("NUMA_Overview", sheets)
 
 
+@unittest.skipUnless(PANDAS_AVAILABLE and pd is not None, "pandas/openpyxl required")
+class TestSkipCharts(unittest.TestCase):
+    """``skip_charts`` (``--no-charts``) skips the chart phase but still
+    promotes the workbook via ``os.replace`` (resource_report.xlsx appears,
+    chart-less). For huge runs the openpyxl chart build dominates export time;
+    skipping still writes every sheet, just without charts."""
+
+    def setUp(self):
+        self.monitor = DummyMonitor()
+        _populate_numa_data(self.monitor)
+        self.log_dir = tempfile.mkdtemp(prefix="vm_monitor_skipcharts_")
+        self.output_file = os.path.join(self.log_dir, "resource_report.xlsx")
+
+    def tearDown(self):
+        for f in os.listdir(self.log_dir):
+            os.unlink(os.path.join(self.log_dir, f))
+        os.rmdir(self.log_dir)
+
+    def test_skip_charts_true_skips_add_charts_and_writes_xlsx(self):
+        """skip_charts=True must NOT call _add_charts, and os.replace still
+        promotes the chart-less build to the final path."""
+        import vm_monitor.exporters as exp
+
+        called = {"n": 0}
+
+        def spy(_path):
+            called["n"] += 1
+
+        orig = exp._add_charts
+        exp._add_charts = spy
+        try:
+            result = export_to_excel(
+                self.monitor,
+                self.log_dir,
+                numa_nodes=[0, 5],
+                output_file=self.output_file,
+                skip_charts=True,
+            )
+        finally:
+            exp._add_charts = orig
+
+        self.assertEqual(called["n"], 0)  # chart phase skipped
+        self.assertEqual(result, self.output_file)
+        self.assertTrue(os.path.exists(self.output_file))  # os.replace still ran
+
+    def test_skip_charts_false_calls_add_charts(self):
+        """Default (skip_charts=False) still builds charts -- pins the contract
+        that --no-charts is opt-in, not the new default."""
+        import vm_monitor.exporters as exp
+
+        called = {"n": 0}
+
+        def spy(_path):
+            called["n"] += 1
+
+        orig = exp._add_charts
+        exp._add_charts = spy
+        try:
+            export_to_excel(
+                self.monitor,
+                self.log_dir,
+                numa_nodes=[0, 5],
+                output_file=self.output_file,
+                skip_charts=False,
+            )
+        finally:
+            exp._add_charts = orig
+
+        self.assertGreater(called["n"], 0)  # charts built by default
+
+
 if __name__ == "__main__":
     unittest.main()
