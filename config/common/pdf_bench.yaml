@@ -1,0 +1,92 @@
+# config/common/pdf_bench.yaml
+# Unified PDF document benchmark config — backend-agnostic (E2B + Docker).
+#
+# Workflow type: document — replays a trace-derived PDF scene recipe against a
+# fresh copy of an immutable in-image seed. One fixed success path (read/write/
+# exec tool calls, including helper source written through exec as a base64
+# heredoc); phase IDs are recorded as step-level metrics. No resident server.
+#
+# Case: PDF (openclaw-document-v1 template / ubuntu-document-bench image).
+#   - Seed: /opt/document-bench/pdf (baked in by the image)
+#   - Workspace: /root/.openclaw/workspace/tool-modeling/SUB-MEM-PDF-01
+#   - Scene recipe: dockerfile_build/document/assets/operations/pdf_key_operations.json
+#   - Ready-check: `document-bench-validate` (non-zero exit = image failure, not retried)
+#
+# Pick the backend with --provider; the SAME stress profile runs on either:
+#   bench-core --provider e2b    --config config/common/pdf_bench.yaml --create-only
+#   bench-core --provider docker --config config/common/pdf_bench.yaml --create-only
+#
+# Validate without any SDK (parses shared sections only):
+#   bench-core --provider fake --config config/common/pdf_bench.yaml --create-only -n 1
+#
+# Legacy e2b_bench keeps its own config/e2b/pdf_bench.yaml (old schema); unaffected.
+
+workflow_type: document
+
+# === backend blocks (one per provider; only the matching one is read) ===
+e2b:
+  template: "openclaw-document-v1"   # E2B template (shared PDF/XLSX document image)
+  create_timeout: 86400              # Sandbox creation timeout (seconds)
+  # NUMA node(s) to bind sandboxes to. Single: 2; Multi (round-robin): [2, 3]; null/omit: none.
+  numa_bind: 2
+  sandbox_ids_file: "sandboxs_document_pdf.txt"  # save/load sandbox IDs across runs (empty = disabled)
+  env:                              # E2B SDK env vars; key/token fall back to ~/.e2b/config.json
+    E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+    E2B_API_KEY: "your_e2b_api_key_here"
+    E2B_DOMAIN: "e2b.app"
+    E2B_API_URL: "http://localhost:3000"
+    E2B_HTTP_SSL: "false"
+
+docker:
+  # Shared PDF/XLSX document image. ARM64 tag shown; use ...-linuxamd64 on x86_64.
+  image: "ubuntu-document-bench:24.04-linuxarm64"
+  container_prefix: "oc-bench"             # Container name prefix (oc-bench-1, ...)
+  cpu_limit: 2.0                           # CPU limit per container (--cpus)
+  memory_limit: "2g"                       # Memory limit per container (-m)
+  create_timeout: 300                      # Container creation timeout (seconds)
+  # Readiness is a workflow concern (document runs `document-bench-validate`,
+  # not a port probe); it is provider-transparent, so there is no port_check block.
+  # See src/env_provider/_ready.py.
+
+# === shared stress sections (all -> KernelConfig) ===
+sandbox:                            # shared sandbox control (creation mode)
+  total_count: 10                   # Total sandbox count (creation mode)
+  detect_existing: false            # Detect existing sandboxes instead of creating new ones
+  create_only: false                # Create sandboxes only without running tasks (Phase 0)
+
+# Sandbox creation batch control (optional, full concurrent if not configured).
+create_batch:
+  size: 10                          # Sandboxes per batch during creation
+  interval: 3                       # Interval between creation batches (seconds)
+
+# Task execution batch control (optional, full concurrent if not configured).
+task_batch:
+  size: 5                           # Sandboxes to start tasks per batch
+  interval: 5                       # Interval between task batches (seconds)
+
+# Document task configuration. case_kind selects the PDF scene recipe; the seed/
+# workspace paths are kernel-resolved from case_kind (see bench_core.config.
+# DOCUMENT_SCENE_LAYOUTS). recipe_path omitted -> canonical repo path.
+document:
+  case_kind: "pdf"                  # document case kind: "pdf" or "xlsx"
+  operation_timeout: 300            # Per tool-call timeout (seconds; write/exec)
+  recalc_timeout: 180               # Substituted into recipe exec commands as __DOCUMENT_RECALC_TIMEOUT__
+  task_timeout: 900                # Whole-task deadline; a running recipe is not interrupted
+  interval_min: 3.0                # Min interval between complete tasks (fixed mode)
+  interval_max: 10.0               # Max interval between complete tasks (fixed mode)
+
+# Test run configuration
+test:
+  duration: 160                     # Test duration (seconds)
+  stats_interval: 10                # Stats snapshot interval (seconds)
+  benchmark_percent: 1.0            # Fraction of sandboxes for benchmark (1.0 = 100%, 0.5 = 50%)
+  # Round-robin mode: each round runs one complete PDF task per sandbox in the round.
+  benchmark_mode: "round_robin"     # "fixed" (default) or "round_robin"
+  round_size: 5                    # Sandboxes per round (group_count = ceil(total / round_size))
+  round_count: 20                  # Max number of rounds (stops when reached or duration exceeded)
+  round_interval: 3                # Round interval in seconds
+
+# Report configuration
+report:
+  output_dir: "results/document/pdf"
+  filename_prefix: "document_pdf_bench"
