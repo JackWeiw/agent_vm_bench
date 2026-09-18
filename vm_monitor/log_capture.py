@@ -33,7 +33,15 @@ class LogCapture:
         "smap_bw": 60,  # smap_bw follows duration + some buffer
     }
 
-    def __init__(self, config: dict, duration: int, log_dir: str, numa_nodes: list, ksys_parse_timeout: int = None):
+    def __init__(
+        self,
+        config: dict,
+        duration: int,
+        log_dir: str,
+        numa_nodes: list,
+        ksys_parse_timeout: int = None,
+        disabled_devkit: set[str] | None = None,
+    ):
         """
         Args:
             config: paths from .env (devkit_path, ksys_path, ksys_config_path, ub_watch_path, devkit_cpu_range, getfre_path, getfre_config_path)
@@ -41,6 +49,10 @@ class LogCapture:
             log_dir: output directory for log files
             numa_nodes: list of NUMA nodes to monitor (for CPU range calculation)
             ksys_parse_timeout: extra timeout for ksys parse phase (default 600s)
+            disabled_devkit: subset of {"devkit_mem", "devkit_top_down"} to skip.
+                devkit_path is shared by both sub-tools, so .env path control cannot
+                run only one; this set lets the CLI (--no-devkit-mem /
+                --no-devkit-topdown) split them. Default empty = both run.
         """
         self.config = config
         self.duration = duration
@@ -52,6 +64,7 @@ class LogCapture:
         self.failed_runtime = []  # tools that failed during runtime
         self.start_time = None
         self.ksys_parse_timeout = ksys_parse_timeout or self.DEFAULT_TOOL_TIMEOUTS["ksys"]
+        self.disabled_devkit = set(disabled_devkit or ())
         # getfre threading components
         self.getfre_threads = {}  # {numa_id: Thread}
         self.getfre_log_files = {}  # {numa_id: file handle}
@@ -328,20 +341,22 @@ class LogCapture:
         failed = []
 
         # Start DevKit memory tuner
-        ok, err = self._start_devkit_mem()
-        if ok:
-            success.append("devkit_mem")
-        elif err and "not configured" not in err:
-            failed.append(("devkit_mem", err))
-            self.failed_startup.append("devkit_mem")
+        if "devkit_mem" not in self.disabled_devkit:
+            ok, err = self._start_devkit_mem()
+            if ok:
+                success.append("devkit_mem")
+            elif err and "not configured" not in err:
+                failed.append(("devkit_mem", err))
+                self.failed_startup.append("devkit_mem")
 
         # Start DevKit top-down tuner
-        ok, err = self._start_devkit_top_down()
-        if ok:
-            success.append("devkit_top_down")
-        elif err and "not configured" not in err:
-            failed.append(("devkit_top_down", err))
-            self.failed_startup.append("devkit_top_down")
+        if "devkit_top_down" not in self.disabled_devkit:
+            ok, err = self._start_devkit_top_down()
+            if ok:
+                success.append("devkit_top_down")
+            elif err and "not configured" not in err:
+                failed.append(("devkit_top_down", err))
+                self.failed_startup.append("devkit_top_down")
 
         # Start ksys
         ok, err = self._start_ksys()
