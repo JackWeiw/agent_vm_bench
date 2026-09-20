@@ -1,0 +1,49 @@
+# Oversubscription sweep: aenv lifecycle, ratios 1:1 through 1:6.
+#
+# Run once on each architecture (ARM baseline, then each x86 freq/L3 config),
+# reconfiguring the host between runs. Point each run at a labeled output
+# root so oversub-compare can join them later:
+#
+#   oversub-bench --sweep-config config/oversub/lifecycle-1to6.yaml \
+#       --output-root results/oversub/arm/
+#   # (reconfigure x86 host freq/L3, then:)
+#   oversub-bench --sweep-config config/oversub/lifecycle-1to6.yaml \
+#       --output-root results/oversub/x86-<config>/
+#
+# Then compare:
+#   oversub-compare --manifest config/oversub/compare-manifest.yaml
+#
+# Precedence: CLI flag > this file > built-in default (see `oversub-bench --help`).
+
+base_config: config/common/replay.yaml
+
+provider: aenv
+
+# N running slots stays fixed; total_count = N * ratio scales per trial.
+# PIN running_concurrency so both archs use the same N (same RAM -> same
+# baseline VM count) -> ratio 1:k maps to the same absolute sandbox count on
+# both, and the cross-arch comparison is fair. 1.5 TiB / 4 GiB = 384.
+running_concurrency: 384
+
+ratios: [1, 2, 3, 4, 5, 6]   # k values: total_count = k * N per trial
+modes: [lifecycle]            # pause/resume only exist in lifecycle; exec_sec
+                              # is a breakdown column within it. Add exec_only
+                              # as a pure-CPU-oversub baseline if desired.
+repeats: 3                    # medians across repeats for stable cross-arch deltas
+
+test_duration: 600           # hard ceiling per trial (sec); a trial ends when
+                              # the k*N fleet drains (round_count=1) or at this
+                              # stall cap. null = inherit base test.duration.
+failure_tolerance: 0.0       # max failure_rate for a trial to count as valid
+cooldown_sec: 30             # settle time between trials
+cleanup_between_trials: on   # pre-trial teardown of leftovers so they don't
+                              # corrupt the ratio
+# trial_timeout_sec: 0         # omit -> inherits the 6h built-in default
+                                # (defense-in-depth backstop so a hung kernel
+                                # subprocess cannot block the sweep). 0 = off.
+# output_root: null           # null = results/oversub/oversub-N{N}-{timestamp}/
+
+reuse: false                  # skip completed-valid trials (restart safety)
+stop_on_failure: false       # halt on first invalid trial
+no_vm_monitor: false         # pass --no-vm-monitor through to bench-core
+bench_core_bin: [bench-core] # kernel subprocess command (tests point at a stub)

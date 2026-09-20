@@ -52,6 +52,7 @@ dev = [
 vm-monitor = "vm_monitor.cli:main"
 bench-core = "bench_core.bench:main"
 oversub-bench = "bench_core.oversub:main"
+oversub-compare = "bench_core.compare_sweeps:main"
 
 [tool.setuptools.packages.find]
 where = ["src", "."]
