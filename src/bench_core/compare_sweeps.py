@@ -397,11 +397,13 @@ def _write_overview(
 
 
 def _write_per_ratio(wb: Workbook, ratio_summary: pd.DataFrame, manifest: dict) -> None:
-    """Per-ratio sheet: two chart-data blocks + LineCharts.
+    """Per-ratio sheet: up to three chart-data blocks + LineCharts.
 
     Block 1 = absolute median e2e latency (who's faster). Block 2 = within-series
-    degradation % vs k=1 (whose oversub behavior degrades worse). Two charts,
-    NOT a dual-axis (dataviz anti-pattern) -- each has one y-axis.
+    degradation % vs k=1 (whose oversub behavior degrades worse). Block 3 =
+    lifecycle_overhead_pct (the trial-level pause/resume cost share) -- only
+    lifecycle runs carry it, so it self-skips on an exec_only comparison. Each
+    block is its own chart with one y-axis; no dual-axis (dataviz anti-pattern).
     """
     ws = wb.create_sheet("Per-ratio")
     e2e = ratio_summary[ratio_summary["metric"] == "elapsed_sec"]
@@ -452,6 +454,34 @@ def _write_per_ratio(wb: Workbook, ratio_summary: pd.DataFrame, manifest: dict) 
         anchor=f"{get_column_letter(2 + len(series_labels) + 1)}{start}",
         header_row=start + 1,
     )
+
+    # Block 3: lifecycle_overhead_pct (trial-level pause/resume cost share of
+    # slice_total). Only lifecycle runs carry it -- exec_only emits no
+    # lifecycle_overhead, so its cells are NaN; the notna filter empties the
+    # subset and the block self-skips (no flat-zero clutter on exec_only).
+    oh = ratio_summary[(ratio_summary["metric"] == "lifecycle_overhead_pct") & ratio_summary["median_sec"].notna()]
+    if not oh.empty and (oh["median_sec"] != 0).any():
+        start = ws.max_row + 3
+        ws.cell(start, 1, "Lifecycle overhead (%)").font = Font(bold=True)
+        ws.cell(start + 1, 1, "ratio")
+        for j, lab in enumerate(series_labels, start=2):
+            ws.cell(start + 1, j, lab)
+        pivot_oh = oh.pivot_table(index="ratio", columns="series", values="median_sec", sort=False)
+        for i, (ratio, row) in enumerate(pivot_oh.iterrows(), start=1):
+            ws.cell(start + 1 + i, 1, int(ratio))
+            for j, lab in enumerate(series_labels, start=2):
+                v = row.get(lab)
+                ws.cell(start + 1 + i, j, float(v) if pd.notna(v) else None)
+        _add_line_chart(
+            ws,
+            "Lifecycle overhead vs oversub ratio (%)",
+            "lifecycle_overhead_pct",
+            cat_col=1,
+            data_cols=list(range(2, 2 + len(series_labels))),
+            n_rows=len(pivot_oh),
+            anchor=f"{get_column_letter(2 + len(series_labels) + 1)}{start}",
+            header_row=start + 1,
+        )
     ws.column_dimensions["A"].width = 12
     for col in range(2, 2 + len(series_labels)):
         ws.column_dimensions[get_column_letter(col)].width = 18

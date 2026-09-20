@@ -85,7 +85,9 @@ def _traj_row(mode: str, ratio: int, traj_id: str, elapsed: float) -> dict:
     }
 
 
-def _trial_row(mode: str, ratio: int, *, n: int, wall: float, valid: bool = True) -> dict:
+def _trial_row(
+    mode: str, ratio: int, *, n: int, wall: float, valid: bool = True, lifecycle_overhead_pct: float | None = 10.0
+) -> dict:
     return {
         "mode": mode,
         "ratio": ratio,
@@ -105,7 +107,7 @@ def _trial_row(mode: str, ratio: int, *, n: int, wall: float, valid: bool = True
         "wall_sec": wall,
         "tasks_per_sec": (ratio * n) / wall if wall else 0.0,
         "steps_per_sec": 0.01,
-        "lifecycle_overhead_pct": 10.0,
+        "lifecycle_overhead_pct": lifecycle_overhead_pct,
         "return_code": 0 if valid else 1,
         "valid": valid,
         "reused": False,
@@ -118,18 +120,28 @@ def _trial_row(mode: str, ratio: int, *, n: int, wall: float, valid: bool = True
 
 
 def _seed_series(
-    root: Path, *, ratios: list[int], elapsed: dict[tuple[int, str], float], n: int = 384, valid: bool = True
+    root: Path,
+    *,
+    ratios: list[int],
+    elapsed: dict[tuple[int, str], float],
+    n: int = 384,
+    valid: bool = True,
+    mode: str = "lifecycle",
 ) -> Path:
     """Write a series dir with trajectory-detail.csv + trial-summary.csv.
 
     elapsed: {(ratio, trajectory_id): seconds}. trial wall_sec = the per-ratio
     max elapsed (any positive number; the trial-derived metrics are not the
-    focus of the assertion math, just non-degenerate)."""
+    focus of the assertion math, just non-degenerate). exec_only mirrors the
+    real driver: it emits no lifecycle_overhead, so the cell is empty -> pandas
+    NaN, and the lifecycle-overhead chart self-skips on an exec_only comparison.
+    """
     root.mkdir(parents=True, exist_ok=True)
-    traj_rows = [_traj_row("lifecycle", r, t, e) for (r, t), e in elapsed.items()]
+    traj_rows = [_traj_row(mode, r, t, e) for (r, t), e in elapsed.items()]
     _write_traj(root / "trajectory-detail.csv", traj_rows)
     wall = {r: max((e for (rr, _), e in elapsed.items() if rr == r), default=10.0) for r in ratios}
-    trial_rows = [_trial_row("lifecycle", r, n=n, wall=wall[r], valid=valid) for r in ratios]
+    overhead = None if mode == "exec_only" else 10.0
+    trial_rows = [_trial_row(mode, r, n=n, wall=wall[r], valid=valid, lifecycle_overhead_pct=overhead) for r in ratios]
     _write_trial(root / "trial-summary.csv", trial_rows)
     return root
 
@@ -405,9 +417,35 @@ def test_run_comparison_writes_outputs(tmp_path):
 
     wb = load_workbook(out / "comparison.xlsx")
     assert wb.sheetnames == ["Overview", "Per-ratio", "Component heatmaps", "Per-trajectory delta"]
-    assert len(wb["Per-ratio"]._charts) >= 2  # absolute + degradation line charts
+    # 3 charts on Per-ratio for a lifecycle comparison: absolute e2e +
+    # degradation + lifecycle_overhead_pct (Block 3).
+    assert len(wb["Per-ratio"]._charts) >= 3
     assert len(wb["Component heatmaps"]._charts) == 0  # heatmaps are conditional fmt, not charts
     assert len(list(wb["Component heatmaps"].conditional_formatting)) >= 1
+
+
+def test_per_ratio_lifecycle_overhead_chart_skips_for_exec_only(tmp_path):
+    """exec_only emits no lifecycle_overhead (cells NaN), so Block 3 self-skips
+    -- the Per-ratio sheet carries only the absolute + degradation charts, and
+    no "Lifecycle overhead" banner row. Mirrors the real driver, which leaves
+    the cell empty when the kernel reports no lifecycle_overhead."""
+    arm = _seed_series(tmp_path / "arm", ratios=[1, 2], mode="exec_only", elapsed={(1, "t0"): 2.0, (2, "t0"): 4.0})
+    x86 = _seed_series(tmp_path / "x86", ratios=[1, 2], mode="exec_only", elapsed={(1, "t0"): 1.0, (2, "t0"): 2.0})
+    manifest = {
+        "baseline_series": "arm",
+        "series": [
+            {"label": "arm", "arch": "arm", "dir": str(arm), "caps": {}},
+            {"label": "x86", "arch": "x86", "dir": str(x86), "caps": {}},
+        ],
+    }
+    out = tmp_path / "out"
+    assert run_comparison(manifest, out) == 0
+    from openpyxl import load_workbook
+
+    ws = load_workbook(out / "comparison.xlsx")["Per-ratio"]
+    assert len(ws._charts) == 2  # absolute + degradation only; no overhead chart
+    banners = [c.value for row in ws.iter_rows() for c in row if isinstance(c.value, str)]
+    assert not any("Lifecycle overhead" in b for b in banners)
 
 
 def test_run_comparison_refuses_mismatched_n(tmp_path):
