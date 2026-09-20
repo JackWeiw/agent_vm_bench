@@ -65,17 +65,19 @@ TRAJECTORY_METRIC_COLS = [
     "running_slot_held_sec",
 ]
 
-# The component set the user wants dissected (exec / resume / pause / wait /
-# create / kill). "wait" surfaces as slot_contention_wait_sec -- the headline
-# queueing wait; its sub-decomposition (capacity / rate_pacing / inflight) is
-# in the tidy CSV for drill-down.
+# The component set the user wants dissected (exec / resume / pause / wait).
+# create/kill are omitted: in lifecycle/exec_only they are not per-trajectory
+# (create happens once at create_all, kill at cleanup; the kernel records 0.0
+# per step for non-trajectory modes), so the heatmap would carry only flat
+# zeros. They remain in the tidy CSV for drill-down if a trajectory-mode
+# comparison ever needs them. "wait" surfaces as slot_contention_wait_sec --
+# the headline queueing wait; its sub-decomposition (capacity / rate_pacing /
+# inflight) is in the tidy CSV too.
 COMPONENT_COLS = [
     "exec_sec",
     "resume_sec",
     "pause_sec",
     "slot_contention_wait_sec",
-    "create_sec",
-    "kill_sec",
 ]
 
 # Trial-summary CSV metric columns surfaced in the ratio summary (per-trial
@@ -488,7 +490,7 @@ def _write_per_ratio(wb: Workbook, ratio_summary: pd.DataFrame, manifest: dict) 
 
 
 def _write_component_heatmaps(wb: Workbook, ratio_summary: pd.DataFrame, manifest: dict) -> None:
-    """One grid per component (exec/resume/pause/wait/create/kill): rows=
+    """One grid per component (exec/resume/pause/wait): rows=
     series, cols=ratio, ColorScale conditional formatting on the median value.
 
     Heatmaps scale to many configs without the spaghetti of multi-line, and

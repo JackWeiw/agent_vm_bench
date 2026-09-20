@@ -422,6 +422,12 @@ def test_run_comparison_writes_outputs(tmp_path):
     assert len(wb["Per-ratio"]._charts) >= 3
     assert len(wb["Component heatmaps"]._charts) == 0  # heatmaps are conditional fmt, not charts
     assert len(list(wb["Component heatmaps"].conditional_formatting)) >= 1
+    # Component set is exec/resume/pause/wait only -- create/kill are not
+    # per-trajectory in lifecycle/exec_only (flat zeros), so they're omitted.
+    hm_cells = [str(c.value) for row in wb["Component heatmaps"].iter_rows() for c in row if c.value]
+    for comp in ("exec_sec", "resume_sec", "pause_sec", "slot_contention_wait_sec"):
+        assert any(c.startswith(comp) for c in hm_cells), f"{comp} heatmap missing"
+    assert not any("create_sec" in c or "kill_sec" in c for c in hm_cells), "create/kill must not be heatmapped"
 
 
 def test_per_ratio_lifecycle_overhead_chart_skips_for_exec_only(tmp_path):
