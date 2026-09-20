@@ -652,3 +652,74 @@ Degradation is computed **within a mode** vs that mode's `k=1` baseline, so life
 A trial halted mid-run by Ctrl-C / a driver-initiated SIGTERM is *not* dropped — the kernel's SIGTERM-cooperative `finally` flushes a **partial** `run_summary.json` + `trajectories/index.json` (artifacts are written atomically via temp-file + `os.replace`, so a second SIGTERM mid-flush leaves already-written files intact), and the driver captures it as a row with **`return_code == 130`** and `valid == False`. Its `total` / `wall_sec` reflect only what ran before the interrupt — which is itself the degradation signal (a ratio that stalls at 200/1152 trajectories in the stall window is the oversub breakdown point). An interrupted trial **ends the sweep** (the driver halts with exit 130); a *timed-out* trial (non-zero `return_code` ≠ 130) does **not** — the sweep continues to the next ratio unless `--stop-on-failure` is set.
 
 > `_interrupted` is an internal row sentinel (not a CSV column — `DictWriter` drops it) that `main()` reads to distinguish "halt the sweep" (user interrupt) from "continue" (trial timeout). Downstream analysis scripts should key off the committed `return_code == 130` column, not the in-memory sentinel.
+
+### 8.6 Cross-architecture / cross-config comparison (`oversub-compare`)
+
+`oversub-compare` (`src/bench_core/compare_sweeps.py`) compares and visualizes **already-produced** `oversub-bench` sweep results across architectures / configs. It **runs no sandboxes and produces no benchmark data of its own** — it only consumes the driver's written CSV contract (`trajectory-detail.csv` + `trial-summary.csv`), joining N sweep output dirs on `(mode, ratio, trajectory_id)` to emit delta CSVs + an xlsx workbook. Sibling to `oversub-bench` (imports no kernel data-path internals).
+
+**Typical use:** ARM baseline vs several x86 freq/L3 configs, ratios 1:1–1:6, comparing per-trajectory end-to-end latency by ratio, the exec/resume/pause/wait component latencies, and overall degradation. Host-level freq/L3 caps are set outside the benchmark (BIOS / cpufreq / l3cat / boot); the tool **never sniffs them** — you declare what each dir represents in the manifest.
+
+#### One mode per comparison
+
+A single `oversub-compare` run compares **one mode's set of series** (e.g. `arm-life1 / arm-life2 / x86-life`, or `x86-exec1 / x86-exec2 / arm-exec`). To compare exec_only and lifecycle, **run it twice** — one workbook per mode, side by side. The tool does not assume you mix both modes into one manifest (the `mode` column is constant per dir, so a single-mode manifest stays clean).
+
+#### Manifest
+
+`config/oversub/compare-manifest.yaml` is the commented template:
+
+```yaml
+baseline_series: arm-ampere
+output_dir: results/oversub/comparison-2026-09-19/   # null = comparison-<ts>/
+series:
+  - {label: arm-ampere, arch: arm, dir: results/oversub/arm/,       caps: {l3_mb: 256}}
+  - {label: x86-base,   arch: x86, dir: results/oversub/x86-base/,   caps: {freq_ghz: 3.0, l3_mb: 64}}
+  - {label: x86-freq2,  arch: x86, dir: results/oversub/x86-freq2/,  caps: {freq_ghz: 2.0, l3_mb: 64}}
+```
+
+`baseline_series` is the reference all deltas are computed against (ARM by convention; any series works). `caps` is **informational** — surfaced in the Overview + series labels, never parsed. Relative `dir` paths resolve against the manifest file's parent (portable). Unknown keys are rejected (a typo like `serie:` fails loudly).
+
+#### Running the comparison
+
+```bash
+oversub-compare --manifest config/oversub/compare-manifest.yaml
+oversub-compare --arm results/oversub/arm/ --x86 results/oversub/x86/   # 2-dir shorthand (arm is baseline)
+oversub-compare --manifest ... --allow-mismatched-n   # proceed even if N differs (refused by default)
+```
+
+#### Inputs (per series dir, the driver's existing contract)
+
+- `trajectory-detail.csv` — one row per `(mode, ratio, repeat, trajectory_id)` + `elapsed_sec` and 18 `*_sec` breakdown columns.
+- `trial-summary.csv` — per-trial `wall_sec / tasks_per_sec / lifecycle_overhead_pct / avg_queue_wait_sec`, etc.
+- `benchmark-report.json` — `configuration` (for the N-parity check).
+
+A missing file errors with the path.
+
+#### Outputs (`<output_dir>/`)
+
+| File | Contents |
+|------|----------|
+| `comparison-tidy.csv` | long: `series, arch, <caps…>, mode, ratio, repeat, trajectory_id, metric, value` (concat+melt, most flexible) |
+| `comparison-ratio-summary.csv` | one row per `(mode, ratio, series, metric)`: median + delta vs baseline + pct + within-series degradation vs that series' own k=1; a series without k=1 yields blank degradation (no crash) |
+| `comparison-trajectory-delta.csv` | join on `(mode, ratio, trajectory_id)`: baseline `elapsed_sec` + each series' value + delta; an absent side stays blank, orphan count surfaces in Overview |
+| `comparison.xlsx` | 4 sheets (below) |
+
+#### `comparison.xlsx` four sheets
+
+1. **Overview** — manifest (series/arch/caps/baseline), N-parity check result, per-series valid/invalid trial counts, median-e2e headline table.
+2. **Per-ratio** — up to 3 LineCharts, each with one y-axis (no dual-axis): ① absolute median e2e (who's faster); ② within-series degradation % vs k=1 (whose oversub behavior degrades worse); ③ `lifecycle_overhead_pct` (the pause/resume cost share for a lifecycle comparison). For an exec_only comparison ③ self-skips — the driver writes an empty cell for exec_only (no lifecycle_overhead), pandas reads NaN, the subset empties, and the block is omitted (no flat-zero line).
+3. **Component heatmaps** — one grid per component (rows=series, cols=ratio, ColorScale single-hue light→dark): `exec / resume / pause / slot_contention_wait`. `create / kill` are **excluded** — in lifecycle/exec_only they are 0 per step (only trajectory mode has per-trajectory create_one/kill_one), so the heatmap would carry only flat zeros; both columns remain in the tidy CSV for drill-down.
+4. **Per-trajectory delta** — e2e delta joined per trajectory; freeze panes at D2.
+
+#### N-parity guard
+
+`running_concurrency` must match across series — different N means ratio 1:k maps to different absolute sandbox counts, so the cross-series comparison is apples-to-oranges. A mismatch is refused by default; `--allow-mismatched-n` proceeds anyway. Invalid trials **stay in the median** (the median is robust to one flaky repeat); Overview surfaces the per-series valid/invalid count so you can decide whether to drop + re-run.
+
+#### Runbook
+
+1. On ARM: `oversub-bench --sweep-config config/oversub/lifecycle-1to6.yaml --output-root results/oversub/arm/`
+2. On each x86 config (reconfigure host freq/L3 between runs): `oversub-bench ... --output-root results/oversub/x86-<config>/`
+3. Edit `config/oversub/compare-manifest.yaml` to point at each dir + declare caps.
+4. `oversub-compare --manifest config/oversub/compare-manifest.yaml`
+5. Open `results/oversub/comparison-<ts>/comparison.xlsx`.
+
+To compare exec_only vs lifecycle: repeat 1–5 with a separate manifest per mode (one mode's worth of series each) and read the two workbooks side by side.

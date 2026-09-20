@@ -559,3 +559,74 @@ driver 深拷贝 `base_config` 并只改写超卖字段;其余透传:
 被 Ctrl-C / driver 发起的 SIGTERM 中途打断的 trial **不丢弃**——kernel 的 SIGTERM 协作 `finally` flush 出一份**部分** `run_summary.json` + `trajectories/index.json`(产物经 temp-file + `os.replace` 原子写,所以 flush 中途再来一次 SIGTERM,已写的文件仍完好),driver 把它捕获为一行,**`return_code == 130`** 且 `valid == False`。其 `total` / `wall_sec` 只反映打断前跑掉的部分——这本身就是退化信号(一个 ratio 在停滞窗口里卡在 200/1152 条轨迹,正是超卖崩溃点)。被打断的 trial **结束整个扫描**(driver 以 exit 130 停);而**超时**的 trial(非零 `return_code` ≠ 130)**不会**——扫描继续下一个 ratio,除非设了 `--stop-on-failure`。
 
 > `_interrupted` 是内部行哨兵(非 CSV 列——`DictWriter` 丢弃它),`main()` 读它来区分"停扫描"(用户中断)还是"继续"(trial 超时)。下游分析脚本应按落盘的 `return_code == 130` 列判断,而非内存哨兵。
+
+### 8.6 跨架构/配置对比 (`oversub-compare`)
+
+`oversub-compare`(`src/bench_core/compare_sweeps.py`)对**已经产出的** `oversub-bench` sweep 结果做跨架构/跨配置的对比与可视化展示。它本身**不跑沙箱、不产生 benchmark 数据**——只消费 driver 已写好的 CSV 契约(`trajectory-detail.csv` + `trial-summary.csv`),把 N 个 sweep 输出目录按 `(mode, ratio, trajectory_id)` join 起来,产出 delta CSV + xlsx,跟 `oversub-bench` 是兄弟(不导入 kernel 数据路径内部)。
+
+**典型场景:** ARM 基线 vs 若干 x86 频率/L3 配置,ratio 1:1–1:6,看各轨迹在不同超分比下的端到端时延、exec/resume/pause/wait 分量、总体退化。host 级 freq/L3 cap 在 benchmark 外设(BIOS / cpufreq / l3cat),工具**不嗅探**——你在 manifest 里声明每个目录代表什么。
+
+#### 单 mode 一次比较
+
+一次 `oversub-compare` 比较**同一个 mode 的一组 series**(例如 `arm-life1 / arm-life2 / x86-life`,或 `x86-exec1 / x86-exec2 / arm-exec`)。要对比 exec_only 和 lifecycle 两种 mode,**分两次跑**——各产一个 workbook,摆一起看。工具不假设你把两个 mode 混进一个 manifest(`mode` 列每目录恒定,单 mode 干净)。
+
+#### manifest
+
+`config/oversub/compare-manifest.yaml` 是带注释模板:
+
+```yaml
+baseline_series: arm-ampere
+output_dir: results/oversub/comparison-2026-09-19/   # null = comparison-<ts>/
+series:
+  - {label: arm-ampere, arch: arm, dir: results/oversub/arm/,       caps: {l3_mb: 256}}
+  - {label: x86-base,   arch: x86, dir: results/oversub/x86-base/,   caps: {freq_ghz: 3.0, l3_mb: 64}}
+  - {label: x86-freq2,  arch: x86, dir: results/oversub/x86-freq2/,  caps: {freq_ghz: 2.0, l3_mb: 64}}
+```
+
+`baseline_series` 是所有 delta 的参照(ARM 约定为基线;任一 series 都行)。`caps` 是**信息性**——在 Overview + series 标签里露出,不被解析。相对 `dir` 路径相对 manifest 所在目录解析(可移植)。未知键被拒(`serie:` 笔误直接报错)。
+
+#### 调用方式
+
+```bash
+oversub-compare --manifest config/oversub/compare-manifest.yaml
+oversub-compare --arm results/oversub/arm/ --x86 results/oversub/x86/   # 双目录简写(arm 为基线)
+oversub-compare --manifest ... --allow-mismatched-n   # N 不一致也硬跑(默认拒绝)
+```
+
+#### 输入(每个 series 目录,driver 既有契约)
+
+- `trajectory-detail.csv` — 每 `(mode, ratio, repeat, trajectory_id)` 一行 + `elapsed_sec` 与 18 个 `*_sec` 分解列。
+- `trial-summary.csv` — 每 trial 的 `wall_sec / tasks_per_sec / lifecycle_overhead_pct / avg_queue_wait_sec` 等。
+- `benchmark-report.json` — `configuration`(N-parity 校验用)。
+
+缺文件直接报错并指路径。
+
+#### 输出(`<output_dir>/`)
+
+| 文件 | 内容 |
+|------|------|
+| `comparison-tidy.csv` | 长表:`series, arch, <caps…>, mode, ratio, repeat, trajectory_id, metric, value`(concat+melt,最灵活) |
+| `comparison-ratio-summary.csv` | 每 `(mode, ratio, series, metric)` 一行:median + delta vs 基线 + pct + 该 series 自己 k=1 的退化%;无 k=1 的 series 退化为空(不崩) |
+| `comparison-trajectory-delta.csv` | 按 `(mode, ratio, trajectory_id)` join:基线 `elapsed_sec` + 各 series 值 + delta;缺席侧留空,orphan 计数上 Overview |
+| `comparison.xlsx` | 4 个 sheet(见下) |
+
+#### `comparison.xlsx` 四个 sheet
+
+1. **Overview** — manifest(series/arch/caps/基线)、N-parity 校验结果、每 series valid/invalid trial 计数、median e2e 头表。
+2. **Per-ratio** — 最多 3 个 LineChart,各一轴(非双轴):① 绝对 median e2e(谁更快);② 对各自 k=1 的退化%(谁超分退化更狠);③ `lifecycle_overhead_pct`(lifecycle 比较的 pause/resume 开销占比)。exec_only 比较下 ③ 自动省略——driver 对 exec_only 写空 cell(无 lifecycle_overhead),pandas 读 NaN,子集为空就跳过,不留平零线。
+3. **Component heatmaps** — 一个 component 一张 grid(rows=series,cols=ratio,ColorScale 单色由浅到深):`exec / resume / pause / slot_contention_wait`。`create / kill` **不在内**——lifecycle/exec_only 下它们每步是 0(只有 trajectory 模式才有 per-trajectory create_one/kill_one),热力图只会是平零;两列仍在 tidy CSV 里供 drill-down。
+4. **Per-trajectory delta** — 按 trajectory join 的 e2e delta;freeze panes 在 D2。
+
+#### N-parity 守卫
+
+`running_concurrency` 跨 series 必须一致——不同 N 意味着 ratio 1:k 映射到不同绝对沙箱数,跨 series 比较就是 apples-to-oranges。不一致默认拒绝,`--allow-mismatched-n` 硬跑。invalid trial **留在 median 里**(中位对一个 flaky repeat 鲁棒),Overview 露出每 series 的 valid/invalid 计数,由你决定要不要 drop + 重跑。
+
+#### Runbook
+
+1. ARM 上:`oversub-bench --sweep-config config/oversub/lifecycle-1to6.yaml --output-root results/oversub/arm/`
+2. 每个 x86 配置(主机间改 freq/L3):`oversub-bench ... --output-root results/oversub/x86-<config>/`
+3. 编辑 `config/oversub/compare-manifest.yaml` 指向各目录 + 声明 caps。
+4. `oversub-compare --manifest config/oversub/compare-manifest.yaml`
+5. 打开 `results/oversub/comparison-<ts>/comparison.xlsx`。
+
+对比 exec_only vs lifecycle:重复 1–5,各自一个 manifest(一个 mode 一组 series),两个 workbook 摆一起看。
