@@ -37,8 +37,8 @@ import pytest
 
 from bench_core.bench import _make_sigterm_handler, run_benchmark
 from bench_core.config import KernelConfig
-from bench_core.round_robin import RoundRobinTaskManager
-from bench_core.task_manager import TaskManager
+from bench_core.task_manager.round_robin import RoundRobinTaskManager
+from bench_core.task_manager.fixed import TaskManager
 from bench_core.task_runner.replay import ReplayConfig
 from bench_core.utils import _atomic_write_text
 
@@ -173,7 +173,7 @@ def test_partial_trajectory_index_flushed_on_lifecycle_exception(tmp_path, monke
 
         The real runner flushes each event on write, so these survive the crash
         without ``close()``. ``self.series`` is the ``LifecycleSeriesWriter``
-        passed into ``RoundRobinTaskManager`` (see round_robin.py:57).
+        passed into ``RoundRobinTaskManager`` (see task_manager/round_robin.py:57).
         """
         if self.series is not None:
             for tid in ("traj-a", "traj-b"):

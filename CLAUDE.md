@@ -66,8 +66,8 @@ The kernel (`bench_core`) and every provider impl depend on the contract (`env_p
 **`bench_core` kernel** (`src/bench_core/`):
 - `bench.py` — `run_benchmark(config, provider)` spine: `prepare_env → create/detect → (create-only | warmup-only | cleanup-only | benchmark) → stop → report`. `_build_provider` lazy-imports the selected provider submodule. `_promote` lifts provider `SandboxInstance` → kernel `BenchSandbox` (attaches workflow metrics).
 - `config.py` — `KernelConfig`. `KernelConfig.from_raw(raw)` is the **single reader** of the shared stress sections (`sandbox` / `create_batch` / `task_batch` / `browser` / `coding` / `document` / `test` / `report` / `workflow_type`). `__post_init__` auto-fills `coding_source_files` from `CODING_LANGUAGE_DEFAULT_SOURCE_FILES[language]` (ts→vuejs/core, go→gohugoio/hugo, python→django/django), so coding configs omit `source_files`.
-- `task_manager.py` + `task_runner/{browser,coding,document}.py` — the three workflows. Browser rides HTTP (agent-browser on port 18789) on top of a backend the provider starts; coding/document are pure `exec` (verify script written via heredoc through `exec`).
-- `round_robin.py` — `RoundRobinTaskManager` (group rotation, per-step timing).
+- `task_manager/fixed.py` + `task_runner/{browser,coding,document}.py` — the three workflows. Browser rides HTTP (agent-browser on port 18789) on top of a backend the provider starts; coding/document are pure `exec` (verify script written via heredoc through `exec`).
+- `task_manager/round_robin.py` — `RoundRobinTaskManager` (group rotation, per-step timing).
 - `stats_collector.py` — snapshots + report generation (`generate_report` / `save_report`).
 - `coding_payload.py` — canonical coding replacement pairs + verify scripts.
 - `monitor.py` — `MonitorController` + `MonitorConfig`: host-level `vm-monitor` orchestration around the stress phase (stress-file sync subprocess; auto-enable by provider `vmm_type`; outputs to `report.output_dir/vm_monitor/`; optional host-sheet merge into replay obs xlsx).
@@ -99,7 +99,7 @@ These have their own managers / stats / round-robin (`e2b_bench/run_benchmark` i
 
 | Package | Purpose | Key Files |
 |---------|---------|-----------|
-| `src/bench_core/` | host-agnostic kernel (recommended) | `bench.py`, `config.py`, `task_manager.py`, `round_robin.py`, `stats_collector.py`, `task_runner/{browser,coding,document}.py`, `coding_payload.py` |
+| `src/bench_core/` | host-agnostic kernel (recommended) | `bench.py`, `config.py`, `task_manager/{fixed,round_robin}.py`, `stats_collector.py`, `task_runner/{browser,coding,document}.py`, `coding_payload.py` |
 | `src/env_provider/` | provider contract + e2b/docker/aenv/fake impls | `__init__.py` (ABC + capability Protocols), `_base.py`, `_ready.py`, `e2b/`, `docker/`, `aenv/`, `fake.py` |
 | `vm_monitor/` | VMM monitoring (QEMU/Firecracker) | `base.py`, `qemu.py`, `firecracker.py`, `parsers.py`, `exporters.py` |
 | `e2b_bench/` | E2B sandbox testing (frozen legacy) | `bench.py`, `round_robin.py`, `task_runner.py`, `sandbox_manager.py`, `batch_scheduler.py`, `stats_collector.py` |

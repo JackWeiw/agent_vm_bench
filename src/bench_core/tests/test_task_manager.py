@@ -13,7 +13,7 @@ import threading
 
 from bench_core.config import KernelConfig
 from bench_core.schemas import BenchSandbox
-from bench_core.task_manager import TaskManager
+from bench_core.task_manager.fixed import TaskManager
 from bench_core.task_runner.browser import BrowserConfig, BrowserTaskRunner
 from bench_core.task_runner.coding import CodingConfig
 from bench_core.task_runner.replay import ReplayConfig
