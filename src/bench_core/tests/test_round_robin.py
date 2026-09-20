@@ -15,7 +15,7 @@ import time
 
 from bench_core.config import KernelConfig
 from bench_core.observability.stats_collector import StatsCollector
-from bench_core.round_robin import RoundRobinTaskManager
+from bench_core.task_manager.round_robin import RoundRobinTaskManager
 from bench_core.schemas import BenchSandbox
 from bench_core.task_runner.browser import BrowserConfig
 from bench_core.task_runner.replay import ReplayConfig

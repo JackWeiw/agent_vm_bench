@@ -35,9 +35,9 @@ from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 from bench_core.observability.monitor import MonitorController
 from bench_core.observability.snapshot_scanner import SnapshotSizeScanner
 from bench_core.observability.stats_collector import StatsCollector
-from bench_core.round_robin import RoundRobinTaskManager
+from bench_core.task_manager.round_robin import RoundRobinTaskManager
 from bench_core.schemas import BenchSandbox
-from bench_core.task_manager import TaskManager
+from bench_core.task_manager.fixed import TaskManager
 from bench_core.task_runner.coding import CodingConfig
 from bench_core.task_runner.document import DocumentConfig
 from bench_core.task_runner.replay import ReplayConfig
