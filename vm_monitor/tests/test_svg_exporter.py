@@ -219,6 +219,7 @@ class TestSvgExport(unittest.TestCase):
         self.assertEqual(
             sorted(os.path.basename(p) for p in written),
             [
+                "cpu.svg",
                 "disk_io.svg",
                 "disk_latency.svg",
                 "host_pressure.svg",
@@ -276,6 +277,19 @@ class TestSvgExport(unittest.TestCase):
         # Pressure / cache / runstate moved to host_pressure.svg, not here.
         self.assertNotIn("Page-Cache Pressure", text)
         self.assertNotIn("Runnable / Blocked Procs", text)
+
+    def test_cpu_report_is_dedicated_enlarged_curve(self):
+        export_svg_reports(self.monitor, self.out_dir)
+        text = open(os.path.join(self.out_dir, "cpu.svg"), encoding="utf-8").read()
+        # Whole-machine CPU + IOWait are the two series.
+        self.assertIn("Host CPU Utilization", text)
+        self.assertIn("CPU", text)
+        self.assertIn("IOWait", text)
+        # Single chart (no mem/dirty/wb panels cluttering the leadership view).
+        self.assertEqual(text.count('class="chart-title"'), 1)
+        # No memory-axis charts leaked in.
+        self.assertNotIn("Dirty", text)
+        self.assertNotIn("Writeback", text)
 
     def test_host_pressure_report_carries_pressure_charts(self):
         export_svg_reports(self.monitor, self.out_dir)

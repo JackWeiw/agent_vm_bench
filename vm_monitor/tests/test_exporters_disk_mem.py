@@ -197,6 +197,7 @@ class TestDiskIoAndHostMemSheets(unittest.TestCase):
         self.assertNotIn("Disk_IO_Timeline", names)
         self.assertNotIn("Host_Mem_Timeline", names)
         self.assertNotIn("Host_Pressure_Timeline", names)
+        self.assertNotIn("Host_CPU_Timeline", names)
 
 
 if __name__ == "__main__":
