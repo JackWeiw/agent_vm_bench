@@ -828,6 +828,7 @@ class ReplayBaseRunner(TaskRunner):
                             "sandbox_index": self.state.index,
                             "timestamp": time.time(),
                             "trajectory_id": traj.instance_id,
+                            "round_id": getattr(self, "round_id", None),
                             "create_sec": create_sec,
                             "success": True,
                         }
@@ -842,6 +843,7 @@ class ReplayBaseRunner(TaskRunner):
                             "sandbox_index": self.state.index,
                             "timestamp": time.time(),
                             "trajectory_id": traj.instance_id,
+                            "round_id": getattr(self, "round_id", None),
                             "create_sec": create_sec,
                             "success": False,
                             "error_type": type(e).__name__,
@@ -905,6 +907,7 @@ class ReplayBaseRunner(TaskRunner):
                             "sandbox_index": self.state.index,
                             "timestamp": time.time(),
                             "trajectory_id": traj.instance_id,
+                            "round_id": getattr(self, "round_id", None),
                             "kill_sec": kill_sec,
                             "success": True,
                         }
@@ -918,6 +921,7 @@ class ReplayBaseRunner(TaskRunner):
                             "sandbox_index": self.state.index,
                             "timestamp": time.time(),
                             "trajectory_id": traj.instance_id,
+                            "round_id": getattr(self, "round_id", None),
                             "kill_sec": kill_sec,
                             "success": False,
                             "error_type": type(e).__name__,
@@ -1012,6 +1016,7 @@ class ReplayBaseRunner(TaskRunner):
                     "event": "trajectory_failed",
                     "sandbox_index": self.state.index,
                     "trajectory_id": traj.instance_id,
+                    "round_id": getattr(self, "round_id", None),
                     "create_sec": create_sec,
                     "kill_sec": kill_sec,
                 }

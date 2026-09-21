@@ -1,18 +1,31 @@
 """Per-trajectory ``replay_result.json`` export + ``trajectories/index.json`` catalog.
 
+Two-tier (see :mod:`bench_core.observability.trajectory_summary`): the kernel
+emits RAW per-run records (one per ``(trajectory_id, sandbox_index, round_id)``);
+this module rolls them into a per-trajectory aggregate + a per-run drill-down.
+
+- ``trajectories/index.json`` -- one LEAN row per trajectory (the aggregate
+  headline: ``n_runs``/``n_success``/``n_failed``/``elapsed_sec`` success-median
+  + a slim ``runs[]`` array). The oversub driver expands ``runs[]`` into one
+  ``trajectory-detail.csv`` row per run so a reader gets per-run latency at any
+  pool/N ratio and can ``groupby trajectory_id`` for the per-trajectory median.
+- ``trajectories/<sanitized_tid>/replay_result.json`` -- the DEEP per-trajectory
+  artifact: the full ``all_runs``/``successful_runs`` aggregate sets (p50/p95/avg
+  per metric) + ``runs[].steps[]`` (per-step drill-down scoped to each run).
+  ``replay_result.json`` is one-per-trajectory but a trajectory that ran on
+  multiple sandboxes (pool < N) carries one ``runs[]`` entry per run.
+
 **stderr is unavailable by design.** The lifecycle series excludes raw
 stdout/stderr to stay compact and backend-agnostic; a ``step`` event carries
 timings + ``exit_code`` + ``slice_failed``/``timed_out`` flags but NO error
 text. The only failure signal the series carries is the trajectory-level
 ``error_type`` + ``error`` (a short string, ``[:120]``) on
 ``trajectory_create(success=False)`` / ``trajectory_kill(success=False)``
-events. So ``create_error``/``kill_error`` is what a user sees for a
-trajectory that failed at create/kill, and a *successful* trajectory whose
-individual steps failed (``exit_code != 0``) shows only
-``return_code``/``timed_out``/``slice_failed`` per step -- no error text. The
-``stderr: null`` in each step is therefore by-design, not a bug. (Long-term,
-out of scope here: an optional runner config to emit a truncated step-error
-summary into the series for failed slices.)
+events. So ``create_error``/``kill_error`` is what a user sees for a run that
+failed at create/kill, and a *successful* run whose individual steps failed
+(``exit_code != 0``) shows only ``return_code``/``timed_out``/``slice_failed``
+per step -- no error text. The ``stderr: null`` in each step is therefore
+by-design, not a bug.
 
 **Naming collision.** The reference replay-aenv-main per-step ``paused_sec``
 is the think-time gap *between* slices; bench-core's series field
@@ -28,12 +41,39 @@ import re
 from pathlib import Path
 
 from bench_core.observability.lifecycle_series import load_events
-from bench_core.observability.trajectory_summary import SEG_KEYS, trajectory_summaries
+from bench_core.observability.trajectory_summary import (
+    SEG_KEYS,
+    aggregate_trajectories,
+    trajectory_summaries,
+)
 from bench_core.utils import _atomic_write_text, calc_percentiles
 
-# Fields excluded from the per-step distribution (aggregates). The 9 SEG_KEYS
-# are the durations worth distributing; flag/identity fields are not.
 _UNSAFE_TID = re.compile(r"[^A-Za-z0-9._-]")
+
+# SEG_KEY -> short key used in the flat ``time_breakdown_sec`` dict (kept
+# aligned with oversub._BREAKDOWN_KEY_TO_COL so the CSV reader maps each seg).
+_BREAKDOWN_SHORT = {
+    "slice_total_sec": "slice_total",
+    "exec_sec": "exec",
+    "resume_sec": "resume",
+    "pause_sec": "pause",
+    "interaction_total_sec": "interaction_total",
+    "slot_contention_wait_sec": "slot_contention_wait",
+    "natural_delay_sec": "natural_delay",
+    "capacity_wait_sec": "capacity_wait",
+    "rate_pacing_wait_sec": "rate_pacing_wait",
+    "inflight_wait_sec": "inflight_wait",
+    "resume_rate_pacing_wait_sec": "resume_rate_pacing_wait",
+    "pause_rate_pacing_wait_sec": "pause_rate_pacing_wait",
+    "resume_inflight_wait_sec": "resume_inflight_wait",
+    "pause_inflight_wait_sec": "pause_inflight_wait",
+    "running_slot_held_sec": "running_slot_held",
+}
+
+
+def _sort_key(x) -> tuple:
+    """Sort None last without comparing None to int (avoids TypeError)."""
+    return (x is None, x)
 
 
 def export_trajectories(
@@ -45,7 +85,8 @@ def export_trajectories(
     """Load the lifecycle series and write one ``replay_result.json`` per trajectory.
 
     Also writes ``<output_dir>/trajectories/index.json`` -- a browsable
-    top-level catalog (one short-summary row per trajectory) so a fleet of
+    top-level catalog (one aggregate row per trajectory, plus a slim ``runs[]``
+    array the oversub driver expands into per-run CSV rows) so a fleet of
     dozens/hundreds of trajectories is navigable without walking folders.
 
     Returns the number of trajectories written. No-op (``0``) if the series
@@ -55,32 +96,47 @@ def export_trajectories(
     already has a unique ``output_dir``).
     """
     events = load_events(Path(series_path))
-    summaries = trajectory_summaries(events)
-    if not summaries:
+    per_run = trajectory_summaries(events)
+    if not per_run:
         return 0
+    aggregate = aggregate_trajectories(per_run)
 
     base = Path(output_dir) / "trajectories"
     base.mkdir(parents=True, exist_ok=True)
 
-    # Index step events by trajectory_id so each record can carry its steps[]
-    # in step_index order. (trajectory_summaries already summed them; this is
-    # the per-step drill-down.)
-    steps_by_tid: dict[str, list[dict]] = {}
+    # Per-run step drill-down, keyed by (tid, sandbox, round) so each run record
+    # carries its own steps[] in step_index order. (trajectory_summaries already
+    # computed per-run sums/elapsed; this is the per-step drill-down.)
+    steps_by_run: dict[tuple, list[dict]] = {}
     for ev in events:
         if ev.get("event") == "step":
-            tid = ev.get("trajectory_id") or ""
-            steps_by_tid.setdefault(tid, []).append(ev)
+            key = (ev.get("trajectory_id") or "", ev.get("sandbox_index"), ev.get("round_id"))
+            steps_by_run.setdefault(key, []).append(ev)
+
+    runs_by_tid: dict[str, list[dict]] = {}
+    for r in per_run:
+        runs_by_tid.setdefault(r["trajectory_id"], []).append(r)
 
     index_rows: list[dict] = []
-    for s in summaries:
-        tid = s["trajectory_id"]
-        steps = sorted(steps_by_tid.get(tid, []), key=lambda e: e.get("step_index", 0))
-        record = _build_record(s, steps)
+    for agg in aggregate:
+        tid = agg["trajectory_id"]
+        run_sums = sorted(
+            runs_by_tid.get(tid, []),
+            key=lambda r: (_sort_key(r["sandbox_index"]), _sort_key(r["round_id"])),
+        )
+        run_records = []
+        for r in run_sums:
+            steps = sorted(
+                steps_by_run.get((r["trajectory_id"], r["sandbox_index"], r["round_id"]), []),
+                key=lambda e: e.get("step_index", 0),
+            )
+            run_records.append(_build_run_record(r, steps))
+        record = _build_tid_record(agg, run_records)
         sanitized = _sanitize_tid(tid)
         sub = base / sanitized
         sub.mkdir(parents=True, exist_ok=True)
         _atomic_write_text(sub / "replay_result.json", json.dumps(record, indent=2) + "\n")
-        index_rows.append(_index_row(record, sanitized))
+        index_rows.append(_index_row(agg, run_sums, sanitized))
 
     index = {"n_trajectories": len(index_rows), "trajectories": index_rows}
     _atomic_write_text(base / "index.json", json.dumps(index, indent=2) + "\n")
@@ -106,18 +162,40 @@ def _sanitize_tid(tid: str) -> str:
     return f"{name}_{suffix}"
 
 
-def _build_record(s: dict, steps: list[dict]) -> dict:
-    """Assemble the full replay_result.json record from a summary + its steps."""
+def _flat_breakdown(sums: dict, requested_delay: float, create: float, kill: float) -> dict:
+    """Flat short-key breakdown dict from a single run's sums (for index runs[])."""
+    bd = {_short: round(float(sums[seg]), 6) for seg, _short in _BREAKDOWN_SHORT.items()}
+    bd["requested_delay"] = round(float(requested_delay), 6)
+    bd["create"] = round(float(create), 6)
+    bd["kill"] = round(float(kill), 6)
+    return bd
+
+
+def _flat_breakdown_p50(set_dict: dict) -> dict:
+    """Flat short-key breakdown of p50 values from an aggregate set (for index top level)."""
+    tbs = set_dict["time_breakdown_sec"]
+    bd = {_short: tbs[seg]["p50"] for seg, _short in _BREAKDOWN_SHORT.items()}
+    bd["requested_delay"] = set_dict["requested_delay_sec"]["p50"]
+    bd["create"] = set_dict["create_sec"]["p50"]
+    bd["kill"] = set_dict["kill_sec"]["p50"]
+    return bd
+
+
+def _build_run_record(s: dict, steps: list[dict]) -> dict:
+    """Assemble the deep per-run record (one entry in replay_result.json ``runs[]``).
+
+    ``elapsed_sec``/``requested_delay_sec`` come straight from the per-run
+    summary (trajectory_summaries already computed them from the step stamps) --
+    no re-derivation here. This fn adds the per-run overhead + per-segment
+    distribution + per-step enrichment that need the step list.
+    """
     sums = s["sums"]
     n = s["n_steps"]
 
     # Inter-step think gaps (the reference's paused_sec). step i>0 ->
-    # max(0, resume_start[i] - pause_end[i-1]); step 0 -> 0.0.
-    #
-    # Sentinel guard: a failed step's resume_start/pause_end are 0.0 (not None,
-    # see _failed_series_record), while real series stamps are time.time()
-    # epochs (~1.8e9, always positive). Drop <=0 sentinels or the cross-step
-    # gap becomes ~1.8e9s (same bug class lifecycle_reconstruct._segment guards).
+    # max(0, resume_start[i] - pause_end[i-1]); step 0 -> 0.0. Sentinel guard:
+    # a failed step's stamps are 0.0 (not None); drop <=0 sentinels or the
+    # cross-step gap becomes ~1.8e9s.
     paused_secs: list[float] = []
     for i, ev in enumerate(steps):
         gap = 0.0
@@ -128,22 +206,8 @@ def _build_record(s: dict, steps: list[dict]) -> dict:
             if pe is not None and rs is not None and float(pe) > 0 and float(rs) > 0:
                 gap = max(0.0, float(rs) - float(pe))
         paused_secs.append(gap)
-    requested_delay = sum(paused_secs)
 
-    # elapsed: prefer wall-clock span from first resume_start to last pause_end;
-    # add create+kill lifecycle cost. Fall back to slice_total + idle when
-    # timestamps are absent (exec-only / synthetic series). Same <=0 sentinel
-    # guard as above so a failed step's zeroed stamps don't collapse the span
-    # to ~1.8e9s.
-    resume_starts = [float(e["resume_start"]) for e in steps if e.get("resume_start") and float(e["resume_start"]) > 0]
-    pause_ends = [float(e["pause_end"]) for e in steps if e.get("pause_end") and float(e["pause_end"]) > 0]
-    create_kill = s["create_sec"] + s["kill_sec"]
-    if resume_starts and pause_ends:
-        elapsed = max(pause_ends) - min(resume_starts) + create_kill
-    else:
-        elapsed = sums["slice_total_sec"] + requested_delay + create_kill
-
-    # Overhead decomposition (reference's pause_resume_overhead).
+    # Overhead decomposition (reference's pause_resume_overhead), from this run's sums.
     resume_pause_total = sums["resume_sec"] + sums["pause_sec"]
     per_cycle = resume_pause_total / n if n else 0.0
     slice_total = sums["slice_total_sec"]
@@ -171,17 +235,18 @@ def _build_record(s: dict, steps: list[dict]) -> dict:
         aggregates[k] = agg
 
     enriched = [_enrich_step(i, ev, gap) for i, (ev, gap) in enumerate(zip(steps, paused_secs))]
+    success = s["success_rate"] is not None and s["success_rate"] >= 1.0
 
     return {
-        "trajectory_id": s["trajectory_id"],
         "sandbox_index": s["sandbox_index"],
         "round_id": s["round_id"],
         "n_steps": n,
         "n_failed": s["n_failed"],
         "n_timeout": s["n_timeout"],
         "success_rate": s["success_rate"],
-        "elapsed_sec": round(elapsed, 6),
-        "requested_delay_sec": round(requested_delay, 6),
+        "success": success,
+        "elapsed_sec": s["elapsed_sec"],
+        "requested_delay_sec": s["requested_delay_sec"],
         "create_sec": round(s["create_sec"], 6),
         "kill_sec": round(s["kill_sec"], 6),
         "create_error_type": s["create_error_type"],
@@ -192,6 +257,38 @@ def _build_record(s: dict, steps: list[dict]) -> dict:
         "overhead": overhead,
         "aggregates": aggregates,
         "steps": enriched,
+    }
+
+
+def _build_tid_record(agg: dict, run_records: list[dict]) -> dict:
+    """Assemble the per-trajectory replay_result.json: aggregate + runs[].steps[]."""
+    # Per-trajectory overhead derived from the headline set's p50 resume/pause/
+    # slice/n_steps (successful_runs when present, else all_runs).
+    use_set = agg["successful_runs"] or agg["all_runs"]
+    tbs = use_set["time_breakdown_sec"]
+    resume_p50 = tbs["resume_sec"]["p50"]
+    pause_p50 = tbs["pause_sec"]["p50"]
+    slice_p50 = tbs["slice_total_sec"]["p50"]
+    n_steps_p50 = use_set["n_steps"]["p50"]
+    rpt = resume_p50 + pause_p50
+    overhead = {
+        "pause_resume_total_sec": round(rpt, 6),
+        "per_cycle_sec": round(rpt / n_steps_p50, 6) if n_steps_p50 else 0.0,
+        "pct_of_slice_total": round(rpt / slice_p50 * 100, 6) if slice_p50 else 0.0,
+    }
+    return {
+        "trajectory_id": agg["trajectory_id"],
+        "n_runs": agg["n_runs"],
+        "n_success": agg["n_success"],
+        "n_failed": agg["n_failed"],
+        "success_rate": agg["success_rate"],
+        "elapsed_sec": agg["elapsed_sec"],
+        "all_failed": agg["all_failed"],
+        "n_steps_max": agg["n_steps_max"],
+        "all_runs": agg["all_runs"],
+        "successful_runs": agg["successful_runs"],
+        "overhead": overhead,
+        "runs": run_records,
     }
 
 
@@ -242,49 +339,48 @@ def _enrich_step(index: int, ev: dict, paused_sec: float) -> dict:
     }
 
 
-def _index_row(rec: dict, sanitized: str) -> dict:
-    """Short summary row for trajectories/index.json (no steps[]/aggregates).
+def _index_row(agg: dict, run_summaries: list[dict], sanitized: str) -> dict:
+    """Lean per-trajectory row for trajectories/index.json (no steps[]/aggregates).
 
-    ``time_breakdown_sec`` carries the trajectory-level sums that decompose
-    ``elapsed_sec`` into exec / lifecycle-API (resume+pause) / inter-step think
-    delay / create+kill cost / queueing waits. Values are the sums already
-    rounded in ``_build_record`` (``rec["sums"]`` for the SEG_KEYS +
-    ``requested_delay_sec`` / ``create_sec`` / ``kill_sec`` at the record top
-    level). Surfacing them in the index -- not just in each replay_result.json --
-    lets downstream consumers (the oversub driver's trajectory-detail.csv)
-    attribute per-trajectory wall time from one file read per trial instead of
-    walking every replay_result.json.
+    Top level = the per-trajectory aggregate headline (``n_runs``/``n_success``/
+    ``n_failed``/``elapsed_sec`` success-median + ``time_breakdown_sec`` of p50s
+    for browsability / old readers). ``runs[]`` is the slim per-run array the
+    oversub driver expands into one ``trajectory-detail.csv`` row per run so a
+    reader gets per-run latency at any pool/N ratio.
     """
-    sums = rec["sums"]
+    use_set = agg["successful_runs"] or agg["all_runs"]
+    runs_slim = [
+        {
+            "sandbox_index": r["sandbox_index"],
+            "round_id": r["round_id"],
+            "elapsed_sec": r["elapsed_sec"],
+            "n_steps": r["n_steps"],
+            "n_failed": r["n_failed"],
+            "n_timeout": r["n_timeout"],
+            "success_rate": r["success_rate"],
+            "success": r["success_rate"] is not None and r["success_rate"] >= 1.0,
+            "create_error_type": r["create_error_type"],
+            "kill_error_type": r["kill_error_type"],
+            "time_breakdown_sec": _flat_breakdown(r["sums"], r["requested_delay_sec"], r["create_sec"], r["kill_sec"]),
+        }
+        for r in run_summaries
+    ]
+    # First-seen error types across runs (a run that failed at create surfaces
+    # its error_type so the worst case is visible at the per-trajectory level).
+    create_err_type = next((r["create_error_type"] for r in run_summaries if r["create_error_type"]), None)
+    kill_err_type = next((r["kill_error_type"] for r in run_summaries if r["kill_error_type"]), None)
     return {
-        "trajectory_id": rec["trajectory_id"],
-        "sandbox_index": rec["sandbox_index"],
-        "n_steps": rec["n_steps"],
-        "n_failed": rec["n_failed"],
-        "n_timeout": rec["n_timeout"],
-        "success_rate": rec["success_rate"],
-        "elapsed_sec": rec["elapsed_sec"],
-        "time_breakdown_sec": {
-            "slice_total": sums["slice_total_sec"],
-            "exec": sums["exec_sec"],
-            "resume": sums["resume_sec"],
-            "pause": sums["pause_sec"],
-            "requested_delay": rec["requested_delay_sec"],
-            "create": rec["create_sec"],
-            "kill": rec["kill_sec"],
-            "interaction_total": sums["interaction_total_sec"],
-            "slot_contention_wait": sums["slot_contention_wait_sec"],
-            "natural_delay": sums["natural_delay_sec"],
-            "capacity_wait": sums["capacity_wait_sec"],
-            "rate_pacing_wait": sums["rate_pacing_wait_sec"],
-            "inflight_wait": sums["inflight_wait_sec"],
-            "resume_rate_pacing_wait": sums["resume_rate_pacing_wait_sec"],
-            "pause_rate_pacing_wait": sums["pause_rate_pacing_wait_sec"],
-            "resume_inflight_wait": sums["resume_inflight_wait_sec"],
-            "pause_inflight_wait": sums["pause_inflight_wait_sec"],
-            "running_slot_held": sums["running_slot_held_sec"],
-        },
-        "create_error_type": rec["create_error_type"],
-        "kill_error_type": rec["kill_error_type"],
+        "trajectory_id": agg["trajectory_id"],
+        "n_runs": agg["n_runs"],
+        "n_success": agg["n_success"],
+        "n_failed": agg["n_failed"],
+        "success_rate": agg["success_rate"],
+        "elapsed_sec": agg["elapsed_sec"],
+        "all_failed": agg["all_failed"],
+        "n_steps_max": agg["n_steps_max"],
+        "time_breakdown_sec": _flat_breakdown_p50(use_set),
+        "runs": runs_slim,
+        "create_error_type": create_err_type,
+        "kill_error_type": kill_err_type,
         "file": f"{sanitized}/replay_result.json",
     }

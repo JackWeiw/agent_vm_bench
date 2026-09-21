@@ -175,7 +175,20 @@ def build_tidy(manifest: dict, tables: dict[str, dict[str, pd.DataFrame]]) -> pd
         df.insert(1, "arch", entry.get("arch", ""))
         for k, v in (entry.get("caps") or {}).items():
             df[k] = v  # scalar broadcast; concat aligns across series
-        id_vars = ["series", "arch", "mode", "ratio", "repeat", "trajectory_id", *(entry.get("caps") or {}).keys()]
+        id_vars = [
+            "series",
+            "arch",
+            "mode",
+            "ratio",
+            "repeat",
+            "trajectory_id",
+            "sandbox_index",
+            *(entry.get("caps") or {}).keys(),
+        ]
+        # Per-run CSVs (post per-run aggregation) carry round_id; pre-aggregation
+        # CSVs don't, so include it only when present (backward-compat melt).
+        if "round_id" in df.columns:
+            id_vars.append("round_id")
         tidy = df.melt(id_vars=id_vars, value_vars=TRAJECTORY_METRIC_COLS, var_name="metric", value_name="value")
         frames.append(tidy)
     return pd.concat(frames, ignore_index=True)
