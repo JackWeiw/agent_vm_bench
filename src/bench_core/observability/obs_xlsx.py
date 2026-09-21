@@ -382,7 +382,7 @@ class XlsxReportRenderer:
             _overview_banner(ws, "Per-step timing")
             _overview_subtable(
                 ws,
-                ["segment", "n", "min", "max", "avg", "p50", "p95", "p99"],
+                ["segment", "n", "min_s", "max_s", "avg_s", "p50_s", "p95_s", "p99_s"],
                 [_pcts_row(k, v) for k, v in timing.items() if v],
             )
 
@@ -448,7 +448,7 @@ class XlsxReportRenderer:
                 by_action.setdefault(act, []).extend(vals)
         for act in sorted(by_action):
             rows.append(_pcts_row(act, by_action[act]))
-        _write_table(ws, ["bucket", "n", "min", "max", "avg", "p50", "p95", "p99"], rows)
+        _write_table(ws, ["bucket", "n", "min_s", "max_s", "avg_s", "p50_s", "p95_s", "p99_s"], rows)
         # Per-step detail rows (latency per step, concatenated across sandboxes).
         # Downsampled: openpyxl inlines a numCache for every charted cell at save
         # time, so an uncapped 150k-point chart makes wb.save explode. The Step
@@ -493,7 +493,7 @@ class XlsxReportRenderer:
             lists["slot_held"].extend(m.running_slot_held_secs)
             lists["interaction"].extend(m.interaction_total_secs)
         rows = [_pcts_row(label, vals) for label, vals in lists.items()]
-        _write_table(ws, ["segment", "n", "min", "max", "avg", "p50", "p95", "p99"], rows)
+        _write_table(ws, ["segment", "n", "min_s", "max_s", "avg_s", "p50_s", "p95_s", "p99_s"], rows)
         # Per-step detail + line chart (resume/pause/slice ms over step index).
         n = len(lists["resume"])
         if n:
@@ -643,7 +643,7 @@ class XlsxReportRenderer:
                 ws.append([])
             rows = [_pcts_row("create_sec", [v for s in obs.states.values() for v in s.replay_metrics.create_secs])]
             rows.append(_pcts_row("kill_sec", [v for s in obs.states.values() for v in s.replay_metrics.kill_secs]))
-            _write_table(ws, ["segment", "n", "min", "max", "avg", "p50", "p95", "p99"], rows)
+            _write_table(ws, ["segment", "n", "min_s", "max_s", "avg_s", "p50_s", "p95_s", "p99_s"], rows)
 
     def _sheet_step_detail(self, wb: Workbook) -> None:
         """Per-trajectory per-step raw rows -- the detail behind the percentile tables.

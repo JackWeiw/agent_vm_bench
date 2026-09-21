@@ -1258,7 +1258,7 @@ def test_overview_renders_per_step_timing_section(tmp_path):
     # names), so read the Per-step timing subtable positionally from its banner,
     # not by col-A key (which would collide).
     start = next(i for i, r in enumerate(all_rows) if r and r[0] == "Per-step timing")
-    assert all_rows[start + 1][:8] == ["segment", "n", "min", "max", "avg", "p50", "p95", "p99"]
+    assert all_rows[start + 1][:8] == ["segment", "n", "min_s", "max_s", "avg_s", "p50_s", "p95_s", "p99_s"]
     seg_rows = {r[0]: r for r in all_rows[start + 2 : start + 6]}
     for seg in ("exec", "think", "pause", "resume"):
         assert seg in seg_rows, f"{seg} row missing from Per-step timing"
