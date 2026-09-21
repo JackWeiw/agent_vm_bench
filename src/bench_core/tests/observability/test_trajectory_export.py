@@ -104,9 +104,26 @@ def test_export_schema_matches_reference(tmp_path):
     _write(sp, [_step("traj-a", resume_start=10.0, pause_end=11.0)])
     export_trajectories(sp, tmp_path)
     rec = _records(tmp_path)["traj-a"]
-    # top-level keys (reference fields + bench-core extras)
+    # top-level keys (the per-trajectory aggregate headline)
     for k in (
         "trajectory_id",
+        "n_runs",
+        "n_success",
+        "n_failed",
+        "success_rate",
+        "elapsed_sec",
+        "all_failed",
+        "n_steps_max",
+        "all_runs",
+        "successful_runs",
+        "overhead",
+        "runs",
+    ):
+        assert k in rec, f"missing top-level key {k}"
+    assert len(rec["runs"]) == 1
+    run = rec["runs"][0]
+    # per-run deep record keys (reference fields + bench-core extras)
+    for k in (
         "sandbox_index",
         "round_id",
         "n_steps",
@@ -126,12 +143,12 @@ def test_export_schema_matches_reference(tmp_path):
         "aggregates",
         "steps",
     ):
-        assert k in rec, f"missing top-level key {k}"
+        assert k in run, f"missing per-run key {k}"
     # overhead decomposition (reference's pause_resume_overhead)
-    oh = rec["overhead"]
+    oh = run["overhead"]
     assert {"pause_resume_total_sec", "per_cycle_sec", "pct_of_slice_total"} <= set(oh)
     # steps[] entry carries the reference fields + stderr:null + sub-segments
-    st = rec["steps"][0]
+    st = run["steps"][0]
     for k in (
         "index",
         "action_type",
@@ -159,8 +176,8 @@ def test_export_schema_matches_reference(tmp_path):
     ):
         assert k in st, f"missing sub-segment {k}"
     # aggregates: per-segment distribution with p99 (consistent with calc_percentiles)
-    assert "slice_total_sec" in rec["aggregates"]
-    agg = rec["aggregates"]["slice_total_sec"]
+    assert "slice_total_sec" in run["aggregates"]
+    agg = run["aggregates"]["slice_total_sec"]
     assert {"n", "min", "max", "avg", "p50", "p95", "p99"} <= set(agg)
 
 
@@ -178,9 +195,10 @@ def test_export_aggregates_exclude_failed_steps(tmp_path):
     )
     export_trajectories(sp, tmp_path)
     rec = _records(tmp_path)["t"]
-    assert rec["n_failed"] == 1
-    assert rec["n_steps"] == 3
-    agg = rec["aggregates"]["exec_sec"]
+    run = rec["runs"][0]
+    assert run["n_failed"] == 1
+    assert run["n_steps"] == 3
+    agg = run["aggregates"]["exec_sec"]
     assert agg["n"] == 2  # the failed step (0.0) excluded
     assert agg["min"] == 0.4 and agg["max"] == 0.4
 
@@ -284,10 +302,12 @@ def test_export_reconstructs_paused_sec_and_elapsed(tmp_path):
     )
     export_trajectories(sp, tmp_path)
     rec = _records(tmp_path)["t"]
-    assert rec["steps"][0]["paused_sec"] == 0.0  # first step has no predecessor
-    assert rec["steps"][1]["paused_sec"] == 1.0
-    assert rec["requested_delay_sec"] == 1.0
-    assert rec["elapsed_sec"] == 3.0
+    run = rec["runs"][0]
+    assert run["steps"][0]["paused_sec"] == 0.0  # first step has no predecessor
+    assert run["steps"][1]["paused_sec"] == 1.0
+    assert run["requested_delay_sec"] == 1.0
+    assert run["elapsed_sec"] == 3.0
+    assert rec["elapsed_sec"] == 3.0  # headline == single run
 
 
 def test_export_failed_step_zeroed_timestamps_do_not_poison_elapsed(tmp_path):
@@ -317,12 +337,13 @@ def test_export_failed_step_zeroed_timestamps_do_not_poison_elapsed(tmp_path):
     )
     export_trajectories(sp, tmp_path)
     rec = _records(tmp_path)["t"]
+    run = rec["runs"][0]
     # elapsed = (epoch+5) - epoch = 5.0; NOT ~1.789e9 (epoch - 0.0).
-    assert rec["elapsed_sec"] == 5.0
+    assert run["elapsed_sec"] == 5.0
     # cross-step gap from the failed step's pause_end=0 to step1's resume_start
     # must be 0 (sentinel dropped), NOT ~1.789e9.
-    assert rec["steps"][1]["paused_sec"] == 0.0
-    assert rec["requested_delay_sec"] == 0.0
+    assert run["steps"][1]["paused_sec"] == 0.0
+    assert run["requested_delay_sec"] == 0.0
 
 
 def test_export_writes_index_json_catalog(tmp_path):
@@ -341,11 +362,13 @@ def test_export_writes_index_json_catalog(tmp_path):
         assert p.exists(), f"catalog file {r['file']} missing"
         for k in (
             "trajectory_id",
-            "n_steps",
+            "n_runs",
+            "n_success",
             "n_failed",
-            "n_timeout",
             "success_rate",
             "elapsed_sec",
+            "all_failed",
+            "n_steps_max",
             "time_breakdown_sec",
             "create_error_type",
             "kill_error_type",
@@ -407,8 +430,9 @@ def test_export_index_row_breakdown_matches_sums(tmp_path):
     # span reconstruction applies; here timestamps are present so elapsed uses the
     # wall span, but the component sums still account for all the time).
     rec = _records(tmp_path)["t"]
-    assert bd["slice_total"] == round(rec["sums"]["slice_total_sec"], 6)
-    assert bd["exec"] == round(rec["sums"]["exec_sec"], 6)
+    run = rec["runs"][0]
+    assert bd["slice_total"] == round(run["sums"]["slice_total_sec"], 6)
+    assert bd["exec"] == round(run["sums"]["exec_sec"], 6)
 
 
 def test_export_surfaces_create_kill_error(tmp_path):
@@ -432,6 +456,11 @@ def test_export_surfaces_create_kill_error(tmp_path):
     )
     export_trajectories(sp, tmp_path)
     rec = _records(tmp_path)["boom"]
-    assert rec["create_error_type"] == "TimeoutError"
-    assert rec["create_error"] == "create timed out after 30s"
-    assert rec["n_steps"] == 0
+    run = rec["runs"][0]
+    assert run["create_error_type"] == "TimeoutError"
+    assert run["create_error"] == "create timed out after 30s"
+    assert run["n_steps"] == 0
+    # per-trajectory aggregate surfaces the failure: all_failed, n_success=0.
+    assert rec["all_failed"] is True
+    assert rec["n_success"] == 0
+    assert rec["n_runs"] == 1

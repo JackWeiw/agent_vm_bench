@@ -817,24 +817,27 @@ def test_step_detail_sheet_empty_without_series(tmp_path):
 
 
 def test_trajectory_summary_attributes_cost_per_instance(tmp_path):
-    """Trajectory summary: per-instance SUMS (not percentiles) so each
+    """Trajectory summary: per-instance MEDIANS across runs (not sums) so each
     trajectory's wall-clock decomposes into pause/resume/exec/wait totals --
-    "where did this trajectory's time go", which percentiles (available in the
-    Step detail / Lifecycle overhead sheets) do not show."""
+    "where did this trajectory's time go". With one run per trajectory (pool>=N)
+    the median of one == the run's sums, so the cost-attribution decomposition
+    still holds; with pool < N the median is across the N/pool runs (NOT an
+    inflated sum). Percentiles live in the Step detail / Lifecycle overhead sheets."""
     from unittest.mock import MagicMock
 
     from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 
     sp = tmp_path / "s.jsonl"
     w = LifecycleSeriesWriter(sp)
-    # Two trajectories, 3 steps each, distinct resume/pause/wait so sums are
-    # attributable per instance. slice_total = resume + exec + pause exactly.
+    # Two trajectories, 3 steps each on ONE sandbox (pool>=N: 1 run per tid),
+    # distinct resume/pause/wait so the per-run sums are attributable. With 1 run
+    # the median == the run's sums. slice_total = resume + exec + pause exactly.
     for tid, resume, pause, slot_wait in (("traj-a", 0.10, 0.20, 0.01), ("traj-b", 0.50, 0.60, 0.05)):
         for i in range(3):
             w.write(
                 {
                     "event": "step",
-                    "sandbox_index": i,
+                    "sandbox_index": 0,
                     "trajectory_id": tid,
                     "step_index": i,
                     "exec_sec": 0.4,
@@ -863,17 +866,19 @@ def test_trajectory_summary_attributes_cost_per_instance(tmp_path):
 
     headers = [c.value for c in ws[1]]
     assert "trajectory_id" in headers
-    assert "n_steps" in headers
-    # sum-based cost-attribution columns (no percentiles on this sheet)
-    assert "slice_total_sum_s" in headers
-    assert "exec_sum_s" in headers
-    assert "resume_sum_s" in headers
-    assert "pause_sum_s" in headers
-    assert "slot_contention_wait_sum_s" in headers
-    assert "resume_rate_pacing_wait_sum_s" in headers
-    assert "pause_rate_pacing_wait_sum_s" in headers
-    assert "running_slot_held_sum_s" in headers
-    assert "avg_slice_s" in headers
+    assert "n_runs" in headers  # 1 run per tid (pool>=N)
+    assert "n_steps_median" in headers
+    # median-based cost-attribution columns (medians across runs; with n_runs==1
+    # the median == the single run's sums, so the decomposition still holds)
+    assert "slice_total_median_s" in headers
+    assert "exec_median_s" in headers
+    assert "resume_median_s" in headers
+    assert "pause_median_s" in headers
+    assert "slot_contention_wait_median_s" in headers
+    assert "resume_rate_pacing_wait_median_s" in headers
+    assert "pause_rate_pacing_wait_median_s" in headers
+    assert "running_slot_held_median_s" in headers
+    assert "avg_slice_median_s" in headers
     # no percentile columns remain (they live in Step detail / Lifecycle overhead)
     assert not any(h.endswith("_p50_s") for h in headers)
     # one row per trajectory (a, b), header + 2 rows
@@ -881,13 +886,13 @@ def test_trajectory_summary_attributes_cost_per_instance(tmp_path):
     traj_col = headers.index("trajectory_id") + 1
     assert ws.cell(2, traj_col).value == "traj-a"
     assert ws.cell(3, traj_col).value == "traj-b"
-    # traj-a: resume 3x0.10=0.30, pause 3x0.20=0.60, exec 3x0.4=1.2,
-    # slice_total 3x0.70=2.10, slot_wait 3x0.01=0.03
-    rs = headers.index("resume_sum_s") + 1
-    ps = headers.index("pause_sum_s") + 1
-    es = headers.index("exec_sum_s") + 1
-    ss = headers.index("slice_total_sum_s") + 1
-    sw = headers.index("slot_contention_wait_sum_s") + 1
+    # traj-a (1 run, 3 steps): resume 3x0.10=0.30, pause 3x0.20=0.60, exec 3x0.4=1.2,
+    # slice_total 3x0.70=2.10, slot_wait 3x0.01=0.03. Median of 1 == the sum.
+    rs = headers.index("resume_median_s") + 1
+    ps = headers.index("pause_median_s") + 1
+    es = headers.index("exec_median_s") + 1
+    ss = headers.index("slice_total_median_s") + 1
+    sw = headers.index("slot_contention_wait_median_s") + 1
     assert ws.cell(2, rs).value == 0.3
     assert ws.cell(2, ps).value == 0.6
     assert ws.cell(2, es).value == 1.2
@@ -895,13 +900,16 @@ def test_trajectory_summary_attributes_cost_per_instance(tmp_path):
     assert ws.cell(2, sw).value == 0.03
     # traj-b resume (1.50) > traj-a resume (0.30) -- per-instance separation
     assert ws.cell(3, rs).value == 1.5
-    # sum invariant: slice_total_sum == resume_sum + exec_sum + pause_sum
+    # sum invariant within the run: slice_total_median == resume+exec+pause medians
     assert round(ws.cell(2, rs).value + ws.cell(2, es).value + ws.cell(2, ps).value, 3) == ws.cell(2, ss).value
-    # avg_slice = slice_total_sum / n_steps (traj-a: 2.10 / 3 = 0.70)
-    n_col = headers.index("n_steps") + 1
-    avg_col = headers.index("avg_slice_s") + 1
+    # avg_slice = slice_total / n_steps (traj-a: 2.10 / 3 = 0.70); n_steps_median = 3
+    n_col = headers.index("n_steps_median") + 1
+    avg_col = headers.index("avg_slice_median_s") + 1
     assert ws.cell(2, n_col).value == 3
     assert ws.cell(2, avg_col).value == 0.7
+    # n_runs column reports the per-trajectory run count (1 here = pool>=N)
+    nr = headers.index("n_runs") + 1
+    assert ws.cell(2, nr).value == 1
 
 
 def test_trajectory_summary_has_stacked_cost_bar_chart(tmp_path):
@@ -951,8 +959,8 @@ def test_trajectory_summary_has_stacked_cost_bar_chart(tmp_path):
 
 def test_trajectory_summary_chart_legend_uses_header_names(tmp_path):
     """The stacked cost bar chart's legend must take titles from the HEADER row
-    (exec_sum_s / resume_sum_s / pause_sum_s), not from the first data row
-    (which would surface the first trajectory's numeric sums as legend labels).
+    (exec_median_s / resume_median_s / pause_median_s), not from the first data
+    row (which would surface the first trajectory's numeric medians as legend labels).
 
     Regression guard: header_row was derived as ws.max_row+1 on a fresh empty
     sheet, but openpyxl reports max_row==1 for an empty sheet, so the +1 aimed
@@ -965,12 +973,13 @@ def test_trajectory_summary_chart_legend_uses_header_names(tmp_path):
 
     sp = tmp_path / "s.jsonl"
     w = LifecycleSeriesWriter(sp)
+    # One run per tid (sandbox_index=0); median of 1 == the run's sums.
     for tid, resume, pause in (("traj-a", 0.10, 0.20), ("traj-b", 0.50, 0.60)):
         for i in range(3):
             w.write(
                 {
                     "event": "step",
-                    "sandbox_index": i,
+                    "sandbox_index": 0,
                     "trajectory_id": tid,
                     "step_index": i,
                     "exec_sec": 0.4,
@@ -995,7 +1004,7 @@ def test_trajectory_summary_chart_legend_uses_header_names(tmp_path):
 
     # Each series title is a StrRef into a header cell (titles_from_data=True).
     # Resolve the referenced cell and read its value -- must be a column name,
-    # not a numeric sum from the first trajectory's data row.
+    # not a numeric median from the first trajectory's data row.
     labels = []
     for s in ch.series:
         f = s.tx.strRef.f if (s.tx is not None and s.tx.strRef is not None) else None
@@ -1003,9 +1012,9 @@ def test_trajectory_summary_chart_legend_uses_header_names(tmp_path):
         assert m, f"unexpected series title reference: {f!r}"
         labels.append(ws[f"{m.group(1)}{m.group(2)}"].value)
     assert labels == [
-        "exec_sum_s",
-        "resume_sum_s",
-        "pause_sum_s",
+        "exec_median_s",
+        "resume_median_s",
+        "pause_median_s",
     ], f"chart legend should be header column names, got {labels}"
 
 
@@ -1087,20 +1096,22 @@ def test_trajectory_summary_has_failure_and_success_columns(tmp_path):
     ws = load_workbook(out)["Trajectory summary"]
 
     headers = [c.value for c in ws[1]]
-    assert "n_failed" in headers
-    assert "n_timeout" in headers
+    assert "n_failed" in headers  # runs that did not fully succeed (count OF runs)
+    assert "n_timeout_median" in headers  # median per-run timeout count
     assert "success_rate" in headers
 
     traj_col = headers.index("trajectory_id") + 1
     nf = headers.index("n_failed") + 1
-    nt = headers.index("n_timeout") + 1
+    nt = headers.index("n_timeout_median") + 1
     sr = headers.index("success_rate") + 1
-    # traj-a row (row 2): 1 failed, 0 timeout, success_rate 2/3
+    # traj-a (1 run, 2 success + 1 failed slice): the run's success_rate is 2/3
+    # (<1.0) so it counts as a failed run -> n_failed=1; n_timeout_median=0.
     assert ws.cell(2, traj_col).value == "traj-a"
     assert ws.cell(2, nf).value == 1
     assert ws.cell(2, nt).value == 0
     assert round(ws.cell(2, sr).value, 6) == round(2 / 3, 6)
-    # traj-b row (row 3): 0 failed, 1 timeout, success_rate 1.0 (timeout != slice_failed)
+    # traj-b (1 run, 1 success + 1 timeout): timeout != slice_failed, so the run
+    # fully succeeded -> n_failed=0; n_timeout_median=1; success_rate=1.0.
     assert ws.cell(3, traj_col).value == "traj-b"
     assert ws.cell(3, nf).value == 0
     assert ws.cell(3, nt).value == 1
@@ -1108,7 +1119,7 @@ def test_trajectory_summary_has_failure_and_success_columns(tmp_path):
 
 
 def test_trajectory_summary_has_data_bars_and_failure_color_scale(tmp_path):
-    """Conditional formatting: data bars on slice_total_sum_s + slot_contention_wait_sum_s
+    """Conditional formatting: data bars on slice_total_median_s + slot_contention_wait_median_s
     (longer bar = slower / more queueing) and a red color scale on n_failed --
     the at-a-glance outlier highlighting the reference's per-trial table lacks."""
     from unittest.mock import MagicMock
@@ -1137,8 +1148,8 @@ def test_trajectory_summary_has_data_bars_and_failure_color_scale(tmp_path):
     headers = [c.value for c in ws[1]]
     from openpyxl.utils import get_column_letter
 
-    slice_col = get_column_letter(headers.index("slice_total_sum_s") + 1)
-    slot_col = get_column_letter(headers.index("slot_contention_wait_sum_s") + 1)
+    slice_col = get_column_letter(headers.index("slice_total_median_s") + 1)
+    slot_col = get_column_letter(headers.index("slot_contention_wait_median_s") + 1)
     nf_col = get_column_letter(headers.index("n_failed") + 1)
 
     rule_cols = []  # (type, covered-column-letter)

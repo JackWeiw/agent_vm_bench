@@ -9,7 +9,7 @@ the worst trajectories vanish from the comparison.
 """
 from __future__ import annotations
 
-from bench_core.observability.trajectory_summary import SEG_KEYS, trajectory_summaries
+from bench_core.observability.trajectory_summary import SEG_KEYS, aggregate_trajectories, trajectory_summaries
 
 
 def _step(
@@ -68,7 +68,7 @@ class TestTrajectorySummaries:
                     _step(
                         tid,
                         step_index=i,
-                        sandbox_index=i,
+                        sandbox_index=0,
                         resume_sec=resume,
                         pause_sec=pause,
                         slot_contention_wait_sec=slot_wait,
@@ -187,21 +187,27 @@ class TestTrajectorySummaries:
         out = trajectory_summaries(events)
         assert [s["trajectory_id"] for s in out] == ["aaa", "mmm", "zzz"]
 
-    def test_sums_accumulate_across_rounds_for_recurring_tid(self):
-        # Round-robin / multi-round: the same trajectory_id recurs; sums must
-        # accumulate across rounds (total cost, not per-instance average) --
-        # matches the existing inline step-sum semantics.
+    def test_per_run_keying_separates_rounds(self):
+        # Per-run keying: the same trajectory_id in two rounds (same sandbox) is
+        # TWO runs -- not one summed record. Each run keeps its own sums; the
+        # per-trajectory aggregate (aggregate_trajectories) rolls them up via
+        # median, NOT sum (summing across runs is the pool<N inflation bug).
         events = [
-            _step("traj-x", round_id=0, step_index=0, exec_sec=0.4, resume_sec=0.1, pause_sec=0.2),
-            _step("traj-x", round_id=1, step_index=0, exec_sec=0.4, resume_sec=0.1, pause_sec=0.2),
+            _step("traj-x", round_id=0, sandbox_index=0, step_index=0, exec_sec=0.4, resume_sec=0.1, pause_sec=0.2),
+            _step("traj-x", round_id=1, sandbox_index=0, step_index=0, exec_sec=0.4, resume_sec=0.1, pause_sec=0.2),
         ]
         out = trajectory_summaries(events)
-        assert len(out) == 1
-        x = out[0]
-        assert x["n_steps"] == 2
-        assert round(x["sums"]["exec_sec"], 3) == 0.8
-        assert round(x["sums"]["resume_sec"], 3) == 0.2
-        assert round(x["avg_slice"], 3) == round((0.2 + 0.8 + 0.4) / 2, 3)  # per-attempt avg
+        assert len(out) == 2  # two runs, not one summed record
+        for r in out:
+            assert r["trajectory_id"] == "traj-x"
+            assert r["sandbox_index"] == 0
+            assert r["n_steps"] == 1
+            assert round(r["sums"]["exec_sec"], 3) == 0.4
+        # aggregate rolls the two runs up: median exec == 0.4 (NOT sum 0.8).
+        agg = aggregate_trajectories(out)
+        assert len(agg) == 1
+        assert agg[0]["n_runs"] == 2
+        assert agg[0]["all_runs"]["time_breakdown_sec"]["exec_sec"]["p50"] == 0.4  # median, not sum
 
     def test_create_kill_error_surfaced(self):
         # trajectory_create(success=False) carries error_type + error ([:120]);
@@ -258,3 +264,112 @@ class TestTrajectorySummaries:
             {"event": "snapshot_size", "sandbox_index": 0, "pause_seq": 1, "logical_bytes": 100},
         ]
         assert trajectory_summaries(events) == []
+
+
+class TestAggregateTrajectories:
+    def test_median_not_sum_across_runs(self):
+        # 3 runs of the same tid with elapsed 1, 2, 3. Per-tid median elapsed
+        # == 2.0 (NOT sum 6.0 -- summing across runs is the pool<N inflation bug).
+        events = [
+            _step("t", sandbox_index=sb, round_id=0, step_index=0, exec_sec=exec_sec, resume_sec=0.0, pause_sec=0.0)
+            for sb, exec_sec in ((0, 1.0), (1, 2.0), (2, 3.0))
+        ]
+        agg = aggregate_trajectories(trajectory_summaries(events))
+        assert len(agg) == 1
+        a = agg[0]
+        assert a["n_runs"] == 3
+        assert a["n_success"] == 3
+        assert a["elapsed_sec"] == 2.0  # success median == median of [1,2,3]
+        assert a["all_runs"]["elapsed_sec"]["p50"] == 2.0
+        assert a["all_runs"]["time_breakdown_sec"]["exec_sec"]["p50"] == 2.0  # median, not sum 6
+
+    def test_successful_runs_excludes_failed_runs(self):
+        # 4 short failed runs (elapsed 1) + 2 long successful runs (50, 60).
+        # all_runs median is dragged to 1 by the failures; the headline
+        # (success-only median = 60) is NOT -- exactly the user's concern.
+        events = [
+            *(
+                _step(
+                    "t",
+                    sandbox_index=sb,
+                    round_id=0,
+                    step_index=0,
+                    exec_sec=1.0,
+                    resume_sec=0.0,
+                    pause_sec=0.0,
+                    slice_failed=True,
+                    exit_code=1,
+                )
+                for sb in range(4)
+            ),
+            _step("t", sandbox_index=4, round_id=0, step_index=0, exec_sec=50.0, resume_sec=0.0, pause_sec=0.0),
+            _step("t", sandbox_index=5, round_id=0, step_index=0, exec_sec=60.0, resume_sec=0.0, pause_sec=0.0),
+        ]
+        a = aggregate_trajectories(trajectory_summaries(events))[0]
+        assert a["n_runs"] == 6
+        assert a["n_success"] == 2
+        assert a["n_failed"] == 4
+        assert a["all_failed"] is False
+        assert a["all_runs"]["elapsed_sec"]["p50"] == 1.0  # dragged by failures
+        assert a["successful_runs"]["elapsed_sec"]["p50"] == 60.0
+        assert a["successful_runs"]["elapsed_sec"]["n"] == 2
+        assert a["elapsed_sec"] == 60.0  # headline = success median, not all_runs
+
+    def test_all_failed_falls_back_to_all_runs_median(self):
+        # Every run failed -> successful_runs empty, headline = all_runs median,
+        # all_failed=True.
+        events = [
+            _step(
+                "t",
+                sandbox_index=0,
+                round_id=0,
+                step_index=0,
+                exec_sec=2.0,
+                resume_sec=0.0,
+                pause_sec=0.0,
+                slice_failed=True,
+                exit_code=1,
+            ),
+            _step(
+                "t",
+                sandbox_index=1,
+                round_id=0,
+                step_index=0,
+                exec_sec=4.0,
+                resume_sec=0.0,
+                pause_sec=0.0,
+                slice_failed=True,
+                exit_code=1,
+            ),
+            _step(
+                "t",
+                sandbox_index=2,
+                round_id=0,
+                step_index=0,
+                exec_sec=6.0,
+                resume_sec=0.0,
+                pause_sec=0.0,
+                slice_failed=True,
+                exit_code=1,
+            ),
+        ]
+        a = aggregate_trajectories(trajectory_summaries(events))[0]
+        assert a["n_runs"] == 3
+        assert a["n_success"] == 0
+        assert a["all_failed"] is True
+        assert a["successful_runs"] == {}  # empty set
+        assert a["elapsed_sec"] == 4.0  # fallback to all_runs median of [2,4,6]
+        assert a["all_runs"]["elapsed_sec"]["p50"] == 4.0
+
+    def test_single_run_aggregate_equals_run(self):
+        # pool>=N (1 run per tid): median of 1 == the run's value; the two sets
+        # coincide; behaviour unchanged in magnitude vs the old per-tid sums.
+        events = [_step("t", sandbox_index=0, round_id=0, step_index=0, exec_sec=5.0, resume_sec=0.5, pause_sec=0.5)]
+        per_run = trajectory_summaries(events)
+        a = aggregate_trajectories(per_run)[0]
+        assert a["n_runs"] == 1
+        assert a["n_success"] == 1
+        assert a["all_failed"] is False
+        assert a["elapsed_sec"] == per_run[0]["elapsed_sec"]
+        assert a["all_runs"]["elapsed_sec"]["p50"] == per_run[0]["elapsed_sec"]
+        assert a["successful_runs"]["elapsed_sec"]["p50"] == per_run[0]["elapsed_sec"]

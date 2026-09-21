@@ -22,7 +22,7 @@ from openpyxl.formatting.rule import ColorScaleRule, DataBarRule
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from bench_core.observability.trajectory_summary import SEG_KEYS, trajectory_summaries
+from bench_core.observability.trajectory_summary import SEG_KEYS, aggregate_trajectories, trajectory_summaries
 from bench_core.utils import calc_percentiles
 
 if TYPE_CHECKING:
@@ -194,7 +194,7 @@ def _add_trajectory_cost_chart(ws, headers: list[str], header_row: int, n_traj: 
     ch.x_axis.title = "trajectory_id"
     ch.height = 8
     ch.width = 16
-    for name in ("exec_sum_s", "resume_sum_s", "pause_sum_s"):
+    for name in ("exec_median_s", "resume_median_s", "pause_median_s"):
         col = headers.index(name) + 1
         ref = Reference(ws, min_col=col, min_row=header_row, max_row=header_row + n_traj)
         ch.add_data(ref, titles_from_data=True)
@@ -529,76 +529,85 @@ class XlsxReportRenderer:
     def _sheet_trajectory_summary(self, wb: Workbook) -> None:
         ws = wb.create_sheet("Trajectory summary")
         obs = self.obs
-        # Per-trajectory cumulative cost attribution (seconds). Sums, not
-        # percentiles: a per-instance summary answers "where did this
-        # trajectory's wall-clock go" (pause vs resume vs exec vs waits), and
-        # per-step distributions already live in the Step detail sheet (filter
-        # by trajectory_id) and pooled in the Lifecycle overhead sheet. n_steps
-        # counts every recorded step event (success + slice_failed); a failed
-        # slice contributes 0 to the sums (it did no work) but still counts as
-        # an attempted step, so avg_slice reflects the per-attempt cost.
+        # Per-trajectory aggregate (medians across runs, NOT sums). When pool <
+        # N the round-robin wraps and each trajectory is run by ~N/pool
+        # sandboxes; summing would inflate the breakdown. The headline
+        # elapsed_sec is the success-only median (all_runs median + all_failed
+        # flag when no run succeeded) so short failed runs cannot drag it down.
+        # n_runs/n_success/n_failed are counts OF runs; per-step distributions
+        # live in the Step detail sheet and pooled in the Lifecycle overhead sheet.
         wrote_profile = False
         if self.series_path is not None and Path(self.series_path).exists():
             from bench_core.observability.lifecycle_series import load_events
 
-            # Union-keyed (step + trajectory_create/kill/failed) so a trajectory
-            # that failed at create (zero step events) still appears -- the worst
-            # trajectories are the ones a comparison most needs to surface.
-            summaries = trajectory_summaries(load_events(Path(self.series_path)))
-            if summaries:
+            # Two-tier: per-run records (trajectory_summaries) rolled up to a
+            # per-trajectory aggregate (aggregate_trajectories). Medians across
+            # runs, NOT sums -- when pool < N the round-robin wraps and each
+            # trajectory is run by ~N/pool sandboxes; summing would inflate the
+            # breakdown ~7x. A run that failed at create still appears (union-
+            # keyed) so the worst trajectories surface.
+            aggregates = aggregate_trajectories(trajectory_summaries(load_events(Path(self.series_path))))
+            if aggregates:
                 headers = [
                     "trajectory_id",
-                    "n_steps",
+                    "n_runs",
+                    "n_success",
                     "n_failed",
-                    "n_timeout",
                     "success_rate",
-                    "slice_total_sum_s",
-                    "exec_sum_s",
-                    "resume_sum_s",
-                    "pause_sum_s",
-                    "interaction_total_sum_s",
-                    "slot_contention_wait_sum_s",
-                    "natural_delay_sum_s",
-                    "capacity_wait_sum_s",
-                    "rate_pacing_wait_sum_s",
-                    "inflight_wait_sum_s",
-                    "resume_rate_pacing_wait_sum_s",
-                    "pause_rate_pacing_wait_sum_s",
-                    "resume_inflight_wait_sum_s",
-                    "pause_inflight_wait_sum_s",
-                    "running_slot_held_sum_s",
-                    "avg_slice_s",
+                    "all_failed",
+                    "elapsed_sec",
+                    "n_steps_median",
+                    "slice_total_median_s",
+                    "exec_median_s",
+                    "resume_median_s",
+                    "pause_median_s",
+                    "interaction_total_median_s",
+                    "slot_contention_wait_median_s",
+                    "natural_delay_median_s",
+                    "capacity_wait_median_s",
+                    "rate_pacing_wait_median_s",
+                    "inflight_wait_median_s",
+                    "resume_rate_pacing_wait_median_s",
+                    "pause_rate_pacing_wait_median_s",
+                    "resume_inflight_wait_median_s",
+                    "pause_inflight_wait_median_s",
+                    "running_slot_held_median_s",
+                    "avg_slice_median_s",
+                    "n_timeout_median",
                 ]
                 sr_idx = headers.index("success_rate")
                 rows = []
-                for s in summaries:
-                    sums = s["sums"]
+                for a in aggregates:
+                    use_set = a["successful_runs"] or a["all_runs"]
+                    tbs = use_set["time_breakdown_sec"]
                     rows.append(
                         [
-                            s["trajectory_id"],
-                            s["n_steps"],
-                            s["n_failed"],
-                            s["n_timeout"],
-                            s["success_rate"],  # None when 0 steps attempted
-                            *(round(sums[k], 3) for k in SEG_KEYS),
-                            round(s["avg_slice"], 3),
+                            a["trajectory_id"],
+                            a["n_runs"],
+                            a["n_success"],
+                            a["n_failed"],
+                            a["success_rate"],  # None when no run has steps
+                            a["all_failed"],
+                            round(a["elapsed_sec"], 3),  # success-median (or all-median if all_failed)
+                            round(use_set["n_steps"]["p50"], 3),
+                            *(round(tbs[k]["p50"], 3) for k in SEG_KEYS),
+                            round(use_set["avg_slice"]["p50"], 3),
+                            round(use_set["n_timeout"]["p50"], 3),
                         ]
                     )
                 header_row = _write_table(ws, headers, rows)
                 wrote_profile = True
                 _add_trajectory_cost_chart(ws, headers, header_row, len(rows))
-                # At-a-glance outlier highlighting the reference's per-trial
-                # table lacks: data bars on the two cost drivers (total slice +
-                # slot queueing -- longer bar = slower / more queueing) and a red
-                # color scale on the failure count. Only when trajectories
-                # exist, so a series-less sheet stays empty (max_row==1, no CF
-                # on an empty range). success_rate=None (0 steps) gets a hover
-                # comment so the blank cell is not mistaken for "0 = all failed".
+                # At-a-glance outlier highlighting: data bars on the two cost
+                # drivers (total slice + slot queueing -- longer bar = slower /
+                # more queueing) and a red color scale on the failed-run count.
+                # success_rate=None (no run has steps) gets a hover comment so
+                # the blank cell is not mistaken for "0 = all runs failed".
                 first, last = header_row + 1, header_row + len(rows)
                 for ri, row in enumerate(rows, start=first):
                     if row[sr_idx] is None:
                         ws.cell(ri, sr_idx + 1).comment = Comment(
-                            "no steps attempted (created/killed with 0 steps); " "0.0 = all steps failed",
+                            "no steps attempted in any run (created/killed with 0 steps); " "0.0 = all runs failed",
                             "bench-core",
                         )
 
@@ -607,11 +616,11 @@ class XlsxReportRenderer:
                     return f"{letter}{first}:{letter}{last}"
 
                 ws.conditional_formatting.add(
-                    _col_range(headers.index("slice_total_sum_s") + 1),
+                    _col_range(headers.index("slice_total_median_s") + 1),
                     DataBarRule(start_type="min", end_type="max", color="638EC6"),
                 )
                 ws.conditional_formatting.add(
-                    _col_range(headers.index("slot_contention_wait_sum_s") + 1),
+                    _col_range(headers.index("slot_contention_wait_median_s") + 1),
                     DataBarRule(start_type="min", end_type="max", color="638EC6"),
                 )
                 ws.conditional_formatting.add(
