@@ -409,7 +409,7 @@ class TestTemplatePassthrough:
 
     def test_per_slot_template_reaches_create_and_instance(self, monkeypatch):
         from env_provider.e2b import manager as _mgr_mod
-        from env_provider.tests.test_e2b_manager import _FakeSandboxCls
+        from env_provider.tests.e2b.test_e2b_manager import _FakeSandboxCls
 
         fake = _FakeSandboxCls()
         monkeypatch.setattr(_mgr_mod, "Sandbox", fake)
@@ -439,7 +439,7 @@ class TestTemplatePassthrough:
     def test_no_templates_kwarg_falls_back_to_config_default(self, monkeypatch):
         """templates=None → _create_single uses self.config.template (default)."""
         from env_provider.e2b import manager as _mgr_mod
-        from env_provider.tests.test_e2b_manager import _FakeSandboxCls
+        from env_provider.tests.e2b.test_e2b_manager import _FakeSandboxCls
 
         fake = _FakeSandboxCls()
         monkeypatch.setattr(_mgr_mod, "Sandbox", fake)
