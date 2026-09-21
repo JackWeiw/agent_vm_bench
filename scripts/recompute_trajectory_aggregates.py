@@ -13,18 +13,25 @@ re-derivable. This script re-runs the now-merged two-tier aggregation (median
 across runs, not sum) over each trial's jsonl and rewrites:
 
   - ``trajectories/index.json`` + ``trajectories/<tid>/replay_result.json``
-    (via `export_trajectories`)
+    (via `export_trajectories`) -- the per-trajectory catalog with a slim
+    ``runs[]`` array (~N/pool entries) per trajectory.
   - ``trajectory-detail.csv`` + ``ratio-summary.csv`` + ``trial-summary.csv``
-    + ``benchmark-report.json`` (via `write_outputs`)
+    + ``benchmark-report.json`` (via `write_outputs`) -- only when the input
+    is the oversub run root (contains ``benchmark-report.json``).
 
-The old ``trajectory-detail.csv`` is backed up to ``.pre197`` before overwrite
-so a before/after diff is possible. Idempotent: re-running just overwrites.
+The old ``trajectory-detail.csv`` is backed up to ``.pre197`` before overwrite.
+Idempotent: re-running just overwrites.
 
-Usage:
-    python scripts/recompute_trajectory_aggregates.py <oversub_output_root>
+Usage -- the script accepts ANY of these as the argument (it recursively finds
+``*_lifecycle_series.jsonl`` underneath):
 
-where <oversub_output_root> is the dir containing ``benchmark-report.json``
-(e.g. ``results/oversub/oversub-N384-...``).
+    python scripts/recompute_trajectory_aggregates.py results/oversub/oversub-N384-...
+    python scripts/recompute_trajectory_aggregates.py .../repeat-00/                       # one trial
+    python scripts/recompute_trajectory_aggregates.py .../repeat-00/replay_bench_20260920-222102/   # one stamp
+
+When given the oversub run root, it ALSO regenerates trajectory-detail.csv
+(one row per run ~= 384) from the new index.json. When given a finer path it
+only regenerates that trial's trajectories/ (re-run at the root for the CSV).
 
 Scope: lifecycle / exec_only runs whose jsonl carries `round_id` on step
 events (true since the early replay stack -- `6421f32`). Trajectory-mode runs
@@ -41,67 +48,80 @@ import sys
 from pathlib import Path
 
 
-def _find_jsonl(stamp_dir: Path) -> Path | None:
-    hits = sorted(stamp_dir.glob("*_lifecycle_series.jsonl"))
-    return hits[-1] if hits else None
-
-
-def main(output_root: str | Path) -> int:
-    output_root = Path(output_root)
-    report_path = output_root / "benchmark-report.json"
-    if not report_path.exists():
-        print(f"error: {report_path} not found (pass the oversub run's output_root)", file=sys.stderr)
-        return 2
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    trials = report.get("trials", [])
-    configuration = report.get("configuration")
-    if not trials:
-        print("error: benchmark-report.json has no trials", file=sys.stderr)
+def main(arg: str | Path) -> int:
+    root = Path(arg)
+    if not root.exists():
+        print(f"error: {root} does not exist", file=sys.stderr)
         return 2
 
-    # Lazy imports -- keep --help / arg-error fast and offline-friendly.
     from bench_core.observability.trajectory_export import export_trajectories
-    from bench_core.oversub import write_outputs
+
+    # Recursively find every lifecycle_series.jsonl under the input path. This
+    # accepts the oversub root, a trial dir (.../repeat-00/), or a single stamp
+    # dir (.../replay_bench_<ts>/) -- the jsonl lives in the stamp dir either way.
+    jsonls = sorted(root.rglob("*_lifecycle_series.jsonl"))
+    if not jsonls:
+        print(
+            f"error: no *_lifecycle_series.jsonl found under {root}\n"
+            f"       pass the oversub run root (e.g. results/oversub/oversub-N384-...)\n"
+            f"       or a trial/stamp dir that contains one.",
+            file=sys.stderr,
+        )
+        return 2
 
     fixed = 0
-    skipped = 0
-    for t in trials:
-        rsp = t.get("run_summary_path")
-        mode = t.get("mode", "?")
-        ratio = t.get("ratio", "?")
-        repeat = t.get("repeat", "?")
-        label = f"{mode}/ratio-{ratio}/repeat-{repeat}"
-        if not rsp:
-            print(f"  skip  {label}: no run_summary_path")
-            skipped += 1
+    for series in jsonls:
+        stamp_dir = series.parent
+        try:
+            n = export_trajectories(series, stamp_dir)
+        except Exception as e:
+            print(f"  FAIL  {series}: {e}", file=sys.stderr)
             continue
-        stamp_dir = Path(rsp).parent
-        series = _find_jsonl(stamp_dir)
-        if series is None:
-            print(f"  skip  {label}: no *_lifecycle_series.jsonl in {stamp_dir}")
-            skipped += 1
-            continue
-        n = export_trajectories(series, stamp_dir)
-        print(f"  ok    {label}: {n} trajectories re-aggregated from {series.name}")
-        fixed += 1
+        if n:
+            print(f"  ok    {n:3d} trajectories  <-  {series.relative_to(root) if root.is_dir() else series}")
+            fixed += 1
+        else:
+            print(f"  empty 0 trajectories  <-  {series} (no trajectory events in series)")
 
-    # Back up the old trajectory-detail.csv before write_outputs overwrites it.
-    detail_csv = output_root / "trajectory-detail.csv"
-    if detail_csv.exists():
-        bak = output_root / "trajectory-detail.csv.pre197"
-        shutil.copy2(detail_csv, bak)
-        print(f"backed up old {detail_csv.name} -> {bak.name}")
+    if fixed == 0:
+        print("\nno trajectory aggregates were written (see errors above).", file=sys.stderr)
+        return 1
 
-    write_outputs(trials, output_root=output_root, configuration=configuration)
-    print(
-        f"\nre-aggregated {fixed} trial(s) ({skipped} skipped); "
-        f"rewrote trajectory-detail.csv + ratio-summary.csv + trial-summary.csv + benchmark-report.json"
-    )
+    # If the input is the oversub run root (has benchmark-report.json), also
+    # regenerate trajectory-detail.csv from the freshly-written index.json.
+    report_path = root / "benchmark-report.json"
+    if report_path.exists():
+        from bench_core.oversub import write_outputs
+
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        trials = report.get("trials", [])
+        configuration = report.get("configuration")
+        if trials:
+            detail_csv = root / "trajectory-detail.csv"
+            if detail_csv.exists():
+                bak = root / "trajectory-detail.csv.pre197"
+                shutil.copy2(detail_csv, bak)
+                print(f"backed up old {detail_csv.name} -> {bak.name}")
+            write_outputs(trials, output_root=root, configuration=configuration)
+            print(
+                f"\nre-aggregated {fixed} jsonl(s); rewrote trajectory-detail.csv "
+                f"(one row per run) + ratio-summary.csv + trial-summary.csv + benchmark-report.json"
+            )
+            return 0
+        print("\nbenchmark-report.json has no trials; skipped trajectory-detail.csv regeneration.")
+    else:
+        print(
+            f"\nre-aggregated {fixed} jsonl(s). To also regenerate trajectory-detail.csv, "
+            f"re-run with the oversub run root (the dir containing benchmark-report.json)."
+        )
     return 0
 
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("usage: python scripts/recompute_trajectory_aggregates.py <oversub_output_root>", file=sys.stderr)
+        print(
+            "usage: python scripts/recompute_trajectory_aggregates.py <oversub_root | trial_dir | stamp_dir>",
+            file=sys.stderr,
+        )
         sys.exit(2)
     sys.exit(main(sys.argv[1]))
