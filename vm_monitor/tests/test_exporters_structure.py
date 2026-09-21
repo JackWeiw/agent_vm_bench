@@ -569,6 +569,7 @@ class TestExportStructure(unittest.TestCase):
                 "Disk_IO_Timeline",
                 "Host_Mem_Timeline",
                 "Host_Pressure_Timeline",
+                "Host_CPU_Timeline",
             ],
         )
 
@@ -710,6 +711,7 @@ class TestExportStructure(unittest.TestCase):
                 "Procs Running",
                 "Procs Blocked",
             ],
+            "Host_CPU_Timeline": ["Timestamp", "Host CPU (%)", "Host Mem Used (GB)", "Host Mem Usage (%)"],
             "VM_Total_Memory_Timeline": [
                 "Timestamp",
                 "VM Total Memory (MB)",
@@ -772,6 +774,8 @@ class TestExportStructure(unittest.TestCase):
             "Disk_IO_Timeline": 2,
             "Host_Mem_Timeline": 2,
             "Host_Pressure_Timeline": 2,
+            # host_cpu_history has 3 samples, host_mem_history has 2 -> max=3 rows.
+            "Host_CPU_Timeline": 3,
         }
         for sheet, expected in expected_rows.items():
             self.assertEqual(rows[sheet], expected, f"row count mismatch for {sheet}")
@@ -783,7 +787,8 @@ class TestExportStructure(unittest.TestCase):
         # + 2 Swap (in/out + SwapCache) + 3 NUMA_Memory_Timeline (8A + 8B + 8C reclaim)
         # + 1 VM_Total + 1 Disk Write line + 1 Dirty+Writeback line + 1 Host Pressure line
         # + 1 VM_Stats composition bar + 2 Getfre_Timeline (NUMA0 + NUMA1 freq lines)
-        self.assertEqual(charts, 17)
+        # + 1 Host CPU utilization line (Host_CPU_Timeline)
+        self.assertEqual(charts, 18)
 
 
 @unittest.skipUnless(PANDAS_AVAILABLE and load_workbook is not None, "pandas/openpyxl required")

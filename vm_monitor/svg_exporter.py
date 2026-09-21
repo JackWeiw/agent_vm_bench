@@ -530,6 +530,24 @@ def _vm_total_report(target, rows):
     _render_report(target, "VM Total Memory Time Curves", charts, [rows] * len(charts))
 
 
+def _cpu_report(monitor, target, rows):
+    """cpu.svg: whole-machine host CPU utilization + IOWait (1 enlarged chart).
+
+    Dedicated leadership-slide view mirroring the Host_CPU_Timeline xlsx sheet.
+    Distinct from the CPU panel inside host_resources.svg (which sits in a 2x2
+    resource-baseline grid); this is a single full-width chart so the curve is
+    legible at slide size. Reuses the same host_rows the host_resources report
+    builds (host_cpu_pct + iowait_pct already merged by index there).
+    """
+    chart = (
+        "Host CPU Utilization",
+        "%",
+        [("host_cpu_pct", "CPU", "#60a5fa"), ("iowait_pct", "IOWait", "#fb7185")],
+        None,
+    )
+    _render_report(target, "Host CPU Time Curve", [chart], [rows])
+
+
 def export_svg_reports(monitor, output_dir: str) -> list[str]:
     """Render all SVG time-curve reports for a monitor into output_dir.
 
@@ -556,6 +574,10 @@ def export_svg_reports(monitor, output_dir: str) -> list[str]:
     if host_rows:
         _host_resource_report(monitor, _path("host_resources.svg"), host_rows)
         written.append(_path("host_resources.svg"))
+        # Dedicated enlarged CPU-only view mirroring the Host_CPU_Timeline xlsx
+        # sheet (leadership-slide legibility, not buried in the 2x2 grid).
+        _cpu_report(monitor, _path("cpu.svg"), host_rows)
+        written.append(_path("cpu.svg"))
         # Pressure / cache-breakdown / runstate view only when pressure history
         # exists (keeps host_resources.svg a clean baseline on partial runs).
         if getattr(monitor, "host_pressure_history", None):

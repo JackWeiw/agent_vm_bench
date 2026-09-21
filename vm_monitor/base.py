@@ -671,7 +671,14 @@ class VMMonitorBase(ABC):
             mem_total_mb = round(mem.total / 1024 / 1024, 2)
             mem_usage = round(mem.percent, 1)
             self.host_cpu_history.append(cpu)
-            self.host_mem_history.append({"used_mb": mem_used_mb, "total_mb": mem_total_mb, "usage": mem_usage})
+            self.host_mem_history.append(
+                {
+                    "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "used_mb": mem_used_mb,
+                    "total_mb": mem_total_mb,
+                    "usage": mem_usage,
+                }
+            )
             if cpu > self.peak_host_cpu:
                 self.peak_host_cpu = cpu
             if mem_used_mb > self.peak_host_mem_mb:

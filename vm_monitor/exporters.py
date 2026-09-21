@@ -960,6 +960,50 @@ def _build_host_pressure_sheet(writer, monitor, *, log_dir=None):
     _safe_write_sheet(writer, pd.DataFrame(pressure_data), "Host_Pressure_Timeline", log_dir=log_dir)
 
 
+def _build_host_cpu_timeline_sheet(writer, monitor, *, log_dir=None):
+    """Sheet: Host_CPU_Timeline (whole-machine CPU% + host mem, per sample).
+
+    The leadership-visible whole-machine CPU utilization time curve. Mirrors the
+    "Host CPU Usage" panel of host_resources.svg, but as an xlsx timeline sheet
+    with a native LineChart so it lands in resource_report.xlsx (not just SVG).
+
+    Carries companion Host Mem Used / Usage columns from the same host_mem_history
+    dicts for context; only Host CPU (%) is charted (single 0-100 axis, no dual-axis).
+    host_cpu_history has no ts, but host_mem_history is appended in the same
+    collect_host_stats call, so their indices align and the ts stamped on the mem
+    dict carries to the CPU row. Falls back to an index-based label when ts is
+    absent (synthetic fixtures), matching the svg_exporter fallback behaviour.
+    """
+    cpu = monitor.host_cpu_history
+    mem = monitor.host_mem_history
+    if not cpu:
+        return
+    interval = getattr(monitor, "interval", 0) or 1.0
+    n = max(len(cpu), len(mem))
+    ts_col, cpu_col, mem_gb_col, mem_pct_col = [], [], [], []
+    for i in range(n):
+        ts = ""
+        if i < len(mem):
+            ts = mem[i].get("ts", "")
+        if not ts:
+            ts = f"t={i * interval:.0f}s"
+        ts_col.append(ts)
+        cpu_col.append(round(cpu[i], 1) if i < len(cpu) else None)
+        if i < len(mem):
+            mem_gb_col.append(round(mem[i].get("used_mb", 0.0) / 1024.0, 3))
+            mem_pct_col.append(round(mem[i].get("usage", 0.0), 1))
+        else:
+            mem_gb_col.append(None)
+            mem_pct_col.append(None)
+    data = {
+        "Timestamp": ts_col,
+        "Host CPU (%)": cpu_col,
+        "Host Mem Used (GB)": mem_gb_col,
+        "Host Mem Usage (%)": mem_pct_col,
+    }
+    _safe_write_sheet(writer, pd.DataFrame(data), "Host_CPU_Timeline", log_dir=log_dir)
+
+
 def _add_charts(build_file):
     """Add charts to the built workbook (non-critical: failures warn).
 
@@ -991,6 +1035,7 @@ def _add_charts(build_file):
         _add_disk_write_line(wb)
         _add_dirty_writeback_line(wb)
         _add_host_pressure_line(wb)
+        _add_host_cpu_line(wb)
         _add_vm_stats_bar(wb)
         _add_getfre_timeline_line(wb)
         wb.save(tmp)
@@ -1422,6 +1467,33 @@ def _add_host_pressure_line(wb):
     ws.add_chart(pressure_chart, f"{get_column_letter(anchor_col)}2")
 
 
+def _add_host_cpu_line(wb):
+    """Chart: whole-machine host CPU utilization over time (Host_CPU_Timeline).
+
+    Single 0-100 (%) axis, one series (Host CPU). Companion mem columns are
+    context, not charted (different unit -> would need a forbidden dual axis).
+    """
+    if "Host_CPU_Timeline" not in wb.sheetnames:
+        return
+    ws = wb["Host_CPU_Timeline"]
+    if ws.max_row <= 1:
+        return
+    cpu_chart = LineChart()
+    cpu_chart.title = "Host CPU Utilization Over Time"
+    cpu_chart.style = 10
+    cpu_chart.y_axis.title = "CPU (%)"
+    cpu_chart.x_axis.title = "Time"
+    cpu_chart.width = 18
+    cpu_chart.height = 8
+    # Host CPU (%) is column 2 by construction.
+    data = Reference(ws, min_col=2, min_row=1, max_row=ws.max_row)
+    cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row)
+    cpu_chart.add_data(data, titles_from_data=True)
+    cpu_chart.set_categories(cats)
+    anchor_col = ws.max_column + 2
+    ws.add_chart(cpu_chart, f"{get_column_letter(anchor_col)}2")
+
+
 def _add_vm_stats_bar(wb):
     """Chart: per-VM memory composition (Avg Memory / Private / Heap / Hugepage).
 
@@ -1573,6 +1645,7 @@ def export_to_excel(
             _build_disk_io_sheet(writer, monitor, log_dir=log_dir)
             _build_host_mem_timeline_sheet(writer, monitor, log_dir=log_dir)
             _build_host_pressure_sheet(writer, monitor, log_dir=log_dir)
+            _build_host_cpu_timeline_sheet(writer, monitor, log_dir=log_dir)
     except ImportError:
         print("[WARN] openpyxl not available, skipping Excel export")
         print("  Install with: pip install openpyxl")
