@@ -146,12 +146,16 @@ def find_trajectories(directory: Path, glob: str = "*.replay.json") -> list[Path
 def load_pool(config: KernelConfig) -> tuple[Trajectory, ...]:
     """Load + cache the shared trajectory pool from ``config``.
 
-    When ``config.workflow_config.replay_template_manifest`` is set, each
-    trajectory's ``template`` is attached from the manifest (keyed by path
-    relative to ``config.workflow_config.replay_trajectory_dir``); a missing
-    entry leaves ``template=None`` with a WARNING. A missing/unreadable manifest file is a hard error (an explicit
-    manifest the user asked for must be readable). Returns a cached frozen tuple
-    so repeat calls from different runner threads share one immutable object.
+    With no ``replay_template_manifest``, every trajectory keeps
+    ``template=None`` (legacy single-template: the provider uses its block-level
+    ``template`` default). When a manifest IS set it is the authoritative run
+    set -- only trajectories it maps to a concrete template string enter the
+    pool; entries absent from the manifest (or mapped to a null, empty, or
+    non-string value) are skipped with a WARNING rather than falling back to the provider
+    default, which may be a wrong image for the trajectory's repo or a shipped
+    placeholder that 400s on the backend. A missing/unreadable manifest file is
+    a hard error. Returns a cached frozen tuple so repeat calls from different
+    runner threads share one immutable object.
     """
     from bench_core.task_runner.replay import ReplayConfig
 
@@ -185,20 +189,22 @@ def load_pool(config: KernelConfig) -> tuple[Trajectory, ...]:
             logger.warning(f"[replay] skipping trajectory with no executable steps: {path.name}")
             continue
 
-        template: str | None = None
-        if manifest is not None:
-            rel = os.path.relpath(path, directory).replace("\\", "/")
-            raw_template = manifest.get(rel)
-            if raw_template is not None and not isinstance(raw_template, str):
-                logger.warning(
-                    f"[replay] manifest entry for {rel} is not a string ({type(raw_template).__name__}); ignoring"
-                )
-                raw_template = None
-            template = raw_template
-            if template is None and rel not in manifest:
-                logger.warning(f"[replay] trajectory {rel} has no manifest entry; falling back to default template")
-            traj = dataclasses.replace(traj, template=template)
-        pool.append(traj)
+        if manifest is None:
+            # Legacy single-template path: every trajectory keeps template=None
+            # and the provider uses its block-level `template` default.
+            pool.append(traj)
+            continue
+        rel = os.path.relpath(path, directory).replace("\\", "/")
+        raw_template = manifest.get(rel)
+        if raw_template is not None and not isinstance(raw_template, str):
+            logger.warning(
+                f"[replay] manifest entry for {rel} is not a string ({type(raw_template).__name__}); skipping"
+            )
+            continue
+        if not raw_template:
+            logger.warning(f"[replay] trajectory {rel} has no manifest entry; skipping")
+            continue
+        pool.append(dataclasses.replace(traj, template=raw_template))
 
     cached = tuple(pool)
     _POOL_CACHE[cache_key] = cached

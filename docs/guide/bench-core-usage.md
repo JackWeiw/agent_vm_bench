@@ -408,8 +408,11 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
 - `template_manifest` is a side JSON mapping `{trajectory-relative-path: template}` (paths
   relative to `replay_trajectory_dir`, backslashes normalized). With multiple templates,
   non-trajectory modes route by template affinity (orphan templates are skipped with a
-  count); trajectory mode passes `template=` into each `create_one`. A missing entry
-  resolves to `None` (warning, provider default).
+  count); trajectory mode passes `template=` into each `create_one`. The manifest is the
+  authoritative run set: a trajectory absent from it (or mapped to a null/non-string
+  value) is skipped with a warning -- it does not fall back to the provider default. Omit
+  the manifest entirely for the legacy single-template path (every trajectory uses the
+  provider block's `template`).
 
 ### 8.4 Observability workbook (`*_obs.xlsx`)
 
