@@ -179,7 +179,7 @@ class TestRoundRobinReplayWorkflow:
         from bench_core.payload.replay_payload import reset_pool_cache
 
         reset_pool_cache()
-        fixtures_dir = pathlib.Path(__file__).parent / "fixtures" / "replay"
+        fixtures_dir = pathlib.Path(__file__).parent.parent / "fixtures" / "replay"
 
         config = KernelConfig(
             workflow_type="replay",
