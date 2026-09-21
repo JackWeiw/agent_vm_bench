@@ -290,15 +290,27 @@ def build_trajectory_delta(
     frame surfaces the e2e metric only (components are covered by heatmaps).
     """
     baseline = manifest["baseline_series"]
-    base = tables[baseline]["traj"][["mode", "ratio", "trajectory_id", "elapsed_sec"]].copy()
-    base = base.rename(columns={"elapsed_sec": "elapsed_sec_baseline"})
+
+    # Collapse per-run rows to one per (mode, ratio, trajectory_id) via median
+    # elapsed_sec -- the per-trajectory delta sheet is one-row-per-trajectory by
+    # design (per-run distribution lives in ratio_summary). Without this, the
+    # merge keys are non-unique under the post-#197 per-run CSV and the left
+    # join explodes into a cartesian product (N_runs x N_runs per tid).
+    def _per_tid(df: pd.DataFrame, label: str) -> pd.DataFrame:
+        g = (
+            df.groupby(["mode", "ratio", "trajectory_id"], sort=False)["elapsed_sec"]
+            .median()
+            .reset_index()
+            .rename(columns={"elapsed_sec": f"elapsed_sec__{label}" if label != baseline else "elapsed_sec_baseline"})
+        )
+        return g
+
+    base = _per_tid(tables[baseline]["traj"], baseline)
     for entry in manifest["series"]:
         label = entry["label"]
         if label == baseline:
             continue
-        other = tables[label]["traj"][["mode", "ratio", "trajectory_id", "elapsed_sec"]].rename(
-            columns={"elapsed_sec": f"elapsed_sec__{label}"}
-        )
+        other = _per_tid(tables[label]["traj"], label)
         base = base.merge(other, on=["mode", "ratio", "trajectory_id"], how="left")
         base[f"delta_sec__{label}"] = base[f"elapsed_sec__{label}"] - base["elapsed_sec_baseline"]
         base[f"pct_delta__{label}"] = (

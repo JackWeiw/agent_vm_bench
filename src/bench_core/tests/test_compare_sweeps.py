@@ -373,6 +373,52 @@ def test_build_trajectory_delta_aligned_and_orphan(tmp_path):
     assert pd_isna(by_id["t1"]["delta_sec__x86"])
 
 
+def test_build_trajectory_delta_collapses_per_run_rows(tmp_path):
+    """Post-#197 trajectory-detail.csv has multiple per-run rows per tid (one per
+    sandbox/round). build_trajectory_delta must collapse them to ONE row per tid
+    via median elapsed_sec -- without the per-tid groupby the left join on a
+    non-unique key explodes into a cartesian product (n_runs x n_runs per tid)."""
+    arm = _seed_series(
+        tmp_path / "arm",
+        ratios=[1],
+        elapsed={(1, "t0"): 2.0, (1, "t1"): 5.0},
+    )
+    # Overwrite arm's trajectory-detail.csv with two per-run rows per tid: the
+    # median of [2.0, 4.0] is 3.0 for t0; [5.0, 7.0] -> 6.0 for t1.
+    arm_rows = [
+        _traj_row("lifecycle", 1, "t0", 2.0) | {"sandbox_index": 0, "round_id": 0},
+        _traj_row("lifecycle", 1, "t0", 4.0) | {"sandbox_index": 1, "round_id": 0},
+        _traj_row("lifecycle", 1, "t1", 5.0) | {"sandbox_index": 0, "round_id": 0},
+        _traj_row("lifecycle", 1, "t1", 7.0) | {"sandbox_index": 1, "round_id": 0},
+    ]
+    _write_traj(arm / "trajectory-detail.csv", arm_rows)
+    x86 = _seed_series(
+        tmp_path / "x86",
+        ratios=[1],
+        elapsed={(1, "t0"): 1.5, (1, "t1"): 3.0},
+    )
+    manifest = {
+        "baseline_series": "arm",
+        "series": [
+            {"label": "arm", "arch": "arm", "dir": str(arm), "caps": {}},
+            {"label": "x86", "arch": "x86", "dir": str(x86), "caps": {}},
+        ],
+    }
+    from bench_core.compare_sweeps import _read_series_tables
+
+    tables = _read_series_tables(manifest)
+    td = build_trajectory_delta(tables, manifest)
+    # One row per (mode, ratio, trajectory_id) -- no cartesian explosion.
+    by_id = {r["trajectory_id"]: r for _, r in td.iterrows()}
+    assert sorted(by_id) == ["t0", "t1"]
+    # arm collapsed to median across its 2 runs: t0=3.0, t1=6.0.
+    assert by_id["t0"]["elapsed_sec_baseline"] == pytest.approx(3.0)
+    assert by_id["t1"]["elapsed_sec_baseline"] == pytest.approx(6.0)
+    # x86 (1 run) unchanged: t0=1.5 -> delta -1.5.
+    assert by_id["t0"]["elapsed_sec__x86"] == pytest.approx(1.5)
+    assert by_id["t0"]["delta_sec__x86"] == pytest.approx(-1.5)
+
+
 def pd_isna(v) -> bool:
     import pandas as pd
 
