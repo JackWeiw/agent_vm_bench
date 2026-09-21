@@ -224,7 +224,8 @@ def test_load_pool_attaches_template_from_manifest(tmp_path):
     assert by_id["b"].template == "swb-b"
 
 
-def test_load_pool_missing_manifest_entry_is_none_with_warning(tmp_path, caplog):
+def test_load_pool_missing_manifest_entry_is_skipped(tmp_path, caplog):
+    """A trajectory absent from the manifest is skipped, not fallen back."""
     import json
     import logging
 
@@ -238,7 +239,7 @@ def test_load_pool_missing_manifest_entry_is_none_with_warning(tmp_path, caplog)
     reset_pool_cache()
     caplog.set_level(logging.WARNING)
     pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest)))
-    assert pool[0].template is None
+    assert len(pool) == 0
     assert "no manifest entry" in caplog.text
 
 
@@ -304,7 +305,8 @@ def test_load_pool_cache_invalidates_on_manifest_change(tmp_path):
     assert load_pool(_cfg_for_manifest(tmp_path, manifest=str(m2)))[0].template == "swb-a2"
 
 
-def test_load_pool_non_string_manifest_value_is_none_with_warning(tmp_path, caplog):
+def test_load_pool_non_string_manifest_value_is_skipped(tmp_path, caplog):
+    """A manifest entry mapping to a non-string value is skipped, not ignored."""
     import json
     import logging
 
@@ -318,5 +320,24 @@ def test_load_pool_non_string_manifest_value_is_none_with_warning(tmp_path, capl
     reset_pool_cache()
     caplog.set_level(logging.WARNING)
     pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest)))
-    assert pool[0].template is None
+    assert len(pool) == 0
     assert "is not a string" in caplog.text
+
+
+def test_load_pool_empty_string_manifest_value_is_skipped(tmp_path, caplog):
+    """An empty-string manifest value is unusable: skip, don't attach template=''."""
+    import json
+    import logging
+
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
+
+    traj_dir = tmp_path / "traj"
+    _write_traj(traj_dir, "a.replay.json", "a")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"a.replay.json": ""}), encoding="utf-8")
+
+    reset_pool_cache()
+    caplog.set_level(logging.WARNING)
+    pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest)))
+    assert len(pool) == 0
+    assert "no manifest entry" in caplog.text

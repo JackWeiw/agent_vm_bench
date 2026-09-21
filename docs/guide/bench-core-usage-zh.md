@@ -331,8 +331,10 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
   `{instance_id, environment, trajectory:[{action, delay_time}, ...]}`,在首个
   `submit/finish/done` 处截断(见 `src/bench_core/replay_payload.py`)。若你的轨迹是别的
   字段名(如 sweagent 原始格式),需先转成 `.replay.json`。
-- `template_manifest` 是 `{trajectory相对路径: template}` 的 side JSON。多模板时,非 trajectory
-  模式按 template 亲和路由(孤儿模板跳过计数);trajectory 模式 `create_one(template=)` 逐条带。
+- `template_manifest` 是 `{trajectory相对路径: template}` 的 side JSON。它是**运行集的唯一来源**:
+  manifest 里没有的轨迹(或映射到 null/非字符串值)会被 WARNING + 跳过,**不回落**到 provider 默认模板。
+  多模板时,非 trajectory 模式按 template 亲和路由(孤儿模板跳过计数);trajectory 模式 `create_one(template=)`
+  逐条带。完全不配 manifest 则走 legacy 单模板路径(所有轨迹都用 provider 块的 `template`)。
 
 ### 8.4 可观测性工作簿 (`*_obs.xlsx`)
 
