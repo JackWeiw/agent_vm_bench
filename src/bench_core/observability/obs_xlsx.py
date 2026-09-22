@@ -463,6 +463,8 @@ class XlsxReportRenderer:
                 c.font = Font(bold=True)
             for r in step_rows:
                 ws.append(r)
+            # Anchor to the right of the percentile table (cols A-H) so the chart
+            # stays visible without scrolling past the per-step detail rows.
             _add_line_chart(
                 ws,
                 "Per-step latency",
@@ -470,7 +472,7 @@ class XlsxReportRenderer:
                 ws.cell(hdr, 1).column,
                 [ws.cell(hdr, 2).column],
                 len(step_rows),
-                f"A{ws.max_row + 2}",
+                "J2",
                 header_row=hdr,
                 first_data_row=hdr + 1,
             )
@@ -521,7 +523,7 @@ class XlsxReportRenderer:
                 1,
                 [2, 3, 4],
                 len(idxs),
-                f"A{ws.max_row + 2}",
+                "J2",
                 header_row=hdr,
                 first_data_row=hdr + 1,
             )
