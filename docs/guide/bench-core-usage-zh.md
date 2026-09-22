@@ -34,9 +34,16 @@ python -m pip install -e .
 可选后端 SDK(用到哪个装哪个;不用可不装):
 
 ```bash
-pip install e2b       # --provider e2b
-pip install docker     # --provider docker
+pip install 'e2b>=2.0,<2.47'   # --provider e2b / aenv
+pip install docker              # --provider docker
 ```
+
+> **e2b 版本上限(`<2.47`)。** AENV 服务端暴露的 E2B-compatible API 对齐 e2b SDK
+> **2.46.x**;e2b **2.47+** 改了 `Sandbox.create` 的请求形状,AENV 路由会回
+> `405 Method Not Allowed`(表现为 `--provider aenv` 时所有沙箱创建失败、`total=0`)。
+> `pyproject.toml` / `requirements.txt` 已 pin `e2b>=2.0,<2.47`,直接 `pip install -e .`
+> 即带上;手动装时务必带上限。e2b 云端不受影响,仅 AENV 服务端需等其跟进新 API 形状后
+> 才能放开上限。
 
 > 验证安装:`bench-core --provider fake --config config/common/browser.yaml --create-only -n 1`
 > 能跑通即内核 + CLI + 配置解析全部就绪(fake 不需要任何 SDK)。

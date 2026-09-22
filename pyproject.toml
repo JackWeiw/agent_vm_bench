@@ -34,7 +34,7 @@ dependencies = [
     "xlsxwriter>=3.0.0",
     "matplotlib>=3.5",  # replay-observability Gantt PNG (import-guarded in obs_xlsx.py)
     "python-dotenv>=0.19.0",
-    "e2b>=0.15.0",
+    "e2b>=2.0,<2.47",  # floor=2.x paginator/beta_pause API; ceiling: 2.47+ changed Sandbox.create shape -> 405 vs AENV
     "aiohttp>=3.8.0",
 ]
 
