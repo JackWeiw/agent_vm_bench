@@ -21,8 +21,8 @@ knob caps heatmap rows to the worst N when the trajectory count grows.
 
 Typical use::
 
-    trajectory-degradation --sweep-dir results/oversub/oversub-N384-2026.../
-    trajectory-degradation --sweep-dir .../ --mode lifecycle --top-n 10 --heatmap-top-n 50
+    traj-degradation --sweep-dir results/oversub/oversub-N384-2026.../
+    traj-degradation --sweep-dir .../ --mode lifecycle --top-n 10 --heatmap-top-n 50
 """
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ _FLEET_CAVEAT = (
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="trajectory-degradation",
+        prog="traj-degradation",
         description="Plot per-trajectory e2e latency vs oversub ratio for one sweep.",
     )
     p.add_argument("--sweep-dir", required=True, help="oversub-bench sweep output dir (holds trajectory-detail.csv)")
@@ -226,9 +226,7 @@ def _write_heatmap_sheet(
     ws.auto_filter.ref = ws.dimensions
     # Title banner above the table would shift rows; keep sheet title in tab +
     # a comment on A1 instead so the grid starts at row 1 (chart refs stay simple).
-    ws["A1"].comment = Comment(
-        title + " -- rows sorted worst-first; blank = baseline missing.", "trajectory-degradation"
-    )
+    ws["A1"].comment = Comment(title + " -- rows sorted worst-first; blank = baseline missing.", "traj-degradation")
 
 
 def _write_breakdown_sheet(
@@ -341,7 +339,7 @@ def _write_topn_sheet(
     data_cols = list(range(2, 2 + len(top_tids)))
     if has_fleet and data_cols:
         fleet_col = 2 + len(top_tids)
-        ws.cell(row=1, column=fleet_col).comment = Comment(_FLEET_CAVEAT, "trajectory-degradation")
+        ws.cell(row=1, column=fleet_col).comment = Comment(_FLEET_CAVEAT, "traj-degradation")
         _add_line_chart(
             ws,
             "Top-N trajectory degradation (per-trajectory k=1 baseline) -- fleet median: shape reference only",
