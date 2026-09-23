@@ -72,6 +72,10 @@ class MonitorConfig:
     # the courtesy wait in stop(); skipping still writes every sheet, just
     # without charts. Default false (charts on); opt-in for oversub-scale runs.
     skip_charts: bool = False
+    # perf-split mode: devkit topdown+mem full duration, ksys first half, perf stat
+    # loop (PERF_STAT_EVENTS every PERF_SAMPLE_SEC) for the second half. Forwards
+    # --perf-split to vm-monitor. Requires capture (auto/true) to collect anything.
+    perf_split: bool = False
 
     @classmethod
     def from_raw(cls, raw: dict | None) -> MonitorConfig:
@@ -97,6 +101,7 @@ class MonitorConfig:
             report_timeout=int(raw.get("report_timeout", 300)),
             skip=skip,
             skip_charts=bool(raw.get("skip_charts", False)),
+            perf_split=bool(raw.get("perf_split", False)),
         )
 
 
@@ -117,6 +122,7 @@ class MonitorController:
         self._interval = mc.interval
         self._numa = mc.numa
         self._disks = mc.disks
+        self._perf_split = mc.perf_split
         self.proc = None
         self._stdout_fh = None
         self._stderr_fh = None
@@ -159,6 +165,9 @@ class MonitorController:
         # where the openpyxl chart build dominates export time.
         if self._config.monitor.skip_charts:
             cmd += ["--no-charts"]
+        # perf-split mode (forwards --perf-split): only meaningful with capture on.
+        if self._perf_split and self._capture_on:
+            cmd += ["--perf-split"]
         # Hard upper bound: vm_monitor exits after this even if the lock is never
         # removed (SIGKILL/OOM on the kernel side cannot reap the subprocess).
         hard_t = getattr(self._config, "test_duration", self._report_timeout) + 60
