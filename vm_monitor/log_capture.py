@@ -20,7 +20,8 @@ from .config import _count_physical_cores, calculate_cpu_range_from_numa, load_g
 # --- perf-split mode magic constants (edit for your host) ------------------
 # When LogCapture(perf_split=True): devkit topdown+mem run the full duration,
 # ksys runs the FIRST half, then `perf stat -e <events> -a -- sleep N` loops
-# every PERF_SAMPLE_SEC for the SECOND half. One perf_stat_NNNN.log per segment.
+# every PERF_SAMPLE_SEC for the SECOND half. All perf segments are appended to
+# a single perf_stat.log (one block per segment, with a segment header).
 PERF_STAT_EVENTS = (
     "cycles,cpu-clock,instructions,tlb:tlb_flush,l1d_tlb,l1d_tlb_refill,"
     "l2d_tlb,l2d_tlb_refill,l2i_tlb,l2i_tlb_refill,context-switches,sched:sched_switch"
@@ -89,6 +90,7 @@ class LogCapture:
         self._t0_mono = None
         self.perf_stop_flag = None
         self.perf_thread = None
+        self.perf_log_fh = None  # single perf_stat.log handle, closed in stop()/finally
 
     def _get_cpu_range(self) -> str:
         """Get CPU range for devkit top-down command"""
@@ -361,7 +363,7 @@ class LogCapture:
 
         Waits for the first half to elapse, then runs `perf stat -e <events>
         -a -- sleep N` repeatedly until the full collection window ends or
-        stop() is called. One perf_stat_NNNN.log per segment.
+        stop() is called. All segments append to a single perf_stat.log.
         """
         self.perf_stop_flag = threading.Event()
         self.perf_thread = threading.Thread(target=self._perf_stat_loop_thread, name="perf-stat-loop", daemon=True)
@@ -370,22 +372,35 @@ class LogCapture:
         return (True, None)
 
     def _perf_stat_loop_thread(self):
-        """Thread target: sleep until the second half, then loop perf stat segments."""
+        """Thread target: sleep until the second half, then loop perf stat segments.
+
+        Writes every segment's perf output into one appended perf_stat.log
+        (segment header + perf stat block per iteration).
+        """
         half = self.duration // 2
         full_deadline = self._t0_mono + self.duration
         wait_until = self._t0_mono + half
+        log_path = os.path.join(self.log_dir, "perf_stat.log")
 
-        # Idle through the first half (ksys owns it).
-        while not self.perf_stop_flag.is_set() and time.monotonic() < wait_until:
-            self.perf_stop_flag.wait(timeout=0.5)
+        try:
+            fh = open(log_path, "a")
+        except OSError as exc:
+            print(f"  [ERROR] cannot open perf stat log {log_path}: {exc}")
+            return
+        self.perf_log_fh = fh
 
-        seg = 0
-        while not self.perf_stop_flag.is_set() and time.monotonic() < full_deadline:
-            seg += 1
-            log_path = os.path.join(self.log_dir, f"perf_stat_{seg:04d}.log")
-            cmd = ["perf", "stat", "-e", PERF_STAT_EVENTS, "-a", "--", "sleep", str(PERF_SAMPLE_SEC)]
-            try:
-                with open(log_path, "w") as fh:
+        try:
+            # Idle through the first half (ksys owns it).
+            while not self.perf_stop_flag.is_set() and time.monotonic() < wait_until:
+                self.perf_stop_flag.wait(timeout=0.5)
+
+            seg = 0
+            while not self.perf_stop_flag.is_set() and time.monotonic() < full_deadline:
+                seg += 1
+                fh.write(f"\n# perf stat segment {seg} @ {datetime.now().isoformat(timespec='seconds')}\n")
+                fh.flush()
+                cmd = ["perf", "stat", "-e", PERF_STAT_EVENTS, "-a", "--", "sleep", str(PERF_SAMPLE_SEC)]
+                try:
                     subprocess.run(
                         cmd,
                         stdout=fh,
@@ -393,12 +408,19 @@ class LogCapture:
                         timeout=PERF_SAMPLE_SEC + 15,
                         check=False,
                     )
-            except subprocess.TimeoutExpired:
+                except subprocess.TimeoutExpired:
+                    pass
+                except OSError as exc:
+                    # perf binary missing or unrunnable — no point retrying.
+                    print(f"  [ERROR] perf stat segment {seg} failed: {exc}")
+                    break
+                fh.flush()
+        finally:
+            try:
+                fh.close()
+            except Exception:
                 pass
-            except OSError as exc:
-                # perf binary missing or unrunnable — no point retrying.
-                print(f"  [ERROR] perf stat segment {seg} failed: {exc}")
-                break
+            self.perf_log_fh = None
 
     def start(self) -> dict:
         """Start all collection processes in parallel using Popen
@@ -474,6 +496,15 @@ class LogCapture:
             self.perf_stop_flag.set()
         if self.perf_thread is not None:
             self.perf_thread.join(timeout=PERF_SAMPLE_SEC + 5)
+        # If the perf thread is still blocked in a perf subprocess past the join
+        # timeout, close its log handle so the in-flight write errors out and the
+        # daemon thread exits promptly.
+        if self.perf_log_fh is not None:
+            try:
+                self.perf_log_fh.close()
+            except Exception:
+                pass
+            self.perf_log_fh = None
 
         # Stop getfre threads first
         for numa_id, stop_flag in self.getfre_stop_flags.items():

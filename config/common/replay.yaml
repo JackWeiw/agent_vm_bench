@@ -183,7 +183,7 @@ monitor:
   # Split-timeline host-perf collection (forwards vm-monitor --perf-split).
   # When true: devkit topdown+mem run the full stress window, ksys runs only the
   # FIRST half, then `perf stat -e <PERF_STAT_EVENTS> -a -- sleep 3` loops every
-  # PERF_SAMPLE_SEC for the SECOND half (one perf_stat_NNNN.log per segment).
+  # PERF_SAMPLE_SEC for the SECOND half (all segments appended to perf_stat.log).
   # Requires capture (auto/true). Events/split/sample are magic constants in
   # vm_monitor/log_capture.py (edit there for your host). Default off.
   # perf_split: true
