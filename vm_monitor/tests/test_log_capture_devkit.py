@@ -81,5 +81,49 @@ class TestDevkitSplit(unittest.TestCase):
         self.assertIn("top-down", subcmds)
 
 
+class TestPerfSplitKsys(unittest.TestCase):
+    """perf-split mode halves the ksys -d so perf stat owns the second half."""
+
+    def setUp(self):
+        self.log_dir = tempfile.mkdtemp(prefix="perf_split_")
+        self.config = {"ksys_path": "/fake/ksys", "ksys_config_path": "/fake/ksys.yaml"}
+
+    def tearDown(self):
+        cap = getattr(self, "_cap", None)
+        if cap is not None:
+            cap.stop()
+        for f in os.listdir(self.log_dir):
+            try:
+                os.unlink(os.path.join(self.log_dir, f))
+            except PermissionError:
+                pass
+        try:
+            os.rmdir(self.log_dir)
+        except OSError:
+            pass
+
+    def _ksys_cmd(self, perf_split: bool) -> list:
+        spawned = []
+
+        def fake_popen(cmd, *a, **k):
+            spawned.append(cmd)
+            return _DummyProc()
+
+        self._cap = LogCapture(self.config, 600, self.log_dir, [0], perf_split=perf_split)
+        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=fake_popen):
+            self._cap._start_ksys()
+        ksys_cmds = [c for c in spawned if c and c[0] == "/fake/ksys"]
+        self.assertTrue(ksys_cmds, "ksys was not spawned")
+        return ksys_cmds[0]
+
+    def test_ksys_halved_when_perf_split(self):
+        cmd = self._ksys_cmd(True)
+        self.assertEqual(cmd[cmd.index("-d") + 1], "300")  # 600 // 2
+
+    def test_ksys_full_when_no_split(self):
+        cmd = self._ksys_cmd(False)
+        self.assertEqual(cmd[cmd.index("-d") + 1], "600")
+
+
 if __name__ == "__main__":
     unittest.main()

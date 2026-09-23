@@ -150,6 +150,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=600,
         help="Timeout for ksys data parsing phase in seconds (default: 600s, increase for large VM counts)",
     )
+    parser.add_argument(
+        "--perf-split",
+        action="store_true",
+        help="perf-split mode: devkit topdown+mem full duration, ksys first half, "
+        "perf stat -e <PERF_STAT_EVENTS> -a looped every PERF_SAMPLE_SEC for the second half",
+    )
 
     # Selective /proc collectors + devkit split (default all ON). The dest is
     # derived from the hyphenated STEM so --no-host-mem-detail lands on
@@ -272,6 +278,7 @@ def main():
             m.target_numa_nodes,
             ksys_parse_timeout=args.ksys_parse_timeout,
             disabled_devkit=disabled_devkit,
+            perf_split=args.perf_split,
         )
         capture.start()
         print(f"[OK] Log collection tools started in background (duration={args.time}s)")

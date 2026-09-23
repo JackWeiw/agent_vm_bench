@@ -17,6 +17,17 @@ from datetime import datetime
 from .config import _count_physical_cores, calculate_cpu_range_from_numa, load_getfre_config, numa_to_physical_cores
 
 
+# --- perf-split mode magic constants (edit for your host) ------------------
+# When LogCapture(perf_split=True): devkit topdown+mem run the full duration,
+# ksys runs the FIRST half, then `perf stat -e <events> -a -- sleep N` loops
+# every PERF_SAMPLE_SEC for the SECOND half. One perf_stat_NNNN.log per segment.
+PERF_STAT_EVENTS = (
+    "cycles,cpu-clock,instructions,tlb:tlb_flush,l1d_tlb,l1d_tlb_refill,"
+    "l2d_tlb,l2d_tlb_refill,l2i_tlb,l2i_tlb_refill,context-switches,sched:sched_switch"
+)
+PERF_SAMPLE_SEC = 3
+
+
 class LogCapture:
     """Parallel log collection with devkit, ksys, ub_watch, smap_bw
 
@@ -41,6 +52,7 @@ class LogCapture:
         numa_nodes: list,
         ksys_parse_timeout: int = None,
         disabled_devkit: set[str] | None = None,
+        perf_split: bool = False,
     ):
         """
         Args:
@@ -53,6 +65,9 @@ class LogCapture:
                 devkit_path is shared by both sub-tools, so .env path control cannot
                 run only one; this set lets the CLI (--no-devkit-mem /
                 --no-devkit-topdown) split them. Default empty = both run.
+            perf_split: split-timeline mode — devkit topdown+mem run the full
+                duration, ksys runs only the FIRST half, then a perf stat loop
+                (PERF_STAT_EVENTS, every PERF_SAMPLE_SEC) runs the SECOND half.
         """
         self.config = config
         self.duration = duration
@@ -69,6 +84,11 @@ class LogCapture:
         self.getfre_threads = {}  # {numa_id: Thread}
         self.getfre_log_files = {}  # {numa_id: file handle}
         self.getfre_stop_flags = {}  # {numa_id: Event}
+        # perf-split threading components (second-half perf stat loop)
+        self.perf_split = perf_split
+        self._t0_mono = None
+        self.perf_stop_flag = None
+        self.perf_thread = None
 
     def _get_cpu_range(self) -> str:
         """Get CPU range for devkit top-down command"""
@@ -149,18 +169,24 @@ class LogCapture:
         if not self.config.get("ksys_config_path"):
             return (False, "ksys_config_path not configured")
 
+        # perf-split: ksys covers only the first half so perf stat can take the
+        # second half without overlapping another kernel-level collector.
+        ksys_duration = self.duration // 2 if self.perf_split else self.duration
         cmd = [
             self.config["ksys_path"],
             "collect",
             "-d",
-            str(self.duration),
+            str(ksys_duration),
             "-i",
             "3",
             "-c",
             self.config["ksys_config_path"],
         ]
         return self._start_tool(
-            "ksys", cmd, "ksys.log", f"Started ksys collect (config={self.config['ksys_config_path']})"
+            "ksys",
+            cmd,
+            "ksys.log",
+            f"Started ksys collect (duration={ksys_duration}s, config={self.config['ksys_config_path']})",
         )
 
     def _start_ub_watch(self) -> tuple:
@@ -330,6 +356,50 @@ class LogCapture:
         # Final flush
         log_file.flush()
 
+    def _start_perf_stat_loop(self) -> tuple:
+        """Start the perf stat loop thread (perf-split mode, second half).
+
+        Waits for the first half to elapse, then runs `perf stat -e <events>
+        -a -- sleep N` repeatedly until the full collection window ends or
+        stop() is called. One perf_stat_NNNN.log per segment.
+        """
+        self.perf_stop_flag = threading.Event()
+        self.perf_thread = threading.Thread(target=self._perf_stat_loop_thread, name="perf-stat-loop", daemon=True)
+        self.perf_thread.start()
+        print(f"  [OK] Started perf stat loop (interval={PERF_SAMPLE_SEC}s, second half)")
+        return (True, None)
+
+    def _perf_stat_loop_thread(self):
+        """Thread target: sleep until the second half, then loop perf stat segments."""
+        half = self.duration // 2
+        full_deadline = self._t0_mono + self.duration
+        wait_until = self._t0_mono + half
+
+        # Idle through the first half (ksys owns it).
+        while not self.perf_stop_flag.is_set() and time.monotonic() < wait_until:
+            self.perf_stop_flag.wait(timeout=0.5)
+
+        seg = 0
+        while not self.perf_stop_flag.is_set() and time.monotonic() < full_deadline:
+            seg += 1
+            log_path = os.path.join(self.log_dir, f"perf_stat_{seg:04d}.log")
+            cmd = ["perf", "stat", "-e", PERF_STAT_EVENTS, "-a", "--", "sleep", str(PERF_SAMPLE_SEC)]
+            try:
+                with open(log_path, "w") as fh:
+                    subprocess.run(
+                        cmd,
+                        stdout=fh,
+                        stderr=subprocess.STDOUT,
+                        timeout=PERF_SAMPLE_SEC + 15,
+                        check=False,
+                    )
+            except subprocess.TimeoutExpired:
+                pass
+            except OSError as exc:
+                # perf binary missing or unrunnable — no point retrying.
+                print(f"  [ERROR] perf stat segment {seg} failed: {exc}")
+                break
+
     def start(self) -> dict:
         """Start all collection processes in parallel using Popen
 
@@ -337,6 +407,7 @@ class LogCapture:
             {'success': [tool_names], 'failed': [(tool_name, error_msg)]}
         """
         self.start_time = datetime.now()
+        self._t0_mono = time.monotonic()
         success = []
         failed = []
 
@@ -390,10 +461,20 @@ class LogCapture:
             failed.append(("getfre", err))
             self.failed_startup.append("getfre")
 
+        # Start perf stat loop (perf-split mode, second half)
+        if self.perf_split:
+            self._start_perf_stat_loop()
+
         return {"success": success, "failed": failed}
 
     def stop(self):
         """Stop all running processes and threads"""
+        # Stop perf stat loop thread first (perf-split mode)
+        if self.perf_stop_flag is not None:
+            self.perf_stop_flag.set()
+        if self.perf_thread is not None:
+            self.perf_thread.join(timeout=PERF_SAMPLE_SEC + 5)
+
         # Stop getfre threads first
         for numa_id, stop_flag in self.getfre_stop_flags.items():
             stop_flag.set()  # Signal threads to stop
