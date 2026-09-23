@@ -17,15 +17,18 @@ this module rolls them into a per-trajectory aggregate + a per-run drill-down.
 
 **stderr is unavailable by design.** The lifecycle series excludes raw
 stdout/stderr to stay compact and backend-agnostic; a ``step`` event carries
-timings + ``exit_code`` + ``slice_failed``/``timed_out`` flags but NO error
-text. The only failure signal the series carries is the trajectory-level
-``error_type`` + ``error`` (a short string, ``[:120]``) on
-``trajectory_create(success=False)`` / ``trajectory_kill(success=False)``
-events. So ``create_error``/``kill_error`` is what a user sees for a run that
-failed at create/kill, and a *successful* run whose individual steps failed
-(``exit_code != 0``) shows only ``return_code``/``timed_out``/``slice_failed``
-per step -- no error text. The ``stderr: null`` in each step is therefore
-by-design, not a bug.
+timings + ``exit_code`` + ``slice_failed``/``timed_out`` flags + a compact,
+single-line, truncated (``ACTION_SERIES_LIMIT``) ``action`` text but NO error
+text and NO full action body. The full action lives in the trajectory
+``*.replay.json`` source -- the series ``action`` is enough to identify which
+command ran without joining back. The only failure signal the series carries
+beyond per-step is the trajectory-level ``error_type`` + ``error`` (a short
+string, ``[:120]``) on ``trajectory_create(success=False)`` /
+``trajectory_kill(success=False)`` events. So ``create_error``/``kill_error``
+is what a user sees for a run that failed at create/kill, and a *successful*
+run whose individual steps failed (``exit_code != 0``) shows only
+``return_code``/``timed_out``/``slice_failed`` per step -- no error text. The
+``stderr: null`` in each step is therefore by-design, not a bug.
 
 **Naming collision.** The reference replay-aenv-main per-step ``paused_sec``
 is the think-time gap *between* slices; bench-core's series field
@@ -308,6 +311,7 @@ def _enrich_step(index: int, ev: dict, paused_sec: float) -> dict:
     return {
         "index": ev.get("step_index", index),
         "action_type": ev.get("action_type"),
+        "action": ev.get("action"),
         "pause_sec": _f("pause_sec"),
         "paused_sec": round(paused_sec, 6),
         "resume_sec": _f("resume_sec"),

@@ -56,6 +56,21 @@ READY_PROBE_TIMEOUT = 10  # seconds per attempt
 # normal nonzero exit, so the timeout metric bucket stays meaningful.
 TIMEOUT_EXIT_CODE = 124
 
+# Cap on the per-step ``action`` text stored in the lifecycle series. A SWE-bench
+# ``str_replace_editor`` action can carry whole-file content (tens of KB); the
+# series is written per-step on a background drain, so an untruncated action
+# bloats the jsonl and the obs workbook. The full text lives in the trajectory
+# ``*.replay.json`` source -- this compact form is enough to identify the step
+# without joining back. Mirrors the ``stderr: null`` compact-by-design choice.
+ACTION_SERIES_LIMIT = 512
+
+
+def _compact_action(action: str | None, *, limit: int = ACTION_SERIES_LIMIT) -> str:
+    """Single-line + truncate a recorded action for the series ``step`` event."""
+    s = (action or "").replace("\r", "")
+    s = s.replace("\n", "\\n")
+    return s if len(s) <= limit else s[:limit] + "…<truncated>"
+
 
 def _affinity_pool(pool: tuple[Trajectory, ...], template: str | None) -> list[Trajectory]:
     """Trajectories whose template matches this sandbox's template.
@@ -361,6 +376,7 @@ class ReplayBaseRunner(TaskRunner):
                         "inflight_wait_sec": inflight_wait_sec,
                         "running_slot_held_sec": sr.running_slot_held_sec,
                         "interaction_total_sec": sr.interaction_total_sec,
+                        "action": _compact_action(step.action),
                     }
                 )
             # Track pause-end for the next step's ready_at (G2).
@@ -1006,6 +1022,7 @@ class ReplayBaseRunner(TaskRunner):
             "pause_inflight_wait_sec": 0.0,
             "rate_pacing_wait_sec": 0.0,
             "inflight_wait_sec": 0.0,
+            "action": _compact_action(step.action),
         }
 
     def _record_trajectory_failure(self, traj: Trajectory, *, create_sec: float, kill_sec: float) -> None:

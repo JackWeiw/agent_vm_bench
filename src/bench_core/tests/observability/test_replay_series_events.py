@@ -171,6 +171,38 @@ class TestAdmissionEvents:
         events = [e for e in _series_events(tmp_path) if e["event"].startswith("slot_")]
         assert events == []
 
+    def test_step_event_carries_compact_action(self, tmp_path):
+        """The series ``step`` event carries a single-line, truncated ``action``
+        so replay_result.json can show which command ran without joining back to
+        the trajectory ``*.replay.json`` source. str_replace_editor actions can
+        carry whole-file content (tens of KB) -- verify short actions pass through
+        verbatim (newlines flattened) and long ones are capped at
+        ``ACTION_SERIES_LIMIT`` with a truncation marker.
+        """
+        from bench_core.task_runner.replay import ACTION_SERIES_LIMIT
+
+        runner, series, provider, state = self._runner(tmp_path)
+
+        short = ReplayStep(index=0, action_type="shell", action="echo hi\nsecond line", delay_time_sec=0.0)
+        runner._run_slice(short, trajectory_id="t1")
+
+        long_action = "x" * (ACTION_SERIES_LIMIT + 50)
+        big = ReplayStep(index=1, action_type="str_replace_editor", action=long_action, delay_time_sec=0.0)
+        runner._run_slice(big, trajectory_id="t1")
+        series.close()
+
+        steps = [e for e in _series_events(tmp_path) if e["event"] == "step"]
+        assert len(steps) == 2
+
+        # Short action: newlines flattened to literal \n, otherwise verbatim.
+        assert steps[0]["action"] == "echo hi\\nsecond line"
+        assert len(steps[0]["action"]) < ACTION_SERIES_LIMIT
+
+        # Long action: capped at the limit + truncation marker; not the full body.
+        assert len(steps[1]["action"]) == ACTION_SERIES_LIMIT + len("…<truncated>")
+        assert steps[1]["action"].endswith("…<truncated>")
+        assert "x" * ACTION_SERIES_LIMIT in steps[1]["action"]
+
 
 class TestTrajectoryEvents:
     def test_create_and_kill_events_emitted(self, tmp_path):
