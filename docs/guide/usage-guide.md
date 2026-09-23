@@ -172,6 +172,16 @@ CPU microarchitecture top-down analysis. Identifies pipeline bottlenecks:
 
 Key metrics: IPC, cycles, instructions, top-down percentages
 
+**What vm_monitor runs** (one subprocess, stdout+stderr → `devkit_top_down.log`):
+
+```bash
+$DEVKIT_PATH tuner top-down -d <duration> -i 3 -c <cpu_range>
+# duration = vm_monitor -t; interval fixed at 3s
+# cpu_range = DEVKIT_CPU_RANGE, or auto-computed from --numa (see below)
+```
+
+`devkit_top_down` and `devkit_mem` share `DEVKIT_PATH` (same binary, different `tuner` subcommand), so `.env` path control cannot run only one of them. Use `--no-devkit-topdown` / `--no-devkit-mem` to skip one. If `DEVKIT_CPU_RANGE` is unset AND sysfs cpulist is unreadable, top-down is skipped (never launched with a wrong range).
+
 #### devkit_mem
 
 Memory subsystem analysis:
@@ -180,6 +190,13 @@ Memory subsystem analysis:
 - **DDR Bandwidth**: Read/Write bandwidth (MB/s)
 - **NUMA Bandwidth**: Per-node memory bandwidth
 
+**What vm_monitor runs** (stdout+stderr → `devkit_mem.log`):
+
+```bash
+$DEVKIT_PATH tuner memory -d <duration> -i 3
+# no CPU range needed — memory tuner samples the whole socket
+```
+
 #### ksys
 
 Kernel system performance collector:
@@ -187,6 +204,25 @@ Kernel system performance collector:
 - **Cache Latency**: L2/L3 miss latency (cycles)
 - **IPC**: Instructions per cycle
 - **Topdown**: Kernel-level top-down percentages
+
+**What vm_monitor runs** (stdout+stderr → `ksys.log`):
+
+```bash
+$KSYS_PATH collect -d <duration> -i 3 -c $KSYS_CONFIG_PATH
+# requires BOTH KSYS_PATH and KSYS_CONFIG_PATH; skipped if either is missing
+```
+
+**Two-phase lifecycle** (ksys is the only tool with a long tail after collection):
+
+1. **Collect phase** — runs for `-d <duration>` seconds (data collection).
+2. **Parse phase** — after collection, ksys parses accumulated data; this can take minutes for large samples.
+
+vm_monitor tracks parse progress by scanning `ksys.log` for markers:
+- `Starting to collect data` → still collecting
+- `Starting to parse data` → parse phase started
+- `Starting to process and print data` / `CPU Metrics` / `Data saved successfully` → parse completed
+
+If parse exceeds `ksys_parse_timeout` (default 600s), ksys is force-terminated and a warning is printed with suggestions (increase `ksys_parse_timeout`, check `ksys.log` size, reduce sampling interval). Parse progress is logged every 30s with 50/75/90% threshold warnings. All other tools (devkit/ub_watch/smap_bw) use a simple `duration + 60s` timeout.
 
 #### ub_watch
 
@@ -236,18 +272,25 @@ numa_nodes:                     # NUMA nodes to monitor (omit to auto-discover)
 
 ### Configuration (.env)
 
+All tool paths are loaded from `.env` by `vm_monitor/config.py` (`load_env_config`), then validated before collection starts. Missing/invalid paths are handled one of two ways depending on how vm_monitor was launched:
+
+- **Non-interactive** (the path used by `bench-core`'s auto vm-monitor and `--no-vm-monitor`-aware callers): the tool is silently disabled for the session — a `[WARN]` is printed and collection proceeds without that tool's log/sheet.
+- **Interactive** (`vm-monitor` CLI without a non-interactive flag): vm_monitor prompts for each missing path, offering `skip` to disable. Entered paths are written back to `.env` via `python-dotenv`.
+
+So a run never hard-fails on a missing tool — the missing tool's sheet is simply absent from `resource_report.xlsx`.
+
 ```env
-# DevKit collection tool path
+# DevKit collection tool path (shared by devkit_top_down + devkit_mem)
 DEVKIT_PATH=/path/to/devkit
 
-# ksys collection tool path and config
+# ksys collection tool path and config (BOTH required — ksys skipped if either missing)
 KSYS_PATH=/path/to/ksys
 KSYS_CONFIG_PATH=/path/to/config.yaml
 
 # ub_watch collection tool path
 UB_WATCH_PATH=/path/to/ub_watch
 
-# smap_bw script path
+# smap_bw script path (run via sudo for dmesg access)
 SMAP_BW_PATH=/path/to/smap_bw.py
 
 # getfre executable path and config
@@ -258,7 +301,18 @@ GETFRE_CONFIG_PATH=/path/to/getfre_config.yaml
 DEVKIT_CPU_RANGE=96-191
 ```
 
-If `.env` is missing or paths invalid, interactive input will be prompted.
+#### Key → tool mapping
+
+| `.env` key | Tool(s) it drives | Required for | Optional? |
+|------------|-------------------|--------------|-----------|
+| `DEVKIT_PATH` | `devkit_top_down`, `devkit_mem` | DevKit_TopDown / DevKit_Memory sheets | both share one binary |
+| `DEVKIT_CPU_RANGE` | `devkit_top_down` only | top-down CPU scope | auto from `--numa` sysfs cpulist |
+| `KSYS_PATH` + `KSYS_CONFIG_PATH` | `ksys` | KSys sheet | **both required** — ksys skipped if either missing |
+| `UB_WATCH_PATH` | `ub_watch` | UBWatch_Latency sheet | optional |
+| `SMAP_BW_PATH` | `smap_bw` | SMAPBW sheets | optional (run via sudo) |
+| `GETFRE_PATH` + `GETFRE_CONFIG_PATH` | `getfre` | Getfre sheets | optional; config falls back to host auto-detect |
+
+If `.env` is missing entirely or a path is unset, interactive input will be prompted (or the tool silently skipped in non-interactive mode).
 
 ### Output Files
 
