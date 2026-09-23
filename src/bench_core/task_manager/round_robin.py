@@ -291,13 +291,29 @@ class RoundRobinTaskManager:
         self.stats_collector.current_round = None
 
     def _wait_for_active_runners(self) -> None:
-        """Wait for this round's runners; document tasks use one shared deadline."""
-        if self.config.workflow_type in {"browser", "coding", "replay"}:
+        """Wait for this round's runners; per-runner join ceiling is workflow-specific.
+
+        browser/coding/replay share one ceiling: ``test_duration + 60``. A round
+        is one unit of work (a browser tab cycle / a coding build probe / one
+        SWE-bench trajectory); none can legitimately outlive the whole benchmark
+        wall, so ``test_duration + 60`` lets a legitimate long unit complete while
+        a deadlocked runner is still reaped. The old 120s hardcoded ceiling
+        silently truncated long replay trajectories (98 steps on a pinned core)
+        -- steps after the cut neither executed nor reached the series /
+        replay_result.json, and no log explained the shortfall.
+
+        document keeps its own ``document_task_timeout + 5`` deadline (a hard
+        RuntimeError on overrun, by design for one-shot document rounds).
+        """
+        wf = self.config.workflow_type
+        if wf in {"browser", "coding", "replay"}:
+            per_runner_timeout = float(self.config.test_duration) + 60.0
             for runner in self.active_runners:
-                runner.join(timeout=120)
+                runner.join(timeout=per_runner_timeout)
+            self._warn_if_alive(per_runner_timeout)
             return
-        if self.config.workflow_type != "document":
-            raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
+        if wf != "document":
+            raise ValueError(f"Unsupported workflow_type: {wf}")
         cfg = self.config.workflow_config
         assert isinstance(cfg, DocumentConfig), "document round requires a DocumentConfig view"
         deadline = time.monotonic() + cfg.document_task_timeout + 5
@@ -306,6 +322,22 @@ class RoundRobinTaskManager:
         alive = [runner.name for runner in self.active_runners if runner.is_alive()]
         if alive:
             raise RuntimeError(f"document round runners did not finish before task deadline: {alive}")
+
+    def _warn_if_alive(self, timeout: float) -> None:
+        """Log a WARNING for runners still alive after the join ceiling.
+
+        A live runner means the trajectory was truncated: steps after the cut
+        are neither executed nor recorded, so replay_result.json / the series
+        jsonl come up short with no log explaining why. This is the signal the
+        120s-replay bug was missing.
+        """
+        alive = [runner.name for runner in self.active_runners if runner.is_alive()]
+        if alive:
+            logger.warning(
+                f"[RoundRobin] {len(alive)} runner(s) still alive after {timeout:.0f}s "
+                f"join ceiling -- trajectory truncated; steps after the cut are not "
+                f"recorded: {alive}"
+            )
 
     def _calculate_rounds(self) -> int:
         """Calculate max number of rounds to execute.

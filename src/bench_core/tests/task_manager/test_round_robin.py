@@ -206,3 +206,60 @@ class TestRoundRobinReplayWorkflow:
         assert len(mgr.active_runners) == 1
         mgr._wait_for_active_runners()
         mgr._stop_round()
+
+    def test_round_runner_join_ceiling_scales_with_test_duration(self):
+        """browser/coding/replay share a per-runner join ceiling of
+        ``test_duration + 60``, not the old hardcoded 120s. A 98-step replay
+        trajectory on a pinned core runs minutes; the old 120s ceiling silently
+        truncated it (steps after the cut unrecorded). Verify the ceiling scales
+        and that a runner still alive past it surfaces a WARNING (the signal
+        the old bug lacked).
+        """
+        import logging
+
+        config = KernelConfig(
+            workflow_type="replay",
+            round_size=1,
+            round_count=1,
+            test_duration=5,
+            workflow_config=ReplayConfig(replay_delay_scale=0.0),
+        )
+        states = _states(1)
+        states[0].workflow_type = "replay"
+        stats = _new_stats(config, states)
+        mgr = RoundRobinTaskManager(config, states, threading.Event(), stats, FakeProvider(count=1))
+
+        join_timeouts: list[float] = []
+
+        class _StubRunner:
+            name = "stub-round-runner"
+            state = states[0]
+
+            def join(self, timeout=None):
+                join_timeouts.append(timeout)
+                return None  # return immediately; never finished
+
+            def is_alive(self):
+                return True
+
+        mgr.active_runners = [_StubRunner()]
+
+        records: list[logging.LogRecord] = []
+
+        class _Handler(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        handler = _Handler(level=logging.WARNING)
+        rr_logger = logging.getLogger("bench_core.task_manager.round_robin")
+        rr_logger.addHandler(handler)
+        try:
+            mgr._wait_for_active_runners()
+        finally:
+            rr_logger.removeHandler(handler)
+
+        # Ceiling = test_duration (5) + 60 = 65s, NOT the old 120.
+        assert join_timeouts == [65.0], f"expected [65.0], got {join_timeouts}"
+        warnings = [r for r in records if r.levelno == logging.WARNING]
+        assert warnings, "expected a WARNING that the runner was still alive after the join ceiling"
+        assert "truncated" in warnings[0].getMessage()
