@@ -279,6 +279,7 @@ def main():
             ksys_parse_timeout=args.ksys_parse_timeout,
             disabled_devkit=disabled_devkit,
             perf_split=args.perf_split,
+            stress_file=args.stress_file,
         )
         capture.start()
         print(f"[OK] Log collection tools started in background (duration={args.time}s)")

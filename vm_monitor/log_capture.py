@@ -19,14 +19,23 @@ from .config import _count_physical_cores, calculate_cpu_range_from_numa, load_g
 
 # --- perf-split mode magic constants (edit for your host) ------------------
 # When LogCapture(perf_split=True): devkit topdown+mem run the full duration,
-# ksys runs the FIRST half, then `perf stat -e <events> -a -- sleep N` loops
-# every PERF_SAMPLE_SEC for the SECOND half. All perf segments are appended to
-# a single perf_stat.log (one block per segment, with a segment header).
+# ksys runs the FIRST PERF_SPLIT_DURATION_SEC//2 of stress, then
+# `perf stat -e <events> -a -- sleep N` loops every PERF_SAMPLE_SEC for the
+# REST of the stress window (until the stress-file lock disappears). All perf
+# segments are appended to a single perf_stat.log (block per segment).
+#
+# perf-split keys off the stress-file lock lifecycle, NOT vm_monitor's -t, so a
+# huge -t (replay runs that let trajectories finish to completion) does not push
+# perf past the end of stress — perf always runs during real stress.
 PERF_STAT_EVENTS = (
     "cycles,cpu-clock,instructions,tlb:tlb_flush,l1d_tlb,l1d_tlb_refill,"
     "l2d_tlb,l2d_tlb_refill,l2i_tlb,l2i_tlb_refill,context-switches,sched:sched_switch"
 )
 PERF_SAMPLE_SEC = 3
+# Expected stress window (s) — sizes ksys's first-half run. perf takes whatever
+# remains of real stress (lock-gone = done), so this only needs to be roughly
+# the stress duration; perf is robust if stress ends earlier or later.
+PERF_SPLIT_DURATION_SEC = 600
 
 
 class LogCapture:
@@ -54,6 +63,7 @@ class LogCapture:
         ksys_parse_timeout: int = None,
         disabled_devkit: set[str] | None = None,
         perf_split: bool = False,
+        stress_file: str | None = None,
     ):
         """
         Args:
@@ -67,8 +77,13 @@ class LogCapture:
                 run only one; this set lets the CLI (--no-devkit-mem /
                 --no-devkit-topdown) split them. Default empty = both run.
             perf_split: split-timeline mode — devkit topdown+mem run the full
-                duration, ksys runs only the FIRST half, then a perf stat loop
-                (PERF_STAT_EVENTS, every PERF_SAMPLE_SEC) runs the SECOND half.
+                duration, ksys runs the first half of stress, then a perf stat
+                loop (PERF_STAT_EVENTS every PERF_SAMPLE_SEC) runs the rest of
+                stress. Keys off the stress-file lock lifecycle, not -t.
+            stress_file: stress marker lock path (from --stress-file). perf-split
+                uses this for its timeline (appear = stress start, disappear =
+                stress end) so a huge -t does not push perf past real stress.
+                None in timer mode -> fall back to -t-based timing.
         """
         self.config = config
         self.duration = duration
@@ -87,6 +102,7 @@ class LogCapture:
         self.getfre_stop_flags = {}  # {numa_id: Event}
         # perf-split threading components (second-half perf stat loop)
         self.perf_split = perf_split
+        self.stress_file = stress_file
         self._t0_mono = None
         self.perf_stop_flag = None
         self.perf_thread = None
@@ -171,9 +187,12 @@ class LogCapture:
         if not self.config.get("ksys_config_path"):
             return (False, "ksys_config_path not configured")
 
-        # perf-split: ksys covers only the first half so perf stat can take the
-        # second half without overlapping another kernel-level collector.
-        ksys_duration = self.duration // 2 if self.perf_split else self.duration
+        # perf-split: ksys covers only the first half of the expected stress
+        # window (PERF_SPLIT_DURATION_SEC//2) so perf stat can take the rest.
+        # Sized off the stress estimate, NOT vm_monitor's -t, so a huge -t
+        # (replay runs that finish trajectories to completion) does not inflate
+        # ksys past real stress.
+        ksys_duration = (PERF_SPLIT_DURATION_SEC // 2) if self.perf_split else self.duration
         cmd = [
             self.config["ksys_path"],
             "collect",
@@ -361,27 +380,65 @@ class LogCapture:
     def _start_perf_stat_loop(self) -> tuple:
         """Start the perf stat loop thread (perf-split mode, second half).
 
-        Waits for the first half to elapse, then runs `perf stat -e <events>
-        -a -- sleep N` repeatedly until the full collection window ends or
-        stop() is called. All segments append to a single perf_stat.log.
+        Waits for the first half of stress to elapse, then runs `perf stat -e
+        <events> -a -- sleep N` repeatedly until stress ends (stress-file lock
+        disappears) or stop() is called. All segments append to perf_stat.log.
         """
         self.perf_stop_flag = threading.Event()
         self.perf_thread = threading.Thread(target=self._perf_stat_loop_thread, name="perf-stat-loop", daemon=True)
         self.perf_thread.start()
-        print(f"  [OK] Started perf stat loop (interval={PERF_SAMPLE_SEC}s, second half)")
+        print(f"  [OK] Started perf stat loop (interval={PERF_SAMPLE_SEC}s, second half of stress)")
         return (True, None)
 
-    def _perf_stat_loop_thread(self):
-        """Thread target: sleep until the second half, then loop perf stat segments.
+    def _wait_for_stress_lock(self) -> float | None:
+        """Block until the stress-file lock appears (= real stress start).
 
-        Writes every segment's perf output into one appended perf_stat.log
-        (segment header + perf stat block per iteration).
+        Returns the monotonic timestamp of lock appearance, or None if stop()
+        was signaled first (or the lock never appeared within vm_monitor's -t).
         """
-        half = self.duration // 2
-        full_deadline = self._t0_mono + self.duration
-        wait_until = self._t0_mono + half
-        log_path = os.path.join(self.log_dir, "perf_stat.log")
+        deadline = time.monotonic() + self.duration  # don't outlive vm_monitor's -t
+        while not self.perf_stop_flag.is_set() and time.monotonic() < deadline:
+            if self.stress_file and os.path.exists(self.stress_file):
+                return time.monotonic()
+            self.perf_stop_flag.wait(timeout=0.5)
+        return None
 
+    def _stress_active(self) -> bool:
+        """True while stress is ongoing (lock present). False once it ends."""
+        if not self.stress_file:
+            return True  # timer mode (no lock) -> active until the deadline check stops us
+        return os.path.exists(self.stress_file)
+
+    def _perf_stat_loop_thread(self):
+        """Thread target: wait for stress start, idle through ksys's first half,
+        then loop perf stat segments until stress ends (lock gone) or stop().
+
+        Timeline keys off the stress-file lock lifecycle, NOT vm_monitor's -t,
+        so a huge -t (replay runs that finish trajectories to completion) cannot
+        push perf's window past the end of real stress. Writes every segment to
+        one appended perf_stat.log (segment header + perf block per iteration).
+        """
+        half = PERF_SPLIT_DURATION_SEC // 2
+
+        # t0 = real stress start (lock appears). Timer mode: fall back to now.
+        if self.stress_file:
+            t0 = self._wait_for_stress_lock()
+            if t0 is None:
+                return  # stop signaled, or stress never started within -t
+        else:
+            t0 = self._t0_mono
+
+        perf_start = t0 + half
+        # Idle through the first half (ksys owns it). Bail if stress ends
+        # before the half is up (nothing for perf to collect).
+        while not self.perf_stop_flag.is_set() and time.monotonic() < perf_start:
+            if not self._stress_active():
+                return
+            self.perf_stop_flag.wait(timeout=0.5)
+
+        # Open the perf log only when perf is about to write (so no empty
+        # perf_stat.log is left behind if stress never reaches the second half).
+        log_path = os.path.join(self.log_dir, "perf_stat.log")
         try:
             fh = open(log_path, "a")
         except OSError as exc:
@@ -390,12 +447,9 @@ class LogCapture:
         self.perf_log_fh = fh
 
         try:
-            # Idle through the first half (ksys owns it).
-            while not self.perf_stop_flag.is_set() and time.monotonic() < wait_until:
-                self.perf_stop_flag.wait(timeout=0.5)
-
+            # Second half: loop perf stat until stress ends (lock gone) or stop.
             seg = 0
-            while not self.perf_stop_flag.is_set() and time.monotonic() < full_deadline:
+            while not self.perf_stop_flag.is_set() and self._stress_active():
                 seg += 1
                 fh.write(f"\n# perf stat segment {seg} @ {datetime.now().isoformat(timespec='seconds')}\n")
                 fh.flush()

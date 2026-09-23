@@ -181,9 +181,12 @@ monitor:
   #   - devkit-mem
   #   - devkit-topdown
   # Split-timeline host-perf collection (forwards vm-monitor --perf-split).
-  # When true: devkit topdown+mem run the full stress window, ksys runs only the
-  # FIRST half, then `perf stat -e <PERF_STAT_EVENTS> -a -- sleep 3` loops every
-  # PERF_SAMPLE_SEC for the SECOND half (all segments appended to perf_stat.log).
+  # When true: devkit topdown+mem run the full stress window, ksys runs the
+  # first PERF_SPLIT_DURATION_SEC//2 of stress, then `perf stat -e
+  # <PERF_STAT_EVENTS> -a -- sleep 3` loops every PERF_SAMPLE_SEC for the REST
+  # of stress (until the stress-file lock disappears). perf-split keys off the
+  # stress lock lifecycle, NOT -t, so a huge test_duration (replay runs that
+  # finish trajectories to completion) cannot push perf past real stress.
   # Requires capture (auto/true). Events/split/sample are magic constants in
   # vm_monitor/log_capture.py (edit there for your host). Default off.
   # perf_split: true
