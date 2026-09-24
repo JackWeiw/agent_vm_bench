@@ -38,6 +38,8 @@ _VALID_SKIP_STEMS = frozenset(
         "vm-total",
         "disk",
         "ublk",
+        "pss",
+        "ublk-daemon",
         "devkit-mem",
         "devkit-topdown",
     }

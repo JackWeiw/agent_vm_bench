@@ -877,6 +877,26 @@ def _build_vm_total_memory_timeline_sheet(writer, monitor, *, log_dir=None):
         _safe_write_sheet(writer, pd.DataFrame(vm_mem_data), "VM_Total_Memory_Timeline", log_dir=log_dir)
 
 
+def _build_vm_total_pss_timeline_sheet(writer, monitor, *, log_dir=None):
+    """Sheet: VM_Total_PSS_Timeline (fleet aggregate PSS per sample).
+
+    PSS sums shared pages across sharers, so the fleet total is the true
+    marginal memory cost of the sandbox fleet (template pages shared by all
+    VMs counted ~once), unlike VM_Total_Memory_Timeline which sums numa_maps
+    Total and double-counts shared pages. No per-NUMA split -- PSS has no node
+    attribution (smaps_rollup is a single aggregate). Skipped when the 'pss'
+    collector is off (history empty).
+    """
+    if not monitor.vm_total_pss_history:
+        return
+    pss_data = {
+        "Timestamp": [h["ts"] for h in monitor.vm_total_pss_history],
+        "VM Total PSS (MB)": [h["total_pss_mb"] for h in monitor.vm_total_pss_history],
+        "VM Count": [h["vm_count"] for h in monitor.vm_total_pss_history],
+    }
+    _safe_write_sheet(writer, pd.DataFrame(pss_data), "VM_Total_PSS_Timeline", log_dir=log_dir)
+
+
 def _build_disk_io_sheet(writer, monitor, *, log_dir=None):
     """Sheet: Disk_IO_Timeline (per-device read/write MB/s, util%, inflight + ublk count).
 
@@ -901,6 +921,7 @@ def _build_disk_io_sheet(writer, monitor, *, log_dir=None):
         disk_data[f"{dev} Write IOPS"] = []
         disk_data[f"{dev} Avg Rq Sz (sectors)"] = []
     disk_data["ublk Devices"] = []
+    disk_data["Ublk Daemon Cores"] = []
 
     for i, entry in enumerate(monitor.disk_history):
         disk_data["Timestamp"].append(entry["ts"])
@@ -917,9 +938,12 @@ def _build_disk_io_sheet(writer, monitor, *, log_dir=None):
             disk_data[f"{dev} Read IOPS"].append(d.get("r_iops", 0))
             disk_data[f"{dev} Write IOPS"].append(d.get("w_iops", 0))
             disk_data[f"{dev} Avg Rq Sz (sectors)"].append(d.get("avg_rq_sz", 0))
-        # ublk_history shares the 1s disk sub-sample cadence; align by index, pad to 0
+        # ublk_history + ublk_daemon_history share the 1s disk sub-sample cadence;
+        # align by index, pad to 0 (daemon absent / not yet resolved -> 0)
         ublk = monitor.ublk_history[i]["ublk_devices"] if i < len(monitor.ublk_history) else 0
         disk_data["ublk Devices"].append(ublk)
+        daemon = monitor.ublk_daemon_history[i]["cores"] if i < len(monitor.ublk_daemon_history) else 0.0
+        disk_data["Ublk Daemon Cores"].append(daemon)
 
     _safe_write_sheet(writer, pd.DataFrame(disk_data), "Disk_IO_Timeline", log_dir=log_dir)
 
@@ -1645,6 +1669,7 @@ def export_to_excel(
             _build_swap_timeline_sheet(writer, monitor, log_dir=log_dir)
             _build_numa_memory_timeline_sheet(writer, monitor, numa_nodes, log_dir=log_dir)
             _build_vm_total_memory_timeline_sheet(writer, monitor, log_dir=log_dir)
+            _build_vm_total_pss_timeline_sheet(writer, monitor, log_dir=log_dir)
             _build_disk_io_sheet(writer, monitor, log_dir=log_dir)
             _build_host_mem_timeline_sheet(writer, monitor, log_dir=log_dir)
             _build_host_pressure_sheet(writer, monitor, log_dir=log_dir)

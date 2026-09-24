@@ -58,3 +58,16 @@ def test_hyphenated_dest_resolved_from_stem():
     assert args.no_host_mem_detail is True
     coll, dev = collect_disabled(args)
     assert coll == {"host_mem_detail"}
+
+
+def test_no_pss_and_no_ublk_daemon():
+    args = _parse(["--vmm", "qemu", "--no-pss", "--no-ublk-daemon"])
+    coll, dev = collect_disabled(args)
+    assert coll == {"pss", "ublk_daemon"}
+    assert dev == set()
+
+
+def test_ublk_daemon_hyphenated_dest():
+    # dest derived from STEM, so --no-ublk-daemon -> args.no_ublk_daemon
+    args = _parse(["--vmm", "qemu", "--no-ublk-daemon"])
+    assert args.no_ublk_daemon is True

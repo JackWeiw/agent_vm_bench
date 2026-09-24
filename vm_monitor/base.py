@@ -37,6 +37,17 @@ try:
 except (ValueError, OSError, AttributeError):
     _PAGE_SIZE = 4096
 
+# sysconf clock ticks per second for /proc/<pid>/stat utime+stime jiffies.
+try:
+    _CLK_TCK = os.sysconf("SC_CLK_TCK")
+except (ValueError, OSError, AttributeError):
+    _CLK_TCK = 100
+
+# Process comm of the userspace ublk daemon (aenv/Cloud Hypervisor snapshot
+# I/O backend). collect_ublk_daemon resolves this lazily; on hosts without a
+# ublk runtime it is simply absent -> daemon CPU history stays empty.
+_UBLK_DAEMON_COMM = "uvm-ublk-daemon"
+
 # Block-layer stat sector size. The kernel documents /sys/block/<dev>/stat
 # sector counters as always 512 bytes regardless of the physical sector size.
 _SECTOR_SIZE_BYTES = 512
@@ -67,6 +78,8 @@ _ALL_SAMPLE_COLLECTORS = frozenset(
         "vm_total",
         "disk",
         "ublk",
+        "pss",
+        "ublk_daemon",
     }
 )
 
@@ -291,6 +304,20 @@ class VMMonitorBase(ABC):
         # ublk device count (/dev/ublkb*)
         self.ublk_history = []
         self.peak_ublk_devices = 0
+
+        # uvm-ublk-daemon CPU (cores) -- the host-side daemon driving ublk I/O.
+        # pid resolved lazily on first collect_ublk_daemon(); -1 = not found
+        # (no ublk runtime on this host -> history stays empty -> sheet omits).
+        self.ublk_daemon_history = []
+        self._ublk_daemon_pid = None
+        self._prev_ublk_daemon_jiffies = None
+        self._ublk_daemon_last_t = 0.0
+
+        # Fleet-total PSS timeline (aggregate of per-VM pss_mb each sample).
+        # PSS splits shared pages across sharers, so the fleet total is the true
+        # marginal memory cost (template pages shared by all VMs counted once-ish),
+        # unlike vm_total_memory which sums numa_maps Total and double-counts shared.
+        self.vm_total_pss_history = []
 
         # Host page-cache pressure + runnable/blocked procs (from /proc/vmstat
         # + /proc/meminfo + /proc/stat). One sample per collect_sample cycle.
@@ -884,6 +911,58 @@ class VMMonitorBase(ABC):
         except Exception:
             pass
 
+    @staticmethod
+    def _find_pid_by_comm(comm: str) -> int | None:
+        """First pid whose /proc/<pid>/comm equals ``comm`` (one /proc scan).
+
+        None when no such process exists (e.g. the ublk daemon is absent on a
+        non-ublk host). Used by collect_ublk_daemon to resolve the daemon pid
+        lazily; rescans on miss so a daemon started after the monitor launches
+        is picked up on a later sample.
+        """
+        for path in glob.glob("/proc/[0-9]*/comm"):
+            try:
+                with open(path) as f:
+                    if f.read().strip() != comm:
+                        continue
+                return int(path.split("/")[2])
+            except (OSError, ValueError):
+                pass
+        return None
+
+    # ===================== Collect ublk Daemon CPU =====================
+    def collect_ublk_daemon(self):
+        """CPU cores consumed by the uvm-ublk-daemon process.
+
+        Resolves the daemon pid lazily on first call, then reads
+        /proc/<pid>/stat utime+stime each sample and converts the jiffy delta
+        to cores (= CPU-seconds / wall-seconds). On hosts without a ublk
+        runtime the daemon is absent -> history stays empty -> the
+        Disk_IO_Timeline column pads to 0 (graceful degrade).
+        """
+        if self._ublk_daemon_pid is None:
+            self._ublk_daemon_pid = self._find_pid_by_comm(_UBLK_DAEMON_COMM)
+        pid = self._ublk_daemon_pid
+        if not pid:
+            return
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                rest = f.read().rsplit(")", 1)[1].split()
+            jiffies = int(rest[11]) + int(rest[12])  # utime + stime
+        except (OSError, IndexError, ValueError):
+            # daemon exited/restarted; re-resolve next sample
+            self._ublk_daemon_pid = None
+            self._prev_ublk_daemon_jiffies = None
+            return
+        now = time.perf_counter()
+        cores = 0.0
+        if self._prev_ublk_daemon_jiffies is not None:
+            dt = max(1e-6, now - self._ublk_daemon_last_t)
+            cores = round(max(0, jiffies - self._prev_ublk_daemon_jiffies) / _CLK_TCK / dt, 3)
+        self._prev_ublk_daemon_jiffies = jiffies
+        self._ublk_daemon_last_t = now
+        self.ublk_daemon_history.append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "cores": cores})
+
     # ===================== Collect Host Page-Cache Pressure =====================
     def collect_host_pressure(self, meminfo: dict | None = None, vmstat: dict | None = None):
         """Collect host page-cache pressure + runnable/blocked procs per sample.
@@ -1051,6 +1130,25 @@ class VMMonitorBase(ABC):
             "swapcache_per_numa": {k: round(v, 2) for k, v in swapcache_per_numa.items()},
         }
         self.vm_total_memory_history.append(entry)
+        return entry
+
+    def collect_vm_total_pss(self, vms: list[dict]) -> dict:
+        """Aggregate total PSS across all VMs per sample (fleet timeline).
+
+        Sums per-VM pss_mb (collected by _read_pss_mb via smaps_rollup). PSS
+        splits shared pages across sharers, so the fleet total is the true
+        marginal memory cost of the sandbox fleet -- template pages shared by
+        all VMs are counted ~once, unlike collect_vm_total_memory's numa_maps
+        Total sum which double-counts shared pages. No per-NUMA split (PSS has
+        no node attribution; pair with vm_total_memory for the NUMA view).
+        """
+        total_pss = sum(vm.get("pss_mb", 0) for vm in vms)
+        entry = {
+            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "total_pss_mb": round(total_pss, 2),
+            "vm_count": len(vms),
+        }
+        self.vm_total_pss_history.append(entry)
         return entry
 
     def _read_meminfo(self) -> dict:
@@ -1455,7 +1553,9 @@ class VMMonitorBase(ABC):
             # NUMA memory via numa_maps fast path + numastat fallback
             numastat_mem = self.get_vm_memory_from_numastat(pid)
             fields = self._extract_numastat_fields(numastat_mem)
-            fields["pss_mb"] = self._read_pss_mb(pid)  # always-on PSS via smaps_rollup
+            fields["pss_mb"] = (
+                self._read_pss_mb(pid) if self._collects("pss") else 0.0
+            )  # PSS via smaps_rollup (gated by 'pss' collector)
 
             # If numa_maps + numastat both fail, fall back to psutil
             if fields["memory_mb"] <= 0:
@@ -1575,7 +1675,9 @@ class VMMonitorBase(ABC):
         # NUMA memory via numa_maps fast path + numastat fallback
         numastat_mem = self.get_vm_memory_from_numastat(pid)
         fields = self._extract_numastat_fields(numastat_mem)
-        fields["pss_mb"] = self._read_pss_mb(pid)  # always-on PSS via smaps_rollup
+        fields["pss_mb"] = (
+            self._read_pss_mb(pid) if self._collects("pss") else 0.0
+        )  # PSS via smaps_rollup (gated by 'pss' collector)
 
         # If numa_maps + numastat both fail, fall back to psutil
         if fields["memory_mb"] <= 0:
@@ -1637,6 +1739,8 @@ class VMMonitorBase(ABC):
         # Aggregate VM total memory
         if self._collects("vm_total"):
             self.collect_vm_total_memory(vms)
+        if self._collects("pss"):
+            self.collect_vm_total_pss(vms)
 
         timestamp = datetime.now()
         sample_data = []
@@ -1690,6 +1794,8 @@ class VMMonitorBase(ABC):
                 self.collect_disk_stats()
             if self._collects("ublk"):
                 self.collect_ublk_count()
+            if self._collects("ublk_daemon"):
+                self.collect_ublk_daemon()
 
     def display_realtime_table(self, sample_data, elapsed_time, duration, check_method=""):
         """Display real-time table"""
