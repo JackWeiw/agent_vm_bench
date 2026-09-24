@@ -723,6 +723,7 @@ class TestCollectVmMetricsParallel(unittest.TestCase):
             self.assertIn("cpu_percent", vm)
             self.assertIn("memory_mb", vm)
             self.assertIn("memory_swapcache_mb", vm)
+            self.assertIn("pss_mb", vm)
             self.assertIn("status", vm)
             # Internal keys should not be in final result
             self.assertNotIn("_is_new_pid", vm)
@@ -758,6 +759,7 @@ class TestCollectVmMetricsParallel(unittest.TestCase):
         self.assertEqual(vm["pid"], 100)
         self.assertEqual(vm["name"], "vm-100")
         self.assertEqual(vm["memory_mb"], 2048.0)
+        self.assertIn("pss_mb", vm)
 
     def test_small_count_uses_serial_path(self):
         """Less than 4 VMs should use serial path (no ThreadPoolExecutor)"""
@@ -1061,6 +1063,7 @@ class TestBugFixes(unittest.TestCase):
         self.assertEqual(fields["memory_per_numa"], {0: {"total_mb": 1024.0}})
         self.assertEqual(fields["memory_swapcache_mb"], 100.0)
         self.assertEqual(fields["memory_swapcache_per_numa"], {0: 50.0})
+        self.assertEqual(fields["pss_mb"], 0.0)  # default; collector overwrites via _read_pss_mb
 
     def test_collect_single_vm_returns_tuple(self):
         """_collect_single_vm should return (result_dict, seed_proc_or_None) tuple"""
@@ -1083,7 +1086,7 @@ class TestBugFixes(unittest.TestCase):
 
         with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), patch(
             "vm_monitor.base.psutil.Process", return_value=mock_proc
-        ):
+        ), patch.object(monitor, "_read_pss_mb", return_value=512.0):
             vm_result, seed_proc = monitor._collect_single_vm(candidate)
 
         # Result dict should not contain _is_new_pid or _seed_process
@@ -1091,6 +1094,8 @@ class TestBugFixes(unittest.TestCase):
         self.assertNotIn("_seed_process", vm_result)
         self.assertEqual(vm_result["pid"], 100)
         self.assertEqual(vm_result["memory_mb"], 100.0)
+        # PSS is always collected (not just a numastat-failure fallback)
+        self.assertEqual(vm_result["pss_mb"], 512.0)
         # seed_proc should be the mock Process object
         self.assertIsNotNone(seed_proc)
 
@@ -1109,6 +1114,7 @@ class TestBugFixes(unittest.TestCase):
             "name": "vm-100",
             "cpu_percent": 5.0,
             "memory_mb": 2048.0,
+            "pss_mb": 1500.0,
             "memory_huge_mb": 0.0,
             "memory_private_mb": 1000.0,
             "memory_heap_mb": 50.0,
@@ -1123,6 +1129,7 @@ class TestBugFixes(unittest.TestCase):
             "pid": vm_dict["pid"],
             "cpu_percent": vm_dict["cpu_percent"],
             "memory_mb": vm_dict["memory_mb"],
+            "pss_mb": vm_dict.get("pss_mb", 0),
             "memory_huge_mb": vm_dict.get("memory_huge_mb", 0),
             "memory_private_mb": vm_dict.get("memory_private_mb", 0),
             "memory_heap_mb": vm_dict.get("memory_heap_mb", 0),
@@ -1135,6 +1142,8 @@ class TestBugFixes(unittest.TestCase):
         self.assertIn("memory_swapcache_mb", record)
         self.assertIn("memory_swapcache_per_numa", record)
         self.assertEqual(record["memory_swapcache_mb"], 100.0)
+        self.assertIn("pss_mb", record)
+        self.assertEqual(record["pss_mb"], 1500.0)
 
 
 if __name__ == "__main__":
