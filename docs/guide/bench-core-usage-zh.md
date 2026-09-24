@@ -590,6 +590,28 @@ driver 深拷贝 `base_config` 并只改写超卖字段,其余透传:
 
 > `_interrupted` 是内部行哨兵(非 CSV 列——`DictWriter` 丢弃),`main()` 读它区分"停扫描"(用户中断)还是"继续"(trial 超时)。下游分析脚本应按落盘的 `return_code == 130` 列判断,而非内存哨兵。
 
+#### 轨迹级退化分析 (`traj-degradation`)
+
+`traj-degradation`(`src/bench_core/traj_degradation.py`)是 `oversub-bench` 的第三个兄弟分析工具——只消费 sweep 目录里已写好的 `trajectory-detail.csv`,**按轨迹模板拆**看各轨迹随超分比变化的端到端时延与退化。`ratio-summary.csv` 给的是全体 fleet median 退化曲线,看不出哪条轨迹拖后腿;本工具把 55 条(或更多)轨迹逐一画出来。
+
+**口径**:退化基线 = **每条轨迹自己在 `--baseline-ratio`(默认 1)的 median `elapsed_sec`**,即 `(traj_k − traj_k1)/traj_k1 × 100`,与 `ratio-summary.csv` 的 fleet 整体 k=1 基线**不同**——后者 fleet 中位数,前者单轨迹自己。某轨迹在 baseline ratio 缺席时,其退化列在**所有 ratio** 留空(无分母,不是 0%)。
+
+**产出**(`<output-dir>/traj-degradation.xlsx` + `.csv`,4 sheet):
+
+| Sheet | 内容 |
+|-------|------|
+| Degradation | 热力图:rows=trajectory,cols=ratio,cell=退化 %。白→深蓝 `1F4E79`,每个 mode 独立排序(最烫的在顶)。`--heatmap-top-n` 可只显示最严重的 N 条(轨迹数涨到几百时压缩视图)。 |
+| Absolute e2e | 热力图:cell=该轨迹该 ratio 的 median 秒数(绝对值,补"本来有多慢")。 |
+| Breakdown | `exec/resume/pause/slot_contention_wait` 4 个分量各一块独立色阶热力图(绝对秒;退化 % 会让 0.1s→0.5s 炸成 500%,故用绝对值)。看退化是 exec 拖的、还是 pause/resume 生命周期开销、还是排队。 |
+| Top-N | 退化最严重的 N 条轨迹线图 + 一条灰色 fleet-median 参照线(`ratio-summary.csv` 可选,缺则省略 + WARNING)。两套基线不同,同 Y 轴只供宏观形状参照,不可直接比数值(列头 Comment 显式标注)。 |
+
+```bash
+traj-degradation --sweep-dir results/oversub/oversub-N384-2026.../
+traj-degradation --sweep-dir .../ --mode lifecycle --top-n 10 --heatmap-top-n 50
+```
+
+CSV 为长表(`mode, trajectory_id, ratio, median_elapsed_sec, degradation_pct, *_median_sec`),便于脚本化再分析。
+
 ### 8.6 跨架构/配置对比 (`oversub-compare`)
 
 `oversub-compare`(`src/bench_core/compare_sweeps.py`)对**已经产出的** `oversub-bench` sweep 结果做跨架构/跨配置的对比与可视化。它**不跑沙箱、不产生 benchmark 数据**——只消费 driver 已写好的 CSV 契约(`trajectory-detail.csv` + `trial-summary.csv`),把 N 个 sweep 目录按 `(mode, ratio, trajectory_id)` join,产出 delta CSV + xlsx。跟 `oversub-bench` 是兄弟,同样不导入 kernel 数据路径内部。
