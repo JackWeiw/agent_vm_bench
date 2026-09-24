@@ -1342,6 +1342,26 @@ class VMMonitorBase(ABC):
             except Exception:
                 return 0.0
 
+    def _read_pss_mb(self, pid: int) -> float:
+        """PSS (MB) from /proc/<pid>/smaps_rollup (kernel >= 4.14).
+
+        PSS splits shared pages across sharers, so the per-VM aggregate is the
+        true marginal memory cost (template pages shared by all VMs counted
+        once-ish), unlike RSS/numa_maps Total which double-count. Always
+        collected, not just a numastat-failure fallback. Measured cost at
+        ~1k FC pids: ~92ms added to the 64-thread parallel round (~240ms total),
+        well within the 1Hz budget; revisit cadence if oversub ratio pushes
+        pss-pid count > ~5k.
+        """
+        try:
+            with open(f"/proc/{pid}/smaps_rollup") as f:
+                for line in f:
+                    if line.startswith("Pss:"):
+                        return round(int(line.split()[1]) / 1024, 2)
+        except OSError:
+            pass
+        return 0.0
+
     def _extract_numastat_fields(self, numastat_mem: dict) -> dict:
         """Extract standard VM metric fields from numastat/numa_maps result dict.
 
@@ -1355,6 +1375,7 @@ class VMMonitorBase(ABC):
             "memory_per_numa": numastat_mem.get("per_node", {}),
             "memory_swapcache_mb": numastat_mem.get("swapcache_mb", 0.0),
             "memory_swapcache_per_numa": numastat_mem.get("swapcache_per_node", {}),
+            "pss_mb": 0.0,  # overwritten by _read_pss_mb in the collector
         }
 
     def _finalize_vm_collection(
@@ -1434,6 +1455,7 @@ class VMMonitorBase(ABC):
             # NUMA memory via numa_maps fast path + numastat fallback
             numastat_mem = self.get_vm_memory_from_numastat(pid)
             fields = self._extract_numastat_fields(numastat_mem)
+            fields["pss_mb"] = self._read_pss_mb(pid)  # always-on PSS via smaps_rollup
 
             # If numa_maps + numastat both fail, fall back to psutil
             if fields["memory_mb"] <= 0:
@@ -1553,6 +1575,7 @@ class VMMonitorBase(ABC):
         # NUMA memory via numa_maps fast path + numastat fallback
         numastat_mem = self.get_vm_memory_from_numastat(pid)
         fields = self._extract_numastat_fields(numastat_mem)
+        fields["pss_mb"] = self._read_pss_mb(pid)  # always-on PSS via smaps_rollup
 
         # If numa_maps + numastat both fail, fall back to psutil
         if fields["memory_mb"] <= 0:
@@ -1628,6 +1651,7 @@ class VMMonitorBase(ABC):
                 "pid": vm["pid"],
                 "cpu_percent": vm["cpu_percent"],
                 "memory_mb": vm["memory_mb"],
+                "pss_mb": vm.get("pss_mb", 0),
                 "memory_huge_mb": vm.get("memory_huge_mb", 0),
                 "memory_private_mb": vm.get("memory_private_mb", 0),
                 "memory_heap_mb": vm.get("memory_heap_mb", 0),
@@ -1962,6 +1986,7 @@ class VMMonitorBase(ABC):
                 "pid",
                 "cpu_percent",
                 "memory_mb",
+                "pss_mb",
                 "memory_huge_mb",
                 "memory_private_mb",
                 "memory_heap_mb",
@@ -1985,6 +2010,7 @@ class VMMonitorBase(ABC):
         for name, recs in sorted(vm_data.items()):
             cpus = [r["cpu_percent"] for r in recs]
             mems = [r["memory_mb"] for r in recs]
+            psss = [r.get("pss_mb", 0) for r in recs]
             huge = [r.get("memory_huge_mb", 0) for r in recs]
             private = [r.get("memory_private_mb", 0) for r in recs]
             heap = [r.get("memory_heap_mb", 0) for r in recs]
@@ -1999,6 +2025,8 @@ class VMMonitorBase(ABC):
                     "max_memory_mb": round(max(mems), 2),
                     "min_memory_mb": round(min(mems), 2),
                     "last_memory_mb": mems[-1],
+                    "avg_pss_mb": round(sum(psss) / len(psss), 2) if psss else 0,
+                    "max_pss_mb": round(max(psss), 2) if psss else 0,
                     "avg_huge_mb": round(sum(huge) / len(huge), 2) if huge else 0,
                     "max_huge_mb": round(max(huge), 2) if huge else 0,
                     "avg_private_mb": round(sum(private) / len(private), 2) if private else 0,
