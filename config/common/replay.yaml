@@ -176,7 +176,9 @@ monitor:
   #   - pressure
   #   - numa-memory
   #   - vm-total
+  #   - pss
   #   - disk
   #   - ublk
+  #   - ublk-daemon
   #   - devkit-mem
   #   - devkit-topdown
