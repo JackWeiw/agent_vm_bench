@@ -137,6 +137,7 @@ class TestDiskIoAndHostMemSheets(unittest.TestCase):
                 "sdb Write IOPS",
                 "sdb Avg Rq Sz (sectors)",
                 "ublk Devices",
+                "Ublk Daemon Cores",
             ],
         )
         self.assertEqual(len(df), 2)

@@ -44,6 +44,8 @@ COLLECTOR_FLAGS = [
     ("vm-total", "vm_total", "base"),
     ("disk", "disk", "base"),
     ("ublk", "ublk", "base"),
+    ("pss", "pss", "base"),
+    ("ublk-daemon", "ublk_daemon", "base"),
     ("devkit-mem", "devkit_mem", "devkit"),
     ("devkit-topdown", "devkit_top_down", "devkit"),
 ]
@@ -75,6 +77,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
   --no-swap / --no-hugepage / --no-pressure / --no-host-mem-detail /
   --no-numa-memory / --no-numa-cpu / --no-host-stats / --no-vm-total /
   --no-disk / --no-ublk : skip a /proc collector (its sheet/SVG is omitted).
+  --no-pss : skip per-VM PSS (smaps_rollup) + VM_Total_PSS_Timeline sheet.
+  --no-ublk-daemon : skip uvm-ublk-daemon CPU tracking (Disk_IO col).
   --no-devkit-mem / --no-devkit-topdown : run only one devkit sub-tool.
   All default ON; disabling degrades gracefully (empty history -> sheet skipped).
         """,

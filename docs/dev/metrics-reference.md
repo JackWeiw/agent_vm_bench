@@ -265,11 +265,13 @@ Consolidates what were previously three separate sheets; there is **no** `NUMA_C
 
 ### `VM_Stats` — one row per detected VM
 
-`VM Name` | `PID` | `Samples` | `Avg CPU (%)` | `Max CPU (%)` | `Avg Memory (MB)` | `Max Memory (MB)` | `Avg Hugepage (MB)`
+`VM Name` | `PID` | `Samples` | `Avg CPU (%)` | `Max CPU (%)` | `Avg Memory (MB)` | `Max Memory (MB)` | `Min Memory (MB)` | `Last Memory (MB)` | `Avg PSS (MB)` | `Max PSS (MB)` | `Avg Hugepage (MB)`
+
+> `PSS (MB)` comes from `/proc/<pid>/smaps_rollup` — it splits shared pages across sharers, so the fleet aggregate is the true marginal memory cost (template pages shared by all VMs counted ~once), unlike `Memory (MB)` (numa_maps `Total`) which double-counts shared. Gated by the `pss` collector (`--no-pss`).
 
 ### `Raw_VM_Data` — per-sample, per-VM raw rows
 
-`Timestamp` | `VM Name` | `PID` | `CPU (%)` | `Memory (MB)` | `Hugepage (MB)`
+`Timestamp` | `VM Name` | `PID` | `CPU (%)` | `Memory (MB)` | `PSS (MB)` | `Hugepage (MB)`
 
 ## 2.2 Self-collected timeline sheets
 
@@ -279,8 +281,10 @@ One row per sampling interval. These sheets do **not** require external tools �
 
 Per-device columns are emitted in `monitor.target_disks` order (auto-discovered from `/sys/block` by default; override with `--disks`). 10 columns per device:
 
-`Timestamp` · `{dev} Read (MB/s)` · `{dev} Write (MB/s)` · `{dev} Util (%)` · `{dev} Inflight` · `{dev} Queue Depth` · `{dev} Read Await (ms)` · `{dev} Write Await (ms)` · `{dev} Read IOPS` · `{dev} Write IOPS` · `{dev} Avg Rq Sz (sectors)` · `ublk Devices`
+`Timestamp` · `{dev} Read (MB/s)` · `{dev} Write (MB/s)` · `{dev} Util (%)` · `{dev} Inflight` · `{dev} Queue Depth` · `{dev} Read Await (ms)` · `{dev} Write Await (ms)` · `{dev} Read IOPS` · `{dev} Write IOPS` · `{dev} Avg Rq Sz (sectors)` · `ublk Devices` · `Ublk Daemon Cores`
 
+> `Ublk Daemon Cores` is the CPU cores consumed by the `uvm-ublk-daemon` process (the host-side ublk I/O backend for aenv/Cloud Hypervisor snapshots), computed from `/proc/<pid>/stat` utime+stime jiffy deltas. Absent on non-ublk hosts (column pads to 0). Gated by the `ublk_daemon` collector (`--no-ublk-daemon`).
+>
 > Sectors→MiB uses `_SECTOR_SIZE_BYTES = 512` (kernel block-layer stat is always 512-byte sectors). Virtual/software layers (`loop`/`ram`/`sr`/`zram`/`md`/`dm`) are excluded from auto-discovery.
 
 ### `Host_Mem_Timeline`
@@ -314,6 +318,12 @@ Only **focus** NUMA nodes are emitted: the CLI `--numa` list + the remote-borrow
 `Timestamp` · `VM Total Memory (MB)` · `VM Count` · `NUMA{N} VM Memory (MB)` (one per NUMA id found across all samples' `per_numa`, sorted)
 
 > The history entry also carries `swapcache_mb` / `swapcache_per_numa`, but the sheet does **not** emit them.
+
+### `VM_Total_PSS_Timeline`
+
+`Timestamp` · `VM Total PSS (MB)` · `VM Count`
+
+> Fleet aggregate of per-VM `pss_mb` (smaps_rollup). PSS splits shared pages across sharers, so this is the **true marginal memory cost of the sandbox fleet** — template pages shared by all VMs are counted ~once, unlike `VM_Total_Memory_Timeline` which sums numa_maps `Total` and double-counts shared pages. No per-NUMA split (PSS has no node attribution — `smaps_rollup` is a single aggregate). Gated by the `pss` collector (`--no-pss` skips both per-VM PSS collection and this sheet).
 
 ## 2.3 External hardware profiler sheets (`--enable-capture`)
 
@@ -630,6 +640,8 @@ record loop) is always on; only the auxiliary resource collectors toggle.
 | `--no-vm-total` | `collect_vm_total_memory` | VM_Total_Memory_Timeline / vm_total.svg |
 | `--no-disk` | `collect_disk_stats` | Disk_IO_Timeline / disk_io.svg / disk_latency.svg |
 | `--no-ublk` | `collect_ublk_count` | `ublk Devices` column (on Disk_IO_Timeline) |
+| `--no-ublk-daemon` | `collect_ublk_daemon` | `Ublk Daemon Cores` column (on Disk_IO_Timeline) |
+| `--no-pss` | per-VM `_read_pss_mb` + `collect_vm_total_pss` | per-VM `PSS (MB)` + `Avg/Max PSS (MB)` (VM_Stats/Raw_VM_Data) + `VM_Total_PSS_Timeline` / vm_total_pss.svg |
 | `--no-devkit-mem` | `devkit_mem` sub-tool | DevKit_Memory / NUMA_Bandwidth |
 | `--no-devkit-topdown` | `devkit_top_down` sub-tool | DevKit_TopDown |
 
@@ -638,10 +650,13 @@ The devkit split is necessary because `devkit_path` is shared by both sub-tools
 (ksys / ub_watch / smap_bw / getfre) stay `.env`-path-controlled (a missing
 path already skips them).
 
-`ublk` and `disk` are independent histories. Disabling `disk` alone leaves ublk
-data captured (in `ublk_history`) but not rendered — `Disk_IO_Timeline` is
-skipped whenever `disk_history` is empty, so the `ublk Devices` column only
-appears when `disk` is also on.
+`ublk`, `ublk_daemon`, and `disk` are independent histories but share the
+`Disk_IO_Timeline` sheet. Disabling `disk` alone leaves ublk device counts and
+daemon-core samples captured (in `ublk_history` / `ublk_daemon_history`) but not
+rendered — `Disk_IO_Timeline` is skipped whenever `disk_history` is empty, so
+the `ublk Devices` and `Ublk Daemon Cores` columns only appear when `disk` is
+also on. `ublk_daemon` pads to 0 on hosts with no `uvm-ublk-daemon` process
+(non-ublk backends), so it is safe to leave enabled unconditionally.
 
 From bench-core, the same switches forward through a single `monitor.skip`
 list (hyphenated stems):

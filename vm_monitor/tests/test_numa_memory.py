@@ -1145,6 +1145,83 @@ class TestBugFixes(unittest.TestCase):
         self.assertIn("pss_mb", record)
         self.assertEqual(record["pss_mb"], 1500.0)
 
+    def test_pss_collector_off_skips_read_and_zeros_field(self):
+        """--no-pss must skip _read_pss_mb entirely (no smaps_rollup cost)."""
+        monitor = DummyMonitor()
+        monitor.disable_collectors({"pss"})
+        candidate = {"pid": 100, "vm_name": "vm-100", "status": "running", "proc_name": "t", "cmdline": ""}
+
+        def mock_numa(pid):
+            return {
+                "total_mb": 100.0,
+                "huge_mb": 0.0,
+                "private_mb": 50.0,
+                "heap_mb": 0.0,
+                "per_node": {},
+                "swapcache_mb": 0.0,
+                "swapcache_per_node": {},
+            }
+
+        mock_proc = MagicMock()
+        mock_proc.cpu_percent.return_value = 0.0
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa), patch(
+            "vm_monitor.base.psutil.Process", return_value=mock_proc
+        ), patch.object(monitor, "_read_pss_mb") as mock_pss:
+            vm_result, _ = monitor._collect_single_vm(candidate)
+
+        mock_pss.assert_not_called()  # smaps_rollup never opened
+        self.assertEqual(vm_result["pss_mb"], 0.0)
+
+    def test_collect_vm_total_pss_sums_per_vm_pss(self):
+        """collect_vm_total_pss aggregates per-VM pss_mb into a fleet timeline."""
+        monitor = DummyMonitor()
+        vms = [{"pss_mb": 512.0}, {"pss_mb": 1488.0}, {"pss_mb": 0.0}]
+        entry = monitor.collect_vm_total_pss(vms)
+        self.assertEqual(entry["total_pss_mb"], 2000.0)
+        self.assertEqual(entry["vm_count"], 3)
+        self.assertEqual(len(monitor.vm_total_pss_history), 1)
+        self.assertEqual(monitor.vm_total_pss_history[0]["total_pss_mb"], 2000.0)
+
+    def test_collect_ublk_daemon_computes_cores_from_jiffies(self):
+        """collect_ublk_daemon resolves the pid + converts jiffy delta to cores."""
+        monitor = DummyMonitor()
+        # Two stat reads: utime+stime jumps 100 jiffies (1.0s @ _CLK_TCK=100).
+        stat_payloads = iter(
+            [
+                "0 (uvm-ublk-daemon) S 1 0 0 0 -1 0 0 0 0 0 0 0 0 0 0 0 0 0",
+                "0 (uvm-ublk-daemon) S 1 0 0 0 -1 0 0 0 0 0 0 100 0 0 0 0 0 0 0",  # +100 jiffies
+            ]
+        )
+
+        def fake_open(path, *a, **k):
+            content = next(stat_payloads)
+
+            class _F:
+                def read(self_inner):
+                    return content
+
+                def __enter__(self_inner):
+                    return self_inner
+
+                def __exit__(self_inner, *a):
+                    return False
+
+            return _F()
+
+        import vm_monitor.base as base
+
+        # Patch perf_counter to simulate a 1.0s wall delta between samples.
+        clock = iter([1000.0, 1001.0])
+        with patch.object(monitor, "_find_pid_by_comm", return_value=4242), patch(
+            "builtins.open", side_effect=fake_open
+        ), patch.object(base.time, "perf_counter", side_effect=lambda: next(clock)):
+            monitor.collect_ublk_daemon()  # seed (no prev -> cores 0)
+            monitor.collect_ublk_daemon()  # delta 100 jiffies / 100 tck / 1.0s = 1.0 core
+
+        self.assertEqual(len(monitor.ublk_daemon_history), 2)
+        self.assertEqual(monitor.ublk_daemon_history[0]["cores"], 0.0)
+        self.assertEqual(monitor.ublk_daemon_history[1]["cores"], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

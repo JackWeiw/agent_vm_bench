@@ -700,6 +700,7 @@ class TestExportStructure(unittest.TestCase):
                 "sdc Write IOPS",
                 "sdc Avg Rq Sz (sectors)",
                 "ublk Devices",
+                "Ublk Daemon Cores",
             ],
             "Host_Mem_Timeline": ["Timestamp", "Cached (MB)", "Buffers (MB)", "Dirty (MB)", "Writeback (MB)"],
             "Host_Pressure_Timeline": [
