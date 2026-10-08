@@ -43,6 +43,15 @@ class _FakeHandle:
     def __init__(self, commands, sandbox_id="cube-1"):
         self.commands = commands
         self.sandbox_id = sandbox_id
+        self.killed = False
+        self.pause_calls: list = []
+
+    def kill(self):
+        self.killed = True
+
+    def pause(self, wait=True, *args, **kwargs):  # noqa: ARG002
+        # Native cube pause(wait=True); record the wait flag the runner relies on.
+        self.pause_calls.append(wait)
 
 
 # Exception stand-ins whose class names carry "timeout" (mapped to exit 124) vs not.
@@ -71,27 +80,35 @@ def test_cube_name():
     assert CubesandboxProvider.name == "cubesandbox"
 
 
-def test_cube_default_replay_mode_is_exec_only():
-    assert CubesandboxProvider.default_replay_mode == "exec_only"
+def test_cube_default_replay_mode_is_lifecycle():
+    # Phase 2: native pause/resume lands -> lifecycle is the natural replay mode
+    # (same memory-reuse oversubscription shape as aenv).
+    assert CubesandboxProvider.default_replay_mode == "lifecycle"
 
 
 def test_cube_vmm_type_is_none():
     assert CubesandboxProvider.vmm_type is None
 
 
-def test_cube_is_not_lifecycle_capable_in_phase1():
-    # Phase 1: exec-only baseline. LifecycleCapable is added in Phase 2.
+def test_cube_is_lifecycle_capable():
     from env_provider import LifecycleCapable
 
     provider = _make_provider(_FakeHandle(_FakeCommands()))
-    assert not isinstance(provider, LifecycleCapable)
+    assert isinstance(provider, LifecycleCapable)
 
 
-def test_cube_is_not_ephemeral_capable_in_phase1():
+def test_cube_is_ephemeral_capable():
     from env_provider import EphemeralCapable
 
     provider = _make_provider(_FakeHandle(_FakeCommands()))
-    assert not isinstance(provider, EphemeralCapable)
+    assert isinstance(provider, EphemeralCapable)
+
+
+def test_cube_is_snapshot_size_capable():
+    from env_provider import SnapshotSizeCapable
+
+    provider = _make_provider(_FakeHandle(_FakeCommands()))
+    assert isinstance(provider, SnapshotSizeCapable)
 
 
 # --------------------------------------------------------------------- build_provider
@@ -250,3 +267,141 @@ def test_to_instance_ready_status_maps_to_ready():
     inst = provider._to_instance(state)
     assert inst.ready is True
     assert inst.creation_metrics.status == SandboxStatus.READY
+
+
+# --------------------------------------------------------------------- lifecycle (Phase 2)
+def test_pause_calls_native_pause_wait_true():
+    handle = _FakeHandle(_FakeCommands())
+    provider = _make_provider(handle)
+    inst = SandboxInstance(id="cube-1", index=1)
+    provider.pause(inst)
+    # wait=True is forwarded so the snapshot is stable before the runner accounts
+    # the pause (synchronous, unlike an async fire-and-forget).
+    assert handle.pause_calls == [True]
+
+
+def test_pause_raises_on_missing_handle():
+    provider = _make_provider(_FakeHandle(_FakeCommands()))
+
+    class _EmptyManager:
+        sandbox_states = {}
+
+    provider._manager = _EmptyManager()
+    inst = SandboxInstance(id="x", index=99)
+    with pytest.raises(RuntimeError, match="index 99"):
+        provider.pause(inst)
+
+
+def test_resume_swaps_handle_via_connect(monkeypatch):
+    handle = _FakeHandle(_FakeCommands())
+    provider = _make_provider(handle)
+
+    new_handle = _FakeHandle(_FakeCommands(), sandbox_id="cube-1")
+    fake_sandbox = type("_FS", (), {"connect": staticmethod(lambda sid, *a, **k: new_handle)})
+    monkeypatch.setattr("env_provider.cubesandbox.Sandbox", fake_sandbox)
+
+    inst = SandboxInstance(id="cube-1", index=1)
+    provider.resume(inst)
+    # connect returns a fresh handle on the resumed sandbox; swap it in.
+    state = provider.manager.sandbox_states[1]
+    assert state.cube_sandbox is new_handle
+
+
+def test_resume_raises_on_missing_state():
+    provider = _make_provider(_FakeHandle(_FakeCommands()))
+
+    class _EmptyManager:
+        sandbox_states = {}
+
+    provider._manager = _EmptyManager()
+    inst = SandboxInstance(id="x", index=99)
+    with pytest.raises(RuntimeError, match="index 99"):
+        provider.resume(inst)
+
+
+def test_snapshot_sizes_returns_none():
+    # SnapshotInfo has no size fields (control plane can't satisfy it yet);
+    # None keeps the provider SnapshotSizeCapable while signalling "no data" so
+    # the snapshot_size series event is skipped, not crashed.
+    provider = _make_provider(_FakeHandle(_FakeCommands()))
+    inst = SandboxInstance(id="cube-1", index=1)
+    assert provider.snapshot_sizes(inst) is None
+
+
+# --------------------------------------------------------------------- ephemeral (Phase 2)
+class _CreateFakeSandbox:
+    """Stand-in for cubesandbox.Sandbox on the create_one path (manager seams).
+
+    Only ``create`` is exercised by create_one; ``list``/``connect`` stay on the
+    manager mock in test_cubesandbox_manager.py. The returned handle is a
+    _FakeHandle whose commands.run returns exit 0 -> the replay uname readiness
+    probe sees ready.
+    """
+
+    def __init__(self):
+        self.created: list = []  # (template, timeout, envs, metadata)
+
+    def create(self, template, *, timeout=86400, envs=None, metadata=None, **kwargs):  # noqa: ARG003
+        sbx = _FakeHandle(_FakeCommands(), sandbox_id=f"cube-{len(self.created) + 1}")
+        self.created.append((template, timeout, envs, metadata))
+        return sbx
+
+
+def _make_real_provider(monkeypatch, fake, *, template="cube-tpl"):
+    """Provider with a REAL manager (create_one/kill_one need the base seams)."""
+    monkeypatch.setattr("env_provider.cubesandbox.manager.Sandbox", fake)
+    cfg = KernelConfig(workflow_type="replay", total_count=1)
+    return CubesandboxProvider(cfg, Config(template=template), threading.Event())
+
+
+def test_create_one_runs_through_manager_seams(monkeypatch):
+    fake = _CreateFakeSandbox()
+    provider = _make_real_provider(monkeypatch, fake)
+    inst = provider.create_one(1, metadata={"traj": "t1"})
+    assert inst.index == 1
+    assert inst.id == "cube-1"
+    assert inst.template == "cube-tpl"  # stamped from _slot_templates
+    assert inst.ready is True  # replay uname probe exit 0
+    template, _timeout, envs, metadata = fake.created[0]
+    assert template == "cube-tpl"
+    assert envs is None  # v1 passes no envs
+    assert metadata == {"traj": "t1"}
+
+
+def test_create_one_forwards_template_override(monkeypatch):
+    fake = _CreateFakeSandbox()
+    provider = _make_real_provider(monkeypatch, fake, template="default-tpl")
+    inst = provider.create_one(1, template="override-tpl")
+    assert inst.template == "override-tpl"  # per-trajectory template wins
+    template, *_ = fake.created[0]
+    assert template == "override-tpl"
+
+
+def test_create_one_raises_on_sdk_failure(monkeypatch):
+    fake = _CreateFakeSandbox()
+    fake.create = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("create failed"))
+    provider = _make_real_provider(monkeypatch, fake)
+    with pytest.raises(RuntimeError, match="create_one\\(1\\) failed"):
+        provider.create_one(1)
+
+
+def test_kill_one_calls_kill_and_marks_dead(monkeypatch):
+    fake = _CreateFakeSandbox()
+    provider = _make_real_provider(monkeypatch, fake)
+    inst = provider.create_one(1)
+    handle = provider.manager.sandbox_states[1].cube_sandbox
+    provider.kill_one(inst)
+    assert handle.killed is True
+    assert inst.is_alive is False
+    assert provider.manager.sandbox_states[1].is_alive is False
+
+
+def test_kill_one_missing_state_is_noop():
+    provider = _make_provider(_FakeHandle(_FakeCommands()))
+
+    class _EmptyManager:
+        sandbox_states = {}
+
+    provider._manager = _EmptyManager()
+    inst = SandboxInstance(id="x", index=99)
+    provider.kill_one(inst)  # never created -> return early, no raise
