@@ -1031,6 +1031,36 @@ def _build_host_cpu_timeline_sheet(writer, monitor, *, log_dir=None):
     _safe_write_sheet(writer, pd.DataFrame(data), "Host_CPU_Timeline", log_dir=log_dir)
 
 
+def _build_numa_cpu_timeline_sheet(writer, monitor, *, log_dir=None):
+    """Sheet: NUMA_CPU_Timeline (per-NUMA-node whole-machine CPU%, per sample).
+
+    The per-NUMA breakdown that Host_CPU_Timeline lacks: one column per
+    monitored node (``monitor.numa_cpu_history``), against the shared host
+    sample timestamp. numa_cpu_history has no ts, but each node's value is
+    appended in the same collect_numa_cpu call within one collect_sample cycle,
+    so indices align with host_mem_history and its ts carries over. Falls back
+    to an index-based label when ts is absent (synthetic fixtures).
+    """
+    numa_hist = monitor.numa_cpu_history
+    if not numa_hist or not any(numa_hist[n] for n in numa_hist):
+        return
+    nodes = sorted(numa_hist.keys())
+    mem = monitor.host_mem_history
+    interval = getattr(monitor, "interval", 0) or 1.0
+    n = max(max((len(numa_hist[n]) for n in nodes), default=0), len(mem))
+    ts_col = []
+    for i in range(n):
+        ts = mem[i].get("ts", "") if i < len(mem) else ""
+        if not ts:
+            ts = f"t={i * interval:.0f}s"
+        ts_col.append(ts)
+    data = {"Timestamp": ts_col}
+    for node in nodes:
+        hist = numa_hist[node]
+        data[f"NUMA{node} CPU (%)"] = [round(hist[i], 1) if i < len(hist) else None for i in range(n)]
+    _safe_write_sheet(writer, pd.DataFrame(data), "NUMA_CPU_Timeline", log_dir=log_dir)
+
+
 def _add_charts(build_file):
     """Add charts to the built workbook (non-critical: failures warn).
 
@@ -1674,6 +1704,7 @@ def export_to_excel(
             _build_host_mem_timeline_sheet(writer, monitor, log_dir=log_dir)
             _build_host_pressure_sheet(writer, monitor, log_dir=log_dir)
             _build_host_cpu_timeline_sheet(writer, monitor, log_dir=log_dir)
+            _build_numa_cpu_timeline_sheet(writer, monitor, log_dir=log_dir)
     except ImportError:
         print("[WARN] openpyxl not available, skipping Excel export")
         print("  Install with: pip install openpyxl")

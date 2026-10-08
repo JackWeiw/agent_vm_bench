@@ -257,6 +257,11 @@ def main():
     else:
         m.target_disks = [d.strip() for d in args.disks.split(",") if d.strip()]
 
+    # Log dir drives the always-on raw dumper (host_*_raw.csv / vm_cpu_raw.csv /
+    # disk_io_raw.csv / numa_cpu_map.csv) inside base.collect_sample; set before
+    # monitoring starts so the lazy-start on the first sample finds it.
+    m.log_dir = log_dir
+
     # Selective /proc collectors + devkit split (--no-X flags; default all ON).
     disabled_collectors, disabled_devkit = collect_disabled(args)
     if disabled_collectors:

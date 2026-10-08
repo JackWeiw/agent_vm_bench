@@ -2,8 +2,9 @@
 
 A disabled collector must NOT be called from collect_sample / _disk_subsample_sleep;
 its history stays empty so downstream sheets/SVGs omit it. The shared /proc/meminfo
-+ /proc/vmstat read is skipped when none of its consumers (swap / host_mem_detail /
-host_pressure) are enabled.
++ /proc/vmstat + /proc/stat reads now run unconditionally every cycle (the raw
+/proc CSV dumper is an always-on consumer), so disabling every /proc-metric
+consumer still leaves meminfo/vmstat/stat read.
 """
 from __future__ import annotations
 
@@ -37,7 +38,7 @@ class _RecorderMonitor(VMMonitorBase):
     def collect_host_mem_detail(self, meminfo=None):  # noqa: N802 - recorder seam
         self._record("host_mem_detail")
 
-    def collect_host_pressure(self, meminfo=None, vmstat=None):  # noqa: N802 - recorder seam
+    def collect_host_pressure(self, meminfo=None, vmstat=None, stat=None):  # noqa: N802 - recorder seam
         self._record("pressure")
 
     def get_numa_nodes_memory(self):  # noqa: N802 - recorder seam
@@ -62,6 +63,10 @@ class _RecorderMonitor(VMMonitorBase):
         self._record("vmstat")
         return {}
 
+    def _read_proc_stat(self):  # noqa: N802 - recorder seam
+        self._record("stat")
+        return {}
+
     # ABC seams:
     def get_vms_realtime(self):  # noqa: N802 - ABC seam
         return []
@@ -82,8 +87,9 @@ class _RecorderMonitor(VMMonitorBase):
         return "recorder_monitor"
 
 
-# collect_sample drives these 8 + the shared meminfo/vmstat reads (disk/ublk are
-# sub-sampled separately by _disk_subsample_sleep).
+# collect_sample drives these 8 + the shared meminfo/vmstat/stat reads (disk/ublk
+# are sub-sampled separately by _disk_subsample_sleep). meminfo/vmstat/stat are
+# read unconditionally every cycle (raw /proc CSV dumper is an always-on consumer).
 _SAMPLE_DRIVEN = {
     "hugepage",
     "numa_cpu",
@@ -95,6 +101,7 @@ _SAMPLE_DRIVEN = {
     "vm_total",
     "meminfo",
     "vmstat",
+    "stat",
 }
 
 
@@ -115,16 +122,19 @@ def test_disable_subset_skips_only_named_collectors():
     assert "meminfo" in mon.called  # host_mem_detail still needs the shared read
 
 
-def test_shared_proc_read_skipped_when_all_consumers_disabled():
-    # Disabling swap + host_mem_detail + pressure means no consumer of the
-    # shared /proc/meminfo + /proc/vmstat read is left -> the read is skipped.
+def test_shared_proc_read_runs_even_when_all_consumers_disabled():
+    # Disabling swap + host_mem_detail + pressure leaves no /proc-metric consumer,
+    # but meminfo/vmstat/stat are still read every cycle: the raw /proc CSV dumper
+    # is an unconditional consumer (always-on, no switch).
     mon = _RecorderMonitor()
     mon.disable_collectors({"swap", "host_mem_detail", "pressure"})
     mon.collect_sample()
-    assert "meminfo" not in mon.called
-    assert "vmstat" not in mon.called
+    assert "meminfo" in mon.called
+    assert "vmstat" in mon.called
+    assert "stat" in mon.called
     assert "swap" not in mon.called
     assert "host_mem_detail" not in mon.called
+    assert "pressure" not in mon.called
     assert "hugepage" in mon.called  # other collectors still run
 
 
