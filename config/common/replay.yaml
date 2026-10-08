@@ -60,6 +60,20 @@ aenv:
     E2B_API_URL: "http://127.0.0.1:8000"      # AENV control plane (POST /sandboxes)
     E2B_SANDBOX_URL: "http://127.0.0.1:8000"  # AENV data plane (envd proxy; overrides subdomain build, forces http)
 
+cubesandbox:
+  template: "openclaw-coding-python-v1"  # CubeSandbox image with /testbed (cube template ID)
+  timeout: 86400            # idle TTL seconds (NOT create-wait; create is a synchronous
+                           # HTTP POST). Long-lived replay sandboxes want a long TTL so
+                           # they survive pauses between steps; -1 = NEVER_TIMEOUT.
+  sandbox_ids_file: "sandboxs_replay_cube.txt"
+  # CubeSandbox snapshot dir override (Phase 2 snapshot_sizes; v1 unused -> the
+  # provider returns None and the snapshot-size series event is skipped).
+  # snapshot_dir: "/var/lib/cube/snapshots"
+  env:
+    CUBE_API_URL: "http://127.0.0.1:3000"     # CubeAPI control plane (POST /sandboxes)
+    CUBE_API_KEY: "your_cube_api_key_here"     # optional (placeholder -> no X-API-Key header)
+    CUBE_SANDBOX_DOMAIN: "cube.app"           # sandbox data-plane domain (get_host)
+
 # === shared stress sections (all -> KernelConfig) ===
 sandbox:
   total_count: 384          # ratio 1:1 baseline = 1.5TiB/4GiB.  ratio 1:k -> k*384.
