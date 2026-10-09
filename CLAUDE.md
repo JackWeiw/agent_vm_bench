@@ -130,11 +130,11 @@ A top-level `monitor:` block (peer of `report:`) controls host-level `vm_monitor
 **Always-on raw snapshots** (no switch): alongside `resource_report.xlsx`, `vm_monitor` writes raw /proc + per-VM + per-disk CSV snapshots to the log dir on a background daemon thread (queue.SimpleQueue; enqueue is O(1) so the sampling loop never blocks on file I/O; joined + flushed before export). Files are named by scope so the dimension is obvious:
 - `host_mem_raw.csv` (wide, /proc/meminfo all fields) · `host_vmstat_raw.csv` (wide, /proc/vmstat all fields) · `host_cpu_raw.csv` (wide, /proc/stat aggregate cpu jiffies + ctxt + softirq + procs_running/blocked; `intr` skipped)
 - `host_percpu_raw.csv` (long, one row per cpu per sample — join with `numa_cpu_map.csv` to rebuild per-NUMA CPU%)
-- `vm_cpu_raw.csv` (long, per-VM `/proc/<pid>/stat` utime+stime jiffies per sample)
+- `vm_cpu_raw.csv` (long, per-VM `/proc/<pid>/stat` utime+stime jiffies per sample) · `ublk_cpu_raw.csv` (long, per-ublk-daemon utime+stime jiffies at 1s sub-sample cadence)
 - `disk_io_raw.csv` (long, per-device `/sys/block/<dev>/stat` 17 standard counters at 1s sub-sample cadence)
 - `numa_cpu_map.csv` (static `node,cpu` mapping, written once — boot-constant)
 
-All raw counters are cumulative kernel values; an agent derives rates via delta over the real interval. Note `/proc/stat` `guest`/`guest_nice` are double-counted (already in user/nice) — total is `sum(first 8 fields)` or `sum(8) - guest - guest_nice`, not a naive sum of all 10. Wide CSVs write the header from the first non-empty row; the xlsx exporters never touch these filenames.
+All raw counters are cumulative kernel values; an agent derives rates via delta over the real interval between rows' `timestamp` (the CSV header is written from the first non-empty row, so columns are self-describing via `pd.read_csv`). Derivation formulas live in [docs/dev/metrics-reference.md](docs/dev/metrics-reference.md): disk I/O (sectors→MB/s, `weighted_ms`→await/queue-depth, `ms_io`→util) under "Disk I/O"; iowait% + page-scan/reclaim/refault rates under "Page-cache pressure"; swap in/out under "Swap"; and per-VM / per-ublk-daemon jiffies→CPU% (`÷ _CLK_TCK`) under "Per-VM & ublk-daemon CPU". Note `/proc/stat` `guest`/`guest_nice` are double-counted (already in user/nice) — total is `sum(first 8 fields)`, not a naive sum of all 10. Files land in `<report.output_dir>/vm_monitor/` alongside `resource_report.xlsx`; the xlsx exporters never touch these filenames.
 
 ### Replay workflow (trajectory / lifecycle replay)
 
