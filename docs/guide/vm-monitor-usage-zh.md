@@ -55,7 +55,7 @@ sudo vm-monitor -t 300 -i 2 --vmm firecracker --enable-capture --auto-skip \
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
-| `--vmm` | `qemu` | VMM 类型：`qemu` 或 `firecracker` |
+| `--vmm` | `qemu` | VMM 类型：`qemu`、`firecracker` 或 `cubesandbox` |
 | `-t, --time` | `60` | 采样时长（秒） |
 | `-i, --interval` | `2` | 采样间隔（秒） |
 | `--stress-process` | — | 等待该进程名出现后开始采样 |

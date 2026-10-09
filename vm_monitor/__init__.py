@@ -32,6 +32,7 @@ from .exporters import (
     export_to_excel,
     print_capture_summary,
 )
+from .cubesandbox import CubeSandboxMonitor
 from .firecracker import FirecrackerMonitor
 from .log_capture import LogCapture
 
@@ -55,6 +56,7 @@ __all__ = [
     "VMMonitorBase",
     "QEMUMonitor",
     "FirecrackerMonitor",
+    "CubeSandboxMonitor",
     "LogCapture",
     # Configuration
     "load_env_config",

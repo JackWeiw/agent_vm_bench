@@ -51,7 +51,7 @@ class MonitorConfig:
     """Host-level monitor toggles (the ``monitor:`` YAML section)."""
 
     enabled: str = "auto"  # auto | true | false   (auto = decide by provider.vmm_type)
-    vmm: str = "auto"  # auto | qemu | firecracker  (auto = take provider hint)
+    vmm: str = "auto"  # auto | qemu | firecracker | cubesandbox  (auto = take provider hint)
     interval: int = 2  # sampling interval (seconds)
     capture: str = "auto"  # auto | true | false  (auto/true -> --enable-capture --auto-skip)
     numa: str = "all"  # NUMA nodes: "all" = every node, or comma-separated "0,1"

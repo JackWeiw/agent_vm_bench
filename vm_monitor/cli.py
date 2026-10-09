@@ -4,7 +4,7 @@ Command Line Interface Entry Point
 
 Main entry point for VM monitor tool. Handles argparse parsing,
 initialization of monitor and log capture, and coordinates execution.
-Supports multiple VMM types: QEMU, Firecracker.
+Supports multiple VMM types: QEMU, Firecracker, CubeSandbox.
 """
 
 import argparse
@@ -18,6 +18,7 @@ from .base import _discover_block_devices
 
 # Internal dependencies - all modules
 from .config import load_env_config, validate_and_prompt_missing
+from .cubesandbox import CubeSandboxMonitor
 from .exporters import export_to_excel, print_capture_summary
 from .firecracker import FirecrackerMonitor
 from .log_capture import LogCapture
@@ -54,7 +55,7 @@ COLLECTOR_FLAGS = [
 def build_arg_parser() -> argparse.ArgumentParser:
     """Build the vm-monitor CLI parser (extracted for unit testing)."""
     parser = argparse.ArgumentParser(
-        description="VM Monitoring Tool (supports QEMU and Firecracker)",
+        description="VM Monitoring Tool (supports QEMU, Firecracker, CubeSandbox)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 [Mode 1: Stress Sync Monitoring]
@@ -70,8 +71,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     -> Monitor for 60 seconds with parallel log collection
 
 [VMM Types]
-  --vmm qemu         Monitor QEMU VMs (qemu-kvm, qemu-system)
-  --vmm firecracker  Monitor Firecracker microVMs
+  --vmm qemu          Monitor QEMU VMs (qemu-kvm, qemu-system)
+  --vmm firecracker    Monitor Firecracker microVMs
+  --vmm cubesandbox   Monitor CubeSandbox microVMs (containerd-shim-cube-rs)
 
 [Selective Collectors]
   --no-swap / --no-hugepage / --no-pressure / --no-host-mem-detail /
@@ -86,7 +88,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # VMM type selection
     parser.add_argument(
-        "--vmm", type=str, choices=["qemu", "firecracker"], default="qemu", help="VMM type to monitor (default: qemu)"
+        "--vmm",
+        type=str,
+        choices=["qemu", "firecracker", "cubesandbox"],
+        default="qemu",
+        help="VMM type to monitor (default: qemu)",
     )
 
     # Stress sync modes
@@ -242,6 +248,9 @@ def main():
     elif args.vmm == "firecracker":
         m = FirecrackerMonitor()
         csv_prefix = "firecracker_monitor"
+    elif args.vmm == "cubesandbox":
+        m = CubeSandboxMonitor()
+        csv_prefix = "cubesandbox_monitor"
     else:
         print(f"[ERROR] Unknown VMM type: {args.vmm}")
         sys.exit(1)
