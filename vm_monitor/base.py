@@ -241,6 +241,9 @@ class _ProcRawWriter:
     sampling path never blocks on file I/O. meminfo/vmstat/stat-aggregate are wide
     (one row per sample); per-cpu and per-VM are long (one row per cpu/vm per
     sample). numa_cpu_map is one-shot (idempotent: only the first enqueue writes).
+    All files land in a ``raw_data/`` subdir of the monitor log_dir so the raw
+    snapshots stay separated from resource_report.xlsx and the xlsx-overflow
+    CSVs in the parent dir.
 
     Header is written from the first non-empty row and later rows align to it
     (missing -> '', extra -> ignored). ponytail: a field appearing mid-run (kernel
@@ -275,7 +278,11 @@ class _ProcRawWriter:
     )
 
     def __init__(self, log_dir: str):
-        self._dir = log_dir
+        # Raw snapshots live in a raw_data/ subdir so the *_raw.csv +
+        # numa_cpu_map.csv files stay separated from resource_report.xlsx and
+        # the xlsx-overflow CSVs in the parent log_dir.
+        self._dir = os.path.join(log_dir, "raw_data")
+        os.makedirs(self._dir, exist_ok=True)
         self._q: queue.SimpleQueue = queue.SimpleQueue()
         self._wide: dict = {}  # key -> (fh, DictWriter)
         self._percpu = None  # (fh, DictWriter)
