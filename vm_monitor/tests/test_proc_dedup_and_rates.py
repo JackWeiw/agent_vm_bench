@@ -216,5 +216,49 @@ class TestPressureRateActualElapsed(unittest.TestCase):
         self.assertNotAlmostEqual(row["page_scan_mib_s"], round(512 * mib_per_page / 5, 3), places=3)
 
 
+class TestIowaitExcludesGuest(unittest.TestCase):
+    """iowait% denominator sums only the first 8 /proc/stat cpu fields.
+
+    guest (index 8) is already folded into user, guest_nice (index 9) into nice
+    by the kernel, so including them double-counts the total and dilutes
+    iowait% (man 5 proc: guest is already accounted in user)."""
+
+    _MI = {"AnonPages": 0, "Cached": 0, "SReclaimable": 0, "Buffers": 0, "Shmem": 0}
+    _VS = {
+        "pgscan_kswapd": 0,
+        "pgscan_direct": 0,
+        "pgscan_direct_throttle": 0,
+        "pgsteal_kswapd": 0,
+        "pgsteal_direct": 0,
+        "workingset_refault_file": 0,
+    }
+
+    def test_iowait_pct_not_diluted_by_guest(self):
+        mon = _DummyMonitor()
+        mon.interval = 5
+        mon._dirty_limits_read = True  # skip /proc/sys/vm read
+        # cpu = [user, nice, system, idle, iowait, irq, softirq, steal, guest, guest_nice]
+        # sample 1: first8 sum = 400 (guest 50 folded into user, guest_nice 10 into nice)
+        stat1 = {"cpu": [100, 10, 50, 230, 10, 0, 0, 0, 50, 10], "procs_running": 1, "procs_blocked": 0}
+        # sample 2: guest rises 50->60 (folded into user), iowait 10->20, real
+        # total (first8) rises 400->410 -> iowait% = 10 iowait / 10 total = 100%.
+        # Bug (sum all 10): total rises 460->480 (guest included) -> 10/20 = 50%.
+        stat2 = {"cpu": [110, 10, 50, 220, 20, 0, 0, 0, 60, 10], "procs_running": 1, "procs_blocked": 0}
+        ticks = iter([100.0, 102.0])
+        with patch("vm_monitor.base.time.monotonic", lambda: next(ticks)):
+            mon.collect_host_pressure(meminfo=self._MI, vmstat=self._VS, stat=stat1)  # baseline
+            mon.collect_host_pressure(meminfo=self._MI, vmstat=self._VS, stat=stat2)  # delta
+        self.assertEqual(mon.host_pressure_history[-1]["iowait_pct"], 100.0)
+
+    def test_first_sample_iowait_is_zero(self):
+        mon = _DummyMonitor()
+        mon.interval = 5
+        mon._dirty_limits_read = True
+        stat = {"cpu": [100, 10, 50, 230, 10, 0, 0, 0, 50, 10], "procs_running": 1, "procs_blocked": 0}
+        with patch("vm_monitor.base.time.monotonic", lambda: 100.0):
+            mon.collect_host_pressure(meminfo=self._MI, vmstat=self._VS, stat=stat)
+        self.assertEqual(mon.host_pressure_history[-1]["iowait_pct"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

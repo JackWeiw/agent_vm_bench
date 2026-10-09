@@ -10,6 +10,8 @@ from __future__ import annotations
 import csv
 import os
 import tempfile
+import threading
+import time
 
 from vm_monitor.base import _ProcRawWriter
 
@@ -132,3 +134,87 @@ def test_proc_raw_writer_dumps_all_sources():
         assert rows[0] == ["node", "cpu"]
         body = [tuple(r) for r in rows[1:]]
         assert body == [("0", "0"), ("0", "1"), ("0", "2"), ("5", "10"), ("5", "11")]
+
+
+def test_proc_raw_writer_dumps_ublk_daemon_jiffies():
+    """ublk daemon raw utime+stime jiffies land in ublk_cpu_raw.csv (long, one
+    row per 1s sub-sample) so an agent derives ublk-daemon CPU% via delta --
+    the derived 'cores' rate in ublk_daemon_history alone is lossy. A pid
+    restart (new pid) is just another row keyed by pid."""
+    with tempfile.TemporaryDirectory() as d:
+        w = _ProcRawWriter(d)
+        w.enqueue_ublk("2026-01-01 00:00:00", 4242, 100, 10)
+        w.enqueue_ublk("2026-01-01 00:00:01", 4242, 150, 15)  # pid stable
+        w.enqueue_ublk("2026-01-01 00:00:02", 9999, 5, 1)  # pid restarted
+        w.close()
+        with open(os.path.join(d, "ublk_cpu_raw.csv")) as f:
+            rows = list(csv.DictReader(f))
+    assert [r["pid"] for r in rows] == ["4242", "4242", "9999"]
+    assert rows[0]["utime"] == "100" and rows[0]["stime"] == "10"
+    assert rows[1]["utime"] == "150" and rows[1]["stime"] == "15"
+    assert rows[2]["utime"] == "5" and rows[2]["stime"] == "1"
+
+
+def test_numa_map_retries_after_failed_first_write(monkeypatch):
+    """A failed first numa_cpu_map write must NOT mark itself written, so a
+    later cycle retries. Bug: flag set in finally -> flag True after failure ->
+    every later call short-circuits -> the topology map is never written."""
+    attempts = {"n": 0}
+    real_open = open
+
+    def flaky_open(path, *a, **k):
+        if os.path.basename(str(path)) == "numa_cpu_map.csv":
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise OSError("simulated disk full")
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr("builtins.open", flaky_open)
+    with tempfile.TemporaryDirectory() as d:
+        w = _ProcRawWriter(d)
+        # Drain thread is idle (queue empty); exercise the writer's numa-map
+        # path directly. Bug: 1st call raises + sets flag -> 2nd is a no-op.
+        for _ in range(2):
+            try:
+                w._write_numa_map({0: [0, 1]})
+            except OSError:
+                pass  # bug path raises (flag wrongly set); fix swallows it
+        w.close()
+        assert attempts["n"] == 2, "numa map must retry after the first failure"
+        with real_open(os.path.join(d, "numa_cpu_map.csv")) as f:
+            rows = list(csv.reader(f))
+    assert rows[0] == ["node", "cpu"]
+    assert ("0", "0") in [tuple(r) for r in rows[1:]]
+
+
+def test_close_drains_slow_writer_before_closing_handles(monkeypatch):
+    """close() must wait for the drain thread to finish writing before closing
+    file handles. A bounded join (join(timeout=5)) closes the handle mid-write
+    when a single row takes longer than the timeout, losing the row."""
+    opened = threading.Event()
+
+    def slow_write_wide(self, key, fname, ts, row):
+        # Replicate _write_wide's open-on-first-call so the handle exists, then
+        # delay the row write past the old 5s join timeout.
+        sink = self._wide.get(key)
+        if sink is None:
+            fh = open(os.path.join(self._dir, fname), "w", newline="", encoding="utf-8")
+            dw = csv.DictWriter(fh, fieldnames=["timestamp", *row.keys()], restval="", extrasaction="ignore")
+            dw.writeheader()
+            self._wide[key] = (fh, dw)
+            opened.set()
+        fh, dw = self._wide[key]
+        time.sleep(5.5)
+        dw.writerow({"timestamp": ts, **row})
+        fh.flush()
+
+    monkeypatch.setattr(_ProcRawWriter, "_write_wide", slow_write_wide)
+    with tempfile.TemporaryDirectory() as d:
+        w = _ProcRawWriter(d)
+        w.enqueue_proc("2026-01-01 00:00:00", {"MemTotal": 1}, {}, {})
+        assert opened.wait(5), "drain did not open the handle in time"
+        w.close()
+        with open(os.path.join(d, "host_mem_raw.csv")) as f:
+            rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    assert rows[0]["MemTotal"] == "1"
