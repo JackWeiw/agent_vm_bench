@@ -11,7 +11,7 @@ contact_links:
     url: https://github.com/JackWeiw/agent_vm_bench/blob/main/CONTRIBUTING.md
     about: How to set up the dev environment, run tests, and open a pull request.
   - name: Propose a major change (RFC)
-    url: https://github.com/JackWeiw/agent_vm_bench/blob/main/docs/rfcs/README.md
+    url: https://github.com/JackWeiw/agent_vm_bench/blob/main/docs/dev/rfcs/README.md
     about: For architecture or workflow changes that need design discussion first.
   - name: Report a security vulnerability
     url: https://github.com/JackWeiw/agent_vm_bench/security/advisories/new
