@@ -16,6 +16,7 @@ Provides system-level monitoring infrastructure independent of VMM type:
 import csv
 import glob
 import os
+import queue
 import re
 import signal
 import subprocess
@@ -205,6 +206,268 @@ def _compute_pressure_rates(cur: dict, prev: dict, interval: float, page_size: i
     return rates
 
 
+class _ProcRawWriter:
+    """Background raw-snapshot dumper — every /proc-style source the monitor reads.
+
+    Files are named by SCOPE so the dimension is obvious without context:
+      host_mem_raw.csv       wide   whole-machine /proc/meminfo (kB fields)
+      host_vmstat_raw.csv    wide   whole-machine /proc/vmstat (page counters)
+      host_cpu_raw.csv       wide   whole-machine /proc/stat aggregate cpu line
+                                   (user/nice/.../iowait jiffies + ctxt + softirq
+                                   + procs_running/blocked) — intr line skipped
+      host_percpu_raw.csv    long   every /proc/stat cpuN line (one row per cpu
+                                   per sample; long avoids a ~2000-col sheet)
+      numa_cpu_map.csv       static node->cpu mapping, written ONCE (boot-constant;
+                                   /sys/devices/system/node/nodeN/cpulist). Join with
+                                   host_percpu_raw.csv to rebuild per-NUMA CPU%
+      vm_cpu_raw.csv         long   per-VM /proc/<pid>/stat utime+stime jiffies
+                                   (one row per VM per sample). Raw cumulative
+                                   counters; agent derives per-VM CPU% via delta
+                                   over the monotonic interval.
+      disk_io_raw.csv        long   per-device /sys/block/<dev>/stat raw counters
+                                   (one row per device per 1s sub-sample). 17
+                                   standard fields incl. discards/flush; agent
+                                   derives r/w MB-s, util%, await, iops via delta.
+      ublk_cpu_raw.csv       long   ublk-daemon /proc/<pid>/stat utime+stime raw
+                                   jiffies (one row per daemon per 1s sub-sample).
+                                   Raw cumulative counters; agent derives ublk-daemon
+                                   CPU% via delta -- the derived 'cores' rate in
+                                   ublk_daemon_history alone is lossy. A pid restart
+                                   (new daemon) is just another row keyed by pid.
+
+    collect_sample enqueues the dicts already read for the swap / mem-detail /
+    pressure collectors (meminfo, vmstat) plus a freshly parsed /proc/stat and the
+    per-VM pid list; a daemon thread drains the queue and appends rows so the hot
+    sampling path never blocks on file I/O. meminfo/vmstat/stat-aggregate are wide
+    (one row per sample); per-cpu and per-VM are long (one row per cpu/vm per
+    sample). numa_cpu_map is one-shot (idempotent: only the first enqueue writes).
+
+    Header is written from the first non-empty row and later rows align to it
+    (missing -> '', extra -> ignored). ponytail: a field appearing mid-run (kernel
+    module load) would be dropped; these sets are stable per boot, so never in
+    practice.
+    """
+
+    # /proc/stat "cpu" line positional fields (stable since 2.6).
+    _CPU_FIELDS = ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "guest", "guest_nice")
+
+    # /sys/block/<dev>/stat positional fields (kernel docs Documentation/admin-guide/iostats.rst).
+    # 0-10 stable since 2.6; 11-14 discards since 4.18; 15-16 flush since 5.5.
+    # Older kernels return fewer fields -> the writer pads missing ones with "".
+    _DISK_FIELDS = (
+        "reads_completed",
+        "reads_merged",
+        "sectors_read",
+        "read_ms",
+        "writes_completed",
+        "writes_merged",
+        "sectors_written",
+        "write_ms",
+        "inflight",
+        "ms_io",
+        "weighted_ms",
+        "discards_completed",
+        "discards_merged",
+        "sectors_discarded",
+        "discard_ms",
+        "flush_requests",
+        "flush_ms",
+    )
+
+    def __init__(self, log_dir: str):
+        self._dir = log_dir
+        self._q: queue.SimpleQueue = queue.SimpleQueue()
+        self._wide: dict = {}  # key -> (fh, DictWriter)
+        self._percpu = None  # (fh, DictWriter)
+        self._vm = None  # (fh, DictWriter)
+        self._disk = None  # (fh, DictWriter)
+        self._ublk = None  # (fh, DictWriter)
+        self._numa_map_written = False
+        self._thread = threading.Thread(target=self._run, name="proc-raw-writer", daemon=True)
+        self._thread.start()
+
+    # --- producers (collect_sample / _disk_subsample_sleep call these; O(1) puts) ---
+    def enqueue_proc(self, ts: str, meminfo: dict, vmstat: dict, stat: dict) -> None:
+        self._q.put(("proc", ts, meminfo, vmstat, stat))
+
+    def enqueue_vm(self, ts: str, vms: list) -> None:
+        self._q.put(("vm", ts, vms))
+
+    def enqueue_disk(self, ts: str, dev_raw: dict) -> None:
+        """dev_raw = {dev: [field0, field1, ...]} raw /sys/block/<dev>/stat splits."""
+        self._q.put(("disk", ts, dev_raw))
+
+    def enqueue_ublk(self, ts: str, pid: int, utime, stime) -> None:
+        """ublk-daemon raw jiffies (utime+stime) for ublk_cpu_raw.csv."""
+        self._q.put(("ublk", ts, pid, utime, stime))
+
+    def enqueue_numa_map(self, node_to_cpus: dict) -> None:
+        # Idempotent: collect_sample calls every cycle; only the first writes.
+        if self._numa_map_written:
+            return
+        self._q.put(("numa_map", node_to_cpus))
+
+    # --- drain thread ---
+    def _run(self) -> None:
+        while True:
+            item = self._q.get()
+            if item is None:  # close sentinel -> drain done, exit
+                break
+            tag = item[0]
+            if tag == "proc":
+                _, ts, meminfo, vmstat, stat = item
+                if meminfo:
+                    self._write_wide("meminfo", "host_mem_raw.csv", ts, meminfo)
+                if vmstat:
+                    self._write_wide("vmstat", "host_vmstat_raw.csv", ts, vmstat)
+                if stat:
+                    self._write_stat(ts, stat)
+            elif tag == "vm":
+                _, ts, vms = item
+                self._write_vm(ts, vms)
+            elif tag == "disk":
+                _, ts, dev_raw = item
+                self._write_disk(ts, dev_raw)
+            elif tag == "ublk":
+                _, ts, pid, utime, stime = item
+                self._write_ublk(ts, pid, utime, stime)
+            elif tag == "numa_map":
+                _, node_to_cpus = item
+                self._write_numa_map(node_to_cpus)
+
+    def _write_wide(self, key: str, fname: str, ts: str, row: dict) -> None:
+        """Append one wide row; open file + write header from the first row."""
+        sink = self._wide.get(key)
+        if sink is None:
+            fh = open(os.path.join(self._dir, fname), "w", newline="", encoding="utf-8")
+            dw = csv.DictWriter(fh, fieldnames=["timestamp", *row.keys()], restval="", extrasaction="ignore")
+            dw.writeheader()
+            sink = (fh, dw)
+            self._wide[key] = sink
+        fh, dw = sink
+        dw.writerow({"timestamp": ts, **row})
+        fh.flush()  # line-buffered: rows land on disk promptly for crash safety
+
+    def _write_stat(self, ts: str, stat: dict) -> None:
+        # Aggregate cpu + ctxt/btime/procs/softirq -> one wide row per sample.
+        cpu = stat.get("cpu") or []
+        softirq = stat.get("softirq") or []
+        agg: dict = {}
+        for i, name in enumerate(self._CPU_FIELDS):
+            agg[f"cpu_{name}"] = cpu[i] if i < len(cpu) else ""
+        for k in ("ctxt", "btime", "processes", "procs_running", "procs_blocked"):
+            agg[k] = stat.get(k, "")
+        for i, v in enumerate(softirq):
+            agg["softirq_total" if i == 0 else f"softirq_{i}"] = v
+        self._write_wide("stat", "host_cpu_raw.csv", ts, agg)
+
+        # Per-cpu -> long format (one row per cpu per sample).
+        cpus = stat.get("cpus") or {}
+        if not cpus:
+            return
+        if self._percpu is None:
+            fh = open(os.path.join(self._dir, "host_percpu_raw.csv"), "w", newline="", encoding="utf-8")
+            dw = csv.DictWriter(
+                fh, fieldnames=["timestamp", "cpu_id", *self._CPU_FIELDS], restval="", extrasaction="ignore"
+            )
+            dw.writeheader()
+            self._percpu = (fh, dw)
+        fh, dw = self._percpu
+        for cpu_id, vals in sorted(cpus.items(), key=lambda kv: int(kv[0])):
+            row = {"timestamp": ts, "cpu_id": cpu_id}
+            for i, name in enumerate(self._CPU_FIELDS):
+                row[name] = vals[i] if i < len(vals) else ""
+            dw.writerow(row)
+        fh.flush()
+
+    def _write_vm(self, ts: str, vms: list) -> None:
+        # Per-VM -> long format (one row per VM per sample).
+        if self._vm is None:
+            fh = open(os.path.join(self._dir, "vm_cpu_raw.csv"), "w", newline="", encoding="utf-8")
+            dw = csv.DictWriter(
+                fh, fieldnames=["timestamp", "pid", "vm_name", "utime", "stime"], restval="", extrasaction="ignore"
+            )
+            dw.writeheader()
+            self._vm = (fh, dw)
+        fh, dw = self._vm
+        for v in vms:
+            ut, st = v.get("utime"), v.get("stime")
+            if ut is None or st is None:
+                continue  # VM exited or /proc/<pid>/stat unreadable mid-sample
+            dw.writerow({"timestamp": ts, "pid": v.get("pid"), "vm_name": v.get("name", ""), "utime": ut, "stime": st})
+        fh.flush()
+
+    def _write_disk(self, ts: str, dev_raw: dict) -> None:
+        # Per-device -> long format (one row per device per 1s sub-sample).
+        # Raw /sys/block/<dev>/stat counters; agent derives r_mb_s / util / await
+        # via delta. Missing trailing fields (older kernel) pad to "".
+        if self._disk is None:
+            fh = open(os.path.join(self._dir, "disk_io_raw.csv"), "w", newline="", encoding="utf-8")
+            dw = csv.DictWriter(
+                fh, fieldnames=["timestamp", "device", *self._DISK_FIELDS], restval="", extrasaction="ignore"
+            )
+            dw.writeheader()
+            self._disk = (fh, dw)
+        fh, dw = self._disk
+        for dev, fields in sorted(dev_raw.items()):
+            row = {"timestamp": ts, "device": dev}
+            for i, name in enumerate(self._DISK_FIELDS):
+                row[name] = fields[i] if i < len(fields) else ""
+            dw.writerow(row)
+        fh.flush()
+
+    def _write_numa_map(self, node_to_cpus: dict) -> None:
+        # Static boot-constant topology: one row per (node, cpu). Agent groupby
+        # rebuilds per-NUMA CPU% from host_percpu_raw.csv.
+        if self._numa_map_written:
+            return
+        path = os.path.join(self._dir, "numa_cpu_map.csv")
+        try:
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                dw = csv.writer(f)
+                dw.writerow(["node", "cpu"])
+                for node in sorted(node_to_cpus):
+                    for cpu in node_to_cpus[node]:
+                        dw.writerow([node, cpu])
+        except OSError:
+            return  # leave flag False -> a later cycle retries (was: finally set True)
+        self._numa_map_written = True
+
+    def _write_ublk(self, ts: str, pid, utime, stime) -> None:
+        # Per-daemon -> long format (one row per daemon per 1s sub-sample).
+        if self._ublk is None:
+            fh = open(os.path.join(self._dir, "ublk_cpu_raw.csv"), "w", newline="", encoding="utf-8")
+            dw = csv.DictWriter(
+                fh, fieldnames=["timestamp", "pid", "utime", "stime"], restval="", extrasaction="ignore"
+            )
+            dw.writeheader()
+            self._ublk = (fh, dw)
+        fh, dw = self._ublk
+        dw.writerow({"timestamp": ts, "pid": pid, "utime": utime, "stime": stime})
+        fh.flush()
+
+    def close(self) -> None:
+        """Signal the drain thread to exit, then close every open file handle.
+
+        join() with no timeout: a bounded join(timeout=5) closes handles mid-write
+        when a single row takes longer than the timeout, losing the row. The drain
+        thread exits as soon as it drains the queue to the None sentinel, so this
+        only blocks for as long as the queued writes themselves take."""
+        self._q.put(None)
+        self._thread.join()
+        for fh, _ in self._wide.values():
+            try:
+                fh.close()
+            except OSError:
+                pass
+        for sink in (self._percpu, self._vm, self._disk, self._ublk):
+            if sink is not None:
+                try:
+                    sink[0].close()
+                except OSError:
+                    pass
+
+
 class VMMonitorBase(ABC):
     """Abstract Base Class for VM Real-time Monitor
 
@@ -353,6 +616,21 @@ class VMMonitorBase(ABC):
         # summary) already degrades to omitting that sheet/SVG (verified: no
         # unguarded consumers exist).
         self.enabled_collectors: set[str] = set(_ALL_SAMPLE_COLLECTORS)
+
+        # Output directory (set by the CLI before monitoring starts) and the
+        # always-on raw dumper. The dumper writes full meminfo/vmstat/stat +
+        # per-VM jiffies + per-disk counters to <log_dir>/{host,vm,disk,numa}_*.csv
+        # on a background thread so the sampling loop never blocks on file I/O.
+        # Started lazily on the first collect_sample() call once log_dir is known
+        # (disk raw enqueues from _disk_subsample_sleep find it already started);
+        # joined at monitoring end.
+        self.log_dir: str | None = None
+        self._proc_raw: _ProcRawWriter | None = None
+        # node -> [cpu ids] topology cache (boot-constant); built lazily once
+        # and shared by collect_numa_cpu (per-NUMA CPU%) + the raw dumper
+        # (numa_cpu_map.csv) so /sys/.../cpulist is read once per run, not per
+        # cycle. None until first use.
+        self._numa_cpu_map: dict[int, list[int]] | None = None
 
     def _collects(self, name: str) -> bool:
         """True if collector ``name`` is currently enabled."""
@@ -660,33 +938,24 @@ class VMMonitorBase(ABC):
     def collect_numa_cpu(self):
         try:
             all_cpu = psutil.cpu_percent(interval=None, percpu=True)
+            node_to_cpus = self._numa_cpu_map_cached()
 
             for node in self.target_numa_nodes:
-                with open(f"/sys/devices/system/node/node{node}/cpulist") as f:
-                    cpulist = f.read().strip()
-
-                cores = []
-                for part in cpulist.split(","):
-                    if "-" in part:
-                        s, e = part.split("-")
-                        cores.extend(range(int(s), int(e) + 1))
-                    else:
-                        cores.append(int(part))
-
+                cores = node_to_cpus.get(node, [])
                 total = 0.0
                 valid = 0
                 for c in cores:
                     try:
                         total += all_cpu[c]
                         valid += 1
-                    except:
+                    except IndexError:
                         pass
                 avg = round(total / valid, 1) if valid > 0 else 0.0
 
                 self.numa_cpu_history[node].append(avg)
                 if avg > self.numa_cpu_peak[node]:
                     self.numa_cpu_peak[node] = avg
-        except:
+        except Exception:
             pass
 
     # ===================== Collect Host Machine Total CPU/Memory =====================
@@ -821,12 +1090,14 @@ class VMMonitorBase(ABC):
         an AgentEnv-specific signal.
         """
         cur_stats = {}
+        raw_fields: dict[str, list[str]] = {}  # dev -> raw /sys/block/<dev>/stat splits
         for dev in self.target_disks:
             try:
                 with open(f"/sys/block/{dev}/stat") as f:
                     fields = f.read().split()
                 if len(fields) < 11:
                     continue
+                raw_fields[dev] = fields  # keep ALL fields for the raw dump
                 cur_stats[dev] = {
                     "sectors_read": int(fields[2]),
                     "sectors_written": int(fields[6]),
@@ -863,6 +1134,11 @@ class VMMonitorBase(ABC):
             self.peak_disk_write_mb_s = peak_write
 
         self.disk_history.append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "disks": rates})
+
+        # Raw /sys/block/<dev>/stat counters -> disk_io_raw.csv (1s cadence, same
+        # background writer; enqueue is O(1) so the sub-sampler never blocks).
+        if self._proc_raw is not None and raw_fields:
+            self._proc_raw.enqueue_disk(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), raw_fields)
 
     # ===================== Collect Host Memory Detail =====================
     def collect_host_mem_detail(self, meminfo: dict | None = None):
@@ -945,15 +1221,18 @@ class VMMonitorBase(ABC):
         pid = self._ublk_daemon_pid
         if not pid:
             return
-        try:
-            with open(f"/proc/{pid}/stat") as f:
-                rest = f.read().rsplit(")", 1)[1].split()
-            jiffies = int(rest[11]) + int(rest[12])  # utime + stime
-        except (OSError, IndexError, ValueError):
+        js = self._read_pid_jiffies(pid)
+        if js is None:
             # daemon exited/restarted; re-resolve next sample
             self._ublk_daemon_pid = None
             self._prev_ublk_daemon_jiffies = None
             return
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Raw cumulative jiffies for ublk_cpu_raw.csv; agent derives CPU% via
+        # delta -- the derived 'cores' below alone is lossy (rounded, rate-only).
+        if self._proc_raw is not None:
+            self._proc_raw.enqueue_ublk(ts, pid, js[0], js[1])
+        jiffies = js[0] + js[1]  # utime + stime
         now = time.perf_counter()
         cores = 0.0
         if self._prev_ublk_daemon_jiffies is not None:
@@ -961,10 +1240,10 @@ class VMMonitorBase(ABC):
             cores = round(max(0, jiffies - self._prev_ublk_daemon_jiffies) / _CLK_TCK / dt, 3)
         self._prev_ublk_daemon_jiffies = jiffies
         self._ublk_daemon_last_t = now
-        self.ublk_daemon_history.append({"ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "cores": cores})
+        self.ublk_daemon_history.append({"ts": ts, "cores": cores})
 
     # ===================== Collect Host Page-Cache Pressure =====================
-    def collect_host_pressure(self, meminfo: dict | None = None, vmstat: dict | None = None):
+    def collect_host_pressure(self, meminfo: dict | None = None, vmstat: dict | None = None, stat: dict | None = None):
         """Collect host page-cache pressure + runnable/blocked procs per sample.
 
         Sources (all generic /proc, no sandbox-runtime coupling):
@@ -976,8 +1255,10 @@ class VMMonitorBase(ABC):
           page_scan / page_reclaim / file_refault MiB/s. ``vmstat`` is the
           shared pre-read dict; read here when None. Rates divide by the
           ACTUAL monotonic elapsed window between samples (not self.interval).
-        - /proc/stat: "cpu" line -> instantaneous iowait% (delta vs prior
-          sample's cumulative jiffies); "procs_running" / "procs_blocked".
+        - /proc/stat: ``stat`` is the pre-parsed dict shared across one
+          collect_sample cycle (also consumed by the raw /proc CSV dumper); read
+          here via _read_proc_stat() when None. Yields instantaneous iowait%
+          (delta vs prior sample's cumulative jiffies) + procs_running/blocked.
         Also reads dirty throttle thresholds once (lazy) from /proc/sys/vm.
         First sample (no prior baseline) records zero rates.
         """
@@ -1014,32 +1295,27 @@ class VMMonitorBase(ABC):
         self._last_pressure = cur_pressure
         self._last_pressure_monotonic = now
 
-        # iowait% + runnable/blocked procs from /proc/stat (delta-based iowait)
+        # iowait% + runnable/blocked procs from /proc/stat (delta-based iowait).
+        # stat is the shared parse from collect_sample (or a fresh read here when
+        # called standalone); avoids a second /proc/stat open per cycle.
+        if stat is None:
+            stat = self._read_proc_stat()
+        procs_running = stat.get("procs_running", 0)
+        procs_blocked = stat.get("procs_blocked", 0)
         iowait_pct = 0.0
-        procs_running = 0
-        procs_blocked = 0
-        try:
-            with open("/proc/stat") as f:
-                for line in f:
-                    parts = line.split()
-                    if not parts:
-                        continue
-                    if parts[0] == "cpu":
-                        vals = [int(x) for x in parts[1:11]]
-                        total = sum(vals)
-                        iowait = vals[4] if len(vals) > 4 else 0
-                        if self._last_cpu_total is not None and total > self._last_cpu_total:
-                            dt = total - self._last_cpu_total
-                            di = iowait - (self._last_cpu_iowait or 0)
-                            iowait_pct = round(max(0, di) / dt * 100, 1) if dt > 0 else 0.0
-                        self._last_cpu_total = total
-                        self._last_cpu_iowait = iowait
-                    elif parts[0] == "procs_running" and len(parts) > 1:
-                        procs_running = int(parts[1])
-                    elif parts[0] == "procs_blocked" and len(parts) > 1:
-                        procs_blocked = int(parts[1])
-        except (OSError, ValueError):
-            pass
+        cpu_vals = stat.get("cpu") or []
+        if cpu_vals:
+            # First 8 fields (user..steal) are the real total; guest(8)/guest_nice(9)
+            # are already folded into user/nice by the kernel (man 5 proc) -- summing
+            # all 10 double-counts and dilutes iowait%.
+            total = sum(cpu_vals[:8])
+            iowait = cpu_vals[4] if len(cpu_vals) > 4 else 0
+            if self._last_cpu_total is not None and total > self._last_cpu_total:
+                dt = total - self._last_cpu_total
+                di = iowait - (self._last_cpu_iowait or 0)
+                iowait_pct = round(max(0, di) / dt * 100, 1) if dt > 0 else 0.0
+            self._last_cpu_total = total
+            self._last_cpu_iowait = iowait
 
         # Dirty throttle thresholds (read once; sysctls are effectively static)
         if not self._dirty_limits_read:
@@ -1188,6 +1464,89 @@ class VMMonitorBase(ABC):
         except (FileNotFoundError, PermissionError):
             pass
         return result
+
+    def _read_proc_stat(self) -> dict:
+        """Parse /proc/stat into a structured dict for the raw dumper + pressure.
+
+        Captures the aggregate ``cpu`` line and every ``cpuN`` line as positional
+        jiffy lists (user/nice/system/idle/iowait/irq/softirq/steal/guest/
+        guest_nice), plus ctxt / btime / processes / procs_running /
+        procs_blocked / softirq (total + sub-counters). The ``intr`` line is
+        skipped (low density, hundreds of columns). Returns {} on non-Linux /
+        unreadable. Shared between collect_host_pressure (needs cpu + procs) and
+        _ProcRawWriter (needs everything) so /proc/stat is opened once per cycle.
+        """
+        result: dict = {}
+        try:
+            with open("/proc/stat") as f:
+                for line in f:
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    key = parts[0]
+                    if key == "cpu":
+                        result["cpu"] = [int(x) for x in parts[1:11]]
+                    elif key.startswith("cpu") and key[3:].isdigit():
+                        result.setdefault("cpus", {})[key[3:]] = [int(x) for x in parts[1:11]]
+                    elif key in ("ctxt", "btime", "processes", "procs_running", "procs_blocked") and len(parts) > 1:
+                        result[key] = int(parts[1])
+                    elif key == "softirq":
+                        result["softirq"] = [int(x) for x in parts[1:]]
+                    # "intr " line intentionally skipped
+        except (FileNotFoundError, PermissionError, OSError, ValueError):
+            pass
+        return result
+
+    def _read_numa_cpu_map(self) -> dict[int, list[int]]:
+        """node -> [cpu ids] from /sys/devices/system/node/nodeN/cpulist.
+
+        Boot-constant topology; read ONCE per run (cached in self._numa_cpu_map
+        via _numa_cpu_map_cached) and dumped to numa_cpu_map.csv so an agent can
+        join host_percpu_raw.csv back to per-NUMA CPU%. Returns {} on non-Linux.
+        Mirrors the cpulist range-parse collect_numa_cpu used to do per cycle.
+        """
+        node_to_cpus: dict[int, list[int]] = {}
+        for node in self.available_numa_nodes:
+            try:
+                with open(f"/sys/devices/system/node/node{node}/cpulist") as f:
+                    cpulist = f.read().strip()
+            except (OSError, ValueError):
+                continue
+            cpus: list[int] = []
+            for part in cpulist.split(","):
+                try:
+                    if "-" in part:
+                        s, e = part.split("-")
+                        cpus.extend(range(int(s), int(e) + 1))
+                    elif part:
+                        cpus.append(int(part))
+                except ValueError:
+                    continue
+            if cpus:
+                node_to_cpus[node] = cpus
+        return node_to_cpus
+
+    def _numa_cpu_map_cached(self) -> dict[int, list[int]]:
+        """Lazy cached accessor for the boot-constant node->cpu topology."""
+        if self._numa_cpu_map is None:
+            self._numa_cpu_map = self._read_numa_cpu_map()
+        return self._numa_cpu_map
+
+    def _read_pid_jiffies(self, pid: int) -> tuple[int, int] | None:
+        """(utime, stime) jiffies from /proc/<pid>/stat; None if unreadable.
+
+        Raw cumulative counters -- the agent derives per-VM CPU% via delta over
+        the monotonic interval. rsplit(')', 1) skips the comm field (may contain
+        spaces/parens); rest[11]/rest[12] = utime/stime (fields 14/15, 0-indexed
+        11/12 after comm). Same read as spotbox read_fc_jiffies; shared with
+        collect_ublk_daemon so the /proc/<pid>/stat parse lives in one place.
+        """
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                rest = f.read().rsplit(")", 1)[1].split()
+            return int(rest[11]), int(rest[12])
+        except (OSError, IndexError, ValueError):
+            return None
 
     def get_vm_memory_from_numastat(self, pid):
         """Get process NUMA memory statistics.
@@ -1699,6 +2058,12 @@ class VMMonitorBase(ABC):
             **fields,
             "status": candidate["status"],
         }
+        # Raw /proc/<pid>/stat utime+stime for the per-VM CPU dump
+        # (vm_cpu_raw.csv). None when unreadable -> row skipped by the writer.
+        ut_st = self._read_pid_jiffies(pid)
+        if ut_st is not None:
+            result["utime"] = ut_st[0]
+            result["stime"] = ut_st[1]
 
         return result, seed_proc
 
@@ -1717,24 +2082,44 @@ class VMMonitorBase(ABC):
             self.collect_numa_cpu()
         if self._collects("host_stats"):
             self.collect_host_stats()
-        # /proc/meminfo + /proc/vmstat are shared across swap_stats,
-        # host_mem_detail, and host_pressure -- read once per cycle to avoid
-        # three redundant meminfo parses and two redundant vmstat parses. Skip
-        # both reads entirely when every consumer is disabled.
-        need_meminfo = self._collects("swap") or self._collects("host_mem_detail") or self._collects("pressure")
-        need_vmstat = self._collects("swap") or self._collects("pressure")
-        meminfo = self._read_meminfo() if need_meminfo else {}
-        vmstat = self._read_vmstat() if need_vmstat else {}
+        # /proc/meminfo + /proc/vmstat + /proc/stat are shared across swap_stats,
+        # host_mem_detail, host_pressure, and the always-on raw CSV dumper -- read
+        # once per cycle regardless of which /proc consumers are enabled (the raw
+        # dump is unconditional, so the old "skip when no consumer enabled" gate
+        # is dead code now). stat feeds both host_pressure and the raw dumper, so
+        # /proc/stat is opened exactly once per cycle.
+        meminfo = self._read_meminfo()
+        vmstat = self._read_vmstat()
+        stat = self._read_proc_stat()
+        # One sample timestamp shared across host_*_raw.csv + vm_cpu_raw.csv rows
+        # so an agent can join them by timestamp (was: proc and vm enqueued with
+        # separate now() calls, skewed across get_vms_realtime).
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Lazy-start the background raw dumper on the first sample, then enqueue
+        # the dicts already in hand -- zero extra /proc reads for the dump, and
+        # enqueue is O(1) so the sampling path never blocks on file I/O.
+        if self.log_dir and self._proc_raw is None:
+            self._proc_raw = _ProcRawWriter(self.log_dir)
+        if self._proc_raw is not None:
+            self._proc_raw.enqueue_proc(ts, meminfo, vmstat, stat)
+            # node->cpu topology is boot-constant; dump once (writer is idempotent).
+            self._proc_raw.enqueue_numa_map(self._numa_cpu_map_cached())
         if self._collects("swap"):
             self.collect_swap_stats(meminfo=meminfo, vmstat=vmstat)
         if self._collects("host_mem_detail"):
             self.collect_host_mem_detail(meminfo=meminfo)
         if self._collects("pressure"):
-            self.collect_host_pressure(meminfo=meminfo, vmstat=vmstat)
+            self.collect_host_pressure(meminfo=meminfo, vmstat=vmstat, stat=stat)
         if self._collects("numa_memory"):
             self.get_numa_nodes_memory()  # Collect NUMA meminfo in same cycle as swap/hugepage
         vms = self.get_vms_realtime()
         self.last_vm_count = len(vms)
+
+        # Per-VM raw /proc/<pid>/stat jiffies (utime+stime) for vm_cpu_raw.csv.
+        # Each VM already carries utime/stime from _collect_single_vm (parallel
+        # read); enqueue is O(1), the drain thread writes the long CSV.
+        if self._proc_raw is not None and vms:
+            self._proc_raw.enqueue_vm(ts, vms)
 
         # Aggregate VM total memory
         if self._collects("vm_total"):
@@ -1954,6 +2339,18 @@ class VMMonitorBase(ABC):
     def check_stress_file(self, file_path):
         return os.path.exists(file_path)
 
+    def _close_proc_raw(self) -> None:
+        """Join the background raw dumper and close its file handles.
+
+        Called at monitoring end so the host_*_raw.csv / vm_cpu_raw.csv /
+        disk_io_raw.csv / numa_cpu_map.csv files are fully flushed before export
+        begins (the xlsx exporters never touch these filenames, so ordering is
+        belt-and-braces, not a correctness dependency).
+        """
+        if self._proc_raw is not None:
+            self._proc_raw.close()
+            self._proc_raw = None
+
     def wait_for_stress_and_monitor(self, check_type, check_target, interval_seconds=5, duration_seconds=None):
         """Wait for stress test to start, then monitor for specified duration.
 
@@ -2030,6 +2427,8 @@ class VMMonitorBase(ABC):
                     self._disk_subsample_sleep(sl)
         except KeyboardInterrupt:
             pass
+        finally:
+            self._close_proc_raw()
         return self.data
 
     def start_monitoring(self, duration_seconds=None, interval_seconds=5):
@@ -2079,6 +2478,8 @@ class VMMonitorBase(ABC):
                     self._disk_subsample_sleep(sl)
         except KeyboardInterrupt:
             pass
+        finally:
+            self._close_proc_raw()
         return self.data
 
     # ==================== Export and Analysis Methods ====================

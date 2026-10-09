@@ -570,6 +570,7 @@ class TestExportStructure(unittest.TestCase):
                 "Host_Mem_Timeline",
                 "Host_Pressure_Timeline",
                 "Host_CPU_Timeline",
+                "NUMA_CPU_Timeline",
             ],
         )
 
@@ -716,6 +717,7 @@ class TestExportStructure(unittest.TestCase):
                 "Procs Blocked",
             ],
             "Host_CPU_Timeline": ["Timestamp", "Host CPU (%)", "Host Mem Used (GB)", "Host Mem Usage (%)"],
+            "NUMA_CPU_Timeline": ["Timestamp", "NUMA0 CPU (%)", "NUMA5 CPU (%)"],
             "VM_Total_Memory_Timeline": [
                 "Timestamp",
                 "VM Total Memory (MB)",
@@ -780,6 +782,9 @@ class TestExportStructure(unittest.TestCase):
             "Host_Pressure_Timeline": 2,
             # host_cpu_history has 3 samples, host_mem_history has 2 -> max=3 rows.
             "Host_CPU_Timeline": 3,
+            # numa_cpu_history[0] and [5] each have 2 samples; host_mem_history
+            # has 2 (no ts -> index label) -> max=2 rows.
+            "NUMA_CPU_Timeline": 2,
         }
         for sheet, expected in expected_rows.items():
             self.assertEqual(rows[sheet], expected, f"row count mismatch for {sheet}")

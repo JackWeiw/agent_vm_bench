@@ -484,6 +484,7 @@ verified against `vm_monitor/base.py`; the symbols used:
 - `_SECTOR_SIZE_BYTES = 512` — kernel block-layer stat sector size (always 512 B, regardless of device block size).
 - `_BYTES_PER_MIB = 2**20` (1,048,576) — note this is **MiB**, not decimal MB.
 - `_PAGE_SIZE` — host page size from `os.sysconf("SC_PAGE_SIZE")` (typically 4096); used to convert page counts ↔ MiB.
+- `_CLK_TCK` — clock ticks per second from `os.sysconf("SC_CLK_TCK")` (typically 100 → 1 jiffy = 10 ms); used to convert `/proc/<pid>/stat` utime+stime jiffies → CPU-seconds.
 
 ### Source files
 
@@ -575,6 +576,20 @@ From `/proc/stat`:
 |--------|---------|
 | `IOWait (%)` | `max(0, Δiowait) / Δtotal_jiffies × 100` — `iowait` and `total` are the cumulative `cpu` line values (jiffies); deltas taken vs the prior sample, so this is the share of CPU time spent in `iowait` over the interval. |
 | `Procs Running` / `Procs Blocked` | literal `procs_running` / `procs_blocked` lines (instantaneous counts) |
+
+### Per-VM & ublk-daemon CPU (raw jiffies — `vm_cpu_raw.csv` / `ublk_cpu_raw.csv`)
+
+These raw CSVs store **cumulative** `/proc/<pid>/stat` `utime`+`stime` jiffies
+(one row per VM/daemon per sample); an agent derives CPU% via delta — the
+`Raw_VM_Data` sheet's `CPU (%)` column uses psutil `cpu_percent()` (rate-only,
+rounded), so the raw jiffies are the authoritative source.
+
+| Metric | Formula |
+|--------|---------|
+| Per-VM CPU (%) | `Δ(utime + stime) / _CLK_TCK / interval × 100` — `Δ` vs the same `pid`'s prior sample; divide by the real elapsed between the two rows' `timestamp`. A `pid` restart (new daemon) is a fresh row → 0% on its first sample. |
+| ublk-daemon CPU (%) | same formula, keyed by `pid` in `ublk_cpu_raw.csv` |
+
+> A multi-vCPU row can exceed 100% (each core = 100%; a 384-core host saturates at 38400%). `_CLK_TCK = os.sysconf("SC_CLK_TCK")` (typically 100).
 
 ### Dirty throttle thresholds (`_read_dirty_limits_mb`)
 
