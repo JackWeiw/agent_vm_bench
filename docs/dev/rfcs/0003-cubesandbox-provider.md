@@ -1,7 +1,7 @@
 ---
-rfc: 0002
+rfc: 0003
 title: Add cubesandbox provider (Cloud Hypervisor microVM, lifecycle-capable)
-status: Draft
+status: Active
 author: "@JackWeiw"
 shepherd: ""
 areas: [e2b, vm_monitor]
@@ -19,7 +19,7 @@ Add a new `cubesandbox` provider under `src/env_provider/` — the second lifecy
 
 CubeSandbox is a high-performance microVM sandbox service built on a Cloud Hypervisor fork (RustVMM/KVM — the same family as Firecracker). It offers **native pause/resume that preserves a full memory snapshot**, plus snapshot/rollback/clone. That is exactly the lifecycle surface the replay `lifecycle` mode (memory-reuse oversubscription benchmark) requires, on a *different* VMM than aenv/e2b (Firecracker) — giving the bench a second, comparable lifecycle backend instead of another exec-only one.
 
-Adding a provider is an architecture-level change — a new backend family, a new optional SDK dependency, a new config block, and a possible monitor extension — so it warrants RFC review per `docs/rfcs/README.md` before code lands.
+Adding a provider is an architecture-level change — a new backend family, a new optional SDK dependency, a new config block, and a possible monitor extension — so it warrants RFC review per `docs/dev/rfcs/README.md` before code lands.
 
 **Goals**
 
