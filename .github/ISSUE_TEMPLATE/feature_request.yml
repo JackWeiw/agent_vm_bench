@@ -34,5 +34,5 @@ body:
     attributes:
       label: Scope
       options:
-        - label: This is a non-trivial change that may warrant an RFC (see docs/rfcs/README.md).
+        - label: This is a non-trivial change that may warrant an RFC (see docs/dev/rfcs/README.md).
           required: false
