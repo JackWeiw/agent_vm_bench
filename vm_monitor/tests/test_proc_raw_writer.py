@@ -83,21 +83,21 @@ def test_proc_raw_writer_dumps_all_sources():
             "disk_io_raw.csv",
             "numa_cpu_map.csv",
         ):
-            assert os.path.exists(os.path.join(d, fname)), f"{fname} not written"
+            assert os.path.exists(os.path.join(d, "raw_data", fname)), f"{fname} not written"
 
         # host meminfo wide: header from first row, one row, timestamp prepended.
-        with open(os.path.join(d, "host_mem_raw.csv")) as f:
+        with open(os.path.join(d, "raw_data", "host_mem_raw.csv")) as f:
             rows = list(csv.DictReader(f))
         assert rows == [{"timestamp": "2026-01-01 00:00:00", "MemTotal": "100", "MemFree": "50"}]
 
         # host per-cpu long: numeric cpu_id sort (0, 2, 10 -- NOT 0, 10, 2).
-        with open(os.path.join(d, "host_percpu_raw.csv")) as f:
+        with open(os.path.join(d, "raw_data", "host_percpu_raw.csv")) as f:
             rows = list(csv.DictReader(f))
         assert [r["cpu_id"] for r in rows] == ["0", "2", "10"]
         assert rows[0]["user"] == "1" and rows[1]["user"] == "2" and rows[2]["user"] == "3"
 
         # host cpu aggregate wide: cpu_<field> + ctxt + softirq_total/sub land.
-        with open(os.path.join(d, "host_cpu_raw.csv")) as f:
+        with open(os.path.join(d, "raw_data", "host_cpu_raw.csv")) as f:
             rows = list(csv.DictReader(f))
         assert rows[0]["cpu_user"] == "10"
         assert rows[0]["cpu_iowait"] == "1"
@@ -107,7 +107,7 @@ def test_proc_raw_writer_dumps_all_sources():
         assert rows[0]["softirq_1"] == "1"
 
         # per-VM long: one row per VM, None-jiffies VM skipped.
-        with open(os.path.join(d, "vm_cpu_raw.csv")) as f:
+        with open(os.path.join(d, "raw_data", "vm_cpu_raw.csv")) as f:
             rows = list(csv.DictReader(f))
         assert [r["pid"] for r in rows] == ["111", "222"]
         assert rows[0]["utime"] == "500" and rows[0]["stime"] == "50"
@@ -115,7 +115,7 @@ def test_proc_raw_writer_dumps_all_sources():
 
         # disk raw: one row per device; devices sorted; old-kernel (11-field)
         # row pads discards/flush to "" while new-kernel (17-field) keeps them.
-        with open(os.path.join(d, "disk_io_raw.csv")) as f:
+        with open(os.path.join(d, "raw_data", "disk_io_raw.csv")) as f:
             rows = list(csv.DictReader(f))
         assert [r["device"] for r in rows] == ["nvme0n1", "sda"]  # sorted
         sda = next(r for r in rows if r["device"] == "sda")
@@ -129,7 +129,7 @@ def test_proc_raw_writer_dumps_all_sources():
         w2.enqueue_numa_map(numa_map)
         w2.enqueue_numa_map({99: [0]})  # second call must NOT overwrite
         w2.close()
-        with open(os.path.join(d, "numa_cpu_map.csv")) as f:
+        with open(os.path.join(d, "raw_data", "numa_cpu_map.csv")) as f:
             rows = list(csv.reader(f))
         assert rows[0] == ["node", "cpu"]
         body = [tuple(r) for r in rows[1:]]
@@ -147,7 +147,7 @@ def test_proc_raw_writer_dumps_ublk_daemon_jiffies():
         w.enqueue_ublk("2026-01-01 00:00:01", 4242, 150, 15)  # pid stable
         w.enqueue_ublk("2026-01-01 00:00:02", 9999, 5, 1)  # pid restarted
         w.close()
-        with open(os.path.join(d, "ublk_cpu_raw.csv")) as f:
+        with open(os.path.join(d, "raw_data", "ublk_cpu_raw.csv")) as f:
             rows = list(csv.DictReader(f))
     assert [r["pid"] for r in rows] == ["4242", "4242", "9999"]
     assert rows[0]["utime"] == "100" and rows[0]["stime"] == "10"
@@ -181,7 +181,7 @@ def test_numa_map_retries_after_failed_first_write(monkeypatch):
                 pass  # bug path raises (flag wrongly set); fix swallows it
         w.close()
         assert attempts["n"] == 2, "numa map must retry after the first failure"
-        with real_open(os.path.join(d, "numa_cpu_map.csv")) as f:
+        with real_open(os.path.join(d, "raw_data", "numa_cpu_map.csv")) as f:
             rows = list(csv.reader(f))
     assert rows[0] == ["node", "cpu"]
     assert ("0", "0") in [tuple(r) for r in rows[1:]]
@@ -214,7 +214,7 @@ def test_close_drains_slow_writer_before_closing_handles(monkeypatch):
         w.enqueue_proc("2026-01-01 00:00:00", {"MemTotal": 1}, {}, {})
         assert opened.wait(5), "drain did not open the handle in time"
         w.close()
-        with open(os.path.join(d, "host_mem_raw.csv")) as f:
+        with open(os.path.join(d, "raw_data", "host_mem_raw.csv")) as f:
             rows = list(csv.DictReader(f))
     assert len(rows) == 1
     assert rows[0]["MemTotal"] == "1"
