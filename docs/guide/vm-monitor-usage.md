@@ -55,7 +55,7 @@ sudo vm-monitor -t 300 -i 2 --vmm firecracker --enable-capture --auto-skip \
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--vmm` | `qemu` | VMM type: `qemu` or `firecracker` |
+| `--vmm` | `qemu` | VMM type: `qemu`, `firecracker`, or `cubesandbox` |
 | `-t, --time` | `60` | Sampling duration (seconds) |
 | `-i, --interval` | `2` | Sampling interval (seconds) |
 | `--stress-process` | — | Wait for this process name, then sample |
@@ -247,7 +247,7 @@ class MyMonitor(VMMonitorBase):
 
 ## bench-core integration (auto vm-monitor)
 
-`bench-core` wraps vm_monitor via `bench_core.monitor.MonitorController`. It is **auto-enabled** when the selected provider declares a `vmm_type` (e2b/aenv → firecracker; docker/fake → skipped). The monitor runs as a local subprocess, bracketing the active stress phase via a synced stress-file, and outputs to `<report.output_dir>/vm_monitor/`.
+`bench-core` wraps vm_monitor via `bench_core.monitor.MonitorController`. It is **auto-enabled** when the selected provider declares a `vmm_type` (e2b/aenv → firecracker; cubesandbox → cubesandbox; docker/fake → skipped). The monitor runs as a local subprocess, bracketing the active stress phase via a synced stress-file, and outputs to `<report.output_dir>/vm_monitor/`.
 
 Relevant `monitor:` YAML block (peer of `report:`):
 

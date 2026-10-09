@@ -19,9 +19,8 @@ pause/resume -- :class:`LifecycleCapable`), ``snapshot_sizes`` (returns
 the ``snapshot_size`` series event is skipped until size introspection lands),
 and ``create_one`` / ``kill_one`` (trajectory-mode ephemeral lifecycle --
 :class:`EphemeralCapable`). ``default_replay_mode`` is ``lifecycle``;
-``vmm_type`` is ``None`` (vm_monitor integration is deferred; CubeSandbox's VMM
-process name -- ``cube-hypervisor`` vs ``cloud-hypervisor`` -- is unresolved
-and host-level monitoring is a follow-on phase).
+``vmm_type`` is ``cubesandbox`` (vm_monitor matches the per-sandbox
+``containerd-shim-cube-rs`` shim process via :class:`CubeSandboxMonitor`).
 """
 from __future__ import annotations
 
@@ -98,10 +97,10 @@ class CubesandboxProvider(EnvironmentProvider):
     # memory-reuse oversubscription shape as aenv (pause frees RAM, so k*N
     # sandboxes fit in N running slots).
     default_replay_mode = "lifecycle"
-    # vm_monitor integration deferred -- CubeSandbox's VMM process name is
-    # unresolved (cube-hypervisor vs cloud-hypervisor) and host-level monitoring
-    # is a follow-on phase.
-    vmm_type = None
+    # vm_monitor matches the per-sandbox ``containerd-shim-cube-rs`` shim
+    # process via CubeSandboxMonitor; auto-enables host-level monitoring for
+    # ``--provider cubesandbox`` (MonitorController reads this hint).
+    vmm_type = "cubesandbox"
 
     def __init__(self, kernel_config: KernelConfig, config: Config, stop_event: threading.Event) -> None:
         self._kernel_config = kernel_config

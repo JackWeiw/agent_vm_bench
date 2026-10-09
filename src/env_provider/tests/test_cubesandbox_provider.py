@@ -86,8 +86,10 @@ def test_cube_default_replay_mode_is_lifecycle():
     assert CubesandboxProvider.default_replay_mode == "lifecycle"
 
 
-def test_cube_vmm_type_is_none():
-    assert CubesandboxProvider.vmm_type is None
+def test_cube_vmm_type_is_cubesandbox():
+    # auto-enables vm_monitor for --provider cubesandbox (matches
+    # containerd-shim-cube-rs via CubeSandboxMonitor)
+    assert CubesandboxProvider.vmm_type == "cubesandbox"
 
 
 def test_cube_is_lifecycle_capable():

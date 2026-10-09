@@ -25,3 +25,11 @@ def test_aenv_inherits_firecracker():
     from env_provider.aenv import AenvProvider
 
     assert AenvProvider.vmm_type == "firecracker"
+
+
+def test_cubesandbox_provider_is_cubesandbox():
+    # cubesandbox SDK is optional; the provider module is importable without it
+    # (the Sandbox import is mocked in __init__), so this needs no importorskip.
+    from env_provider.cubesandbox import CubesandboxProvider
+
+    assert CubesandboxProvider.vmm_type == "cubesandbox"
