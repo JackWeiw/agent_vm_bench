@@ -4,6 +4,12 @@ Parallel Log Collection Module
 
 Runs multiple log collection tools (devkit, ksys, ub_watch, smap_bw, getfre)
 in parallel subprocesses and threads, synchronized with QEMU monitoring duration.
+
+Log-rotation mode (``log_rotation=True``): devkit (top-down + memory in
+parallel) -> ksys -> ``perf stat`` rotate one slot at a time for the whole
+stress window instead of running everything concurrently; ub_watch / smap_bw /
+getfre keep their all-parallel behavior. Each turn writes a timestamped log
+under ``<rotation_log_dir>/{devkit/{topdown,memory},ksys,perf}/``.
 """
 
 import os
@@ -15,6 +21,15 @@ from datetime import datetime
 
 # Internal dependencies
 from .config import _count_physical_cores, calculate_cpu_range_from_numa, load_getfre_config, numa_to_physical_cores
+
+# Default perf stat event set for log-rotation mode (used when the caller does
+# not pass --rotation-perf-events). Mirrors the feat/perf-split experiment's
+# event list; override per-host via the monitor.log_rotation.perf_events YAML
+# knob (bench-core) or --rotation-perf-events (vm-monitor CLI).
+DEFAULT_ROTATION_PERF_EVENTS = (
+    "cycles,cpu-clock,instructions,tlb:tlb_flush,l1d_tlb,l1d_tlb_refill,"
+    "l2d_tlb,l2d_tlb_refill,l2i_tlb,l2i_tlb_refill,context-switches,sched:sched_switch"
+)
 
 
 class LogCapture:
@@ -41,6 +56,11 @@ class LogCapture:
         numa_nodes: list,
         ksys_parse_timeout: int = None,
         disabled_devkit: set[str] | None = None,
+        log_rotation: bool = False,
+        rotation_interval: int = 15,
+        rotation_perf_events: str | None = None,
+        rotation_log_dir: str | None = None,
+        stress_file: str | None = None,
     ):
         """
         Args:
@@ -53,6 +73,21 @@ class LogCapture:
                 devkit_path is shared by both sub-tools, so .env path control cannot
                 run only one; this set lets the CLI (--no-devkit-mem /
                 --no-devkit-topdown) split them. Default empty = both run.
+                In rotation mode it filters the devkit slot the same way.
+            log_rotation: rotation mode -- devkit (top-down + memory in parallel)
+                -> ksys -> perf stat rotate one slot per rotation_interval instead
+                of running all tools concurrently. devkit/ksys leave the parallel
+                set (they rotate); ub_watch/smap_bw/getfre are unchanged. Each
+                turn writes a timestamped log under rotation_log_dir.
+            rotation_interval: per-slot collection duration in seconds (default 15)
+            rotation_perf_events: comma-separated perf stat events (default:
+                DEFAULT_ROTATION_PERF_EVENTS)
+            rotation_log_dir: output dir for rotation logs (default:
+                <log_dir>/log_capture)
+            stress_file: stress marker lock path (from --stress-file). The
+                rotation keys off the lock lifecycle (appear = stress start,
+                disappear = stress end) so a huge -t cannot push rotation past
+                real stress. None -> timer mode: rotate for `duration` seconds.
         """
         self.config = config
         self.duration = duration
@@ -69,6 +104,22 @@ class LogCapture:
         self.getfre_threads = {}  # {numa_id: Thread}
         self.getfre_log_files = {}  # {numa_id: file handle}
         self.getfre_stop_flags = {}  # {numa_id: Event}
+        # log-rotation components (devkit -> ksys -> perf round-robin)
+        self.log_rotation = log_rotation
+        self.rotation_interval = max(1, int(rotation_interval))
+        self.rotation_perf_events = rotation_perf_events or DEFAULT_ROTATION_PERF_EVENTS
+        self.rotation_log_dir = rotation_log_dir or os.path.join(log_dir, "log_capture")
+        self.stress_file = stress_file
+        self.rotation_stop_flag = threading.Event()
+        self.rotation_thread = None
+        self.rotation_turns = {  # per-tool list of per-turn log paths
+            "devkit_top_down": [],
+            "devkit_mem": [],
+            "ksys": [],
+            "perf": [],
+        }
+        self._rotation_ksys_procs = []  # ksys processes still parsing in background
+        self._rotation_skipped = set()  # tools disabled for the rest of the run
 
     def _get_cpu_range(self) -> str:
         """Get CPU range for devkit top-down command"""
@@ -330,6 +381,276 @@ class LogCapture:
         # Final flush
         log_file.flush()
 
+    # ------------------------------------------------------------------
+    # Log-rotation mode: devkit (top-down + memory in parallel) -> ksys ->
+    # perf stat, one slot per rotation_interval, repeating while stress runs.
+    # ------------------------------------------------------------------
+
+    def _rotation_log_path(self, tool: str, *sub: str) -> str | None:
+        """Create (and remember) a per-turn timestamped log path under rotation_log_dir.
+
+        Layout: <rotation_log_dir>/<tool>[/<sub>]/<YYYYmmdd-HHMMSS>.log, e.g.
+        log_capture/devkit/topdown/20261009-142530.log. A filename collision
+        (only possible with sub-second slot intervals) gets a -2/-3 suffix.
+        """
+        d = os.path.join(self.rotation_log_dir, tool, *sub)
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError as e:
+            print(f"  [ERROR] rotation: cannot create log dir {d}: {e}")
+            return None
+        base = datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = os.path.join(d, base + ".log")
+        n = 1
+        while os.path.exists(path):
+            n += 1
+            path = os.path.join(d, f"{base}-{n}.log")
+        return path
+
+    def _rotation_skip_tool(self, tool: str, reason: str) -> None:
+        """Disable one tool's turns for the rest of the run (warn once)."""
+        if tool not in self._rotation_skipped:
+            print(f"  [WARN] rotation: skipping {tool} for the rest of the run ({reason})")
+            self._rotation_skipped.add(tool)
+
+    def _wait_for_stress_lock(self) -> bool:
+        """Block until the stress lock appears (or stop is signaled / -t passes).
+
+        Returns True when rotation may start, False when it should not run.
+        """
+        deadline = time.monotonic() + self.duration  # don't outlive vm_monitor's -t
+        while not self.rotation_stop_flag.is_set() and time.monotonic() < deadline:
+            if self.stress_file and os.path.exists(self.stress_file):
+                return True
+            self.rotation_stop_flag.wait(timeout=0.5)
+        return False
+
+    def _stress_active(self) -> bool:
+        """True while stress is ongoing (lock present). False once it ends."""
+        if not self.stress_file:
+            return True  # timer mode (no lock) -> active until the deadline check stops us
+        return os.path.exists(self.stress_file)
+
+    @staticmethod
+    def _ksys_parse_started(log_path: str) -> bool:
+        """True once the ksys turn's log shows the collect->parse transition."""
+        try:
+            with open(log_path, encoding="utf-8", errors="ignore") as f:
+                return "Starting to parse data" in f.read()
+        except OSError:
+            return False
+
+    def _rotation_devkit_turn(self) -> None:
+        """One devkit slot: top-down + memory in parallel, each for one interval."""
+        if not self.config.get("devkit_path"):
+            self._rotation_skip_tool("devkit", "devkit_path not configured")
+            return
+        cpu_range = self._get_cpu_range()
+        if not cpu_range:
+            self._rotation_skip_tool("devkit", "could not determine CPU range (set DEVKIT_CPU_RANGE in .env)")
+            return
+        interval = str(self.rotation_interval)
+        cmds = {}
+        if "devkit_top_down" not in self.disabled_devkit:
+            cmds["devkit_top_down"] = [
+                self.config["devkit_path"],
+                "tuner",
+                "top-down",
+                "-d",
+                interval,
+                "-i",
+                "3",
+                "-c",
+                cpu_range,
+            ]
+        if "devkit_mem" not in self.disabled_devkit:
+            cmds["devkit_mem"] = [self.config["devkit_path"], "tuner", "memory", "-d", interval, "-i", "3"]
+        if not cmds:
+            return  # both sub-tools disabled via --no-devkit-mem / --no-devkit-topdown
+        procs = {}
+        handles = {}
+        for tool, cmd in cmds.items():
+            log_path = self._rotation_log_path("devkit", "topdown" if tool == "devkit_top_down" else "memory")
+            if log_path is None:
+                continue
+            fh = None
+            try:
+                fh = open(log_path, "w")
+                print(f"  [CMD] {tool} (rotation): {' '.join(cmd)}")
+                procs[tool] = subprocess.Popen(cmd, stdout=fh, stderr=fh, cwd=self.rotation_log_dir)
+                handles[tool] = fh
+                self.rotation_turns[tool].append(log_path)
+            except OSError as e:
+                print(f"  [ERROR] rotation {tool} failed to start: {e}")
+                self.failed_runtime.append({"tool": tool, "error": str(e)})
+                if fh is not None:
+                    try:
+                        fh.close()
+                    except Exception:
+                        pass
+        # Both sub-tools run for -d interval; they finish together, so the
+        # sequential waits collapse to ~one slot (+ hang timeout per tool).
+        timeout = self.rotation_interval + self.DEFAULT_TOOL_TIMEOUTS["devkit_mem"]
+        for tool, proc in procs.items():
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                print(f"  [WARN] rotation {tool} timed out after {timeout}s, terminating...")
+                proc.terminate()
+                time.sleep(3)
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                self.failed_runtime.append({"tool": tool, "error": "rotation_timeout"})
+            else:
+                if proc.returncode != 0:
+                    self.failed_runtime.append({"tool": tool, "returncode": proc.returncode})
+        for fh in handles.values():
+            try:
+                fh.close()
+            except Exception:
+                pass
+
+    def _rotation_ksys_turn(self) -> None:
+        """One ksys slot: collect for one interval; the parse phase keeps running in background.
+
+        ksys has two phases: collect (-d interval) then parse (can take minutes).
+        The turn waits only for the collect phase -- process exit, the
+        "Starting to parse data" log marker, or interval+30s, whichever comes
+        first -- then rotates on. The parse process is tracked in
+        _rotation_ksys_procs and reaped in stop()/wait(); its CPU overlaps
+        later slots, the same trade-off the all-parallel mode and perf-split
+        make (ksys cannot collect without parsing).
+        """
+        if not self.config.get("ksys_path") or not self.config.get("ksys_config_path"):
+            self._rotation_skip_tool("ksys", "ksys_path/ksys_config_path not configured")
+            return
+        interval = str(self.rotation_interval)
+        cmd = [
+            self.config["ksys_path"],
+            "collect",
+            "-d",
+            interval,
+            "-i",
+            "3",
+            "-c",
+            self.config["ksys_config_path"],
+        ]
+        log_path = self._rotation_log_path("ksys")
+        if log_path is None:
+            return
+        try:
+            fh = open(log_path, "w")
+        except OSError as e:
+            print(f"  [ERROR] rotation ksys cannot open log {log_path}: {e}")
+            return
+        print(f"  [CMD] ksys (rotation): {' '.join(cmd)}")
+        try:
+            proc = subprocess.Popen(cmd, stdout=fh, stderr=fh, cwd=self.rotation_log_dir)
+        except OSError as e:
+            print(f"  [ERROR] rotation ksys failed to start: {e}")
+            self.failed_runtime.append({"tool": "ksys", "error": str(e)})
+            try:
+                fh.close()
+            except Exception:
+                pass
+            return
+        self.rotation_turns["ksys"].append(log_path)
+        self._rotation_ksys_procs.append(proc)
+        # Wait for the collect phase only (parse runs on in background).
+        collect_deadline = time.monotonic() + self.rotation_interval + 30
+        while (
+            not self.rotation_stop_flag.is_set()
+            and proc.poll() is None
+            and time.monotonic() < collect_deadline
+            and not self._ksys_parse_started(log_path)
+        ):
+            time.sleep(1)
+        # Closing the parent handle is safe: the child keeps its own dup and
+        # writes the parse output to the same file until it exits.
+        try:
+            fh.close()
+        except Exception:
+            pass
+
+    def _rotation_perf_turn(self) -> None:
+        """One perf slot: ``perf stat -e <events> -a -- sleep <interval>`` into a per-turn log."""
+        if "perf" in self._rotation_skipped:
+            return
+        cmd = ["perf", "stat", "-e", self.rotation_perf_events, "-a", "--", "sleep", str(self.rotation_interval)]
+        log_path = self._rotation_log_path("perf")
+        if log_path is None:
+            return
+        try:
+            fh = open(log_path, "w")
+        except OSError as e:
+            print(f"  [ERROR] rotation perf cannot open log {log_path}: {e}")
+            return
+        print(f"  [CMD] perf (rotation): {' '.join(cmd)}")
+        self.rotation_turns["perf"].append(log_path)
+        try:
+            # perf stat writes its counters to stderr; merge into the log.
+            subprocess.run(
+                cmd,
+                stdout=fh,
+                stderr=subprocess.STDOUT,
+                timeout=self.rotation_interval + 15,
+                check=False,
+                cwd=self.rotation_log_dir,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"  [WARN] rotation perf stat timed out after {self.rotation_interval + 15}s")
+            self.failed_runtime.append({"tool": "perf", "error": "timeout"})
+        except OSError as e:
+            # perf binary missing/unrunnable -- no point retrying every turn.
+            self._rotation_skip_tool("perf", f"perf not runnable: {e}")
+            if self.rotation_turns["perf"] and self.rotation_turns["perf"][-1] == log_path:
+                self.rotation_turns["perf"].pop()
+            try:
+                os.unlink(log_path)  # drop the empty log from the failed turn
+            except OSError:
+                pass
+            try:
+                os.rmdir(os.path.dirname(log_path))  # drop the empty perf dir too
+            except OSError:
+                pass
+        finally:
+            try:
+                fh.close()
+            except Exception:
+                pass
+
+    def _rotation_thread_main(self) -> None:
+        """devkit(topdown+memory parallel) -> ksys -> perf, repeating while stress runs."""
+        # Lock mode: idle until the stress lock appears (or stop/-t). Timer
+        # mode (no stress_file): start immediately, bounded by `duration`.
+        if self.stress_file and not self._wait_for_stress_lock():
+            return
+        t0 = time.monotonic()
+        while not self.rotation_stop_flag.is_set() and self._stress_active() and time.monotonic() - t0 < self.duration:
+            if {"devkit", "ksys", "perf"} <= self._rotation_skipped:
+                print("  [WARN] rotation: no runnable tools left, rotation stopped")
+                return
+            # Stop between slots once stress ends; an in-flight tool finishes
+            # its own bounded -d interval slot first. An unexpected exception
+            # stops the rotation (one message) -- it must never kill the bench.
+            try:
+                if "devkit" not in self._rotation_skipped:
+                    self._rotation_devkit_turn()
+                if self.rotation_stop_flag.is_set() or not self._stress_active():
+                    break
+                if "ksys" not in self._rotation_skipped:
+                    self._rotation_ksys_turn()
+                if self.rotation_stop_flag.is_set() or not self._stress_active():
+                    break
+                if "perf" not in self._rotation_skipped:
+                    self._rotation_perf_turn()
+            except Exception as e:  # noqa: BLE001 -- rotation must never kill the bench
+                print(f"  [ERROR] rotation turn failed, stopping rotation: {e}")
+                return
+        print("  [OK] log rotation finished")
+
     def start(self) -> dict:
         """Start all collection processes in parallel using Popen
 
@@ -339,9 +660,12 @@ class LogCapture:
         self.start_time = datetime.now()
         success = []
         failed = []
+        # Rotation mode moves devkit/ksys out of the parallel set (they rotate
+        # on the rotation thread instead); ub_watch/smap_bw/getfre are unchanged.
+        rotate = self.log_rotation
 
         # Start DevKit memory tuner
-        if "devkit_mem" not in self.disabled_devkit:
+        if not rotate and "devkit_mem" not in self.disabled_devkit:
             ok, err = self._start_devkit_mem()
             if ok:
                 success.append("devkit_mem")
@@ -350,7 +674,7 @@ class LogCapture:
                 self.failed_startup.append("devkit_mem")
 
         # Start DevKit top-down tuner
-        if "devkit_top_down" not in self.disabled_devkit:
+        if not rotate and "devkit_top_down" not in self.disabled_devkit:
             ok, err = self._start_devkit_top_down()
             if ok:
                 success.append("devkit_top_down")
@@ -359,12 +683,13 @@ class LogCapture:
                 self.failed_startup.append("devkit_top_down")
 
         # Start ksys
-        ok, err = self._start_ksys()
-        if ok:
-            success.append("ksys")
-        elif err and "not configured" not in err:
-            failed.append(("ksys", err))
-            self.failed_startup.append("ksys")
+        if not rotate:
+            ok, err = self._start_ksys()
+            if ok:
+                success.append("ksys")
+            elif err and "not configured" not in err:
+                failed.append(("ksys", err))
+                self.failed_startup.append("ksys")
 
         # Start ub_watch
         ok, err = self._start_ub_watch()
@@ -390,10 +715,35 @@ class LogCapture:
             failed.append(("getfre", err))
             self.failed_startup.append("getfre")
 
+        # Start the rotation thread (devkit -> ksys -> perf, one slot at a time).
+        # It idles until the stress lock appears, so starting it here is safe.
+        if rotate:
+            self.rotation_thread = threading.Thread(target=self._rotation_thread_main, name="log-rotation")
+            self.rotation_thread.start()
+            success.append("log_rotation")
+
         return {"success": success, "failed": failed}
 
     def stop(self):
         """Stop all running processes and threads"""
+        # Rotation mode: signal the loop first so it stops between slots (an
+        # in-flight tool finishes its own bounded -d interval slot), then reap
+        # any ksys parse still running in the background (emergency path: a
+        # kill here loses that turn's parse output, same as the parallel mode).
+        self.rotation_stop_flag.set()
+        if self.rotation_thread is not None and self.rotation_thread.is_alive():
+            self.rotation_thread.join(timeout=self.rotation_interval + 90)
+        for proc in self._rotation_ksys_procs:
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+
         # Stop getfre threads first
         for numa_id, stop_flag in self.getfre_stop_flags.items():
             stop_flag.set()  # Signal threads to stop
@@ -571,6 +921,10 @@ class LogCapture:
         - devkit/ub_watch: duration + 60s (quick completion expected)
         - ksys: duration + ksys_parse_timeout (parse can take minutes)
         """
+        # Rotation mode: the thread exits on stop flag / stress end once its
+        # in-flight slot finishes; give it that slot's budget before moving on.
+        if self.log_rotation and self.rotation_thread is not None:
+            self.rotation_thread.join(timeout=self.rotation_interval + 120)
         for tool_name, proc in self.processes.items():
             try:
                 # Get appropriate timeout for this tool
@@ -627,6 +981,27 @@ class LogCapture:
                     }
                 )
 
+        # Rotation-mode ksys processes: collect already finished, only the
+        # parse phase may still be running. Bounded by ksys_parse_timeout,
+        # then terminated (a straggler's parse output is lost past that).
+        for proc in self._rotation_ksys_procs:
+            if proc.poll() is not None:
+                continue
+            deadline = time.time() + self.ksys_parse_timeout
+            while proc.poll() is None and time.time() < deadline:
+                time.sleep(5)
+            if proc.poll() is None:
+                print(f"  [WARN] rotation ksys parse exceeded {self.ksys_parse_timeout}s, terminating...")
+                proc.terminate()
+                time.sleep(3)
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                self.failed_runtime.append({"tool": "ksys", "error": "parse_timeout"})
+            elif proc.returncode != 0:
+                self.failed_runtime.append({"tool": "ksys", "returncode": proc.returncode})
+
         # Close log file handles
         for tool_name, f in self.log_files.items():
             try:
@@ -661,22 +1036,38 @@ class LogCapture:
         if self.getfre_threads and "getfre" not in self.failed_startup:
             success.append("getfre")
 
+        # Rotation mode: the rotated tools never enter self.processes; report
+        # the thread as the carrier of devkit/ksys/perf instead.
+        if self.log_rotation and self.rotation_thread is not None:
+            success.append("log_rotation")
+
         # Build getfre log files dict
         getfre_logs = {}
         for numa_id in self.getfre_log_files.keys():
             getfre_logs[f"getfre_NUMA{numa_id}"] = os.path.join(self.log_dir, f"getfre_NUMA{numa_id}.log")
 
-        return {
+        log_files = {
+            "devkit_mem": os.path.join(self.log_dir, "devkit_mem.log"),
+            "devkit_top_down": os.path.join(self.log_dir, "devkit_top_down.log"),
+            "ksys": os.path.join(self.log_dir, "ksys.log"),
+            "ub_watch": os.path.join(self.log_dir, "ub_watch.log"),
+            "smap_bw": os.path.join(self.log_dir, "smap_bw.log"),
+            **getfre_logs,  # Add getfre log files
+        }
+        if self.log_rotation:
+            # devkit/ksys write per-turn timestamped logs instead of the single
+            # files the exporters look for; expose them as rotation_files and
+            # drop the nonexistent single-file keys.
+            for tool in ("devkit_mem", "devkit_top_down", "ksys"):
+                log_files.pop(tool, None)
+
+        results = {
             "success": success,
             "failed_startup": self.failed_startup,
             "failed_runtime": self.failed_runtime,
-            "log_files": {
-                "devkit_mem": os.path.join(self.log_dir, "devkit_mem.log"),
-                "devkit_top_down": os.path.join(self.log_dir, "devkit_top_down.log"),
-                "ksys": os.path.join(self.log_dir, "ksys.log"),
-                "ub_watch": os.path.join(self.log_dir, "ub_watch.log"),
-                "smap_bw": os.path.join(self.log_dir, "smap_bw.log"),
-                **getfre_logs,  # Add getfre log files
-            },
+            "log_files": log_files,
             "duration": actual_duration,
         }
+        if self.log_rotation:
+            results["rotation_files"] = {tool: list(paths) for tool, paths in self.rotation_turns.items()}
+        return results

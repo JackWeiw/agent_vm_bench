@@ -196,3 +196,17 @@ monitor:
   #   - ublk-daemon
   #   - devkit-mem
   #   - devkit-topdown
+  # Log-capture rotation (forwards vm-monitor --log-rotation + knobs). When
+  # enabled, devkit (top-down + memory in parallel) -> ksys -> perf stat rotate
+  # one slot at a time for the whole stress window instead of all capture tools
+  # running concurrently; each turn writes a timestamped log under
+  # <output_dir>/log_capture/{devkit/{topdown,memory},ksys,perf}/. ub_watch /
+  # smap_bw / getfre keep their all-parallel behavior. Requires capture
+  # (auto/true); keys off the stress-file lock lifecycle (appear = start,
+  # disappear = stop after the in-flight slot), so a huge test_duration cannot
+  # push rotation past real stress. perf_events takes a list or a comma string;
+  # omit it for vm_monitor's built-in event set. Default off (all-parallel).
+  # log_rotation:
+  #   enabled: true
+  #   interval_sec: 15          # per-slot collection duration (s)
+  #   perf_events:              # e.g. [cycles, instructions, context-switches]

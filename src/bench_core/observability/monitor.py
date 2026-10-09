@@ -47,6 +47,52 @@ _VALID_SKIP_STEMS = frozenset(
 
 
 @dataclass
+class LogRotationConfig:
+    """Log-capture rotation toggles (the ``monitor.log_rotation:`` YAML block).
+
+    Rotates devkit (top-down + memory in parallel) -> ksys -> ``perf stat``,
+    one collector group at a time, for the whole stress window. Each turn
+    writes a timestamped log under ``<output_dir>/log_capture/
+    {devkit/{topdown,memory},ksys,perf}/``. Forwards the vm-monitor
+    ``--log-rotation`` flag family; requires ``capture`` (auto/true) to run.
+    """
+
+    enabled: bool = False
+    interval_sec: int = 15  # per-slot collection duration (seconds)
+    # None -> vm_monitor's built-in event set (DEFAULT_ROTATION_PERF_EVENTS).
+    perf_events: list[str] | None = None
+
+    @classmethod
+    def from_raw(cls, raw) -> LogRotationConfig | None:
+        """Parse the ``log_rotation`` block; ``None`` when absent.
+
+        Accepts a dict (``enabled`` defaults to true when the block is present)
+        or the shorthand ``log_rotation: true``. A non-dict/non-true value is
+        warned + dropped (never crash the bench on a YAML typo). ``perf_events``
+        accepts a YAML list or a comma string.
+        """
+        if raw is None:
+            return None
+        if raw is True:
+            return cls(enabled=True)
+        if not isinstance(raw, dict):
+            logger.warning("monitor.log_rotation must be a mapping or true, got %r; ignoring", raw)
+            return None
+        events = raw.get("perf_events")
+        if events is None:
+            perf_events: list[str] | None = None
+        elif isinstance(events, str):
+            perf_events = [e.strip() for e in events.split(",") if e.strip()] or None
+        else:
+            perf_events = [str(e).strip() for e in events if str(e).strip()]
+        return cls(
+            enabled=bool(raw.get("enabled", True)),
+            interval_sec=int(raw.get("interval_sec", 15)),
+            perf_events=perf_events,
+        )
+
+
+@dataclass
 class MonitorConfig:
     """Host-level monitor toggles (the ``monitor:`` YAML section)."""
 
@@ -74,6 +120,11 @@ class MonitorConfig:
     # the courtesy wait in stop(); skipping still writes every sheet, just
     # without charts. Default false (charts on); opt-in for oversub-scale runs.
     skip_charts: bool = False
+    # Log-capture rotation (the ``log_rotation:`` sub-block): devkit(top-down +
+    # memory in parallel) -> ksys -> perf stat, one group at a time, for the
+    # stress window; per-turn timestamped logs land in
+    # ``<output_dir>/log_capture/``. None/absent = off (all-parallel capture).
+    log_rotation: LogRotationConfig | None = None
 
     @classmethod
     def from_raw(cls, raw: dict | None) -> MonitorConfig:
@@ -99,6 +150,7 @@ class MonitorConfig:
             report_timeout=int(raw.get("report_timeout", 300)),
             skip=skip,
             skip_charts=bool(raw.get("skip_charts", False)),
+            log_rotation=LogRotationConfig.from_raw(raw.get("log_rotation")),
         )
 
 
@@ -161,6 +213,18 @@ class MonitorController:
         # where the openpyxl chart build dominates export time.
         if self._config.monitor.skip_charts:
             cmd += ["--no-charts"]
+        # Log-capture rotation (forwards --log-rotation + knobs), only meaningful
+        # with capture on. Rotation logs land in <output_dir>/log_capture/
+        # (sibling of vm_monitor/), not inside vm_monitor's own log dir.
+        lr = self._config.monitor.log_rotation
+        if lr is not None and lr.enabled:
+            if not self._capture_on:
+                logger.warning("monitor.log_rotation enabled but capture is off; rotation will not run")
+            else:
+                cmd += ["--log-rotation", "--rotation-interval", str(lr.interval_sec)]
+                if lr.perf_events:
+                    cmd += ["--rotation-perf-events", ",".join(lr.perf_events)]
+                cmd += ["--rotation-log-dir", str(Path(self._config.output_dir) / "log_capture")]
         # Hard upper bound: vm_monitor exits after this even if the lock is never
         # removed (SIGKILL/OOM on the kernel side cannot reap the subprocess).
         hard_t = getattr(self._config, "test_duration", self._report_timeout) + 60

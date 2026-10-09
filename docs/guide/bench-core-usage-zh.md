@@ -467,6 +467,8 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
 > 1:1(无超卖)且 QPS / inflight 熔断旋钮未设时,`capacity_wait`/`rate_pacing`/`inflight` 及 resume/pause 的 rate-pacing/inflight 分量合理为 0,只在超卖 + 控制面限流时非 0;`natural_delay` 只要轨迹有步间间隔且 `delay_scale > 0` 即非 0,是 1:1 下的主要非生产项。
 > host 级系统资源(CPU/内存/NUMA)在独立的 vm_monitor `resource_report.xlsx`(`monitor.merge_report: false`),或合并进本工作簿的 `VM_Stats`/`NUMA_Overview`/`DevKit_TopDown` sheet(`merge_report: true`)。
 
+**log-capture 轮转**(`monitor.log_rotation:`,默认关):开启后 devkit(top-down + memory 并行)→ ksys → `perf stat` 三个采集器**轮转**执行——同一时刻只有一组在跑,避免全并行时互相污染测量。每次轮到某工具就生成一个时间戳命名的 log,落在 `<output_dir>/log_capture/` 下(`devkit/topdown/`、`devkit/memory/`、`ksys/`、`perf/` 四个子目录);轮到几次就有几个文件。旋钮:`interval_sec`(每槽采集时长,默认 15s)、`perf_events`(perf 事件列表或逗号串,缺省用 vm_monitor 内置事件集)。以 stress 锁生命周期为界(锁出现开始、锁消失后跑完当前槽即停),巨大的 `test_duration` 不会把轮转拖过真实压测窗口。依赖 `capture`(auto/true);ub_watch/smap_bw/getfre 保持全并行不变;轮转 log 是原始产物,不进 xlsx sheet(ksys 的 parse 阶段在后台继续,与后续槽位重叠——与全并行模式相同的固有代价)。示例见 `config/common/replay.yaml` monitor 段注释。
+
 ### 8.5 超卖扫描 (`oversub-bench`)
 
 `oversub-bench` driver(`src/bench_core/oversub.py`)把 replay kernel 跑过一组内存/CPU 超卖比:`running_concurrency`(N)固定,`total_count = k×N` 每个 trial 缩放。每个 trial 一次 `bench-core` 调用;driver 读每个 trial 的机器可读 `run_summary.json`,聚合 per-trial + per-ratio 退化曲线。
