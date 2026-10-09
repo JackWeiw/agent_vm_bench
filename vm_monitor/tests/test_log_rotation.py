@@ -132,12 +132,50 @@ class TestLogRotation(unittest.TestCase):
         self.assertEqual(cap.rotation_turns["perf"], [])
         self.assertFalse(os.path.exists(os.path.join(self.log_dir, "log_capture", "perf")))
 
+    def test_devkit_turn_popen_failure_skips_subtools(self):
+        cap = self._cap()
+        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=OSError("Permission denied")):
+            cap._rotation_devkit_turn()
+            cap._rotation_devkit_turn()  # second turn hits the empty-cmds path
+        self.assertIn("devkit_mem", cap._rotation_skipped)
+        self.assertIn("devkit_top_down", cap._rotation_skipped)
+        self.assertIn("devkit", cap._rotation_skipped)  # family skip once both sub-tools are out
+        self.assertEqual(cap.rotation_turns["devkit_mem"], [])
+        self.assertEqual(cap.rotation_turns["devkit_top_down"], [])
+        # No empty log files left behind from the failed starts.
+        self.assertFalse(os.path.exists(os.path.join(self.log_dir, "log_capture", "devkit")))
+
+    def test_ksys_turn_popen_failure_skips_tool(self):
+        cap = self._cap()
+        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=OSError("Permission denied")):
+            cap._rotation_ksys_turn()
+        self.assertIn("ksys", cap._rotation_skipped)
+        self.assertEqual(cap.rotation_turns["ksys"], [])
+        self.assertFalse(os.path.exists(os.path.join(self.log_dir, "log_capture", "ksys")))
+
+    def test_run_slot_paces_fast_turn_to_interval(self):
+        # A turn that finishes instantly must still hold its slot open for the
+        # full interval (no hot spin of empty logs when a tool misbehaves).
+        cap = self._cap(rotation_interval=1)
+        t0 = time.monotonic()
+        cap._run_slot(lambda: None)
+        self.assertGreaterEqual(time.monotonic() - t0, 0.9)
+
+    def test_run_slot_pacing_interrupted_by_stop(self):
+        # stop() must break the pace immediately -- no waiting out a dead run.
+        cap = self._cap(rotation_interval=30)
+        cap.rotation_stop_flag.set()
+        t0 = time.monotonic()
+        cap._run_slot(lambda: None)
+        self.assertLess(time.monotonic() - t0, 1.0)
+
     def test_thread_full_cycle_order_and_stop(self):
         """Timer mode: one full cycle devkit(topdown+memory) -> ksys, then stops.
 
         The ksys spawn sets the stop flag, so the loop must break before perf.
+        interval=1 keeps the post-devkit slot pacing well under the join timeout.
         """
-        cap = self._cap()  # no stress_file -> timer mode, starts immediately
+        cap = self._cap(rotation_interval=1)  # no stress_file -> timer mode, starts immediately
         spawned = []
         ran = []
 

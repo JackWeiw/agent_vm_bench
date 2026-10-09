@@ -451,7 +451,7 @@ class LogCapture:
             return
         interval = str(self.rotation_interval)
         cmds = {}
-        if "devkit_top_down" not in self.disabled_devkit:
+        if "devkit_top_down" not in self.disabled_devkit and "devkit_top_down" not in self._rotation_skipped:
             cmds["devkit_top_down"] = [
                 self.config["devkit_path"],
                 "tuner",
@@ -463,10 +463,13 @@ class LogCapture:
                 "-c",
                 cpu_range,
             ]
-        if "devkit_mem" not in self.disabled_devkit:
+        if "devkit_mem" not in self.disabled_devkit and "devkit_mem" not in self._rotation_skipped:
             cmds["devkit_mem"] = [self.config["devkit_path"], "tuner", "memory", "-d", interval, "-i", "3"]
         if not cmds:
-            return  # both sub-tools disabled via --no-devkit-mem / --no-devkit-topdown
+            # Both sub-tools out (CLI --no-X or skipped after a start failure):
+            # the whole family is done for this run.
+            self._rotation_skipped.add("devkit")
+            return
         procs = {}
         handles = {}
         for tool, cmd in cmds.items():
@@ -481,12 +484,19 @@ class LogCapture:
                 handles[tool] = fh
                 self.rotation_turns[tool].append(log_path)
             except OSError as e:
-                print(f"  [ERROR] rotation {tool} failed to start: {e}")
+                # Cannot exec (bad path, no exec bit) -- it will not heal mid-run,
+                # so skip this sub-tool for the rest of the run instead of
+                # retrying (and empty-logging) every slot.
+                self._rotation_skip_tool(tool, f"failed to start: {e}")
                 self.failed_runtime.append({"tool": tool, "error": str(e)})
                 if fh is not None:
                     try:
                         fh.close()
-                    except Exception:
+                        os.unlink(log_path)
+                        leaf = os.path.dirname(log_path)
+                        os.rmdir(leaf)  # drop the empty per-turn dir
+                        os.rmdir(os.path.dirname(leaf))  # drop devkit/ too when both sub-tools are out
+                    except OSError:
                         pass
         # Both sub-tools run for -d interval; they finish together, so the
         # sequential waits collapse to ~one slot (+ hang timeout per tool).
@@ -544,16 +554,21 @@ class LogCapture:
             fh = open(log_path, "w")
         except OSError as e:
             print(f"  [ERROR] rotation ksys cannot open log {log_path}: {e}")
+            self._rotation_skip_tool("ksys", f"cannot open log: {e}")
             return
         print(f"  [CMD] ksys (rotation): {' '.join(cmd)}")
         try:
             proc = subprocess.Popen(cmd, stdout=fh, stderr=fh, cwd=self.rotation_log_dir)
         except OSError as e:
-            print(f"  [ERROR] rotation ksys failed to start: {e}")
+            # Cannot exec (bad path, no exec bit) -- skip for the rest of the
+            # run instead of retrying every slot.
+            self._rotation_skip_tool("ksys", f"failed to start: {e}")
             self.failed_runtime.append({"tool": "ksys", "error": str(e)})
             try:
                 fh.close()
-            except Exception:
+                os.unlink(log_path)
+                os.rmdir(os.path.dirname(log_path))  # drop the empty ksys dir
+            except OSError:
                 pass
             return
         self.rotation_turns["ksys"].append(log_path)
@@ -621,6 +636,23 @@ class LogCapture:
             except Exception:
                 pass
 
+    def _run_slot(self, turn) -> None:
+        """Run one rotation slot, then hold the slot open for its full interval.
+
+        A slot is a fixed window: a tool that finishes early (fast exit, bad
+        args, start failure) must not collapse the cadence into a hot spin of
+        empty logs. The remainder is waited out interruptibly -- stop() or the
+        end of stress breaks the pace immediately.
+        """
+        t0 = time.monotonic()
+        turn()
+        while (
+            not self.rotation_stop_flag.is_set()
+            and self._stress_active()
+            and time.monotonic() - t0 < self.rotation_interval
+        ):
+            self.rotation_stop_flag.wait(timeout=0.5)
+
     def _rotation_thread_main(self) -> None:
         """devkit(topdown+memory parallel) -> ksys -> perf, repeating while stress runs."""
         # Lock mode: idle until the stress lock appears (or stop/-t). Timer
@@ -637,15 +669,15 @@ class LogCapture:
             # stops the rotation (one message) -- it must never kill the bench.
             try:
                 if "devkit" not in self._rotation_skipped:
-                    self._rotation_devkit_turn()
+                    self._run_slot(self._rotation_devkit_turn)
                 if self.rotation_stop_flag.is_set() or not self._stress_active():
                     break
                 if "ksys" not in self._rotation_skipped:
-                    self._rotation_ksys_turn()
+                    self._run_slot(self._rotation_ksys_turn)
                 if self.rotation_stop_flag.is_set() or not self._stress_active():
                     break
                 if "perf" not in self._rotation_skipped:
-                    self._rotation_perf_turn()
+                    self._run_slot(self._rotation_perf_turn)
             except Exception as e:  # noqa: BLE001 -- rotation must never kill the bench
                 print(f"  [ERROR] rotation turn failed, stopping rotation: {e}")
                 return
