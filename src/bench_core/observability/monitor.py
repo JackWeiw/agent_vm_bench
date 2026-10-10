@@ -407,6 +407,45 @@ class MonitorController:
         self._started = False
         return [self.report_xlsx] if self.report_xlsx is not None else []
 
+    def wait_for_host_resources(self, timeout: int = 30) -> Path | None:
+        """Briefly wait for ``host_resources.xlsx`` (the fast, CSV-only artifact
+        written FIRST in vm_monitor's export phase), then detach -- never block
+        for the slow ``resource_report.xlsx``.
+
+        On a Ctrl+C / SIGTERM teardown the happy-path ``stop()`` never ran, so
+        nothing was waiting for vm_monitor's export. But ``end_stress`` already
+        removed the lock, so vm_monitor exits monitoring, flushes the raw CSVs
+        in its ``finally``, and writes host_resources first (seconds -- it reads
+        only the line-flushed CSVs, not the in-memory chart stack). A short wait
+        here catches it; vm_monitor keeps the slow SVG/xlsx as a detached orphan
+        that ``_emergency_kill`` won't reap (no SIGTERM mid-export). No-op when
+        the monitor never started or ``stop()`` already ran (``_started`` False).
+        """
+        if not self._started:
+            return None
+        hr = self._log_dir / "host_resources.xlsx"
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if hr.exists():
+                break
+            if self.proc is not None and self.proc.poll() is not None:
+                break  # vm_monitor exited (crash or done) -- one last check below
+            time.sleep(1)
+        found = hr if hr.exists() else None
+        if found is None:
+            logger.warning(
+                "host_resources.xlsx not produced within %ds; raw CSVs are still on "
+                "disk -- run `vm-monitor raw-report %s` to regenerate",
+                timeout,
+                self._log_dir,
+            )
+        # Detach so vm_monitor finishes the slow SVG/xlsx as an orphan;
+        # _emergency_kill skips detached procs (no SIGTERM mid-export).
+        self._detached = True
+        self._close_handles()
+        self._started = False
+        return found
+
     def merge_source(self) -> Path | None:
         """Return the host report to merge into the obs workbook, or ``None``.
 

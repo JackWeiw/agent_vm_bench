@@ -389,11 +389,16 @@ class _ProcRawWriter:
         fh.flush()
 
     def _write_vm(self, ts: str, vms: list) -> None:
-        # Per-VM -> long format (one row per VM per sample).
+        # Per-VM -> long format (one row per VM per sample). pss_mb is a gauge
+        # (current MB via smaps_rollup, already collected by _collect_single_vm);
+        # utime/stime are cumulative counters an agent deltas into CPU cores.
         if self._vm is None:
             fh = open(os.path.join(self._dir, "vm_cpu_raw.csv"), "w", newline="", encoding="utf-8")
             dw = csv.DictWriter(
-                fh, fieldnames=["timestamp", "pid", "vm_name", "utime", "stime"], restval="", extrasaction="ignore"
+                fh,
+                fieldnames=["timestamp", "pid", "vm_name", "utime", "stime", "pss_mb"],
+                restval="",
+                extrasaction="ignore",
             )
             dw.writeheader()
             self._vm = (fh, dw)
@@ -402,7 +407,16 @@ class _ProcRawWriter:
             ut, st = v.get("utime"), v.get("stime")
             if ut is None or st is None:
                 continue  # VM exited or /proc/<pid>/stat unreadable mid-sample
-            dw.writerow({"timestamp": ts, "pid": v.get("pid"), "vm_name": v.get("name", ""), "utime": ut, "stime": st})
+            dw.writerow(
+                {
+                    "timestamp": ts,
+                    "pid": v.get("pid"),
+                    "vm_name": v.get("name", ""),
+                    "utime": ut,
+                    "stime": st,
+                    "pss_mb": v.get("pss_mb", ""),
+                }
+            )
         fh.flush()
 
     def _write_disk(self, ts: str, dev_raw: dict) -> None:
@@ -474,6 +488,12 @@ class _ProcRawWriter:
                     sink[0].close()
                 except OSError:
                     pass
+
+
+# Module-level exposure of the /sys/block/<dev>/stat field set so the
+# derived-rate consumer (raw_report._derive_disk) imports the single source of
+# truth rather than re-hardcoding the 17-field tuple.
+_DISK_FIELDS = _ProcRawWriter._DISK_FIELDS
 
 
 class VMMonitorBase(ABC):
@@ -1146,7 +1166,7 @@ class VMMonitorBase(ABC):
         # Raw /sys/block/<dev>/stat counters -> disk_io_raw.csv (1s cadence, same
         # background writer; enqueue is O(1) so the sub-sampler never blocks).
         if self._proc_raw is not None and raw_fields:
-            self._proc_raw.enqueue_disk(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), raw_fields)
+            self._proc_raw.enqueue_disk(datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"), raw_fields)
 
     # ===================== Collect Host Memory Detail =====================
     def collect_host_mem_detail(self, meminfo: dict | None = None):
@@ -1235,7 +1255,7 @@ class VMMonitorBase(ABC):
             self._ublk_daemon_pid = None
             self._prev_ublk_daemon_jiffies = None
             return
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         # Raw cumulative jiffies for ublk_cpu_raw.csv; agent derives CPU% via
         # delta -- the derived 'cores' below alone is lossy (rounded, rate-only).
         if self._proc_raw is not None:
@@ -2102,7 +2122,7 @@ class VMMonitorBase(ABC):
         # One sample timestamp shared across host_*_raw.csv + vm_cpu_raw.csv rows
         # so an agent can join them by timestamp (was: proc and vm enqueued with
         # separate now() calls, skewed across get_vms_realtime).
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         # Lazy-start the background raw dumper on the first sample, then enqueue
         # the dicts already in hand -- zero extra /proc reads for the dump, and
         # enqueue is O(1) so the sampling path never blocks on file I/O.
