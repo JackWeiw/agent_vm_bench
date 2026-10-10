@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from bench_core.config import KernelConfig
-from bench_core.observability.monitor import MonitorConfig, MonitorController
+from bench_core.observability.monitor import LogRotationConfig, MonitorConfig, MonitorController
 
 
 def test_monitor_config_defaults_when_absent():
@@ -125,6 +127,96 @@ def test_command_skip_charts_forwards_no_charts(monkeypatch, tmp_path):
     assert "--no-charts" in mc._cmd
     mc_default = MonitorController(_cfg(stress_file=str(tmp_path / "lock")), prov)
     assert "--no-charts" not in mc_default._cmd
+
+
+def test_log_rotation_config_defaults_when_absent():
+    cfg = KernelConfig.from_raw({"sandbox": {"total_count": 1}})
+    assert cfg.monitor.log_rotation is None
+
+
+def test_log_rotation_config_from_raw_full_block():
+    raw = {
+        "sandbox": {"total_count": 1},
+        "monitor": {
+            "log_rotation": {
+                "enabled": True,
+                "interval_sec": 30,
+                "perf_events": ["cycles", "instructions"],
+            },
+        },
+    }
+    lr = KernelConfig.from_raw(raw).monitor.log_rotation
+    assert isinstance(lr, LogRotationConfig)
+    assert lr.enabled is True
+    assert lr.interval_sec == 30
+    assert lr.perf_events == ["cycles", "instructions"]
+
+
+def test_log_rotation_config_shorthand_and_defaults():
+    # `log_rotation: true` shorthand -> enabled with defaults (no events).
+    lr = KernelConfig.from_raw({"sandbox": {"total_count": 1}, "monitor": {"log_rotation": True}}).monitor.log_rotation
+    assert lr is not None and lr.enabled is True
+    assert lr.interval_sec == 15
+    assert lr.perf_events is None
+    # A present dict implies enabled; perf_events accepts a comma string too.
+    lr2 = KernelConfig.from_raw(
+        {"sandbox": {"total_count": 1}, "monitor": {"log_rotation": {"perf_events": "cycles, instructions"}}}
+    ).monitor.log_rotation
+    assert lr2.enabled is True
+    assert lr2.perf_events == ["cycles", "instructions"]
+
+
+def test_log_rotation_config_invalid_warns_and_drops(caplog):
+    cfg = KernelConfig.from_raw({"sandbox": {"total_count": 1}, "monitor": {"log_rotation": "banana"}})
+    assert cfg.monitor.log_rotation is None
+    assert any("log_rotation" in r.message for r in caplog.records)
+
+
+def test_command_log_rotation_forwards_flags(monkeypatch, tmp_path):
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    prov = _StubProvider(vmm_type="firecracker")
+    mc = MonitorController(
+        _cfg(
+            stress_file=str(tmp_path / "lock"),
+            log_rotation={"enabled": True, "interval_sec": 20, "perf_events": ["cycles", "instructions"]},
+        ),
+        prov,
+    )
+    cmd = mc._cmd
+    i = cmd.index("--log-rotation")
+    assert cmd[cmd.index("--rotation-interval") + 1] == "20"
+    assert cmd[cmd.index("--rotation-perf-events") + 1] == "cycles,instructions"
+    # Rotation logs land in <output_dir>/log_capture (sibling of vm_monitor/).
+    assert cmd[cmd.index("--rotation-log-dir") + 1] == str(Path("out") / "log_capture")
+    assert i < cmd.index("--rotation-interval")  # flags travel as one block
+
+
+def test_command_log_rotation_default_events_omit_flag(monkeypatch, tmp_path):
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    prov = _StubProvider(vmm_type="firecracker")
+    # perf_events omitted -> vm-monitor's built-in set applies (no flag).
+    mc = MonitorController(_cfg(stress_file=str(tmp_path / "lock"), log_rotation=True), prov)
+    assert "--log-rotation" in mc._cmd
+    assert "--rotation-perf-events" not in mc._cmd
+    assert "--rotation-interval" in mc._cmd  # interval still forwarded (default 15)
+
+
+def test_command_log_rotation_inert_when_capture_off(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    prov = _StubProvider(vmm_type="firecracker")
+    mc = MonitorController(
+        _cfg(capture="false", stress_file=str(tmp_path / "lock"), log_rotation={"enabled": True}),
+        prov,
+    )
+    assert "--log-rotation" not in mc._cmd
+    assert any("rotation will not run" in r.message for r in caplog.records)
+
+
+def test_command_log_rotation_default_off(monkeypatch, tmp_path):
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    prov = _StubProvider(vmm_type="firecracker")
+    mc = MonitorController(_cfg(stress_file=str(tmp_path / "lock")), prov)
+    assert "--log-rotation" not in mc._cmd
 
 
 def test_start_removes_stale_lock(monkeypatch, tmp_path, caplog):

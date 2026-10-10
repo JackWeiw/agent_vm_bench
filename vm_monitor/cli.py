@@ -21,11 +21,40 @@ from .config import load_env_config, validate_and_prompt_missing
 from .cubesandbox import CubeSandboxMonitor
 from .exporters import export_to_excel, print_capture_summary
 from .firecracker import FirecrackerMonitor
-from .log_capture import LogCapture
+from .log_capture import DEFAULT_ROTATION_PERF_EVENTS, LogCapture
 from .qemu import QEMUMonitor
 from .svg_exporter import export_svg_reports
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_rotation_intervals(spec: str, fallback: int) -> dict:
+    """Parse ``--rotation-intervals 'devkit=20,ksys=30,perf=15'`` into a dict.
+
+    Tools omitted from the spec fall back to ``fallback`` (``--rotation-interval``).
+    Unknown keys are warned + dropped (never crash the bench on a typo); ``devkit``,
+    ``ksys``, ``perf`` are the valid tools.
+    """
+    valid = {"devkit", "ksys", "perf"}
+    result = {}
+    for token in spec.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "=" not in token:
+            logger.warning("--rotation-intervals: '%s' is not key=value, skipping", token)
+            continue
+        tool, _, val = token.partition("=")
+        tool = tool.strip()
+        if tool not in valid:
+            logger.warning("--rotation-intervals: unknown tool '%s' (valid: %s), skipping", tool, sorted(valid))
+            continue
+        try:
+            result[tool] = max(1, int(val.strip()))
+        except ValueError:
+            logger.warning("--rotation-intervals: '%s' is not an int for tool '%s', skipping", val.strip(), tool)
+    return result
+
 
 # Unified flag_stem -> internal_name map (user refinement: single source of
 # truth for stem<->internal translation). target "base" disables a
@@ -161,6 +190,44 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Timeout for ksys data parsing phase in seconds (default: 600s, increase for large VM counts)",
     )
 
+    # Log-rotation capture (devkit -> ksys -> perf, one slot at a time).
+    # bench-core forwards monitor.log_rotation as these flags.
+    parser.add_argument(
+        "--log-rotation",
+        action="store_true",
+        help="Log-rotation mode: devkit (top-down + memory in parallel) -> ksys -> perf stat rotate "
+        "one slot per --rotation-interval for the whole stress window instead of running all capture "
+        "tools concurrently. Per-turn timestamped logs under --rotation-log-dir. Requires "
+        "--enable-capture; keys off the --stress-file lock lifecycle when given.",
+    )
+    parser.add_argument(
+        "--rotation-interval",
+        type=int,
+        default=15,
+        help="Per-slot collection duration in seconds for --log-rotation (default: 15). "
+        "Fallback for any tool not overridden by --rotation-intervals.",
+    )
+    parser.add_argument(
+        "--rotation-intervals",
+        type=str,
+        default=None,
+        help="Per-tool rotation intervals as 'devkit=20,ksys=30,perf=15' (seconds). "
+        "Tools omitted fall back to --rotation-interval. Overrides --rotation-interval "
+        "for the tools it lists.",
+    )
+    parser.add_argument(
+        "--rotation-perf-events",
+        type=str,
+        default=DEFAULT_ROTATION_PERF_EVENTS,
+        help="Comma-separated perf stat events for --log-rotation (default: built-in set)",
+    )
+    parser.add_argument(
+        "--rotation-log-dir",
+        type=str,
+        default=None,
+        help="Output dir for rotation logs (default: <log-dir>/log_capture)",
+    )
+
     # Selective /proc collectors + devkit split (default all ON). The dest is
     # derived from the hyphenated STEM so --no-host-mem-detail lands on
     # args.no_host_mem_detail (NOT a broken internal-name-derived dest).
@@ -283,6 +350,11 @@ def main():
     # Start log capture (parallel with monitor)
     if args.enable_capture:
         print("\nStarting log collection tools...")
+        # --rotation-intervals 'devkit=20,ksys=30,perf=15' -> per-tool dict;
+        # falls back to --rotation-interval for omitted tools / when unset.
+        rotation_interval = args.rotation_interval
+        if args.rotation_intervals:
+            rotation_interval = _parse_rotation_intervals(args.rotation_intervals, args.rotation_interval)
         capture = LogCapture(
             config,
             args.time,
@@ -290,6 +362,11 @@ def main():
             m.target_numa_nodes,
             ksys_parse_timeout=args.ksys_parse_timeout,
             disabled_devkit=disabled_devkit,
+            log_rotation=args.log_rotation,
+            rotation_interval=rotation_interval,
+            rotation_perf_events=args.rotation_perf_events,
+            rotation_log_dir=args.rotation_log_dir,
+            stress_file=args.stress_file,
         )
         capture.start()
         print(f"[OK] Log collection tools started in background (duration={args.time}s)")

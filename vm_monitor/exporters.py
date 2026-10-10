@@ -1763,11 +1763,21 @@ def print_capture_summary(results: dict, log_dir: str, numa_nodes: list = None):
     if results["success"]:
         print(f"\n[OK] Success ({len(results['success'])} tools):")
         for tool in results["success"]:
+            if tool == "log_rotation":
+                continue  # the rotation carrier has no single log file; printed below
             log_file = results["log_files"].get(tool, "")
             size = 0
             if os.path.exists(log_file):
                 size = os.path.getsize(log_file)
             print(f"   {tool}: {log_file} ({size} bytes)")
+
+    # Rotation mode: per-turn timestamped logs (one per slot), not single files.
+    rotation = results.get("rotation_files")
+    if rotation:
+        print("\n[OK] Log rotation turns:")
+        for tool, paths in rotation.items():
+            if paths:
+                print(f"   {tool}: {len(paths)} logs under {os.path.dirname(paths[0])}/")
 
     # Startup failures
     if results["failed_startup"]:
