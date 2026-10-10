@@ -127,6 +127,7 @@ class LogCapture:
             "perf": [],
         }
         self._rotation_ksys_procs = []  # ksys processes still parsing in background
+        self._rotation_devkit_procs = []  # devkit processes still finishing in background
         self._rotation_skipped = set()  # tools disabled for the rest of the run
 
     def _get_cpu_range(self) -> str:
@@ -527,24 +528,19 @@ class LogCapture:
                         os.rmdir(os.path.dirname(leaf))  # drop devkit/ too when both sub-tools are out
                     except OSError:
                         pass
-        # Both sub-tools run for -d interval; they finish together, so the
-        # sequential waits collapse to ~one slot (+ hang timeout per tool).
-        timeout = self.rotation_intervals["devkit"] + self.DEFAULT_TOOL_TIMEOUTS["devkit_mem"]
+        # Wait for the collect duration only; a sub-tool that runs 1-2s over
+        # (e.g. memory) continues in the background and is reaped in stop().
+        # Closing the parent handle is safe: the child keeps its own dup.
+        deadline = time.monotonic() + self.rotation_intervals["devkit"]
+        while time.monotonic() < deadline:
+            if all(proc.poll() is not None for proc in procs.values()):
+                break
+            time.sleep(0.5)
         for tool, proc in procs.items():
-            try:
-                proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                print(f"  [WARN] rotation {tool} timed out after {timeout}s, terminating...")
-                proc.terminate()
-                time.sleep(3)
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
-                self.failed_runtime.append({"tool": tool, "error": "rotation_timeout"})
-            else:
-                if proc.returncode != 0:
-                    self.failed_runtime.append({"tool": tool, "returncode": proc.returncode})
+            if proc.poll() is None:
+                self._rotation_devkit_procs.append(proc)
+            elif proc.returncode != 0:
+                self.failed_runtime.append({"tool": tool, "returncode": proc.returncode})
         for fh in handles.values():
             try:
                 fh.close()
@@ -555,12 +551,13 @@ class LogCapture:
         """One ksys slot: collect for one interval; the parse phase keeps running in background.
 
         ksys has two phases: collect (-d interval) then parse (can take minutes).
-        The turn waits only for the collect phase -- process exit, the
-        "Starting to parse data" log marker, or interval+30s, whichever comes
-        first -- then rotates on. The parse process is tracked in
-        _rotation_ksys_procs and reaped in stop()/wait(); its CPU overlaps
-        later slots, the same trade-off the all-parallel mode and perf-split
-        make (ksys cannot collect without parsing).
+        The turn waits only for the collect phase (interval seconds) -- not
+        process exit, because ksys block-buffers its stdout so the
+        "Starting to parse data" marker is unreadable until the process
+        flushes near exit. A timer is the robust signal. The parse process is
+        tracked in _rotation_ksys_procs and reaped in stop()/wait(); its CPU
+        overlaps later slots, the same trade-off the all-parallel mode and
+        perf-split make (ksys cannot collect without parsing).
         """
         if not self.config.get("ksys_path") or not self.config.get("ksys_config_path"):
             self._rotation_skip_tool("ksys", "ksys_path/ksys_config_path not configured")
@@ -602,17 +599,15 @@ class LogCapture:
             return
         self.rotation_turns["ksys"].append(log_path)
         self._rotation_ksys_procs.append(proc)
-        # Wait for the collect phase only (parse runs on in background).
-        collect_deadline = time.monotonic() + self.rotation_intervals["ksys"] + 30
-        while (
-            not self.rotation_stop_flag.is_set()
-            and proc.poll() is None
-            and time.monotonic() < collect_deadline
-            and not self._ksys_parse_started(log_path)
-        ):
-            time.sleep(1)
-        # Closing the parent handle is safe: the child keeps its own dup and
-        # writes the parse output to the same file until it exits.
+        # Wait for the collect duration only (interval seconds); parse runs on
+        # in the background. ksys's "Starting to parse data" marker is block-
+        # buffered (the binary flushes on exit, not per-line), so marker
+        # detection via the log file is unreliable -- a timer is the robust
+        # signal.  Closing the parent handle is safe: the child keeps its own
+        # dup and writes the parse output to the same file until it exits.
+        collect_deadline = time.monotonic() + self.rotation_intervals["ksys"]
+        while not self.rotation_stop_flag.is_set() and proc.poll() is None and time.monotonic() < collect_deadline:
+            time.sleep(0.5)
         try:
             fh.close()
         except Exception:
@@ -801,6 +796,16 @@ class LogCapture:
         self.rotation_stop_flag.set()
         if self.rotation_thread is not None and self.rotation_thread.is_alive():
             self.rotation_thread.join(timeout=self.rotation_interval + 90)
+        for proc in self._rotation_devkit_procs:
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
         for proc in self._rotation_ksys_procs:
             if proc.poll() is None:
                 try:

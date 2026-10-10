@@ -298,6 +298,76 @@ class TestLogRotation(unittest.TestCase):
         perf_cmd = mock_run.call_args.args[0]
         self.assertEqual(perf_cmd[-1], "15")
 
+    def test_ksys_turn_timer_exits_after_interval_not_interval_plus_30(self):
+        """ksys turn must exit after interval seconds, not interval+30.
+
+        The old marker-based detection waited up to interval+30s because
+        ksys block-buffers its stdout. The timer-based fix must cap the
+        wait at interval seconds even when the process stays alive.
+        """
+        cap = self._cap(rotation_interval=2)  # 2s -> ksys turn <= 2s
+
+        class _AliveProc:
+            """Simulates a ksys process that never exits (collect+parse running)."""
+
+            returncode = None
+
+            def poll(self):
+                return None  # always alive
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+
+        with patch("vm_monitor.log_capture.subprocess.Popen", return_value=_AliveProc()):
+            t0 = time.monotonic()
+            cap._rotation_ksys_turn()
+            elapsed = time.monotonic() - t0
+        # Must exit at ~2s (the interval), well under the old 2+30=32s deadline.
+        self.assertLess(elapsed, 5)
+        self.assertGreaterEqual(elapsed, 1.5)
+        # Process tracked for background reaping.
+        self.assertEqual(len(cap._rotation_ksys_procs), 1)
+
+    def test_devkit_turn_timer_exits_after_interval(self):
+        """devkit turn must exit after interval seconds even if sub-tools stay alive."""
+        cap = self._cap(rotation_interval=2)
+
+        class _AliveProc:
+            returncode = None
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+
+        spawned = []
+
+        def fake_popen(cmd, *a, **k):
+            spawned.append(cmd)
+            return _AliveProc()
+
+        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=fake_popen):
+            t0 = time.monotonic()
+            cap._rotation_devkit_turn()
+            elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, 5)
+        self.assertGreaterEqual(elapsed, 1.5)
+        # Both alive procs tracked for background reaping.
+        self.assertEqual(len(cap._rotation_devkit_procs), 2)
+
     def test_run_slot_uses_per_tool_interval(self):
         cap = self._cap(rotation_interval={"devkit": 1, "ksys": 1, "perf": 1})
         t0 = time.monotonic()
