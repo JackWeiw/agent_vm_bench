@@ -513,7 +513,7 @@ previous (first sample has no baseline → zero rates).
 |--------|---------|
 | `Read (MB/s)` = `r_mb_s` | `Δsectors_read × 512 / 2²⁰ / interval` |
 | `Write (MB/s)` = `w_mb_s` | `Δsectors_written × 512 / 2²⁰ / interval` |
-| `Util (%)` = `util_pct` | `min(100, (Δms_io / 10) / interval × 100)` — `ms_io` ticks at 10 ms granularity, so this is the fraction of wall-time the device spent servicing I/O, capped at 100%. |
+| `Util (%)` = `util_pct` | `min(100, Δms_io / 1000 / interval × 100)` — `ms_io` is cumulative busy ms (>=1 I/O in-flight); busy-seconds / wall-seconds, capped at 100%. |
 | `Inflight` | current `inflight` (field 8, instantaneous, not a rate) |
 | `Queue Depth` = `avg_queue_depth` | `Δweighted_ms / 1000 / interval` — `weighted_ms` is I/O-time weighted by queue depth, so this is the mean in-flight request count over the interval. |
 | `Read Await (ms)` = `read_await_ms` | `Δread_ms / Δreads_completed` (0 when no reads completed) — mean latency per completed read I/O. |

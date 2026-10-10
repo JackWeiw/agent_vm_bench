@@ -26,19 +26,19 @@ class TestComputeDiskIoRates(unittest.TestCase):
         cur = {"sda": self._snap(2048, 4096, 100, 2)}
         prev = {"sda": self._snap(0, 0, 0, 1)}
         r = _compute_disk_io_rates(cur, prev, 1.0)["sda"]
-        # 2048 sectors * 512 B = 1 MiB; 4096 sectors = 2 MiB; util = (100/10)/1*100 capped 100
+        # 2048 sectors * 512 B = 1 MiB; 4096 sectors = 2 MiB; util = 100/1000/1*100 = 10.0
         self.assertAlmostEqual(r["r_mb_s"], 1.0)
         self.assertAlmostEqual(r["w_mb_s"], 2.0)
-        self.assertEqual(r["util_pct"], 100.0)
+        self.assertEqual(r["util_pct"], 10.0)
         self.assertEqual(r["inflight"], 2)
         self.assertAlmostEqual(r["r_mb"], 1.0)
         self.assertAlmostEqual(r["w_mb"], 2.0)
 
     def test_util_below_cap(self):
-        cur = {"sda": self._snap(100, 200, 5, 1)}
+        cur = {"sda": self._snap(100, 200, 500, 1)}
         prev = {"sda": self._snap(0, 0, 0, 0)}
         r = _compute_disk_io_rates(cur, prev, 1.0)["sda"]
-        # util = (5/10)/1*100 = 50.0
+        # util = 500/1000/1*100 = 50.0 (device busy half the interval)
         self.assertEqual(r["util_pct"], 50.0)
 
     def test_zero_or_none_interval_yields_zero_rates(self):
