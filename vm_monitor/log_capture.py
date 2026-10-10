@@ -624,6 +624,8 @@ class LogCapture:
             "-e",
             self.rotation_perf_events,
             "-a",
+            "-I",
+            "3000",  # 3s sampling interval (ms), matches devkit/ksys -i 3
             "--",
             "sleep",
             str(self.rotation_intervals["perf"]),

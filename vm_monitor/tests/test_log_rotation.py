@@ -111,7 +111,7 @@ class TestLogRotation(unittest.TestCase):
         with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
             cap._rotation_perf_turn()
         cmd = spawned[0]
-        self.assertEqual(cmd, ["perf", "stat", "-e", "cycles,instructions", "-a", "--", "sleep", "15"])
+        self.assertEqual(cmd, ["perf", "stat", "-e", "cycles,instructions", "-a", "-I", "3000", "--", "sleep", "15"])
         files = os.listdir(os.path.join(self.log_dir, "log_capture", "perf"))
         self.assertEqual(len(files), 1)
 
