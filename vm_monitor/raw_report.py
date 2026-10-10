@@ -3,10 +3,10 @@
 Reads the always-on raw /proc + per-VM + per-disk CSV dumps and derives rates
 via delta (reusing base._compute_pressure_rates + base._compute_disk_io_rates).
 Pure file input -- does not depend on in-memory history, post-hoc rerunnable.
-The xlsx assembly (3 sheets, openpyxl LineCharts) is added in a later task;
-this module currently exposes _derive_host (host-wide), _derive_per_vm (per-VM
-CPU cores + PSS), _derive_disk (per-device I/O), and the shared _guarded
-counter-reset/gap guard.
+The xlsx assembly (build_host_resources_xlsx: 3 spotbox-style sheets with
+openpyxl LineCharts) reuses the derived DataFrames above. All derivation is
+delta-based on persistent cumulative counters -- pure file input, post-hoc
+rerunnable, independent of in-memory history and of resource_report.xlsx.
 """
 from __future__ import annotations
 
@@ -23,6 +23,11 @@ from vm_monitor.base import (
     _compute_disk_io_rates,
     _compute_pressure_rates,
 )
+
+from openpyxl import Workbook
+from openpyxl.chart import LineChart, Reference
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 logger = logging.getLogger(__name__)
 
@@ -310,3 +315,161 @@ def _derive_disk(raw_dir: Path) -> pd.DataFrame:
     df = pd.DataFrame(cols)
     df.insert(0, "t_s", [0.0] + [ts_sorted[i] - ts_sorted[0] for i in range(1, len(ts_sorted))])
     return df
+
+
+_HEADER_FILL = PatternFill("solid", fgColor="1F2937")
+_HEADER_FONT = Font(bold=True, color="F9FAFB")
+
+
+def _put_row(ws, row, values, header=False):
+    for i, v in enumerate(values, 1):
+        c = ws.cell(row=row, column=i, value=v)
+        if header:
+            c.fill = _HEADER_FILL
+            c.font = _HEADER_FONT
+    return row + 1
+
+
+def _write_table(ws, df, headers):
+    """Write df rows under a styled header at row 1; return last data-row index."""
+    r = _put_row(ws, 1, headers, header=True)
+    for _, row in df.iterrows():
+        r = _put_row(ws, r, [row.get(h) for h in headers])
+    ws.freeze_panes = "A2"
+    return r - 1  # last data row
+
+
+def _add_line_chart(ws, title, y_title, cat_col, data_cols, header_row, n_data_rows, anchor):
+    """openpyxl LineChart bound to worksheet cells (spotbox style). ``header_row``
+    carries the series names (titles_from_data); data occupies header_row+1 ..
+    header_row+n_data_rows. X axis = cat_col (t (s)). Stacked vertically via anchor."""
+    ch = LineChart()
+    ch.title = title
+    ch.y_axis.title = y_title
+    ch.x_axis.title = "t (s)"
+    ch.height = 8
+    ch.width = 16
+    last = header_row + n_data_rows
+    for col in data_cols:
+        ch.add_data(Reference(ws, min_col=col, min_row=header_row, max_row=last), titles_from_data=True)
+    ch.set_categories(Reference(ws, min_col=cat_col, min_row=header_row + 1, max_row=last))
+    ws.add_chart(ch, anchor)
+
+
+def _build_host_sheet(wb, df):
+    if df.empty:
+        return
+    ws = wb.create_sheet("Host resources")
+    headers = [
+        "t_s",
+        "timestamp",
+        "cpu_busy_pct",
+        "cpu_iowait_pct",
+        "mem_used_gb",
+        "mem_cache_gb",
+        "buffers_mb",
+        "dirty_mb",
+        "swap_in_mib_s",
+        "swap_out_mib_s",
+        "page_scan_mib_s",
+        "page_reclaim_mib_s",
+        "file_refault_mib_s",
+        "ublk_cores",
+        "vm_cores",
+    ]
+    _write_table(ws, df, headers)
+    anchor = get_column_letter(len(headers) + 2)
+    n = len(df)
+    _add_line_chart(ws, "Host memory", "GB/MB", 1, (5, 6, 7, 8), 1, n, f"{anchor}2")
+    _add_line_chart(ws, "Host CPU", "%", 1, (3, 4), 1, n, f"{anchor}20")
+    _add_line_chart(ws, "Page-cache pressure", "MiB/s", 1, (11, 12, 13), 1, n, f"{anchor}38")
+    _add_line_chart(ws, "Swap in/out", "MiB/s", 1, (9, 10), 1, n, f"{anchor}56")
+    _add_line_chart(ws, "CPU cores (ublk + VM)", "cores", 1, (14, 15), 1, n, f"{anchor}74")
+
+
+def _build_per_vm_sheet(wb, cores_df, pss_df):
+    if cores_df is None or cores_df.empty:
+        return
+    ws = wb.create_sheet("Per-VM")
+    cores_headers = ["t_s", *cores_df.columns[1:]]  # t_s + VM names + 'other'
+    last_core = _write_table(ws, cores_df, cores_headers)
+    anchor = get_column_letter(len(cores_headers) + 2)
+    # per-vm table has NO timestamp column -> first VM is col 2 (not 3).
+    cpu_cols = tuple(range(2, len(cores_headers) + 1))
+    _add_line_chart(ws, "Per-VM CPU cores", "cores", 1, cpu_cols, 1, len(cores_df), f"{anchor}2")
+    # PSS table written BELOW the cores table; its chart must reference the PSS
+    # rows (header_row + first_data_row), not the cores rows at the top.
+    pss_headers = ["t_s", *pss_df.columns[1:]]
+    pss_hdr = last_core + 3
+    r = _put_row(ws, pss_hdr, pss_headers, header=True)
+    for _, row in pss_df.iterrows():
+        r = _put_row(ws, r, [row.get(h) for h in pss_headers])
+    pss_cols = tuple(range(2, len(pss_headers) + 1))
+    # Floor the PSS chart anchor at row 20 so it clears the 8cm cores chart
+    # (anchored at row 2, spans ~rows 2-17) when the cores table is short.
+    # ponytail: production has hundreds of samples so pss_hdr+1 >> 20; the floor
+    # only matters for tiny test fixtures.
+    pss_anchor_row = max(pss_hdr + 1, 20)
+    _add_line_chart(ws, "Per-VM PSS", "GB", 1, pss_cols, pss_hdr, len(pss_df), f"{anchor}{pss_anchor_row}")
+
+
+def _build_disk_sheet(wb, df):
+    if df.empty:
+        return
+    ws = wb.create_sheet("Disk IO")
+    headers = list(df.columns)
+    _write_table(ws, df, headers)
+    anchor = get_column_letter(len(headers) + 2)
+    n = len(df)
+    rw_cols = tuple(i for i, h in enumerate(headers, 1) if h.endswith("_r_mb_s") or h.endswith("_w_mb_s"))
+    util_cols = tuple(i for i, h in enumerate(headers, 1) if h.endswith("_util_pct"))
+    if rw_cols:
+        _add_line_chart(ws, "Disk r/w MB/s", "MB/s", 1, rw_cols, 1, n, f"{anchor}2")
+    if util_cols:
+        _add_line_chart(ws, "Disk util %", "%", 1, util_cols, 1, n, f"{anchor}20")
+
+
+def build_host_resources_xlsx(raw_dir, out_path) -> Path:
+    """Read raw_data/*.csv -> derive -> write host_resources.xlsx (3 spotbox-style
+    sheets). Independent of resource_report.xlsx (separate filename preserves
+    bench-core's reap signal) and of in-memory history (post-hoc rerunnable).
+    Degrades: a missing CSV skips its sheet (WARNING), never raises."""
+    raw_dir = Path(raw_dir)
+    out_path = Path(out_path)
+    host_df = _derive_host(raw_dir)
+    cores_df, pss_df = pd.DataFrame(), pd.DataFrame()
+    try:
+        cores_df, pss_df = _derive_per_vm(raw_dir)
+    except (OSError, ValueError, KeyError, pd.errors.ParserError) as e:
+        logger.warning("per-VM derivation failed for raw_dir=%s: %s", raw_dir, e)
+        cores_df, pss_df = pd.DataFrame(), pd.DataFrame()
+    disk_df = _derive_disk(raw_dir)
+    # Fill host_df.vm_cores from the per-VM cores aggregate (sum across VMs per
+    # timestamp). host_df is RangeIndex; cores_df is timestamp-indexed -> align
+    # by position (same sample cadence). ponytail: positional fill assumes host
+    # and vm CSVs share sample cadence (true: both written by collect_sample);
+    # a cadence mismatch leaves vm_cores NaN rather than misaligning silently.
+    if not cores_df.empty and not host_df.empty:
+        vm_agg = (
+            cores_df.drop(columns=["t_s"], errors="ignore")
+            .select_dtypes("number")
+            .sum(axis=1, skipna=True, min_count=1)
+        )
+        if len(vm_agg) == len(host_df):
+            host_df["vm_cores"] = vm_agg.to_numpy()
+    wb = Workbook()
+    default = wb.active
+    _build_host_sheet(wb, host_df)
+    _build_per_vm_sheet(wb, cores_df, pss_df)
+    _build_disk_sheet(wb, disk_df)
+    # If no sheet was built (all raw CSVs missing/empty), there is nothing to
+    # write -- log + return without saving a misleading empty workbook. Also
+    # avoids wb.save() IndexError on a 0-sheet book (default was not removed).
+    if len(wb.worksheets) == 1:  # only the default -> no sheet built at all
+        logger.warning("no raw CSV data found in raw_dir=%s; host_resources.xlsx not written", raw_dir)
+        return out_path
+    wb.remove(default)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(out_path)
+    logger.info("host_resources.xlsx written: %s", out_path)
+    return out_path

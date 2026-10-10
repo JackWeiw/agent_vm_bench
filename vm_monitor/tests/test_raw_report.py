@@ -4,9 +4,16 @@ from __future__ import annotations
 import csv
 import logging
 import math
+import openpyxl
 import os
 
-from vm_monitor.raw_report import _derive_disk, _derive_host, _derive_per_vm, _guarded
+from vm_monitor.raw_report import (
+    _derive_disk,
+    _derive_host,
+    _derive_per_vm,
+    _guarded,
+    build_host_resources_xlsx,
+)
 
 
 def _write(path, header, rows):
@@ -318,3 +325,134 @@ def test_derive_disk_inflight_gauge_excluded_from_guard(tmp_path, caplog):
     assert not math.isnan(r4["sda_r_mb_s"])
     # And the rate is correct (proves it actually computed, not just non-NaN)
     assert math.isclose(r2["sda_r_mb_s"], 2000 * 512 / 2**20 / 2, abs_tol=0.01)
+
+
+def _seed_all(d):
+    """Minimal cumulative CSVs for all three sheets (host + per-VM + disk)."""
+    _write(
+        d / "host_cpu_raw.csv",
+        [
+            "timestamp",
+            "cpu_user",
+            "cpu_nice",
+            "cpu_system",
+            "cpu_idle",
+            "cpu_iowait",
+            "cpu_irq",
+            "cpu_softirq",
+            "cpu_steal",
+            "cpu_guest",
+            "cpu_guest_nice",
+            "ctxt",
+            "btime",
+            "processes",
+            "procs_running",
+            "procs_blocked",
+            "softirq_total",
+        ],
+        [
+            ["0", "100", "0", "50", "8000", "100", "10", "20", "5", "0", "0", "1", "0", "0", "0", "0", "0"],
+            ["2", "120", "0", "55", "8010", "102", "11", "22", "6", "0", "0", "2", "0", "0", "0", "0", "0"],
+        ],
+    )
+    _write(
+        d / "host_mem_raw.csv",
+        ["timestamp", "MemTotal", "MemAvailable", "MemFree", "Cached", "SReclaimable", "Buffers", "Dirty", "Writeback"],
+        [
+            ["0", "2097152", "1048576", "512000", "200000", "50000", "30000", "1000", "0"],
+            ["2", "2097152", "943718", "450000", "210000", "52000", "32000", "2000", "0"],
+        ],
+    )
+    _write(
+        d / "host_vmstat_raw.csv",
+        [
+            "timestamp",
+            "pswpin",
+            "pswpout",
+            "pgscan_kswapd",
+            "pgscan_direct",
+            "pgscan_direct_throttle",
+            "pgsteal_kswapd",
+            "pgsteal_direct",
+            "workingset_refault_file",
+        ],
+        [["0", "100", "0", "0", "0", "0", "0", "0", "0"], ["2", "300", "0", "2048", "0", "0", "0", "0", "0"]],
+    )
+    _write(
+        d / "ublk_cpu_raw.csv",
+        ["timestamp", "pid", "utime", "stime"],
+        [["0", "4242", "0", "0"], ["2", "4242", "100", "100"]],
+    )
+    _write(
+        d / "vm_cpu_raw.csv",
+        ["timestamp", "pid", "vm_name", "utime", "stime", "pss_mb"],
+        [["0", "1", "vm0", "0", "0", "1024.0"], ["2", "1", "vm0", "200", "0", "1024.0"]],
+    )
+    from vm_monitor.base import _DISK_FIELDS
+
+    zero = [0] * len(_DISK_FIELDS)
+    row2 = [0] * len(_DISK_FIELDS)
+    row2[_DISK_FIELDS.index("sectors_read")] = 2000
+    _write(d / "disk_io_raw.csv", ["timestamp", "device", *_DISK_FIELDS], [["0", "sda", *zero], ["2", "sda", *row2]])
+
+
+def test_build_xlsx_sheets_and_charts(tmp_path):
+    d = tmp_path
+    _seed_all(d)
+    out = d / "host_resources.xlsx"
+    build_host_resources_xlsx(d, out)
+    wb = openpyxl.load_workbook(out)
+    assert set(wb.sheetnames) == {"Host resources", "Per-VM", "Disk IO"}
+    host = wb["Host resources"]
+    assert len(host._charts) == 5
+    # series counts lock the col-set per chart (memory=4, cpu=2, pressure=3,
+    # swap=2, cores=2) -- guards against pressure wrongly including swap cols
+    # or an off-by-one skipping a series.
+    assert sorted(len(c.series) for c in host._charts) == [2, 2, 2, 3, 4]
+    assert len(wb["Per-VM"]._charts) == 2
+    assert len(wb["Disk IO"]._charts) == 2
+
+
+def test_build_xlsx_degrades_on_missing_csv(tmp_path):
+    # only host_cpu_raw present -> only Host resources sheet, no crash
+    _write(
+        tmp_path / "host_cpu_raw.csv",
+        [
+            "timestamp",
+            "cpu_user",
+            "cpu_nice",
+            "cpu_system",
+            "cpu_idle",
+            "cpu_iowait",
+            "cpu_irq",
+            "cpu_softirq",
+            "cpu_steal",
+            "cpu_guest",
+            "cpu_guest_nice",
+            "ctxt",
+            "btime",
+            "processes",
+            "procs_running",
+            "procs_blocked",
+            "softirq_total",
+        ],
+        [["0", "1", "0", "1", "90", "0", "0", "0", "0", "0", "0", "1", "0", "0", "0", "0", "0"]],
+    )
+    out = tmp_path / "host_resources.xlsx"
+    build_host_resources_xlsx(tmp_path, out)
+    wb = openpyxl.load_workbook(out)
+    assert "Host resources" in wb.sheetnames
+    assert "Per-VM" not in wb.sheetnames
+    assert "Disk IO" not in wb.sheetnames
+
+
+def test_build_xlsx_no_crash_when_all_csvs_missing(tmp_path, caplog):
+    """All raw CSVs missing -> no sheet built -> WARNING + no file written,
+    never raises (contract: 'never raises'). Regression for the wb.save()
+    IndexError when wb.remove(wb.active) left a 0-sheet workbook."""
+    out = tmp_path / "host_resources.xlsx"
+    with caplog.at_level(logging.WARNING):
+        result = build_host_resources_xlsx(tmp_path, out)
+    assert result == out  # returns the intended path without raising
+    assert not out.exists()  # no misleading empty workbook written
+    assert any("no raw CSV data" in m for m in caplog.messages)
