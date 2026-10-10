@@ -653,6 +653,24 @@ guaranteed on a mid-export Ctrl+C / hard kill — the raw dumper flushes every
 row (`fh.flush()` per write), so partial data is on disk even if the monitor
 was interrupted.
 
+**Ctrl+C / interrupt guarantee (bench-core orchestrated path).** bench-core
+spawns `vm-monitor` in its own session (`start_new_session`), so the terminal's
+Ctrl+C reaches bench-core, not `vm-monitor`. bench-core's teardown `finally`
+calls `monitor.end_stress()` (removes the stress lock → `vm-monitor` exits
+monitoring, flushes raw CSVs in its `finally`, writes host_resources first) and
+then `monitor.wait_for_host_resources(timeout=30)` — a short wait for the fast,
+CSV-only artifact (never blocking on the slow `resource_report.xlsx`). On
+timeout or `vm-monitor` exit it **detaches** (no SIGTERM mid-export); `vm-monitor`
+finishes the slow SVG/xlsx as an orphan that bench-core's atexit backstop won't
+reap. If the wait still can't collect it (e.g. `vm-monitor` hard-killed before
+export), the warning points at the post-hoc recovery command below.
+
+**Post-hoc recovery.** `vm-monitor raw-report <log_dir>` accepts EITHER the
+vm_monitor log_dir (CSVs in `<log_dir>/raw_data/`) OR the raw_data dir itself —
+pointing at the raw_data dir no longer doubles the path into `raw_data/raw_data/`.
+The raw CSVs are always on disk (line-flushed), so host_resources is
+regeneratable after any interruption.
+
 ### 2.8 Disabling collectors (`--no-X`, `monitor.skip`)
 
 By default every `/proc`-based resource collector runs (backward-compat). Opt

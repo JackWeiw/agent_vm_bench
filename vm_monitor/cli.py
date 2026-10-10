@@ -218,21 +218,54 @@ def resolve_numa_nodes(numa_arg: str, available_nodes: list[int]) -> list[int]:
         return [0]
 
 
+def _dir_has_raw_csvs(path: str) -> bool:
+    """True if ``path`` holds any ``*_raw.csv`` file (the always-on dumper's output)."""
+    try:
+        names = os.listdir(path)
+    except OSError:
+        return False
+    return any(n.endswith("_raw.csv") for n in names)
+
+
+def _resolve_raw_dir(log_dir: str, raw_subdir: str) -> str:
+    """Find the directory holding the raw CSVs.
+
+    The user may pass EITHER the vm_monitor log_dir (CSVs live in
+    ``<log_dir>/<raw_subdir>/``) OR the raw_data dir itself. Pointing at the
+    raw_data dir used to double the subdir (``raw_data/raw_data/``) and find
+    nothing. Try the subdir first; if it has no CSVs, fall back to ``log_dir``
+    itself when it does. If neither has CSVs, return the subdir candidate so
+    the build emits its standard ``raw_dir=...`` missing-CSV message.
+    """
+    candidate = os.path.join(log_dir, raw_subdir)
+    if _dir_has_raw_csvs(candidate):
+        return candidate
+    if _dir_has_raw_csvs(log_dir):
+        return log_dir  # user pointed at the raw_data dir directly
+    return candidate
+
+
 def _run_raw_report(argv):
     """`vm-monitor raw-report <log_dir> [--out PATH] [--raw-subdir raw_data]`.
 
     Regenerate host_resources.xlsx from persisted raw_data CSVs (post-hoc, no
-    monitor needed). Degrade to [ERROR] + rc=1, never an uncaught traceback."""
+    monitor needed). Accepts either the vm_monitor log_dir (CSVs in
+    ``<log_dir>/raw_data/``) or the raw_data dir itself. Degrade to
+    [ERROR] + rc=1, never an uncaught traceback."""
     p = argparse.ArgumentParser(
         prog="vm-monitor raw-report",
         description="Regenerate host_resources.xlsx from persisted raw_data CSVs.",
     )
-    p.add_argument("log_dir", help="vm_monitor log dir (contains raw_data/)")
+    p.add_argument("log_dir", help="vm_monitor log dir OR the raw_data dir itself")
     p.add_argument("--out", help="Output xlsx (default: <log_dir>/host_resources.xlsx)")
-    p.add_argument("--raw-subdir", default="raw_data", help="raw CSV subdir (default: raw_data)")
+    p.add_argument(
+        "--raw-subdir",
+        default="raw_data",
+        help="raw CSV subdir (default raw_data; ignored when log_dir IS the raw_data dir)",
+    )
     a = p.parse_args(argv)
     log_dir = os.path.abspath(a.log_dir)
-    raw_dir = os.path.join(log_dir, a.raw_subdir)
+    raw_dir = _resolve_raw_dir(log_dir, a.raw_subdir)
     out = os.path.abspath(a.out) if a.out else os.path.join(log_dir, "host_resources.xlsx")
     try:
         build_host_resources_xlsx(raw_dir, out)

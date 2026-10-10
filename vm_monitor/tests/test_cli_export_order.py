@@ -227,3 +227,48 @@ def test_host_resources_runs_before_svg_so_survives_export_interrupt(monkeypatch
         cli.main()
     assert call_order[0] == "host_resources"  # built before the interrupting SVG
     assert "xlsx" not in call_order  # the slow xlsx (reap signal) never reached
+
+
+def test_resolve_raw_dir_finds_csvs_in_subdir(tmp_path):
+    """Pointing at the vm_monitor log_dir finds CSVs in <log_dir>/raw_data/."""
+    from vm_monitor.cli import _resolve_raw_dir
+
+    raw_subdir = tmp_path / "raw_data"
+    raw_subdir.mkdir()
+    (raw_subdir / "host_cpu_raw.csv").write_text("timestamp,cpu\n")
+    assert _resolve_raw_dir(str(tmp_path), "raw_data") == str(raw_subdir)
+
+
+def test_resolve_raw_dir_handles_raw_data_dir_directly(tmp_path):
+    """Pointing at the raw_data dir ITSELF (a common mistake) does NOT double
+    the subdir into raw_data/raw_data/ -- it uses the dir directly."""
+    from vm_monitor.cli import _resolve_raw_dir
+
+    (tmp_path / "host_cpu_raw.csv").write_text("timestamp,cpu\n")  # CSVs live directly in tmp_path
+    assert _resolve_raw_dir(str(tmp_path), "raw_data") == str(tmp_path)
+
+
+def test_run_raw_report_pointed_at_raw_data_dir_builds_without_doubling(monkeypatch, tmp_path, capsys):
+    """End-to-end: `vm-monitor raw-report <raw_data_dir>` regenerates
+    host_resources.xlsx from the persisted CSVs even when the user points at
+    the raw_data dir itself -- the build receives the dir directly, not
+    <dir>/raw_data (the doubling bug that found no CSVs)."""
+    import vm_monitor.cli as cli
+
+    recorded: dict = {}
+
+    def fake_build(raw_dir, out_path):
+        recorded["raw_dir"] = raw_dir
+        recorded["out"] = out_path
+        return out_path
+
+    monkeypatch.setattr(cli, "build_host_resources_xlsx", fake_build)
+
+    # raw_data dir IS the pointed-at dir; CSVs live directly in it.
+    (tmp_path / "host_cpu_raw.csv").write_text("timestamp,cpu\n")
+
+    rc = cli.main(["raw-report", str(tmp_path)])
+    assert rc == 0
+    assert recorded["raw_dir"] == str(tmp_path)  # NOT tmp_path/raw_data (the doubling bug)
+    assert recorded["out"] == os.path.join(str(tmp_path), "host_resources.xlsx")
+    assert "[OK]" in capsys.readouterr().out

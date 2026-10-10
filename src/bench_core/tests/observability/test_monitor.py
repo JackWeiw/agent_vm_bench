@@ -437,6 +437,124 @@ def test_stop_handles_dead_subprocess(monkeypatch, tmp_path, caplog):
     assert any("without report" in r.message for r in caplog.records)
 
 
+class _HostResProc:
+    """Fake proc simulating vm_monitor writing ``host_resources.xlsx`` (the
+    FIRST export step) after a few polls, then staying alive (slow SVG/xlsx
+    still running). ``write_on_poll=None`` -> never writes (timeout path)."""
+
+    def __init__(self, hr_path, *, write_on_poll=2):
+        self._hr = hr_path
+        self._write_on = write_on_poll
+        self._polls = 0
+        self.returncode = None
+        self.terminated = False
+        self.killed = False
+
+    def poll(self):
+        self._polls += 1
+        if self._write_on is not None and self._polls >= self._write_on and self.returncode is None:
+            if not self._hr.exists():
+                self._hr.write_text("ok")  # vm_monitor finishes the fast CSV-only export step
+        return self.returncode
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+
+def test_wait_for_host_resources_noop_when_not_started():
+    mc = MonitorController(_cfg(), _StubProvider(vmm_type=None))
+    assert mc.wait_for_host_resources() is None
+
+
+def test_wait_for_host_resources_noop_after_stop(monkeypatch, tmp_path):
+    """On the happy path ``stop()`` already ran (``_started=False``); the
+    finally's wait_for_host_resources must be a no-op (no re-wait / re-detach)."""
+    monkeypatch.setattr("bench_core.observability.monitor.time", _Clock())
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    proc = _FakeProc()
+    proc.returncode = 0
+    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: proc)
+    mc = MonitorController(
+        _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path), report_timeout=1),
+        _StubProvider(vmm_type="firecracker"),
+    )
+    mc.start()
+    mc.stop()
+    assert mc.wait_for_host_resources(timeout=30) is None
+
+
+def test_wait_for_host_resources_waits_then_collects_and_detaches(monkeypatch, tmp_path):
+    """Ctrl+C teardown: vm_monitor writes host_resources.xlsx (first export
+    step) within the short wait; the controller collects it, DETACHES (no
+    SIGTERM), and leaves vm_monitor to finish the slow SVG/xlsx as an orphan
+    that _emergency_kill won't reap."""
+    monkeypatch.setattr("bench_core.observability.monitor.time", _Clock())
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    hr = tmp_path / "host_resources.xlsx"
+    proc = _HostResProc(hr, write_on_poll=2)
+    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: proc)
+    mc = MonitorController(
+        _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path), report_timeout=1),
+        _StubProvider(vmm_type="firecracker"),
+    )
+    mc.start()
+    found = mc.wait_for_host_resources(timeout=30)
+    assert found == hr
+    assert hr.exists()
+    assert mc._detached is True  # detached -> _emergency_kill skips it
+    assert proc.terminated is False  # no SIGTERM mid-export
+    assert mc._started is False
+    mc._emergency_kill()  # atexit backstop must be a no-op for a detached proc
+    assert proc.terminated is False
+
+
+def test_wait_for_host_resources_handles_proc_exit_without_report(monkeypatch, tmp_path):
+    """vm_monitor exited (crashed before export) without writing host_resources
+    -> return None + detach (no hanging wait past proc exit)."""
+    monkeypatch.setattr("bench_core.observability.monitor.time", _Clock())
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    proc = _FakeProc()
+    proc.returncode = 0  # already exited, no host_resources written
+    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: proc)
+    mc = MonitorController(
+        _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path), report_timeout=1),
+        _StubProvider(vmm_type="firecracker"),
+    )
+    mc.start()
+    found = mc.wait_for_host_resources(timeout=30)
+    assert found is None
+    assert mc._detached is True
+    assert mc._started is False
+
+
+def test_wait_for_host_resources_times_out_detaches_and_warns(monkeypatch, tmp_path, caplog):
+    """host_resources never appears + vm_monitor still alive -> timeout, DETACH
+    (never kill), and warn with the `vm-monitor raw-report` recovery command
+    (raw CSVs are still on disk, so the artifact is regeneratable post-hoc)."""
+    monkeypatch.setattr("bench_core.observability.monitor.time", _Clock())
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    proc = _FakeProc()  # never exits, never writes host_resources
+    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: proc)
+    mc = MonitorController(
+        _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path), report_timeout=1),
+        _StubProvider(vmm_type="firecracker"),
+    )
+    mc.start()
+    found = mc.wait_for_host_resources(timeout=30)
+    assert found is None
+    assert mc._detached is True  # detached, not killed
+    assert proc.terminated is False
+    assert proc.killed is False
+    assert any("vm-monitor raw-report" in r.message for r in caplog.records)
+
+
 def _make_src_xlsx(path):
     from openpyxl import Workbook
 
