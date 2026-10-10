@@ -58,9 +58,13 @@ class LogRotationConfig:
     """
 
     enabled: bool = False
-    interval_sec: int = 15  # per-slot collection duration (seconds)
+    interval_sec: int = 15  # per-slot collection duration (seconds); fallback for any tool not in intervals
     # None -> vm_monitor's built-in event set (DEFAULT_ROTATION_PERF_EVENTS).
     perf_events: list[str] | None = None
+    # Per-tool rotation intervals: {"devkit": sec, "ksys": sec, "perf": sec}.
+    # None -> every tool uses interval_sec. A partial dict falls back to
+    # interval_sec for the omitted tools. Forwarded as --rotation-intervals.
+    intervals: dict[str, int] | None = None
 
     @classmethod
     def from_raw(cls, raw) -> LogRotationConfig | None:
@@ -69,7 +73,9 @@ class LogRotationConfig:
         Accepts a dict (``enabled`` defaults to true when the block is present)
         or the shorthand ``log_rotation: true``. A non-dict/non-true value is
         warned + dropped (never crash the bench on a YAML typo). ``perf_events``
-        accepts a YAML list or a comma string.
+        accepts a YAML list or a comma string. ``intervals`` accepts a dict
+        ``{devkit: sec, ksys: sec, perf: sec}``; valid tools are devkit/ksys/perf,
+        unknown keys are warned + dropped.
         """
         if raw is None:
             return None
@@ -85,10 +91,30 @@ class LogRotationConfig:
             perf_events = [e.strip() for e in events.split(",") if e.strip()] or None
         else:
             perf_events = [str(e).strip() for e in events if str(e).strip()]
+        raw_intervals = raw.get("intervals")
+        intervals: dict[str, int] | None = None
+        if isinstance(raw_intervals, dict):
+            valid = {"devkit", "ksys", "perf"}
+            parsed = {}
+            for tool, val in raw_intervals.items():
+                key = str(tool).strip()
+                if key not in valid:
+                    logger.warning(
+                        "monitor.log_rotation.intervals: unknown tool %r (valid: %s), skipping", key, sorted(valid)
+                    )
+                    continue
+                try:
+                    parsed[key] = max(1, int(val))
+                except (TypeError, ValueError):
+                    logger.warning("monitor.log_rotation.intervals: %r is not an int for tool %r, skipping", val, key)
+            intervals = parsed or None
+        elif raw_intervals is not None:
+            logger.warning("monitor.log_rotation.intervals must be a mapping, got %r; ignoring", raw_intervals)
         return cls(
             enabled=bool(raw.get("enabled", True)),
             interval_sec=int(raw.get("interval_sec", 15)),
             perf_events=perf_events,
+            intervals=intervals,
         )
 
 
@@ -222,6 +248,11 @@ class MonitorController:
                 logger.warning("monitor.log_rotation enabled but capture is off; rotation will not run")
             else:
                 cmd += ["--log-rotation", "--rotation-interval", str(lr.interval_sec)]
+                if lr.intervals:
+                    cmd += [
+                        "--rotation-intervals",
+                        ",".join(f"{t}={lr.intervals[t]}" for t in ("devkit", "ksys", "perf") if t in lr.intervals),
+                    ]
                 if lr.perf_events:
                     cmd += ["--rotation-perf-events", ",".join(lr.perf_events)]
                 cmd += ["--rotation-log-dir", str(Path(self._config.output_dir) / "log_capture")]

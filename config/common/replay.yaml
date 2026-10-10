@@ -208,5 +208,9 @@ monitor:
   # omit it for vm_monitor's built-in event set. Default off (all-parallel).
   # log_rotation:
   #   enabled: true
-  #   interval_sec: 15          # per-slot collection duration (s)
+  #   interval_sec: 15          # per-slot collection duration (s); fallback for any tool
+  #   intervals:                # per-tool override: each tool runs its own interval
+  #     devkit: 20
+  #     ksys: 30
+  #     perf: 15
   #   perf_events:              # e.g. [cycles, instructions, context-switches]

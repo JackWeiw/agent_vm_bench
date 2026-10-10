@@ -266,6 +266,44 @@ class TestLogRotation(unittest.TestCase):
             self.assertNotIn(tool, results["log_files"])
         self.assertIn("ub_watch", results["log_files"])
 
+    def test_per_tool_intervals_dict_resolves_each(self):
+        cap = self._cap(rotation_interval={"devkit": 20, "ksys": 30, "perf": 15})
+        self.assertEqual(cap.rotation_intervals, {"devkit": 20, "ksys": 30, "perf": 15})
+        self.assertEqual(cap.rotation_interval, 30)  # max -> join/stop budget
+
+    def test_per_tool_intervals_partial_falls_back(self):
+        cap = self._cap(rotation_interval={"devkit": 25})
+        self.assertEqual(cap.rotation_intervals, {"devkit": 25, "ksys": 15, "perf": 15})
+        self.assertEqual(cap.rotation_interval, 25)
+
+    def test_per_tool_intervals_int_applies_to_all(self):
+        cap = self._cap(rotation_interval=12)
+        self.assertEqual(cap.rotation_intervals, {"devkit": 12, "ksys": 12, "perf": 12})
+
+    def test_per_tool_intervals_drive_each_turn_cmd(self):
+        cap = self._cap(rotation_interval={"devkit": 20, "ksys": 30, "perf": 15})
+        spawned = []
+        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
+            cap._rotation_devkit_turn()
+            cap._rotation_ksys_turn()
+        with patch("vm_monitor.log_capture.subprocess.run") as mock_run:
+            cap._rotation_perf_turn()
+        # devkit top-down + memory both run for -d 20; ksys runs -d 30.
+        for cmd in spawned:
+            if "top-down" in cmd or "memory" in cmd:
+                self.assertEqual(cmd[cmd.index("-d") + 1], "20")
+            if "collect" in cmd:
+                self.assertEqual(cmd[cmd.index("-d") + 1], "30")
+        # perf stat sleeps for 15.
+        perf_cmd = mock_run.call_args.args[0]
+        self.assertEqual(perf_cmd[-1], "15")
+
+    def test_run_slot_uses_per_tool_interval(self):
+        cap = self._cap(rotation_interval={"devkit": 1, "ksys": 1, "perf": 1})
+        t0 = time.monotonic()
+        cap._run_slot(lambda: None, interval=1)
+        self.assertGreaterEqual(time.monotonic() - t0, 0.9)
+
 
 if __name__ == "__main__":
     unittest.main()

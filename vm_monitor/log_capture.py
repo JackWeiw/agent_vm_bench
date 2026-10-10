@@ -57,7 +57,7 @@ class LogCapture:
         ksys_parse_timeout: int = None,
         disabled_devkit: set[str] | None = None,
         log_rotation: bool = False,
-        rotation_interval: int = 15,
+        rotation_interval: int | dict = 15,
         rotation_perf_events: str | None = None,
         rotation_log_dir: str | None = None,
         stress_file: str | None = None,
@@ -79,7 +79,13 @@ class LogCapture:
                 of running all tools concurrently. devkit/ksys leave the parallel
                 set (they rotate); ub_watch/smap_bw/getfre are unchanged. Each
                 turn writes a timestamped log under rotation_log_dir.
-            rotation_interval: per-slot collection duration in seconds (default 15)
+            rotation_interval: per-slot collection duration in seconds (default 15).
+                Accepts an int (applies to every tool) or a dict mapping
+                ``{"devkit": sec, "ksys": sec, "perf": sec}`` so each tool runs
+                its own interval; keys absent from the dict fall back to 15.
+                ``self.rotation_interval`` keeps the largest value for join/stop
+                budgets, and ``self.rotation_intervals`` holds the resolved
+                per-tool map.
             rotation_perf_events: comma-separated perf stat events (default:
                 DEFAULT_ROTATION_PERF_EVENTS)
             rotation_log_dir: output dir for rotation logs (default:
@@ -106,7 +112,9 @@ class LogCapture:
         self.getfre_stop_flags = {}  # {numa_id: Event}
         # log-rotation components (devkit -> ksys -> perf round-robin)
         self.log_rotation = log_rotation
-        self.rotation_interval = max(1, int(rotation_interval))
+        # rotation_interval may be a single int (all tools share it) or a dict
+        # {"devkit": sec, "ksys": sec, "perf": sec} for per-tool intervals.
+        self.rotation_intervals, self.rotation_interval = self._resolve_rotation_intervals(rotation_interval)
         self.rotation_perf_events = rotation_perf_events or DEFAULT_ROTATION_PERF_EVENTS
         self.rotation_log_dir = rotation_log_dir or os.path.join(log_dir, "log_capture")
         self.stress_file = stress_file
@@ -386,6 +394,27 @@ class LogCapture:
     # perf stat, one slot per rotation_interval, repeating while stress runs.
     # ------------------------------------------------------------------
 
+    _ROTATION_TOOLS = ("devkit", "ksys", "perf")
+
+    @classmethod
+    def _resolve_rotation_intervals(cls, raw) -> tuple[dict[str, int], int]:
+        """Normalize ``rotation_interval`` into a per-tool map + a budget value.
+
+        ``raw`` is an int (every tool shares it) or a dict
+        ``{"devkit": sec, "ksys": sec, "perf": sec}``; keys absent from the dict
+        fall back to the default (15). Returns ``(intervals, max_interval)`` --
+        ``intervals`` maps each rotation tool to a >= 1 second value, and
+        ``max_interval`` is the largest (used for stop()/wait() join budgets).
+        """
+        default = 15
+        if isinstance(raw, dict):
+            base = int(raw.get("default", raw.get("_default", default)))
+            intervals = {t: max(1, int(raw.get(t, base))) for t in cls._ROTATION_TOOLS}
+        else:
+            val = max(1, int(raw)) if raw is not None else default
+            intervals = {t: val for t in cls._ROTATION_TOOLS}
+        return intervals, max(intervals.values())
+
     def _rotation_log_path(self, tool: str, *sub: str) -> str | None:
         """Create (and remember) a per-turn timestamped log path under rotation_log_dir.
 
@@ -449,7 +478,7 @@ class LogCapture:
         if not cpu_range:
             self._rotation_skip_tool("devkit", "could not determine CPU range (set DEVKIT_CPU_RANGE in .env)")
             return
-        interval = str(self.rotation_interval)
+        interval = str(self.rotation_intervals["devkit"])
         cmds = {}
         if "devkit_top_down" not in self.disabled_devkit and "devkit_top_down" not in self._rotation_skipped:
             cmds["devkit_top_down"] = [
@@ -500,7 +529,7 @@ class LogCapture:
                         pass
         # Both sub-tools run for -d interval; they finish together, so the
         # sequential waits collapse to ~one slot (+ hang timeout per tool).
-        timeout = self.rotation_interval + self.DEFAULT_TOOL_TIMEOUTS["devkit_mem"]
+        timeout = self.rotation_intervals["devkit"] + self.DEFAULT_TOOL_TIMEOUTS["devkit_mem"]
         for tool, proc in procs.items():
             try:
                 proc.wait(timeout=timeout)
@@ -536,7 +565,7 @@ class LogCapture:
         if not self.config.get("ksys_path") or not self.config.get("ksys_config_path"):
             self._rotation_skip_tool("ksys", "ksys_path/ksys_config_path not configured")
             return
-        interval = str(self.rotation_interval)
+        interval = str(self.rotation_intervals["ksys"])
         cmd = [
             self.config["ksys_path"],
             "collect",
@@ -574,7 +603,7 @@ class LogCapture:
         self.rotation_turns["ksys"].append(log_path)
         self._rotation_ksys_procs.append(proc)
         # Wait for the collect phase only (parse runs on in background).
-        collect_deadline = time.monotonic() + self.rotation_interval + 30
+        collect_deadline = time.monotonic() + self.rotation_intervals["ksys"] + 30
         while (
             not self.rotation_stop_flag.is_set()
             and proc.poll() is None
@@ -593,7 +622,16 @@ class LogCapture:
         """One perf slot: ``perf stat -e <events> -a -- sleep <interval>`` into a per-turn log."""
         if "perf" in self._rotation_skipped:
             return
-        cmd = ["perf", "stat", "-e", self.rotation_perf_events, "-a", "--", "sleep", str(self.rotation_interval)]
+        cmd = [
+            "perf",
+            "stat",
+            "-e",
+            self.rotation_perf_events,
+            "-a",
+            "--",
+            "sleep",
+            str(self.rotation_intervals["perf"]),
+        ]
         log_path = self._rotation_log_path("perf")
         if log_path is None:
             return
@@ -610,12 +648,12 @@ class LogCapture:
                 cmd,
                 stdout=fh,
                 stderr=subprocess.STDOUT,
-                timeout=self.rotation_interval + 15,
+                timeout=self.rotation_intervals["perf"] + 15,
                 check=False,
                 cwd=self.rotation_log_dir,
             )
         except subprocess.TimeoutExpired:
-            print(f"  [WARN] rotation perf stat timed out after {self.rotation_interval + 15}s")
+            print(f"  [WARN] rotation perf stat timed out after {self.rotation_intervals['perf'] + 15}s")
             self.failed_runtime.append({"tool": "perf", "error": "timeout"})
         except OSError as e:
             # perf binary missing/unrunnable -- no point retrying every turn.
@@ -636,7 +674,7 @@ class LogCapture:
             except Exception:
                 pass
 
-    def _run_slot(self, turn) -> None:
+    def _run_slot(self, turn, interval=None) -> None:
         """Run one rotation slot, then hold the slot open for its full interval.
 
         A slot is a fixed window: a tool that finishes early (fast exit, bad
@@ -644,13 +682,11 @@ class LogCapture:
         empty logs. The remainder is waited out interruptibly -- stop() or the
         end of stress breaks the pace immediately.
         """
+        if interval is None:
+            interval = self.rotation_interval
         t0 = time.monotonic()
         turn()
-        while (
-            not self.rotation_stop_flag.is_set()
-            and self._stress_active()
-            and time.monotonic() - t0 < self.rotation_interval
-        ):
+        while not self.rotation_stop_flag.is_set() and self._stress_active() and time.monotonic() - t0 < interval:
             self.rotation_stop_flag.wait(timeout=0.5)
 
     def _rotation_thread_main(self) -> None:
@@ -669,15 +705,15 @@ class LogCapture:
             # stops the rotation (one message) -- it must never kill the bench.
             try:
                 if "devkit" not in self._rotation_skipped:
-                    self._run_slot(self._rotation_devkit_turn)
+                    self._run_slot(self._rotation_devkit_turn, self.rotation_intervals["devkit"])
                 if self.rotation_stop_flag.is_set() or not self._stress_active():
                     break
                 if "ksys" not in self._rotation_skipped:
-                    self._run_slot(self._rotation_ksys_turn)
+                    self._run_slot(self._rotation_ksys_turn, self.rotation_intervals["ksys"])
                 if self.rotation_stop_flag.is_set() or not self._stress_active():
                     break
                 if "perf" not in self._rotation_skipped:
-                    self._run_slot(self._rotation_perf_turn)
+                    self._run_slot(self._rotation_perf_turn, self.rotation_intervals["perf"])
             except Exception as e:  # noqa: BLE001 -- rotation must never kill the bench
                 print(f"  [ERROR] rotation turn failed, stopping rotation: {e}")
                 return
