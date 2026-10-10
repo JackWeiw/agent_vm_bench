@@ -124,31 +124,45 @@ def _read_csv(raw_dir: Path, fname: str) -> pd.DataFrame | None:
 
 def _aggregate_cores(ublk_df: pd.DataFrame, cur_ts: float, dt: float) -> float:
     """Sum ublk-daemon cores at sample boundary cur_ts (ublk is 1s sub-sampled;
-    take the last row <= cur_ts per pid, delta vs its predecessor). Expects
-    ublk_df pre-sorted by timestamp with a float-epoch ``timestamp`` column
-    (normalized once in _derive_host -- the dumper writes datetime strings)."""
+    take the last distinct-timestamp snapshot <= cur_ts per pid, delta vs its
+    predecessor). Expects ublk_df pre-sorted by timestamp with a float-epoch
+    ``timestamp`` column (normalized once in _derive_host -- the dumper writes
+    datetime strings).
+
+    Collapses duplicate-timestamp rows first: the whole-second dumper + sub-1s
+    cadence can write two samples into one wall-second, and the literal
+    last-two-rows pair then shared a ts -> sub_dt=0 -> the dt<=0 guard NaN-holed
+    the whole column. De-dup (keep last value per distinct ts, matching
+    _derive_disk's groupby("timestamp") snapshot approach) gives a predecessor
+    with a strictly-earlier ts -> sub_dt>0. A pid with < 2 distinct snapshots
+    <= cur_ts (not yet started / just started / already gone) is skipped --
+    contributes 0, does not NaN-hole the sum; NaN only when NO pid is rateable."""
     if ublk_df is None or ublk_df.empty or not dt:
         return math.nan
     total = 0.0
-    nans = 0
-    for pid, g in ublk_df.groupby("pid"):
+    saw = False
+    for pid, g in ublk_df.groupby("pid", sort=False):
         g = g[g["timestamp"] <= cur_ts]
         if len(g) < 2:
-            nans += 1
             continue
-        prev, cur = g.iloc[-2], g.iloc[-1]
+        # Last value per distinct timestamp (sub-second samples that collide on a
+        # whole-second ts collapse to one snapshot), so prev has a strictly-earlier ts.
+        distinct = g.drop_duplicates("timestamp", keep="last")
+        if len(distinct) < 2:
+            continue
+        prev, cur = distinct.iloc[-2], distinct.iloc[-1]
+        sub_dt = cur["timestamp"] - prev["timestamp"]
+        if _guarded(cur.to_dict(), prev.to_dict(), sub_dt, f"ublk pid={pid}", ["utime", "stime"]):
+            continue  # this pid's interval reset/gapped -- skip it, keep the rest of the fleet
         d = (
             _f(cur.to_dict(), "utime")
             + _f(cur.to_dict(), "stime")
             - _f(prev.to_dict(), "utime")
             - _f(prev.to_dict(), "stime")
         )
-        sub_dt = cur["timestamp"] - prev["timestamp"]
-        if _guarded(cur.to_dict(), prev.to_dict(), sub_dt, f"ublk pid={pid}", ["utime", "stime"]):
-            nans += 1
-            continue
         total += d / _CLK_TCK / sub_dt
-    return total if nans == 0 else math.nan
+        saw = True
+    return total if saw else math.nan
 
 
 def _derive_host(raw_dir: Path) -> pd.DataFrame:

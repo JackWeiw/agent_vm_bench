@@ -118,6 +118,97 @@ def test_derive_host_cpu_mem_swap(tmp_path):
     assert math.isnan(df.iloc[0]["cpu_busy_pct"])
 
 
+def test_derive_host_ublk_duplicate_timestamps(tmp_path, caplog):
+    """Regression: ublk_cpu_raw.csv is 1s sub-sampled but the dumper writes
+    whole-second timestamps, so two sub-second samples can collide on one
+    wall-second -> duplicate-timestamp rows. _aggregate_cores must collapse
+    duplicates (last value per distinct ts, like _derive_disk) and still
+    produce a rate; the pre-fix literal 'last two rows' took a same-ts pair
+    -> sub_dt=0 -> the dt<=0 guard NaN-holed the whole ublk_cores column."""
+    d = tmp_path
+    hdr = [
+        "timestamp",
+        "cpu_user",
+        "cpu_nice",
+        "cpu_system",
+        "cpu_idle",
+        "cpu_iowait",
+        "cpu_irq",
+        "cpu_softirq",
+        "cpu_steal",
+        "cpu_guest",
+        "cpu_guest_nice",
+        "ctxt",
+        "btime",
+        "processes",
+        "procs_running",
+        "procs_blocked",
+        "softirq_total",
+    ]
+    _write(
+        d / "host_cpu_raw.csv",
+        hdr,
+        [
+            ["0", "100", "0", "50", "8000", "100", "10", "20", "5", "0", "0", "1", "0", "0", "0", "0", "0"],
+            ["2", "120", "0", "55", "8010", "102", "11", "22", "6", "0", "0", "2", "0", "0", "0", "0", "0"],
+            ["4", "130", "0", "60", "8020", "104", "12", "24", "7", "0", "0", "3", "0", "0", "0", "0", "0"],
+            ["6", "140", "0", "65", "8030", "106", "13", "26", "8", "0", "0", "4", "0", "0", "0", "0", "0"],
+        ],
+    )
+    _write(
+        d / "host_mem_raw.csv",
+        ["timestamp", "MemTotal", "MemAvailable", "MemFree", "Cached", "SReclaimable", "Buffers", "Dirty", "Writeback"],
+        [
+            ["0", "2097152", "1048576", "512000", "200000", "50000", "30000", "1000", "0"],
+            ["2", "2097152", "943718", "450000", "210000", "52000", "32000", "2000", "0"],
+            ["4", "2097152", "900000", "440000", "215000", "53000", "33000", "3000", "0"],
+            ["6", "2097152", "880000", "430000", "218000", "54000", "34000", "4000", "0"],
+        ],
+    )
+    _write(
+        d / "host_vmstat_raw.csv",
+        [
+            "timestamp",
+            "pswpin",
+            "pswpout",
+            "pgscan_kswapd",
+            "pgscan_direct",
+            "pgscan_direct_throttle",
+            "pgsteal_kswapd",
+            "pgsteal_direct",
+            "workingset_refault_file",
+        ],
+        [
+            ["0", "0", "0", "0", "0", "0", "0", "0", "0"],
+            ["2", "0", "0", "0", "0", "0", "0", "0", "0"],
+            ["4", "0", "0", "0", "0", "0", "0", "0", "0"],
+            ["6", "0", "0", "0", "0", "0", "0", "0", "0"],
+        ],
+    )
+    # ublk: whole-second timestamps WITH duplicates (t=1,3 doubled); jiffies monotonic.
+    # keep="last" per distinct ts -> snapshot (20,20) at t=1, (50,50) at t=3.
+    _write(
+        d / "ublk_cpu_raw.csv",
+        ["timestamp", "pid", "utime", "stime"],
+        [
+            ["1", "4242", "10", "10"],
+            ["1", "4242", "20", "20"],
+            ["2", "4242", "30", "30"],
+            ["3", "4242", "40", "40"],
+            ["3", "4242", "50", "50"],
+            ["4", "4242", "60", "60"],
+        ],
+    )
+    with caplog.at_level(logging.WARNING):
+        df = _derive_host(d)
+    # row at t=2 (iloc[1]): distinct prev=t=1(20,20), cur=t=2(30,30) -> d=20, dt=1 -> 0.2 cores
+    assert math.isclose(df.iloc[1]["ublk_cores"], 20 / 100 / 1, abs_tol=0.01)
+    # row at t=4 (iloc[2]): prev=t=3(50,50), cur=t=4(60,60) -> d=20, dt=1 -> 0.2
+    assert math.isclose(df.iloc[2]["ublk_cores"], 20 / 100 / 1, abs_tol=0.01)
+    # the pre-fix symptom (dt<=0 from a same-ts ublk pair) must not fire
+    assert not any("dt<=0" in m and "ublk" in m for m in caplog.messages)
+
+
 def test_derive_host_guard_fires_on_vmstat_reset_and_cpu_gap(tmp_path, caplog):
     """A vmstat counter reset (cur<prev at a NORMAL interval) NaNs swap+pressure
     and emits a 'counter reset' WARNING; a host sampling gap (dt>MAX_INTERVAL_S)
