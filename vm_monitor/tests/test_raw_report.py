@@ -456,3 +456,16 @@ def test_build_xlsx_no_crash_when_all_csvs_missing(tmp_path, caplog):
     assert result == out  # returns the intended path without raising
     assert not out.exists()  # no misleading empty workbook written
     assert any("no raw CSV data" in m for m in caplog.messages)
+
+
+def test_raw_report_cli_writes_xlsx(tmp_path):
+    """`vm-monitor raw-report <dir>` regenerates host_resources.xlsx post-hoc
+    from persisted raw_data CSVs (real build, real xlsx written)."""
+    raw_dir = tmp_path / "raw_data"
+    raw_dir.mkdir()
+    _seed_all(raw_dir)  # seeds host_cpu/mem/vmstat/ublk/vm/disk CSVs into raw_dir
+    from vm_monitor import cli
+
+    rc = cli.main(["raw-report", str(tmp_path), "--out", str(tmp_path / "out.xlsx")])
+    assert rc == 0
+    assert (tmp_path / "out.xlsx").exists()

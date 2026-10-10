@@ -23,6 +23,7 @@ from .exporters import export_to_excel, print_capture_summary
 from .firecracker import FirecrackerMonitor
 from .log_capture import LogCapture
 from .qemu import QEMUMonitor
+from .raw_report import build_host_resources_xlsx
 from .svg_exporter import export_svg_reports
 
 logger = logging.getLogger(__name__)
@@ -217,11 +218,43 @@ def resolve_numa_nodes(numa_arg: str, available_nodes: list[int]) -> list[int]:
         return [0]
 
 
-def main():
-    """Main entry point for VM monitoring tool"""
-    parser = build_arg_parser()
+def _run_raw_report(argv):
+    """`vm-monitor raw-report <log_dir> [--out PATH] [--raw-subdir raw_data]`.
 
-    args = parser.parse_args()
+    Regenerate host_resources.xlsx from persisted raw_data CSVs (post-hoc, no
+    monitor needed). Degrade to [ERROR] + rc=1, never an uncaught traceback."""
+    p = argparse.ArgumentParser(
+        prog="vm-monitor raw-report",
+        description="Regenerate host_resources.xlsx from persisted raw_data CSVs.",
+    )
+    p.add_argument("log_dir", help="vm_monitor log dir (contains raw_data/)")
+    p.add_argument("--out", help="Output xlsx (default: <log_dir>/host_resources.xlsx)")
+    p.add_argument("--raw-subdir", default="raw_data", help="raw CSV subdir (default: raw_data)")
+    a = p.parse_args(argv)
+    log_dir = os.path.abspath(a.log_dir)
+    raw_dir = os.path.join(log_dir, a.raw_subdir)
+    out = os.path.abspath(a.out) if a.out else os.path.join(log_dir, "host_resources.xlsx")
+    try:
+        build_host_resources_xlsx(raw_dir, out)
+        print(f"[OK] host_resources.xlsx -> {out}")
+        return 0
+    except (OSError, ValueError, KeyError) as e:
+        print(f"[ERROR] raw-report failed for raw_dir={raw_dir}: {e}")
+        return 1
+
+
+def main(argv=None):
+    """Main entry point for VM monitoring tool.
+
+    Subcommand ``raw-report <log_dir>`` regenerates host_resources.xlsx from
+    persisted raw_data CSVs (post-hoc, no monitor needed). All other argv
+    shapes take the existing flat flag parser.
+    """
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["raw-report"]:
+        return _run_raw_report(argv[1:])
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
 
     # Check root permission
     if hasattr(os, "geteuid") and os.geteuid() != 0:
@@ -330,6 +363,15 @@ def main():
         svg_files = export_svg_reports(m, log_dir)
         if svg_files:
             print(f"[OK] SVG time-curve reports: {', '.join(os.path.basename(p) for p in svg_files)}")
+
+    # host_resources.xlsx from raw CSVs (independent of in-memory chart stack;
+    # runs even with --no-charts; separate filename so resource_report.xlsx
+    # remains bench-core's reap signal). Degrade to WARNING, never block main xlsx.
+    raw_dir = os.path.join(log_dir, "raw_data")
+    try:
+        build_host_resources_xlsx(raw_dir, os.path.join(log_dir, "host_resources.xlsx"))
+    except (OSError, ValueError, KeyError) as e:
+        logger.warning("host_resources raw-report failed for raw_dir=%s: %s", raw_dir, e)
 
     # Export to Excel (if pandas available) -- LAST so its appearance signals
     # that CSV + SVG + xlsx are all written and the subprocess is essentially
