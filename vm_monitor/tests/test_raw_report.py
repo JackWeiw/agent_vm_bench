@@ -6,7 +6,7 @@ import logging
 import math
 import os
 
-from vm_monitor.raw_report import _guarded, _derive_host
+from vm_monitor.raw_report import _derive_host, _derive_per_vm, _guarded
 
 
 def _write(path, header, rows):
@@ -200,3 +200,42 @@ def test_derive_host_guard_fires_on_vmstat_reset_and_cpu_gap(tmp_path, caplog):
     # row 1 (t=2, clean) still computes normally
     assert not math.isnan(df.iloc[1]["cpu_busy_pct"])
     assert not math.isnan(df.iloc[1]["swap_in_mib_s"])
+
+
+def test_derive_per_vm_topk_and_other_and_reset(tmp_path, caplog):
+    """per-VM CPU cores (delta) + PSS GB (gauge). VM count > MAX_VM_SERIES ->
+    top-K by CPU busy mean + 'other' sum(skipna, min_count=1). A utime reset
+    (pid restart, same vm_name) -> that point NaN, not a negative spike."""
+    import logging
+
+    d = tmp_path
+    # 12 VMs: vm0 (highest busy, has the pid-restart reset) down to vm11 (lowest).
+    # cores at t=2 = delta(utime+stime)/_CLK_TCK/dt; vm0=2000/100/2=10.0 (top),
+    # vm1..vm7 step down, vm8..vm11 are the low-busy "other" set.
+    rows = [["timestamp", "pid", "vm_name", "utime", "stime", "pss_mb"]]
+    deltas = {0: 2000, 1: 1800, 2: 1600, 3: 1400, 4: 1200, 5: 1000, 6: 800, 7: 600, 8: 400, 9: 300, 10: 200, 11: 100}
+    for v in range(12):
+        rows.append(["0", f"{v}", f"vm{v}", "0", "0", f"{(v + 1) * 100}.0"])
+        rows.append(["2", f"{v}", f"vm{v}", f"{deltas[v]}", "0", f"{(v + 1) * 100}.0"])
+    # vm0 pid restart: same vm_name, utime drops 2000 -> 5 at t=4
+    rows.append(["4", "999", "vm0", "5", "0", "50.0"])
+    _write(d / "vm_cpu_raw.csv", rows[0], rows[1:])
+
+    with caplog.at_level(logging.WARNING):
+        cores, pss = _derive_per_vm(d, max_series=8)
+    # top-8 = vm0..vm7 (named) + 'other' = vm8..vm11
+    assert "other" in cores.columns
+    named = [c for c in cores.columns if c.startswith("vm")]
+    assert len(named) == 8
+    assert "vm0" in named  # highest busy -> named, so its reset is observable
+    # reset at t=4 (vm0 utime 2000->5): NaN, not a negative spike
+    last = cores[cores["t_s"] == 4.0]
+    assert math.isnan(last["vm0"].iloc[0])
+    assert any("counter reset" in r and "vm0" in r for r in caplog.messages)
+    # 'other' = sum(vm8..vm11 cores) at t=2 = (400+300+200+100)/_CLK_TCK/dt = 5.0
+    other_t2 = cores[cores["t_s"] == 2.0]["other"].iloc[0]
+    assert math.isclose(other_t2, (400 + 300 + 200 + 100) / 100 / 2, abs_tol=0.01)
+    # PSS is a gauge (pss_mb/1024 -> GB); same column set as cores
+    assert list(pss.columns) == list(cores.columns)
+    pss_t2 = pss[pss["t_s"] == 2.0]["vm0"].iloc[0]
+    assert math.isclose(pss_t2, 100.0 / 1024, abs_tol=0.001)  # vm0 pss_mb=100 at t=2

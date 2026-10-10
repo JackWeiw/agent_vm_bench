@@ -197,3 +197,57 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
     df.insert(0, "t_s", [0.0] + [ts[i] - ts[0] for i in range(1, len(ts))])
     df.insert(1, "timestamp", cpu["timestamp"].tolist())
     return df
+
+
+def _derive_per_vm(raw_dir: Path, max_series: int = MAX_VM_SERIES) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Per-VM CPU cores (delta of utime+stime /_CLK_TCK/dt, guarded) + PSS GB
+    (gauge, plotted directly -- no delta). long -> wide pivot (rows indexed by
+    timestamp, cols=vm_name). VM count > max_series -> top-K by CPU busy mean
+    (descending) + 'other' = sum(skipna, min_count=1) of the rest. Both the CPU
+    and PSS charts share this VM set (ranked by CPU busy, NOT PSS) so the two
+    side-by-side charts show the same VMs -- ranking each by its own metric
+    would misalign the sets and confuse the reader."""
+    vm = _read_csv(raw_dir, "vm_cpu_raw.csv")
+    if vm is None or vm.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    vm = vm.sort_values(["vm_name", "timestamp"]).copy()
+    vm["timestamp"] = vm["timestamp"].astype(float)
+    vm["cores"] = math.nan
+    vm["pss_gb"] = math.nan
+    for name, g in vm.groupby("vm_name"):
+        g = g.sort_values("timestamp")
+        prev = None
+        c_col, p_col = [], []
+        for _, row in g.iterrows():
+            rd = row.to_dict()
+            if prev is None:
+                c_col.append(math.nan)
+            else:
+                dt = float(row["timestamp"]) - float(prev["timestamp"])
+                if _guarded(rd, prev, dt, f"vm={name}", ["utime", "stime"]):
+                    c_col.append(math.nan)
+                else:
+                    d = _f(rd, "utime") + _f(rd, "stime") - _f(prev, "utime") - _f(prev, "stime")
+                    c_col.append(d / _CLK_TCK / dt if dt else math.nan)
+            p_col.append(_f(rd, "pss_mb") / 1024)
+            prev = rd
+        vm.loc[g.index, "cores"] = c_col
+        vm.loc[g.index, "pss_gb"] = p_col
+
+    p_cores = vm.pivot_table(index="timestamp", columns="vm_name", values="cores", aggfunc="first", dropna=False)
+    p_pss = vm.pivot_table(index="timestamp", columns="vm_name", values="pss_gb", aggfunc="first", dropna=False)
+    # rank VMs by mean CPU busy (cores) -- shared set for both charts
+    means = p_cores.mean().sort_values(ascending=False)
+    top = list(means.head(max_series).index)
+    rest = [v for v in p_cores.columns if v not in top]
+    out_cores = p_cores[top].copy()
+    out_pss = p_pss[top].copy()
+    if rest:
+        out_cores["other"] = p_cores[rest].sum(axis=1, skipna=True, min_count=1)
+        out_pss["other"] = p_pss[rest].sum(axis=1, skipna=True, min_count=1)
+    out_cores = out_cores.sort_index()
+    out_pss = out_pss.sort_index()
+    t0 = out_cores.index.min()
+    out_cores.insert(0, "t_s", out_cores.index - t0)
+    out_pss.insert(0, "t_s", out_pss.index - t0)
+    return out_cores, out_pss
