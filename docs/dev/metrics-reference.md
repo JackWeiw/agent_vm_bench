@@ -671,6 +671,125 @@ pointing at the raw_data dir no longer doubles the path into `raw_data/raw_data/
 The raw CSVs are always on disk (line-flushed), so host_resources is
 regeneratable after any interruption.
 
+### host_resources.xlsx 字段含义（中文版）
+
+> 本节是 `host_resources.xlsx` 三个 sheet 的中文逐列释义，配合上文「Raw-CSV consumer」
+> 的构建/中断/恢复机制阅读。所有原始计数器都是内核累积值，消费端按相邻行 `timestamp`
+> 的真实时间差 `dt` 派生为速率/百分比；`Δ` = 本行 − 上一行；首行无基线 → 该行速率为
+> `NaN`（图表自动跳过）。计数器回卷（`Δ<0`，进程重启/设备重挂载）、时间差异常
+>（`dt≤0` / `NaN`）或采样缺失（`dt > MAX_INTERVAL_S=10s`）→ 该行同样置 `NaN`，不再 crash
+> 整张表（这是修复 `could not convert string to float: '2026-10-10 15:20:02'` 回归的关键守卫）。
+
+#### Sheet 1：Host resources（宿主机资源，16 列）
+
+列按其在表中出现的顺序，依所属折线图分组列出。
+
+**主机内存** —— 图 `Host memory`，单位 GB
+
+| 列 | 含义 | 来源 / 公式 |
+|----|------|-------------|
+| `mem_used_gb` | 已用内存（应用 + 内核结构，不含可回收缓存） | `(MemTotal − MemAvailable) / 2²⁰`（`/proc/meminfo`，kB→GB） |
+| `mem_cache_gb` | 可回收页缓存（page cache + 可回收 slab） | `(Cached + SReclaimable) / 2²⁰` |
+
+**主机 buffers/dirty** —— 图 `Host buffers/dirty`，单位 MB
+
+| 列 | 含义 | 来源 / 公式 |
+|----|------|-------------|
+| `buffers_mb` | 内核 buffer cache（原始块设备 I/O 缓冲） | `Buffers / 1024`（kB→MB） |
+| `dirty_mb` | 待回写的脏页（写回磁盘前驻留内存） | `Dirty / 1024` |
+
+> 与 `mem_used_gb`/`mem_cache_gb` 拆成两张图：前者是 GB 级，buffers/dirty 是 MB 级，混在
+> 一张图里后者会被压成贴 0 的平线，看不出波动。
+
+**FC 内存（总 PSS）** —— 图 `FC memory (total PSS)`，单位 GB
+
+| 列 | 含义 | 来源 / 公式 |
+|----|------|-------------|
+| `fc_pss_gb` | 所有 Firecracker microVM 进程的 PSS 之和 | `Σ_vm pss_mb / 1024`（每 VM `pss_mb` 来自 `smaps_rollup`） |
+
+> 用 PSS 而非 RSS：模板/库的共享页在 PSS 里按比例分摊到每个共享者，舰队求和 = 真实边际
+> 内存；RSS 会把同一页在每个 FC 进程里各计一次，严重高估 fleet 总占用。这是本仓库的刻意
+> 选择（`base.py` 仅在 `smaps_rollup` 不可得时才用 RSS 兜底）。`--no-pss` 时此列全 `NaN`。
+
+**主机 CPU** —— 图 `Host CPU`，单位 %
+
+| 列 | 含义 | 来源 / 公式 |
+|----|------|-------------|
+| `cpu_busy_pct` | 非空闲 CPU 占比（**不含** iowait） | `100 × (1 − (Δidle + Δiowait) / d_total)` |
+| `cpu_iowait_pct` | iowait 占比 | `100 × Δiowait / d_total` |
+
+> `d_total = Δ(user+nice+system+idle+iowait+irq+softirq+steal)`（`/proc/stat` `cpu` 行前 8
+> 字段之和；`guest`/`guest_nice` 已含在 user/nice 内，不重复计）。于是
+> `cpu_busy% + cpu_iowait% + idle% ≈ 100%`。本表的「busy」**不含** iowait，与某些工具的
+> `100 − idle%`（含 iowait）不同。
+>
+> **iowait 陷阱**：iowait 只在 CPU **既无可运行任务、又有未完成 I/O** 时才计数。负载变重
+>（可运行任务变多）会把 iowait「挤掉」，所以 `cpu_iowait_pct` 在繁忙主机上可能不升反降，
+> 即使 I/O 争用其实更严重。判断 I/O 瓶颈请看 Disk IO 的 `util%` / `await` 和页缓存压力
+> 三列，而不是 iowait。
+
+**页缓存压力** —— 图 `Page-cache pressure`，单位 MiB/s
+
+| 列 | 含义 | 来源 / 公式 |
+|----|------|-------------|
+| `page_scan_mib_s` | 扫描页速率（kswapd + direct + throttle） | `(Δpgscan_kswapd + Δpgscan_direct + Δpgscan_direct_throttle) × page_size / 2²⁰ / dt` |
+| `page_reclaim_mib_s` | 回收页速率（kswapd + direct steal） | `(Δpgsteal_kswapd + Δpgsteal_direct) × page_size / 2²⁰ / dt` |
+| `file_refault_mib_s` | 文件页重命中率（回收后再次访问 = 缓存不够） | `Δworkingset_refault_file × page_size / 2²⁰ / dt` |
+
+> scan 高 = 内核在主动找可回收页；reclaim 高 = 真的在驱逐；file_refault 高 = 刚回收的页
+> 又被要回来 = 缓存尺寸不够工作集。三者来自 `/proc/vmstat`，由 `_compute_pressure_rates`
+> 派生。
+
+**Swap 进出** —— 图 `Swap in/out`，单位 MiB/s
+
+| 列 | 含义 | 来源 / 公式 |
+|----|------|-------------|
+| `swap_in_mib_s` | 从 swap 读入内存的速率 | `Δpswpin × page_size / 2²⁰ / dt`（`/proc/vmstat`） |
+| `swap_out_mib_s` | 内存写回 swap 的速率 | `Δpswpout × page_size / 2²⁰ / dt` |
+
+**CPU 核数（ublk + VM）** —— 图 `CPU cores (ublk + VM)`，单位 核
+
+| 列 | 含义 | 来源 / 公式 |
+|----|------|-------------|
+| `ublk_cores` | 所有 ublk 守护进程占用的 CPU 核数 | `Σ_daemon Δ(utime + stime) / _CLK_TCK / dt`（`_CLK_TCK = 100`） |
+| `vm_cores` | 所有 VM 进程占用的 CPU 核数 | `Σ_vm Δ(utime + stime) / _CLK_TCK / dt` |
+
+> 两列口径一致，可直接相加得到「I/O 路径 + guest」的 CPU 占用。`utime`/`stime` 来自
+> `/proc/<pid>/stat`，ublk 子采样为 1s。
+
+#### Sheet 2：Per-VM（每虚拟机，按时间快照）
+
+每采样点列出每个 VM 进程：`vm_name`、`pid`、该点 CPU 核数
+（`Δ(utime+stime)/_CLK_TCK/dt`）、PSS（`pss_mb`）。为控制行数，只保留 CPU 最高的 top-K
+个 VM，其余合并成一行 `other`（核数/PSS 求和）。本 sheet 是 Sheet 1 `fc_pss_gb` /
+`vm_cores` 的明细下钻——想看是谁在吃内存/CPU 时用它。
+
+#### Sheet 3：Disk IO（每块磁盘）
+
+每块物理盘（`--disks` 或自动发现，排除 loop/ram/sr/zram/md/dm）的每采样点速率：
+
+| 列 | 含义 | 公式 |
+|----|------|------|
+| `r_mb_s` / `w_mb_s` | 读 / 写吞吐（MB/s） | `Δsectors_read×512/2²⁰/dt` / `Δsectors_written×512/2²⁰/dt` |
+| `util_pct` | 利用率（有 I/O 在途的时间占比，0–100） | `clamp(Δms_io/1000/dt×100, 0, 100)` |
+| `avg_queue_depth` | 平均在途请求数 | `Δweighted_ms/1000/dt` |
+| `read_await_ms` / `write_await_ms` | 单次读 / 写平均延迟（ms） | `Δread_ms/Δreads_completed` / `Δwrite_ms/Δwrites_completed` |
+| `r_iops` / `w_iops` | 读 / 写 IOPS | `Δreads_completed/dt` / `Δwrites_completed/dt` |
+| `avg_rq_sz` | 平均请求大小（扇区） | `(Δsectors_read+Δsectors_written)/(Δreads+Δwrites)` |
+
+> `ms_io` 是「至少 1 个 I/O 在途」的累计毫秒，`util_pct` 接近 100% = 磁盘饱和；
+> `avg_queue_depth` 高 = 排队；`await` 高 = 单次 I/O 慢。多盘同时高 = 存储成瓶颈。
+> `avg_rq_sz` 小 ≈ 随机小 I/O，大 ≈ 顺序 I/O。数据来自 `/sys/block/<dev>/stat`。
+
+#### 时间戳与 Δ 守卫
+
+- 原始 CSV 的 `timestamp` 是 wall-clock 字符串（`2026-10-10 15:20:02`），消费端先用
+  `_ts_to_epoch` 归一化为浮点 epoch 秒，且对 `datetime64` 单位无关（强制 `[s]` 精度，避免
+  不同 pandas 构建存 `[ns]`/`[us]` 导致速率 1000× 偏差——`cpu_busy%` 因 dt 在比式里相消
+  而侥幸正确，但 ublk/swap/disk 速率会全错）。
+- 每个速率列都过 Δ 守卫：`Δ<0`（计数器回卷/进程重启）或 `dt≤0`/`NaN`/`dt>10s`（采样
+  缺失）→ 该行置 `NaN`，不污染后续均值/图表，也不 crash 构建。
+
 ### 2.8 Disabling collectors (`--no-X`, `monitor.skip`)
 
 By default every `/proc`-based resource collector runs (backward-compat). Opt
