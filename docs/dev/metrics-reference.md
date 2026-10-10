@@ -635,6 +635,18 @@ sampled — noted here so the formulas above are reproducible on any host:
 | NUMA nodes | `/sys/devices/system/node/node{N}` | `numa_nodes` default, focus-set construction |
 | Physical cores (per node / host-wide) | `node{N}/cpulist` + per-CPU `topology/thread_siblings_list` (keeps the lowest sibling ID, so each physical core appears once) | `numa_to_physical_cores`, getfre `total_cores` default |
 
+### Raw-CSV consumer: `host_resources.xlsx`
+
+`vm-monitor raw-report <log_dir>` (and the export-step auto-hook) reads the
+`raw_data/*.csv` cumulative counters, derives rates via delta with a
+counter-reset + gap guard (`MAX_INTERVAL_S=10s`; `cur<prev` -> NaN + WARNING
+to avoid spurious spikes on VM pid restart / device remount), and writes
+`<log_dir>/host_resources.xlsx` — 3 spotbox-style sheets (Host resources /
+Per-VM / Disk IO), each a data table + stacked openpyxl LineCharts on a shared
+`t (s)` axis. Independent of `resource_report.xlsx` (separate filename
+preserves bench-core's reap signal) and of in-memory history (post-hoc
+rerunnable). PSS (`vm_cpu_raw.csv` `pss_mb`) is a gauge, plotted directly.
+
 ### 2.8 Disabling collectors (`--no-X`, `monitor.skip`)
 
 By default every `/proc`-based resource collector runs (backward-compat). Opt
