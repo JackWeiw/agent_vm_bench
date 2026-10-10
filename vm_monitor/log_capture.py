@@ -564,6 +564,11 @@ class LogCapture:
             self._rotation_skip_tool("ksys", "ksys_path/ksys_config_path not configured")
             return
         interval = str(self.rotation_intervals["ksys"])
+        # -o <ksys_log_dir>/ : ksys writes its _report.json into this dir
+        # so it lands alongside the per-turn .log files instead of the
+        # log_capture root (cwd).  The dir must exist before ksys starts.
+        ksys_dir = os.path.join(self.rotation_log_dir, "ksys")
+        os.makedirs(ksys_dir, exist_ok=True)
         cmd = [
             self.config["ksys_path"],
             "collect",
@@ -573,6 +578,8 @@ class LogCapture:
             "3",
             "-c",
             self.config["ksys_config_path"],
+            "-o",
+            ksys_dir + "/",
         ]
         log_path = self._rotation_log_path("ksys")
         if log_path is None:

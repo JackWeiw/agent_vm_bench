@@ -99,7 +99,11 @@ class TestLogRotation(unittest.TestCase):
         spawned = []
         with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
             cap._rotation_ksys_turn()
-        self.assertEqual(spawned, [["/fake/ksys", "collect", "-d", "15", "-i", "3", "-c", "/fake/ksys_config.yaml"]])
+        self.assertEqual(len(spawned), 1)
+        cmd = spawned[0]
+        self.assertEqual(cmd[:8], ["/fake/ksys", "collect", "-d", "15", "-i", "3", "-c", "/fake/ksys_config.yaml"])
+        self.assertEqual(cmd[8], "-o")
+        self.assertTrue(cmd[9].endswith("/log_capture/ksys/"))
         files = os.listdir(os.path.join(self.log_dir, "log_capture", "ksys"))
         self.assertEqual(len(files), 1)
         # The collect-phase ksys process is tracked for later reaping.
