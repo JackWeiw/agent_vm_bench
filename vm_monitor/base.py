@@ -389,11 +389,16 @@ class _ProcRawWriter:
         fh.flush()
 
     def _write_vm(self, ts: str, vms: list) -> None:
-        # Per-VM -> long format (one row per VM per sample).
+        # Per-VM -> long format (one row per VM per sample). pss_mb is a gauge
+        # (current MB via smaps_rollup, already collected by _collect_single_vm);
+        # utime/stime are cumulative counters an agent deltas into CPU cores.
         if self._vm is None:
             fh = open(os.path.join(self._dir, "vm_cpu_raw.csv"), "w", newline="", encoding="utf-8")
             dw = csv.DictWriter(
-                fh, fieldnames=["timestamp", "pid", "vm_name", "utime", "stime"], restval="", extrasaction="ignore"
+                fh,
+                fieldnames=["timestamp", "pid", "vm_name", "utime", "stime", "pss_mb"],
+                restval="",
+                extrasaction="ignore",
             )
             dw.writeheader()
             self._vm = (fh, dw)
@@ -402,7 +407,16 @@ class _ProcRawWriter:
             ut, st = v.get("utime"), v.get("stime")
             if ut is None or st is None:
                 continue  # VM exited or /proc/<pid>/stat unreadable mid-sample
-            dw.writerow({"timestamp": ts, "pid": v.get("pid"), "vm_name": v.get("name", ""), "utime": ut, "stime": st})
+            dw.writerow(
+                {
+                    "timestamp": ts,
+                    "pid": v.get("pid"),
+                    "vm_name": v.get("name", ""),
+                    "utime": ut,
+                    "stime": st,
+                    "pss_mb": v.get("pss_mb", ""),
+                }
+            )
         fh.flush()
 
     def _write_disk(self, ts: str, dev_raw: dict) -> None:
