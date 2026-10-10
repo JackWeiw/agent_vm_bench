@@ -783,10 +783,12 @@ regeneratable after any interruption.
 
 #### 时间戳与 Δ 守卫
 
-- 原始 CSV 的 `timestamp` 是 wall-clock 字符串（`2026-10-10 15:20:02`），消费端先用
-  `_ts_to_epoch` 归一化为浮点 epoch 秒，且对 `datetime64` 单位无关（强制 `[s]` 精度，避免
-  不同 pandas 构建存 `[ns]`/`[us]` 导致速率 1000× 偏差——`cpu_busy%` 因 dt 在比式里相消
-  而侥幸正确，但 ublk/swap/disk 速率会全错）。
+- 原始 CSV 的 `timestamp` 是带亚秒的 wall-clock 字符串（`2026-10-10 15:20:02.123456`）。
+  1s 亚采样的 ublk/disk 写 `.%f`——否则亚秒样本会撞进同一整秒 → 重复时间戳 → `sub_dt=0`
+  → Δ 守卫把整列 NaN 化。消费端 `_ts_to_epoch` 归一化为浮点 epoch 秒：强制
+  `datetime64[us]` → int64 微秒 → `/1e6`，**保留亚秒分数**（整秒采样的 host CSV 分数为 `.0`，
+  行为不变）；对 `datetime64` 单位无关（避免不同 pandas 构建存 `[ns]`/`[us]` 导致速率 1000×
+  偏差——`cpu_busy%` 因 dt 在比式里相消而侥幸正确，但 ublk/swap/disk 速率会全错）。
 - 每个速率列都过 Δ 守卫：`Δ<0`（计数器回卷/进程重启）或 `dt≤0`/`NaN`/`dt>10s`（采样
   缺失）→ 该行置 `NaN`，不污染后续均值/图表，也不 crash 构建。
 

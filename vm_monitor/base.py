@@ -1166,7 +1166,7 @@ class VMMonitorBase(ABC):
         # Raw /sys/block/<dev>/stat counters -> disk_io_raw.csv (1s cadence, same
         # background writer; enqueue is O(1) so the sub-sampler never blocks).
         if self._proc_raw is not None and raw_fields:
-            self._proc_raw.enqueue_disk(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), raw_fields)
+            self._proc_raw.enqueue_disk(datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"), raw_fields)
 
     # ===================== Collect Host Memory Detail =====================
     def collect_host_mem_detail(self, meminfo: dict | None = None):
@@ -1255,7 +1255,7 @@ class VMMonitorBase(ABC):
             self._ublk_daemon_pid = None
             self._prev_ublk_daemon_jiffies = None
             return
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         # Raw cumulative jiffies for ublk_cpu_raw.csv; agent derives CPU% via
         # delta -- the derived 'cores' below alone is lossy (rounded, rate-only).
         if self._proc_raw is not None:
@@ -2122,7 +2122,7 @@ class VMMonitorBase(ABC):
         # One sample timestamp shared across host_*_raw.csv + vm_cpu_raw.csv rows
         # so an agent can join them by timestamp (was: proc and vm enqueued with
         # separate now() calls, skewed across get_vms_realtime).
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
         # Lazy-start the background raw dumper on the first sample, then enqueue
         # the dicts already in hand -- zero extra /proc reads for the dump, and
         # enqueue is O(1) so the sampling path never blocks on file I/O.

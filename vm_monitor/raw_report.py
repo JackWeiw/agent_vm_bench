@@ -76,17 +76,21 @@ def _ts_to_epoch(series: pd.Series) -> pd.Series:
     except (TypeError, ValueError):
         pass
     parsed = pd.to_datetime(series, errors="coerce")
-    # Force second-resolution datetime64 then view as int64 seconds. This is
-    # unit-agnostic: pandas may store datetime64[ns] or [us] depending on build,
-    # and the naive /1e9 assumed [ns] -- on a [us] build every rate delta was
-    # 1000x too small (cpu_busy% survived only because dt cancels in the ratio;
-    # ublk/swap/disk rates were wrong). The dumper writes whole-second strftime
-    # timestamps, so [s] resolution loses nothing. NaT is masked to NaN BEFORE
-    # the int view so a numpy NaT->int sentinel (or raise) never reaches deltas.
+    # Force microsecond-resolution datetime64, view as int64 microseconds, then
+    # /1e6 -> epoch seconds with sub-second preserved as a fraction. Unit-
+    # agnostic: pandas may store datetime64[ns] or [us] depending on build;
+    # forcing [us] then /1e6 gives true seconds either way (the naive /1e9
+    # assumed [ns] -- on a [us] build every rate delta was 1000x too small;
+    # cpu_busy% survived only because dt cancels in the ratio). Sub-second
+    # matters because the 1s-sub-sampled raw writers (ublk/disk) write .%f
+    # timestamps: whole-second [s] truncation collided sub-second samples into
+    # duplicate timestamps -> sub_dt=0 -> the dt<=0 guard NaN-holed ublk_cores.
+    # Host CSVs are 2s cadence (fraction .0, no behavior change). NaT is masked
+    # to NaN BEFORE the int view so a NaT->int sentinel never reaches deltas.
     out = pd.Series(math.nan, index=series.index, dtype="float64")
     mask = parsed.notna()
     if mask.any():
-        secs = parsed[mask].to_numpy().astype("datetime64[s]").astype("int64").astype("float64")
+        secs = parsed[mask].to_numpy().astype("datetime64[us]").astype("int64").astype("float64") / 1e6
         out[mask] = secs
     return out
 
