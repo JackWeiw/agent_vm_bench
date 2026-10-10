@@ -367,11 +367,19 @@ def _put_row(ws, row, values, header=False):
     return row + 1
 
 
-def _write_table(ws, df, headers):
-    """Write df rows under a styled header at row 1; return last data-row index."""
+def _write_table(ws, df, headers, cols=None):
+    """Write df rows under a styled header at row 1; return last data-row index.
+
+    ``headers`` are the display labels written to row 1; ``cols`` are the df
+    column names looked up per data row (defaults to ``headers`` -- display
+    labels ARE the column names, the per-VM/disk case). Pass ``cols`` separately
+    when display labels differ from df columns (e.g. "CPU busy (%)" for
+    cpu_busy_pct), so a readable header never breaks the data lookup."""
+    if cols is None:
+        cols = headers
     r = _put_row(ws, 1, headers, header=True)
     for _, row in df.iterrows():
-        r = _put_row(ws, r, [row.get(h) for h in headers])
+        r = _put_row(ws, r, [row.get(c) for c in cols])
     ws.freeze_panes = "A2"
     return r - 1  # last data row
 
@@ -397,25 +405,29 @@ def _build_host_sheet(wb, df):
     if df.empty:
         return
     ws = wb.create_sheet("Host resources")
-    headers = [
-        "t_s",
-        "timestamp",
-        "cpu_busy_pct",
-        "cpu_iowait_pct",
-        "mem_used_gb",
-        "mem_cache_gb",
-        "buffers_mb",
-        "dirty_mb",
-        "swap_in_mib_s",
-        "swap_out_mib_s",
-        "page_scan_mib_s",
-        "page_reclaim_mib_s",
-        "file_refault_mib_s",
-        "ublk_cores",
-        "vm_cores",
-        "fc_pss_gb",
+    # (df column, display label) paired -- a column reorder can't silently
+    # misalign a header with the wrong data (mislabeled metrics are worse than
+    # verbose). Labels match resource_report.xlsx's readable + unit style.
+    col_labels = [
+        ("t_s", "t (s)"),
+        ("timestamp", "Timestamp"),
+        ("cpu_busy_pct", "CPU busy (%)"),
+        ("cpu_iowait_pct", "CPU iowait (%)"),
+        ("mem_used_gb", "Mem used (GB)"),
+        ("mem_cache_gb", "Mem cache (GB)"),
+        ("buffers_mb", "Buffers (MB)"),
+        ("dirty_mb", "Dirty (MB)"),
+        ("swap_in_mib_s", "Swap in (MiB/s)"),
+        ("swap_out_mib_s", "Swap out (MiB/s)"),
+        ("page_scan_mib_s", "Page scan (MiB/s)"),
+        ("page_reclaim_mib_s", "Page reclaim (MiB/s)"),
+        ("file_refault_mib_s", "File refault (MiB/s)"),
+        ("ublk_cores", "ublk cores"),
+        ("vm_cores", "VM cores"),
+        ("fc_pss_gb", "FC total PSS (GB)"),
     ]
-    _write_table(ws, df, headers)
+    cols, headers = zip(*col_labels)
+    _write_table(ws, df, list(headers), cols=list(cols))
     anchor = get_column_letter(len(headers) + 2)
     n = len(df)
     _add_line_chart(ws, "Host memory", "GB", 1, (5, 6), 1, n, f"{anchor}2")
