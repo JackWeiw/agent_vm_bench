@@ -184,6 +184,7 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
             "file_refault_mib_s",
             "ublk_cores",
             "vm_cores",
+            "fc_pss_gb",
         )
     }
 
@@ -241,6 +242,7 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
                 out[k].append(math.nan)
         out["ublk_cores"].append(_aggregate_cores(ublk, ts[i], dt) if ublk is not None else math.nan)
         out["vm_cores"].append(math.nan)  # filled by per-VM aggregate in the orchestrator (Task 5)
+        out["fc_pss_gb"].append(math.nan)  # filled by pss_df aggregate in the orchestrator
     df = pd.DataFrame(out)
     df.insert(0, "t_s", [0.0] + [ts[i] - ts[0] for i in range(1, len(ts))])
     df.insert(1, "timestamp", cpu["timestamp"].tolist())
@@ -411,15 +413,18 @@ def _build_host_sheet(wb, df):
         "file_refault_mib_s",
         "ublk_cores",
         "vm_cores",
+        "fc_pss_gb",
     ]
     _write_table(ws, df, headers)
     anchor = get_column_letter(len(headers) + 2)
     n = len(df)
-    _add_line_chart(ws, "Host memory", "GB/MB", 1, (5, 6, 7, 8), 1, n, f"{anchor}2")
-    _add_line_chart(ws, "Host CPU", "%", 1, (3, 4), 1, n, f"{anchor}20")
-    _add_line_chart(ws, "Page-cache pressure", "MiB/s", 1, (11, 12, 13), 1, n, f"{anchor}38")
-    _add_line_chart(ws, "Swap in/out", "MiB/s", 1, (9, 10), 1, n, f"{anchor}56")
-    _add_line_chart(ws, "CPU cores (ublk + VM)", "cores", 1, (14, 15), 1, n, f"{anchor}74")
+    _add_line_chart(ws, "Host memory", "GB", 1, (5, 6), 1, n, f"{anchor}2")
+    _add_line_chart(ws, "Host buffers/dirty", "MB", 1, (7, 8), 1, n, f"{anchor}20")
+    _add_line_chart(ws, "FC memory (total PSS)", "GB", 1, (16,), 1, n, f"{anchor}38")
+    _add_line_chart(ws, "Host CPU", "%", 1, (3, 4), 1, n, f"{anchor}56")
+    _add_line_chart(ws, "Page-cache pressure", "MiB/s", 1, (11, 12, 13), 1, n, f"{anchor}74")
+    _add_line_chart(ws, "Swap in/out", "MiB/s", 1, (9, 10), 1, n, f"{anchor}92")
+    _add_line_chart(ws, "CPU cores (ublk + VM)", "cores", 1, (14, 15), 1, n, f"{anchor}110")
 
 
 def _build_per_vm_sheet(wb, cores_df, pss_df):
@@ -492,6 +497,17 @@ def build_host_resources_xlsx(raw_dir, out_path) -> Path:
         )
         if len(vm_agg) == len(host_df):
             host_df["vm_cores"] = vm_agg.to_numpy()
+    # FC fleet total memory = sum of per-VM PSS (GB) per timestamp. PSS (not
+    # RSS): smaps_rollup splits shared template/lib pages across sharers, so the
+    # fleet sum is the true marginal host memory the FC fleet costs; RSS would
+    # double-count those shared pages across the fleet. Same positional/cadence
+    # alignment as vm_cores (pss_df shares vm_cpu_raw.csv's timestamps).
+    if not pss_df.empty and not host_df.empty:
+        pss_agg = (
+            pss_df.drop(columns=["t_s"], errors="ignore").select_dtypes("number").sum(axis=1, skipna=True, min_count=1)
+        )
+        if len(pss_agg) == len(host_df):
+            host_df["fc_pss_gb"] = pss_agg.to_numpy()
     wb = Workbook()
     default = wb.active
     _build_host_sheet(wb, host_df)

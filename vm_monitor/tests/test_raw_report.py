@@ -404,11 +404,14 @@ def test_build_xlsx_sheets_and_charts(tmp_path):
     wb = openpyxl.load_workbook(out)
     assert set(wb.sheetnames) == {"Host resources", "Per-VM", "Disk IO"}
     host = wb["Host resources"]
-    assert len(host._charts) == 5
-    # series counts lock the col-set per chart (memory=4, cpu=2, pressure=3,
-    # swap=2, cores=2) -- guards against pressure wrongly including swap cols
-    # or an off-by-one skipping a series.
-    assert sorted(len(c.series) for c in host._charts) == [2, 2, 2, 3, 4]
+    assert len(host._charts) == 7
+    # series counts lock the col-set per chart (memory=2, buffers/dirty=2,
+    # fc_pss=1, cpu=2, pressure=3, swap=2, cores=2) -- guards against pressure
+    # wrongly including swap cols or an off-by-one skipping a series.
+    assert sorted(len(c.series) for c in host._charts) == [1, 2, 2, 2, 2, 2, 3]
+    # FC total PSS = sum of per-VM pss_mb/1024 per timestamp. _seed_all's vm0
+    # has pss_mb=1024 at both samples -> fc_pss_gb=1.0 GB (col 16, first data row).
+    assert math.isclose(host.cell(row=2, column=16).value, 1.0, abs_tol=0.001)
     assert len(wb["Per-VM"]._charts) == 2
     assert len(wb["Disk IO"]._charts) == 2
 
