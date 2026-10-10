@@ -120,8 +120,8 @@ def _compute_disk_io_rates(cur: dict, prev: dict, interval: float) -> dict:
     Sector size is 512 bytes (kernel block-layer stat sector size). util_pct is
     the fraction of wall-time the device spent servicing I/O: ms_io is the
     cumulative ms the device had >=1 I/O in-flight, so util = delta_ms_io / 1000
-    / interval * 100 (busy-seconds / wall-seconds), capped at
-    100. avg_queue_depth is the mean in-flight request count over the interval
+    / interval * 100 (busy-seconds / wall-seconds), clamped to [0, 100].
+    avg_queue_depth is the mean in-flight request count over the interval
     (weighted_ms / 1000 / interval, where weighted_ms is I/O-time weighted by
     queue depth). read/write_await_ms is mean latency per completed I/O
     (read_ms / reads_completed). r_iops/w_iops are completed read/write I/Os
@@ -156,7 +156,7 @@ def _compute_disk_io_rates(cur: dict, prev: dict, interval: float) -> dict:
         d_ms = c.get("ms_io", 0) - p.get("ms_io", 0)
         r_mb = d_read * _SECTOR_SIZE_BYTES / _BYTES_PER_MIB
         w_mb = d_write * _SECTOR_SIZE_BYTES / _BYTES_PER_MIB
-        util = min(100.0, d_ms / 1000.0 / interval * 100)
+        util = max(0.0, min(100.0, d_ms / 1000.0 / interval * 100))
         d_reads = c.get("reads_completed", 0) - p.get("reads_completed", 0)
         d_writes = c.get("writes_completed", 0) - p.get("writes_completed", 0)
         d_read_ms = c.get("read_ms", 0) - p.get("read_ms", 0)
