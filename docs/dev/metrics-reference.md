@@ -647,6 +647,12 @@ Per-VM / Disk IO), each a data table + stacked openpyxl LineCharts on a shared
 preserves bench-core's reap signal) and of in-memory history (post-hoc
 rerunnable). PSS (`vm_cpu_raw.csv` `pss_mb`) is a gauge, plotted directly.
 
+The auto-hook runs **first** in the export phase (before the slow SVG/xlsx
+steps) and reads only the line-flushed raw CSVs, so it is the one artifact
+guaranteed on a mid-export Ctrl+C / hard kill — the raw dumper flushes every
+row (`fh.flush()` per write), so partial data is on disk even if the monitor
+was interrupted.
+
 ### 2.8 Disabling collectors (`--no-X`, `monitor.skip`)
 
 By default every `/proc`-based resource collector runs (backward-compat). Opt

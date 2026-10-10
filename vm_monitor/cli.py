@@ -354,24 +354,28 @@ def main(argv=None):
         capture_results = capture.get_results()
         print_capture_summary(capture_results, log_dir, m.target_numa_nodes)
 
-    # Export dark-themed SVG time-curve reports FIRST. The xlsx report must be
-    # the LAST artifact written: orchestrators (bench-core MonitorController)
-    # poll for resource_report.xlsx as the "all artifacts written" signal and
-    # reap the subprocess the moment it appears. If SVG ran after xlsx, that
-    # reap would drop every SVG file.
-    if not args.no_svg:
-        svg_files = export_svg_reports(m, log_dir)
-        if svg_files:
-            print(f"[OK] SVG time-curve reports: {', '.join(os.path.basename(p) for p in svg_files)}")
-
-    # host_resources.xlsx from raw CSVs (independent of in-memory chart stack;
-    # runs even with --no-charts; separate filename so resource_report.xlsx
-    # remains bench-core's reap signal). Degrade to WARNING, never block main xlsx.
+    # host_resources.xlsx from raw CSVs -- built FIRST in the export phase so
+    # it lands on disk before the slow SVG/xlsx steps. It reads only the
+    # line-flushed raw_data CSVs (independent of the in-memory chart stack;
+    # runs even with --no-charts), so it's the one artifact worth guaranteeing
+    # on a mid-export Ctrl+C / hard kill. Separate filename so
+    # resource_report.xlsx remains bench-core's reap signal. Degrade to
+    # WARNING, never block the main xlsx.
     raw_dir = os.path.join(log_dir, "raw_data")
     try:
         build_host_resources_xlsx(raw_dir, os.path.join(log_dir, "host_resources.xlsx"))
     except (OSError, ValueError, KeyError) as e:
         logger.warning("host_resources raw-report failed for raw_dir=%s: %s", raw_dir, e)
+
+    # Export dark-themed SVG time-curve reports. The xlsx report must be the
+    # LAST artifact written: orchestrators (bench-core MonitorController) poll
+    # for resource_report.xlsx as the "all artifacts written" signal and reap
+    # the subprocess the moment it appears. If SVG ran after xlsx, that reap
+    # would drop every SVG file.
+    if not args.no_svg:
+        svg_files = export_svg_reports(m, log_dir)
+        if svg_files:
+            print(f"[OK] SVG time-curve reports: {', '.join(os.path.basename(p) for p in svg_files)}")
 
     # Export to Excel (if pandas available) -- LAST so its appearance signals
     # that CSV + SVG + xlsx are all written and the subprocess is essentially

@@ -19,6 +19,8 @@ import os
 import sys
 from unittest.mock import MagicMock
 
+import pytest
+
 
 def test_cli_exports_svg_before_xlsx(monkeypatch, tmp_path):
     """export_svg_reports must run before export_to_excel so the xlsx is the
@@ -182,3 +184,46 @@ def test_auto_host_resources_hook_failure_does_not_block_xlsx(monkeypatch, tmp_p
     # WARNING logged naming the REAL raw_dir (<log_dir>/raw_data), not the parent
     assert any("host_resources raw-report failed" in m for m in caplog.messages)
     assert any(str(tmp_path) in m and "raw_data" in m for m in caplog.messages)
+
+
+def test_host_resources_runs_before_svg_so_survives_export_interrupt(monkeypatch, tmp_path):
+    """host_resources.xlsx is built BEFORE the (slow, interruptible) SVG/xlsx
+    steps. It reads only the line-flushed raw_data CSVs, so it's the one
+    artifact worth guaranteeing on a mid-export Ctrl+C / hard kill: if the slow
+    SVG phase is interrupted, host_resources is already on disk. This locks the
+    ordering (host_resources before SVG) that makes that guarantee hold."""
+    import vm_monitor.cli as cli
+
+    call_order: list[str] = []
+
+    def fake_build(raw_dir, out_path):
+        call_order.append("host_resources")
+        return out_path
+
+    def svg_raises(monitor, log_dir):
+        call_order.append("svg")
+        raise KeyboardInterrupt  # simulate a mid-export interrupt (handler reset / hard kill)
+
+    def fake_xlsx(monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False):
+        call_order.append("xlsx")  # must NOT run -- SVG raised before it
+
+    monkeypatch.setattr(cli, "build_host_resources_xlsx", fake_build)
+    monkeypatch.setattr(cli, "export_svg_reports", svg_raises)
+    monkeypatch.setattr(cli, "export_to_excel", fake_xlsx)
+    monkeypatch.setattr(cli, "PANDAS_AVAILABLE", True)
+
+    fake_m = MagicMock()
+    fake_m.available_numa_nodes = [0]
+    monkeypatch.setattr(cli, "FirecrackerMonitor", lambda: fake_m)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["vm-monitor", "--vmm", "firecracker", "--time", "0", "--disks", "", "--log-dir", str(tmp_path)],
+    )
+    # SVG raises KeyboardInterrupt; main() does not swallow it, so it propagates
+    # -- but host_resources already ran first, so the artifact is on disk.
+    with pytest.raises(KeyboardInterrupt):
+        cli.main()
+    assert call_order[0] == "host_resources"  # built before the interrupting SVG
+    assert "xlsx" not in call_order  # the slow xlsx (reap signal) never reached
