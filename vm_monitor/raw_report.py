@@ -1,11 +1,12 @@
 """raw_data/*.csv -> derived-rate DataFrames (spotbox-style host_resources consumer).
 
 Reads the always-on raw /proc + per-VM + per-disk CSV dumps and derives rates
-via delta (reusing base._compute_pressure_rates; disk rates via base.
-_compute_disk_io_rates arrive in a later task). Pure file input -- does not
-depend on in-memory history, post-hoc rerunnable. The xlsx assembly (3 sheets,
-openpyxl LineCharts) is added in a later task; this module currently exposes
-_derive_host (host-wide) + the shared _guarded counter-reset/gap guard.
+via delta (reusing base._compute_pressure_rates + base._compute_disk_io_rates).
+Pure file input -- does not depend on in-memory history, post-hoc rerunnable.
+The xlsx assembly (3 sheets, openpyxl LineCharts) is added in a later task;
+this module currently exposes _derive_host (host-wide), _derive_per_vm (per-VM
+CPU cores + PSS), _derive_disk (per-device I/O), and the shared _guarded
+counter-reset/gap guard.
 """
 from __future__ import annotations
 
@@ -18,6 +19,8 @@ import pandas as pd
 from vm_monitor.base import (
     _BYTES_PER_MIB,
     _CLK_TCK,
+    _DISK_FIELDS,
+    _compute_disk_io_rates,
     _compute_pressure_rates,
 )
 
@@ -26,6 +29,11 @@ logger = logging.getLogger(__name__)
 # Calibration knobs (ponytail: physical world needs tuning, not hard-coded).
 MAX_INTERVAL_S = 10.0  # gap guard: per-key delta over a gap longer than this -> NaN
 MAX_VM_SERIES = 8  # per-VM chart series cap (Excel render perf); used in Task 3+
+
+# /sys/block/<dev>/stat fields that are cumulative monotonic counters.
+# `inflight` (current I/Os in progress) is a GAUGE -- normal 3->1 fluctuation
+# must NOT trip the reset guard, else busy-disk intervals get NaN-holed.
+_DISK_GUARD_FIELDS = tuple(f for f in _DISK_FIELDS if f != "inflight")
 
 _MEMINFO_KB_PER_GIB = 2**20  # /proc/meminfo fields are in kB; /2**20 -> GiB
 
@@ -251,3 +259,54 @@ def _derive_per_vm(raw_dir: Path, max_series: int = MAX_VM_SERIES) -> tuple[pd.D
     out_cores.insert(0, "t_s", out_cores.index - t0)
     out_pss.insert(0, "t_s", out_pss.index - t0)
     return out_cores, out_pss
+
+
+def _derive_disk(raw_dir: Path) -> pd.DataFrame:
+    """Per-device r/w MB/s + util% via base._compute_disk_io_rates. long CSV ->
+    {ts: {dev: {field}}}; consecutive ts snapshots -> rates, with a per-device
+    counter-reset guard (cur<prev -> NaN for that dev that interval, no
+    negative spike on device remount)."""
+    disk = _read_csv(raw_dir, "disk_io_raw.csv")
+    if disk is None or disk.empty:
+        return pd.DataFrame()
+    disk["timestamp"] = disk["timestamp"].astype(float)
+    # build per-timestamp snapshot {dev: {field: val}}
+    snaps = {}
+    for ts, g in disk.groupby("timestamp"):
+        snaps[ts] = {r["device"]: {f: r[f] for f in _DISK_FIELDS} for _, r in g.iterrows()}
+    ts_sorted = sorted(snaps)
+    devs = sorted({dev for s in snaps.values() for dev in s})
+    cols = {}
+    for dev in devs:
+        cols[f"{dev}_r_mb_s"] = [math.nan]
+        cols[f"{dev}_w_mb_s"] = [math.nan]
+        cols[f"{dev}_util_pct"] = [math.nan]
+    for i in range(1, len(ts_sorted)):
+        cur_ts, prev_ts = ts_sorted[i], ts_sorted[i - 1]
+        dt = cur_ts - prev_ts
+        for dev in devs:
+            for sfx in ("r_mb_s", "w_mb_s", "util_pct"):
+                cols[f"{dev}_{sfx}"].append(math.nan)
+        cur_snap, prev_snap = snaps[cur_ts], snaps[prev_ts]
+        # per-dev reset guard, then reuse base compute (single-dev dict).
+        # Guard over cumulative counters ONLY (_DISK_GUARD_FIELDS) -- inflight is
+        # a gauge and is read as such by _compute_disk_io_rates, so a normal drop
+        # must not NaN-hole the interval. Inject timestamp for the WARNING log.
+        for dev in devs:
+            if dev not in cur_snap or dev not in prev_snap:
+                continue
+            if _guarded(
+                {"timestamp": cur_ts, **cur_snap[dev]},
+                {"timestamp": prev_ts, **prev_snap[dev]},
+                dt,
+                f"disk={dev}",
+                _DISK_GUARD_FIELDS,
+            ):
+                continue
+            rates = _compute_disk_io_rates({dev: cur_snap[dev]}, {dev: prev_snap[dev]}, dt)[dev]
+            cols[f"{dev}_r_mb_s"][-1] = rates["r_mb_s"]
+            cols[f"{dev}_w_mb_s"][-1] = rates["w_mb_s"]
+            cols[f"{dev}_util_pct"][-1] = rates["util_pct"]
+    df = pd.DataFrame(cols)
+    df.insert(0, "t_s", [0.0] + [ts_sorted[i] - ts_sorted[0] for i in range(1, len(ts_sorted))])
+    return df

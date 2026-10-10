@@ -6,7 +6,7 @@ import logging
 import math
 import os
 
-from vm_monitor.raw_report import _derive_host, _derive_per_vm, _guarded
+from vm_monitor.raw_report import _derive_disk, _derive_host, _derive_per_vm, _guarded
 
 
 def _write(path, header, rows):
@@ -239,3 +239,82 @@ def test_derive_per_vm_topk_and_other_and_reset(tmp_path, caplog):
     assert list(pss.columns) == list(cores.columns)
     pss_t2 = pss[pss["t_s"] == 2.0]["vm0"].iloc[0]
     assert math.isclose(pss_t2, 100.0 / 1024, abs_tol=0.001)  # vm0 pss_mb=100 at t=2
+
+
+def test_derive_disk_rates_and_reset(tmp_path, caplog):
+    """disk r/w MB/s + util% via base._compute_disk_io_rates; a sectors_read
+    reset (device remount) -> that dev that interval NaN + WARNING."""
+    import logging
+
+    d = tmp_path
+    from vm_monitor.base import _DISK_FIELDS
+
+    hdr = ["timestamp", "device", *_DISK_FIELDS]
+
+    def row(ts, dev, sr, sw, msio):
+        vals = {f: 0 for f in _DISK_FIELDS}
+        vals["sectors_read"] = sr
+        vals["sectors_written"] = sw
+        vals["ms_io"] = msio
+        vals["reads_completed"] = sr
+        vals["writes_completed"] = sw
+        return [ts, dev, *[vals[f] for f in _DISK_FIELDS]]
+
+    rows = [
+        row("0", "sda", 0, 0, 0),
+        row("2", "sda", 2000, 4000, 1000),
+        row("4", "sda", 100, 100, 50),  # RESET: sectors_read 2000 -> 100
+    ]
+    _write(d / "disk_io_raw.csv", hdr, rows)
+
+    with caplog.at_level(logging.WARNING):
+        df = _derive_disk(d)
+    # t=2: r_mb_s = 2000*512/2**20/2; _compute_disk_io_rates rounds to 2 dp -> 0.49
+    r2 = df[df["t_s"] == 2.0].iloc[0]
+    assert math.isclose(r2["sda_r_mb_s"], 2000 * 512 / 2**20 / 2, abs_tol=0.01)
+    assert math.isclose(r2["sda_w_mb_s"], 4000 * 512 / 2**20 / 2, abs_tol=0.01)
+    # t=4 reset -> NaN (not a negative spike)
+    r4 = df[df["t_s"] == 4.0].iloc[0]
+    assert math.isnan(r4["sda_r_mb_s"])
+    assert any("counter reset" in m and "sda" in m for m in caplog.messages)
+
+
+def test_derive_disk_inflight_gauge_excluded_from_guard(tmp_path, caplog):
+    """inflight is a gauge (current I/Os in progress), not a cumulative counter;
+    normal fluctuation (3->1->5) must NOT trip the reset guard. Cumulative
+    counters stay monotonic -> every interval computes, no NaN holes on busy disks."""
+    import logging
+
+    d = tmp_path
+    from vm_monitor.base import _DISK_FIELDS
+
+    hdr = ["timestamp", "device", *_DISK_FIELDS]
+
+    def row(ts, dev, sr, sw, msio, inflight):
+        vals = {f: 0 for f in _DISK_FIELDS}
+        vals["sectors_read"] = sr
+        vals["sectors_written"] = sw
+        vals["ms_io"] = msio
+        vals["reads_completed"] = sr
+        vals["writes_completed"] = sw
+        vals["inflight"] = inflight  # gauge: fluctuates 3 -> 1 -> 5
+        return [ts, dev, *[vals[f] for f in _DISK_FIELDS]]
+
+    rows = [
+        row("0", "sda", 0, 0, 0, 3),
+        row("2", "sda", 2000, 4000, 1000, 1),  # inflight 3->1 (gauge drop); cumulative all up
+        row("4", "sda", 4000, 8000, 2000, 5),  # inflight 1->5; cumulative all up
+    ]
+    _write(d / "disk_io_raw.csv", hdr, rows)
+
+    with caplog.at_level(logging.WARNING):
+        df = _derive_disk(d)
+    # No false "counter reset" WARNING (inflight drop must not fire guard)
+    assert not any("counter reset" in m and "sda" in m for m in caplog.messages)
+    # Both intervals computed (not NaN)
+    r2 = df[df["t_s"] == 2.0].iloc[0]
+    r4 = df[df["t_s"] == 4.0].iloc[0]
+    assert not math.isnan(r2["sda_r_mb_s"])
+    assert not math.isnan(r4["sda_r_mb_s"])
+    # And the rate is correct (proves it actually computed, not just non-NaN)
+    assert math.isclose(r2["sda_r_mb_s"], 2000 * 512 / 2**20 / 2, abs_tol=0.01)

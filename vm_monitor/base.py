@@ -490,6 +490,12 @@ class _ProcRawWriter:
                     pass
 
 
+# Module-level exposure of the /sys/block/<dev>/stat field set so the
+# derived-rate consumer (raw_report._derive_disk) imports the single source of
+# truth rather than re-hardcoding the 17-field tuple.
+_DISK_FIELDS = _ProcRawWriter._DISK_FIELDS
+
+
 class VMMonitorBase(ABC):
     """Abstract Base Class for VM Real-time Monitor
 
