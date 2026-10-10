@@ -99,6 +99,10 @@ def _aggregate_cores(ublk_df: pd.DataFrame, cur_ts: float, dt: float) -> float:
     take the last row <= cur_ts per pid, delta vs its predecessor)."""
     if ublk_df is None or ublk_df.empty or not dt:
         return math.nan
+    # ponytail: re-sorts the whole ublk_df per call (O(n log n) x n_samples);
+    # acceptable for few-daemon hosts at ~1Hz over minutes-to-hours. Hoist the
+    # sort out of the loop (pre-sort once, groupby preserves order) if a long
+    # high-frequency run makes this hot.
     ublk_df = ublk_df.sort_values("timestamp")
     ublk_df["timestamp"] = ublk_df["timestamp"].astype(float)
     total = 0.0
@@ -170,8 +174,9 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
             out["cpu_busy_pct"].append(math.nan)
             out["cpu_iowait_pct"].append(math.nan)
         # mem is a gauge (no delta); aligned by row index to cpu since host_*_raw
-        # are written together per-sample in one enqueue_proc call. If a /proc
-        # read ever intermittently fails, switch to pd.merge_asof on timestamp.
+        # are written together per-sample in one enqueue_proc call. ponytail:
+        # positional alignment assumes no per-/proc read failure drops a row;
+        # switch to pd.merge_asof on timestamp if that ever happens.
         if mem is not None and i < len(mem):
             md = mem.iloc[i].to_dict()
             out["mem_used_gb"].append((_f(md, "MemTotal") - _f(md, "MemAvailable")) / _MEMINFO_KB_PER_GIB)
