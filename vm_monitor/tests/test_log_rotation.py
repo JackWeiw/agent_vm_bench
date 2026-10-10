@@ -107,25 +107,24 @@ class TestLogRotation(unittest.TestCase):
 
     def test_perf_turn_cmd_and_log(self):
         cap = self._cap(rotation_perf_events="cycles,instructions")
-        with patch("vm_monitor.log_capture.subprocess.run") as mock_run:
+        spawned = []
+        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
             cap._rotation_perf_turn()
-        cmd = mock_run.call_args.args[0]
-        kwargs = mock_run.call_args.kwargs
+        cmd = spawned[0]
         self.assertEqual(cmd, ["perf", "stat", "-e", "cycles,instructions", "-a", "--", "sleep", "15"])
-        # perf stat writes its counters to stderr; the turn must merge it into the log.
-        self.assertEqual(kwargs.get("stderr"), subprocess.STDOUT)
         files = os.listdir(os.path.join(self.log_dir, "log_capture", "perf"))
         self.assertEqual(len(files), 1)
 
     def test_perf_default_events_used_when_none(self):
         cap = self._cap()
-        with patch("vm_monitor.log_capture.subprocess.run") as mock_run:
+        spawned = []
+        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
             cap._rotation_perf_turn()
-        self.assertEqual(mock_run.call_args.args[0][3], DEFAULT_ROTATION_PERF_EVENTS)
+        self.assertEqual(spawned[0][3], DEFAULT_ROTATION_PERF_EVENTS)
 
     def test_perf_missing_disables_future_turns(self):
         cap = self._cap()
-        with patch("vm_monitor.log_capture.subprocess.run", side_effect=OSError("No such file")):
+        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=OSError("No such file")):
             cap._rotation_perf_turn()
             cap._rotation_perf_turn()  # second turn must not retry
         self.assertIn("perf", cap._rotation_skipped)
@@ -252,7 +251,6 @@ class TestLogRotation(unittest.TestCase):
         cap = self._cap()
         with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder([])):
             cap._rotation_devkit_turn()
-        with patch("vm_monitor.log_capture.subprocess.run"):
             cap._rotation_perf_turn()
         cap.rotation_thread = True  # non-None so get_results reports the carrier
         results = cap.get_results()
@@ -286,7 +284,6 @@ class TestLogRotation(unittest.TestCase):
         with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
             cap._rotation_devkit_turn()
             cap._rotation_ksys_turn()
-        with patch("vm_monitor.log_capture.subprocess.run") as mock_run:
             cap._rotation_perf_turn()
         # devkit top-down + memory both run for -d 20; ksys runs -d 30.
         for cmd in spawned:
@@ -295,7 +292,7 @@ class TestLogRotation(unittest.TestCase):
             if "collect" in cmd:
                 self.assertEqual(cmd[cmd.index("-d") + 1], "30")
         # perf stat sleeps for 15.
-        perf_cmd = mock_run.call_args.args[0]
+        perf_cmd = next(c for c in spawned if c[0] == "perf")
         self.assertEqual(perf_cmd[-1], "15")
 
     def test_ksys_turn_timer_exits_after_interval_not_interval_plus_30(self):

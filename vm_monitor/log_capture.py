@@ -128,6 +128,7 @@ class LogCapture:
         }
         self._rotation_ksys_procs = []  # ksys processes still parsing in background
         self._rotation_devkit_procs = []  # devkit processes still finishing in background
+        self._rotation_perf_procs = []  # perf processes still finishing in background
         self._rotation_skipped = set()  # tools disabled for the rest of the run
 
     def _get_cpu_range(self) -> str:
@@ -639,22 +640,21 @@ class LogCapture:
         self.rotation_turns["perf"].append(log_path)
         try:
             # perf stat writes its counters to stderr; merge into the log.
-            subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
                 stdout=fh,
                 stderr=subprocess.STDOUT,
-                timeout=self.rotation_intervals["perf"] + 15,
-                check=False,
                 cwd=self.rotation_log_dir,
             )
-        except subprocess.TimeoutExpired:
-            print(f"  [WARN] rotation perf stat timed out after {self.rotation_intervals['perf'] + 15}s")
-            self.failed_runtime.append({"tool": "perf", "error": "timeout"})
         except OSError as e:
             # perf binary missing/unrunnable -- no point retrying every turn.
             self._rotation_skip_tool("perf", f"perf not runnable: {e}")
             if self.rotation_turns["perf"] and self.rotation_turns["perf"][-1] == log_path:
                 self.rotation_turns["perf"].pop()
+            try:
+                fh.close()
+            except Exception:
+                pass
             try:
                 os.unlink(log_path)  # drop the empty log from the failed turn
             except OSError:
@@ -663,11 +663,24 @@ class LogCapture:
                 os.rmdir(os.path.dirname(log_path))  # drop the empty perf dir too
             except OSError:
                 pass
-        finally:
-            try:
-                fh.close()
-            except Exception:
-                pass
+            return
+        # Wait for the collect duration only (interval seconds); a perf
+        # process that runs over (startup overhead, system load) continues
+        # in the background and is reaped in stop().  Closing the parent
+        # handle is safe: the child keeps its own dup.
+        deadline = time.monotonic() + self.rotation_intervals["perf"]
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                break
+            time.sleep(0.5)
+        if proc.poll() is None:
+            self._rotation_perf_procs.append(proc)
+        elif proc.returncode != 0:
+            self.failed_runtime.append({"tool": "perf", "returncode": proc.returncode})
+        try:
+            fh.close()
+        except Exception:
+            pass
 
     def _run_slot(self, turn, interval=None) -> None:
         """Run one rotation slot, then hold the slot open for its full interval.
@@ -797,6 +810,16 @@ class LogCapture:
         if self.rotation_thread is not None and self.rotation_thread.is_alive():
             self.rotation_thread.join(timeout=self.rotation_interval + 90)
         for proc in self._rotation_devkit_procs:
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+        for proc in self._rotation_perf_procs:
             if proc.poll() is None:
                 try:
                     proc.terminate()
