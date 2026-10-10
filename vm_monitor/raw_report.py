@@ -63,6 +63,34 @@ def _f(d: dict, k: str) -> float:
         return math.nan
 
 
+def _ts_to_epoch(series: pd.Series) -> pd.Series:
+    """Normalize a raw-CSV timestamp column to float epoch seconds for delta math.
+
+    The always-on dumper writes wall-clock datetime strings
+    ('2026-10-10 15:20:02'); some fixtures carry a unix-float timestamp. Both
+    work: numeric -> float directly; datetime string -> pd.to_datetime -> int64
+    seconds. Unparseable -> NaN so a bad row NaN-holes its interval instead of
+    crashing the build (the 'could not convert string to float' regression)."""
+    try:
+        return series.astype(float)
+    except (TypeError, ValueError):
+        pass
+    parsed = pd.to_datetime(series, errors="coerce")
+    # Force second-resolution datetime64 then view as int64 seconds. This is
+    # unit-agnostic: pandas may store datetime64[ns] or [us] depending on build,
+    # and the naive /1e9 assumed [ns] -- on a [us] build every rate delta was
+    # 1000x too small (cpu_busy% survived only because dt cancels in the ratio;
+    # ublk/swap/disk rates were wrong). The dumper writes whole-second strftime
+    # timestamps, so [s] resolution loses nothing. NaT is masked to NaN BEFORE
+    # the int view so a numpy NaT->int sentinel (or raise) never reaches deltas.
+    out = pd.Series(math.nan, index=series.index, dtype="float64")
+    mask = parsed.notna()
+    if mask.any():
+        secs = parsed[mask].to_numpy().astype("datetime64[s]").astype("int64").astype("float64")
+        out[mask] = secs
+    return out
+
+
 def _guarded(
     cur: dict, prev: dict, dt: float, key: str, fields: list[str], max_interval: float = MAX_INTERVAL_S
 ) -> bool:
@@ -96,15 +124,11 @@ def _read_csv(raw_dir: Path, fname: str) -> pd.DataFrame | None:
 
 def _aggregate_cores(ublk_df: pd.DataFrame, cur_ts: float, dt: float) -> float:
     """Sum ublk-daemon cores at sample boundary cur_ts (ublk is 1s sub-sampled;
-    take the last row <= cur_ts per pid, delta vs its predecessor)."""
+    take the last row <= cur_ts per pid, delta vs its predecessor). Expects
+    ublk_df pre-sorted by timestamp with a float-epoch ``timestamp`` column
+    (normalized once in _derive_host -- the dumper writes datetime strings)."""
     if ublk_df is None or ublk_df.empty or not dt:
         return math.nan
-    # ponytail: re-sorts the whole ublk_df per call (O(n log n) x n_samples);
-    # acceptable for few-daemon hosts at ~1Hz over minutes-to-hours. Hoist the
-    # sort out of the loop (pre-sort once, groupby preserves order) if a long
-    # high-frequency run makes this hot.
-    ublk_df = ublk_df.sort_values("timestamp")
-    ublk_df["timestamp"] = ublk_df["timestamp"].astype(float)
     total = 0.0
     nans = 0
     for pid, g in ublk_df.groupby("pid"):
@@ -137,7 +161,13 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
     if cpu is None or cpu.empty:
         return pd.DataFrame()
     cpu = cpu.sort_values("timestamp").reset_index(drop=True)
-    ts = cpu["timestamp"].astype(float).to_numpy()
+    ts = _ts_to_epoch(cpu["timestamp"]).to_numpy()
+    # Pre-normalize ublk timestamps ONCE (the dumper writes wall-clock datetime
+    # strings '2026-10-10 15:20:02'); _aggregate_cores compares them against the
+    # host cpu epoch seconds (<= cur_ts) and trusts sorted float input.
+    if ublk is not None and not ublk.empty:
+        ublk = ublk.sort_values("timestamp")
+        ublk["timestamp"] = _ts_to_epoch(ublk["timestamp"])
     out = {
         c: [math.nan]
         for c in (
@@ -229,7 +259,7 @@ def _derive_per_vm(raw_dir: Path, max_series: int = MAX_VM_SERIES) -> tuple[pd.D
     if vm is None or vm.empty:
         return pd.DataFrame(), pd.DataFrame()
     vm = vm.sort_values(["vm_name", "timestamp"]).copy()
-    vm["timestamp"] = vm["timestamp"].astype(float)
+    vm["timestamp"] = _ts_to_epoch(vm["timestamp"])
     vm["cores"] = math.nan
     vm["pss_gb"] = math.nan
     for name, g in vm.groupby("vm_name"):
@@ -279,7 +309,7 @@ def _derive_disk(raw_dir: Path) -> pd.DataFrame:
     disk = _read_csv(raw_dir, "disk_io_raw.csv")
     if disk is None or disk.empty:
         return pd.DataFrame()
-    disk["timestamp"] = disk["timestamp"].astype(float)
+    disk["timestamp"] = _ts_to_epoch(disk["timestamp"])
     # build per-timestamp snapshot {dev: {field: val}}
     snaps = {}
     for ts, g in disk.groupby("timestamp"):

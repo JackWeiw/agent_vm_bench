@@ -469,3 +469,96 @@ def test_raw_report_cli_writes_xlsx(tmp_path):
     rc = cli.main(["raw-report", str(tmp_path), "--out", str(tmp_path / "out.xlsx")])
     assert rc == 0
     assert (tmp_path / "out.xlsx").exists()
+
+
+def test_derive_datetime_string_timestamps(tmp_path):
+    """Regression: the always-on dumper writes wall-clock datetime strings
+    ('2026-10-10 15:20:02' via datetime.now().strftime), NOT unix floats. The
+    old .astype(float)/float(ts) crashed the build with 'could not convert
+    string to float'; _ts_to_epoch parses both. Exercises every crash site
+    (host cpu, ublk, per-VM, disk) and asserts the derived dt is the real 2s
+    wall-clock gap (proving parse, not just no-crash)."""
+    d = tmp_path
+    t0, t1 = "2026-10-10 15:20:02", "2026-10-10 15:20:04"  # dt = 2s
+    _write(
+        d / "host_cpu_raw.csv",
+        [
+            "timestamp",
+            "cpu_user",
+            "cpu_nice",
+            "cpu_system",
+            "cpu_idle",
+            "cpu_iowait",
+            "cpu_irq",
+            "cpu_softirq",
+            "cpu_steal",
+            "cpu_guest",
+            "cpu_guest_nice",
+            "ctxt",
+            "btime",
+            "processes",
+            "procs_running",
+            "procs_blocked",
+            "softirq_total",
+        ],
+        [
+            [t0, "100", "0", "50", "8000", "100", "10", "20", "5", "0", "0", "1", "0", "0", "0", "0", "0"],
+            [t1, "120", "0", "55", "8010", "102", "11", "22", "6", "0", "0", "2", "0", "0", "0", "0", "0"],
+        ],
+    )
+    _write(
+        d / "host_mem_raw.csv",
+        ["timestamp", "MemTotal", "MemAvailable", "MemFree", "Cached", "SReclaimable", "Buffers", "Dirty", "Writeback"],
+        [
+            [t0, "2097152", "1048576", "512000", "200000", "50000", "30000", "1000", "0"],
+            [t1, "2097152", "943718", "450000", "210000", "52000", "32000", "2000", "0"],
+        ],
+    )
+    _write(
+        d / "host_vmstat_raw.csv",
+        [
+            "timestamp",
+            "pswpin",
+            "pswpout",
+            "pgscan_kswapd",
+            "pgscan_direct",
+            "pgscan_direct_throttle",
+            "pgsteal_kswapd",
+            "pgsteal_direct",
+            "workingset_refault_file",
+        ],
+        [[t0, "100", "0", "0", "0", "0", "0", "0", "0"], [t1, "300", "0", "2048", "0", "0", "0", "0", "0"]],
+    )
+    _write(
+        d / "ublk_cpu_raw.csv",
+        ["timestamp", "pid", "utime", "stime"],
+        [[t0, "4242", "0", "0"], [t1, "4242", "100", "100"]],
+    )
+    _write(
+        d / "vm_cpu_raw.csv",
+        ["timestamp", "pid", "vm_name", "utime", "stime", "pss_mb"],
+        [[t0, "1", "vm0", "0", "0", "1024.0"], [t1, "1", "vm0", "200", "0", "1024.0"]],
+    )
+    from vm_monitor.base import _DISK_FIELDS
+
+    zero = [0] * len(_DISK_FIELDS)
+    row2 = [0] * len(_DISK_FIELDS)
+    row2[_DISK_FIELDS.index("sectors_read")] = 2000
+    _write(d / "disk_io_raw.csv", ["timestamp", "device", *_DISK_FIELDS], [[t0, "sda", *zero], [t1, "sda", *row2]])
+
+    # Build must not raise on datetime-string timestamps (the regression).
+    out = d / "host_resources.xlsx"
+    build_host_resources_xlsx(d, out)
+    assert out.exists()
+    wb = openpyxl.load_workbook(out)
+    assert set(wb.sheetnames) == {"Host resources", "Per-VM", "Disk IO"}
+
+    # Derived dt is the real 2s wall-clock gap (parse correctness, not just
+    # no-crash): d(idle+iowait)=12, d_total8=41 -> busy% = 100*(1-12/41);
+    # ublk cores = d(utime+stime)=200 /_CLK_TCK=100 / dt=2 -> 1.0.
+    from vm_monitor.raw_report import _derive_host
+
+    df = _derive_host(d)
+    r = df.iloc[1]
+    assert math.isclose(r["cpu_busy_pct"], 100 * (1 - 12 / 41), abs_tol=0.1)
+    assert math.isclose(r["ublk_cores"], 200 / 100 / 2, abs_tol=0.01)
