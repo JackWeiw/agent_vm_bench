@@ -126,7 +126,7 @@ class LogCapture:
             "ksys": [],
             "perf": [],
         }
-        self._rotation_ksys_procs = []  # ksys processes still parsing in background
+        self._rotation_ksys_procs = []  # (proc, log_path) pairs: ksys procs still parsing in background
         self._rotation_devkit_procs = []  # devkit processes still finishing in background
         self._rotation_perf_procs = []  # perf processes still finishing in background
         self._rotation_skipped = set()  # tools disabled for the rest of the run
@@ -606,7 +606,7 @@ class LogCapture:
                 pass
             return
         self.rotation_turns["ksys"].append(log_path)
-        self._rotation_ksys_procs.append(proc)
+        self._rotation_ksys_procs.append((proc, log_path))
         # Wait for the collect duration only (interval seconds); parse runs on
         # in the background. ksys's "Starting to parse data" marker is block-
         # buffered (the binary flushes on exit, not per-line), so marker
@@ -838,7 +838,7 @@ class LogCapture:
                         proc.kill()
                     except Exception:
                         pass
-        for proc in self._rotation_ksys_procs:
+        for proc, log_path in self._rotation_ksys_procs:
             if proc.poll() is None:
                 try:
                     proc.terminate()
@@ -848,6 +848,20 @@ class LogCapture:
                         proc.kill()
                     except Exception:
                         pass
+            # Rename ksys-generated *_report.json to match the .log
+            # filename (same timestamp, .json extension) so all files in
+            # the ksys/ dir share one naming scheme.
+            ksys_dir = os.path.dirname(log_path)
+            base = os.path.basename(log_path).removesuffix(".log")
+            try:
+                for f in os.listdir(ksys_dir):
+                    if f.endswith("_report.json"):
+                        src = os.path.join(ksys_dir, f)
+                        dst = os.path.join(ksys_dir, base + "_report.json")
+                        if src != dst:
+                            os.rename(src, dst)
+            except OSError:
+                pass
 
         # Stop getfre threads first
         for numa_id, stop_flag in self.getfre_stop_flags.items():
