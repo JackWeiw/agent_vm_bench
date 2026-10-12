@@ -312,6 +312,8 @@ def _host_resource_rows(monitor) -> list[dict]:
             row["page_scan_mib_s"] = p.get("page_scan_mib_s", 0.0)
             row["page_reclaim_mib_s"] = p.get("page_reclaim_mib_s", 0.0)
             row["file_refault_mib_s"] = p.get("file_refault_mib_s", 0.0)
+            row["direct_reclaim_mib_s"] = p.get("direct_reclaim_mib_s", 0.0)
+            row["allocstall_per_s"] = p.get("allocstall_per_s", 0.0)
             row["procs_running"] = p.get("procs_running", 0)
             row["procs_blocked"] = p.get("procs_blocked", 0)
         if dirty_limit > 0:
@@ -496,6 +498,12 @@ def _host_pressure_report(target, rows):
             "Runnable / Blocked Procs",
             "count",
             [("procs_running", "Running", "#4ade80"), ("procs_blocked", "Blocked", "#fb7185")],
+            None,
+        ),
+        (
+            "Reclaim Stalls",
+            "/s",
+            [("allocstall_per_s", "Alloc stalls", "#f97316")],
             None,
         ),
     ]

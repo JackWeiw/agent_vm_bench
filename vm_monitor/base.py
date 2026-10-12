@@ -191,10 +191,22 @@ def _compute_pressure_rates(cur: dict, prev: dict, interval: float, page_size: i
     pgscan_kswapd / pgscan_direct / pgscan_direct_throttle (pages scanned for
     reclaim), pgsteal_kswapd / pgsteal_direct (pages reclaimed), and
     workingset_refault_file (evicted file pages refaulted back). Returns rates
-    in MiB/s: page_scan_mib_s, page_reclaim_mib_s, file_refault_mib_s. A
-    zero/None interval or missing previous snapshot yields zero rates.
+    in MiB/s: page_scan_mib_s, page_reclaim_mib_s, file_refault_mib_s, plus
+    direct_reclaim_mib_s (the blocking subset -- direct + throttle, i.e. pages
+    reclaimed by a synchronously-stalled allocator, not background kswapd) and
+    allocstall_per_s (allocation requests that stalled waiting on reclaim,
+    straight count/s -- the closest kernel proxy for "processes blocked on
+    memory reclaim"). allocstall is summed across the per-zone-type variants
+    (allocstall_normal/_dma32/...) -- modern /proc/vmstat exposes no plain sum.
+    A zero/None interval or missing previous snapshot yields zero rates.
     """
-    rates = {"page_scan_mib_s": 0.0, "page_reclaim_mib_s": 0.0, "file_refault_mib_s": 0.0}
+    rates = {
+        "page_scan_mib_s": 0.0,
+        "page_reclaim_mib_s": 0.0,
+        "file_refault_mib_s": 0.0,
+        "direct_reclaim_mib_s": 0.0,
+        "allocstall_per_s": 0.0,
+    }
     if not cur or not prev or not interval or interval <= 0:
         return rates
     mib_per_page = page_size / _BYTES_PER_MIB
@@ -205,9 +217,26 @@ def _compute_pressure_rates(cur: dict, prev: dict, interval: float, page_size: i
     scan = _delta("pgscan_kswapd") + _delta("pgscan_direct") + _delta("pgscan_direct_throttle")
     steal = _delta("pgsteal_kswapd") + _delta("pgsteal_direct")
     refault = _delta("workingset_refault_file")
+    # Direct reclaim = the allocator blocked itself doing reclaim (direct scan)
+    # or was put to sleep because too many direct reclaimers were already
+    # running (throttle). Excludes kswapd (background, non-blocking).
+    direct = _delta("pgscan_direct") + _delta("pgscan_direct_throttle")
+    # allocstall is exposed per zone-type (allocstall_dma/_dma32/_normal/
+    # _movable/_high/_device) on modern kernels -- /proc/vmstat has NO plain
+    # "allocstall" sum field. Sum every allocstall_* variant present in either
+    # snapshot so the rate is correct regardless of which zones the kernel
+    # config exposes; fall back to a plain "allocstall" only for legacy kernels
+    # that exposed a single sum (and neither variants nor a plain field exist).
+    allocstall_keys = {k for k in set(cur) | set(prev) if k.startswith("allocstall_")}
+    if allocstall_keys:
+        allocstall = sum(max(0, cur.get(k, 0) - prev.get(k, 0)) for k in allocstall_keys)
+    else:
+        allocstall = _delta("allocstall")
     rates["page_scan_mib_s"] = round(scan * mib_per_page / interval, 3)
     rates["page_reclaim_mib_s"] = round(steal * mib_per_page / interval, 3)
     rates["file_refault_mib_s"] = round(refault * mib_per_page / interval, 3)
+    rates["direct_reclaim_mib_s"] = round(direct * mib_per_page / interval, 3)
+    rates["allocstall_per_s"] = round(allocstall / interval, 3)
     return rates
 
 
@@ -1501,6 +1530,11 @@ class VMMonitorBase(ABC):
           page_scan / page_reclaim / file_refault MiB/s. ``vmstat`` is the
           shared pre-read dict; read here when None. Rates divide by the
           ACTUAL monotonic elapsed window between samples (not self.interval).
+          Also derives direct_reclaim_mib_s (pgscan_direct + throttle -- the
+          blocking subset, excludes background kswapd) and allocstall_per_s
+          (allocations that stalled waiting on reclaim, count/s). allocstall is
+          summed across the per-zone-type variants (allocstall_normal/_dma32/
+          ...) since modern /proc/vmstat exposes no plain allocstall sum.
         - /proc/stat: ``stat`` is the pre-parsed dict shared across one
           collect_sample cycle (also consumed by the raw /proc CSV dumper); read
           here via _read_proc_stat() when None. Yields instantaneous iowait%
@@ -1529,6 +1563,11 @@ class VMMonitorBase(ABC):
             "pgsteal_kswapd": vs.get("pgsteal_kswapd", 0),
             "pgsteal_direct": vs.get("pgsteal_direct", 0),
             "workingset_refault_file": vs.get("workingset_refault_file", 0),
+            # allocstall per-zone-type variants (allocstall_normal/_dma32/...).
+            # Modern /proc/vmstat exposes ONLY these, not a plain sum; copy
+            # whatever variants are present -- _compute_pressure_rates sums
+            # the allocstall_* keys.
+            **{k: vs.get(k, 0) for k in vs if k.startswith("allocstall_")},
         }
         now = time.monotonic()
         if self._last_pressure is not None and self._last_pressure_monotonic is not None:
@@ -1580,6 +1619,8 @@ class VMMonitorBase(ABC):
                 "iowait_pct": iowait_pct,
                 "procs_running": procs_running,
                 "procs_blocked": procs_blocked,
+                "direct_reclaim_mib_s": pressure["direct_reclaim_mib_s"],
+                "allocstall_per_s": pressure["allocstall_per_s"],
             }
         )
         if pressure["page_scan_mib_s"] > self.peak_page_scan_mib_s:

@@ -716,6 +716,8 @@ class TestExportStructure(unittest.TestCase):
                 "IOWait (%)",
                 "Procs Running",
                 "Procs Blocked",
+                "Direct Reclaim (MiB/s)",
+                "Alloc Stalls (/s)",
             ],
             "Host_CPU_Timeline": ["Timestamp", "Host CPU (%)", "Host Mem Used (GB)", "Host Mem Usage (%)"],
             "NUMA_CPU_Timeline": ["Timestamp", "NUMA0 CPU (%)", "NUMA5 CPU (%)"],
