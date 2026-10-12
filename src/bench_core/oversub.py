@@ -658,6 +658,76 @@ def _run_subprocess(cmd: list[str], log_path: Path, timeout_sec: int) -> int:
         return proc.returncode if proc.returncode is not None else -1
 
 
+def _run_cleanup(args: argparse.Namespace, *, label: str, halt_on_interrupt: bool = True) -> None:
+    """Tear down leftover sandboxes via ``bench-core --cleanup``.
+
+    Idempotent (lists + kills whatever is still alive). Two callers:
+      * pre-trial, so a prior run's leftovers don't corrupt the ratio;
+      * on a Ctrl+C sweep halt, so an interrupted trial (kernel SIGTERM'd
+        mid-stress, which leaves sandboxes for THIS reaper -- the kernel's
+        SIGTERM path deliberately skips cleanup so the driver owns teardown)
+        does not orphan them when the sweep halts with no next trial to run
+        the pre-trial cleanup.
+
+    Respects ``--cleanup-between-trials`` and ``--dry-run`` (the single auto-
+    cleanup knob; a user who opted out manages sandboxes themselves). The
+    dedicated cleanup timeout caps at 300s so a hung ``bench-core --cleanup``
+    cannot block indefinitely; shrinks to ``trial_timeout_sec`` if smaller.
+
+    ``halt_on_interrupt``: a SECOND Ctrl+C during cleanup. Pre-trial we
+    propagate it (it halts the sweep, matching the prior behavior where a
+    Ctrl+C during pre-trial cleanup unwound straight to main's handler). On
+    the post-interrupt exit path we are already inside an interrupt unwind,
+    so we swallow it (log + return) instead of replacing the propagating
+    interrupt and traceback-ing the driver. Never raises otherwise: a cleanup
+    failure or timeout is logged + downgraded to a warning.
+    """
+    if args.cleanup_between_trials != "on" or args.dry_run:
+        return
+    cleanup_timeout = min(args.trial_timeout_sec or 300, 300)
+    cmd = [*args.bench_core_bin, "--config", args.config, "--provider", args.provider, "--cleanup"]
+    logger.info("%s: tearing down leftovers (timeout %ss)...", label, cleanup_timeout)
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=cleanup_timeout)
+    except subprocess.TimeoutExpired as exc:
+        logger.warning(
+            "%s timed out after %ss; leftover sandboxes may remain\n%s",
+            label,
+            cleanup_timeout,
+            _cleanup_output(exc.stdout, exc.stderr),
+        )
+        return
+    except KeyboardInterrupt:
+        logger.warning("%s interrupted again; leftover sandboxes may remain", label)
+        if halt_on_interrupt:
+            raise
+        return
+    if result.returncode != 0:
+        logger.warning(
+            "%s returned %s; leftover sandboxes may remain\n%s",
+            label,
+            result.returncode,
+            _cleanup_output(result.stdout, result.stderr),
+        )
+
+
+def _cleanup_output(stdout, stderr, *, limit: int = 2000) -> str:
+    """Decode + truncate captured ``bench-core --cleanup`` output for diagnostics.
+
+    ``capture_output=True`` yields bytes (or None); decode defensively and tail
+    to ``limit`` chars so a chatty or hung cleanup cannot flood the driver log.
+    """
+    parts = []
+    for name, blob in (("stdout", stdout), ("stderr", stderr)):
+        if not blob:
+            continue
+        text = blob.decode("utf-8", "replace") if isinstance(blob, bytes) else str(blob)
+        if len(text) > limit:
+            text = "..." + text[-limit:]
+        parts.append(f"[{name}]\n{text}")
+    return "\n".join(parts)
+
+
 def _run_trial(
     args: argparse.Namespace,
     base_yaml: dict,
@@ -727,21 +797,9 @@ def _run_trial(
         time.sleep(args.cooldown_sec)
 
     # Pre-trial cleanup: tear down leftovers so they don't corrupt the ratio.
-    if args.cleanup_between_trials == "on" and not args.dry_run:
-        # Dedicated cleanup timeout: cap at 300s so a hung `bench-core --cleanup`
-        # cannot block the sweep indefinitely; shrink to trial_timeout if smaller.
-        cleanup_timeout = min(args.trial_timeout_sec or 300, 300)
-        logger.info("pre-trial cleanup: tearing down leftovers (timeout %ss)...", cleanup_timeout)
-        result = subprocess.run(
-            [*args.bench_core_bin, "--config", args.config, "--provider", args.provider, "--cleanup"],
-            capture_output=True,
-            timeout=cleanup_timeout,
-        )
-        if result.returncode != 0:
-            logger.warning(
-                "pre-trial cleanup returned %s; leftover sandboxes may corrupt the ratio",
-                result.returncode,
-            )
+    # A Ctrl+C during this window propagates (halt_on_interrupt=True) and unwinds
+    # to main's interrupt handler, which then runs its own post-interrupt cleanup.
+    _run_cleanup(args, label="pre-trial cleanup", halt_on_interrupt=True)
 
     cfg = build_trial_config(
         base_yaml,
@@ -924,10 +982,18 @@ def main(argv: list[str] | None = None) -> int:
                 break
             if row is not None and row.get("_interrupted"):
                 logger.warning("[interrupted] partial results preserved; halting sweep")
+                # The interrupted trial's kernel was SIGTERM'd mid-stress, so it
+                # skipped cleanup (the driver owns teardown); with the sweep
+                # halting there is no next trial to run the pre-trial cleanup,
+                # so tear down the leftovers here.
+                _run_cleanup(args, label="post-interrupt cleanup", halt_on_interrupt=False)
                 return 130
     except KeyboardInterrupt:
         write_outputs(trials, output_root=output_root, configuration=configuration)
         logger.warning("[interrupted] partial results were preserved")
+        # Same leak path: a Ctrl+C between trials leaves the just-SIGTERM'd
+        # trial's sandboxes with no next pre-trial cleanup to reap them.
+        _run_cleanup(args, label="post-interrupt cleanup", halt_on_interrupt=False)
         return 130
 
     write_outputs(trials, output_root=output_root, configuration=configuration)

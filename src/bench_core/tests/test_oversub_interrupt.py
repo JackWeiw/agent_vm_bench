@@ -4,7 +4,9 @@ Companion to ``test_bench_interrupt.py`` (kernel side). Covers the driver's
 half of the no-stats-on-interrupt contract: when a trial is interrupted
 mid-fleet, the partial ``run_summary.json`` the kernel's ``finally`` flushed
 must surface in ``trial-summary.csv`` as an invalid row (rc=130) instead of
-being orphaned, and a user-initiated interrupt must halt the sweep.
+being orphaned, and a user-initiated interrupt must halt the sweep AND tear
+down the interrupted trial's sandboxes (the kernel was SIGTERM'd mid-stress
+and skipped cleanup -- the driver owns teardown).
 
 Two interrupt flavors, distinguished by whether the DRIVER saw a
 ``KeyboardInterrupt`` (not by the subprocess exit code, which is 130 in both):
@@ -14,14 +16,20 @@ Two interrupt flavors, distinguished by whether the DRIVER saw a
     CONTINUES (no ``_interrupted`` sentinel).
   * user-interrupt: the driver's ``_run_subprocess`` raised ``KeyboardInterrupt``
     (user Ctrl-C'd the driver) -> ``_run_trial`` sets ``_interrupted`` and
-    ``main`` halts the sweep (returns 130, runs no further trials).
+    ``main`` halts the sweep (returns 130, runs no further trials) and runs a
+    post-interrupt cleanup so the SIGTERM'd trial's sandboxes do not orphan.
 """
 from __future__ import annotations
 
+import argparse
 import csv
+import subprocess
 import sys
+
+import pytest
 import yaml
 
+import bench_core.oversub as oversub_mod
 from bench_core.oversub import main
 
 
@@ -182,3 +190,208 @@ def test_grace_constants_match_kernel_partial_flush_budget():
 
     assert _TERMINATE_GRACE_SEC == 30
     assert _POSTKILL_GRACE_SEC == 5
+
+
+# ---------------------------------------------------------------------------
+# _run_cleanup helper (gate, command, timeout, second-Ctrl+C handling)
+# ---------------------------------------------------------------------------
+
+
+def _record_run(capture: list, rc: int = 0):
+    """A ``subprocess.run`` stub that records the cmd and returns a CompletedProcess."""
+
+    def _run(cmd, *a, **kw):
+        capture.append(list(cmd))
+        return subprocess.CompletedProcess(args=cmd, returncode=rc)
+
+    return _run
+
+
+def _raise_run(exc):
+    """A ``subprocess.run`` stub that raises ``exc`` every call."""
+
+    def _run(cmd, *a, **kw):
+        raise exc
+
+    return _run
+
+
+def _cleanup_args(cleanup: str, dry: bool) -> argparse.Namespace:
+    return argparse.Namespace(
+        bench_core_bin=["bench-core"],
+        config="cfg.yaml",
+        provider="aenv",
+        cleanup_between_trials=cleanup,
+        dry_run=dry,
+        trial_timeout_sec=0,  # 0 -> default 300 in min(... or 300, 300)
+    )
+
+
+def test_run_cleanup_spawns_bench_core_cleanup_when_on(monkeypatch):
+    """``_run_cleanup`` (on, not dry-run) runs ``bench-core --cleanup`` with the
+    resolved config/provider; the single auto-cleanup knob."""
+    calls: list[list[str]] = []
+
+    def _run(cmd, *a, **kw):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(args=cmd, returncode=0)
+
+    monkeypatch.setattr(oversub_mod.subprocess, "run", _run)
+
+    oversub_mod._run_cleanup(_cleanup_args("on", False), label="unit")
+    assert calls and calls[-1][0] == "bench-core"
+    assert calls[-1][-1] == "--cleanup"
+    assert "--config" in calls[-1] and "cfg.yaml" in calls[-1]
+    assert "--provider" in calls[-1] and "aenv" in calls[-1]
+
+
+def test_run_cleanup_gated_off_by_knob(monkeypatch):
+    """``off`` (user opted out of auto-cleanup) skips the cleanup subprocess."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(oversub_mod.subprocess, "run", lambda cmd, *a, **k: calls.append(list(cmd)))
+    oversub_mod._run_cleanup(_cleanup_args("off", False), label="unit")
+    assert calls == []
+
+
+def test_run_cleanup_gated_off_by_dry_run(monkeypatch):
+    """``dry_run`` (no sandboxes created) skips the cleanup subprocess."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(oversub_mod.subprocess, "run", lambda cmd, *a, **k: calls.append(list(cmd)))
+    oversub_mod._run_cleanup(_cleanup_args("on", True), label="unit")
+    assert calls == []
+
+
+def test_run_cleanup_timeout_logs_captured_output(monkeypatch, caplog):
+    """A hung ``bench-core --cleanup`` (TimeoutExpired) must not crash the driver
+    and must surface the captured stdout/stderr so the operator can diagnose why
+    teardown hung (network/API/config), not just the duration."""
+    exc = subprocess.TimeoutExpired(cmd=["x"], timeout=1, output=b"partial out", stderr=b"err msg")
+    monkeypatch.setattr(oversub_mod.subprocess, "run", _raise_run(exc))
+    with caplog.at_level("WARNING"):
+        oversub_mod._run_cleanup(_cleanup_args("on", False), label="unit")
+    msg = "\n".join(r.message for r in caplog.records)
+    assert "timed out" in msg
+    assert "partial out" in msg and "err msg" in msg  # captured output surfaced
+
+
+def test_run_cleanup_nonzero_logs_captured_output(monkeypatch, caplog):
+    """A non-zero cleanup exit surfaces captured stdout/stderr so the operator
+    can diagnose the teardown failure (not just the return code)."""
+    result = subprocess.CompletedProcess(args=["x"], returncode=1, stdout=b"api error", stderr=b"boom")
+    monkeypatch.setattr(oversub_mod.subprocess, "run", lambda cmd, *a, **kw: result)
+    with caplog.at_level("WARNING"):
+        oversub_mod._run_cleanup(_cleanup_args("on", False), label="unit")
+    msg = "\n".join(r.message for r in caplog.records)
+    assert "returned 1" in msg
+    assert "api error" in msg and "boom" in msg
+
+
+def test_cleanup_output_truncates_and_decodes():
+    """``_cleanup_output`` decodes bytes defensively and tails long output so a
+    chatty cleanup cannot flood the driver log; empty blobs are dropped."""
+    out = oversub_mod._cleanup_output(b"x" * 5000, b"err")
+    assert "..." in out and "err" in out  # truncated + stderr present
+    assert "x" * 5000 not in out  # full blob not dumped
+    assert oversub_mod._cleanup_output(None, None) == ""  # nothing to show
+
+
+def test_run_cleanup_second_ctrl_c_propagates_by_default(monkeypatch):
+    """A second Ctrl+C during cleanup, on the pre-trial path, must propagate so
+    it halts the sweep (matching the prior behavior where a Ctrl+C during
+    pre-trial cleanup unwound to main's handler)."""
+    monkeypatch.setattr(oversub_mod.subprocess, "run", _raise_run(KeyboardInterrupt))
+    with pytest.raises(KeyboardInterrupt):
+        oversub_mod._run_cleanup(_cleanup_args("on", False), label="pre-trial cleanup")
+
+
+def test_run_cleanup_second_ctrl_c_swallowed_on_post_interrupt(monkeypatch):
+    """On the post-interrupt exit path (``halt_on_interrupt=False``) a second
+    Ctrl+C is swallowed so it does not replace the propagating interrupt and
+    traceback the driver -- the driver is already exiting."""
+    monkeypatch.setattr(oversub_mod.subprocess, "run", _raise_run(KeyboardInterrupt))
+    # Must not raise.
+    oversub_mod._run_cleanup(_cleanup_args("on", False), label="post-interrupt cleanup", halt_on_interrupt=False)
+
+
+# ---------------------------------------------------------------------------
+# Driver Ctrl+C -> post-interrupt cleanup of the SIGTERM'd trial's sandboxes
+# ---------------------------------------------------------------------------
+
+
+def _interrupt_argv(base, out_root, stub, *, cleanup):
+    argv = _common_argv(base, out_root, stub)
+    argv[argv.index("off")] = cleanup  # --cleanup-between-trials value
+    return argv
+
+
+def test_user_interrupt_runs_post_interrupt_cleanup(tmp_path, monkeypatch):
+    """A Ctrl+C during a trial halts the sweep AND tears down the interrupted
+    trial's sandboxes.
+
+    The kernel was SIGTERM'd mid-stress (it skips cleanup -- the driver owns
+    teardown), and with the sweep halting there is no next trial to run the
+    pre-trial cleanup, so ``main`` runs a post-interrupt ``bench-core --cleanup``
+    itself. Spies on ``subprocess.run`` (used only by ``_run_cleanup``; the
+    trial subprocess uses ``Popen``) to prove the post-interrupt call landed.
+    """
+    stub = tmp_path / "stub_partial_interrupt.py"
+    _write_stub_bench_core_partial(stub, exit_code=0)  # stub flushes + exits 0; wrapper raises after
+    out_root = tmp_path / "sweep"
+
+    real_run_subprocess = oversub_mod._run_subprocess
+
+    def _interrupt_after_flush(cmd, log_path, timeout_sec):
+        real_run_subprocess(cmd, log_path, 0)  # stub exits fast after flushing
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(oversub_mod, "_run_subprocess", _interrupt_after_flush)
+
+    cleanup_cmds: list[list[str]] = []
+
+    def _record_run(cmd, *a, **kw):
+        cleanup_cmds.append(list(cmd))
+        return subprocess.CompletedProcess(args=cmd, returncode=0)
+
+    monkeypatch.setattr(oversub_mod.subprocess, "run", _record_run)
+
+    rc = main(_interrupt_argv(_partial_base_yaml(tmp_path), out_root, stub, cleanup="on"))
+    assert rc == 130  # user-interrupt halts the sweep
+
+    # Pre-trial cleanup (1st trial) + post-interrupt cleanup => two --cleanup calls.
+    cleanup_calls = [c for c in cleanup_cmds if c[-1] == "--cleanup"]
+    assert len(cleanup_calls) == 2, f"expected pre-trial + post-interrupt cleanup, got {cleanup_calls}"
+
+    # Sweep halted after the first (interrupted) trial.
+    with open(out_root / "trial-summary.csv", newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    assert rows[0]["return_code"] == "130"
+    assert rows[0]["run_summary_path"]  # partial summary was captured
+
+
+def test_post_interrupt_cleanup_skipped_when_between_trials_off(tmp_path, monkeypatch):
+    """With ``--cleanup-between-trials off`` the post-interrupt cleanup is
+    skipped too -- the single auto-cleanup knob; a user who opted out manages
+    sandboxes themselves. The sweep still halts and captures the partial row."""
+    stub = tmp_path / "stub_partial_interrupt_off.py"
+    _write_stub_bench_core_partial(stub, exit_code=0)
+    out_root = tmp_path / "sweep"
+
+    real_run_subprocess = oversub_mod._run_subprocess
+
+    def _interrupt_after_flush(cmd, log_path, timeout_sec):
+        real_run_subprocess(cmd, log_path, 0)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(oversub_mod, "_run_subprocess", _interrupt_after_flush)
+
+    cleanup_cmds: list[list[str]] = []
+    monkeypatch.setattr(oversub_mod.subprocess, "run", _record_run(cleanup_cmds))
+
+    rc = main(_interrupt_argv(_partial_base_yaml(tmp_path), out_root, stub, cleanup="off"))
+    assert rc == 130
+    # No --cleanup invocation at all (gate skips pre-trial AND post-interrupt).
+    assert not [c for c in cleanup_cmds if c[-1] == "--cleanup"]
+    with open(out_root / "trial-summary.csv", newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
