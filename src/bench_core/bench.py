@@ -82,7 +82,7 @@ def _promote(instances: dict[int, SandboxInstance], workflow_type: str) -> dict[
     return {i: BenchSandbox.from_instance(s, workflow_type) for i, s in instances.items()}
 
 
-def _make_sigterm_handler(stop_event: threading.Event):
+def _make_sigterm_handler(stop_event: threading.Event, sigterm_flag: list[bool] | None = None):
     """Build a SIGTERM handler that cooperatively unwinds ``run_benchmark``.
 
     Installs on the MAIN thread only (signal handlers must be registered from
@@ -98,6 +98,14 @@ def _make_sigterm_handler(stop_event: threading.Event):
     ``KeyboardInterrupt`` is a ``BaseException``, so it bypasses the dispatch
     ``except Exception`` block and propagates straight to the ``finally``.
 
+    ``sigterm_flag`` (a one-element list the handler mutates) lets ``run_benchmark``
+    tell a driver-issued SIGTERM apart from a user Ctrl+C (SIGINT), which also
+    surfaces as ``KeyboardInterrupt`` but does not invoke this handler. The
+    ``finally`` skips sandbox cleanup when the flag is set so the driver's
+    ``--cleanup-between-trials`` reaper owns teardown (and the partial-artifact
+    flush stays fast within the driver's terminate grace); a plain Ctrl+C leaves
+    the flag unset, so the ``finally`` tears down the sandboxes this run created.
+
     Limitation: cooperative unwinding only happens when SIGTERM is received on
     the main thread mid-run. A SECOND SIGTERM during the ``finally``
     partial-flush cannot be cooperatively handled -- the kernel writes each
@@ -110,6 +118,8 @@ def _make_sigterm_handler(stop_event: threading.Event):
 
     def _handler(signum, frame):
         stop_event.set()
+        if sigterm_flag is not None:
+            sigterm_flag[0] = True
         raise KeyboardInterrupt
 
     return _handler
@@ -501,8 +511,16 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     # Install a cooperative SIGTERM handler so a driver-initiated terminate
     # (oversub _run_subprocess) unwinds into the finally below for a partial
     # artifact flush instead of a hard die. Linux-only; see _make_sigterm_handler.
-    _prev_sigterm = signal.signal(signal.SIGTERM, _make_sigterm_handler(stop_event))
+    # ``_sigterm_flag`` distinguishes a driver SIGTERM (flag set -> finally skips
+    # sandbox cleanup; the driver's --cleanup-between-trials reaps leftovers) from
+    # a user Ctrl+C (flag unset -> finally cleans up the sandboxes it created).
+    _sigterm_flag = [False]
+    _prev_sigterm = signal.signal(signal.SIGTERM, _make_sigterm_handler(stop_event, _sigterm_flag))
     _artifacts_flushed = False
+    # Tracks whether cleanup_all already ran on the happy/except paths so the
+    # finally does not double-teardown (and so it CAN tell that a Ctrl+C that
+    # skipped those paths still owes a cleanup).
+    _cleaned_up = False
     task_manager: TaskManager | None = None
     try:
         monitor.begin_stress()
@@ -559,6 +577,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         # Only tear down sandboxes the kernel created; detect mode leaves them running.
         if not config.detect_existing:
             provider.cleanup_all()
+            _cleaned_up = True
         else:
             logger.info("Sandboxes left running (detect mode - not killing)")
 
@@ -660,6 +679,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
             series_writer.close()
         if not config.detect_existing:
             provider.cleanup_all()
+            _cleaned_up = True
         raise
     finally:
         # Restore the default SIGTERM disposition for any post-run work.
@@ -719,6 +739,21 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                     )
                 except Exception:
                     logger.exception("partial run_summary write failed")
+
+        # A user Ctrl+C (SIGINT) during dispatch raises KeyboardInterrupt, a
+        # BaseException that bypasses ``except Exception`` and the happy-path
+        # cleanup above, landing here with ``_cleaned_up`` still False. A
+        # driver SIGTERM also lands here (its handler raises KeyboardInterrupt)
+        # but sets ``_sigterm_flag`` -- the driver's --cleanup-between-trials
+        # owns teardown then, so we skip cleanup to keep the partial-flush fast
+        # within the terminate grace. Detect mode never owns its sandboxes.
+        # Guarded so a cleanup failure cannot replace the propagating interrupt.
+        if not _cleaned_up and not config.detect_existing and not _sigterm_flag[0]:
+            logger.info("\nUser interrupt: cleaning up sandboxes created by this run...")
+            try:
+                provider.cleanup_all()
+            except Exception:
+                logger.exception("cleanup_all failed during interrupt teardown")
 
 
 def load_config(path: str | Path, *, workflow_type_override: str | None = None) -> tuple[KernelConfig, dict[str, Any]]:
