@@ -626,6 +626,13 @@ def test_build_xlsx_has_hostproc_sheet_with_timelines(tmp_path):
     # two timeline charts: CPU cores + PSS, each carrying the 2 process series.
     assert len(hp._charts) == 2
     assert sorted(len(c.series) for c in hp._charts) == [2, 2]
+    # horizontal layout: both charts pinned at row 2 (OneCellAnchor._from.row==1,
+    # 0-indexed) and in different column blocks -- a long采集 window must NOT
+    # push the PSS chart below the cores table (the vertical-stack regression).
+    rows = sorted(c.anchor._from.row for c in hp._charts)
+    cols = sorted(c.anchor._from.col for c in hp._charts)
+    assert rows == [1, 1]  # both at row 2
+    assert cols[1] - cols[0] >= 8  # PSS chart seated past the cores chart
 
 
 def test_raw_report_cli_writes_xlsx(tmp_path):

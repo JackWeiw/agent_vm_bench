@@ -375,9 +375,14 @@ def _derive_disk(raw_dir: Path) -> pd.DataFrame:
 _HEADER_FILL = PatternFill("solid", fgColor="1F2937")
 _HEADER_FONT = Font(bold=True, color="F9FAFB")
 
+# openpyxl LineChart(width=16cm) spans ~10 default-width columns. Used to seat
+# the PSS block past the cores chart's right edge so the two side-by-side blocks
+# (horizontal layout) don't overlap.
+_CHART_COL_FOOTPRINT = 10
 
-def _put_row(ws, row, values, header=False):
-    for i, v in enumerate(values, 1):
+
+def _put_row(ws, row, values, header=False, start_col=1):
+    for i, v in enumerate(values, start_col):
         c = ws.cell(row=row, column=i, value=v)
         if header:
             c.fill = _HEADER_FILL
@@ -548,29 +553,49 @@ def _derive_hostproc(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def _build_hostproc_sheet(wb, cores_df, pss_df):
-    """Host-process CPU cores + PSS sheet (mirrors Per-VM sheet layout).
+    """Host-process CPU cores + PSS sheet. The two blocks are laid out SIDE BY
+    SIDE (cores left, PSS right), each = data table + chart to its right, both
+    charts pinned at row 2. A vertical stack (the Per-VM sheet's pattern) would
+    push the PSS table/chart below the cores table -- with a long采集 window
+    the cores table is N rows, so PSS lands at row N+4 and is invisible until
+    you scroll far down. Horizontal layout keeps both blocks at the top.
+
     Skipped when both frames are empty."""
     if (cores_df is None or cores_df.empty) and (pss_df is None or pss_df.empty):
         return
     ws = wb.create_sheet("HostProc")
+    pss_start_col = 1  # when no cores block, PSS starts at col 1
     if cores_df is not None and not cores_df.empty:
         cores_headers = ["t_s", *cores_df.columns[1:]]
-        last_core = _write_table(ws, cores_df, cores_headers)
-        anchor = get_column_letter(len(cores_headers) + 2)
-        cpu_cols = tuple(range(2, len(cores_headers) + 1))
-        _add_line_chart(ws, "Host-proc CPU cores", "cores", 1, cpu_cols, 1, len(cores_df), f"{anchor}2")
-    else:
-        last_core = 1
+        _write_table(ws, cores_df, cores_headers)  # row 1, cols 1..len(headers)
+        nc = len(cores_headers)
+        cpu_cols = tuple(range(2, nc + 1))  # t_s is col 1; data cols 2..nc
+        cores_chart_col = nc + 2
+        _add_line_chart(
+            ws, "Host-proc CPU cores", "cores", 1, cpu_cols, 1, len(cores_df), f"{get_column_letter(cores_chart_col)}2"
+        )
+        # PSS block starts past the cores chart's right edge so the two blocks
+        # (table+chart each) do not overlap.
+        pss_start_col = cores_chart_col + _CHART_COL_FOOTPRINT
     if pss_df is not None and not pss_df.empty:
         pss_headers = ["t_s", *pss_df.columns[1:]]
-        pss_hdr = last_core + 3
-        r = _put_row(ws, pss_hdr, pss_headers, header=True)
+        np_ = len(pss_headers)
+        r = _put_row(ws, 1, pss_headers, header=True, start_col=pss_start_col)
         for _, row in pss_df.iterrows():
-            r = _put_row(ws, r, [row.get(h) for h in pss_headers])
-        anchor = get_column_letter(len(pss_headers) + 2)
-        pss_cols = tuple(range(2, len(pss_headers) + 1))
-        pss_anchor_row = max(pss_hdr + 1, 20)
-        _add_line_chart(ws, "Host-proc PSS", "GB", 1, pss_cols, pss_hdr, len(pss_df), f"{anchor}{pss_anchor_row}")
+            r = _put_row(ws, r, [row.get(h) for h in pss_headers], start_col=pss_start_col)
+        ws.freeze_panes = "A2"
+        pss_data_cols = tuple(range(pss_start_col + 1, pss_start_col + np_))  # t_s at pss_start_col
+        pss_chart_col = pss_start_col + np_ + 2
+        _add_line_chart(
+            ws,
+            "Host-proc PSS",
+            "GB",
+            pss_start_col,
+            pss_data_cols,
+            1,
+            len(pss_df),
+            f"{get_column_letter(pss_chart_col)}2",
+        )
 
 
 def build_host_resources_xlsx(raw_dir, out_path) -> Path:
