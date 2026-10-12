@@ -567,7 +567,7 @@ class LogCapture:
         # -o <ksys_log_dir>/ : ksys writes its _report.json into this dir
         # so it lands alongside the per-turn .log files instead of the
         # log_capture root (cwd).  The dir must exist before ksys starts.
-        ksys_dir = os.path.join(self.rotation_log_dir, "ksys")
+        ksys_dir = os.path.abspath(os.path.join(self.rotation_log_dir, "ksys"))
         os.makedirs(ksys_dir, exist_ok=True)
         cmd = [
             self.config["ksys_path"],
@@ -1103,7 +1103,7 @@ class LogCapture:
         # Rotation-mode ksys processes: collect already finished, only the
         # parse phase may still be running. Bounded by ksys_parse_timeout,
         # then terminated (a straggler's parse output is lost past that).
-        for proc in self._rotation_ksys_procs:
+        for proc, _log_path in self._rotation_ksys_procs:
             if proc.poll() is not None:
                 continue
             deadline = time.time() + self.ksys_parse_timeout
