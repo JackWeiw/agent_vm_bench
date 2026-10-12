@@ -212,4 +212,3 @@ monitor:
   # host-proc tracking. Example (agentENV server daemon):
   # host_procs:
   #   - server:release/server
-  #   - uvm-ublk-daemon
