@@ -60,7 +60,7 @@ oversub-compare = "bench_core.compare_sweeps:main"
 
 [tool.setuptools.packages.find]
 where = ["src", "."]
-include = ["vm_monitor*", "vm_bench*", "e2b_bench*", "docker_bench*", "llm_replay*", "bench_core*", "env_provider*"]
+include = ["vm_monitor*", "vm_bench*", "e2b_bench*", "docker_bench*", "bench_core*", "env_provider*"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
@@ -81,7 +81,7 @@ testpaths = [
     "e2b_bench/tests",
     "vm_bench/tests",
     "docker_bench/tests",
-    "llm_replay/tests",
+    "vm_monitor/tests",
 ]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
