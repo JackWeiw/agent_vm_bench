@@ -375,9 +375,14 @@ def _derive_disk(raw_dir: Path) -> pd.DataFrame:
 _HEADER_FILL = PatternFill("solid", fgColor="1F2937")
 _HEADER_FONT = Font(bold=True, color="F9FAFB")
 
+# openpyxl LineChart(width=16cm) spans ~10 default-width columns. Used to seat
+# the PSS block past the cores chart's right edge so the two side-by-side blocks
+# (horizontal layout) don't overlap.
+_CHART_COL_FOOTPRINT = 10
 
-def _put_row(ws, row, values, header=False):
-    for i, v in enumerate(values, 1):
+
+def _put_row(ws, row, values, header=False, start_col=1):
+    for i, v in enumerate(values, start_col):
         c = ws.cell(row=row, column=i, value=v)
         if header:
             c.fill = _HEADER_FILL
@@ -499,6 +504,100 @@ def _build_disk_sheet(wb, df):
         _add_line_chart(ws, "Disk util %", "%", 1, util_cols, 1, n, f"{anchor}20")
 
 
+def _derive_hostproc(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Per named host-process CPU cores + PSS GB from hostproc_cpu_raw.csv.
+
+    Cores = delta of (utime+stime) / _CLK_TCK / dt, guarded, **grouped by
+    (name, pid)** so a pid restart resets the delta baseline -- NEVER delta
+    across pids (a new pid's utime starts from 0; cross-pid delta would emit a
+    huge negative spike). The per-(name,pid) segments are then pivoted onto one
+    curve per ``name`` (a restart = a separate segment on the same series; at
+    any one timestamp only one pid for a name is live, so pivot aggfunc="first"
+    is unambiguous). PSS is a gauge, plotted directly. Returns (cores_df,
+    pss_df) wide (rows=timestamp, cols=name); both empty when the CSV is
+    absent (-> sheet skipped)."""
+    hp = _read_csv(raw_dir, "hostproc_cpu_raw.csv")
+    if hp is None or hp.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    hp = hp.sort_values(["name", "pid", "timestamp"]).copy()
+    hp["timestamp"] = _ts_to_epoch(hp["timestamp"])
+    hp["cores"] = math.nan
+    hp["pss_gb"] = math.nan
+    for (name, pid), g in hp.groupby(["name", "pid"]):
+        g = g.sort_values("timestamp")
+        prev = None
+        c_col, p_col = [], []
+        for _, row in g.iterrows():
+            rd = row.to_dict()
+            if prev is None:
+                c_col.append(math.nan)
+            else:
+                dt = float(row["timestamp"]) - float(prev["timestamp"])
+                if _guarded(rd, prev, dt, f"hostproc={name}/{pid}", ["utime", "stime"]):
+                    c_col.append(math.nan)
+                else:
+                    d = _f(rd, "utime") + _f(rd, "stime") - _f(prev, "utime") - _f(prev, "stime")
+                    c_col.append(d / _CLK_TCK / dt if dt else math.nan)
+            p_col.append(_f(rd, "pss_mb") / 1024)
+            prev = rd
+        hp.loc[g.index, "cores"] = c_col
+        hp.loc[g.index, "pss_gb"] = p_col
+    p_cores = hp.pivot_table(index="timestamp", columns="name", values="cores", aggfunc="first", dropna=False)
+    p_pss = hp.pivot_table(index="timestamp", columns="name", values="pss_gb", aggfunc="first", dropna=False)
+    p_cores = p_cores.sort_index()
+    p_pss = p_pss.sort_index()
+    t0 = p_cores.index.min()
+    p_cores.insert(0, "t_s", p_cores.index - t0)
+    p_pss.insert(0, "t_s", p_pss.index - t0)
+    return p_cores, p_pss
+
+
+def _build_hostproc_sheet(wb, cores_df, pss_df):
+    """Host-process CPU cores + PSS sheet. The two blocks are laid out SIDE BY
+    SIDE (cores left, PSS right), each = data table + chart to its right, both
+    charts pinned at row 2. A vertical stack (the Per-VM sheet's pattern) would
+    push the PSS table/chart below the cores table -- with a long采集 window
+    the cores table is N rows, so PSS lands at row N+4 and is invisible until
+    you scroll far down. Horizontal layout keeps both blocks at the top.
+
+    Skipped when both frames are empty."""
+    if (cores_df is None or cores_df.empty) and (pss_df is None or pss_df.empty):
+        return
+    ws = wb.create_sheet("HostProc")
+    pss_start_col = 1  # when no cores block, PSS starts at col 1
+    if cores_df is not None and not cores_df.empty:
+        cores_headers = ["t_s", *cores_df.columns[1:]]
+        _write_table(ws, cores_df, cores_headers)  # row 1, cols 1..len(headers)
+        nc = len(cores_headers)
+        cpu_cols = tuple(range(2, nc + 1))  # t_s is col 1; data cols 2..nc
+        cores_chart_col = nc + 2
+        _add_line_chart(
+            ws, "Host-proc CPU cores", "cores", 1, cpu_cols, 1, len(cores_df), f"{get_column_letter(cores_chart_col)}2"
+        )
+        # PSS block starts past the cores chart's right edge so the two blocks
+        # (table+chart each) do not overlap.
+        pss_start_col = cores_chart_col + _CHART_COL_FOOTPRINT
+    if pss_df is not None and not pss_df.empty:
+        pss_headers = ["t_s", *pss_df.columns[1:]]
+        np_ = len(pss_headers)
+        r = _put_row(ws, 1, pss_headers, header=True, start_col=pss_start_col)
+        for _, row in pss_df.iterrows():
+            r = _put_row(ws, r, [row.get(h) for h in pss_headers], start_col=pss_start_col)
+        ws.freeze_panes = "A2"
+        pss_data_cols = tuple(range(pss_start_col + 1, pss_start_col + np_))  # t_s at pss_start_col
+        pss_chart_col = pss_start_col + np_ + 2
+        _add_line_chart(
+            ws,
+            "Host-proc PSS",
+            "GB",
+            pss_start_col,
+            pss_data_cols,
+            1,
+            len(pss_df),
+            f"{get_column_letter(pss_chart_col)}2",
+        )
+
+
 def build_host_resources_xlsx(raw_dir, out_path) -> Path:
     """Read raw_data/*.csv -> derive -> write host_resources.xlsx (3 spotbox-style
     sheets). Independent of resource_report.xlsx (separate filename preserves
@@ -514,6 +613,7 @@ def build_host_resources_xlsx(raw_dir, out_path) -> Path:
         logger.warning("per-VM derivation failed for raw_dir=%s: %s", raw_dir, e)
         cores_df, pss_df = pd.DataFrame(), pd.DataFrame()
     disk_df = _derive_disk(raw_dir)
+    hp_cores_df, hp_pss_df = _derive_hostproc(raw_dir)
     # Fill host_df.vm_cores from the per-VM cores aggregate (sum across VMs per
     # timestamp). host_df is RangeIndex; cores_df is timestamp-indexed -> align
     # by position (same sample cadence). ponytail: positional fill assumes host
@@ -543,6 +643,7 @@ def build_host_resources_xlsx(raw_dir, out_path) -> Path:
     _build_host_sheet(wb, host_df)
     _build_per_vm_sheet(wb, cores_df, pss_df)
     _build_disk_sheet(wb, disk_df)
+    _build_hostproc_sheet(wb, hp_cores_df, hp_pss_df)
     # If no sheet was built (all raw CSVs missing/empty), there is nothing to
     # write -- log + return without saving a misleading empty workbook. Also
     # avoids wb.save() IndexError on a 0-sheet book (default was not removed).

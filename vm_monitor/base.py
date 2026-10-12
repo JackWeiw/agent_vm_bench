@@ -15,6 +15,7 @@ Provides system-level monitoring infrastructure independent of VMM type:
 
 import csv
 import glob
+import logging
 import os
 import queue
 import re
@@ -29,6 +30,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 import psutil
+
+logger = logging.getLogger(__name__)
 
 # Host page size (bytes). Used to convert /proc/vmstat page counters (pgscan,
 # pgsteal, workingset_refault) into MiB. Guarded so importing this module on a
@@ -81,6 +84,7 @@ _ALL_SAMPLE_COLLECTORS = frozenset(
         "ublk",
         "pss",
         "ublk_daemon",
+        "hostproc",
     }
 )
 
@@ -290,6 +294,7 @@ class _ProcRawWriter:
         self._vm = None  # (fh, DictWriter)
         self._disk = None  # (fh, DictWriter)
         self._ublk = None  # (fh, DictWriter)
+        self._hostproc = None  # (fh, DictWriter)
         self._numa_map_written = False
         self._thread = threading.Thread(target=self._run, name="proc-raw-writer", daemon=True)
         self._thread.start()
@@ -308,6 +313,11 @@ class _ProcRawWriter:
     def enqueue_ublk(self, ts: str, pid: int, utime, stime) -> None:
         """ublk-daemon raw jiffies (utime+stime) for ublk_cpu_raw.csv."""
         self._q.put(("ublk", ts, pid, utime, stime))
+
+    def enqueue_hostproc(self, ts: str, name: str, pid: int, utime, stime, pss_mb) -> None:
+        """Named host-process raw jiffies (utime+stime) + PSS MB for
+        hostproc_cpu_raw.csv. ``name`` is the spec label (comm)."""
+        self._q.put(("hostproc", ts, name, pid, utime, stime, pss_mb))
 
     def enqueue_numa_map(self, node_to_cpus: dict) -> None:
         # Idempotent: collect_sample calls every cycle; only the first writes.
@@ -339,6 +349,9 @@ class _ProcRawWriter:
             elif tag == "ublk":
                 _, ts, pid, utime, stime = item
                 self._write_ublk(ts, pid, utime, stime)
+            elif tag == "hostproc":
+                _, ts, name, pid, utime, stime, pss_mb = item
+                self._write_hostproc(ts, name, pid, utime, stime, pss_mb)
             elif tag == "numa_map":
                 _, node_to_cpus = item
                 self._write_numa_map(node_to_cpus)
@@ -468,6 +481,27 @@ class _ProcRawWriter:
         dw.writerow({"timestamp": ts, "pid": pid, "utime": utime, "stime": stime})
         fh.flush()
 
+    def _write_hostproc(self, ts: str, name: str, pid, utime, stime, pss_mb) -> None:
+        # Per named host process -> long format (one row per process per 1s
+        # sub-sample). pss_mb is a smaps_rollup gauge; utime/stime are
+        # cumulative counters an agent deltas into CPU cores. The ``name``
+        # column is the spec label (comm); a pid restart is just another row
+        # keyed by the new pid -- never delta ACROSS pids (raw_report groups
+        # by (name, pid) for the cores delta, then merges onto one name curve).
+        if self._hostproc is None:
+            fh = open(os.path.join(self._dir, "hostproc_cpu_raw.csv"), "w", newline="", encoding="utf-8")
+            dw = csv.DictWriter(
+                fh,
+                fieldnames=["timestamp", "name", "pid", "utime", "stime", "pss_mb"],
+                restval="",
+                extrasaction="ignore",
+            )
+            dw.writeheader()
+            self._hostproc = (fh, dw)
+        fh, dw = self._hostproc
+        dw.writerow({"timestamp": ts, "name": name, "pid": pid, "utime": utime, "stime": stime, "pss_mb": pss_mb})
+        fh.flush()
+
     def close(self) -> None:
         """Signal the drain thread to exit, then close every open file handle.
 
@@ -482,7 +516,7 @@ class _ProcRawWriter:
                 fh.close()
             except OSError:
                 pass
-        for sink in (self._percpu, self._vm, self._disk, self._ublk):
+        for sink in (self._percpu, self._vm, self._disk, self._ublk, self._hostproc):
             if sink is not None:
                 try:
                     sink[0].close()
@@ -603,6 +637,25 @@ class VMMonitorBase(ABC):
         self._ublk_daemon_pid = None
         self._prev_ublk_daemon_jiffies = None
         self._ublk_daemon_last_t = 0.0
+
+        # User-specified host processes to monitor by name (e.g. the agentENV
+        # "server" daemon, comm="server" + cmdline contains "release/server").
+        # Generalized sibling of collect_ublk_daemon: each spec tracks ONE pid
+        # (resolved lazily via _resolve_hostproc_pid, re-resolved on miss) and
+        # streams raw utime+stime+pss to hostproc_cpu_raw.csv. ``specs`` is a
+        # list of (label, comm, cmdline_substr); set via set_host_proc_specs()
+        # from the CLI --host-proc flag. Empty by default -> no-op collector.
+        self.hostproc_history: list[dict] = []
+        self._hostproc_specs: list[tuple[str, str, str | None]] = []
+        self._hostproc_pids: dict[str, int | None] = {}
+        self._hostproc_prev: dict[str, float] = {}  # prev jiffies (utime+stime)
+        self._hostproc_last_t: dict[str, float] = {}  # monotonic ts of last sample
+        # per-spec once-only flags: warned_multi (multi-match), warned_missing
+        # (consecutive not-found after threshold). Re-armed when pid is found.
+        self._hostproc_warned_multi: set[str] = set()
+        self._hostproc_warned_missing: set[str] = set()
+        self._hostproc_missing_streak: dict[str, int] = {}  # consecutive miss count
+        self._hostproc_ever_seen: set[str] = set()
 
         # Fleet-total PSS timeline (aggregate of per-VM pss_mb each sample).
         # PSS splits shared pages across sharers, so the fleet total is the true
@@ -1216,23 +1269,75 @@ class VMMonitorBase(ABC):
             pass
 
     @staticmethod
-    def _find_pid_by_comm(comm: str) -> int | None:
+    def _find_pid_by_comm(comm: str, cmdline_substr: str | None = None) -> int | None:
         """First pid whose /proc/<pid>/comm equals ``comm`` (one /proc scan).
 
         None when no such process exists (e.g. the ublk daemon is absent on a
         non-ublk host). Used by collect_ublk_daemon to resolve the daemon pid
         lazily; rescans on miss so a daemon started after the monitor launches
         is picked up on a later sample.
+
+        ``cmdline_substr`` (optional) additionally requires the substring in
+        /proc/<pid>/cmdline -- necessary for generic comms like ``server``
+        (the agentENV server's comm is ``server``; without a filter any process
+        literally named ``server`` would match). The cmdline file is
+        NUL-joined; the match is a plain substring over those raw bytes (parity
+        with spotbox ``find_pid_by_comm``), so ``release/server`` also matches
+        ``release/server-foo`` -- accept the minor over-match and use a more
+        specific substr when it matters. Returns the FIRST match and short-
+        circuits; collect_host_procs uses _resolve_hostproc_pid when it also
+        needs a multi-match count for the "spec too loose" WARNING.
         """
         for path in glob.glob("/proc/[0-9]*/comm"):
             try:
                 with open(path) as f:
                     if f.read().strip() != comm:
                         continue
-                return int(path.split("/")[2])
+                pid = int(path.split("/")[2])
+                if cmdline_substr is not None:
+                    try:
+                        with open(f"/proc/{pid}/cmdline") as cf:
+                            if cmdline_substr not in cf.read():
+                                continue
+                    except OSError:
+                        continue
+                return pid
             except (OSError, ValueError):
                 pass
         return None
+
+    @staticmethod
+    def _resolve_hostproc_pid(comm: str, cmdline_substr: str | None) -> tuple[int | None, int]:
+        """Resolve a host-proc spec to (first_pid, match_count_up_to_2).
+
+        One /proc scan collecting up to 2 matches so the caller can emit a
+        one-time "spec matches N pids -- tracking the first" WARNING when a
+        spec is too loose (e.g. ``server`` with no cmdline filter). Stops at 2
+        (the count only needs to distinguish 1 vs many). Used by
+        collect_host_procs at (re)resolve time only -- never per-sample -- so
+        the full /proc scan cost (~100ms) is paid once per spec per restart,
+        not every tick.
+        """
+        matches: list[int] = []
+        for path in glob.glob("/proc/[0-9]*/comm"):
+            try:
+                with open(path) as f:
+                    if f.read().strip() != comm:
+                        continue
+                pid = int(path.split("/")[2])
+                if cmdline_substr is not None:
+                    try:
+                        with open(f"/proc/{pid}/cmdline") as cf:
+                            if cmdline_substr not in cf.read():
+                                continue
+                    except OSError:
+                        continue
+                matches.append(pid)
+                if len(matches) >= 2:
+                    break
+            except (OSError, ValueError):
+                pass
+        return (matches[0] if matches else None, len(matches))
 
     # ===================== Collect ublk Daemon CPU =====================
     def collect_ublk_daemon(self):
@@ -1269,6 +1374,119 @@ class VMMonitorBase(ABC):
         self._prev_ublk_daemon_jiffies = jiffies
         self._ublk_daemon_last_t = now
         self.ublk_daemon_history.append({"ts": ts, "cores": cores})
+
+    # ===================== Collect user-specified host processes ============
+    def set_host_proc_specs(self, specs: list[str]) -> None:
+        """Parse + store ``--host-proc`` specs for collect_host_procs.
+
+        Each spec is ``comm`` or ``comm:cmdline_substr``. The label used in
+        the raw CSV / sheet is the comm (a pid column disambiguates restarts).
+        A comm without a cmdline filter is allowed but loose (any process with
+        that comm matches); ``server`` should carry ``:release/server`` etc.
+        Commas are NOT valid inside a spec (a comma-separated YAML value would
+        split a spec across the comma); use a YAML list for cmdline filters
+        that need a comma.
+        """
+        parsed: list[tuple[str, str, str | None]] = []
+        for spec in specs:
+            spec = spec.strip()
+            if not spec:
+                continue
+            if ":" in spec:
+                comm, substr = spec.split(":", 1)
+                comm, substr = comm.strip(), substr.strip()
+                if not comm:
+                    logger.warning("host-proc spec %r has empty comm; dropped", spec)
+                    continue
+                parsed.append((comm, comm, substr or None))
+            else:
+                parsed.append((spec, spec, None))
+        self._hostproc_specs = parsed
+        if parsed:
+            labels = [f"{c}:{s}" if s else c for _, c, s in parsed]
+            print(f"[INFO] host-proc specs: {labels}")
+
+    # Host-proc "not found" consecutive-miss threshold before a WARNING fires
+    # (at 1s sub-sample cadence, ~5s of "never seen this spec" -> likely a typo).
+    _HOSTPROC_MISS_THRESHOLD = 5
+
+    def collect_host_procs(self):
+        """CPU cores + PSS for each user-specified host process (collect_ublk_daemon
+        generalized to a list of name specs).
+
+        Per spec: resolve the pid lazily via _resolve_hostproc_pid (cached in
+        self._hostproc_pids[label]; re-resolved on /proc/<pid>/stat miss so a
+        late start or restart is picked up), read utime+stime via
+        _read_pid_jiffies and PSS via _read_pss_mb, enqueue raw cumulative
+        counters to hostproc_cpu_raw.csv (the drain thread writes the long CSV),
+        and append a derived {ts, name, cores, pss_mb} row to hostproc_history
+        for the sheet. On miss: DEBUG (transient); after
+        _HOSTPROC_MISS_THRESHOLD consecutive misses while never yet seen,
+        WARNING once ("check comm/cmdline spec") -- surfaces a typo'd spec
+        instead of a silently-empty CSV. Multi-match at resolve time: WARNING
+        once per spec ("matches N pids, tracking first"). All warnings re-arm
+        when the pid is (re)found.
+        """
+        if not self._hostproc_specs:
+            return
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        now = time.perf_counter()
+        for label, comm, substr in self._hostproc_specs:
+            pid = self._hostproc_pids.get(label)
+            if pid is None:
+                pid, count = self._resolve_hostproc_pid(comm, substr)
+                if pid is not None:
+                    self._hostproc_pids[label] = pid
+                    self._hostproc_warned_missing.discard(label)
+                    self._hostproc_missing_streak[label] = 0
+                    self._hostproc_ever_seen.add(label)
+                    if count > 1 and label not in self._hostproc_warned_multi:
+                        logger.warning(
+                            "host-proc spec %r matched %d pids; tracking pid %d (first match)",
+                            f"{comm}{(':' + substr) if substr else ''}",
+                            count,
+                            pid,
+                        )
+                        self._hostproc_warned_multi.add(label)
+                else:
+                    # transient / late start / typo'd spec -- DEBUG per sample,
+                    # escalate to a one-time WARNING after a streak.
+                    streak = self._hostproc_missing_streak.get(label, 0) + 1
+                    self._hostproc_missing_streak[label] = streak
+                    logger.debug("host-proc %r not found (streak %d)", label, streak)
+                    if (
+                        streak >= self._HOSTPROC_MISS_THRESHOLD
+                        and label not in self._hostproc_warned_missing
+                        and label not in self._hostproc_ever_seen
+                    ):
+                        logger.warning(
+                            "host-proc spec %r not found after %d samples; "
+                            "check comm/cmdline (history will be empty until it appears)",
+                            f"{comm}{(':' + substr) if substr else ''}",
+                            streak,
+                        )
+                        self._hostproc_warned_missing.add(label)
+                    continue
+            js = self._read_pid_jiffies(pid)
+            if js is None:
+                # process exited/restarted -> re-resolve next sample.
+                self._hostproc_pids[label] = None
+                self._hostproc_prev.pop(label, None)
+                self._hostproc_last_t.pop(label, None)
+                logger.debug("host-proc %r pid %d gone; will re-resolve", label, pid)
+                continue
+            pss_mb = self._read_pss_mb(pid) if self._collects("pss") else 0.0
+            if self._proc_raw is not None:
+                self._proc_raw.enqueue_hostproc(ts, label, pid, js[0], js[1], pss_mb)
+            jiffies = js[0] + js[1]
+            cores = 0.0
+            prev = self._hostproc_prev.get(label)
+            if prev is not None:
+                dt = max(1e-6, now - self._hostproc_last_t.get(label, now))
+                cores = round(max(0, jiffies - prev) / _CLK_TCK / dt, 3)
+            self._hostproc_prev[label] = jiffies
+            self._hostproc_last_t[label] = now
+            self.hostproc_history.append({"ts": ts, "name": label, "cores": cores, "pss_mb": round(pss_mb, 2)})
 
     # ===================== Collect Host Page-Cache Pressure =====================
     def collect_host_pressure(self, meminfo: dict | None = None, vmstat: dict | None = None, stat: dict | None = None):
@@ -2209,6 +2427,8 @@ class VMMonitorBase(ABC):
                 self.collect_ublk_count()
             if self._collects("ublk_daemon"):
                 self.collect_ublk_daemon()
+            if self._collects("hostproc") and self._hostproc_specs:
+                self.collect_host_procs()
 
     def display_realtime_table(self, sample_data, elapsed_time, duration, check_method=""):
         """Display real-time table"""

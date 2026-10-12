@@ -577,10 +577,10 @@ From `/proc/stat`:
 | `IOWait (%)` | `max(0, Δiowait) / Δtotal_jiffies × 100` — `iowait` and `total` are the cumulative `cpu` line values (jiffies); deltas taken vs the prior sample, so this is the share of CPU time spent in `iowait` over the interval. |
 | `Procs Running` / `Procs Blocked` | literal `procs_running` / `procs_blocked` lines (instantaneous counts) |
 
-### Per-VM & ublk-daemon CPU (raw jiffies — `vm_cpu_raw.csv` / `ublk_cpu_raw.csv`)
+### Per-VM & ublk-daemon & host-proc CPU (raw jiffies — `vm_cpu_raw.csv` / `ublk_cpu_raw.csv` / `hostproc_cpu_raw.csv`)
 
 These raw CSVs store **cumulative** `/proc/<pid>/stat` `utime`+`stime` jiffies
-(one row per VM/daemon per sample); an agent derives CPU% via delta — the
+(one row per VM/daemon/process per sample); an agent derives CPU% via delta — the
 `Raw_VM_Data` sheet's `CPU (%)` column uses psutil `cpu_percent()` (rate-only,
 rounded), so the raw jiffies are the authoritative source.
 
@@ -588,6 +588,17 @@ rounded), so the raw jiffies are the authoritative source.
 |--------|---------|
 | Per-VM CPU (%) | `Δ(utime + stime) / _CLK_TCK / interval × 100` — `Δ` vs the same `pid`'s prior sample; divide by the real elapsed between the two rows' `timestamp`. A `pid` restart (new daemon) is a fresh row → 0% on its first sample. |
 | ublk-daemon CPU (%) | same formula, keyed by `pid` in `ublk_cpu_raw.csv` |
+| Host-proc CPU (%) | same jiffy-delta formula, keyed by **(name, pid)** in `hostproc_cpu_raw.csv` — a `pid` reset (process restart) MUST reset the delta baseline (never delta across pids); the per-(name,pid) segments then merge onto one curve per `name`. `pss_mb` is a smaps_rollup gauge, plotted directly (no delta). |
+
+> `hostproc_cpu_raw.csv` is written only when `--host-proc` specs are set (the
+> collector is a no-op without specs). Each spec = `comm` or
+> `comm:cmdline_substr` and tracks ONE pid (the agentENV server is
+> `server:release/server`). Resolution is by `/proc/<pid>/comm` (+ optional
+> `/proc/<pid>/cmdline` substring); cmdline match is a plain substring over the
+> NUL-joined raw bytes (parity with `spotbox_monitor`), so `release/server` also
+> matches `release/server-foo`. A spec matching >1 pid logs a one-time WARNING
+> (tracks the first); a never-found spec logs a one-time WARNING after
+> `_HOSTPROC_MISS_THRESHOLD` consecutive misses.
 
 > A multi-vCPU row can exceed 100% (each core = 100%; a 384-core host saturates at 38400%). `_CLK_TCK = os.sysconf("SC_CLK_TCK")` (typically 100).
 
@@ -813,6 +824,7 @@ record loop) is always on; only the auxiliary resource collectors toggle.
 | `--no-disk` | `collect_disk_stats` | Disk_IO_Timeline / disk_io.svg / disk_latency.svg |
 | `--no-ublk` | `collect_ublk_count` | `ublk Devices` column (on Disk_IO_Timeline) |
 | `--no-ublk-daemon` | `collect_ublk_daemon` | `Ublk Daemon Cores` column (on Disk_IO_Timeline) |
+| `--no-hostproc` | `collect_host_procs` | `HostProc` sheet (in `host_resources.xlsx`) + `hostproc_cpu_raw.csv` |
 | `--no-pss` | per-VM `_read_pss_mb` + `collect_vm_total_pss` | per-VM `PSS (MB)` + `Avg/Max PSS (MB)` (VM_Stats/Raw_VM_Data) + `VM_Total_PSS_Timeline` / vm_total_pss.svg |
 | `--no-devkit-mem` | `devkit_mem` sub-tool | DevKit_Memory / NUMA_Bandwidth |
 | `--no-devkit-topdown` | `devkit_top_down` sub-tool | DevKit_TopDown |

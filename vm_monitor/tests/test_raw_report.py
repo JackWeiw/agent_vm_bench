@@ -10,6 +10,7 @@ import os
 from vm_monitor.raw_report import (
     _derive_disk,
     _derive_host,
+    _derive_hostproc,
     _derive_per_vm,
     _guarded,
     build_host_resources_xlsx,
@@ -550,6 +551,88 @@ def test_build_xlsx_no_crash_when_all_csvs_missing(tmp_path, caplog):
     assert result == out  # returns the intended path without raising
     assert not out.exists()  # no misleading empty workbook written
     assert any("no raw CSV data" in m for m in caplog.messages)
+
+
+def _seed_hostproc(path):
+    """Two named host procs (server + worker) across 2 samples, incl. a server
+    pid restart at t=4 (pid 700 -> 800). Cores = delta(utime+stime)/_CLK_TCK/dt,
+    grouped by (name,pid) so the restart never cross-deltas."""
+    _write(
+        path,
+        ["timestamp", "name", "pid", "utime", "stime", "pss_mb"],
+        [
+            ["0", "server", "700", "100", "10", "512.0"],
+            ["2", "server", "700", "300", "30", "520.0"],  # delta 220 jiffies / 2s
+            ["4", "server", "800", "5", "1", "530.0"],  # restarted pid: new baseline, no neg spike
+            ["0", "worker", "900", "0", "0", "8.0"],
+            ["2", "worker", "900", "200", "0", "8.0"],
+        ],
+    )
+
+
+def test_derive_hostproc_groups_by_name_pid(tmp_path):
+    """Cores derive per (name,pid); a pid restart yields NaN for the new pid's
+    first sample (no prev) -- NOT a negative spike from cross-pid delta."""
+    from vm_monitor.base import _CLK_TCK
+
+    _seed_hostproc(tmp_path / "hostproc_cpu_raw.csv")
+    cores_df, pss_df = _derive_hostproc(tmp_path)
+    assert list(cores_df.columns)[1:] == ["server", "worker"]  # t_s + 2 names
+    server = cores_df["server"].tolist()
+    # 3 timestamps; the restarted pid's first sample is NaN (saw=True only when
+    # a pid has >=2 distinct snapshots <= cur_ts). The t=2 sample derives from
+    # pid 700: (300+30 - 100-10) / _CLK_TCK / 2.
+    import math as _math
+
+    valid = [v for v in server if not _math.isnan(v)]
+    assert len(valid) == 1
+    assert _math.isclose(valid[0], (220) / _CLK_TCK / 2, abs_tol=0.001)
+    # PSS is a gauge: server 512 MB -> 0.5 GB at the first sample.
+    assert _math.isclose(pss_df["server"].iloc[0], 0.5, abs_tol=0.001)
+
+
+def test_build_xlsx_has_hostproc_sheet_with_timelines(tmp_path):
+    """hostproc_cpu_raw.csv -> a HostProc sheet in host_resources.xlsx with two
+    timeline line charts (CPU cores + PSS), one series per process name."""
+    _write(
+        tmp_path / "host_cpu_raw.csv",
+        [
+            "timestamp",
+            "cpu_user",
+            "cpu_nice",
+            "cpu_system",
+            "cpu_idle",
+            "cpu_iowait",
+            "cpu_irq",
+            "cpu_softirq",
+            "cpu_steal",
+            "cpu_guest",
+            "cpu_guest_nice",
+            "ctxt",
+            "btime",
+            "processes",
+            "procs_running",
+            "procs_blocked",
+            "softirq_total",
+        ],
+        [["0", "1", "0", "1", "90", "0", "0", "0", "0", "0", "0", "1", "0", "0", "0", "0", "0"]],
+    )
+    _seed_hostproc(tmp_path / "hostproc_cpu_raw.csv")
+    out = tmp_path / "host_resources.xlsx"
+    build_host_resources_xlsx(tmp_path, out)
+    wb = openpyxl.load_workbook(out)
+    assert "HostProc" in wb.sheetnames
+    hp = wb["HostProc"]
+    # two timeline charts: CPU cores + PSS, each carrying the 2 process series.
+    assert len(hp._charts) == 2
+    assert sorted(len(c.series) for c in hp._charts) == [2, 2]
+    # horizontal layout: both charts pinned at row 2 (OneCellAnchor._from.row==1,
+    # 0-indexed) and in different column blocks -- a long采集 window must NOT
+    # push the PSS chart below the cores table (the vertical-stack regression).
+    rows = sorted(c.anchor._from.row for c in hp._charts)
+    cols = sorted(c.anchor._from.col for c in hp._charts)
+    assert rows == [1, 1]  # both at row 2
+    assert cols[1] - cols[0] >= 8  # PSS chart seated past the cores chart
 
 
 def test_raw_report_cli_writes_xlsx(tmp_path):

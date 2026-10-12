@@ -54,6 +54,12 @@ class _RecorderMonitor(VMMonitorBase):
     def collect_ublk_count(self):  # noqa: N802 - recorder seam
         self._record("ublk")
 
+    def collect_ublk_daemon(self):  # noqa: N802 - recorder seam
+        self._record("ublk_daemon")
+
+    def collect_host_procs(self):  # noqa: N802 - recorder seam
+        self._record("hostproc")
+
     # Shared /proc reads -- counted so we can assert the skip:
     def _read_meminfo(self):  # noqa: N802 - recorder seam
         self._record("meminfo")
@@ -160,6 +166,42 @@ def test_disk_subsample_skips_disabled_ublk(monkeypatch):
     mon._disk_subsample_sleep(2.0)
     assert "ublk" not in mon.called
     assert "disk" in mon.called
+
+
+def test_disk_subsample_skips_hostproc_when_no_specs(monkeypatch):
+    """hostproc is a no-op (and not called) when --host-proc specs are empty,
+    even with the collector enabled -- the guard is `collects AND specs`."""
+    mon = _RecorderMonitor()
+    mon.running = True
+    monkeypatch.setattr(base.time, "sleep", lambda s: None)
+    ticks = iter([0.0, 1.0, 2.0])
+    monkeypatch.setattr(base.time, "monotonic", lambda: next(ticks, 999.0))
+    mon._disk_subsample_sleep(2.0)
+    assert "hostproc" not in mon.called  # no specs -> guarded out
+
+
+def test_disk_subsample_skips_disabled_hostproc(monkeypatch):
+    """--no-hostproc globally skips collection regardless of specs."""
+    mon = _RecorderMonitor()
+    mon.running = True
+    mon.disable_collectors({"hostproc"})
+    mon.set_host_proc_specs(["server:release/server"])
+    monkeypatch.setattr(base.time, "sleep", lambda s: None)
+    ticks = iter([0.0, 1.0, 2.0])
+    monkeypatch.setattr(base.time, "monotonic", lambda: next(ticks, 999.0))
+    mon._disk_subsample_sleep(2.0)
+    assert "hostproc" not in mon.called  # disabled -> skipped even with specs
+
+
+def test_disk_subsample_runs_hostproc_when_enabled_with_specs(monkeypatch):
+    mon = _RecorderMonitor()
+    mon.running = True
+    mon.set_host_proc_specs(["server:release/server"])
+    monkeypatch.setattr(base.time, "sleep", lambda s: None)
+    ticks = iter([0.0, 1.0, 2.0])
+    monkeypatch.setattr(base.time, "monotonic", lambda: next(ticks, 999.0))
+    mon._disk_subsample_sleep(2.0)
+    assert "hostproc" in mon.called
 
 
 def test_disable_unknown_name_silently_ignored():
