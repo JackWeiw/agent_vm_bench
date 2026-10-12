@@ -202,5 +202,14 @@ monitor:
   #   - disk
   #   - ublk
   #   - ublk-daemon
+  #   - hostproc
   #   - devkit-mem
   #   - devkit-topdown
+  # Host processes to monitor by name (forwards vm-monitor --host-proc). Each
+  # entry is `comm` or `comm:cmdline_substr` (one pid per spec, resolved
+  # lazily). CPU cores + PSS -> hostproc_cpu_raw.csv + HostProc sheet. Use a
+  # YAML list -- commas are NOT allowed inside a spec entry. Default unset = no
+  # host-proc tracking. Example (agentENV server daemon):
+  # host_procs:
+  #   - server:release/server
+  #   - uvm-ublk-daemon
