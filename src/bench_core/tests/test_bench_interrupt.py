@@ -340,3 +340,148 @@ def test_trajectory_export_failure_does_not_abort_run(tmp_path, monkeypatch, cap
     assert len(hits) == 1, f"expected run_summary.json despite export failure, got {hits}"
     # The export failure is surfaced in the log, not swallowed silently.
     assert any("trajectory export failed" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# 6. User Ctrl+C (SIGINT) mid-dispatch tears down the sandboxes it created
+# ---------------------------------------------------------------------------
+
+
+def test_user_ctrl_c_cleans_up_sandboxes(tmp_path, monkeypatch, caplog):
+    """A Ctrl+C (SIGINT) during round-robin dispatch must clean up the sandboxes
+    this run created.
+
+    ``KeyboardInterrupt`` is a ``BaseException``, so it bypasses ``except
+    Exception`` and the happy-path cleanup, landing in the ``finally``.
+    Previously the ``finally`` skipped ``cleanup_all`` (by design, so a driver
+    SIGTERM's partial-flush stayed fast within the terminate grace), which
+    orphaned every sandbox when a user Ctrl+C'd a standalone ``bench-core``
+    stress run. The ``finally`` now distinguishes a user Ctrl+C (no sigterm flag)
+    from a driver SIGTERM (flag set) and tears down only the former.
+    """
+    from env_provider.fake import FakeProvider
+    from bench_core.payload.replay_payload import reset_pool_cache
+
+    _seed_traj_pool(tmp_path)
+    reset_pool_cache()
+    cfg = KernelConfig(
+        workflow_type="replay",
+        total_count=2,
+        benchmark_mode="round_robin",
+        round_count=1,
+        round_size=2,
+        round_interval=0,
+        test_duration=1,
+        output_dir=str(tmp_path),
+        filename_prefix="kc",
+        workflow_config=ReplayConfig(
+            replay_trajectory_dir=str(tmp_path / "traj"),
+            replay_mode="exec_only",
+            replay_delay_scale=0.0,
+        ),
+    )
+
+    def _ctrl_c(self):
+        raise KeyboardInterrupt("user ctrl+c")
+
+    monkeypatch.setattr(RoundRobinTaskManager, "run", _ctrl_c)
+
+    provider = FakeProvider(count=2)
+    with caplog.at_level("INFO"), pytest.raises(KeyboardInterrupt):
+        run_benchmark(cfg, provider)
+
+    # The finally tore down the sandboxes this run created (the bug: leaked).
+    assert provider.cleanup_called is True
+    assert any("User interrupt: cleaning up sandboxes" in r.message for r in caplog.records)
+    # The partial-flush still ran first -- the cleanup does not starve it.
+    assert list(tmp_path.glob("kc_run_summary.json"))
+
+
+# ---------------------------------------------------------------------------
+# 7. Driver SIGTERM mid-dispatch skips cleanup (the driver reaps leftovers)
+# ---------------------------------------------------------------------------
+
+
+def test_driver_sigterm_interrupt_skips_cleanup(tmp_path, monkeypatch):
+    """A driver-issued SIGTERM reaches the same ``finally`` (the cooperative
+    handler raises ``KeyboardInterrupt``) but sets the sigterm flag, so the
+    ``finally`` does NOT call ``cleanup_all`` -- the oversub driver's
+    ``--cleanup-between-trials`` owns teardown and the skip keeps the
+    partial-artifact flush fast within the terminate grace.
+    """
+    import bench_core.bench as bench_mod
+
+    from env_provider.fake import FakeProvider
+    from bench_core.payload.replay_payload import reset_pool_cache
+
+    _seed_traj_pool(tmp_path)
+    reset_pool_cache()
+    cfg = KernelConfig(
+        workflow_type="replay",
+        total_count=2,
+        benchmark_mode="round_robin",
+        round_count=1,
+        round_size=2,
+        round_interval=0,
+        test_duration=1,
+        output_dir=str(tmp_path),
+        filename_prefix="st",
+        workflow_config=ReplayConfig(
+            replay_trajectory_dir=str(tmp_path / "traj"),
+            replay_mode="exec_only",
+            replay_delay_scale=0.0,
+        ),
+    )
+
+    captured: dict = {}
+
+    def _capture_signal(sig, handler):
+        # The kernel installs its cooperative SIGTERM handler here; capture it
+        # so the patched dispatch can fire it (modelling the driver's
+        # terminate). Returning a non-None prev sentinel satisfies the restore.
+        captured["handler"] = handler
+        return _capture_signal
+
+    monkeypatch.setattr(bench_mod.signal, "signal", _capture_signal)
+
+    def _run_as_sigterm(self):
+        # The driver's SIGTERM arrives mid-round: the installed handler sets
+        # stop_event + the sigterm flag and raises KeyboardInterrupt.
+        captured["handler"](signal.SIGTERM, None)
+
+    monkeypatch.setattr(RoundRobinTaskManager, "run", _run_as_sigterm)
+
+    provider = FakeProvider(count=2)
+    with pytest.raises(KeyboardInterrupt):
+        run_benchmark(cfg, provider)
+
+    # No cleanup: the driver's --cleanup-between-trials reaps leftovers.
+    assert provider.cleanup_called is False
+
+
+# ---------------------------------------------------------------------------
+# 8. SIGTERM handler flags itself so the finally can tell SIGTERM from Ctrl+C
+# ---------------------------------------------------------------------------
+
+
+def test_sigterm_handler_sets_sigterm_flag_for_finally():
+    """The handler sets the sigterm flag so ``run_benchmark``'s ``finally`` can
+    distinguish a driver SIGTERM (skip cleanup; the driver reaps) from a user
+    Ctrl+C (no flag; tear down what this run created). Without the flag, both
+    surface as ``KeyboardInterrupt`` and would be indistinguishable in the
+    ``finally``.
+    """
+    stop = threading.Event()
+    flag = [False]
+    handler = _make_sigterm_handler(stop, flag)
+    with pytest.raises(KeyboardInterrupt):
+        handler(signal.SIGTERM, None)
+    assert stop.is_set()
+    assert flag[0] is True
+
+    # Default (no flag): legacy callers still get stop_event + raise.
+    stop2 = threading.Event()
+    handler2 = _make_sigterm_handler(stop2)
+    with pytest.raises(KeyboardInterrupt):
+        handler2(signal.SIGTERM, None)
+    assert stop2.is_set()
