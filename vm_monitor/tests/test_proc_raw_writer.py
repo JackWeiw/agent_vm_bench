@@ -218,3 +218,21 @@ def test_close_drains_slow_writer_before_closing_handles(monkeypatch):
             rows = list(csv.DictReader(f))
     assert len(rows) == 1
     assert rows[0]["MemTotal"] == "1"
+
+
+def test_proc_raw_writer_dumps_vm_pss():
+    """vm_cpu_raw.csv must carry pss_mb (PSS is already collected per VM via
+    smaps_rollup; only the dump was missing). PSS is a gauge (current MB), not a
+    cumulative counter, so it is plotted directly -- no delta."""
+    with tempfile.TemporaryDirectory() as d:
+        w = _ProcRawWriter(d)
+        vms = [
+            {"pid": 111, "name": "fc-vm0", "utime": 500, "stime": 50, "pss_mb": 1024.0},
+            {"pid": 222, "name": "fc-vm1", "utime": 900, "stime": 90, "pss_mb": 2048.0},
+        ]
+        w.enqueue_vm("2026-01-01 00:00:00", vms)
+        w.close()
+        with open(os.path.join(d, "raw_data", "vm_cpu_raw.csv")) as f:
+            rows = list(csv.DictReader(f))
+    assert rows[0]["pss_mb"] == "1024.0"
+    assert rows[1]["pss_mb"] == "2048.0"

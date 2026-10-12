@@ -672,6 +672,17 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
             monitor.end_stress()
         except Exception:
             logger.exception("monitor.end_stress failed during teardown")
+        # Guarantee host_resources.xlsx on a Ctrl+C / SIGTERM interrupt: it's
+        # written FIRST in vm_monitor's export (reads only the line-flushed raw
+        # CSVs, seconds), so a short wait catches it without blocking on the
+        # slow resource_report.xlsx. No-op on the happy/except paths (stop()
+        # already set _started=False); on the interrupt path stop() was skipped,
+        # so this is the only thing that waits. vm_monitor finishes SVG/xlsx as
+        # a detached orphan.
+        try:
+            monitor.wait_for_host_resources(timeout=30)
+        except Exception:
+            logger.exception("monitor.wait_for_host_resources failed during teardown")
         try:
             stats_collector.stop()
         except Exception:

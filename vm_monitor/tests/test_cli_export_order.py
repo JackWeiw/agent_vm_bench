@@ -14,8 +14,12 @@ orchestration layer.
 """
 from __future__ import annotations
 
+import logging
+import os
 import sys
 from unittest.mock import MagicMock
+
+import pytest
 
 
 def test_cli_exports_svg_before_xlsx(monkeypatch, tmp_path):
@@ -104,3 +108,167 @@ def test_cli_no_charts_forwards_skip_charts(monkeypatch, tmp_path):
     )
     cli.main()
     assert recorded.get("skip_charts") is True
+
+
+def test_auto_host_resources_hook_runs_even_with_no_charts(monkeypatch, tmp_path):
+    """The export-step hook for host_resources.xlsx fires even under --no-charts
+    (it reads raw CSVs, not the in-memory chart stack), runs AFTER svg and BEFORE
+    the main xlsx, with raw_dir=<log_dir>/raw_data and out=<log_dir>/host_resources.xlsx."""
+    import vm_monitor.cli as cli
+
+    call_order: list[str] = []
+    recorded: dict = {}
+
+    def fake_build(raw_dir, out_path):
+        call_order.append("host_resources")
+        recorded["raw_dir"] = raw_dir
+        recorded["out"] = out_path
+        return out_path
+
+    def fake_xlsx(monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False):
+        call_order.append("xlsx")
+
+    monkeypatch.setattr(cli, "build_host_resources_xlsx", fake_build)
+    monkeypatch.setattr(cli, "export_to_excel", fake_xlsx)
+    monkeypatch.setattr(cli, "export_svg_reports", lambda m, d: [])
+    monkeypatch.setattr(cli, "PANDAS_AVAILABLE", True)
+
+    fake_m = MagicMock()
+    fake_m.available_numa_nodes = [0]
+    monkeypatch.setattr(cli, "FirecrackerMonitor", lambda: fake_m)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["vm-monitor", "--vmm", "firecracker", "--time", "0", "--disks", "", "--log-dir", str(tmp_path), "--no-charts"],
+    )
+    cli.main()
+    assert "host_resources" in call_order  # hook fired under --no-charts
+    assert call_order.index("host_resources") < call_order.index("xlsx")  # before main xlsx
+    assert recorded["raw_dir"] == os.path.join(str(tmp_path), "raw_data")
+    assert recorded["out"] == os.path.join(str(tmp_path), "host_resources.xlsx")
+
+
+def test_auto_host_resources_hook_failure_does_not_block_xlsx(monkeypatch, tmp_path, caplog):
+    """If build_host_resources_xlsx raises, the hook logs a WARNING naming the
+    real raw_dir and the main resource_report.xlsx export still runs (degrade
+    contract: WARNING + skip, never block main xlsx)."""
+    import vm_monitor.cli as cli
+
+    call_order: list[str] = []
+
+    def boom(raw_dir, out_path):
+        call_order.append("host_resources-boom")
+        raise OSError("simulated disk full")
+
+    def fake_xlsx(monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False):
+        call_order.append("xlsx")
+
+    monkeypatch.setattr(cli, "build_host_resources_xlsx", boom)
+    monkeypatch.setattr(cli, "export_to_excel", fake_xlsx)
+    monkeypatch.setattr(cli, "export_svg_reports", lambda m, d: [])
+    monkeypatch.setattr(cli, "PANDAS_AVAILABLE", True)
+
+    fake_m = MagicMock()
+    fake_m.available_numa_nodes = [0]
+    monkeypatch.setattr(cli, "FirecrackerMonitor", lambda: fake_m)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["vm-monitor", "--vmm", "firecracker", "--time", "0", "--disks", "", "--log-dir", str(tmp_path)],
+    )
+    with caplog.at_level(logging.WARNING):
+        cli.main()  # must NOT raise despite the hook's OSError
+    assert "xlsx" in call_order  # main xlsx still ran
+    # WARNING logged naming the REAL raw_dir (<log_dir>/raw_data), not the parent
+    assert any("host_resources raw-report failed" in m for m in caplog.messages)
+    assert any(str(tmp_path) in m and "raw_data" in m for m in caplog.messages)
+
+
+def test_host_resources_runs_before_svg_so_survives_export_interrupt(monkeypatch, tmp_path):
+    """host_resources.xlsx is built BEFORE the (slow, interruptible) SVG/xlsx
+    steps. It reads only the line-flushed raw_data CSVs, so it's the one
+    artifact worth guaranteeing on a mid-export Ctrl+C / hard kill: if the slow
+    SVG phase is interrupted, host_resources is already on disk. This locks the
+    ordering (host_resources before SVG) that makes that guarantee hold."""
+    import vm_monitor.cli as cli
+
+    call_order: list[str] = []
+
+    def fake_build(raw_dir, out_path):
+        call_order.append("host_resources")
+        return out_path
+
+    def svg_raises(monitor, log_dir):
+        call_order.append("svg")
+        raise KeyboardInterrupt  # simulate a mid-export interrupt (handler reset / hard kill)
+
+    def fake_xlsx(monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False):
+        call_order.append("xlsx")  # must NOT run -- SVG raised before it
+
+    monkeypatch.setattr(cli, "build_host_resources_xlsx", fake_build)
+    monkeypatch.setattr(cli, "export_svg_reports", svg_raises)
+    monkeypatch.setattr(cli, "export_to_excel", fake_xlsx)
+    monkeypatch.setattr(cli, "PANDAS_AVAILABLE", True)
+
+    fake_m = MagicMock()
+    fake_m.available_numa_nodes = [0]
+    monkeypatch.setattr(cli, "FirecrackerMonitor", lambda: fake_m)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["vm-monitor", "--vmm", "firecracker", "--time", "0", "--disks", "", "--log-dir", str(tmp_path)],
+    )
+    # SVG raises KeyboardInterrupt; main() does not swallow it, so it propagates
+    # -- but host_resources already ran first, so the artifact is on disk.
+    with pytest.raises(KeyboardInterrupt):
+        cli.main()
+    assert call_order[0] == "host_resources"  # built before the interrupting SVG
+    assert "xlsx" not in call_order  # the slow xlsx (reap signal) never reached
+
+
+def test_resolve_raw_dir_finds_csvs_in_subdir(tmp_path):
+    """Pointing at the vm_monitor log_dir finds CSVs in <log_dir>/raw_data/."""
+    from vm_monitor.cli import _resolve_raw_dir
+
+    raw_subdir = tmp_path / "raw_data"
+    raw_subdir.mkdir()
+    (raw_subdir / "host_cpu_raw.csv").write_text("timestamp,cpu\n")
+    assert _resolve_raw_dir(str(tmp_path), "raw_data") == str(raw_subdir)
+
+
+def test_resolve_raw_dir_handles_raw_data_dir_directly(tmp_path):
+    """Pointing at the raw_data dir ITSELF (a common mistake) does NOT double
+    the subdir into raw_data/raw_data/ -- it uses the dir directly."""
+    from vm_monitor.cli import _resolve_raw_dir
+
+    (tmp_path / "host_cpu_raw.csv").write_text("timestamp,cpu\n")  # CSVs live directly in tmp_path
+    assert _resolve_raw_dir(str(tmp_path), "raw_data") == str(tmp_path)
+
+
+def test_run_raw_report_pointed_at_raw_data_dir_builds_without_doubling(monkeypatch, tmp_path, capsys):
+    """End-to-end: `vm-monitor raw-report <raw_data_dir>` regenerates
+    host_resources.xlsx from the persisted CSVs even when the user points at
+    the raw_data dir itself -- the build receives the dir directly, not
+    <dir>/raw_data (the doubling bug that found no CSVs)."""
+    import vm_monitor.cli as cli
+
+    recorded: dict = {}
+
+    def fake_build(raw_dir, out_path):
+        recorded["raw_dir"] = raw_dir
+        recorded["out"] = out_path
+        return out_path
+
+    monkeypatch.setattr(cli, "build_host_resources_xlsx", fake_build)
+
+    # raw_data dir IS the pointed-at dir; CSVs live directly in it.
+    (tmp_path / "host_cpu_raw.csv").write_text("timestamp,cpu\n")
+
+    rc = cli.main(["raw-report", str(tmp_path)])
+    assert rc == 0
+    assert recorded["raw_dir"] == str(tmp_path)  # NOT tmp_path/raw_data (the doubling bug)
+    assert recorded["out"] == os.path.join(str(tmp_path), "host_resources.xlsx")
+    assert "[OK]" in capsys.readouterr().out
