@@ -29,8 +29,8 @@ devkit_mem.log
 devkit_top_down.log
 ksys.log
 ub_watch.log
-# ...but keep the committed parser fixture under log_example/
-!log_example/devkit_mem.log
+# ...but keep the committed parser fixture under vm_monitor/tests/fixtures/
+!vm_monitor/tests/fixtures/devkit_mem.log
 
 # Downloaded web content
 web_content/

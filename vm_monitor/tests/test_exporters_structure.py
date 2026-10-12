@@ -23,9 +23,10 @@ try:
 except ImportError:  # pragma: no cover
     load_workbook = None
 
-# Real devkit_mem.log ships in the repo (log_example/) -- drive the real parser.
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_DEVKIT_MEM_LOG = os.path.join(_REPO_ROOT, "log_example", "devkit_mem.log")
+# Real devkit_mem.log ships in the repo (vm_monitor/tests/fixtures/) -- drive
+# the real parser.
+_TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+_DEVKIT_MEM_LOG = os.path.join(_TESTS_DIR, "fixtures", "devkit_mem.log")
 
 
 class DummyMonitor(VMMonitorBase):
@@ -307,7 +308,7 @@ def _full_monitor():
 def _full_parsed_logs():
     """parsed_logs fixture covering all collection-tool sheets.
 
-    devkit_mem comes from the real parser against log_example/devkit_mem.log;
+    devkit_mem comes from the real parser against vm_monitor/tests/fixtures/devkit_mem.log;
     the rest are hand-built to match each parser's return schema.
     """
     parsed = {}
