@@ -40,6 +40,7 @@ _VALID_SKIP_STEMS = frozenset(
         "ublk",
         "pss",
         "ublk-daemon",
+        "hostproc",
         "devkit-mem",
         "devkit-topdown",
     }
@@ -146,6 +147,13 @@ class MonitorConfig:
     # the courtesy wait in stop(); skipping still writes every sheet, just
     # without charts. Default false (charts on); opt-in for oversub-scale runs.
     skip_charts: bool = False
+    # Host processes to monitor by name, forwarded to vm-monitor as --host-proc.
+    # Accepts a YAML list ("host_procs: [server:release/server]") or a comma
+    # string ("host_procs: server:release/server,uvm-ublk-daemon"). Each entry is
+    # ``comm`` or ``comm:cmdline_substr``. Comma-string mode forbids a comma
+    # INSIDE a spec (the split would break it) -- use a YAML list then. None = no
+    # host-proc tracking (the hostproc collector is a no-op without specs).
+    host_procs: list[str] | None = None
     # Log-capture rotation (the ``log_rotation:`` sub-block): devkit(top-down +
     # memory in parallel) -> ksys -> perf stat, one group at a time, for the
     # stress window; per-turn timestamped logs land in
@@ -163,6 +171,13 @@ class MonitorConfig:
             skip = [t.strip() for t in raw_skip.split(",") if t.strip()]
         else:
             skip = [str(t).strip() for t in raw_skip if str(t).strip()]
+        raw_host_procs = raw.get("host_procs")
+        if raw_host_procs is None:
+            host_procs: list[str] | None = None
+        elif isinstance(raw_host_procs, str):
+            host_procs = [t.strip() for t in raw_host_procs.split(",") if t.strip()]
+        else:
+            host_procs = [str(t).strip() for t in raw_host_procs if str(t).strip()]
         return cls(
             enabled=str(raw.get("enabled", "auto")),
             vmm=str(raw.get("vmm", "auto")),
@@ -176,6 +191,7 @@ class MonitorConfig:
             report_timeout=int(raw.get("report_timeout", 300)),
             skip=skip,
             skip_charts=bool(raw.get("skip_charts", False)),
+            host_procs=host_procs,
             log_rotation=LogRotationConfig.from_raw(raw.get("log_rotation")),
         )
 
@@ -235,6 +251,10 @@ class MonitorController:
                 cmd += [f"--no-{token}"]
             else:
                 logger.warning("Unknown collector name: %s, skip ignored", token)
+        # Forward monitor.host_procs as repeated --host-proc flags. Each spec is
+        # passed through verbatim (comm or comm:cmdline_substr); vm-monitor parses.
+        for spec in self._config.monitor.host_procs or []:
+            cmd += ["--host-proc", spec]
         # Skip the xlsx chart phase (forwards --no-charts). Opt-in for huge runs
         # where the openpyxl chart build dominates export time.
         if self._config.monitor.skip_charts:

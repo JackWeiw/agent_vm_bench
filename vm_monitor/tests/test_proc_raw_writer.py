@@ -155,6 +155,27 @@ def test_proc_raw_writer_dumps_ublk_daemon_jiffies():
     assert rows[2]["utime"] == "5" and rows[2]["stime"] == "1"
 
 
+def test_proc_raw_writer_dumps_hostproc_jiffies():
+    """hostproc_cpu_raw.csv: long format (one row per named process per 1s
+    sub-sample) with name + pid + utime + stime + pss_mb. A pid restart is a
+    separate row keyed by the new pid (raw_report deltas per (name,pid),
+    never across pids)."""
+    with tempfile.TemporaryDirectory() as d:
+        w = _ProcRawWriter(d)
+        w.enqueue_hostproc("2026-01-01 00:00:00", "server", 700, 1000, 100, 512.0)
+        w.enqueue_hostproc("2026-01-01 00:00:01", "server", 700, 1200, 120, 520.0)  # stable
+        w.enqueue_hostproc("2026-01-01 00:00:02", "server", 800, 5, 1, 530.0)  # restarted (new pid)
+        w.enqueue_hostproc("2026-01-01 00:00:00", "uvm-ublk-daemon", 4242, 10, 1, 8.0)  # 2nd spec
+        w.close()
+        with open(os.path.join(d, "raw_data", "hostproc_cpu_raw.csv")) as f:
+            rows = list(csv.DictReader(f))
+    assert [r["name"] for r in rows] == ["server", "server", "server", "uvm-ublk-daemon"]
+    assert [r["pid"] for r in rows] == ["700", "700", "800", "4242"]
+    assert rows[0]["utime"] == "1000" and rows[0]["stime"] == "100" and rows[0]["pss_mb"] == "512.0"
+    assert rows[2]["utime"] == "5" and rows[2]["stime"] == "1"  # restarted pid resets
+    assert rows[3]["pss_mb"] == "8.0"
+
+
 def test_numa_map_retries_after_failed_first_write(monkeypatch):
     """A failed first numa_cpu_map write must NOT mark itself written, so a
     later cycle retries. Bug: flag set in finally -> flag True after failure ->

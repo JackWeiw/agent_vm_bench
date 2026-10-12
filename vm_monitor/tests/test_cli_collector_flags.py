@@ -71,3 +71,24 @@ def test_ublk_daemon_hyphenated_dest():
     # dest derived from STEM, so --no-ublk-daemon -> args.no_ublk_daemon
     args = _parse(["--vmm", "qemu", "--no-ublk-daemon"])
     assert args.no_ublk_daemon is True
+
+
+def test_no_hostproc_disables_collector():
+    args = _parse(["--vmm", "qemu", "--no-hostproc"])
+    assert args.no_hostproc is True
+    coll, dev = collect_disabled(args)
+    assert coll == {"hostproc"}
+    assert dev == set()
+
+
+def test_host_proc_repeatable_and_parsed():
+    # --host-proc is append-mode: repeatable, preserves order, supports both
+    # comm and comm:cmdline_substr forms. (Parsing into specs is the monitor's
+    # job; the CLI just collects the raw strings.)
+    args = _parse(["--vmm", "qemu", "--host-proc", "server:release/server", "--host-proc", "uvm-ublk-daemon"])
+    assert args.host_procs == ["server:release/server", "uvm-ublk-daemon"]
+
+
+def test_host_proc_defaults_empty():
+    args = _parse(["--vmm", "qemu"])
+    assert args.host_procs == []

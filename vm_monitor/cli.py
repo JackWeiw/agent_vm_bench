@@ -77,6 +77,7 @@ COLLECTOR_FLAGS = [
     ("ublk", "ublk", "base"),
     ("pss", "pss", "base"),
     ("ublk-daemon", "ublk_daemon", "base"),
+    ("hostproc", "hostproc", "base"),
     ("devkit-mem", "devkit_mem", "devkit"),
     ("devkit-topdown", "devkit_top_down", "devkit"),
 ]
@@ -111,7 +112,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
   --no-disk / --no-ublk : skip a /proc collector (its sheet/SVG is omitted).
   --no-pss : skip per-VM PSS (smaps_rollup) + VM_Total_PSS_Timeline sheet.
   --no-ublk-daemon : skip uvm-ublk-daemon CPU tracking (Disk_IO col).
+  --no-hostproc : skip user-specified host-process CPU/PSS tracking.
   --no-devkit-mem / --no-devkit-topdown : run only one devkit sub-tool.
+  --host-proc comm[:cmdline_substr] : monitor a host process by name
+                (repeatable). e.g. --host-proc server:release/server tracks
+                the agentENV server daemon. Cores+PSS -> HostProc sheet +
+                hostproc_cpu_raw.csv.
   All default ON; disabling degrades gracefully (empty history -> sheet skipped).
         """,
     )
@@ -240,6 +246,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
             default=False,
             help=f"Skip the {stem} collector (default: enabled)",
         )
+
+    # User-specified host processes to monitor by name (agentENV "server", etc).
+    # Repeatable; each SPEC is ``comm`` or ``comm:cmdline_substr``. The cmdline
+    # filter is needed for generic comms (``server`` alone is too loose). Each
+    # spec tracks one pid; raw utime+stime+pss land in hostproc_cpu_raw.csv.
+    parser.add_argument(
+        "--host-proc",
+        action="append",
+        dest="host_procs",
+        default=[],
+        metavar="comm[:cmdline_substr]",
+        help="Monitor a host process by comm (+ optional cmdline substring). "
+        "Repeatable. e.g. --host-proc server:release/server. "
+        "Use --no-hostproc to disable the whole collector.",
+    )
 
     return parser
 
@@ -412,6 +433,12 @@ def main(argv=None):
         print(f"[INFO] Disabled collectors: {', '.join(sorted(disabled_collectors))}")
     if disabled_devkit:
         print(f"[INFO] Disabled devkit: {', '.join(sorted(disabled_devkit))}")
+
+    # User-specified host processes to monitor by name (agentENV server, etc).
+    # Parsed into (label, comm, cmdline_substr) specs by the monitor. --no-hostproc
+    # (in disabled_collectors) globally skips collection regardless of specs.
+    if args.host_procs:
+        m.set_host_proc_specs(args.host_procs)
 
     # Start log capture (parallel with monitor)
     if args.enable_capture:

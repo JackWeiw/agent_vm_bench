@@ -17,6 +17,7 @@ def test_monitor_config_defaults_when_absent():
     assert cfg.monitor.report_timeout == 300
     assert cfg.monitor.skip is None
     assert cfg.monitor.skip_charts is False
+    assert cfg.monitor.host_procs is None
     assert cfg.monitor.log_dir is None
     assert cfg.monitor.disks == "all"
     assert cfg.monitor.numa == "all"
@@ -127,6 +128,43 @@ def test_command_skip_charts_forwards_no_charts(monkeypatch, tmp_path):
     assert "--no-charts" in mc._cmd
     mc_default = MonitorController(_cfg(stress_file=str(tmp_path / "lock")), prov)
     assert "--no-charts" not in mc_default._cmd
+
+
+def test_host_procs_parsed_from_list_and_comma_string():
+    # YAML list form.
+    cfg = _cfg(host_procs=["server:release/server", "uvm-ublk-daemon"])
+    assert cfg.monitor.host_procs == ["server:release/server", "uvm-ublk-daemon"]
+    # comma-string form (forbids commas inside a spec).
+    cfg2 = _cfg(host_procs="server:release/server,uvm-ublk-daemon")
+    assert cfg2.monitor.host_procs == ["server:release/server", "uvm-ublk-daemon"]
+    # default absent -> None.
+    assert _cfg().monitor.host_procs is None
+
+
+def test_command_forwards_host_proc_specs(monkeypatch, tmp_path):
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    prov = _StubProvider(vmm_type="firecracker")
+    mc = MonitorController(
+        _cfg(host_procs=["server:release/server", "uvm-ublk-daemon"], stress_file=str(tmp_path / "lock")),
+        prov,
+    )
+    cmd = mc._cmd
+    # each spec forwarded as a repeated --host-proc pair, in order.
+    idxs = [i for i, a in enumerate(cmd) if a == "--host-proc"]
+    assert len(idxs) == 2
+    assert cmd[idxs[0] + 1] == "server:release/server"
+    assert cmd[idxs[1] + 1] == "uvm-ublk-daemon"
+    # default (no host_procs) emits no --host-proc.
+    mc_default = MonitorController(_cfg(stress_file=str(tmp_path / "lock")), prov)
+    assert "--host-proc" not in mc_default._cmd
+
+
+def test_command_hostproc_skip_stem_forwarded(monkeypatch, tmp_path):
+    # --no-hostproc reaches vm-monitor via the same skip-contract as other stems.
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    prov = _StubProvider(vmm_type="firecracker")
+    mc = MonitorController(_cfg(skip=["hostproc"], stress_file=str(tmp_path / "lock")), prov)
+    assert "--no-hostproc" in mc._cmd
 
 
 def test_log_rotation_config_defaults_when_absent():
