@@ -439,7 +439,7 @@ Written by `_add_charts` after all sheets:
 
 ## 2.5 SVG reports
 
-Written by `svg_exporter.export_svg_reports` (skip with `--no-svg`). Dark theme (`#07101f` canvas, `#101827` panels); palette `#60a5fa #f59e0b #fb7185 #4ade80 #c084fc #22c55e #f97316 #38bdf8`. Each file is written only when its source history is non-empty.
+Written by `svg_exporter.export_svg_reports` (skip with `--no-svg`) into a `svg/` subdir of the vm_monitor log dir, so they sit alongside CSVs/xlsx without cluttering the top level. Dark theme (`#07101f` canvas, `#101827` panels); palette `#60a5fa #f59e0b #fb7185 #4ade80 #c084fc #22c55e #f97316 #38bdf8`. Each file is written only when its source history is non-empty.
 
 | Filename | Document title | Panels (title → series) | Width |
 |----------|-----------------|--------------------------|-------|

@@ -510,9 +510,11 @@ def main(argv=None):
     # the subprocess the moment it appears. If SVG ran after xlsx, that reap
     # would drop every SVG file.
     if not args.no_svg:
-        svg_files = export_svg_reports(m, log_dir)
+        # SVGs land in a dedicated svg/ subdir of the log dir instead of being
+        # scattered alongside the CSVs/xlsx, so the results tree stays clean.
+        svg_files = export_svg_reports(m, os.path.join(log_dir, "svg"))
         if svg_files:
-            print(f"[OK] SVG time-curve reports: {', '.join(os.path.basename(p) for p in svg_files)}")
+            print(f"[OK] SVG time-curve reports (svg/): {', '.join(os.path.basename(p) for p in svg_files)}")
 
     # Export to Excel (if pandas available) -- LAST so its appearance signals
     # that CSV + SVG + xlsx are all written and the subprocess is essentially
