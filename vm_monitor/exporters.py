@@ -967,7 +967,8 @@ def _build_host_pressure_sheet(writer, monitor, *, log_dir=None):
 
     One row per sample from monitor.host_pressure_history. Covers the generic
     host memory-pressure signals (page scan/reclaim/refault rates, anonymous vs
-    file cache, SReclaimable, iowait%, runnable/blocked procs) that the legacy
+    file cache, SReclaimable, iowait%, runnable/blocked procs, direct-reclaim
+    rate + alloc stalls -- the blocking-on-reclaim subset) that the legacy
     monitor lacked -- sourced from /proc/vmstat + /proc/meminfo + /proc/stat.
     """
     if not monitor.host_pressure_history:
@@ -983,6 +984,12 @@ def _build_host_pressure_sheet(writer, monitor, *, log_dir=None):
         "IOWait (%)": [h["iowait_pct"] for h in monitor.host_pressure_history],
         "Procs Running": [h["procs_running"] for h in monitor.host_pressure_history],
         "Procs Blocked": [h["procs_blocked"] for h in monitor.host_pressure_history],
+        # Blocking-on-reclaim subset: direct reclaim = allocator stalled itself
+        # doing reclaim (excludes background kswapd); alloc stalls = allocation
+        # requests that blocked waiting on reclaim. .get default keeps older
+        # history dicts (and test fixtures) from before these fields existed.
+        "Direct Reclaim (MiB/s)": [h.get("direct_reclaim_mib_s", 0.0) for h in monitor.host_pressure_history],
+        "Alloc Stalls (/s)": [h.get("allocstall_per_s", 0.0) for h in monitor.host_pressure_history],
     }
     _safe_write_sheet(writer, pd.DataFrame(pressure_data), "Host_Pressure_Timeline", log_dir=log_dir)
 

@@ -309,7 +309,9 @@ Only **focus** NUMA nodes are emitted: the CLI `--numa` list + the remote-borrow
 
 ### `Host_Pressure_Timeline` — only if `host_pressure_history` non-empty
 
-`Timestamp` · `Page Scan (MiB/s)` · `Page Reclaim (MiB/s)` · `File Refault (MiB/s)` · `Anon Pages (MB)` · `File Cache (MB)` · `SReclaimable (MB)` · `IOWait (%)` · `Procs Running` · `Procs Blocked`
+`Timestamp` · `Page Scan (MiB/s)` · `Page Reclaim (MiB/s)` · `File Refault (MiB/s)` · `Anon Pages (MB)` · `File Cache (MB)` · `SReclaimable (MB)` · `IOWait (%)` · `Procs Running` · `Procs Blocked` · `Direct Reclaim (MiB/s)` · `Alloc Stalls (/s)`
+
+`Direct Reclaim (MiB/s)` is the **blocking subset** of `Page Scan` — `(Δpgscan_direct + Δpgscan_direct_throttle) × mib_per_page / interval`, excluding background `kswapd`. `Alloc Stalls (/s)` sums `Δallocstall_<zone>` across per-zone-type variants (modern `/proc/vmstat` exposes `allocstall_normal`/`_dma32`/`_movable`/…, **not** a plain `allocstall` sum) / interval — the count of allocation requests that stalled waiting on memory reclaim (the kernel's closest proxy for "processes blocked on reclaim"; `procs_blocked` is broader — any D-state, includes disk I/O).
 
 > There is **no** `Pressure`/`Host_Pressure`/`Host_CPU`/`Host_Resources` sheet — host CPU/memory totals are on `Summary`; host memory detail is `Host_Mem_Timeline`; pressure is `Host_Pressure_Timeline`.
 
@@ -492,7 +494,7 @@ verified against `vm_monitor/base.py`; the symbols used:
 |--------|-------------|--------------|
 | `/sys/block/<dev>/stat` | fields 0,2,3,4,6,7,8,9,10 (reads_completed, sectors_read, read_ms, writes_completed, sectors_written, write_ms, inflight, ms_io, weighted_ms) | `collect_disk_stats` → `_compute_disk_io_rates` |
 | `/proc/meminfo` | `Cached`, `SReclaimable`, `Buffers`, `Dirty`, `Writeback`, `SwapCached`, `AnonPages`, `Shmem`, `MemTotal` (all kB → /1024 → MB) | `_read_meminfo` |
-| `/proc/vmstat` | `pswpin`, `pswpout`, `pgscan_kswapd`, `pgscan_direct`, `pgscan_direct_throttle`, `pgsteal_kswapd`, `pgsteal_direct`, `workingset_refault_file` (raw page counters) | `_read_vmstat` |
+| `/proc/vmstat` | `pswpin`, `pswpout`, `pgscan_kswapd`, `pgscan_direct`, `pgscan_direct_throttle`, `pgsteal_kswapd`, `pgsteal_direct`, `workingset_refault_file`, `allocstall_<zone>` variants (raw page counters; `_read_vmstat` reads the full file, `_compute_pressure_rates` sums the `allocstall_*` keys) | `_read_vmstat` |
 | `/proc/stat` | `cpu` line (jiffies, index 4 = iowait), `procs_running`, `procs_blocked` | `collect_host_pressure` |
 | `/proc/sys/vm/dirty_bytes`, `dirty_background_bytes`, `dirty_ratio`, `dirty_background_ratio` | dirty throttle thresholds (read once) | `_read_dirty_limits_mb` |
 | `/sys/devices/system/node/node{N}/meminfo` | `MemTotal`, `MemFree`, `MemAvailable`, `SwapCached`, `Active`, `Inactive`, `AnonPages`, `FilePages` (kB → /1024 → MB) | `get_numa_nodes_memory` |
@@ -558,6 +560,8 @@ From `/proc/vmstat` page-counter deltas; `mib_per_page = _PAGE_SIZE / 2²⁰`.
 | `Page Scan (MiB/s)` | `(Δpgscan_kswapd + Δpgscan_direct + Δpgscan_direct_throttle) × mib_per_page / interval` |
 | `Page Reclaim (MiB/s)` | `(Δpgsteal_kswapd + Δpgsteal_direct) × mib_per_page / interval` |
 | `File Refault (MiB/s)` | `Δworkingset_refault_file × mib_per_page / interval` |
+| `Direct Reclaim (MiB/s)` | `(Δpgscan_direct + Δpgscan_direct_throttle) × mib_per_page / interval` (the blocking subset; excludes background `kswapd`) |
+| `Alloc Stalls (/s)` | `ΣΔallocstall_<zone> / interval` (sum across per-zone-type variants `allocstall_dma`/`_dma32`/`_normal`/`_movable`/`_high`/`_device`; modern `/proc/vmstat` exposes no plain `allocstall` sum) — allocation requests that stalled waiting on reclaim |
 
 Each `Δ` is clamped to `max(0, …)` so a counter reset (host reboot mid-run)
 cannot produce a negative rate.

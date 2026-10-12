@@ -51,6 +51,15 @@ _VMSTAT_FIELDS = [
     "pgsteal_kswapd",
     "pgsteal_direct",
     "workingset_refault_file",
+    # allocstall is per-zone-type in /proc/vmstat (no plain sum); list every
+    # known variant so the reset guard covers them. Absent variants -> NaN via
+    # _f -> NaN<NaN is False -> no spurious reset on configs that lack a zone.
+    "allocstall_dma",
+    "allocstall_dma32",
+    "allocstall_normal",
+    "allocstall_movable",
+    "allocstall_high",
+    "allocstall_device",
 ]
 
 
@@ -200,6 +209,8 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
             "page_scan_mib_s",
             "page_reclaim_mib_s",
             "file_refault_mib_s",
+            "direct_reclaim_mib_s",
+            "allocstall_per_s",
             "ublk_cores",
             "vm_cores",
             "fc_pss_gb",
@@ -244,6 +255,8 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
                     "page_scan_mib_s",
                     "page_reclaim_mib_s",
                     "file_refault_mib_s",
+                    "direct_reclaim_mib_s",
+                    "allocstall_per_s",
                 ):
                     out[k].append(math.nan)
             else:
@@ -255,8 +268,18 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
                 out["page_scan_mib_s"].append(pr["page_scan_mib_s"])
                 out["page_reclaim_mib_s"].append(pr["page_reclaim_mib_s"])
                 out["file_refault_mib_s"].append(pr["file_refault_mib_s"])
+                out["direct_reclaim_mib_s"].append(pr["direct_reclaim_mib_s"])
+                out["allocstall_per_s"].append(pr["allocstall_per_s"])
         else:
-            for k in ("swap_in_mib_s", "swap_out_mib_s", "page_scan_mib_s", "page_reclaim_mib_s", "file_refault_mib_s"):
+            for k in (
+                "swap_in_mib_s",
+                "swap_out_mib_s",
+                "page_scan_mib_s",
+                "page_reclaim_mib_s",
+                "file_refault_mib_s",
+                "direct_reclaim_mib_s",
+                "allocstall_per_s",
+            ):
                 out[k].append(math.nan)
         out["ublk_cores"].append(_aggregate_cores(ublk, ts[i], dt) if ublk is not None else math.nan)
         out["vm_cores"].append(math.nan)  # filled by per-VM aggregate in the orchestrator (Task 5)
@@ -448,6 +471,8 @@ def _build_host_sheet(wb, df):
         ("ublk_cores", "ublk cores"),
         ("vm_cores", "VM cores"),
         ("fc_pss_gb", "FC total PSS (GB)"),
+        ("direct_reclaim_mib_s", "Direct reclaim (MiB/s)"),
+        ("allocstall_per_s", "Alloc stalls (/s)"),
     ]
     cols, headers = zip(*col_labels)
     _write_table(ws, df, list(headers), cols=list(cols))
@@ -460,6 +485,10 @@ def _build_host_sheet(wb, df):
     _add_line_chart(ws, "Page-cache pressure", "MiB/s", 1, (11, 12, 13), 1, n, f"{anchor}74")
     _add_line_chart(ws, "Swap in/out", "MiB/s", 1, (9, 10), 1, n, f"{anchor}92")
     _add_line_chart(ws, "CPU cores (ublk + VM)", "cores", 1, (14, 15), 1, n, f"{anchor}110")
+    # Alloc stalls (/s) sits at col 18 -- the headline "blocked on reclaim"
+    # counter (count of allocation requests that stalled). Direct reclaim
+    # (col 17) is the blocking subset of page-scan, left as a column only.
+    _add_line_chart(ws, "Alloc stalls", "/s", 1, (18,), 1, n, f"{anchor}128")
 
 
 def _build_per_vm_sheet(wb, cores_df, pss_df):
