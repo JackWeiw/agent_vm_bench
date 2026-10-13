@@ -170,6 +170,16 @@ class Config:
     # Sandbox IDs file (for save/load sandbox IDs across runs)
     sandbox_ids_file: str | None = None
 
+    # CCL CPU-affinity binding (AENV host-side: pin each sandbox's firecracker to
+    # a dedicated CCL vCPU set so concurrent VMs don't contend for the same
+    # physical cores). Opt-in (off by default): blind pinning needs root on the
+    # AENV host and a matching topology. Topology defaults to the reference
+    # (384 vCPU / 16 per CCL = 24 CCLs); override per host. See
+    # :mod:`env_provider.aenv._ccl`. Only consulted by the AENV provider.
+    ccl_bind: bool = False
+    ccl_total_count: int = 24
+    ccl_vcpus_per_ccl: int = 16
+
     # AENV snapshot dir override. When set, the AenvProvider stats
     # ``<snapshot_dir>/<sandbox_id>/`` for per-pause overlaybd snapshot sizes.
     # None -> resolve from aenv_home_path / $AENV_HOME_PATH (see below), else
@@ -207,6 +217,9 @@ class Config:
             sandbox_ids_file=backend.get("sandbox_ids_file"),
             snapshot_dir=backend.get("snapshot_dir"),
             aenv_home_path=backend.get("aenv_home_path"),
+            ccl_bind=bool(backend.get("ccl_bind", False)),
+            ccl_total_count=backend.get("ccl_total_count", 24),
+            ccl_vcpus_per_ccl=backend.get("ccl_vcpus_per_ccl", 16),
         )
 
     def setup_e2b_env(self) -> None:

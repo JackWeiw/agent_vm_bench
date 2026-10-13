@@ -7,21 +7,29 @@ handle table (create/detect/cleanup/exec/translate all inherited). It adds
 ``pause``/``resume`` via the E2B SDK's ``beta_pause()`` / ``Sandbox.connect()``,
 satisfying :class:`env_provider.LifecycleCapable`.
 
+Optionally pins each sandbox's warm-pooled firecracker to a dedicated CCL vCPU
+set (``aenv.ccl_bind``) in ``exec_only`` replay mode, so concurrent VMs don't
+contend for the same physical cores; see :mod:`env_provider.aenv._ccl`.
+
 The ``e2b`` provider stays exec-only (cloud E2B's ``beta_pause`` is uncertain;
 AENV is the snapshot backend). Adding lifecycle to cloud e2b later is a
 one-liner (add the methods to ``E2BProvider``).
 """
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from pathlib import Path
 
 from bench_core.config import KernelConfig
 from env_provider import SandboxInstance
+from env_provider.aenv._ccl import bind_ccl_affinity
 from env_provider.aenv._snapshot import scan_snapshot_sizes
 from env_provider.e2b import E2BProvider
 from env_provider.e2b.config import Config
+
+logger = logging.getLogger(__name__)
 
 # Hardcoded fallback when neither AENV_HOME_PATH / AENV_HOME nor an explicit
 # ``aenv.snapshot_dir`` override is set -- the AENV default install location.
@@ -96,6 +104,79 @@ class AenvProvider(E2BProvider):
     name = "aenv"
     default_replay_mode = "lifecycle"
 
+    # ---------------------------------------------------------- CCL affinity
+    # AENV keeps a warm firecracker pool: each firecracker exists before create()
+    # with only a random --api-sock path (no sandbox_id in cmdline). bind_ccl
+    # scans /proc + MMDS to map sandbox_id -> firecracker pid, then
+    # os.sched_setaffinity-pins it to a dedicated CCL vCPU set so concurrent VMs
+    # don't contend for the same physical cores. Opt-in via ``aenv.ccl_bind``;
+    # viable only in exec_only (lifecycle/trajectory respawn the firecracker on
+    # each resume -> pid unstable); best-effort (Linux + root on the AENV host);
+    # never unwinds a successful create. See :mod:`env_provider.aenv._ccl`.
+    def create_all(self, *, templates: dict[int, str | None] | None = None) -> dict[int, SandboxInstance]:
+        """Create all sandboxes, then pin each to its CCL (exec_only, best-effort).
+
+        Binding runs as a post-create pass over the manager's states (the base
+        create already joined its concurrent workers), so the first bind primes
+        the pid cache for the rest. Faithful to the reference, which binds
+        immediately after a successful create; for best-effort pinning of a
+        long-lived firecracker the timing is immaterial. Gated by
+        :meth:`_ccl_active` (exec_only only -- lifecycle/trajectory respawn the
+        firecracker per resume, so the pid is unstable).
+        """
+        states = self.manager.create_all(templates=templates)
+        if self._ccl_active():
+            for state in states.values():
+                self._bind_ccl(state)
+        return self._translate(states)
+
+    def _ccl_active(self) -> bool:
+        """True iff CCL binding should run for this run.
+
+        Binding is viable only in ``exec_only``: the firecracker pid is stable
+        for the whole run (no pause/resume). In lifecycle/trajectory each
+        ``resume`` respawns the firecracker under a new pid (AENV pause kills
+        the process; resume takes a fresh one from the warm pool), so the pid
+        is unstable and re-binding per resume would block the stress path
+        (post-resume commands depend on the binding). Read the replay mode off
+        the kernel's workflow view; a missing/non-replay config skips (backward
+        compat: ``ccl_bind`` is a no-op outside exec_only).
+        """
+        if not getattr(self._config, "ccl_bind", False):
+            return False
+        wf = getattr(self._kernel_config, "workflow_config", None)
+        mode = getattr(wf, "replay_mode", None)
+        if mode != "exec_only":
+            logger.warning(
+                "ccl_bind is set but replay mode is %r; CCL binding applies only "
+                "to exec_only (lifecycle/trajectory respawn the firecracker on each "
+                "resume, so the pid is unstable). Skipping CCL binding for this run.",
+                mode,
+            )
+            return False
+        return True
+
+    def _bind_ccl(self, state) -> None:
+        """Pin one sandbox's firecracker to its CCL. Best-effort; never raises.
+
+        ``state.sandbox_id`` is the 1-based kernel sequence; the CCL index is
+        0-based (``sandbox_id - 1``), matching the reference's ``index - 1``
+        convention. Failed/no-handle states have ``sandbox_obj is None`` ->
+        empty sandbox_id -> the bind helper skips with a warning.
+        """
+        sbx = getattr(state, "sandbox_obj", None)
+        sandbox_id = str(getattr(sbx, "sandbox_id", "") or "") if sbx is not None else ""
+        sandbox_index = state.sandbox_id - 1
+        try:
+            bind_ccl_affinity(sandbox_id, sandbox_index, self._config)
+        except Exception as aff_err:  # noqa: BLE001 -- never unwind a working sandbox
+            logger.warning(
+                "CCL bind failed for sandbox index %s: %s: %r",
+                state.sandbox_id,
+                type(aff_err).__name__,
+                aff_err,
+            )
+
     def pause(self, inst: SandboxInstance) -> None:
         """Memory-snapshot the sandbox (E2B SDK beta_pause)."""
         state = self.manager.sandbox_states.get(inst.index)
@@ -110,6 +191,13 @@ class AenvProvider(E2BProvider):
         (mirrors the e2b manager's ``_attach``, which connects to running
         sandboxes in detect mode). ``inst.id`` is the e2b sandbox_id (set at
         create via ``_to_instance``); it persists across pause/resume.
+
+        CCL binding is intentionally NOT re-applied here: a resumed sandbox's
+        firecracker has respawned under a new pid (AENV pause kills the process;
+        resume takes a fresh one from the warm pool), so the cached pid is
+        stale and re-resolving it (a /proc + MMDS scan) would block the stress
+        path whose post-resume commands depend on the binding. CCL binding is
+        exec_only-only (see :meth:`_ccl_active`), where the pid is stable.
         """
         state = self.manager.sandbox_states.get(inst.index)
         if state is None:
