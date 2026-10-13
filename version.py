@@ -1,11 +1,11 @@
 # version.py
 # Single source of truth for project version
 
-__version__ = "0.5.0"
+__version__ = "0.7.0"
 __version_info__ = tuple(map(int, __version__.split(".")))
 
 # Version status
-VERSION_STATUS = "alpha"  # alpha, beta, stable
+VERSION_STATUS = "stable"  # alpha, beta, stable
 
 
 # Full version string with status
