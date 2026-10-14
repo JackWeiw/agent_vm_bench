@@ -36,6 +36,7 @@ def _step(
     pause_rate_pacing_wait_sec=0.0,
     pause_api_sec=0.0,
     running_slot_held_sec=0.0,
+    action="echo step",
 ):
     s = round(resume_sec + exec_sec + pause_sec, 3)
     return {
@@ -44,6 +45,7 @@ def _step(
         "trajectory_id": tid,
         "step_index": step_index,
         "action_type": "shell",
+        "action": action,
         "resume_start": resume_start,
         "exec_start": None,
         "exec_end": None,
@@ -372,8 +374,12 @@ def test_export_writes_index_json_catalog(tmp_path):
             "time_breakdown_sec",
             "create_error_type",
             "kill_error_type",
+            "action_series",
         ):
             assert k in r, f"catalog row missing {k}"
+        # action_series = the trajectory's recorded step commands, newline-joined
+        # (one step here -> the single action verbatim).
+        assert r["action_series"] == "echo step"
         # time_breakdown_sec carries the per-trajectory timing components
         assert set(r["time_breakdown_sec"]) == {
             "slice_total",
@@ -464,3 +470,55 @@ def test_export_surfaces_create_kill_error(tmp_path):
     assert rec["all_failed"] is True
     assert rec["n_success"] == 0
     assert rec["n_runs"] == 1
+
+
+def test_export_action_series_joins_steps_in_order(tmp_path):
+    # A multi-step trajectory: the catalog ``action_series`` is the steps'
+    # ``action`` texts joined with newlines in step_index order (the executed
+    # command sequence), even when the series events were written out of order.
+    sp = tmp_path / "s.jsonl"
+    _write(
+        sp,
+        [
+            _step("t", step_index=1, action="cmd-one"),
+            _step("t", step_index=0, action="cmd-zero"),
+            _step("t", step_index=2, action="cmd-two"),
+        ],
+    )
+    export_trajectories(sp, tmp_path)
+    idx = json.loads((tmp_path / "trajectories" / "index.json").read_text(encoding="utf-8"))
+    assert idx["trajectories"][0]["action_series"] == "cmd-zero\ncmd-one\ncmd-two"
+    # replay_result.json steps[] still carry the per-step action verbatim.
+    rec = _records(tmp_path)["t"]
+    assert [s["action"] for s in rec["runs"][0]["steps"]] == ["cmd-zero", "cmd-one", "cmd-two"]
+
+
+def test_export_action_series_picks_fullest_run(tmp_path):
+    # A trajectory with two runs: sandbox 0 failed at create (0 steps, sorted
+    # first), sandbox 1 completed (2 steps). action_series must pick the fullest
+    # run's steps, not the first-sorted (create-failed) run's empty list -- the
+    # oversub regime is exactly where create failures happen, and those
+    # trajectories are the ones a user most wants the command sequence to diagnose.
+    sp = tmp_path / "s.jsonl"
+    _write(
+        sp,
+        [
+            {
+                "event": "trajectory_create",
+                "sandbox_index": 0,
+                "trajectory_id": "t",
+                "timestamp": 1.0,
+                "create_sec": 0.3,
+                "success": False,
+                "error_type": "TimeoutError",
+                "error": "create timed out",
+            },
+            _step("t", step_index=0, sandbox_index=1, action="cmd-zero"),
+            _step("t", step_index=1, sandbox_index=1, action="cmd-one"),
+        ],
+    )
+    export_trajectories(sp, tmp_path)
+    idx = json.loads((tmp_path / "trajectories" / "index.json").read_text(encoding="utf-8"))
+    # the create-failed run (sandbox 0) is first by sort order but has 0 steps;
+    # action_series falls back to the fullest run (sandbox 1).
+    assert idx["trajectories"][0]["action_series"] == "cmd-zero\ncmd-one"

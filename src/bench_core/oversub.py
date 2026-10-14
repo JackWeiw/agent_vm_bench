@@ -358,6 +358,10 @@ TRAJECTORY_COLUMNS = [
     *_TRAJECTORY_BREAKDOWN_COLUMNS,
     "create_error_type",
     "kill_error_type",
+    # The trajectory's recorded command sequence (newline-joined, per-step
+    # compact). Trajectory-level in index.json, copied onto every run row so a
+    # reader sees the executed commands per trajectory at any pool/N ratio.
+    "action_series",
 ]
 
 
@@ -517,6 +521,9 @@ def _trajectory_rows(trials: list[dict]) -> list[dict]:
                     "elapsed_sec": src.get("elapsed_sec"),
                     "create_error_type": src.get("create_error_type"),
                     "kill_error_type": src.get("kill_error_type"),
+                    # Trajectory-level (same for every run of this trajectory);
+                    # blank for an older index.json without it (backward compat).
+                    "action_series": tr.get("action_series"),
                 }
                 bd = src.get("time_breakdown_sec") or {}
                 for short_key, col in _BREAKDOWN_KEY_TO_COL.items():

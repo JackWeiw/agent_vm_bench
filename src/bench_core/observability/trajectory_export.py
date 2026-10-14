@@ -21,7 +21,11 @@ timings + ``exit_code`` + ``slice_failed``/``timed_out`` flags + a compact,
 single-line, truncated (``ACTION_SERIES_LIMIT``) ``action`` text but NO error
 text and NO full action body. The full action lives in the trajectory
 ``*.replay.json`` source -- the series ``action`` is enough to identify which
-command ran without joining back. The only failure signal the series carries
+command ran without joining back. The catalog row additionally carries an
+``action_series`` (the trajectory's steps' ``action`` texts, newline-joined,
+per-step compact) so the oversub driver can surface the executed command
+sequence in ``trajectory-detail.csv`` without reading each ``replay_result.json``;
+the per-step body + per-run fidelity still live in the deep files. The only failure signal the series carries
 beyond per-step is the trajectory-level ``error_type`` + ``error`` (a short
 string, ``[:120]``) on ``trajectory_create(success=False)`` /
 ``trajectory_kill(success=False)`` events. So ``create_error``/``kill_error``
@@ -77,6 +81,31 @@ _BREAKDOWN_SHORT = {
 def _sort_key(x) -> tuple:
     """Sort None last without comparing None to int (avoids TypeError)."""
     return (x is None, x)
+
+
+def _action_series(run_records: list[dict]) -> str:
+    """Join a trajectory's recorded step commands into one newline-separated string.
+
+    Per-trajectory (NOT per-run): the recorded commands are identical across a
+    trajectory's runs (the bench replays one recorded trajectory), so the fullest
+    run's steps are the canonical sequence -- stored once on the catalog row to
+    keep ``index.json`` lean at oversub scale (k*N runs would otherwise each
+    duplicate the same string). The fullest run is picked by step count so a
+    create-failed run (0 steps) or a ``stop_on_error``-aborted run (partial) does
+    not starve the sequence when a fuller run exists; if every run failed at
+    create the result is ``""``. Each action is already single-line + <=512 chars
+    (``_compact_action`` in the series ``step`` event), so the join is bounded per
+    step. Per-run execution fidelity -- which steps actually succeeded vs aborted
+    -- lives in the Step detail sheet + each run's ``replay_result.json``
+    ``steps[]`` (exit_code / slice_failed / timed_out).
+    """
+    if not run_records:
+        return ""
+    # Pick the run with the most steps: a create-failed run carries 0 steps and a
+    # stop_on_error-aborted run carries a partial set, but the recorded commands
+    # are identical across runs, so the fullest step list is the canonical sequence.
+    steps = max((r.get("steps") or [] for r in run_records), key=len)
+    return "\n".join(st.get("action") or "" for st in steps)
 
 
 def export_trajectories(
@@ -139,7 +168,7 @@ def export_trajectories(
         sub = base / sanitized
         sub.mkdir(parents=True, exist_ok=True)
         _atomic_write_text(sub / "replay_result.json", json.dumps(record, indent=2) + "\n")
-        index_rows.append(_index_row(agg, run_sums, sanitized))
+        index_rows.append(_index_row(agg, run_sums, sanitized, _action_series(run_records)))
 
     index = {"n_trajectories": len(index_rows), "trajectories": index_rows}
     _atomic_write_text(base / "index.json", json.dumps(index, indent=2) + "\n")
@@ -343,14 +372,17 @@ def _enrich_step(index: int, ev: dict, paused_sec: float) -> dict:
     }
 
 
-def _index_row(agg: dict, run_summaries: list[dict], sanitized: str) -> dict:
+def _index_row(agg: dict, run_summaries: list[dict], sanitized: str, action_series: str) -> dict:
     """Lean per-trajectory row for trajectories/index.json (no steps[]/aggregates).
 
     Top level = the per-trajectory aggregate headline (``n_runs``/``n_success``/
     ``n_failed``/``elapsed_sec`` success-median + ``time_breakdown_sec`` of p50s
     for browsability / old readers). ``runs[]`` is the slim per-run array the
     oversub driver expands into one ``trajectory-detail.csv`` row per run so a
-    reader gets per-run latency at any pool/N ratio.
+    reader gets per-run latency at any pool/N ratio. ``action_series`` is the
+    trajectory's recorded command sequence (see :func:`_action_series`) -- copied
+    verbatim onto every CSV run row by the driver so the detail CSV carries the
+    executed commands without the catalog duplicating it per run.
     """
     use_set = agg["successful_runs"] or agg["all_runs"]
     runs_slim = [
@@ -386,5 +418,6 @@ def _index_row(agg: dict, run_summaries: list[dict], sanitized: str) -> dict:
         "runs": runs_slim,
         "create_error_type": create_err_type,
         "kill_error_type": kill_err_type,
+        "action_series": action_series,
         "file": f"{sanitized}/replay_result.json",
     }

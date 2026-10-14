@@ -679,6 +679,10 @@ class XlsxReportRenderer:
             "round_id",
             "step_index",
             "action_type",
+            # The recorded command text (single-line, <=512 chars from the series
+            # ``_compact_action``). Reading down a trajectory's rows = its executed
+            # command sequence; the full per-step body lives in replay_result.json.
+            "action",
             "slice_failed",
             "resume_sec",
             "resume_rate_pacing_wait_sec",
@@ -721,6 +725,7 @@ class XlsxReportRenderer:
                     ev.get("round_id"),
                     ev.get("step_index"),
                     ev.get("action_type") or "",
+                    ev.get("action") or "",
                     bool(ev.get("slice_failed")),
                     _round_or_none(ev.get("resume_sec")),
                     _round_or_none(ev.get("resume_rate_pacing_wait_sec")),
