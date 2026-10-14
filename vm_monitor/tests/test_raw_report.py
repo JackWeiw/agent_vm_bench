@@ -105,10 +105,14 @@ def test_derive_host_cpu_mem_swap(tmp_path):
     assert math.isclose(r["cpu_busy_pct"], 100 * (1 - 12 / 41), abs_tol=0.1)
     # iowait% = 100 * d_iowait(2) / d_total(41)
     assert math.isclose(r["cpu_iowait_pct"], 100 * (2 / 41), abs_tol=0.1)
-    # mem used GB = (MemTotal-MemAvailable)/2**20
-    assert math.isclose(r["mem_used_gb"], (2097152 - 943718) / 2**20, abs_tol=0.01)
-    # cache GB = (Cached+SReclaimable)/2**20
-    assert math.isclose(r["mem_cache_gb"], (210000 + 52000) / 2**20, abs_tol=0.01)
+    # host_mem_raw.csv holds MB values: base._read_meminfo() converts /proc/meminfo
+    # kB -> MB before enqueue_proc -> _write_wide dumps it. So GB = MB/1024 and the
+    # MB columns are passthrough (regression: raw_report used to assume kB and
+    # divide by 2**20 / 1024, underreporting every mem field by 1024x).
+    assert math.isclose(r["mem_used_gb"], (2097152 - 943718) / 1024, abs_tol=0.01)
+    assert math.isclose(r["mem_cache_gb"], (210000 + 52000) / 1024, abs_tol=0.01)
+    assert math.isclose(r["buffers_mb"], 32000, abs_tol=0.01)
+    assert math.isclose(r["dirty_mb"], 2000, abs_tol=0.01)
     # swap in MiB/s = d(pswpin=200)*4096/2**20 / dt(2)
     assert math.isclose(r["swap_in_mib_s"], 200 * 4096 / 2**20 / 2, abs_tol=0.01)
     # pressure page_scan_mib_s = 2048*4096/2**20 / 2 (reuse _compute_pressure_rates)

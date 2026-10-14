@@ -703,15 +703,15 @@ regeneratable after any interruption.
 
 | 列 | 含义 | 来源 / 公式 |
 |----|------|-------------|
-| `mem_used_gb` | 已用内存（应用 + 内核结构，不含可回收缓存） | `(MemTotal − MemAvailable) / 2²⁰`（`/proc/meminfo`，kB→GB） |
-| `mem_cache_gb` | 可回收页缓存（page cache + 可回收 slab） | `(Cached + SReclaimable) / 2²⁰` |
+| `mem_used_gb` | 已用内存（应用 + 内核结构，不含可回收缓存） | `(MemTotal − MemAvailable) / 1024`（`host_mem_raw.csv` 存 MB：`_read_meminfo` 已把 `/proc/meminfo` 的 kB 转 MB 再落盘；MB→GiB） |
+| `mem_cache_gb` | 可回收页缓存（page cache + 可回收 slab） | `(Cached + SReclaimable) / 1024`（同上，CSV 存 MB→GiB） |
 
 **主机 buffers/dirty** —— 图 `Host buffers/dirty`，单位 MB
 
 | 列 | 含义 | 来源 / 公式 |
 |----|------|-------------|
-| `buffers_mb` | 内核 buffer cache（原始块设备 I/O 缓冲） | `Buffers / 1024`（kB→MB） |
-| `dirty_mb` | 待回写的脏页（写回磁盘前驻留内存） | `Dirty / 1024` |
+| `buffers_mb` | 内核 buffer cache（原始块设备 I/O 缓冲） | `Buffers`（`host_mem_raw.csv` 已是 MB，直通；勿再 `/1024`） |
+| `dirty_mb` | 待回写的脏页（写回磁盘前驻留内存） | `Dirty`（同上，MB 直通） |
 
 > 与 `mem_used_gb`/`mem_cache_gb` 拆成两张图：前者是 GB 级，buffers/dirty 是 MB 级，混在
 > 一张图里后者会被压成贴 0 的平线，看不出波动。
