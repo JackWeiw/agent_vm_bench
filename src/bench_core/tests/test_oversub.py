@@ -295,7 +295,7 @@ def test_write_outputs_emits_all_four_files(tmp_path):
     assert "configuration" in rep and "trials" in rep and "ratio_summary" in rep
 
 
-def test_write_outputs_trajectory_detail_has_rows(tmp_path):
+def test_trajectory_detail_has_rows(tmp_path):
     # Seed a trial dir with trajectories/index.json next to the run_summary path.
     trial_stamp = tmp_path / "t" / "rb_20260905-140000"
     traj_dir = trial_stamp / "trajectories"
@@ -383,7 +383,7 @@ def test_write_outputs_trajectory_detail_has_rows(tmp_path):
     assert td["pause_sec"] == 0.3
 
 
-def test_write_outputs_trajectory_detail_blank_breakdown_for_old_index(tmp_path):
+def test_trajectory_detail_old_index_compat(tmp_path):
     """An older trajectories/index.json (no time_breakdown_sec, e.g. produced
     before this enrichment) must still yield a row -- the breakdown columns are
     present in the header but blank -- rather than crash. Backward compat for
@@ -432,6 +432,112 @@ def test_write_outputs_trajectory_detail_blank_breakdown_for_old_index(tmp_path)
     assert "exec_sec" in reader.fieldnames
     assert rows[0]["exec_sec"] in ("", None)
     assert rows[0]["pause_sec"] in ("", None)
+
+
+def test_trajectory_detail_action_series(tmp_path):
+    # action_series is trajectory-level in index.json; the driver copies it onto
+    # every run row so trajectory-detail.csv carries the executed command
+    # sequence. A newline-in-cell round-trips through csv.DictReader (the csv
+    # module reassembles quoted fields spanning physical lines).
+    trial_stamp = tmp_path / "t" / "rb_20260905-160000"
+    traj_dir = trial_stamp / "trajectories"
+    traj_dir.mkdir(parents=True)
+    idx = {
+        "n_trajectories": 1,
+        "trajectories": [
+            {
+                "trajectory_id": "t0",
+                "n_steps": 2,
+                "n_failed": 0,
+                "n_timeout": 0,
+                "success_rate": 1.0,
+                "elapsed_sec": 1.5,
+                "time_breakdown_sec": {
+                    k: 0.1
+                    for k in (
+                        "slice_total",
+                        "exec",
+                        "resume",
+                        "pause",
+                        "requested_delay",
+                        "create",
+                        "kill",
+                        "interaction_total",
+                        "slot_contention_wait",
+                        "natural_delay",
+                        "capacity_wait",
+                        "rate_pacing_wait",
+                        "inflight_wait",
+                        "resume_rate_pacing_wait",
+                        "pause_rate_pacing_wait",
+                        "resume_inflight_wait",
+                        "pause_inflight_wait",
+                        "running_slot_held",
+                    )
+                },
+                "create_error_type": None,
+                "kill_error_type": None,
+                "action_series": "echo one\necho two",
+                "runs": [
+                    {
+                        "sandbox_index": 0,
+                        "round_id": 0,
+                        "elapsed_sec": 1.5,
+                        "n_steps": 2,
+                        "n_failed": 0,
+                        "n_timeout": 0,
+                        "success_rate": 1.0,
+                        "create_error_type": None,
+                        "kill_error_type": None,
+                        "time_breakdown_sec": {},
+                    },
+                    {
+                        "sandbox_index": 1,
+                        "round_id": 0,
+                        "elapsed_sec": 1.6,
+                        "n_steps": 2,
+                        "n_failed": 0,
+                        "n_timeout": 0,
+                        "success_rate": 1.0,
+                        "create_error_type": None,
+                        "kill_error_type": None,
+                        "time_breakdown_sec": {},
+                    },
+                ],
+                "file": "t0/replay_result.json",
+            }
+        ],
+    }
+    (traj_dir / "index.json").write_text(json.dumps(idx), encoding="utf-8")
+    s = _summary(total=4, succeeded=4, failed=0, wall_sec=100.0, peak_active=380, mode="lifecycle", test_duration=1000)
+    s["throughput"]["tasks_per_sec"] = 10.0
+    row = trial_row(
+        mode="lifecycle",
+        ratio=2,
+        repeat=1,
+        running_concurrency=384,
+        target_count=768,
+        summary=s,
+        return_code=0,
+        valid=True,
+        reused=False,
+        trial_dir=str(trial_stamp),
+        run_summary_path=str(trial_stamp / "rb_run_summary.json"),
+    )
+    write_outputs([row], output_root=tmp_path)
+    # Read with newline="" so multi-line quoted cells (action_series carries
+    # embedded newlines) round-trip correctly -- read_text().splitlines() strips
+    # the line terminators the csv reader needs to reassemble a quoted field.
+    with open(tmp_path / "trajectory-detail.csv", newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 2  # two runs -> two CSV rows
+    # the trajectory-level action_series is copied onto every run row, newlines
+    # preserved (csv quoting round-trips through a proper reader).
+    for r in rows:
+        assert r["action_series"] == "echo one\necho two"
+    # also surfaces in benchmark-report.json trajectory_details
+    rep = json.loads((tmp_path / "benchmark-report.json").read_text(encoding="utf-8"))
+    assert all(td["action_series"] == "echo one\necho two" for td in rep["trajectory_details"])
 
 
 from bench_core.oversub import main

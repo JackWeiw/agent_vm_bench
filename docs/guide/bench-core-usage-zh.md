@@ -559,7 +559,7 @@ driver 深拷贝 `base_config` 并只改写超卖字段,其余透传:
 |------|-------------|-------------|
 | `trial-summary.csv` | 每个 `(mode, ratio, repeat)` trial 一行 | `total, succeeded, failed, failure_rate, peak_active, wall_sec, tasks_per_sec, steps_per_sec, lifecycle_overhead_pct, return_code, valid, target_count, test_duration` |
 | `ratio-summary.csv` | 每个 `(mode, ratio)` 一行(跨 repeat 取中位) | `attempted, successful, median_wall_sec, median_tasks_per_sec, time_degradation_vs_1_1_pct, throughput_gain_vs_1_1_pct` |
-| `trajectory-detail.csv` | 每 trial 每条轨迹一行(取自 `trajectories/index.json`) | `trajectory_id, sandbox_index, n_steps, n_failed, success_rate, elapsed_sec` + 18 个 `*_sec` 分解列 |
+| `trajectory-detail.csv` | 每 trial 每条轨迹一行(取自 `trajectories/index.json`) | `trajectory_id, sandbox_index, n_steps, n_failed, success_rate, elapsed_sec` + 18 个 `*_sec` 分解列 + `action_series`(该轨迹执行的命令序列,换行连接) |
 | `benchmark-report.json` | 完整机器可读报告 | `configuration, trials, ratio_summary, trajectory_details` |
 
 每个 trial 还有自己的子目录 `<output_root>/<mode>/ratio-XX/repeat-XX/`,里面是 bench-core 跑该 trial 的原生产物:`trial.yaml`(该 trial 的覆盖配置)、`driver.log`(子进程日志)、`*_run_summary.json`、`*_obs.xlsx`(8.4 节那 8 张表)、`*_lifecycle_series.jsonl`、`trajectories/index.json`、`vm_monitor/`(若未 `--no-vm-monitor`)、文本报告。要钻到单 step / 单 sandbox 级别就进这个目录开 obs workbook。

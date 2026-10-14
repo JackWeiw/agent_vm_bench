@@ -633,6 +633,7 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
             "round_id": 0,
             "step_index": 0,
             "action_type": "shell",
+            "action": "ls -la /workspace",
             "slice_failed": False,
             # New invariants: resume_sec = inflight + api + ready (rate-pacing
             # resume_rate_pacing_wait is PRE-lease, NOT in resume_sec); pause_sec =
@@ -667,6 +668,7 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
             "round_id": 0,
             "step_index": 1,
             "action_type": "edit",
+            "action": "str_replace_editor view file.py",
             "slice_failed": False,
             "resume_sec": 0.06,
             "resume_rate_pacing_wait_sec": 0.0,
@@ -700,6 +702,7 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
             "round_id": 0,
             "step_index": 0,
             "action_type": "shell",
+            "action": "cat /etc/hosts",
             "slice_failed": True,
             "resume_sec": 0.0,
             "resume_rate_pacing_wait_sec": 0.0,
@@ -741,6 +744,14 @@ def test_step_detail_sheet_breaks_down_per_trajectory(tmp_path):
     assert "trajectory_id" in headers
     assert "exec_sec" in headers
     assert "slice_failed" in headers
+    # the recorded command text surfaces per step; reading down a trajectory's
+    # rows = its executed command sequence.
+    assert "action" in headers
+    act_col = headers.index("action") + 1
+    # sorted order: traj-a step0 (failed), traj-a step1, traj-b step0
+    assert ws.cell(2, act_col).value == "cat /etc/hosts"
+    assert ws.cell(3, act_col).value == "str_replace_editor view file.py"
+    assert ws.cell(4, act_col).value == "ls -la /workspace"
     # sub-decomposition columns (already emitted by the runner into the series)
     # are surfaced so the sum invariants are inspectable in the sheet itself.
     assert "resume_rate_pacing_wait_sec" in headers
