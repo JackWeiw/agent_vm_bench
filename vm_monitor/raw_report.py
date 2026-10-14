@@ -40,7 +40,7 @@ MAX_VM_SERIES = 8  # per-VM chart series cap (Excel render perf); used in Task 3
 # must NOT trip the reset guard, else busy-disk intervals get NaN-holed.
 _DISK_GUARD_FIELDS = tuple(f for f in _DISK_FIELDS if f != "inflight")
 
-_MEMINFO_KB_PER_GIB = 2**20  # /proc/meminfo fields are in kB; /2**20 -> GiB
+_MEMINFO_MB_PER_GIB = 1024  # host_mem_raw.csv holds MB (_read_meminfo converts kB->MB); /1024 -> GiB
 
 _VMSTAT_FIELDS = [
     "pswpin",
@@ -239,10 +239,10 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
         # switch to pd.merge_asof on timestamp if that ever happens.
         if mem is not None and i < len(mem):
             md = mem.iloc[i].to_dict()
-            out["mem_used_gb"].append((_f(md, "MemTotal") - _f(md, "MemAvailable")) / _MEMINFO_KB_PER_GIB)
-            out["mem_cache_gb"].append((_f(md, "Cached") + _f(md, "SReclaimable")) / _MEMINFO_KB_PER_GIB)
-            out["buffers_mb"].append(_f(md, "Buffers") / 1024)
-            out["dirty_mb"].append(_f(md, "Dirty") / 1024)
+            out["mem_used_gb"].append((_f(md, "MemTotal") - _f(md, "MemAvailable")) / _MEMINFO_MB_PER_GIB)
+            out["mem_cache_gb"].append((_f(md, "Cached") + _f(md, "SReclaimable")) / _MEMINFO_MB_PER_GIB)
+            out["buffers_mb"].append(_f(md, "Buffers"))
+            out["dirty_mb"].append(_f(md, "Dirty"))
         else:
             for k in ("mem_used_gb", "mem_cache_gb", "buffers_mb", "dirty_mb"):
                 out[k].append(math.nan)

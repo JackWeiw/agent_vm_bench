@@ -244,7 +244,8 @@ class _ProcRawWriter:
     """Background raw-snapshot dumper — every /proc-style source the monitor reads.
 
     Files are named by SCOPE so the dimension is obvious without context:
-      host_mem_raw.csv       wide   whole-machine /proc/meminfo (kB fields)
+      host_mem_raw.csv       wide   whole-machine /proc/meminfo (MB; _read_meminfo
+                                   converts kB->MB before dump, NOT raw kB)
       host_vmstat_raw.csv    wide   whole-machine /proc/vmstat (page counters)
       host_cpu_raw.csv       wide   whole-machine /proc/stat aggregate cpu line
                                    (user/nice/.../iowait jiffies + ctxt + softirq
