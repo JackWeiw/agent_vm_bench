@@ -8,6 +8,7 @@ chart, or a changed row count will fail this test.
 """
 
 import os
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -1067,6 +1068,114 @@ class TestAtomicReportWrite(unittest.TestCase):
         self._export()
         leftovers = [f for f in os.listdir(self.log_dir) if f.endswith(".xlsx") and f != "resource_report.xlsx"]
         self.assertEqual(leftovers, [], f"build temp left behind: {leftovers}")
+
+
+class TestRawCpuSourcePreferred(unittest.TestCase):
+    """resource_report's Host_CPU_Timeline / VM_Stats / Summary must source host
+    + per-VM CPU from the raw_data /proc delta series (same source as
+    host_resources.xlsx) when present, NOT the psutil in-memory history -- so the
+    three CPU views never disagree with host_resources.xlsx / spotbox_monitor."""
+
+    def setUp(self):
+        self.monitor = _full_monitor()
+        self.parsed_logs = _full_parsed_logs()
+        self.log_dir = tempfile.mkdtemp(prefix="vm_monitor_rawcpu_")
+        self.output_file = os.path.join(self.log_dir, "resource_report.xlsx")
+        os.makedirs(os.path.join(self.log_dir, "raw_data"))
+
+    def tearDown(self):
+        shutil.rmtree(self.log_dir, ignore_errors=True)
+
+    def _export(self):
+        with patch("vm_monitor.exporters.parse_all_logs", return_value=self.parsed_logs):
+            return export_to_excel(self.monitor, self.log_dir, numa_nodes=[0], output_file=self.output_file)
+
+    @staticmethod
+    def _write_csv(path, header, rows):
+        import csv
+
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerows([header, *rows])
+
+    def test_raw_cpu_overrides_psutil(self):
+        # _full_monitor() seeds the psutil distractors host_cpu_history=[40,50,60]
+        # and VM cpu_percent vm0=[10,20], vm1=[5]. raw_data below carries DIFFERENT
+        # jiffies; the sheets must reflect the raw delta, not psutil.
+        rd = os.path.join(self.log_dir, "raw_data")
+        self._write_csv(
+            os.path.join(rd, "host_cpu_raw.csv"),
+            "timestamp,cpu_user,cpu_nice,cpu_system,cpu_idle,cpu_iowait,cpu_irq,cpu_softirq,cpu_steal,cpu_guest,cpu_guest_nice,ctxt,btime,processes,procs_running,procs_blocked,softirq_total".split(
+                ","
+            ),
+            [
+                [
+                    "2026-08-14 10:00:00",
+                    "100",
+                    "0",
+                    "100",
+                    "800",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                ],
+                [
+                    "2026-08-14 10:00:02",
+                    "110",
+                    "0",
+                    "100",
+                    "808",
+                    "2",
+                    "0",
+                    "10",
+                    "10",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                ],
+            ],
+        )
+        # 2s delta: d_total=40, d(idle+iowait)=10 -> host CPU busy = 75.0
+        self._write_csv(
+            os.path.join(rd, "vm_cpu_raw.csv"),
+            "timestamp,pid,vm_name,utime,stime,pss_mb".split(","),
+            [
+                ["2026-08-14 10:00:00", "100", "vm0", "0", "0", "1024"],
+                ["2026-08-14 10:00:02", "100", "vm0", "100", "0", "1024"],
+                ["2026-08-14 10:00:00", "101", "vm1", "0", "0", "2048"],
+                ["2026-08-14 10:00:02", "101", "vm1", "200", "0", "2048"],
+            ],
+        )
+        # 2s delta (CLK_TCK=100): vm0 d=100 -> 0.5 core -> 50%, vm1 d=200 -> 1.0 -> 100%
+        self._export()
+        self.assertTrue(os.path.exists(self.output_file))
+
+        cpu_vals = pd.read_excel(self.output_file, sheet_name="Host_CPU_Timeline")["Host CPU (%)"].dropna().tolist()
+        self.assertEqual(cpu_vals, [75.0], f"raw host CPU busy% must win over psutil [40,50,60]; got {cpu_vals}")
+
+        vm = pd.read_excel(self.output_file, sheet_name="VM_Stats")
+        got = {r["VM Name"]: float(r["Avg CPU (%)"]) for _, r in vm.iterrows()}
+        self.assertEqual(got.get("vm0"), 50.0, f"vm0 Avg CPU must be raw 50.0 not psutil 15; got {got}")
+        self.assertEqual(got.get("vm1"), 100.0, f"vm1 Avg CPU must be raw 100.0 not psutil 5; got {got}")
+
+        summary = pd.read_excel(self.output_file, sheet_name="Summary")
+        host_avg = float(summary.loc[summary["Metric"] == "Host Avg CPU", "Value"].iloc[0])
+        self.assertEqual(
+            host_avg, 75.0, f"Summary Host Avg CPU must match raw-series mean, not psutil 50; got {host_avg}"
+        )
 
 
 if __name__ == "__main__":

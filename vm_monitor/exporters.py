@@ -14,6 +14,7 @@ directly to the shared writer.
 import os
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from vm_monitor.base import _PAGE_SIZE
@@ -84,7 +85,7 @@ def _safe_write_sheet(writer, df, sheet_name, *, log_dir=None):
     df.to_excel(writer, sheet_name=sheet_name, index=False)
 
 
-def _build_summary_sheet(writer, monitor, numa_nodes, overall_stats):
+def _build_summary_sheet(writer, monitor, numa_nodes, overall_stats, *, raw_host_df=None):
     """Sheet 1: Summary overview (test metadata + host/swap/hugepage/VM aggregates)."""
     summary_data = {"Metric": [], "Value": [], "Unit": []}
 
@@ -100,14 +101,26 @@ def _build_summary_sheet(writer, monitor, numa_nodes, overall_stats):
     )
     summary_data["Unit"].extend(["", "", "seconds", ""])
 
-    # Host machine stats
-    if monitor.host_cpu_history:
+    # Host machine stats. CPU avg/peak prefer the raw /proc/stat delta series
+    # (raw_host_df["cpu_busy_pct"], same source as host_resources.xlsx +
+    # Host_CPU_Timeline) over the psutil host_cpu_history, so a reader never
+    # reconciles two host-CPU numbers in one report. psutil is the fallback when
+    # raw capture was off (synthetic fixtures / --no-vm-monitor).
+    host_cpu_avg = host_peak = None
+    if raw_host_df is not None and not raw_host_df.empty and "cpu_busy_pct" in raw_host_df.columns:
+        _cv = raw_host_df["cpu_busy_pct"].dropna()
+        if len(_cv):
+            host_cpu_avg = round(float(_cv.mean()), 1)
+            host_peak = round(float(_cv.max()), 1)
+    if host_cpu_avg is None and monitor.host_cpu_history:
         host_cpu_avg = round(sum(monitor.host_cpu_history) / len(monitor.host_cpu_history), 1)
+        host_peak = round(monitor.peak_host_cpu, 1)
+    if host_cpu_avg is not None and monitor.host_mem_history:
         summary_data["Metric"].extend(["Host Avg CPU", "Host Peak CPU", "Host Avg Memory", "Host Peak Memory"])
         summary_data["Value"].extend(
             [
                 host_cpu_avg,
-                round(monitor.peak_host_cpu, 1),
+                host_peak,
                 round(sum(h["used_mb"] for h in monitor.host_mem_history) / len(monitor.host_mem_history), 0),
                 round(monitor.peak_host_mem_mb, 0),
             ]
@@ -318,21 +331,32 @@ def _build_numa_overview_sheet(writer, monitor):
         pd.DataFrame(overview_data).to_excel(writer, sheet_name="NUMA_Overview", index=False)
 
 
-def _build_vm_stats_sheet(writer, vm_stats):
+def _build_vm_stats_sheet(writer, vm_stats, *, vm_cores_df=None):
     """Sheet 3: VM Statistics (one row per VM).
 
     Carries the full per-VM summary calculate_vm_stats() computes, incl. the
     min/last memory, max hugepage, and private/heap memory breakdowns the
     legacy 8-column sheet dropped.
+
+    Avg/Max CPU prefer the raw /proc/<pid>/stat jiffie delta (vm_cores_df, same
+    source as host_resources.xlsx's Per-VM sheet) over psutil
+    Process.cpu_percent. cores*100 == psutil's "% of one core" (cpu_percent can
+    exceed 100 for multithread), so the "(%)" label stays comparable; psutil is
+    the fallback when raw capture was off.
     """
     if not vm_stats:
         return
+    avg_pct = max_pct = {}
+    if vm_cores_df is not None and not vm_cores_df.empty:
+        _c = vm_cores_df.drop(columns=["t_s"], errors="ignore").select_dtypes("number")
+        avg_pct = {str(n): round(float(_c[n].mean(skipna=True)) * 100, 2) for n in _c.columns if _c[n].notna().any()}
+        max_pct = {str(n): round(float(_c[n].max(skipna=True)) * 100, 2) for n in _c.columns if _c[n].notna().any()}
     vm_data = {
         "VM Name": [v["vm_name"] for v in vm_stats],
         "PID": [v["pid"] for v in vm_stats],
         "Samples": [v["sample_count"] for v in vm_stats],
-        "Avg CPU (%)": [v["avg_cpu"] for v in vm_stats],
-        "Max CPU (%)": [v["max_cpu"] for v in vm_stats],
+        "Avg CPU (%)": [avg_pct.get(v["vm_name"], v["avg_cpu"]) for v in vm_stats],
+        "Max CPU (%)": [max_pct.get(v["vm_name"], v["max_cpu"]) for v in vm_stats],
         "Avg Memory (MB)": [v["avg_memory_mb"] for v in vm_stats],
         "Max Memory (MB)": [v["max_memory_mb"] for v in vm_stats],
         "Min Memory (MB)": [v.get("min_memory_mb", 0) for v in vm_stats],
@@ -994,7 +1018,7 @@ def _build_host_pressure_sheet(writer, monitor, *, log_dir=None):
     _safe_write_sheet(writer, pd.DataFrame(pressure_data), "Host_Pressure_Timeline", log_dir=log_dir)
 
 
-def _build_host_cpu_timeline_sheet(writer, monitor, *, log_dir=None):
+def _build_host_cpu_timeline_sheet(writer, monitor, *, log_dir=None, raw_host_df=None):
     """Sheet: Host_CPU_Timeline (whole-machine CPU% + host mem, per sample).
 
     The leadership-visible whole-machine CPU utilization time curve. Mirrors the
@@ -1008,7 +1032,15 @@ def _build_host_cpu_timeline_sheet(writer, monitor, *, log_dir=None):
     dict carries to the CPU row. Falls back to an index-based label when ts is
     absent (synthetic fixtures), matching the svg_exporter fallback behaviour.
     """
-    cpu = monitor.host_cpu_history
+    # Prefer the raw /proc/stat delta series (raw_host_df["cpu_busy_pct"], same
+    # source as host_resources.xlsx) over psutil host_cpu_history so the two
+    # host-CPU reports never disagree; psutil is the fallback when raw capture
+    # was off (synthetic fixtures / --no-vm-monitor). Row 0 is NaN (no previous
+    # sample to delta); round(nan, 1)=nan flows through as an empty cell.
+    if raw_host_df is not None and not raw_host_df.empty and "cpu_busy_pct" in raw_host_df.columns:
+        cpu = raw_host_df["cpu_busy_pct"].round(1).tolist()
+    else:
+        cpu = monitor.host_cpu_history
     mem = monitor.host_mem_history
     if not cpu:
         return
@@ -1693,9 +1725,27 @@ def export_to_excel(
             vm_stats = monitor.calculate_vm_stats()
             overall_stats = monitor.calculate_overall_stats(vm_stats)
 
-            _build_summary_sheet(writer, monitor, numa_nodes, overall_stats)
+            # Unify the CPU-bearing sheets onto the raw /proc delta source that
+            # host_resources.xlsx uses, so resource_report's Host_CPU_Timeline /
+            # VM_Stats / Summary never disagree with it or spotbox_monitor on host
+            # or per-VM CPU. Missing CSVs -> empty df -> each builder falls back to
+            # its psutil history (synthetic fixtures / raw capture off).
+            raw_dir = Path(log_dir) / "raw_data"
+            raw_host_df = pd.DataFrame()
+            vm_cores_df = pd.DataFrame()
+            try:
+                from vm_monitor.raw_report import _derive_host, _derive_per_vm
+
+                raw_host_df = _derive_host(raw_dir)
+                # max_series effectively uncapped: VM_Stats lists every VM, not
+                # the top-K the Per-VM chart sheet caps at.
+                vm_cores_df, _ = _derive_per_vm(raw_dir, max_series=10**6)
+            except (OSError, ValueError, KeyError, pd.errors.ParserError) as e:
+                print(f"[WARN] raw CPU derivation skipped (falling back to psutil): {e}")
+
+            _build_summary_sheet(writer, monitor, numa_nodes, overall_stats, raw_host_df=raw_host_df)
             _build_numa_overview_sheet(writer, monitor)
-            _build_vm_stats_sheet(writer, vm_stats)
+            _build_vm_stats_sheet(writer, vm_stats, vm_cores_df=vm_cores_df)
             _build_devkit_topdown_sheets(writer, parsed_logs, log_dir=log_dir)
             _build_devkit_memory_sheets(writer, parsed_logs, log_dir=log_dir)
             _build_ksys_sheet(writer, parsed_logs)
@@ -1710,7 +1760,7 @@ def export_to_excel(
             _build_disk_io_sheet(writer, monitor, log_dir=log_dir)
             _build_host_mem_timeline_sheet(writer, monitor, log_dir=log_dir)
             _build_host_pressure_sheet(writer, monitor, log_dir=log_dir)
-            _build_host_cpu_timeline_sheet(writer, monitor, log_dir=log_dir)
+            _build_host_cpu_timeline_sheet(writer, monitor, log_dir=log_dir, raw_host_df=raw_host_df)
             _build_numa_cpu_timeline_sheet(writer, monitor, log_dir=log_dir)
     except ImportError:
         print("[WARN] openpyxl not available, skipping Excel export")
