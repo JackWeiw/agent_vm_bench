@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass
 
 from bench_core.admission import ShutdownInterrupted
-from bench_core.payload.replay_payload import ReplayStep, Trajectory, load_pool
+from bench_core.payload.replay_payload import ReplayStep, Trajectory, load_pool, within_template_rank
 from bench_core.schemas import REPLAY_STEP_ORDER, ReplayMetrics
 from bench_core.transients import is_transient_sandbox_error
 from bench_core.workflow_registry import (
@@ -1131,9 +1131,10 @@ class ReplayTaskRunner(ReplayBaseRunner):
                 self.state.replay_metrics.record_orphan_skip()
                 return
             self._init_lifecycle()
-            # Round-robin across the affinity-filtered sub-fleet; when my_pool
-            # is shorter than pool, modulo still spreads sandboxes evenly.
-            cursor = self.state.index % len(my_pool)
+            # Start cursor at the sandbox's within-template rank (k // T), not
+            # its global index, so the +1 cycling has stride 1 within the group
+            # (even coverage; avoids the gcd/T trajectory-reachability bug).
+            cursor = within_template_rank(pool, self.state.index) % len(my_pool)
             while not self.stop_event.is_set() and self.state.is_alive:
                 traj = my_pool[cursor]
                 try:
@@ -1198,10 +1199,13 @@ class ReplayTaskRunner(ReplayBaseRunner):
 class ReplayRoundRunner(ReplayBaseRunner):
     """Round-robin replay runner -- replays one trajectory per round.
 
-    Trajectory selection is deterministic: index ``(state.index + round_id) %
-    len(pool)``. So round N, sandbox S always maps to the same trajectory, and
-    successive rounds rotate each sandbox through the pool. No cursor state
-    is held across rounds (round_id encodes the position).
+    Trajectory selection is deterministic: index
+    ``(within_template_rank(pool, state.index) + round_id) % len(my_pool)``
+    -- the sandbox's within-template rank (k // T), not its global index, so
+    coverage is stride-1 within the group. Round N, sandbox S always maps to
+    the same trajectory, and successive rounds rotate each sandbox through
+    its template's sub-pool. No cursor state is held across rounds (round_id
+    encodes the position).
     """
 
     def __init__(self, ctx: RunContext) -> None:
@@ -1238,7 +1242,11 @@ class ReplayRoundRunner(ReplayBaseRunner):
                 )
                 self.state.replay_metrics.record_orphan_skip()
                 return
-            idx = (self.state.index + self.round_id) % len(my_pool)
+            # Pick by the sandbox's rank WITHIN its template group (k // T), not
+            # its global index -- stride-1 coverage kills the gcd/T bug where
+            # gcd(T, count_t) > 1 left some trajectories unreachable per round.
+            rank = within_template_rank(pool, self.state.index)
+            idx = (rank + self.round_id) % len(my_pool)
             traj = my_pool[idx]
             logger.info(f"[Sandbox{self.state.index}] Replay round {self.round_id}: trajectory {traj.instance_id}")
             try:

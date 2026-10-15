@@ -165,7 +165,9 @@ def build_trial_config(
     """Deep-copy the base YAML and merge the per-trial oversub overrides.
 
     Overrides: ``sandbox.total_count = ratio*N``; ``replay.running_concurrency = N``
-    (stays fixed); ``replay.mode``; ``test.round_size = ratio*N`` (so all k*N
+    (stays fixed); ``replay.trajectory_limit = N`` (fixes the issue set to the
+    first N trajectories PER TEMPLATE across all ratios so only concurrency
+    varies); ``replay.mode``; ``test.round_size = ratio*N`` (so all k*N
     sandboxes run concurrently in one group -- without this, k>=2 silently
     runs multiple sequential groups of N, corrupting the oversubscription
     dynamics); ``test.duration`` (the time ceiling); ``report.output_dir``;
@@ -181,6 +183,18 @@ def build_trial_config(
     target = ratio * n
     cfg.setdefault("sandbox", {})["total_count"] = target
     cfg.setdefault("replay", {})["running_concurrency"] = n
+    # Fix the issue set across ratios so only concurrency varies. Sets
+    # trajectory_limit=N (the single-template strategy: first N per template).
+    # For multi-template (T>1) the kernel's ``load_pool`` further clamps this to
+    # N//T (the ratio-1 per-template fleet share under the balanced fleet) so
+    # count_t <= fleet_t(ratio 1) and the running issue set stays fixed across
+    # ratios -- without that clamp, capping to N lets only N/T issues per
+    # template run at ratio 1 and the set grows with ratio until k>=T, drifting
+    # the baseline. The driver cannot compute T itself (the trajectory pool /
+    # manifest live on the test host, not necessarily the driver's box), so the
+    # clamp is kernel-side. Per-template (not global first-N) keeps every
+    # template covered in a multi-template manifest.
+    cfg["replay"]["trajectory_limit"] = n
     cfg["replay"]["mode"] = mode
     cfg.setdefault("test", {})
     cfg["test"]["round_size"] = target

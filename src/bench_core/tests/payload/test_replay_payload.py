@@ -171,12 +171,271 @@ def test_load_pool_is_cached():
     assert a is b  # same cached tuple object
 
 
+def test_load_pool_trajectory_limit_caps_to_first_n():
+    """trajectory_limit caps the pool to the first N per template (natural sort
+    within each template). On this single-template fixture that is just the
+    first N of the one template. The cap is part of the cache key so a different
+    limit does not return the stale unlimited tuple."""
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
+
+    class _CfgLimited:
+        workflow_config = ReplayConfig(
+            replay_trajectory_dir=str(FIXTURES),
+            replay_trajectory_glob="*",
+            replay_template_manifest=None,
+            replay_trajectory_limit=1,
+        )
+
+    reset_pool_cache()
+    limited = load_pool(_CfgLimited())  # type: ignore[arg-type]
+    # The fixture pool has 2 survivors; limit=1 keeps only the first by sort.
+    assert len(limited) == 1
+
+    # A separate unlimited config must still see all 2 (cache key differs).
+    class _CfgFull:
+        workflow_config = ReplayConfig(
+            replay_trajectory_dir=str(FIXTURES),
+            replay_trajectory_glob="*",
+            replay_template_manifest=None,
+        )
+
+    full = load_pool(_CfgFull())  # type: ignore[arg-type]
+    assert len(full) == 2
+
+
+def test_load_pool_trajectory_limit_caps_per_template(tmp_path):
+    """trajectory_limit caps EACH template's sub-pool to the first N, not a
+    global first-N. With 3 trajectories per template (a1,a2,a3,b1,b2,b3 in
+    sort order) and limit=2, a global first-2 cap would yield only [a1,a2]
+    and starve template b entirely; the per-template cap yields [a1,a2,b1,b2]
+    -- both templates keep their first 2."""
+    import json
+
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
+
+    traj_dir = tmp_path / "traj"
+    for i in (1, 2, 3):
+        _write_traj(traj_dir, f"a{i}.replay.json", f"a{i}")
+        _write_traj(traj_dir, f"b{i}.replay.json", f"b{i}")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({f"{t}{i}.replay.json": f"swb-{t}" for t in ("a", "b") for i in (1, 2, 3)}),
+        encoding="utf-8",
+    )
+
+    reset_pool_cache()
+    pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest), glob="*.replay.json", limit=2))
+    assert len(pool) == 4
+    by_tpl: dict[str | None, list[str]] = {}
+    for t in pool:
+        by_tpl.setdefault(t.template, []).append(t.instance_id)
+    # each template keeps its first 2 by natural sort; b is NOT starved.
+    assert sorted(by_tpl["swb-a"]) == ["a1", "a2"]
+    assert sorted(by_tpl["swb-b"]) == ["b1", "b2"]
+
+
+# ---------------------------------------------------------------------------
+# load_pool — oversub linearity clamp (trajectory_limit N -> N//T for T>1)
+# ---------------------------------------------------------------------------
+
+
+def test_load_pool_limit_clamped_to_fleet_share(tmp_path):
+    """Oversub linearity clamp: 3 templates, trajectory_limit=N=6, running_concurrency=6.
+    The kernel clamps N to N//T = 6//3 = 2 (the ratio-1 per-template fleet share)
+    so count_t <= fleet_t(ratio 1) and the issue set stays fixed across ratios.
+    Without the clamp each template would keep 6 but only 2 run at ratio 1
+    (drifting with ratio until k>=T)."""
+    import json
+
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
+
+    traj_dir = tmp_path / "traj"
+    for tpl in ("a", "b", "c"):
+        for i in range(1, 7):  # 6 trajectories each (all >= N)
+            _write_traj(traj_dir, f"{tpl}{i}.replay.json", f"{tpl}{i}")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({f"{t}{i}.replay.json": f"swb-{t}" for t in ("a", "b", "c") for i in range(1, 7)}),
+        encoding="utf-8",
+    )
+
+    reset_pool_cache()
+    pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest), limit=6, rc=6))
+    by_tpl: dict[str | None, list[str]] = {}
+    for t in pool:
+        by_tpl.setdefault(t.template, []).append(t.instance_id)
+    # clamped to N//T = 2 per template (NOT 6); first 2 by natural sort kept.
+    assert len(by_tpl) == 3
+    assert all(len(v) == 2 for v in by_tpl.values())
+    assert sorted(by_tpl["swb-a"]) == ["a1", "a2"]
+
+
+def test_load_pool_no_clamp_when_single_template(tmp_path):
+    """T=1: running_concurrency//T == N, so the clamp is a no-op (cap stays N).
+    Single-template matches the legacy ``trajectories[:N]`` strategy unchanged."""
+    import json
+
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
+
+    traj_dir = tmp_path / "traj"
+    for i in range(1, 6):  # 5 trajectories, one template
+        _write_traj(traj_dir, f"a{i}.replay.json", f"a{i}")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({f"a{i}.replay.json": "swb-a" for i in range(1, 6)}), encoding="utf-8")
+
+    reset_pool_cache()
+    pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest), limit=3, rc=3))
+    # T=1 -> 3//1 = 3, min(3, 3) = 3: keeps first 3 (no clamp).
+    assert len(pool) == 3
+
+
+def test_load_pool_clamp_respects_smaller_limit(tmp_path):
+    """An explicit trajectory_limit smaller than N//T is honored (min). The clamp
+    only caps the MAXIMUM (N//T); a user-set smaller limit stays."""
+    import json
+
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
+
+    traj_dir = tmp_path / "traj"
+    for tpl in ("a", "b", "c"):
+        for i in range(1, 7):
+            _write_traj(traj_dir, f"{tpl}{i}.replay.json", f"{tpl}{i}")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({f"{t}{i}.replay.json": f"swb-{t}" for t in ("a", "b", "c") for i in range(1, 7)}),
+        encoding="utf-8",
+    )
+
+    reset_pool_cache()
+    # limit=1, rc=6 -> N//T=2, min(1, 2)=1 (explicit smaller limit wins).
+    pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest), limit=1, rc=6))
+    by_tpl: dict[str | None, list[str]] = {}
+    for t in pool:
+        by_tpl.setdefault(t.template, []).append(t.instance_id)
+    assert len(by_tpl) == 3
+    assert all(len(v) == 1 for v in by_tpl.values())
+
+
+def test_load_pool_no_clamp_when_rc_unset(tmp_path):
+    """rc unset (non-oversub direct run): no N//T clamp, honor the explicit
+    limit as-is -- preserves direct bench-core use that sets trajectory_limit
+    but not running_concurrency."""
+    import json
+
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
+
+    traj_dir = tmp_path / "traj"
+    for tpl in ("a", "b", "c"):
+        for i in range(1, 7):
+            _write_traj(traj_dir, f"{tpl}{i}.replay.json", f"{tpl}{i}")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({f"{t}{i}.replay.json": f"swb-{t}" for t in ("a", "b", "c") for i in range(1, 7)}),
+        encoding="utf-8",
+    )
+
+    reset_pool_cache()
+    pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest), limit=6, rc=None))
+    by_tpl: dict[str | None, list[str]] = {}
+    for t in pool:
+        by_tpl.setdefault(t.template, []).append(t.instance_id)
+    # rc None -> no clamp -> each template keeps all 6.
+    assert all(len(v) == 6 for v in by_tpl.values())
+
+
+def test_load_pool_cache_separates_by_rc(tmp_path):
+    """The clamp depends on rc, so the cache key must too: same dir/glob/manifest/
+    limit but rc=6 (clamps to 2) vs rc=None (no clamp, keeps 6) must NOT share a
+    cached pool (a shared slot would silently return the clamped pool for the
+    no-rc case, or vice versa)."""
+    import json
+
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
+
+    traj_dir = tmp_path / "traj"
+    for tpl in ("a", "b", "c"):
+        for i in range(1, 7):
+            _write_traj(traj_dir, f"{tpl}{i}.replay.json", f"{tpl}{i}")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({f"{t}{i}.replay.json": f"swb-{t}" for t in ("a", "b", "c") for i in range(1, 7)}),
+        encoding="utf-8",
+    )
+
+    reset_pool_cache()
+    clamped = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest), limit=6, rc=6))
+    unclamped = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest), limit=6, rc=None))
+    assert len(clamped) == 6  # 3 templates x 2 (N//T=2)
+    assert len(unclamped) == 18  # 3 templates x 6 (no clamp)
+    assert clamped is not unclamped
+
+
+def test_load_pool_ratio_invariant_under_clamp(tmp_path):
+    """The oversub linearity invariant end-to-end: the loaded POOL is IDENTICAL
+    across ratios 1/2/3, because the clamp pins count_t to running_concurrency//T
+    (N and T are ratio-invariant), so only concurrency (total_count=k*N) varies.
+    Per-issue execution = (fleet_t * round_count)/count_t then scales linearly
+    with k. (All->=N case: 3 templates x 10 trajectories.)
+
+    ``reset_pool_cache`` between ratios forces a recompute so a buggy clamp that
+    used total_count//T (ratio-dependent) would make the pools differ and fail."""
+    import json
+
+    from bench_core.config import KernelConfig
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
+    from bench_core.task_runner.replay import ReplayConfig
+
+    traj_dir = tmp_path / "traj"
+    for tpl in ("a", "b", "c"):
+        for i in range(1, 11):  # 10 per template, all >= N
+            _write_traj(traj_dir, f"{tpl}{i}.replay.json", f"{tpl}{i}")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({f"{t}{i}.replay.json": f"swb-{t}" for t in ("a", "b", "c") for i in range(1, 11)}),
+        encoding="utf-8",
+    )
+
+    n = 6
+    pools = {}
+    for k in (1, 2, 3):
+        reset_pool_cache()
+        cfg = KernelConfig(
+            workflow_type="replay",
+            total_count=k * n,  # the oversub variable (concurrency)
+            benchmark_mode="fixed",
+            test_duration=1,
+            workflow_config=ReplayConfig(
+                replay_trajectory_dir=str(traj_dir),
+                replay_template_manifest=str(manifest),
+                replay_trajectory_limit=n,  # driver sets N
+                replay_running_concurrency=n,  # driver pins N (ratio-invariant)
+                replay_mode="exec_only",
+            ),
+        )
+        pools[k] = load_pool(cfg)
+    # The pool is identical across ratios (only concurrency varied).
+    assert pools[1] == pools[2] == pools[3]
+    # And each template keeps N//T = 6//3 = 2 (the ratio-1 fleet share), not N=6.
+    by_tpl: dict[str | None, list[str]] = {}
+    for t in pools[1]:
+        by_tpl.setdefault(t.template, []).append(t.instance_id)
+    assert len(by_tpl) == 3
+    assert all(len(v) == 2 for v in by_tpl.values())
+
+
 # ---------------------------------------------------------------------------
 # load_pool — template manifest
 # ---------------------------------------------------------------------------
 
 
-def _cfg_for_manifest(tmp_path: Path, *, manifest: str | None = None, glob: str = "*.replay.json") -> KernelConfig:
+def _cfg_for_manifest(
+    tmp_path: Path,
+    *,
+    manifest: str | None = None,
+    glob: str = "*.replay.json",
+    limit: int | None = None,
+    rc: int | None = None,
+) -> KernelConfig:
     """Minimal KernelConfig for manifest tests; all other fields use defaults."""
     from bench_core.config import KernelConfig
     from bench_core.task_runner.replay import ReplayConfig
@@ -190,6 +449,8 @@ def _cfg_for_manifest(tmp_path: Path, *, manifest: str | None = None, glob: str 
             replay_trajectory_dir=str(tmp_path / "traj"),
             replay_trajectory_glob=glob,
             replay_template_manifest=manifest,
+            replay_trajectory_limit=limit,
+            replay_running_concurrency=rc,
         ),
     )
 
@@ -341,3 +602,109 @@ def test_load_pool_empty_string_manifest_value_is_skipped(tmp_path, caplog):
     pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest)))
     assert len(pool) == 0
     assert "no manifest entry" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Fleet-assignment helpers: _distinct_templates / template_fleet / within_template_rank
+# ---------------------------------------------------------------------------
+
+
+def _traj(template: str | None, iid: str | None = None) -> Trajectory:
+    """A throwaway Trajectory for helper tests -- only ``.template`` is consulted."""
+    return Trajectory(
+        path=Path("/tmp/x"),
+        instance_id=iid if iid is not None else (template or "none"),
+        environment="main",
+        steps=(),
+        template=template,
+    )
+
+
+def test_distinct_templates_mixed_none_and_named_does_not_crash():
+    """A pool could in principle mix template=None (no manifest) with named
+    templates. ``sorted({None, "swb"})`` raises TypeError in Py3 (None < str);
+    ``_distinct_templates`` must be total and sort None first."""
+    from bench_core.payload.replay_payload import _distinct_templates
+
+    pool = (_traj(None), _traj("swb-a"), _traj(None), _traj("swb-b"))
+    assert _distinct_templates(pool) == [None, "swb-a", "swb-b"]
+
+
+def test_distinct_templates_empty_pool():
+    from bench_core.payload.replay_payload import _distinct_templates
+
+    assert _distinct_templates(()) == []
+
+
+def test_template_fleet_balanced_round_robin():
+    """distinct[k % T]: each template gets ~total/T sandboxes regardless of how
+    many pool entries each template has (here both templates have 2 entries, but
+    the fleet is driven by distinct templates, not pool length)."""
+    from bench_core.payload.replay_payload import template_fleet
+
+    pool = (_traj("swb-a"), _traj("swb-b"), _traj("swb-a"), _traj("swb-b"))  # T=2
+    assert template_fleet(pool, 6) == {0: "swb-a", 1: "swb-b", 2: "swb-a", 3: "swb-b", 4: "swb-a", 5: "swb-b"}
+
+
+def test_template_fleet_t_greater_than_total_count():
+    """More distinct templates than sandboxes: each of the first ``total`` slots
+    gets a distinct template; no template gets two. The fleet is as balanced as
+    the small total allows (remainder toward the earlier distinct templates)."""
+    from bench_core.payload.replay_payload import template_fleet
+
+    pool = (_traj("a"), _traj("b"), _traj("c"), _traj("d"), _traj("e"))  # T=5
+    assert template_fleet(pool, 3) == {0: "a", 1: "b", 2: "c"}
+
+
+def test_template_fleet_remainder_distributes_to_earlier_distinct():
+    """total_count % T != 0: the +1 remainder sandboxes always land on the
+    EARLIER distinct templates (a fixed, deterministic bias, locked here). 7
+    sandboxes / 3 templates -> a:3, b:2, c:2 (the lone remainder goes to a)."""
+    from bench_core.payload.replay_payload import template_fleet
+
+    pool = (_traj("swb-a"), _traj("swb-b"), _traj("swb-c"))  # T=3
+    counts: dict[str | None, int] = {}
+    for tpl in template_fleet(pool, 7).values():
+        counts[tpl] = counts.get(tpl, 0) + 1
+    assert counts == {"swb-a": 3, "swb-b": 2, "swb-c": 2}
+
+
+def test_template_fleet_empty_pool_returns_empty():
+    from bench_core.payload.replay_payload import template_fleet
+
+    assert template_fleet((), 10) == {}
+
+
+def test_template_fleet_single_template_all_same():
+    """T=1 (legacy single-template pool, or one template): every sandbox gets it."""
+    from bench_core.payload.replay_payload import template_fleet
+
+    pool = (_traj("only"), _traj("only"), _traj("only"))  # T=1
+    fleet = template_fleet(pool, 5)
+    assert len(fleet) == 5 and all(t == "only" for t in fleet.values())
+
+
+def test_within_template_rank_is_k_div_T():
+    """Under the balanced fleet, a sandbox's within-group rank is exactly k // T
+    (all same-template sandboxes share k % T and are ordered 0,1,2,... by k)."""
+    from bench_core.payload.replay_payload import within_template_rank
+
+    pool = (_traj("a"), _traj("b"), _traj("c"))  # T=3
+    assert [within_template_rank(pool, k) for k in range(9)] == [k // 3 for k in range(9)]
+
+
+def test_within_template_rank_empty_pool_returns_zero():
+    """Empty pool: T=0 would divide-by-zero; the helper guards it to 0 (callers
+    guard ``if not pool`` first, so this path is defense-in-depth)."""
+    from bench_core.payload.replay_payload import within_template_rank
+
+    assert within_template_rank((), 5) == 0
+
+
+def test_within_template_rank_single_template_is_k():
+    """T=1: every sandbox shares the one template, so rank == k (0,1,2,...). The
+    runner then picks my_pool[(k + round_id) % len] -- stride 1, full reach."""
+    from bench_core.payload.replay_payload import within_template_rank
+
+    pool = (_traj("only"),)  # T=1
+    assert [within_template_rank(pool, k) for k in range(5)] == [0, 1, 2, 3, 4]
