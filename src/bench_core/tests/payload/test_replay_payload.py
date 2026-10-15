@@ -171,12 +171,77 @@ def test_load_pool_is_cached():
     assert a is b  # same cached tuple object
 
 
+def test_load_pool_trajectory_limit_caps_to_first_n():
+    """trajectory_limit caps the pool to the first N per template (natural sort
+    within each template). On this single-template fixture that is just the
+    first N of the one template. The cap is part of the cache key so a different
+    limit does not return the stale unlimited tuple."""
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
+
+    class _CfgLimited:
+        workflow_config = ReplayConfig(
+            replay_trajectory_dir=str(FIXTURES),
+            replay_trajectory_glob="*",
+            replay_template_manifest=None,
+            replay_trajectory_limit=1,
+        )
+
+    reset_pool_cache()
+    limited = load_pool(_CfgLimited())  # type: ignore[arg-type]
+    # The fixture pool has 2 survivors; limit=1 keeps only the first by sort.
+    assert len(limited) == 1
+
+    # A separate unlimited config must still see all 2 (cache key differs).
+    class _CfgFull:
+        workflow_config = ReplayConfig(
+            replay_trajectory_dir=str(FIXTURES),
+            replay_trajectory_glob="*",
+            replay_template_manifest=None,
+        )
+
+    full = load_pool(_CfgFull())  # type: ignore[arg-type]
+    assert len(full) == 2
+
+
+def test_load_pool_trajectory_limit_caps_per_template(tmp_path):
+    """trajectory_limit caps EACH template's sub-pool to the first N, not a
+    global first-N. With 3 trajectories per template (a1,a2,a3,b1,b2,b3 in
+    sort order) and limit=2, a global first-2 cap would yield only [a1,a2]
+    and starve template b entirely; the per-template cap yields [a1,a2,b1,b2]
+    -- both templates keep their first 2."""
+    import json
+
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
+
+    traj_dir = tmp_path / "traj"
+    for i in (1, 2, 3):
+        _write_traj(traj_dir, f"a{i}.replay.json", f"a{i}")
+        _write_traj(traj_dir, f"b{i}.replay.json", f"b{i}")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({f"{t}{i}.replay.json": f"swb-{t}" for t in ("a", "b") for i in (1, 2, 3)}),
+        encoding="utf-8",
+    )
+
+    reset_pool_cache()
+    pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest), glob="*.replay.json", limit=2))
+    assert len(pool) == 4
+    by_tpl: dict[str | None, list[str]] = {}
+    for t in pool:
+        by_tpl.setdefault(t.template, []).append(t.instance_id)
+    # each template keeps its first 2 by natural sort; b is NOT starved.
+    assert sorted(by_tpl["swb-a"]) == ["a1", "a2"]
+    assert sorted(by_tpl["swb-b"]) == ["b1", "b2"]
+
+
 # ---------------------------------------------------------------------------
 # load_pool — template manifest
 # ---------------------------------------------------------------------------
 
 
-def _cfg_for_manifest(tmp_path: Path, *, manifest: str | None = None, glob: str = "*.replay.json") -> KernelConfig:
+def _cfg_for_manifest(
+    tmp_path: Path, *, manifest: str | None = None, glob: str = "*.replay.json", limit: int | None = None
+) -> KernelConfig:
     """Minimal KernelConfig for manifest tests; all other fields use defaults."""
     from bench_core.config import KernelConfig
     from bench_core.task_runner.replay import ReplayConfig
@@ -190,6 +255,7 @@ def _cfg_for_manifest(tmp_path: Path, *, manifest: str | None = None, glob: str 
             replay_trajectory_dir=str(tmp_path / "traj"),
             replay_trajectory_glob=glob,
             replay_template_manifest=manifest,
+            replay_trajectory_limit=limit,
         ),
     )
 

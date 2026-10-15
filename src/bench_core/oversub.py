@@ -165,7 +165,9 @@ def build_trial_config(
     """Deep-copy the base YAML and merge the per-trial oversub overrides.
 
     Overrides: ``sandbox.total_count = ratio*N``; ``replay.running_concurrency = N``
-    (stays fixed); ``replay.mode``; ``test.round_size = ratio*N`` (so all k*N
+    (stays fixed); ``replay.trajectory_limit = N`` (fixes the issue set to the
+    first N trajectories PER TEMPLATE across all ratios so only concurrency
+    varies); ``replay.mode``; ``test.round_size = ratio*N`` (so all k*N
     sandboxes run concurrently in one group -- without this, k>=2 silently
     runs multiple sequential groups of N, corrupting the oversubscription
     dynamics); ``test.duration`` (the time ceiling); ``report.output_dir``;
@@ -181,6 +183,14 @@ def build_trial_config(
     target = ratio * n
     cfg.setdefault("sandbox", {})["total_count"] = target
     cfg.setdefault("replay", {})["running_concurrency"] = n
+    # Fix the issue set to the first N trajectories PER TEMPLATE (same set at
+    # every ratio) so the only variable across ratios is concurrency = k*N.
+    # Each issue's execution count then scales linearly with ratio k (the issue
+    # mix is held fixed), matching the no-lifecycle driver's fixed-pool
+    # strategy -- without this, a large pool lets the issue mix drift with ratio
+    # and confounds linearity. Per-template (not global first-N) so a multi-
+    # template manifest keeps every template covered.
+    cfg["replay"]["trajectory_limit"] = n
     cfg["replay"]["mode"] = mode
     cfg.setdefault("test", {})
     cfg["test"]["round_size"] = target

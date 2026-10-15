@@ -164,7 +164,8 @@ def load_pool(config: KernelConfig) -> tuple[Trajectory, ...]:
     directory = rcfg.replay_trajectory_dir
     glob = rcfg.replay_trajectory_glob
     manifest_path = rcfg.replay_template_manifest
-    cache_key = (str(directory), glob, str(manifest_path or ""))
+    limit = rcfg.replay_trajectory_limit
+    cache_key = (str(directory), glob, str(manifest_path or ""), str(limit or ""))
     if cache_key in _POOL_CACHE:
         return _POOL_CACHE[cache_key]
 
@@ -205,6 +206,30 @@ def load_pool(config: KernelConfig) -> tuple[Trajectory, ...]:
             logger.warning(f"[replay] trajectory {rel} has no manifest entry; skipping")
             continue
         pool.append(dataclasses.replace(traj, template=raw_template))
+
+    if limit is not None:
+        # Cap each template's sub-pool to the first `limit` trajectories (natural
+        # sort order preserved) -- per-template, NOT a global first-N. A global
+        # first-N can land entirely inside one template and starve the rest in a
+        # multi-template manifest (orphan skips at replay time). Capping per
+        # template keeps every template covered; the round-robin cycles each
+        # template's N trajectories across that template's sandboxes, so the
+        # issue set per template stays fixed across ratios.
+        kept: list[Trajectory] = []
+        kept_n: dict[str | None, int] = {}
+        total_n: dict[str | None, int] = {}
+        for traj in pool:
+            total_n[traj.template] = total_n.get(traj.template, 0) + 1
+            if kept_n.get(traj.template, 0) < limit:
+                kept.append(traj)
+                kept_n[traj.template] = kept_n.get(traj.template, 0) + 1
+        if len(kept) < len(pool):
+            parts = [f"{t!r} {total_n[t]}->{kept_n[t]}" for t in total_n if total_n[t] > kept_n[t]]
+            logger.info(
+                f"[replay] trajectory_limit={limit}: capping per template {len(pool)} -> {len(kept)} "
+                f"({'; '.join(parts)})"
+            )
+        pool = kept
 
     cached = tuple(pool)
     _POOL_CACHE[cache_key] = cached

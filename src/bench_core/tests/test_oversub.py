@@ -76,6 +76,7 @@ def test_build_trial_config_overrides_and_preserves_base():
     # Overrides applied.
     assert cfg["sandbox"]["total_count"] == 768  # k*N = 2*384
     assert cfg["replay"]["running_concurrency"] == 384  # N stays fixed
+    assert cfg["replay"]["trajectory_limit"] == 384  # N: fixed issue set across ratios
     assert cfg["replay"]["mode"] == "exec_only"
     assert cfg["test"]["round_size"] == 768  # scale with total_count
     assert cfg["test"]["round_count"] == 1  # passed through from base (not overridden)

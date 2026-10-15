@@ -24,6 +24,16 @@ class ReplayConfig(WorkflowConfigBase):
 
     replay_trajectory_dir: str = "trajectories"
     replay_trajectory_glob: str = "*.replay.json"
+    # Cap the loaded pool to the first N trajectories PER TEMPLATE (natural sort
+    # order within each template). None = use the whole pool. Set by the oversub
+    # driver to ``running_concurrency`` (N) so each template's issue set stays
+    # fixed across ratios -- isolating the oversub variable for linearity
+    # analysis (each issue's execution count then scales linearly with ratio k)
+    # instead of letting the issue mix drift with ratio. Per-template (not a
+    # global first-N) so a multi-template manifest keeps every template covered;
+    # a global first-N could starve a template whose trajectories sort after
+    # another's.
+    replay_trajectory_limit: int | None = None
     replay_template_manifest: str | None = None
     replay_workdir: str = "/"
     replay_env: dict[str, str] = field(default_factory=dict)
@@ -57,6 +67,7 @@ class ReplayConfig(WorkflowConfigBase):
         return cls(
             replay_trajectory_dir=r.get("trajectory_dir", "trajectories"),
             replay_trajectory_glob=r.get("trajectory_glob", "*.replay.json"),
+            replay_trajectory_limit=r.get("trajectory_limit"),
             replay_template_manifest=r.get("template_manifest"),
             replay_workdir=r.get("workdir", "/"),
             replay_env=r.get("env", {}),
@@ -85,6 +96,8 @@ class ReplayConfig(WorkflowConfigBase):
                     f"replay_running_concurrency ({self.replay_running_concurrency}) must be <= "
                     f"total_count ({kernel_config.total_count})"
                 )
+        if self.replay_trajectory_limit is not None and self.replay_trajectory_limit < 1:
+            raise WorkflowConfigError(f"replay_trajectory_limit must be >= 1, got {self.replay_trajectory_limit}")
         if self.replay_control_plane_qps is not None and self.replay_control_plane_qps <= 0:
             raise WorkflowConfigError(f"replay_control_plane_qps must be > 0, got {self.replay_control_plane_qps}")
         if self.replay_control_plane_inflight_cap is not None and self.replay_control_plane_inflight_cap < 1:
