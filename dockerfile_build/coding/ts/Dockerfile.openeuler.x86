@@ -101,9 +101,15 @@ RUN echo 'sslverify=0' >> /etc/dnf/dnf.conf && \
 # the captured openclaw agent did), which resolves tsx/esbuild from
 # node_modules/.bin internally. tsx/rollup/esbuild devDeps are the real surface.
 # PUPPETEER_SKIP_DOWNLOAD=1 skips puppeteer's browser download (not needed).
+# vuejs/core base_commit: b5f8518379b77c3b62a7a9d2b52f6c76cda09bd5 (2026-07-21,
+# "chore: allow @parcel/watcher builds (#15106)") -- the HEAD baked into the
+# prebuilt ubuntu-coding-bench image. Full clone (no --depth 1) so the pinned
+# commit is fetchable; mirrors the go image's gohugoio/hugo base_commit pin so
+# rebuilds reproduce the saved image's source state instead of drifting to HEAD.
 RUN cd /opt && \
-    git clone --depth 1 https://github.com/vuejs/core.git coding-bench && \
+    git clone https://github.com/vuejs/core.git coding-bench && \
     cd coding-bench && \
+    git checkout b5f8518379b77c3b62a7a9d2b52f6c76cda09bd5 && \
     # pnpm install against the mirror (no build, no PATH patch needed at runtime).
     # --ignore-scripts skips vuejs/core's postinstall (simple-git-hooks sets
     # pre-commit/commit-msg hooks we never use in a bench image); that postinstall
