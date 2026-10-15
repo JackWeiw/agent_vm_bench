@@ -17,6 +17,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -236,6 +237,78 @@ def load_pool(config: KernelConfig) -> tuple[Trajectory, ...]:
     return cached
 
 
+# ---------------------------------------------------------------------------
+# Fleet-assignment helpers: balanced template distribution + within-group rank.
+#
+# Both ``template_fleet`` (what ``_replay_template_map`` feeds create_all) and
+# ``within_template_rank`` (what the runner uses to pick a trajectory) MUST
+# derive the distinct-template order from here -- the single source of truth --
+# so a sandbox's fleet template and its within-group rank agree. Both consume
+# the SAME cached ``load_pool`` tuple (one immutable object per config), so the
+# order can never drift between create_all and the runner.
+# ---------------------------------------------------------------------------
+
+
+def _template_sort_key(name: str | None) -> tuple[bool, str]:
+    """Sort None before any named template without crashing on mixed pools.
+
+    Python 3 forbids ``None < "str"`` (TypeError), so a bare ``sorted({None,
+    "swb"})`` crashes if a pool ever held both. In practice a pool is either
+    all-``None`` (no manifest -> provider block default) or all-named (manifest
+    set) -- never mixed -- but this key makes ``_distinct_templates`` total.
+    """
+    return (name is not None, name or "")
+
+
+@lru_cache(maxsize=8)
+def _distinct_templates(pool: tuple[Trajectory, ...]) -> list[str | None]:
+    """Sorted distinct template names in ``pool`` (deterministic; None first).
+
+    Cached on the immutable ``load_pool`` tuple (few distinct inputs per run),
+    so the runner hot path never rebuilds the set per sandbox.
+    """
+    return sorted({t.template for t in pool}, key=_template_sort_key)
+
+
+def template_fleet(pool: tuple[Trajectory, ...], total_count: int) -> dict[int, str | None]:
+    """Balanced per-sandbox template map: sandbox ``k`` -> ``distinct[k % T]``.
+
+    Round-robin over the *distinct templates* (NOT over pool entries), so each
+    template gets ``~total_count/T`` sandboxes at every ratio regardless of pool
+    order, length, or per-template trajectory counts -> the fleet mix is
+    ratio-stable (the precondition for oversub linearity). When
+    ``total_count % T != 0`` the remainder always lands on the earlier distinct
+    templates -- a fixed, deterministic bias (locked by tests). Empty pool ->
+    ``{}``.
+    """
+    distinct = _distinct_templates(pool)
+    if not distinct:
+        return {}
+    T = len(distinct)
+    return {k: distinct[k % T] for k in range(total_count)}
+
+
+def within_template_rank(pool: tuple[Trajectory, ...], k: int) -> int:
+    """Sandbox ``k``'s 0-based rank within its template group under :func:`template_fleet`.
+
+    Under the balanced fleet ``distinct[k % T]`` all sandboxes of one template
+    share ``k % T`` and are ordered 0, 1, 2, ... by increasing ``k`` -- so the
+    within-group rank is exactly ``k // T``. The runner uses this (NOT the
+    global sandbox index) to pick ``my_pool[(rank + round_id) % len(my_pool)]``,
+    giving stride-1 within-template coverage -- which kills the gcd/T stride
+    bug where ``gcd(T, count_t) > 1`` left some of a template's trajectories
+    unreachable per round.
+
+    Only valid when ``pool`` is the SAME tuple :func:`template_fleet` consumed
+    (both must come from ``load_pool``); a stale distinct order would silently
+    mis-route. Returns 0 for an empty pool (callers guard ``if not pool``
+    before reaching here, so the divide-by-zero is unreachable in practice).
+    """
+    T = len(_distinct_templates(pool))
+    return k // T if T else 0
+
+
 def reset_pool_cache() -> None:
     """Test hook: clear the module-level pool cache between tests."""
     _POOL_CACHE.clear()
+    _distinct_templates.cache_clear()

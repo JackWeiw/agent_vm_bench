@@ -407,3 +407,109 @@ def test_load_pool_empty_string_manifest_value_is_skipped(tmp_path, caplog):
     pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest)))
     assert len(pool) == 0
     assert "no manifest entry" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Fleet-assignment helpers: _distinct_templates / template_fleet / within_template_rank
+# ---------------------------------------------------------------------------
+
+
+def _traj(template: str | None, iid: str | None = None) -> Trajectory:
+    """A throwaway Trajectory for helper tests -- only ``.template`` is consulted."""
+    return Trajectory(
+        path=Path("/tmp/x"),
+        instance_id=iid if iid is not None else (template or "none"),
+        environment="main",
+        steps=(),
+        template=template,
+    )
+
+
+def test_distinct_templates_mixed_none_and_named_does_not_crash():
+    """A pool could in principle mix template=None (no manifest) with named
+    templates. ``sorted({None, "swb"})`` raises TypeError in Py3 (None < str);
+    ``_distinct_templates`` must be total and sort None first."""
+    from bench_core.payload.replay_payload import _distinct_templates
+
+    pool = (_traj(None), _traj("swb-a"), _traj(None), _traj("swb-b"))
+    assert _distinct_templates(pool) == [None, "swb-a", "swb-b"]
+
+
+def test_distinct_templates_empty_pool():
+    from bench_core.payload.replay_payload import _distinct_templates
+
+    assert _distinct_templates(()) == []
+
+
+def test_template_fleet_balanced_round_robin():
+    """distinct[k % T]: each template gets ~total/T sandboxes regardless of how
+    many pool entries each template has (here both templates have 2 entries, but
+    the fleet is driven by distinct templates, not pool length)."""
+    from bench_core.payload.replay_payload import template_fleet
+
+    pool = (_traj("swb-a"), _traj("swb-b"), _traj("swb-a"), _traj("swb-b"))  # T=2
+    assert template_fleet(pool, 6) == {0: "swb-a", 1: "swb-b", 2: "swb-a", 3: "swb-b", 4: "swb-a", 5: "swb-b"}
+
+
+def test_template_fleet_t_greater_than_total_count():
+    """More distinct templates than sandboxes: each of the first ``total`` slots
+    gets a distinct template; no template gets two. The fleet is as balanced as
+    the small total allows (remainder toward the earlier distinct templates)."""
+    from bench_core.payload.replay_payload import template_fleet
+
+    pool = (_traj("a"), _traj("b"), _traj("c"), _traj("d"), _traj("e"))  # T=5
+    assert template_fleet(pool, 3) == {0: "a", 1: "b", 2: "c"}
+
+
+def test_template_fleet_remainder_distributes_to_earlier_distinct():
+    """total_count % T != 0: the +1 remainder sandboxes always land on the
+    EARLIER distinct templates (a fixed, deterministic bias, locked here). 7
+    sandboxes / 3 templates -> a:3, b:2, c:2 (the lone remainder goes to a)."""
+    from bench_core.payload.replay_payload import template_fleet
+
+    pool = (_traj("swb-a"), _traj("swb-b"), _traj("swb-c"))  # T=3
+    counts: dict[str | None, int] = {}
+    for tpl in template_fleet(pool, 7).values():
+        counts[tpl] = counts.get(tpl, 0) + 1
+    assert counts == {"swb-a": 3, "swb-b": 2, "swb-c": 2}
+
+
+def test_template_fleet_empty_pool_returns_empty():
+    from bench_core.payload.replay_payload import template_fleet
+
+    assert template_fleet((), 10) == {}
+
+
+def test_template_fleet_single_template_all_same():
+    """T=1 (legacy single-template pool, or one template): every sandbox gets it."""
+    from bench_core.payload.replay_payload import template_fleet
+
+    pool = (_traj("only"), _traj("only"), _traj("only"))  # T=1
+    fleet = template_fleet(pool, 5)
+    assert len(fleet) == 5 and all(t == "only" for t in fleet.values())
+
+
+def test_within_template_rank_is_k_div_T():
+    """Under the balanced fleet, a sandbox's within-group rank is exactly k // T
+    (all same-template sandboxes share k % T and are ordered 0,1,2,... by k)."""
+    from bench_core.payload.replay_payload import within_template_rank
+
+    pool = (_traj("a"), _traj("b"), _traj("c"))  # T=3
+    assert [within_template_rank(pool, k) for k in range(9)] == [k // 3 for k in range(9)]
+
+
+def test_within_template_rank_empty_pool_returns_zero():
+    """Empty pool: T=0 would divide-by-zero; the helper guards it to 0 (callers
+    guard ``if not pool`` first, so this path is defense-in-depth)."""
+    from bench_core.payload.replay_payload import within_template_rank
+
+    assert within_template_rank((), 5) == 0
+
+
+def test_within_template_rank_single_template_is_k():
+    """T=1: every sandbox shares the one template, so rank == k (0,1,2,...). The
+    runner then picks my_pool[(k + round_id) % len] -- stride 1, full reach."""
+    from bench_core.payload.replay_payload import within_template_rank
+
+    pool = (_traj("only"),)  # T=1
+    assert [within_template_rank(pool, k) for k in range(5)] == [0, 1, 2, 3, 4]

@@ -126,11 +126,14 @@ def _make_sigterm_handler(stop_event: threading.Event, sigterm_flag: list[bool] 
 
 
 def _replay_template_map(config: KernelConfig) -> dict[int, str | None] | None:
-    """Round-robin the pool's (template, trajectory) pairs over total_count slots.
+    """Round-robin the pool's distinct templates over total_count slots.
 
     Returns None when no manifest is configured (legacy single-template path)
-    or when the workflow is not replay. Sandbox k gets
-    ``pool[k % len(pool)].template`` (may be None -> provider uses its default).
+    or when the workflow is not replay. Sandbox k gets ``distinct[k % T]`` --
+    a *balanced* round-robin over the distinct templates (NOT over pool
+    entries), so each template gets ~total_count/T sandboxes at every ratio
+    and the fleet mix is ratio-stable (the precondition for oversub
+    linearity). May be None -> provider uses its default.
 
     The ``load_pool`` import is function-local to avoid a circular import at
     module load time (``replay_payload`` imports ``config``, not ``bench``).
@@ -141,12 +144,12 @@ def _replay_template_map(config: KernelConfig) -> dict[int, str | None] | None:
     assert isinstance(cfg, ReplayConfig)
     if not cfg.replay_template_manifest:
         return None
-    from bench_core.payload.replay_payload import load_pool
+    from bench_core.payload.replay_payload import load_pool, template_fleet
 
     pool = load_pool(config)
     if not pool:
         return None
-    return {k: pool[k % len(pool)].template for k in range(config.total_count)}
+    return template_fleet(pool, config.total_count)
 
 
 def _print_header(config: KernelConfig, provider: EnvironmentProvider) -> None:

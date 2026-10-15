@@ -120,3 +120,130 @@ def test_run_benchmark_passes_template_map_to_create_all(tmp_path):
     # Sandbox 0..3 templates: round-robin over pool [swb-a, swb-b] -> a,b,a,b
     seen = [provider._instances[i].template for i in range(4)]
     assert seen == ["swb-a", "swb-b", "swb-a", "swb-b"]
+
+
+# ---------------------------------------------------------------------------
+# Balanced fleet + within-group rank (oversub multi-template linearity)
+# ---------------------------------------------------------------------------
+
+
+def _seed_grouped_pool(tmp_path: Path, specs: dict[str, int]) -> Path:
+    """Write a template-grouped pool: for each (template, count) write ``count``
+    trajectories named ``{template}{i}.replay.json`` all mapped to ``swb-{template}``.
+
+    Filenames sort grouped-by-template (a1..aN then b1..bN ...), reproducing the
+    SWE-bench pool shape (filename ~= repo ~= template) that breaks the old
+    ``pool[k % len(pool)].template`` mapping at ratio 1.
+    """
+    traj = tmp_path / "traj"
+    traj.mkdir()
+    manifest: dict[str, str] = {}
+    for tpl, count in specs.items():
+        for i in range(1, count + 1):
+            name = f"{tpl}{i}.replay.json"
+            (traj / name).write_text(
+                json.dumps({"instance_id": f"{tpl}{i}", "trajectory": [{"action": "echo", "delay_time": 0}]}),
+                encoding="utf-8",
+            )
+            manifest[name] = f"swb-{tpl}"
+    m = tmp_path / "manifest.json"
+    m.write_text(json.dumps(manifest), encoding="utf-8")
+    return m
+
+
+def _mt_cfg(tmp_path: Path, manifest: Path, total_count: int) -> KernelConfig:
+    """Minimal replay KernelConfig wired to the grouped pool at ``total_count``."""
+    return KernelConfig(
+        workflow_type="replay",
+        total_count=total_count,
+        benchmark_mode="fixed",
+        test_duration=1,
+        output_dir=str(tmp_path),
+        filename_prefix="mt",
+        workflow_config=ReplayConfig(
+            replay_trajectory_dir=str(tmp_path / "traj"),
+            replay_template_manifest=str(manifest),
+            replay_mode="exec_only",
+        ),
+    )
+
+
+def test_replay_template_map_balanced_on_grouped_pool_ratio1(tmp_path):
+    """The bug case: pool sorted grouped-by-template (all A filenames before all
+    B's), total_count < len(pool) at ratio 1. The old ``pool[k % len].template``
+    mapped every sandbox to the first-sorted template (100% A); the balanced
+    ``distinct[k % T]`` fleet must spread sandboxes across BOTH templates
+    (~total/T each), so the ratio-1 baseline is NOT a different workload than k>=2."""
+    manifest = _seed_grouped_pool(tmp_path, {"a": 5, "b": 5})
+    reset_pool_cache()
+    fleet = _replay_template_map(_mt_cfg(tmp_path, manifest, 5))
+    counts: dict[str | None, int] = {}
+    for tpl in fleet.values():
+        counts[tpl] = counts.get(tpl, 0) + 1
+    # distinct=[swb-a, swb-b] (T=2); k%2 -> a,b,a,b,a => a:3, b:2 (NOT 100% a).
+    assert set(counts) == {"swb-a", "swb-b"}
+    assert counts["swb-a"] == 3  # ceil(5/2)
+    assert counts["swb-b"] == 2  # floor(5/2)
+
+
+def test_replay_template_map_balanced_uneven_345(tmp_path):
+    """Uneven pool A=3/B=4/C=5 trajectories. The fleet is balanced over the 3
+    DISTINCT templates (NOT over trajectory counts), so each template gets
+    ~total/3 sandboxes regardless of how few trajectories it has. With total a
+    multiple of 3 each template's fleet share scales LINEARLY with ratio
+    (3->6->9) -- the precondition for the oversub linearity invariant
+    per-issue-execution = (fleet_share * round_count) / count_t being linear in k."""
+    manifest = _seed_grouped_pool(tmp_path, {"a": 3, "b": 4, "c": 5})
+    for total, per in [(9, 3), (18, 6), (27, 9)]:  # ratios 1/2/3 at N=9, T=3
+        reset_pool_cache()
+        fleet = _replay_template_map(_mt_cfg(tmp_path, manifest, total))
+        counts: dict[str | None, int] = {}
+        for tpl in fleet.values():
+            counts[tpl] = counts.get(tpl, 0) + 1
+        # total % 3 == 0 -> each distinct template gets exactly total/3 sandboxes.
+        assert counts == {"swb-a": per, "swb-b": per, "swb-c": per}, f"total={total}"
+
+
+def test_round_robin_rank_reaches_all_trajectories_gcd_case(tmp_path):
+    """The gcd/T coverage bug: 3 templates (T=3), template A has 3 trajectories,
+    round_count=2. Under the balanced fleet A's sandboxes sit at global indices
+    all == 0 mod T. The OLD ``(state.index + round_id) % len`` selection hit only
+    trajectory indices {0,1} (index 2 starved -- gcd(3,3)=3>1). The rank-based
+    ``(k // T + round_id) % len`` reaches all 3."""
+    manifest = _seed_grouped_pool(tmp_path, {"a": 3, "b": 3, "c": 3})
+    reset_pool_cache()
+    from bench_core.payload.replay_payload import load_pool, template_fleet, within_template_rank
+
+    cfg = _mt_cfg(tmp_path, manifest, 12)  # 3 templates x 4 sandboxes each
+    pool = load_pool(cfg)
+    fleet = template_fleet(pool, 12)
+    a_pool = [t for t in pool if t.template == "swb-a"]
+    assert len(a_pool) == 3
+    a_sandboxes = [k for k in range(12) if fleet[k] == "swb-a"]
+    assert a_sandboxes == [0, 3, 6, 9]  # all == 0 mod T=3
+    round_count = 2
+    # NEW rank-based: (k // T + round_id) % 3 -> {0,1,2} -- all reachable.
+    reached_rank = {(within_template_rank(pool, k) + r) % len(a_pool) for k in a_sandboxes for r in range(round_count)}
+    assert reached_rank == {0, 1, 2}
+    # OLD global-index: (k + round_id) % 3 over k all ==0 mod 3 -> only {0,1}.
+    reached_old = {(k + r) % len(a_pool) for k in a_sandboxes for r in range(round_count)}
+    assert reached_old == {0, 1}  # trajectory index 2 starved -- the defect fixed
+
+
+def test_fixed_runner_rank_pure_in_state_index(tmp_path):
+    """State recovery: the fixed runner derives its starting cursor from
+    ``within_template_rank(pool, state.index)`` -- a PURE function of the
+    persisted state.index (k // T), with NO mutable per-sandbox cursor. So a
+    sandbox restarted with the same state.index recomputes the identical rank ->
+    identical starting trajectory; there is no in-memory cursor state to lose
+    across a restart. (The round runner needs no recovery: it holds no cursor
+    across rounds -- round_id encodes the position.)"""
+    manifest = _seed_grouped_pool(tmp_path, {"a": 2, "b": 2, "c": 2})
+    reset_pool_cache()
+    from bench_core.payload.replay_payload import load_pool, within_template_rank
+
+    cfg = _mt_cfg(tmp_path, manifest, 9)  # T=3
+    pool = load_pool(cfg)
+    ranks_run1 = [within_template_rank(pool, k) for k in range(9)]
+    ranks_run2 = [within_template_rank(pool, k) for k in range(9)]  # "restart"
+    assert ranks_run1 == ranks_run2 == [k // 3 for k in range(9)]
