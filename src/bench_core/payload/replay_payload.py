@@ -166,7 +166,12 @@ def load_pool(config: KernelConfig) -> tuple[Trajectory, ...]:
     glob = rcfg.replay_trajectory_glob
     manifest_path = rcfg.replay_template_manifest
     limit = rcfg.replay_trajectory_limit
-    cache_key = (str(directory), glob, str(manifest_path or ""), str(limit or ""))
+    rc = rcfg.replay_running_concurrency
+    # ``rc`` (the oversub baseline fleet size N) is in the key because the
+    # linearity clamp below may reduce ``limit`` to ``rc // T`` -- two configs
+    # with the same trajectory_limit but different rc clamp differently, so they
+    # must not share a cache slot.
+    cache_key = (str(directory), glob, str(manifest_path or ""), str(limit or ""), str(rc or ""))
     if cache_key in _POOL_CACHE:
         return _POOL_CACHE[cache_key]
 
@@ -209,13 +214,34 @@ def load_pool(config: KernelConfig) -> tuple[Trajectory, ...]:
         pool.append(dataclasses.replace(traj, template=raw_template))
 
     if limit is not None:
-        # Cap each template's sub-pool to the first `limit` trajectories (natural
-        # sort order preserved) -- per-template, NOT a global first-N. A global
-        # first-N can land entirely inside one template and starve the rest in a
-        # multi-template manifest (orphan skips at replay time). Capping per
-        # template keeps every template covered; the round-robin cycles each
-        # template's N trajectories across that template's sandboxes, so the
-        # issue set per template stays fixed across ratios.
+        # Oversub linearity clamp: the oversub driver sets trajectory_limit=N
+        # (mirroring the single-template ``trajectories[:N]`` strategy). For a
+        # MULTI-template pool (T>1) N is too large -- the balanced ratio-1 fleet
+        # gives each template only N/T sandboxes, so capping to N lets the
+        # RUNNING issue set grow with ratio until k>=T (only N/T of N issues run
+        # at ratio 1, then 2N/T, ...), drifting the linearity baseline. Clamp to
+        # the ratio-1 fleet share (running_concurrency // T) so count_t <=
+        # fleet_t(ratio 1) and the issue set stays fixed across ratios (per-issue
+        # execution count then scales linearly with k). Single-template (T=1):
+        # rc//T == N, no-op. rc unset (non-oversub direct run): honor the explicit
+        # limit as-is (no clamp).
+        if rc is not None and rc > 0:
+            t_count = len({t.template for t in pool})
+            if t_count > 1:
+                fleet_share = max(rc // t_count, 1)
+                if fleet_share < limit:
+                    logger.info(
+                        f"[replay] trajectory_limit={limit} clamped to ratio-1 fleet share "
+                        f"{fleet_share} (running_concurrency={rc} // T={t_count}); keeps "
+                        f"the issue set fixed across oversub ratios"
+                    )
+                    limit = fleet_share
+        # Then cap each template's sub-pool to the first ``limit`` trajectories
+        # (natural sort order preserved) -- per-template, NOT a global first-N. A
+        # global first-N can land entirely inside one template and starve the rest
+        # in a multi-template manifest (orphan skips at replay time). Capping per
+        # template keeps every template covered; combined with the clamp above
+        # (limit = N//T) the issue set per template stays fixed across ratios.
         kept: list[Trajectory] = []
         kept_n: dict[str | None, int] = {}
         total_n: dict[str | None, int] = {}

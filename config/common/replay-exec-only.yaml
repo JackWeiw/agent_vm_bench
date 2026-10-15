@@ -99,9 +99,12 @@ replay:
   # each template). Set by the oversub driver to running_concurrency (N) so each
   # template's issue set stays fixed across ratios (per-issue execution count
   # then scales linearly with k); without it a large pool lets the issue mix
-  # drift with ratio and confounds linearity. Per-template (not a global
-  # first-N) keeps every template covered in a multi-template manifest.
-  # Omit / null = use the whole pool.
+  # drift with ratio and confounds linearity. For a MULTI-template pool (T>1)
+  # the kernel further clamps N to N//T (the ratio-1 per-template fleet share)
+  # so count_t <= fleet_t(ratio 1) and the running issue set stays fixed
+  # (capping to N alone would let only N/T issues run at ratio 1 and grow with
+  # ratio until k>=T). Per-template (not a global first-N) keeps every template
+  # covered in a multi-template manifest. Omit / null = use the whole pool.
   # trajectory_limit: 20
   # Side manifest mapping trajectory file (path relative to trajectory_dir) ->
   # concrete backend template. Lives with the dataset (not the benchmark config).

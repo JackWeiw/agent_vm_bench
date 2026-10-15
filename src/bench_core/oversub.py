@@ -183,13 +183,17 @@ def build_trial_config(
     target = ratio * n
     cfg.setdefault("sandbox", {})["total_count"] = target
     cfg.setdefault("replay", {})["running_concurrency"] = n
-    # Fix the issue set to the first N trajectories PER TEMPLATE (same set at
-    # every ratio) so the only variable across ratios is concurrency = k*N.
-    # Each issue's execution count then scales linearly with ratio k (the issue
-    # mix is held fixed), matching the no-lifecycle driver's fixed-pool
-    # strategy -- without this, a large pool lets the issue mix drift with ratio
-    # and confounds linearity. Per-template (not global first-N) so a multi-
-    # template manifest keeps every template covered.
+    # Fix the issue set across ratios so only concurrency varies. Sets
+    # trajectory_limit=N (the single-template strategy: first N per template).
+    # For multi-template (T>1) the kernel's ``load_pool`` further clamps this to
+    # N//T (the ratio-1 per-template fleet share under the balanced fleet) so
+    # count_t <= fleet_t(ratio 1) and the running issue set stays fixed across
+    # ratios -- without that clamp, capping to N lets only N/T issues per
+    # template run at ratio 1 and the set grows with ratio until k>=T, drifting
+    # the baseline. The driver cannot compute T itself (the trajectory pool /
+    # manifest live on the test host, not necessarily the driver's box), so the
+    # clamp is kernel-side. Per-template (not global first-N) keeps every
+    # template covered in a multi-template manifest.
     cfg["replay"]["trajectory_limit"] = n
     cfg["replay"]["mode"] = mode
     cfg.setdefault("test", {})

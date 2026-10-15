@@ -168,7 +168,7 @@ def _mt_cfg(tmp_path: Path, manifest: Path, total_count: int) -> KernelConfig:
     )
 
 
-def test_replay_template_map_balanced_on_grouped_pool_ratio1(tmp_path):
+def test_replay_template_map_balanced_grouped(tmp_path):
     """The bug case: pool sorted grouped-by-template (all A filenames before all
     B's), total_count < len(pool) at ratio 1. The old ``pool[k % len].template``
     mapped every sandbox to the first-sorted template (100% A); the balanced
@@ -204,7 +204,7 @@ def test_replay_template_map_balanced_uneven_345(tmp_path):
         assert counts == {"swb-a": per, "swb-b": per, "swb-c": per}, f"total={total}"
 
 
-def test_round_robin_rank_reaches_all_trajectories_gcd_case(tmp_path):
+def test_round_robin_rank_covers_all_trajectories(tmp_path):
     """The gcd/T coverage bug: 3 templates (T=3), template A has 3 trajectories,
     round_count=2. Under the balanced fleet A's sandboxes sit at global indices
     all == 0 mod T. The OLD ``(state.index + round_id) % len`` selection hit only
@@ -247,3 +247,115 @@ def test_fixed_runner_rank_pure_in_state_index(tmp_path):
     ranks_run1 = [within_template_rank(pool, k) for k in range(9)]
     ranks_run2 = [within_template_rank(pool, k) for k in range(9)]  # "restart"
     assert ranks_run1 == ranks_run2 == [k // 3 for k in range(9)]
+
+
+def test_oversub_per_issue_scales_linearly(tmp_path):
+    """End-to-end linearity (the user's all->=N case): clamp (count_t = N//T) +
+    balanced fleet (distinct[k % T]) + rank-based selection (idx = (k//T +
+    round_id) % count_t) => each issue's execution count scales LINEARLY with
+    ratio k (1x/2x/3x), and the issue SET is identical across ratios. This is
+    the comprehensive fix holding together for every load shape.
+
+    Simulates the round-robin runner's selection (no live SDK): for each sandbox
+    picks its template's affinity sub-pool entry by within-template rank + round
+    rotation, counts executions per issue across ratios 1/2/3."""
+    manifest = _seed_grouped_pool(tmp_path, {"a": 10, "b": 10, "c": 10})  # all >= N
+    from bench_core.payload.replay_payload import (
+        load_pool,
+        reset_pool_cache,
+        template_fleet,
+        within_template_rank,
+    )
+
+    n = 6  # running_concurrency; T=3 -> clamp pins count_t to N//T = 2 per template
+    round_count = 1
+    by_ratio: dict[int, dict[str, int]] = {}
+    for k in (1, 2, 3):
+        reset_pool_cache()
+        cfg = KernelConfig(
+            workflow_type="replay",
+            total_count=k * n,  # the oversub variable (concurrency)
+            benchmark_mode="round_robin",
+            test_duration=1,
+            output_dir=str(tmp_path),
+            filename_prefix="mt",
+            workflow_config=ReplayConfig(
+                replay_trajectory_dir=str(tmp_path / "traj"),
+                replay_template_manifest=str(manifest),
+                replay_trajectory_limit=n,  # driver sets N
+                replay_running_concurrency=n,  # driver pins N (ratio-invariant)
+                replay_mode="exec_only",
+            ),
+        )
+        pool = load_pool(cfg)
+        fleet = template_fleet(pool, k * n)
+        execs: dict[str, int] = {}
+        for sandbox_idx in range(k * n):
+            tpl = fleet[sandbox_idx]
+            my_pool = [t for t in pool if t.template == tpl]  # affinity sub-pool
+            rank = within_template_rank(pool, sandbox_idx)
+            for r in range(round_count):
+                idx = (rank + r) % len(my_pool)
+                iid = my_pool[idx].instance_id
+                execs[iid] = execs.get(iid, 0) + 1
+        by_ratio[k] = execs
+
+    # The issue SET is identical across ratios (clamp + per-template cap fix it).
+    assert set(by_ratio[1]) == set(by_ratio[2]) == set(by_ratio[3])
+    # Each issue's execution count scales linearly with k (1x, 2x, 3x).
+    for iid in by_ratio[1]:
+        assert by_ratio[1][iid] == 1, f"{iid}: ratio1={by_ratio[1][iid]}"
+        assert by_ratio[2][iid] == 2, f"{iid}: ratio2={by_ratio[2][iid]}"
+        assert by_ratio[3][iid] == 3, f"{iid}: ratio3={by_ratio[3][iid]}"
+
+
+def test_oversub_issue_set_fixed_indivisible(tmp_path):
+    """N not divisible by T (the remainder case): the clamp count_t = N//T is
+    still <= fleet_t(1) for EVERY template (fleet_t(1) is floor or ceil under the
+    balanced fleet, and floor == N//T), so all count_t issues run at every ratio
+    and the issue SET stays fixed (no drift) even when the fleet has a +-1
+    remainder imbalance. Per-issue count stays linear in k (constant slope =
+    round_count; only the intercept varies by +-1). This guards the 'every load
+    shape' claim beyond the clean T|N case above."""
+    manifest = _seed_grouped_pool(tmp_path, {"a": 10, "b": 10, "c": 10})
+    from bench_core.payload.replay_payload import (
+        load_pool,
+        reset_pool_cache,
+        template_fleet,
+        within_template_rank,
+    )
+
+    n = 7  # 7 % 3 = 1 -> remainder; clamp count_t = 7//3 = 2 per template
+    round_count = 1
+    sets: dict[int, set[str]] = {}
+    for k in (1, 2, 3):
+        reset_pool_cache()
+        cfg = KernelConfig(
+            workflow_type="replay",
+            total_count=k * n,
+            benchmark_mode="round_robin",
+            test_duration=1,
+            output_dir=str(tmp_path),
+            filename_prefix="mt",
+            workflow_config=ReplayConfig(
+                replay_trajectory_dir=str(tmp_path / "traj"),
+                replay_template_manifest=str(manifest),
+                replay_trajectory_limit=n,
+                replay_running_concurrency=n,
+                replay_mode="exec_only",
+            ),
+        )
+        pool = load_pool(cfg)
+        fleet = template_fleet(pool, k * n)
+        ran: set[str] = set()
+        for sandbox_idx in range(k * n):
+            tpl = fleet[sandbox_idx]
+            my_pool = [t for t in pool if t.template == tpl]
+            rank = within_template_rank(pool, sandbox_idx)
+            for r in range(round_count):
+                ran.add(my_pool[(rank + r) % len(my_pool)].instance_id)
+        sets[k] = ran
+    # The issue SET is identical across ratios (no drift), even with N%T != 0.
+    assert sets[1] == sets[2] == sets[3]
+    # Every issue in the clamped pool ran at every ratio (none starved).
+    assert len(sets[1]) == 6  # 3 templates x (N//T = 2)
