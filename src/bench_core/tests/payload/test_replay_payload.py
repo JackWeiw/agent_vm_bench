@@ -498,9 +498,11 @@ def test_load_pool_missing_manifest_entry_is_skipped(tmp_path, caplog):
     manifest.write_text(json.dumps({}), encoding="utf-8")  # no entry for a
 
     reset_pool_cache()
-    caplog.set_level(logging.WARNING)
+    caplog.set_level(logging.INFO)
     pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest)))
     assert len(pool) == 0
+    assert "skipped 1 trajectory file(s)" in caplog.text
+    assert "a.replay.json" in caplog.text
     assert "no manifest entry" in caplog.text
 
 
@@ -579,10 +581,11 @@ def test_load_pool_non_string_manifest_value_is_skipped(tmp_path, caplog):
     manifest.write_text(json.dumps({"a.replay.json": 123}), encoding="utf-8")
 
     reset_pool_cache()
-    caplog.set_level(logging.WARNING)
+    caplog.set_level(logging.INFO)
     pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest)))
     assert len(pool) == 0
-    assert "is not a string" in caplog.text
+    assert "skipped 1 trajectory file(s)" in caplog.text
+    assert "not a string" in caplog.text
 
 
 def test_load_pool_empty_string_manifest_value_is_skipped(tmp_path, caplog):
@@ -598,10 +601,38 @@ def test_load_pool_empty_string_manifest_value_is_skipped(tmp_path, caplog):
     manifest.write_text(json.dumps({"a.replay.json": ""}), encoding="utf-8")
 
     reset_pool_cache()
-    caplog.set_level(logging.WARNING)
+    caplog.set_level(logging.INFO)
     pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest)))
     assert len(pool) == 0
+    assert "skipped 1 trajectory file(s)" in caplog.text
     assert "no manifest entry" in caplog.text
+
+
+def test_load_pool_manifest_skips_aggregate_into_one_summary(tmp_path, caplog):
+    """Many missing-entry trajectories collapse to ONE summary line, not a
+    WARNING per file. Guards the noise fix: the oversub driver spawns one
+    bench-core subprocess per trial, so per-file WARNINGs would repeat across
+    every ratio against the same manifest + trajectory dir."""
+    import json
+    import logging
+
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
+
+    traj_dir = tmp_path / "traj"
+    for n in ("a", "b", "c"):
+        _write_traj(traj_dir, f"{n}.replay.json", n)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({}), encoding="utf-8")  # no entries
+
+    reset_pool_cache()
+    caplog.set_level(logging.INFO)
+    pool = load_pool(_cfg_for_manifest(tmp_path, manifest=str(manifest)))
+    assert len(pool) == 0
+    # exactly ONE summary line, not a per-file WARNING per skipped trajectory
+    assert caplog.text.count("not mapped to a usable template") == 1
+    assert "skipped 3 trajectory file(s)" in caplog.text
+    for name in ("a.replay.json", "b.replay.json", "c.replay.json"):
+        assert name in caplog.text
 
 
 # ---------------------------------------------------------------------------
