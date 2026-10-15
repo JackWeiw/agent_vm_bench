@@ -329,17 +329,20 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 f"(pause/resume); provider '{provider.name}' does not support it. "
                 f"Providers that support it: {_capability_hint(LifecycleCapable)}."
             )
-    if rcfg is not None and rcfg.replay_mode == "trajectory":
+    if rcfg is not None and rcfg.replay_mode in ("trajectory", "exec_ephemeral"):
         if not isinstance(provider, EphemeralCapable):
             raise ValueError(
-                f"replay.mode=trajectory requires an EphemeralCapable provider "
+                f"replay.mode={rcfg.replay_mode} requires an EphemeralCapable provider "
                 f"(create_one/kill_one); provider '{provider.name}' does not support it. "
                 f"Providers that support it: {_capability_hint(EphemeralCapable)}."
             )
-    # exec_only has no lifecycle calls; force the ready probe off regardless of
-    # whether exec_only was explicit in YAML or resolved from the provider default.
-    if rcfg is not None and rcfg.replay_mode == "exec_only":
+    # exec_only / exec_ephemeral have no lifecycle calls; force the ready probe
+    # off regardless of whether the mode was explicit in YAML or resolved from
+    # the provider default.
+    if rcfg is not None and rcfg.replay_mode in ("exec_only", "exec_ephemeral"):
         rcfg.replay_ready_probe = False
+    if rcfg is not None:
+        logger.info(f"[Replay] mode={rcfg.replay_mode} runner={config.benchmark_mode} provider={provider.name}")
     if config.workflow_type == "document":
         from bench_core.task_runner.document import preflight_document
 
@@ -362,14 +365,14 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
 
     stop_event = threading.Event()
 
-    # 2. Create or detect sandboxes. Trajectory mode skips create_all (each
-    # trajectory creates/kills its own sandbox in-runner); build N lightweight
-    # shells the workers fill per trajectory. detect mode is incompatible with
-    # trajectory (no persistent pool to detect).
-    if rcfg is not None and rcfg.replay_mode == "trajectory":
+    # 2. Create or detect sandboxes. Trajectory / exec_ephemeral modes skip
+    # create_all (each trajectory creates/kills its own sandbox in-runner);
+    # build N lightweight shells the workers fill per trajectory. detect mode
+    # is incompatible with these modes (no persistent pool to detect).
+    if rcfg is not None and rcfg.replay_mode in ("trajectory", "exec_ephemeral"):
         if config.detect_existing:
-            logger.info("\n[Phase 1] detect mode incompatible with trajectory mode; building shells.")
-        logger.info(f"\n[Phase 1] Trajectory mode: {config.total_count} worker shells (no pre-create).")
+            logger.info(f"\n[Phase 1] detect mode incompatible with {rcfg.replay_mode} mode; building shells.")
+        logger.info(f"\n[Phase 1] {rcfg.replay_mode} mode: {config.total_count} worker shells (no pre-create).")
         instances = {
             i: SandboxInstance(
                 id=f"traj-shell-{i}",
@@ -504,12 +507,15 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 f"qps={admission_snapshot['qps']}, inflight_cap={admission_snapshot['inflight_cap']}"
             )
 
-    # G5: shared no-catch-up launch pacer for trajectory mode (one per fleet).
-    # Paces trajectory starts so multiple workers don't burst-create in the
-    # same instant. The pacer's lock + deadline cell are shared across all
-    # workers (a per-runner field would let each read its own 0.0 and burst).
-    # None outside trajectory mode (no per-trajectory create).
-    trajectory_launch_pacer = LaunchPacer() if (rcfg is not None and rcfg.replay_mode == "trajectory") else None
+    # G5: shared no-catch-up launch pacer for ephemeral modes (one per fleet).
+    # Paces per-trajectory create_one starts so multiple workers don't burst-
+    # create in the same instant. The pacer's lock + deadline cell are shared
+    # across all workers (a per-runner field would let each read its own 0.0
+    # and burst). None outside trajectory/exec_ephemeral (no per-trajectory
+    # create).
+    trajectory_launch_pacer = (
+        LaunchPacer() if (rcfg is not None and rcfg.replay_mode in ("trajectory", "exec_ephemeral")) else None
+    )
 
     # Install a cooperative SIGTERM handler so a driver-initiated terminate
     # (oversub _run_subprocess) unwinds into the finally below for a partial

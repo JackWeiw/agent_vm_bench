@@ -359,3 +359,109 @@ def test_oversub_issue_set_fixed_indivisible(tmp_path):
     assert sets[1] == sets[2] == sets[3]
     # Every issue in the clamped pool ran at every ratio (none starved).
     assert len(sets[1]) == 6  # 3 templates x (N//T = 2)
+
+
+# ---------------------------------------------------------------------------
+# exec_ephemeral: ephemeral create/kill per round (B's no-lifecycle model)
+# ---------------------------------------------------------------------------
+
+
+def test_exec_ephemeral_selection_linearity_1_based(tmp_path):
+    """exec_ephemeral round-robin selection with 1-based shell indices (the real
+    bench.py indexing, range(1, total+1)) + template_at: per-issue exec count
+    scales 1x/2x/3x across ratios, issue SET fixed. Guards the 1-based indexing
+    + template_at path the draft got wrong (template_fleet(total).get(state.index)
+    orphan-skips the last sandbox when shells are 1-based). This is the oversub
+    linearity path for exec_ephemeral."""
+    manifest = _seed_grouped_pool(tmp_path, {"a": 10, "b": 10, "c": 10})
+    from bench_core.payload.replay_payload import (
+        load_pool,
+        reset_pool_cache,
+        template_at,
+        within_template_rank,
+    )
+
+    n = 6  # T=3 -> clamp count_t = N//T = 2 per template
+    round_count = 1
+    by_ratio: dict[int, dict[str, int]] = {}
+    for k in (1, 2, 3):
+        reset_pool_cache()
+        cfg = KernelConfig(
+            workflow_type="replay",
+            total_count=k * n,
+            benchmark_mode="round_robin",
+            test_duration=1,
+            output_dir=str(tmp_path),
+            filename_prefix="ee",
+            workflow_config=ReplayConfig(
+                replay_trajectory_dir=str(tmp_path / "traj"),
+                replay_template_manifest=str(manifest),
+                replay_trajectory_limit=n,
+                replay_running_concurrency=n,
+                replay_mode="exec_ephemeral",
+            ),
+        )
+        pool = load_pool(cfg)
+        execs: dict[str, int] = {}
+        for s in range(1, k * n + 1):  # 1-based shell indices
+            my_tpl = template_at(pool, s)
+            my_pool = [t for t in pool if t.template == my_tpl]
+            rank = within_template_rank(pool, s)
+            for r in range(round_count):
+                execs[my_pool[(rank + r) % len(my_pool)].instance_id] = (
+                    execs.get(my_pool[(rank + r) % len(my_pool)].instance_id, 0) + 1
+                )
+        by_ratio[k] = execs
+
+    assert set(by_ratio[1]) == set(by_ratio[2]) == set(by_ratio[3])
+    for iid in by_ratio[1]:
+        assert by_ratio[1][iid] == 1, f"{iid}: ratio1={by_ratio[1][iid]}"
+        assert by_ratio[2][iid] == 2, f"{iid}: ratio2={by_ratio[2][iid]}"
+        assert by_ratio[3][iid] == 3, f"{iid}: ratio3={by_ratio[3][iid]}"
+
+
+def test_exec_ephemeral_fixed_runner_issue_pool_fixed(tmp_path):
+    """exec_ephemeral FIXED runner: the cursor cycles WITHIN my_pool (never
+    leaves), so each worker's touched issue SET == its template's sub-pool
+    (count_t) and the union == the full clamped pool. The fixed path isn't the
+    oversub linearity metric (round_robin is), but its cursor must not drift
+    outside the pool either."""
+    manifest = _seed_grouped_pool(tmp_path, {"a": 10, "b": 10, "c": 10})
+    from bench_core.payload.replay_payload import (
+        load_pool,
+        reset_pool_cache,
+        template_at,
+        within_template_rank,
+    )
+
+    n = 6
+    for k in (1, 2, 3):
+        reset_pool_cache()
+        cfg = KernelConfig(
+            workflow_type="replay",
+            total_count=k * n,
+            benchmark_mode="fixed",
+            test_duration=1,
+            output_dir=str(tmp_path),
+            filename_prefix="eef",
+            workflow_config=ReplayConfig(
+                replay_trajectory_dir=str(tmp_path / "traj"),
+                replay_template_manifest=str(manifest),
+                replay_trajectory_limit=n,
+                replay_running_concurrency=n,
+                replay_mode="exec_ephemeral",
+            ),
+        )
+        pool = load_pool(cfg)
+        all_touched: set[str] = set()
+        for s in range(1, k * n + 1):  # 1-based
+            my_tpl = template_at(pool, s)
+            my_pool = [t for t in pool if t.template == my_tpl]
+            cursor = within_template_rank(pool, s) % len(my_pool)
+            touched: set[str] = set()
+            for _ in range(k * n):  # fixed runner target = total_count
+                touched.add(my_pool[cursor].instance_id)
+                cursor = (cursor + 1) % len(my_pool)
+            assert touched.issubset({t.instance_id for t in my_pool})  # never leaves my_pool
+            all_touched |= touched
+        assert all_touched == {t.instance_id for t in pool}  # union == full pool, no outside issues

@@ -708,3 +708,44 @@ def test_within_template_rank_single_template_is_k():
 
     pool = (_traj("only"),)  # T=1
     assert [within_template_rank(pool, k) for k in range(5)] == [0, 1, 2, 3, 4]
+
+
+def test_template_at_is_distinct_k_mod_T():
+    """template_at(k) == distinct[k % T] -- the per-worker template for ephemeral
+    modes (no create_all fleet to read from). Mods on T directly, so it is valid
+    for 1-based shell indices (bench.py builds range(1, total+1)) as well as 0-based."""
+    from bench_core.payload.replay_payload import _distinct_templates, template_at
+
+    pool = (_traj("a"), _traj("b"), _traj("c"))  # T=3, distinct=[a,b,c]
+    d = _distinct_templates(pool)
+    assert [template_at(pool, k) for k in range(9)] == [d[k % 3] for k in range(9)]
+    # 1-based (real shell indexing) still maps to a valid template, never None.
+    assert [template_at(pool, k) for k in range(1, 10)] == [d[k % 3] for k in range(1, 10)]
+
+
+def test_template_at_empty_pool_returns_none():
+    from bench_core.payload.replay_payload import template_at
+
+    assert template_at((), 0) is None
+    assert template_at((), 5) is None
+
+
+def test_template_at_single_template():
+    """T=1: every sandbox maps to the one template."""
+    from bench_core.payload.replay_payload import template_at
+
+    pool = (_traj("only"),)
+    assert [template_at(pool, k) for k in range(5)] == ["only"] * 5
+
+
+def test_template_at_matches_template_fleet_on_zero_based():
+    """template_at(k) for 0-based k equals template_fleet(total)[k] -- both are
+    distinct[k % T] (shared cached _distinct_templates, no drift). For exec_ephemeral's
+    real 1-based shell indices template_at mods on T directly (stays valid), where
+    template_fleet(total)[1-based index] would go out of range on the last sandbox."""
+    from bench_core.payload.replay_payload import template_fleet, template_at
+
+    pool = (_traj("a"), _traj("b"), _traj("c"))  # T=3
+    fleet = template_fleet(pool, 7)
+    for k in range(7):
+        assert template_at(pool, k) == fleet[k]

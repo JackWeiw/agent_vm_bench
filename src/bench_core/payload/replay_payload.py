@@ -334,6 +334,23 @@ def within_template_rank(pool: tuple[Trajectory, ...], k: int) -> int:
     return k // T if T else 0
 
 
+def template_at(pool: tuple[Trajectory, ...], k: int) -> str | None:
+    """Sandbox ``k``'s template under :func:`template_fleet` -- ``distinct[k % T]``.
+
+    exec_ephemeral skips ``create_all`` (no fleet dict to read a template from),
+    so each worker derives its template from its shell index via this helper.
+    Mods on ``T`` (the distinct-template count) directly -- indexing-agnostic,
+    so it is correct for the 1-based shell indices bench.py builds
+    (``range(1, total_count+1)``) as well as the 0-based fleet dict, and never
+    mis-routes the last sandbox the way ``template_fleet(total_count).get(k)``
+    does when ``T`` does not divide ``total_count``. Shares the cached
+    :func:`_distinct_templates` source of truth so its order is byte-identical
+    to :func:`template_fleet`'s. Empty pool -> ``None``.
+    """
+    distinct = _distinct_templates(pool)
+    return distinct[k % len(distinct)] if distinct else None
+
+
 def reset_pool_cache() -> None:
     """Test hook: clear the module-level pool cache between tests."""
     _POOL_CACHE.clear()

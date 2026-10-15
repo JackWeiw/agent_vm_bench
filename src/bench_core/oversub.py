@@ -119,7 +119,7 @@ _TRUE_DEFAULTS: dict[str, object] = {
     "provider": "aenv",
     "running_concurrency": None,
     "ratios": "1,2,3",
-    "modes": "lifecycle,exec_only",
+    "modes": "lifecycle,exec_ephemeral",
     "repeats": 1,
     "test_duration": None,
     "failure_tolerance": 0.0,
@@ -584,7 +584,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="N running slots (default = base replay.running_concurrency)",
     )
     p.add_argument("--ratios", default=None, help="comma-separated k values (default 1,2,3)")
-    p.add_argument("--modes", default=None, help="comma-separated replay modes (default lifecycle,exec_only)")
+    p.add_argument("--modes", default=None, help="comma-separated replay modes (default lifecycle,exec_ephemeral)")
     p.add_argument("--repeats", type=int, default=None, help="repeats per (mode,ratio) (default 1)")
     p.add_argument(
         "--test-duration", type=int, default=None, help="sustained window per trial (default = base test.duration)"
@@ -934,6 +934,18 @@ def main(argv: list[str] | None = None) -> int:
     n = n or default_running_concurrency(base_yaml)
     ratios = _coerce_ratios(resolve("ratios"))
     modes = _coerce_modes(resolve("modes"))
+    # Breaking-change surface: the oversub default sweep modes changed from
+    # exec_only to exec_ephemeral (per-round sandbox recreate). Warn loudly when
+    # that default is *auto-applied* (no --modes, no sweep modes:) so operators
+    # who relied on the long-lived exec_only baseline notice and can pin it back.
+    _modes_cli = getattr(args, "modes", None)
+    if _modes_cli is None and "modes" not in sweep and "exec_ephemeral" in modes:
+        logger.warning(
+            "oversub default modes now include exec_ephemeral (per-round sandbox "
+            "recreate); behavior changed vs the old exec_only default. Pin "
+            "--modes exec_only (or set modes: in the sweep config) to keep the "
+            "long-lived baseline."
+        )
     repeats = int(resolve("repeats"))
     td = resolve("test_duration")
     test_duration = int(td) if td is not None else None

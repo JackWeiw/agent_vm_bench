@@ -271,15 +271,16 @@ coding 配置里的 `ubuntu-openclaw-coding-{ts,go,python}:24.04-arm64` 是占�
 aenv(lifecycle pause/resume)或 e2b/docker(exec_only)上。`config/common/replay.yaml` 是
 aenv lifecycle 内存超卖压测的 1:1 基线配置。
 
-### 8.1 三种 mode
+### 8.1 四种 mode
 
-三种模式的根本区别是**沙箱生命周期**,不是"有没有限流":
+四种模式的根本区别是**沙箱生命周期**,不是"有没有限流":
 
 | mode | 沙箱生命周期 | 每 step 做什么 | 并发/超卖控制 | 何时用 |
 |------|------------|--------------|--------------|--------|
 | `exec_only` | 预创建后**长驻**,整轮不创不杀 | 仅 exec | 无 | 测纯轨迹回放(exec)开销基线;后端无 lifecycle/ephemeral 能力(e2b/docker/fake) |
 | `lifecycle` | 预创建后**长驻**,整轮不杀 | acquire slot→resume→exec→pause→release | pause 打快照释放内存,k×N 沙箱塞进 N slot(**内存超卖**) | 测 pause/resume 快照开销 + 内存 overcommit;需 LifecycleCapable(aenv) |
-| `trajectory` | **临时**,每条轨迹 create→…→kill | acquire slot(整条轨迹持有)→resume→exec→pause→release | M slot 限并发轨迹数,未开始的推迟 create(**排队限流,非内存复用**) | 测频繁建删沙箱的 create/kill 开销 + 启动节流;需 EphemeralCapable(aenv) |
+| `trajectory` | **临时**,每条轨迹 create→…→kill | acquire slot(整条轨迹持有)→resume→exec→pause→release | M slot 限并发轨迹数,未开始的推迟 create(**排队限流,非内存复用**) | 测频繁建删沙箱的 create/kill + pause/resume 开销;需 EphemeralCapable(aenv) |
+| `exec_ephemeral` | **临时**,每轮 create→exec→kill(轮间杀掉重建) | 仅 exec(无 pause/resume) | 无(k×N 全并发,无 admission) | 客户真实临时负载("拉起一次就杀,要用再拉起",B 的 no-lifecycle 模型);需 EphemeralCapable(aenv) |
 
 **exec_only vs trajectory 的区别不在"限流"**:
 
@@ -289,6 +290,13 @@ aenv lifecycle 内存超卖压测的 1:1 基线配置。
   一次、整轮复用,用不到启动节流。所以"trajectory 多了个限流"只是表象,本质是沙箱生命周期不同
   (长驻复用 vs 临时建删)。
 
+**exec_ephemeral = B 的 no-lifecycle 临时模型**(客户真实负载):每轮 `create_one` → 裸 exec 每步
+(无 pause/resume)→ `kill_one`,轮间沙箱杀掉重建。与 exec_only 一样无 pause/resume、无 admission
+(k×N 全并发),但沙箱**临时**(exec_only 长驻)。`launch_interval_sec` 也对它生效(节流每轮 create 突发)。
+**这是 `oversub-bench` 的默认扫描 mode**(默认 `lifecycle,exec_ephemeral`);驱动在自动套用默认(未传
+`--modes`、sweep 也未设 `modes`)时会 WARNING。`tasks_per_sec` 含每轮 create+kill 成本,**不能与
+exec_only 直接比**;调 `test.duration` 需比 exec_only 更大(k×N×round_count 个 create+exec+kill 周期)。
+
 **lifecycle vs trajectory 的超卖机制不同**:
 
 - lifecycle 超卖 = **快照内存复用**。沙箱长驻,pause 释放物理内存,所以 `total_count = k×N`
@@ -297,9 +305,9 @@ aenv lifecycle 内存超卖压测的 1:1 基线配置。
 - trajectory 超卖 = **排队限流**。running slot 按**整条轨迹**持有(create 前 acquire、kill 后
   release);M slot → 同时 M 条轨迹在跑,其余排队等开始,**不会"暂停腾内存"**,沙箱用完即杀。
 
-> `launch_interval_sec`(浮点秒,per-sandbox create 节流)只在 trajectory 模式生效。lifecycle
-> 模式预创建用 `create_batch.size`/`interval`(且 `interval` 是整数秒),做不了 sub-second 级
-> per-sandbox 节流——这是 lifecycle 的已知限制,需精细启动节流请用 trajectory。
+> `launch_interval_sec`(浮点秒,per-sandbox create 节流)在临时模式(trajectory、exec_ephemeral)生效。
+> lifecycle 模式预创建用 `create_batch.size`/`interval`(且 `interval` 是整数秒),做不了 sub-second 级
+> per-sandbox 节流——这是 lifecycle 的已知限制,需精细启动节流请用 trajectory/exec_ephemeral。
 
 ### 8.2 lifecycle 内存超卖:ratio 配置法
 
@@ -495,7 +503,7 @@ oversub-bench --config config/common/replay.yaml --provider aenv --ratios 1,2,3 
 | `provider` | `aenv` | `{aenv, e2b, docker, fake}` |
 | `running_concurrency` | base `replay.running_concurrency` | N 个 running slot(跨 ratio 固定) |
 | `ratios` | `1,2,3` | k 值(list 或 `"1,2,3"`);`total_count = k×N` |
-| `modes` | `lifecycle,exec_only` | 要扫描的 replay mode(每个一条曲线) |
+| `modes` | `lifecycle,exec_ephemeral` | 要扫描的 replay mode(每个一条曲线) |
 | `repeats` | `1` | 每个 `(mode, ratio)` 重复次数(取中位) |
 | `test_duration` | base `test.duration`(600) | 每个 trial 硬上限(秒) |
 | `failure_tolerance` | `0.0` | trial 判 valid 时允许的最大 `failure_rate` |
@@ -516,7 +524,7 @@ driver 深拷贝 `base_config` 并只改写超卖字段,其余透传:
 |-------|--------|-----|
 | `sandbox.total_count` | `k×N` | 超卖目标 |
 | `replay.running_concurrency` | `N`(固定) | 基线 slot 数 |
-| `replay.mode` | 扫描的 mode | lifecycle / exec_only / trajectory |
+| `replay.mode` | 扫描的 mode | lifecycle / exec_only / trajectory / exec_ephemeral |
 | `test.round_size` | `k×N` | 所有 k×N 沙箱一组并发;不设 k≥2 会按 N 串行多组,破坏超卖动态 |
 | `test.duration` | `test_duration` | 时间上限 |
 | `report.output_dir` / `report.filename_prefix` | 每 trial 目录/前缀 | 隔离各 trial 产物 |
@@ -535,7 +543,7 @@ driver 深拷贝 `base_config` 并只改写超卖字段,其余透传:
 | `test_duration` / `wall_sec` | 配置上限 vs 实际墙钟;wall ≪ duration = 提前停/卡死 |
 | `total_count` / `running_concurrency` / `overcommit_ratio` | 该 trial 的 k×N / N / k;ratio=k 是扫描横轴 |
 | `throughput` | `total`(跑过的沙箱数)/ `succeeded`(跑完全部 step 的轨迹数)/ `failed` / `total_steps` / `steps_per_sec` / `tasks_per_sec`;`total` 是 driver valid 门槛 |
-| `admission` | `maximum, peak_active, granted, avg_queue_wait_sec, control_qps, control_dispatched`;`peak_active≤N` 是 valid 门槛;exec_only 为 `null` |
+| `admission` | `maximum, peak_active, granted, avg_queue_wait_sec, control_qps, control_dispatched`;`peak_active≤N` 是 valid 门槛;exec_only/exec_ephemeral 为 `null` |
 | `lifecycle_overhead` | `pause_sec_sum, resume_sec_sum, pct_of_slice_total`(开销比率 %,与 Overview `lifecycle_overhead_aggregate_pct` 同源);仅 lifecycle/trajectory |
 | `paths` | `report, obs_xlsx, lifecycle_series, trajectory_index, vm_monitor_dir` 各产物路径 |
 | `error` | 出错时的错误串;非空 = `return_code≠0` 的根因线索 |
@@ -545,7 +553,7 @@ driver 深拷贝 `base_config` 并只改写超卖字段,其余透传:
 一个 trial(跑一遍 k×N fleet,`round_count=1`)在"跑满大多数 running slot 且未过量准入"时判 **valid**:
 
 - `return_code == 0`;
-- `throughput.total >= 0.9 * N`(跑满 N 个 slot 的大多数——崩溃/早退在此失败;`test.duration` 上限会盖住卡住的 run,随后也在此失败)。mode 无关:lifecycle `total` ≈ k×N、exec_only `total` ≈ N,健康 run 都 ≥ 0.9×N;
+- `throughput.total >= 0.9 * N`(跑满 N 个 slot 的大多数——崩溃/早退在此失败;`test.duration` 上限会盖住卡住的 run,随后也在此失败)。mode 无关:lifecycle/exec_ephemeral `total` ≈ k×N、exec_only `total` ≈ N,健康 run 都 ≥ 0.9×N;
 - `admission.peak_active <= N`(从不超过 N 并发——exec_only 跳过);
 - `failure_rate <= failure_tolerance`。
 
