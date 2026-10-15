@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass
 
 from bench_core.admission import ShutdownInterrupted
-from bench_core.payload.replay_payload import ReplayStep, Trajectory, load_pool, within_template_rank
+from bench_core.payload.replay_payload import ReplayStep, Trajectory, load_pool, template_at, within_template_rank
 from bench_core.schemas import REPLAY_STEP_ORDER, ReplayMetrics
 from bench_core.transients import is_transient_sandbox_error
 from bench_core.workflow_registry import (
@@ -1118,8 +1118,38 @@ class ReplayTaskRunner(ReplayBaseRunner):
                     break
                 cursor = (cursor + 1) % len(pool)
                 run += 1
+        elif self.cfg.replay_mode == "exec_ephemeral":
+            # exec_ephemeral: ephemeral like trajectory (create_one/kill_one per
+            # trajectory via _run_trajectory) but with NO create_all, so
+            # state.template is None -- derive this worker's template from its
+            # shell index (template_at) and affinity-filter to its sub-pool, then
+            # cycle the sub-pool by within-template rank to total_count
+            # trajectories. The cursor never leaves my_pool, so the issue SET
+            # stays fixed (count_t per template) across ratios. round_robin (not
+            # fixed) is the oversub linearity path; fixed keeps the same
+            # invariant so direct runs don't drift the pool either.
+            my_tpl = template_at(pool, self.state.index)
+            my_pool = [t for t in pool if t.template == my_tpl]
+            if not my_pool:
+                logger.warning(
+                    f"[Sandbox{self.state.index}] template {my_tpl!r} "
+                    f"has no trajectory in the pool; skipping (orphan)"
+                )
+                self.state.replay_metrics.record_orphan_skip()
+                return
+            target = self.config.total_count
+            run = 0
+            cursor = within_template_rank(pool, self.state.index) % len(my_pool)
+            while not self.stop_event.is_set() and self.state.is_alive and run < target:
+                traj = my_pool[cursor]
+                try:
+                    self._run_trajectory(traj)
+                except ShutdownInterrupted:
+                    break
+                cursor = (cursor + 1) % len(my_pool)
+                run += 1
         else:
-            # Non-trajectory (exec_only / lifecycle): affinity-filter the pool so
+            # Non-ephemeral (exec_only / lifecycle): affinity-filter the pool so
             # this sandbox only runs trajectories matching its template. Legacy
             # (no manifest): both sides are None -> whole pool returned.
             my_pool = _affinity_pool(pool, self.state.template)
@@ -1232,8 +1262,36 @@ class ReplayRoundRunner(ReplayBaseRunner):
                 self._run_trajectory(traj)
             except ShutdownInterrupted:
                 pass  # benchmark shutdown mid-slice; round ends cleanly
+        elif self.cfg.replay_mode == "exec_ephemeral":
+            # exec_ephemeral: ephemeral like trajectory (one create_one/kill_one
+            # per round via _run_trajectory) but with NO create_all, so
+            # state.template is None -- derive this worker's template from its
+            # shell index (template_at) and affinity-filter to its sub-pool, then
+            # pick by within-template rank + round rotation. Round N's
+            # _run_trajectory ends in kill_one; round N+1's starts in create_one
+            # -> kill+recreate between rounds (the customer's real ephemeral
+            # workload). round_id rotates statelessly across rounds (no cursor
+            # held between rounds); the fixed runner cycles a stateful cursor --
+            # the two differ by design, not a bug.
+            my_tpl = template_at(pool, self.state.index)
+            my_pool = [t for t in pool if t.template == my_tpl]
+            if not my_pool:
+                logger.warning(
+                    f"[Sandbox{self.state.index}] template {my_tpl!r} "
+                    f"has no trajectory in the pool; skipping (orphan)"
+                )
+                self.state.replay_metrics.record_orphan_skip()
+                return
+            rank = within_template_rank(pool, self.state.index)
+            idx = (rank + self.round_id) % len(my_pool)
+            traj = my_pool[idx]
+            logger.info(f"[Sandbox{self.state.index}] Replay round {self.round_id}: trajectory {traj.instance_id}")
+            try:
+                self._run_trajectory(traj)
+            except ShutdownInterrupted:
+                pass  # benchmark shutdown mid-slice; round ends cleanly
         else:
-            # Non-trajectory (exec_only / lifecycle): affinity-filter the pool.
+            # Non-ephemeral (exec_only / lifecycle): affinity-filter the pool.
             my_pool = _affinity_pool(pool, self.state.template)
             if not my_pool:
                 logger.warning(

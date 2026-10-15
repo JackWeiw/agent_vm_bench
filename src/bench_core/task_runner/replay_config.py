@@ -50,10 +50,11 @@ class ReplayConfig(WorkflowConfigBase):
     replay_pause_duration_sec: float = 0.0
 
     def __post_init__(self) -> None:
-        # exec_only has no lifecycle calls; the ready probe is meaningless there.
-        # Fires for both from_raw and direct construction so the invariant holds
-        # without depending on the parsing path.
-        if self.replay_mode == "exec_only":
+        # exec_only / exec_ephemeral have no lifecycle calls (exec_ephemeral is a
+        # bare create->exec->kill per trajectory, B's no-lifecycle model); the
+        # ready probe is meaningless there. Fires for both from_raw and direct
+        # construction so the invariant holds without depending on the parsing path.
+        if self.replay_mode in ("exec_only", "exec_ephemeral"):
             self.replay_ready_probe = False
 
     @classmethod
@@ -108,7 +109,8 @@ class ReplayConfig(WorkflowConfigBase):
             raise WorkflowConfigError(f"replay_launch_interval_sec must be >= 0, got {self.replay_launch_interval_sec}")
         if self.replay_pause_duration_sec < 0:
             raise WorkflowConfigError(f"replay_pause_duration_sec must be >= 0, got {self.replay_pause_duration_sec}")
-        if self.replay_mode not in (None, "exec_only", "lifecycle", "trajectory"):
+        if self.replay_mode not in (None, "exec_only", "exec_ephemeral", "lifecycle", "trajectory"):
             raise WorkflowConfigError(
-                f"replay_mode must be None, 'exec_only', 'lifecycle', or 'trajectory', got {self.replay_mode!r}"
+                f"replay_mode must be None, 'exec_only', 'exec_ephemeral', 'lifecycle', or 'trajectory', "
+                f"got {self.replay_mode!r}"
             )

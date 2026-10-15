@@ -306,6 +306,174 @@ def test_trajectory_create_one_passes_template(tmp_path, monkeypatch):
     assert create_calls[0]["metadata"] == {"trajectory_id": "x"}
 
 
+# ---------------------------------------------------------------------------
+# exec_ephemeral: ephemeral create/kill per round (B's no-lifecycle model)
+# ---------------------------------------------------------------------------
+
+
+def _ephemeral_traj() -> Trajectory:
+    return Trajectory(
+        path=Path("x"),
+        instance_id="x",
+        environment="main",
+        steps=(ReplayStep(index=0, action="echo x", delay_time_sec=0.0, action_type="shell"),),
+        template="swb-a",
+    )
+
+
+def _ephemeral_cfg() -> KernelConfig:
+    # ready_probe=False mirrors bench.py's exec_ephemeral normalization
+    # (__post_init__ would do it if mode were set at construction time).
+    return KernelConfig(
+        workflow_type="replay",
+        workflow_config=ReplayConfig(
+            replay_mode="exec_ephemeral",
+            replay_delay_scale=0.0,
+            replay_ready_probe=False,
+        ),
+    )
+
+
+def test_exec_ephemeral_kills_and_recreates_between_rounds(tmp_path, monkeypatch):
+    """exec_ephemeral: each _run_trajectory is create_one -> bare exec -> kill_one,
+    so round N ends in kill_one and round N+1 starts in create_one -- kill+
+    recreate between rounds (the customer's real ephemeral workload). FakeProvider
+    is EphemeralCapable, so _run_trajectory's is_ephemeral branch fires real
+    create/kill; admission=None (no bench spine) keeps them ungated."""
+    provider = FakeProvider(count=1)
+    events: list[str] = []
+    real_create = provider.create_one
+    real_kill = provider.kill_one
+
+    def _spy_create(index, *, template=None, metadata=None):
+        events.append(f"create:{index}")
+        return real_create(index, template=template, metadata=metadata)
+
+    def _spy_kill(inst):
+        events.append(f"kill:{inst.index}")
+        real_kill(inst)
+
+    provider.create_one = _spy_create  # type: ignore[method-assign]
+    provider.kill_one = _spy_kill  # type: ignore[method-assign]
+
+    cfg = _ephemeral_cfg()
+    state = _sandbox(0, None)  # shell template None: exec_ephemeral derives it via template_at, not state.template
+    state.ready = True
+    stop = threading.Event()
+    traj = _ephemeral_traj()
+    for rid in (0, 1):
+        runner = ReplayRoundRunner(
+            RunContext(state=state, config=cfg, stop_event=stop, round_id=rid, provider=provider, launch_pacer=None)
+        )
+        runner._run_trajectory(traj)
+    assert events == ["create:0", "kill:0", "create:0", "kill:0"]
+
+
+def test_exec_ephemeral_step_exception_still_kills(tmp_path, monkeypatch):
+    """A step raising Exception (caught at the step-loop except, replay.py:886)
+    must NOT skip the kill block -- kill_one still runs after the step loop.
+    (Only BaseException / ShutdownInterrupted skips it; that live sandbox is
+    reaped by cleanup_all -- noted, not assertable without a full spine.)"""
+    provider = FakeProvider(count=1)
+    killed: list[int] = []
+    real_kill = provider.kill_one
+
+    def _spy_kill(inst):
+        killed.append(inst.index)
+        real_kill(inst)
+
+    provider.kill_one = _spy_kill  # type: ignore[method-assign]
+
+    def _boom(*a, **k):
+        raise RuntimeError("step exploded")
+
+    monkeypatch.setattr(provider, "exec", _boom)
+
+    cfg = _ephemeral_cfg()
+    state = _sandbox(0, None)
+    state.ready = True
+    stop = threading.Event()
+    runner = ReplayRoundRunner(
+        RunContext(state=state, config=cfg, stop_event=stop, round_id=0, provider=provider, launch_pacer=None)
+    )
+    runner._run_trajectory(_ephemeral_traj())
+    assert killed == [0]  # kill_one ran despite the step exception
+
+
+def test_exec_ephemeral_round_do_run_routes_to_run_trajectory(tmp_path, monkeypatch):
+    """exec_ephemeral's round do_run must route to _run_trajectory (ephemeral),
+    NOT the persistent _replay_round_loop. Guards a regression where
+    exec_ephemeral falls through to the exec_only/lifecycle else-branch (no
+    create/kill -> silent wrong lifecycle). The simulation tests in
+    test_bench_multitemplate exercise the selection math but bypass do_run."""
+    reset_pool_cache()
+    cfg = _seed(
+        tmp_path,
+        [
+            ("a.replay.json", "a", "swb-a"),
+            ("b.replay.json", "b", "swb-b"),
+            ("c.replay.json", "c", "swb-a"),
+        ],
+    )
+    cfg.workflow_config.replay_mode = (
+        "exec_ephemeral"  # _seed leaves it None (persistent path); force the ephemeral branch
+    )
+    stop = threading.Event()
+    provider = FakeProvider(count=1)
+    routed: list[str] = []
+
+    def _wrong(self, traj):  # persistent path must NOT be reached
+        raise AssertionError("exec_ephemeral routed to the persistent _replay_round_loop path")
+
+    def _ephemeral(self, traj):
+        routed.append(traj.instance_id)
+        stop.set()
+
+    monkeypatch.setattr(ReplayRoundRunner, "_replay_round_loop", _wrong)
+    monkeypatch.setattr(ReplayRoundRunner, "_run_trajectory", _ephemeral)
+    runner = ReplayRoundRunner(
+        RunContext(state=_sandbox(0, "swb-a"), config=cfg, stop_event=stop, round_id=0, provider=provider)
+    )
+    runner.run()
+    assert routed, "exec_ephemeral round do_run did not route to _run_trajectory"
+    assert routed[0] in ("a", "c")  # template_at(pool,0)=swb-a -> affinity pool {a,c}
+
+
+def test_exec_ephemeral_fixed_do_run_routes_to_run_trajectory(tmp_path, monkeypatch):
+    """exec_ephemeral's fixed do_run routes to _run_trajectory (ephemeral),
+    NOT the persistent _replay_trajectory path; and the cursor never leaves
+    the swb-a affinity pool."""
+    reset_pool_cache()
+    cfg = _seed(
+        tmp_path,
+        [
+            ("a.replay.json", "a", "swb-a"),
+            ("b.replay.json", "b", "swb-b"),
+            ("c.replay.json", "c", "swb-a"),
+        ],
+    )
+    cfg.workflow_config.replay_mode = (
+        "exec_ephemeral"  # _seed leaves it None (persistent path); force the ephemeral branch
+    )
+    stop = threading.Event()
+    provider = FakeProvider(count=1)
+    routed: list[str] = []
+
+    def _wrong(self, traj):
+        raise AssertionError("exec_ephemeral routed to the persistent _replay_trajectory path")
+
+    def _ephemeral(self, traj):
+        routed.append(traj.instance_id)
+        stop.set()
+
+    monkeypatch.setattr(ReplayTaskRunner, "_replay_trajectory", _wrong)
+    monkeypatch.setattr(ReplayTaskRunner, "_run_trajectory", _ephemeral)
+    runner = ReplayTaskRunner(RunContext(state=_sandbox(0, "swb-a"), config=cfg, stop_event=stop, provider=provider))
+    runner.run()
+    assert routed, "exec_ephemeral fixed do_run did not route to _run_trajectory"
+    assert all(r in ("a", "c") for r in routed)  # cursor never leaves the swb-a pool
+
+
 def test_trajectory_create_one_none_template(tmp_path, monkeypatch):
     """Legacy trajectory (template=None) passes template=None to create_one."""
     provider = FakeProvider(count=1)

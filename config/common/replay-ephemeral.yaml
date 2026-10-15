@@ -1,0 +1,177 @@
+# exec_ephemeral replay config — the no-lifecycle EPHEMERAL model (B's workload).
+#
+# Each round: create_one -> bare exec each recorded step (no pause/resume) ->
+# kill_one. Between rounds the sandbox is killed and recreated fresh — the
+# customer's real workload ("sandbox spun up once then killed; to reuse, spin
+# up again"). This is the missing 4th quadrant:
+#   exec_only     = persistent + bare exec       (long-lived, state accumulates)
+#   lifecycle     = persistent + pause/resume
+#   trajectory    = ephemeral  + pause/resume
+#   exec_ephemeral= ephemeral  + bare exec       <-- this file (B's model)
+#
+# Like exec_only there is no pause/resume and no admission gate (k*N sandboxes
+# run concurrently), so control_plane_* / running_concurrency are no-ops here.
+# Unlike exec_only, sandboxes are ephemeral: the launch pacer
+# (launch_interval_sec) IS active (it paces the per-round create_one burst),
+# and tasks_per_sec includes per-round create+kill cost — it is NOT comparable
+# to exec_only's long-lived tasks_per_sec.
+#
+# TUNING: per-round create/kill is high-frequency; if you hit `sandbox create
+# timeout`, raise the aenv: create_timeout (values are deployment-driven, not
+# hardcoded here). And scale test.duration up vs exec_only — k*N*round_count
+# create+exec+kill cycles need a longer window to all finish within duration.
+#
+#   bench-core --provider aenv --config config/common/replay-ephemeral.yaml -n 384
+#   oversub-bench --config config/common/replay-ephemeral.yaml   # default modes now exec_ephemeral
+
+workflow_type: replay
+
+# === backend blocks (one per provider; only the matching one is read) ===
+e2b:
+  template: "openclaw-coding-python-v1"
+  create_timeout: 86400
+  numa_bind: 2
+  sandbox_ids_file: "sandboxs_replay.txt"
+  env:
+    E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+    E2B_API_KEY: "your_e2b_api_key_here"
+    E2B_DOMAIN: "e2b.app"
+    E2B_API_URL: "http://localhost:3000"
+    E2B_HTTP_SSL: "false"
+
+docker:
+  image: "ubuntu-openclaw-coding-python:24.04-arm64"
+  container_prefix: "oc-replay"
+  cpu_limit: 2.0
+  memory_limit: "2g"
+  create_timeout: 300
+
+aenv:
+  template: "openclaw-coding-python-v1"  # AENV snapshot-capable image (same /testbed shape)
+  create_timeout: 86400
+  numa_bind: 2
+  sandbox_ids_file: "sandboxs_replay_aenv.txt"
+  # AENV server home path -- primary source for the snapshot-scan base. Irrelevant
+  # in exec_ephemeral (no pause/snapshot), kept for config parity with replay.yaml.
+  # Falls back to $AENV_HOME_PATH / $AENV_HOME, then /var/lib/aenv.
+  # aenv_home_path: "/var/lib/aenv"
+  env:
+    E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+    E2B_API_KEY: "your_e2b_api_key_here"
+    E2B_DOMAIN: "your_aenv_domain_here"
+    E2B_API_URL: "http://127.0.0.1:8000"      # AENV control plane (POST /sandboxes)
+    E2B_SANDBOX_URL: "http://127.0.0.1:8000"  # AENV data plane (envd proxy; overrides subdomain build, forces http)
+
+cubesandbox:
+  template: "openclaw-coding-python-v1"  # CubeSandbox image with /testbed (cube template ID)
+  timeout: 86400            # idle TTL seconds (NOT create-wait; create is a synchronous
+                           # HTTP POST). Ephemeral sandboxes are killed per round, so TTL
+                           # mostly matters for safety margin; -1 = NEVER_TIMEOUT.
+  sandbox_ids_file: "sandboxs_replay_cube.txt"
+  # snapshot_dir: "/var/lib/cube/snapshots"   # Phase 2 snapshot_sizes; v1 unused in exec_ephemeral.
+  env:
+    CUBE_API_URL: "http://127.0.0.1:3000"     # CubeAPI control plane (POST /sandboxes)
+    CUBE_API_KEY: "your_cube_api_key_here"     # optional (placeholder -> no X-API-Key header)
+    CUBE_SANDBOX_DOMAIN: "cube.app"           # sandbox data-plane domain (get_host)
+
+# === shared stress sections (all -> KernelConfig) ===
+sandbox:
+  total_count: 384          # k*N at ratio k (ephemeral: each slot create/kills per round)
+  detect_existing: false
+  create_only: false
+
+create_batch:
+  size: 96
+  interval: 1              # NOTE: exec_ephemeral skips create_all (no batch pre-create);
+                           # this block is inert here. Per-round create_one pacing uses
+                           # replay.launch_interval_sec below instead.
+
+task_batch:
+  size: 5
+  interval: 5
+
+# Replay configuration (host-agnostic; the sandbox runs the recorded commands).
+replay:
+  # Point these at your dataset (host-specific; do not commit real paths).
+  trajectory_dir: "trajectories/swe-bench"  # pool of .replay.json/.json/.traj
+  trajectory_glob: "*.replay.json"
+  # Cap the pool to the first N trajectories PER TEMPLATE (natural sort within
+  # each template). Set by the oversub driver to running_concurrency (N) so each
+  # template's issue set stays fixed across ratios (per-issue execution count
+  # then scales linearly with k); without it a large pool lets the issue mix
+  # drift with ratio and confounds linearity. For a MULTI-template pool (T>1)
+  # the kernel further clamps N to N//T (the ratio-1 per-template fleet share)
+  # so count_t <= fleet_t(ratio 1) and the running issue set stays fixed.
+  # Per-template (not a global first-N) keeps every template covered. Omit/null
+  # = use the whole pool.
+  # trajectory_limit: 20
+  # Side manifest mapping trajectory file (path relative to trajectory_dir) ->
+  # concrete backend template. Lives with the dataset (not the benchmark config).
+  # Omit -> single-template legacy (all trajectories use the provider block's
+  # default `template`).
+  # template_manifest: "trajectories/swe-bench/inst463-trajectory-templates.json"
+  workdir: "/"                            # exec cwd (no shell wrap); "/" = run at root
+  env: {}                                   # optional {PAGER: cat, ...} via exec env param
+  action_timeout: 300                       # per-action exec timeout (same as lifecycle)
+  delay_scale: 1.0                          # 1.0=realtime; 0=no delay; 0.1=10x compressed
+  stop_on_error: false                      # abort current trajectory, advance to next (not the sandbox)
+
+  # mode: exec_ephemeral -- ephemeral create_one/kill_one per round (B's model),
+  # no pause/resume, no admission (k*N concurrent). Requires an EphemeralCapable
+  # provider (aenv/cubesandbox). KernelConfig.__post_init__ force-disables
+  # ready_probe in exec_ephemeral.
+  mode: exec_ephemeral
+
+  # The knobs below are NO-OPS in exec_ephemeral (admission is lifecycle/
+  # trajectory only). Kept for parity with replay.yaml; at ratio 1:1 the
+  # comparison with exec_only is fair (neither queues).
+  running_concurrency: 384             # ignored in exec_ephemeral (no admission)
+  control_plane_qps: 1000.0           # ignored in exec_ephemeral (no QPS limiter)
+  control_plane_inflight_cap: 1024     # ignored in exec_ephemeral (no inflight cap)
+  pause_duration_sec: 0.0             # ignored in exec_ephemeral (no pause phase)
+  ready_probe: true                   # force-disabled by __post_init__ in exec_ephemeral
+  lifecycle_retries: 2                # ignored in exec_ephemeral (no lifecycle calls)
+  # launch_interval_sec IS active in exec_ephemeral (paces per-round create_one
+  # so workers don't burst-create in the same instant). 0.0 = no pacing.
+  launch_interval_sec: 0.0
+
+test:
+  duration: 3600      # hard time ceiling. exec_ephemeral runs k*N*round_count
+                       # create+exec+kill cycles; scale this up vs exec_only if
+                       # rounds don't all finish in-window (the count gate in
+                       # compute_valid catches a genuine stall, not a slow-but-
+                       # finishing run). Also feeds vm_monitor's -t backstop.
+  stats_interval: 10
+  benchmark_percent: 1.0
+  benchmark_mode: "round_robin"
+  round_size: 384     # one group = all sandboxes -> all concurrent
+  round_count: 1      # each sandbox runs exactly 1 trajectory per round (= 1 create/kill)
+  round_interval: 0
+
+report:
+  output_dir: "results/replay-ephemeral"
+  filename_prefix: "replay_ephemeral_bench"
+  format: both  # txt + xlsx observability workbook (Per-step timings, Trajectory summary)
+
+# Host-level monitor (optional). Default `auto` enables vm_monitor only when the
+# provider has a VMM (e2b/aenv -> firecracker); docker/fake are skipped.
+monitor:
+  enabled: auto          # auto | true | false
+  vmm: auto              # auto | qemu | firecracker (auto = take provider hint)
+  interval: 2
+  capture: auto          # auto | true | false (auto/true -> --enable-capture --auto-skip)
+  numa: all              # "all" = every NUMA node, or comma-separated "0,1"
+  disks: all             # block devices for I/O: "all" auto-discovers physical devices;
+                         # or comma-separated, e.g. "sda,nvme0n1" to monitor specific disks.
+  stress_file: /dev/shm/bench_core_monitor.lock
+  log_dir: null          # null = <report.output_dir>/vm_monitor
+  merge_report: false    # false (default): vm_monitor resource_report.xlsx stands alone;
+                         # the replay obs workbook carries trajectory/replay metrics only.
+  report_timeout: 300
+  # skip_charts: true    # uncomment for oversub-scale runs (chart build dominates export)
+  # skip:
+  #   - hugepage
+  #   - numa-cpu
+  #   - host-stats
+  # host_procs:
+  #   - server:release/server
