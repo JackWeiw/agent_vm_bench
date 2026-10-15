@@ -152,11 +152,15 @@ def load_pool(config: KernelConfig) -> tuple[Trajectory, ...]:
     ``template`` default). When a manifest IS set it is the authoritative run
     set -- only trajectories it maps to a concrete template string enter the
     pool; entries absent from the manifest (or mapped to a null, empty, or
-    non-string value) are skipped with a WARNING rather than falling back to the provider
+    non-string value) are skipped rather than falling back to the provider
     default, which may be a wrong image for the trajectory's repo or a shipped
-    placeholder that 400s on the backend. A missing/unreadable manifest file is
-    a hard error. Returns a cached frozen tuple so repeat calls from different
-    runner threads share one immutable object.
+    placeholder that 400s on the backend. Skips are expected (a declared
+    subset), so they are aggregated into one INFO summary after the loop
+    instead of a WARNING per file -- the oversub driver spawns one bench-core
+    subprocess per trial, so per-file WARNINGs would repeat across every ratio
+    against the same manifest + trajectory dir. A missing/unreadable manifest
+    file is a hard error. Returns a cached frozen tuple so repeat calls from
+    different runner threads share one immutable object.
     """
     from bench_core.task_runner.replay import ReplayConfig
 
@@ -186,6 +190,12 @@ def load_pool(config: KernelConfig) -> tuple[Trajectory, ...]:
             ) from exc
 
     pool: list[Trajectory] = []
+    # Trajectories the manifest didn't map to a usable template string. The
+    # manifest is the AUTHORITATIVE run set, so these skips are expected (a
+    # declared subset), not anomalies -- aggregate into one INFO line below
+    # instead of a WARNING per file (the oversub driver spawns one bench-core
+    # subprocess per trial, so per-file WARNINGs repeat across every ratio).
+    skipped_manifest: list[tuple[str, str]] = []
     for path in find_trajectories(Path(directory), glob):
         try:
             traj = load_trajectory(path)
@@ -204,14 +214,20 @@ def load_pool(config: KernelConfig) -> tuple[Trajectory, ...]:
         rel = os.path.relpath(path, directory).replace("\\", "/")
         raw_template = manifest.get(rel)
         if raw_template is not None and not isinstance(raw_template, str):
-            logger.warning(
-                f"[replay] manifest entry for {rel} is not a string ({type(raw_template).__name__}); skipping"
-            )
+            skipped_manifest.append((rel, f"not a string ({type(raw_template).__name__})"))
             continue
         if not raw_template:
-            logger.warning(f"[replay] trajectory {rel} has no manifest entry; skipping")
+            skipped_manifest.append((rel, "no manifest entry"))
             continue
         pool.append(dataclasses.replace(traj, template=raw_template))
+
+    if skipped_manifest:
+        shown = [f"{rel} ({why})" for rel, why in skipped_manifest[:8]]
+        more = f" (+{len(skipped_manifest) - 8} more)" if len(skipped_manifest) > 8 else ""
+        logger.info(
+            f"[replay] manifest is authoritative: skipped {len(skipped_manifest)} trajectory file(s) "
+            f"not mapped to a usable template: {', '.join(shown)}{more}"
+        )
 
     if limit is not None:
         # Oversub linearity clamp: the oversub driver sets trajectory_limit=N
