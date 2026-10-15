@@ -400,6 +400,80 @@ def test_exec_ephemeral_step_exception_still_kills(tmp_path, monkeypatch):
     assert killed == [0]  # kill_one ran despite the step exception
 
 
+def test_exec_ephemeral_round_do_run_routes_to_run_trajectory(tmp_path, monkeypatch):
+    """exec_ephemeral's round do_run must route to _run_trajectory (ephemeral),
+    NOT the persistent _replay_round_loop. Guards a regression where
+    exec_ephemeral falls through to the exec_only/lifecycle else-branch (no
+    create/kill -> silent wrong lifecycle). The simulation tests in
+    test_bench_multitemplate exercise the selection math but bypass do_run."""
+    reset_pool_cache()
+    cfg = _seed(
+        tmp_path,
+        [
+            ("a.replay.json", "a", "swb-a"),
+            ("b.replay.json", "b", "swb-b"),
+            ("c.replay.json", "c", "swb-a"),
+        ],
+    )
+    cfg.workflow_config.replay_mode = (
+        "exec_ephemeral"  # _seed leaves it None (persistent path); force the ephemeral branch
+    )
+    stop = threading.Event()
+    provider = FakeProvider(count=1)
+    routed: list[str] = []
+
+    def _wrong(self, traj):  # persistent path must NOT be reached
+        raise AssertionError("exec_ephemeral routed to the persistent _replay_round_loop path")
+
+    def _ephemeral(self, traj):
+        routed.append(traj.instance_id)
+        stop.set()
+
+    monkeypatch.setattr(ReplayRoundRunner, "_replay_round_loop", _wrong)
+    monkeypatch.setattr(ReplayRoundRunner, "_run_trajectory", _ephemeral)
+    runner = ReplayRoundRunner(
+        RunContext(state=_sandbox(0, "swb-a"), config=cfg, stop_event=stop, round_id=0, provider=provider)
+    )
+    runner.run()
+    assert routed, "exec_ephemeral round do_run did not route to _run_trajectory"
+    assert routed[0] in ("a", "c")  # template_at(pool,0)=swb-a -> affinity pool {a,c}
+
+
+def test_exec_ephemeral_fixed_do_run_routes_to_run_trajectory(tmp_path, monkeypatch):
+    """exec_ephemeral's fixed do_run routes to _run_trajectory (ephemeral),
+    NOT the persistent _replay_trajectory path; and the cursor never leaves
+    the swb-a affinity pool."""
+    reset_pool_cache()
+    cfg = _seed(
+        tmp_path,
+        [
+            ("a.replay.json", "a", "swb-a"),
+            ("b.replay.json", "b", "swb-b"),
+            ("c.replay.json", "c", "swb-a"),
+        ],
+    )
+    cfg.workflow_config.replay_mode = (
+        "exec_ephemeral"  # _seed leaves it None (persistent path); force the ephemeral branch
+    )
+    stop = threading.Event()
+    provider = FakeProvider(count=1)
+    routed: list[str] = []
+
+    def _wrong(self, traj):
+        raise AssertionError("exec_ephemeral routed to the persistent _replay_trajectory path")
+
+    def _ephemeral(self, traj):
+        routed.append(traj.instance_id)
+        stop.set()
+
+    monkeypatch.setattr(ReplayTaskRunner, "_replay_trajectory", _wrong)
+    monkeypatch.setattr(ReplayTaskRunner, "_run_trajectory", _ephemeral)
+    runner = ReplayTaskRunner(RunContext(state=_sandbox(0, "swb-a"), config=cfg, stop_event=stop, provider=provider))
+    runner.run()
+    assert routed, "exec_ephemeral fixed do_run did not route to _run_trajectory"
+    assert all(r in ("a", "c") for r in routed)  # cursor never leaves the swb-a pool
+
+
 def test_trajectory_create_one_none_template(tmp_path, monkeypatch):
     """Legacy trajectory (template=None) passes template=None to create_one."""
     provider = FakeProvider(count=1)
