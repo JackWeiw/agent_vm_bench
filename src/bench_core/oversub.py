@@ -240,29 +240,51 @@ def compute_valid(
         (mode-agnostic: lifecycle ``total`` ~= k*N and exec_only ``total`` ~=
         N, both >= 0.9*N on a healthy run). When ``multiplier`` (M) is set
         (fixed+exec_ephemeral+M), each of the k*N sandboxes runs M trajectories,
-        so ``expected = M * k * N`` -- this catches a silent under-run where
-        slots crashed / exited early before finishing their M (mirrors reference
-        B's ``total == target_count`` check). Per-trajectory completion is
-        inspectable in trajectory-detail.csv -- ``valid`` is the gross-failure /
-        over-admission gate, not a "every trajectory succeeded" bar,
+        so ``expected = M * k * N`` and the floor reads ``throughput.succeeded``
+        (the trajectory-completion count = ``sum(trajectory_completions)`` =
+        M*k*N on a healthy run) -- NOT ``throughput.total`` (a sandbox count =
+        k*N, which would always fail against M*k*N for M>=2). This catches a
+        silent under-run where slots crashed / exited early before finishing
+        their M (mirrors reference B's ``total == target_count`` check).
+        Per-trajectory completion is inspectable in trajectory-detail.csv --
+        ``valid`` is the gross-failure / over-admission gate, not a "every
+        trajectory succeeded" bar,
       * ``admission.peak_active <= N`` (never ran more than N concurrent --
         dropped for exec_only, which has no admission controller),
-      * ``failure_rate <= failure_tolerance`` (configurable wrap-noise allowance).
+      * ``failure_rate <= failure_tolerance`` (configurable wrap-noise allowance;
+        1:1 modes only -- skipped when ``multiplier`` is set: run_summary's
+        ``failed = total - succeeded`` is a sandbox-vs-trajectory count and goes
+        negative for M>1, so the succeeded-floor above is the sole gate there).
     """
     if return_code != 0:
         return False
     tp = summary.get("throughput") or {}
-    total = tp.get("total", 0)
-    expected = multiplier * (ratio or 1) * n if multiplier else n
-    if total < 0.9 * expected:
+    # M-aware floor: throughput.total is a SANDBOX count (run_summary emits
+    # len(sandbox_states) = ratio*N), but with multiplier each sandbox runs M
+    # trajectories, so the trajectory-completion count is throughput.succeeded
+    # (= sum(trajectory_completions) = M*ratio*N on a healthy run). Comparing
+    # the sandbox count against M*ratio*N always fails for M>=2 -- read
+    # succeeded when M is set so the floor is dimensionally consistent.
+    if multiplier:
+        actual = tp.get("succeeded", 0)
+        expected = multiplier * (ratio or 1) * n
+    else:
+        actual = tp.get("total", 0)
+        expected = n
+    if actual < 0.9 * expected:
         return False
     adm = summary.get("admission")
     if adm and adm.get("peak_active") is not None and adm["peak_active"] > n:
         return False
-    failed = tp.get("failed", 0)
-    failure_rate = failed / total if total else 1.0
-    if failure_rate > failure_tolerance:
-        return False
+    if not multiplier:
+        # failure_rate is meaningful only in the 1:1 (sandbox==trajectory) case;
+        # for M>1 run_summary's failed = total - succeeded is negative, so the
+        # succeeded-floor above is the sole gate (step failures already reduce
+        # completions).
+        failed = tp.get("failed", 0)
+        failure_rate = failed / actual if actual else 1.0
+        if failure_rate > failure_tolerance:
+            return False
     return True
 
 

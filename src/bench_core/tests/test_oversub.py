@@ -240,18 +240,27 @@ def test_build_trial_config_no_multiplier_keeps_benchmark_mode():
 
 
 def test_compute_valid_multiplier_aware_happy():
-    """M=5, ratio=2, N=384 -> expected = 5*2*384 = 3840. A run where each slot ran
-    exactly M trajectories (total=3840) is valid. exec_ephemeral has no admission
-    controller (peak_active=None), so the over-admission clause is skipped."""
-    s = _summary(total=3840, succeeded=3840, mode="exec_ephemeral", peak_active=None)
+    """M=5, ratio=2, N=384 -> expected trajectory completions = 5*2*384 = 3840.
+    run_summary emits throughput.total = SANDBOX count (len(sandbox_states) =
+    ratio*N = 768) and throughput.succeeded = TRAJECTORY-completion count
+    (sum(trajectory_completions) = M*ratio*N = 3840); failed = total-succeeded
+    = -3072 (negative -- the 1:1 sandbox==trajectory assumption breaks for M>1).
+    The floor must read succeeded (3840 >= 0.9*3840), NOT total (768 < 0.9*3840
+    would always fail for M>=2 -- the dimensional bug this guards). exec_ephemeral
+    has no admission controller (peak_active=None), so the over-admission clause
+    is skipped, and the failure_rate clause is skipped for M>1 (negative failed)."""
+    s = _summary(total=768, succeeded=3840, failed=-3072, mode="exec_ephemeral", peak_active=None)
     assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0, multiplier=5, ratio=2) is True
 
 
 def test_compute_valid_multiplier_under_run():
-    """Same M/ratio/N but only 2000 trajectories completed (< 0.9*3840=3456):
-    slots exited early before finishing their M -> under-run -> invalid. Mirrors
-    reference B's ``total == target_count`` check."""
-    s = _summary(total=2000, succeeded=2000, mode="exec_ephemeral", peak_active=None)
+    """Same M/ratio/N (expected = 3840 completions) but only 2000 trajectories
+    completed: all 768 sandboxes ran (total=768) yet exited early before finishing
+    their M, so succeeded=2000 < 0.9*3840=3456 -> under-run -> invalid. Reading
+    total (768) against the floor would pass (768 >= 0 is moot), so this only
+    fails correctly when the floor reads succeeded. Mirrors reference B's
+    ``total == target_count`` check."""
+    s = _summary(total=768, succeeded=2000, failed=-1232, mode="exec_ephemeral", peak_active=None)
     assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0, multiplier=5, ratio=2) is False
 
 
