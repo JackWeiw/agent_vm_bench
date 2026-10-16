@@ -1137,7 +1137,11 @@ class ReplayTaskRunner(ReplayBaseRunner):
                 )
                 self.state.replay_metrics.record_orphan_skip()
                 return
-            target = self.config.total_count
+            # M (replay.multiplier) sets a per-sandbox trajectory count: each of
+            # the N running slots runs exactly M trajectories, then this loop
+            # exits (the bench spine's stop-when-done waits on all slots). Falls
+            # back to total_count when M is unset (backward compat).
+            target = self.cfg.replay_multiplier or self.config.total_count
             run = 0
             cursor = within_template_rank(pool, self.state.index) % len(my_pool)
             while not self.stop_event.is_set() and self.state.is_alive and run < target:

@@ -20,9 +20,11 @@ fully synchronous (the E2B SDK ``Sandbox.create`` is a blocking call).
 
 Cache: a module-level sandbox_id -> pid map, populated by the first scan
 (``setdefault`` -- never overwritten). A cache hit short-circuits without a
-rescan. This is correct only because binding is ``exec_only``-only: the
-firecracker pid is stable for the whole run (no pause/resume), so a cached pid
-never goes stale. Mirrors the reference's incremental-cache pattern.
+rescan. Correct in both bound modes: exec_only (the firecracker pid is stable
+for the whole run, no pause/resume) and exec_ephemeral (each ``create_one``
+yields a fresh e2b sandbox_id, so ``setdefault`` never collides and a killed
+sandbox's entry is never re-resolved). Mirrors the reference's incremental-cache
+pattern.
 """
 from __future__ import annotations
 
@@ -85,9 +87,10 @@ class LocalFirecrackerPidResolver:
     """Map sandbox_id -> firecracker pid by reading MMDS instanceID locally.
 
     Sync port of the reference's async resolver. A cache hit short-circuits
-    without a rescan -- correct because binding is ``exec_only``-only, where the
-    firecracker pid is stable for the whole run (no pause/resume), so a cached
-    pid never goes stale.
+    without a rescan -- correct in exec_only (the firecracker pid is stable for
+    the whole run, no pause/resume) and exec_ephemeral (each ``create_one``
+    yields a fresh sandbox_id, so the cache only grows and a killed sandbox's
+    entry is never re-resolved).
     """
 
     def __init__(self) -> None:
@@ -151,19 +154,21 @@ class LocalFirecrackerPidResolver:
             if instance_id is None:
                 continue
             identified += 1
-            # setdefault: never overwrite. Correct because binding is exec_only-
-            # only (the firecracker pid is stable for the whole run); a stale-pid
-            # refresh has no motivating case once resume-rebind is gone.
+            # setdefault: never overwrite. Correct in exec_only (the pid is
+            # stable for the whole run) and exec_ephemeral (each create_one
+            # yields a fresh sandbox_id, so this never collides with a prior
+            # entry; a killed sandbox's id is never re-resolved).
             self._pid_map.setdefault(instance_id, pid)
         return len(processes), identified
 
     def resolve_firecracker_pid(self, sandbox_id: str, *, attempts: int, timeout_sec: float) -> int | None:
         """Resolve a sandbox_id to its firecracker pid, with retry+cache.
 
-        A cache hit short-circuits without a rescan -- correct because binding
-        is exec_only-only (the pid is stable for the whole run, so a cached pid
-        never goes stale). On a miss, scan /proc + MMDS under the lock; a few
-        short retries cover the just-created-sandbox-not-yet-in-warm-pool race.
+        A cache hit short-circuits without a rescan -- correct in exec_only (the
+        pid is stable for the whole run) and exec_ephemeral (each ``create_one``
+        yields a fresh sandbox_id, so the cache only grows). On a miss, scan
+        /proc + MMDS under the lock; a few short retries cover the
+        just-created-sandbox-not-yet-in-warm-pool race.
         """
         last_scan = "scan did not run"
         for attempt in range(1, attempts + 1):

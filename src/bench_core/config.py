@@ -117,6 +117,25 @@ class KernelConfig:
             return 1
         return (self.total_count + self.task_batch_size - 1) // self.task_batch_size
 
+    @property
+    def stop_when_done(self) -> bool:
+        """True iff the fixed replay run blocks until every slot finishes M
+        trajectories (exec_ephemeral + ``replay.multiplier`` set + fixed mode).
+
+        Centralizes the rule so the fixed runner's per-slot bound (M) and the
+        bench spine's stop mode stay in sync -- both key off the same triple.
+        Duck-typed over ``workflow_config`` (getattr) so config.py need not
+        import ``ReplayConfig`` (circular: replay_config imports KernelConfig).
+        Non-replay workflows lack ``replay_mode``/``replay_multiplier`` -> the
+        getattr defaults make this a safe no-op (False) elsewhere.
+        """
+        wf = self.workflow_config
+        return (
+            self.benchmark_mode == "fixed"
+            and getattr(wf, "replay_mode", None) == "exec_ephemeral"
+            and getattr(wf, "replay_multiplier", None) is not None
+        )
+
     def validate(self) -> None:
         """Raise :class:`WorkflowConfigError` for invalid settings; call after construction.
 

@@ -272,3 +272,63 @@ def test_config_from_raw_reads_trajectory_knobs():
     assert rc.replay_mode == "trajectory"
     assert rc.replay_lifecycle_retries == 5
     assert rc.replay_launch_interval_sec == 1.5
+
+
+# --- exec_ephemeral multiplier (M) + stop-when-done ---
+
+
+def test_stop_when_done_property():
+    """stop_when_done is True iff the triple holds: fixed mode + exec_ephemeral
+    + replay.multiplier set. Any one off -> False. Non-replay workflows are a
+    safe no-op (getattr defaults over a browser config / None)."""
+    on = KernelConfig(
+        workflow_type="replay",
+        benchmark_mode="fixed",
+        workflow_config=ReplayConfig(replay_mode="exec_ephemeral", replay_multiplier=3),
+    )
+    assert on.stop_when_done is True
+
+    # benchmark_mode != fixed
+    off_mode = KernelConfig(
+        workflow_type="replay",
+        benchmark_mode="round_robin",
+        workflow_config=ReplayConfig(replay_mode="exec_ephemeral", replay_multiplier=3),
+    )
+    assert off_mode.stop_when_done is False
+
+    # replay_mode != exec_ephemeral
+    off_replay = KernelConfig(
+        workflow_type="replay",
+        benchmark_mode="fixed",
+        workflow_config=ReplayConfig(replay_mode="lifecycle", replay_multiplier=3),
+    )
+    assert off_replay.stop_when_done is False
+
+    # multiplier unset
+    off_m = KernelConfig(
+        workflow_type="replay",
+        benchmark_mode="fixed",
+        workflow_config=ReplayConfig(replay_mode="exec_ephemeral"),
+    )
+    assert off_m.stop_when_done is False
+
+    # non-replay workflow -> getattr defaults -> False, no crash
+    assert KernelConfig(workflow_type="browser").stop_when_done is False
+
+
+def test_replay_multiplier_validation_rejects_zero():
+    """multiplier < 1 is rejected at validate time (from_raw runs validate)."""
+    with pytest.raises(ValueError, match="replay_multiplier"):
+        KernelConfig.from_raw({"workflow_type": "replay", "replay": {"mode": "exec_ephemeral", "multiplier": 0}})
+
+
+def test_replay_multiplier_ignored_warning(caplog):
+    """multiplier set under a non-exec_ephemeral mode is a warned no-op (the bound
+    lives in the fixed exec_ephemeral branch), not a hard error: constructed fine,
+    multiplier preserved, one WARNING surfaced."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="bench_core.task_runner.replay_config"):
+        cfg = KernelConfig.from_raw({"workflow_type": "replay", "replay": {"mode": "lifecycle", "multiplier": 3}})
+    assert any("replay.multiplier" in r.message and "ignoring" in r.message for r in caplog.records)
+    assert cfg.workflow_config.replay_multiplier == 3
