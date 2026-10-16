@@ -122,6 +122,15 @@ replay:
   # ready_probe in exec_ephemeral.
   mode: exec_ephemeral
 
+  # Per-sandbox trajectory count M (the fixed-mode work knob). Consulted ONLY in
+  # fixed + exec_ephemeral: each sandbox runs exactly M trajectories continuously
+  # (no round barrier), then self-stops (stop-when-done). In an oversub sweep the
+  # driver sets this per-trial and flips benchmark_mode to fixed automatically; for
+  # a DIRECT bench-core run you must ALSO set test.benchmark_mode: fixed below
+  # (otherwise multiplier is ignored with a WARNING). Total trajectories = M * k * N.
+  # Omit/null to use round_robin + round_count below instead (the round-based model).
+  # multiplier: 5
+
   # The knobs below are NO-OPS in exec_ephemeral (admission is lifecycle/
   # trajectory only). Kept for parity with replay.yaml; at ratio 1:1 the
   # comparison with exec_only is fair (neither queues).

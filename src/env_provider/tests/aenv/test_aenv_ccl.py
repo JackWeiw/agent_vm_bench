@@ -6,10 +6,12 @@ Covers three layers:
 2. ``bind_ccl_affinity`` best-effort guard contract (skip paths + verified bind),
    and the resolver's setdefault cache (hit short-circuits, miss scans).
 3. ``AenvProvider`` integration: ``create_all`` binds each sandbox iff ``ccl_bind``
-   is on AND the replay mode is ``exec_only`` (driven through the real
-   SandboxManager + a fake e2b Sandbox, mirroring test_aenv_ephemeral).
-   ``create_one`` (trajectory) and ``resume`` (lifecycle) never bind -- their
-   firecracker respawns per resume, so the pid is unstable.
+   is on AND the replay mode is ``exec_only`` / ``exec_ephemeral`` (driven
+   through the real SandboxManager + a fake e2b Sandbox, mirroring
+   test_aenv_ephemeral). ``create_one`` binds in ``exec_ephemeral`` (the
+   ephemeral create path; pid stable for the round) but skips in
+   ``trajectory``/``lifecycle`` (firecracker respawns per resume). ``resume``
+   never re-binds (the resumed firecracker's pid is stale).
 """
 from __future__ import annotations
 
@@ -85,8 +87,9 @@ class _FakeSbx:
 def _make_provider(monkeypatch, *, ccl_bind=False, total_count=1, replay_mode="exec_only"):
     """Build an AenvProvider with a fake e2b SDK + an attached ReplayConfig.
 
-    ``replay_mode`` defaults to ``exec_only`` (the only mode where CCL binds);
-    pass ``"lifecycle"`` / ``"trajectory"`` / ``None`` to exercise the skip path.
+    ``replay_mode`` defaults to ``exec_only`` (one of the two modes where CCL
+    binds); pass ``"lifecycle"`` / ``"trajectory"`` / ``None`` to exercise the
+    skip path, or ``"exec_ephemeral"`` for the create_one bind path.
     """
     monkeypatch.setattr("env_provider.e2b.manager.Sandbox", _FakeSandboxCls())
     wf = ReplayConfig(replay_mode=replay_mode) if replay_mode is not None else None
@@ -257,24 +260,53 @@ def test_create_all_skips_ccl_when_disabled(monkeypatch):
     assert calls == []
 
 
-def test_create_one_never_binds(monkeypatch):
-    # create_one is trajectory-only (pause/resume -> pid unstable); CCL is
-    # exec_only-only, so create_one never binds even with ccl_bind + exec_only.
-    provider = _make_provider(monkeypatch, ccl_bind=True)
+def test_create_one_binds_in_exec_ephemeral(monkeypatch):
+    # exec_ephemeral: create_one IS the create path and the firecracker pid is
+    # stable for the round (no pause/resume) -> bind right after a successful
+    # create, reusing create_all's _bind_ccl (best-effort).
+    provider = _make_provider(monkeypatch, ccl_bind=True, replay_mode="exec_ephemeral")
     calls = _record_binds(monkeypatch)
     provider.create_one(1, template="swb-a")
+    assert len(calls) == 1
+    # e2b sandbox_id string + 0-based CCL index (sandbox_id 1 -> index 0).
+    assert calls[0] == ("sbx-1", 0)
+
+
+def test_create_one_skips_in_trajectory(monkeypatch, caplog):
+    # trajectory respawns the firecracker per resume -> pid unstable -> skip.
+    provider = _make_provider(monkeypatch, ccl_bind=True, replay_mode="trajectory")
+    calls = _record_binds(monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        provider.create_one(1, template="swb-a")
     assert calls == []
+    assert any("exec_only" in r.message for r in caplog.records)
+
+
+def test_create_one_bind_failure_is_best_effort(monkeypatch):
+    # A bind that raises must not unwind a successful create (best-effort):
+    # _bind_ccl wraps it in try/except -> WARNING, the sandbox stays usable.
+    provider = _make_provider(monkeypatch, ccl_bind=True, replay_mode="exec_ephemeral")
+
+    def _raise(sandbox_id, sandbox_index, config):  # noqa: ARG001
+        raise RuntimeError("bind blew up")
+
+    monkeypatch.setattr("env_provider.aenv.bind_ccl_affinity", _raise)
+    inst = provider.create_one(1, template="swb-a")  # must NOT raise
+    assert inst.is_alive is True
 
 
 def test_resume_never_binds(monkeypatch):
-    provider = _make_provider(monkeypatch, ccl_bind=True)
+    # lifecycle: create_one skips the bind (firecracker respawns per resume),
+    # so the create path here leaves calls empty before we even call resume.
+    provider = _make_provider(monkeypatch, ccl_bind=True, replay_mode="lifecycle")
     calls = _record_binds(monkeypatch)
-    inst = provider.create_one(1)  # create_one never binds
+    inst = provider.create_one(1)
     assert calls == []
 
     # resume swaps the handle (Sandbox.connect) and does NOT re-bind -- a
     # resumed firecracker respawned under a new pid; re-resolving would block
-    # the stress path. CCL is exec_only-only.
+    # the stress path. CCL binds at create time only (exec_only's create_all /
+    # exec_ephemeral's create_one), never on resume.
     import env_provider.aenv as aenv_mod
 
     monkeypatch.setattr(aenv_mod.Sandbox, "connect", staticmethod(lambda sid: _FakeSbx(sid)))

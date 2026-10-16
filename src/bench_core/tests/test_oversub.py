@@ -215,6 +215,55 @@ def test_compute_valid_failure_tolerance_allows_wrap_noise():
     assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is False
 
 
+def test_build_trial_config_multiplier_switches_to_fixed():
+    """multiplier (M) set -> trial.yaml carries replay.multiplier and flips to
+    fixed (stop-when-done). total_count/round_size still scale for config-object
+    compatibility even though fixed+M ignores them."""
+    base = _base_yaml()
+    cfg = build_trial_config(
+        base, mode="exec_ephemeral", ratio=2, n=384, test_duration=600, trial_dir="out", prefix="rb", multiplier=5
+    )
+    assert cfg["replay"]["multiplier"] == 5
+    assert cfg["test"]["benchmark_mode"] == "fixed"
+    # Still scaled (compat), unused under fixed+M.
+    assert cfg["sandbox"]["total_count"] == 768  # 2 * 384
+    assert cfg["test"]["round_size"] == 768
+
+
+def test_build_trial_config_no_multiplier_keeps_benchmark_mode():
+    """No multiplier -> no replay.multiplier key and benchmark_mode passes through
+    from the base (round_robin here), so the trial runs the base's mode unchanged."""
+    base = _base_yaml()
+    cfg = build_trial_config(base, mode="lifecycle", ratio=2, n=384, test_duration=600, trial_dir="out", prefix="rb")
+    assert "multiplier" not in cfg["replay"]
+    assert cfg["test"]["benchmark_mode"] == "round_robin"  # base value preserved
+
+
+def test_compute_valid_multiplier_aware_happy():
+    """M=5, ratio=2, N=384 -> expected trajectory completions = 5*2*384 = 3840.
+    run_summary emits throughput.total = SANDBOX count (len(sandbox_states) =
+    ratio*N = 768) and throughput.succeeded = TRAJECTORY-completion count
+    (sum(trajectory_completions) = M*ratio*N = 3840); failed = total-succeeded
+    = -3072 (negative -- the 1:1 sandbox==trajectory assumption breaks for M>1).
+    The floor must read succeeded (3840 >= 0.9*3840), NOT total (768 < 0.9*3840
+    would always fail for M>=2 -- the dimensional bug this guards). exec_ephemeral
+    has no admission controller (peak_active=None), so the over-admission clause
+    is skipped, and the failure_rate clause is skipped for M>1 (negative failed)."""
+    s = _summary(total=768, succeeded=3840, failed=-3072, mode="exec_ephemeral", peak_active=None)
+    assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0, multiplier=5, ratio=2) is True
+
+
+def test_compute_valid_multiplier_under_run():
+    """Same M/ratio/N (expected = 3840 completions) but only 2000 trajectories
+    completed: all 768 sandboxes ran (total=768) yet exited early before finishing
+    their M, so succeeded=2000 < 0.9*3840=3456 -> under-run -> invalid. Reading
+    total (768) against the floor would pass (768 >= 0 is moot), so this only
+    fails correctly when the floor reads succeeded. Mirrors reference B's
+    ``total == target_count`` check."""
+    s = _summary(total=768, succeeded=2000, failed=-1232, mode="exec_ephemeral", peak_active=None)
+    assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0, multiplier=5, ratio=2) is False
+
+
 from bench_core.oversub import aggregate_ratio_summary, trial_row, write_outputs
 
 

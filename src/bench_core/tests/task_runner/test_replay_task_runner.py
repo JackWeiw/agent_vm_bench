@@ -246,3 +246,38 @@ def test_run_slice_p2_override_flows_timing_through_hooks():
     assert sr.resume_sec >= _LifecycleRunner.RESUME_DUR * 0.5  # tolerant lower bound
     assert sr.pause_sec >= _LifecycleRunner.PAUSE_DUR * 0.5
     assert sr.slice_total_sec >= sr.resume_sec + sr.pause_sec
+
+
+def test_fixed_exec_ephemeral_multiplier_runs_exactly_m():
+    """stop-when-done (replay.multiplier): each slot runs exactly M
+    trajectories then exits on its own -- no stop_event, no duration ceiling."""
+    from pathlib import Path
+
+    from bench_core.payload.replay_payload import reset_pool_cache
+    from bench_core.task_runner.replay import ReplayTaskRunner
+
+    reset_pool_cache()
+    config = KernelConfig(
+        workflow_type="replay",
+        workflow_config=ReplayConfig(
+            replay_trajectory_dir=str(Path(__file__).parent.parent / "fixtures" / "replay"),
+            replay_trajectory_glob="no_terminal.json",  # one trajectory, 2 steps
+            replay_delay_scale=0.0,
+            replay_mode="exec_ephemeral",
+            replay_multiplier=3,
+        ),
+    )
+    state = _make_state()
+    # No stop thread -- the runner must self-terminate when run reaches M.
+    runner = ReplayTaskRunner(
+        RunContext(state=state, config=config, stop_event=threading.Event(), provider=FakeProvider(count=1))
+    )
+
+    t0 = time.monotonic()
+    runner.run()
+    wall = time.monotonic() - t0
+
+    # Exactly M trajectories completed (3 x the single 2-step trajectory).
+    assert state.replay_metrics.trajectory_completions == 3
+    # Stop-when-done: returns promptly, well under any fixed duration ceiling.
+    assert wall < 5.0

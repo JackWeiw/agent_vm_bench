@@ -131,6 +131,7 @@ _TRUE_DEFAULTS: dict[str, object] = {
     "stop_on_failure": False,
     "dry_run": False,
     "no_vm_monitor": False,
+    "multiplier": None,
     "bench_core_bin": ["bench-core"],
 }
 
@@ -161,6 +162,7 @@ def build_trial_config(
     test_duration: int,
     trial_dir: str,
     prefix: str,
+    multiplier: int | None = None,
 ) -> dict:
     """Deep-copy the base YAML and merge the per-trial oversub overrides.
 
@@ -202,6 +204,14 @@ def build_trial_config(
     cfg.setdefault("report", {})
     cfg["report"]["output_dir"] = trial_dir
     cfg["report"]["filename_prefix"] = prefix
+    # When multiplier (M) is set, switch this trial to fixed+exec_ephemeral+M:
+    # each of the ratio*N sandboxes runs exactly M trajectories then exits
+    # (stop-when-done). total_count/round_size/trajectory_limit are retained
+    # for config-object compatibility but unused under fixed+M -- the per-slot
+    # bound is replay.multiplier; round_count/round_size are round_robin knobs.
+    if multiplier is not None:
+        cfg["replay"]["multiplier"] = multiplier
+        cfg["test"]["benchmark_mode"] = "fixed"
     return cfg
 
 
@@ -216,6 +226,8 @@ def compute_valid(
     *,
     n: int,
     failure_tolerance: float,
+    multiplier: int | None = None,
+    ratio: int | None = None,
 ) -> bool:
     """Run-to-completion validity (one pass of the k*N fleet).
 
@@ -224,31 +236,55 @@ def compute_valid(
     fleet without over-admitting:
 
       * ``return_code == 0`` (the kernel subprocess succeeded),
-      * ``throughput.total >= 0.9 * N`` (it ran most of the N running slots -- a
-        crash/early-exit that only reached a few sandboxes fails here; the
-        kernel's own ``test.duration`` ceiling caps a stalled run, which then
-        also fails this gate). Mode-agnostic: lifecycle ``total`` ~= k*N and
-        exec_only ``total`` ~= N, both >= 0.9*N on a healthy run. Per-trajectory
-        completion is inspectable in trajectory-detail.csv (``total`` vs
-        ``target_count`` in trial-summary.csv) -- ``valid`` is the gross-failure
-        / over-admission gate, not a "every trajectory succeeded" bar,
+      * ``throughput.total >= 0.9 * expected``. ``expected = N`` by default
+        (mode-agnostic: lifecycle ``total`` ~= k*N and exec_only ``total`` ~=
+        N, both >= 0.9*N on a healthy run). When ``multiplier`` (M) is set
+        (fixed+exec_ephemeral+M), each of the k*N sandboxes runs M trajectories,
+        so ``expected = M * k * N`` and the floor reads ``throughput.succeeded``
+        (the trajectory-completion count = ``sum(trajectory_completions)`` =
+        M*k*N on a healthy run) -- NOT ``throughput.total`` (a sandbox count =
+        k*N, which would always fail against M*k*N for M>=2). This catches a
+        silent under-run where slots crashed / exited early before finishing
+        their M (mirrors reference B's ``total == target_count`` check).
+        Per-trajectory completion is inspectable in trajectory-detail.csv --
+        ``valid`` is the gross-failure / over-admission gate, not a "every
+        trajectory succeeded" bar,
       * ``admission.peak_active <= N`` (never ran more than N concurrent --
         dropped for exec_only, which has no admission controller),
-      * ``failure_rate <= failure_tolerance`` (configurable wrap-noise allowance).
+      * ``failure_rate <= failure_tolerance`` (configurable wrap-noise allowance;
+        1:1 modes only -- skipped when ``multiplier`` is set: run_summary's
+        ``failed = total - succeeded`` is a sandbox-vs-trajectory count and goes
+        negative for M>1, so the succeeded-floor above is the sole gate there).
     """
     if return_code != 0:
         return False
     tp = summary.get("throughput") or {}
-    total = tp.get("total", 0)
-    if total < 0.9 * n:
+    # M-aware floor: throughput.total is a SANDBOX count (run_summary emits
+    # len(sandbox_states) = ratio*N), but with multiplier each sandbox runs M
+    # trajectories, so the trajectory-completion count is throughput.succeeded
+    # (= sum(trajectory_completions) = M*ratio*N on a healthy run). Comparing
+    # the sandbox count against M*ratio*N always fails for M>=2 -- read
+    # succeeded when M is set so the floor is dimensionally consistent.
+    if multiplier:
+        actual = tp.get("succeeded", 0)
+        expected = multiplier * (ratio or 1) * n
+    else:
+        actual = tp.get("total", 0)
+        expected = n
+    if actual < 0.9 * expected:
         return False
     adm = summary.get("admission")
     if adm and adm.get("peak_active") is not None and adm["peak_active"] > n:
         return False
-    failed = tp.get("failed", 0)
-    failure_rate = failed / total if total else 1.0
-    if failure_rate > failure_tolerance:
-        return False
+    if not multiplier:
+        # failure_rate is meaningful only in the 1:1 (sandbox==trajectory) case;
+        # for M>1 run_summary's failed = total - succeeded is negative, so the
+        # succeeded-floor above is the sole gate (step failures already reduce
+        # completions).
+        failed = tp.get("failed", 0)
+        failure_rate = failed / actual if actual else 1.0
+        if failure_rate > failure_tolerance:
+            return False
     return True
 
 
@@ -589,6 +625,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--test-duration", type=int, default=None, help="sustained window per trial (default = base test.duration)"
     )
+    p.add_argument(
+        "--multiplier",
+        type=int,
+        default=None,
+        help="per-sandbox trajectory count M for exec_ephemeral: each sandbox runs M "
+        "trajectories then stops (stop-when-done); switches the trial to fixed. "
+        "Default off (the trial uses the base benchmark_mode / total_count).",
+    )
     p.add_argument("--failure-tolerance", type=float, default=None, help="max failure_rate for valid (default 0.0)")
     p.add_argument("--cooldown-sec", type=int, default=None, help="settle time between trials (default 30)")
     p.add_argument(
@@ -766,6 +810,9 @@ def _run_trial(
     trial_dir = output_root / mode / f"ratio-{ratio:02d}" / f"repeat-{repeat:02d}"
     trial_dir.mkdir(parents=True, exist_ok=True)
     test_duration = args.test_duration or (base_yaml.get("test") or {}).get("duration", 600)
+    # multiplier (M) applies only to exec_ephemeral (each sandbox runs M
+    # trajectories, stop-when-done); a no-op for lifecycle/trajectory.
+    m = args.multiplier if mode == "exec_ephemeral" else None
 
     summary_glob = f"{prefix}_*/{prefix}_run_summary.json"
 
@@ -787,7 +834,7 @@ def _run_trial(
         if hits:
             try:
                 s = parse_run_summary(hits[-1])
-                if compute_valid(s, 0, n=n, failure_tolerance=args.failure_tolerance):
+                if compute_valid(s, 0, n=n, failure_tolerance=args.failure_tolerance, multiplier=m, ratio=ratio):
                     logger.info(
                         "[%s/%s] %s ratio=%d repeat=%d: reused completed-valid trial -- skipped",
                         index,
@@ -830,6 +877,7 @@ def _run_trial(
         test_duration=test_duration,
         trial_dir=str(trial_dir),
         prefix=prefix,
+        multiplier=m,
     )
     trial_yaml = trial_dir / "trial.yaml"
     trial_yaml.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
@@ -870,7 +918,7 @@ def _run_trial(
         )
     else:
         summary = parse_run_summary(hits[-1])
-        valid = compute_valid(summary, rc, n=n, failure_tolerance=args.failure_tolerance)
+        valid = compute_valid(summary, rc, n=n, failure_tolerance=args.failure_tolerance, multiplier=m, ratio=ratio)
         row = trial_row(
             mode=mode,
             ratio=ratio,
@@ -958,6 +1006,7 @@ def main(argv: list[str] | None = None) -> int:
     args.modes = modes
     args.repeats = repeats
     args.test_duration = test_duration
+    args.multiplier = resolve("multiplier")
     args.failure_tolerance = float(resolve("failure_tolerance"))
     args.cooldown_sec = int(resolve("cooldown_sec"))
     args.cleanup_between_trials = resolve("cleanup_between_trials")
@@ -984,6 +1033,7 @@ def main(argv: list[str] | None = None) -> int:
         "modes": modes,
         "repeats": repeats,
         "test_duration": test_duration,
+        "multiplier": args.multiplier,
         "failure_tolerance": args.failure_tolerance,
         "cooldown_sec": args.cooldown_sec,
         "trial_timeout_sec": args.trial_timeout_sec,

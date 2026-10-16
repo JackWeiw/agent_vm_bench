@@ -6,10 +6,13 @@ import-compat (``from bench_core.task_runner.replay import ReplayConfig``).
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from bench_core.config import KernelConfig
 from bench_core.workflow_registry import WorkflowConfigBase, WorkflowConfigError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -34,6 +37,13 @@ class ReplayConfig(WorkflowConfigBase):
     # a global first-N could starve a template whose trajectories sort after
     # another's.
     replay_trajectory_limit: int | None = None
+    # Per-sandbox trajectory count (M) for fixed exec_ephemeral: each of the N
+    # running slots runs exactly M trajectories (total = M * concurrency), then
+    # the run stops -- continuous (no barrier) + stop-when-done. Corresponds to
+    # reference B's ``--total-multiplier`` (renamed for brevity; reference B is a
+    # separate script). Ignored outside fixed+exec_ephemeral (the bound lives in
+    # the fixed runner's exec_ephemeral branch; round_robin uses round_count).
+    replay_multiplier: int | None = None
     replay_template_manifest: str | None = None
     replay_workdir: str = "/"
     replay_env: dict[str, str] = field(default_factory=dict)
@@ -69,6 +79,7 @@ class ReplayConfig(WorkflowConfigBase):
             replay_trajectory_dir=r.get("trajectory_dir", "trajectories"),
             replay_trajectory_glob=r.get("trajectory_glob", "*.replay.json"),
             replay_trajectory_limit=r.get("trajectory_limit"),
+            replay_multiplier=r.get("multiplier"),
             replay_template_manifest=r.get("template_manifest"),
             replay_workdir=r.get("workdir", "/"),
             replay_env=r.get("env", {}),
@@ -99,6 +110,22 @@ class ReplayConfig(WorkflowConfigBase):
                 )
         if self.replay_trajectory_limit is not None and self.replay_trajectory_limit < 1:
             raise WorkflowConfigError(f"replay_trajectory_limit must be >= 1, got {self.replay_trajectory_limit}")
+        if self.replay_multiplier is not None and self.replay_multiplier < 1:
+            raise WorkflowConfigError(f"replay_multiplier must be >= 1, got {self.replay_multiplier}")
+        # multiplier is the per-sandbox trajectory count for fixed+exec_ephemeral;
+        # it's a no-op elsewhere (the bound lives in the fixed runner's
+        # exec_ephemeral branch; round_robin uses round_count). Warn so a stray
+        # value under another mode surfaces instead of being silently ignored.
+        if self.replay_multiplier is not None and (
+            self.replay_mode != "exec_ephemeral" or kernel_config.benchmark_mode != "fixed"
+        ):
+            logger.warning(
+                "replay.multiplier=%d set but mode=%r / benchmark_mode=%r -- consulted only "
+                "in fixed+exec_ephemeral; ignoring.",
+                self.replay_multiplier,
+                self.replay_mode,
+                kernel_config.benchmark_mode,
+            )
         if self.replay_control_plane_qps is not None and self.replay_control_plane_qps <= 0:
             raise WorkflowConfigError(f"replay_control_plane_qps must be > 0, got {self.replay_control_plane_qps}")
         if self.replay_control_plane_inflight_cap is not None and self.replay_control_plane_inflight_cap < 1:

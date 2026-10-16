@@ -33,6 +33,13 @@ from env_provider import EnvironmentProvider
 
 logger = logging.getLogger(__name__)
 
+# Poll cadence for TaskManager.wait_for_completion (fixed+exec_ephemeral
+# stop-when-done): short enough to wake promptly when all slots finish their M
+# trajectories, long enough to avoid a busy spin. One shared deadline + is_alive
+# poll -- NOT wait_all's sequential per-runner join (that would cost up to
+# N*timeout; see wait_for_completion).
+_COMPLETION_POLL_SEC = 0.5
+
 
 class TaskManager:
     """Task manager -- manages all sandbox task execution threads with batch control."""
@@ -325,3 +332,24 @@ class TaskManager:
                 runner.join(timeout=timeout)
             return
         raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
+
+    def wait_for_completion(self, timeout: float) -> bool:
+        """Block until all task runners finish OR the shared deadline (timeout).
+
+        For fixed+exec_ephemeral stop-when-done: each slot runs M trajectories
+        then exits, so this polls ``is_alive`` against ONE shared deadline --
+        NOT ``wait_all``'s sequential per-runner join (which would cost up to
+        N*timeout). Honors ``stop_event`` (Ctrl+C / SIGTERM unwinds at once).
+        Returns True if every runner ended before the deadline, False if the
+        deadline (the test_duration safety ceiling) fired with runners still
+        alive -- the caller then runs the straggler-reaper (stop_event.set() +
+        wait_all(5)).
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.stop_event.is_set():
+                return False
+            if not self.runners or not any(r.is_alive() for r in self.runners):
+                return True
+            time.sleep(_COMPLETION_POLL_SEC)
+        return not any(r.is_alive() for r in self.runners)

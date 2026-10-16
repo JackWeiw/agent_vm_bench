@@ -561,11 +561,52 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 scanner=snapshot_scanner,
             )
             task_manager.start_all()
-            logger.info(f"\n[Phase 5] Running for {config.test_duration} seconds...")
-            try:
-                time.sleep(config.test_duration)
-            except KeyboardInterrupt:
-                logger.info("\nUser interrupt, stopping...")
+            if config.stop_when_done:
+                # Fixed+exec_ephemeral: each running slot runs M trajectories
+                # (replay.multiplier) then exits; block until all done or the
+                # test_duration safety ceiling -- not a plain timed sleep.
+                wf = config.workflow_config
+                m = getattr(wf, "replay_multiplier", None)
+                logger.info(
+                    f"\n[Phase 5] stop-when-done active: each slot runs multiplier={m} "
+                    f"trajectories (safety ceiling {config.test_duration}s)..."
+                )
+                try:
+                    finished = task_manager.wait_for_completion(config.test_duration)
+                except KeyboardInterrupt:
+                    logger.info("\nUser interrupt, stopping...")
+                    finished = False
+                if not finished:
+                    logger.warning(
+                        "stop-when-done hit the %ss safety ceiling before all slots "
+                        "finished their trajectories; reaping stragglers.",
+                        config.test_duration,
+                    )
+                # Final-total validation: each slot should have completed exactly M
+                # trajectories. Without this an early exit / crash under-runs
+                # silently (mirrors reference B's total==target_count check).
+                if m is not None:
+                    completed_total = 0
+                    for s in task_manager.sandbox_states.values():
+                        rm = getattr(s, "replay_metrics", None)
+                        if rm is not None:
+                            completed_total += rm.trajectory_completions
+                    expected_total = m * len(task_manager.runners)
+                    if completed_total < expected_total:
+                        logger.warning(
+                            "stop-when-done under-run: completed %d/%d trajectories "
+                            "(multiplier=%d x %d slots); some slots exited early.",
+                            completed_total,
+                            expected_total,
+                            m,
+                            len(task_manager.runners),
+                        )
+            else:
+                logger.info(f"\n[Phase 5] Running for {config.test_duration} seconds...")
+                try:
+                    time.sleep(config.test_duration)
+                except KeyboardInterrupt:
+                    logger.info("\nUser interrupt, stopping...")
 
         # 7. Stop all components.
         logger.info("\n[Phase 6] Stopping...")

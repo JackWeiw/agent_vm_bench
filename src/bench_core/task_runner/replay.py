@@ -1100,6 +1100,13 @@ class ReplayTaskRunner(ReplayBaseRunner):
 
         logger.info(f"[Sandbox{self.state.index}] Replay task runner started ({len(pool)} trajectories)")
 
+        # Last trajectory this sandbox touched. Each branch assigns `traj` as the
+        # first statement of its loop body (before the try), so this holds the
+        # trajectory running when the loop last iterated (or when ShutdownInterrupted
+        # broke out) -- surfaced in the "ended" log for live debug. None if the loop
+        # never entered (stop_event preset at dispatch / sandbox not alive).
+        traj: Trajectory | None = None
+
         if self.cfg.replay_mode == "trajectory":
             # Shared trajectory queue: cycle the pool to total_count trajectories.
             # _run_trajectory owns per-trajectory lifecycle setup (create/kill);
@@ -1137,7 +1144,11 @@ class ReplayTaskRunner(ReplayBaseRunner):
                 )
                 self.state.replay_metrics.record_orphan_skip()
                 return
-            target = self.config.total_count
+            # M (replay.multiplier) sets a per-sandbox trajectory count: each of
+            # the N running slots runs exactly M trajectories, then this loop
+            # exits (the bench spine's stop-when-done waits on all slots). Falls
+            # back to total_count when M is unset (backward compat).
+            target = self.cfg.replay_multiplier or self.config.total_count
             run = 0
             cursor = within_template_rank(pool, self.state.index) % len(my_pool)
             while not self.stop_event.is_set() and self.state.is_alive and run < target:
@@ -1173,7 +1184,8 @@ class ReplayTaskRunner(ReplayBaseRunner):
                     break
                 cursor = (cursor + 1) % len(my_pool)
 
-        logger.info(f"[Sandbox{self.state.index}] Replay task runner ended")
+        last_traj = traj.instance_id if traj is not None else "none"
+        logger.info(f"[Sandbox{self.state.index}] Replay task runner ended (last trajectory: {last_traj})")
 
     def _replay_trajectory(self, traj: Trajectory) -> None:
         """Fixed-mode (non-trajectory) per-step loop. Trajectory mode uses _run_trajectory."""

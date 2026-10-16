@@ -8,8 +8,9 @@ handle table (create/detect/cleanup/exec/translate all inherited). It adds
 satisfying :class:`env_provider.LifecycleCapable`.
 
 Optionally pins each sandbox's warm-pooled firecracker to a dedicated CCL vCPU
-set (``aenv.ccl_bind``) in ``exec_only`` replay mode, so concurrent VMs don't
-contend for the same physical cores; see :mod:`env_provider.aenv._ccl`.
+set (``aenv.ccl_bind``) in ``exec_only`` / ``exec_ephemeral`` replay mode, so
+concurrent VMs don't contend for the same physical cores; see
+:mod:`env_provider.aenv._ccl`.
 
 The ``e2b`` provider stays exec-only (cloud E2B's ``beta_pause`` is uncertain;
 AENV is the snapshot backend). Adding lifecycle to cloud e2b later is a
@@ -110,19 +111,20 @@ class AenvProvider(E2BProvider):
     # scans /proc + MMDS to map sandbox_id -> firecracker pid, then
     # os.sched_setaffinity-pins it to a dedicated CCL vCPU set so concurrent VMs
     # don't contend for the same physical cores. Opt-in via ``aenv.ccl_bind``;
-    # viable only in exec_only (lifecycle/trajectory respawn the firecracker on
-    # each resume -> pid unstable); best-effort (Linux + root on the AENV host);
+    # viable in exec_only / exec_ephemeral (lifecycle/trajectory respawn the
+    # firecracker on each resume -> pid unstable); best-effort (Linux + root on
+    # the AENV host);
     # never unwinds a successful create. See :mod:`env_provider.aenv._ccl`.
     def create_all(self, *, templates: dict[int, str | None] | None = None) -> dict[int, SandboxInstance]:
-        """Create all sandboxes, then pin each to its CCL (exec_only, best-effort).
+        """Create all sandboxes, then pin each to its CCL (exec_only / exec_ephemeral, best-effort).
 
         Binding runs as a post-create pass over the manager's states (the base
         create already joined its concurrent workers), so the first bind primes
         the pid cache for the rest. Faithful to the reference, which binds
         immediately after a successful create; for best-effort pinning of a
         long-lived firecracker the timing is immaterial. Gated by
-        :meth:`_ccl_active` (exec_only only -- lifecycle/trajectory respawn the
-        firecracker per resume, so the pid is unstable).
+        :meth:`_ccl_active` (exec_only / exec_ephemeral only -- lifecycle/trajectory
+        respawn the firecracker per resume, so the pid is unstable).
         """
         states = self.manager.create_all(templates=templates)
         if self._ccl_active():
@@ -133,24 +135,27 @@ class AenvProvider(E2BProvider):
     def _ccl_active(self) -> bool:
         """True iff CCL binding should run for this run.
 
-        Binding is viable only in ``exec_only``: the firecracker pid is stable
-        for the whole run (no pause/resume). In lifecycle/trajectory each
-        ``resume`` respawns the firecracker under a new pid (AENV pause kills
-        the process; resume takes a fresh one from the warm pool), so the pid
-        is unstable and re-binding per resume would block the stress path
-        (post-resume commands depend on the binding). Read the replay mode off
-        the kernel's workflow view; a missing/non-replay config skips (backward
-        compat: ``ccl_bind`` is a no-op outside exec_only).
+        Binding is viable in ``exec_only`` / ``exec_ephemeral``: the firecracker
+        pid is stable for the bind window (exec_only: the whole run, no
+        pause/resume; exec_ephemeral: per round -- create_one -> bind -> run ->
+        kill_one, no resume). In lifecycle/trajectory each ``resume`` respawns
+        the firecracker under a new pid (AENV pause kills the process; resume
+        takes a fresh one from the warm pool), so the pid is unstable and
+        re-binding per resume would block the stress path (post-resume commands
+        depend on the binding). Read the replay mode off the kernel's workflow
+        view; a missing/non-replay config skips (backward compat: ``ccl_bind``
+        is a no-op outside exec_only / exec_ephemeral).
         """
         if not getattr(self._config, "ccl_bind", False):
             return False
         wf = getattr(self._kernel_config, "workflow_config", None)
         mode = getattr(wf, "replay_mode", None)
-        if mode != "exec_only":
+        if mode not in ("exec_only", "exec_ephemeral"):
             logger.warning(
                 "ccl_bind is set but replay mode is %r; CCL binding applies only "
-                "to exec_only (lifecycle/trajectory respawn the firecracker on each "
-                "resume, so the pid is unstable). Skipping CCL binding for this run.",
+                "to exec_only / exec_ephemeral (lifecycle/trajectory respawn the "
+                "firecracker on each resume, so the pid is unstable). Skipping CCL "
+                "binding for this run.",
                 mode,
             )
             return False
@@ -196,8 +201,9 @@ class AenvProvider(E2BProvider):
         firecracker has respawned under a new pid (AENV pause kills the process;
         resume takes a fresh one from the warm pool), so the cached pid is
         stale and re-resolving it (a /proc + MMDS scan) would block the stress
-        path whose post-resume commands depend on the binding. CCL binding is
-        exec_only-only (see :meth:`_ccl_active`), where the pid is stable.
+        path whose post-resume commands depend on the binding. CCL binding runs
+        only at create time (exec_only's ``create_all`` pass; exec_ephemeral's
+        ``create_one``), never on resume -- see :meth:`_ccl_active`.
         """
         state = self.manager.sandbox_states.get(inst.index)
         if state is None:
@@ -248,6 +254,14 @@ class AenvProvider(E2BProvider):
                 label,
             )
             mgr._apply_ready(state, ready, create_elapsed=result["create_elapsed"])
+            # exec_ephemeral reuses create_all's per-create CCL bind: each
+            # create_one yields a fresh e2b sandbox_id (pid-resolvable via MMDS)
+            # and the firecracker is stable for the round (no pause/resume), so
+            # binding right after a successful create is correct. Best-effort
+            # (never unwinds the create); a no-op when _ccl_active is False
+            # (non-exec modes, or ccl_bind unset).
+            if self._ccl_active():
+                self._bind_ccl(state)
         else:
             state.creation_metrics.status = BackendSandboxStatus.FAILED
             state.creation_metrics.error_msg = result["error"]

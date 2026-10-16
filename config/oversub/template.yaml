@@ -13,6 +13,10 @@ provider: aenv                            # {aenv, e2b, docker, fake}
 
 ratios: [1, 2, 3]                         # k values (list) or "1,2,3" (string); total_count = k * N
 modes: [lifecycle, exec_only]             # lifecycle / exec_only / trajectory (or a subset)
+# multiplier: 5                           # per-sandbox trajectory count M (exec_ephemeral ONLY;
+                                          # ignored for lifecycle/exec_only). Each of the k*N
+                                          # sandboxes runs exactly M trajectories (fixed +
+                                          # stop-when-done); total = M * k * N.
 repeats: 1                               # repeats per (mode, ratio)
 
 test_duration: 600                        # hard ceiling per trial (sec); ends when the fleet drains
