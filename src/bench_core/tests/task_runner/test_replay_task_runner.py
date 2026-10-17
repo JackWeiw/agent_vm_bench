@@ -250,7 +250,16 @@ def test_run_slice_p2_override_flows_timing_through_hooks():
 
 def test_fixed_exec_ephemeral_multiplier_runs_exactly_m():
     """stop-when-done (replay.multiplier): each slot runs exactly M
-    trajectories then exits on its own -- no stop_event, no duration ceiling."""
+    trajectories then exits on its own -- no stop_event, no duration ceiling.
+
+    Also the integration-level guard for the 2026-10-16 N384 multiplier
+    regression: FakeProvider.kill_one faithfully flips ``inst.is_alive`` (the
+    runner's slot, matching aenv ``__init__.py:281``), so without the
+    ``_slot_continuable`` guard the ephemeral M-loop would exit after
+    trajectory 1 (kill_one's is_alive flip) -> completions == 1, not M. The
+    contract layer (test_kill_one_marks_passed_instance_dead_distinct_object)
+    locks the faithful flip; this test locks the runner-side continuation gate.
+    """
     from pathlib import Path
 
     from bench_core.payload.replay_payload import reset_pool_cache

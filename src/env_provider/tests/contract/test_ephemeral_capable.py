@@ -31,6 +31,24 @@ def test_kill_one_clears_handle_and_marks_dead():
     assert inst.is_alive is False
 
 
+def test_kill_one_marks_passed_instance_dead_distinct_object():
+    """The replay runner passes its OWN slot state (``self.state``) to
+    ``kill_one`` -- a distinct object from the SandboxInstance ``create_one``
+    stored/returned (the runner discards the return value). A faithful
+    EphemeralCapable provider must flip THAT instance's ``is_alive`` (aenv does
+    at ``aenv/__init__.py:281``); the 2026-10-16 N384 multiplier regression
+    shipped because an earlier loop guard gated between-trajectory continuation
+    on ``is_alive`` and FakeProvider did NOT flip the runner's slot, so the bug
+    passed tests but failed on real aenv. Lock the contract at the fake layer.
+    """
+    provider = FakeProvider(count=0)
+    provider.create_one(5)  # populate the stored handle at index 5
+    # The runner's slot: a DISTINCT object from the stored handle.
+    runner_slot = SandboxInstance(id="runner-slot-5", index=5, ready=True, is_alive=True)
+    provider.kill_one(runner_slot)
+    assert runner_slot.is_alive is False
+
+
 def test_kill_one_unknown_index_is_noop_safe():
     provider = FakeProvider(count=0)
     # A shell whose create never ran must not raise on kill (runner finally-path).

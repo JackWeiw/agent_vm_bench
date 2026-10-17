@@ -798,6 +798,14 @@ class ReplayBaseRunner(TaskRunner):
         self._prev_pause_end_monotonic = None  # first step: ready_at=None (G2)
         if is_ephemeral:
             self._wait_for_launch_turn()
+            # Each ephemeral trajectory is an independent create_one/kill_one
+            # cycle on a FRESH sandbox. kill_one flips is_alive=False at the end
+            # of every trajectory (correct: the per-trajectory sandbox is dead,
+            # and stats_collector / check_alive rely on that). Re-establish slot
+            # liveness here so the step-loop below (guarded by is_alive) runs the
+            # NEXT trajectory's steps. The M-loop continuation is gated by
+            # _slot_continuable() (persistent create-failure), NOT is_alive.
+            self.state.is_alive = True
         # The outer try/finally owns the trajectory-level lease release so a
         # BaseException (ShutdownInterrupted from the create/step/cleanup QPS
         # slots, or KeyboardInterrupt) still releases the lease -- the lease is
@@ -1025,6 +1033,25 @@ class ReplayBaseRunner(TaskRunner):
             "action": _compact_action(step.action),
         }
 
+    # Consecutive trajectory create-failures after which an ephemeral slot gives
+    # up -- the ONLY legit "stop this slot early" signal in ephemeral modes.
+    # ``is_alive`` is NOT that signal there: ``kill_one`` flips it False at the
+    # end of every trajectory (the per-trajectory sandbox is genuinely dead).
+    # Gating the per-sandbox M-loop on is_alive would exit after trajectory 1,
+    # defeating ``replay.multiplier`` (1 trajectory ran, not M).
+    # ``consecutive_failures`` is monotonic (never reset), so >= threshold is a
+    # stable latch -- no separate flag needed.
+    _TRAJECTORY_GIVEUP_THRESHOLD: int = 3
+
+    def _slot_continuable(self) -> bool:
+        """Ephemeral slot continuation gate (checked between trajectories).
+
+        True unless the slot hit persistent create-failure. ``stop_event`` and
+        ``run < target`` are checked in the loop condition itself; this only
+        answers "should this slot run another trajectory after a kill_one".
+        """
+        return self.state.consecutive_failures < self._TRAJECTORY_GIVEUP_THRESHOLD
+
     def _record_trajectory_failure(self, traj: Trajectory, *, create_sec: float, kill_sec: float) -> None:
         """Record a failed trajectory (create failed before any step)."""
         if self.series is not None:
@@ -1040,7 +1067,7 @@ class ReplayBaseRunner(TaskRunner):
             )
         self.state.replay_metrics.last_error = "trajectory create failed"
         self.state.consecutive_failures += 1
-        if self.state.consecutive_failures >= 3:
+        if self.state.consecutive_failures >= self._TRAJECTORY_GIVEUP_THRESHOLD:
             self.state.is_alive = False
 
 
@@ -1117,7 +1144,7 @@ class ReplayTaskRunner(ReplayBaseRunner):
             target = self.config.total_count
             run = 0
             cursor = self.state.index % len(pool)
-            while not self.stop_event.is_set() and self.state.is_alive and run < target:
+            while not self.stop_event.is_set() and self._slot_continuable() and run < target:
                 traj = pool[cursor]
                 try:
                     self._run_trajectory(traj)
@@ -1151,7 +1178,7 @@ class ReplayTaskRunner(ReplayBaseRunner):
             target = self.cfg.replay_multiplier or self.config.total_count
             run = 0
             cursor = within_template_rank(pool, self.state.index) % len(my_pool)
-            while not self.stop_event.is_set() and self.state.is_alive and run < target:
+            while not self.stop_event.is_set() and self._slot_continuable() and run < target:
                 traj = my_pool[cursor]
                 try:
                     self._run_trajectory(traj)

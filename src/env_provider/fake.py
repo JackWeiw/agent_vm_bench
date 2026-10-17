@@ -89,11 +89,26 @@ class FakeProvider(EnvironmentProvider):
         return inst
 
     def kill_one(self, inst: SandboxInstance) -> None:
-        """Tear down a single sandbox (trajectory mode). No-op if never created."""
+        """Tear down a single sandbox (trajectory mode). No-op if never created.
+
+        Faithful to a real EphemeralCapable provider (aenv ``__init__.py:281``):
+        flip the passed ``inst`` dead, not just the stored handle. The replay
+        runner discards ``create_one``'s return value and passes its OWN slot
+        state (``self.state`` -- a distinct object from the handle ``create_one``
+        stored) to ``kill_one``; stats_collector / ``check_alive`` read
+        ``is_alive`` off that passed instance, so a provider that only mutates
+        its internal copy leaves the runner's slot reporting alive on a dead
+        sandbox. (The 2026-10-16 N384 multiplier regression shipped because an
+        earlier loop guard then gated between-trajectory continuation on that
+        stale ``is_alive``; the runner now gates on ``consecutive_failures``
+        via ``_slot_continuable`` -- but the fake must still model the real
+        contract so the gap shows up in tests, not just in production.)
+        """
         existing = self._instances.get(inst.index)
         if existing is None:
-            return
+            return  # never created (aenv returns early here too; no inst mutation)
         existing.is_alive = False
+        inst.is_alive = False
 
     # --- setup hooks (record calls so tests can assert wiring) ---
     def prepare_env(self) -> None:
