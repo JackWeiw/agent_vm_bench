@@ -500,12 +500,12 @@ def test_build_xlsx_sheets_and_charts(tmp_path):
     wb = openpyxl.load_workbook(out)
     assert set(wb.sheetnames) == {"Host resources", "Per-VM", "Disk IO"}
     host = wb["Host resources"]
-    assert len(host._charts) == 8
+    assert len(host._charts) == 9
     # series counts lock the col-set per chart (memory=2, buffers/dirty=2,
-    # fc_pss=1, cpu=2, pressure=3, swap=2, cores=2, alloc-stalls=1) -- guards
-    # against pressure wrongly including swap cols or an off-by-one skipping a
-    # series.
-    assert sorted(len(c.series) for c in host._charts) == [1, 1, 2, 2, 2, 2, 2, 3]
+    # fc_pss=1, cpu=2, pressure=3, swap=2, cores=2, alloc-stalls=1,
+    # concurrent_vms=1) -- guards against pressure wrongly including swap cols
+    # or an off-by-one skipping a series.
+    assert sorted(len(c.series) for c in host._charts) == [1, 1, 1, 2, 2, 2, 2, 2, 3]
     # FC total PSS = sum of per-VM pss_mb/1024 per timestamp. _seed_all's vm0
     # has pss_mb=1024 at both samples -> fc_pss_gb=1.0 GB (col 16, first data row).
     assert math.isclose(host.cell(row=2, column=16).value, 1.0, abs_tol=0.001)
@@ -744,3 +744,271 @@ def test_derive_datetime_string_timestamps(tmp_path):
     r = df.iloc[1]
     assert math.isclose(r["cpu_busy_pct"], 100 * (1 - 12 / 41), abs_tol=0.1)
     assert math.isclose(r["ublk_cores"], 200 / 100 / 2, abs_tol=0.01)
+
+
+# --- vm_cores aggregate fix (rev 2) ---
+# These tests use a PHYSICAL host (busy cores >= fleet vm_cores) so the sanity
+# invariant vm_cores <= host_busy_cores holds and the per-row warning does NOT
+# fire -- unlike _seed_all, whose VM jiffies exceed its host /proc/stat (the
+# warning correctly fires there, but those tests don't assert on it).
+_CPU_HDR = [
+    "timestamp",
+    "cpu_user",
+    "cpu_nice",
+    "cpu_system",
+    "cpu_idle",
+    "cpu_iowait",
+    "cpu_irq",
+    "cpu_softirq",
+    "cpu_steal",
+    "cpu_guest",
+    "cpu_guest_nice",
+    "ctxt",
+    "btime",
+    "processes",
+    "procs_running",
+    "procs_blocked",
+    "softirq_total",
+]
+_VM_HDR = ["timestamp", "pid", "vm_name", "utime", "stime", "pss_mb"]
+_MEM_HDR = [
+    "timestamp",
+    "MemTotal",
+    "MemAvailable",
+    "MemFree",
+    "Cached",
+    "SReclaimable",
+    "Buffers",
+    "Dirty",
+    "Writeback",
+]
+_VMSTAT_HDR = [
+    "timestamp",
+    "pswpin",
+    "pswpout",
+    "pgscan_kswapd",
+    "pgscan_direct",
+    "pgscan_direct_throttle",
+    "pgsteal_kswapd",
+    "pgsteal_direct",
+    "workingset_refault_file",
+]
+
+
+def _seed_host_busy(d):
+    # t0->t2 deltas: d_total=421, d_idle+iowait=12 -> host_busy = 409/100/2 = 2.045
+    # cores (bounds vm_cores up to ~2 in these tests -> sanity warning stays quiet).
+    _write(
+        d / "host_cpu_raw.csv",
+        _CPU_HDR,
+        [
+            ["0", "100", "0", "50", "8000", "100", "10", "20", "5", "0", "0", "1", "0", "0", "0", "0", "0"],
+            ["2", "500", "0", "55", "8010", "102", "11", "22", "6", "0", "0", "2", "0", "0", "0", "0", "0"],
+        ],
+    )
+    _write(
+        d / "host_mem_raw.csv",
+        _MEM_HDR,
+        [
+            ["0", "2097152", "1048576", "512000", "200000", "50000", "30000", "1000", "0"],
+            ["2", "2097152", "943718", "450000", "210000", "52000", "32000", "2000", "0"],
+        ],
+    )
+    _write(
+        d / "host_vmstat_raw.csv",
+        _VMSTAT_HDR,
+        [["0", "0", "0", "0", "0", "0", "0", "0", "0"], ["2", "0", "0", "0", "0", "0", "0", "0", "0"]],
+    )
+
+
+def test_vm_cores_aggregate_bounded_and_correct(tmp_path, caplog):
+    """vm_cores = single aggregate jiffies delta over the host interval (NOT a
+    sum of per-VM normalized rates). 3 VMs alive across t=0->t=2, each Δj=100,
+    _CLK_TCK=100, dt=2 -> vm_cores = 300/100/2 = 1.5. host_busy=2.045 bounds it
+    (VM CPU ⊆ host CPU), so the per-row sanity warning does NOT fire."""
+    from vm_monitor.raw_report import _derive_host
+
+    d = tmp_path
+    _seed_host_busy(d)
+    rows = [_VM_HDR]
+    for v in range(3):
+        rows.append(["0", f"{v}", f"vm{v}", "0", "0", "100.0"])
+        rows.append(["2", f"{v}", f"vm{v}", "100", "0", "100.0"])
+    _write(d / "vm_cpu_raw.csv", rows[0], rows[1:])
+
+    with caplog.at_level(logging.WARNING):
+        df = _derive_host(d)
+    r = df.iloc[1]  # t=2
+    assert math.isclose(r["vm_cores"], 300 / 100 / 2, abs_tol=0.01)  # 1.5
+    assert r["concurrent_vms"] == 3
+    assert not any("vm_cores exceeded" in m for m in caplog.messages)  # bounded -> no warn
+
+
+def test_vm_cores_excludes_midinterval_start_counts_concurrent(tmp_path):
+    """Method A: a VM born at t=2 (no t=0 baseline) is EXCLUDED from vm_cores
+    (not present at both consecutive host endpoints) but COUNTED in
+    concurrent_vms. A全程 VM contributes to both."""
+    from vm_monitor.raw_report import _derive_host
+
+    d = tmp_path
+    _seed_host_busy(d)
+    # vm0: t=0(j=0) -> t=2(j=200) [全程]. vm1: t=2 only (j=50) [born mid-window].
+    _write(
+        d / "vm_cpu_raw.csv",
+        _VM_HDR,
+        [
+            ["0", "0", "vm0", "0", "0", "100.0"],
+            ["2", "0", "vm0", "200", "0", "100.0"],
+            ["2", "1", "vm1", "50", "0", "100.0"],
+        ],
+    )
+    df = _derive_host(d)
+    assert math.isclose(df.iloc[1]["vm_cores"], 200 / 100 / 2, abs_tol=0.01)  # only vm0 -> 1.0
+    assert df.iloc[1]["concurrent_vms"] == 2  # vm0 + vm1 alive at t=2
+    assert df.iloc[0]["concurrent_vms"] == 1  # only vm0 at t=0
+
+
+def test_vm_cores_pid_restart_skips_one_keeps_rest(tmp_path):
+    """A VM whose utime zeroes at t=2 (pid restart, same vm_name) -> Δj<0 ->
+    that VM masked out that interval; the OTHER VM still contributes -> fleet
+    vm_cores computes from the rest (not whole-column NaN)."""
+    from vm_monitor.raw_report import _derive_host
+
+    d = tmp_path
+    _seed_host_busy(d)
+    # vm0: j 200 -> 5 (restart, Δj=-195 -> masked). vm1: j 0 -> 100 (contributes).
+    _write(
+        d / "vm_cpu_raw.csv",
+        _VM_HDR,
+        [
+            ["0", "0", "vm0", "200", "0", "100.0"],
+            ["2", "999", "vm0", "5", "0", "100.0"],
+            ["0", "1", "vm1", "0", "0", "100.0"],
+            ["2", "1", "vm1", "100", "0", "100.0"],
+        ],
+    )
+    df = _derive_host(d)
+    # only vm1's Δj=100 -> 100/100/2 = 0.5 (vm0's negative delta excluded, not a NaN-hole)
+    assert math.isclose(df.iloc[1]["vm_cores"], 100 / 100 / 2, abs_tol=0.01)
+    assert not math.isnan(df.iloc[1]["vm_cores"])
+
+
+def test_vm_cores_nonconstant_dt(tmp_path):
+    """Host samples at t=0,2,5 (dt=2 then dt=3) -- each row's vm_cores uses its
+    own host dt; no NaN-holing from the cadence change. vm0 j: 0 -> 200 (dt=2 ->
+    1.0) -> 500 (Δj=300 over dt=3 -> 1.0)."""
+    from vm_monitor.raw_report import _derive_host
+
+    d = tmp_path
+    _write(
+        d / "host_cpu_raw.csv",
+        _CPU_HDR,
+        [
+            ["0", "100", "0", "50", "8000", "100", "10", "20", "5", "0", "0", "1", "0", "0", "0", "0", "0"],
+            ["2", "400", "0", "55", "8010", "102", "11", "22", "6", "0", "0", "2", "0", "0", "0", "0", "0"],
+            ["5", "850", "0", "60", "8020", "104", "12", "24", "7", "0", "0", "3", "0", "0", "0", "0", "0"],
+        ],
+    )
+    _write(
+        d / "host_mem_raw.csv",
+        _MEM_HDR,
+        [
+            ["0", "2097152", "1048576", "512000", "200000", "50000", "30000", "1000", "0"],
+            ["2", "2097152", "943718", "450000", "210000", "52000", "32000", "2000", "0"],
+            ["5", "2097152", "900000", "440000", "215000", "53000", "33000", "3000", "0"],
+        ],
+    )
+    _write(
+        d / "host_vmstat_raw.csv",
+        _VMSTAT_HDR,
+        [
+            ["0", "0", "0", "0", "0", "0", "0", "0", "0"],
+            ["2", "0", "0", "0", "0", "0", "0", "0", "0"],
+            ["5", "0", "0", "0", "0", "0", "0", "0", "0"],
+        ],
+    )
+    _write(
+        d / "vm_cpu_raw.csv",
+        _VM_HDR,
+        [
+            ["0", "0", "vm0", "0", "0", "100.0"],
+            ["2", "0", "vm0", "200", "0", "100.0"],
+            ["5", "0", "vm0", "500", "0", "100.0"],
+        ],
+    )
+    df = _derive_host(d)
+    assert math.isclose(df.iloc[1]["vm_cores"], 200 / 100 / 2, abs_tol=0.01)  # t=2: 1.0
+    assert math.isclose(df.iloc[2]["vm_cores"], 300 / 100 / 3, abs_tol=0.01)  # t=5: 1.0
+
+
+def test_fc_pss_multi_vm_snapshot_sum(tmp_path):
+    """fc_pss_gb = Σ pss_mb/1024 of alive VMs per timestamp (gauge snapshot sum,
+    equivalent to the old pivot sum(skipna) but computed directly from the long
+    CSV)."""
+    from vm_monitor.raw_report import _derive_host
+
+    d = tmp_path
+    _seed_host_busy(d)
+    # 3 VMs with distinct pss at both samples -> fc_pss = (1024+2048+512)/1024 = 3.5
+    _write(
+        d / "vm_cpu_raw.csv",
+        _VM_HDR,
+        [
+            ["0", "0", "vm0", "0", "0", "1024.0"],
+            ["2", "0", "vm0", "50", "0", "1024.0"],
+            ["0", "1", "vm1", "0", "0", "2048.0"],
+            ["2", "1", "vm1", "50", "0", "2048.0"],
+            ["0", "2", "vm2", "0", "0", "512.0"],
+            ["2", "2", "vm2", "50", "0", "512.0"],
+        ],
+    )
+    df = _derive_host(d)
+    expected = (1024 + 2048 + 512) / 1024
+    assert math.isclose(df.iloc[0]["fc_pss_gb"], expected, abs_tol=0.01)
+    assert math.isclose(df.iloc[1]["fc_pss_gb"], expected, abs_tol=0.01)
+
+
+def test_vm_cores_sanity_warn_fires_on_overcount(tmp_path, caplog):
+    """When synthetic VM jiffies EXCEED host busy (unphysical input), the per-row
+    invariant vm_cores <= host_busy*1.02 is violated -> ONE warning fires (count
+    + worst timestamp + worst ratio). Proves the check fires (the bounded
+    fixture above proves it stays quiet when the invariant holds)."""
+    from vm_monitor.raw_report import _derive_host
+
+    d = tmp_path
+    # small host busy (0.29 cores) so a 2000-jiffie VM clearly overcounts.
+    _write(
+        d / "host_cpu_raw.csv",
+        _CPU_HDR,
+        [
+            ["0", "100", "0", "50", "8000", "100", "10", "20", "5", "0", "0", "1", "0", "0", "0", "0", "0"],
+            ["2", "120", "0", "55", "8010", "102", "11", "22", "6", "0", "0", "2", "0", "0", "0", "0", "0"],
+        ],
+    )
+    _write(
+        d / "host_mem_raw.csv",
+        _MEM_HDR,
+        [
+            ["0", "2097152", "1048576", "512000", "200000", "50000", "30000", "1000", "0"],
+            ["2", "2097152", "943718", "450000", "210000", "52000", "32000", "2000", "0"],
+        ],
+    )
+    _write(
+        d / "host_vmstat_raw.csv",
+        _VMSTAT_HDR,
+        [["0", "0", "0", "0", "0", "0", "0", "0", "0"], ["2", "0", "0", "0", "0", "0", "0", "0", "0"]],
+    )
+    # vm0 Δj=2000 over dt=2 -> vm_cores=10.0 vs host_busy=0.29 -> violation.
+    _write(
+        d / "vm_cpu_raw.csv",
+        _VM_HDR,
+        [
+            ["0", "0", "vm0", "0", "0", "100.0"],
+            ["2", "0", "vm0", "2000", "0", "100.0"],
+        ],
+    )
+    with caplog.at_level(logging.WARNING):
+        df = _derive_host(d)
+    assert math.isclose(df.iloc[1]["vm_cores"], 2000 / 100 / 2, abs_tol=0.01)  # 10.0
+    assert any("vm_cores exceeded host_busy_cores" in m for m in caplog.messages)
+    assert any("worst" in m for m in caplog.messages)

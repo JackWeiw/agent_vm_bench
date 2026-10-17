@@ -767,10 +767,16 @@ regeneratable after any interruption.
 | 列 | 含义 | 来源 / 公式 |
 |----|------|-------------|
 | `ublk_cores` | 所有 ublk 守护进程占用的 CPU 核数 | `Σ_daemon Δ(utime + stime) / _CLK_TCK / dt`（`_CLK_TCK = 100`） |
-| `vm_cores` | 所有 VM 进程占用的 CPU 核数 | `Σ_vm Δ(utime + stime) / _CLK_TCK / dt` |
+| `vm_cores` | **整个 VM 机群**占用的 CPU 核数（单一聚合增量，**非**逐 VM 归一化速率之和） | `Σ_vm Δ(utime + stime) / _CLK_TCK / dt`，其中 `dt` 为**主机采样间隔**（连续 `host_cpu_raw` 时间戳之差，随主机抖动变化，**不是**单 VM 侧间隔）；只累加在两个相邻主机端点都存活的 VM 的 `Δ(utime+stime)`，最后**除一次** |
+| `concurrent_vms` | 每个主机采样点的存活+可读 VM 数量（gauge） | 该采样点 `vm_cpu_raw.csv` 中不同 `vm_name` 的行数；过载程度直接可观测项 |
 
-> 两列口径一致，可直接相加得到「I/O 路径 + guest」的 CPU 占用。`utime`/`stime` 来自
-> `/proc/<pid>/stat`，ublk 子采样为 1s。
+> 三类口径互不混淆，别串到一起：
+> - **`vm_cores`（机群速率）**——主机采样区间内的**单一聚合 jiffies 增量**：先把两个端点都存活的 VM 的原始 `Δ(utime+stime)` 求和，再一次性除以 `_CLK_TCK·dt`。**按构造被主机 CPU 上界约束**：VM 进程 CPU ⊆ 主机 CPU，故 `vm_cores ≤ host_busy_cores = (Δtotal − Δidle − Δiowait)/_CLK_TCK/dt`（同一段 `/proc/stat` 即可算，**无需 `nproc`**——在任意机器上事后重算都成立，不像 `os.cpu_count()` 会拿到本机核数而非被监控主机的核数）。这正是取代旧的「逐 VM 归一化速率之和」反模式（旧实现在 NaN 稀疏的 pivot 上 `sum(skipna)`，既会少计也会超计——`vm_cores` max 曾达 808 > 384 物理核）。每行若有 `vm_cores > host_busy_cores × 1.02` 则记一条 WARNING（计数 + 最坏时间戳 + 最坏倍率）；1.02 的 ε 容纳同一次 `collect_sample` 内 host `/proc/stat`（先读）与 VM `/proc/<pid>/stat`（后读）之间几个 ms 的相位偏移。
+> - **`concurrent_vms`（gauge）**——每个主机采样点的存活+可读 VM 数量，即**过载程度的直接可观测项**（`vm_cores` 无法表达的那个维度，因为速率与机群规模是两回事）。
+> - **Per-VM sheet（明细下钻）**——逐 VM 的 CPU 速率；多 vCPU 的 VM 单台 >1 核是**正常**的（明细，不是机群聚合，故不适用上面的「单一聚合」口径）。
+>
+> **`vm_cores` 口径取舍（method A）**：只在 VM 于**两个相邻主机端点都存活**时才计入其增量——在一个采样窗**中途**出生或死亡的 VM **不计入**该窗（缺一端基线）。在 exec_ephemeral 高 churn 下这会少计瞬时 VM 的 CPU；那部分残量仍作为交叉校验体现在 `cpu_busy_pct`（主机总占用）里。method B（按时间加权部分窗 jiffies）是后续选项，本次不做。
+> `vm_cores` 的 `dt` 与 `ublk_cores` 的 `dt` 都是主机采样间隔（ublk 子采样 1s，但其 `Δ/dt` 仍按主机端点对齐）。`utime`/`stime` 来自 `/proc/<pid>/stat`。
 
 #### Sheet 2：Per-VM（每虚拟机，按时间快照）
 
