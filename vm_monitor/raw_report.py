@@ -195,6 +195,43 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
     if ublk is not None and not ublk.empty:
         ublk = ublk.sort_values("timestamp")
         ublk["timestamp"] = _ts_to_epoch(ublk["timestamp"])
+    # VM fleet aggregates from vm_cpu_raw.csv (vm_cores / concurrent_vms /
+    # fc_pss_gb), vectorized -- groupby/shift/map/sum are pandas C-level and
+    # scale to the ~14M-row exec_ephemeral dump (no per-row Python loop). Keyed
+    # by float epoch via _ts_to_epoch: collect_sample emits ONE strftime ts for
+    # host+vm (base.py:2385), so host and VM epochs match EXACTLY -- a future
+    # break of that invariant surfaces as visible NaN holes, never silent
+    # cross-row misalignment (why exact-match, not fuzzy tolerance).
+    vm = _read_csv(raw_dir, "vm_cpu_raw.csv")
+    _vm_dj = _vm_conc = _vm_pss = _vm_ok = None
+    if vm is not None and not vm.empty:
+        vm = vm.copy()
+        vm["__e"] = _ts_to_epoch(vm["timestamp"])
+        vm["__j"] = pd.to_numeric(vm["utime"], errors="coerce") + pd.to_numeric(vm["stime"], errors="coerce")
+        if "pss_mb" in vm.columns:
+            vm["__pss"] = pd.to_numeric(vm["pss_mb"], errors="coerce")
+        else:
+            vm["__pss"] = 0.0
+        # Host epoch sequence (shared stamp -> VM epochs ⊆ host epochs); map each
+        # host epoch to its immediate predecessor. A VM contributes at e_cur only
+        # if its own prev sample (groupby shift) == that predecessor -- i.e. it
+        # was sampled at BOTH consecutive host endpoints (method A; a VM that
+        # missed a host sample -> gap -> excluded, no 2x over-count from dividing
+        # a 2-interval delta by 1-interval dt).
+        _host_eps = sorted({e for e in ts.tolist() if not math.isnan(e)})
+        _host_prev = {_host_eps[k]: _host_eps[k - 1] for k in range(1, len(_host_eps))}
+        vm = vm.sort_values(["vm_name", "__e"])
+        _g = vm.groupby("vm_name", sort=False)
+        vm["__prev_j"] = _g["__j"].shift(1)
+        vm["__prev_e"] = _g["__e"].shift(1)
+        vm["__dj"] = vm["__j"] - vm["__prev_j"]
+        _expected_prev = vm["__e"].map(_host_prev)
+        _ok = (vm["__prev_e"] == _expected_prev) & (vm["__dj"] >= 0)  # both endpoints + no pid-restart
+        vm.loc[~_ok, "__dj"] = math.nan
+        _vm_dj = vm.groupby("__e")["__dj"].sum(min_count=1)  # epoch -> Σ guarded Δj
+        _vm_ok = vm[_ok].groupby("__e")["vm_name"].count()  # epoch -> # both-endpoint VMs (debug)
+        _vm_conc = vm.groupby("__e")["vm_name"].count()  # epoch -> alive VM count (gauge)
+        _vm_pss = vm.groupby("__e")["__pss"].sum(min_count=1) / 1024  # epoch -> Σ PSS GB (gauge)
     out = {
         c: [math.nan]
         for c in (
@@ -214,13 +251,26 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
             "ublk_cores",
             "vm_cores",
             "fc_pss_gb",
+            "concurrent_vms",
         )
     }
 
     _CPU8 = ["cpu_user", "cpu_nice", "cpu_system", "cpu_idle", "cpu_iowait", "cpu_irq", "cpu_softirq", "cpu_steal"]
+    # Per-row sanity invariant: vm_cores (fleet VM CPU) <= host_busy_cores, since
+    # VM process CPU is a subset of host CPU. Tracked across the loop, emitted as
+    # ONE warning at the end (count + worst timestamp + worst ratio). The 1.02
+    # epsilon covers the within-sample read-phase offset: host /proc/stat is
+    # read at base.py:2381, VM /proc/<pid>/stat in get_vms_realtime at base.py:2403
+    # (a few ms later in the same collect_sample), so a VM's interval is shifted
+    # vs host's by a tick or two at the boundaries.
+    _SANITY_EPS = 1.02
+    _n_over = 0
+    _worst_ratio = 0.0
+    _worst_ts: str | None = None
     for i in range(1, len(cpu)):
         dt = ts[i] - ts[i - 1]
         cur_c, prev_c = cpu.iloc[i].to_dict(), cpu.iloc[i - 1].to_dict()
+        host_busy = math.nan
         if not _guarded(cur_c, prev_c, dt, "host_cpu", _CPU8):
             d_total = sum(_f(cur_c, f) - _f(prev_c, f) for f in _CPU8)
             d_idle_iowait = (
@@ -230,6 +280,8 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
             out["cpu_iowait_pct"].append(
                 100.0 * (_f(cur_c, "cpu_iowait") - _f(prev_c, "cpu_iowait")) / d_total if d_total else math.nan
             )
+            if d_total and dt:
+                host_busy = (d_total - d_idle_iowait) / _CLK_TCK / dt
         else:
             out["cpu_busy_pct"].append(math.nan)
             out["cpu_iowait_pct"].append(math.nan)
@@ -282,8 +334,61 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
             ):
                 out[k].append(math.nan)
         out["ublk_cores"].append(_aggregate_cores(ublk, ts[i], dt) if ublk is not None else math.nan)
-        out["vm_cores"].append(math.nan)  # filled by per-VM aggregate in the orchestrator (Task 5)
-        out["fc_pss_gb"].append(math.nan)  # filled by pss_df aggregate in the orchestrator
+        # VM fleet CPU = SINGLE aggregate jiffies delta over the host interval
+        # (NOT a sum of per-VM normalized rates -- the pre-fix realization over/
+        # under-counted under churn via a NaN-sparse pivot + per-VM dt). Bounded
+        # by construction: ΣΔj_VM <= Δj_host_busy -> vm_cores <= host_busy. Method
+        # A: only VMs present at BOTH consecutive host endpoints contribute (a VM
+        # born/died mid-interval has no baseline -> excluded, contributes 0, does
+        # not NaN-hole the fleet; its CPU is still visible in host_busy as a
+        # cross-check). dt = host sample interval (varies with jitter), NOT a
+        # VM-side interval.
+        e_cur = ts[i]
+        _dj = _vm_dj.get(e_cur, math.nan) if _vm_dj is not None else math.nan
+        if 0 < dt <= MAX_INTERVAL_S and not math.isnan(_dj):
+            vm_cores = _dj / _CLK_TCK / dt
+        else:
+            vm_cores = math.nan
+        out["vm_cores"].append(vm_cores)
+        # concurrent_vms + fc_pss_gb are gauges (no predecessor) -> snapshot at e_cur.
+        out["concurrent_vms"].append(int(_vm_conc.get(e_cur, 0)) if _vm_conc is not None else 0)
+        out["fc_pss_gb"].append(_vm_pss.get(e_cur, math.nan) if _vm_pss is not None else math.nan)
+        logger.debug(
+            "vm_cores %s: alive=%d both_endpoints=%d sum_dj=%s vm_cores=%.3f host_busy=%.3f",
+            cpu.iloc[i]["timestamp"],
+            int(_vm_conc.get(e_cur, 0)) if _vm_conc is not None else 0,
+            int(_vm_ok.get(e_cur, 0)) if _vm_ok is not None else 0,
+            _dj,
+            vm_cores if not math.isnan(vm_cores) else 0.0,
+            host_busy if not math.isnan(host_busy) else 0.0,
+        )
+        if (
+            not math.isnan(vm_cores)
+            and not math.isnan(host_busy)
+            and host_busy > 0
+            and vm_cores > host_busy * _SANITY_EPS
+        ):
+            _n_over += 1
+            _r = vm_cores / host_busy
+            if _r > _worst_ratio:
+                _worst_ratio = _r
+                _worst_ts = cpu.iloc[i]["timestamp"]
+    # Gauges (concurrent_vms, fc_pss_gb) have no predecessor -> populate row 0
+    # too (rate cols like cpu_busy_pct stay NaN at row 0, consistent w/ existing
+    # mem-gauge row-0 behavior before this change for fc_pss was via positional
+    # fill; preserving the row-0 value keeps the xlsx test's col-16 == 1.0).
+    if ts.size:
+        out["concurrent_vms"][0] = int(_vm_conc.get(ts[0], 0)) if _vm_conc is not None else 0
+        out["fc_pss_gb"][0] = _vm_pss.get(ts[0], math.nan) if _vm_pss is not None else math.nan
+    if _n_over:
+        logger.warning(
+            "vm_cores exceeded host_busy_cores*%.2f at %d timestamp(s) (worst %.2fx at %s) "
+            "-- bounded by construction; investigate VM jiffies vs /proc/stat skew",
+            _SANITY_EPS,
+            _n_over,
+            _worst_ratio,
+            _worst_ts,
+        )
     df = pd.DataFrame(out)
     df.insert(0, "t_s", [0.0] + [ts[i] - ts[0] for i in range(1, len(ts))])
     df.insert(1, "timestamp", cpu["timestamp"].tolist())
@@ -473,6 +578,7 @@ def _build_host_sheet(wb, df):
         ("fc_pss_gb", "FC total PSS (GB)"),
         ("direct_reclaim_mib_s", "Direct reclaim (MiB/s)"),
         ("allocstall_per_s", "Alloc stalls (/s)"),
+        ("concurrent_vms", "Concurrent VMs"),
     ]
     cols, headers = zip(*col_labels)
     _write_table(ws, df, list(headers), cols=list(cols))
@@ -489,6 +595,7 @@ def _build_host_sheet(wb, df):
     # counter (count of allocation requests that stalled). Direct reclaim
     # (col 17) is the blocking subset of page-scan, left as a column only.
     _add_line_chart(ws, "Alloc stalls", "/s", 1, (18,), 1, n, f"{anchor}128")
+    _add_line_chart(ws, "Concurrent VMs", "count", 1, (19,), 1, n, f"{anchor}146")
 
 
 def _build_per_vm_sheet(wb, cores_df, pss_df):
@@ -643,30 +750,9 @@ def build_host_resources_xlsx(raw_dir, out_path) -> Path:
         cores_df, pss_df = pd.DataFrame(), pd.DataFrame()
     disk_df = _derive_disk(raw_dir)
     hp_cores_df, hp_pss_df = _derive_hostproc(raw_dir)
-    # Fill host_df.vm_cores from the per-VM cores aggregate (sum across VMs per
-    # timestamp). host_df is RangeIndex; cores_df is timestamp-indexed -> align
-    # by position (same sample cadence). ponytail: positional fill assumes host
-    # and vm CSVs share sample cadence (true: both written by collect_sample);
-    # a cadence mismatch leaves vm_cores NaN rather than misaligning silently.
-    if not cores_df.empty and not host_df.empty:
-        vm_agg = (
-            cores_df.drop(columns=["t_s"], errors="ignore")
-            .select_dtypes("number")
-            .sum(axis=1, skipna=True, min_count=1)
-        )
-        if len(vm_agg) == len(host_df):
-            host_df["vm_cores"] = vm_agg.to_numpy()
-    # FC fleet total memory = sum of per-VM PSS (GB) per timestamp. PSS (not
-    # RSS): smaps_rollup splits shared template/lib pages across sharers, so the
-    # fleet sum is the true marginal host memory the FC fleet costs; RSS would
-    # double-count those shared pages across the fleet. Same positional/cadence
-    # alignment as vm_cores (pss_df shares vm_cpu_raw.csv's timestamps).
-    if not pss_df.empty and not host_df.empty:
-        pss_agg = (
-            pss_df.drop(columns=["t_s"], errors="ignore").select_dtypes("number").sum(axis=1, skipna=True, min_count=1)
-        )
-        if len(pss_agg) == len(host_df):
-            host_df["fc_pss_gb"] = pss_agg.to_numpy()
+    # vm_cores / fc_pss_gb / concurrent_vms now come filled from _derive_host
+    # (single aggregate jiffies delta + gauges, epoch-aligned) -- no positional
+    # fill needed. _derive_per_vm still feeds the Per-VM drill-down sheet below.
     wb = Workbook()
     default = wb.active
     _build_host_sheet(wb, host_df)
