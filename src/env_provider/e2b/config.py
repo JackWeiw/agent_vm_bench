@@ -223,7 +223,7 @@ class Config:
             snapshot_dir=backend.get("snapshot_dir"),
             aenv_home_path=backend.get("aenv_home_path"),
             ccl_bind=bool(backend.get("ccl_bind", False)),
-            ccl_granularity=str(backend.get("ccl_granularity", "auto")).lower(),
+            ccl_granularity=str(backend.get("ccl_granularity") or "auto").lower(),
             ccl_total_count=backend.get("ccl_total_count", 24),
             ccl_vcpus_per_ccl=backend.get("ccl_vcpus_per_ccl", 16),
         )

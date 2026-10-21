@@ -193,7 +193,7 @@ def _arithmetic_domains(config: Config) -> list[set[int]]:
     """Fallback domains: ``ccl_total_count`` contiguous blocks of
     ``ccl_vcpus_per_ccl`` CPUs (the legacy pre-detection behavior)."""
     total = max(1, int(getattr(config, "ccl_total_count", 24)))
-    per = int(getattr(config, "ccl_vcpus_per_ccl", 16))
+    per = max(1, int(getattr(config, "ccl_vcpus_per_ccl", 16)))
     return [set(get_ccl_cpu_affinity(i, total, per)) for i in range(total)]
 
 
@@ -301,18 +301,24 @@ def bind_process_all_threads(pid: int, cpus: set[int], max_passes: int = 3) -> t
         if set(_task_tids(pid)) <= bound:
             break
     mismatched = []
+    checked = 0
     for tid in _task_tids(pid):
         try:
             if os.sched_getaffinity(tid) != effective:
                 mismatched.append(tid)
+            checked += 1
         except OSError:
             pass  # thread exited; nothing left to verify
     detail = f"threads={len(bound)}"
+    if not checked:
+        detail += " no_live_thread_to_verify"
     if effective != set(cpus):
         detail += f" kernel_narrowed_to={format_cpu_list(effective)}"
     if mismatched:
         detail += f" mismatched_tids={mismatched}"
-    return not mismatched, detail
+    # checked > 0: a process that died between the bind and the verify has no
+    # live thread to compare -- that is NOT a verified bind.
+    return not mismatched and checked > 0, detail
 
 
 class LocalFirecrackerPidResolver:
@@ -350,7 +356,7 @@ class LocalFirecrackerPidResolver:
                 socket_path = Path(arguments[socket_index])
             except (OSError, ValueError, IndexError):
                 continue
-            if not arguments or Path(arguments[0]).name != "firecracker":
+            if Path(arguments[0]).name != "firecracker":
                 continue
             if socket_path.is_socket():
                 processes.append((int(proc_dir.name), socket_path))
@@ -511,7 +517,16 @@ def bind_ccl_affinity(sandbox_id: str, sandbox_index: int, config: Config) -> bo
             sandbox_id,
         )
         return False
-    domains, source = select_ccl_domains(config)
+    try:
+        domains, source = select_ccl_domains(config)
+    except Exception as select_err:  # noqa: BLE001 -- best-effort, never raise
+        logger.warning(
+            "CCL domain selection failed for sandbox %s: %s: %r",
+            sandbox_id,
+            type(select_err).__name__,
+            select_err,
+        )
+        return False
     domain_idx = sandbox_index % len(domains)
     domain = domains[domain_idx]
     logger.info(

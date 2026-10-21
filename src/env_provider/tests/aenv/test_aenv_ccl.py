@@ -238,7 +238,7 @@ def test_detect_socket_domains(tmp_path):
 def test_select_auto_prefers_l3_on_zen4(tmp_path):
     root = _mk_sysfs(tmp_path, l3=ZEN4_L3, numa=["0-15,192-207", "8-15,200-207"])
     domains, source = select_ccl_domains(Config(), root)
-    # 16-cpu L3 domains >= ccl_vcpus_per_ccl(16) -> bind at CCD granularity.
+    # auto always prefers L3 when sysfs exposes it (no capacity-based downgrade).
     assert source == "sysfs-l3(auto)"
     assert domains[0] == parse_cpu_list("0-7,192-199")
 
@@ -410,6 +410,20 @@ def test_bind_main_setaffinity_failure(monkeypatch):
     assert "failed" in detail
 
 
+def test_bind_verify_false_when_process_dies_mid_bind(monkeypatch):
+    # A firecracker that exits between the bind and the verify must not report
+    # verified=True: every getaffinity raises, so zero threads were checked.
+    _fake_sched(monkeypatch, lambda pid: [999])
+
+    def _raise_get(tid):
+        raise OSError(3, "no such process")
+
+    monkeypatch.setattr(os, "sched_getaffinity", _raise_get, raising=False)
+    ok, detail = bind_process_all_threads(999, set(range(8)))
+    assert not ok
+    assert "no_live_thread_to_verify" in detail
+
+
 # ------------------------------------------------------------- resolver cache
 def test_resolver_cache_hit_short_circuits(monkeypatch):
     monkeypatch.setattr(ccl_mod, "CCL_PID_RESOLVE_ATTEMPTS", 1)
@@ -550,3 +564,10 @@ def test_config_ccl_defaults_off():
     assert cfg.ccl_granularity == "auto"
     assert cfg.ccl_total_count == 24
     assert cfg.ccl_vcpus_per_ccl == 16
+
+
+def test_config_ccl_granularity_null_becomes_auto():
+    # An explicit YAML null (uncommented `ccl_granularity:` with no value) must
+    # default to auto, not stringify to the bogus "none".
+    cfg = Config.from_raw({"aenv": {"ccl_granularity": None}}, block="aenv")
+    assert cfg.ccl_granularity == "auto"
