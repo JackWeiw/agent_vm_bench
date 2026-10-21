@@ -63,14 +63,14 @@ aenv:
   # successful create. EXEC_ONLY / EXEC_EPHEMERAL ONLY: lifecycle / trajectory
   # respawn the firecracker on each resume (pid unstable), so ccl_bind is a
   # no-op there (warned + skipped).
-  # ccl_granularity: auto = L3 domains, auto-falling back to NUMA when an L3
-  # domain holds fewer CPUs than ccl_vcpus_per_ccl (the Kunpeng CL=4 case);
-  # l3 / numa / socket force a level; config = legacy arithmetic below (also
-  # the fallback when sysfs detection finds nothing).
+  # ccl_granularity: auto = L3 domains whenever sysfs exposes them (AMD CCD /
+  # Kunpeng CL -- both bind at silicon granularity; NUMA only when the host
+  # exposes no L3 domains); l3 / numa / socket force a level; config = legacy
+  # arithmetic below (also the fallback when sysfs detection finds nothing).
   # ccl_bind: true
   # ccl_granularity: auto
-  # ccl_total_count: 24      # fallback arithmetic topology only
-  # ccl_vcpus_per_ccl: 16    # fallback block size + auto's min L3-domain size
+  # ccl_total_count: 24      # fallback arithmetic topology only (new Kunpeng layout)
+  # ccl_vcpus_per_ccl: 16    # fallback arithmetic block size
   env:
     E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
     E2B_API_KEY: "your_e2b_api_key_here"

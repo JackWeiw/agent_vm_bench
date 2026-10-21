@@ -129,7 +129,7 @@ def _record_binds(monkeypatch):
 # after -- CCD 0 = "0-7,192-199" (NOT the contiguous "0-15" the legacy
 # arithmetic assumed, which spans two CCDs and no siblings).
 ZEN4_L3 = ["0-7,192-199", "8-15,200-207"]
-# Kunpeng 920-style: 16 CLs of 4 CPUs (no SMT, contiguous) inside 2 NUMA nodes.
+# Kunpeng-style: small CLs (4 CPUs, no SMT, contiguous) inside 2 NUMA nodes.
 KUNPENG_L3 = [f"{i * 4}-{i * 4 + 3}" for i in range(16)]
 KUNPENG_NUMA = ["0-31", "32-63"]
 
@@ -243,19 +243,21 @@ def test_select_auto_prefers_l3_on_zen4(tmp_path):
     assert domains[0] == parse_cpu_list("0-7,192-199")
 
 
-def test_select_auto_falls_back_to_numa_on_kunpeng(tmp_path):
+def test_select_auto_binds_kunpeng_at_cl_granularity(tmp_path):
+    # Kunpeng exposes its CLs via index3 -> auto binds at CL granularity even
+    # though NUMA nodes exist (no capacity-based NUMA downgrade).
     root = _mk_sysfs(tmp_path, l3=KUNPENG_L3, numa=KUNPENG_NUMA)
     domains, source = select_ccl_domains(Config(), root)
-    # 4-cpu CLs < ccl_vcpus_per_ccl(16) -> the coarser NUMA level.
-    assert source.startswith("sysfs-numa(auto")
-    assert domains == [set(range(32)), set(range(32, 64))]
-
-
-def test_select_auto_small_l3_without_numa_still_uses_l3(tmp_path):
-    root = _mk_sysfs(tmp_path, l3=KUNPENG_L3)
-    domains, source = select_ccl_domains(Config(), root)
-    assert source.startswith("sysfs-l3(auto")
+    assert source == "sysfs-l3(auto)"
     assert len(domains) == 16
+    assert domains[0] == {0, 1, 2, 3}
+
+
+def test_select_auto_numa_only_when_no_l3(tmp_path):
+    root = _mk_sysfs(tmp_path, numa=KUNPENG_NUMA)
+    domains, source = select_ccl_domains(Config(), root)
+    assert source == "sysfs-numa(auto: no l3 domains)"
+    assert domains == [set(range(32)), set(range(32, 64))]
 
 
 def test_select_granularity_config_skips_detection(tmp_path):

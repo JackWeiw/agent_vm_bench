@@ -10,11 +10,13 @@ bind the process.
 
 Domains are detected from sysfs at runtime (``cache/index3/shared_cpu_list``
 -- the same path on x86_64 and aarch64), never hardcoded: the legacy
-contiguous-block arithmetic (``ccl_total_count`` x ``ccl_vcpus_per_ccl``)
-survives only as the fallback when detection finds nothing. The arithmetic is
-actively wrong on SMT hosts (Linux numbers physical cores 0..N-1 and their
-siblings N..2N-1, so a "contiguous block of 16" spans TWO zen4/zen5 CCDs and
-contains no sibling threads). See :func:`select_ccl_domains`.
+contiguous-block arithmetic (``ccl_total_count`` x ``ccl_vcpus_per_ccl``,
+which was tuned for the 384-core Kunpeng's contiguously-enumerated CLs)
+survives only as the fallback when detection finds nothing. On hosts that
+number SMT siblings apart (x86 convention: physical cores 0..N-1, siblings
+N..2N-1) the arithmetic is actively wrong -- a "contiguous block of 16"
+spans TWO zen4/zen5 CCDs and contains no sibling threads. See
+:func:`select_ccl_domains`.
 
 The bind is one-shot and covers EVERY thread (:func:`bind_process_all_threads`):
 main thread first (any thread spawned later inherits its mask -- clone()
@@ -200,11 +202,9 @@ def select_ccl_domains(config: Config, sysfs_root: Path | None = None) -> tuple[
 
     - ``l3`` / ``numa`` / ``socket``: force that sysfs level; arithmetic
       fallback (warned) if detection finds nothing.
-    - ``auto`` (default): L3 domains when every domain holds at least
-      ``ccl_vcpus_per_ccl`` CPUs; else NUMA when present (the Kunpeng case: a
-      4-CPU CL is too small to bind usefully, so take the coarser node --
-      ``ccl_vcpus_per_ccl`` then acts as the minimum acceptable domain size);
-      else L3 anyway; else NUMA; else arithmetic.
+    - ``auto`` (default): L3 domains whenever sysfs exposes them -- AMD CCD
+      and Kunpeng CL both bind at silicon granularity; NUMA only when the
+      host exposes no L3 domains; else arithmetic.
     - ``config``: skip detection, arithmetic blocks only (legacy behavior).
 
     Returns ``(domains sorted by first cpu, source label for logging)``; the
@@ -215,7 +215,6 @@ def select_ccl_domains(config: Config, sysfs_root: Path | None = None) -> tuple[
         return _TOPOLOGY_CACHE
     root = _SYSFS_ROOT if sysfs_root is None else sysfs_root
     granularity = str(getattr(config, "ccl_granularity", "auto") or "auto").lower()
-    min_size = int(getattr(config, "ccl_vcpus_per_ccl", 16))
     if granularity not in ("auto", "config") and granularity not in _DETECTORS:
         logger.warning("Unknown ccl_granularity %r; falling back to 'auto'.", granularity)
         granularity = "auto"
@@ -226,16 +225,8 @@ def select_ccl_domains(config: Config, sysfs_root: Path | None = None) -> tuple[
         source = f"sysfs-{granularity}"
     elif granularity == "auto":
         l3 = detect_l3_domains(root)
-        if l3 and min(len(d) for d in l3) >= min_size:
+        if l3:
             domains, source = l3, "sysfs-l3(auto)"
-        elif l3:
-            smallest = min(len(d) for d in l3)
-            numa = detect_numa_domains(root)
-            if numa:
-                domains = numa
-                source = f"sysfs-numa(auto: l3 domains of {smallest} cpus < ccl_vcpus_per_ccl={min_size})"
-            else:
-                domains, source = l3, f"sysfs-l3(auto: {smallest} cpus/domain, no numa fallback)"
         else:
             numa = detect_numa_domains(root)
             if numa:
@@ -244,11 +235,12 @@ def select_ccl_domains(config: Config, sysfs_root: Path | None = None) -> tuple[
         if granularity != "config":
             logger.warning(
                 "CCL detection (%s) found no domains under %s; falling back to config arithmetic "
-                "(%d CCLs x %d vCPUs -- only correct on no-SMT hosts).",
+                "(%d CCLs x %d vCPUs -- contiguous blocks, only correct on hosts whose silicon "
+                "domains enumerate contiguously).",
                 granularity,
                 root,
                 getattr(config, "ccl_total_count", 24),
-                min_size,
+                getattr(config, "ccl_vcpus_per_ccl", 16),
             )
         domains = _arithmetic_domains(config)
         source = "config-arithmetic"

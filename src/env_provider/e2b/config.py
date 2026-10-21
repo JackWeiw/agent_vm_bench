@@ -173,13 +173,13 @@ class Config:
     # CCL CPU-affinity binding (AENV host-side: pin each sandbox's firecracker
     # -- every thread, one-shot at create -- to one sysfs-detected silicon L3
     # domain: AMD CCD / Kunpeng CL). Opt-in (off by default): needs root on the
-    # AENV host. ccl_granularity: auto (L3 domains; falls back to NUMA when an
-    # L3 domain holds fewer CPUs than ccl_vcpus_per_ccl -- the Kunpeng CL=4
-    # case) | l3 | numa | socket | config (legacy arithmetic).
+    # AENV host. ccl_granularity: auto (L3 domains whenever sysfs exposes them
+    # -- both AMD and Kunpeng bind at silicon granularity; NUMA only when the
+    # host has none) | l3 | numa | socket | config (legacy arithmetic).
     # ccl_total_count / ccl_vcpus_per_ccl are the fallback arithmetic topology
-    # (reference: 384 vCPU / 16 per CCL = 24 CCLs), used only when sysfs
-    # detection finds nothing. See :mod:`env_provider.aenv._ccl`. Only
-    # consulted by the AENV provider.
+    # (reference: 384 vCPU / 16 per CCL = 24 CCLs -- the new Kunpeng layout),
+    # used only when sysfs detection finds nothing. See
+    # :mod:`env_provider.aenv._ccl`. Only consulted by the AENV provider.
     ccl_bind: bool = False
     ccl_granularity: str = "auto"
     ccl_total_count: int = 24
