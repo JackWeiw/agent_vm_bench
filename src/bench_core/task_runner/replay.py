@@ -157,6 +157,17 @@ class ReplayBaseRunner(TaskRunner):
         self._launch_pacer = ctx.launch_pacer
         # Per-sandbox 1-based pause counter for snapshot_size events.
         self._pause_seq = 0
+        # Run identity for the series layer. Series events key a run by
+        # (trajectory_id, sandbox_index, round_id); a slot that replays the
+        # same trajectory twice under one round_id merges into ONE run row
+        # downstream (double n_steps, summed create/kill, wall-spanning
+        # elapsed_sec). The round runner's identity comes from ctx (a fresh
+        # instance per round); the fixed runner is ONE long-lived instance
+        # cycling the pool, so it stamps an advancing per-slot pass ordinal
+        # via _begin_pass() at the top of every pass. Initialized from ctx so
+        # the attribute always exists for the defensive getattr reads below.
+        self.round_id = ctx.round_id
+        self._pass_seq = 0
 
     def do_run(self) -> None:
         """Run-hostile stub: this is a slice-machinery helper base, not a runner.
@@ -777,6 +788,24 @@ class ReplayBaseRunner(TaskRunner):
         if delay > 0 and not self.stop_event.is_set():
             self.stop_event.wait(delay)
 
+    def _begin_pass(self) -> None:
+        """Pass-identity hook: stamp THIS pass's ``round_id`` before any event.
+
+        The series run key ``(trajectory_id, sandbox_index, round_id)`` only
+        separates repeated passes of one trajectory on one slot when each pass
+        carries a distinct ``round_id``. Both pass entry points
+        (:meth:`_run_trajectory`, :meth:`ReplayTaskRunner._replay_trajectory`)
+        call this as their first statement, so every fixed-mode branch —
+        current or future — gets per-pass run identity structurally instead of
+        each scheduling loop having to remember to set it.
+
+        Base default is a no-op: the round runner's ``round_id`` comes from
+        ``ctx`` (a fresh instance per round already has a distinct id), and
+        warmup emits no trajectory-keyed events. The fixed runner
+        (:class:`ReplayTaskRunner`) is one long-lived instance, so it overrides
+        this with an advancing per-slot pass ordinal.
+        """
+
     def _run_trajectory(self, traj: Trajectory) -> None:
         """Per-trajectory create -> (resume->exec->pause steps) -> kill loop (G8).
 
@@ -790,6 +819,7 @@ class ReplayBaseRunner(TaskRunner):
         ``slot_acquired_at=0``). exec_only/lifecycle (non-EphemeralCapable)
         skip create/kill + the per-trajectory lease.
         """
+        self._begin_pass()
         is_ephemeral = isinstance(self.provider, EphemeralCapable)
         lease = None
         create_sec = 0.0
@@ -1112,8 +1142,13 @@ class ReplayTaskRunner(ReplayBaseRunner):
     advances to the next -- it does NOT stop the sandbox or the benchmark.
     """
 
-    def __init__(self, ctx: RunContext) -> None:
-        super().__init__(ctx)
+    def _begin_pass(self) -> None:
+        # Fixed mode is ONE long-lived instance cycling the pool, so the pass
+        # ordinal (0-based, per slot) IS this pass's run identity: two passes
+        # of the same trajectory on the same slot get round_id 0 / 1 and stay
+        # separate run rows instead of merging into one double-step record.
+        self.round_id = self._pass_seq
+        self._pass_seq += 1
 
     def do_run(self) -> None:
         if not self.state.ready:
@@ -1216,6 +1251,7 @@ class ReplayTaskRunner(ReplayBaseRunner):
 
     def _replay_trajectory(self, traj: Trajectory) -> None:
         """Fixed-mode (non-trajectory) per-step loop. Trajectory mode uses _run_trajectory."""
+        self._begin_pass()
         prev_slice_end = time.perf_counter()
         aborted = False
         for step in traj.steps:
@@ -1276,10 +1312,6 @@ class ReplayRoundRunner(ReplayBaseRunner):
     its template's sub-pool. No cursor state is held across rounds (round_id
     encodes the position).
     """
-
-    def __init__(self, ctx: RunContext) -> None:
-        super().__init__(ctx)
-        self.round_id = ctx.round_id
 
     def do_run(self) -> None:
         if not self.state.ready or not self.state.is_alive:

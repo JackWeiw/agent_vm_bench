@@ -558,6 +558,12 @@ class XlsxReportRenderer:
                     "success_rate",
                     "all_failed",
                     "elapsed_sec",
+                    # Per-run wall decomposition (medians across runs):
+                    # elapsed_sec = create + kill + stress, so the sheet shows
+                    # the total AND where it went without opening the JSONL.
+                    "create_median_s",
+                    "kill_median_s",
+                    "stress_median_s",
                     "n_steps_median",
                     "slice_total_median_s",
                     "exec_median_s",
@@ -591,6 +597,9 @@ class XlsxReportRenderer:
                             a["success_rate"],  # None when no run has steps
                             a["all_failed"],
                             round(a["elapsed_sec"], 3),  # success-median (or all-median if all_failed)
+                            round(use_set["create_sec"]["p50"], 3),
+                            round(use_set["kill_sec"]["p50"], 3),
+                            round(use_set["stress_sec"]["p50"], 3),
                             round(use_set["n_steps"]["p50"], 3),
                             *(round(tbs[k]["p50"], 3) for k in SEG_KEYS),
                             round(use_set["avg_slice"]["p50"], 3),

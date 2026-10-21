@@ -389,6 +389,8 @@ def test_export_writes_index_json_catalog(tmp_path):
             "requested_delay",
             "create",
             "kill",
+            # stress window (elapsed - create - kill): total-minus-plumbing
+            "stress",
             "interaction_total",
             "slot_contention_wait",
             # wait-decoupling split (the four independent components + per-phase inflight)

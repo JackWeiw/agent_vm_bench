@@ -535,9 +535,13 @@ class TestSeriesFileE2E:
         for r in step_records:
             assert isinstance(r["round_id"], int)
 
-    def test_fixed_mode_round_id_is_null(self, tmp_path):
-        # spec §A decision: round_id is null (None) in fixed mode, int in
-        # round-robin. The default _lifecycle_config is fixed mode.
+    def test_fixed_mode_round_id_is_pass_ordinal(self, tmp_path):
+        # Fixed mode: round_id is the slot's 0-based PASS ordinal (stamped by
+        # the _begin_pass hook), int like round-robin. It used to be null in
+        # fixed mode, which collapsed repeated passes of one trajectory on one
+        # slot into a single merged run row downstream (double n_steps, summed
+        # create/kill) -- the per-pass ordinal is what keeps runs distinct.
+        # The default _lifecycle_config is fixed mode.
         config = _lifecycle_config(tmp_path, filename_prefix="fixed")
         provider = FakeLifecycleProvider(count=1)
         result = run_benchmark(config, provider)
@@ -547,7 +551,7 @@ class TestSeriesFileE2E:
         step_records = [e for e in events if e["event"] == "step"]
         assert len(step_records) >= 1
         for r in step_records:
-            assert r["round_id"] is None
+            assert isinstance(r["round_id"], int) and r["round_id"] >= 0
 
 
 from bench_core.admission import Admission, RunningSlotScheduler
