@@ -1,11 +1,16 @@
 """CCL CPU-affinity binding tests for AenvProvider (no live firecracker/Linux).
 
-Covers three layers:
-1. Pure helpers: ``get_ccl_cpu_affinity`` topology math, ``read_kernel_cpu_affinity``
-   /proc/status parsing.
-2. ``bind_ccl_affinity`` best-effort guard contract (skip paths + verified bind),
-   and the resolver's setdefault cache (hit short-circuits, miss scans).
-3. ``AenvProvider`` integration: ``create_all`` binds each sandbox iff ``ccl_bind``
+Covers four layers:
+1. Pure helpers: cpulist parse/format round-trips, ``get_ccl_cpu_affinity``
+   fallback arithmetic.
+2. Sysfs topology detection against fake ``/sys`` trees (zen4-style SMT L3
+   layout, Kunpeng-style small-CL layout, NUMA, socket) and the
+   ``select_ccl_domains`` granularity / auto cascade / arithmetic fallback.
+3. ``bind_process_all_threads`` (all-thread one-shot binding: main first,
+   task sweep, per-tid verification) + ``bind_ccl_affinity`` best-effort guard
+   contract, and the resolver's setdefault cache (hit short-circuits, miss
+   scans).
+4. ``AenvProvider`` integration: ``create_all`` binds each sandbox iff ``ccl_bind``
    is on AND the replay mode is ``exec_only`` / ``exec_ephemeral`` (driven
    through the real SandboxManager + a fake e2b Sandbox, mirroring
    test_aenv_ephemeral). ``create_one`` binds in ``exec_ephemeral`` (the
@@ -17,7 +22,6 @@ from __future__ import annotations
 
 import logging
 import os
-import pathlib
 import threading
 
 import pytest
@@ -31,11 +35,25 @@ from env_provider.aenv._ccl import (
     LocalFirecrackerPidResolver,
     RESOLVER,
     bind_ccl_affinity,
+    bind_process_all_threads,
+    detect_l3_domains,
+    detect_numa_domains,
+    detect_socket_domains,
+    format_cpu_list,
     get_ccl_cpu_affinity,
-    read_kernel_cpu_affinity,
+    parse_cpu_list,
     reset_ccl_cache,
+    select_ccl_domains,
 )
 from env_provider.e2b.config import Config
+
+
+@pytest.fixture(autouse=True)
+def _fresh_ccl_caches():
+    """Every test starts with empty pid + topology caches."""
+    reset_ccl_cache()
+    yield
+    reset_ccl_cache()
 
 
 # ----------------------------------------------------------------------- helpers
@@ -107,6 +125,59 @@ def _record_binds(monkeypatch):
     return calls
 
 
+# zen4/zen5-style SMT layout: Linux numbers physical cores first, siblings
+# after -- CCD 0 = "0-7,192-199" (NOT the contiguous "0-15" the legacy
+# arithmetic assumed, which spans two CCDs and no siblings).
+ZEN4_L3 = ["0-7,192-199", "8-15,200-207"]
+# Kunpeng 920-style: 16 CLs of 4 CPUs (no SMT, contiguous) inside 2 NUMA nodes.
+KUNPENG_L3 = [f"{i * 4}-{i * 4 + 3}" for i in range(16)]
+KUNPENG_NUMA = ["0-31", "32-63"]
+
+
+def _mk_sysfs(tmp_path, *, l3=(), numa=(), sockets=None):
+    """Build a fake sysfs tree; returns its root. ``l3``: one cpulist string
+    per domain (written to every member cpu's index3/shared_cpu_list, as the
+    kernel does). ``sockets``: {cpu_id: package_id}."""
+    cpu_root = tmp_path / "devices" / "system" / "cpu"
+    cpu_root.mkdir(parents=True, exist_ok=True)
+    for domain in l3:
+        for cpu in parse_cpu_list(domain):
+            idx3 = cpu_root / f"cpu{cpu}" / "cache" / "index3"
+            idx3.mkdir(parents=True, exist_ok=True)
+            (idx3 / "shared_cpu_list").write_text(domain + "\n", encoding="utf-8")
+    for cpu, pkg in (sockets or {}).items():
+        topo = cpu_root / f"cpu{cpu}" / "topology"
+        topo.mkdir(parents=True, exist_ok=True)
+        (topo / "physical_package_id").write_text(f"{pkg}\n", encoding="utf-8")
+    for node, cpulist in enumerate(numa):
+        node_dir = tmp_path / "devices" / "system" / "node" / f"node{node}"
+        node_dir.mkdir(parents=True, exist_ok=True)
+        (node_dir / "cpulist").write_text(cpulist + "\n", encoding="utf-8")
+    return tmp_path
+
+
+def _fake_sched(monkeypatch, tids_fn, default_mask=None):
+    """Monkeypatch os.sched_setaffinity/getaffinity + _task_tids.
+
+    ``tids_fn(pid)`` lists the process's threads; ``default_mask`` is what an
+    *unbound* tid reports from getaffinity (defaults to 64 free CPUs). Returns
+    the live mask dict {tid: set[int]} -- only bound tids appear in it.
+    """
+    masks: dict[int, set[int]] = {}
+    free = set(range(64)) if default_mask is None else default_mask
+
+    def _set(tid, cpus):
+        masks[tid] = set(cpus)
+
+    def _get(tid):
+        return masks.get(tid, free)
+
+    monkeypatch.setattr(os, "sched_setaffinity", _set, raising=False)
+    monkeypatch.setattr(os, "sched_getaffinity", _get, raising=False)
+    monkeypatch.setattr(ccl_mod, "_task_tids", tids_fn)
+    return masks
+
+
 # ----------------------------------------------------------- get_ccl_cpu_affinity
 def test_get_ccl_cpu_affinity_default_topology():
     # 384 vCPU / 16 per CCL = 24 CCLs.
@@ -126,29 +197,106 @@ def test_get_ccl_cpu_affinity_custom_topology():
     assert get_ccl_cpu_affinity(2, 2, 4) == [0, 1, 2, 3]
 
 
-# ------------------------------------------------------- read_kernel_cpu_affinity
-def test_read_kernel_cpu_affinity_parses_cpulist(monkeypatch):
-    def fake(self, *a, **k):
-        return "Name:\tfc\nCpus_allowed_list:\t0-15\nState:\tR\n"
-
-    monkeypatch.setattr(pathlib.Path, "read_text", fake)
-    assert read_kernel_cpu_affinity(999) == "0-15"
-
-
-def test_read_kernel_cpu_affinity_missing_pid(monkeypatch):
-    def fake(self, *a, **k):
-        raise FileNotFoundError("no such pid")
-
-    monkeypatch.setattr(pathlib.Path, "read_text", fake)
-    assert read_kernel_cpu_affinity(999) is None
+# ------------------------------------------------------- cpulist parse / format
+def test_parse_cpu_list():
+    assert parse_cpu_list("0-7,192-199") == set(range(8)) | set(range(192, 200))
+    assert parse_cpu_list("3") == {3}
+    assert parse_cpu_list("") == set()
+    assert parse_cpu_list("0-1,junk,5") == {0, 1, 5}  # garbage parts skipped
 
 
-def test_read_kernel_cpu_affinity_no_field(monkeypatch):
-    def fake(self, *a, **k):
-        return "Name:\tfoo\nState:\tR\n"
+def test_format_cpu_list_roundtrip():
+    for text in ("0-7,192-199", "0-15", "3", "0-3,8-11,20"):
+        assert format_cpu_list(parse_cpu_list(text)) == text
+    assert format_cpu_list(set()) == ""
 
-    monkeypatch.setattr(pathlib.Path, "read_text", fake)
-    assert read_kernel_cpu_affinity(999) is None
+
+# ------------------------------------------------------------ sysfs detection
+def test_detect_l3_domains_zen4_dedupes_and_sorts(tmp_path):
+    root = _mk_sysfs(tmp_path, l3=ZEN4_L3)
+    assert detect_l3_domains(root) == [
+        set(range(8)) | set(range(192, 200)),
+        set(range(8, 16)) | set(range(200, 208)),
+    ]
+
+
+def test_detect_l3_domains_missing_sysfs(tmp_path):
+    assert detect_l3_domains(tmp_path) == []
+
+
+def test_detect_numa_domains(tmp_path):
+    root = _mk_sysfs(tmp_path, numa=KUNPENG_NUMA)
+    assert detect_numa_domains(root) == [set(range(32)), set(range(32, 64))]
+
+
+def test_detect_socket_domains(tmp_path):
+    root = _mk_sysfs(tmp_path, sockets={0: 0, 1: 0, 2: 1, 3: 1})
+    assert detect_socket_domains(root) == [{0, 1}, {2, 3}]
+
+
+# ---------------------------------------------------------- select_ccl_domains
+def test_select_auto_prefers_l3_on_zen4(tmp_path):
+    root = _mk_sysfs(tmp_path, l3=ZEN4_L3, numa=["0-15,192-207", "8-15,200-207"])
+    domains, source = select_ccl_domains(Config(), root)
+    # 16-cpu L3 domains >= ccl_vcpus_per_ccl(16) -> bind at CCD granularity.
+    assert source == "sysfs-l3(auto)"
+    assert domains[0] == parse_cpu_list("0-7,192-199")
+
+
+def test_select_auto_falls_back_to_numa_on_kunpeng(tmp_path):
+    root = _mk_sysfs(tmp_path, l3=KUNPENG_L3, numa=KUNPENG_NUMA)
+    domains, source = select_ccl_domains(Config(), root)
+    # 4-cpu CLs < ccl_vcpus_per_ccl(16) -> the coarser NUMA level.
+    assert source.startswith("sysfs-numa(auto")
+    assert domains == [set(range(32)), set(range(32, 64))]
+
+
+def test_select_auto_small_l3_without_numa_still_uses_l3(tmp_path):
+    root = _mk_sysfs(tmp_path, l3=KUNPENG_L3)
+    domains, source = select_ccl_domains(Config(), root)
+    assert source.startswith("sysfs-l3(auto")
+    assert len(domains) == 16
+
+
+def test_select_granularity_config_skips_detection(tmp_path):
+    root = _mk_sysfs(tmp_path, l3=ZEN4_L3)
+    domains, source = select_ccl_domains(Config(ccl_granularity="config"), root)
+    assert source == "config-arithmetic"
+    assert len(domains) == 24
+    assert domains[0] == set(range(16))
+
+
+def test_select_granularity_l3_forced(tmp_path):
+    root = _mk_sysfs(tmp_path, l3=KUNPENG_L3, numa=KUNPENG_NUMA)
+    domains, source = select_ccl_domains(Config(ccl_granularity="l3"), root)
+    assert source == "sysfs-l3"
+    assert len(domains) == 16  # no NUMA fallback when explicitly forced
+
+
+def test_select_explicit_granularity_without_sysfs_falls_back(tmp_path, caplog):
+    with caplog.at_level(logging.WARNING):
+        domains, source = select_ccl_domains(Config(ccl_granularity="l3"), tmp_path)
+    assert source == "config-arithmetic"
+    assert len(domains) == 24
+    assert any("falling back to config arithmetic" in r.message for r in caplog.records)
+
+
+def test_select_unknown_granularity_warns_and_autos(tmp_path, caplog):
+    root = _mk_sysfs(tmp_path, l3=ZEN4_L3)
+    with caplog.at_level(logging.WARNING):
+        _, source = select_ccl_domains(Config(ccl_granularity="ccd"), root)
+    assert source == "sysfs-l3(auto)"
+    assert any("Unknown ccl_granularity" in r.message for r in caplog.records)
+
+
+def test_select_caches_until_reset(tmp_path):
+    root = _mk_sysfs(tmp_path, l3=ZEN4_L3)
+    first = select_ccl_domains(Config(), root)
+    # A different config/root is ignored while the cache is warm...
+    assert select_ccl_domains(Config(ccl_granularity="config"), tmp_path) == first
+    reset_ccl_cache()
+    _, source = select_ccl_domains(Config(ccl_granularity="config"), tmp_path)
+    assert source == "config-arithmetic"
 
 
 # ------------------------------------------------------------- bind_ccl_affinity
@@ -172,24 +320,36 @@ def test_bind_ccl_skips_when_pid_unresolved(monkeypatch):
     assert bind_ccl_affinity("sbx-1", 0, Config()) is False
 
 
-def test_bind_ccl_success_verified(monkeypatch):
+def test_bind_ccl_success_verified_all_threads(monkeypatch, tmp_path):
     monkeypatch.setattr(ccl_mod, "CCL_PID_RESOLVE_ATTEMPTS", 1)
-    reset_ccl_cache()
+    monkeypatch.setattr(ccl_mod, "_SYSFS_ROOT", tmp_path)  # empty -> arithmetic fallback
     RESOLVER._pid_map["sbx-1"] = 999
     # Cached pid -> cache hit, no scan, no liveness check.
-
-    set_calls: list[tuple[int, set[int]]] = []
-    monkeypatch.setattr(os, "sched_setaffinity", lambda pid, mask: set_calls.append((pid, mask)), raising=False)
-    # Kernel reports the requested mask back -> verified.
-    monkeypatch.setattr(ccl_mod, "read_kernel_cpu_affinity", lambda pid: "0-15")
+    masks = _fake_sched(monkeypatch, lambda pid: [999, 1000, 1001])
 
     assert bind_ccl_affinity("sbx-1", 0, Config()) is True
-    assert set_calls == [(999, set(range(0, 16)))]
+    # Domain 0 of the fallback arithmetic = cpus 0-15, applied to EVERY thread
+    # (main 999 + vCPU tids 1000/1001), not just the main one.
+    assert masks == {tid: set(range(16)) for tid in (999, 1000, 1001)}
 
 
-def test_bind_ccl_setaffinity_failure_is_false(monkeypatch):
+def test_bind_ccl_uses_detected_l3_domain_not_arithmetic(monkeypatch, tmp_path):
+    # Regression: on an SMT host the arithmetic block for index 1 would be
+    # cpus 16-31; the detected CCD 1 is "8-15,200-207".
+    root = _mk_sysfs(tmp_path, l3=ZEN4_L3)
+    monkeypatch.setattr(ccl_mod, "_SYSFS_ROOT", root)
     monkeypatch.setattr(ccl_mod, "CCL_PID_RESOLVE_ATTEMPTS", 1)
-    reset_ccl_cache()
+    RESOLVER._pid_map["sbx-2"] = 999
+    masks = _fake_sched(monkeypatch, lambda pid: [999, 1000])
+
+    assert bind_ccl_affinity("sbx-2", 1, Config()) is True
+    expected = set(range(8, 16)) | set(range(200, 208))
+    assert masks == {999: expected, 1000: expected}
+
+
+def test_bind_ccl_setaffinity_failure_is_false(monkeypatch, tmp_path):
+    monkeypatch.setattr(ccl_mod, "CCL_PID_RESOLVE_ATTEMPTS", 1)
+    monkeypatch.setattr(ccl_mod, "_SYSFS_ROOT", tmp_path)
     RESOLVER._pid_map["sbx-1"] = 999
 
     def _fail(pid, mask):
@@ -197,6 +357,55 @@ def test_bind_ccl_setaffinity_failure_is_false(monkeypatch):
 
     monkeypatch.setattr(os, "sched_setaffinity", _fail, raising=False)
     assert bind_ccl_affinity("sbx-1", 0, Config()) is False
+
+
+# ------------------------------------------------- bind_process_all_threads
+def test_bind_all_threads_covers_every_tid(monkeypatch):
+    masks = _fake_sched(monkeypatch, lambda pid: [999, 1000, 1001])
+    ok, detail = bind_process_all_threads(999, set(range(8)))
+    assert ok
+    assert "threads=3" in detail
+    assert masks == {tid: set(range(8)) for tid in (999, 1000, 1001)}
+
+
+def test_bind_second_pass_covers_late_thread(monkeypatch):
+    # A thread that appears during the bind (vCPU spawn race) is caught by the
+    # convergence re-list -- no polling needed.
+    calls = {"n": 0}
+
+    def tids(pid):
+        calls["n"] += 1
+        return [999] if calls["n"] == 1 else [999, 1002]
+
+    masks = _fake_sched(monkeypatch, tids)
+    ok, _ = bind_process_all_threads(999, set(range(8)))
+    assert ok
+    assert masks.get(1002) == set(range(8))
+
+
+def test_bind_verify_fails_when_a_tid_escapes(monkeypatch):
+    # Regression for the old verified=True false-positive: a vCPU thread whose
+    # setaffinity silently did not stick MUST fail the per-tid verification.
+    masks = _fake_sched(monkeypatch, lambda pid: [999, 1000])
+
+    def _set(tid, cpus):
+        if tid != 1000:  # 1000 escapes the bind
+            masks[tid] = set(cpus)
+
+    monkeypatch.setattr(os, "sched_setaffinity", _set, raising=False)
+    ok, detail = bind_process_all_threads(999, set(range(8)))
+    assert not ok
+    assert "mismatched_tids=[1000]" in detail
+
+
+def test_bind_main_setaffinity_failure(monkeypatch):
+    def _raise(tid, cpus):
+        raise OSError(1, "operation not permitted")
+
+    monkeypatch.setattr(os, "sched_setaffinity", _raise, raising=False)
+    ok, detail = bind_process_all_threads(999, set(range(8)))
+    assert not ok
+    assert "failed" in detail
 
 
 # ------------------------------------------------------------- resolver cache
@@ -320,6 +529,7 @@ def test_config_from_raw_reads_ccl_fields():
         {
             "aenv": {
                 "ccl_bind": True,
+                "ccl_granularity": "NUMA",
                 "ccl_total_count": 8,
                 "ccl_vcpus_per_ccl": 32,
             }
@@ -327,6 +537,7 @@ def test_config_from_raw_reads_ccl_fields():
         block="aenv",
     )
     assert cfg.ccl_bind is True
+    assert cfg.ccl_granularity == "numa"  # normalized to lower-case
     assert cfg.ccl_total_count == 8
     assert cfg.ccl_vcpus_per_ccl == 32
 
@@ -334,5 +545,6 @@ def test_config_from_raw_reads_ccl_fields():
 def test_config_ccl_defaults_off():
     cfg = Config.from_raw({"aenv": {}}, block="aenv")
     assert cfg.ccl_bind is False
+    assert cfg.ccl_granularity == "auto"
     assert cfg.ccl_total_count == 24
     assert cfg.ccl_vcpus_per_ccl == 16

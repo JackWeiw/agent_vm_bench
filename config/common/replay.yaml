@@ -53,19 +53,24 @@ aenv:
   # stores its data (no shell env var to export). Falls back to $AENV_HOME_PATH
   # / $AENV_HOME, then /var/lib/aenv. snapshot_dir overrides the full base.
   # aenv_home_path: "/var/lib/aenv"
-  # CCL CPU-affinity binding: pin each sandbox's warm-pooled firecracker to a
-  # dedicated CCL vCPU set (sandbox_index % total_count) so concurrent VMs
-  # don't contend for the same physical cores. Opt-in; needs root on the AENV
-  # host (MMDS socket + sched_setaffinity). Topology defaults to 384 vCPU /
-  # 16 per CCL = 24 CCLs -- override per host. Best-effort: failures warn +
-  # skip, never blocking a successful create. EXEC_ONLY ONLY: lifecycle /
-  # trajectory respawn the firecracker on each resume (pause kills the
-  # process, resume takes a fresh one from the warm pool), so the pid is
-  # unstable and re-binding per resume would block the stress path. With
-  # replay.mode != exec_only, ccl_bind is a no-op (warned + skipped).
+  # CCL CPU-affinity binding: pin each sandbox's warm-pooled firecracker --
+  # ALL threads, one-shot at create (main thread first so later-spawned
+  # threads inherit the mask, then a /proc/<pid>/task sweep; no polling) --
+  # to one sysfs-detected silicon L3 domain (AMD CCD / Kunpeng CL),
+  # round-robin by sandbox index, so concurrent VMs don't contend for the
+  # same physical cores. Opt-in; needs root on the AENV host (MMDS socket +
+  # sched_setaffinity). Best-effort: failures warn + skip, never blocking a
+  # successful create. EXEC_ONLY / EXEC_EPHEMERAL ONLY: lifecycle / trajectory
+  # respawn the firecracker on each resume (pid unstable), so ccl_bind is a
+  # no-op there (warned + skipped).
+  # ccl_granularity: auto = L3 domains, auto-falling back to NUMA when an L3
+  # domain holds fewer CPUs than ccl_vcpus_per_ccl (the Kunpeng CL=4 case);
+  # l3 / numa / socket force a level; config = legacy arithmetic below (also
+  # the fallback when sysfs detection finds nothing).
   # ccl_bind: true
-  # ccl_total_count: 24
-  # ccl_vcpus_per_ccl: 16
+  # ccl_granularity: auto
+  # ccl_total_count: 24      # fallback arithmetic topology only
+  # ccl_vcpus_per_ccl: 16    # fallback block size + auto's min L3-domain size
   env:
     E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
     E2B_API_KEY: "your_e2b_api_key_here"
