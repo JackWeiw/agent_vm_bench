@@ -63,6 +63,9 @@ aenv:
   # stores its data (no shell env var to export). Falls back to $AENV_HOME_PATH
   # / $AENV_HOME, then /var/lib/aenv. snapshot_dir overrides the full base.
   # aenv_home_path: "/var/lib/aenv"
+  # CCL binding is a NO-OP in trajectory mode (firecracker respawns per resume,
+  # pid unstable). Switch kept for config-family consistency -- see replay.yaml.
+  ccl_bind: false
   env:
     E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
     E2B_API_KEY: "your_e2b_api_key_here"

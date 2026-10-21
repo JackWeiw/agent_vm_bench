@@ -51,6 +51,11 @@ aenv:
   # in exec_only (no pause/snapshot), kept for config parity with replay.yaml.
   # Falls back to $AENV_HOME_PATH / $AENV_HOME, then /var/lib/aenv.
   # aenv_home_path: "/var/lib/aenv"
+  # CCL CPU-affinity binding: pin each sandbox's firecracker -- ALL threads,
+  # one-shot at create -- to one sysfs-detected silicon L3 domain (AMD CCD /
+  # Kunpeng CL), round-robin by sandbox index. Needs root on the AENV host.
+  # Full docs (granularity, fallback arithmetic): config/common/replay.yaml.
+  ccl_bind: false              # <- the on/off switch
   env:
     E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
     E2B_API_KEY: "your_e2b_api_key_here"
