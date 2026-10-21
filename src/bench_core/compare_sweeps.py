@@ -52,6 +52,7 @@ TRAJECTORY_METRIC_COLS = [
     "requested_delay_sec",
     "create_sec",
     "kill_sec",
+    "stress_sec",
     "interaction_total_sec",
     "slot_contention_wait_sec",
     "natural_delay_sec",
@@ -79,6 +80,14 @@ COMPONENT_COLS = [
     "pause_sec",
     "slot_contention_wait_sec",
 ]
+
+# Metric columns that MAY be absent from older trajectory-detail.csv files
+# (added to TRAJECTORY_METRIC_COLS after the tool's first release, e.g.
+# stress_sec). ``build_tidy`` melts the intersection, so an old sweep dir still
+# compares via the CLI with the metric simply absent from tidy. A NEW metric
+# column must be listed here or the contract check below rejects every
+# pre-existing sweep dir.
+OPTIONAL_METRIC_COLS = frozenset({"stress_sec"})
 
 # Trial-summary CSV metric columns surfaced in the ratio summary (per-trial
 # aggregates, distinct from the per-trajectory medians). Must match
@@ -151,8 +160,12 @@ def _read_series_tables(manifest: dict) -> dict[str, dict[str, pd.DataFrame]]:
         traj = pd.read_csv(traj_p)
         trial = pd.read_csv(trial_p)
         # Validate the contract: the columns we melt / aggregate must be present.
+        # Later-added metric columns (OPTIONAL_METRIC_COLS) are exempt so sweep
+        # dirs written before them still load (build_tidy melts the intersection).
         missing = [
-            c for c in ["mode", "ratio", "repeat", "trajectory_id", *TRAJECTORY_METRIC_COLS] if c not in traj.columns
+            c
+            for c in ["mode", "ratio", "repeat", "trajectory_id", *TRAJECTORY_METRIC_COLS]
+            if c not in traj.columns and c not in OPTIONAL_METRIC_COLS
         ]
         if missing:
             raise ValueError(f"series {label!r} trajectory-detail.csv missing columns: {missing}")
@@ -189,7 +202,14 @@ def build_tidy(manifest: dict, tables: dict[str, dict[str, pd.DataFrame]]) -> pd
         # CSVs don't, so include it only when present (backward-compat melt).
         if "round_id" in df.columns:
             id_vars.append("round_id")
-        tidy = df.melt(id_vars=id_vars, value_vars=TRAJECTORY_METRIC_COLS, var_name="metric", value_name="value")
+        # value_vars filtered to present columns so an older trajectory-detail.csv
+        # (missing a since-added metric, e.g. stress_sec) melts without KeyError.
+        tidy = df.melt(
+            id_vars=id_vars,
+            value_vars=[c for c in TRAJECTORY_METRIC_COLS if c in df.columns],
+            var_name="metric",
+            value_name="value",
+        )
         frames.append(tidy)
     return pd.concat(frames, ignore_index=True)
 

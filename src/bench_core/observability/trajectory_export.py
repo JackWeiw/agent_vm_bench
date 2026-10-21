@@ -194,12 +194,16 @@ def _sanitize_tid(tid: str) -> str:
     return f"{name}_{suffix}"
 
 
-def _flat_breakdown(sums: dict, requested_delay: float, create: float, kill: float) -> dict:
+def _flat_breakdown(sums: dict, requested_delay: float, create: float, kill: float, stress: float) -> dict:
     """Flat short-key breakdown dict from a single run's sums (for index runs[])."""
     bd = {_short: round(float(sums[seg]), 6) for seg, _short in _BREAKDOWN_SHORT.items()}
     bd["requested_delay"] = round(float(requested_delay), 6)
     bd["create"] = round(float(create), 6)
     bd["kill"] = round(float(kill), 6)
+    # The stress window (elapsed - create - kill, clamped at 0): with the total
+    # elapsed_sec beside it, a run row decomposes exactly as
+    # elapsed = create + kill + stress without the reader re-deriving anything.
+    bd["stress"] = round(float(stress), 6)
     return bd
 
 
@@ -210,6 +214,7 @@ def _flat_breakdown_p50(set_dict: dict) -> dict:
     bd["requested_delay"] = set_dict["requested_delay_sec"]["p50"]
     bd["create"] = set_dict["create_sec"]["p50"]
     bd["kill"] = set_dict["kill_sec"]["p50"]
+    bd["stress"] = set_dict["stress_sec"]["p50"]
     return bd
 
 
@@ -278,6 +283,7 @@ def _build_run_record(s: dict, steps: list[dict]) -> dict:
         "success_rate": s["success_rate"],
         "success": success,
         "elapsed_sec": s["elapsed_sec"],
+        "stress_sec": s["stress_sec"],
         "requested_delay_sec": s["requested_delay_sec"],
         "create_sec": round(s["create_sec"], 6),
         "kill_sec": round(s["kill_sec"], 6),
@@ -397,7 +403,9 @@ def _index_row(agg: dict, run_summaries: list[dict], sanitized: str, action_seri
             "success": r["success_rate"] is not None and r["success_rate"] >= 1.0,
             "create_error_type": r["create_error_type"],
             "kill_error_type": r["kill_error_type"],
-            "time_breakdown_sec": _flat_breakdown(r["sums"], r["requested_delay_sec"], r["create_sec"], r["kill_sec"]),
+            "time_breakdown_sec": _flat_breakdown(
+                r["sums"], r["requested_delay_sec"], r["create_sec"], r["kill_sec"], r["stress_sec"]
+            ),
         }
         for r in run_summaries
     ]

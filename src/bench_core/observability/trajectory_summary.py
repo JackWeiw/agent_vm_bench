@@ -4,7 +4,12 @@ Two tiers:
 
 - :func:`trajectory_summaries` -- the RAW per-run layer, keyed by
   ``(trajectory_id, sandbox_index, round_id)``. One record per *run* (one
-  sandbox's execution of one trajectory in one round). Sums, ``avg_slice``,
+  sandbox's execution of one trajectory in one round). ``round_id`` is the
+  per-pass run identity: the round-robin manager's round ordinal, or (fixed
+  mode) the slot's 0-based pass ordinal stamped by the runner's
+  ``_begin_pass`` hook -- so repeated passes of one trajectory on one slot
+  NEVER merge (older series files carry ``round_id=None`` throughout; they
+  predate per-pass stamping and still parse). Sums, ``avg_slice``,
   ``elapsed_sec`` and ``requested_delay_sec`` are computed WITHIN that one run;
   this is the kernel-emit-raw-facts layer that downstream consumers (the oversub
   driver's ``trajectory-detail.csv``, the obs sheet) expand into per-run rows.
@@ -67,6 +72,7 @@ SEG_KEYS = (
 # nested under ``sums`` and aggregated into ``time_breakdown_sec``).
 _RUN_METRIC_FIELDS = (
     "elapsed_sec",
+    "stress_sec",
     "avg_slice",
     "requested_delay_sec",
     "create_sec",
@@ -106,9 +112,9 @@ def trajectory_summaries(events: list[dict]) -> list[dict]:
 
     Returns one dict per RUN, sorted by (trajectory_id, sandbox_index, round_id).
     Each dict: ``{trajectory_id, sandbox_index, round_id, n_steps, n_failed,
-    n_timeout, success_rate, sums, avg_slice, elapsed_sec, requested_delay_sec,
-    create_sec, kill_sec, create_error_type, kill_error_type, create_error,
-    kill_error}``.
+    n_timeout, success_rate, sums, avg_slice, elapsed_sec, stress_sec,
+    requested_delay_sec, create_sec, kill_sec, create_error_type,
+    kill_error_type, create_error, kill_error}``.
 
     - **Sums include failed steps at 0.0** (honest cost attribution; a failed
       slice did no work but still counts as an attempted step so avg_slice
@@ -125,6 +131,13 @@ def trajectory_summaries(events: list[dict]) -> list[dict]:
       series lacks real timestamps (exec-only / synthetic). Real stamps are
       ``time.time()`` epochs (~1.8e9); a failed step's zeroed sentinels (0.0)
       are dropped so they cannot collapse the span to ~1.8e9s.
+    - ``stress_sec`` is the load-bearing complement of ``elapsed_sec``: the
+      stress window alone (``elapsed_sec - create_sec - kill_sec``, clamped at
+      0), so the per-run decomposition ``elapsed = create + kill + stress`` is
+      exact by construction on BOTH elapsed paths -- a reader never has to
+      guess how much of a run's wall was sandbox plumbing vs actual replay.
+      The stress window is itself attributable via ``sums`` (exec / slice /
+      inter-step delay / lifecycle waits).
     - ``create_sec``/``kill_sec`` sum within the run (a single create/kill per
       run in normal flow); ``create_error``/``kill_error`` carry the short error
       STRING from a ``trajectory_create(success=False)``/``trajectory_kill(success=False)``
@@ -245,6 +258,7 @@ def trajectory_summaries(events: list[dict]) -> list[dict]:
         else:
             elapsed = slice_sum + st["req_delay"] + create_kill
         acc["elapsed_sec"] = round(elapsed, 6)
+        acc["stress_sec"] = round(max(elapsed - create_kill, 0.0), 6)
         acc["requested_delay_sec"] = round(st["req_delay"], 6)
         out.append(acc)
     return out

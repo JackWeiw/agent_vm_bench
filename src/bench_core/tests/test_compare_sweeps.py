@@ -69,6 +69,8 @@ def _traj_row(mode: str, ratio: int, traj_id: str, elapsed: float) -> dict:
         "requested_delay_sec": elapsed * 0.05,
         "create_sec": 0.05,
         "kill_sec": 0.05,
+        # stress window: elapsed - create - kill (the per-run identity).
+        "stress_sec": elapsed - 0.1,
         "interaction_total_sec": elapsed * 0.8,
         "slot_contention_wait_sec": elapsed * 0.1,
         "natural_delay_sec": elapsed * 0.05,
@@ -264,8 +266,8 @@ def test_build_tidy_shape_and_caps(tmp_path):
 
     tables = _read_series_tables(manifest)
     tidy = build_tidy(manifest, tables)
-    # 2 series * 2 ratios * 2 trajectories * 19 metrics = 152 rows.
-    assert len(tidy) == 2 * 2 * 2 * 19
+    # 2 series * 2 ratios * 2 trajectories * 20 metrics = 160 rows.
+    assert len(tidy) == 2 * 2 * 2 * 20
     # caps exploded to columns (union: freq_ghz, l3_mb); arm lacks freq_ghz -> NaN.
     assert {"series", "arch", "l3_mb", "freq_ghz", "mode", "ratio", "trajectory_id", "metric", "value"} <= set(
         tidy.columns
@@ -273,6 +275,49 @@ def test_build_tidy_shape_and_caps(tmp_path):
     arm_rows = tidy[tidy["series"] == "arm"]
     assert arm_rows["l3_mb"].iloc[0] == 256
     assert arm_rows["freq_ghz"].isna().all()
+
+
+def test_build_tidy_old_csv_without_stress_col(tmp_path):
+    """Backward compat through the CLI path: a trajectory-detail.csv written
+    before stress_sec (or any later-added metric column) existed must pass
+    _read_series_tables' contract check AND melt without KeyError -- optional
+    columns are simply absent from tidy, so old sweep dirs stay comparable.
+    The fixture mirrors a real pre-stress_sec sweep dir: every other contract
+    column present, only stress_sec missing."""
+    old_cols = [c for c in TRAJECTORY_COLUMNS if c != "stress_sec"]
+    with open(tmp_path / "trajectory-detail.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=old_cols, extrasaction="ignore", restval="")
+        w.writeheader()
+        w.writerow(_traj_row("lifecycle", 1, "t0", 2.0))
+    _write_trial(tmp_path / "trial-summary.csv", [{"mode": "lifecycle", "ratio": 1, "repeat": 1}])
+    manifest = {
+        "baseline_series": "old",
+        "series": [{"label": "old", "arch": "", "dir": str(tmp_path), "caps": {}}],
+    }
+    from bench_core.compare_sweeps import TRAJECTORY_METRIC_COLS, _read_series_tables
+
+    tables = _read_series_tables(manifest)  # must not reject the old CSV
+    tidy = build_tidy(manifest, tables)
+    expected_metrics = {c for c in TRAJECTORY_METRIC_COLS if c != "stress_sec"}
+    assert set(tidy["metric"]) == expected_metrics
+    assert len(tidy) == len(expected_metrics)  # one traj row x present metrics
+
+
+def test_read_series_tables_still_requires_core_metric_cols(tmp_path):
+    """The OPTIONAL_METRIC_COLS exemption is narrow: a CSV missing a core
+    metric (elapsed_sec) still fails the contract check loudly."""
+    (tmp_path / "trajectory-detail.csv").write_text(
+        "mode,ratio,repeat,trajectory_id,exec_sec\nlifecycle,1,1,t0,1.0\n", encoding="utf-8"
+    )
+    (tmp_path / "trial-summary.csv").write_text("mode,ratio,repeat\nlifecycle,1,1\n", encoding="utf-8")
+    manifest = {
+        "baseline_series": "bad",
+        "series": [{"label": "bad", "arch": "", "dir": str(tmp_path), "caps": {}}],
+    }
+    from bench_core.compare_sweeps import _read_series_tables
+
+    with pytest.raises(ValueError, match="elapsed_sec"):
+        _read_series_tables(manifest)
 
 
 def test_build_ratio_summary_medians_and_deltas(tmp_path):

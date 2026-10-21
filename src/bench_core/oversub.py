@@ -350,6 +350,8 @@ RATIO_COLUMNS = [
 # decompose ``elapsed_sec`` into exec / lifecycle-API (resume+pause) /
 # inter-step think delay / create+kill cost / queueing waits, so a reader can
 # attribute where each trajectory's wall time went without opening replay_result.json.
+# ``stress_sec`` is the stress window (elapsed - create - kill, clamped at 0):
+# ``elapsed_sec = create_sec + kill_sec + stress_sec`` holds per run row.
 # index.json short key -> CSV column name (kept aligned with trajectory_export._index_row).
 _TRAJECTORY_BREAKDOWN_COLUMNS = [
     "slice_total_sec",
@@ -359,6 +361,7 @@ _TRAJECTORY_BREAKDOWN_COLUMNS = [
     "requested_delay_sec",
     "create_sec",
     "kill_sec",
+    "stress_sec",
     "interaction_total_sec",
     "slot_contention_wait_sec",
     # Wait-decoupling split (the four independent components + per-phase inflight).
@@ -380,6 +383,7 @@ _BREAKDOWN_KEY_TO_COL = {
     "requested_delay": "requested_delay_sec",
     "create": "create_sec",
     "kill": "kill_sec",
+    "stress": "stress_sec",
     "interaction_total": "interaction_total_sec",
     "slot_contention_wait": "slot_contention_wait_sec",
     "natural_delay": "natural_delay_sec",

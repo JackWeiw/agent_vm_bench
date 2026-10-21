@@ -209,6 +209,63 @@ class TestTrajectorySummaries:
         assert agg[0]["n_runs"] == 2
         assert agg[0]["all_runs"]["time_breakdown_sec"]["exec_sec"]["p50"] == 0.4  # median, not sum
 
+    def test_stress_sec_fallback_path_exact(self):
+        # No real stamps (exec-only / synthetic): elapsed falls back to
+        # slice_total + requested_delay + create + kill, so stress_sec is
+        # exactly the replay work (slice_total + delay) and the per-run
+        # decomposition elapsed = create + kill + stress is exact.
+        events = [
+            {
+                "event": "trajectory_create",
+                "sandbox_index": 0,
+                "trajectory_id": "t",
+                "create_sec": 2.0,
+                "success": True,
+            },
+            _step("t", step_index=0, exec_sec=0.4, resume_sec=0.1, pause_sec=0.2),
+            {
+                "event": "trajectory_kill",
+                "sandbox_index": 0,
+                "trajectory_id": "t",
+                "kill_sec": 0.5,
+                "success": True,
+            },
+        ]
+        r = trajectory_summaries(events)[0]
+        assert r["stress_sec"] == 0.7  # slice_total only (no delay, no stamps)
+        assert round(r["elapsed_sec"], 6) == round(r["create_sec"] + r["kill_sec"] + r["stress_sec"], 6)
+        assert r["elapsed_sec"] == 3.2
+        # stress flows into the per-tid aggregate via _RUN_METRIC_FIELDS.
+        agg = aggregate_trajectories([r])[0]
+        assert agg["all_runs"]["stress_sec"]["p50"] == 0.7
+
+    def test_stress_sec_stamps_path_is_wall_span(self):
+        # Real stamps: stress_sec is the first-resume -> last-pause wall span
+        # (create/kill excluded even when present).
+        events = [
+            _step(
+                "t",
+                step_index=0,
+                resume_start=1_000_000_000.0,
+                pause_end=1_000_000_004.0,
+                exec_sec=0.4,
+                resume_sec=0.1,
+                pause_sec=0.2,
+            ),
+            _step(
+                "t",
+                step_index=1,
+                resume_start=1_000_000_006.0,
+                pause_end=1_000_000_010.0,
+                exec_sec=0.4,
+                resume_sec=0.1,
+                pause_sec=0.2,
+            ),
+        ]
+        r = trajectory_summaries(events)[0]
+        assert r["stress_sec"] == 10.0
+        assert r["elapsed_sec"] == 10.0  # no create/kill events in this run
+
     def test_create_kill_error_surfaced(self):
         # trajectory_create(success=False) carries error_type + error ([:120]);
         # the short error string is the failure signal a user sees for a failed

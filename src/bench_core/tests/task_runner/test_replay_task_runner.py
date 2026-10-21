@@ -290,3 +290,64 @@ def test_fixed_exec_ephemeral_multiplier_runs_exactly_m():
     assert state.replay_metrics.trajectory_completions == 3
     # Stop-when-done: returns promptly, well under any fixed duration ceiling.
     assert wall < 5.0
+
+
+def test_fixed_exec_ephemeral_passes_stay_distinct_run_rows():
+    """Run-merge-key regression: M=2 over a single-trajectory pool replays the
+    SAME trajectory twice on the SAME slot. Before per-pass round_id stamping
+    (the _begin_pass hook), both passes emitted round_id=None and
+    trajectory_summaries merged them into ONE run row -- n_steps=2*M, doubled
+    create/kill, and an elapsed_sec spanning both passes including the
+    inter-pass kill+create gap (the "double steps" oversub ambiguity). Each
+    pass must now be its own run: round_id 0/1, own steps, own create/kill,
+    and the per-run decomposition elapsed = create + kill + stress.
+    """
+    from pathlib import Path
+
+    from bench_core.observability.trajectory_summary import trajectory_summaries
+    from bench_core.payload.replay_payload import reset_pool_cache
+    from bench_core.task_runner.replay import ReplayTaskRunner
+
+    reset_pool_cache()
+    config = KernelConfig(
+        workflow_type="replay",
+        workflow_config=ReplayConfig(
+            replay_trajectory_dir=str(Path(__file__).parent.parent / "fixtures" / "replay"),
+            replay_trajectory_glob="no_terminal.json",  # one trajectory, 2 steps
+            replay_delay_scale=0.0,
+            replay_mode="exec_ephemeral",
+            replay_multiplier=2,
+        ),
+    )
+    state = _make_state()
+
+    class _Collector:
+        def __init__(self):
+            self.events: list[dict] = []
+
+        def write(self, rec):
+            self.events.append(rec)
+
+    series = _Collector()
+    runner = ReplayTaskRunner(
+        RunContext(
+            state=state, config=config, stop_event=threading.Event(), provider=FakeProvider(count=1), series=series
+        )
+    )
+    runner.run()
+
+    assert state.replay_metrics.trajectory_completions == 2
+    # Every trajectory-keyed event carries the pass ordinal, not None.
+    creates = [e for e in series.events if e.get("event") == "trajectory_create"]
+    kills = [e for e in series.events if e.get("event") == "trajectory_kill"]
+    assert sorted(e["round_id"] for e in creates) == [0, 1]
+    assert sorted(e["round_id"] for e in kills) == [0, 1]
+    # Two run rows, one per pass -- NOT one merged row.
+    runs = trajectory_summaries(series.events)
+    assert [r["round_id"] for r in runs] == [0, 1]
+    for r in runs:
+        assert r["trajectory_id"] == "interrupted-traj"
+        assert r["n_steps"] == 2  # one pass worth of steps, not 2*M
+        assert r["create_sec"] > 0.0  # its OWN create, not the doubled sum
+        # elapsed = create + kill + stress, exact to the rounding boundary.
+        assert abs(r["elapsed_sec"] - (r["create_sec"] + r["kill_sec"] + r["stress_sec"])) < 1e-4
