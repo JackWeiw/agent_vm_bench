@@ -67,7 +67,8 @@ aenv:
   # Kunpeng CL -- both bind at silicon granularity; NUMA only when the host
   # exposes no L3 domains); l3 / numa / socket force a level; config = legacy
   # arithmetic below (also the fallback when sysfs detection finds nothing).
-  ccl_bind: false              # <- the on/off switch (no-op in lifecycle / trajectory modes)
+  # ccl_bind: true             # active only with replay.mode exec_only / exec_ephemeral
+                               # (e.g. an oversub sweep overriding mode); no-op in lifecycle
   # ccl_granularity: auto
   # ccl_total_count: 24      # fallback arithmetic topology only (new Kunpeng layout)
   # ccl_vcpus_per_ccl: 16    # fallback arithmetic block size
