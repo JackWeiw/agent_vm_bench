@@ -166,6 +166,14 @@ def test_log_rotation_config_shorthand_and_defaults():
     assert lr2.perf_events == ["cycles", "instructions"]
 
 
+def test_log_rotation_config_intervals_accepts_uprof():
+    # uprof joins devkit/ksys/perf as a valid per-tool interval key.
+    lr = KernelConfig.from_raw(
+        {"sandbox": {"total_count": 1}, "monitor": {"log_rotation": {"intervals": {"devkit": 20, "uprof": 10}}}}
+    ).monitor.log_rotation
+    assert lr.intervals == {"devkit": 20, "uprof": 10}
+
+
 def test_log_rotation_config_invalid_warns_and_drops(caplog):
     cfg = KernelConfig.from_raw({"sandbox": {"total_count": 1}, "monitor": {"log_rotation": "banana"}})
     assert cfg.monitor.log_rotation is None

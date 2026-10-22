@@ -6,10 +6,11 @@ Runs multiple log collection tools (devkit, ksys, ub_watch, smap_bw, getfre)
 in parallel subprocesses and threads, synchronized with QEMU monitoring duration.
 
 Log-rotation mode (``log_rotation=True``): devkit (top-down + memory in
-parallel) -> ksys -> ``perf stat`` rotate one slot at a time for the whole
-stress window instead of running everything concurrently; ub_watch / smap_bw /
-getfre keep their all-parallel behavior. Each turn writes a timestamped log
-under ``<rotation_log_dir>/{devkit/{topdown,memory},ksys,perf}/``.
+parallel) -> ksys -> ``perf stat`` -> AMDuProfPcm rotate one slot at a time
+for the whole stress window instead of running everything concurrently;
+ub_watch / smap_bw / getfre keep their all-parallel behavior. Each turn
+writes a timestamped log under
+``<rotation_log_dir>/{devkit/{topdown,memory},ksys,perf,uprof}/``.
 """
 
 import os
@@ -31,9 +32,14 @@ DEFAULT_ROTATION_PERF_EVENTS = (
     "l2d_tlb,l2d_tlb_refill,l2i_tlb,l2i_tlb_refill,context-switches,sched:sched_switch"
 )
 
+# Default AMDuProfPcm collection spec for log-rotation mode (system-wide
+# memory + pipeline-utilization counters). The binary path comes from .env
+# (UPROF_PATH); the per-turn ``-d <interval>`` is appended by the rotation turn.
+DEFAULT_UPROF_ARGS = ("-m", "memory,pipeline_util", "-a", "-A", "system,package")
+
 
 class LogCapture:
-    """Parallel log collection with devkit, ksys, ub_watch, smap_bw
+    """Parallel log collection with devkit, ksys, ub_watch, smap_bw, uprof
 
     Runs collection tools in background, synchronized with QEMU monitoring duration.
     All output is redirected to log files, not interfering with terminal display.
@@ -75,13 +81,14 @@ class LogCapture:
                 --no-devkit-topdown) split them. Default empty = both run.
                 In rotation mode it filters the devkit slot the same way.
             log_rotation: rotation mode -- devkit (top-down + memory in parallel)
-                -> ksys -> perf stat rotate one slot per rotation_interval instead
-                of running all tools concurrently. devkit/ksys leave the parallel
-                set (they rotate); ub_watch/smap_bw/getfre are unchanged. Each
-                turn writes a timestamped log under rotation_log_dir.
+                -> ksys -> perf stat -> AMDuProfPcm rotate one slot per
+                rotation_interval instead of running all tools concurrently.
+                devkit/ksys leave the parallel set (they rotate);
+                ub_watch/smap_bw/getfre are unchanged. Each turn writes a
+                timestamped log under rotation_log_dir.
             rotation_interval: per-slot collection duration in seconds (default 15).
                 Accepts an int (applies to every tool) or a dict mapping
-                ``{"devkit": sec, "ksys": sec, "perf": sec}`` so each tool runs
+                ``{"devkit": sec, "ksys": sec, "perf": sec, "uprof": sec}`` so each tool runs
                 its own interval; keys absent from the dict fall back to 15.
                 ``self.rotation_interval`` keeps the largest value for join/stop
                 budgets, and ``self.rotation_intervals`` holds the resolved
@@ -110,7 +117,7 @@ class LogCapture:
         self.getfre_threads = {}  # {numa_id: Thread}
         self.getfre_log_files = {}  # {numa_id: file handle}
         self.getfre_stop_flags = {}  # {numa_id: Event}
-        # log-rotation components (devkit -> ksys -> perf round-robin)
+        # log-rotation components (devkit -> ksys -> perf -> uprof round-robin)
         self.log_rotation = log_rotation
         # rotation_interval may be a single int (all tools share it) or a dict
         # {"devkit": sec, "ksys": sec, "perf": sec} for per-tool intervals.
@@ -125,10 +132,12 @@ class LogCapture:
             "devkit_mem": [],
             "ksys": [],
             "perf": [],
+            "uprof": [],
         }
         self._rotation_ksys_procs = []  # (proc, log_path) pairs: ksys procs still parsing in background
         self._rotation_devkit_procs = []  # devkit processes still finishing in background
         self._rotation_perf_procs = []  # perf processes still finishing in background
+        self._rotation_uprof_procs = []  # uprof processes still finishing in background
         self._rotation_skipped = set()  # tools disabled for the rest of the run
 
     def _get_cpu_range(self) -> str:
@@ -393,17 +402,18 @@ class LogCapture:
 
     # ------------------------------------------------------------------
     # Log-rotation mode: devkit (top-down + memory in parallel) -> ksys ->
-    # perf stat, one slot per rotation_interval, repeating while stress runs.
+    # perf stat -> AMDuProfPcm, one slot per rotation_interval, repeating
+    # while stress runs.
     # ------------------------------------------------------------------
 
-    _ROTATION_TOOLS = ("devkit", "ksys", "perf")
+    _ROTATION_TOOLS = ("devkit", "ksys", "perf", "uprof")
 
     @classmethod
     def _resolve_rotation_intervals(cls, raw) -> tuple[dict[str, int], int]:
         """Normalize ``rotation_interval`` into a per-tool map + a budget value.
 
         ``raw`` is an int (every tool shares it) or a dict
-        ``{"devkit": sec, "ksys": sec, "perf": sec}``; keys absent from the dict
+        ``{"devkit": sec, "ksys": sec, "perf": sec, "uprof": sec}``; keys absent from the dict
         fall back to the default (15). Returns ``(intervals, max_interval)`` --
         ``intervals`` maps each rotation tool to a >= 1 second value, and
         ``max_interval`` is the largest (used for stop()/wait() join budgets).
@@ -414,7 +424,7 @@ class LogCapture:
             intervals = {t: max(1, int(raw.get(t, base))) for t in cls._ROTATION_TOOLS}
         else:
             val = max(1, int(raw)) if raw is not None else default
-            intervals = {t: val for t in cls._ROTATION_TOOLS}
+            intervals = dict.fromkeys(cls._ROTATION_TOOLS, val)
         return intervals, max(intervals.values())
 
     def _rotation_log_path(self, tool: str, *sub: str) -> str | None:
@@ -691,6 +701,65 @@ class LogCapture:
         except Exception:
             pass
 
+    def _rotation_uprof_turn(self) -> None:
+        """One uprof slot: AMDuProfPcm system-wide counters into a per-turn log."""
+        if "uprof" in self._rotation_skipped:
+            return
+        if not self.config.get("uprof_path"):
+            self._rotation_skip_tool("uprof", "uprof_path not configured")
+            return
+        interval = str(self.rotation_intervals["uprof"])
+        cmd = [self.config["uprof_path"], *DEFAULT_UPROF_ARGS, "-d", interval]
+        log_path = self._rotation_log_path("uprof")
+        if log_path is None:
+            return
+        try:
+            fh = open(log_path, "w")
+        except OSError as e:
+            print(f"  [ERROR] rotation uprof cannot open log {log_path}: {e}")
+            return
+        print(f"  [CMD] uprof (rotation): {' '.join(cmd)}")
+        self.rotation_turns["uprof"].append(log_path)
+        try:
+            # Counters go to stdout; merge stderr into the log too.
+            proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT, cwd=self.rotation_log_dir)
+        except OSError as e:
+            # Cannot exec (bad path, no exec bit) -- skip for the rest of the
+            # run instead of retrying every turn.
+            self._rotation_skip_tool("uprof", f"failed to start: {e}")
+            if self.rotation_turns["uprof"] and self.rotation_turns["uprof"][-1] == log_path:
+                self.rotation_turns["uprof"].pop()
+            try:
+                fh.close()
+            except Exception:
+                pass
+            try:
+                os.unlink(log_path)  # drop the empty log from the failed turn
+            except OSError:
+                pass
+            try:
+                os.rmdir(os.path.dirname(log_path))  # drop the empty uprof dir too
+            except OSError:
+                pass
+            return
+        # Wait for the collect duration only (interval seconds); an AMDuProfPcm
+        # process that runs over (startup overhead, system load) continues in
+        # the background and is reaped in stop().  Closing the parent handle is
+        # safe: the child keeps its own dup.
+        deadline = time.monotonic() + self.rotation_intervals["uprof"]
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                break
+            time.sleep(0.5)
+        if proc.poll() is None:
+            self._rotation_uprof_procs.append(proc)
+        elif proc.returncode != 0:
+            self.failed_runtime.append({"tool": "uprof", "returncode": proc.returncode})
+        try:
+            fh.close()
+        except Exception:
+            pass
+
     def _run_slot(self, turn, interval=None) -> None:
         """Run one rotation slot, then hold the slot open for its full interval.
 
@@ -707,14 +776,14 @@ class LogCapture:
             self.rotation_stop_flag.wait(timeout=0.5)
 
     def _rotation_thread_main(self) -> None:
-        """devkit(topdown+memory parallel) -> ksys -> perf, repeating while stress runs."""
+        """devkit(topdown+memory parallel) -> ksys -> perf -> uprof, repeating while stress runs."""
         # Lock mode: idle until the stress lock appears (or stop/-t). Timer
         # mode (no stress_file): start immediately, bounded by `duration`.
         if self.stress_file and not self._wait_for_stress_lock():
             return
         t0 = time.monotonic()
         while not self.rotation_stop_flag.is_set() and self._stress_active() and time.monotonic() - t0 < self.duration:
-            if {"devkit", "ksys", "perf"} <= self._rotation_skipped:
+            if {"devkit", "ksys", "perf", "uprof"} <= self._rotation_skipped:
                 print("  [WARN] rotation: no runnable tools left, rotation stopped")
                 return
             # Stop between slots once stress ends; an in-flight tool finishes
@@ -731,6 +800,10 @@ class LogCapture:
                     break
                 if "perf" not in self._rotation_skipped:
                     self._run_slot(self._rotation_perf_turn, self.rotation_intervals["perf"])
+                if self.rotation_stop_flag.is_set() or not self._stress_active():
+                    break
+                if "uprof" not in self._rotation_skipped:
+                    self._run_slot(self._rotation_uprof_turn, self.rotation_intervals["uprof"])
             except Exception as e:  # noqa: BLE001 -- rotation must never kill the bench
                 print(f"  [ERROR] rotation turn failed, stopping rotation: {e}")
                 return
@@ -800,7 +873,7 @@ class LogCapture:
             failed.append(("getfre", err))
             self.failed_startup.append("getfre")
 
-        # Start the rotation thread (devkit -> ksys -> perf, one slot at a time).
+        # Start the rotation thread (devkit -> ksys -> perf -> uprof, one slot at a time).
         # It idles until the stress lock appears, so starting it here is safe.
         if rotate:
             self.rotation_thread = threading.Thread(target=self._rotation_thread_main, name="log-rotation")
@@ -829,6 +902,16 @@ class LogCapture:
                     except Exception:
                         pass
         for proc in self._rotation_perf_procs:
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+        for proc in self._rotation_uprof_procs:
             if proc.poll() is None:
                 try:
                     proc.terminate()
@@ -1156,7 +1239,7 @@ class LogCapture:
             success.append("getfre")
 
         # Rotation mode: the rotated tools never enter self.processes; report
-        # the thread as the carrier of devkit/ksys/perf instead.
+        # the thread as the carrier of devkit/ksys/perf/uprof instead.
         if self.log_rotation and self.rotation_thread is not None:
             success.append("log_rotation")
 

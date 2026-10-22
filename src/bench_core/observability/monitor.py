@@ -6,6 +6,7 @@ for a lock file, samples while it exists, exports on removal. The controller
 degrades to a no-op when the provider has no VMM (``vmm_type is None``), the
 binary is missing, or the lock dir is unwritable -- never compromising the bench.
 """
+
 from __future__ import annotations
 
 import atexit
@@ -50,10 +51,10 @@ _VALID_SKIP_STEMS = frozenset(
 class LogRotationConfig:
     """Log-capture rotation toggles (the ``monitor.log_rotation:`` YAML block).
 
-    Rotates devkit (top-down + memory in parallel) -> ksys -> ``perf stat``,
-    one collector group at a time, for the whole stress window. Each turn
-    writes a timestamped log under ``<output_dir>/log_capture/
-    {devkit/{topdown,memory},ksys,perf}/``. Forwards the vm-monitor
+    Rotates devkit (top-down + memory in parallel) -> ksys -> ``perf stat`` ->
+    AMDuProfPcm, one collector group at a time, for the whole stress window.
+    Each turn writes a timestamped log under ``<output_dir>/log_capture/
+    {devkit/{topdown,memory},ksys,perf,uprof}/``. Forwards the vm-monitor
     ``--log-rotation`` flag family; requires ``capture`` (auto/true) to run.
     """
 
@@ -61,7 +62,7 @@ class LogRotationConfig:
     interval_sec: int = 15  # per-slot collection duration (seconds); fallback for any tool not in intervals
     # None -> vm_monitor's built-in event set (DEFAULT_ROTATION_PERF_EVENTS).
     perf_events: list[str] | None = None
-    # Per-tool rotation intervals: {"devkit": sec, "ksys": sec, "perf": sec}.
+    # Per-tool rotation intervals: {"devkit": sec, "ksys": sec, "perf": sec, "uprof": sec}.
     # None -> every tool uses interval_sec. A partial dict falls back to
     # interval_sec for the omitted tools. Forwarded as --rotation-intervals.
     intervals: dict[str, int] | None = None
@@ -74,7 +75,7 @@ class LogRotationConfig:
         or the shorthand ``log_rotation: true``. A non-dict/non-true value is
         warned + dropped (never crash the bench on a YAML typo). ``perf_events``
         accepts a YAML list or a comma string. ``intervals`` accepts a dict
-        ``{devkit: sec, ksys: sec, perf: sec}``; valid tools are devkit/ksys/perf,
+        ``{devkit: sec, ksys: sec, perf: sec, uprof: sec}``; valid tools are devkit/ksys/perf/uprof,
         unknown keys are warned + dropped.
         """
         if raw is None:
@@ -94,7 +95,7 @@ class LogRotationConfig:
         raw_intervals = raw.get("intervals")
         intervals: dict[str, int] | None = None
         if isinstance(raw_intervals, dict):
-            valid = {"devkit", "ksys", "perf"}
+            valid = {"devkit", "ksys", "perf", "uprof"}
             parsed = {}
             for tool, val in raw_intervals.items():
                 key = str(tool).strip()
@@ -147,8 +148,8 @@ class MonitorConfig:
     # without charts. Default false (charts on); opt-in for oversub-scale runs.
     skip_charts: bool = False
     # Log-capture rotation (the ``log_rotation:`` sub-block): devkit(top-down +
-    # memory in parallel) -> ksys -> perf stat, one group at a time, for the
-    # stress window; per-turn timestamped logs land in
+    # memory in parallel) -> ksys -> perf stat -> AMDuProfPcm, one group at a
+    # time, for the stress window; per-turn timestamped logs land in
     # ``<output_dir>/log_capture/``. None/absent = off (all-parallel capture).
     log_rotation: LogRotationConfig | None = None
 
@@ -251,7 +252,9 @@ class MonitorController:
                 if lr.intervals:
                     cmd += [
                         "--rotation-intervals",
-                        ",".join(f"{t}={lr.intervals[t]}" for t in ("devkit", "ksys", "perf") if t in lr.intervals),
+                        ",".join(
+                            f"{t}={lr.intervals[t]}" for t in ("devkit", "ksys", "perf", "uprof") if t in lr.intervals
+                        ),
                     ]
                 if lr.perf_events:
                     cmd += ["--rotation-perf-events", ",".join(lr.perf_events)]

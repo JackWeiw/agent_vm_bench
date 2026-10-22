@@ -33,9 +33,9 @@ def _parse_rotation_intervals(spec: str, fallback: int) -> dict:
 
     Tools omitted from the spec fall back to ``fallback`` (``--rotation-interval``).
     Unknown keys are warned + dropped (never crash the bench on a typo); ``devkit``,
-    ``ksys``, ``perf`` are the valid tools.
+    ``ksys``, ``perf``, ``uprof`` are the valid tools.
     """
-    valid = {"devkit", "ksys", "perf"}
+    valid = {"devkit", "ksys", "perf", "uprof"}
     result = {}
     for token in spec.split(","):
         token = token.strip()
@@ -190,12 +190,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Timeout for ksys data parsing phase in seconds (default: 600s, increase for large VM counts)",
     )
 
-    # Log-rotation capture (devkit -> ksys -> perf, one slot at a time).
+    # Log-rotation capture (devkit -> ksys -> perf -> uprof, one slot at a time).
     # bench-core forwards monitor.log_rotation as these flags.
     parser.add_argument(
         "--log-rotation",
         action="store_true",
-        help="Log-rotation mode: devkit (top-down + memory in parallel) -> ksys -> perf stat rotate "
+        help="Log-rotation mode: devkit (top-down + memory in parallel) -> ksys -> perf stat -> uprof rotate "
         "one slot per --rotation-interval for the whole stress window instead of running all capture "
         "tools concurrently. Per-turn timestamped logs under --rotation-log-dir. Requires "
         "--enable-capture; keys off the --stress-file lock lifecycle when given.",
@@ -211,7 +211,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--rotation-intervals",
         type=str,
         default=None,
-        help="Per-tool rotation intervals as 'devkit=20,ksys=30,perf=15' (seconds). "
+        help="Per-tool rotation intervals as 'devkit=20,ksys=30,perf=15,uprof=15' (seconds). "
         "Tools omitted fall back to --rotation-interval. Overrides --rotation-interval "
         "for the tools it lists.",
     )

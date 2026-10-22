@@ -1,9 +1,9 @@
 """Tests for log-rotation mode in vm_monitor/log_capture.py.
 
 ``log_rotation=True`` replaces the all-parallel capture of devkit/ksys with a
-devkit (top-down + memory in parallel) -> ksys -> perf stat rotation, one slot
-per ``rotation_interval``; each turn writes a timestamped log under
-``<rotation_log_dir>/{devkit/{topdown,memory},ksys,perf}/``. ub_watch /
+devkit (top-down + memory in parallel) -> ksys -> perf stat -> uprof rotation,
+one slot per ``rotation_interval``; each turn writes a timestamped log under
+``<rotation_log_dir>/{devkit/{topdown,memory},ksys,perf,uprof}/``. ub_watch /
 smap_bw / getfre keep their all-parallel behavior.
 """
 
@@ -135,6 +135,37 @@ class TestLogRotation(unittest.TestCase):
         self.assertEqual(cap.rotation_turns["perf"], [])
         self.assertFalse(os.path.exists(os.path.join(self.log_dir, "log_capture", "perf")))
 
+    def test_uprof_turn_cmd_and_log(self):
+        self.config["uprof_path"] = "/fake/AMDuProfPcm"
+        cap = self._cap()
+        spawned = []
+        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
+            cap._rotation_uprof_turn()
+        cmd = spawned[0]
+        self.assertEqual(
+            cmd, ["/fake/AMDuProfPcm", "-m", "memory,pipeline_util", "-a", "-A", "system,package", "-d", "15"]
+        )
+        files = os.listdir(os.path.join(self.log_dir, "log_capture", "uprof"))
+        self.assertEqual(len(files), 1)
+
+    def test_uprof_missing_path_skips(self):
+        self.config.pop("uprof_path", None)
+        cap = self._cap()
+        cap._rotation_uprof_turn()
+        self.assertIn("uprof", cap._rotation_skipped)
+        self.assertEqual(cap.rotation_turns["uprof"], [])
+        self.assertFalse(os.path.exists(os.path.join(self.log_dir, "log_capture", "uprof")))
+
+    def test_uprof_turn_popen_failure_skips_tool(self):
+        self.config["uprof_path"] = "/fake/AMDuProfPcm"
+        cap = self._cap()
+        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=OSError("Permission denied")):
+            cap._rotation_uprof_turn()
+            cap._rotation_uprof_turn()  # second turn must not retry
+        self.assertIn("uprof", cap._rotation_skipped)
+        self.assertEqual(cap.rotation_turns["uprof"], [])
+        self.assertFalse(os.path.exists(os.path.join(self.log_dir, "log_capture", "uprof")))
+
     def test_devkit_turn_popen_failure_skips_subtools(self):
         cap = self._cap()
         with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=OSError("Permission denied")):
@@ -208,6 +239,39 @@ class TestLogRotation(unittest.TestCase):
         self.assertEqual(len(cap.rotation_turns["devkit_mem"]), 1)
         self.assertEqual(len(cap.rotation_turns["ksys"]), 1)
         self.assertEqual(cap.rotation_turns["perf"], [])
+        self.assertEqual(cap.rotation_turns["uprof"], [])
+
+    def test_thread_full_cycle_reaches_uprof(self):
+        """Timer mode: full cycle devkit(topdown+memory) -> ksys -> perf -> uprof.
+
+        The uprof spawn sets the stop flag, so the loop must stop after the
+        uprof slot instead of wrapping around to a second devkit turn.
+        """
+        self.config["uprof_path"] = "/fake/AMDuProfPcm"
+        cap = self._cap(rotation_interval=1)  # no stress_file -> timer mode
+        spawned = []
+
+        def fake_popen(cmd, *a, **k):
+            spawned.append(cmd)
+            if cmd[0] == "/fake/AMDuProfPcm":  # uprof turn: stop after this slot
+                cap.rotation_stop_flag.set()
+            return _DummyProc()
+
+        with (
+            patch("vm_monitor.log_capture.subprocess.Popen", side_effect=fake_popen),
+            patch("vm_monitor.log_capture.subprocess.run", side_effect=lambda cmd, *a, **k: None),
+        ):
+            cap.rotation_thread = threading.Thread(target=cap._rotation_thread_main)
+            cap.rotation_thread.start()
+            cap.rotation_thread.join(timeout=15)
+        self.assertFalse(cap.rotation_thread.is_alive())
+        self.assertEqual(len(spawned), 5)  # topdown + memory (parallel) + ksys + perf + uprof
+        self.assertIn("top-down", spawned[0])
+        self.assertIn("memory", spawned[1])
+        self.assertIn("collect", spawned[2])
+        self.assertEqual(spawned[3][0], "perf")
+        self.assertEqual(spawned[4][0], "/fake/AMDuProfPcm")
+        self.assertEqual(len(cap.rotation_turns["uprof"]), 1)
 
     def test_thread_lock_mode_waits_for_lock(self):
         """Lock mode: no lock -> no turns even though the thread was started."""
@@ -222,7 +286,9 @@ class TestLogRotation(unittest.TestCase):
             cap.rotation_thread.join(timeout=10)
         self.assertFalse(cap.rotation_thread.is_alive())
         self.assertEqual(spawned, [])
-        self.assertEqual(cap.rotation_turns, {"devkit_top_down": [], "devkit_mem": [], "ksys": [], "perf": []})
+        self.assertEqual(
+            cap.rotation_turns, {"devkit_top_down": [], "devkit_mem": [], "ksys": [], "perf": [], "uprof": []}
+        )
         self.assertFalse(os.path.exists(os.path.join(self.log_dir, "log_capture")))
 
     def test_start_rotation_mode_skips_parallel_devkit_ksys(self):
@@ -263,41 +329,46 @@ class TestLogRotation(unittest.TestCase):
         self.assertEqual(len(results["rotation_files"]["devkit_mem"]), 1)
         self.assertEqual(len(results["rotation_files"]["perf"]), 1)
         self.assertEqual(results["rotation_files"]["ksys"], [])
+        self.assertEqual(results["rotation_files"]["uprof"], [])
         # The parallel single-file keys must be dropped in rotation mode.
         for tool in ("devkit_mem", "devkit_top_down", "ksys"):
             self.assertNotIn(tool, results["log_files"])
         self.assertIn("ub_watch", results["log_files"])
 
     def test_per_tool_intervals_dict_resolves_each(self):
-        cap = self._cap(rotation_interval={"devkit": 20, "ksys": 30, "perf": 15})
-        self.assertEqual(cap.rotation_intervals, {"devkit": 20, "ksys": 30, "perf": 15})
+        cap = self._cap(rotation_interval={"devkit": 20, "ksys": 30, "perf": 15, "uprof": 10})
+        self.assertEqual(cap.rotation_intervals, {"devkit": 20, "ksys": 30, "perf": 15, "uprof": 10})
         self.assertEqual(cap.rotation_interval, 30)  # max -> join/stop budget
 
     def test_per_tool_intervals_partial_falls_back(self):
         cap = self._cap(rotation_interval={"devkit": 25})
-        self.assertEqual(cap.rotation_intervals, {"devkit": 25, "ksys": 15, "perf": 15})
+        self.assertEqual(cap.rotation_intervals, {"devkit": 25, "ksys": 15, "perf": 15, "uprof": 15})
         self.assertEqual(cap.rotation_interval, 25)
 
     def test_per_tool_intervals_int_applies_to_all(self):
         cap = self._cap(rotation_interval=12)
-        self.assertEqual(cap.rotation_intervals, {"devkit": 12, "ksys": 12, "perf": 12})
+        self.assertEqual(cap.rotation_intervals, {"devkit": 12, "ksys": 12, "perf": 12, "uprof": 12})
 
     def test_per_tool_intervals_drive_each_turn_cmd(self):
-        cap = self._cap(rotation_interval={"devkit": 20, "ksys": 30, "perf": 15})
+        self.config["uprof_path"] = "/fake/AMDuProfPcm"
+        cap = self._cap(rotation_interval={"devkit": 20, "ksys": 30, "perf": 15, "uprof": 10})
         spawned = []
         with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
             cap._rotation_devkit_turn()
             cap._rotation_ksys_turn()
             cap._rotation_perf_turn()
+            cap._rotation_uprof_turn()
         # devkit top-down + memory both run for -d 20; ksys runs -d 30.
         for cmd in spawned:
             if "top-down" in cmd or "memory" in cmd:
                 self.assertEqual(cmd[cmd.index("-d") + 1], "20")
             if "collect" in cmd:
                 self.assertEqual(cmd[cmd.index("-d") + 1], "30")
-        # perf stat sleeps for 15.
+        # perf stat sleeps for 15; uprof collects for 10.
         perf_cmd = next(c for c in spawned if c[0] == "perf")
         self.assertEqual(perf_cmd[-1], "15")
+        uprof_cmd = next(c for c in spawned if c[0] == "/fake/AMDuProfPcm")
+        self.assertEqual(uprof_cmd[uprof_cmd.index("-d") + 1], "10")
 
     def test_ksys_turn_timer_exits_after_interval_not_interval_plus_30(self):
         """ksys turn must exit after interval seconds, not interval+30.
