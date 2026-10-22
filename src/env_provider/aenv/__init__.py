@@ -108,9 +108,12 @@ class AenvProvider(E2BProvider):
     # ---------------------------------------------------------- CCL affinity
     # AENV keeps a warm firecracker pool: each firecracker exists before create()
     # with only a random --api-sock path (no sandbox_id in cmdline). bind_ccl
-    # scans /proc + MMDS to map sandbox_id -> firecracker pid, then
-    # os.sched_setaffinity-pins it to a dedicated CCL vCPU set so concurrent VMs
-    # don't contend for the same physical cores. Opt-in via ``aenv.ccl_bind``;
+    # scans /proc + MMDS to map sandbox_id -> firecracker pid, then pins EVERY
+    # thread of that process (one-shot: main first so later-spawned threads
+    # inherit the mask, then a /proc/<pid>/task sweep) to a sysfs-detected
+    # silicon L3 domain (AMD CCD / Kunpeng CL; round-robin by sandbox index)
+    # so concurrent VMs don't contend for the same physical cores. Opt-in via
+    # ``aenv.ccl_bind``;
     # viable in exec_only / exec_ephemeral (lifecycle/trajectory respawn the
     # firecracker on each resume -> pid unstable); best-effort (Linux + root on
     # the AENV host);

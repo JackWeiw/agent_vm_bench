@@ -170,13 +170,18 @@ class Config:
     # Sandbox IDs file (for save/load sandbox IDs across runs)
     sandbox_ids_file: str | None = None
 
-    # CCL CPU-affinity binding (AENV host-side: pin each sandbox's firecracker to
-    # a dedicated CCL vCPU set so concurrent VMs don't contend for the same
-    # physical cores). Opt-in (off by default): blind pinning needs root on the
-    # AENV host and a matching topology. Topology defaults to the reference
-    # (384 vCPU / 16 per CCL = 24 CCLs); override per host. See
+    # CCL CPU-affinity binding (AENV host-side: pin each sandbox's firecracker
+    # -- every thread, one-shot at create -- to one sysfs-detected silicon L3
+    # domain: AMD CCD / Kunpeng CL). Opt-in (off by default): needs root on the
+    # AENV host. ccl_granularity: auto (L3 domains whenever sysfs exposes them
+    # -- both AMD and Kunpeng bind at silicon granularity; NUMA only when the
+    # host has none) | l3 | numa | socket | config (legacy arithmetic).
+    # ccl_total_count / ccl_vcpus_per_ccl are the fallback arithmetic topology
+    # (reference: 384 vCPU / 16 per CCL = 24 CCLs -- the new Kunpeng layout),
+    # used only when sysfs detection finds nothing. See
     # :mod:`env_provider.aenv._ccl`. Only consulted by the AENV provider.
     ccl_bind: bool = False
+    ccl_granularity: str = "auto"
     ccl_total_count: int = 24
     ccl_vcpus_per_ccl: int = 16
 
@@ -218,6 +223,7 @@ class Config:
             snapshot_dir=backend.get("snapshot_dir"),
             aenv_home_path=backend.get("aenv_home_path"),
             ccl_bind=bool(backend.get("ccl_bind", False)),
+            ccl_granularity=str(backend.get("ccl_granularity") or "auto").lower(),
             ccl_total_count=backend.get("ccl_total_count", 24),
             ccl_vcpus_per_ccl=backend.get("ccl_vcpus_per_ccl", 16),
         )
