@@ -187,6 +187,53 @@ class TestLogRotation(unittest.TestCase):
         self.assertEqual(cap.rotation_turns["ksys"], [])
         self.assertFalse(os.path.exists(os.path.join(self.log_dir, "log_capture", "ksys")))
 
+    def test_rotation_tools_default_all_four(self):
+        cap = self._cap()
+        self.assertEqual(cap.rotation_tools, ("devkit", "ksys", "perf", "uprof"))
+        self.assertEqual(cap._rotation_skipped, set())
+
+    def test_rotation_tools_selection_keeps_canonical_order(self):
+        cap = self._cap(rotation_tools=["perf", "devkit", "banana"])
+        self.assertEqual(cap.rotation_tools, ("devkit", "perf"))
+        # Unselected tools are parked in _rotation_skipped for the whole run.
+        self.assertEqual(cap._rotation_skipped, {"ksys", "uprof"})
+
+    def test_thread_cycle_with_selection_runs_only_selected(self):
+        """tools=[devkit, perf]: ksys/uprof slots never run; stop after perf."""
+        cap = self._cap(rotation_interval=1, rotation_tools=["devkit", "perf"])
+        spawned = []
+
+        def fake_popen(cmd, *a, **k):
+            spawned.append(cmd)
+            if cmd[0] == "perf":  # perf turn: stop after this slot
+                cap.rotation_stop_flag.set()
+            return _DummyProc()
+
+        with (
+            patch("vm_monitor.log_capture.subprocess.Popen", side_effect=fake_popen),
+            patch("vm_monitor.log_capture.subprocess.run", side_effect=lambda cmd, *a, **k: None),
+        ):
+            cap.rotation_thread = threading.Thread(target=cap._rotation_thread_main)
+            cap.rotation_thread.start()
+            cap.rotation_thread.join(timeout=10)
+        self.assertFalse(cap.rotation_thread.is_alive())
+        self.assertEqual(len(spawned), 3)  # topdown + memory (parallel) + perf
+        self.assertEqual(spawned[2][0], "perf")
+        self.assertEqual(cap.rotation_turns["ksys"], [])
+        self.assertEqual(cap.rotation_turns["uprof"], [])
+
+    def test_rotation_tools_all_unrunnable_stops(self):
+        """tools=[uprof] without uprof_path: one idle loop, then 'no runnable'."""
+        cap = self._cap(rotation_interval=1, rotation_tools=["uprof"])
+        spawned = []
+        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
+            cap.rotation_thread = threading.Thread(target=cap._rotation_thread_main)
+            cap.rotation_thread.start()
+            cap.rotation_thread.join(timeout=10)
+        self.assertFalse(cap.rotation_thread.is_alive())
+        self.assertEqual(spawned, [])
+        self.assertIn("uprof", cap._rotation_skipped)
+
     def test_run_slot_paces_fast_turn_to_interval(self):
         # A turn that finishes instantly must still hold its slot open for the
         # full interval (no hot spin of empty logs when a tool misbehaves).

@@ -11,6 +11,8 @@ for the whole stress window instead of running everything concurrently;
 ub_watch / smap_bw / getfre keep their all-parallel behavior. Each turn
 writes a timestamped log under
 ``<rotation_log_dir>/{devkit/{topdown,memory},ksys,perf,uprof}/``.
+``rotation_tools`` (``--rotation-tools`` / ``monitor.log_rotation.tools:``)
+narrows the cycle to the named tools, e.g. devkit -> perf.
 """
 
 import os
@@ -67,6 +69,7 @@ class LogCapture:
         rotation_perf_events: str | None = None,
         rotation_log_dir: str | None = None,
         stress_file: str | None = None,
+        rotation_tools: list[str] | None = None,
     ):
         """
         Args:
@@ -101,6 +104,11 @@ class LogCapture:
                 rotation keys off the lock lifecycle (appear = stress start,
                 disappear = stress end) so a huge -t cannot push rotation past
                 real stress. None -> timer mode: rotate for `duration` seconds.
+            rotation_tools: subset of tools to rotate, e.g. ["devkit", "perf"].
+                None (default) rotates every tool; canonical slot order
+                (devkit -> ksys -> perf -> uprof) is kept whatever the input
+                order. Unselected tools are parked in _rotation_skipped
+                silently for the whole run.
         """
         self.config = config
         self.duration = duration
@@ -125,6 +133,9 @@ class LogCapture:
         self.rotation_perf_events = rotation_perf_events or DEFAULT_ROTATION_PERF_EVENTS
         self.rotation_log_dir = rotation_log_dir or os.path.join(log_dir, "log_capture")
         self.stress_file = stress_file
+        # Rotation membership: None -> every tool; a list keeps the named ones
+        # in canonical order (unselected tools are parked in _rotation_skipped).
+        self.rotation_tools = self._resolve_rotation_tools(rotation_tools)
         self.rotation_stop_flag = threading.Event()
         self.rotation_thread = None
         self.rotation_turns = {  # per-tool list of per-turn log paths
@@ -138,7 +149,8 @@ class LogCapture:
         self._rotation_devkit_procs = []  # devkit processes still finishing in background
         self._rotation_perf_procs = []  # perf processes still finishing in background
         self._rotation_uprof_procs = []  # uprof processes still finishing in background
-        self._rotation_skipped = set()  # tools disabled for the rest of the run
+        # Tools disabled for the rest of the run; seeded with unselected tools.
+        self._rotation_skipped = set(self._ROTATION_TOOLS) - set(self.rotation_tools)
 
     def _get_cpu_range(self) -> str:
         """Get CPU range for devkit top-down command"""
@@ -426,6 +438,24 @@ class LogCapture:
             val = max(1, int(raw)) if raw is not None else default
             intervals = dict.fromkeys(cls._ROTATION_TOOLS, val)
         return intervals, max(intervals.values())
+
+    @classmethod
+    def _resolve_rotation_tools(cls, raw) -> tuple[str, ...]:
+        """Normalize ``rotation_tools`` into the canonical selected tuple.
+
+        ``raw`` is None (every tool) or a list/comma-string of tool names.
+        Unknown names are dropped silently here -- the CLI/YAML layers warn.
+        The result keeps canonical slot order (devkit, ksys, perf, uprof)
+        whatever the input order; an empty selection yields an empty tuple
+        (the rotation thread then stops with 'no runnable tools left').
+        """
+        if raw is None:
+            return cls._ROTATION_TOOLS
+        if isinstance(raw, str):
+            raw = raw.split(",")
+        wanted = {str(t).strip() for t in raw}
+        wanted.discard("")
+        return tuple(t for t in cls._ROTATION_TOOLS if t in wanted)
 
     def _rotation_log_path(self, tool: str, *sub: str) -> str | None:
         """Create (and remember) a per-turn timestamped log path under rotation_log_dir.
@@ -777,13 +807,15 @@ class LogCapture:
 
     def _rotation_thread_main(self) -> None:
         """devkit(topdown+memory parallel) -> ksys -> perf -> uprof, repeating while stress runs."""
+        if self.rotation_tools != self._ROTATION_TOOLS:
+            print(f"  [OK] log rotation tools selected: {' -> '.join(self.rotation_tools)}")
         # Lock mode: idle until the stress lock appears (or stop/-t). Timer
         # mode (no stress_file): start immediately, bounded by `duration`.
         if self.stress_file and not self._wait_for_stress_lock():
             return
         t0 = time.monotonic()
         while not self.rotation_stop_flag.is_set() and self._stress_active() and time.monotonic() - t0 < self.duration:
-            if {"devkit", "ksys", "perf", "uprof"} <= self._rotation_skipped:
+            if set(self.rotation_tools) <= self._rotation_skipped:
                 print("  [WARN] rotation: no runnable tools left, rotation stopped")
                 return
             # Stop between slots once stress ends; an in-flight tool finishes
@@ -873,7 +905,7 @@ class LogCapture:
             failed.append(("getfre", err))
             self.failed_startup.append("getfre")
 
-        # Start the rotation thread (devkit -> ksys -> perf -> uprof, one slot at a time).
+        # Start the rotation thread (selected tools only, one slot at a time).
         # It idles until the stress lock appears, so starting it here is safe.
         if rotate:
             self.rotation_thread = threading.Thread(target=self._rotation_thread_main, name="log-rotation")

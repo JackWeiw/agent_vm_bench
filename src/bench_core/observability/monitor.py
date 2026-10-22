@@ -54,8 +54,9 @@ class LogRotationConfig:
     Rotates devkit (top-down + memory in parallel) -> ksys -> ``perf stat`` ->
     AMDuProfPcm, one collector group at a time, for the whole stress window.
     Each turn writes a timestamped log under ``<output_dir>/log_capture/
-    {devkit/{topdown,memory},ksys,perf,uprof}/``. Forwards the vm-monitor
-    ``--log-rotation`` flag family; requires ``capture`` (auto/true) to run.
+    {devkit/{topdown,memory},ksys,perf,uprof}/``. ``tools`` narrows the cycle
+    to the named tools. Forwards the vm-monitor ``--log-rotation`` flag
+    family; requires ``capture`` (auto/true) to run.
     """
 
     enabled: bool = False
@@ -66,6 +67,10 @@ class LogRotationConfig:
     # None -> every tool uses interval_sec. A partial dict falls back to
     # interval_sec for the omitted tools. Forwarded as --rotation-intervals.
     intervals: dict[str, int] | None = None
+    # Rotation membership: which tools rotate, e.g. ["devkit", "perf"]. None ->
+    # every tool (devkit/ksys/perf/uprof). Accepts a YAML list or comma string;
+    # unknown names are warned + dropped. Forwarded as --rotation-tools.
+    tools: list[str] | None = None
 
     @classmethod
     def from_raw(cls, raw) -> LogRotationConfig | None:
@@ -76,7 +81,8 @@ class LogRotationConfig:
         warned + dropped (never crash the bench on a YAML typo). ``perf_events``
         accepts a YAML list or a comma string. ``intervals`` accepts a dict
         ``{devkit: sec, ksys: sec, perf: sec, uprof: sec}``; valid tools are devkit/ksys/perf/uprof,
-        unknown keys are warned + dropped.
+        unknown keys are warned + dropped. ``tools`` accepts a YAML list or comma
+        string and selects which tools rotate (None/empty = every tool).
         """
         if raw is None:
             return None
@@ -111,11 +117,29 @@ class LogRotationConfig:
             intervals = parsed or None
         elif raw_intervals is not None:
             logger.warning("monitor.log_rotation.intervals must be a mapping, got %r; ignoring", raw_intervals)
+        raw_tools = raw.get("tools")
+        tools: list[str] | None = None
+        if raw_tools is not None:
+            if isinstance(raw_tools, str):
+                raw_tools = [t.strip() for t in raw_tools.split(",") if t.strip()]
+            valid = {"devkit", "ksys", "perf", "uprof"}
+            tools = []
+            for item in raw_tools:
+                key = str(item).strip()
+                if key not in valid:
+                    logger.warning(
+                        "monitor.log_rotation.tools: unknown tool %r (valid: %s), skipping", key, sorted(valid)
+                    )
+                    continue
+                if key not in tools:
+                    tools.append(key)
+            tools = tools or None
         return cls(
             enabled=bool(raw.get("enabled", True)),
             interval_sec=int(raw.get("interval_sec", 15)),
             perf_events=perf_events,
             intervals=intervals,
+            tools=tools,
         )
 
 
@@ -151,6 +175,7 @@ class MonitorConfig:
     # memory in parallel) -> ksys -> perf stat -> AMDuProfPcm, one group at a
     # time, for the stress window; per-turn timestamped logs land in
     # ``<output_dir>/log_capture/``. None/absent = off (all-parallel capture).
+    # ``tools:`` selects which tools rotate (default all four).
     log_rotation: LogRotationConfig | None = None
 
     @classmethod
@@ -256,6 +281,8 @@ class MonitorController:
                             f"{t}={lr.intervals[t]}" for t in ("devkit", "ksys", "perf", "uprof") if t in lr.intervals
                         ),
                     ]
+                if lr.tools:
+                    cmd += ["--rotation-tools", ",".join(lr.tools)]
                 if lr.perf_events:
                     cmd += ["--rotation-perf-events", ",".join(lr.perf_events)]
                 cmd += ["--rotation-log-dir", str(Path(self._config.output_dir) / "log_capture")]
