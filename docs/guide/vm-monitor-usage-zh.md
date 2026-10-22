@@ -99,6 +99,9 @@ UB_WATCH_PATH=/path/to/ub_watch
 # smap_bw（经 sudo 运行以访问 dmesg）
 SMAP_BW_PATH=/path/to/smap_bw.py
 
+# AMD uProf（仅 log-rotation 轮转使用；未配置则轮转跳过 uprof 槽）
+UPROF_PATH=/opt/AMDuProf_5.3-521/bin/AMDuProfPcm
+
 # getfre 及其 YAML 配置
 GETFRE_PATH=/path/to/getfre
 GETFRE_CONFIG_PATH=/path/to/getfre_config.yaml
@@ -116,6 +119,7 @@ DEVKIT_CPU_RANGE=96-191
 | `KSYS_PATH` + `KSYS_CONFIG_PATH` | `ksys` | KSys sheet | **两者均必需** |
 | `UB_WATCH_PATH` | `ub_watch` | UBWatch sheets | 可选 |
 | `SMAP_BW_PATH` | `smap_bw` | SMAPBW sheets | 可选；sudo |
+| `UPROF_PATH` | `uprof`（轮转模式） | log_capture/uprof 日志 | 可选；仅 `--log-rotation`，未配置跳过该槽 |
 | `GETFRE_PATH` + `GETFRE_CONFIG_PATH` | `getfre` | Getfre sheets | 可选；配置可从宿主机拓扑自动填充 |
 
 缺失路径的行为：

@@ -194,6 +194,7 @@ def save_env_config(config: dict):
             set_key(env_path, "UB_WATCH_PATH", config["ub_watch_path"])
         if config.get("smap_bw_path"):
             set_key(env_path, "SMAP_BW_PATH", config["smap_bw_path"])
+        if config.get("uprof_path"):
             set_key(env_path, "UPROF_PATH", config["uprof_path"])
         if config.get("devkit_cpu_range"):
             set_key(env_path, "DEVKIT_CPU_RANGE", config["devkit_cpu_range"])

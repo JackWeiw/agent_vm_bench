@@ -197,6 +197,7 @@ Multi-template routing: trajectories may declare per-file concrete templates via
 | `ub_watch` | NUMA interconnect | `UB_WATCH_PATH` |
 | `smap_bw` | SMAP bandwidth | `SMAP_BW_PATH` |
 | `getfre` | Core frequency | `GETFRE_PATH`, `GETFRE_CONFIG_PATH` |
+| `AMDuProfPcm` | AMD uProf system counters (rotation slot) | `UPROF_PATH` |
 
 ### Tool output parsing
 
