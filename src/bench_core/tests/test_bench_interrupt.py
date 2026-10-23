@@ -123,9 +123,11 @@ def test_partial_run_summary_flushed_on_dispatch_exception(tmp_path, monkeypatch
     data = json.loads(hits[0].read_text(encoding="utf-8"))
     assert data["workflow_type"] == "replay"
     assert data["replay_mode"] == "exec_only"
-    # Partial state: dispatch never started, so 0 trajectories completed.
-    assert data["throughput"]["total"] == 2
+    # Partial state: dispatch never started, so 0 trajectories were attempted
+    # or completed (throughput is trajectory-level since schema 2, not slots).
+    assert data["throughput"]["total"] == 0
     assert data["throughput"]["succeeded"] == 0
+    assert data["throughput"]["failed"] == 0
     # The interruption is surfaced in the log.
     assert any("Trial interrupted, writing partial artifacts" in r.message for r in caplog.records)
 

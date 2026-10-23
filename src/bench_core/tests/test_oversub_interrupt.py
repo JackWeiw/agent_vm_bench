@@ -53,7 +53,7 @@ run_dir.mkdir(parents=True, exist_ok=True)
 total = cfg['sandbox']['total_count']
 succeeded = total // 2  # partial: only half the fleet completed
 summary = {{
-  'schema_version': 1, 'workflow_type': 'replay',
+  'schema_version': 2, 'workflow_type': 'replay',
   'replay_mode': cfg['replay']['mode'], 'provider': 'stub',
   'started_at': '2026-09-05T14:00:00+08:00',
   'completed_at': '2026-09-05T14:18:00+08:00',

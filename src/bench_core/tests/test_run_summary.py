@@ -39,11 +39,12 @@ def _stats_with_replay_metrics(config: KernelConfig, *, total: int, succeeded: i
     Drives exactly ``total`` ``add()`` calls so ``total_tasks == total`` (step
     count); the first ``succeeded`` steps succeed, the rest fail. The last
     step marks ``trajectory_complete`` so the one trajectory is counted as
-    completed (``trajectory_completions == 1``). With one sandbox,
-    trajectory-level throughput is total=1, succeeded=1, failed=0. Requires
-    ``id`` (no default), hence ``id="s0"``.
+    completed (``trajectory_completions == 1``). With one sandbox and one
+    marked attempt, trajectory-level throughput is total=1, succeeded=1,
+    failed=0. Requires ``id`` (no default), hence ``id="s0"``.
     """
     state = BenchSandbox(id="s0", index=0, workflow_type="replay")
+    state.replay_metrics._mark_attempt()
     for i in range(total):
         state.replay_metrics.add(latency=0.1, success=(i < succeeded), trajectory_complete=(i == total - 1))
     return StatsCollector(config, {0: state}, provider_label="fake")
@@ -63,7 +64,7 @@ def test_run_summary_has_required_fields(tmp_path):
     )
     assert path is not None and path.exists()
     data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
     assert data["workflow_type"] == "replay"
     assert data["replay_mode"] == "exec_only"
     assert data["provider"] == "fake"
@@ -84,6 +85,28 @@ def test_run_summary_skips_non_replay(tmp_path):
     path = write_run_summary(config, sc, series_path=None, obs_xlsx_path=None, report_path=None)
     assert path is None
     assert not (tmp_path / "x_run_summary.json").exists()
+
+
+def test_run_summary_throughput_multi_pass_slot_stays_dimensional(tmp_path):
+    """Regression (negative failed): one exec_ephemeral slot running M passes
+    accumulates more completions than there are sandbox slots. total must be
+    the trajectory-ATTEMPT count (schema 2), keeping failed = total - succeeded
+    >= 0. Schema 1 emitted total = len(sandbox_states) = 1 here, so
+    failed = 1 - 2 = -1 (the reported -441 on a ratio=2 multiplier=2 sweep)."""
+    config = _replay_config(tmp_path, mode="exec_ephemeral", total=1)
+    state = BenchSandbox(id="s0", index=0, workflow_type="replay")
+    # 3 passes on ONE slot: two ran to the end, one aborted mid-trajectory.
+    for complete in (True, True, False):
+        state.replay_metrics._mark_attempt()
+        state.replay_metrics.add(latency=0.1, success=True, trajectory_complete=complete)
+    sc = StatsCollector(config, {0: state}, provider_label="fake")
+    sc.start_time = 1700000000.0
+    path = write_run_summary(config, sc, series_path=None, obs_xlsx_path=None, report_path=None)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    tp = data["throughput"]
+    assert tp["total"] == 3  # attempts, NOT the slot count (1)
+    assert tp["succeeded"] == 2
+    assert tp["failed"] == tp["total"] - tp["succeeded"] == 1
 
 
 def test_run_summary_has_no_valid_field(tmp_path):
@@ -249,6 +272,11 @@ def test_run_benchmark_emits_run_summary_exec_only(tmp_path):
     assert data["replay_mode"] == "exec_only"
     assert data["admission"] is None  # exec_only builds no admission controller
     assert data["test_duration"] == cfg.test_duration
+    # The real runner marks attempts at pass entry: the trajectory-level triple
+    # stays dimensionally consistent end to end (failed never negative).
+    tp = data["throughput"]
+    assert tp["total"] >= tp["succeeded"] >= 0
+    assert tp["failed"] == tp["total"] - tp["succeeded"] >= 0
 
 
 def test_run_benchmark_emits_run_summary_lifecycle(tmp_path):

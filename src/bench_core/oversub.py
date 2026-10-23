@@ -237,13 +237,15 @@ def compute_valid(
 
       * ``return_code == 0`` (the kernel subprocess succeeded),
       * ``throughput.total >= 0.9 * expected``. ``expected = N`` by default
-        (mode-agnostic: lifecycle ``total`` ~= k*N and exec_only ``total`` ~=
-        N, both >= 0.9*N on a healthy run). When ``multiplier`` (M) is set
+        (mode-agnostic: a non-M trial runs ONE round, so ``total`` -- the
+        trajectory-attempt count since run_summary schema 2 -- ~= k*N >= 0.9*N
+        on a healthy run). When ``multiplier`` (M) is set
         (fixed+exec_ephemeral+M), each of the k*N sandboxes runs M trajectories,
         so ``expected = M * k * N`` and the floor reads ``throughput.succeeded``
         (the trajectory-completion count = ``sum(trajectory_completions)`` =
-        M*k*N on a healthy run) -- NOT ``throughput.total`` (a sandbox count =
-        k*N, which would always fail against M*k*N for M>=2). This catches a
+        M*k*N on a healthy run) -- NOT ``throughput.total`` (attempts shrink
+        when a slot gives up on persistent create-failure, so only completions
+        measure the work actually done). This catches a
         silent under-run where slots crashed / exited early before finishing
         their M (mirrors reference B's ``total == target_count`` check).
         Per-trajectory completion is inspectable in trajectory-detail.csv --
@@ -252,19 +254,20 @@ def compute_valid(
       * ``admission.peak_active <= N`` (never ran more than N concurrent --
         dropped for exec_only, which has no admission controller),
       * ``failure_rate <= failure_tolerance`` (configurable wrap-noise allowance;
-        1:1 modes only -- skipped when ``multiplier`` is set: run_summary's
-        ``failed = total - succeeded`` is a sandbox-vs-trajectory count and goes
-        negative for M>1, so the succeeded-floor above is the sole gate there).
+        1:1 modes only -- skipped when ``multiplier`` is set: the M succeeded-floor
+        above is the sole gate there, and ``failure_tolerance`` is tuned for
+        single-round wrap noise, not M-pass fleets).
     """
     if return_code != 0:
         return False
     tp = summary.get("throughput") or {}
-    # M-aware floor: throughput.total is a SANDBOX count (run_summary emits
-    # len(sandbox_states) = ratio*N), but with multiplier each sandbox runs M
-    # trajectories, so the trajectory-completion count is throughput.succeeded
-    # (= sum(trajectory_completions) = M*ratio*N on a healthy run). Comparing
-    # the sandbox count against M*ratio*N always fails for M>=2 -- read
-    # succeeded when M is set so the floor is dimensionally consistent.
+    # M-aware floor: with multiplier each sandbox runs M trajectories, so the
+    # trajectory-completion count is throughput.succeeded (= M*ratio*N on a
+    # healthy run). throughput.total counts ATTEMPTS (schema 2), which under-
+    # counts when slots give up early -- read succeeded so the floor measures
+    # completed work against M*ratio*N. (Schema-1 summaries had total = slot
+    # count and a dimensionally broken negative failed; the gates below read
+    # the same fields, so rescoring an old file behaves as it did then.)
     if multiplier:
         actual = tp.get("succeeded", 0)
         expected = multiplier * (ratio or 1) * n
@@ -277,9 +280,8 @@ def compute_valid(
     if adm and adm.get("peak_active") is not None and adm["peak_active"] > n:
         return False
     if not multiplier:
-        # failure_rate is meaningful only in the 1:1 (sandbox==trajectory) case;
-        # for M>1 run_summary's failed = total - succeeded is negative, so the
-        # succeeded-floor above is the sole gate (step failures already reduce
+        # failure_rate is the 1:1 (single-round) gate; for M>1 the succeeded
+        # floor above is the sole gate (step failures already reduce
         # completions).
         failed = tp.get("failed", 0)
         failure_rate = failed / actual if actual else 1.0

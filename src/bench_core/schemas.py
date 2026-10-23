@@ -300,6 +300,7 @@ class ReplayMetrics(TaskMetricsBase):
         self._delay_requested: float = 0.0
         self._delay_actual: float = 0.0
         self._trajectory_completions: int = 0
+        self._trajectory_attempts: int = 0
         self.initial_pause_sec: float = (
             0.0  # one-time snapshot-creation pause (single writer in _init_lifecycle; no lock)
         )
@@ -670,6 +671,18 @@ class ReplayMetrics(TaskMetricsBase):
         trajectory ran all its steps). Thread-safe."""
         with self._lock:
             self._trajectory_completions += 1
+
+    @property
+    def trajectory_attempts(self) -> int:
+        with self._lock:
+            return self._trajectory_attempts
+
+    def _mark_attempt(self) -> None:
+        """Increment the attempt counter (called by the runner at every
+        trajectory-pass entry, so attempts - completions = trajectories that
+        were dispatched but did not run to the end). Thread-safe."""
+        with self._lock:
+            self._trajectory_attempts += 1
 
 
 @dataclass

@@ -820,6 +820,7 @@ class ReplayBaseRunner(TaskRunner):
         skip create/kill + the per-trajectory lease.
         """
         self._begin_pass()
+        self.state.replay_metrics._mark_attempt()
         is_ephemeral = isinstance(self.provider, EphemeralCapable)
         lease = None
         create_sec = 0.0
@@ -1252,6 +1253,7 @@ class ReplayTaskRunner(ReplayBaseRunner):
     def _replay_trajectory(self, traj: Trajectory) -> None:
         """Fixed-mode (non-trajectory) per-step loop. Trajectory mode uses _run_trajectory."""
         self._begin_pass()
+        self.state.replay_metrics._mark_attempt()
         prev_slice_end = time.perf_counter()
         aborted = False
         for step in traj.steps:
@@ -1387,6 +1389,7 @@ class ReplayRoundRunner(ReplayBaseRunner):
 
     def _replay_round_loop(self, traj: Trajectory) -> None:
         """Per-step loop for non-trajectory round-robin mode (one trajectory)."""
+        self.state.replay_metrics._mark_attempt()
         prev_slice_end = time.perf_counter()
         aborted = False
         for step in traj.steps:
