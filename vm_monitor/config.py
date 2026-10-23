@@ -140,7 +140,7 @@ def load_env_config() -> dict:
 
     Returns:
         dict with keys: devkit_path, ksys_path, ksys_config_path,
-        ub_watch_path, smap_bw_path, devkit_cpu_range,
+        ub_watch_path, smap_bw_path, uprof_path, devkit_cpu_range,
         getfre_path, getfre_config_path
     """
     config = {
@@ -149,6 +149,7 @@ def load_env_config() -> dict:
         "ksys_config_path": "",
         "ub_watch_path": "",
         "smap_bw_path": "",
+        "uprof_path": "",
         "devkit_cpu_range": "",
         "getfre_path": "",
         "getfre_config_path": "",
@@ -163,6 +164,7 @@ def load_env_config() -> dict:
     config["ksys_config_path"] = os.environ.get("KSYS_CONFIG_PATH", "")
     config["ub_watch_path"] = os.environ.get("UB_WATCH_PATH", "")
     config["smap_bw_path"] = os.environ.get("SMAP_BW_PATH", "")
+    config["uprof_path"] = os.environ.get("UPROF_PATH", "")
     config["devkit_cpu_range"] = os.environ.get("DEVKIT_CPU_RANGE", "")
     config["getfre_path"] = os.environ.get("GETFRE_PATH", "")
     config["getfre_config_path"] = os.environ.get("GETFRE_CONFIG_PATH", "")
@@ -192,6 +194,8 @@ def save_env_config(config: dict):
             set_key(env_path, "UB_WATCH_PATH", config["ub_watch_path"])
         if config.get("smap_bw_path"):
             set_key(env_path, "SMAP_BW_PATH", config["smap_bw_path"])
+        if config.get("uprof_path"):
+            set_key(env_path, "UPROF_PATH", config["uprof_path"])
         if config.get("devkit_cpu_range"):
             set_key(env_path, "DEVKIT_CPU_RANGE", config["devkit_cpu_range"])
         if config.get("getfre_path"):

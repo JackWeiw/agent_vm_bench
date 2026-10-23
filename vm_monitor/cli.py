@@ -34,9 +34,9 @@ def _parse_rotation_intervals(spec: str, fallback: int) -> dict:
 
     Tools omitted from the spec fall back to ``fallback`` (``--rotation-interval``).
     Unknown keys are warned + dropped (never crash the bench on a typo); ``devkit``,
-    ``ksys``, ``perf`` are the valid tools.
+    ``ksys``, ``perf``, ``uprof`` are the valid tools.
     """
-    valid = {"devkit", "ksys", "perf"}
+    valid = {"devkit", "ksys", "perf", "uprof"}
     result = {}
     for token in spec.split(","):
         token = token.strip()
@@ -55,6 +55,27 @@ def _parse_rotation_intervals(spec: str, fallback: int) -> dict:
         except ValueError:
             logger.warning("--rotation-intervals: '%s' is not an int for tool '%s', skipping", val.strip(), tool)
     return result
+
+
+def _parse_rotation_tools(spec: str) -> list[str] | None:
+    """Parse ``--rotation-tools 'devkit,perf'`` into a tool-name list.
+
+    Unknown names are warned + dropped; an empty result (only-invalid names)
+    falls back to None = rotate every tool. Order does not matter: LogCapture
+    keeps the canonical slot order.
+    """
+    valid = {"devkit", "ksys", "perf", "uprof"}
+    tools = []
+    for token in spec.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if token not in valid:
+            logger.warning("--rotation-tools: unknown tool '%s' (valid: %s), skipping", token, sorted(valid))
+            continue
+        if token not in tools:
+            tools.append(token)
+    return tools or None
 
 
 # Unified flag_stem -> internal_name map (user refinement: single source of
@@ -197,12 +218,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Timeout for ksys data parsing phase in seconds (default: 600s, increase for large VM counts)",
     )
 
-    # Log-rotation capture (devkit -> ksys -> perf, one slot at a time).
+    # Log-rotation capture (devkit -> ksys -> perf -> uprof, one slot at a time).
     # bench-core forwards monitor.log_rotation as these flags.
     parser.add_argument(
         "--log-rotation",
         action="store_true",
-        help="Log-rotation mode: devkit (top-down + memory in parallel) -> ksys -> perf stat rotate "
+        help="Log-rotation mode: devkit (top-down + memory in parallel) -> ksys -> perf stat -> uprof rotate "
         "one slot per --rotation-interval for the whole stress window instead of running all capture "
         "tools concurrently. Per-turn timestamped logs under --rotation-log-dir. Requires "
         "--enable-capture; keys off the --stress-file lock lifecycle when given.",
@@ -218,9 +239,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--rotation-intervals",
         type=str,
         default=None,
-        help="Per-tool rotation intervals as 'devkit=20,ksys=30,perf=15' (seconds). "
+        help="Per-tool rotation intervals as 'devkit=20,ksys=30,perf=15,uprof=15' (seconds). "
         "Tools omitted fall back to --rotation-interval. Overrides --rotation-interval "
         "for the tools it lists.",
+    )
+    parser.add_argument(
+        "--rotation-tools",
+        type=str,
+        default=None,
+        help="Comma-separated tools to rotate in --log-rotation, e.g. 'devkit,perf' "
+        "(default: all of devkit,ksys,perf,uprof; canonical slot order is kept). "
+        "Unknown names are warned + dropped; an empty result rotates every tool.",
     )
     parser.add_argument(
         "--rotation-perf-events",
@@ -448,6 +477,9 @@ def main(argv=None):
         rotation_interval = args.rotation_interval
         if args.rotation_intervals:
             rotation_interval = _parse_rotation_intervals(args.rotation_intervals, args.rotation_interval)
+        # --rotation-tools 'devkit,perf' -> rotate only the named tools;
+        # unset / only-invalid names -> None (rotate every tool).
+        rotation_tools = _parse_rotation_tools(args.rotation_tools) if args.rotation_tools else None
         capture = LogCapture(
             config,
             args.time,
@@ -460,6 +492,7 @@ def main(argv=None):
             rotation_perf_events=args.rotation_perf_events,
             rotation_log_dir=args.rotation_log_dir,
             stress_file=args.stress_file,
+            rotation_tools=rotation_tools,
         )
         capture.start()
         print(f"[OK] Log collection tools started in background (duration={args.time}s)")
