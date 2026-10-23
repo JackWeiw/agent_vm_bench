@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from bench_core.config import KernelConfig
     from bench_core.observability.stats_collector import StatsCollector
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _iso(epoch: float) -> str:
@@ -66,12 +66,16 @@ def write_run_summary(
     )
 
     # Throughput is trajectory-level (spec §4; matches the txt report's
-    # "Trajectory Completions" line). In lifecycle/exec_only each sandbox runs
-    # one trajectory, so total = sandboxes that ran; succeeded = trajectories
-    # that ran all steps (replay_metrics.trajectory_completions); failed = the
-    # rest. Step-level counts stay distinct in total_steps / steps_per_sec
-    # (and the txt report's "Total Steps"), so the two axes never collapse.
-    total = len(sandbox_states)
+    # "Trajectory Completions" line) and dimensionally consistent:
+    # total = trajectory ATTEMPTS (one per runner pass; a slot reused across
+    # ephemeral create/kill cycles or fixed-mode passes attempts once per
+    # trajectory), succeeded = attempts that ran every step to the end
+    # (replay_metrics.trajectory_completions), failed = total - succeeded >= 0.
+    # Schema 1 had total = len(sandbox_states) (a SLOT count) -- in ephemeral /
+    # fixed-multiplier modes one slot completes many trajectories, so
+    # failed = slots - completions went negative. Step-level counts stay
+    # distinct in total_steps / steps_per_sec, so the two axes never collapse.
+    total = sum(s.replay_metrics.trajectory_attempts for s in sandbox_states.values())
     succeeded = sum(s.replay_metrics.trajectory_completions for s in sandbox_states.values())
     failed = total - succeeded
     tasks_per_sec = (succeeded / wall_sec) if wall_sec and wall_sec > 0 else None

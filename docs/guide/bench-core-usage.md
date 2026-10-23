@@ -607,12 +607,12 @@ Each trial writes `{prefix}_run_summary.json` — the only contract between kern
 
 | field | what it is | what to read / why it matters |
 |-------|------------|------------------------------|
-| `schema_version` | `1` | contract version; the driver keys schema compat off this |
+| `schema_version` | `2` | contract version; informational — the driver reads the throughput fields directly and never validates this (rescoring a schema-1 file behaves exactly as before: same gates, same fields) |
 | `replay_mode`, `provider` | which mode / backend | separates the lifecycle/exec_only/trajectory curves and the backend |
 | `started_at`, `completed_at` (+ `_epoch`) | ISO local + epoch seconds | start/end times; epoch joins with vm_monitor host samples |
 | `test_duration`, `wall_sec` | configured ceiling vs actual wall | whether the ceiling was hit; wall ≪ duration = early stop/stall |
 | `total_count`, `running_concurrency`, `overcommit_ratio` | the trial's k×N / N / k | oversub params; ratio=k is the sweep's x-axis |
-| `throughput` | `total, succeeded, failed, total_steps, steps_per_sec, tasks_per_sec` (`total` = sandboxes that ran; `succeeded` = trajectories that ran all steps) | output/failure stats; steps_per_sec=throughput; `total` is the driver's valid gate |
+| `throughput` | `total, succeeded, failed, total_steps, steps_per_sec, tasks_per_sec` (`total` = trajectory attempts — schema 2 counts per trajectory, not per sandbox slot, so a slot reused across ephemeral create/kill or fixed-multiplier passes counts once per pass; `succeeded` = trajectories that ran all steps; `failed` = total − succeeded, never negative) | output/failure stats; steps_per_sec=throughput; `total` is the driver's valid gate (non-M trials; M trials gate on `succeeded`) |
 | `admission` | `maximum, peak_active, granted, avg_queue_wait_sec, control_qps, control_dispatched` — `null` for exec_only (no admission controller) | admission control-plane state; `peak_active≤N` is the valid gate; null for exec_only |
 | `lifecycle_overhead` | `pause_sec_sum, resume_sec_sum, pct_of_slice_total` — lifecycle/trajectory only; `pct_of_slice_total` is the overhead ratio (%, same source as Overview's `lifecycle_overhead_aggregate_pct`) | lifecycle overhead in absolute + ratio; the driver writes this to `trial-summary.csv`'s `lifecycle_overhead_pct` |
 | `paths` | `report, obs_xlsx, lifecycle_series, trajectory_index, vm_monitor_dir` | artifact paths; the driver aggregates / pulls detail from these |
@@ -623,7 +623,7 @@ Each trial writes `{prefix}_run_summary.json` — the only contract between kern
 A trial (one pass of the k×N fleet, `round_count=1`) is **valid** when it ran (close to) the full running fleet without over-admitting:
 
 - `return_code == 0` (the kernel subprocess succeeded);
-- `throughput.total >= 0.9 * N` (it ran most of the N running slots — a crash/early-exit fails here; the `test.duration` ceiling caps a stalled run, which then also fails this gate). Mode-agnostic: lifecycle `total` ≈ k×N and exec_only `total` ≈ N, both ≥ 0.9×N on a healthy run;
+- `throughput.total >= 0.9 * N` (it ran most of the N running slots — a crash/early-exit fails here; the `test.duration` ceiling caps a stalled run, which then also fails this gate). Mode-agnostic: a single-round trial attempts each trajectory once, so lifecycle `total` ≈ k×N and exec_only `total` ≈ N, both ≥ 0.9×N on a healthy run; with `multiplier` (M) the floor instead reads `succeeded` (completions) ≥ 0.9×M×k×N;
 - `admission.peak_active <= N` (never ran more than N concurrent — dropped for exec_only);
 - `failure_rate <= failure_tolerance` (configurable wrap-noise allowance).
 

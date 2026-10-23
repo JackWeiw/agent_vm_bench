@@ -241,26 +241,26 @@ def test_build_trial_config_no_multiplier_keeps_benchmark_mode():
 
 def test_compute_valid_multiplier_aware_happy():
     """M=5, ratio=2, N=384 -> expected trajectory completions = 5*2*384 = 3840.
-    run_summary emits throughput.total = SANDBOX count (len(sandbox_states) =
-    ratio*N = 768) and throughput.succeeded = TRAJECTORY-completion count
-    (sum(trajectory_completions) = M*ratio*N = 3840); failed = total-succeeded
-    = -3072 (negative -- the 1:1 sandbox==trajectory assumption breaks for M>1).
-    The floor must read succeeded (3840 >= 0.9*3840), NOT total (768 < 0.9*3840
-    would always fail for M>=2 -- the dimensional bug this guards). exec_ephemeral
-    has no admission controller (peak_active=None), so the over-admission clause
-    is skipped, and the failure_rate clause is skipped for M>1 (negative failed)."""
-    s = _summary(total=768, succeeded=3840, failed=-3072, mode="exec_ephemeral", peak_active=None)
+    Since run_summary schema 2, throughput.total = trajectory ATTEMPTS and
+    throughput.succeeded = completions (dimensionally consistent; schema 1
+    emitted total = slot count = 768 and a negative failed). The floor must
+    read succeeded (3840 >= 0.9*3840): attempts shrink when slots give up on
+    persistent create-failure, so only completions measure the work done.
+    exec_ephemeral has no admission controller (peak_active=None), so the
+    over-admission clause is skipped, and the failure_rate clause is skipped
+    for M>1 (the succeeded-floor is the sole M gate)."""
+    s = _summary(total=3840, succeeded=3840, failed=0, mode="exec_ephemeral", peak_active=None)
     assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0, multiplier=5, ratio=2) is True
 
 
 def test_compute_valid_multiplier_under_run():
     """Same M/ratio/N (expected = 3840 completions) but only 2000 trajectories
-    completed: all 768 sandboxes ran (total=768) yet exited early before finishing
-    their M, so succeeded=2000 < 0.9*3840=3456 -> under-run -> invalid. Reading
-    total (768) against the floor would pass (768 >= 0 is moot), so this only
-    fails correctly when the floor reads succeeded. Mirrors reference B's
+    completed: slots exited early (give-up / crash) after 2400 attempts, so
+    succeeded=2000 < 0.9*3840=3456 -> under-run -> invalid. Reading total
+    (attempts=2400) against the floor would also fail here, but only succeeded
+    fails for the RIGHT reason (completed work vs M*k*N). Mirrors reference B's
     ``total == target_count`` check."""
-    s = _summary(total=768, succeeded=2000, failed=-1232, mode="exec_ephemeral", peak_active=None)
+    s = _summary(total=2400, succeeded=2000, failed=400, mode="exec_ephemeral", peak_active=None)
     assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0, multiplier=5, ratio=2) is False
 
 
@@ -608,7 +608,7 @@ stamp = time.strftime('%Y%m%d-%H%M%S')
 run_dir = out / f'{{pfx}}_{{stamp}}'
 run_dir.mkdir(parents=True, exist_ok=True)
 summary = {{
-  'schema_version': 1, 'workflow_type': 'replay',
+  'schema_version': 2, 'workflow_type': 'replay',
   'replay_mode': cfg['replay']['mode'], 'provider': 'stub',
   'started_at': '2026-09-05T14:00:00+08:00',
   'completed_at': '2026-09-05T14:18:00+08:00',

@@ -537,12 +537,12 @@ driver 深拷贝 `base_config` 并只改写超卖字段,其余透传:
 
 | 字段 | 含义 |
 |-------|------|
-| `schema_version` | 契约版本(`1`);driver 据此判 schema 兼容 |
+| `schema_version` | 契约版本(`2`);信息性字段——driver 直接读 throughput 字段、从不校验此值(用新 driver 重打分 schema-1 旧文件行为不变:同门槛、同字段) |
 | `replay_mode` / `provider` | 哪个 mode / 后端;区分曲线与后端 |
 | `started_at` / `completed_at`(+ `_epoch`) | 起止时间;epoch 用于与 vm_monitor 对齐 join |
 | `test_duration` / `wall_sec` | 配置上限 vs 实际墙钟;wall ≪ duration = 提前停/卡死 |
 | `total_count` / `running_concurrency` / `overcommit_ratio` | 该 trial 的 k×N / N / k;ratio=k 是扫描横轴 |
-| `throughput` | `total`(跑过的沙箱数)/ `succeeded`(跑完全部 step 的轨迹数)/ `failed` / `total_steps` / `steps_per_sec` / `tasks_per_sec`;`total` 是 driver valid 门槛 |
+| `throughput` | `total`(轨迹 attempt 数,schema 2:slot 跨 ephemeral create/kill 或 fixed multiplier 复用时按轨迹计数,不再按沙箱槽位)/ `succeeded`(跑完全部 step 的轨迹数)/ `failed`(= total − succeeded,恒 ≥ 0)/ `total_steps` / `steps_per_sec` / `tasks_per_sec`;非 M trial 的 valid 门槛读 `total`,M(multiplier)trial 读 `succeeded` |
 | `admission` | `maximum, peak_active, granted, avg_queue_wait_sec, control_qps, control_dispatched`;`peak_active≤N` 是 valid 门槛;exec_only/exec_ephemeral 为 `null` |
 | `lifecycle_overhead` | `pause_sec_sum, resume_sec_sum, pct_of_slice_total`(开销比率 %,与 Overview `lifecycle_overhead_aggregate_pct` 同源);仅 lifecycle/trajectory |
 | `paths` | `report, obs_xlsx, lifecycle_series, trajectory_index, vm_monitor_dir` 各产物路径 |
@@ -553,7 +553,7 @@ driver 深拷贝 `base_config` 并只改写超卖字段,其余透传:
 一个 trial(跑一遍 k×N fleet,`round_count=1`)在"跑满大多数 running slot 且未过量准入"时判 **valid**:
 
 - `return_code == 0`;
-- `throughput.total >= 0.9 * N`(跑满 N 个 slot 的大多数——崩溃/早退在此失败;`test.duration` 上限会盖住卡住的 run,随后也在此失败)。mode 无关:lifecycle/exec_ephemeral `total` ≈ k×N、exec_only `total` ≈ N,健康 run 都 ≥ 0.9×N;
+- `throughput.total >= 0.9 * N`(跑满 N 个 slot 的大多数——崩溃/早退在此失败;`test.duration` 上限会盖住卡住的 run,随后也在此失败)。mode 无关:单轮 trial 每条轨迹 attempt 一次,lifecycle/exec_ephemeral `total` ≈ k×N、exec_only `total` ≈ N,健康 run 都 ≥ 0.9×N;设 `multiplier`(M)时门槛改读 `succeeded`(完成数)≥ 0.9×M×k×N;
 - `admission.peak_active <= N`(从不超过 N 并发——exec_only 跳过);
 - `failure_rate <= failure_tolerance`。
 
