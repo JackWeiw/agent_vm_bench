@@ -178,11 +178,15 @@ class MonitorConfig:
             host_procs = [t.strip() for t in raw_host_procs.split(",") if t.strip()]
         else:
             host_procs = [str(t).strip() for t in raw_host_procs if str(t).strip()]
+        # ponytail: .lower() normalizes YAML booleans too -- str(True)="True"
+        # but the toggle comparisons below want lowercase "true"/"auto"/"false",
+        # so an unquoted `enabled: true` would otherwise read as "True" and miss
+        # the `== "true"` check, silently disabling vm_monitor.
         return cls(
-            enabled=str(raw.get("enabled", "auto")),
-            vmm=str(raw.get("vmm", "auto")),
+            enabled=str(raw.get("enabled", "auto")).lower(),
+            vmm=str(raw.get("vmm", "auto")).lower(),
             interval=int(raw.get("interval", 2)),
-            capture=str(raw.get("capture", "auto")),
+            capture=str(raw.get("capture", "auto")).lower(),
             numa=str(raw.get("numa", "all")),
             disks=str(raw.get("disks", "all")),
             stress_file=str(raw.get("stress_file", "/dev/shm/bench_core_monitor.lock")),
