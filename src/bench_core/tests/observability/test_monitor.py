@@ -54,6 +54,18 @@ def test_monitor_config_from_raw_overrides():
     assert cfg.monitor.skip_charts is True
 
 
+def test_monitor_config_yaml_boolean_enabled_normalized():
+    """An unquoted YAML `enabled: true` (bool True) must read as enabled, not
+    str(True)="True" which misses the `== "true"` check and silently disables."""
+    raw = {"sandbox": {"total_count": 1}, "monitor": {"enabled": True, "capture": True}}
+    cfg = KernelConfig.from_raw(raw)
+    assert cfg.monitor.enabled == "true"
+    assert cfg.monitor.capture == "true"
+    prov = _StubProvider(name="cubesandbox", vmm_type="cubesandbox")
+    mc = MonitorController(cfg, prov)
+    assert mc._effective is True
+
+
 class _StubProvider:
     """Minimal provider stub for MonitorController (no SDK)."""
 
