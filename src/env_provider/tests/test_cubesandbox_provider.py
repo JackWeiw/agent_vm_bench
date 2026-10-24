@@ -144,6 +144,15 @@ def test_build_provider_reads_cubesandbox_block():
     assert provider._config.cube_template_id == "fallback-tpl"
 
 
+def test_config_from_raw_reads_timeout_knobs():
+    cfg = Config.from_raw({"cubesandbox": {"request_timeout": 5.0, "cleanup_concurrency": 3}})
+    assert cfg.request_timeout == 5.0
+    assert cfg.cleanup_concurrency == 3
+    defaults = Config.from_raw({"cubesandbox": {}})
+    assert defaults.request_timeout == 30.0
+    assert defaults.cleanup_concurrency == 100
+
+
 def test_setup_cube_env_skips_placeholder_api_key(monkeypatch):
     # The example YAML ships your_cube_api_key_here; setup must NOT export it
     # (cube auth is optional; a placeholder would be sent as a real key).
@@ -307,6 +316,20 @@ def test_resume_swaps_handle_via_connect(monkeypatch):
     # connect returns a fresh handle on the resumed sandbox; swap it in.
     state = provider.manager.sandbox_states[1]
     assert state.cube_sandbox is new_handle
+
+
+def test_resume_pins_session_timeout(monkeypatch):
+    # resume() swaps in a fresh connect handle -> fresh session; the timeout
+    # pin must follow it (kill/pause/get_info on the new handle stay bounded).
+    provider = _make_provider(_FakeHandle(_FakeCommands()))
+    new_handle = _FakeHandle(_FakeCommands(), sandbox_id="cube-1")
+    fake_sandbox = type("_FS", (), {"connect": staticmethod(lambda sid, *a, **k: new_handle)})
+    monkeypatch.setattr("env_provider.cubesandbox.Sandbox", fake_sandbox)
+    pinned: list = []
+    monkeypatch.setattr("env_provider.cubesandbox.pin_session_timeout", lambda sbx, t: pinned.append((sbx, t)))
+
+    provider.resume(SandboxInstance(id="cube-1", index=1))
+    assert pinned == [(new_handle, 30.0)]  # Config() default request_timeout
 
 
 def test_resume_raises_on_missing_state():

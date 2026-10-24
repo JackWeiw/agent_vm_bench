@@ -64,6 +64,20 @@ class Config:
     # survives pauses between steps.
     timeout: int = 86400
 
+    # Bench-side bound on SDK control-plane HTTP calls (seconds). The
+    # cubesandbox SDK (0.7.0) omits ``timeout=`` on several session requests
+    # (kill / pause / get_info / snapshots) and ``requests`` defaults to
+    # blocking forever -- one blackholed DELETE hangs cleanup indefinitely
+    # (observed at oversub ratio-04 scale). The manager pins an HTTPAdapter
+    # carrying this timeout onto every SDK handle's session. Distinct from
+    # ``timeout`` above, which is the sandbox *idle TTL*.
+    request_timeout: float = 30.0
+
+    # Bounded concurrency for ``cleanup_all``: a serial loop is too slow at
+    # 1000+ sandboxes, and full-parallel DELETEs overflow cubemaster's accept
+    # backlog (which is what blackholes kills in the first place).
+    cleanup_concurrency: int = 100
+
     # Default template ID. None -> the SDK falls back to $CUBE_TEMPLATE_ID (set
     # by setup_cube_env from cube_template_id). The YAML block normally sets
     # this explicitly.
@@ -93,6 +107,8 @@ class Config:
             cube_template_id=env.get("CUBE_TEMPLATE_ID", ""),
             cube_sandbox_domain=env.get("CUBE_SANDBOX_DOMAIN", "cube.app"),
             timeout=backend.get("timeout", 86400),
+            request_timeout=backend.get("request_timeout", 30.0),
+            cleanup_concurrency=backend.get("cleanup_concurrency", 100),
             template=backend.get("template"),
             sandbox_ids_file=backend.get("sandbox_ids_file"),
             snapshot_dir=backend.get("snapshot_dir"),

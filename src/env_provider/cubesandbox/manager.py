@@ -26,7 +26,10 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, wait
 from threading import Event
 from typing import Any
 
@@ -94,6 +97,119 @@ from .schemas import CubeSandboxState
 
 logger = logging.getLogger(__name__)
 
+try:
+    from requests.adapters import HTTPAdapter
+
+    class _TimeoutAdapter(HTTPAdapter):
+        """HTTPAdapter that fills a default timeout when the caller omits one.
+
+        ``requests`` blocks forever when ``timeout`` is None (its default), and
+        the cube SDK's control-plane calls (kill / pause / get_info / snapshots)
+        omit it -- a single blackholed DELETE hangs the caller indefinitely.
+        Mounting this on a handle's session bounds every call without patching
+        the pip-installed SDK.
+        """
+
+        def __init__(self, timeout: float, **kwargs: Any) -> None:
+            self._default_timeout = timeout
+            super().__init__(**kwargs)
+
+        def send(self, request: Any, **kwargs: Any) -> Any:
+            if kwargs.get("timeout") is None:
+                kwargs["timeout"] = self._default_timeout
+            return super().send(request, **kwargs)
+
+except ImportError:  # requests absent (only when the cube SDK is absent)
+    _TimeoutAdapter = None  # type: ignore[assignment,misc]
+
+
+# Version/layout guard: the pin below touches the SDK-internal ``_session``
+# attribute and was verified against this cube SDK version. Upstream drift can
+# silently turn the pin into a no-op (unbounded control-plane calls), so both a
+# version mismatch and a skipped/failed pin warn once per process.
+_TESTED_SDK_VERSION = "0.7.0"
+_guard_warned: set[str] = set()
+
+
+def _warn_guard_once(key: str, msg: str) -> None:
+    if key not in _guard_warned:
+        _guard_warned.add(key)
+        logger.warning(msg)
+    else:
+        logger.debug(msg)
+
+
+def _check_sdk_version_once() -> None:
+    try:
+        from cubesandbox import __version__ as sdk_version
+    except Exception:
+        return  # SDK absent (unit tests / fakes) -- nothing to check
+    if sdk_version != _TESTED_SDK_VERSION:
+        _warn_guard_once(
+            "version",
+            f"cubesandbox SDK {sdk_version} != pin-tested {_TESTED_SDK_VERSION}; "
+            "the control-plane timeout pin may no-op if SDK internals changed",
+        )
+
+
+def pin_session_timeout(handle: Any, timeout: float) -> None:
+    """Best-effort: bound the cube SDK handle's control-plane HTTP calls.
+
+    Mounts a :class:`_TimeoutAdapter` on the handle's ``requests.Session`` so a
+    ``kill()`` with no ``timeout=`` cannot block forever. Idempotent per
+    session. A skipped or failed pin warns once (SDK version/layout drift would
+    otherwise silently leave every control-plane call unbounded); the backstop
+    is ``cleanup_all``'s overall deadline.
+    """
+    _check_sdk_version_once()
+    if _TimeoutAdapter is None:
+        return
+    session = getattr(handle, "_session", None)
+    if session is None:
+        _warn_guard_once(
+            "no-session",
+            "cube SDK handle has no _session attribute (SDK layout changed?); "
+            "control-plane calls are NOT timeout-pinned -- only cleanup_all's deadline bounds teardown",
+        )
+        return
+    if getattr(session, "_timeout_pinned", False):
+        return
+    try:
+        adapter = _TimeoutAdapter(timeout)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        session._timeout_pinned = True
+    except Exception as e:
+        _warn_guard_once("pin-failed", f"Session timeout pin failed: {str(e)[:80]}; control-plane calls not bounded")
+
+
+def _call_bounded(fn: Callable[[], Any], timeout: float) -> Any:
+    """Run ``fn()`` on a daemon thread; raise TimeoutError if it outlives ``timeout``.
+
+    :func:`pin_session_timeout` only covers instance handles (their session
+    exists before the first call). The SDK's classmethods -- ``Sandbox.create``,
+    ``connect``, ``list`` -- build a throwaway ``requests.Session`` per call
+    with no timeout, so a blackholed control-plane POST blocks the calling thread forever and there is no session to pin ahead of time.
+    join(timeout) bounds the wait bench-side; the worker is a daemon thread, so
+    an abandoned call can never block process exit.
+    """
+    box: dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            box["result"] = fn()
+        except BaseException as exc:  # re-raised on the caller's thread
+            box["error"] = exc
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        raise TimeoutError(f"cube SDK call did not return within {timeout}s; abandoned")
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
+
 
 class CubesandboxManager(BaseSandboxManager):
     """CubeSandbox lifecycle: SDK seams over the shared lifecycle template.
@@ -149,12 +265,16 @@ class CubesandboxManager(BaseSandboxManager):
         resolved = template or self.config.template
 
         try:
-            sbx = Sandbox.create(
-                resolved,
-                timeout=self.config.timeout,
-                envs=None,
-                metadata=metadata,
+            sbx = _call_bounded(
+                lambda: Sandbox.create(
+                    resolved,
+                    timeout=self.config.timeout,
+                    envs=None,
+                    metadata=metadata,
+                ),
+                self.config.request_timeout,
             )
+            pin_session_timeout(sbx, self.config.request_timeout)
             state.cube_sandbox = sbx
             state.creation_metrics.create_ready_time = time.time()
             state.creation_metrics.create_elapsed = (
@@ -178,7 +298,7 @@ class CubesandboxManager(BaseSandboxManager):
 
     def _list_existing(self) -> list:
         """List running sandboxes (CubeSandbox returns a flat list of dicts)."""
-        return Sandbox.list()
+        return _call_bounded(Sandbox.list, self.config.request_timeout)
 
     def _external_id(self, listed: Any) -> str:
         """The stable cube sandbox ID of a listed sandbox (a dict, key sandboxID)."""
@@ -187,7 +307,9 @@ class CubesandboxManager(BaseSandboxManager):
         return str(getattr(listed, "sandbox_id", listed) or "")
 
     def _attach(self, listed: Any) -> Any:
-        return Sandbox.connect(self._external_id(listed))
+        sbx = _call_bounded(lambda: Sandbox.connect(self._external_id(listed)), self.config.request_timeout)
+        pin_session_timeout(sbx, self.config.request_timeout)
+        return sbx
 
     def _kill_one(self, state: CubeSandboxState) -> None:
         state.cube_sandbox.kill()
@@ -195,6 +317,98 @@ class CubesandboxManager(BaseSandboxManager):
     def _exec_probe(self, handle: Any, cmd: str, timeout: int) -> tuple[int, str, str]:
         result = handle.commands.run(cmd, user="root", timeout=timeout)
         return result.exit_code, result.stdout, result.stderr
+
+    # ------------------------------------------------------------ cleanup override
+    def cleanup_all(self) -> None:
+        """Bounded-concurrent kill of every tracked sandbox.
+
+        Overrides the base serial loop: serial is too slow at oversub scale
+        (1000+ sandboxes), but *unbounded* parallel DELETEs overflow cubemaster's
+        accept backlog and blackhole kills (observed at ratio-04). Two bounds
+        stack:
+
+        * ``cleanup_concurrency`` workers cap the request storm;
+        * the pinned session timeout (:func:`pin_session_timeout`) caps each
+          HTTP call, and the overall deadline below -- worst case every kill
+          rides its full timeout -- guarantees teardown returns even if the pin
+          is unavailable (SDK internals changed). Abandoned kills are logged,
+          not retried.
+        """
+        logger.info(f"\nKilling all {self._noun.lower()}s...")
+        states = [s for s in self._states.values() if self._handle_of(s)]
+        if not states:
+            logger.info(f"Killed 0 {self._noun.lower()}s")
+            return
+        workers = max(1, min(self.config.cleanup_concurrency, len(states)))
+        overall = (len(states) / workers + 1) * self.config.request_timeout
+        logger.info(f"  {len(states)} {self._noun.lower()}s, {workers} concurrent, {overall:.0f}s deadline")
+
+        executor = ThreadPoolExecutor(max_workers=workers)
+        try:
+            futures = {executor.submit(self._kill_tracked, s): s for s in states}
+            done, not_done = wait(futures, timeout=overall)
+            killed = sum(1 for f in done if f.result())
+        finally:
+            # Never join workers here: a kill blocked despite the pinned timeout
+            # must not hang teardown (the report and subsequent trials proceed).
+            executor.shutdown(wait=False, cancel_futures=True)
+        for f in not_done:
+            logger.warning(f"[{self._label(futures[f])}] kill unfinished after {overall:.0f}s, abandoning")
+        logger.info(f"Killed {killed} of {len(states)} {self._noun.lower()}s")
+
+    def cleanup_existing(self) -> int:
+        """Bounded-concurrent ``--cleanup`` (standalone teardown of leftovers).
+
+        The base serial loop is bounded per call (pin + :func:`_call_bounded`)
+        but a degraded control plane still costs N x request_timeout serially
+        at oversub scale. Same two bounds as :meth:`cleanup_all`: a worker pool
+        capped by ``cleanup_concurrency`` plus an overall deadline (2 calls per
+        item -- connect + kill). Per-item work reuses the base seams via
+        ``_attach`` / ``_kill_one``; abandoned items are warned, not retried.
+        """
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"Cleaning up existing {self._noun.lower()}s")
+        logger.info(f"{'=' * 60}")
+        try:
+            listed = _call_bounded(Sandbox.list, self.config.request_timeout)
+        except Exception as e:
+            logger.error(f"  Failed to list {self._noun.lower()}s: {e}")
+            return 0
+        if not listed:
+            logger.info(f"  No existing {self._noun.lower()}s found")
+            return 0
+        logger.info(f"  Found {len(listed)} running {self._noun.lower()}s")
+
+        def _kill_listed(i_item: tuple[int, Any]) -> bool:
+            i, item = i_item
+            handle = self._attach(item)  # bounded connect + session pin
+            state = self._new_state(i, external_id=self._external_id(item))
+            setattr(state, self._handle_attr, handle)
+            self._kill_one(state)
+            return True
+
+        workers = max(1, min(self.config.cleanup_concurrency, len(listed)))
+        overall = (len(listed) / workers + 1) * 2 * self.config.request_timeout
+        killed = 0
+        executor = ThreadPoolExecutor(max_workers=workers)
+        try:
+            futures = {executor.submit(_kill_listed, pair): pair for pair in enumerate(listed, start=1)}
+            done, not_done = wait(futures, timeout=overall)
+            for f in done:
+                exc = f.exception()
+                if exc is None:
+                    killed += 1
+                    logger.info(f"  Killed {self._external_id(futures[f][1])}")
+                else:
+                    logger.warning(f"  [{self._external_id(futures[f][1])}] Kill error: {str(exc)[:80]}")
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+        for f in not_done:
+            logger.warning(
+                f"  [{self._external_id(futures[f][1])}] cleanup unfinished after {overall:.0f}s, abandoning"
+            )
+        logger.info(f"Killed {killed} of {len(listed)} {self._noun.lower()}s")
+        return killed
 
     # ----------------------------------------------------- cube-specific methods
     def detect_from_file(self, ids_file: str) -> dict[int, CubeSandboxState]:

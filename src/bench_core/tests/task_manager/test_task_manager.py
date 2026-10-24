@@ -10,6 +10,7 @@ body.
 from __future__ import annotations
 
 import threading
+import time
 
 from bench_core.config import KernelConfig
 from bench_core.schemas import BenchSandbox
@@ -171,3 +172,25 @@ class TestReplay:
 
         # wait_all must not raise for replay (it joins like browser/coding).
         tm.wait_all(timeout=0.1)
+
+    def test_wait_all_shared_deadline_bounds_wedged_runners(self):
+        # A sequential per-runner join costs N x timeout when runners are wedged
+        # inside unbounded backend calls (observed at oversub scale: 1320 x 5s
+        # ~ 1.8h of "Status Snapshot" spam before teardown even starts). One
+        # shared deadline must bound wait_all regardless of fleet size.
+        config = KernelConfig(workflow_type="replay", workflow_config=ReplayConfig())
+        tm = TaskManager(config, {}, threading.Event(), FakeProvider(count=0))
+        block = threading.Event()
+        wedged = [threading.Thread(target=block.wait, daemon=True) for _ in range(6)]
+        for t in wedged:
+            t.start()
+        tm.runners = wedged
+        try:
+            start = time.monotonic()
+            tm.wait_all(timeout=0.3)
+            # Shared deadline ~0.3s total, not 6 x 0.3 = 1.8s sequential.
+            assert time.monotonic() - start < 1.5
+        finally:
+            block.set()
+            for t in wedged:
+                t.join(timeout=5)

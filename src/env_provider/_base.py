@@ -305,23 +305,32 @@ class BaseSandboxManager(ABC):
         logger.info(f"\nKilling all {self._noun.lower()}s...")
         killed = 0
         for state in self._states.values():
-            handle = self._handle_of(state)
-            if not handle:
+            if not self._handle_of(state):
                 continue
-            try:
-                was_alive = state.is_alive
-                self._kill_one(state)
-                state.is_alive = False
-                # Only explain the transition when the sandbox was alive before
-                # this intentional kill (preserve genuine offline states).
-                if was_alive:
-                    state.stopped_by_cleanup = True
-                if self._set_killed_on_cleanup:
-                    state.creation_metrics.status = BackendSandboxStatus.KILLED
-                killed += 1
-            except Exception as e:
-                logger.warning(f"[{self._label(state)}] Kill error: {str(e)[:50]}")
+            killed += self._kill_tracked(state)
         logger.info(f"Killed {killed} {self._noun.lower()}s")
+
+    def _kill_tracked(self, state: BackendState) -> bool:
+        """Kill one tracked sandbox + flag bookkeeping. Returns True on success.
+
+        Extracted from :meth:`cleanup_all` so a backend that kills through a
+        bounded worker pool (cubesandbox) reuses the exact flag transitions
+        instead of re-implementing them.
+        """
+        try:
+            was_alive = state.is_alive
+            self._kill_one(state)
+            state.is_alive = False
+            # Only explain the transition when the sandbox was alive before
+            # this intentional kill (preserve genuine offline states).
+            if was_alive:
+                state.stopped_by_cleanup = True
+            if self._set_killed_on_cleanup:
+                state.creation_metrics.status = BackendSandboxStatus.KILLED
+            return True
+        except Exception as e:
+            logger.warning(f"[{self._label(state)}] Kill error: {str(e)[:50]}")
+            return False
 
     # ----------------------------------------------------------- cleanup_existing
     def cleanup_existing(self) -> int:

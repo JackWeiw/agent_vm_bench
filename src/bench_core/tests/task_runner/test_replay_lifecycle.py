@@ -1388,6 +1388,28 @@ def test_trajectory_mode_skips_create_all_and_builds_shells():
     assert called["create_all"] is False
 
 
+def test_create_only_ephemeral_is_explicit_noop(tmp_path):
+    """Spine: --create-only in an ephemeral mode exits with a no-op report --
+    no zero-filled creation timing report and no sandbox_ids_file full of
+    "traj-shell-N" placeholders (the shells are not real sandboxes)."""
+    from bench_core.bench import run_benchmark
+    from bench_core.config import KernelConfig
+    from env_provider.fake import FakeProvider
+
+    cfg = KernelConfig(
+        workflow_type="replay",
+        total_count=2,
+        create_only=True,
+        output_dir=str(tmp_path),
+        workflow_config=ReplayConfig(replay_mode="exec_ephemeral"),
+    )
+    provider = FakeProvider(count=0)
+    result = run_benchmark(cfg, provider)
+    assert "no-op" in result["report"]
+    assert result["filepath"] is None
+    assert provider.save_ids_calls == 0
+
+
 def test_run_trajectory_creates_runs_kills_with_lease(tmp_path):
     """E2E: _run_trajectory does create -> steps -> kill under one lease, and
     overlays create/kill/slot-held timing on the last recorded step.
