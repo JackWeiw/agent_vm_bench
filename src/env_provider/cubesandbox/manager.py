@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
 from threading import Event
 from typing import Any
@@ -144,6 +146,34 @@ def pin_session_timeout(handle: Any, timeout: float) -> None:
         logger.debug(f"Session timeout pin skipped: {str(e)[:80]}")
 
 
+def _call_bounded(fn: Callable[[], Any], timeout: float) -> Any:
+    """Run ``fn()`` on a daemon thread; raise TimeoutError if it outlives ``timeout``.
+
+    :func:`pin_session_timeout` only covers instance handles (their session
+    exists before the first call). The SDK's classmethods -- ``Sandbox.create``,
+    ``connect``, ``list`` -- build a throwaway ``requests.Session`` per call
+    with no timeout, so a blackholed control-plane POST blocks the calling thread forever and there is no session to pin ahead of time.
+    join(timeout) bounds the wait bench-side; the worker is a daemon thread, so
+    an abandoned call can never block process exit.
+    """
+    box: dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            box["result"] = fn()
+        except BaseException as exc:  # re-raised on the caller's thread
+            box["error"] = exc
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        raise TimeoutError(f"cube SDK call did not return within {timeout}s; abandoned")
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
+
+
 class CubesandboxManager(BaseSandboxManager):
     """CubeSandbox lifecycle: SDK seams over the shared lifecycle template.
 
@@ -198,11 +228,14 @@ class CubesandboxManager(BaseSandboxManager):
         resolved = template or self.config.template
 
         try:
-            sbx = Sandbox.create(
-                resolved,
-                timeout=self.config.timeout,
-                envs=None,
-                metadata=metadata,
+            sbx = _call_bounded(
+                lambda: Sandbox.create(
+                    resolved,
+                    timeout=self.config.timeout,
+                    envs=None,
+                    metadata=metadata,
+                ),
+                self.config.request_timeout,
             )
             pin_session_timeout(sbx, self.config.request_timeout)
             state.cube_sandbox = sbx
@@ -228,7 +261,7 @@ class CubesandboxManager(BaseSandboxManager):
 
     def _list_existing(self) -> list:
         """List running sandboxes (CubeSandbox returns a flat list of dicts)."""
-        return Sandbox.list()
+        return _call_bounded(Sandbox.list, self.config.request_timeout)
 
     def _external_id(self, listed: Any) -> str:
         """The stable cube sandbox ID of a listed sandbox (a dict, key sandboxID)."""
@@ -237,7 +270,7 @@ class CubesandboxManager(BaseSandboxManager):
         return str(getattr(listed, "sandbox_id", listed) or "")
 
     def _attach(self, listed: Any) -> Any:
-        sbx = Sandbox.connect(self._external_id(listed))
+        sbx = _call_bounded(lambda: Sandbox.connect(self._external_id(listed)), self.config.request_timeout)
         pin_session_timeout(sbx, self.config.request_timeout)
         return sbx
 

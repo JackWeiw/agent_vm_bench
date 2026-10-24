@@ -39,7 +39,7 @@ from env_provider import (
 )
 
 from .config import Config
-from .manager import CubesandboxManager, pin_session_timeout
+from .manager import CubesandboxManager, _call_bounded, pin_session_timeout
 from .schemas import CubeSandboxState
 from .schemas import SandboxStatus as CubeSandboxStatus
 
@@ -241,7 +241,9 @@ class CubesandboxProvider(EnvironmentProvider):
         state = self.manager.sandbox_states.get(inst.index)
         if state is None:
             raise RuntimeError(f"No CubeSandbox handle for sandbox index {inst.index}")
-        state.cube_sandbox = Sandbox.connect(inst.id)
+        # connect is a classmethod on a throwaway session (un-pinnable); bound
+        # the call bench-side so a blackholed resume cannot wedge the runner.
+        state.cube_sandbox = _call_bounded(lambda: Sandbox.connect(inst.id), self._config.request_timeout)
         # Fresh handle -> fresh session; re-pin the control-plane timeout bound.
         pin_session_timeout(state.cube_sandbox, self._config.request_timeout)
 

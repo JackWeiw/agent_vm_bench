@@ -328,8 +328,25 @@ class TaskManager:
                 raise RuntimeError(f"document runners did not finish before task deadline: {alive}")
             return
         if self.config.workflow_type in {"browser", "coding", "replay"}:
+            # ONE shared deadline for the whole fleet, not a per-runner join:
+            # a sequential join(timeout) costs O(n_wedged * timeout) on the main
+            # thread when runners are stuck inside unbounded backend calls
+            # (1320 slots * 5s ~ 1.8h at oversub scale), during which the stats
+            # collector keeps printing snapshots and teardown never starts.
+            # Healthy runners exit promptly after stop_event; wedged runners are
+            # daemon threads -- abandon them and let Phase 6 proceed.
+            deadline = time.monotonic() + timeout
             for runner in self.runners:
-                runner.join(timeout=timeout)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                runner.join(timeout=remaining)
+            alive = sum(1 for runner in self.runners if runner.is_alive())
+            if alive:
+                logger.warning(
+                    f"{alive} task runner(s) still alive {timeout}s after stop; "
+                    "abandoning (daemon threads, cannot block exit)"
+                )
             return
         raise ValueError(f"Unsupported workflow_type: {self.config.workflow_type}")
 

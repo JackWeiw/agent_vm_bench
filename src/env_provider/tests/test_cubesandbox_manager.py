@@ -23,7 +23,7 @@ import pytest
 
 from bench_core.config import KernelConfig
 from env_provider.cubesandbox.config import Config
-from env_provider.cubesandbox.manager import CubesandboxManager
+from env_provider.cubesandbox.manager import CubesandboxManager, _call_bounded
 
 
 # ------------------------------------------------------------------ cube fakes
@@ -405,3 +405,41 @@ class TestCheckAlive:
         mgr = CubesandboxManager(_kc(total_count=1), Config(), Event())
         state = mgr._new_state(1)  # cube_sandbox stays None
         assert mgr.check_alive(state) is False
+
+
+# --------------------------------------------------------------------- _call_bounded
+class TestCallBounded:
+    def test_returns_result(self):
+        assert _call_bounded(lambda: 42, 5.0) == 42
+
+    def test_reraises_error_on_caller_thread(self):
+        with pytest.raises(RuntimeError, match="boom"):
+            _call_bounded(lambda: (_ for _ in ()).throw(RuntimeError("boom")), 5.0)
+
+    def test_blocking_call_times_out_bounded(self):
+        release = threading.Event()
+        try:
+            start = time.monotonic()
+            with pytest.raises(TimeoutError, match="did not return"):
+                _call_bounded(release.wait, 0.2)
+            assert time.monotonic() - start < 5.0  # abandoned at the deadline, daemon thread left behind
+        finally:
+            release.set()
+
+    def test_create_single_blocking_sdk_fails_fast(self, monkeypatch):
+        # Sandbox.create rides a throwaway session (un-pinnable by
+        # pin_session_timeout); a blackholed create must return a failure dict
+        # at request_timeout instead of wedging the caller forever.
+        fake = _FakeSandboxCls()
+        release = threading.Event()
+        fake.create = lambda *a, **k: release.wait(30)
+        _patch(monkeypatch, fake)
+        cfg = Config(template="t", request_timeout=0.2)
+        mgr = CubesandboxManager(_kc(total_count=1), cfg, Event())
+        state = mgr._new_state(1)
+        try:
+            result = mgr._create_single(state)
+        finally:
+            release.set()
+        assert result["success"] is False
+        assert "did not return" in result["error"]
