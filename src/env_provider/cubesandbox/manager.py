@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, wait
 from threading import Event
 from typing import Any
 
@@ -94,6 +95,54 @@ from .schemas import CubeSandboxState
 
 logger = logging.getLogger(__name__)
 
+try:
+    from requests.adapters import HTTPAdapter
+
+    class _TimeoutAdapter(HTTPAdapter):
+        """HTTPAdapter that fills a default timeout when the caller omits one.
+
+        ``requests`` blocks forever when ``timeout`` is None (its default), and
+        the cube SDK's control-plane calls (kill / pause / get_info / snapshots)
+        omit it -- a single blackholed DELETE hangs the caller indefinitely.
+        Mounting this on a handle's session bounds every call without patching
+        the pip-installed SDK.
+        """
+
+        def __init__(self, timeout: float, **kwargs: Any) -> None:
+            self._default_timeout = timeout
+            super().__init__(**kwargs)
+
+        def send(self, request: Any, **kwargs: Any) -> Any:
+            if kwargs.get("timeout") is None:
+                kwargs["timeout"] = self._default_timeout
+            return super().send(request, **kwargs)
+
+except ImportError:  # requests absent (only when the cube SDK is absent)
+    _TimeoutAdapter = None  # type: ignore[assignment,misc]
+
+
+def pin_session_timeout(handle: Any, timeout: float) -> None:
+    """Best-effort: bound the cube SDK handle's control-plane HTTP calls.
+
+    Mounts a :class:`_TimeoutAdapter` on the handle's ``requests.Session`` so a
+    ``kill()`` with no ``timeout=`` cannot block forever. Idempotent per
+    session; degrades to a debug log if the SDK's private layout differs -- never
+    fails a create/connect. The bench-side backstop when the pin is unavailable
+    is ``cleanup_all``'s overall deadline.
+    """
+    if _TimeoutAdapter is None:
+        return
+    session = getattr(handle, "_session", None)
+    if session is None or getattr(session, "_timeout_pinned", False):
+        return
+    try:
+        adapter = _TimeoutAdapter(timeout)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        session._timeout_pinned = True
+    except Exception as e:
+        logger.debug(f"Session timeout pin skipped: {str(e)[:80]}")
+
 
 class CubesandboxManager(BaseSandboxManager):
     """CubeSandbox lifecycle: SDK seams over the shared lifecycle template.
@@ -155,6 +204,7 @@ class CubesandboxManager(BaseSandboxManager):
                 envs=None,
                 metadata=metadata,
             )
+            pin_session_timeout(sbx, self.config.request_timeout)
             state.cube_sandbox = sbx
             state.creation_metrics.create_ready_time = time.time()
             state.creation_metrics.create_elapsed = (
@@ -187,7 +237,9 @@ class CubesandboxManager(BaseSandboxManager):
         return str(getattr(listed, "sandbox_id", listed) or "")
 
     def _attach(self, listed: Any) -> Any:
-        return Sandbox.connect(self._external_id(listed))
+        sbx = Sandbox.connect(self._external_id(listed))
+        pin_session_timeout(sbx, self.config.request_timeout)
+        return sbx
 
     def _kill_one(self, state: CubeSandboxState) -> None:
         state.cube_sandbox.kill()
@@ -195,6 +247,44 @@ class CubesandboxManager(BaseSandboxManager):
     def _exec_probe(self, handle: Any, cmd: str, timeout: int) -> tuple[int, str, str]:
         result = handle.commands.run(cmd, user="root", timeout=timeout)
         return result.exit_code, result.stdout, result.stderr
+
+    # ------------------------------------------------------------ cleanup override
+    def cleanup_all(self) -> None:
+        """Bounded-concurrent kill of every tracked sandbox.
+
+        Overrides the base serial loop: serial is too slow at oversub scale
+        (1000+ sandboxes), but *unbounded* parallel DELETEs overflow cubemaster's
+        accept backlog and blackhole kills (observed at ratio-04). Two bounds
+        stack:
+
+        * ``cleanup_concurrency`` workers cap the request storm;
+        * the pinned session timeout (:func:`pin_session_timeout`) caps each
+          HTTP call, and the overall deadline below -- worst case every kill
+          rides its full timeout -- guarantees teardown returns even if the pin
+          is unavailable (SDK internals changed). Abandoned kills are logged,
+          not retried.
+        """
+        logger.info(f"\nKilling all {self._noun.lower()}s...")
+        states = [s for s in self._states.values() if self._handle_of(s)]
+        if not states:
+            logger.info(f"Killed 0 {self._noun.lower()}s")
+            return
+        workers = max(1, min(self.config.cleanup_concurrency, len(states)))
+        overall = (len(states) / workers + 1) * self.config.request_timeout
+        logger.info(f"  {len(states)} {self._noun.lower()}s, {workers} concurrent, {overall:.0f}s deadline")
+
+        executor = ThreadPoolExecutor(max_workers=workers)
+        try:
+            futures = {executor.submit(self._kill_tracked, s): s for s in states}
+            done, not_done = wait(futures, timeout=overall)
+            killed = sum(1 for f in done if f.result())
+        finally:
+            # Never join workers here: a kill blocked despite the pinned timeout
+            # must not hang teardown (the report and subsequent trials proceed).
+            executor.shutdown(wait=False, cancel_futures=True)
+        for f in not_done:
+            logger.warning(f"[{self._label(futures[f])}] kill unfinished after {overall:.0f}s, abandoning")
+        logger.info(f"Killed {killed} of {len(states)} {self._noun.lower()}s")
 
     # ----------------------------------------------------- cube-specific methods
     def detect_from_file(self, ids_file: str) -> dict[int, CubeSandboxState]:

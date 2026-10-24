@@ -39,7 +39,7 @@ from env_provider import (
 )
 
 from .config import Config
-from .manager import CubesandboxManager
+from .manager import CubesandboxManager, pin_session_timeout
 from .schemas import CubeSandboxState
 from .schemas import SandboxStatus as CubeSandboxStatus
 
@@ -242,6 +242,8 @@ class CubesandboxProvider(EnvironmentProvider):
         if state is None:
             raise RuntimeError(f"No CubeSandbox handle for sandbox index {inst.index}")
         state.cube_sandbox = Sandbox.connect(inst.id)
+        # Fresh handle -> fresh session; re-pin the control-plane timeout bound.
+        pin_session_timeout(state.cube_sandbox, self._config.request_timeout)
 
     def snapshot_sizes(self, inst: SandboxInstance) -> dict | None:
         """Stat the sandbox's snapshot disk usage -- ``None`` for now (deferred).

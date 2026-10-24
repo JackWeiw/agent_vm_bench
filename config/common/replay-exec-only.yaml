@@ -69,6 +69,11 @@ cubesandbox:
                            # HTTP POST). Long-lived replay sandboxes want a long TTL so
                            # they survive pauses between steps; -1 = NEVER_TIMEOUT.
   sandbox_ids_file: "sandboxs_replay_cube.txt"
+  # request_timeout: 30.0     # control-plane HTTP cap, seconds (kill/pause/get_info/snapshots):
+  #                           # the SDK omits timeout= there, so the manager pins an adapter --
+  #                           # one blackholed DELETE would otherwise hang cleanup forever.
+  # cleanup_concurrency: 100  # bounded-concurrent kills in cleanup_all (serial is too slow
+  #                           # at 1k+ sandboxes; full-parallel overflows cubemaster's backlog).
   # CubeSandbox snapshot dir override (Phase 2 snapshot_sizes; v1 unused -> the
   # provider returns None and the snapshot-size series event is skipped).
   # snapshot_dir: "/var/lib/cube/snapshots"

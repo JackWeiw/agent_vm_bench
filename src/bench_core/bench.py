@@ -402,6 +402,17 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
 
     # 3. Create-only: emit the creation timing report and leave sandboxes running.
     if config.create_only:
+        if rcfg is not None and rcfg.replay_mode in ("trajectory", "exec_ephemeral"):
+            # Ephemeral modes create/kill per round inside the runner -- there is
+            # no pool to pre-create, and the Phase-1 shells are placeholders, not
+            # real sandboxes. Exit honestly: a zero-filled creation report and a
+            # sandbox_ids_file full of "traj-shell-N" would both be lies.
+            logger.warning(
+                f"--create-only is a no-op for replay.mode={rcfg.replay_mode}: sandboxes are created "
+                "per round by the runner (creation cost is part of the measured workload). "
+                "Run the trial itself (optionally with a small -n) to exercise the creation path."
+            )
+            return {"report": f"create-only is a no-op for replay.mode={rcfg.replay_mode}", "filepath": None}
         logger.info("\n[Phase 0 Complete] Create-only mode finished.")
         report = _create_only_report(config, instances)
         logger.info("\n" + report)
