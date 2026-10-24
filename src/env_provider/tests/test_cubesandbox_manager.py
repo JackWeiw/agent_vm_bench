@@ -422,6 +422,7 @@ class TestPinSessionTimeout:
     def test_no_session_warns_once(self, monkeypatch, caplog):
         # A skipped pin (SDK renamed/removed `_session`) silently unbounds every
         # control-plane call -- must warn once, not per handle (1320 at oversub).
+        pytest.importorskip("requests")  # no requests -> no adapter -> no pin path
         import logging
 
         import env_provider.cubesandbox.manager as mgr_mod
