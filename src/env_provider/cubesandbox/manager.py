@@ -356,6 +356,60 @@ class CubesandboxManager(BaseSandboxManager):
             logger.warning(f"[{self._label(futures[f])}] kill unfinished after {overall:.0f}s, abandoning")
         logger.info(f"Killed {killed} of {len(states)} {self._noun.lower()}s")
 
+    def cleanup_existing(self) -> int:
+        """Bounded-concurrent ``--cleanup`` (standalone teardown of leftovers).
+
+        The base serial loop is bounded per call (pin + :func:`_call_bounded`)
+        but a degraded control plane still costs N x request_timeout serially
+        at oversub scale. Same two bounds as :meth:`cleanup_all`: a worker pool
+        capped by ``cleanup_concurrency`` plus an overall deadline (2 calls per
+        item -- connect + kill). Per-item work reuses the base seams via
+        ``_attach`` / ``_kill_one``; abandoned items are warned, not retried.
+        """
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"Cleaning up existing {self._noun.lower()}s")
+        logger.info(f"{'=' * 60}")
+        try:
+            listed = _call_bounded(Sandbox.list, self.config.request_timeout)
+        except Exception as e:
+            logger.error(f"  Failed to list {self._noun.lower()}s: {e}")
+            return 0
+        if not listed:
+            logger.info(f"  No existing {self._noun.lower()}s found")
+            return 0
+        logger.info(f"  Found {len(listed)} running {self._noun.lower()}s")
+
+        def _kill_listed(i_item: tuple[int, Any]) -> bool:
+            i, item = i_item
+            handle = self._attach(item)  # bounded connect + session pin
+            state = self._new_state(i, external_id=self._external_id(item))
+            setattr(state, self._handle_attr, handle)
+            self._kill_one(state)
+            return True
+
+        workers = max(1, min(self.config.cleanup_concurrency, len(listed)))
+        overall = (len(listed) / workers + 1) * 2 * self.config.request_timeout
+        killed = 0
+        executor = ThreadPoolExecutor(max_workers=workers)
+        try:
+            futures = {executor.submit(_kill_listed, pair): pair for pair in enumerate(listed, start=1)}
+            done, not_done = wait(futures, timeout=overall)
+            for f in done:
+                exc = f.exception()
+                if exc is None:
+                    killed += 1
+                    logger.info(f"  Killed {self._external_id(futures[f][1])}")
+                else:
+                    logger.warning(f"  [{self._external_id(futures[f][1])}] Kill error: {str(exc)[:80]}")
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+        for f in not_done:
+            logger.warning(
+                f"  [{self._external_id(futures[f][1])}] cleanup unfinished after {overall:.0f}s, abandoning"
+            )
+        logger.info(f"Killed {killed} of {len(listed)} {self._noun.lower()}s")
+        return killed
+
     # ----------------------------------------------------- cube-specific methods
     def detect_from_file(self, ids_file: str) -> dict[int, CubeSandboxState]:
         """Detect sandboxes from an ID file: list running, match, attach.

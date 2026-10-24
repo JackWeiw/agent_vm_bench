@@ -246,7 +246,7 @@ class TestCleanupExisting:
         killed = mgr.cleanup_existing()
 
         assert killed == 2
-        assert fake.connected == ["cube-a", "cube-b"]  # connected, not just listed
+        assert sorted(fake.connected) == ["cube-a", "cube-b"]  # connected (pool order nondeterministic)
         # Ready checker is never built (no readiness probe on teardown).
         assert mgr._ready is None
 
@@ -256,6 +256,24 @@ class TestCleanupExisting:
         mgr = CubesandboxManager(_kc(), Config(), Event())
         assert mgr.cleanup_existing() == 0
         assert fake.connected == []
+
+    def test_blocking_connect_is_bounded(self, monkeypatch):
+        # Degraded control plane: connect blackholes -> _call_bounded raises at
+        # request_timeout, the item counts as an error, cleanup_existing returns
+        # (base serial loop: N x request_timeout; here bounded by the pool deadline).
+        fake = _FakeSandboxCls()
+        release = threading.Event()
+        fake.connect = lambda sid, *a, **k: release.wait(30)
+        fake.list_items = [{"sandboxID": "cube-x"}]
+        _patch(monkeypatch, fake)
+        cfg = Config(request_timeout=0.2, cleanup_concurrency=2)
+        mgr = CubesandboxManager(_kc(), cfg, Event())
+        try:
+            start = time.monotonic()
+            assert mgr.cleanup_existing() == 0
+            assert time.monotonic() - start < 10
+        finally:
+            release.set()
 
 
 # --------------------------------------------------------------------- cleanup_all
