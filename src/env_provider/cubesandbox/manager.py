@@ -123,19 +123,56 @@ except ImportError:  # requests absent (only when the cube SDK is absent)
     _TimeoutAdapter = None  # type: ignore[assignment,misc]
 
 
+# Version/layout guard: the pin below touches the SDK-internal ``_session``
+# attribute and was verified against this cube SDK version. Upstream drift can
+# silently turn the pin into a no-op (unbounded control-plane calls), so both a
+# version mismatch and a skipped/failed pin warn once per process.
+_TESTED_SDK_VERSION = "0.7.0"
+_guard_warned: set[str] = set()
+
+
+def _warn_guard_once(key: str, msg: str) -> None:
+    if key not in _guard_warned:
+        _guard_warned.add(key)
+        logger.warning(msg)
+    else:
+        logger.debug(msg)
+
+
+def _check_sdk_version_once() -> None:
+    try:
+        from cubesandbox import __version__ as sdk_version
+    except Exception:
+        return  # SDK absent (unit tests / fakes) -- nothing to check
+    if sdk_version != _TESTED_SDK_VERSION:
+        _warn_guard_once(
+            "version",
+            f"cubesandbox SDK {sdk_version} != pin-tested {_TESTED_SDK_VERSION}; "
+            "the control-plane timeout pin may no-op if SDK internals changed",
+        )
+
+
 def pin_session_timeout(handle: Any, timeout: float) -> None:
     """Best-effort: bound the cube SDK handle's control-plane HTTP calls.
 
     Mounts a :class:`_TimeoutAdapter` on the handle's ``requests.Session`` so a
     ``kill()`` with no ``timeout=`` cannot block forever. Idempotent per
-    session; degrades to a debug log if the SDK's private layout differs -- never
-    fails a create/connect. The bench-side backstop when the pin is unavailable
+    session. A skipped or failed pin warns once (SDK version/layout drift would
+    otherwise silently leave every control-plane call unbounded); the backstop
     is ``cleanup_all``'s overall deadline.
     """
+    _check_sdk_version_once()
     if _TimeoutAdapter is None:
         return
     session = getattr(handle, "_session", None)
-    if session is None or getattr(session, "_timeout_pinned", False):
+    if session is None:
+        _warn_guard_once(
+            "no-session",
+            "cube SDK handle has no _session attribute (SDK layout changed?); "
+            "control-plane calls are NOT timeout-pinned -- only cleanup_all's deadline bounds teardown",
+        )
+        return
+    if getattr(session, "_timeout_pinned", False):
         return
     try:
         adapter = _TimeoutAdapter(timeout)
@@ -143,7 +180,7 @@ def pin_session_timeout(handle: Any, timeout: float) -> None:
         session.mount("https://", adapter)
         session._timeout_pinned = True
     except Exception as e:
-        logger.debug(f"Session timeout pin skipped: {str(e)[:80]}")
+        _warn_guard_once("pin-failed", f"Session timeout pin failed: {str(e)[:80]}; control-plane calls not bounded")
 
 
 def _call_bounded(fn: Callable[[], Any], timeout: float) -> Any:

@@ -347,7 +347,7 @@ class TestPinSessionTimeout:
         pin_session_timeout(sbx, 99.0)
         assert sbx._session.mounted["http://"] is first  # idempotent
 
-        pin_session_timeout(object(), 7.0)  # no _session -> silent no-op
+        pin_session_timeout(object(), 7.0)  # no _session -> warn-once no-op
 
     def test_adapter_fills_missing_timeout_only(self, monkeypatch):
         pytest.importorskip("requests")
@@ -379,6 +379,41 @@ class TestPinSessionTimeout:
         fake.list_items = [{"sandboxID": "cube-a"}]
         handle = mgr._attach({"sandboxID": "cube-a"})
         assert calls[-1] == (handle, 11.0)
+
+    def test_version_mismatch_warns_once(self, monkeypatch, caplog):
+        # The pin rides SDK-internal `_session` layout verified against
+        # _TESTED_SDK_VERSION; upstream drift must be visible in the run log.
+        import logging
+        import sys
+
+        import env_provider.cubesandbox.manager as mgr_mod
+
+        monkeypatch.setattr(mgr_mod, "_guard_warned", set())
+        monkeypatch.setitem(sys.modules, "cubesandbox", type("_M", (), {"__version__": "9.9.9"})())
+
+        class _Sbx:
+            def __init__(self):
+                self._session = type("_Sess", (), {"mount": staticmethod(lambda p, a: None)})()
+
+        with caplog.at_level(logging.WARNING, logger=mgr_mod.__name__):
+            mgr_mod.pin_session_timeout(_Sbx(), 1.0)
+            mgr_mod.pin_session_timeout(_Sbx(), 1.0)
+        version_warnings = [r for r in caplog.records if "pin-tested" in r.getMessage()]
+        assert len(version_warnings) == 1  # warned, exactly once
+
+    def test_no_session_warns_once(self, monkeypatch, caplog):
+        # A skipped pin (SDK renamed/removed `_session`) silently unbounds every
+        # control-plane call -- must warn once, not per handle (1320 at oversub).
+        import logging
+
+        import env_provider.cubesandbox.manager as mgr_mod
+
+        monkeypatch.setattr(mgr_mod, "_guard_warned", set())
+        with caplog.at_level(logging.WARNING, logger=mgr_mod.__name__):
+            mgr_mod.pin_session_timeout(object(), 1.0)
+            mgr_mod.pin_session_timeout(object(), 1.0)
+        layout_warnings = [r for r in caplog.records if "no _session" in r.getMessage()]
+        assert len(layout_warnings) == 1
 
 
 # --------------------------------------------------------------------- check_alive
