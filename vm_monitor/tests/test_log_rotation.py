@@ -7,6 +7,7 @@ one slot per ``rotation_interval``; each turn writes a timestamped log under
 smap_bw / getfre keep their all-parallel behavior.
 """
 
+import io
 import os
 import shutil
 import subprocess
@@ -14,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from vm_monitor.log_capture import DEFAULT_ROTATION_PERF_EVENTS, LogCapture
@@ -233,6 +235,22 @@ class TestLogRotation(unittest.TestCase):
         self.assertFalse(cap.rotation_thread.is_alive())
         self.assertEqual(spawned, [])
         self.assertIn("uprof", cap._rotation_skipped)
+
+    def test_rotation_tools_empty_selection_no_ok_print(self):
+        """An empty selection must not print a misleading '[OK] tools selected'."""
+        cap = self._cap(rotation_interval=1, rotation_tools=[])
+        buf = io.StringIO()
+        spawned = []
+        with (
+            patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)),
+            redirect_stdout(buf),
+        ):
+            cap.rotation_thread = threading.Thread(target=cap._rotation_thread_main)
+            cap.rotation_thread.start()
+            cap.rotation_thread.join(timeout=10)
+        self.assertFalse(cap.rotation_thread.is_alive())
+        self.assertNotIn("log rotation tools selected", buf.getvalue())
+        self.assertIn("no runnable tools left", buf.getvalue())
 
     def test_run_slot_paces_fast_turn_to_interval(self):
         # A turn that finishes instantly must still hold its slot open for the

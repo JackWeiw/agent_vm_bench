@@ -122,6 +122,9 @@ class LogRotationConfig:
         if raw_tools is not None:
             if isinstance(raw_tools, str):
                 raw_tools = [t.strip() for t in raw_tools.split(",") if t.strip()]
+            elif not isinstance(raw_tools, (list, tuple)):
+                logger.warning("monitor.log_rotation.tools must be a list or comma string, got %r; ignoring", raw_tools)
+                raw_tools = []
             valid = {"devkit", "ksys", "perf", "uprof"}
             tools = []
             for item in raw_tools:

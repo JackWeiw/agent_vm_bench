@@ -20,6 +20,7 @@ import re
 import subprocess
 import threading
 import time
+from collections.abc import Iterable
 from datetime import datetime
 
 # Internal dependencies
@@ -69,7 +70,7 @@ class LogCapture:
         rotation_perf_events: str | None = None,
         rotation_log_dir: str | None = None,
         stress_file: str | None = None,
-        rotation_tools: list[str] | None = None,
+        rotation_tools: Iterable[str] | None = None,
     ):
         """
         Args:
@@ -104,7 +105,8 @@ class LogCapture:
                 rotation keys off the lock lifecycle (appear = stress start,
                 disappear = stress end) so a huge -t cannot push rotation past
                 real stress. None -> timer mode: rotate for `duration` seconds.
-            rotation_tools: subset of tools to rotate, e.g. ["devkit", "perf"].
+            rotation_tools: subset of tools to rotate, e.g. ["devkit", "perf"]
+                (any iterable of names; a comma string is split too).
                 None (default) rotates every tool; canonical slot order
                 (devkit -> ksys -> perf -> uprof) is kept whatever the input
                 order. Unselected tools are parked in _rotation_skipped
@@ -807,8 +809,8 @@ class LogCapture:
 
     def _rotation_thread_main(self) -> None:
         """devkit(topdown+memory parallel) -> ksys -> perf -> uprof, repeating while stress runs."""
-        if self.rotation_tools != self._ROTATION_TOOLS:
-            print(f"  [OK] log rotation tools selected: {' -> '.join(self.rotation_tools)}")
+        if self.rotation_tools and self.rotation_tools != self._ROTATION_TOOLS:
+            print(f"  [INFO] log rotation tools selected: {' -> '.join(self.rotation_tools)}")
         # Lock mode: idle until the stress lock appears (or stop/-t). Timer
         # mode (no stress_file): start immediately, bounded by `duration`.
         if self.stress_file and not self._wait_for_stress_lock():

@@ -178,6 +178,16 @@ def test_log_rotation_config_tools_parses_list_or_string():
     assert lr2.tools == ["devkit", "perf"]
 
 
+def test_log_rotation_config_invalid_tools_warns_and_drops(caplog):
+    # A non-iterable tools value must warn + fall back to all tools, never
+    # raise out of config parsing.
+    lr = KernelConfig.from_raw(
+        {"sandbox": {"total_count": 1}, "monitor": {"log_rotation": {"tools": 42}}}
+    ).monitor.log_rotation
+    assert lr.tools is None
+    assert any("log_rotation.tools" in r.message for r in caplog.records)
+
+
 def test_log_rotation_config_intervals_accepts_uprof():
     # uprof joins devkit/ksys/perf as a valid per-tool interval key.
     lr = KernelConfig.from_raw(
