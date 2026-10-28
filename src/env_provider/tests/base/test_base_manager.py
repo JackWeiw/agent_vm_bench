@@ -26,6 +26,7 @@ class FakeState:
     creation_metrics: BackendCreationMetrics = field(default_factory=BackendCreationMetrics)
     is_alive: bool = True
     stopped_by_cleanup: bool = False
+    torn_down: bool = False
 
 
 class FakeListed:
@@ -236,6 +237,30 @@ class TestCleanupAll:
         assert mgr.killed == [1, 2, 3]
         assert all(s.is_alive is False for s in mgr._states.values())
         assert all(s.stopped_by_cleanup is True for s in mgr._states.values())
+        assert all(s.torn_down is True for s in mgr._states.values())
+
+    def test_torn_down_skipped_and_failed_kill_retriable(self):
+        # Ephemeral per-round kill_one marks torn_down -> cleanup_all must skip
+        # (no misleading "not found" re-kill). A FAILED kill must NOT be marked
+        # torn_down, so this cleanup retries it (no leak).
+        mgr = FakeManager(_kernel_config(total_count=3), Event())
+        mgr.create_all()
+        mgr._states[1].torn_down = True  # already killed per-round
+
+        original = mgr._kill_one
+
+        def flaky(state):
+            if state.sandbox_id == 2:
+                raise RuntimeError("kill failed")
+            original(state)
+
+        mgr._kill_one = flaky  # type: ignore[method-assign]
+        mgr.cleanup_all()
+
+        assert mgr.killed == [3]  # 1 skipped (torn_down), 2 attempted-but-failed
+        assert mgr._states[1].torn_down is True
+        assert mgr._states[2].torn_down is False  # retriable by a later cleanup
+        assert mgr._states[3].torn_down is True
 
     def test_no_handle_skipped(self):
         mgr = FakeManager(_kernel_config(total_count=2), Event(), create_fails={1, 2})

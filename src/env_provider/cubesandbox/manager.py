@@ -333,9 +333,18 @@ class CubesandboxManager(BaseSandboxManager):
           rides its full timeout -- guarantees teardown returns even if the pin
           is unavailable (SDK internals changed). Abandoned kills are logged,
           not retried.
+
+        States already ``torn_down`` (a successful per-round ``kill_one`` in
+        the ephemeral modes) are skipped: re-killing them only produces
+        misleading "not found" warnings and wasted DELETEs. A FAILED earlier
+        kill leaves ``torn_down`` False, so it is retried here (no leak).
         """
         logger.info(f"\nKilling all {self._noun.lower()}s...")
-        states = [s for s in self._states.values() if self._handle_of(s)]
+        tracked = [s for s in self._states.values() if self._handle_of(s)]
+        states = [s for s in tracked if not s.torn_down]
+        skipped = len(tracked) - len(states)
+        if skipped:
+            logger.info(f"  {skipped} already torn down (per-round ephemeral kills); skipping")
         if not states:
             logger.info(f"Killed 0 {self._noun.lower()}s")
             return

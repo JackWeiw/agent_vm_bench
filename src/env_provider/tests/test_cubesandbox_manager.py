@@ -286,8 +286,30 @@ class TestCleanupAll:
         for s in mgr._states.values():
             assert s.cube_sandbox.killed is True
             assert s.is_alive is False
+            assert s.torn_down is True
             # cube keeps the original creation status (no KILLED overwrite, like e2b)
             assert s.creation_metrics.status.value == "port_ready"
+
+    def test_torn_down_states_not_rekilled(self, monkeypatch):
+        """Ephemeral per-round kill_one marks torn_down; cleanup_all must skip
+        those handles -- re-killing them was the source of the misleading
+        'sandbox ... not found' warning spam at Phase 6."""
+        _patch(monkeypatch, _FakeSandboxCls())
+        mgr = CubesandboxManager(_kc(total_count=3), Config(template="cube-tpl"), Event())
+        mgr.create_all()
+        # Slots 1-2 finished their round (kill_one succeeded server-side);
+        # slot 3 is still running when the bench stops.
+        for idx in (1, 2):
+            s = mgr._states[idx]
+            s.cube_sandbox.kill()
+            s.torn_down = True
+            s.is_alive = False
+        kills: list[int] = []
+        for idx in (1, 2, 3):
+            mgr._states[idx].cube_sandbox.kill = lambda i=idx: kills.append(i)
+        mgr.cleanup_all()
+        assert kills == [3]  # only the live one killed; no re-kill of dead handles
+        assert mgr._states[3].torn_down is True
 
 
 class TestCleanupAllConcurrent:
