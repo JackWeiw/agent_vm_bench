@@ -216,6 +216,36 @@ def test_log_rotation_config_shorthand_and_defaults():
     assert lr2.perf_events == ["cycles", "instructions"]
 
 
+def test_log_rotation_config_tools_parses_list_or_string():
+    # tools accepts a YAML list or comma string; unknown names are dropped.
+    lr = KernelConfig.from_raw(
+        {"sandbox": {"total_count": 1}, "monitor": {"log_rotation": {"tools": ["devkit", "perf"]}}}
+    ).monitor.log_rotation
+    assert lr.tools == ["devkit", "perf"]
+    lr2 = KernelConfig.from_raw(
+        {"sandbox": {"total_count": 1}, "monitor": {"log_rotation": {"tools": "devkit, banana, perf"}}}
+    ).monitor.log_rotation
+    assert lr2.tools == ["devkit", "perf"]
+
+
+def test_log_rotation_config_invalid_tools_warns_and_drops(caplog):
+    # A non-iterable tools value must warn + fall back to all tools, never
+    # raise out of config parsing.
+    lr = KernelConfig.from_raw(
+        {"sandbox": {"total_count": 1}, "monitor": {"log_rotation": {"tools": 42}}}
+    ).monitor.log_rotation
+    assert lr.tools is None
+    assert any("log_rotation.tools" in r.message for r in caplog.records)
+
+
+def test_log_rotation_config_intervals_accepts_uprof():
+    # uprof joins devkit/ksys/perf as a valid per-tool interval key.
+    lr = KernelConfig.from_raw(
+        {"sandbox": {"total_count": 1}, "monitor": {"log_rotation": {"intervals": {"devkit": 20, "uprof": 10}}}}
+    ).monitor.log_rotation
+    assert lr.intervals == {"devkit": 20, "uprof": 10}
+
+
 def test_log_rotation_config_invalid_warns_and_drops(caplog):
     cfg = KernelConfig.from_raw({"sandbox": {"total_count": 1}, "monitor": {"log_rotation": "banana"}})
     assert cfg.monitor.log_rotation is None
@@ -239,6 +269,16 @@ def test_command_log_rotation_forwards_flags(monkeypatch, tmp_path):
     # Rotation logs land in <output_dir>/log_capture (sibling of vm_monitor/).
     assert cmd[cmd.index("--rotation-log-dir") + 1] == str(Path("out") / "log_capture")
     assert i < cmd.index("--rotation-interval")  # flags travel as one block
+
+
+def test_command_log_rotation_tools_forwards_flag(monkeypatch, tmp_path):
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    prov = _StubProvider(vmm_type="firecracker")
+    mc = MonitorController(
+        _cfg(stress_file=str(tmp_path / "lock"), log_rotation={"enabled": True, "tools": ["devkit", "perf"]}),
+        prov,
+    )
+    assert mc._cmd[mc._cmd.index("--rotation-tools") + 1] == "devkit,perf"
 
 
 def test_command_log_rotation_default_events_omit_flag(monkeypatch, tmp_path):
