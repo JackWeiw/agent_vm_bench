@@ -45,7 +45,6 @@ docker:
 aenv:
   template: "openclaw-coding-python-v1"  # AENV snapshot-capable image (same /testbed shape)
   create_timeout: 86400
-  numa_bind: 2
   sandbox_ids_file: "sandboxs_replay_aenv.txt"
   # AENV server home path -- the primary source for the snapshot-scan base.
   # The persisted-sandboxes tree lives under <aenv_home_path>/persisted-

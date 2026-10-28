@@ -161,10 +161,13 @@ class Config:
     template: str = "openclaw-browser-v1"
     create_timeout: int = 86400  # Sandbox creation timeout (seconds)
 
-    # NUMA binding for sandbox creation. Accepts an int (single node), a list of
-    # ints (round-robin across nodes), or null (no binding). Defaults to node 2.
-    # Normalized to a list or None by from_raw (see _normalize_numa_bind); a bare
-    # Config() leaves the int default, which numa_node_for_index tolerates.
+    # NUMA binding for sandbox creation (e2b-only). Accepts an int (single
+    # node), a list of ints (round-robin across nodes), or null (no binding).
+    # Defaults to node 2. Normalized to a list or None by from_raw (see
+    # _normalize_numa_bind); a bare Config() leaves the int default, which
+    # numa_node_for_index tolerates. AENV has no NUMA-binding feature -- its
+    # firecracker ignores the FC_BIND env var -- so from_raw force-clears this
+    # to None for the aenv block; honored only by cloud e2b.
     numa_bind: int | list[int] | None = 2
 
     # Sandbox IDs file (for save/load sandbox IDs across runs)
@@ -204,7 +207,9 @@ class Config:
         ``block`` selects which top-level YAML key to read (``e2b`` for the
         cloud e2b provider, ``aenv`` for the AENV provider, which reuses this
         Config shape). ``env`` nests under the block. ``numa_bind`` is
-        normalized to a canonical list/None. Missing keys fall back to the
+        normalized to a canonical list/None -- but force-cleared to None for
+        the ``aenv`` block, whose firecracker has no NUMA-binding feature
+        (FC_BIND is an e2b-only convention). Missing keys fall back to the
         dataclass defaults, so a minimal block still loads.
         """
         backend = raw.get(block) or {}
@@ -218,7 +223,9 @@ class Config:
             e2b_sandbox_url=env.get("E2B_SANDBOX_URL", ""),
             template=backend.get("template", "openclaw-browser-v1"),
             create_timeout=backend.get("create_timeout", 86400),
-            numa_bind=_normalize_numa_bind(backend.get("numa_bind", 2)),
+            # AENV has no NUMA-binding feature (firecracker ignores FC_BIND);
+            # force-clear so even a stray aenv.numa_bind is a no-op. e2b honors it.
+            numa_bind=None if block == "aenv" else _normalize_numa_bind(backend.get("numa_bind", 2)),
             sandbox_ids_file=backend.get("sandbox_ids_file"),
             snapshot_dir=backend.get("snapshot_dir"),
             aenv_home_path=backend.get("aenv_home_path"),

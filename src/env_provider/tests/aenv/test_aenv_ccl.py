@@ -571,3 +571,13 @@ def test_config_ccl_granularity_null_becomes_auto():
     # default to auto, not stringify to the bogus "none".
     cfg = Config.from_raw({"aenv": {"ccl_granularity": None}}, block="aenv")
     assert cfg.ccl_granularity == "auto"
+
+
+def test_config_aenv_ignores_numa_bind():
+    # AENV has no NUMA-binding feature (its firecracker ignores the e2b FC_BIND
+    # env var), so from_raw force-clears numa_bind for the aenv block even when
+    # the YAML sets it. Cloud e2b still honors the field (default node 2).
+    assert Config.from_raw({"aenv": {"numa_bind": 2}}, block="aenv").numa_bind is None
+    assert Config.from_raw({"aenv": {"numa_bind": [2, 3]}}, block="aenv").numa_bind is None
+    assert Config.from_raw({"e2b": {}}).numa_bind == [2]
+    assert Config.from_raw({"e2b": {"numa_bind": [2, 3]}}).numa_bind == [2, 3]
