@@ -54,4 +54,5 @@ class CubeSandboxState:
 
     is_alive: bool = True  # Sandbox alive status
     stopped_by_cleanup: bool = False  # Killed by normal benchmark cleanup
+    torn_down: bool = False  # Server-side kill succeeded (cleanup skips; set by _kill_tracked / kill_one)
     warmup_done: bool = False  # Warmup phase completed flag (read by the adapter)

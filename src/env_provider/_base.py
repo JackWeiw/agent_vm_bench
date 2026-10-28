@@ -91,6 +91,7 @@ class BackendState(Protocol):
     creation_metrics: BackendCreationMetrics
     is_alive: bool
     stopped_by_cleanup: bool
+    torn_down: bool
 
 
 class BaseSandboxManager(ABC):
@@ -301,13 +302,26 @@ class BaseSandboxManager(ABC):
 
     # ------------------------------------------------------------- cleanup_all
     def cleanup_all(self) -> None:
-        """Kill/remove every tracked sandbox (e2b kill_all / docker remove_all)."""
+        """Kill/remove every tracked sandbox (e2b kill_all / docker remove_all).
+
+        States already ``torn_down`` (a successful server-side kill -- e.g. an
+        ephemeral mode's per-round ``kill_one``) are skipped: re-killing them
+        only produces misleading "not found" warnings and wasted HTTP calls.
+        A FAILED earlier kill leaves ``torn_down`` False, so it is retried here
+        (no leak).
+        """
         logger.info(f"\nKilling all {self._noun.lower()}s...")
         killed = 0
+        skipped = 0
         for state in self._states.values():
             if not self._handle_of(state):
                 continue
+            if state.torn_down:
+                skipped += 1
+                continue
             killed += self._kill_tracked(state)
+        if skipped:
+            logger.info(f"Skipped {skipped} already torn down (per-round ephemeral kills)")
         logger.info(f"Killed {killed} {self._noun.lower()}s")
 
     def _kill_tracked(self, state: BackendState) -> bool:
@@ -321,6 +335,9 @@ class BaseSandboxManager(ABC):
             was_alive = state.is_alive
             self._kill_one(state)
             state.is_alive = False
+            # Server-side kill succeeded: later cleanup passes skip this state
+            # (re-killing a dead sandbox only yields "not found" noise).
+            state.torn_down = True
             # Only explain the transition when the sandbox was alive before
             # this intentional kill (preserve genuine offline states).
             if was_alive:

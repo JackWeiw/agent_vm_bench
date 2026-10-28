@@ -47,4 +47,5 @@ class ContainerState:
 
     is_alive: bool = True  # Container alive status
     stopped_by_cleanup: bool = False  # Removed by normal benchmark cleanup (set by the base)
+    torn_down: bool = False  # Server-side remove succeeded (cleanup skips; set by the base)
     browser_started: bool = False  # OpenClaw browser backend started flag (read by the adapter as warmup_done)

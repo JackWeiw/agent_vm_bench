@@ -300,13 +300,21 @@ class CubesandboxProvider(EnvironmentProvider):
         return self._to_instance(state)
 
     def kill_one(self, inst: SandboxInstance) -> None:
-        """Tear down a single sandbox (trajectory mode, EphemeralCapable)."""
+        """Tear down a single sandbox (trajectory mode, EphemeralCapable).
+
+        On a successful server-side kill the state is marked ``torn_down`` so
+        the final ``cleanup_all`` skips it (re-killing an already-dead sandbox
+        only yields misleading "not found" warnings). A failed kill leaves the
+        flag False so cleanup retries it -- no leak. The handle is kept either
+        way for ``check_alive`` / post-mortem diagnostics.
+        """
         state = self.manager.sandbox_states.get(inst.index)
         if state is None:
             return  # never created (runner finally-path safety)
         try:
             if self.manager._handle_of(state) is not None:
                 self.manager._kill_one(state)
+                state.torn_down = True
         finally:
             inst.is_alive = False
             state.is_alive = False

@@ -139,10 +139,29 @@ def test_create_one_delegates_and_probes_ready(monkeypatch):
 def test_kill_one_calls_manager_kill(monkeypatch):
     provider, fake = _make_provider(monkeypatch)
     inst = provider.create_one(2)
-    handle = provider.manager.sandbox_states[2].sandbox_obj
+    state = provider.manager.sandbox_states[2]
+    handle = state.sandbox_obj
     provider.kill_one(inst)
     assert inst.is_alive is False
     assert handle.killed is True
+    # Successful kill marks torn_down so cleanup_all skips the dead handle;
+    # the handle itself is KEPT for diagnostics.
+    assert state.torn_down is True
+    assert state.sandbox_obj is handle
+
+
+def test_kill_one_failure_leaves_torn_down_false(monkeypatch):
+    # A failed server-side kill must NOT mark torn_down: cleanup_all retries
+    # it (no leak), while is_alive still flips so the runner abandons the slot.
+    provider, _ = _make_provider(monkeypatch)
+    inst = provider.create_one(2)
+    state = provider.manager.sandbox_states[2]
+    state.sandbox_obj.kill = lambda: (_ for _ in ()).throw(RuntimeError("kill failed"))
+    with pytest.raises(RuntimeError):
+        provider.kill_one(inst)
+    assert state.torn_down is False
+    assert state.is_alive is False
+    assert inst.is_alive is False
 
 
 def test_kill_one_unknown_index_is_noop(monkeypatch):

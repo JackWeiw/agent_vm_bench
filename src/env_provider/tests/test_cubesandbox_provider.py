@@ -414,11 +414,31 @@ def test_kill_one_calls_kill_and_marks_dead(monkeypatch):
     fake = _CreateFakeSandbox()
     provider = _make_real_provider(monkeypatch, fake)
     inst = provider.create_one(1)
-    handle = provider.manager.sandbox_states[1].cube_sandbox
+    state = provider.manager.sandbox_states[1]
+    handle = state.cube_sandbox
     provider.kill_one(inst)
     assert handle.killed is True
     assert inst.is_alive is False
-    assert provider.manager.sandbox_states[1].is_alive is False
+    assert state.is_alive is False
+    # Successful kill marks torn_down so cleanup_all skips the dead handle
+    # (no "not found" re-kill spam); the handle itself is KEPT for diagnostics.
+    assert state.torn_down is True
+    assert state.cube_sandbox is handle
+
+
+def test_kill_one_failure_leaves_torn_down_false(monkeypatch):
+    # A failed server-side kill must NOT mark torn_down: cleanup_all retries
+    # it (no leak), while is_alive still flips so the runner abandons the slot.
+    fake = _CreateFakeSandbox()
+    provider = _make_real_provider(monkeypatch, fake)
+    inst = provider.create_one(1)
+    state = provider.manager.sandbox_states[1]
+    state.cube_sandbox.kill = lambda: (_ for _ in ()).throw(RuntimeError("kill failed"))
+    with pytest.raises(RuntimeError):
+        provider.kill_one(inst)
+    assert state.torn_down is False
+    assert state.is_alive is False
+    assert inst.is_alive is False
 
 
 def test_kill_one_missing_state_is_noop():
