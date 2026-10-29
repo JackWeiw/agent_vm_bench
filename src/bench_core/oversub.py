@@ -343,6 +343,9 @@ RATIO_COLUMNS = [
     "median_tasks_per_sec",
     "median_peak_active",
     "median_queue_wait_sec",
+    "avg_cmd_exec_sec",
+    "median_cmd_exec_sec",
+    "cmd_exec_degradation_vs_1_1_pct",
     "time_degradation_vs_1_1_pct",
     "throughput_gain_vs_1_1_pct",
 ]
@@ -476,14 +479,45 @@ def _median(vals: list[float]) -> float:
     return statistics.median(vals) if vals else 0.0
 
 
-def aggregate_ratio_summary(trials: list[dict]) -> list[dict]:
+def _cmd_exec_stats(traj_rows: list[dict]) -> dict[tuple[str, int], tuple[float, float]]:
+    """Per ``(mode, ratio)``: ``(avg_cmd_exec_sec, median_cmd_exec_sec)``.
+
+    Per-cmd exec time = a run's ``exec_sec / n_steps``, over runs that executed
+    at least one step and had **no failed steps** (a failed run carries
+    truncated / zero exec that would drag the mean down -- the same exclusion
+    rule as the kernel's per-action latency stats). ``avg`` is the true
+    per-cmd mean ``sum(exec) / sum(steps)``; ``median`` is the median of
+    per-run means (robust to run-length outliers). Keys absent when a ratio
+    has no qualifying run (callers default to 0.0, matching _median).
+    """
+    by_key: dict[tuple[str, int], list[tuple[float, int]]] = {}
+    for r in traj_rows:
+        n = r.get("n_steps") or 0
+        ex = r.get("exec_sec")
+        if not n or ex is None or (r.get("n_failed") or 0) > 0:
+            continue
+        by_key.setdefault((r["mode"], r["ratio"]), []).append((float(ex), int(n)))
+    out: dict[tuple[str, int], tuple[float, float]] = {}
+    for key, pairs in by_key.items():
+        total_exec = sum(e for e, _ in pairs)
+        total_steps = sum(n for _, n in pairs)
+        per_run = [e / n for e, n in pairs]
+        out[key] = (round(total_exec / total_steps, 6), round(statistics.median(per_run), 6))
+    return out
+
+
+def aggregate_ratio_summary(trials: list[dict], traj_rows: list[dict] | None = None) -> list[dict]:
     """One row per ``(mode, ratio)``: medians across repeats + degradation vs k=1.
 
     Degradation is computed **within a mode** vs that mode's ``k=1`` baseline,
     so lifecycle and exec_only each get their own curve (memory-overcommit
     overhead vs CPU-oversubscription degradation). When a mode has no k=1
     trial, the degradation columns default to ``0.0`` (no baseline to compare).
+
+    ``traj_rows`` (the trajectory-detail rows) enables the per-cmd exec
+    columns; without them those columns stay ``0.0`` (older callers).
     """
+    cmd_stats = _cmd_exec_stats(traj_rows or [])
     by_key: dict[tuple[str, int], list[dict]] = {}
     for t in trials:
         by_key.setdefault((t["mode"], t["ratio"]), []).append(t)
@@ -496,6 +530,7 @@ def aggregate_ratio_summary(trials: list[dict]) -> list[dict]:
         waits = [g["avg_queue_wait_sec"] for g in group if g.get("avg_queue_wait_sec") is not None]
         attempted = len(group)
         successful = sum(1 for g in group if g["valid"])
+        avg_cmd, med_cmd = cmd_stats.get((mode, ratio), (0.0, 0.0))
         rows.append(
             {
                 "mode": mode,
@@ -507,6 +542,9 @@ def aggregate_ratio_summary(trials: list[dict]) -> list[dict]:
                 "median_tasks_per_sec": _median(tps),
                 "median_peak_active": _median(peaks),
                 "median_queue_wait_sec": _median(waits),
+                "avg_cmd_exec_sec": avg_cmd,
+                "median_cmd_exec_sec": med_cmd,
+                "cmd_exec_degradation_vs_1_1_pct": 0.0,
                 "time_degradation_vs_1_1_pct": 0.0,
                 "throughput_gain_vs_1_1_pct": 0.0,
             }
@@ -524,6 +562,8 @@ def aggregate_ratio_summary(trials: list[dict]) -> list[dict]:
             r["time_degradation_vs_1_1_pct"] = round(((r["median_wall_sec"] - bw) / bw * 100) if bw else 0.0, 3)
             bt = base["median_tasks_per_sec"] or 0
             r["throughput_gain_vs_1_1_pct"] = round(((r["median_tasks_per_sec"] - bt) / bt * 100) if bt else 0.0, 3)
+            bc = base["avg_cmd_exec_sec"] or 0
+            r["cmd_exec_degradation_vs_1_1_pct"] = round(((r["avg_cmd_exec_sec"] - bc) / bc * 100) if bc else 0.0, 3)
     return rows
 
 
@@ -595,9 +635,9 @@ def write_outputs(trials: list[dict], *, output_root: Path, configuration: dict 
     """
     output_root.mkdir(parents=True, exist_ok=True)
     _write_csv(output_root / "trial-summary.csv", TRIAL_COLUMNS, trials)
-    ratio_rows = aggregate_ratio_summary(trials)
-    _write_csv(output_root / "ratio-summary.csv", RATIO_COLUMNS, ratio_rows)
     traj_rows = _trajectory_rows(trials)
+    ratio_rows = aggregate_ratio_summary(trials, traj_rows)
+    _write_csv(output_root / "ratio-summary.csv", RATIO_COLUMNS, ratio_rows)
     _write_csv(output_root / "trajectory-detail.csv", TRAJECTORY_COLUMNS, traj_rows)
     report = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
