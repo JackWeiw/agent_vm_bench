@@ -327,6 +327,40 @@ def test_aggregate_ratio_summary_degradation_needs_k1_baseline():
     assert rows[0]["time_degradation_vs_1_1_pct"] == 0.0
 
 
+def _traj_row(mode, ratio, *, exec_sec, n_steps, n_failed=0):
+    return {"mode": mode, "ratio": ratio, "exec_sec": exec_sec, "n_steps": n_steps, "n_failed": n_failed}
+
+
+def test_aggregate_ratio_summary_cmd_exec_stats():
+    trials = [_trial_row("lifecycle", 1, 1), _trial_row("lifecycle", 2, 1, wall=200, tps=5)]
+    traj_rows = [
+        # ratio 1: per-cmd avg = (4+6)/(10+10) = 0.5; per-run means median(0.4,0.6) = 0.5
+        _traj_row("lifecycle", 1, exec_sec=4.0, n_steps=10),
+        _traj_row("lifecycle", 1, exec_sec=6.0, n_steps=10),
+        # a failed run is excluded (truncated exec would drag the mean down)
+        _traj_row("lifecycle", 1, exec_sec=0.1, n_steps=10, n_failed=2),
+        # ratio 2: avg = 12/10 = 1.2 -> degradation (1.2-0.5)/0.5*100 = 140%
+        _traj_row("lifecycle", 2, exec_sec=12.0, n_steps=10),
+        # a zero-step / None-exec run is ignored, not a ZeroDivisionError
+        _traj_row("lifecycle", 2, exec_sec=None, n_steps=0),
+    ]
+    rows = aggregate_ratio_summary(trials, traj_rows)
+    by = {(r["mode"], r["ratio"]): r for r in rows}
+    assert by[("lifecycle", 1)]["avg_cmd_exec_sec"] == 0.5
+    assert by[("lifecycle", 1)]["median_cmd_exec_sec"] == 0.5
+    assert by[("lifecycle", 1)]["cmd_exec_degradation_vs_1_1_pct"] == 0.0
+    assert abs(by[("lifecycle", 2)]["avg_cmd_exec_sec"] - 1.2) < 1e-6
+    assert abs(by[("lifecycle", 2)]["cmd_exec_degradation_vs_1_1_pct"] - 140.0) < 0.01
+
+
+def test_aggregate_ratio_summary_cmd_exec_defaults_without_traj_rows():
+    """Older callers pass no traj rows -> cmd columns default to 0.0, no crash."""
+    rows = aggregate_ratio_summary([_trial_row("lifecycle", 1, 1)])
+    assert rows[0]["avg_cmd_exec_sec"] == 0.0
+    assert rows[0]["median_cmd_exec_sec"] == 0.0
+    assert rows[0]["cmd_exec_degradation_vs_1_1_pct"] == 0.0
+
+
 def test_write_outputs_emits_all_four_files(tmp_path):
     trials = [_trial_row("lifecycle", 1, 1), _trial_row("lifecycle", 2, 1, wall=200, tps=5)]
     # Seed a fake trajectories/index.json in one trial's (fake) run_summary path dir.
