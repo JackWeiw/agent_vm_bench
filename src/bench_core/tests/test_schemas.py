@@ -151,8 +151,6 @@ def test_get_step_order_replay():
 
 
 def test_replay_metrics_buckets_by_action_type():
-    from bench_core.schemas import ReplayMetrics
-
     m = ReplayMetrics()
     m.add(
         latency=0.1, success=True, action_type="shell", requested_delay=1.0, actual_delay=0.9, trajectory_complete=False
@@ -169,8 +167,37 @@ def test_replay_metrics_buckets_by_action_type():
     assert m.success_count == 1
     assert m.failed_count == 1
     lat = m.action_type_latencies
-    assert set(lat.keys()) == {"shell", "str_replace_editor"}
-    assert len(lat["shell"]) == 1
+    # failed steps never enter the latency buckets (same population as `latencies`)
+    assert set(lat.keys()) == {"shell"}
+    assert lat["shell"] == [0.1]
+
+
+def test_replay_metrics_failed_steps_do_not_contribute_latency_samples():
+    """Failed/timed-out steps are counted but never append latency samples.
+
+    The exception path synthesizes exec_elapsed_sec=0.0 (_failed_step_result);
+    recording that zero would drag the [Step-Level Timing] Avg(s) and the
+    Per-step-timings per-action avg_s toward 0.
+    """
+    m = ReplayMetrics()
+    m.add(latency=0.5, success=True, action_type="shell", step_times={"shell": 0.5})
+    # failed step with a synthesized zero duration (exception path)
+    m.add(latency=0.0, success=False, action_type="shell", step_times={"shell": 0.0})
+    # failed step with a real measured duration (non-zero exit code)
+    m.add(latency=2.0, success=False, action_type="shell", step_times={"shell": 2.0})
+    # timeout
+    m.add(latency=30.0, success=False, timeout=True, action_type="shell", step_times={"shell": 30.0})
+
+    assert m.total_tasks == 4
+    assert m.success_count == 1
+    assert m.failed_count == 3
+    assert m.timeout_count == 1
+    assert m.latencies == [0.5]
+    assert m.action_type_latencies == {"shell": [0.5]}
+    assert m.get_step_times_copy() == {"shell": [0.5]}
+    stats = m.get_step_stats()
+    assert stats["shell"]["count"] == 1
+    assert stats["shell"]["avg"] == 0.5
 
 
 def test_replay_metrics_delay_fidelity_and_completions():
