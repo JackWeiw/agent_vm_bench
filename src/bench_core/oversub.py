@@ -133,6 +133,7 @@ _TRUE_DEFAULTS: dict[str, object] = {
     "no_vm_monitor": False,
     "multiplier": None,
     "bench_core_bin": ["bench-core"],
+    "auto_compare": True,
 }
 
 
@@ -649,6 +650,34 @@ def write_outputs(trials: list[dict], *, output_root: Path, configuration: dict 
     (output_root / "benchmark-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
 
+def _auto_compare(output_root: Path) -> None:
+    """Post-sweep: run compare_sweeps on this single sweep dir.
+
+    Produces ``<output_root>/comparison/`` (per-stat p50/p90/p99/avg degradation
+    vs k=1 + the same-trajectory cross-ratio table + workbook) without a manual
+    ``oversub-compare`` invocation -- a single-series manifest where the
+    cross-series deltas degenerate to zero and the within-series cross-ratio
+    comparison is the point. NEVER fails the sweep: any error degrades to a
+    warning (the raw CSVs remain the source of truth; ``oversub-compare`` can
+    always be re-run by hand).
+    """
+    from bench_core.compare_sweeps import run_comparison
+
+    manifest = {
+        "baseline_series": "sweep",
+        "series": [{"label": "sweep", "arch": "", "dir": str(output_root), "caps": {}}],
+    }
+    try:
+        rc = run_comparison(manifest, output_root / "comparison")
+    except Exception as exc:
+        logger.warning("auto-compare skipped (%s); sweep CSVs are unaffected", exc)
+        return
+    if rc == 0:
+        logger.info("auto-compare written to %s", output_root / "comparison")
+    else:
+        logger.warning("auto-compare returned %s; sweep CSVs are unaffected", rc)
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="oversub-bench",
@@ -718,6 +747,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--bench-core-bin", nargs="+", default=None, help="command for the kernel subprocess (default bench-core)"
+    )
+    p.add_argument(
+        "--auto-compare",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="run oversub-compare on the finished sweep (single-series cross-ratio "
+        "comparison into <output_root>/comparison/) (default on)",
     )
     return p
 
@@ -1062,6 +1098,7 @@ def main(argv: list[str] | None = None) -> int:
     args.dry_run = resolve("dry_run")
     args.no_vm_monitor = resolve("no_vm_monitor")
     args.bench_core_bin = _coerce_cmd(resolve("bench_core_bin"))
+    args.auto_compare = resolve("auto_compare")
 
     output_root_arg = resolve("output_root")
     if output_root_arg:
@@ -1133,6 +1170,8 @@ def main(argv: list[str] | None = None) -> int:
         len(trials),
         output_root / "benchmark-report.json",
     )
+    if args.auto_compare and trials and not args.dry_run:
+        _auto_compare(output_root)
     return 0
 
 

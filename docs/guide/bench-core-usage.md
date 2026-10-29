@@ -585,6 +585,7 @@ Precedence: **CLI flag > sweep-config > built-in default**. `--sweep-config` car
 | `stop_on_failure` | `false` | halt on first invalid trial |
 | `no_vm_monitor` | `false` | pass `--no-vm-monitor` through to bench-core |
 | `bench_core_bin` | `[bench-core]` | kernel subprocess command (tests point at a stub) |
+| `auto_compare` | `true` | post-sweep, auto-run a single-series `oversub-compare` into `<output_root>/comparison/` (per-stat degradation + same-trajectory cross-ratio table); `--no-auto-compare` disables |
 
 #### Per-trial config overrides
 
@@ -703,17 +704,20 @@ A missing file errors with the path.
 
 | File | Contents |
 |------|----------|
-| `comparison-tidy.csv` | long: `series, arch, <caps…>, mode, ratio, repeat, trajectory_id, metric, value` (concat+melt, most flexible) |
-| `comparison-ratio-summary.csv` | one row per `(mode, ratio, series, metric)`: median + delta vs baseline + pct + within-series degradation vs that series' own k=1; a series without k=1 yields blank degradation (no crash) |
+| `comparison-tidy.csv` | long: `series, arch, <caps…>, mode, ratio, repeat, trajectory_id, metric, value` (concat+melt, most flexible; metrics = the 20 CSV columns + derived `cmd_exec_sec` = `exec_sec/n_steps`, NaN for runs with failed steps) |
+| `comparison-ratio-summary.csv` | one row per `(mode, ratio, series, metric)`: a p50/p90/p99/avg stat pack (`median_sec/p90_sec/p99_sec/avg_sec`) + delta vs baseline + pct + one within-series degradation column per stat vs that series' own k=1 (`degradation_vs_ratio1_pct`=p50, `deg_p90/p99/avg_vs_ratio1_pct`); trial-level metrics carry the median only; a series without k=1 yields blank degradation (no crash) |
 | `comparison-trajectory-delta.csv` | join on `(mode, ratio, trajectory_id)`: baseline `elapsed_sec` + each series' value + delta; an absent side stays blank, orphan count surfaces in Overview |
-| `comparison.xlsx` | 4 sheets (below) |
+| `comparison-cross-ratio-trajectory.csv` | one row per `(series, mode, trajectory_id, ratio)`: that trajectory's median `elapsed_sec` + degradation vs the SAME trajectory's ratio-1 median (the driver pins the pool across ratios, so ids join); a tid missing at k=1 stays blank |
+| `comparison.xlsx` | 5 sheets (below) |
 
-#### `comparison.xlsx` four sheets
+#### `comparison.xlsx` five sheets
 
 1. **Overview** — manifest (series/arch/caps/baseline), N-parity check result, per-series valid/invalid trial counts, median-e2e headline table.
-2. **Per-ratio** — up to 3 LineCharts, each with one y-axis (no dual-axis): ① absolute median e2e (who's faster); ② within-series degradation % vs k=1 (whose oversub behavior degrades worse); ③ `lifecycle_overhead_pct` (the pause/resume cost share for a lifecycle comparison). For an exec_only comparison ③ self-skips — the driver writes an empty cell for exec_only (no lifecycle_overhead), pandas reads NaN, the subset empties, and the block is omitted (no flat-zero line).
+2. **Per-ratio** — LineCharts, each with one y-axis (no dual-axis): ① absolute median e2e (who's faster); ② within-series degradation % vs k=1 (whose oversub behavior degrades worse); ③ `lifecycle_overhead_pct` (the pause/resume cost share for a lifecycle comparison). For an exec_only comparison ③ self-skips — the driver writes an empty cell for exec_only (no lifecycle_overhead), pandas reads NaN, the subset empties, and the block is omitted (no flat-zero line).
+   ④ per series, a task-time (`elapsed_sec`) degradation block + chart with one line per stat (p50/p90/p99/avg vs k=1).
 3. **Component heatmaps** — one grid per component (rows=series, cols=ratio, ColorScale single-hue light→dark): `exec / resume / pause / slot_contention_wait`. `create / kill` are **excluded** — in lifecycle/exec_only they are 0 per step (only trajectory mode has per-trajectory create_one/kill_one), so the heatmap would carry only flat zeros; both columns remain in the tidy CSV for drill-down.
 4. **Per-trajectory delta** — e2e delta joined per trajectory; freeze panes at D2.
+5. **Cross-ratio per-traj** — the same-trajectory cross-ratio table (`comparison-cross-ratio-trajectory.csv` rendered): per trajectory, its median `elapsed_sec` at each ratio + degradation vs its own ratio-1 median; freeze panes at D2.
 
 #### N-parity guard
 

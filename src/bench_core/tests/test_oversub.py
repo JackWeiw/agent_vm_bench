@@ -1008,3 +1008,27 @@ def test_main_missing_config_returns_error(tmp_path):
     sweep = tmp_path / "sweep.yaml"
     sweep.write_text(yaml.safe_dump({"ratios": [1, 2]}, sort_keys=False), encoding="utf-8")
     assert main(["--sweep-config", str(sweep)]) == 2
+
+
+def test_auto_compare_end_to_end_and_graceful(tmp_path):
+    """_auto_compare writes comparison/ next to the sweep CSVs; a dir without
+    the CSVs degrades to a warning (never raises -- the sweep must not fail)."""
+    from bench_core.oversub import _auto_compare
+
+    sweep = tmp_path / "sweep"
+    write_outputs([_trial_row("lifecycle", 1, 1)], output_root=sweep)
+    _auto_compare(sweep)
+    assert (sweep / "comparison" / "comparison.xlsx").exists()
+    assert (sweep / "comparison" / "comparison-ratio-summary.csv").exists()
+    assert (sweep / "comparison" / "comparison-cross-ratio-trajectory.csv").exists()
+
+    _auto_compare(tmp_path / "nonexistent")  # warning, no raise
+    assert not (tmp_path / "nonexistent" / "comparison").exists()
+
+
+def test_auto_compare_flag_defaults():
+    from bench_core.oversub import _TRUE_DEFAULTS, build_arg_parser
+
+    assert _TRUE_DEFAULTS["auto_compare"] is True
+    assert build_arg_parser().parse_args([]).auto_compare is None  # sentinel; main() resolves
+    assert build_arg_parser().parse_args(["--no-auto-compare"]).auto_compare is False
