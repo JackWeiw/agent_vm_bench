@@ -636,9 +636,11 @@ Written after every trial (so a killed driver leaves a complete partial set) int
 | file | granularity | key columns |
 |------|-------------|-------------|
 | `trial-summary.csv` | one row per `(mode, ratio, repeat)` trial | `total, succeeded, failed, failure_rate, peak_active, wall_sec, tasks_per_sec, steps_per_sec, lifecycle_overhead_pct, return_code, valid, target_count, test_duration` |
-| `ratio-summary.csv` | one row per `(mode, ratio)` (medians across repeats) | `attempted, successful, median_wall_sec, median_tasks_per_sec, time_degradation_vs_1_1_pct, throughput_gain_vs_1_1_pct` |
+| `ratio-summary.csv` | one row per `(mode, ratio)` (medians across repeats) | `attempted, successful, median_wall_sec, median_tasks_per_sec, avg_cmd_exec_sec, median_cmd_exec_sec, cmd_exec_degradation_vs_1_1_pct, time_degradation_vs_1_1_pct, throughput_gain_vs_1_1_pct` |
 | `trajectory-detail.csv` | one row per trajectory per trial (from `trajectories/index.json`) | `trajectory_id, sandbox_index, n_steps, n_failed, success_rate, elapsed_sec` + the 18 `*_sec` breakdown columns (exec/resume/pause/requested_delay/create/kill/slice_total/interaction_total/slot_contention_wait/natural_delay/capacity_wait/rate_pacing_wait/inflight_wait/resume_rate_pacing_wait/pause_rate_pacing_wait/resume_inflight_wait/pause_inflight_wait/running_slot_held) + `action_series` (the trajectory's executed command sequence, newline-joined) |
 | `benchmark-report.json` | full machine-readable report | `configuration, trials, ratio_summary, trajectory_details` |
+
+Per-cmd exec time: `avg_cmd_exec_sec` is the true per-command mean `sum(exec_sec)/sum(n_steps)` across runs with no failed steps (a failed run's truncated exec would drag the mean down); `median_cmd_exec_sec` is the median of per-run means; `cmd_exec_degradation_vs_1_1_pct` compares `avg_cmd_exec_sec` against the mode's `k=1` baseline.
 
 Degradation is computed **within a mode** vs that mode's `k=1` baseline, so lifecycle and exec_only each get their own curve (memory-overcommit overhead vs CPU-oversubscription degradation). When a mode has no `k=1` trial, the degradation columns default to `0.0`.
 
