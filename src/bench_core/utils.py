@@ -142,10 +142,10 @@ def format_duration(seconds: float) -> str:
 def calc_percentiles(values: list[float]) -> dict[str, float]:
     """Calculate percentile statistics.
 
-    Returns: ``{"min", "max", "avg", "p50", "p95", "p99"}`` (all 0.0 when empty).
+    Returns: ``{"min", "max", "avg", "p50", "p90", "p95", "p99"}`` (all 0.0 when empty).
     """
     if not values:
-        return {"min": 0.0, "max": 0.0, "avg": 0.0, "p50": 0.0, "p95": 0.0, "p99": 0.0}
+        return {"min": 0.0, "max": 0.0, "avg": 0.0, "p50": 0.0, "p90": 0.0, "p95": 0.0, "p99": 0.0}
 
     sorted_vals = sorted(values)
     n = len(sorted_vals)
@@ -159,6 +159,7 @@ def calc_percentiles(values: list[float]) -> dict[str, float]:
         "max": sorted_vals[-1],
         "avg": statistics.mean(values),
         "p50": percentile(50),
+        "p90": percentile(90),
         "p95": percentile(95),
         "p99": percentile(99),
     }

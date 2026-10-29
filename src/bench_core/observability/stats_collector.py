@@ -187,6 +187,7 @@ class ReportFormatter:
         lines.append(f"  Max:  {stats['max']:.1f}s")
         lines.append(f"  Avg:  {stats['avg']:.1f}s")
         lines.append(f"  P50:  {stats['p50']:.1f}s")
+        lines.append(f"  P90:  {stats['p90']:.1f}s")
         lines.append(f"  P95:  {stats['p95']:.1f}s")
         lines.append(f"  P99:  {stats['p99']:.1f}s")
 

@@ -386,15 +386,15 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
 
 **Lifecycle overhead %**(比率,非秒):`lifecycle_overhead_aggregate_pct`((Σresume+Σpause)/Σslice_total)、`_mean_pct`(各 slice 比率均值)、`_p95_pct`(尾部)。近零 slice(`< MIN_SLICE_SEC`)被排除。同源数据见文本报告 `[Lifecycle Overhead]` 块与 `run_summary.json`。
 
-**Per-step timing**(子表,列 `segment/n/min_s/max_s/avg_s/p50_s/p95_s/p99_s`):`exec`(= slice_total − resume − pause,纯命令执行)/ `think`(= natural_delay,步间 LLM/思考延迟)/ `pause`(API+rate-pacing+inflight)/ `resume`(API+ready_wait+inflight)。
+**Per-step timing**(子表,列 `segment/n/min_s/max_s/avg_s/p50_s/p90_s/p95_s/p99_s`):`exec`(= slice_total − resume − pause,纯命令执行)/ `think`(= natural_delay,步间 LLM/思考延迟)/ `pause`(API+rate-pacing+inflight)/ `resume`(API+ready_wait+inflight)。
 
 #### Per-step timings sheet 字段介绍
 
-`bucket`(= `action_type`:shell/bash/str_replace_editor/submit/finish/done)+ `n/min_s/max_s/avg_s/p50_s/p95_s/p99_s`(全 fleet 纯 exec 的池化百分位,`latency` = 纯 `provider.exec()` 墙钟)。延迟样本**仅含成功 step**:失败/超时只计数、不进延迟分布(此前异常路径合成的 0 会把 avg_s 拉向 0;与主指标 `Avg Latency`、文字报告 `[Step-Level Timing]` 表同一口径)。下方附 per-step detail(`step_index | latency_ms`,抽样以控文件体积)与 step_index×latency 折图,图锚在 J 列(数据右侧)。
+`bucket`(= `action_type`:shell/bash/str_replace_editor/submit/finish/done)+ `n/min_s/max_s/avg_s/p50_s/p90_s/p95_s/p99_s`(全 fleet 纯 exec 的池化百分位,`latency` = 纯 `provider.exec()` 墙钟)。延迟样本**仅含成功 step**:失败/超时只计数、不进延迟分布(此前异常路径合成的 0 会把 avg_s 拉向 0;与主指标 `Avg Latency`、文字报告 `[Step-Level Timing]` 表同一口径)。下方附 per-step detail(`step_index | latency_ms`,抽样以控文件体积)与 step_index×latency 折图,图锚在 J 列(数据右侧)。
 
 #### Lifecycle overhead sheet 字段介绍
 
-`segment`(`resume`/`pause`/`slice_total`/`slot_held`/`interaction`)+ `n/min_s/max_s/avg_s/p50_s/p95_s/p99_s`(原始秒,跨所有 sandbox pool)。五段含义见下文"Step detail sheet 字段介绍"同名分量。下方附 per-step detail(`step_index | resume_ms | pause_ms | slice_ms`,抽样)与折图,图锚在 J 列(数据右侧)。
+`segment`(`resume`/`pause`/`slice_total`/`slot_held`/`interaction`)+ `n/min_s/max_s/avg_s/p50_s/p90_s/p95_s/p99_s`(原始秒,跨所有 sandbox pool)。五段含义见下文"Step detail sheet 字段介绍"同名分量。下方附 per-step detail(`step_index | resume_ms | pause_ms | slice_ms`,抽样)与折图,图锚在 J 列(数据右侧)。
 
 #### Trajectory summary sheet 字段介绍(秒,median-based)
 

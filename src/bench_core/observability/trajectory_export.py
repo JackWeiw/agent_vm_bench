@@ -10,7 +10,7 @@ this module rolls them into a per-trajectory aggregate + a per-run drill-down.
   ``trajectory-detail.csv`` row per run so a reader gets per-run latency at any
   pool/N ratio and can ``groupby trajectory_id`` for the per-trajectory median.
 - ``trajectories/<sanitized_tid>/replay_result.json`` -- the DEEP per-trajectory
-  artifact: the full ``all_runs``/``successful_runs`` aggregate sets (p50/p95/avg
+  artifact: the full ``all_runs``/``successful_runs`` aggregate sets (p50/p90/p95/avg
   per metric) + ``runs[].steps[]`` (per-step drill-down scoped to each run).
   ``replay_result.json`` is one-per-trajectory but a trajectory that ran on
   multiple sandboxes (pool < N) carries one ``runs[]`` entry per run.
