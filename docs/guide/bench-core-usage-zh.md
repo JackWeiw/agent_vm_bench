@@ -515,6 +515,7 @@ oversub-bench --config config/common/replay.yaml --provider aenv --ratios 1,2,3 
 | `stop_on_failure` | `false` | 遇首个 invalid trial 即停 |
 | `no_vm_monitor` | `false` | 透传 `--no-vm-monitor` 给 bench-core |
 | `bench_core_bin` | `[bench-core]` | kernel 子进程命令(测试指向 stub) |
+| `auto_compare` | `true` | sweep 结束后自动对本 sweep 目录跑单 series 的 `oversub-compare`,产物在 `<output_root>/comparison/`(分位数退化 + 同轨迹跨 ratio 表);`--no-auto-compare` 关闭 |
 
 #### 每个 trial 的 config 覆盖
 
@@ -645,19 +646,21 @@ oversub-compare --manifest ... --allow-mismatched-n   # N 不一致也硬跑(默
 
 | 文件 | 粒度 | 内容 |
 |------|------|------|
-| `comparison-tidy.csv` | 长表 | `series, arch, <caps…>, mode, ratio, repeat, trajectory_id, metric, value`(concat+melt,最灵活,pandas 直接 group) |
-| `comparison-ratio-summary.csv` | 每 `(mode, ratio, series, metric)` | median + delta vs 基线 + pct + 该 series 自己 k=1 的退化%;无 k=1 的 series 退化为空(不崩) |
+| `comparison-tidy.csv` | 长表 | `series, arch, <caps…>, mode, ratio, repeat, trajectory_id, metric, value`(concat+melt,最灵活,pandas 直接 group;metric = 20 个 CSV 列 + 派生 `cmd_exec_sec` = `exec_sec/n_steps`,含失败步的 run 为 NaN) |
+| `comparison-ratio-summary.csv` | 每 `(mode, ratio, series, metric)` | p50/p90/p99/avg 统计包(`median_sec/p90_sec/p99_sec/avg_sec`)+ delta vs 基线 + pct + 每个统计量各一列对该 series 自己 k=1 的退化%(`degradation_vs_ratio1_pct`=p50、`deg_p90/p99/avg_vs_ratio1_pct`);trial 级指标只有 median;无 k=1 的 series 退化为空(不崩) |
 | `comparison-trajectory-delta.csv` | 按 `(mode, ratio, trajectory_id)` join | 基线 `elapsed_sec` + 各 series 值 + delta;缺席侧留空,orphan 计数上 Overview |
-| `comparison.xlsx` | 4 sheet | 见下 |
+| `comparison-cross-ratio-trajectory.csv` | 每 `(series, mode, trajectory_id, ratio)` 一行 | 该轨迹在该 ratio 的 median `elapsed_sec` + 相对**同轨迹** ratio-1 median 的退化%(driver 已把轨迹池钉死跨 ratio 可 join);k=1 缺席的 tid 留空 |
+| `comparison.xlsx` | 5 sheet | 见下 |
 
-> 怎么看:先开 `comparison.xlsx` 的 **Overview** 看 N-parity 与 valid 计数,再到 **Per-ratio** 看三条曲线(谁更快/谁退化狠/lifecycle 开销),**Component heatmaps** 看哪个分量(exec/resume/pause/排队)在哪档 ratio 最烫,**Per-trajectory delta** 找具体哪条轨迹拉开差距。要脚本化分析用 tidy CSV。
+> 怎么看:先开 `comparison.xlsx` 的 **Overview** 看 N-parity 与 valid 计数,再到 **Per-ratio** 看三条曲线(谁更快/谁退化狠/lifecycle 开销),**Component heatmaps** 看哪个分量(exec/resume/pause/排队)在哪档 ratio 最烫,**Per-trajectory delta** 找具体哪条轨迹拉开差距,**Cross-ratio per-traj** 看同一条轨迹随 ratio 的退化。要脚本化分析用 tidy CSV。
 
-#### `comparison.xlsx` 四个 sheet
+#### `comparison.xlsx` 五个 sheet
 
 1. **Overview** — manifest(series/arch/caps/基线)、N-parity 校验结果、每 series valid/invalid trial 计数、median e2e 头表。
-2. **Per-ratio** — 最多 3 个 LineChart(各一轴,非双轴):① 绝对 median e2e(谁更快);② 对各自 k=1 的退化%(谁超分退化更狠);③ `lifecycle_overhead_pct`(pause/resume 开销占比)。exec_only 比较下 ③ 自动省略——driver 对 exec_only 写空 cell,pandas 读 NaN,子集为空就跳过,不留平零线。
+2. **Per-ratio** — LineChart(各一轴,非双轴):① 绝对 median e2e(谁更快);② 对各自 k=1 的退化%(谁超分退化更狠);③ `lifecycle_overhead_pct`(pause/resume 开销占比);④ 每 series 一块任务时长(`elapsed_sec`)退化表+图,p50/p90/p99/avg 各一条线(vs k=1)。exec_only 比较下 ③ 自动省略——driver 对 exec_only 写空 cell,pandas 读 NaN,子集为空就跳过,不留平零线。
 3. **Component heatmaps** — 一个 component 一张 grid(rows=series,cols=ratio,单色 ColorScale 由浅到深):`exec / resume / pause / slot_contention_wait`。`create / kill` **不在内**——lifecycle/exec_only 下每步为 0(只有 trajectory 模式才有 per-trajectory create_one/kill_one),热力图只会平零;两列仍在 tidy CSV 里供 drill-down。
 4. **Per-trajectory delta** — 按 trajectory join 的 e2e delta;freeze panes 在 D2。
+5. **Cross-ratio per-traj** — 同轨迹跨 ratio 表(`comparison-cross-ratio-trajectory.csv` 的渲染):每条轨迹在各 ratio 的 median `elapsed_sec` + 相对自己 ratio-1 的退化%;freeze panes 在 D2。
 
 #### N-parity 守卫
 
