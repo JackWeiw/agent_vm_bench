@@ -390,7 +390,7 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
 
 #### Per-step timings sheet 字段介绍
 
-`bucket`(= `action_type`:shell/bash/str_replace_editor/submit/finish/done)+ `n/min_s/max_s/avg_s/p50_s/p95_s/p99_s`(全 fleet 纯 exec 的池化百分位,`latency` = 纯 `provider.exec()` 墙钟)。下方附 per-step detail(`step_index | latency_ms`,抽样以控文件体积)与 step_index×latency 折图,图锚在 J 列(数据右侧)。
+`bucket`(= `action_type`:shell/bash/str_replace_editor/submit/finish/done)+ `n/min_s/max_s/avg_s/p50_s/p95_s/p99_s`(全 fleet 纯 exec 的池化百分位,`latency` = 纯 `provider.exec()` 墙钟)。延迟样本**仅含成功 step**:失败/超时只计数、不进延迟分布(此前异常路径合成的 0 会把 avg_s 拉向 0;与主指标 `Avg Latency`、文字报告 `[Step-Level Timing]` 表同一口径)。下方附 per-step detail(`step_index | latency_ms`,抽样以控文件体积)与 step_index×latency 折图,图锚在 J 列(数据右侧)。
 
 #### Lifecycle overhead sheet 字段介绍
 

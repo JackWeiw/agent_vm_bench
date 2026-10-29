@@ -388,20 +388,23 @@ class ReplayMetrics(TaskMetricsBase):
                 self._failed_count += 1
             elif success:
                 self._success_count += 1
+                # Latency samples are success-only (same population as
+                # _latencies): a failed step's exec time is either a
+                # synthesized 0.0 (exception path -- not a measurement, would
+                # drag per-action Avg toward 0) or an aborted run. Failures
+                # are counted, never timed.
                 self._latencies.append(latency)
                 self._action_type_latencies.setdefault(action_type, []).append(latency)
+                if step_times:
+                    for step_name, step_latency in step_times.items():
+                        self._step_times.setdefault(step_name, []).append(step_latency)
             else:
                 self._failed_count += 1
-                self._action_type_latencies.setdefault(action_type, []).append(latency)
 
             self._delay_requested += requested_delay
             self._delay_actual += actual_delay
             if trajectory_complete:
                 self._trajectory_completions += 1
-
-            if step_times:
-                for step_name, step_latency in step_times.items():
-                    self._step_times.setdefault(step_name, []).append(step_latency)
 
             # Lifecycle duration lists (P2.5): aligned, failure-free for
             # percentile math. slice_total_sec == 0 means the runner
