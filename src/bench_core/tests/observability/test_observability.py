@@ -137,5 +137,13 @@ def test_trajectory_stats_empty_when_no_create_secs():
     state.replay_metrics = ReplayMetrics()  # no slices -> empty create_secs
     cfg = KernelConfig(workflow_type="replay", total_count=1, workflow_config=ReplayConfig(replay_mode="trajectory"))
     obs = ReplayObservability(cfg, {0: state})
-    assert obs.create_sec_stats == {"min": 0.0, "max": 0.0, "avg": 0.0, "p50": 0.0, "p95": 0.0, "p99": 0.0}
+    assert obs.create_sec_stats == {
+        "min": 0.0,
+        "max": 0.0,
+        "avg": 0.0,
+        "p50": 0.0,
+        "p90": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+    }
     assert obs.kill_sec_stats["p50"] == 0.0

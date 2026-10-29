@@ -17,7 +17,7 @@ from bench_core.utils import (
 class TestCalcPercentiles:
     def test_empty(self):
         s = calc_percentiles([])
-        assert s == {"min": 0.0, "max": 0.0, "avg": 0.0, "p50": 0.0, "p95": 0.0, "p99": 0.0}
+        assert s == {"min": 0.0, "max": 0.0, "avg": 0.0, "p50": 0.0, "p90": 0.0, "p95": 0.0, "p99": 0.0}
 
     def test_basic(self):
         s = calc_percentiles([1.0, 2.0, 3.0, 4.0, 5.0])
@@ -25,6 +25,12 @@ class TestCalcPercentiles:
         assert s["max"] == 5.0
         assert s["avg"] == 3.0
         assert s["p50"] == 3.0
+
+    def test_p90_between_p50_and_p95(self):
+        vals = [float(v) for v in range(1, 101)]  # 1..100
+        s = calc_percentiles(vals)
+        assert s["p50"] <= s["p90"] <= s["p95"]
+        assert s["p90"] == 91.0  # idx = int(100 * 90 / 100) -> vals[90]
 
 
 class TestCalcP99:

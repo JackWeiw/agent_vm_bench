@@ -443,7 +443,7 @@ class ReplayReportFormatter(ReportFormatters):
             return []
 
         lines = ["\n[Step-Level Timing (Replay Mode)]"]
-        headers = ["Action", "Count", "Avg(s)", "P50(s)", "P95(s)", "P99(s)", "Tail"]
+        headers = ["Action", "Count", "Avg(s)", "P50(s)", "P90(s)", "P95(s)", "P99(s)", "Tail"]
         rows: list[list[str]] = []
 
         for step_name in REPLAY_STEP_ORDER:
@@ -458,6 +458,7 @@ class ReplayReportFormatter(ReportFormatters):
                         str(len(times)),
                         f"{stats['avg']:.3f}",
                         f"{stats['p50']:.3f}",
+                        f"{stats['p90']:.3f}",
                         f"{stats['p95']:.3f}",
                         f"{stats['p99']:.3f}",
                         f"{tail_ratio:.2f}x ({severity})",

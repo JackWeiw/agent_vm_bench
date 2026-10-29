@@ -14,7 +14,7 @@ Two tiers:
   this is the kernel-emit-raw-facts layer that downstream consumers (the oversub
   driver's ``trajectory-detail.csv``, the obs sheet) expand into per-run rows.
 - :func:`aggregate_trajectories` -- the per-trajectory aggregate across runs.
-  Durations/counts -> median (p50; p95/mean carried); ``success_rate`` -> mean;
+  Durations/counts -> median (p50; p90/p95/mean carried); ``success_rate`` -> mean;
   ``n_runs``/``n_success``/``n_failed`` -> sum. Carries TWO parallel sets
   (``all_runs`` + ``successful_runs``) so a reader is never misled by short
   failed runs dragging the latency median down: the headline ``elapsed_sec`` is
@@ -84,9 +84,15 @@ _RUN_METRIC_FIELDS = (
 
 
 def _pstats(vals: list[float]) -> dict:
-    """``{p50, p95, avg, n}`` over a list of floats (all 0 / n=0 when empty)."""
+    """``{p50, p90, p95, avg, n}`` over a list of floats (all 0 / n=0 when empty)."""
     pc = calc_percentiles(vals)
-    return {"p50": round(pc["p50"], 6), "p95": round(pc["p95"], 6), "avg": round(pc["avg"], 6), "n": len(vals)}
+    return {
+        "p50": round(pc["p50"], 6),
+        "p90": round(pc["p90"], 6),
+        "p95": round(pc["p95"], 6),
+        "avg": round(pc["avg"], 6),
+        "n": len(vals),
+    }
 
 
 def _run_set(runs: list[dict]) -> dict:
@@ -280,7 +286,7 @@ def aggregate_trajectories(per_run: list[dict]) -> list[dict]:
       back to ``all_runs.elapsed_sec.p50`` + ``all_failed=True`` when no run
       succeeded -- the trajectory latency a reader wants, never dragged down by
       short failed runs.
-    - ``all_runs`` / ``successful_runs`` each carry ``{p50, p95, avg, n}`` for
+    - ``all_runs`` / ``successful_runs`` each carry ``{p50, p90, p95, avg, n}`` for
       every metric field + a ``time_breakdown_sec`` sub-dict of per-SEG_KEY
       medians. ``successful_runs`` is ``{}`` (empty) when no run succeeded.
     - ``n_steps_max`` = the trajectory's full step count (the max across runs;
