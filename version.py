@@ -1,7 +1,7 @@
 # version.py
 # Single source of truth for project version
 
-__version__ = "0.7.1"
+__version__ = "0.7.2"
 __version_info__ = tuple(map(int, __version__.split(".")))
 
 # Version status
