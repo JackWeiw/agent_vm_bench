@@ -858,3 +858,15 @@ class TestReplayLifecycleOverheadByRound:
 
         assert "[Lifecycle Overhead by Round]" not in report
         assert "[Round Comparison]" not in report  # single-round redundancy suppressed
+
+
+def test_percentile_section_renders_p90_between_p50_and_p95():
+    """P90 line sits between P50 and P95 with the nearest-rank value (91 of 1..100)."""
+    config = Mock(spec=KernelConfig)
+    config.workflow_type = "browser"  # real value: ReportFormatter imports the workflow's format strategy
+    formatter = ReportFormatter(config, {}, "")
+    lines = formatter.format_percentile_section("Sandbox.create Performance", [float(v) for v in range(1, 101)])
+    joined = "\n".join(lines)
+    assert "  P90:  91.0s" in joined
+    assert joined.index("P50:") < joined.index("P90:") < joined.index("P95:") < joined.index("P99:")
+    assert formatter.format_percentile_section("T", []) == []
