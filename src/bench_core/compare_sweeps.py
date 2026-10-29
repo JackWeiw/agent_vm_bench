@@ -89,6 +89,24 @@ COMPONENT_COLS = [
 # pre-existing sweep dir.
 OPTIONAL_METRIC_COLS = frozenset({"stress_sec"})
 
+# Derived metrics: not CSV columns (the oversub contract above stays intact)
+# but computed in build_tidy from existing ones. ``cmd_exec_sec`` is the
+# per-command exec time (exec_sec / n_steps) -- the "average cmd duration per
+# ratio" view without opening each trial's obs workbook. Runs with failed
+# steps are excluded (NaN): a failed run's truncated exec drags the mean
+# down, the same rule as the kernel's per-action latency stats.
+DERIVED_METRIC_COLS = ["cmd_exec_sec"]
+
+# (stat column, its degradation-vs-k=1 column) in ratio-summary. median_sec /
+# degradation_vs_ratio1_pct keep their historical names (charts + downstream
+# scripts read them); p90/p99/avg are additive.
+_STAT_DEG_PAIRS = [
+    ("median_sec", "degradation_vs_ratio1_pct"),
+    ("p90_sec", "deg_p90_vs_ratio1_pct"),
+    ("p99_sec", "deg_p99_vs_ratio1_pct"),
+    ("avg_sec", "deg_avg_vs_ratio1_pct"),
+]
+
 # Trial-summary CSV metric columns surfaced in the ratio summary (per-trial
 # aggregates, distinct from the per-trajectory medians). Must match
 # bench_core.oversub.TRIAL_COLUMNS exactly.
@@ -202,11 +220,19 @@ def build_tidy(manifest: dict, tables: dict[str, dict[str, pd.DataFrame]]) -> pd
         # CSVs don't, so include it only when present (backward-compat melt).
         if "round_id" in df.columns:
             id_vars.append("round_id")
+        # Derived per-cmd exec time (see DERIVED_METRIC_COLS). NaN when n_steps
+        # is missing/zero or the run had failed steps -- groupby stats skip NaN.
+        if "exec_sec" in df.columns and "n_steps" in df.columns:
+            n_steps = pd.to_numeric(df["n_steps"], errors="coerce")
+            cmd = pd.to_numeric(df["exec_sec"], errors="coerce") / n_steps
+            df["cmd_exec_sec"] = cmd.where(n_steps > 0)
+            if "n_failed" in df.columns:
+                df.loc[pd.to_numeric(df["n_failed"], errors="coerce") > 0, "cmd_exec_sec"] = float("nan")
         # value_vars filtered to present columns so an older trajectory-detail.csv
         # (missing a since-added metric, e.g. stress_sec) melts without KeyError.
         tidy = df.melt(
             id_vars=id_vars,
-            value_vars=[c for c in TRAJECTORY_METRIC_COLS if c in df.columns],
+            value_vars=[c for c in [*TRAJECTORY_METRIC_COLS, *DERIVED_METRIC_COLS] if c in df.columns],
             var_name="metric",
             value_name="value",
         )
@@ -219,20 +245,29 @@ def build_ratio_summary(
     tables: dict[str, dict[str, pd.DataFrame]],
     manifest: dict,
 ) -> pd.DataFrame:
-    """Per ``(mode, ratio, series, metric)``: median + delta vs the baseline
-    series + pct delta + within-series degradation vs that series' own k=1.
+    """Per ``(mode, ratio, series, metric)``: a p50/p90/p99/avg stat pack +
+    delta vs the baseline series + pct delta + within-series degradation vs
+    that series' own k=1 (one degradation column per stat).
 
     Long form (one row per metric) so the xlsx can pivot freely. Metrics come
-    from the trajectory tidy (per-trajectory medians) + the trial-summary
-    tables (per-trial medians: wall_sec / tasks_per_sec / lifecycle_overhead /
-    avg_queue_wait). A series without a k=1 trial yields blank degradation
-    (no baseline to normalize to), not a crash.
+    from the trajectory tidy (per-trajectory stats; pandas' interpolated
+    quantiles) + the trial-summary tables (per-trial medians only: wall_sec /
+    tasks_per_sec / lifecycle_overhead / avg_queue_wait -- the stat-pack
+    columns are NaN for those). A series without a k=1 trial yields blank
+    degradation (no baseline to normalize to), not a crash.
     """
     baseline = manifest["baseline_series"]
-    # Trajectory-derived medians: groupby series/mode/ratio/metric over all
-    # repeats + trajectories (the median is robust to a flaky repeat).
+    # Trajectory-derived stat pack: groupby series/mode/ratio/metric over all
+    # repeats + trajectories (order stats are robust to a flaky repeat).
     traj_med = (
-        tidy.groupby(["series", "mode", "ratio", "metric"], sort=False)["value"].median().reset_index(name="median_sec")
+        tidy.groupby(["series", "mode", "ratio", "metric"], sort=False)["value"]
+        .agg(
+            median_sec="median",
+            p90_sec=lambda s: s.quantile(0.90),
+            p99_sec=lambda s: s.quantile(0.99),
+            avg_sec="mean",
+        )
+        .reset_index()
     )
     # Trial-derived medians: wall_sec etc. are per-trial, not per-trajectory.
     trial_frames: list[pd.DataFrame] = []
@@ -271,18 +306,20 @@ def build_ratio_summary(
         (med["median_sec"] - med["baseline_median_sec"]) / med["baseline_median_sec"] * 100
     ).round(3)
 
-    # Within-series degradation vs that series' own k=1.
-    k1 = med[med["ratio"] == 1][["series", "mode", "metric", "median_sec"]].rename(
-        columns={"median_sec": "k1_median_sec"}
-    )
-    med = med.merge(k1, on=["series", "mode", "metric"], how="left")
-    med["degradation_vs_ratio1_pct"] = (
-        ((med["median_sec"] - med["k1_median_sec"]) / med["k1_median_sec"] * 100)
-        .where(med["k1_median_sec"].notna() & (med["k1_median_sec"] != 0))
-        .round(3)
-    )
-    # ratio=1 row: degradation is 0 by definition (vs itself).
-    med.loc[med["ratio"] == 1, "degradation_vs_ratio1_pct"] = 0.0
+    # Within-series degradation vs that series' own k=1 -- one column per stat
+    # (p50 keeps the original column name; p90/p99/avg get explicit ones).
+    # ratio=1 rows are 0 by definition (vs themselves); a missing/zero k1 or a
+    # NaN stat (trial-only metrics carry no stat pack) yields NaN, not a crash.
+    for stat_col, deg_col in _STAT_DEG_PAIRS:
+        if stat_col not in med.columns:
+            continue
+        k1 = med[med["ratio"] == 1][["series", "mode", "metric", stat_col]].rename(columns={stat_col: "_k1"})
+        med = med.merge(k1, on=["series", "mode", "metric"], how="left")
+        med[deg_col] = (
+            ((med[stat_col] - med["_k1"]) / med["_k1"] * 100).where(med["_k1"].notna() & (med["_k1"] != 0)).round(3)
+        )
+        med.loc[med["ratio"] == 1, deg_col] = 0.0
+        med = med.drop(columns="_k1")
 
     cols = [
         "mode",
@@ -290,11 +327,18 @@ def build_ratio_summary(
         "series",
         "metric",
         "median_sec",
+        "p90_sec",
+        "p99_sec",
+        "avg_sec",
         "delta_vs_baseline_sec",
         "pct_delta_vs_baseline",
-        "degradation_vs_ratio1_pct",
+        *[deg for _, deg in _STAT_DEG_PAIRS],
     ]
-    return med[cols].sort_values(["mode", "metric", "series", "ratio"]).reset_index(drop=True)
+    return (
+        med[[c for c in cols if c in med.columns]]
+        .sort_values(["mode", "metric", "series", "ratio"])
+        .reset_index(drop=True)
+    )
 
 
 def build_trajectory_delta(
@@ -337,6 +381,58 @@ def build_trajectory_delta(
             (base[f"elapsed_sec__{label}"] - base["elapsed_sec_baseline"]) / base["elapsed_sec_baseline"] * 100
         ).round(3)
     return base.sort_values(["mode", "ratio", "trajectory_id"]).reset_index(drop=True)
+
+
+def build_cross_ratio_trajectory(tables: dict[str, dict[str, pd.DataFrame]], manifest: dict) -> pd.DataFrame:
+    """Same-trajectory cross-ratio comparison: one row per
+    ``(series, mode, trajectory_id, ratio)``.
+
+    ``elapsed_sec_median`` is the median across that trajectory's runs (per-run
+    rows collapse like build_trajectory_delta); ``degradation_vs_ratio1_pct``
+    compares it against the SAME trajectory's ratio-1 median. The driver pins
+    the trajectory pool across ratios (``replay.trajectory_limit``), so ids are
+    joinable and only concurrency varies -- a trajectory absent at ratio 1
+    yields NaN degradation, not a crash.
+    """
+    frames: list[pd.DataFrame] = []
+    for entry in manifest["series"]:
+        label = entry["label"]
+        df = tables[label]["traj"]
+        if df.empty or "elapsed_sec" not in df.columns:
+            continue
+        g = (
+            df.groupby(["mode", "trajectory_id", "ratio"], sort=False)["elapsed_sec"]
+            .median()
+            .reset_index(name="elapsed_sec_median")
+        )
+        g.insert(0, "series", label)
+        base = g[g["ratio"] == 1][["mode", "trajectory_id", "elapsed_sec_median"]].rename(
+            columns={"elapsed_sec_median": "elapsed_sec_k1"}
+        )
+        g = g.merge(base, on=["mode", "trajectory_id"], how="left")
+        g["degradation_vs_ratio1_pct"] = (
+            ((g["elapsed_sec_median"] - g["elapsed_sec_k1"]) / g["elapsed_sec_k1"] * 100)
+            .where(g["elapsed_sec_k1"].notna() & (g["elapsed_sec_k1"] != 0))
+            .round(3)
+        )
+        g.loc[g["ratio"] == 1, "degradation_vs_ratio1_pct"] = 0.0
+        frames.append(g)
+    if not frames:
+        return pd.DataFrame()
+    cols = [
+        "series",
+        "mode",
+        "trajectory_id",
+        "ratio",
+        "elapsed_sec_median",
+        "elapsed_sec_k1",
+        "degradation_vs_ratio1_pct",
+    ]
+    return (
+        pd.concat(frames, ignore_index=True)[cols]
+        .sort_values(["series", "mode", "trajectory_id", "ratio"])
+        .reset_index(drop=True)
+    )
 
 
 def check_n_parity(tables: dict[str, dict[str, pd.DataFrame]]) -> tuple[bool, list[str]]:
@@ -444,13 +540,15 @@ def _write_overview(
 
 
 def _write_per_ratio(wb: Workbook, ratio_summary: pd.DataFrame, manifest: dict) -> None:
-    """Per-ratio sheet: up to three chart-data blocks + LineCharts.
+    """Per-ratio sheet: chart-data blocks + LineCharts.
 
     Block 1 = absolute median e2e latency (who's faster). Block 2 = within-series
     degradation % vs k=1 (whose oversub behavior degrades worse). Block 3 =
     lifecycle_overhead_pct (the trial-level pause/resume cost share) -- only
-    lifecycle runs carry it, so it self-skips on an exec_only comparison. Each
-    block is its own chart with one y-axis; no dual-axis (dataviz anti-pattern).
+    lifecycle runs carry it, so it self-skips on an exec_only comparison.
+    Block 4 = per series, task-time (elapsed_sec) degradation vs k=1 with one
+    line per stat (p50/p90/p99/avg). Each block is its own chart with one
+    y-axis; no dual-axis (dataviz anti-pattern).
     """
     ws = wb.create_sheet("Per-ratio")
     e2e = ratio_summary[ratio_summary["metric"] == "elapsed_sec"]
@@ -529,9 +627,48 @@ def _write_per_ratio(wb: Workbook, ratio_summary: pd.DataFrame, manifest: dict) 
             anchor=f"{get_column_letter(2 + len(series_labels) + 1)}{start}",
             header_row=start + 1,
         )
+    # Block 4: task-time (elapsed_sec) degradation vs k=1 per stat
+    # (p50/p90/p99/avg) -- one sub-block + chart per series. This is the
+    # "same metric, four order stats" view of oversub degradation; block 2
+    # above stays the p50-only headline for backward compat.
+    stat_deg = [(s, d) for s, d in _STAT_DEG_PAIRS if d in e2e.columns]
+    if len(stat_deg) > 1:
+        for lab in series_labels:
+            sub = e2e[e2e["series"] == lab].sort_values("ratio")
+            if sub.empty:
+                continue
+            start = ws.max_row + 3
+            ws.cell(start, 1, f"Task-time degradation vs ratio-1 (%) -- {lab}").font = Font(bold=True)
+            ws.cell(start + 1, 1, "ratio")
+            for j, (_, deg_col) in enumerate(stat_deg, start=2):
+                ws.cell(start + 1, j, _DEG_COL_LABEL.get(deg_col, deg_col))
+            for i, (_, r) in enumerate(sub.iterrows(), start=1):
+                ws.cell(start + 1 + i, 1, int(r["ratio"]))
+                for j, (_, deg_col) in enumerate(stat_deg, start=2):
+                    v = r.get(deg_col)
+                    ws.cell(start + 1 + i, j, float(v) if pd.notna(v) else None)
+            _add_line_chart(
+                ws,
+                f"Task-time degradation vs ratio-1 (%) -- {lab}",
+                "pct degradation",
+                cat_col=1,
+                data_cols=list(range(2, 2 + len(stat_deg))),
+                n_rows=len(sub),
+                anchor=f"{get_column_letter(2 + len(stat_deg) + 1)}{start}",
+                header_row=start + 1,
+            )
     ws.column_dimensions["A"].width = 12
     for col in range(2, 2 + len(series_labels)):
         ws.column_dimensions[get_column_letter(col)].width = 18
+
+
+# Human labels for the per-stat degradation columns (block 4 headers).
+_DEG_COL_LABEL = {
+    "degradation_vs_ratio1_pct": "p50",
+    "deg_p90_vs_ratio1_pct": "p90",
+    "deg_p99_vs_ratio1_pct": "p99",
+    "deg_avg_vs_ratio1_pct": "avg",
+}
 
 
 def _write_component_heatmaps(wb: Workbook, ratio_summary: pd.DataFrame, manifest: dict) -> None:
@@ -585,22 +722,34 @@ def _write_component_heatmaps(wb: Workbook, ratio_summary: pd.DataFrame, manifes
         ws.column_dimensions[get_column_letter(col)].width = 12
 
 
-def _write_trajectory_delta(wb: Workbook, traj_delta: pd.DataFrame) -> None:
-    ws = wb.create_sheet("Per-trajectory delta")
-    if traj_delta.empty:
-        ws.append(["no per-trajectory data"])
+def _write_df_sheet(wb: Workbook, title: str, df: pd.DataFrame, empty_msg: str) -> None:
+    """Write a DataFrame to its own sheet (bold+shaded header, cell-by-cell).
+
+    Shared by the per-trajectory delta + cross-ratio sheets: pandas to_excel
+    would add a sheet but we are in a shared Workbook -- write cell-by-cell to
+    keep styling control.
+    """
+    ws = wb.create_sheet(title)
+    if df.empty:
+        ws.append([empty_msg])
         return
-    # Write header + rows; pandas to_excel would add a sheet but we are in a
-    # shared Workbook -- write cell-by-cell to keep styling control.
-    headers = list(traj_delta.columns)
+    headers = list(df.columns)
     ws.append(headers)
     for c in range(1, len(headers) + 1):
         ws.cell(1, c).font = Font(bold=True)
         ws.cell(1, c).fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-    for _, r in traj_delta.iterrows():
+    for _, r in df.iterrows():
         ws.append([r[c] if pd.notna(r[c]) else None for c in headers])
     ws.column_dimensions["A"].width = 14
     ws.freeze_panes = "D2"
+
+
+def _write_trajectory_delta(wb: Workbook, traj_delta: pd.DataFrame) -> None:
+    _write_df_sheet(wb, "Per-trajectory delta", traj_delta, "no per-trajectory data")
+
+
+def _write_cross_ratio(wb: Workbook, cross_ratio: pd.DataFrame) -> None:
+    _write_df_sheet(wb, "Cross-ratio per-traj", cross_ratio, "no cross-ratio data")
 
 
 def write_xlsx(
@@ -611,21 +760,32 @@ def write_xlsx(
     n_ok: bool,
     n_warns: list[str],
     series_stats: list[dict],
+    cross_ratio: pd.DataFrame | None = None,
 ) -> None:
-    """Assemble the 4-sheet comparison workbook."""
+    """Assemble the comparison workbook (Overview / Per-ratio / heatmaps /
+    per-trajectory delta / cross-ratio per-trajectory)."""
     wb = Workbook()
     _write_overview(wb, manifest, n_ok, n_warns, ratio_summary, series_stats)
     _write_per_ratio(wb, ratio_summary, manifest)
     _write_component_heatmaps(wb, ratio_summary, manifest)
     _write_trajectory_delta(wb, traj_delta)
+    _write_cross_ratio(wb, cross_ratio if cross_ratio is not None else pd.DataFrame())
     wb.save(out_path)
 
 
-def write_csvs(out_dir: Path, tidy: pd.DataFrame, ratio_summary: pd.DataFrame, traj_delta: pd.DataFrame) -> None:
-    """Write the tidy long + ratio-summary + per-trajectory CSVs."""
+def write_csvs(
+    out_dir: Path,
+    tidy: pd.DataFrame,
+    ratio_summary: pd.DataFrame,
+    traj_delta: pd.DataFrame,
+    cross_ratio: pd.DataFrame | None = None,
+) -> None:
+    """Write the tidy long + ratio-summary + per-trajectory + cross-ratio CSVs."""
     tidy.to_csv(out_dir / "comparison-tidy.csv", index=False)
     ratio_summary.to_csv(out_dir / "comparison-ratio-summary.csv", index=False)
     traj_delta.to_csv(out_dir / "comparison-trajectory-delta.csv", index=False)
+    if cross_ratio is not None:
+        cross_ratio.to_csv(out_dir / "comparison-cross-ratio-trajectory.csv", index=False)
 
 
 def run_comparison(manifest: dict, out_dir: Path, *, allow_mismatched_n: bool = False) -> int:
@@ -655,10 +815,13 @@ def run_comparison(manifest: dict, out_dir: Path, *, allow_mismatched_n: bool = 
     tidy = build_tidy(manifest, tables)
     ratio_summary = build_ratio_summary(tidy, tables, manifest)
     traj_delta = build_trajectory_delta(tables, manifest)
+    cross_ratio = build_cross_ratio_trajectory(tables, manifest)
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    write_csvs(out_dir, tidy, ratio_summary, traj_delta)
-    write_xlsx(out_dir / "comparison.xlsx", ratio_summary, traj_delta, manifest, n_ok, n_warns, series_stats)
+    write_csvs(out_dir, tidy, ratio_summary, traj_delta, cross_ratio)
+    write_xlsx(
+        out_dir / "comparison.xlsx", ratio_summary, traj_delta, manifest, n_ok, n_warns, series_stats, cross_ratio
+    )
     logger.info(
         "comparison written to %s (series=%d, ratios=%s, baseline=%s)",
         out_dir,

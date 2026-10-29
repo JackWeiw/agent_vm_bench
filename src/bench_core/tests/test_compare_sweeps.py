@@ -9,6 +9,7 @@ the driver's ``trajectory-detail.csv`` / ``trial-summary.csv`` contract
 from __future__ import annotations
 
 import csv
+import math
 from pathlib import Path
 
 import pytest
@@ -266,8 +267,9 @@ def test_build_tidy_shape_and_caps(tmp_path):
 
     tables = _read_series_tables(manifest)
     tidy = build_tidy(manifest, tables)
-    # 2 series * 2 ratios * 2 trajectories * 20 metrics = 160 rows.
-    assert len(tidy) == 2 * 2 * 2 * 20
+    # 2 series * 2 ratios * 2 trajectories * 21 metrics (20 CSV cols + the
+    # derived cmd_exec_sec) = 168 rows.
+    assert len(tidy) == 2 * 2 * 2 * 21
     # caps exploded to columns (union: freq_ghz, l3_mb); arm lacks freq_ghz -> NaN.
     assert {"series", "arch", "l3_mb", "freq_ghz", "mode", "ratio", "trajectory_id", "metric", "value"} <= set(
         tidy.columns
@@ -298,7 +300,9 @@ def test_build_tidy_old_csv_without_stress_col(tmp_path):
 
     tables = _read_series_tables(manifest)  # must not reject the old CSV
     tidy = build_tidy(manifest, tables)
-    expected_metrics = {c for c in TRAJECTORY_METRIC_COLS if c != "stress_sec"}
+    # cmd_exec_sec is derived (exec_sec + n_steps are contract cols), so it is
+    # present even in an old CSV; only the optional stress_sec is absent.
+    expected_metrics = {c for c in TRAJECTORY_METRIC_COLS if c != "stress_sec"} | {"cmd_exec_sec"}
     assert set(tidy["metric"]) == expected_metrics
     assert len(tidy) == len(expected_metrics)  # one traj row x present metrics
 
@@ -502,14 +506,22 @@ def test_run_comparison_writes_outputs(tmp_path):
     assert (out / "comparison-tidy.csv").exists()
     assert (out / "comparison-ratio-summary.csv").exists()
     assert (out / "comparison-trajectory-delta.csv").exists()
+    assert (out / "comparison-cross-ratio-trajectory.csv").exists()
     assert (out / "comparison.xlsx").exists()
-    # xlsx has the 4 sheets + LineChart on Per-ratio + ColorScale on heatmaps.
+    # xlsx has the 5 sheets + LineChart on Per-ratio + ColorScale on heatmaps.
     from openpyxl import load_workbook
 
     wb = load_workbook(out / "comparison.xlsx")
-    assert wb.sheetnames == ["Overview", "Per-ratio", "Component heatmaps", "Per-trajectory delta"]
-    # 3 charts on Per-ratio for a lifecycle comparison: absolute e2e +
-    # degradation + lifecycle_overhead_pct (Block 3).
+    assert wb.sheetnames == [
+        "Overview",
+        "Per-ratio",
+        "Component heatmaps",
+        "Per-trajectory delta",
+        "Cross-ratio per-traj",
+    ]
+    # >= 3 charts on Per-ratio for a lifecycle comparison: absolute e2e +
+    # degradation + lifecycle_overhead_pct (Block 3) + per-series task-time
+    # degradation stat blocks (Block 4).
     assert len(wb["Per-ratio"]._charts) >= 3
     assert len(wb["Component heatmaps"]._charts) == 0  # heatmaps are conditional fmt, not charts
     assert len(list(wb["Component heatmaps"].conditional_formatting)) >= 1
@@ -540,7 +552,9 @@ def test_per_ratio_lifecycle_overhead_chart_skips_for_exec_only(tmp_path):
     from openpyxl import load_workbook
 
     ws = load_workbook(out / "comparison.xlsx")["Per-ratio"]
-    assert len(ws._charts) == 2  # absolute + degradation only; no overhead chart
+    # absolute + degradation + one task-time stat-degradation chart per series
+    # (Block 4, 2 series); no lifecycle-overhead chart.
+    assert len(ws._charts) == 4
     banners = [c.value for row in ws.iter_rows() for c in row if isinstance(c.value, str)]
     assert not any("Lifecycle overhead" in b for b in banners)
 
@@ -567,3 +581,104 @@ def test_main_shorthand_arm_x86(tmp_path):
 
 def test_main_needs_manifest_or_arm_x86(tmp_path):
     assert main([]) == 2
+
+
+# ---- stat pack (p50/p90/p99/avg) + per-stat degradation -------------------
+
+
+def _single_series(root: Path) -> dict:
+    return {"baseline_series": "s", "series": [{"label": "s", "arch": "", "dir": str(root), "caps": {}}]}
+
+
+def test_ratio_summary_stat_pack_and_per_stat_degradation(tmp_path):
+    from bench_core.compare_sweeps import _read_series_tables
+
+    root = _seed_series(tmp_path / "s", ratios=[1, 2], elapsed={(1, "t0"): 2.0, (2, "t0"): 5.0})
+    manifest = _single_series(root)
+    tables = _read_series_tables(manifest)
+    rs = build_ratio_summary(build_tidy(manifest, tables), tables, manifest)
+
+    e2 = rs[rs["metric"] == "elapsed_sec"]
+    r1 = e2[e2["ratio"] == 1].iloc[0]
+    r2 = e2[e2["ratio"] == 2].iloc[0]
+    # One run per ratio: every stat collapses to the value itself.
+    assert r1["median_sec"] == r1["p90_sec"] == r1["p99_sec"] == r1["avg_sec"] == 2.0
+    assert r2["p90_sec"] == r2["p99_sec"] == r2["avg_sec"] == 5.0
+    # (5-2)/2*100 = 150% for every stat; ratio-1 rows are 0 by definition.
+    for col in ("degradation_vs_ratio1_pct", "deg_p90_vs_ratio1_pct", "deg_p99_vs_ratio1_pct", "deg_avg_vs_ratio1_pct"):
+        assert r2[col] == pytest.approx(150.0), col
+        assert r1[col] == 0.0, col
+    # Trial-only metric: median present, stat pack + its degradations NaN.
+    wall = rs[(rs["metric"] == "wall_sec") & (rs["ratio"] == 2)].iloc[0]
+    assert not math.isnan(wall["median_sec"])
+    for col in ("p90_sec", "p99_sec", "avg_sec", "deg_p90_vs_ratio1_pct"):
+        assert math.isnan(wall[col]), col
+
+
+def test_cmd_exec_sec_derived_metric(tmp_path):
+    """cmd_exec_sec = exec_sec/n_steps; failed runs and zero-step runs -> NaN
+    (excluded from every downstream stat, never a ZeroDivisionError)."""
+    from bench_core.compare_sweeps import _read_series_tables
+
+    good = _traj_row("lifecycle", 1, "t0", 3.0)  # exec 1.5 / 3 steps = 0.5
+    failed = _traj_row("lifecycle", 1, "t1", 3.0)
+    failed["n_failed"] = 1
+    zero = _traj_row("lifecycle", 1, "t2", 3.0)
+    zero["n_steps"] = 0
+    _write_traj(tmp_path / "trajectory-detail.csv", [good, failed, zero])
+    _write_trial(tmp_path / "trial-summary.csv", [_trial_row("lifecycle", 1, n=3, wall=10.0)])
+    manifest = _single_series(tmp_path)
+    tables = _read_series_tables(manifest)
+    tidy = build_tidy(manifest, tables)
+    cmd = tidy[tidy["metric"] == "cmd_exec_sec"].set_index("trajectory_id")["value"]
+    assert cmd["t0"] == pytest.approx(0.5)
+    assert math.isnan(cmd["t1"])
+    assert math.isnan(cmd["t2"])
+
+
+def test_cross_ratio_trajectory_same_tid_degradation(tmp_path):
+    """Same-trajectory cross-ratio: per (mode, tid, ratio) median elapsed +
+    degradation vs the SAME trajectory's ratio-1 median; a tid missing at
+    ratio 1 -> NaN degradation, no crash."""
+    from bench_core.compare_sweeps import _read_series_tables, build_cross_ratio_trajectory
+
+    root = _seed_series(
+        tmp_path / "s",
+        ratios=[1, 2],
+        elapsed={(1, "t0"): 2.0, (2, "t0"): 5.0, (1, "t1"): 4.0, (2, "t1"): 4.0, (2, "t2"): 9.0},
+    )
+    manifest = _single_series(root)
+    tables = _read_series_tables(manifest)
+    cr = build_cross_ratio_trajectory(tables, manifest)
+
+    t0k2 = cr[(cr["trajectory_id"] == "t0") & (cr["ratio"] == 2)].iloc[0]
+    assert t0k2["elapsed_sec_median"] == 5.0
+    assert t0k2["elapsed_sec_k1"] == 2.0
+    assert t0k2["degradation_vs_ratio1_pct"] == pytest.approx(150.0)
+    t0k1 = cr[(cr["trajectory_id"] == "t0") & (cr["ratio"] == 1)].iloc[0]
+    assert t0k1["degradation_vs_ratio1_pct"] == 0.0
+    t1k2 = cr[(cr["trajectory_id"] == "t1") & (cr["ratio"] == 2)].iloc[0]
+    assert t1k2["degradation_vs_ratio1_pct"] == pytest.approx(0.0)  # 4.0 == 4.0
+    t2k2 = cr[(cr["trajectory_id"] == "t2") & (cr["ratio"] == 2)].iloc[0]
+    assert math.isnan(t2k2["elapsed_sec_k1"])
+    assert math.isnan(t2k2["degradation_vs_ratio1_pct"])
+
+
+def test_run_comparison_writes_cross_ratio_outputs(tmp_path):
+    """End-to-end: the cross-ratio CSV + sheet carry the same-tid rows."""
+    root = _seed_series(tmp_path / "s", ratios=[1, 2], elapsed={(1, "t0"): 2.0, (2, "t0"): 5.0})
+    out = tmp_path / "out"
+    assert run_comparison(_single_series(root), out) == 0
+    import pandas as pd
+
+    cr = pd.read_csv(out / "comparison-cross-ratio-trajectory.csv")
+    assert list(cr.columns) == [
+        "series",
+        "mode",
+        "trajectory_id",
+        "ratio",
+        "elapsed_sec_median",
+        "elapsed_sec_k1",
+        "degradation_vs_ratio1_pct",
+    ]
+    assert len(cr) == 2
