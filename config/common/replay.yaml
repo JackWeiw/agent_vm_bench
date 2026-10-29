@@ -112,7 +112,7 @@ create_batch:
 
 task_batch:
   size: 5
-  interval: 5
+  interval: 1
 
 # Replay configuration (host-agnostic; the sandbox runs the recorded commands).
 replay:
