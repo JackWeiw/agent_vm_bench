@@ -418,10 +418,9 @@ TRAJECTORY_COLUMNS = [
     *_TRAJECTORY_BREAKDOWN_COLUMNS,
     "create_error_type",
     "kill_error_type",
-    # The trajectory's recorded command sequence (newline-joined, per-step
-    # compact). Trajectory-level in index.json, copied onto every run row so a
-    # reader sees the executed commands per trajectory at any pool/N ratio.
-    "action_series",
+    # action_series (the trajectory's newline-joined command sequence) lives in
+    # replay_result.json / index.json per trajectory and in benchmark-report.json;
+    # omitted from the CSV so a multi-line cell doesn't bloat every Excel row.
 ]
 
 
