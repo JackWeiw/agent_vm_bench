@@ -519,10 +519,10 @@ def test_trajectory_detail_old_index_compat(tmp_path):
 
 
 def test_trajectory_detail_action_series(tmp_path):
-    # action_series is trajectory-level in index.json; the driver copies it onto
-    # every run row so trajectory-detail.csv carries the executed command
-    # sequence. A newline-in-cell round-trips through csv.DictReader (the csv
-    # module reassembles quoted fields spanning physical lines).
+    # action_series is trajectory-level in index.json; the driver keeps it on
+    # every run row in benchmark-report.json (and in replay_result.json per
+    # trajectory) but OMITS it from trajectory-detail.csv so a multi-line
+    # command cell doesn't bloat every Excel row.
     trial_stamp = tmp_path / "t" / "rb_20260905-160000"
     traj_dir = trial_stamp / "trajectories"
     traj_dir.mkdir(parents=True)
@@ -609,17 +609,18 @@ def test_trajectory_detail_action_series(tmp_path):
         run_summary_path=str(trial_stamp / "rb_run_summary.json"),
     )
     write_outputs([row], output_root=tmp_path)
-    # Read with newline="" so multi-line quoted cells (action_series carries
-    # embedded newlines) round-trip correctly -- read_text().splitlines() strips
-    # the line terminators the csv reader needs to reassemble a quoted field.
+    # Read with newline="" so any quoted field round-trips through csv.DictReader
+    # (read_text().splitlines() strips the line terminators the csv reader needs).
     with open(tmp_path / "trajectory-detail.csv", newline="", encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
+        reader = csv.DictReader(f)
+        rows = list(reader)
     assert len(rows) == 2  # two runs -> two CSV rows
-    # the trajectory-level action_series is copied onto every run row, newlines
-    # preserved (csv quoting round-trips through a proper reader).
+    # action_series is intentionally absent from the CSV columns (multi-line
+    # command content would bloat every Excel row); it stays in the JSON report.
+    assert "action_series" not in reader.fieldnames
     for r in rows:
-        assert r["action_series"] == "echo one\necho two"
-    # also surfaces in benchmark-report.json trajectory_details
+        assert "action_series" not in r
+    # still surfaces in benchmark-report.json trajectory_details
     rep = json.loads((tmp_path / "benchmark-report.json").read_text(encoding="utf-8"))
     assert all(td["action_series"] == "echo one\necho two" for td in rep["trajectory_details"])
 
