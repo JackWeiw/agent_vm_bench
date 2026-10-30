@@ -237,6 +237,8 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
         for c in (
             "cpu_busy_pct",
             "cpu_iowait_pct",
+            "cpu_user_pct",
+            "cpu_sys_pct",
             "mem_used_gb",
             "mem_cache_gb",
             "buffers_mb",
@@ -280,11 +282,19 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
             out["cpu_iowait_pct"].append(
                 100.0 * (_f(cur_c, "cpu_iowait") - _f(prev_c, "cpu_iowait")) / d_total if d_total else math.nan
             )
+            # user/sys decomposition of busy (guest already folded into user by
+            # the kernel, so user+sys <= busy; both share d_total as denominator).
+            d_user = _f(cur_c, "cpu_user") - _f(prev_c, "cpu_user")
+            d_sys = _f(cur_c, "cpu_system") - _f(prev_c, "cpu_system")
+            out["cpu_user_pct"].append(100.0 * d_user / d_total if d_total else math.nan)
+            out["cpu_sys_pct"].append(100.0 * d_sys / d_total if d_total else math.nan)
             if d_total and dt:
                 host_busy = (d_total - d_idle_iowait) / _CLK_TCK / dt
         else:
             out["cpu_busy_pct"].append(math.nan)
             out["cpu_iowait_pct"].append(math.nan)
+            out["cpu_user_pct"].append(math.nan)
+            out["cpu_sys_pct"].append(math.nan)
         # mem is a gauge (no delta); aligned by row index to cpu since host_*_raw
         # are written together per-sample in one enqueue_proc call. ponytail:
         # positional alignment assumes no per-/proc read failure drops a row;
@@ -564,6 +574,8 @@ def _build_host_sheet(wb, df):
         ("timestamp", "Timestamp"),
         ("cpu_busy_pct", "CPU busy (%)"),
         ("cpu_iowait_pct", "CPU iowait (%)"),
+        ("cpu_user_pct", "CPU user (%)"),
+        ("cpu_sys_pct", "CPU sys (%)"),
         ("mem_used_gb", "Mem used (GB)"),
         ("mem_cache_gb", "Mem cache (GB)"),
         ("buffers_mb", "Buffers (MB)"),
@@ -582,20 +594,45 @@ def _build_host_sheet(wb, df):
     ]
     cols, headers = zip(*col_labels)
     _write_table(ws, df, list(headers), cols=list(cols))
+    # 1-indexed column position per df column name -- insertion-safe: adding a
+    # col_label shifts downstream positions, and the chart refs below follow
+    # automatically. The pre-fix hardcoded int tuples silently misaligned the
+    # memory/disk charts the moment a column was inserted mid-table.
+    pos = {name: i + 1 for i, (name, _) in enumerate(col_labels)}
     anchor = get_column_letter(len(headers) + 2)
     n = len(df)
-    _add_line_chart(ws, "Host memory", "GB", 1, (5, 6), 1, n, f"{anchor}2")
-    _add_line_chart(ws, "Host buffers/dirty", "MB", 1, (7, 8), 1, n, f"{anchor}20")
-    _add_line_chart(ws, "FC memory (total PSS)", "GB", 1, (16,), 1, n, f"{anchor}38")
-    _add_line_chart(ws, "Host CPU", "%", 1, (3, 4), 1, n, f"{anchor}56")
-    _add_line_chart(ws, "Page-cache pressure", "MiB/s", 1, (11, 12, 13), 1, n, f"{anchor}74")
-    _add_line_chart(ws, "Swap in/out", "MiB/s", 1, (9, 10), 1, n, f"{anchor}92")
-    _add_line_chart(ws, "CPU cores (ublk + VM)", "cores", 1, (14, 15), 1, n, f"{anchor}110")
-    # Alloc stalls (/s) sits at col 18 -- the headline "blocked on reclaim"
-    # counter (count of allocation requests that stalled). Direct reclaim
-    # (col 17) is the blocking subset of page-scan, left as a column only.
-    _add_line_chart(ws, "Alloc stalls", "/s", 1, (18,), 1, n, f"{anchor}128")
-    _add_line_chart(ws, "Concurrent VMs", "count", 1, (19,), 1, n, f"{anchor}146")
+    _add_line_chart(ws, "Host memory", "GB", 1, (pos["mem_used_gb"], pos["mem_cache_gb"]), 1, n, f"{anchor}2")
+    _add_line_chart(ws, "Host buffers/dirty", "MB", 1, (pos["buffers_mb"], pos["dirty_mb"]), 1, n, f"{anchor}20")
+    _add_line_chart(ws, "FC memory (total PSS)", "GB", 1, (pos["fc_pss_gb"],), 1, n, f"{anchor}38")
+    # Host CPU: busy (total non-idle) decomposed into iowait + user + sys so the
+    # reader sees both the aggregate and its breakdown on one axis.
+    _add_line_chart(
+        ws,
+        "Host CPU",
+        "%",
+        1,
+        (pos["cpu_busy_pct"], pos["cpu_iowait_pct"], pos["cpu_user_pct"], pos["cpu_sys_pct"]),
+        1,
+        n,
+        f"{anchor}56",
+    )
+    _add_line_chart(
+        ws,
+        "Page-cache pressure",
+        "MiB/s",
+        1,
+        (pos["page_scan_mib_s"], pos["page_reclaim_mib_s"], pos["file_refault_mib_s"]),
+        1,
+        n,
+        f"{anchor}74",
+    )
+    _add_line_chart(ws, "Swap in/out", "MiB/s", 1, (pos["swap_in_mib_s"], pos["swap_out_mib_s"]), 1, n, f"{anchor}92")
+    _add_line_chart(ws, "CPU cores (ublk + VM)", "cores", 1, (pos["ublk_cores"], pos["vm_cores"]), 1, n, f"{anchor}110")
+    # Alloc stalls (/s) is the headline "blocked on reclaim" counter (count of
+    # allocation requests that stalled). Direct reclaim is the blocking subset
+    # of page-scan, left as a column only.
+    _add_line_chart(ws, "Alloc stalls", "/s", 1, (pos["allocstall_per_s"],), 1, n, f"{anchor}128")
+    _add_line_chart(ws, "Concurrent VMs", "count", 1, (pos["concurrent_vms"],), 1, n, f"{anchor}146")
 
 
 def _build_per_vm_sheet(wb, cores_df, pss_df):

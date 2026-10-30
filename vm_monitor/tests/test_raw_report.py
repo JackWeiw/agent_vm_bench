@@ -105,6 +105,12 @@ def test_derive_host_cpu_mem_swap(tmp_path):
     assert math.isclose(r["cpu_busy_pct"], 100 * (1 - 12 / 41), abs_tol=0.1)
     # iowait% = 100 * d_iowait(2) / d_total(41)
     assert math.isclose(r["cpu_iowait_pct"], 100 * (2 / 41), abs_tol=0.1)
+    # user/sys decomposition of busy: d_user=20 (100->120), d_sys=5 (50->55),
+    # both over d_total=41. user+sys=25/41 < busy=(41-12)/41=29/41 (the rest is
+    # irq+softirq+steal+nice) -- guards against a denominator mix-up.
+    assert math.isclose(r["cpu_user_pct"], 100 * (20 / 41), abs_tol=0.1)
+    assert math.isclose(r["cpu_sys_pct"], 100 * (5 / 41), abs_tol=0.1)
+    assert r["cpu_user_pct"] + r["cpu_sys_pct"] < r["cpu_busy_pct"]
     # host_mem_raw.csv holds MB values: base._read_meminfo() converts /proc/meminfo
     # kB -> MB before enqueue_proc -> _write_wide dumps it. So GB = MB/1024 and the
     # MB columns are passthrough (regression: raw_report used to assume kB and
@@ -121,6 +127,8 @@ def test_derive_host_cpu_mem_swap(tmp_path):
     assert math.isclose(r["ublk_cores"], 200 / 100 / 2, abs_tol=0.01)
     # first row -> NaN (no baseline)
     assert math.isnan(df.iloc[0]["cpu_busy_pct"])
+    assert math.isnan(df.iloc[0]["cpu_user_pct"])
+    assert math.isnan(df.iloc[0]["cpu_sys_pct"])
 
 
 def test_derive_host_ublk_duplicate_timestamps(tmp_path, caplog):
@@ -296,8 +304,12 @@ def test_derive_host_guard_fires_on_vmstat_reset_and_cpu_gap(tmp_path, caplog):
     assert math.isnan(r2["page_scan_mib_s"])
     # cpu clean at t=4 (monotonic, dt=2) -> cpu_busy still computes
     assert not math.isnan(r2["cpu_busy_pct"])
-    # cpu gap (dt=18>10) -> cpu_busy NaN
+    assert not math.isnan(r2["cpu_user_pct"])
+    assert not math.isnan(r2["cpu_sys_pct"])
+    # cpu gap (dt=18>10) -> cpu_busy NaN, and its user/sys decomposition NaN too
     assert math.isnan(r3["cpu_busy_pct"])
+    assert math.isnan(r3["cpu_user_pct"])
+    assert math.isnan(r3["cpu_sys_pct"])
     assert any("gap detected" in m for m in caplog.messages)
     assert any("counter reset" in m and "host_vmstat" in m for m in caplog.messages)
     # row 1 (t=2, clean) still computes normally
@@ -502,13 +514,15 @@ def test_build_xlsx_sheets_and_charts(tmp_path):
     host = wb["Host resources"]
     assert len(host._charts) == 9
     # series counts lock the col-set per chart (memory=2, buffers/dirty=2,
-    # fc_pss=1, cpu=2, pressure=3, swap=2, cores=2, alloc-stalls=1,
-    # concurrent_vms=1) -- guards against pressure wrongly including swap cols
-    # or an off-by-one skipping a series.
-    assert sorted(len(c.series) for c in host._charts) == [1, 1, 1, 2, 2, 2, 2, 2, 3]
+    # fc_pss=1, cpu=4 [busy+iowait+user+sys], pressure=3, swap=2, cores=2,
+    # alloc-stalls=1, concurrent_vms=1) -- guards against pressure wrongly
+    # including swap cols or an off-by-one skipping a series.
+    assert sorted(len(c.series) for c in host._charts) == [1, 1, 1, 2, 2, 2, 2, 3, 4]
     # FC total PSS = sum of per-VM pss_mb/1024 per timestamp. _seed_all's vm0
-    # has pss_mb=1024 at both samples -> fc_pss_gb=1.0 GB (col 16, first data row).
-    assert math.isclose(host.cell(row=2, column=16).value, 1.0, abs_tol=0.001)
+    # has pss_mb=1024 at both samples -> fc_pss_gb=1.0 GB. Looked up by header
+    # label (not hardcoded column) so a mid-table column insertion can't break it.
+    fc_col = next(i for i, c in enumerate(host[1], start=1) if c.value == "FC total PSS (GB)")
+    assert math.isclose(host.cell(row=2, column=fc_col).value, 1.0, abs_tol=0.001)
     assert len(wb["Per-VM"]._charts) == 2
     assert len(wb["Disk IO"]._charts) == 2
 
