@@ -479,7 +479,7 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
 
 ### 8.5 超卖扫描 (`oversub-bench`)
 
-`oversub-bench` driver(`src/bench_core/oversub.py`)把 replay kernel 跑过一组内存/CPU 超卖比:`running_concurrency`(N)固定,`total_count = k×N` 每个 trial 缩放。每个 trial 一次 `bench-core` 调用;driver 读每个 trial 的机器可读 `run_summary.json`,聚合 per-trial + per-ratio 退化曲线。
+`oversub-bench` driver(`src/bench_core/oversub.py`)把 replay kernel 跑过一组内存/CPU 超卖比:`running_concurrency`(N)固定,`total_count = k×N` 每个 trial 缩放。每个 trial 一次 `bench-core` 调用(开启进程分片时每 shard 一次,见下文 `shards`);driver 读每个 trial 的机器可读 `run_summary.json`,聚合 per-trial + per-ratio 退化曲线。
 
 **分层:kernel 出原始事实,driver 算 valid。** driver 不导入任何 kernel 数据路径内部(lifecycle / admission / stats / observability)——只用 CLI、YAML schema、`run_summary.json` schema 和共享的 `setup_logging` 助手。kernel 不知道自己是"扫描的第 k 个 ratio",只输出发生了什么,driver 判定 trial 是否跑完。
 
@@ -491,7 +491,7 @@ oversub-bench --sweep-config config/oversub/lifecycle-1to3.yaml --ratios 4   # �
 oversub-bench --config config/common/replay.yaml --provider aenv --ratios 1,2,3   # 无 sweep-config
 ```
 
-优先级:**CLI 旗标 > sweep-config > 内置默认**。`--sweep-config` 承载所有旋钮 + `base_config`;`--config` 仅在没有 sweep-config 设 `base_config` 时必填。完整旗标集见 `oversub-bench --help`(`--running-concurrency`、`--modes`、`--repeats`、`--test-duration`、`--failure-tolerance`、`--cooldown-sec`、`--cleanup-between-trials`、`--trial-timeout-sec`、`--output-root`、`--reuse`、`--stop-on-failure`、`--dry-run`、`--no-vm-monitor`、`--bench-core-bin`)。
+优先级:**CLI 旗标 > sweep-config > 内置默认**。`--sweep-config` 承载所有旋钮 + `base_config`;`--config` 仅在没有 sweep-config 设 `base_config` 时必填。完整旗标集见 `oversub-bench --help`(`--running-concurrency`、`--modes`、`--repeats`、`--test-duration`、`--multiplier`、`--shards`、`--failure-tolerance`、`--cooldown-sec`、`--cleanup-between-trials`、`--trial-timeout-sec`、`--output-root`、`--reuse`、`--stop-on-failure`、`--dry-run`、`--no-vm-monitor`、`--bench-core-bin`)。
 
 #### sweep-config 键
 
@@ -504,6 +504,7 @@ oversub-bench --config config/common/replay.yaml --provider aenv --ratios 1,2,3 
 | `running_concurrency` | base `replay.running_concurrency` | N 个 running slot(跨 ratio 固定) |
 | `ratios` | `1,2,3` | k 值(list 或 `"1,2,3"`);`total_count = k×N` |
 | `modes` | `lifecycle,exec_ephemeral` | 要扫描的 replay mode(每个一条曲线) |
+| `shards` | `auto` | 每个 trial 的 kernel 子进程数 P(`auto` = ratio,仅 admission-free mode;见"进程分片") |
 | `repeats` | `1` | 每个 `(mode, ratio)` 重复次数(取中位) |
 | `test_duration` | base `test.duration`(600) | 每个 trial 硬上限(秒) |
 | `failure_tolerance` | `0.0` | trial 判 valid 时允许的最大 `failure_rate` |
@@ -531,6 +532,16 @@ driver 深拷贝 `base_config` 并只改写超卖字段,其余透传:
 | `report.output_dir` / `report.filename_prefix` | 每 trial 目录/前缀 | 隔离各 trial 产物 |
 
 `test.round_count`(工作量旋钮:跑几遍整个 fleet)透传。trial 在两者先到时结束:`round_count` 轮 OR `test.duration` 秒。`round_count: 1`(默认)= 有界单遍;`0` = 持续到 duration 的窗口。
+
+#### 进程分片(`shards`)
+
+高 ratio 下单进程客户端先于主机触顶:thread-per-sandbox kernel 的 dispatch 被单个 GIL 封顶(N=384 实测 ~50–55 steps/s,ratio≥7 后加压只涨客户端排队、不涨主机负载,r9/r10 数据为 client-bound)。`shards` 把一个 trial 的 k×N slot 拆成 P 个 `bench-core` 子进程(`auto` = P=k,每进程 ~N slot——把每个进程的负载钉在 1:1 已验证的水平,GIL 天花板抬到 ~P×)。机制在 `src/bench_core/oversub_shards.py`,driver 只做组合:
+
+- **只有 admission-free mode 可分片**(`exec_ephemeral` / `exec_only`)。`lifecycle` / `trajectory` 的 `running_concurrency` 是全局准入上限,per-shard 各自准入会把峰值放大到 P×N、静默改变超卖 profile,因此始终单进程(显式 P>1 会 WARNING 降级,不报错——一份 sweep config 可跨 mode)。
+- shard 0 独占 vm_monitor(主机指标是 host-wide 的,一个采集器就能看到所有 shard 的 VM;多采集器会重复采样并抢工具锁),其余 shard 自动追加 `--no-vm-monitor`。
+- 每个 shard 是完整独立的 kernel run:`trial_dir/shard-{i:02d}/` 下有 `shard.yaml`(total_count/round_size = 份额、`report.output_dir` = 本 shard 目录、docker `container_prefix` 加 `-s{i}` 后缀防容器重名、`launch_interval_sec` ×P 保持全局创建速率)+ `driver.log` + kernel 产物;`trial.yaml` 保留为未分片的逻辑 provenance。
+- driver 把 P 份产物合并回契约形状:`trial_dir/merged/{prefix}_run_summary.json` + `merged/trajectories/index.json`(计数求和、wall 取 max、速率按合并 wall 重算、时间轴取包络、`sandbox_index` 按 shard slot 偏移重键保证 run key 唯一;`shard_count` / `shard_start_skew_sec` / `shard_return_codes` 等 provenance 走附加字段)——valid 判定、CSV、compare、`--reuse` 全部无感知。崩溃的 shard **绝不回填 0 冒充成功测量**:缺失 shard + rc 记入 merged `error`,trial 判 invalid。
+- `shards: 1`(或 ratio=1)走原单进程路径,目录布局与行为与旧版完全一致。
 
 #### `run_summary.json` 字段(kernel → driver 契约)
 
