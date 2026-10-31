@@ -40,13 +40,17 @@ Known simplifications (measured, not assumed away):
   control-plane protection the knob exists for) without cross-process IPC.
   Round-boundary bursts can still align across shards (up to P concurrent
   creates); a parent-side pacer would remove that if it ever hurts.
+- Multi-template manifests with ``N % T != 0``: a group-aligned shard offset
+  (a multiple of N) shifts the kernel's within-template rank, so the merged
+  (sandbox_index -> trajectory) ASSOCIATION can differ from single-process even
+  though per-trajectory run counts are preserved. Single-template (the oversub
+  default) is exactly faithful.
 """
 from __future__ import annotations
 
 import copy
 import json
 import logging
-import statistics
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -76,10 +80,32 @@ _RUN_SCOPED_KEYS = (
     "n_failed",
     "n_timeout",
     "success_rate",
+    "success",
     "elapsed_sec",
     "time_breakdown_sec",
     "create_error_type",
     "kill_error_type",
+)
+
+# Entry-level AGGREGATES recomputed from the merged runs[] with the kernel's
+# own rules (trajectory_summary.aggregate_trajectories + trajectory_export.
+# _index_row). Never inherited from one shard's entry: that value describes
+# only the shard's runs subset (inheriting shard 0's success_rate/error types/
+# breakdown p50s would silently drop every other shard's data). ``file`` is
+# re-set to None: the deep per-trajectory replay_result.json artifacts stay in
+# each shard's run dir (shard_dirs in the merged summary is the provenance).
+_AGGREGATE_KEYS = (
+    "n_runs",
+    "n_success",
+    "n_failed",
+    "success_rate",
+    "elapsed_sec",
+    "all_failed",
+    "n_steps_max",
+    "time_breakdown_sec",
+    "create_error_type",
+    "kill_error_type",
+    "file",
 )
 
 # Additive count keys inside run_summary["throughput"].
@@ -171,11 +197,32 @@ class ShardPlan:
 
 
 def plan_shards(*, trial_dir: Path, mode: str, ratio: int, n: int, setting: int | str) -> ShardPlan | None:
-    """Build the shard plan for one trial, or ``None`` when P == 1 (legacy)."""
+    """Build the shard plan for one trial, or ``None`` when P == 1 (legacy).
+
+    For P <= ratio the split is GROUP-ALIGNED: the trial's ``ratio`` groups of
+    N slots are distributed over the shards, so every shard size is an integer
+    multiple of N. Each shard then replays the whole first-N pool a whole
+    number of times, and the merged per-trajectory run counts are exactly the
+    single-process counts (slot k -> pool[k % N] in every shard). P > ratio
+    falls back to a slot-level split -- totals are preserved but per-trajectory
+    run counts redistribute (a shard smaller than the pool cannot cover every
+    trajectory), so it is flagged with a warning.
+    """
     p = resolve_shard_count(setting, mode=mode, ratio=ratio, n=n)
     if p <= 1:
         return None
-    sizes = shard_sizes(ratio * n, p)
+    if p <= ratio:
+        sizes = [groups * n for groups in shard_sizes(ratio, p)]
+    else:
+        logger.warning(
+            "shards=%d > ratio=%d: shard sizes fall below the N=%d trajectory pool, so "
+            "per-trajectory run counts redistribute vs a single-process trial (totals "
+            "preserved). Use shards <= ratio for exact per-trajectory parity.",
+            p,
+            ratio,
+            n,
+        )
+        sizes = shard_sizes(ratio * n, p)
     specs, offset = [], 0
     for i, size in enumerate(sizes):
         specs.append(ShardSpec(index=i, size=size, slot_offset=offset, directory=trial_dir / f"shard-{i:02d}"))
@@ -196,10 +243,13 @@ def build_shard_config(trial_cfg: dict, spec: ShardSpec, *, count: int) -> dict:
     to the shard dir, the docker container prefix is suffixed so parallel
     shards never collide on ``{prefix}-{index}`` names (the suffix keeps
     ``startswith(base)`` true, so prefix-based cleanup still reaches every
-    shard), and ``launch_interval_sec`` scales by P to preserve the global
-    average create rate. ``trajectory_limit`` / ``running_concurrency`` stay
-    untouched: the issue pool is global by design (every shard replays the
-    same first-N pool; the merged run set matches the single-process trial).
+    shard), and the pacing knobs (``launch_interval_sec``, ``create_batch.interval``,
+    ``task_batch.interval``) scale by P so P independently-pacing shards keep the
+    GLOBAL average create/dispatch rate of the single-process trial.
+    ``trajectory_limit`` / ``running_concurrency`` stay untouched: the issue pool
+    is global by design (every shard replays the same first-N pool; with
+    group-aligned shard sizes the merged run set matches the single-process
+    trial per trajectory, not just in total).
     """
     cfg = copy.deepcopy(trial_cfg)
     cfg.setdefault("sandbox", {})["total_count"] = spec.size
@@ -211,6 +261,10 @@ def build_shard_config(trial_cfg: dict, spec: ShardSpec, *, count: int) -> dict:
     replay = cfg.get("replay")
     if isinstance(replay, dict) and replay.get("launch_interval_sec"):
         replay["launch_interval_sec"] = replay["launch_interval_sec"] * count
+    for section in ("create_batch", "task_batch"):
+        block = cfg.get(section)
+        if isinstance(block, dict) and block.get("interval"):
+            block["interval"] = block["interval"] * count
     return cfg
 
 
@@ -286,24 +340,31 @@ class ShardGroupRunner:
         logs = []
         interrupted = timed_out = False
         try:
-            for cmd, log_path in zip(self.commands, self.log_paths):
-                log_path.parent.mkdir(parents=True, exist_ok=True)
-                logs.append(open(log_path, "w", encoding="utf-8"))
-                procs.append(subprocess.Popen(cmd, stdout=logs[-1], stderr=subprocess.STDOUT))
-            deadline = time.monotonic() + self.timeout_sec if self.timeout_sec else None
-            for proc in procs:
-                remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
-                try:
-                    proc.wait(timeout=remaining)
-                except subprocess.TimeoutExpired:
-                    timed_out = True
-                    logger.warning("shard group deadline (%ss) breached; tearing down all shards", self.timeout_sec)
-                    self._terminate_all(procs)
-                    break
-                except KeyboardInterrupt:
-                    interrupted = True
-                    self._terminate_all(procs)
-                    break
+            try:
+                for cmd, log_path in zip(self.commands, self.log_paths):
+                    log_path.parent.mkdir(parents=True, exist_ok=True)
+                    logs.append(open(log_path, "w", encoding="utf-8"))
+                    procs.append(subprocess.Popen(cmd, stdout=logs[-1], stderr=subprocess.STDOUT))
+            except KeyboardInterrupt:
+                # Ctrl+C inside the launch window: already-launched shards must
+                # not be orphaned stressing the host while the driver exits.
+                interrupted = True
+                self._terminate_all(procs)
+            if not interrupted:
+                deadline = time.monotonic() + self.timeout_sec if self.timeout_sec else None
+                for proc in procs:
+                    remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+                    try:
+                        proc.wait(timeout=remaining)
+                    except subprocess.TimeoutExpired:
+                        timed_out = True
+                        logger.warning("shard group deadline (%ss) breached; tearing down all shards", self.timeout_sec)
+                        self._terminate_all(procs)
+                        break
+                    except KeyboardInterrupt:
+                        interrupted = True
+                        self._terminate_all(procs)
+                        break
         finally:
             for stream in logs:
                 stream.close()
@@ -350,7 +411,10 @@ def collect_shard_artifacts(plan: ShardPlan, prefix: str) -> ShardArtifacts:
 
     A crashed shard simply has no summary -- it surfaces in ``missing`` and in
     the merged summary's ``error``; it is never backfilled with fabricated
-    zeros (a crash must not masquerade as a successful measurement).
+    zeros (a crash must not masquerade as a successful measurement). Note the
+    ``error`` field is provenance, not a validity gate: ``compute_valid`` gates
+    on summed counts, so an (abnormal) rc-0 exit without a summary would only
+    show up as a count shortfall + this error string.
     """
     out = ShardArtifacts()
     for spec in plan.specs:
@@ -385,18 +449,31 @@ def _merged_throughput(summaries: list[dict], wall_sec: float | None) -> dict:
 
 
 def _merged_span(summaries: list[dict]) -> dict:
-    """min start / max end across shards (the trial's wall-clock envelope)."""
+    """min start / max end across shards (the trial's wall-clock envelope).
+
+    ``wall_sec`` is the ENVELOPE (max completed − min started), not max of the
+    shard walls: the kernel's own ``wall_sec`` is measured over exactly its
+    ``[started_epoch, completed_epoch]`` span, so the envelope is what a single
+    process running k×N slots would have reported -- and every rate is divided
+    by it. Max-of-walls would overstate fleet throughput whenever shards start
+    or finish at different times. Falls back to max wall when epochs are
+    incomplete (a partially-flushed shard summary).
+    """
     started = [(s.get("started_epoch"), s.get("started_at")) for s in summaries if s.get("started_epoch")]
     completed = [(s.get("completed_epoch"), s.get("completed_at")) for s in summaries if s.get("completed_epoch")]
     walls = [s.get("wall_sec") for s in summaries if s.get("wall_sec") is not None]
     start_epoch = min(started)[0] if started else None
     end_epoch = max(completed)[0] if completed else None
+    if start_epoch is not None and end_epoch is not None:
+        wall = round(end_epoch - start_epoch, 3)
+    else:
+        wall = round(max(walls), 3) if walls else None
     return {
         "started_epoch": start_epoch,
         "started_at": min(started)[1] if started else None,
         "completed_epoch": end_epoch,
         "completed_at": max(completed)[1] if completed else None,
-        "wall_sec": round(max(walls), 3) if walls else None,
+        "wall_sec": wall,
         "shard_start_skew_sec": (
             round(max(e for e, _ in started) - start_epoch, 3) if len(started) > 1 and start_epoch else None
         ),
@@ -471,9 +548,10 @@ def merge_run_summaries(
     """Compose P shard summaries into one schema-faithful trial summary.
 
     Schema-2 keys keep their exact meaning at trial level (counts summed,
-    wall = max, rates recomputed, span = envelope); shard provenance rides in
-    ADDITIONAL keys (``shard_*``) so a consumer that only knows schema 2 reads
-    the merged file as if one kernel run of k*N slots had produced it.
+    wall = envelope, rates recomputed over it, span = envelope); shard
+    provenance rides in ADDITIONAL keys (``shard_*``) so a consumer that only
+    knows schema 2 reads the merged file as if one kernel run of k*N slots had
+    produced it.
     """
     present = [s for s in summaries if s is not None]
     if not present:
@@ -512,6 +590,8 @@ def merge_run_summaries(
         "admission": _merged_admission(present),
         "lifecycle_overhead": _merged_lifecycle_overhead(present),
         "paths": {
+            # The real txt/xlsx/series artifacts live under shard_dirs (per-shard
+            # run dirs); no driver consumer reads these three merged keys.
             "report": None,
             "obs_xlsx": None,
             "lifecycle_series": None,
@@ -534,6 +614,52 @@ def _promote_legacy_entry(entry: dict) -> list[dict]:
     return [{k: entry.get(k) for k in _RUN_SCOPED_KEYS}]
 
 
+def _none_last(value) -> tuple[int, float]:
+    """None-safe ascending sort key (mirrors the kernel's _sort_key intent)."""
+    return (1, 0.0) if value is None else (0, float(value))
+
+
+def _p50(values: list[float]) -> float:
+    """The kernel's p50 (utils.calc_percentiles): upper median, NOT the mean of
+    the middle two for even n -- statistics.median would diverge at k=2."""
+    ordered = sorted(values)
+    return ordered[min(len(ordered) // 2, len(ordered) - 1)]
+
+
+def _aggregate_entry(merged: dict) -> None:
+    """Recompute one merged entry's aggregates from its runs[], kernel rules.
+
+    Mirrors ``aggregate_trajectories`` + ``_index_row`` exactly: counts are
+    sums; ``success_rate`` is the mean of per-run rates; headline
+    ``elapsed_sec`` is the success-run median, falling back to the all-run
+    median + ``all_failed`` when nothing succeeded; ``n_steps_max`` is the max
+    across runs; entry-level ``time_breakdown_sec`` is the per-segment median
+    over the same use-set (successful runs, else all); error types are
+    first-seen across the runs. Runs are sorted by ``(sandbox_index,
+    round_id)`` like the kernel's index rows.
+    """
+    runs = sorted(merged["runs"], key=lambda r: (_none_last(r.get("sandbox_index")), _none_last(r.get("round_id"))))
+    merged["runs"] = runs
+    success = [r for r in runs if r.get("success_rate") is not None and r["success_rate"] >= 1.0]
+    merged["n_runs"] = len(runs)
+    merged["n_success"] = len(success)
+    merged["n_failed"] = len(runs) - len(success)
+    merged["all_failed"] = bool(runs) and not success
+    rates = [r["success_rate"] for r in runs if r.get("success_rate") is not None]
+    merged["success_rate"] = round(sum(rates) / len(rates), 6) if rates else None
+    use_set = success or runs
+    elapsed = [r["elapsed_sec"] for r in use_set if r.get("elapsed_sec") is not None]
+    merged["elapsed_sec"] = round(_p50(elapsed), 6) if elapsed else None
+    merged["n_steps_max"] = max((r.get("n_steps") or 0 for r in runs), default=0)
+    seg_keys = sorted({k for r in use_set for k in (r.get("time_breakdown_sec") or {})})
+    merged["time_breakdown_sec"] = {
+        k: round(_p50([(r.get("time_breakdown_sec") or {}).get(k, 0.0) for r in use_set]), 6) for k in seg_keys
+    }
+    merged["create_error_type"] = next((r["create_error_type"] for r in runs if r.get("create_error_type")), None)
+    merged["kill_error_type"] = next((r["kill_error_type"] for r in runs if r.get("kill_error_type")), None)
+    merged["file"] = None
+
+
 def merge_trajectory_indexes(catalogs: list[tuple[int, dict]]) -> dict:
     """Merge per-shard catalogs into one trial-level ``index.json`` shape.
 
@@ -541,10 +667,10 @@ def merge_trajectory_indexes(catalogs: list[tuple[int, dict]]) -> dict:
     so the same trajectory appears in several shards) and each run's
     ``sandbox_index`` is re-keyed by the shard's slot offset -- the run
     identity ``(trajectory_id, sandbox_index, round_id)`` stays unique across
-    the merged file, exactly as in a single-process k*N trial. Additive fields
-    (``n_runs``/``n_success``/``n_failed``) are recomputed from the merged
-    runs; the headline ``elapsed_sec`` is the success-run median (same rule as
-    the kernel's aggregate); run-scoped scalars are never inherited.
+    the merged file, exactly as in a single-process k*N trial. Entry-level
+    aggregates are recomputed from the merged runs with the kernel's own rules
+    (:func:`_aggregate_entry`); only true per-trajectory scalars
+    (``action_series`` and friends) are inherited first-non-null.
     """
     by_tid: dict[str, dict] = {}
     for offset, catalog in catalogs:
@@ -552,10 +678,10 @@ def merge_trajectory_indexes(catalogs: list[tuple[int, dict]]) -> dict:
             tid = str(entry.get("trajectory_id"))
             merged = by_tid.setdefault(tid, {"trajectory_id": entry.get("trajectory_id"), "runs": []})
             for key, value in entry.items():
-                if key in ("runs", "trajectory_id") or key in _RUN_SCOPED_KEYS:
+                if key in ("runs", "trajectory_id") or key in _RUN_SCOPED_KEYS or key in _AGGREGATE_KEYS:
                     continue
                 if merged.get(key) is None and value is not None:
-                    merged[key] = value  # first non-null scalar wins (action_series, file, ...)
+                    merged[key] = value  # first non-null scalar wins (action_series, ...)
             runs = entry.get("runs") or _promote_legacy_entry(entry)
             for run in runs:
                 run = dict(run)
@@ -563,14 +689,7 @@ def merge_trajectory_indexes(catalogs: list[tuple[int, dict]]) -> dict:
                     run["sandbox_index"] = run["sandbox_index"] + offset
                 merged["runs"].append(run)
     for merged in by_tid.values():
-        runs = merged["runs"]
-        merged["n_runs"] = len(runs)
-        success = [r for r in runs if r.get("success_rate") is not None and r["success_rate"] >= 1.0]
-        merged["n_success"] = len(success)
-        merged["n_failed"] = len(runs) - len(success)
-        elapsed = [r["elapsed_sec"] for r in success if r.get("elapsed_sec") is not None]
-        if elapsed:
-            merged["elapsed_sec"] = round(statistics.median(elapsed), 6)
+        _aggregate_entry(merged)
     return {
         "n_trajectories": len(by_tid),
         "trajectories": sorted(by_tid.values(), key=lambda e: str(e["trajectory_id"])),

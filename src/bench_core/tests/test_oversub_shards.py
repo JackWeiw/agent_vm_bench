@@ -92,6 +92,24 @@ def test_plan_shards_none_for_single_process_and_offsets_cumulative(tmp_path):
     assert plan.specs[1].log_path == tmp_path / "shard-01" / "driver.log"
 
 
+def test_plan_shards_group_aligned_for_p_le_ratio(tmp_path):
+    # ratio=3, P=2, N=4 -> groups [2,1] -> sizes [8,4]: every shard size is a
+    # multiple of N, so slot k -> pool[k % N] gives exact per-trajectory parity
+    # with a single-process trial (same run counts per trajectory, not just totals).
+    plan = plan_shards(trial_dir=tmp_path, mode="exec_ephemeral", ratio=3, n=4, setting=2)
+    assert [s.size for s in plan.specs] == [8, 4]
+    assert [s.slot_offset for s in plan.specs] == [0, 8]
+
+
+def test_plan_shards_slot_level_with_warning_for_p_gt_ratio(tmp_path, caplog):
+    # P > ratio: shards fall below the pool -> slot-level split, totals
+    # preserved but per-trajectory counts redistribute; must warn.
+    plan = plan_shards(trial_dir=tmp_path, mode="exec_ephemeral", ratio=2, n=4, setting=4)
+    assert [s.size for s in plan.specs] == [2, 2, 2, 2]
+    assert [s.slot_offset for s in plan.specs] == [0, 2, 4, 6]
+    assert any("redistribute" in r.getMessage() for r in caplog.records)
+
+
 # ---------------------------------------------------------------------------
 # Per-shard config + command
 # ---------------------------------------------------------------------------
@@ -128,6 +146,18 @@ def test_build_shard_config_scales_launch_interval_to_preserve_global_rate(tmp_p
     cfg_in["replay"]["launch_interval_sec"] = 0.5
     cfg = build_shard_config(cfg_in, plan.specs[0], count=plan.count)
     assert cfg["replay"]["launch_interval_sec"] == pytest.approx(1.5)  # P * interval
+
+
+def test_build_shard_config_scales_batch_intervals_to_preserve_global_rate(tmp_path):
+    # P independently-pacing shards would otherwise create/dispatch at P x the
+    # global rate: create_batch/task_batch intervals scale by P too.
+    plan = plan_shards(trial_dir=tmp_path, mode="exec_ephemeral", ratio=2, n=4, setting="auto")
+    cfg_in = _trial_cfg()
+    cfg_in["create_batch"] = {"interval": 1}
+    cfg_in["task_batch"] = {"interval": 2}
+    cfg = build_shard_config(cfg_in, plan.specs[0], count=plan.count)
+    assert cfg["create_batch"]["interval"] == 2
+    assert cfg["task_batch"]["interval"] == 4
 
 
 def test_write_shard_configs_materializes_one_yaml_per_shard(tmp_path):
@@ -195,7 +225,16 @@ def _plan2(tmp_path):
 def test_merge_run_summaries_counts_sum_rates_recompute_span_envelope(tmp_path):
     plan = _plan2(tmp_path)
     s0 = _shard_summary()
-    s1 = _shard_summary(started_epoch=1005.0, started_at="2026-10-30T10:00:05+08:00", wall_sec=1075.0)
+    # s1 starts late AND finishes last: envelope (1000..2085) = 1085 differs
+    # from max-of-shard-walls (1080) -- the merged wall must be the envelope,
+    # matching the kernel's wall_sec == completed_epoch - started_epoch.
+    s1 = _shard_summary(
+        started_epoch=1005.0,
+        started_at="2026-10-30T10:00:05+08:00",
+        completed_epoch=2085.0,
+        completed_at="2026-10-30T10:18:05+08:00",
+        wall_sec=1075.0,
+    )
     artifacts = ShardArtifacts(summaries=[s0, s1], summary_paths=["/a.json", "/b.json"])
     result = GroupResult(returncodes=[0, 0], interrupted=False, timed_out=False)
     merged = merge_run_summaries([s0, s1], plan=plan, artifacts=artifacts, result=result)
@@ -203,12 +242,12 @@ def test_merge_run_summaries_counts_sum_rates_recompute_span_envelope(tmp_path):
     assert merged["throughput"]["total"] == 16
     assert merged["throughput"]["succeeded"] == 16
     assert merged["throughput"]["total_steps"] == 80
-    assert merged["wall_sec"] == 1080.0  # max across concurrent shards
-    # rates recomputed over the merged wall, NOT summed per-shard rates
-    assert merged["throughput"]["tasks_per_sec"] == round(16 / 1080.0, 3)
-    assert merged["throughput"]["steps_per_sec"] == round(80 / 1080.0, 3)
+    assert merged["wall_sec"] == 1085.0  # envelope: max(completed) - min(started)
+    # rates recomputed over the envelope wall, NOT summed per-shard rates
+    assert merged["throughput"]["tasks_per_sec"] == round(16 / 1085.0, 3)
+    assert merged["throughput"]["steps_per_sec"] == round(80 / 1085.0, 3)
     assert merged["started_epoch"] == 1000.0 and merged["started_at"] == s0["started_at"]
-    assert merged["completed_epoch"] == 2080.0
+    assert merged["completed_epoch"] == 2085.0 and merged["completed_at"] == s1["completed_at"]
     assert merged["shard_start_skew_sec"] == 5.0
     assert merged["total_count"] == 8  # k*N echo restored
     assert merged["overcommit_ratio"] == 2.0  # 8 slots / N=4
@@ -216,6 +255,18 @@ def test_merge_run_summaries_counts_sum_rates_recompute_span_envelope(tmp_path):
     assert merged["error"] is None
     assert merged["shard_count"] == 2 and merged["shard_return_codes"] == [0, 0]
     assert merged["shard_run_summaries"] == ["/a.json", "/b.json"]
+
+
+def test_merge_run_summaries_span_falls_back_to_max_wall_without_epochs(tmp_path):
+    plan = _plan2(tmp_path)
+    s0 = _shard_summary(started_epoch=None, completed_epoch=None, wall_sec=1080.0)
+    s1 = _shard_summary(started_epoch=None, completed_epoch=None, wall_sec=900.0)
+    artifacts = ShardArtifacts(summaries=[s0, s1], summary_paths=["/a.json", "/b.json"])
+    result = GroupResult(returncodes=[0, 0], interrupted=False, timed_out=False)
+    merged = merge_run_summaries([s0, s1], plan=plan, artifacts=artifacts, result=result)
+    assert merged["wall_sec"] == 1080.0  # partially-flushed shard: max wall fallback
+    assert merged["started_epoch"] is None and merged["completed_epoch"] is None
+    assert merged["throughput"]["tasks_per_sec"] == round(16 / 1080.0, 3)
 
 
 def test_merge_run_summaries_missing_and_failed_shards_surface_in_error(tmp_path):
@@ -245,7 +296,13 @@ def test_group_result_interrupt_maps_to_130():
     assert GroupResult([0, 0], interrupted=False, timed_out=False).trial_return_code() == 0
 
 
-def _catalog(sandbox_index: int, *, runs_shape: bool = True) -> dict:
+def _catalog(
+    sandbox_index: int,
+    *,
+    runs_shape: bool = True,
+    run_over: dict | None = None,
+    entry_over: dict | None = None,
+) -> dict:
     run = {
         "sandbox_index": sandbox_index,
         "round_id": 0,
@@ -258,11 +315,27 @@ def _catalog(sandbox_index: int, *, runs_shape: bool = True) -> dict:
         "create_error_type": None,
         "kill_error_type": None,
     }
+    run.update(run_over or {})
     entry = {"trajectory_id": "t0", "action_series": "echo hi", "file": "t0/replay_result.json"}
     if runs_shape:
-        entry.update({"n_runs": 1, "n_success": 1, "n_failed": 0, "elapsed_sec": 3.0, "runs": [run]})
+        entry.update(
+            {
+                "n_runs": 1,
+                "n_success": 1,
+                "n_failed": 0,
+                "success_rate": run["success_rate"],
+                "elapsed_sec": run["elapsed_sec"],
+                "all_failed": False,
+                "n_steps_max": run["n_steps"],
+                "time_breakdown_sec": dict(run["time_breakdown_sec"]),
+                "create_error_type": run["create_error_type"],
+                "kill_error_type": run["kill_error_type"],
+                "runs": [run],
+            }
+        )
     else:
         entry.update(run)  # legacy flat shape: the entry IS the run
+    entry.update(entry_over or {})
     return {"n_trajectories": 1, "trajectories": [entry]}
 
 
@@ -275,6 +348,70 @@ def test_merge_trajectory_indexes_groups_by_tid_and_offsets_sandbox_index():
     assert [r["sandbox_index"] for r in entry["runs"]] == [0, 4]  # run keys stay unique
     assert entry["action_series"] == "echo hi"  # scalar inherited once
     assert entry.get("sandbox_index") is None  # run-scoped keys never leak to entry scalars
+    assert entry["file"] is None  # deep replay_result.json stays per-shard; no dead link
+
+
+def test_merge_trajectory_indexes_recomputes_entry_aggregates_with_kernel_rules():
+    # shard 0: t0 succeeds (elapsed 10.0). shard 1: t0 fails at create.
+    # The merged entry must describe the FULL run set, not shard 0's subset.
+    ok = _catalog(0, run_over={"elapsed_sec": 10.0})
+    bad = _catalog(
+        0,
+        run_over={
+            "success_rate": 0.0,
+            "n_steps": 0,
+            "elapsed_sec": None,
+            "time_breakdown_sec": {"create": 30.0},
+            "create_error_type": "timeout",
+        },
+        entry_over={
+            "success_rate": 0.0,
+            "n_success": 0,
+            "n_failed": 1,
+            "all_failed": True,
+            "elapsed_sec": None,
+            "create_error_type": "timeout",
+            "time_breakdown_sec": {"create": 30.0},
+        },
+    )
+    merged = merge_trajectory_indexes([(0, ok), (4, bad)])
+    e = merged["trajectories"][0]
+    assert e["n_runs"] == 2 and e["n_success"] == 1 and e["n_failed"] == 1
+    assert e["all_failed"] is False
+    assert e["success_rate"] == 0.5  # mean of per-run rates, NOT shard 0's inherited 1.0
+    assert e["elapsed_sec"] == 10.0  # success-only p50 (the failing run's None is excluded)
+    assert e["create_error_type"] == "timeout"  # first-seen across ALL shards' runs
+    assert e["n_steps_max"] == 2
+    # breakdown p50 over the success use-set only (kernel rule)
+    assert e["time_breakdown_sec"] == {"exec": 1.0}
+    assert [r["sandbox_index"] for r in e["runs"]] == [0, 4]  # sorted by (sandbox_index, round_id)
+
+
+def test_merge_trajectory_indexes_all_failed_falls_back_to_all_runs():
+    f1 = _catalog(
+        0,
+        run_over={"success_rate": 0.0, "elapsed_sec": 4.0},
+        entry_over={"success_rate": 0.0, "n_success": 0, "n_failed": 1, "all_failed": True, "elapsed_sec": 4.0},
+    )
+    f2 = _catalog(
+        0,
+        run_over={"success_rate": 0.0, "elapsed_sec": 8.0},
+        entry_over={"success_rate": 0.0, "n_success": 0, "n_failed": 1, "all_failed": True, "elapsed_sec": 8.0},
+    )
+    merged = merge_trajectory_indexes([(0, f1), (4, f2)])
+    e = merged["trajectories"][0]
+    assert e["all_failed"] is True and e["n_success"] == 0 and e["n_failed"] == 2
+    assert e["success_rate"] == 0.0
+    assert e["elapsed_sec"] == 8.0  # all-runs fallback, kernel upper-median p50 (NOT the 6.0 mean)
+
+
+def test_merge_trajectory_indexes_elapsed_p50_is_upper_median_like_kernel():
+    # kernel calc_percentiles p50 = sorted[n//2]: for 2 runs (10.0, 12.0) it is
+    # 12.0, not statistics.median's 11.0 -- k=2 is the common multiplier case.
+    a = _catalog(0, run_over={"elapsed_sec": 10.0})
+    b = _catalog(0, run_over={"elapsed_sec": 12.0})
+    merged = merge_trajectory_indexes([(0, a), (4, b)])
+    assert merged["trajectories"][0]["elapsed_sec"] == 12.0
 
 
 def test_merge_trajectory_indexes_promotes_legacy_flat_entries():
