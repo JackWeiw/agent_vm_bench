@@ -590,8 +590,10 @@ def merge_run_summaries(
         "admission": _merged_admission(present),
         "lifecycle_overhead": _merged_lifecycle_overhead(present),
         "paths": {
-            # The real txt/xlsx/series artifacts live under shard_dirs (per-shard
-            # run dirs); no driver consumer reads these three merged keys.
+            # The real txt/xlsx artifacts live under shard_dirs (per-shard run
+            # dirs); no driver consumer reads these two merged keys. The series
+            # is concatenated fleet-wide (merge_lifecycle_series) and patched
+            # in by the driver.
             "report": None,
             "obs_xlsx": None,
             "lifecycle_series": None,
@@ -695,6 +697,47 @@ def merge_trajectory_indexes(catalogs: list[tuple[int, dict]]) -> dict:
         "trajectories": sorted(by_tid.values(), key=lambda e: str(e["trajectory_id"])),
         "merged_from_shards": len(catalogs),
     }
+
+
+def merge_lifecycle_series(summaries: list[dict], plan: ShardPlan, merged_dir: Path, prefix: str) -> Path | None:
+    """Concatenate the shards' lifecycle series into one trial-level JSONL.
+
+    Without this a sharded trial has no fleet-wide series, and tools measuring
+    inflight concurrency from it would see ONE shard (peak capped at N) --
+    incomparable with the single-process series of a k*N trial. Each event's
+    ``sandbox_index`` is re-keyed by the shard's slot offset (same rule as the
+    merged index) so per-sandbox reconstruction never conflates two shards'
+    sandboxes; consumers then work off event ``timestamp`` (the kernel's own
+    writer ordering is burst-coalesced, not sorted), so a plain concat is
+    contract-faithful. Returns ``None`` when no shard wrote a series.
+    """
+    out = merged_dir / f"{prefix}_lifecycle_series.jsonl"
+    merged_dir.mkdir(parents=True, exist_ok=True)
+    written = 0
+    with open(out, "w", encoding="utf-8") as dst:
+        for spec, summary in zip(plan.specs, summaries):
+            if summary is None:
+                continue
+            src = (summary.get("paths") or {}).get("lifecycle_series")
+            if not src or not Path(src).exists():
+                continue
+            try:
+                with open(src, encoding="utf-8") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        try:
+                            event = json.loads(line)
+                        except ValueError:
+                            logger.warning("dropping malformed series line from %s", src)
+                            continue
+                        if event.get("sandbox_index") is not None:
+                            event["sandbox_index"] += spec.slot_offset
+                        dst.write(json.dumps(event) + "\n")
+                        written += 1
+            except OSError as exc:
+                logger.warning("shard series %s unreadable (%s); merged series is partial", src, exc)
+    return out if written else None
 
 
 def write_merged_artifacts(

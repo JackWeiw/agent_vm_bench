@@ -25,6 +25,7 @@ from bench_core.oversub_shards import (
     build_shard_command,
     build_shard_config,
     coerce_shards,
+    merge_lifecycle_series,
     merge_run_summaries,
     merge_trajectory_indexes,
     plan_shards,
@@ -433,6 +434,31 @@ def test_write_merged_artifacts_fixed_path_and_index_patching(tmp_path):
     assert (tmp_path / "merged" / "trajectories" / "index.json").exists()
 
 
+def _series(path: Path, n: int) -> Path:
+    path.write_text(
+        "".join(json.dumps({"event": "step", "sandbox_index": i, "timestamp": 1000.0 + i}) + "\n" for i in range(n)),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_merge_lifecycle_series_concats_and_rekeys_all_shards(tmp_path):
+    # Fleet-wide inflight analysis needs every shard's events with re-keyed
+    # sandbox_index; shard-local keys would conflate sandboxes across shards
+    # (and reading one shard caps the observed peak at N -- the T2 misread).
+    plan = _plan2(tmp_path)  # sizes [4, 4] -> offsets [0, 4]
+    s0 = {"paths": {"lifecycle_series": str(_series(tmp_path / "a.jsonl", 2))}}
+    s1 = {"paths": {"lifecycle_series": str(_series(tmp_path / "b.jsonl", 3))}}
+    gone = {"paths": {"lifecycle_series": str(tmp_path / "gone.jsonl")}}  # missing file skipped
+    out = merge_lifecycle_series([s0, s1, gone, None, {"paths": {}}], plan, tmp_path / "merged", "rb")
+    assert out == tmp_path / "merged" / "rb_lifecycle_series.jsonl"
+    events = [json.loads(x) for x in out.read_text(encoding="utf-8").splitlines() if x.strip()]
+    assert len(events) == 5
+    assert [e["sandbox_index"] for e in events[:2]] == [0, 1]  # shard 0: offset 0
+    assert [e["sandbox_index"] for e in events[2:]] == [4, 5, 6]  # shard 1: offset 4
+    assert merge_lifecycle_series([None, {"paths": {}}], plan, tmp_path / "m2", "rb") is None
+
+
 # ---------------------------------------------------------------------------
 # Group supervision (real subprocesses, stdlib-only payloads)
 # ---------------------------------------------------------------------------
@@ -490,7 +516,8 @@ summary = {
   "throughput": {"total": total * m, "succeeded": total * m, "failed": 0,
                  "total_steps": 10 * m, "steps_per_sec": 0.01, "tasks_per_sec": 0.7},
   "admission": None, "lifecycle_overhead": None,
-  "paths": {"report": None, "obs_xlsx": None, "lifecycle_series": None,
+  "paths": {"report": None, "obs_xlsx": None,
+            "lifecycle_series": str(run_dir / (pfx + "_lifecycle_series.jsonl")),
             "trajectory_index": None, "vm_monitor_dir": None},
   "error": None,
 }
@@ -504,6 +531,8 @@ idx = {"n_trajectories": 1, "trajectories": [
   {"trajectory_id": "t0", "n_runs": 1, "n_success": 1, "n_failed": 0, "elapsed_sec": 1.0,
    "action_series": "echo hi", "file": "t0/replay_result.json", "runs": [run]}]}
 (run_dir / "trajectories" / "index.json").write_text(json.dumps(idx, indent=2) + "\\n")
+series = [{"event": "step", "sandbox_index": i, "timestamp": 1000.0 + i} for i in range(2)]
+(run_dir / f"{pfx}_lifecycle_series.jsonl").write_text("".join(json.dumps(e) + "\\n" for e in series))
 """
 
 
@@ -580,6 +609,15 @@ def test_e2e_sharded_trial_merges_into_contract_artifacts(tmp_path):
     assert merged["throughput"]["succeeded"] == 16  # M*k*N = 2*2*4
     assert merged["throughput"]["total"] == 16
     assert merged["total_count"] == 8  # k*N echo
+
+    # Fleet-wide merged series: both shards' events, sandbox_index re-keyed by
+    # slot offset (shard 1's local 0/1 -> 4/5); inflight analysis must not be
+    # capped at one shard's N slots nor conflate cross-shard sandboxes.
+    series = trial_dir / "merged" / "rb_lifecycle_series.jsonl"
+    events = [json.loads(x) for x in series.read_text(encoding="utf-8").splitlines() if x.strip()]
+    assert len(events) == 4  # 2 shards x 2 events
+    assert sorted(e["sandbox_index"] for e in events) == [0, 1, 4, 5]
+    assert merged["paths"]["lifecycle_series"] == str(series)
 
     # Driver outputs see ONE trial row, valid, keyed to the merged artifacts.
     with open(out_root / "trial-summary.csv", newline="", encoding="utf-8") as f:

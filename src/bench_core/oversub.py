@@ -45,6 +45,7 @@ from bench_core.oversub_shards import (
     build_shard_command,
     coerce_shards,
     collect_shard_artifacts,
+    merge_lifecycle_series,
     merge_run_summaries,
     merge_trajectory_indexes,
     plan_shards,
@@ -1155,6 +1156,12 @@ def _run_sharded_trial(
     else:
         merged_index = merge_trajectory_indexes(artifacts.catalogs) if artifacts.catalogs else None
         summary = merge_run_summaries(artifacts.summaries, plan=plan, artifacts=artifacts, result=result)
+        # Fleet-wide lifecycle series: concat the per-shard JSONLs so inflight-
+        # concurrency analysis sees all k*N slots (not one shard's N). Must run
+        # before write_merged_artifacts, which serializes `summary`.
+        series = merge_lifecycle_series(artifacts.summaries, plan, trial_dir / "merged", prefix)
+        if series is not None:
+            summary.setdefault("paths", {})["lifecycle_series"] = str(series)
         run_summary_path = str(write_merged_artifacts(trial_dir, prefix, summary, merged_index))
 
     valid = compute_valid(
