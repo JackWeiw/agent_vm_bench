@@ -3,8 +3,9 @@
 Reads the always-on raw /proc + per-VM + per-disk CSV dumps and derives rates
 via delta (reusing base._compute_pressure_rates + base._compute_disk_io_rates).
 Pure file input -- does not depend on in-memory history, post-hoc rerunnable.
-The xlsx assembly (build_host_resources_xlsx: 3 spotbox-style sheets with
-openpyxl LineCharts) reuses the derived DataFrames above. All derivation is
+The xlsx assembly (build_host_resources_xlsx: Host resources / Per-VM /
+Disk IO / HostProc sheets, each a data table + openpyxl LineCharts) reuses the
+derived DataFrames above. All derivation is
 delta-based on persistent cumulative counters -- pure file input, post-hoc
 rerunnable, independent of in-memory history and of resource_report.xlsx.
 """
@@ -40,6 +41,34 @@ MAX_VM_SERIES = 8  # per-VM chart series cap (Excel render perf); used in Task 3
 # must NOT trip the reset guard, else busy-disk intervals get NaN-holed.
 _DISK_GUARD_FIELDS = tuple(f for f in _DISK_FIELDS if f != "inflight")
 
+# Per-device depth/latency metrics _compute_disk_io_rates derives on top of the
+# r/w/util trio (mirrors resource_report's Disk_IO_Timeline columns).
+_DISK_DEPTH_FIELDS = (
+    "inflight",
+    "avg_queue_depth",
+    "read_await_ms",
+    "write_await_ms",
+    "r_iops",
+    "w_iops",
+    "avg_rq_sz",
+)
+
+# Disk IO display labels, keyed by df-column suffix ("<device>_<field>"). Keeps
+# the table header + chart legend readable ("sda Read (MB/s)") while the df
+# keeps the suffix names the chart column matcher and downstream readers expect.
+_DISK_FIELD_LABELS = {
+    "r_mb_s": "Read (MB/s)",
+    "w_mb_s": "Write (MB/s)",
+    "util_pct": "Util (%)",
+    "inflight": "Inflight",
+    "avg_queue_depth": "Queue depth",
+    "read_await_ms": "Read await (ms)",
+    "write_await_ms": "Write await (ms)",
+    "r_iops": "Read IOPS",
+    "w_iops": "Write IOPS",
+    "avg_rq_sz": "Avg rq sz (sectors)",
+}
+
 _MEMINFO_MB_PER_GIB = 1024  # host_mem_raw.csv holds MB (_read_meminfo converts kB->MB); /1024 -> GiB
 
 _VMSTAT_FIELDS = [
@@ -70,6 +99,13 @@ def _f(d: dict, k: str) -> float:
         return float(v)
     except (TypeError, ValueError):
         return math.nan
+
+
+def _gauge_int(d: dict, k: str):
+    """Instantaneous count cell as an int (NaN when absent/unparseable), so a
+    gauge column (procs_running/blocked) never renders as '3.0' in the xlsx."""
+    v = _f(d, k)
+    return math.nan if math.isnan(v) else int(v)
 
 
 def _ts_to_epoch(series: pd.Series) -> pd.Series:
@@ -243,6 +279,10 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
             "mem_cache_gb",
             "buffers_mb",
             "dirty_mb",
+            "writeback_mb",
+            "sreclaimable_mb",
+            "anon_pages_mb",
+            "file_cache_mb",
             "swap_in_mib_s",
             "swap_out_mib_s",
             "page_scan_mib_s",
@@ -254,6 +294,8 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
             "vm_cores",
             "fc_pss_gb",
             "concurrent_vms",
+            "procs_running",
+            "procs_blocked",
         )
     }
 
@@ -305,9 +347,34 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
             out["mem_cache_gb"].append((_f(md, "Cached") + _f(md, "SReclaimable")) / _MEMINFO_MB_PER_GIB)
             out["buffers_mb"].append(_f(md, "Buffers"))
             out["dirty_mb"].append(_f(md, "Dirty"))
+            out["writeback_mb"].append(_f(md, "Writeback"))
+            out["sreclaimable_mb"].append(_f(md, "SReclaimable"))
+            out["anon_pages_mb"].append(_f(md, "AnonPages"))
+            # Same definition as base.collect_host_pressure: page cache excludes
+            # tmpfs pages (Shmem is already counted in Cached) and adds Buffers.
+            # Missing Shmem (older CSV) -> 0, not NaN -- one absent field must
+            # not blank the whole column.
+            _shmem = _f(md, "Shmem")
+            _fc = _f(md, "Cached") + _f(md, "Buffers") - (0.0 if math.isnan(_shmem) else _shmem)
+            # Clamp only a real negative (rounding); max(0.0, nan) would silently
+            # turn an absent Cached/Buffers into a 0 MB "file cache" line.
+            out["file_cache_mb"].append(math.nan if math.isnan(_fc) else max(0.0, _fc))
         else:
-            for k in ("mem_used_gb", "mem_cache_gb", "buffers_mb", "dirty_mb"):
+            for k in (
+                "mem_used_gb",
+                "mem_cache_gb",
+                "buffers_mb",
+                "dirty_mb",
+                "writeback_mb",
+                "sreclaimable_mb",
+                "anon_pages_mb",
+                "file_cache_mb",
+            ):
                 out[k].append(math.nan)
+        # procs_running/blocked are gauges from the same /proc/stat row as the
+        # cpu deltas (row i, not a delta). int cells: a count, not a rate.
+        out["procs_running"].append(_gauge_int(cur_c, "procs_running"))
+        out["procs_blocked"].append(_gauge_int(cur_c, "procs_blocked"))
         if vmstat is not None and i < len(vmstat):
             cur_v, prev_v = vmstat.iloc[i].to_dict(), vmstat.iloc[i - 1].to_dict()
             if _guarded(cur_v, prev_v, dt, "host_vmstat", _VMSTAT_FIELDS):
@@ -460,10 +527,11 @@ def _derive_per_vm(raw_dir: Path, max_series: int = MAX_VM_SERIES) -> tuple[pd.D
 
 
 def _derive_disk(raw_dir: Path) -> pd.DataFrame:
-    """Per-device r/w MB/s + util% via base._compute_disk_io_rates. long CSV ->
-    {ts: {dev: {field}}}; consecutive ts snapshots -> rates, with a per-device
-    counter-reset guard (cur<prev -> NaN for that dev that interval, no
-    negative spike on device remount)."""
+    """Per-device throughput / util / depth via base._compute_disk_io_rates. long
+    CSV -> {ts: {dev: {field}}}; consecutive ts snapshots -> rates, with a
+    per-device counter-reset guard (cur<prev -> NaN for that dev that interval,
+    no negative spike on device remount). Depth columns (queue depth, await,
+    IOPS, avg rq size) come from the same delta and share the guard."""
     disk = _read_csv(raw_dir, "disk_io_raw.csv")
     if disk is None or disk.empty:
         return pd.DataFrame()
@@ -474,16 +542,22 @@ def _derive_disk(raw_dir: Path) -> pd.DataFrame:
         snaps[ts] = {r["device"]: {f: r[f] for f in _DISK_FIELDS} for _, r in g.iterrows()}
     ts_sorted = sorted(snaps)
     devs = sorted({dev for s in snaps.values() for dev in s})
+    rate_fields = ("r_mb_s", "w_mb_s", "util_pct", *_DISK_DEPTH_FIELDS)
     cols = {}
     for dev in devs:
-        cols[f"{dev}_r_mb_s"] = [math.nan]
-        cols[f"{dev}_w_mb_s"] = [math.nan]
-        cols[f"{dev}_util_pct"] = [math.nan]
+        for sfx in rate_fields:
+            cols[f"{dev}_{sfx}"] = [math.nan]
+    # inflight is an instantaneous gauge, not a delta: it is already meaningful
+    # on the very first sample (no baseline needed) and stays valid across a
+    # counter reset. Seed row 0 from the first snapshot.
+    if ts_sorted:
+        for dev, snap in snaps[ts_sorted[0]].items():
+            cols[f"{dev}_inflight"][0] = _f(snap, "inflight")
     for i in range(1, len(ts_sorted)):
         cur_ts, prev_ts = ts_sorted[i], ts_sorted[i - 1]
         dt = cur_ts - prev_ts
         for dev in devs:
-            for sfx in ("r_mb_s", "w_mb_s", "util_pct"):
+            for sfx in rate_fields:
                 cols[f"{dev}_{sfx}"].append(math.nan)
         cur_snap, prev_snap = snaps[cur_ts], snaps[prev_ts]
         # per-dev reset guard, then reuse base compute (single-dev dict).
@@ -491,7 +565,11 @@ def _derive_disk(raw_dir: Path) -> pd.DataFrame:
         # a gauge and is read as such by _compute_disk_io_rates, so a normal drop
         # must not NaN-hole the interval. Inject timestamp for the WARNING log.
         for dev in devs:
-            if dev not in cur_snap or dev not in prev_snap:
+            if dev not in cur_snap:
+                continue
+            # gauge: valid even when the counters below cannot be diffed
+            cols[f"{dev}_inflight"][-1] = _f(cur_snap[dev], "inflight")
+            if dev not in prev_snap:
                 continue
             if _guarded(
                 {"timestamp": cur_ts, **cur_snap[dev]},
@@ -502,9 +580,8 @@ def _derive_disk(raw_dir: Path) -> pd.DataFrame:
             ):
                 continue
             rates = _compute_disk_io_rates({dev: cur_snap[dev]}, {dev: prev_snap[dev]}, dt)[dev]
-            cols[f"{dev}_r_mb_s"][-1] = rates["r_mb_s"]
-            cols[f"{dev}_w_mb_s"][-1] = rates["w_mb_s"]
-            cols[f"{dev}_util_pct"][-1] = rates["util_pct"]
+            for sfx in rate_fields:
+                cols[f"{dev}_{sfx}"][-1] = rates[sfx]
     df = pd.DataFrame(cols)
     df.insert(0, "t_s", [0.0] + [ts_sorted[i] - ts_sorted[0] for i in range(1, len(ts_sorted))])
     return df
@@ -517,6 +594,12 @@ _HEADER_FONT = Font(bold=True, color="F9FAFB")
 # the PSS block past the cores chart's right edge so the two side-by-side blocks
 # (horizontal layout) don't overlap.
 _CHART_COL_FOOTPRINT = 10
+
+# Vertical pitch between stacked charts: chart height is 8 cm (~= 15 default
+# 15pt rows), so 18 rows leaves a 3-row gap and never overlaps. Every stacked
+# chart on a sheet uses this pitch -- a hand-picked anchor per chart is how the
+# Host resources pressure charts ended up separated from their memory siblings.
+_CHART_ROW_STEP = 18
 
 
 def _put_row(ws, row, values, header=False, start_col=1):
@@ -545,16 +628,22 @@ def _write_table(ws, df, headers, cols=None):
     return r - 1  # last data row
 
 
-def _add_line_chart(ws, title, y_title, cat_col, data_cols, header_row, n_data_rows, anchor):
+def _add_line_chart(ws, title, y_title, cat_col, data_cols, header_row, n_data_rows, anchor, legend_pos=None):
     """openpyxl LineChart bound to worksheet cells (spotbox style). ``header_row``
     carries the series names (titles_from_data); data occupies header_row+1 ..
-    header_row+n_data_rows. X axis = cat_col (t (s)). Stacked vertically via anchor."""
+    header_row+n_data_rows. X axis = cat_col (t (s)). Stacked vertically via anchor.
+
+    ``legend_pos`` is an openpyxl legend position ("b" = bottom). Left at the
+    Excel default (right) unless the series names are long prose labels, where a
+    right-side legend gets clipped at the 16 cm frame edge."""
     ch = LineChart()
     ch.title = title
     ch.y_axis.title = y_title
     ch.x_axis.title = "t (s)"
     ch.height = 8
     ch.width = 16
+    if legend_pos:
+        ch.legend.position = legend_pos
     last = header_row + n_data_rows
     for col in data_cols:
         ch.add_data(Reference(ws, min_col=col, min_row=header_row, max_row=last), titles_from_data=True)
@@ -580,6 +669,10 @@ def _build_host_sheet(wb, df):
         ("mem_cache_gb", "Mem cache (GB)"),
         ("buffers_mb", "Buffers (MB)"),
         ("dirty_mb", "Dirty (MB)"),
+        ("writeback_mb", "Writeback (MB)"),
+        ("anon_pages_mb", "Anon pages (MB)"),
+        ("file_cache_mb", "File cache (MB)"),
+        ("sreclaimable_mb", "SReclaimable (MB)"),
         ("swap_in_mib_s", "Swap in (MiB/s)"),
         ("swap_out_mib_s", "Swap out (MiB/s)"),
         ("page_scan_mib_s", "Page scan (MiB/s)"),
@@ -591,6 +684,8 @@ def _build_host_sheet(wb, df):
         ("direct_reclaim_mib_s", "Direct reclaim (MiB/s)"),
         ("allocstall_per_s", "Alloc stalls (/s)"),
         ("concurrent_vms", "Concurrent VMs"),
+        ("procs_running", "Procs running"),
+        ("procs_blocked", "Procs blocked"),
     ]
     cols, headers = zip(*col_labels)
     _write_table(ws, df, list(headers), cols=list(cols))
@@ -601,38 +696,46 @@ def _build_host_sheet(wb, df):
     pos = {name: i + 1 for i, (name, _) in enumerate(col_labels)}
     anchor = get_column_letter(len(headers) + 2)
     n = len(df)
-    _add_line_chart(ws, "Host memory", "GB", 1, (pos["mem_used_gb"], pos["mem_cache_gb"]), 1, n, f"{anchor}2")
-    _add_line_chart(ws, "Host buffers/dirty", "MB", 1, (pos["buffers_mb"], pos["dirty_mb"]), 1, n, f"{anchor}20")
-    _add_line_chart(ws, "FC memory (total PSS)", "GB", 1, (pos["fc_pss_gb"],), 1, n, f"{anchor}38")
-    # Host CPU: busy (total non-idle) decomposed into iowait + user + sys so the
-    # reader sees both the aggregate and its breakdown on one axis.
-    _add_line_chart(
-        ws,
-        "Host CPU",
-        "%",
-        1,
-        (pos["cpu_busy_pct"], pos["cpu_iowait_pct"], pos["cpu_user_pct"], pos["cpu_sys_pct"]),
-        1,
-        n,
-        f"{anchor}56",
-    )
-    _add_line_chart(
-        ws,
-        "Page-cache pressure",
-        "MiB/s",
-        1,
-        (pos["page_scan_mib_s"], pos["page_reclaim_mib_s"], pos["file_refault_mib_s"]),
-        1,
-        n,
-        f"{anchor}74",
-    )
-    _add_line_chart(ws, "Swap in/out", "MiB/s", 1, (pos["swap_in_mib_s"], pos["swap_out_mib_s"]), 1, n, f"{anchor}92")
-    _add_line_chart(ws, "CPU cores (ublk + VM)", "cores", 1, (pos["ublk_cores"], pos["vm_cores"]), 1, n, f"{anchor}110")
-    # Alloc stalls (/s) is the headline "blocked on reclaim" counter (count of
-    # allocation requests that stalled). Direct reclaim is the blocking subset
-    # of page-scan, left as a column only.
-    _add_line_chart(ws, "Alloc stalls", "/s", 1, (pos["allocstall_per_s"],), 1, n, f"{anchor}128")
-    _add_line_chart(ws, "Concurrent VMs", "count", 1, (pos["concurrent_vms"],), 1, n, f"{anchor}146")
+    # Charts read top-down in three blocks -- host memory (composition, then
+    # reclaimable vs unreclaimable), memory pressure (the same phenomenon:
+    # scan/reclaim/refault -> blocking stalls -> swap), then CPU/fleet. Kept in
+    # one list so the 18-row pitch is uniform by construction (8cm chart ~= 15
+    # default rows + 3-row gap; an explicit anchor per call is how the
+    # pressure and memory charts drifted apart before).
+    charts = [
+        # -- memory composition -------------------------------------------------
+        ("Host memory", "GB", (pos["mem_used_gb"], pos["mem_cache_gb"])),
+        # MB-scale page-cache signals share one axis; the GB-scale used/cache
+        # pair sits above (a mixed axis squashes the MB series onto zero).
+        ("Buffers / dirty / writeback", "MB", (pos["buffers_mb"], pos["dirty_mb"], pos["writeback_mb"])),
+        # Anon pages are unreclaimable (only swappable) -- the counterpart to the
+        # reclaimable file cache/slab, so "cache too small" vs "memory exhausted"
+        # reads directly off one chart.
+        ("Anon vs file cache", "MB", (pos["anon_pages_mb"], pos["file_cache_mb"], pos["sreclaimable_mb"])),
+        ("FC memory (total PSS)", "GB", (pos["fc_pss_gb"],)),
+        # -- memory pressure ----------------------------------------------------
+        (
+            "Page-cache pressure",
+            "MiB/s",
+            (pos["page_scan_mib_s"], pos["page_reclaim_mib_s"], pos["file_refault_mib_s"]),
+        ),
+        # Alloc stalls is the headline "blocked on reclaim" counter; direct
+        # reclaim is its blocking-subset detail, left as a column only.
+        ("Alloc stalls", "/s", (pos["allocstall_per_s"],)),
+        ("Swap in/out", "MiB/s", (pos["swap_in_mib_s"], pos["swap_out_mib_s"])),
+        # -- CPU / fleet --------------------------------------------------------
+        # busy (total non-idle) decomposed into iowait + user + sys on one axis.
+        (
+            "Host CPU",
+            "%",
+            (pos["cpu_busy_pct"], pos["cpu_iowait_pct"], pos["cpu_user_pct"], pos["cpu_sys_pct"]),
+        ),
+        ("CPU cores (ublk + VM)", "cores", (pos["ublk_cores"], pos["vm_cores"])),
+        ("Procs running/blocked", "count", (pos["procs_running"], pos["procs_blocked"])),
+        ("Concurrent VMs", "count", (pos["concurrent_vms"],)),
+    ]
+    for i, (title, unit, data_cols) in enumerate(charts):
+        _add_line_chart(ws, title, unit, 1, data_cols, 1, n, f"{anchor}{2 + i * _CHART_ROW_STEP}")
 
 
 def _build_per_vm_sheet(wb, cores_df, pss_df):
@@ -661,20 +764,50 @@ def _build_per_vm_sheet(wb, cores_df, pss_df):
     _add_line_chart(ws, "Per-VM PSS", "GB", 1, pss_cols, pss_hdr, len(pss_df), f"{anchor}{pss_anchor_row}")
 
 
+def _disk_display_header(col: str) -> str:
+    """df column -> readable sheet header / chart legend ("sda_read_await_ms" ->
+    "sda Read await (ms)"). Unknown suffixes fall through unchanged."""
+    if col == "t_s":
+        return "t (s)"
+    for field, label in _DISK_FIELD_LABELS.items():
+        suffix = f"_{field}"
+        if col.endswith(suffix):
+            return f"{col[: -len(suffix)]} {label}"
+    return col
+
+
 def _build_disk_sheet(wb, df):
+    """Disk IO: per-device throughput / util / depth table + charts. All columns
+    come from the same /sys/block delta so a saturated device shows up in
+    util%, await and queue depth together (the iostat-style drill-down)."""
     if df.empty:
         return
     ws = wb.create_sheet("Disk IO")
-    headers = list(df.columns)
-    _write_table(ws, df, headers)
+    names = list(df.columns)  # df columns drive chart matching (suffix names)
+    headers = [_disk_display_header(c) for c in names]
+    _write_table(ws, df, headers, cols=names)
     anchor = get_column_letter(len(headers) + 2)
     n = len(df)
-    rw_cols = tuple(i for i, h in enumerate(headers, 1) if h.endswith("_r_mb_s") or h.endswith("_w_mb_s"))
-    util_cols = tuple(i for i, h in enumerate(headers, 1) if h.endswith("_util_pct"))
-    if rw_cols:
-        _add_line_chart(ws, "Disk r/w MB/s", "MB/s", 1, rw_cols, 1, n, f"{anchor}2")
-    if util_cols:
-        _add_line_chart(ws, "Disk util %", "%", 1, util_cols, 1, n, f"{anchor}20")
+
+    def _cols(*suffixes):
+        return tuple(i for i, h in enumerate(names, 1) if h.endswith(tuple(suffixes)))
+
+    # (title, unit, columns) -- suffix-matched so a new device adds its series
+    # to every chart with no hardcoded positions. Order follows the iostat
+    # drill-down: throughput -> saturation -> latency -> depth -> IOPS.
+    charts = [
+        ("Disk r/w MB/s", "MB/s", _cols("_r_mb_s", "_w_mb_s")),
+        ("Disk util %", "%", _cols("_util_pct")),
+        ("Disk await", "ms", _cols("_read_await_ms", "_write_await_ms")),
+        # inflight (instantaneous) and queue depth (interval mean) share a unit.
+        ("Disk queue depth / inflight", "count", _cols("_avg_queue_depth", "_inflight")),
+        ("Disk IOPS", "IOPS", _cols("_r_iops", "_w_iops")),
+    ]
+    for i, (title, unit, cols) in enumerate(charts):
+        if cols:
+            # bottom legend: per-device labels ("sda Read await (ms)") are long
+            # enough to clip against the frame on the default right-side legend
+            _add_line_chart(ws, title, unit, 1, cols, 1, n, f"{anchor}{2 + i * _CHART_ROW_STEP}", legend_pos="b")
 
 
 def _derive_hostproc(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -772,10 +905,11 @@ def _build_hostproc_sheet(wb, cores_df, pss_df):
 
 
 def build_host_resources_xlsx(raw_dir, out_path) -> Path:
-    """Read raw_data/*.csv -> derive -> write host_resources.xlsx (3 spotbox-style
-    sheets). Independent of resource_report.xlsx (separate filename preserves
-    bench-core's reap signal) and of in-memory history (post-hoc rerunnable).
-    Degrades: a missing CSV skips its sheet (WARNING), never raises."""
+    """Read raw_data/*.csv -> derive -> write host_resources.xlsx (Host resources
+    / Per-VM / Disk IO / HostProc sheets). Independent of resource_report.xlsx
+    (separate filename preserves bench-core's reap signal) and of in-memory
+    history (post-hoc rerunnable). Degrades: a missing CSV skips its sheet
+    (WARNING), never raises."""
     raw_dir = Path(raw_dir)
     out_path = Path(out_path)
     host_df = _derive_host(raw_dir)
