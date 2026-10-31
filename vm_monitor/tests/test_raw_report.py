@@ -535,45 +535,50 @@ def test_derive_disk_inflight_gauge_excluded_from_guard(tmp_path, caplog):
     assert math.isclose(r2["sda_r_mb_s"], 2000 * 512 / 2**20 / 2, abs_tol=0.01)
 
 
-def test_derive_disk_drops_virtual_devices(tmp_path, caplog):
-    """A raw CSV from a sandbox-fleet host carries one ublk* device per sandbox
-    (1700+ nodes -> ~19k columns, past Excel's 16,384-column cap, which killed
-    the whole workbook). Those devices are filtered like auto-discovery does,
-    with a WARNING naming them; physical disks keep their columns."""
+def test_derive_disk_caps_series_and_keeps_busiest(tmp_path, caplog):
+    """A pre-fix raw CSV from a sandbox-fleet host carries one block device per
+    sandbox (1,700+ devices -> ~19k columns, past Excel's 16,384-column cap,
+    which killed the whole workbook). The sheet keeps the busiest
+    _MAX_DISK_DEVICES series and warns about the rest. Which devices exist is
+    the collector's call -- the report only enforces sheet capacity."""
     import logging
 
-    d = tmp_path
     from vm_monitor.base import _DISK_FIELDS
+    from vm_monitor.raw_report import _MAX_DISK_DEVICES
 
-    hdr = ["timestamp", "device", *_DISK_FIELDS]
+    d = tmp_path
+    devs = [f"ublkb{i}" for i in range(_MAX_DISK_DEVICES + 4)] + ["sda"]
     rows = []
     for ts in ("0", "2"):
-        for dev in ("sda", "ublkb0", "ublkb1"):
+        for i, dev in enumerate(devs):
             vals = {f: 0 for f in _DISK_FIELDS}
-            vals["sectors_read"] = 2000 if ts == "2" else 0
+            # sda is the busiest; ublkb0 (i=0) the least busy
+            vals["sectors_read"] = 0 if ts == "0" else (i + 1) * 100
             rows.append([ts, dev, *[vals[f] for f in _DISK_FIELDS]])
-    _write(d / "disk_io_raw.csv", hdr, rows)
+    _write(d / "disk_io_raw.csv", ["timestamp", "device", *_DISK_FIELDS], rows)
 
     with caplog.at_level(logging.WARNING):
         df = _derive_disk(d)
-    assert [c for c in df.columns if "ublk" in c] == []
+    assert df.shape[1] == 1 + _MAX_DISK_DEVICES * 10  # t_s + 10 cols/device
     assert "sda_r_mb_s" in df.columns
-    assert any("virtual/software device" in m for m in caplog.messages)
+    assert f"ublkb{_MAX_DISK_DEVICES + 3}_r_mb_s" in df.columns  # 2nd busiest
+    assert "ublkb0_r_mb_s" not in df.columns  # least busy, beyond the cap
+    assert any("sheet cap" in m for m in caplog.messages)
 
 
-def test_derive_disk_only_virtual_devices_returns_empty(tmp_path):
-    """All-virtual CSV -> empty frame (the Disk IO sheet is skipped instead of
-    raising on a zero-column table)."""
-    d = tmp_path
+def test_derive_disk_keeps_explicitly_requested_virtual_device(tmp_path):
+    """An explicitly monitored virtual device (--disks ublkb0) is in the raw
+    CSV because someone asked for it; the report must not filter it away by
+    name -- it only caps series count."""
     from vm_monitor.base import _DISK_FIELDS
 
     vals = {f: 0 for f in _DISK_FIELDS}
     _write(
-        d / "disk_io_raw.csv",
+        tmp_path / "disk_io_raw.csv",
         ["timestamp", "device", *_DISK_FIELDS],
         [["0", "ublkb0", *[vals[f] for f in _DISK_FIELDS]]],
     )
-    assert _derive_disk(d).empty
+    assert "ublkb0_r_mb_s" in _derive_disk(tmp_path).columns
 
 
 def _seed_all(d):
@@ -772,6 +777,28 @@ def test_build_xlsx_degrades_on_missing_csv(tmp_path):
     assert "Host resources" in wb.sheetnames
     assert "Per-VM" not in wb.sheetnames
     assert "Disk IO" not in wb.sheetnames
+
+
+def test_build_xlsx_isolates_a_failing_sheet(tmp_path, monkeypatch, caplog):
+    """A builder that raises must cost only its own sheet: the workbook is still
+    written with the others, and no half-built sheet is left behind. This is the
+    contract that a 17k-column Disk IO table broke in production (openpyxl
+    refused the sheet and the entire workbook was lost)."""
+    _seed_all(tmp_path)
+    out = tmp_path / "host_resources.xlsx"
+
+    def fail_building_disk_sheet(wb, disk_df):
+        wb.create_sheet("Disk IO")
+        raise ValueError("Max value is 16384")
+
+    monkeypatch.setattr("vm_monitor.raw_report._build_disk_sheet", fail_building_disk_sheet)
+    with caplog.at_level(logging.WARNING):
+        build_host_resources_xlsx(tmp_path, out)
+
+    wb = openpyxl.load_workbook(out)
+    assert "Disk IO" not in wb.sheetnames  # half-built sheet dropped
+    assert "Host resources" in wb.sheetnames
+    assert any("Disk IO sheet failed" in m for m in caplog.messages)
 
 
 def test_build_xlsx_no_crash_when_all_csvs_missing(tmp_path, caplog):
