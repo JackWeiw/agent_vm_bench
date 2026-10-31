@@ -285,7 +285,7 @@ Per-device columns are emitted in `monitor.target_disks` order (auto-discovered 
 
 > `Ublk Daemon Cores` is the CPU cores consumed by the `uvm-ublk-daemon` process (the host-side ublk I/O backend for aenv/Cloud Hypervisor snapshots), computed from `/proc/<pid>/stat` utime+stime jiffy deltas. Absent on non-ublk hosts (column pads to 0). Gated by the `ublk_daemon` collector (`--no-ublk-daemon`).
 >
-> Sectors→MiB uses `_SECTOR_SIZE_BYTES = 512` (kernel block-layer stat is always 512-byte sectors). Virtual/software layers (`loop`/`ram`/`sr`/`zram`/`md`/`dm`) are excluded from auto-discovery.
+> Sectors→MiB uses `_SECTOR_SIZE_BYTES = 512` (kernel block-layer stat is always 512-byte sectors). Virtual/software layers (`loop`/`ram`/`sr`/`zram`/`md`/`dm`/`ublk`) are excluded from auto-discovery.
 
 ### `Host_Mem_Timeline`
 
@@ -646,7 +646,7 @@ sampled — noted here so the formulas above are reproducible on any host:
 
 | Discovery | Source | Used for |
 |-----------|--------|----------|
-| Block devices | `/sys/block/`, excluding `loop`/`ram`/`sr`/`zram`/`md`/`dm` | `--disks all` default target set |
+| Block devices | `/sys/block/`, excluding `loop`/`ram`/`sr`/`zram`/`md`/`dm`/`ublk` | `--disks all` default target set |
 | NUMA nodes | `/sys/devices/system/node/node{N}` | `numa_nodes` default, focus-set construction |
 | Physical cores (per node / host-wide) | `node{N}/cpulist` + per-CPU `topology/thread_siblings_list` (keeps the lowest sibling ID, so each physical core appears once) | `numa_to_physical_cores`, getfre `total_cores` default |
 
@@ -822,7 +822,7 @@ regeneratable after any interruption.
 
 #### Sheet 3：Disk IO（每块磁盘）
 
-每块物理盘（`--disks` 或自动发现，排除 loop/ram/sr/zram/md/dm）的每采样点速率：
+每块物理盘（`--disks` 或自动发现，排除 loop/ram/sr/zram/md/dm/ublk）的每采样点速率：
 
 | 列 | 含义 | 公式 |
 |----|------|------|

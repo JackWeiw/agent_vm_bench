@@ -535,6 +535,47 @@ def test_derive_disk_inflight_gauge_excluded_from_guard(tmp_path, caplog):
     assert math.isclose(r2["sda_r_mb_s"], 2000 * 512 / 2**20 / 2, abs_tol=0.01)
 
 
+def test_derive_disk_drops_virtual_devices(tmp_path, caplog):
+    """A raw CSV from a sandbox-fleet host carries one ublk* device per sandbox
+    (1700+ nodes -> ~19k columns, past Excel's 16,384-column cap, which killed
+    the whole workbook). Those devices are filtered like auto-discovery does,
+    with a WARNING naming them; physical disks keep their columns."""
+    import logging
+
+    d = tmp_path
+    from vm_monitor.base import _DISK_FIELDS
+
+    hdr = ["timestamp", "device", *_DISK_FIELDS]
+    rows = []
+    for ts in ("0", "2"):
+        for dev in ("sda", "ublkb0", "ublkb1"):
+            vals = {f: 0 for f in _DISK_FIELDS}
+            vals["sectors_read"] = 2000 if ts == "2" else 0
+            rows.append([ts, dev, *[vals[f] for f in _DISK_FIELDS]])
+    _write(d / "disk_io_raw.csv", hdr, rows)
+
+    with caplog.at_level(logging.WARNING):
+        df = _derive_disk(d)
+    assert [c for c in df.columns if "ublk" in c] == []
+    assert "sda_r_mb_s" in df.columns
+    assert any("virtual/software device" in m for m in caplog.messages)
+
+
+def test_derive_disk_only_virtual_devices_returns_empty(tmp_path):
+    """All-virtual CSV -> empty frame (the Disk IO sheet is skipped instead of
+    raising on a zero-column table)."""
+    d = tmp_path
+    from vm_monitor.base import _DISK_FIELDS
+
+    vals = {f: 0 for f in _DISK_FIELDS}
+    _write(
+        d / "disk_io_raw.csv",
+        ["timestamp", "device", *_DISK_FIELDS],
+        [["0", "ublkb0", *[vals[f] for f in _DISK_FIELDS]]],
+    )
+    assert _derive_disk(d).empty
+
+
 def _seed_all(d):
     """Minimal cumulative CSVs for all three sheets (host + per-VM + disk)."""
     _write(

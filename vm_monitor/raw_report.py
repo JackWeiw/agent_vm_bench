@@ -21,6 +21,7 @@ from vm_monitor.base import (
     _BYTES_PER_MIB,
     _CLK_TCK,
     _DISK_FIELDS,
+    _VIRTUAL_DISK_PREFIXES,
     _compute_disk_io_rates,
     _compute_pressure_rates,
 )
@@ -541,7 +542,24 @@ def _derive_disk(raw_dir: Path) -> pd.DataFrame:
     for ts, g in disk.groupby("timestamp"):
         snaps[ts] = {r["device"]: {f: r[f] for f in _DISK_FIELDS} for _, r in g.iterrows()}
     ts_sorted = sorted(snaps)
+    # Drop virtual/software devices the collector's auto-discovery excludes
+    # (ublk etc.). A pre-fix raw CSV from a sandbox-fleet host can hold 1,700+
+    # per-sandbox devices -> ~19k columns, which overruns Excel's 16,384-column
+    # cap and kills the whole workbook. Physical disks are always kept.
+    virtual = sorted({d for s in snaps.values() for d in s if d.startswith(_VIRTUAL_DISK_PREFIXES)})
+    if virtual:
+        for s in snaps.values():
+            for d in virtual:
+                s.pop(d, None)
+        logger.warning(
+            "disk_io_raw.csv: ignoring %d virtual/software device(s) (%s%s) -- see vm_monitor.base._VIRTUAL_DISK_PREFIXES",
+            len(virtual),
+            ", ".join(virtual[:5]),
+            ", ..." if len(virtual) > 5 else "",
+        )
     devs = sorted({dev for s in snaps.values() for dev in s})
+    if not devs:  # only filtered-out devices -> no Disk IO sheet
+        return pd.DataFrame()
     rate_fields = ("r_mb_s", "w_mb_s", "util_pct", *_DISK_DEPTH_FIELDS)
     cols = {}
     for dev in devs:

@@ -61,9 +61,13 @@ _BYTES_PER_MIB = 2**20
 
 # Virtual / software block-device prefixes excluded from auto-discovery. These
 # either carry no real I/O (loop, ram, sr, zram) or are software layers stacked
-# on physical disks (md, dm) that would double-count throughput. Override with
-# an explicit --disks list when you want to monitor one of these.
-_VIRTUAL_DISK_PREFIXES = ("loop", "ram", "sr", "zram", "md", "dm")
+# on physical disks (md, dm) that would double-count throughput. ublk is the
+# per-sandbox user-space block device a sandbox fleet exposes (hundreds to
+# thousands of ublkb* nodes): its I/O is already counted on the backing physical
+# disk and on the ublk-daemon CPU collector, and one column set per node blows
+# past Excel's 16,384-column limit. Override with an explicit --disks list when
+# you want to monitor one of these.
+_VIRTUAL_DISK_PREFIXES = ("loop", "ram", "sr", "zram", "md", "dm", "ublk")
 
 
 # Names of the /proc-based resource collectors collect_sample / _disk_subsample_sleep
