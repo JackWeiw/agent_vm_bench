@@ -141,6 +141,29 @@ class TestRawVmDataOverflow(unittest.TestCase):
         through to openpyxl's hard refusal."""
         self.assertEqual(_EXCEL_MAX_ROWS, 1_048_576)
 
+    def test_oversized_columns_skipped_other_sheets_survive(self):
+        """A per-device sheet can also overrun Excel's 16,384-COLUMN cap (a
+        fleet host exposing a block device per sandbox: Disk_IO_Timeline was
+        18 x 17,173). openpyxl refuses the sheet and the whole workbook is
+        lost; the guard must skip just that sheet."""
+        self.monitor.target_disks = ["sda", "sdb"]  # 1 + 2*10 + 2 = 23 cols
+        self.monitor.disk_history = [{"ts": "2026-09-07 10:00:00", "disks": {}}]
+        with mock.patch("vm_monitor.exporters._EXCEL_MAX_COLS", 5), mock.patch("builtins.print") as mock_print:
+            self._export()
+
+        printed = " ".join(str(c[0][0]) for c in mock_print.call_args_list)
+        self.assertIn("Disk_IO_Timeline", printed)
+        self.assertIn("cols", printed)
+        with pd.ExcelFile(self.output_file) as xf:
+            names = xf.sheet_names
+        self.assertNotIn("Disk_IO_Timeline", names)
+        self.assertIn("Summary", names)
+
+    def test_real_col_cap_constant_matches_excel_limit(self):
+        from vm_monitor.exporters import _EXCEL_MAX_COLS
+
+        self.assertEqual(_EXCEL_MAX_COLS, 16_384)
+
 
 @unittest.skipUnless(PANDAS_AVAILABLE and load_workbook is not None, "pandas/openpyxl required")
 class TestTimelineSheetOverflow(unittest.TestCase):

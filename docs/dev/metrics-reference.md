@@ -285,7 +285,7 @@ Per-device columns are emitted in `monitor.target_disks` order (auto-discovered 
 
 > `Ublk Daemon Cores` is the CPU cores consumed by the `uvm-ublk-daemon` process (the host-side ublk I/O backend for aenv/Cloud Hypervisor snapshots), computed from `/proc/<pid>/stat` utime+stime jiffy deltas. Absent on non-ublk hosts (column pads to 0). Gated by the `ublk_daemon` collector (`--no-ublk-daemon`).
 >
-> Sectors→MiB uses `_SECTOR_SIZE_BYTES = 512` (kernel block-layer stat is always 512-byte sectors). Virtual/software layers (`loop`/`ram`/`sr`/`zram`/`md`/`dm`) are excluded from auto-discovery.
+> Sectors→MiB uses `_SECTOR_SIZE_BYTES = 512` (kernel block-layer stat is always 512-byte sectors). Virtual/software layers (`loop`/`ram`/`sr`/`zram`/`md`/`dm`/`ublk`) are excluded from auto-discovery.
 
 ### `Host_Mem_Timeline`
 
@@ -646,7 +646,7 @@ sampled — noted here so the formulas above are reproducible on any host:
 
 | Discovery | Source | Used for |
 |-----------|--------|----------|
-| Block devices | `/sys/block/`, excluding `loop`/`ram`/`sr`/`zram`/`md`/`dm` | `--disks all` default target set |
+| Block devices | `/sys/block/`, excluding `loop`/`ram`/`sr`/`zram`/`md`/`dm`/`ublk` | `--disks all` default target set |
 | NUMA nodes | `/sys/devices/system/node/node{N}` | `numa_nodes` default, focus-set construction |
 | Physical cores (per node / host-wide) | `node{N}/cpulist` + per-CPU `topology/thread_siblings_list` (keeps the lowest sibling ID, so each physical core appears once) | `numa_to_physical_cores`, getfre `total_cores` default |
 
@@ -656,8 +656,9 @@ sampled — noted here so the formulas above are reproducible on any host:
 `raw_data/*.csv` cumulative counters, derives rates via delta with a
 counter-reset + gap guard (`MAX_INTERVAL_S=10s`; `cur<prev` -> NaN + WARNING
 to avoid spurious spikes on VM pid restart / device remount), and writes
-`<log_dir>/host_resources.xlsx` — 3 spotbox-style sheets (Host resources /
-Per-VM / Disk IO), each a data table + stacked openpyxl LineCharts on a shared
+`<log_dir>/host_resources.xlsx` — one sheet per concern (Host resources /
+Per-VM / Disk IO / HostProc), each a data table +
+stacked openpyxl LineCharts on a shared
 `t (s)` axis. Independent of `resource_report.xlsx` (separate filename
 preserves bench-core's reap signal) and of in-memory history (post-hoc
 rerunnable). PSS (`vm_cpu_raw.csv` `pss_mb`) is a gauge, plotted directly.
@@ -688,16 +689,27 @@ regeneratable after any interruption.
 
 ### host_resources.xlsx 字段含义（中文版）
 
-> 本节是 `host_resources.xlsx` 三个 sheet 的中文逐列释义，配合上文「Raw-CSV consumer」
+> 本节是 `host_resources.xlsx` 四个 sheet 的中文逐列释义（Host resources / Per-VM /
+> Disk IO / HostProc），配合上文「Raw-CSV consumer」
 > 的构建/中断/恢复机制阅读。所有原始计数器都是内核累积值，消费端按相邻行 `timestamp`
 > 的真实时间差 `dt` 派生为速率/百分比；`Δ` = 本行 − 上一行；首行无基线 → 该行速率为
 > `NaN`（图表自动跳过）。计数器回卷（`Δ<0`，进程重启/设备重挂载）、时间差异常
 >（`dt≤0` / `NaN`）或采样缺失（`dt > MAX_INTERVAL_S=10s`）→ 该行同样置 `NaN`，不再 crash
 > 整张表（这是修复 `could not convert string to float: '2026-10-10 15:20:02'` 回归的关键守卫）。
 
-#### Sheet 1：Host resources（宿主机资源，16 列）
+#### Sheet 1：Host resources（宿主机总览，27 列）
 
-列按其在表中出现的顺序，依所属折线图分组列出。
+列按其在表中出现的顺序，依所属折线图分组列出。主机内存构成、页缓存压力、进程队列都在
+这一张表内，右侧竖排 11 张折线图，自上而下按主题分三块（图名顺序 = 阅读顺序）：
+
+1. **内存构成** —— `Host memory` → `Buffers / dirty / writeback` → `Anon vs file cache` →
+   `FC memory (total PSS)`
+2. **内存压力** —— `Page-cache pressure` → `Alloc stalls` → `Swap in/out`
+3. **CPU / 机群** —— `Host CPU` → `CPU cores (ublk + VM)` → `Procs running/blocked` →
+   `Concurrent VMs`
+
+图表统一 16×8 cm、18 行一个锚点（8 cm ≈ 15 行，余 3 行间隙不重叠），固定在数据表右侧
+（`AC` 列，与最后一列 `AA` 隔一空列），不会压住任何数据列。
 
 **主机内存** —— 图 `Host memory`，单位 GB
 
@@ -706,15 +718,22 @@ regeneratable after any interruption.
 | `mem_used_gb` | 已用内存（应用 + 内核结构，不含可回收缓存） | `(MemTotal − MemAvailable) / 1024`（`host_mem_raw.csv` 存 MB：`_read_meminfo` 已把 `/proc/meminfo` 的 kB 转 MB 再落盘；MB→GiB） |
 | `mem_cache_gb` | 可回收页缓存（page cache + 可回收 slab） | `(Cached + SReclaimable) / 1024`（同上，CSV 存 MB→GiB） |
 
-**主机 buffers/dirty** —— 图 `Host buffers/dirty`，单位 MB
+**主机 buffers / dirty / writeback / 页缓存构成** —— 图 `Buffers / dirty / writeback`
+（MB）+ 图 `Anon vs file cache`（MB）
 
 | 列 | 含义 | 来源 / 公式 |
 |----|------|-------------|
 | `buffers_mb` | 内核 buffer cache（原始块设备 I/O 缓冲） | `Buffers`（`host_mem_raw.csv` 已是 MB，直通；勿再 `/1024`） |
 | `dirty_mb` | 待回写的脏页（写回磁盘前驻留内存） | `Dirty`（同上，MB 直通） |
+| `writeback_mb` | 正在回写中的页 | `Writeback`（同上，MB 直通） |
+| `anon_pages_mb` | 匿名页（堆栈等，不可回收、只能 swap） | `AnonPages`（同上，MB 直通） |
+| `file_cache_mb` | 文件页缓存（**不含** tmpfs） | `Cached + Buffers − Shmem`（Shmem 缺失按 0） |
+| `sreclaimable_mb` | 可回收 slab | `SReclaimable`（同上，MB 直通） |
 
-> 与 `mem_used_gb`/`mem_cache_gb` 拆成两张图：前者是 GB 级，buffers/dirty 是 MB 级，混在
-> 一张图里后者会被压成贴 0 的平线，看不出波动。
+> 与 `mem_used_gb`/`mem_cache_gb` 拆图：前者是 GB 级，buffers/dirty/writeback 是 MB 级，
+> 混在一张图里后者会被压成贴 0 的平线，看不出波动。`Anon vs file cache` 把「不可回收的
+> 匿名页」和「可回收的文件页缓存 + slab」画在一起——两条线交叉下行 = 内存真的吃紧（只能
+> swap），缓存曲线掉而 anon 平稳 = 只是缓存被回收，不是内存耗尽。
 
 **FC 内存（总 PSS）** —— 图 `FC memory (total PSS)`，单位 GB
 
@@ -726,12 +745,36 @@ regeneratable after any interruption.
 > 内存；RSS 会把同一页在每个 FC 进程里各计一次，严重高估 fleet 总占用。这是本仓库的刻意
 > 选择（`base.py` 仅在 `smaps_rollup` 不可得时才用 RSS 兜底）。`--no-pss` 时此列全 `NaN`。
 
+**页缓存压力** —— 图 `Page-cache pressure`（MiB/s）+ 图 `Alloc stalls`（/s）
+
+| 列 | 含义 | 来源 / 公式 |
+|----|------|-------------|
+| `page_scan_mib_s` | 扫描页速率（kswapd + direct + throttle） | `(Δpgscan_kswapd + Δpgscan_direct + Δpgscan_direct_throttle) × page_size / 2²⁰ / dt` |
+| `page_reclaim_mib_s` | 回收页速率（kswapd + direct steal） | `(Δpgsteal_kswapd + Δpgsteal_direct) × page_size / 2²⁰ / dt` |
+| `file_refault_mib_s` | 文件页重命中率（回收后再次访问 = 缓存不够） | `Δworkingset_refault_file × page_size / 2²⁰ / dt` |
+| `direct_reclaim_mib_s` | 直接回收速率（分配器同步阻塞在回收上的子集，**不含** kswapd；仅列不出图，阻塞信号的图看 `Alloc stalls`） | `(Δpgscan_direct + Δpgscan_direct_throttle) × page_size / 2²⁰ / dt` |
+| `allocstall_per_s` | 因等待回收而停顿的分配请求数 /s | `Σ Δallocstall_*`（按 zone 类型求和，旧内核回退到单值 `allocstall`） |
+
+> scan 高 = 内核在主动找可回收页；reclaim 高 = 真的在驱逐；file_refault 高 = 刚回收的页
+> 又被要回来 = 缓存尺寸不够工作集。`direct_reclaim` / `allocstall` 是**同步阻塞**信号——
+> kswapd 是后台线程，直接回收意味着分配页的进程自己停下来等，`allocstall` 是「进程被内存
+> 回收卡住」最接近的内核计数。全部来自 `/proc/vmstat`，由 `_compute_pressure_rates` 派生。
+
+**Swap 进出** —— 图 `Swap in/out`，单位 MiB/s
+
+| 列 | 含义 | 来源 / 公式 |
+|----|------|-------------|
+| `swap_in_mib_s` | 从 swap 读入内存的速率 | `Δpswpin × page_size / 2²⁰ / dt`（`/proc/vmstat`） |
+| `swap_out_mib_s` | 内存写回 swap 的速率 | `Δpswpout × page_size / 2²⁰ / dt` |
+
 **主机 CPU** —— 图 `Host CPU`，单位 %
 
 | 列 | 含义 | 来源 / 公式 |
 |----|------|-------------|
 | `cpu_busy_pct` | 非空闲 CPU 占比（**不含** iowait） | `100 × (1 − (Δidle + Δiowait) / d_total)` |
 | `cpu_iowait_pct` | iowait 占比 | `100 × Δiowait / d_total` |
+| `cpu_user_pct` | 用户态 CPU 占比（含 guest） | `100 × Δuser / d_total` |
+| `cpu_sys_pct` | 内核态 CPU 占比（`system`，不含 irq/softirq） | `100 × Δsystem / d_total` |
 
 > `d_total = Δ(user+nice+system+idle+iowait+irq+softirq+steal)`（`/proc/stat` `cpu` 行前 8
 > 字段之和；`guest`/`guest_nice` 已含在 user/nice 内，不重复计）。于是
@@ -742,25 +785,6 @@ regeneratable after any interruption.
 >（可运行任务变多）会把 iowait「挤掉」，所以 `cpu_iowait_pct` 在繁忙主机上可能不升反降，
 > 即使 I/O 争用其实更严重。判断 I/O 瓶颈请看 Disk IO 的 `util%` / `await` 和页缓存压力
 > 三列，而不是 iowait。
-
-**页缓存压力** —— 图 `Page-cache pressure`，单位 MiB/s
-
-| 列 | 含义 | 来源 / 公式 |
-|----|------|-------------|
-| `page_scan_mib_s` | 扫描页速率（kswapd + direct + throttle） | `(Δpgscan_kswapd + Δpgscan_direct + Δpgscan_direct_throttle) × page_size / 2²⁰ / dt` |
-| `page_reclaim_mib_s` | 回收页速率（kswapd + direct steal） | `(Δpgsteal_kswapd + Δpgsteal_direct) × page_size / 2²⁰ / dt` |
-| `file_refault_mib_s` | 文件页重命中率（回收后再次访问 = 缓存不够） | `Δworkingset_refault_file × page_size / 2²⁰ / dt` |
-
-> scan 高 = 内核在主动找可回收页；reclaim 高 = 真的在驱逐；file_refault 高 = 刚回收的页
-> 又被要回来 = 缓存尺寸不够工作集。三者来自 `/proc/vmstat`，由 `_compute_pressure_rates`
-> 派生。
-
-**Swap 进出** —— 图 `Swap in/out`，单位 MiB/s
-
-| 列 | 含义 | 来源 / 公式 |
-|----|------|-------------|
-| `swap_in_mib_s` | 从 swap 读入内存的速率 | `Δpswpin × page_size / 2²⁰ / dt`（`/proc/vmstat`） |
-| `swap_out_mib_s` | 内存写回 swap 的速率 | `Δpswpout × page_size / 2²⁰ / dt` |
 
 **CPU 核数（ublk + VM）** —— 图 `CPU cores (ublk + VM)`，单位 核
 
@@ -778,6 +802,17 @@ regeneratable after any interruption.
 > **`vm_cores` 口径取舍（method A）**：只在 VM 于**两个相邻主机端点都存活**时才计入其增量——在一个采样窗**中途**出生或死亡的 VM **不计入**该窗（缺一端基线）。在 exec_ephemeral 高 churn 下这会少计瞬时 VM 的 CPU；那部分残量仍作为交叉校验体现在 `cpu_busy_pct`（主机总占用）里。method B（按时间加权部分窗 jiffies）是后续选项，本次不做。
 > `vm_cores` 的 `dt` 与 `ublk_cores` 的 `dt` 都是主机采样间隔（ublk 子采样 1s，但其 `Δ/dt` 仍按主机端点对齐）。`utime`/`stime` 来自 `/proc/<pid>/stat`。
 
+**进程队列** —— 图 `Procs running/blocked`，单位 个（gauge）
+
+| 列 | 含义 | 来源 / 公式 |
+|----|------|-------------|
+| `procs_running` | 可运行（R 状态，含排队等 CPU）进程数 | `/proc/stat` 同行 `procs_running`，瞬时值 |
+| `procs_blocked` | 阻塞（D 状态，多为等 I/O/回收）进程数 | 同行 `procs_blocked`，瞬时值 |
+
+> 与 `concurrent_vms`（并发 VM 数）配着看：`procs_running` 持续 > 物理核数 = CPU 排队；
+> `procs_blocked` 抬头而 `procs_running` 不高 = 卡在 I/O 或内存回收上（再对照
+> `allocstall_per_s`）。
+
 #### Sheet 2：Per-VM（每虚拟机，按时间快照）
 
 每采样点列出每个 VM 进程：`vm_name`、`pid`、该点 CPU 核数
@@ -787,7 +822,7 @@ regeneratable after any interruption.
 
 #### Sheet 3：Disk IO（每块磁盘）
 
-每块物理盘（`--disks` 或自动发现，排除 loop/ram/sr/zram/md/dm）的每采样点速率：
+每块物理盘（`--disks` 或自动发现，排除 loop/ram/sr/zram/md/dm/ublk）的每采样点速率：
 
 | 列 | 含义 | 公式 |
 |----|------|------|
@@ -797,10 +832,21 @@ regeneratable after any interruption.
 | `read_await_ms` / `write_await_ms` | 单次读 / 写平均延迟（ms） | `Δread_ms/Δreads_completed` / `Δwrite_ms/Δwrites_completed` |
 | `r_iops` / `w_iops` | 读 / 写 IOPS | `Δreads_completed/dt` / `Δwrites_completed/dt` |
 | `avg_rq_sz` | 平均请求大小（扇区） | `(Δsectors_read+Δsectors_written)/(Δreads+Δwrites)` |
+| `inflight` | 当前在途请求数（瞬时 gauge，不做 Δ） | `/sys/block/<dev>/stat` 第 9 字段直通 |
 
 > `ms_io` 是「至少 1 个 I/O 在途」的累计毫秒，`util_pct` 接近 100% = 磁盘饱和；
 > `avg_queue_depth` 高 = 排队；`await` 高 = 单次 I/O 慢。多盘同时高 = 存储成瓶颈。
 > `avg_rq_sz` 小 ≈ 随机小 I/O，大 ≈ 顺序 I/O。数据来自 `/sys/block/<dev>/stat`。
+> `inflight` 是唯一不做 Δ 的列：首行即有值，计数器回卷的那个区间也不置 `NaN`（gauge 无需基线）。
+> 图：`Disk r/w MB/s`、`Disk util %`、`Disk await`、`Disk queue depth / inflight`、
+> `Disk IOPS`（每块盘一组序列，按列后缀自动匹配）。
+> 表头与图例是 `<device> Read (MB/s)` 这样的可读标签（内部列名仍是 `<device>_r_mb_s`）。
+
+#### Sheet 4：HostProc（按名字跟踪的宿主进程）
+
+仅当 `--host-proc` / `monitor.host_procs` 有配置时生成：每个命名进程（`name`，按
+`comm[:cmdline]` 解析 pid）一条 CPU 核数曲线（`Δ(utime+stime)/_CLK_TCK/dt`，按
+`(name, pid)` 分组，pid 重启不跨 pid 求差）和一条 PSS（GB）曲线。
 
 #### 时间戳与 Δ 守卫
 

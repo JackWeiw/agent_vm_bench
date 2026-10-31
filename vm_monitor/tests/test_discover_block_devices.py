@@ -49,6 +49,11 @@ class TestDiscoverBlockDevices(unittest.TestCase):
             "md127": True,
             "dm-0": True,
             "dm-3": True,
+            # Per-sandbox user-space block devices: a fleet host exposes
+            # hundreds to thousands of these (they overran Excel's 16,384-column
+            # cap once and killed the whole report).
+            "ublkb0": True,
+            "ublkb1716": True,
         }
         with self._patch_sys_block(entries)[0], self._patch_sys_block(entries)[1]:
             result = _discover_block_devices()
@@ -76,7 +81,7 @@ class TestDiscoverBlockDevices(unittest.TestCase):
         self.assertEqual(result, [])
 
     def test_no_physical_devices_returns_empty(self):
-        entries = {"loop0": True, "ram0": True, "sr0": True}
+        entries = {"loop0": True, "ram0": True, "sr0": True, "ublkb0": True}
         with self._patch_sys_block(entries)[0], self._patch_sys_block(entries)[1]:
             result = _discover_block_devices()
         self.assertEqual(result, [])

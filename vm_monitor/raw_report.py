@@ -3,8 +3,9 @@
 Reads the always-on raw /proc + per-VM + per-disk CSV dumps and derives rates
 via delta (reusing base._compute_pressure_rates + base._compute_disk_io_rates).
 Pure file input -- does not depend on in-memory history, post-hoc rerunnable.
-The xlsx assembly (build_host_resources_xlsx: 3 spotbox-style sheets with
-openpyxl LineCharts) reuses the derived DataFrames above. All derivation is
+The xlsx assembly (build_host_resources_xlsx: Host resources / Per-VM /
+Disk IO / HostProc sheets, each a data table + openpyxl LineCharts) reuses the
+derived DataFrames above. All derivation is
 delta-based on persistent cumulative counters -- pure file input, post-hoc
 rerunnable, independent of in-memory history and of resource_report.xlsx.
 """
@@ -40,6 +41,34 @@ MAX_VM_SERIES = 8  # per-VM chart series cap (Excel render perf); used in Task 3
 # must NOT trip the reset guard, else busy-disk intervals get NaN-holed.
 _DISK_GUARD_FIELDS = tuple(f for f in _DISK_FIELDS if f != "inflight")
 
+# Per-device depth/latency metrics _compute_disk_io_rates derives on top of the
+# r/w/util trio (mirrors resource_report's Disk_IO_Timeline columns).
+_DISK_DEPTH_FIELDS = (
+    "inflight",
+    "avg_queue_depth",
+    "read_await_ms",
+    "write_await_ms",
+    "r_iops",
+    "w_iops",
+    "avg_rq_sz",
+)
+
+# Disk IO display labels, keyed by df-column suffix ("<device>_<field>"). Keeps
+# the table header + chart legend readable ("sda Read (MB/s)") while the df
+# keeps the suffix names the chart column matcher and downstream readers expect.
+_DISK_FIELD_LABELS = {
+    "r_mb_s": "Read (MB/s)",
+    "w_mb_s": "Write (MB/s)",
+    "util_pct": "Util (%)",
+    "inflight": "Inflight",
+    "avg_queue_depth": "Queue depth",
+    "read_await_ms": "Read await (ms)",
+    "write_await_ms": "Write await (ms)",
+    "r_iops": "Read IOPS",
+    "w_iops": "Write IOPS",
+    "avg_rq_sz": "Avg rq sz (sectors)",
+}
+
 _MEMINFO_MB_PER_GIB = 1024  # host_mem_raw.csv holds MB (_read_meminfo converts kB->MB); /1024 -> GiB
 
 _VMSTAT_FIELDS = [
@@ -70,6 +99,14 @@ def _f(d: dict, k: str) -> float:
         return float(v)
     except (TypeError, ValueError):
         return math.nan
+
+
+def _gauge_int(d: dict, k: str):
+    """Instantaneous count cell: int when present, NaN when absent (a count, not
+    a rate). A column holding any NaN upcasts to float, which Excel still renders
+    without a decimal."""
+    v = _f(d, k)
+    return math.nan if math.isnan(v) else int(v)
 
 
 def _ts_to_epoch(series: pd.Series) -> pd.Series:
@@ -243,6 +280,10 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
             "mem_cache_gb",
             "buffers_mb",
             "dirty_mb",
+            "writeback_mb",
+            "sreclaimable_mb",
+            "anon_pages_mb",
+            "file_cache_mb",
             "swap_in_mib_s",
             "swap_out_mib_s",
             "page_scan_mib_s",
@@ -254,6 +295,8 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
             "vm_cores",
             "fc_pss_gb",
             "concurrent_vms",
+            "procs_running",
+            "procs_blocked",
         )
     }
 
@@ -305,9 +348,34 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
             out["mem_cache_gb"].append((_f(md, "Cached") + _f(md, "SReclaimable")) / _MEMINFO_MB_PER_GIB)
             out["buffers_mb"].append(_f(md, "Buffers"))
             out["dirty_mb"].append(_f(md, "Dirty"))
+            out["writeback_mb"].append(_f(md, "Writeback"))
+            out["sreclaimable_mb"].append(_f(md, "SReclaimable"))
+            out["anon_pages_mb"].append(_f(md, "AnonPages"))
+            # Same definition as base.collect_host_pressure: page cache excludes
+            # tmpfs pages (Shmem is already counted in Cached) and adds Buffers.
+            # Missing Shmem (older CSV) -> 0, not NaN -- one absent field must
+            # not blank the whole column.
+            shmem_mb = _f(md, "Shmem")
+            file_cache_mb = _f(md, "Cached") + _f(md, "Buffers") - (0.0 if math.isnan(shmem_mb) else shmem_mb)
+            # Clamp only a real negative (rounding); max(0.0, nan) would silently
+            # turn an absent Cached/Buffers into a 0 MB "file cache" line.
+            out["file_cache_mb"].append(math.nan if math.isnan(file_cache_mb) else max(0.0, file_cache_mb))
         else:
-            for k in ("mem_used_gb", "mem_cache_gb", "buffers_mb", "dirty_mb"):
+            for k in (
+                "mem_used_gb",
+                "mem_cache_gb",
+                "buffers_mb",
+                "dirty_mb",
+                "writeback_mb",
+                "sreclaimable_mb",
+                "anon_pages_mb",
+                "file_cache_mb",
+            ):
                 out[k].append(math.nan)
+        # procs_running/blocked are gauges from the same /proc/stat row as the
+        # cpu deltas (row i, not a delta). int cells: a count, not a rate.
+        out["procs_running"].append(_gauge_int(cur_c, "procs_running"))
+        out["procs_blocked"].append(_gauge_int(cur_c, "procs_blocked"))
         if vmstat is not None and i < len(vmstat):
             cur_v, prev_v = vmstat.iloc[i].to_dict(), vmstat.iloc[i - 1].to_dict()
             if _guarded(cur_v, prev_v, dt, "host_vmstat", _VMSTAT_FIELDS):
@@ -460,10 +528,11 @@ def _derive_per_vm(raw_dir: Path, max_series: int = MAX_VM_SERIES) -> tuple[pd.D
 
 
 def _derive_disk(raw_dir: Path) -> pd.DataFrame:
-    """Per-device r/w MB/s + util% via base._compute_disk_io_rates. long CSV ->
-    {ts: {dev: {field}}}; consecutive ts snapshots -> rates, with a per-device
-    counter-reset guard (cur<prev -> NaN for that dev that interval, no
-    negative spike on device remount)."""
+    """Per-device throughput / util / depth via base._compute_disk_io_rates. long
+    CSV -> {ts: {dev: {field}}}; consecutive ts snapshots -> rates, with a
+    per-device counter-reset guard (cur<prev -> NaN for that dev that interval,
+    no negative spike on device remount). Depth columns (queue depth, await,
+    IOPS, avg rq size) come from the same delta and share the guard."""
     disk = _read_csv(raw_dir, "disk_io_raw.csv")
     if disk is None or disk.empty:
         return pd.DataFrame()
@@ -474,16 +543,50 @@ def _derive_disk(raw_dir: Path) -> pd.DataFrame:
         snaps[ts] = {r["device"]: {f: r[f] for f in _DISK_FIELDS} for _, r in g.iterrows()}
     ts_sorted = sorted(snaps)
     devs = sorted({dev for s in snaps.values() for dev in s})
+    if len(devs) > _MAX_DISK_DEVICES:
+        # Capacity, not policy: each device costs 10 columns, Excel caps a sheet
+        # at 16,384, and a chart with 1,700 lines is unreadable. A fleet host
+        # can expose a block device per sandbox, so keep the busiest N by final
+        # cumulative sectors and say what was dropped. Which devices exist is
+        # the collector's call (base._VIRTUAL_DISK_PREFIXES), not ours -- an
+        # explicitly requested device stays visible when it fits.
+        final_snapshot = snaps[ts_sorted[-1]]
+
+        def cumulative_sectors(device: str) -> float:
+            snapshot = final_snapshot.get(device, {})
+            total = _f(snapshot, "sectors_read") + _f(snapshot, "sectors_written")
+            return 0.0 if math.isnan(total) else total
+
+        by_activity = sorted(devs, key=lambda device: (-cumulative_sectors(device), device))
+        kept_devices = by_activity[:_MAX_DISK_DEVICES]
+        dropped_devices = by_activity[_MAX_DISK_DEVICES:]
+        devs = sorted(kept_devices)
+        for snapshot in snaps.values():  # release the dropped devices' snapshots
+            for device in dropped_devices:
+                snapshot.pop(device, None)
+        logger.warning(
+            "disk_io_raw.csv: %d devices exceed the %d-series sheet cap; keeping the busiest by I/O, dropped: %s%s",
+            len(by_activity),
+            _MAX_DISK_DEVICES,
+            ", ".join(dropped_devices[:5]),
+            ", ..." if len(dropped_devices) > 5 else "",
+        )
+    rate_fields = ("r_mb_s", "w_mb_s", "util_pct", *_DISK_DEPTH_FIELDS)
     cols = {}
     for dev in devs:
-        cols[f"{dev}_r_mb_s"] = [math.nan]
-        cols[f"{dev}_w_mb_s"] = [math.nan]
-        cols[f"{dev}_util_pct"] = [math.nan]
+        for sfx in rate_fields:
+            cols[f"{dev}_{sfx}"] = [math.nan]
+    # inflight is an instantaneous gauge, not a delta: it is already meaningful
+    # on the very first sample (no baseline needed) and stays valid across a
+    # counter reset. Seed row 0 from the first snapshot.
+    if ts_sorted:
+        for dev in devs:
+            cols[f"{dev}_inflight"][0] = _f(snaps[ts_sorted[0]].get(dev, {}), "inflight")
     for i in range(1, len(ts_sorted)):
         cur_ts, prev_ts = ts_sorted[i], ts_sorted[i - 1]
         dt = cur_ts - prev_ts
         for dev in devs:
-            for sfx in ("r_mb_s", "w_mb_s", "util_pct"):
+            for sfx in rate_fields:
                 cols[f"{dev}_{sfx}"].append(math.nan)
         cur_snap, prev_snap = snaps[cur_ts], snaps[prev_ts]
         # per-dev reset guard, then reuse base compute (single-dev dict).
@@ -491,7 +594,11 @@ def _derive_disk(raw_dir: Path) -> pd.DataFrame:
         # a gauge and is read as such by _compute_disk_io_rates, so a normal drop
         # must not NaN-hole the interval. Inject timestamp for the WARNING log.
         for dev in devs:
-            if dev not in cur_snap or dev not in prev_snap:
+            if dev not in cur_snap:
+                continue
+            # gauge: valid even when the counters below cannot be diffed
+            cols[f"{dev}_inflight"][-1] = _f(cur_snap[dev], "inflight")
+            if dev not in prev_snap:
                 continue
             if _guarded(
                 {"timestamp": cur_ts, **cur_snap[dev]},
@@ -502,9 +609,8 @@ def _derive_disk(raw_dir: Path) -> pd.DataFrame:
             ):
                 continue
             rates = _compute_disk_io_rates({dev: cur_snap[dev]}, {dev: prev_snap[dev]}, dt)[dev]
-            cols[f"{dev}_r_mb_s"][-1] = rates["r_mb_s"]
-            cols[f"{dev}_w_mb_s"][-1] = rates["w_mb_s"]
-            cols[f"{dev}_util_pct"][-1] = rates["util_pct"]
+            for sfx in rate_fields:
+                cols[f"{dev}_{sfx}"][-1] = rates[sfx]
     df = pd.DataFrame(cols)
     df.insert(0, "t_s", [0.0] + [ts_sorted[i] - ts_sorted[0] for i in range(1, len(ts_sorted))])
     return df
@@ -517,6 +623,17 @@ _HEADER_FONT = Font(bold=True, color="F9FAFB")
 # the PSS block past the cores chart's right edge so the two side-by-side blocks
 # (horizontal layout) don't overlap.
 _CHART_COL_FOOTPRINT = 10
+
+# Vertical pitch between stacked charts: chart height is 8 cm (~= 15 default
+# 15pt rows), so 18 rows leaves a 3-row gap and never overlaps. Every stacked
+# chart on a sheet uses this pitch -- a hand-picked anchor per chart is how the
+# Host resources pressure charts ended up separated from their memory siblings.
+_CHART_ROW_STEP = 18
+
+# Series cap for the Disk IO sheet (and its 5 charts): 10 columns per device, so
+# this keeps a sheet far below Excel's 16,384-column limit while staying
+# legible. Lowest-activity devices beyond the cap are dropped with a WARNING.
+_MAX_DISK_DEVICES = 16
 
 
 def _put_row(ws, row, values, header=False, start_col=1):
@@ -545,16 +662,22 @@ def _write_table(ws, df, headers, cols=None):
     return r - 1  # last data row
 
 
-def _add_line_chart(ws, title, y_title, cat_col, data_cols, header_row, n_data_rows, anchor):
+def _add_line_chart(ws, title, y_title, cat_col, data_cols, header_row, n_data_rows, anchor, legend_pos=None):
     """openpyxl LineChart bound to worksheet cells (spotbox style). ``header_row``
     carries the series names (titles_from_data); data occupies header_row+1 ..
-    header_row+n_data_rows. X axis = cat_col (t (s)). Stacked vertically via anchor."""
+    header_row+n_data_rows. X axis = cat_col (t (s)). Stacked vertically via anchor.
+
+    ``legend_pos`` is an openpyxl legend position ("b" = bottom). Left at the
+    Excel default (right) unless the series names are long prose labels, where a
+    right-side legend gets clipped at the 16 cm frame edge."""
     ch = LineChart()
     ch.title = title
     ch.y_axis.title = y_title
     ch.x_axis.title = "t (s)"
     ch.height = 8
     ch.width = 16
+    if legend_pos:
+        ch.legend.position = legend_pos
     last = header_row + n_data_rows
     for col in data_cols:
         ch.add_data(Reference(ws, min_col=col, min_row=header_row, max_row=last), titles_from_data=True)
@@ -569,7 +692,7 @@ def _build_host_sheet(wb, df):
     # (df column, display label) paired -- a column reorder can't silently
     # misalign a header with the wrong data (mislabeled metrics are worse than
     # verbose). Labels match resource_report.xlsx's readable + unit style.
-    col_labels = [
+    column_labels = [
         ("t_s", "t (s)"),
         ("timestamp", "Timestamp"),
         ("cpu_busy_pct", "CPU busy (%)"),
@@ -580,6 +703,10 @@ def _build_host_sheet(wb, df):
         ("mem_cache_gb", "Mem cache (GB)"),
         ("buffers_mb", "Buffers (MB)"),
         ("dirty_mb", "Dirty (MB)"),
+        ("writeback_mb", "Writeback (MB)"),
+        ("anon_pages_mb", "Anon pages (MB)"),
+        ("file_cache_mb", "File cache (MB)"),
+        ("sreclaimable_mb", "SReclaimable (MB)"),
         ("swap_in_mib_s", "Swap in (MiB/s)"),
         ("swap_out_mib_s", "Swap out (MiB/s)"),
         ("page_scan_mib_s", "Page scan (MiB/s)"),
@@ -591,48 +718,82 @@ def _build_host_sheet(wb, df):
         ("direct_reclaim_mib_s", "Direct reclaim (MiB/s)"),
         ("allocstall_per_s", "Alloc stalls (/s)"),
         ("concurrent_vms", "Concurrent VMs"),
+        ("procs_running", "Procs running"),
+        ("procs_blocked", "Procs blocked"),
     ]
-    cols, headers = zip(*col_labels)
-    _write_table(ws, df, list(headers), cols=list(cols))
+    column_names, display_headers = zip(*column_labels)
+    _write_table(ws, df, list(display_headers), cols=list(column_names))
     # 1-indexed column position per df column name -- insertion-safe: adding a
     # col_label shifts downstream positions, and the chart refs below follow
     # automatically. The pre-fix hardcoded int tuples silently misaligned the
     # memory/disk charts the moment a column was inserted mid-table.
-    pos = {name: i + 1 for i, (name, _) in enumerate(col_labels)}
-    anchor = get_column_letter(len(headers) + 2)
-    n = len(df)
-    _add_line_chart(ws, "Host memory", "GB", 1, (pos["mem_used_gb"], pos["mem_cache_gb"]), 1, n, f"{anchor}2")
-    _add_line_chart(ws, "Host buffers/dirty", "MB", 1, (pos["buffers_mb"], pos["dirty_mb"]), 1, n, f"{anchor}20")
-    _add_line_chart(ws, "FC memory (total PSS)", "GB", 1, (pos["fc_pss_gb"],), 1, n, f"{anchor}38")
-    # Host CPU: busy (total non-idle) decomposed into iowait + user + sys so the
-    # reader sees both the aggregate and its breakdown on one axis.
-    _add_line_chart(
-        ws,
-        "Host CPU",
-        "%",
-        1,
-        (pos["cpu_busy_pct"], pos["cpu_iowait_pct"], pos["cpu_user_pct"], pos["cpu_sys_pct"]),
-        1,
-        n,
-        f"{anchor}56",
-    )
-    _add_line_chart(
-        ws,
-        "Page-cache pressure",
-        "MiB/s",
-        1,
-        (pos["page_scan_mib_s"], pos["page_reclaim_mib_s"], pos["file_refault_mib_s"]),
-        1,
-        n,
-        f"{anchor}74",
-    )
-    _add_line_chart(ws, "Swap in/out", "MiB/s", 1, (pos["swap_in_mib_s"], pos["swap_out_mib_s"]), 1, n, f"{anchor}92")
-    _add_line_chart(ws, "CPU cores (ublk + VM)", "cores", 1, (pos["ublk_cores"], pos["vm_cores"]), 1, n, f"{anchor}110")
-    # Alloc stalls (/s) is the headline "blocked on reclaim" counter (count of
-    # allocation requests that stalled). Direct reclaim is the blocking subset
-    # of page-scan, left as a column only.
-    _add_line_chart(ws, "Alloc stalls", "/s", 1, (pos["allocstall_per_s"],), 1, n, f"{anchor}128")
-    _add_line_chart(ws, "Concurrent VMs", "count", 1, (pos["concurrent_vms"],), 1, n, f"{anchor}146")
+    column_positions = {name: index + 1 for index, (name, _) in enumerate(column_labels)}
+
+    def column_position(column_name: str) -> int:
+        """1-indexed sheet column for a df column name (keeps the chart list
+        readable and insertion-safe)."""
+        return column_positions[column_name]
+
+    chart_anchor_column = get_column_letter(len(display_headers) + 2)
+    data_row_count = len(df)
+    # Charts read top-down in three blocks -- host memory (composition, then
+    # reclaimable vs unreclaimable), memory pressure (the same phenomenon:
+    # scan/reclaim/refault -> blocking stalls -> swap), then CPU/fleet. Kept in
+    # one list so the 18-row pitch is uniform by construction (8cm chart ~= 15
+    # default rows + 3-row gap; an explicit anchor per call is how the
+    # pressure and memory charts drifted apart before).
+    charts = [
+        # -- memory composition -------------------------------------------------
+        ("Host memory", "GB", (column_position("mem_used_gb"), column_position("mem_cache_gb"))),
+        # MB-scale page-cache signals share one axis; the GB-scale used/cache
+        # pair sits above (a mixed axis squashes the MB series onto zero).
+        (
+            "Buffers / dirty / writeback",
+            "MB",
+            (column_position("buffers_mb"), column_position("dirty_mb"), column_position("writeback_mb")),
+        ),
+        # Anon pages are unreclaimable (only swappable) -- the counterpart to the
+        # reclaimable file cache/slab, so "cache too small" vs "memory exhausted"
+        # reads directly off one chart.
+        (
+            "Anon vs file cache",
+            "MB",
+            (column_position("anon_pages_mb"), column_position("file_cache_mb"), column_position("sreclaimable_mb")),
+        ),
+        ("FC memory (total PSS)", "GB", (column_position("fc_pss_gb"),)),
+        # -- memory pressure ----------------------------------------------------
+        (
+            "Page-cache pressure",
+            "MiB/s",
+            (
+                column_position("page_scan_mib_s"),
+                column_position("page_reclaim_mib_s"),
+                column_position("file_refault_mib_s"),
+            ),
+        ),
+        # Alloc stalls is the headline "blocked on reclaim" counter; direct
+        # reclaim is its blocking-subset detail, left as a column only.
+        ("Alloc stalls", "/s", (column_position("allocstall_per_s"),)),
+        ("Swap in/out", "MiB/s", (column_position("swap_in_mib_s"), column_position("swap_out_mib_s"))),
+        # -- CPU / fleet --------------------------------------------------------
+        # busy (total non-idle) decomposed into iowait + user + sys on one axis.
+        (
+            "Host CPU",
+            "%",
+            (
+                column_position("cpu_busy_pct"),
+                column_position("cpu_iowait_pct"),
+                column_position("cpu_user_pct"),
+                column_position("cpu_sys_pct"),
+            ),
+        ),
+        ("CPU cores (ublk + VM)", "cores", (column_position("ublk_cores"), column_position("vm_cores"))),
+        ("Procs running/blocked", "count", (column_position("procs_running"), column_position("procs_blocked"))),
+        ("Concurrent VMs", "count", (column_position("concurrent_vms"),)),
+    ]
+    for chart_index, (title, y_axis_title, series_columns) in enumerate(charts):
+        chart_anchor = f"{chart_anchor_column}{2 + chart_index * _CHART_ROW_STEP}"
+        _add_line_chart(ws, title, y_axis_title, 1, series_columns, 1, data_row_count, chart_anchor)
 
 
 def _build_per_vm_sheet(wb, cores_df, pss_df):
@@ -661,20 +822,51 @@ def _build_per_vm_sheet(wb, cores_df, pss_df):
     _add_line_chart(ws, "Per-VM PSS", "GB", 1, pss_cols, pss_hdr, len(pss_df), f"{anchor}{pss_anchor_row}")
 
 
-def _build_disk_sheet(wb, df):
-    if df.empty:
+def _disk_display_header(column_name: str) -> str:
+    """df column -> readable sheet header / chart legend ("sda_read_await_ms" ->
+    "sda Read await (ms)"). Unknown suffixes fall through unchanged."""
+    if column_name == "t_s":
+        return "t (s)"
+    for field_name, label in _DISK_FIELD_LABELS.items():
+        suffix = f"_{field_name}"
+        if column_name.endswith(suffix):
+            return f"{column_name[: -len(suffix)]} {label}"
+    return column_name
+
+
+def _build_disk_sheet(wb, disk_df):
+    """Disk IO: per-device throughput / util / depth table + charts. All columns
+    come from the same /sys/block delta so a saturated device shows up in
+    util%, await and queue depth together (the iostat-style drill-down)."""
+    if disk_df.empty:
         return
     ws = wb.create_sheet("Disk IO")
-    headers = list(df.columns)
-    _write_table(ws, df, headers)
-    anchor = get_column_letter(len(headers) + 2)
-    n = len(df)
-    rw_cols = tuple(i for i, h in enumerate(headers, 1) if h.endswith("_r_mb_s") or h.endswith("_w_mb_s"))
-    util_cols = tuple(i for i, h in enumerate(headers, 1) if h.endswith("_util_pct"))
-    if rw_cols:
-        _add_line_chart(ws, "Disk r/w MB/s", "MB/s", 1, rw_cols, 1, n, f"{anchor}2")
-    if util_cols:
-        _add_line_chart(ws, "Disk util %", "%", 1, util_cols, 1, n, f"{anchor}20")
+    column_names = list(disk_df.columns)  # suffix names drive the chart matching
+    display_headers = [_disk_display_header(name) for name in column_names]
+    _write_table(ws, disk_df, display_headers, cols=column_names)
+    chart_anchor_column = get_column_letter(len(display_headers) + 2)
+    data_row_count = len(disk_df)
+
+    def columns_matching(*suffixes):
+        return tuple(index for index, name in enumerate(column_names, 1) if name.endswith(tuple(suffixes)))
+
+    # (title, y-axis title, columns) -- suffix-matched so a new device adds its
+    # series to every chart with no hardcoded positions. Order follows the
+    # iostat drill-down: throughput -> saturation -> latency -> depth -> IOPS.
+    charts = [
+        ("Disk r/w MB/s", "MB/s", columns_matching("_r_mb_s", "_w_mb_s")),
+        ("Disk util %", "%", columns_matching("_util_pct")),
+        ("Disk await", "ms", columns_matching("_read_await_ms", "_write_await_ms")),
+        # inflight (instantaneous) and queue depth (interval mean) share a unit.
+        ("Disk queue depth / inflight", "count", columns_matching("_avg_queue_depth", "_inflight")),
+        ("Disk IOPS", "IOPS", columns_matching("_r_iops", "_w_iops")),
+    ]
+    for chart_index, (title, y_axis_title, series_columns) in enumerate(charts):
+        if series_columns:
+            # bottom legend: per-device labels ("sda Read await (ms)") are long
+            # enough to clip against the frame on the default right-side legend
+            chart_anchor = f"{chart_anchor_column}{2 + chart_index * _CHART_ROW_STEP}"
+            _add_line_chart(ws, title, y_axis_title, 1, series_columns, 1, data_row_count, chart_anchor, legend_pos="b")
 
 
 def _derive_hostproc(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -771,38 +963,60 @@ def _build_hostproc_sheet(wb, cores_df, pss_df):
         )
 
 
+def _derive_or_fallback(raw_dir: Path, source_name: str, derive_fn, fallback):
+    """Run one CSV derivation, falling back to ``fallback`` (an empty frame, or
+    an empty frame pair) with a WARNING when the CSV is malformed -- a bad input
+    must not cost the whole workbook."""
+    try:
+        return derive_fn(raw_dir)
+    except Exception as exc:
+        logger.warning("%s derivation failed for raw_dir=%s: %s", source_name, raw_dir, exc)
+        return fallback
+
+
 def build_host_resources_xlsx(raw_dir, out_path) -> Path:
-    """Read raw_data/*.csv -> derive -> write host_resources.xlsx (3 spotbox-style
-    sheets). Independent of resource_report.xlsx (separate filename preserves
-    bench-core's reap signal) and of in-memory history (post-hoc rerunnable).
-    Degrades: a missing CSV skips its sheet (WARNING), never raises."""
+    """Read raw_data/*.csv -> derive -> write host_resources.xlsx (Host resources
+    / Per-VM / Disk IO / HostProc sheets). Independent of resource_report.xlsx
+    (separate filename preserves bench-core's reap signal) and of in-memory
+    history (post-hoc rerunnable). Degrades: a missing CSV skips its sheet
+    (WARNING), never raises."""
     raw_dir = Path(raw_dir)
     out_path = Path(out_path)
-    host_df = _derive_host(raw_dir)
-    cores_df, pss_df = pd.DataFrame(), pd.DataFrame()
-    try:
-        cores_df, pss_df = _derive_per_vm(raw_dir)
-    except (OSError, ValueError, KeyError, pd.errors.ParserError) as e:
-        logger.warning("per-VM derivation failed for raw_dir=%s: %s", raw_dir, e)
-        cores_df, pss_df = pd.DataFrame(), pd.DataFrame()
-    disk_df = _derive_disk(raw_dir)
-    hp_cores_df, hp_pss_df = _derive_hostproc(raw_dir)
+    host_df = _derive_or_fallback(raw_dir, "host", _derive_host, pd.DataFrame())
+    disk_df = _derive_or_fallback(raw_dir, "disk", _derive_disk, pd.DataFrame())
+    # Each derivation returns a frame pair; separate fallbacks avoid aliasing.
+    per_vm_frames = _derive_or_fallback(raw_dir, "per-VM", _derive_per_vm, (pd.DataFrame(), pd.DataFrame()))
+    hostproc_frames = _derive_or_fallback(raw_dir, "hostproc", _derive_hostproc, (pd.DataFrame(), pd.DataFrame()))
     # vm_cores / fc_pss_gb / concurrent_vms now come filled from _derive_host
     # (single aggregate jiffies delta + gauges, epoch-aligned) -- no positional
     # fill needed. _derive_per_vm still feeds the Per-VM drill-down sheet below.
     wb = Workbook()
-    default = wb.active
-    _build_host_sheet(wb, host_df)
-    _build_per_vm_sheet(wb, cores_df, pss_df)
-    _build_disk_sheet(wb, disk_df)
-    _build_hostproc_sheet(wb, hp_cores_df, hp_pss_df)
+    default_sheet = wb.active
+    # One sheet per builder, each isolated: a sheet that cannot be built (an
+    # over-wide table, a bad column) is dropped with a WARNING rather than
+    # taking the rest of the workbook down with it -- exactly how a 17k-column
+    # Disk IO table once cost every other sheet.
+    sheet_builders = (
+        ("Host resources", _build_host_sheet, (host_df,)),
+        ("Per-VM", _build_per_vm_sheet, per_vm_frames),
+        ("Disk IO", _build_disk_sheet, (disk_df,)),
+        ("HostProc", _build_hostproc_sheet, hostproc_frames),
+    )
+    for sheet_name, build_sheet, build_args in sheet_builders:
+        sheets_before = set(wb.sheetnames)
+        try:
+            build_sheet(wb, *build_args)
+        except Exception as exc:
+            for added_sheet in set(wb.sheetnames) - sheets_before:  # never keep a half-built sheet
+                wb.remove(wb[added_sheet])
+            logger.warning("%s sheet failed for raw_dir=%s: %s", sheet_name, raw_dir, exc)
     # If no sheet was built (all raw CSVs missing/empty), there is nothing to
     # write -- log + return without saving a misleading empty workbook. Also
     # avoids wb.save() IndexError on a 0-sheet book (default was not removed).
     if len(wb.worksheets) == 1:  # only the default -> no sheet built at all
         logger.warning("no raw CSV data found in raw_dir=%s; host_resources.xlsx not written", raw_dir)
         return out_path
-    wb.remove(default)
+    wb.remove(default_sheet)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out_path)
     logger.info("host_resources.xlsx written: %s", out_path)

@@ -46,6 +46,9 @@ except ImportError:  # pragma: no cover
 # cap. Per-VM aggregated sheets (Summary/VM_Stats/DevKit_*/KSys/...) stay small
 # (<= n_vms or <= a few dozen rows) and are never guarded.
 _EXCEL_MAX_ROWS = 1_048_576
+# Excel's column limit (XFD). A per-device sheet can overrun it on a sandbox
+# fleet host, where each sandbox exposes a block device (e.g. ublkb*).
+_EXCEL_MAX_COLS = 16_384
 
 # Internal dependency
 from .parsers import parse_all_logs
@@ -56,33 +59,32 @@ if TYPE_CHECKING:
 
 
 def _safe_write_sheet(writer, df, sheet_name, *, log_dir=None):
-    """Write ``df`` to an xlsx sheet, guarding Excel's row limit.
+    """Write ``df`` to an xlsx sheet, guarding Excel's row and column limits.
 
     A per-sample timeline sheet (swap/memory/disk/pressure/...) can exceed
-    Excel's 1,048,576-row cap on a very long collection. Without a guard, the
-    ``to_excel`` raises inside the shared ``ExcelWriter`` block and aborts the
-    ENTIRE workbook (every other sheet + charts lost because ONE sheet was too
-    big). When the DataFrame exceeds the cap, this skips the sheet (so the
-    workbook survives) and, when ``log_dir`` is given, writes the full data to
-    ``<log_dir>/<sheet_name>.csv`` instead -- CSV has no row limit, so no data
-    is lost. At or below the cap it is a plain ``to_excel``.
+    Excel's 1,048,576-row / 16,384-column caps on a very long collection or a
+    host exposing many block devices. Without a guard, the ``to_excel`` raises
+    inside the shared ``ExcelWriter`` block and aborts the ENTIRE workbook
+    (every other sheet + charts lost because ONE sheet was too big). When the
+    DataFrame exceeds a cap, this skips the sheet (so the workbook survives)
+    and, when ``log_dir`` is given, writes the full data to
+    ``<log_dir>/<sheet_name>.csv`` instead -- CSV has no size limit, so no data
+    is lost. At or below the caps it is a plain ``to_excel``.
     """
-    if len(df) > _EXCEL_MAX_ROWS:
-        if log_dir:
-            csv_path = os.path.join(log_dir, f"{sheet_name}.csv")
-            df.to_csv(csv_path, index=False)
-            print(
-                f"[WARN] Skipping '{sheet_name}' sheet: {len(df):,} rows exceed "
-                f"Excel's {_EXCEL_MAX_ROWS:,}-row limit. Full data written to "
-                f"CSV: {csv_path}"
-            )
-        else:
-            print(
-                f"[WARN] Skipping '{sheet_name}' sheet: {len(df):,} rows exceed "
-                f"Excel's {_EXCEL_MAX_ROWS:,}-row limit."
-            )
+    n_rows, n_cols = len(df), df.shape[1]
+    if n_rows <= _EXCEL_MAX_ROWS and n_cols <= _EXCEL_MAX_COLS:
+        df.to_excel(writer, sheet_name=sheet_name, index=False)
         return
-    df.to_excel(writer, sheet_name=sheet_name, index=False)
+    msg = (
+        f"{n_rows:,} rows x {n_cols:,} cols exceed Excel's "
+        f"{_EXCEL_MAX_ROWS:,}-row / {_EXCEL_MAX_COLS:,}-column limits"
+    )
+    if log_dir:
+        csv_path = os.path.join(log_dir, f"{sheet_name}.csv")
+        df.to_csv(csv_path, index=False)
+        print(f"[WARN] Skipping '{sheet_name}' sheet: {msg}. Full data written to CSV: {csv_path}")
+    else:
+        print(f"[WARN] Skipping '{sheet_name}' sheet: {msg}.")
 
 
 def _build_summary_sheet(writer, monitor, numa_nodes, overall_stats, *, raw_host_df=None):

@@ -129,6 +129,57 @@ def test_derive_host_cpu_mem_swap(tmp_path):
     assert math.isnan(df.iloc[0]["cpu_busy_pct"])
     assert math.isnan(df.iloc[0]["cpu_user_pct"])
     assert math.isnan(df.iloc[0]["cpu_sys_pct"])
+    # host memory page-cache composition + procs gauges (extra Host resources
+    # columns; MB passthrough like buffers/dirty)
+    assert math.isclose(r["sreclaimable_mb"], 52000, abs_tol=0.01)
+    assert math.isclose(r["writeback_mb"], 0, abs_tol=0.01)
+    # file_cache = Cached + Buffers - Shmem; the fixture has no Shmem column ->
+    # treated as 0 (one absent field must not blank the column)
+    assert math.isclose(r["file_cache_mb"], 210000 + 32000, abs_tol=0.01)
+    assert math.isnan(r["anon_pages_mb"])  # AnonPages absent from this fixture
+    assert r["procs_running"] == 0 and r["procs_blocked"] == 0
+
+
+def test_derive_host_file_cache_nan_when_source_missing(tmp_path):
+    """An absent source field must NaN-hole only its own column.
+
+    Regression: ``max(0.0, Cached + Buffers - Shmem)`` returns 0.0 when Cached
+    is NaN (Python's max keeps the first arg on an unordered comparison), i.e.
+    a CSV without ``Cached`` rendered a flat 0 MB "file cache" line instead of
+    a gap. Only a real negative sum gets clamped."""
+    d = tmp_path
+    _write(
+        d / "host_cpu_raw.csv",
+        [
+            "timestamp",
+            "cpu_user",
+            "cpu_nice",
+            "cpu_system",
+            "cpu_idle",
+            "cpu_iowait",
+            "cpu_irq",
+            "cpu_softirq",
+            "cpu_steal",
+            "procs_running",
+            "procs_blocked",
+        ],
+        [
+            ["0", "100", "0", "50", "8000", "100", "10", "20", "5", "0", "0"],
+            ["2", "120", "0", "55", "8010", "102", "11", "22", "6", "0", "0"],
+        ],
+    )
+    # no Cached column at all; Buffers/SReclaimable still present
+    _write(
+        d / "host_mem_raw.csv",
+        ["timestamp", "MemTotal", "MemAvailable", "Buffers", "SReclaimable"],
+        [["0", "2097152", "1048576", "30000", "50000"], ["2", "2097152", "943718", "32000", "52000"]],
+    )
+    r = _derive_host(d).iloc[1]
+    assert math.isnan(r["file_cache_mb"])
+    assert math.isnan(r["mem_cache_gb"])
+    # the fields that ARE present still come through
+    assert math.isclose(r["buffers_mb"], 32000, abs_tol=0.01)
+    assert math.isclose(r["sreclaimable_mb"], 52000, abs_tol=0.01)
 
 
 def test_derive_host_ublk_duplicate_timestamps(tmp_path, caplog):
@@ -366,19 +417,20 @@ def test_derive_disk_rates_and_reset(tmp_path, caplog):
 
     hdr = ["timestamp", "device", *_DISK_FIELDS]
 
-    def row(ts, dev, sr, sw, msio):
+    def row(ts, dev, sr, sw, msio, inflight=0):
         vals = {f: 0 for f in _DISK_FIELDS}
         vals["sectors_read"] = sr
         vals["sectors_written"] = sw
         vals["ms_io"] = msio
         vals["reads_completed"] = sr
         vals["writes_completed"] = sw
+        vals["inflight"] = inflight
         return [ts, dev, *[vals[f] for f in _DISK_FIELDS]]
 
     rows = [
-        row("0", "sda", 0, 0, 0),
-        row("2", "sda", 2000, 4000, 1000),
-        row("4", "sda", 100, 100, 50),  # RESET: sectors_read 2000 -> 100
+        row("0", "sda", 0, 0, 0, inflight=3),
+        row("2", "sda", 2000, 4000, 1000, inflight=3),
+        row("4", "sda", 100, 100, 50, inflight=2),  # RESET: sectors_read 2000 -> 100
     ]
     _write(d / "disk_io_raw.csv", hdr, rows)
 
@@ -388,10 +440,58 @@ def test_derive_disk_rates_and_reset(tmp_path, caplog):
     r2 = df[df["t_s"] == 2.0].iloc[0]
     assert math.isclose(r2["sda_r_mb_s"], 2000 * 512 / 2**20 / 2, abs_tol=0.01)
     assert math.isclose(r2["sda_w_mb_s"], 4000 * 512 / 2**20 / 2, abs_tol=0.01)
-    # t=4 reset -> NaN (not a negative spike)
+    # t=4 reset -> NaN (not a negative spike); depth columns share the guard
     r4 = df[df["t_s"] == 4.0].iloc[0]
     assert math.isnan(r4["sda_r_mb_s"])
+    assert math.isnan(r4["sda_r_iops"])
+    assert math.isnan(r4["sda_read_await_ms"])
+    # ...except inflight, which is a gauge: valid on the first sample and
+    # across the reset (no baseline to lose).
+    assert df[df["t_s"] == 0.0].iloc[0]["sda_inflight"] == 3
+    assert r4["sda_inflight"] == 2
     assert any("counter reset" in m and "sda" in m for m in caplog.messages)
+
+
+def test_derive_disk_depth_columns(tmp_path):
+    """Depth metrics ride the same /sys delta as r/w/util: IOPS, avg request
+    size, queue depth and await are all derived from the raw counters
+    (mirrors resource_report's Disk_IO_Timeline)."""
+    d = tmp_path
+    from vm_monitor.base import _DISK_FIELDS
+
+    def row(ts, sr, sw, msio, wms, rms, rdone, wdone, inflight):
+        vals = {f: 0 for f in _DISK_FIELDS}
+        vals.update(
+            sectors_read=sr,
+            sectors_written=sw,
+            ms_io=msio,
+            weighted_ms=wms,
+            read_ms=rms,
+            writes_completed=wdone,
+            reads_completed=rdone,
+            inflight=inflight,
+        )
+        return [ts, "sda", *[vals[f] for f in _DISK_FIELDS]]
+
+    _write(
+        d / "disk_io_raw.csv",
+        ["timestamp", "device", *_DISK_FIELDS],
+        [
+            row("0", 0, 0, 0, 0, 0, 0, 0, 0),
+            # dt=2: 2000 sectors read + 4000 written, 1000 ms busy, 500 ms
+            # weighted, 400 ms of read latency over 200 reads, 5 in flight.
+            row("2", 2000, 4000, 1000, 500, 400, 200, 800, 5),
+        ],
+    )
+    df = _derive_disk(d)
+    r = df[df["t_s"] == 2.0].iloc[0]
+    assert math.isclose(r["sda_avg_queue_depth"], 500 / 1000 / 2, abs_tol=0.001)
+    assert math.isclose(r["sda_read_await_ms"], 400 / 200, abs_tol=0.001)
+    assert math.isclose(r["sda_write_await_ms"], 0.0, abs_tol=0.001)  # no write_ms
+    assert math.isclose(r["sda_r_iops"], 200 / 2, abs_tol=0.01)
+    assert math.isclose(r["sda_w_iops"], 800 / 2, abs_tol=0.01)
+    assert math.isclose(r["sda_avg_rq_sz"], (2000 + 4000) / (200 + 800), abs_tol=0.01)
+    assert r["sda_inflight"] == 5  # gauge at the interval's closing sample
 
 
 def test_derive_disk_inflight_gauge_excluded_from_guard(tmp_path, caplog):
@@ -433,6 +533,52 @@ def test_derive_disk_inflight_gauge_excluded_from_guard(tmp_path, caplog):
     assert not math.isnan(r4["sda_r_mb_s"])
     # And the rate is correct (proves it actually computed, not just non-NaN)
     assert math.isclose(r2["sda_r_mb_s"], 2000 * 512 / 2**20 / 2, abs_tol=0.01)
+
+
+def test_derive_disk_caps_series_and_keeps_busiest(tmp_path, caplog):
+    """A pre-fix raw CSV from a sandbox-fleet host carries one block device per
+    sandbox (1,700+ devices -> ~19k columns, past Excel's 16,384-column cap,
+    which killed the whole workbook). The sheet keeps the busiest
+    _MAX_DISK_DEVICES series and warns about the rest. Which devices exist is
+    the collector's call -- the report only enforces sheet capacity."""
+    import logging
+
+    from vm_monitor.base import _DISK_FIELDS
+    from vm_monitor.raw_report import _MAX_DISK_DEVICES
+
+    d = tmp_path
+    devs = [f"ublkb{i}" for i in range(_MAX_DISK_DEVICES + 4)] + ["sda"]
+    rows = []
+    for ts in ("0", "2"):
+        for i, dev in enumerate(devs):
+            vals = {f: 0 for f in _DISK_FIELDS}
+            # sda is the busiest; ublkb0 (i=0) the least busy
+            vals["sectors_read"] = 0 if ts == "0" else (i + 1) * 100
+            rows.append([ts, dev, *[vals[f] for f in _DISK_FIELDS]])
+    _write(d / "disk_io_raw.csv", ["timestamp", "device", *_DISK_FIELDS], rows)
+
+    with caplog.at_level(logging.WARNING):
+        df = _derive_disk(d)
+    assert df.shape[1] == 1 + _MAX_DISK_DEVICES * 10  # t_s + 10 cols/device
+    assert "sda_r_mb_s" in df.columns
+    assert f"ublkb{_MAX_DISK_DEVICES + 3}_r_mb_s" in df.columns  # 2nd busiest
+    assert "ublkb0_r_mb_s" not in df.columns  # least busy, beyond the cap
+    assert any("sheet cap" in m for m in caplog.messages)
+
+
+def test_derive_disk_keeps_explicitly_requested_virtual_device(tmp_path):
+    """An explicitly monitored virtual device (--disks ublkb0) is in the raw
+    CSV because someone asked for it; the report must not filter it away by
+    name -- it only caps series count."""
+    from vm_monitor.base import _DISK_FIELDS
+
+    vals = {f: 0 for f in _DISK_FIELDS}
+    _write(
+        tmp_path / "disk_io_raw.csv",
+        ["timestamp", "device", *_DISK_FIELDS],
+        [["0", "ublkb0", *[vals[f] for f in _DISK_FIELDS]]],
+    )
+    assert "ublkb0_r_mb_s" in _derive_disk(tmp_path).columns
 
 
 def _seed_all(d):
@@ -512,19 +658,92 @@ def test_build_xlsx_sheets_and_charts(tmp_path):
     wb = openpyxl.load_workbook(out)
     assert set(wb.sheetnames) == {"Host resources", "Per-VM", "Disk IO"}
     host = wb["Host resources"]
-    assert len(host._charts) == 9
-    # series counts lock the col-set per chart (memory=2, buffers/dirty=2,
-    # fc_pss=1, cpu=4 [busy+iowait+user+sys], pressure=3, swap=2, cores=2,
-    # alloc-stalls=1, concurrent_vms=1) -- guards against pressure wrongly
-    # including swap cols or an off-by-one skipping a series.
-    assert sorted(len(c.series) for c in host._charts) == [1, 1, 1, 2, 2, 2, 2, 3, 4]
+    # 11 charts on the one host timeline: memory(2), buffers/dirty/writeback(3),
+    # anon vs file cache(3), fc_pss(1), page pressure(3), alloc stalls(1),
+    # swap(2), cpu(4), cores(2), procs(2), concurrent vms(1). Series counts lock
+    # the col-set per chart (an off-by-one skipping a series would show up here);
+    # the reading order + seating are locked by test_build_xlsx_chart_layout.
+    assert len(host._charts) == 11
+    assert sorted(len(c.series) for c in host._charts) == [1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 4]
     # FC total PSS = sum of per-VM pss_mb/1024 per timestamp. _seed_all's vm0
     # has pss_mb=1024 at both samples -> fc_pss_gb=1.0 GB. Looked up by header
     # label (not hardcoded column) so a mid-table column insertion can't break it.
     fc_col = next(i for i, c in enumerate(host[1], start=1) if c.value == "FC total PSS (GB)")
     assert math.isclose(host.cell(row=2, column=fc_col).value, 1.0, abs_tol=0.001)
+    # new host-memory / pressure columns are real cells (row 3 = t=2; row 2 is
+    # the first sample where gauges are NaN by design)
+    wb_col = next(i for i, c in enumerate(host[1], start=1) if c.value == "Writeback (MB)")
+    assert host.cell(row=3, column=wb_col).value == 0
+    fc_col2 = next(i for i, c in enumerate(host[1], start=1) if c.value == "File cache (MB)")
+    assert math.isclose(host.cell(row=3, column=fc_col2).value, 210000 + 32000, abs_tol=0.01)
     assert len(wb["Per-VM"]._charts) == 2
-    assert len(wb["Disk IO"]._charts) == 2
+    # Disk IO: r/w + util + await + queue depth/inflight + IOPS
+    assert len(wb["Disk IO"]._charts) == 5
+    assert sorted(len(c.series) for c in wb["Disk IO"]._charts) == [1, 2, 2, 2, 2]
+
+
+def _chart_title(ch):
+    """Chart title text as stored by openpyxl (rich-text run)."""
+    return ch.title.tx.rich.p[0].r[0].t
+
+
+def _chart_anchor(ch):
+    """(col, row) of a chart's top-left, 0-indexed (openpyxl OneCellAnchor)."""
+    return ch.anchor._from.col, ch.anchor._from.row
+
+
+def test_build_xlsx_chart_layout(tmp_path):
+    """Chart order + seating, read back from the written file.
+
+    Order is the reading order (memory -> memory pressure -> CPU/fleet); the
+    anchor pitch must clear the 8 cm chart height, and every chart sits to the
+    right of the data table so it never covers a column."""
+    d = tmp_path
+    _seed_all(d)
+    out = d / "host_resources.xlsx"
+    build_host_resources_xlsx(d, out)
+    wb = openpyxl.load_workbook(out)
+    host = wb["Host resources"]
+    assert [_chart_title(c) for c in host._charts] == [
+        # memory composition
+        "Host memory",
+        "Buffers / dirty / writeback",
+        "Anon vs file cache",
+        "FC memory (total PSS)",
+        # memory pressure -- same phenomenon, adjacent charts
+        "Page-cache pressure",
+        "Alloc stalls",
+        "Swap in/out",
+        # CPU / fleet
+        "Host CPU",
+        "CPU cores (ublk + VM)",
+        "Procs running/blocked",
+        "Concurrent VMs",
+    ]
+    cols, rows = zip(*(_chart_anchor(c) for c in host._charts))
+    # one blank column between the last data column and the chart stack
+    assert set(cols) == {host.max_column + 1}
+    assert rows[0] == 1  # top-aligned with the first data row
+    # 18 default rows (15pt = 0.53cm) = 9.5cm of pitch > the 8cm chart height
+    assert {b - a for a, b in zip(rows, rows[1:])} == {18}
+    disk = wb["Disk IO"]
+    assert [_chart_title(c) for c in disk._charts] == [
+        "Disk r/w MB/s",
+        "Disk util %",
+        "Disk await",
+        "Disk queue depth / inflight",
+        "Disk IOPS",
+    ]
+    dcols, drows = zip(*(_chart_anchor(c) for c in disk._charts))
+    assert set(dcols) == {disk.max_column + 1}
+    assert {b - a for a, b in zip(drows, drows[1:])} == {18}
+    # table header + legend read as prose, not as df suffixes (the df keeps
+    # sda_r_mb_s etc. -- only the display label is rewritten)
+    disk_headers = [c.value for c in disk[1]]
+    assert "sda Read (MB/s)" in disk_headers
+    assert "sda Queue depth" in disk_headers
+    assert "sda_r_mb_s" not in disk_headers
+    assert disk_headers[0] == "t (s)"
 
 
 def test_build_xlsx_degrades_on_missing_csv(tmp_path):
@@ -558,6 +777,28 @@ def test_build_xlsx_degrades_on_missing_csv(tmp_path):
     assert "Host resources" in wb.sheetnames
     assert "Per-VM" not in wb.sheetnames
     assert "Disk IO" not in wb.sheetnames
+
+
+def test_build_xlsx_isolates_a_failing_sheet(tmp_path, monkeypatch, caplog):
+    """A builder that raises must cost only its own sheet: the workbook is still
+    written with the others, and no half-built sheet is left behind. This is the
+    contract that a 17k-column Disk IO table broke in production (openpyxl
+    refused the sheet and the entire workbook was lost)."""
+    _seed_all(tmp_path)
+    out = tmp_path / "host_resources.xlsx"
+
+    def fail_building_disk_sheet(wb, disk_df):
+        wb.create_sheet("Disk IO")
+        raise ValueError("Max value is 16384")
+
+    monkeypatch.setattr("vm_monitor.raw_report._build_disk_sheet", fail_building_disk_sheet)
+    with caplog.at_level(logging.WARNING):
+        build_host_resources_xlsx(tmp_path, out)
+
+    wb = openpyxl.load_workbook(out)
+    assert "Disk IO" not in wb.sheetnames  # half-built sheet dropped
+    assert "Host resources" in wb.sheetnames
+    assert any("Disk IO sheet failed" in m for m in caplog.messages)
 
 
 def test_build_xlsx_no_crash_when_all_csvs_missing(tmp_path, caplog):
