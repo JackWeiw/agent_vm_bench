@@ -116,6 +116,17 @@ These have their own managers / stats / round-robin (`e2b_bench/run_benchmark` i
 - Ruff config in `pyproject.toml`: **`target-version = "py38"`** — do NOT bump to py310 casually; it activates ~740 UP findings repo-wide. Leave it for a dedicated modernization PR.
 - English-only comments and commit messages (no Chinese in code/comments; GitHub issues/PRs/RFCs in English even when the conversation is Chinese).
 
+### Naming & clean code
+
+One bar: **the next reader (or you in three months) changes the code correctly without scrolling back for context.** Short alone is not clean, and neither is tidy — legible and safe-to-edit is.
+
+- **A name states intent, not type.** `data_row_count` over `n`, `columns_matching("_r_mb_s")` over `_cols()`, `_derive_or_fallback` over `_derive_or`. If a name needs a scroll to decode, the name is the defect.
+- **A name must never lie.** A helper called `_bytes` that returns sectors is worse than a clumsy name — downstream logic gets written against the lie.
+- **Length scales with scope.** `i` is fine in a three-line loop; anything read 40 lines later or crossing a function boundary gets the full name. Do not sweep a file to rename unambiguous locals (`df`, `ws`, `d`) — that is churn, not clean.
+- **Structure carries the meaning; comments carry the why.** A table of `(sheet_name, builder, args)` reads as "four isolated sheets" with no prose. Comments explain constraints and choices (why the cap is 16, why the last snapshot ranks devices), never what the next line does — if they did, the name failed.
+- **No abstraction for symmetry.** A two-line helper that makes a chart list readable earns its place; a `SheetBuilder` class for one call site does not.
+- **Consistency beats personal taste.** Match the surrounding file's idiom; keep established short names rather than rewriting a module.
+
 ### Configuration
 
 - All configs in YAML under `config/`; new backend-agnostic workflows go in `config/common/` (one file per workflow, both `e2b:` + `docker:` blocks).
