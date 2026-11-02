@@ -801,6 +801,38 @@ def test_build_xlsx_isolates_a_failing_sheet(tmp_path, monkeypatch, caplog):
     assert any("Disk IO sheet failed" in m for m in caplog.messages)
 
 
+def test_api_state_columns_and_chart(tmp_path):
+    """api_state_raw.csv merges as-of onto host epochs, appending two columns +
+    the "Sandbox states (API)" chart (issue: process gauge can't see paused VMs)."""
+    d = tmp_path
+    _seed_all(d)
+    _write(
+        d / "api_state_raw.csv",
+        ["timestamp", "sandboxes_running", "sandboxes_paused", "sandboxes_other", "sandboxes_total"],
+        [["0", "1", "0", "0", "1"], ["1.5", "3", "7", "0", "10"]],
+    )
+    df = _derive_host(d)
+    # backward as-of: host t=0 -> first poll; host t=2 -> the 1.5s poll
+    assert df["sandboxes_running"].tolist() == [1.0, 3.0]
+    assert df["sandboxes_paused"].tolist() == [0.0, 7.0]
+    out = d / "host_resources.xlsx"
+    build_host_resources_xlsx(d, out)
+    wb = openpyxl.load_workbook(out)
+    host = wb["Host resources"]
+    headers = [c.value for c in host[1]]
+    assert headers[-2:] == ["Sandboxes running (API)", "Sandboxes paused (API)"]
+    assert len(host._charts) == 12
+    assert _chart_title(host._charts[-1]) == "Sandbox states (API)"
+    assert [_chart_title(c) for c in host._charts][-2] == "Concurrent VMs"
+
+
+def test_api_state_absent_leaves_sheet_shape_unchanged(tmp_path):
+    """No list API -> no columns, no chart (backends that cannot report states)."""
+    _seed_all(tmp_path)
+    df = _derive_host(tmp_path)
+    assert "sandboxes_running" not in df.columns
+
+
 def test_build_xlsx_no_crash_when_all_csvs_missing(tmp_path, caplog):
     """All raw CSVs missing -> no sheet built -> WARNING + no file written,
     never raises (contract: 'never raises'). Regression for the wb.save()

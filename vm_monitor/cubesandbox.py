@@ -21,12 +21,25 @@ class CubeSandboxMonitor(VMMonitorBase):
     Monitors ``containerd-shim-cube-rs`` shim processes.
     """
 
-    # Process names to match (the cube containerd-shim binary)
-    PROCESS_NAMES = ("containerd-shim-cube-rs",)
+    # Truncated comm, not the 24-char binary name: psutil's name() reads
+    # /proc/<pid>/stat field 2, which the kernel caps at 15 chars.
+    PROCESS_NAMES = ("containerd-shim",)
 
     def get_process_names(self) -> tuple[str, ...]:
         """Return CubeSandbox shim process names to match"""
         return self.PROCESS_NAMES
+
+    def _matches_vm_process(self, proc_name: str, cmdline: str) -> bool:
+        """Match cube shims only -- every containerd shim shares the comm.
+
+        ``containerd-shim-runc-v2`` truncates to the same ``containerd-shim``
+        comm, so the comm alone would sweep in every ordinary container on the
+        host. Prefer the full binary name when it survived in ``proc_name`` (a
+        psutil build returning the command-line name), else disambiguate on the
+        cmdline; a truncated comm with an unreadable cmdline is skipped rather
+        than miscounted.
+        """
+        return "containerd-shim" in proc_name and ("cube" in proc_name or "containerd-shim-cube-rs" in cmdline)
 
     def extract_vm_id(self, pid: int, cmdline: str) -> str:
         """Extract sandbox ID from the cube shim command line.

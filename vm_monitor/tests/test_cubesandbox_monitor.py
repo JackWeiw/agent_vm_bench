@@ -4,9 +4,27 @@ from __future__ import annotations
 from vm_monitor.cubesandbox import CubeSandboxMonitor
 
 
-def test_process_names_match_cube_shim():
+def test_process_names_use_kernel_truncated_comm():
     m = CubeSandboxMonitor()
-    assert m.get_process_names() == ("containerd-shim-cube-rs",)
+    # psutil name() is comm, capped at 15 chars -- the 24-char binary name
+    # never matched, so the whole per-VM series was empty (issue #270).
+    assert m.get_process_names() == ("containerd-shim",)
+
+
+def test_matches_only_cube_shims_not_runc_shims():
+    m = CubeSandboxMonitor()
+    assert m._matches_vm_process(
+        "containerd-shim",
+        "containerd-shim-cube-rs -namespace default -id sbx_abc123",
+    )
+    # Same truncated comm, different plugin -- must not be counted as a VM.
+    assert not m._matches_vm_process(
+        "containerd-shim",
+        "containerd-shim-runc-v2 -namespace moby -id 3f9a1c -address /run/containerd/containerd.sock",
+    )
+    # If a psutil build reports the full command-line name, match it even when
+    # the cmdline is unreadable (hidepid); "top" shows this 24-char form.
+    assert m._matches_vm_process("containerd-shim-cube-rs", "")
 
 
 def test_extract_vm_id_from_id_flag():

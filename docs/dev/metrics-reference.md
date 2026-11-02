@@ -606,6 +606,24 @@ rounded), so the raw jiffies are the authoritative source.
 
 > A multi-vCPU row can exceed 100% (each core = 100%; a 384-core host saturates at 38400%). `_CLK_TCK = os.sysconf("SC_CLK_TCK")` (typically 100).
 
+### Control-plane sandbox states (`api_state_raw.csv`)
+
+Gauges, not counters — no delta, no guard. bench-core's `ApiStateSampler`
+(`src/bench_core/observability/api_state.py`) polls
+`provider.list_sandbox_states()` once per `monitor.interval` inside the stress
+bracket and appends one row: `timestamp`, `sandboxes_running`,
+`sandboxes_paused`, `sandboxes_other`, `sandboxes_total`. States are the
+provider's own (e2b/aenv: `Sandbox.list()` over running+paused; cubesandbox:
+`Sandbox.list()` dicts), normalized to lowercase last-dot segments.
+
+Why it exists next to `concurrent_vms`: `concurrent_vms` counts live VMM
+**processes**, so a paused sandbox (no process) or one still booting is
+invisible — the process gauge undercounts the fleet the provider holds, most
+visibly in oversubscription (pause-and-reuse) runs. The two are point-sampled
+at different instants, so read them as two views of the same fleet, not a
+reconciliation. Providers with no list API (fake/docker) write no CSV, and the
+`Sandbox states (API)` chart + its two columns are simply absent.
+
 ### Dirty throttle thresholds (`_read_dirty_limits_mb`)
 
 Read **once** (lazy, on first `collect_host_pressure`); drawn as dashed lines on
@@ -701,6 +719,10 @@ regeneratable after any interruption.
 
 列按其在表中出现的顺序，依所属折线图分组列出。主机内存构成、页缓存压力、进程队列都在
 这一张表内，右侧竖排 11 张折线图，自上而下按主题分三块（图名顺序 = 阅读顺序）：
+
+> 后端支持 `list_sandbox_states()` 时（e2b/aenv/cubesandbox），这张表末尾追加
+> `Sandboxes running (API)` / `Sandboxes paused (API)` 两列（共 29 列）并在最下方加
+> 第 12 张图 `Sandbox states (API)`；fake/docker 无列表 API 时表结构与下图完全不变。
 
 1. **内存构成** —— `Host memory` → `Buffers / dirty / writeback` → `Anon vs file cache` →
    `FC memory (total PSS)`

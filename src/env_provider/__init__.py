@@ -190,6 +190,18 @@ class EnvironmentProvider(ABC):
     def detect_existing(self) -> Mapping[int, SandboxInstance]:
         """Detect already-running sandboxes; return ``{index: instance}``."""
 
+    def list_sandbox_states(self) -> Mapping[str, int] | None:
+        """Count this provider's sandboxes by backend state (control-plane view).
+
+        Returns ``{state: count}`` with normalized lowercase states (at least
+        ``"running"`` / ``"paused"`` for backends that have both). Used by the
+        host monitor to sample the fleet the provider believes it holds: the
+        process-level ``Concurrent VMs`` gauge cannot see a paused sandbox (no
+        VMM process) or one still booting. ``None`` = the backend has no list
+        API (default) -- the kernel skips the series.
+        """
+        return None
+
     def detect_from_ids(self, ids_file: str | None = None) -> Mapping[int, SandboxInstance] | None:
         """Load sandboxes from a persisted-IDs file.
 

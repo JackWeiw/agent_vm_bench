@@ -15,6 +15,7 @@ import logging
 import math
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from vm_monitor.base import (
@@ -170,6 +171,27 @@ def _read_csv(raw_dir: Path, fname: str) -> pd.DataFrame | None:
     except (pd.errors.ParserError, OSError, ValueError) as e:
         logger.warning("raw CSV unparseable: %s (%s) -> skipping", p, e)
         return None
+
+
+def _read_csv_optional(raw_dir: Path, fname: str) -> pd.DataFrame | None:
+    """Like :func:`_read_csv` but silent on absence -- the file is provider-dependent."""
+    p = raw_dir / fname
+    if not p.exists() or p.stat().st_size == 0:
+        return None
+    return _read_csv(raw_dir, fname)
+
+
+def _asof_join(sample_ts, value_ts, values):
+    """Last value sampled at or before each sample ts (backward as-of, gauges only).
+
+    A gauge is point-in-time (no delta): each host sample reads the most recent
+    poll at or before it; samples before the first poll are NaN.
+    """
+    index = np.searchsorted(value_ts, sample_ts, side="right") - 1
+    out = np.full(len(sample_ts), math.nan)
+    found = index >= 0
+    out[found] = values[index[found]]
+    return out
 
 
 def _aggregate_cores(ublk_df: pd.DataFrame, cur_ts: float, dt: float) -> float:
@@ -470,6 +492,17 @@ def _derive_host(raw_dir: Path) -> pd.DataFrame:
     df = pd.DataFrame(out)
     df.insert(0, "t_s", [0.0] + [ts[i] - ts[0] for i in range(1, len(ts))])
     df.insert(1, "timestamp", cpu["timestamp"].tolist())
+    # Control-plane fleet gauge (api_state_raw.csv, provider-reported sandbox
+    # states). The process gauge above cannot see a paused sandbox (no VMM
+    # process) nor one still booting, so oversubscription runs read much lower
+    # than the fleet the provider holds. Absent file (no list API) -> no columns.
+    api = _read_csv_optional(raw_dir, "api_state_raw.csv")
+    if api is not None and {"sandboxes_running", "sandboxes_paused"} <= set(api.columns):
+        api_epoch = _ts_to_epoch(api["timestamp"]).to_numpy()
+        order = api_epoch.argsort(kind="stable")
+        for column in ("sandboxes_running", "sandboxes_paused"):
+            values = pd.to_numeric(api[column], errors="coerce").to_numpy()[order]
+            df[column] = _asof_join(ts, api_epoch[order], values)
     return df
 
 
@@ -721,6 +754,13 @@ def _build_host_sheet(wb, df):
         ("procs_running", "Procs running"),
         ("procs_blocked", "Procs blocked"),
     ]
+    # Appended only when the provider reported states (see _derive_host): keeps
+    # the sheet shape stable for backends with no list API.
+    if "sandboxes_running" in df.columns:
+        column_labels += [
+            ("sandboxes_running", "Sandboxes running (API)"),
+            ("sandboxes_paused", "Sandboxes paused (API)"),
+        ]
     column_names, display_headers = zip(*column_labels)
     _write_table(ws, df, list(display_headers), cols=list(column_names))
     # 1-indexed column position per df column name -- insertion-safe: adding a
@@ -791,6 +831,14 @@ def _build_host_sheet(wb, df):
         ("Procs running/blocked", "count", (column_position("procs_running"), column_position("procs_blocked"))),
         ("Concurrent VMs", "count", (column_position("concurrent_vms"),)),
     ]
+    if "sandboxes_running" in df.columns:
+        charts.append(
+            (
+                "Sandbox states (API)",
+                "count",
+                (column_position("sandboxes_running"), column_position("sandboxes_paused")),
+            )
+        )
     for chart_index, (title, y_axis_title, series_columns) in enumerate(charts):
         chart_anchor = f"{chart_anchor_column}{2 + chart_index * _CHART_ROW_STEP}"
         _add_line_chart(ws, title, y_axis_title, 1, series_columns, 1, data_row_count, chart_anchor)
