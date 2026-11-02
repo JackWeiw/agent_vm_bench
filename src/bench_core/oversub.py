@@ -317,6 +317,13 @@ def compute_valid(
 # trial-summary.csv column order (mirrors the reference TRIAL_COLUMNS + the
 # sustained-mode failure_rate / test_duration columns).
 #
+# Two throughput calibers, both kept so a reader can pick the right one:
+#   tasks_per_sec      -- succeeded / wall_sec: end-to-end, INCLUDES each
+#                         round's create and kill cost.
+#   stress_tasks_per_sec -- derived from the per-run stress windows, create/kill
+#                         excluded; the caliber to score when sandbox churn is
+#                         a server-side variable being diagnosed, not workload.
+#
 # Interrupted trials: a trial halted mid-run by Ctrl-C / driver SIGTERM (the
 # kernel's SIGTERM-cooperative `finally` flushes a PARTIAL run_summary.json +
 # trajectories/index.json) surfaces here as ``return_code == 130`` and
@@ -345,6 +352,8 @@ TRIAL_COLUMNS = [
     "test_duration",
     "wall_sec",
     "tasks_per_sec",
+    "mean_stress_sec",
+    "stress_tasks_per_sec",
     "steps_per_sec",
     "lifecycle_overhead_pct",
     "return_code",
@@ -365,6 +374,8 @@ RATIO_COLUMNS = [
     "all_repeats_successful",
     "median_wall_sec",
     "median_tasks_per_sec",
+    "median_stress_sec",
+    "median_stress_tasks_per_sec",
     "median_peak_active",
     "median_queue_wait_sec",
     "avg_cmd_exec_sec",
@@ -372,6 +383,7 @@ RATIO_COLUMNS = [
     "cmd_exec_degradation_vs_1_1_pct",
     "time_degradation_vs_1_1_pct",
     "throughput_gain_vs_1_1_pct",
+    "stress_throughput_gain_vs_1_1_pct",
 ]
 
 # Per-trajectory timing breakdown columns. Sourced from the kernel-emitted
@@ -485,6 +497,10 @@ def trial_row(
         "test_duration": summary.get("test_duration") or 0,
         "wall_sec": summary.get("wall_sec"),
         "tasks_per_sec": tp.get("tasks_per_sec"),
+        # Filled from trajectory-detail rows in write_outputs; None here so the
+        # columns exist even for trials whose index.json is missing.
+        "mean_stress_sec": None,
+        "stress_tasks_per_sec": None,
         "steps_per_sec": tp.get("steps_per_sec"),
         "lifecycle_overhead_pct": lc.get("pct_of_slice_total"),
         "return_code": return_code,
@@ -529,6 +545,62 @@ def _cmd_exec_stats(traj_rows: list[dict]) -> dict[tuple[str, int], tuple[float,
     return out
 
 
+# Only `trajectory` holds one running-slot lease for a whole trajectory, so its
+# stress windows are contiguous and at most `running_concurrency` of them
+# overlap. Every other mode either runs all k*N sandboxes at once (exec_only,
+# exec_ephemeral) or -- lifecycle -- re-acquires the lease per step, so one
+# run's window also spans the k-1 other tenants served between its steps and
+# the windows overlap k-fold. Normalizing lifecycle by N would understate its
+# fleet rate by the oversubscription factor k.
+_WHOLE_TRAJECTORY_LEASE_MODES = frozenset({"trajectory"})
+
+
+def _stress_rate_stats(traj_rows: list[dict], trials: list[dict]) -> dict[tuple[str, int, int], dict]:
+    """Per-trial throughput with create/kill excluded from the clock.
+
+    ``stress_sec`` is already the elapsed time minus create and kill
+    (``elapsed_sec = create_sec + kill_sec + stress_sec``), so a rate over the
+    summed stress windows answers "how fast did the workload itself run" while
+    create/kill stay visible as their own columns. ``tasks_per_sec`` keeps the
+    end-to-end (wall-clock) view: it is still the right number when sandbox
+    churn is part of the workload being measured.
+
+    A run contributes to both numerator and denominator only when its stress
+    window was measured (``stress_sec > 0``); a failed create or an older
+    index.json without the breakdown is absent rather than counted as zero,
+    which would inflate the rate. The numerator counts runs whose every step
+    succeeded (index.json's per-run ``success_rate >= 1.0``, the notion behind
+    its ``success`` flag) -- stricter than ``tasks_per_sec``'s completion count,
+    which still counts a trajectory that ran all its steps with a failed step
+    when ``stop_on_error`` is off.
+    """
+    workers = {
+        (t["mode"], t["ratio"], t["repeat"]): (
+            t.get("running_concurrency") if t["mode"] in _WHOLE_TRAJECTORY_LEASE_MODES else t.get("target_count")
+        )
+        for t in trials
+    }
+    buckets: dict[tuple[str, int, int], list[dict]] = {}
+    for r in traj_rows:
+        sec = r.get("stress_sec")
+        if sec is None or float(sec) <= 0.0:
+            continue
+        buckets.setdefault((r["mode"], r["ratio"], r["repeat"]), []).append(r)
+
+    out: dict[tuple[str, int, int], dict] = {}
+    for key, rows in buckets.items():
+        stress_sum = sum(float(r["stress_sec"]) for r in rows)
+        succeeded = sum(1 for r in rows if float(r.get("success_rate") or 0.0) >= 1.0)
+        n_workers = workers.get(key)
+        out[key] = {
+            "mean_stress_sec": round(stress_sum / len(rows), 6),
+            # workers * successful runs / total-stress-seconds == what the fleet
+            # would deliver if create/kill cost nothing; dims out to tasks/s.
+            "stress_tasks_per_sec": round(n_workers * succeeded / stress_sum, 3) if n_workers and stress_sum else None,
+        }
+    return out
+
+
 def aggregate_ratio_summary(trials: list[dict], traj_rows: list[dict] | None = None) -> list[dict]:
     """One row per ``(mode, ratio)``: medians across repeats + degradation vs k=1.
 
@@ -549,6 +621,8 @@ def aggregate_ratio_summary(trials: list[dict], traj_rows: list[dict] | None = N
     for (mode, ratio), group in sorted(by_key.items()):
         walls = [g["wall_sec"] for g in group if g.get("wall_sec") is not None]
         tps = [g["tasks_per_sec"] for g in group if g.get("tasks_per_sec") is not None]
+        stress = [g["mean_stress_sec"] for g in group if g.get("mean_stress_sec") is not None]
+        stress_tps = [g["stress_tasks_per_sec"] for g in group if g.get("stress_tasks_per_sec") is not None]
         peaks = [g["peak_active"] for g in group if g.get("peak_active") is not None]
         waits = [g["avg_queue_wait_sec"] for g in group if g.get("avg_queue_wait_sec") is not None]
         attempted = len(group)
@@ -563,6 +637,8 @@ def aggregate_ratio_summary(trials: list[dict], traj_rows: list[dict] | None = N
                 "all_repeats_successful": successful == attempted,
                 "median_wall_sec": _median(walls),
                 "median_tasks_per_sec": _median(tps),
+                "median_stress_sec": _median(stress) if stress else None,
+                "median_stress_tasks_per_sec": _median(stress_tps) if stress_tps else None,
                 "median_peak_active": _median(peaks),
                 "median_queue_wait_sec": _median(waits),
                 "avg_cmd_exec_sec": avg_cmd,
@@ -570,6 +646,7 @@ def aggregate_ratio_summary(trials: list[dict], traj_rows: list[dict] | None = N
                 "cmd_exec_degradation_vs_1_1_pct": 0.0,
                 "time_degradation_vs_1_1_pct": 0.0,
                 "throughput_gain_vs_1_1_pct": 0.0,
+                "stress_throughput_gain_vs_1_1_pct": None,
             }
         )
 
@@ -585,6 +662,14 @@ def aggregate_ratio_summary(trials: list[dict], traj_rows: list[dict] | None = N
             r["time_degradation_vs_1_1_pct"] = round(((r["median_wall_sec"] - bw) / bw * 100) if bw else 0.0, 3)
             bt = base["median_tasks_per_sec"] or 0
             r["throughput_gain_vs_1_1_pct"] = round(((r["median_tasks_per_sec"] - bt) / bt * 100) if bt else 0.0, 3)
+            bst = base["median_stress_tasks_per_sec"]
+            cur = r["median_stress_tasks_per_sec"]
+            # Blank (not 0.0) when either side is unmeasured: a missing stress
+            # window is "n/a", and reporting it as a rate would fabricate a
+            # -100% gain curve for an older index.json without breakdowns.
+            r["stress_throughput_gain_vs_1_1_pct"] = (
+                round((cur - bst) / bst * 100, 3) if bst and cur is not None else None
+            )
             bc = base["avg_cmd_exec_sec"] or 0
             r["cmd_exec_degradation_vs_1_1_pct"] = round(((r["avg_cmd_exec_sec"] - bc) / bc * 100) if bc else 0.0, 3)
     return rows
@@ -657,8 +742,14 @@ def write_outputs(trials: list[dict], *, output_root: Path, configuration: dict 
     Call after every trial so a killed driver leaves a complete partial set.
     """
     output_root.mkdir(parents=True, exist_ok=True)
-    _write_csv(output_root / "trial-summary.csv", TRIAL_COLUMNS, trials)
     traj_rows = _trajectory_rows(trials)
+    # Enrich the trial rows with the create/kill-free rate before the CSV and
+    # the ratio summary read them. Recomputed from index.json on every call, so
+    # a trial row written by an earlier call is idempotently refreshed.
+    stress_stats = _stress_rate_stats(traj_rows, trials)
+    for t in trials:
+        t.update(stress_stats.get((t["mode"], t["ratio"], t["repeat"]), {}))
+    _write_csv(output_root / "trial-summary.csv", TRIAL_COLUMNS, trials)
     ratio_rows = aggregate_ratio_summary(trials, traj_rows)
     _write_csv(output_root / "ratio-summary.csv", RATIO_COLUMNS, ratio_rows)
     _write_csv(output_root / "trajectory-detail.csv", TRAJECTORY_COLUMNS, traj_rows)
