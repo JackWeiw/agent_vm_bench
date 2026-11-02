@@ -127,6 +127,12 @@ class CubesandboxProvider(EnvironmentProvider):
     def detect_existing(self) -> Mapping[int, SandboxInstance]:
         return self._translate(self.manager.detect_existing())
 
+    def list_sandbox_states(self) -> Mapping[str, int] | None:
+        # No manager = nothing was ever created; don't build the SDK just to poll.
+        if self._manager is None:
+            return None
+        return self.manager.list_states()
+
     def detect_from_ids(self, ids_file: str | None = None) -> Mapping[int, SandboxInstance] | None:
         path = ids_file or self._config.sandbox_ids_file
         if not path:

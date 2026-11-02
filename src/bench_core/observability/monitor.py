@@ -17,6 +17,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .api_state import ApiStateSampler
+
 logger = logging.getLogger(__name__)
 
 _VM_MONITOR_BIN = "vm-monitor"
@@ -255,6 +257,9 @@ class MonitorController:
         self._started = False
         self._detached = False  # stop() set this: vm_monitor left running to finish async
         self._cmd = self._build_cmd()
+        # Control-plane fleet gauge, bracketed exactly like the stress lock:
+        # raw_report as-of joins raw_data/api_state_raw.csv onto the host samples.
+        self._api_state = ApiStateSampler(provider, self._log_dir / "raw_data" / "api_state_raw.csv", self._interval)
 
     def _build_cmd(self) -> list[str]:
         exe = shutil.which(_VM_MONITOR_BIN)
@@ -365,6 +370,7 @@ class MonitorController:
     def begin_stress(self) -> None:
         if not self._started:
             return
+        self._api_state.start()
         try:
             self._stress_file.touch()
         except OSError as e:
@@ -373,6 +379,7 @@ class MonitorController:
         self._begin_ts = time.time()
 
     def end_stress(self) -> None:
+        self._api_state.stop()  # before the guard: stop even if begin failed midway
         if not self._started:
             return
         try:
@@ -429,6 +436,7 @@ class MonitorController:
         """
         if not self._started:
             return []
+        self._api_state.stop()  # idempotent; covers a stop() without end_stress()
         xlsx = self._log_dir / "resource_report.xlsx"
         # Courtesy wait for a clean exit + synchronous report collection. This
         # is NOT a kill cliff (there is no kill); it is only how long we block

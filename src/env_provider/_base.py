@@ -433,6 +433,26 @@ class BaseSandboxManager(ABC):
             logger.warning(f"[{label}] Ready check failed: {ready['error'][:50]}")
 
     # --------------------------------------------------------- subclass seams
+    def list_states(self) -> dict[str, int]:
+        """Count listed sandboxes by state -> ``{"running": n, "paused": m, ...}``.
+
+        One backend list call, no readiness probe, no handle attach -- safe to
+        poll on the monitor thread during stress. State names are normalized to
+        lowercase last-dot segments (``SandboxState.RUNNING`` -> ``"running"``)
+        so backends that return enums and backends that return JSON strings
+        land on the same keys.
+        """
+        counts: dict[str, int] = {}
+        for listed in self._list_existing():
+            state = self._state_of(listed)
+            counts[state] = counts.get(state, 0) + 1
+        return counts
+
+    def _state_of(self, listed: Any) -> str:
+        """Normalized backend state of one listed sandbox (see :meth:`list_states`)."""
+        state = listed.get("state", "unknown") if isinstance(listed, dict) else getattr(listed, "state", "unknown")
+        return str(state).split(".")[-1].lower()
+
     @abstractmethod
     def _new_state(self, index: int, *, batch_id: int = -1, external_id: str = "") -> BackendState:
         """Build a fresh per-sandbox State (backend dataclass)."""

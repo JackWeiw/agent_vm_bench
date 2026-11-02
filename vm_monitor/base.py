@@ -2142,10 +2142,20 @@ class VMMonitorBase(ABC):
             self.process_cache.pop(p, None)
 
     # ==================== Parallel VM Metrics Collection ====================
+    def _matches_vm_process(self, proc_name: str, cmdline: str) -> bool:
+        """Decide whether a process belongs to a VM we monitor.
+
+        Default: substring match of ``get_process_names()`` against the process
+        name. Subclasses whose name overruns the kernel's 15-char ``comm``
+        (``/proc/<pid>/stat`` field 2, where psutil's ``name()`` comes from)
+        must override and disambiguate on ``cmdline`` instead.
+        """
+        return any(name in proc_name for name in self.get_process_names())
+
     def _discover_vm_processes(self) -> list[dict]:
         """Phase 1: Discover VM processes via psutil.process_iter (serial).
 
-        Scans all system processes, filters by get_process_names(), and
+        Scans all system processes, filters by ``_matches_vm_process``, and
         extracts VM IDs. Returns lightweight candidate dicts with no
         per-VM I/O metrics yet — those are collected in Phase 2.
 
@@ -2153,16 +2163,15 @@ class VMMonitorBase(ABC):
             List of dicts with pid, proc_name, cmdline, status, vm_name.
         """
         candidates = []
-        process_names = self.get_process_names()
 
         for proc in psutil.process_iter(["pid", "name", "cmdline", "status"]):
             try:
                 proc_name = proc.info["name"] or ""
-                if not any(name in proc_name for name in process_names):
+                cmdline = " ".join(proc.info["cmdline"] or [])
+                if not self._matches_vm_process(proc_name, cmdline):
                     continue
 
                 pid = proc.info["pid"]
-                cmdline = " ".join(proc.info["cmdline"] or [])
                 vm_name = self.extract_vm_id(pid, cmdline)
 
                 candidates.append(
