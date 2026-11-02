@@ -14,6 +14,40 @@ The framework collects **50+ performance metrics** from hardware counters, kerne
 
 The frozen-legacy `e2b_bench/`, `docker_bench/`, and OpenStack tools (`vm_bench/`, `auto_vm_test.py`, `batch_test_scheduler.py`) remain for existing users and **share no code with the `src/` kernel**. Edit them only for bug fixes; new work goes in `src/`.
 
+## Working Guidelines
+
+Behavioral guidelines that bias toward caution over speed. For trivial tasks, use judgment.
+
+### Think before coding
+
+Don't assume. Don't hide confusion. Surface tradeoffs.
+
+- State assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them — don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+### Simplicity first
+
+Minimum code that solves the problem. Nothing speculative — no features beyond what was asked, no abstractions for single-use code, no unrequested configurability, no error handling for impossible scenarios. If you write 200 lines and it could be 50, rewrite it. Ask: "Would a senior engineer call this overcomplicated?"
+
+### Surgical changes
+
+Touch only what you must. Clean up only your own mess.
+
+- Don't "improve" adjacent code, comments, or formatting; don't refactor what isn't broken.
+- Match existing style, even if you'd do it differently.
+- Notice unrelated dead code → mention it, don't delete it.
+- Remove imports/variables/functions **your** change orphaned; leave pre-existing dead code alone unless asked.
+
+The test: every changed line traces directly to the user's request.
+
+### Goal-driven execution
+
+Define success criteria, loop until verified. Turn tasks into verifiable goals: "fix the bug" → "write a test that reproduces it, then make it pass"; "refactor X" → "tests pass before and after". For multi-step tasks, state a short plan with a `verify:` check per step. Strong criteria let you loop independently; weak ones ("make it work") need constant clarification.
+
+These guidelines are working if diffs carry fewer unnecessary changes, rewrites from overcomplication drop, and clarifying questions come *before* implementation rather than after mistakes.
+
 ## Build, Lint, Test Commands
 
 > Requires **Python 3.10+** (CI runs 3.13; `pyproject.toml` `requires-python = ">=3.10"`). Ruff `target-version = "py310"` aligns with the runtime floor (lint floor ≤ runtime floor; raising it needs raising `requires-python` first).
