@@ -296,6 +296,8 @@ aenv lifecycle 内存超卖压测的 1:1 基线配置。
 **这是 `oversub-bench` 的默认扫描 mode**(默认 `lifecycle,exec_ephemeral`);驱动在自动套用默认(未传
 `--modes`、sweep 也未设 `modes`)时会 WARNING。`tasks_per_sec` 含每轮 create+kill 成本,**不能与
 exec_only 直接比**;调 `test.duration` 需比 exec_only 更大(k×N×round_count 个 create+exec+kill 周期)。
+评分口径用 `stress_tasks_per_sec`(只按每条轨迹的 `stress_sec` 汇总,create/kill 不计入),
+`tasks_per_sec` 保留为端到端观测值。
 
 **lifecycle vs trajectory 的超卖机制不同**:
 
@@ -566,8 +568,8 @@ driver 深拷贝 `base_config` 并只改写超卖字段,其余透传:
 
 | 文件 | 粒度 | 关键列 |
 |------|-------------|-------------|
-| `trial-summary.csv` | 每个 `(mode, ratio, repeat)` trial 一行 | `total, succeeded, failed, failure_rate, peak_active, wall_sec, tasks_per_sec, steps_per_sec, lifecycle_overhead_pct, return_code, valid, target_count, test_duration` |
-| `ratio-summary.csv` | 每个 `(mode, ratio)` 一行(跨 repeat 取中位) | `attempted, successful, median_wall_sec, median_tasks_per_sec, avg_cmd_exec_sec, median_cmd_exec_sec, cmd_exec_degradation_vs_1_1_pct, time_degradation_vs_1_1_pct, throughput_gain_vs_1_1_pct` |
+| `trial-summary.csv` | 每个 `(mode, ratio, repeat)` trial 一行 | `total, succeeded, failed, failure_rate, peak_active, wall_sec, tasks_per_sec, mean_stress_sec, stress_tasks_per_sec, steps_per_sec, lifecycle_overhead_pct, return_code, valid, target_count, test_duration` |
+| `ratio-summary.csv` | 每个 `(mode, ratio)` 一行(跨 repeat 取中位) | `attempted, successful, median_wall_sec, median_tasks_per_sec, median_stress_sec, median_stress_tasks_per_sec, avg_cmd_exec_sec, median_cmd_exec_sec, cmd_exec_degradation_vs_1_1_pct, time_degradation_vs_1_1_pct, throughput_gain_vs_1_1_pct, stress_throughput_gain_vs_1_1_pct` |
 | `trajectory-detail.csv` | 每 trial 每条轨迹一行(取自 `trajectories/index.json`) | `trajectory_id, sandbox_index, n_steps, n_failed, success_rate, elapsed_sec` + 18 个 `*_sec` 分解列。该轨迹执行的命令序列(`action_series`)**不**在 CSV 里(多行单元格会把 Excel 每行撑得很高)——逐轨迹看 `replay_result.json` / `index.json`,或机器可读的 `benchmark-report.json` 的 `trajectory_details`。 |
 | `benchmark-report.json` | 完整机器可读报告 | `configuration, trials, ratio_summary, trajectory_details`(每个 `trajectory_details` 行带 `action_series`) |
 
@@ -579,7 +581,7 @@ driver 深拷贝 `base_config` 并只改写超卖字段,其余透传:
 
 跑完一轮扫描,按下面顺序读,从"整体曲线"一路下钻到"单步瓶颈":
 
-1. **`ratio-summary.csv` —— 入口,整条退化曲线。** 每行一个 `(mode, ratio)`,跨 repeat 取中位。重点两列:`time_degradation_vs_1_1_pct`(相对 k=1 的墙钟退化 %,正数=变慢)、`throughput_gain_vs_1_1_pct`(吞吐增益 %)。oversub 的核心问题就是"超卖换来的吞吐增益是否盖过单轨迹的时延退化"——两条曲线放一起看。每-cmd 平均执行时长看 `avg_cmd_exec_sec`(sum(exec)/sum(steps),剔除含失败步的 run;`median_cmd_exec_sec` 是 per-run 均值的中位)及其 `cmd_exec_degradation_vs_1_1_pct`(相对 k=1 的每-cmd 劣化 %)。`median_wall_sec` / `median_tasks_per_sec` 是绝对值,`all_repeats_successful` 指该 ratio 所有 repeat 都 valid。
+1. **`ratio-summary.csv` —— 入口,整条退化曲线。** 每行一个 `(mode, ratio)`,跨 repeat 取中位。重点两列:`time_degradation_vs_1_1_pct`(相对 k=1 的墙钟退化 %,正数=变慢)、`stress_throughput_gain_vs_1_1_pct`(剔除 create/kill 后的吞吐增益 %,评分口径)。oversub 的核心问题就是"超卖换来的吞吐增益是否盖过单轨迹的时延退化"——两条曲线放一起看。`throughput_gain_vs_1_1_pct` / `median_tasks_per_sec` 是含 create/kill 的端到端对照;`median_stress_sec` / `median_stress_tasks_per_sec` 只看 stress 窗口。每-cmd 平均执行时长看 `avg_cmd_exec_sec`(sum(exec)/sum(steps),剔除含失败步的 run;`median_cmd_exec_sec` 是 per-run 均值的中位)及其 `cmd_exec_degradation_vs_1_1_pct`(相对 k=1 的每-cmd 劣化 %)。`median_wall_sec` 是绝对值,`all_repeats_successful` 指该 ratio 所有 repeat 都 valid。
 2. **`trial-summary.csv` —— 成败与 valid 门槛。** 先按 `valid` 列筛掉无效 trial;再比 `total` 对 `target_count`(跑满没有)、`return_code`(非 0 的查 `error` 列;`130` 是被中断,见下节)。`peak_active` 应 ≤ `running_concurrency`(`N`),超过=过量准入。`lifecycle_overhead_pct` 看 pause/resume 占比是否随 k 走高。
 3. **`trajectory-detail.csv` —— 哪条轨迹在哪个 ratio 拖后腿。** 按 `trajectory_id` + `ratio` pivot,看 `elapsed_sec` 谁最大,再读 18 个 `*_sec` 分解列定位瓶颈是 exec 慢、resume/pause 慢(生命周期开销)、`capacity_wait_sec`(排队=slot 不够)、还是 `natural_delay_sec`(步间思考)。`create_error_type`/`kill_error_type` 非空说明该轨迹起/止就失败了。
 4. **单 trial 子目录 —— 单 step/sandbox 级。** 进 `<mode>/ratio-XX/repeat-XX/` 开 `*_obs.xlsx`:Step detail 筛 `sandbox_index` 看某个沙箱的逐步时延,Gantt 看时间线,Snapshot sizes 看快照体积膨胀,Lifecycle overhead 看 pause/resume 分位。
@@ -637,7 +639,7 @@ oversub-compare --manifest ... --allow-mismatched-n   # N 不一致也硬跑(默
 #### 输入(每个 series 目录,driver 既有契约)
 
 - `trajectory-detail.csv` — 每 `(mode, ratio, repeat, trajectory_id)` 一行 + `elapsed_sec` 与 18 个 `*_sec` 分解列。
-- `trial-summary.csv` — 每 trial 的 `wall_sec / tasks_per_sec / lifecycle_overhead_pct / avg_queue_wait_sec` 等。
+- `trial-summary.csv` — 每 trial 的 `wall_sec / tasks_per_sec / mean_stress_sec / stress_tasks_per_sec / lifecycle_overhead_pct / avg_queue_wait_sec` 等。
 - `benchmark-report.json` — `configuration`(N-parity 校验用)。
 
 缺文件直接报错并指路径。

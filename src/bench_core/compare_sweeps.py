@@ -110,7 +110,14 @@ _STAT_DEG_PAIRS = [
 # Trial-summary CSV metric columns surfaced in the ratio summary (per-trial
 # aggregates, distinct from the per-trajectory medians). Must match
 # bench_core.oversub.TRIAL_COLUMNS exactly.
-TRIAL_METRIC_COLS = ["wall_sec", "tasks_per_sec", "lifecycle_overhead_pct", "avg_queue_wait_sec"]
+TRIAL_METRIC_COLS = [
+    "wall_sec",
+    "tasks_per_sec",
+    "mean_stress_sec",
+    "stress_tasks_per_sec",
+    "lifecycle_overhead_pct",
+    "avg_queue_wait_sec",
+]
 
 # Heatmap color scale: sequential single hue, light -> dark (dataviz:
 # sequential = one hue, never a rainbow). White -> deep blue.
@@ -252,9 +259,9 @@ def build_ratio_summary(
     Long form (one row per metric) so the xlsx can pivot freely. Metrics come
     from the trajectory tidy (per-trajectory stats; pandas' interpolated
     quantiles) + the trial-summary tables (per-trial medians only: wall_sec /
-    tasks_per_sec / lifecycle_overhead / avg_queue_wait -- the stat-pack
-    columns are NaN for those). A series without a k=1 trial yields blank
-    degradation (no baseline to normalize to), not a crash.
+    tasks_per_sec / mean_stress_sec / stress_tasks_per_sec / lifecycle_overhead /
+    avg_queue_wait -- the stat-pack columns are NaN for those). A series without
+    a k=1 trial yields blank degradation (no baseline to normalize to), not a crash.
     """
     baseline = manifest["baseline_series"]
     # Trajectory-derived stat pack: groupby series/mode/ratio/metric over all
