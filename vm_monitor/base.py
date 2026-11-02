@@ -1840,6 +1840,17 @@ class VMMonitorBase(ABC):
         except (OSError, IndexError, ValueError):
             return None
 
+    def _attach_pid_jiffies(self, vm: dict) -> dict:
+        """Attach raw utime/stime jiffies for vm_cpu_raw.csv, in place.
+
+        Both per-VM collection paths (serial <4 VMs, parallel) route through
+        this; an unreadable pid leaves the keys off and the writer skips it.
+        """
+        ut_st = self._read_pid_jiffies(vm["pid"])
+        if ut_st is not None:
+            vm["utime"], vm["stime"] = ut_st
+        return vm
+
     def get_vm_memory_from_numastat(self, pid):
         """Get process NUMA memory statistics.
 
@@ -2243,13 +2254,15 @@ class VMMonitorBase(ABC):
             current_total_cpu += cpu
 
             vms.append(
-                {
-                    "pid": pid,
-                    "name": candidate["vm_name"],
-                    "cpu_percent": cpu,
-                    **fields,
-                    "status": candidate["status"],
-                }
+                self._attach_pid_jiffies(
+                    {
+                        "pid": pid,
+                        "name": candidate["vm_name"],
+                        "cpu_percent": cpu,
+                        **fields,
+                        "status": candidate["status"],
+                    }
+                )
             )
 
         self._finalize_vm_collection(vms, current_pids, current_total_mem, current_total_cpu)
@@ -2359,14 +2372,7 @@ class VMMonitorBase(ABC):
             **fields,
             "status": candidate["status"],
         }
-        # Raw /proc/<pid>/stat utime+stime for the per-VM CPU dump
-        # (vm_cpu_raw.csv). None when unreadable -> row skipped by the writer.
-        ut_st = self._read_pid_jiffies(pid)
-        if ut_st is not None:
-            result["utime"] = ut_st[0]
-            result["stime"] = ut_st[1]
-
-        return result, seed_proc
+        return self._attach_pid_jiffies(result), seed_proc
 
     # ==================== Template Methods ====================
     def collect_sample(self):
@@ -2417,8 +2423,9 @@ class VMMonitorBase(ABC):
         self.last_vm_count = len(vms)
 
         # Per-VM raw /proc/<pid>/stat jiffies (utime+stime) for vm_cpu_raw.csv.
-        # Each VM already carries utime/stime from _collect_single_vm (parallel
-        # read); enqueue is O(1), the drain thread writes the long CSV.
+        # Each VM already carries utime/stime from _attach_pid_jiffies (both
+        # collection paths); enqueue is O(1), the drain thread writes the long
+        # CSV.
         if self._proc_raw is not None and vms:
             self._proc_raw.enqueue_vm(ts, vms)
 
