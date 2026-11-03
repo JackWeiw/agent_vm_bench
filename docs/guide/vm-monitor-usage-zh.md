@@ -224,6 +224,10 @@ logs_<timestamp>/
 
 > xlsx 被**最后**写入是有意为之——`bench-core` 的 `MonitorController` 以 `resource_report.xlsx` 作为"全部产物已写入"的信号，在其出现的瞬间收割子进程。SVG 先于 xlsx 运行，以免被该收割切断。
 
+## 采样开销
+
+单 VM 采样的主要开销来自 `numa_maps` + `smaps_rollup` 的页表遍历（192 VM 集群实测：4 KiB 页约 35 ms/GiB，THP 后备约 12 ms/GiB）。监控器把这一轮遍历限制在每采样周期 25% 单核的预算内，并在整个 VM 集群上轮转：装不下时（大集群、页表重）每个 VM 的内存字段每 `stride` 个采样刷新一次并沿用上次实测值，而 CPU% 与 jiffies 仍在每个采样周期对每个 VM 读取。`stride > 1` 只在 INFO 级别打一次日志；小集群与 THP 后备集群和以前一样每个采样周期全量刷新。实测数据与 A/B 实验脚本见 [docs/dev/experiments/vm_monitor_perf](../dev/experiments/vm_monitor_perf/RESULTS.md)。
+
 ## Python API
 
 ```python

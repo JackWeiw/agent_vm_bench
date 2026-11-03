@@ -35,11 +35,15 @@ class CubeSandboxMonitor(VMMonitorBase):
         ``containerd-shim-runc-v2`` truncates to the same ``containerd-shim``
         comm, so the comm alone would sweep in every ordinary container on the
         host. Prefer the full binary name when it survived in ``proc_name`` (a
-        psutil build returning the command-line name), else disambiguate on the
-        cmdline; a truncated comm with an unreadable cmdline is skipped rather
-        than miscounted.
+        caller passing the untruncated name), else disambiguate on the cmdline;
+        a truncated comm with an unreadable cmdline is skipped rather than
+        miscounted.
         """
         return "containerd-shim" in proc_name and ("cube" in proc_name or "containerd-shim-cube-rs" in cmdline)
+
+    def _cmdline_may_match(self, proc_name: str) -> bool:
+        """Read shim command lines: the cube suffix does not fit the 15-char comm."""
+        return "containerd-shim" in proc_name
 
     def extract_vm_id(self, pid: int, cmdline: str) -> str:
         """Extract sandbox ID from the cube shim command line.
@@ -56,7 +60,7 @@ class CubeSandboxMonitor(VMMonitorBase):
         """Get real-time information for all CubeSandbox microVMs.
 
         Uses two-phase collection:
-        Phase 1: Discover VM processes (serial psutil scan)
+        Phase 1: Discover VM processes (serial /proc scan)
         Phase 2: Collect per-VM metrics (parallel for large counts)
         """
         vm_candidates = self._discover_vm_processes()

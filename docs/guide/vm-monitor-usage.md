@@ -220,6 +220,10 @@ logs_<timestamp>/
 
 > The xlsx is written **last** deliberately — `bench-core`'s `MonitorController` polls for `resource_report.xlsx` as the "all artifacts written" signal and reaps the subprocess the moment it appears. SVG runs before xlsx so it isn't dropped by that reap.
 
+## Sampling cost
+
+Per-VM cost is dominated by `numa_maps` + `smaps_rollup`, which walk the target's page tables (~35 ms per GiB with 4 KiB pages, ~12 ms per GiB when THP-backed, measured per VM at a 192-VM fleet). The monitor budgets that pass to 25 % of one core per sample interval and round-robins the fleet: when a full pass does not fit (large, page-heavy fleets) each VM's memory fields refresh every `stride` samples and carry forward, while CPU% and jiffies are still read for every VM on every sample. A stride > 1 is logged once at INFO; small and THP-backed fleets refresh every sample as before. Measured numbers and the A/B harness: [docs/dev/experiments/vm_monitor_perf](../dev/experiments/vm_monitor_perf/RESULTS.md).
+
 ## Python API
 
 ```python

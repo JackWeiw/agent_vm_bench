@@ -585,8 +585,21 @@ From `/proc/stat`:
 
 These raw CSVs store **cumulative** `/proc/<pid>/stat` `utime`+`stime` jiffies
 (one row per VM/daemon/process per sample); an agent derives CPU% via delta — the
-`Raw_VM_Data` sheet's `CPU (%)` column uses psutil `cpu_percent()` (rate-only,
-rounded), so the raw jiffies are the authoritative source.
+`Raw_VM_Data` sheet's `CPU (%)` column uses the same jiffy-delta over the
+previous sample (numerically what psutil `cpu_percent()` returns), so the raw
+jiffies are the authoritative source.
+
+> **Per-VM memory fields may be sampled less often than CPU.** `Memory`,
+> `PSS` and the NUMA breakdown come from `numa_maps` + `smaps_rollup`, whose
+> cost is a page-table walk (~35 ms per GiB with 4 KiB pages, ~12 ms per GiB
+> when THP-backed, measured per VM at a 192-VM fleet). The monitor keeps that
+> pass inside a CPU budget (25 % of one core per sample interval) and
+> round-robins the fleet: when a full pass does not fit, each VM's memory
+> fields refresh every `stride` samples and the last measured values are
+> carried forward. CPU% and jiffies are read for every VM on every sample
+> regardless. Small and THP-backed fleets fit the budget and refresh every
+> sample (stride 1, the pre-existing behavior); a stride > 1 is logged once at
+> INFO. Measurements: [experiments/vm_monitor_perf](experiments/vm_monitor_perf/RESULTS.md).
 
 | Metric | Formula |
 |--------|---------|

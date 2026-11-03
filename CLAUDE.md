@@ -135,7 +135,7 @@ These have their own managers / stats / round-robin (`e2b_bench/run_benchmark` i
 |---------|---------|-----------|
 | `src/bench_core/` | host-agnostic kernel (recommended) | `bench.py`, `config.py`, `task_manager/{fixed,round_robin}.py`, `stats_collector.py`, `task_runner/{browser,coding,document}.py`, `coding_payload.py` |
 | `src/env_provider/` | provider contract + e2b/docker/aenv/fake impls | `__init__.py` (ABC + capability Protocols), `_base.py`, `_ready.py`, `e2b/`, `docker/`, `aenv/`, `fake.py` |
-| `vm_monitor/` | VMM monitoring (QEMU/Firecracker) | `base.py`, `qemu.py`, `firecracker.py`, `parsers.py`, `exporters.py` |
+| `vm_monitor/` | VMM monitoring (QEMU/Firecracker) | `base.py`, `qemu.py`, `firecracker.py`, `parsers.py`, `exporters.py`, `sampling.py`, `procfs.py` |
 | `e2b_bench/` | E2B sandbox testing (frozen legacy) | `bench.py`, `round_robin.py`, `task_runner.py`, `sandbox_manager.py`, `batch_scheduler.py`, `stats_collector.py` |
 | `docker_bench/` | Docker container testing (frozen legacy) | `bench.py`, `container_manager.py` |
 | `vm_bench/` | OpenStack VM browser/QA + creation (legacy) | `bench.py`, `vm_manager.py`, `task_runner.py`, `stats_collector.py` |
