@@ -264,10 +264,11 @@ Key flags:
 ### Outputs
 
 - `<prefix>.csv`, `summary.csv` — per-sample raw + summary stats.
-- `resource_report.xlsx` — multi-sheet report (Summary, NUMA, VM stats,
-  DevKit_TopDown/Memory, KSys, UBWatch, SMAPBW, Getfre, Swap/NUMA/VM-total
-  timelines, **Disk_IO_Timeline**, **Host_Mem_Timeline**,
-  **Host_Pressure_Timeline**) with charts.
+- `resource_report.xlsx` — summary sheets only (Summary, NUMA_Overview, VM_Stats,
+  DevKit_TopDown/Memory, KSys, UBWatch, SMAPBW, Getfre) with charts — fast to build.
+- `host_resources.xlsx` — every per-sample timeline (Host resources / NUMA / Per-VM /
+  Disk IO / HostProc), derived post-hoc from the always-on `raw_data/*.csv`
+  snapshots and rerunnable with `vm-monitor raw-report <log_dir>`.
 - **SVG time curves** — dependency-free dark-themed `<polyline>` charts with
   grid/legend/threshold lines, grouped one concern per file so each renders
   as a clean PPT slide: `disk_io.svg` (read/write/util + ublk),

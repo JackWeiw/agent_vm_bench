@@ -455,7 +455,7 @@ def test_derive_disk_rates_and_reset(tmp_path, caplog):
 def test_derive_disk_depth_columns(tmp_path):
     """Depth metrics ride the same /sys delta as r/w/util: IOPS, avg request
     size, queue depth and await are all derived from the raw counters
-    (mirrors resource_report's Disk_IO_Timeline)."""
+    (the only per-sample disk view now that resource_report is summary-only)."""
     d = tmp_path
     from vm_monitor.base import _DISK_FIELDS
 
@@ -659,12 +659,19 @@ def test_build_xlsx_sheets_and_charts(tmp_path):
     assert set(wb.sheetnames) == {"Host resources", "Per-VM", "Disk IO"}
     host = wb["Host resources"]
     # 11 charts on the one host timeline: memory(2), buffers/dirty/writeback(3),
-    # anon vs file cache(3), fc_pss(1), page pressure(3), alloc stalls(1),
-    # swap(2), cpu(4), cores(2), procs(2), concurrent vms(1). Series counts lock
-    # the col-set per chart (an off-by-one skipping a series would show up here);
-    # the reading order + seating are locked by test_build_xlsx_chart_layout.
+    # anon vs file cache(3 -- anon is dropped below: the fixture has no
+    # AnonPages), fc_pss(1), page pressure(3), alloc stalls(1),
+    # swap in/out(2), cpu(4), cores(2), procs(2), concurrent vms(1). Series
+    # counts lock the col-set per chart (an off-by-one skipping a series would
+    # show up here); the reading order + seating are locked by
+    # test_build_xlsx_chart_layout.
     assert len(host._charts) == 11
-    assert sorted(len(c.series) for c in host._charts) == [1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 4]
+    assert sorted(len(c.series) for c in host._charts) == [1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 4]
+    # A field the raw dir never carried (no SwapTotal/SwapFree, no memory_mb)
+    # must not ship an empty chart: no line, no legend entry, no title.
+    titles = [_chart_title(c) for c in host._charts]
+    assert "Swap usage" not in titles and "Swap cache" not in titles
+    assert "VM memory vs FC PSS" not in titles  # would duplicate bare FC PSS
     # FC total PSS = sum of per-VM pss_mb/1024 per timestamp. _seed_all's vm0
     # has pss_mb=1024 at both samples -> fc_pss_gb=1.0 GB. Looked up by header
     # label (not hardcoded column) so a mid-table column insertion can't break it.

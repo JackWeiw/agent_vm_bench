@@ -131,7 +131,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
   --no-swap / --no-hugepage / --no-pressure / --no-host-mem-detail /
   --no-numa-memory / --no-numa-cpu / --no-host-stats / --no-vm-total /
   --no-disk / --no-ublk : skip a /proc collector (its sheet/SVG is omitted).
-  --no-pss : skip per-VM PSS (smaps_rollup) + VM_Total_PSS_Timeline sheet.
+  --no-pss : skip per-VM PSS (smaps_rollup) + the PSS timeline columns.
   --no-ublk-daemon : skip uvm-ublk-daemon CPU tracking (Disk_IO col).
   --no-hostproc : skip user-specified host-process CPU/PSS tracking.
   --no-devkit-mem / --no-devkit-topdown : run only one devkit sub-tool.

@@ -271,7 +271,13 @@ class _ProcRawWriter:
       vm_cpu_raw.csv         long   per-VM /proc/<pid>/stat utime+stime jiffies
                                    (one row per VM per sample). Raw cumulative
                                    counters; agent derives per-VM CPU% via delta
-                                   over the monotonic interval.
+                                   over the monotonic interval. memory_mb is the
+                                   numa_maps total already collected per VM
+                                   (gauge, no extra /proc read).
+      numa_mem_raw.csv       long   per-NUMA-node /sys/devices/system/node/
+                                   nodeN/meminfo, one row per node per sample
+                                   (MB). Same dicts get_numa_nodes_memory()
+                                   already parses -- no extra read.
       disk_io_raw.csv        long   per-device /sys/block/<dev>/stat raw counters
                                    (one row per device per 1s sub-sample). 17
                                    standard fields incl. discards/flush; agent
@@ -338,6 +344,7 @@ class _ProcRawWriter:
         self._disk = None  # (fh, DictWriter)
         self._ublk = None  # (fh, DictWriter)
         self._hostproc = None  # (fh, DictWriter)
+        self._numa_mem = None  # (fh, DictWriter)
         self._numa_map_written = False
         self._thread = threading.Thread(target=self._run, name="proc-raw-writer", daemon=True)
         self._thread.start()
@@ -367,6 +374,10 @@ class _ProcRawWriter:
         if self._numa_map_written:
             return
         self._q.put(("numa_map", node_to_cpus))
+
+    def enqueue_numa_mem(self, ts: str, nodes: list) -> None:
+        """Per-NUMA-node meminfo rows (already parsed by get_numa_nodes_memory)."""
+        self._q.put(("numa_mem", ts, nodes))
 
     # --- drain thread ---
     def _run(self) -> None:
@@ -398,6 +409,9 @@ class _ProcRawWriter:
             elif tag == "numa_map":
                 _, node_to_cpus = item
                 self._write_numa_map(node_to_cpus)
+            elif tag == "numa_mem":
+                _, ts, nodes = item
+                self._write_numa_mem(ts, nodes)
 
     def _write_wide(self, key: str, fname: str, ts: str, row: dict) -> None:
         """Append one wide row; open file + write header from the first row."""
@@ -452,7 +466,7 @@ class _ProcRawWriter:
             fh = open(os.path.join(self._dir, "vm_cpu_raw.csv"), "w", newline="", encoding="utf-8")
             dw = csv.DictWriter(
                 fh,
-                fieldnames=["timestamp", "pid", "vm_name", "utime", "stime", "pss_mb"],
+                fieldnames=["timestamp", "pid", "vm_name", "utime", "stime", "pss_mb", "memory_mb"],
                 restval="",
                 extrasaction="ignore",
             )
@@ -471,6 +485,7 @@ class _ProcRawWriter:
                     "utime": ut,
                     "stime": st,
                     "pss_mb": v.get("pss_mb", ""),
+                    "memory_mb": v.get("memory_mb", ""),
                 }
             )
         fh.flush()
@@ -510,6 +525,44 @@ class _ProcRawWriter:
         except OSError:
             return  # leave flag False -> a later cycle retries (was: finally set True)
         self._numa_map_written = True
+
+    # Per-NUMA-node meminfo fields dumped for each sample (MB, from
+    # get_numa_nodes_memory's already-parsed /sys node meminfo).
+    _NUMA_MEM_FIELDS = (
+        "total_mb",
+        "free_mb",
+        "available_mb",
+        "swap_cached_mb",
+        "active_mb",
+        "inactive_mb",
+        "anon_pages_mb",
+        "file_pages_mb",
+        "used_mb",
+        "usage_pct",
+    )
+
+    def _write_numa_mem(self, ts: str, nodes: list) -> None:
+        # Long format: one row per NUMA node per sample. Gauge values (no delta).
+        if self._numa_mem is None:
+            fh = open(os.path.join(self._dir, "numa_mem_raw.csv"), "w", newline="", encoding="utf-8")
+            dw = csv.DictWriter(
+                fh,
+                fieldnames=["timestamp", "node", *self._NUMA_MEM_FIELDS],
+                restval="",
+                extrasaction="ignore",
+            )
+            dw.writeheader()
+            self._numa_mem = (fh, dw)
+        fh, dw = self._numa_mem
+        for node in nodes:
+            dw.writerow(
+                {
+                    "timestamp": ts,
+                    "node": node.get("node"),
+                    **{k: node.get(k, "") for k in self._NUMA_MEM_FIELDS},
+                }
+            )
+        fh.flush()
 
     def _write_ublk(self, ts: str, pid, utime, stime) -> None:
         # Per-daemon -> long format (one row per daemon per 1s sub-sample).
@@ -559,7 +612,7 @@ class _ProcRawWriter:
                 fh.close()
             except OSError:
                 pass
-        for sink in (self._percpu, self._vm, self._disk, self._ublk, self._hostproc):
+        for sink in (self._percpu, self._vm, self._disk, self._ublk, self._hostproc, self._numa_mem):
             if sink is not None:
                 try:
                     sink[0].close()
@@ -1404,7 +1457,7 @@ class VMMonitorBase(ABC):
         /proc/<pid>/stat utime+stime each sample and converts the jiffy delta
         to cores (= CPU-seconds / wall-seconds). On hosts without a ublk
         runtime the daemon is absent -> history stays empty -> the
-        Disk_IO_Timeline column pads to 0 (graceful degrade).
+        host_resources.xlsx ublk_cores column pads to 0 (graceful degrade).
         """
         if self._ublk_daemon_pid is None:
             self._ublk_daemon_pid = self._find_pid_by_comm(_UBLK_DAEMON_COMM)
@@ -2316,7 +2369,9 @@ class VMMonitorBase(ABC):
         if self._collects("pressure"):
             self.collect_host_pressure(meminfo=meminfo, vmstat=vmstat, stat=stat)
         if self._collects("numa_memory"):
-            self.get_numa_nodes_memory()  # Collect NUMA meminfo in same cycle as swap/hugepage
+            numa_nodes = self.get_numa_nodes_memory()  # same cycle as swap/hugepage
+            if self._proc_raw is not None and numa_nodes:
+                self._proc_raw.enqueue_numa_mem(ts, numa_nodes)
         vms = self.get_vms_realtime()
         self.last_vm_count = len(vms)
 
@@ -2366,9 +2421,9 @@ class VMMonitorBase(ABC):
         general sampling interval (``self.interval``), so r_mb_s / w_mb_s are
         true per-second rates -- burst peaks are not smeared over a longer
         interval. Disk and ublk are sampled together each tick so disk_history
-        and ublk_history stay index-aligned for the Disk_IO_Timeline sheet
-        (both carry real per-row timestamps, so the timeline x-axis is real
-        elapsed seconds, not ``index * interval``). Returns early when
+        and ublk_history stay index-aligned for the Disk IO sheet (both carry
+        real per-row timestamps, so the timeline x-axis is real elapsed
+        seconds, not ``index * interval``). Returns early when
         ``self.running`` is cleared (stop signal). No-op when ``seconds <= 0``.
         """
         if seconds <= 0 or not self.running:

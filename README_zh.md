@@ -236,10 +236,11 @@ sudo "$(which vm-monitor)" --vmm firecracker -t 60 -i 2
 ### 产物
 
 - `<前缀>.csv`、`summary.csv`——逐采样原始数据 + 汇总统计。
-- `resource_report.xlsx`——多 sheet 报告（Summary、NUMA、VM 统计、
-  DevKit_TopDown/Memory、KSys、UBWatch、SMAPBW、Getfre、Swap/NUMA/VM-total
-  时间线、**Disk_IO_Timeline**、**Host_Mem_Timeline**、
-  **Host_Pressure_Timeline**）附图表。
+- `resource_report.xlsx`——仅汇总 sheet（Summary、NUMA_Overview、VM_Stats、
+  DevKit_TopDown/Memory、KSys、UBWatch、SMAPBW、Getfre）附图表，导出快。
+- `host_resources.xlsx`——全部逐采样时序（Host resources / NUMA / Per-VM /
+  Disk IO / HostProc），由常开的 `raw_data/*.csv` 原始快照事后派生，
+  可用 `vm-monitor raw-report <log_dir>` 随时重算。
 - **SVG 时间曲线**——无外部依赖的深色 `<polyline>` 图，含网格/图例/阈值线，
   按关注点拆成多文件，每个文件当一张干净的 PPT 页：`disk_io.svg`
   （读/写/忙碌率 + ublk）、`disk_latency.svg`（队列深度 + await 时延）、
