@@ -16,6 +16,7 @@ import dataclasses
 import json
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -23,6 +24,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from bench_core.config import KernelConfig
+    from bench_core.task_runner.replay import ReplayConfig
 
 # Action-type taxonomy (drives metrics bucketing). Terminal actions are
 # recognized for truncation but never executed.
@@ -124,10 +126,16 @@ logger = logging.getLogger(__name__)
 
 _TRAJECTORY_SUFFIXES = (".replay.json", ".json", ".traj")
 
-# Module-level pool cache: (dir, glob, manifest_path) -> tuple[Trajectory, ...].
+# Module-level pool cache: (dir, glob, manifest_path, limit, rc) -> tuple[Trajectory, ...].
 # Frozen tuples are safe for concurrent read by many runner threads; the pool is
 # shared read-only across all sandboxes. Each runner keeps its own cursor.
-_POOL_CACHE: dict[tuple[str, str, str], tuple[Trajectory, ...]] = {}
+_POOL_CACHE: dict[tuple[str, str, str, str, str], tuple[Trajectory, ...]] = {}
+# The load is I/O-bound (json.load releases the GIL), so an unlocked
+# check-then-load lets every runner thread that starts at the same time build a
+# private copy. Measured at the 384-slot production shape: 64 concurrent
+# threads -> 64 pools, 24,576 file loads, 80 s and ~11 GB RSS. Serialise the
+# miss path; waiters re-check and share the one tuple.
+_POOL_LOCK = threading.Lock()
 
 
 def find_trajectories(directory: Path, glob: str = "*.replay.json") -> list[Path]:
@@ -162,22 +170,47 @@ def load_pool(config: KernelConfig) -> tuple[Trajectory, ...]:
     file is a hard error. Returns a cached frozen tuple so repeat calls from
     different runner threads share one immutable object.
     """
+    rcfg = _replay_view(config)
+    cache_key = _pool_cache_key(rcfg)
+    cached = _POOL_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    with _POOL_LOCK:
+        cached = _POOL_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        return _build_pool(rcfg, cache_key)
+
+
+def _replay_view(config: KernelConfig) -> ReplayConfig:
     from bench_core.task_runner.replay import ReplayConfig
 
     rcfg = config.workflow_config
     assert isinstance(rcfg, ReplayConfig), "load_pool requires a ReplayConfig view"
+    return rcfg
+
+
+def _pool_cache_key(rcfg: ReplayConfig) -> tuple[str, str, str, str, str]:
+    # ``rc`` (the oversub baseline fleet size N) is in the key because the
+    # linearity clamp below may reduce ``limit`` to ``rc // T`` -- two configs
+    # with the same trajectory_limit but different rc clamp differently, so they
+    # must not share a cache slot.
+    return (
+        str(rcfg.replay_trajectory_dir),
+        rcfg.replay_trajectory_glob,
+        str(rcfg.replay_template_manifest or ""),
+        str(rcfg.replay_trajectory_limit or ""),
+        str(rcfg.replay_running_concurrency or ""),
+    )
+
+
+def _build_pool(rcfg: ReplayConfig, cache_key: tuple[str, str, str, str, str]) -> tuple[Trajectory, ...]:
+    """Build the pool for ``cache_key``. Caller holds ``_POOL_LOCK``."""
     directory = rcfg.replay_trajectory_dir
     glob = rcfg.replay_trajectory_glob
     manifest_path = rcfg.replay_template_manifest
     limit = rcfg.replay_trajectory_limit
     rc = rcfg.replay_running_concurrency
-    # ``rc`` (the oversub baseline fleet size N) is in the key because the
-    # linearity clamp below may reduce ``limit`` to ``rc // T`` -- two configs
-    # with the same trajectory_limit but different rc clamp differently, so they
-    # must not share a cache slot.
-    cache_key = (str(directory), glob, str(manifest_path or ""), str(limit or ""), str(rc or ""))
-    if cache_key in _POOL_CACHE:
-        return _POOL_CACHE[cache_key]
 
     manifest: dict[str, str] | None = None
     if manifest_path:
