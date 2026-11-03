@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 import pytest
+import psutil
 import yaml
 
 from bench_core import oversub_shards
@@ -286,6 +287,18 @@ def test_stress_bracket_closes_on_stop_when_a_shard_died_mid_stress(tmp_path):
     _wait_for(lambda: ctl.calls == ["begin"])
     bracket.stop()
     assert ctl.calls == ["begin", "end"]
+    assert bracket.opened is True
+
+
+def test_stress_bracket_reports_never_opened_when_no_shard_starts(tmp_path):
+    """Every shard crashed before stress: the driver must abandon, not wait."""
+    ctl = _RecordingController()
+    bracket = ShardStressBracket([tmp_path / "a.lock", tmp_path / "b.lock"], ctl, poll_sec=0.01)
+    bracket.start()
+    time.sleep(0.05)
+    bracket.stop()
+    assert ctl.calls == []
+    assert bracket.opened is False
 
 
 def test_start_host_monitor_uses_the_trial_root_and_a_driver_lock(tmp_path, monkeypatch):
@@ -853,6 +866,63 @@ def test_e2e_dry_run_writes_shard_yamls(tmp_path):
     assert len(yamls) == 3
     for p in yamls:
         assert yaml.safe_load(p.read_text(encoding="utf-8"))["sandbox"]["total_count"] == 4  # 3*4/3
+
+
+_IDLE_VM_MONITOR_STUB = """import os, time
+from pathlib import Path
+Path(os.environ["VM_STUB_PID_FILE"]).write_text(str(os.getpid()))
+time.sleep(120)  # idle: the stress file never appears
+"""
+
+
+def test_e2e_idle_collector_is_abandoned_when_no_shard_reaches_stress(tmp_path, monkeypatch):
+    """Every shard dies before dispatch -> no window, no report, no 60 s wait."""
+    dying = tmp_path / "dying.py"
+    dying.write_text("import sys\nsys.exit(2)\n", encoding="utf-8")
+    vm_stub = tmp_path / "vm-monitor-stub.py"
+    vm_stub.write_text(_IDLE_VM_MONITOR_STUB, encoding="utf-8")
+    pid_file = tmp_path / "vm.pid"
+    monkeypatch.setenv("VM_STUB_PID_FILE", str(pid_file))
+
+    real_which = shutil.which
+    monkeypatch.setattr(shutil, "which", lambda n: str(vm_stub) if n == "vm-monitor" else real_which(n))
+    real_popen = subprocess.Popen
+
+    def _popen(cmd, **kw):
+        return real_popen([sys.executable, *cmd] if str(cmd[0]).endswith(".py") else cmd, **kw)
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+
+    base = _base_yaml(tmp_path)
+    cfg = yaml.safe_load(base.read_text(encoding="utf-8"))
+    cfg["monitor"] = {"enabled": True, "vmm": "qemu", "report_timeout": 60}
+    base.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+
+    out_root = tmp_path / "sweep"
+    started = time.monotonic()
+    rc = main(
+        _common_argv(tmp_path, base, out_root, dying)
+        + ["--ratios", "2", "--modes", "exec_ephemeral", "--shards", "2", "--test-duration", "60"]
+    )
+    elapsed = time.monotonic() - started
+    assert rc == 0
+    # Abandoned, not waited out: the collector's report_timeout is 60 s and an
+    # idle collector would also never exit on its own.
+    assert elapsed < 30, f"sweep blocked {elapsed:.1f}s on an idle collector"
+
+    pid = int(pid_file.read_text())
+    deadline = time.monotonic() + 5
+    alive = True
+    while time.monotonic() < deadline:
+        alive = psutil.pid_exists(pid)
+        if not alive:
+            break
+        time.sleep(0.05)
+    assert not alive, "idle collector left running after the trial"
+
+    with open(out_root / "trial-summary.csv", newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[0]["valid"] == "False"
 
 
 _VM_MONITOR_STUB = """import json, sys, time
