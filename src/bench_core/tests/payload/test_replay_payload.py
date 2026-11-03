@@ -171,6 +171,58 @@ def test_load_pool_is_cached():
     assert a is b  # same cached tuple object
 
 
+def test_load_pool_concurrent_start_share_one_build(tmp_path, monkeypatch):
+    """Every runner thread calls load_pool() as it starts; the miss path must be
+    serialised or each thread builds a private pool (measured: 64 threads ->
+    64 pools / 24,576 file loads / ~11 GB RSS at the 384-slot shape)."""
+    import json
+    import threading
+    import time
+
+    from bench_core.payload import replay_payload
+
+    for i in range(8):
+        (tmp_path / f"t{i}.replay.json").write_text(
+            json.dumps({"instance_id": f"t{i}", "trajectory": [{"action": f"echo {i}", "delay_time": 0}]}),
+            encoding="utf-8",
+        )
+
+    class _Cfg:
+        workflow_config = ReplayConfig(
+            replay_trajectory_dir=str(tmp_path),
+            replay_trajectory_glob="*.replay.json",
+            replay_template_manifest=None,
+        )
+
+    calls: list[Path] = []
+    real_load = replay_payload.load_trajectory
+
+    def slow_load(path):
+        calls.append(path)
+        time.sleep(0.01)  # widen the I/O window: an unlocked cache races here
+        return real_load(path)
+
+    monkeypatch.setattr(replay_payload, "load_trajectory", slow_load)
+    replay_payload.reset_pool_cache()
+    n_threads = 16
+    barrier = threading.Barrier(n_threads)
+    pools: list = []
+
+    def worker() -> None:
+        barrier.wait()
+        pools.append(replay_payload.load_pool(_Cfg()))  # type: ignore[arg-type]
+
+    threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    replay_payload.reset_pool_cache()
+    assert len(calls) == 8, f"pool built {len(calls) // 8}x, expected once"
+    assert len({id(p) for p in pools}) == 1
+
+
 def test_load_pool_trajectory_limit_caps_to_first_n():
     """trajectory_limit caps the pool to the first N per template (natural sort
     within each template). On this single-template fixture that is just the
