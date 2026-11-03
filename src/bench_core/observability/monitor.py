@@ -516,6 +516,28 @@ class MonitorController:
         self._started = False
         return [self.report_xlsx] if self.report_xlsx is not None else []
 
+    def abandon(self) -> None:
+        """Stop a collector that never saw stress: nothing to export, so no wait.
+
+        ``stop()`` blocks up to ``report_timeout`` hoping for a report. That is
+        right after a real window (the xlsx is written last and must not be
+        killed mid-build), but wrong for a collector still idling for a lock
+        that will never appear -- the stress-file protocol has no idle timeout,
+        so it would wait forever while the bench waits ``report_timeout`` and
+        then detaches it. Nothing has been sampled yet, so terminating loses no
+        artifact.
+        """
+        self._api_state.stop()
+        if self.proc is not None and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait(timeout=5)
+        self._close_handles()
+        self._started = False
+
     def wait_for_host_resources(self, timeout: int = 30) -> Path | None:
         """Briefly wait for ``host_resources.xlsx`` (the fast, CSV-only artifact
         written FIRST in vm_monitor's export phase), then detach -- never block

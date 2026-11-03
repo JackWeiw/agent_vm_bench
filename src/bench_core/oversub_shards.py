@@ -397,6 +397,17 @@ class ShardStressBracket:
         self._poll = poll_sec
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._opened = False
+
+    @property
+    def opened(self) -> bool:
+        """True once a shard marker was seen, i.e. the collector began sampling.
+
+        Read after :meth:`stop` (which joins the thread). An unopened bracket
+        means no shard reached its stress phase: there is no window to export
+        and nothing for the collector to preserve.
+        """
+        return self._opened
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name="shard-stress-bracket", daemon=True)
@@ -416,6 +427,7 @@ class ShardStressBracket:
             if now == active:
                 continue
             if now:
+                self._opened = True
                 self._controller.begin_stress()
             else:
                 self._controller.end_stress()

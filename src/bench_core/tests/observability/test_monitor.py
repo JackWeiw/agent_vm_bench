@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from bench_core.config import KernelConfig
@@ -423,6 +424,24 @@ def test_external_collector_gauge_needs_the_api_state_flag():
     assert MonitorController(_cfg(external_collector=True), prov)._gauge is False
     assert MonitorController(_cfg(external_collector=True, api_state="true"), prov)._gauge is True
     assert MonitorController(_cfg(api_state="false"), prov)._gauge is False
+
+
+def test_abandon_terminates_an_idle_collector_without_waiting_for_a_report(monkeypatch, tmp_path):
+    """No shard ever reached stress: stop() must not block report_timeout."""
+
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    proc = _FakeProc()
+    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: proc)
+    mc = MonitorController(
+        _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path), report_timeout=300),
+        _StubProvider(vmm_type="firecracker"),
+    )
+    mc.start()
+    started = time.monotonic()
+    mc.abandon()
+    assert proc.terminated is True
+    assert mc._started is False
+    assert time.monotonic() - started < 1  # did not sit out report_timeout
 
 
 def test_stop_collects_report_and_closes_handles(monkeypatch, tmp_path):
