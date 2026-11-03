@@ -43,7 +43,7 @@ the chunk size plus the wide output, not by the capture length.
 |---|---|---|---|
 | `host_resources.xlsx` — **before** (4 sheets) | **134.8 s** | 569 MB | 3.8 MB |
 | `host_resources.xlsx` — vectorized (5 sheets) | 17.6 s | 1002 MB | 5.3 MB |
-| `host_resources.xlsx` — **streaming** (5 sheets) | **16.3 s** | **374 MB** | 5.3 MB |
+| `host_resources.xlsx` — **streaming** (5 sheets) | **15.3 s** | **363 MB** | 5.3 MB |
 
 **7.7× faster** while *adding* the `NUMA` sheet (4 nodes × 8 columns + 4 charts),
 four swap gauge columns and `vm_mem_gb` — i.e. strictly more work, not less.
@@ -54,8 +54,8 @@ four swap gauge columns and `vm_mem_gb` — i.e. strictly more work, not less.
 
 | Capture | Wall | Peak RSS |
 |---|---|---|
-| 2 h (3,600 samples) | 16.3 s | 374 MB |
-| **8 h (14,400 samples)** | **61.6 s** | **639 MB** |
+| 2 h (3,600 samples) | 15.3 s | 363 MB |
+| **8 h (14,400 samples)** | **62.4 s** | **630 MB** |
 
 4× the samples costs 1.7× the memory, not 4× — the remainder is the wide derived
 output itself (Per-VM wide timeline, 161-column `Disk IO`), which is proportional to
@@ -148,15 +148,15 @@ corrupt cells.
 
 ### 5. Streaming vs whole-file derivation (identical numbers)
 
-`/tmp/parity.py` derives the same 2 h fixture with the streaming reader and with the
-pre-streaming whole-file reader and diffs the two workbooks cell by cell:
+`parity.py` (in this directory) derives the same 2 h fixture with the streaming reader
+and with a pre-streaming workbook build, then diffs the two cell by cell:
 
 ```text
-Host resources 3600x34 maxdiff=5.68e-14 (FC total PSS (GB))   # float summation order
-NUMA 3600x34 maxdiff=0
-Per-VM 7203x10 maxdiff=0
-Disk IO 7200x161 maxdiff=0
-HostProc 7200x15 maxdiff=0
+Host resources: 3600x34 maxdiff=5.68e-14 (FC total PSS (GB))   # float summation order
+NUMA: 3600x34 maxdiff=0
+Per-VM: 7203x10 maxdiff=0
+Disk IO: 7200x161 maxdiff=0
+HostProc: 7200x15 maxdiff=0
 PARITY OK
 ```
 
@@ -167,7 +167,7 @@ hand-arithmetic spot checks of the streamed cores/PSS/NUMA values.
 
 ## Known limits
 
-- **Peak RSS is 374 MB at 2 h / 639 MB at 8 h.** The remaining growth is the derived
+- **Peak RSS is 363 MB at 2 h / 630 MB at 8 h.** The remaining growth is the derived
   wide output (Per-VM timeline, 161-column `Disk IO`), not the raw rows; the long raw
   files are streamed. The next lever, if multi-day captures ever need it, is rendering
   each sheet as it is derived and freeing it (the workbook already uses
@@ -189,7 +189,10 @@ python3 gen_fixture.py --template /tmp/vmcap/raw_data --out /tmp/fixture2h \
     --samples 3600 --interval 2 --vms 384 --ublk 8 --hostproc 1
 
 # 3. build + verify
-vm-monitor raw-report /tmp/fixture2h --out /tmp/hr_new.xlsx
-python3 verify_numa.py /tmp/fixture2h /tmp/hr_new.xlsx
-python3 verify_workbook.py /tmp/fixture2h /tmp/hr_new.xlsx
+vm-monitor raw-report /tmp/fixture2h --out /tmp/hr_stream.xlsx
+python3 verify_numa.py /tmp/fixture2h /tmp/hr_stream.xlsx
+python3 verify_workbook.py /tmp/fixture2h /tmp/hr_stream.xlsx
+
+# 4. optional: parity against a workbook built before the streaming rewrite
+python3 parity.py /tmp/hr_prestreaming.xlsx /tmp/hr_stream.xlsx
 ```

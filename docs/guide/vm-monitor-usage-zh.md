@@ -235,6 +235,8 @@ logs_<timestamp>/
 `NUMA`、`Per-VM`、`Disk IO`，以及仅在 `--host-proc` 下生成的 `HostProc`。逐列释义见
 [docs/dev/metrics-reference.md](../dev/metrics-reference.md#host_resourcesxlsx-字段含义中文版)。
 不重跑 benchmark 也能随时重算：`vm-monitor raw-report <log_dir>`。
+两个长表 raw 文件（`vm_cpu_raw.csv`、`host_percpu_raw.csv`）按固定块流式读取，
+因此导出耗时随采样时长增长，峰值内存不随其增长（2 h 约 360 MB，8 h 约 630 MB）。
 
 > xlsx 被**最后**写入是有意为之——`bench-core` 的 `MonitorController` 以 `resource_report.xlsx` 作为"全部产物已写入"的信号，在其出现的瞬间收割子进程。SVG 先于 xlsx 运行，以免被该收割切断。
 

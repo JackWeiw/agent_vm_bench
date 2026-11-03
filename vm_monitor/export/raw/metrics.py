@@ -621,7 +621,9 @@ def _numa_memory_series(frames: dict) -> dict[tuple[int, str], pd.Series]:
     raw = frames.get("numa_mem")
     if raw is None or raw.empty:
         return {}
-    frame = raw
+    # Copy: the MB -> GB scaling below must not mutate the shared frames dict,
+    # else a second derivation on the same frames would divide by 1024 again.
+    frame = raw.copy()
     frame["node"] = pd.to_numeric(frame["node"], errors="coerce")
     for field in _NUMA_GB_FIELDS:
         if field in frame.columns:

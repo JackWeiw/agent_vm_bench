@@ -112,6 +112,69 @@ def test_vm_stream_chunk_boundary_matches_single_chunk(tmp_path, monkeypatch):
     _same(pss_ref, pss_chunked)
 
 
+def test_vm_stream_birth_and_death_across_chunks(tmp_path, monkeypatch):
+    """Method A must survive a chunk boundary: a VM that starts or dies mid-run
+    is excluded from vm_cores on intervals it does not span, however the rows
+    were chunked, while still counting toward concurrent_vms."""
+    _write(
+        tmp_path / "host_cpu_raw.csv",
+        _CPU_HDR,
+        [
+            [
+                str(i * 2),
+                str(100 * i),
+                "0",
+                str(50 * i),
+                str(8000 * i),
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+            ]
+            for i in range(5)
+        ],
+    )
+    rows = [
+        ["0", "1", "vm0", "0", "0", "100.0"],
+        ["0", "2", "vm1", "0", "0", "100.0"],
+        ["2", "1", "vm0", "100", "0", "100.0"],
+        ["2", "2", "vm1", "120", "0", "100.0"],
+        ["4", "1", "vm0", "200", "0", "100.0"],
+        ["4", "2", "vm1", "240", "0", "100.0"],  # vm1 dies after t=4
+        ["6", "1", "vm0", "400", "0", "100.0"],
+        ["6", "3", "vm2", "80", "0", "100.0"],  # vm2 born at t=6
+        ["8", "1", "vm0", "500", "0", "100.0"],
+        ["8", "3", "vm2", "160", "0", "100.0"],
+    ]
+    _write(tmp_path / "vm_cpu_raw.csv", ["timestamp", "pid", "vm_name", "utime", "stime", "pss_mb"], rows)
+
+    def build(chunk_rows):
+        monkeypatch.setattr(frames, "_CHUNK_ROWS", chunk_rows)
+        return _derive_host(tmp_path)
+
+    ref = build(10**6)
+    chunked = build(2)  # cuts every sample and every birth/death boundary
+    _same(ref, chunked)
+
+    # t=2: vm0 +100 and vm1 +120 over dt=2 -> 1.1 cores.
+    assert math.isclose(ref.iloc[1]["vm_cores"], 220 / 100 / 2, abs_tol=1e-9)
+    # t=4: vm1's last interval -> its +120 still counts; vm0 +100.
+    assert math.isclose(ref.iloc[2]["vm_cores"], 220 / 100 / 2, abs_tol=1e-9)
+    # t=6: vm1 gone, vm2 has no predecessor -> only vm0's +200 over dt=2.
+    assert math.isclose(ref.iloc[3]["vm_cores"], 200 / 100 / 2, abs_tol=1e-9)
+    assert ref.iloc[3]["concurrent_vms"] == 2  # vm0 + vm2, the newcomer still counted
+    # t=8: vm0 +100 and vm2 +80.
+    assert math.isclose(ref.iloc[4]["vm_cores"], 180 / 100 / 2, abs_tol=1e-9)
+
+
 def test_vm_stream_values_survive_chunking(tmp_path, monkeypatch):
     """Spot-check the streamed numbers against hand arithmetic, not just parity."""
     _seed(tmp_path, vms=2, samples=3)
@@ -166,3 +229,28 @@ def test_numa_stream_chunk_boundary_matches_single_chunk(tmp_path, monkeypatch):
     _same(ref, chunked)
     # Node 0 at sample 1: user+system = 2*(10+20) = 60, idle = 2000.
     assert math.isclose(ref.iloc[1]["NUMA0 CPU (%)"], 100 * (1 - 2000 / 2060), abs_tol=1e-6)
+
+
+def test_numa_derivation_does_not_mutate_shared_frames(tmp_path):
+    """MB -> GB scaling must stay local, so a second derive sees the same numbers.
+
+    ``resource_report`` and ``host_resources`` both derive from frames loaded
+    once; an in-place /1024 would halve the values on the second call.
+    """
+    _write(
+        tmp_path / "host_cpu_raw.csv",
+        _CPU_HDR,
+        [[str(i), "0", "0", "0", str(i), "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0"] for i in range(3)],
+    )
+    _write(
+        tmp_path / "numa_mem_raw.csv",
+        ["timestamp", "node", "used_mb", "free_mb"],
+        [[str(i), "0", "2048", "1024"] for i in range(3)],
+    )
+    shared = frames._load_frames(tmp_path)
+    first = _derive_numa(frames=shared)
+    second = _derive_numa(frames=shared)
+
+    pd.testing.assert_frame_equal(first, second)
+    # 2048 MB -> 2 GB, not 2/1024 after a second pass.
+    assert math.isclose(second["NUMA0 Used (GB)"].iloc[0], 2.0, abs_tol=1e-9)

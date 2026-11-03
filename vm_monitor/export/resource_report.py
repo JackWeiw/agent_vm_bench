@@ -827,12 +827,16 @@ def export_to_excel(
             raw_host_df = pd.DataFrame()
             vm_cores_df = pd.DataFrame()
             try:
+                from vm_monitor.export.raw.frames import _load_frames
                 from vm_monitor.export.raw.report import _derive_host, _derive_per_vm
 
-                raw_host_df = _derive_host(raw_dir)
+                # One read of raw_data for both summary derivations: reading it
+                # per helper doubles the parse (8.4 s each at a 2 h capture).
+                frames = _load_frames(raw_dir)
+                raw_host_df = _derive_host(frames=frames)
                 # max_series effectively uncapped: VM_Stats lists every VM, not
                 # the top-K the Per-VM chart sheet caps at.
-                vm_cores_df, _ = _derive_per_vm(raw_dir, max_series=10**6)
+                vm_cores_df, _ = _derive_per_vm(frames=frames, max_series=10**6)
             except (OSError, ValueError, KeyError, pd.errors.ParserError) as e:
                 print(f"[WARN] raw CPU derivation skipped (falling back to psutil): {e}")
 
