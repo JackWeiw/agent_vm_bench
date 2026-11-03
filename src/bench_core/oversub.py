@@ -42,6 +42,7 @@ import yaml
 from bench_core.oversub_shards import (
     ShardGroupRunner,
     ShardPlan,
+    ShardStressBracket,
     build_shard_command,
     coerce_shards,
     collect_shard_artifacts,
@@ -49,6 +50,7 @@ from bench_core.oversub_shards import (
     merge_run_summaries,
     merge_trajectory_indexes,
     plan_shards,
+    start_host_monitor,
     write_merged_artifacts,
     write_shard_configs,
 )
@@ -1201,14 +1203,15 @@ def _run_sharded_trial(
     """Run one trial as P kernel subprocesses; merge back to a single trial row.
 
     Thin composition: planning / per-shard config derivation / group supervision
-    / artifact merging all live in :mod:`bench_core.oversub_shards`; validity
-    and row shaping reuse the same driver functions as the single-process path,
-    so a sharded trial is indistinguishable downstream (CSVs, compare, reuse).
+    / the driver-owned host collector / artifact merging all live in
+    :mod:`bench_core.oversub_shards`; validity and row shaping reuse the same
+    driver functions as the single-process path, so a sharded trial is
+    indistinguishable downstream (CSVs, compare, reuse).
     A shard that produced no summary is never backfilled -- it surfaces in the
     merged ``error`` and fails the validity floor (a crash must not masquerade
     as a successful measurement).
     """
-    write_shard_configs(trial_cfg, plan)
+    write_shard_configs(trial_cfg, plan, owns_collector=not args.no_vm_monitor)
     commands = [
         build_shard_command(args.bench_core_bin, spec, provider=args.provider, no_vm_monitor=args.no_vm_monitor)
         for spec in plan.specs
@@ -1218,7 +1221,33 @@ def _run_sharded_trial(
             logger.info("[dry-run] %s", " ".join(str(c) for c in cmd))
         return None
 
-    result = ShardGroupRunner(commands, [spec.log_path for spec in plan.specs], args.trial_timeout_sec).run()
+    # One host collector for the whole trial, owned here rather than by a
+    # shard: the shards only publish stress markers, so a crashed or slow shard
+    # can no longer take the host report down with it, and the output path is
+    # fixed at <trial_dir>/vm_monitor/ regardless of the shard layout.
+    monitor = (
+        None
+        if args.no_vm_monitor
+        else start_host_monitor(trial_cfg, trial_dir, provider=args.provider, test_duration=test_duration)
+    )
+    bracket = None if monitor is None else ShardStressBracket([spec.stress_path for spec in plan.specs], monitor)
+
+    result = None
+    try:
+        if bracket is not None:
+            bracket.start()
+        result = ShardGroupRunner(commands, [spec.log_path for spec in plan.specs], args.trial_timeout_sec).run()
+    finally:
+        # Order matters: close the bracket (the collector's sampling window),
+        # then let it export. On an interrupt mirror the kernel: a short wait for
+        # the fast artifact instead of a 300 s export block after Ctrl+C.
+        if bracket is not None:
+            bracket.stop()
+        if monitor is not None:
+            if result is not None and result.interrupted:
+                monitor.wait_for_host_resources(timeout=30)
+            else:
+                monitor.stop()
     artifacts = collect_shard_artifacts(plan, prefix)
     rc = result.trial_return_code()
 
