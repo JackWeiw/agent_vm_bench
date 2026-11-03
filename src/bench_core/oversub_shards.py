@@ -250,11 +250,19 @@ def build_shard_config(trial_cfg: dict, spec: ShardSpec, *, count: int) -> dict:
     is global by design (every shard replays the same first-N pool; with
     group-aligned shard sizes the merged run set matches the single-process
     trial per trajectory, not just in total).
+
+    Shard 0's host-monitor output is hoisted to ``<trial_dir>/vm_monitor/`` --
+    the same path an unsharded trial gets from ``report.output_dir`` -- so the
+    host metrics live at a fixed, sharding-independent location instead of
+    hiding under ``shard-00/``.
     """
     cfg = copy.deepcopy(trial_cfg)
     cfg.setdefault("sandbox", {})["total_count"] = spec.size
     cfg.setdefault("test", {})["round_size"] = spec.size
     cfg.setdefault("report", {})["output_dir"] = str(spec.directory)
+    monitor = cfg.get("monitor") or {}
+    if spec.index == 0 and isinstance(monitor, dict) and not monitor.get("log_dir"):
+        cfg["monitor"] = {**monitor, "log_dir": str(spec.directory.parent / "vm_monitor")}
     docker = cfg.get("docker")
     if isinstance(docker, dict) and docker.get("container_prefix"):
         docker["container_prefix"] = f"{docker['container_prefix']}-s{spec.index}"

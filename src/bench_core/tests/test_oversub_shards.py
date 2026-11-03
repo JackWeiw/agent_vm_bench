@@ -141,6 +141,23 @@ def test_build_shard_config_derives_self_contained_shard(tmp_path):
     assert cfg["docker"]["container_prefix"].startswith("oc-bench")
 
 
+def test_build_shard_config_hoists_shard0_monitor_dir_to_trial_root(tmp_path):
+    """Host metrics are fleet-wide: one fixed path, whether or not we sharded."""
+    cfg_in = {**_trial_cfg(), "monitor": {"interval": 2, "log_dir": None}}
+    plan = plan_shards(trial_dir=tmp_path, mode="exec_ephemeral", ratio=2, n=4, setting="auto")
+
+    shard0 = build_shard_config(cfg_in, plan.specs[0], count=plan.count)
+    assert shard0["monitor"]["log_dir"] == str(tmp_path / "vm_monitor")
+    assert shard0["monitor"]["interval"] == 2  # other monitor keys untouched
+
+    # Non-owning shards keep the default (they run --no-vm-monitor anyway).
+    assert build_shard_config(cfg_in, plan.specs[1], count=plan.count)["monitor"]["log_dir"] is None
+
+    # An explicit log_dir is the operator's call -- never overridden.
+    cfg_explicit = {**_trial_cfg(), "monitor": {"log_dir": "/mnt/fast/vm"}}
+    assert build_shard_config(cfg_explicit, plan.specs[0], count=plan.count)["monitor"]["log_dir"] == "/mnt/fast/vm"
+
+
 def test_build_shard_config_scales_launch_interval_to_preserve_global_rate(tmp_path):
     plan = plan_shards(trial_dir=tmp_path, mode="exec_ephemeral", ratio=3, n=4, setting="auto")
     cfg_in = _trial_cfg()
