@@ -233,7 +233,7 @@ profiler sheets written when their tool log exists — `DevKit_TopDown`, `DevKit
 Regenerate it any time without re-running the benchmark: `vm-monitor raw-report <log_dir>`.
 The long raw files (`vm_cpu_raw.csv`, `host_percpu_raw.csv`) are streamed in bounded
 chunks, so export time grows with the capture but peak memory does not (a 2 h capture
-exports in ~360 MB, an 8 h one in ~630 MB).
+exports in ~370 MB, an 8 h one in ~690 MB).
 
 > The xlsx is written **last** deliberately — `bench-core`'s `MonitorController` polls for `resource_report.xlsx` as the "all artifacts written" signal and reaps the subprocess the moment it appears. SVG runs before xlsx so it isn't dropped by that reap.
 

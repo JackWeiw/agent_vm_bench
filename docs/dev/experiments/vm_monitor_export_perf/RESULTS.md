@@ -54,10 +54,13 @@ four swap gauge columns and `vm_mem_gb` — i.e. strictly more work, not less.
 
 | Capture | Wall | Peak RSS |
 |---|---|---|
-| 2 h (3,600 samples) | 15.3 s | 363 MB |
-| **8 h (14,400 samples)** | **62.4 s** | **630 MB** |
+| 2 h (3,600 samples) | 15.3–15.6 s | 363–374 MB |
+| **8 h (14,400 samples)** | **64–73 s** | **681–692 MB** |
 
-4× the samples costs 1.7× the memory, not 4× — the remainder is the wide derived
+Ranges are run-to-run spread on this host (it is a shared k8s master; the two 8 h runs
+produced cell-identical workbooks, `parity.py` maxdiff 0).
+
+4× the samples costs ~1.8× the memory, not 4× — the remainder is the wide derived
 output itself (Per-VM wide timeline, 161-column `Disk IO`), which is proportional to
 what the workbook is asked to contain, not to the raw row count. The pre-streaming
 build needed 1002 MB for the 2 h case alone, i.e. it would have needed ~4 GB at 8 h.
@@ -167,7 +170,7 @@ hand-arithmetic spot checks of the streamed cores/PSS/NUMA values.
 
 ## Known limits
 
-- **Peak RSS is 363 MB at 2 h / 630 MB at 8 h.** The remaining growth is the derived
+- **Peak RSS is ~370 MB at 2 h / ~690 MB at 8 h.** The remaining growth is the derived
   wide output (Per-VM timeline, 161-column `Disk IO`), not the raw rows; the long raw
   files are streamed. The next lever, if multi-day captures ever need it, is rendering
   each sheet as it is derived and freeing it (the workbook already uses
