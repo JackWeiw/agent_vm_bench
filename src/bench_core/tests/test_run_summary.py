@@ -315,3 +315,29 @@ def test_run_benchmark_emits_run_summary_lifecycle(tmp_path):
     assert data["admission"]["maximum"] == 2
     assert data["lifecycle_overhead"] is not None
     assert data["test_duration"] == cfg.test_duration
+
+
+def test_vm_monitor_dir_follows_the_configured_log_dir(tmp_path):
+    """paths.vm_monitor_dir names where the collector actually wrote.
+
+    The shard planner hoists shard 0's monitor output to the trial root, and an
+    operator can set monitor.log_dir directly; reporting <output_dir>/vm_monitor
+    regardless would point at a directory that does not exist.
+    """
+    config = _replay_config(tmp_path, total=2)
+    sc = _stats_with_replay_metrics(config, total=2, succeeded=2)
+    sc.start_time = 1700000000.0
+
+    # Default: <output_dir>/vm_monitor, reported only once it exists.
+    path = write_run_summary(config, sc, series_path=None, obs_xlsx_path=None, report_path=None)
+    assert json.loads(path.read_text(encoding="utf-8"))["paths"]["vm_monitor_dir"] is None
+    (tmp_path / "vm_monitor").mkdir()
+    path = write_run_summary(config, sc, series_path=None, obs_xlsx_path=None, report_path=None)
+    assert json.loads(path.read_text(encoding="utf-8"))["paths"]["vm_monitor_dir"] == str(tmp_path / "vm_monitor")
+
+    # Hoisted: the configured dir wins.
+    hoisted = tmp_path.parent / "trial-root-vm_monitor"
+    hoisted.mkdir(exist_ok=True)
+    config.monitor.log_dir = str(hoisted)
+    path = write_run_summary(config, sc, series_path=None, obs_xlsx_path=None, report_path=None)
+    assert json.loads(path.read_text(encoding="utf-8"))["paths"]["vm_monitor_dir"] == str(hoisted)
