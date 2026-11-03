@@ -42,7 +42,7 @@ class QEMUMonitor(VMMonitorBase):
         """Get real-time information for all QEMU VMs.
 
         Uses two-phase collection:
-        Phase 1: Discover VM processes (serial psutil scan)
+        Phase 1: Discover VM processes (serial /proc scan)
         Phase 2: Collect per-VM metrics (parallel for large counts)
 
         Returns:
