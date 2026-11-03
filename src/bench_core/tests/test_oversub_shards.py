@@ -10,6 +10,8 @@ from __future__ import annotations
 import csv
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -17,11 +19,13 @@ from pathlib import Path
 import pytest
 import yaml
 
+from bench_core import oversub_shards
 from bench_core.oversub import main
 from bench_core.oversub_shards import (
     GroupResult,
     ShardArtifacts,
     ShardGroupRunner,
+    ShardStressBracket,
     build_shard_command,
     build_shard_config,
     coerce_shards,
@@ -31,6 +35,7 @@ from bench_core.oversub_shards import (
     plan_shards,
     resolve_shard_count,
     shard_sizes,
+    start_host_monitor,
     write_merged_artifacts,
     write_shard_configs,
 )
@@ -158,6 +163,32 @@ def test_build_shard_config_hoists_shard0_monitor_dir_to_trial_root(tmp_path):
     assert build_shard_config(cfg_explicit, plan.specs[0], count=plan.count)["monitor"]["log_dir"] == "/mnt/fast/vm"
 
 
+def test_build_shard_config_gives_every_shard_a_marker_and_no_collector(tmp_path):
+    """The driver owns the host collector: shards only publish their window."""
+    plan = plan_shards(trial_dir=tmp_path, mode="exec_ephemeral", ratio=2, n=4, setting="auto")
+    shard0 = build_shard_config(_trial_cfg(), plan.specs[0], count=plan.count)["monitor"]
+    shard1 = build_shard_config(_trial_cfg(), plan.specs[1], count=plan.count)["monitor"]
+
+    assert shard0["stress_file"] == str(tmp_path / "shard-00" / "stress.lock")
+    assert shard1["stress_file"] == str(tmp_path / "shard-01" / "stress.lock")
+    assert shard0["external_collector"] is True and shard1["external_collector"] is True
+    # Only shard 0 holds a provider handle, so only it keeps the fleet gauge.
+    assert shard0["api_state"] == "true"
+    assert "api_state" not in shard1
+
+
+def test_build_shard_config_leaves_monitor_alone_when_driver_does_not_own_it(tmp_path):
+    """--no-vm-monitor on the driver: no markers, no external-collector handoff."""
+    plan = plan_shards(trial_dir=tmp_path, mode="exec_ephemeral", ratio=2, n=4, setting="auto")
+    monitor = build_shard_config(_trial_cfg(), plan.specs[0], count=plan.count, owns_collector=False)["monitor"]
+    assert "external_collector" not in monitor
+    assert "api_state" not in monitor
+    assert monitor["log_dir"] == str(tmp_path / "vm_monitor")  # still the fixed path
+
+    off = {**_trial_cfg(), "monitor": {"enabled": "false"}}
+    assert "external_collector" not in build_shard_config(off, plan.specs[0], count=plan.count)["monitor"]
+
+
 def test_build_shard_config_scales_launch_interval_to_preserve_global_rate(tmp_path):
     plan = plan_shards(trial_dir=tmp_path, mode="exec_ephemeral", ratio=3, n=4, setting="auto")
     cfg_in = _trial_cfg()
@@ -197,6 +228,92 @@ def test_build_shard_command_vm_monitor_owned_by_shard_zero(tmp_path):
     # global opt-out applies to every shard
     cmd0n = build_shard_command(["bench-core"], plan.specs[0], provider="aenv", no_vm_monitor=True)
     assert "--no-vm-monitor" in cmd0n
+
+
+# ---------------------------------------------------------------------------
+# Driver-owned host collector
+# ---------------------------------------------------------------------------
+
+
+class _RecordingController:
+    """Stands in for MonitorController: records the bracket it was given."""
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def begin_stress(self):
+        self.calls.append("begin")
+
+    def end_stress(self):
+        self.calls.append("end")
+
+
+def _wait_for(predicate, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"condition not met within {timeout}s")
+
+
+def test_stress_bracket_spans_the_union_of_shard_markers(tmp_path):
+    """First shard start to last shard end -- an early finisher never cuts it."""
+    markers = [tmp_path / "a.lock", tmp_path / "b.lock"]
+    ctl = _RecordingController()
+    bracket = ShardStressBracket(markers, ctl, poll_sec=0.01)
+    bracket.start()
+    try:
+        markers[1].touch()
+        _wait_for(lambda: ctl.calls == ["begin"])
+        markers[0].touch()
+        markers[1].unlink()
+        time.sleep(0.05)
+        assert ctl.calls == ["begin"]  # one shard still stressing
+        markers[0].unlink()
+        _wait_for(lambda: ctl.calls == ["begin", "end"])
+    finally:
+        bracket.stop()
+    assert ctl.calls == ["begin", "end"]
+
+
+def test_stress_bracket_closes_on_stop_when_a_shard_died_mid_stress(tmp_path):
+    marker = tmp_path / "shard.lock"
+    ctl = _RecordingController()
+    bracket = ShardStressBracket([marker], ctl, poll_sec=0.01)
+    bracket.start()
+    marker.touch()  # a SIGKILLed shard never removes its own marker
+    _wait_for(lambda: ctl.calls == ["begin"])
+    bracket.stop()
+    assert ctl.calls == ["begin", "end"]
+
+
+def test_start_host_monitor_uses_the_trial_root_and_a_driver_lock(tmp_path, monkeypatch):
+    seen = {}
+
+    class _FakeController:
+        proc = object()  # "spawned": start_host_monitor returns the controller
+
+        def __init__(self, cfg, provider):
+            seen["cfg"], seen["provider"] = cfg, provider
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(oversub_shards, "MonitorController", _FakeController)
+    monkeypatch.setattr(oversub_shards, "provider_vmm_type", lambda _name: "cubesandbox")
+
+    ctl = start_host_monitor(_trial_cfg(), tmp_path, provider="cubesandbox", test_duration=60)
+
+    assert isinstance(ctl, _FakeController)
+    mc = seen["cfg"].monitor
+    assert mc.log_dir == str(tmp_path / "vm_monitor")
+    assert mc.stress_file == str(tmp_path / "vm_monitor" / "stress.lock")
+    assert mc.external_collector is False
+    assert (seen["cfg"].output_dir, seen["cfg"].test_duration) == (str(tmp_path), 60)
+    assert seen["provider"].name == "cubesandbox-driver"  # log lines must not claim the provider has no list API
+    assert seen["provider"].vmm_type == "cubesandbox"
+    assert seen["provider"].list_sandbox_states() is None  # no handle: shard 0 gauges
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +635,18 @@ pfx = cfg["report"]["filename_prefix"]
 out = Path(cfg["report"]["output_dir"])
 out.mkdir(parents=True, exist_ok=True)
 (out / "argv.json").write_text(json.dumps(sys.argv[1:]))
+# Stand in for the kernel's stress bracket: publish this shard's marker for a
+# window that differs per shard, so a union bracket is distinguishable from
+# one shard's window. (The driver-owned collector watches exactly this.)
+lock = Path((cfg.get("monitor") or {}).get("stress_file", "/dev/shm/stub.lock"))
+lock.parent.mkdir(parents=True, exist_ok=True)
+idx = int(out.name.rsplit("-", 1)[-1])
+time.sleep(0.3 * idx)
+began = time.time()
+lock.touch()
+time.sleep(0.5 + 0.8 * idx)
+lock.unlink()
+(out / "marker.json").write_text(json.dumps({"start": began, "end": time.time()}))
 run_dir = out / f"{pfx}_{time.strftime('%Y%m%d-%H%M%S')}"
 (run_dir / "trajectories").mkdir(parents=True, exist_ok=True)
 total = cfg["sandbox"]["total_count"]
@@ -724,6 +853,64 @@ def test_e2e_dry_run_writes_shard_yamls(tmp_path):
     assert len(yamls) == 3
     for p in yamls:
         assert yaml.safe_load(p.read_text(encoding="utf-8"))["sandbox"]["total_count"] == 4  # 3*4/3
+
+
+_VM_MONITOR_STUB = """import json, sys, time
+from pathlib import Path
+argv = sys.argv[1:]
+lock = Path(argv[argv.index("--stress-file") + 1])
+log_dir = Path(argv[argv.index("--log-dir") + 1])
+log_dir.mkdir(parents=True, exist_ok=True)
+while not lock.exists():
+    time.sleep(0.02)
+events = [["start", time.time()]]
+while lock.exists():
+    time.sleep(0.02)
+events.append(["end", time.time()])
+(log_dir / "stub.json").write_text(json.dumps(events))
+(log_dir / "resource_report.xlsx").write_text("stub")
+"""
+
+
+def test_e2e_driver_owns_one_host_collector_over_the_union_window(tmp_path, monkeypatch):
+    """One collector for the whole trial, bracketed by the UNION of shard windows.
+
+    The collector must still be sampling when the LAST shard is stressing (shard
+    1 here outlives shard 0), which a shard-0-owned collector would not do, and
+    its output must land at the trial root, never under ``shard-00/``.
+    """
+    stub = tmp_path / "stub.py"
+    stub.write_text(_SHARD_STUB, encoding="utf-8")
+    vm_stub = tmp_path / "vm-monitor-stub.py"
+    vm_stub.write_text(_VM_MONITOR_STUB, encoding="utf-8")
+
+    real_which = shutil.which
+    monkeypatch.setattr(shutil, "which", lambda n: str(vm_stub) if n == "vm-monitor" else real_which(n))
+    real_popen = subprocess.Popen
+
+    def _popen(cmd, **kw):  # the stub is a .py script, not an executable
+        return real_popen([sys.executable, *cmd] if str(cmd[0]).endswith(".py") else cmd, **kw)
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+
+    base = _base_yaml(tmp_path)
+    out_root = tmp_path / "sweep"
+    rc = main(
+        _common_argv(tmp_path, base, out_root, stub)
+        + ["--ratios", "2", "--modes", "exec_ephemeral", "--shards", "2", "--test-duration", "60"]
+    )
+    assert rc == 0
+
+    trial_dir = out_root / "exec_ephemeral" / "ratio-02" / "repeat-00"
+    events = json.loads((trial_dir / "vm_monitor" / "stub.json").read_text(encoding="utf-8"))
+    assert [e[0] for e in events] == ["start", "end"]  # one bracket, not one per shard
+    began, ended = events[0][1], events[1][1]
+
+    marks = [json.loads((trial_dir / f"shard-0{i}" / "marker.json").read_text(encoding="utf-8")) for i in range(2)]
+    assert marks[1]["end"] > marks[0]["end"] + 0.2  # shard 1 outlives shard 0
+    assert began <= min(m["start"] for m in marks) + 1.0  # opened on the first shard's window
+    assert ended >= max(m["end"] for m in marks) - 0.1  # closed only after the last one
+    assert not (trial_dir / "shard-00" / "vm_monitor").exists()
 
 
 def test_e2e_reuse_skips_completed_sharded_trial(tmp_path):
