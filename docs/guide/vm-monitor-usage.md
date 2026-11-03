@@ -147,7 +147,7 @@ numa_nodes: [0, 1]              # omit to auto-discover
 | **ksys** | `$KSYS_PATH collect -d <t> -i 3 -c $KSYS_CONFIG_PATH` | `ksys.log` | KSys (11 metrics) |
 | **ub_watch** | `$UB_WATCH_PATH -t <t> -i 3` | `ub_watch.log` | UBWatch_Latency, UBWatch_Bandwidth |
 | **smap_bw** | `sudo python3 $SMAP_BW_PATH --clear --duration <t> --timeout <t+10>` | `smap_bw.log` | SMAPBW_Summary, SMAPBW_Cycles |
-| **getfre** | threaded per-NUMA: `$GETFRE_PATH <total_cores> <core_id>` per core | `getfre_NUMA{N}.log` | Getfre_Summary, Getfre_NUMA{N}, Getfre_Timeline_NUMA{N} |
+| **getfre** | threaded per-NUMA: `$GETFRE_PATH <total_cores> <core_id>` per core | `getfre_NUMA{N}.log` | Getfre_Summary, Getfre_NUMA{N} |
 
 `<cpu_range>` = `DEVKIT_CPU_RANGE`, or auto-computed from `--numa` via `/sys/devices/system/node/node{N}/cpulist`. If neither resolves, devkit_top_down is skipped (never launched with a wrong range).
 
@@ -174,18 +174,18 @@ All collectors default **ON**. Disabling one leaves its history empty, so its sh
 
 `/proc` collectors (target `base`):
 
-| Flag | Skips | Sheet affected |
-|------|-------|----------------|
+| Flag | Skips | Artifact affected |
+|------|-------|-------------------|
 | `--no-hugepage` | hugepage stats | Hugepage rows in Summary |
-| `--no-numa-cpu` | per-NUMA CPU% | NUMA CPU lines |
+| `--no-numa-cpu` | per-NUMA CPU% | `NUMA` sheet `CPU (%)` columns, NUMA_Overview, numa.svg |
 | `--no-host-stats` | host CPU/mem | Host rows in Summary |
-| `--no-swap` | swap usage + swap-in/out | Swap_Timeline |
-| `--no-host-mem-detail` | cached/dirty/writeback | Host_Mem_Timeline |
-| `--no-pressure` | page-cache pressure + iowait | Host_Pressure_Timeline |
-| `--no-numa-memory` | per-NUMA meminfo | NUMA_Memory_Timeline |
-| `--no-vm-total` | aggregated VM memory | VM_Total_Memory_Timeline |
-| `--no-disk` | per-device disk I/O (1s sub-sample) | Disk_IO_Timeline |
-| `--no-ublk` | ublk device count | Disk_IO_Timeline ublk column |
+| `--no-swap` | swap usage + swap-in/out | `Host resources` swap columns + `Swap usage` / `Swap cache` / `Swap in/out` charts |
+| `--no-host-mem-detail` | cached/dirty/writeback | `Host resources` Buffers/dirty/writeback + Anon/file-cache columns |
+| `--no-pressure` | page-cache pressure + iowait | `Host resources` pressure columns / `Page-cache pressure` / `Alloc stalls` charts |
+| `--no-numa-memory` | per-NUMA meminfo | `NUMA` sheet memory columns / `numa_mem_raw.csv` |
+| `--no-vm-total` | aggregated VM memory | `Host resources` `vm_mem_gb` + `VM memory vs FC PSS` chart |
+| `--no-disk` | per-device disk I/O (1s sub-sample) | `Disk IO` sheet |
+| `--no-ublk` | ublk daemon CPU | `Host resources` `ublk_cores` + ublk segment of `CPU cores (ublk + VM)` |
 
 devkit split (target `devkit` — the two sub-tools share `DEVKIT_PATH`):
 
@@ -202,7 +202,13 @@ devkit split (target `devkit` — the two sub-tools share `DEVKIT_PATH`):
 logs_<timestamp>/
 ├── qemu_monitor.csv         # raw per-sample VM records (or firecracker_monitor.csv)
 ├── summary.csv              # peak/avg summary
-├── resource_report.xlsx     # aggregated Excel (all sheets below)
+├── resource_report.xlsx     # summary sheets only (fast to build)
+├── host_resources.xlsx      # every per-sample timeline (5 sheets + charts)
+├── raw_data/                # always-on raw CSV snapshots (the host_resources.xlsx input)
+│   ├── host_mem_raw.csv  host_vmstat_raw.csv  host_cpu_raw.csv
+│   ├── host_percpu_raw.csv  numa_cpu_map.csv  numa_mem_raw.csv
+│   ├── vm_cpu_raw.csv  disk_io_raw.csv  ublk_cpu_raw.csv
+│   └── hostproc_cpu_raw.csv  api_state_raw.csv
 ├── disk_io.svg              # dark-themed SVG time-curves
 ├── host_resources.svg
 ├── swap.svg
@@ -216,7 +222,18 @@ logs_<timestamp>/
 └── getfre_NUMA{N}.log
 ```
 
-`resource_report.xlsx` sheets: `Summary`, `NUMA_Overview`, `VM_Stats`, `DevKit_TopDown`, `DevKit_Memory`, `NUMA_Bandwidth`, `KSys`, `UBWatch_Latency`, `UBWatch_Bandwidth`, `SMAPBW_Summary`, `SMAPBW_Cycles`, `Getfre_Summary`, `Getfre_NUMA{N}`, `Getfre_Timeline_NUMA{N}`, `Raw_VM_Data`, `Swap_Timeline`, `NUMA_Memory_Timeline`, `VM_Total_Memory_Timeline`, `Disk_IO_Timeline`, `Host_Mem_Timeline`, `Host_Pressure_Timeline`, `Host_CPU_Timeline`.
+`resource_report.xlsx` sheets (summary only): `Summary`, `NUMA_Overview`, `VM_Stats`, plus the
+profiler sheets written when their tool log exists — `DevKit_TopDown`, `DevKit_Memory`,
+`NUMA_Bandwidth`, `KSys`, `UBWatch_Latency`, `UBWatch_Bandwidth`, `SMAPBW_Summary`,
+`SMAPBW_Cycles`, `Getfre_Summary`, `Getfre_NUMA{N}`.
+
+`host_resources.xlsx` sheets (per-sample timelines, derived from `raw_data/`): `Host resources`,
+`NUMA`, `Per-VM`, `Disk IO`, and `HostProc` (only with `--host-proc`). Column-level definitions:
+[docs/dev/metrics-reference.md](../dev/metrics-reference.md#host_resourcesxlsx-字段含义中文版).
+Regenerate it any time without re-running the benchmark: `vm-monitor raw-report <log_dir>`.
+The long raw files (`vm_cpu_raw.csv`, `host_percpu_raw.csv`) are streamed in bounded
+chunks, so export time grows with the capture but peak memory does not (a 2 h capture
+exports in ~370 MB, an 8 h one in ~690 MB).
 
 > The xlsx is written **last** deliberately — `bench-core`'s `MonitorController` polls for `resource_report.xlsx` as the "all artifacts written" signal and reaps the subprocess the moment it appears. SVG runs before xlsx so it isn't dropped by that reap.
 

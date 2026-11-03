@@ -10,7 +10,7 @@ Usage:
     from vm_monitor import LogCapture
 
     # Module-level import (for specific functions)
-    from vm_monitor.parsers import parse_devkit_top_down
+    from vm_monitor.capture.parsers import parse_devkit_top_down
 
     # CLI entry point
     python -m vm_monitor.cli -t 60 -i 3 --vmm qemu
@@ -28,16 +28,14 @@ from .config import (
 )
 
 # Export utilities
-from .exporters import (
+from .export import (
     export_to_excel,
     print_capture_summary,
 )
-from .cubesandbox import CubeSandboxMonitor
-from .firecracker import FirecrackerMonitor
-from .log_capture import LogCapture
 
-# Parser functions
-from .parsers import (
+# External-tool capture: the log collector and its parsers
+from .capture import LogCapture
+from .capture.parsers import (
     parse_all_logs,
     parse_devkit_mem,
     parse_devkit_top_down,
@@ -46,7 +44,9 @@ from .parsers import (
     parse_smap_bw,
     parse_ub_watch,
 )
-from .qemu import QEMUMonitor
+
+# VMM implementations
+from .vmm import CubeSandboxMonitor, FirecrackerMonitor, QEMUMonitor
 
 # Version marker
 __version__ = "1.0.0"

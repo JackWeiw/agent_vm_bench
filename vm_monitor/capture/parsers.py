@@ -1,4 +1,3 @@
-# vm_monitor/parsers.py
 """
 Log Parser Module
 

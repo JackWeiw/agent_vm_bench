@@ -5,7 +5,7 @@ paused sandbox has none, and a sandbox still booting has none yet, so the
 process gauge undercounts the fleet the provider believes it holds -- exactly
 the wrong shape for oversubscription (pause-and-reuse) runs. This sampler asks
 the provider for its sandbox states once per monitor interval and appends a
-row to ``raw_data/api_state_raw.csv``; ``vm_monitor.raw_report`` as-of joins it
+row to ``raw_data/api_state_raw.csv``; ``vm_monitor.export.raw.report`` as-of joins it
 onto the host samples.
 
 Best-effort by contract (same rule as vm_monitor): a provider without a list

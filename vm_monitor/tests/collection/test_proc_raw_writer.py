@@ -257,3 +257,57 @@ def test_proc_raw_writer_dumps_vm_pss():
             rows = list(csv.DictReader(f))
     assert rows[0]["pss_mb"] == "1024.0"
     assert rows[1]["pss_mb"] == "2048.0"
+
+
+def test_proc_raw_writer_dumps_vm_memory_and_numa_mem():
+    """memory_mb rides the existing per-VM record (numa_maps total already read
+    for the fleet gauge), and numa_mem_raw.csv carries the per-node meminfo
+    dicts get_numa_nodes_memory already parses. Both are pure passthrough: no
+    extra /proc or numa_maps read is issued by the writer."""
+    with tempfile.TemporaryDirectory() as d:
+        w = _ProcRawWriter(d)
+        w.enqueue_vm(
+            "2026-01-01 00:00:00",
+            [{"pid": 111, "name": "fc-vm0", "utime": 500, "stime": 50, "pss_mb": 1024.0, "memory_mb": 1200.0}],
+        )
+        w.enqueue_numa_mem(
+            "2026-01-01 00:00:00",
+            [
+                {
+                    "node": 0,
+                    "total_mb": 1024.0,
+                    "free_mb": 24.0,
+                    "available_mb": 500.0,
+                    "swap_cached_mb": 3.0,
+                    "active_mb": 200.0,
+                    "inactive_mb": 100.0,
+                    "anon_pages_mb": 300.0,
+                    "file_pages_mb": 400.0,
+                    "used_mb": 1000.0,
+                    "usage_pct": 97.66,
+                },
+                {
+                    "node": 1,
+                    "total_mb": 2048.0,
+                    "free_mb": 48.0,
+                    "available_mb": 900.0,
+                    "swap_cached_mb": 6.0,
+                    "active_mb": 400.0,
+                    "inactive_mb": 200.0,
+                    "anon_pages_mb": 600.0,
+                    "file_pages_mb": 800.0,
+                    "used_mb": 2000.0,
+                    "usage_pct": 97.66,
+                },
+            ],
+        )
+        w.close()
+        with open(os.path.join(d, "raw_data", "vm_cpu_raw.csv")) as f:
+            vm_rows = list(csv.DictReader(f))
+        with open(os.path.join(d, "raw_data", "numa_mem_raw.csv")) as f:
+            numa_rows = list(csv.DictReader(f))
+
+    assert vm_rows[0]["memory_mb"] == "1200.0"
+    assert [r["node"] for r in numa_rows] == ["0", "1"]
+    assert numa_rows[1]["used_mb"] == "2000.0"
+    assert numa_rows[0]["timestamp"] == "2026-01-01 00:00:00"

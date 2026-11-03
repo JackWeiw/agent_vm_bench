@@ -30,7 +30,7 @@ CHURN_BIN = os.path.join(BIN_DIR, "containerd-shim-cube-rs")
 def sample(repo: str, pids_file: str, out: str, interval: float) -> None:
     """Second-sample CPU% of every pid in --pids-file, as JSON."""
     sys.path.insert(0, repo)
-    from vm_monitor.cubesandbox import CubeSandboxMonitor
+    from vm_monitor.vmm.cubesandbox import CubeSandboxMonitor
 
     with open(pids_file, encoding="utf-8") as f:
         wanted = set(json.load(f))

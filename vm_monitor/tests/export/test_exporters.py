@@ -1,4 +1,4 @@
-"""Unit tests for vm_monitor/exporters.py Excel sheet structure.
+"""Unit tests for vm_monitor/export/resource_report.py Excel sheet structure.
 
 Covers the consolidation of the former NUMA_CPU, NUMA_Memory, and
 Hugepage_Per_NUMA sheets into a single NUMA_Overview sheet.
@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 from vm_monitor.base import VMMonitorBase
-from vm_monitor.exporters import PANDAS_AVAILABLE, export_to_excel
+from vm_monitor.export.resource_report import PANDAS_AVAILABLE, export_to_excel
 
 try:
     import pandas as pd
@@ -222,7 +222,7 @@ class TestSkipCharts(unittest.TestCase):
     def test_skip_charts_true_skips_add_charts_and_writes_xlsx(self):
         """skip_charts=True must NOT call _add_charts, and os.replace still
         promotes the chart-less build to the final path."""
-        import vm_monitor.exporters as exp
+        import vm_monitor.export.resource_report as exp
 
         called = {"n": 0}
 
@@ -249,7 +249,7 @@ class TestSkipCharts(unittest.TestCase):
     def test_skip_charts_false_calls_add_charts(self):
         """Default (skip_charts=False) still builds charts -- pins the contract
         that --no-charts is opt-in, not the new default."""
-        import vm_monitor.exporters as exp
+        import vm_monitor.export.resource_report as exp
 
         called = {"n": 0}
 

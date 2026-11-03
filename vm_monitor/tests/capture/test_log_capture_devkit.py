@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from vm_monitor.log_capture import LogCapture
+from vm_monitor.capture.log_capture import LogCapture
 
 
 class _DummyProc:
@@ -51,7 +51,7 @@ class TestDevkitSplit(unittest.TestCase):
             return _DummyProc()
 
         cap = LogCapture(self.config, 5, self.log_dir, [0], disabled_devkit=disabled_devkit)
-        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=fake_popen):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=fake_popen):
             cap.start()
             cap.stop()  # close log file handles before tearDown deletes the dir
         return spawned

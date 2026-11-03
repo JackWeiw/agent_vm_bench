@@ -161,7 +161,7 @@ def test_recycled_pid_remeasures_and_resets_cpu_baseline():
 
 def test_cube_shim_discovery_reads_cmdline_for_truncated_comm(monkeypatch):
     """comm 'containerd-shim' is shared with runc; only the cmdline tells them apart."""
-    from vm_monitor.cubesandbox import CubeSandboxMonitor
+    from vm_monitor.vmm.cubesandbox import CubeSandboxMonitor
 
     procs = {
         100: ("containerd-shim", "S", "/usr/bin/containerd-shim-cube-rs -id sandbox-a -namespace cube"),

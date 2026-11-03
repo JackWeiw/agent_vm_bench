@@ -18,13 +18,13 @@ from .base import _discover_block_devices
 
 # Internal dependencies - all modules
 from .config import load_env_config, validate_and_prompt_missing
-from .cubesandbox import CubeSandboxMonitor
-from .exporters import export_to_excel, print_capture_summary
-from .firecracker import FirecrackerMonitor
-from .log_capture import DEFAULT_ROTATION_PERF_EVENTS, LogCapture
-from .qemu import QEMUMonitor
-from .raw_report import build_host_resources_xlsx
-from .svg_exporter import export_svg_reports
+from .capture.log_capture import DEFAULT_ROTATION_PERF_EVENTS, LogCapture
+from .export.raw.report import build_host_resources_xlsx
+from .export.resource_report import export_to_excel, print_capture_summary
+from .export.svg import export_svg_reports
+from .vmm.firecracker import FirecrackerMonitor
+from .vmm.qemu import QEMUMonitor
+from .vmm.cubesandbox import CubeSandboxMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +131,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
   --no-swap / --no-hugepage / --no-pressure / --no-host-mem-detail /
   --no-numa-memory / --no-numa-cpu / --no-host-stats / --no-vm-total /
   --no-disk / --no-ublk : skip a /proc collector (its sheet/SVG is omitted).
-  --no-pss : skip per-VM PSS (smaps_rollup) + VM_Total_PSS_Timeline sheet.
+  --no-pss : skip per-VM PSS (smaps_rollup) + the PSS timeline columns.
   --no-ublk-daemon : skip uvm-ublk-daemon CPU tracking (Disk_IO col).
   --no-hostproc : skip user-specified host-process CPU/PSS tracking.
   --no-devkit-mem / --no-devkit-topdown : run only one devkit sub-tool.

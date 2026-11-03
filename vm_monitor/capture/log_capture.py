@@ -1,4 +1,3 @@
-# vm_monitor/log_capture.py
 """
 Parallel Log Collection Module
 
@@ -24,7 +23,7 @@ from collections.abc import Iterable
 from datetime import datetime
 
 # Internal dependencies
-from .config import _count_physical_cores, calculate_cpu_range_from_numa, load_getfre_config, numa_to_physical_cores
+from ..config import _count_physical_cores, calculate_cpu_range_from_numa, load_getfre_config, numa_to_physical_cores
 
 # Default perf stat event set for log-rotation mode (used when the caller does
 # not pass --rotation-perf-events). Mirrors the feat/perf-split experiment's

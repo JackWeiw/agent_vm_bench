@@ -18,7 +18,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from vm_monitor.log_capture import DEFAULT_ROTATION_PERF_EVENTS, LogCapture
+from vm_monitor.capture.log_capture import DEFAULT_ROTATION_PERF_EVENTS, LogCapture
 
 
 class _DummyProc:
@@ -70,7 +70,7 @@ class TestLogRotation(unittest.TestCase):
     def test_devkit_turn_spawns_both_in_parallel_with_interval(self):
         cap = self._cap()
         spawned = []
-        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
             cap._rotation_devkit_turn()
         self.assertEqual(len(spawned), 2)
         topdown = next(c for c in spawned if "top-down" in c)
@@ -91,7 +91,7 @@ class TestLogRotation(unittest.TestCase):
     def test_devkit_turn_respects_disabled_devkit(self):
         cap = self._cap(disabled_devkit={"devkit_mem"})
         spawned = []
-        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
             cap._rotation_devkit_turn()
         self.assertEqual(len(spawned), 1)
         self.assertIn("top-down", spawned[0])
@@ -99,7 +99,7 @@ class TestLogRotation(unittest.TestCase):
     def test_ksys_turn_cmd_and_log(self):
         cap = self._cap()
         spawned = []
-        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
             cap._rotation_ksys_turn()
         self.assertEqual(len(spawned), 1)
         cmd = spawned[0]
@@ -114,7 +114,7 @@ class TestLogRotation(unittest.TestCase):
     def test_perf_turn_cmd_and_log(self):
         cap = self._cap(rotation_perf_events="cycles,instructions")
         spawned = []
-        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
             cap._rotation_perf_turn()
         cmd = spawned[0]
         self.assertEqual(cmd, ["perf", "stat", "-e", "cycles,instructions", "-a", "-I", "3000", "--", "sleep", "15"])
@@ -124,13 +124,13 @@ class TestLogRotation(unittest.TestCase):
     def test_perf_default_events_used_when_none(self):
         cap = self._cap()
         spawned = []
-        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
             cap._rotation_perf_turn()
         self.assertEqual(spawned[0][3], DEFAULT_ROTATION_PERF_EVENTS)
 
     def test_perf_missing_disables_future_turns(self):
         cap = self._cap()
-        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=OSError("No such file")):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=OSError("No such file")):
             cap._rotation_perf_turn()
             cap._rotation_perf_turn()  # second turn must not retry
         self.assertIn("perf", cap._rotation_skipped)
@@ -141,7 +141,7 @@ class TestLogRotation(unittest.TestCase):
         self.config["uprof_path"] = "/fake/AMDuProfPcm"
         cap = self._cap()
         spawned = []
-        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
             cap._rotation_uprof_turn()
         cmd = spawned[0]
         self.assertEqual(
@@ -161,7 +161,7 @@ class TestLogRotation(unittest.TestCase):
     def test_uprof_turn_popen_failure_skips_tool(self):
         self.config["uprof_path"] = "/fake/AMDuProfPcm"
         cap = self._cap()
-        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=OSError("Permission denied")):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=OSError("Permission denied")):
             cap._rotation_uprof_turn()
             cap._rotation_uprof_turn()  # second turn must not retry
         self.assertIn("uprof", cap._rotation_skipped)
@@ -170,7 +170,7 @@ class TestLogRotation(unittest.TestCase):
 
     def test_devkit_turn_popen_failure_skips_subtools(self):
         cap = self._cap()
-        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=OSError("Permission denied")):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=OSError("Permission denied")):
             cap._rotation_devkit_turn()
             cap._rotation_devkit_turn()  # second turn hits the empty-cmds path
         self.assertIn("devkit_mem", cap._rotation_skipped)
@@ -183,7 +183,7 @@ class TestLogRotation(unittest.TestCase):
 
     def test_ksys_turn_popen_failure_skips_tool(self):
         cap = self._cap()
-        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=OSError("Permission denied")):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=OSError("Permission denied")):
             cap._rotation_ksys_turn()
         self.assertIn("ksys", cap._rotation_skipped)
         self.assertEqual(cap.rotation_turns["ksys"], [])
@@ -212,8 +212,8 @@ class TestLogRotation(unittest.TestCase):
             return _DummyProc()
 
         with (
-            patch("vm_monitor.log_capture.subprocess.Popen", side_effect=fake_popen),
-            patch("vm_monitor.log_capture.subprocess.run", side_effect=lambda cmd, *a, **k: None),
+            patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=fake_popen),
+            patch("vm_monitor.capture.log_capture.subprocess.run", side_effect=lambda cmd, *a, **k: None),
         ):
             cap.rotation_thread = threading.Thread(target=cap._rotation_thread_main)
             cap.rotation_thread.start()
@@ -228,7 +228,7 @@ class TestLogRotation(unittest.TestCase):
         """tools=[uprof] without uprof_path: one idle loop, then 'no runnable'."""
         cap = self._cap(rotation_interval=1, rotation_tools=["uprof"])
         spawned = []
-        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
             cap.rotation_thread = threading.Thread(target=cap._rotation_thread_main)
             cap.rotation_thread.start()
             cap.rotation_thread.join(timeout=10)
@@ -242,7 +242,7 @@ class TestLogRotation(unittest.TestCase):
         buf = io.StringIO()
         spawned = []
         with (
-            patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)),
+            patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)),
             redirect_stdout(buf),
         ):
             cap.rotation_thread = threading.Thread(target=cap._rotation_thread_main)
@@ -288,8 +288,8 @@ class TestLogRotation(unittest.TestCase):
             ran.append(cmd)
 
         with (
-            patch("vm_monitor.log_capture.subprocess.Popen", side_effect=fake_popen),
-            patch("vm_monitor.log_capture.subprocess.run", side_effect=fake_run),
+            patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=fake_popen),
+            patch("vm_monitor.capture.log_capture.subprocess.run", side_effect=fake_run),
         ):
             cap.rotation_thread = threading.Thread(target=cap._rotation_thread_main)
             cap.rotation_thread.start()
@@ -323,8 +323,8 @@ class TestLogRotation(unittest.TestCase):
             return _DummyProc()
 
         with (
-            patch("vm_monitor.log_capture.subprocess.Popen", side_effect=fake_popen),
-            patch("vm_monitor.log_capture.subprocess.run", side_effect=lambda cmd, *a, **k: None),
+            patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=fake_popen),
+            patch("vm_monitor.capture.log_capture.subprocess.run", side_effect=lambda cmd, *a, **k: None),
         ):
             cap.rotation_thread = threading.Thread(target=cap._rotation_thread_main)
             cap.rotation_thread.start()
@@ -343,7 +343,7 @@ class TestLogRotation(unittest.TestCase):
         lock = os.path.join(self.log_dir, "absent.lock")
         cap = self._cap(stress_file=lock)
         spawned = []
-        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
             cap.rotation_thread = threading.Thread(target=cap._rotation_thread_main)
             cap.rotation_thread.start()
             time.sleep(0.3)  # give the thread a chance to (wrongly) run a turn
@@ -359,7 +359,7 @@ class TestLogRotation(unittest.TestCase):
     def test_start_rotation_mode_skips_parallel_devkit_ksys(self):
         cap = self._cap(stress_file=os.path.join(self.log_dir, "absent.lock"))
         spawned = []
-        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
             result = cap.start()
             cap.stop()
         # devkit/ksys must NOT start in parallel (they rotate instead); nothing
@@ -371,7 +371,7 @@ class TestLogRotation(unittest.TestCase):
     def test_start_default_mode_still_parallel(self):
         cap = LogCapture(self.config, 5, self.log_dir, [0])  # log_rotation=False
         spawned = []
-        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
             result = cap.start()
             cap.stop()
         subcmds = [c[2] for c in spawned if c[0] == "/fake/devkit"]
@@ -384,7 +384,7 @@ class TestLogRotation(unittest.TestCase):
 
     def test_get_results_rotation_files(self):
         cap = self._cap()
-        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder([])):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=self._spawn_recorder([])):
             cap._rotation_devkit_turn()
             cap._rotation_perf_turn()
         cap.rotation_thread = True  # non-None so get_results reports the carrier
@@ -418,7 +418,7 @@ class TestLogRotation(unittest.TestCase):
         self.config["uprof_path"] = "/fake/AMDuProfPcm"
         cap = self._cap(rotation_interval={"devkit": 20, "ksys": 30, "perf": 15, "uprof": 10})
         spawned = []
-        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
             cap._rotation_devkit_turn()
             cap._rotation_ksys_turn()
             cap._rotation_perf_turn()
@@ -461,7 +461,7 @@ class TestLogRotation(unittest.TestCase):
             def kill(self):
                 pass
 
-        with patch("vm_monitor.log_capture.subprocess.Popen", return_value=_AliveProc()):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", return_value=_AliveProc()):
             t0 = time.monotonic()
             cap._rotation_ksys_turn()
             elapsed = time.monotonic() - t0
@@ -496,7 +496,7 @@ class TestLogRotation(unittest.TestCase):
             spawned.append(cmd)
             return _AliveProc()
 
-        with patch("vm_monitor.log_capture.subprocess.Popen", side_effect=fake_popen):
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=fake_popen):
             t0 = time.monotonic()
             cap._rotation_devkit_turn()
             elapsed = time.monotonic() - t0

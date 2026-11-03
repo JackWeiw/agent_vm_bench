@@ -1,4 +1,3 @@
-# vm_monitor/cubesandbox.py
 """
 CubeSandboxMonitor - CubeSandbox (Cloud Hypervisor microVM) Monitor
 
@@ -9,7 +8,7 @@ which auto-selects this VMM via ``vmm_type``.
 
 import re
 
-from .base import VMMonitorBase
+from ..base import VMMonitorBase
 
 # containerd-shim invocation: ``containerd-shim-cube-rs -namespace <ns> -id <id> -address <sock>``
 _ID_RE = re.compile(r"(?:^|\s)-id\s+(\S+)")
