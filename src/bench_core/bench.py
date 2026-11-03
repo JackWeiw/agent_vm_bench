@@ -69,6 +69,7 @@ _PROVIDERS: dict[str, tuple[str, str]] = {
     "docker": ("env_provider.docker", "DockerProvider"),
     "aenv": ("env_provider.aenv", "AenvProvider"),
     "cubesandbox": ("env_provider.cubesandbox", "CubesandboxProvider"),
+    "sandboxsched": ("env_provider.sandboxsched", "SandboxSchedProvider"),
 }
 
 
@@ -932,6 +933,8 @@ def _build_provider(name: str, config: KernelConfig, raw_config: dict[str, Any])
         from env_provider.aenv import build_provider
     elif name == "cubesandbox":
         from env_provider.cubesandbox import build_provider
+    elif name == "sandboxsched":
+        from env_provider.sandboxsched import build_provider
     else:
         raise ValueError(f"Unknown provider: {name}")
     return build_provider(config, raw_config)

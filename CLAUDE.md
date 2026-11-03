@@ -42,7 +42,7 @@ python -m pre_commit run --all-files # pre-commit hooks (run on staged files bef
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  CLI / entry                                                 │
-│  bench-core (bench_core.bench.main) --provider {fake,e2b,docker,aenv} │
+│  bench-core (bench_core.bench.main) --provider {fake,e2b,docker,aenv,cubesandbox,sandboxsched} │
 └─────────────────────────────────────────────────────────────┘
                           │
             ┌─────────────┴─────────────┐
@@ -100,7 +100,7 @@ These have their own managers / stats / round-robin (`e2b_bench/run_benchmark` i
 | Package | Purpose | Key Files |
 |---------|---------|-----------|
 | `src/bench_core/` | host-agnostic kernel (recommended) | `bench.py`, `config.py`, `task_manager/{fixed,round_robin}.py`, `stats_collector.py`, `task_runner/{browser,coding,document}.py`, `coding_payload.py` |
-| `src/env_provider/` | provider contract + e2b/docker/aenv/fake impls | `__init__.py` (ABC + capability Protocols), `_base.py`, `_ready.py`, `e2b/`, `docker/`, `aenv/`, `fake.py` |
+| `src/env_provider/` | provider contract + e2b/docker/aenv/cubesandbox/sandboxsched/fake impls | `__init__.py` (ABC + capability Protocols), `_base.py`, `_ready.py`, `e2b/`, `docker/`, `aenv/`, `cubesandbox/`, `sandboxsched/`, `fake.py` |
 | `vm_monitor/` | VMM monitoring (QEMU/Firecracker) | `base.py`, `qemu.py`, `firecracker.py`, `parsers.py`, `exporters.py` |
 | `e2b_bench/` | E2B sandbox testing (frozen legacy) | `bench.py`, `round_robin.py`, `task_runner.py`, `sandbox_manager.py`, `batch_scheduler.py`, `stats_collector.py` |
 | `docker_bench/` | Docker container testing (frozen legacy) | `bench.py`, `container_manager.py` |
@@ -188,7 +188,7 @@ Multi-template routing: trajectories may declare per-file concrete templates via
 
 | Script | Purpose | CLI |
 |--------|---------|-----|
-| `bench-core` (`bench_core.bench:main`) | host-agnostic kernel (recommended) | `--config`, `--provider {fake,e2b,docker,aenv}`, `--create-only`, `--detect`, `--warmup-only`, `--cleanup`, `-n`, `-bm`, `--test-duration`, `--vm-monitor {auto,true,false}`, `--no-vm-monitor` |
+| `bench-core` (`bench_core.bench:main`) | host-agnostic kernel (recommended) | `--config`, `--provider {fake,e2b,docker,aenv,cubesandbox,sandboxsched}`, `--create-only`, `--detect`, `--warmup-only`, `--cleanup`, `-n`, `-bm`, `--test-duration`, `--vm-monitor {auto,true,false}`, `--no-vm-monitor` |
 | `vm-monitor` (`vm_monitor.cli:main`) | VMM monitoring | `-t`, `-i`, `--vmm`, `--enable-capture` |
 | `vm_bench/__main__.py` | OpenStack VM browser/QA + create | `--create-only`, `--detect`, `-n`, `--start-ip`, `--browser-url` |
 | `auto_vm_test.py` | Single OpenStack test | `--config` |
