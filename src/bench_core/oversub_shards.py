@@ -32,9 +32,12 @@ Known simplifications (measured, not assumed away):
 - No cross-process start barrier: shards self-start after their own setup.
   The skew is recorded (``shard_start_skew_sec`` in the merged summary) so it
   can be quantified; add a READY/START gate only if the data shows it matters.
-- vm_monitor is owned by shard 0 alone (one host collector per host); its
-  stress window is shard 0's, which approximates the trial window up to the
-  recorded skew.
+- vm_monitor is owned by the DRIVER, not by a shard: each shard publishes its
+  own stress marker (``monitor.stress_file``) and the driver runs one
+  ``vm-monitor`` over the union of those markers (see ``ShardStressBracket``).
+  The host report therefore lives at a fixed ``<trial_dir>/vm_monitor/`` and
+  survives any one shard crashing; shard 0 keeps only the provider-backed fleet
+  gauge (``monitor.api_state: true``), which the driver cannot poll.
 - ``launch_interval_sec`` is scaled by P per shard: each shard paces its own
   creates at ``P * interval``, preserving the GLOBAL average create rate (the
   control-plane protection the knob exists for) without cross-process IPC.
@@ -52,11 +55,16 @@ import copy
 import json
 import logging
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml
+
+from bench_core.bench import provider_vmm_type
+from bench_core.observability.monitor import MonitorConfig, MonitorController
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +189,11 @@ class ShardSpec:
     def config_path(self) -> Path:
         return self.directory / "shard.yaml"
 
+    @property
+    def stress_path(self) -> Path:
+        """This shard's stress marker; the driver unions them into one window."""
+        return self.directory / "stress.lock"
+
 
 @dataclass(frozen=True)
 class ShardPlan:
@@ -235,7 +248,7 @@ def plan_shards(*, trial_dir: Path, mode: str, ratio: int, n: int, setting: int 
 # ---------------------------------------------------------------------------
 
 
-def build_shard_config(trial_cfg: dict, spec: ShardSpec, *, count: int) -> dict:
+def build_shard_config(trial_cfg: dict, spec: ShardSpec, *, count: int, owns_collector: bool = True) -> dict:
     """Derive one shard's kernel config from the (unsharded) trial config.
 
     The shard is a self-contained kernel run over ``spec.size`` slots:
@@ -251,18 +264,27 @@ def build_shard_config(trial_cfg: dict, spec: ShardSpec, *, count: int) -> dict:
     group-aligned shard sizes the merged run set matches the single-process
     trial per trajectory, not just in total).
 
-    Shard 0's host-monitor output is hoisted to ``<trial_dir>/vm_monitor/`` --
-    the same path an unsharded trial gets from ``report.output_dir`` -- so the
-    host metrics live at a fixed, sharding-independent location instead of
-    hiding under ``shard-00/``.
+    The ``monitor`` block splits the host collector from the stress marker:
+    every shard writes its own ``stress.lock`` (the driver brackets their
+    union), no shard spawns a collector, and shard 0 -- the only process
+    holding a provider handle under sharding -- keeps the fleet gauge and the
+    shared ``<trial_dir>/vm_monitor/`` output path (the same path an unsharded
+    trial gets from ``report.output_dir``), so host data never hides under
+    ``shard-00/``.
     """
     cfg = copy.deepcopy(trial_cfg)
     cfg.setdefault("sandbox", {})["total_count"] = spec.size
     cfg.setdefault("test", {})["round_size"] = spec.size
     cfg.setdefault("report", {})["output_dir"] = str(spec.directory)
-    monitor = cfg.get("monitor") or {}
-    if spec.index == 0 and isinstance(monitor, dict) and not monitor.get("log_dir"):
-        cfg["monitor"] = {**monitor, "log_dir": str(spec.directory.parent / "vm_monitor")}
+    monitor = dict(cfg.get("monitor") or {})
+    monitor["stress_file"] = str(spec.stress_path)
+    if spec.index == 0 and not monitor.get("log_dir"):
+        monitor["log_dir"] = str(spec.directory.parent / "vm_monitor")
+    if owns_collector and str(monitor.get("enabled", "auto")).lower() != "false":
+        monitor["external_collector"] = True
+        if spec.index == 0:
+            monitor.setdefault("api_state", "true")
+    cfg["monitor"] = monitor
     docker = cfg.get("docker")
     if isinstance(docker, dict) and docker.get("container_prefix"):
         docker["container_prefix"] = f"{docker['container_prefix']}-s{spec.index}"
@@ -276,12 +298,12 @@ def build_shard_config(trial_cfg: dict, spec: ShardSpec, *, count: int) -> dict:
     return cfg
 
 
-def write_shard_configs(trial_cfg: dict, plan: ShardPlan) -> list[Path]:
+def write_shard_configs(trial_cfg: dict, plan: ShardPlan, *, owns_collector: bool = True) -> list[Path]:
     """Materialize every shard's ``shard.yaml``; returns the config paths."""
     paths = []
     for spec in plan.specs:
         spec.directory.mkdir(parents=True, exist_ok=True)
-        cfg = build_shard_config(trial_cfg, spec, count=plan.count)
+        cfg = build_shard_config(trial_cfg, spec, count=plan.count, owns_collector=owns_collector)
         spec.config_path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
         paths.append(spec.config_path)
     return paths
@@ -294,17 +316,112 @@ def build_shard_command(
     provider: str,
     no_vm_monitor: bool,
 ) -> list[str]:
-    """One shard's bench-core argv. Shard 0 owns the host vm_monitor.
+    """One shard's bench-core argv; only shard 0 keeps its monitor flags.
 
-    A second collector on the same host would double-sample the same /proc
-    counters and race on the tool lock dir, so every shard past the first runs
-    with ``--no-vm-monitor`` (host metrics are host-wide: one collector sees
-    all VMs, including the other shards').
+    No shard spawns a host collector -- the driver runs one for the whole trial
+    (see :func:`start_host_monitor`) -- so every shard's config carries
+    ``monitor.external_collector`` and publishes its stress marker regardless.
+    Shard 0 still keeps its monitor settings un-suppressed: it is the process
+    that holds a provider handle and therefore the one that can poll the
+    control-plane gauge. A second collector on the same host would double-sample
+    the same /proc counters and race on the tool lock dir.
     """
     cmd = [*bench_core_bin, "--config", str(spec.config_path), "--provider", provider]
     if no_vm_monitor or spec.index > 0:
         cmd.append("--no-vm-monitor")
     return cmd
+
+
+# ---------------------------------------------------------------------------
+# Driver-owned host collector
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _ProviderHint:
+    """The provider facts ``MonitorController`` reads, without an SDK or a handle.
+
+    The driver shells out to bench-core and owns no provider, so it cannot poll
+    the control plane: ``list_sandbox_states`` returning None ends the sampler
+    thread on its first poll. Shard 0 keeps that gauge (``monitor.api_state:
+    true`` in its derived config), where a real provider handle exists.
+    """
+
+    name: str
+    vmm_type: str | None
+
+    def list_sandbox_states(self):
+        return None
+
+
+def start_host_monitor(
+    trial_cfg: dict, trial_dir: Path, *, provider: str, test_duration: int
+) -> MonitorController | None:
+    """Spawn the driver-owned host collector for one sharded trial.
+
+    One collector per host: it samples while the union of the shards' stress
+    markers is non-empty and exports to ``<trial_dir>/vm_monitor/``. Returns
+    None when the collector is not applicable (no VMM for this provider, no
+    binary, ``monitor.enabled: false``) -- the shards then simply publish
+    markers nobody reads.
+    """
+    raw = dict(trial_cfg.get("monitor") or {})
+    log_dir = Path(raw.get("log_dir") or trial_dir / "vm_monitor")
+    raw.update(
+        log_dir=str(log_dir),
+        stress_file=str(log_dir / "stress.lock"),
+        external_collector=False,  # this process IS the collector
+    )
+    cfg = SimpleNamespace(
+        monitor=MonitorConfig.from_raw(raw), output_dir=str(trial_dir), test_duration=int(test_duration)
+    )
+    controller = MonitorController(cfg, _ProviderHint(f"{provider}-driver", provider_vmm_type(provider)))
+    controller.start()
+    return controller if controller.proc is not None else None
+
+
+class ShardStressBracket:
+    """Mirror the union of the shards' stress markers onto one collector lock.
+
+    Each shard's kernel publishes ``monitor.stress_file`` for its own stress
+    window; the driver-owned collector must sample from the FIRST shard's start
+    to the LAST shard's end. This poller touches the collector's lock while any
+    marker exists and removes it only once every marker is gone, so a shard
+    finishing early never cuts the window short and a shard killed mid-stress
+    still ends it (``stop()`` closes an open bracket).
+    """
+
+    def __init__(self, marker_paths: list[Path], controller: MonitorController, poll_sec: float = 0.5) -> None:
+        self._markers = list(marker_paths)
+        self._controller = controller
+        self._poll = poll_sec
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, name="shard-stress-bracket", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """End the window; the collector then exports on its own."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=max(5.0, self._poll * 4))
+            self._thread = None
+
+    def _run(self) -> None:
+        active = False
+        while not self._stop.wait(self._poll):
+            now = any(p.exists() for p in self._markers)
+            if now == active:
+                continue
+            if now:
+                self._controller.begin_stress()
+            else:
+                self._controller.end_stress()
+            active = now
+        if active:
+            self._controller.end_stress()
 
 
 # ---------------------------------------------------------------------------
