@@ -6,9 +6,9 @@ processes. ``resource_report.xlsx`` keeps only the timeline-less summary sheets.
 
 The work is split by responsibility so each layer stays readable on its own:
 
-- :mod:`vm_monitor.raw_frames`  -- raw CSV contract (one read, delta rules)
-- :mod:`vm_monitor.raw_metrics` -- derivations (host / per-VM / NUMA / disk / proc)
-- :mod:`vm_monitor.raw_xlsx`    -- xlsxwriter rendering, capacity guards
+- :mod:`vm_monitor.export.raw.frames`  -- raw CSV contract (one read, delta rules)
+- :mod:`vm_monitor.export.raw.metrics` -- derivations (host / per-VM / NUMA / disk / proc)
+- :mod:`vm_monitor.export.raw.workbook`    -- xlsxwriter rendering, capacity guards
 - this module                    -- orchestration, atomic write, degradation
 
 Output is built at ``<out>.build.xlsx`` and atomically promoted with
@@ -23,12 +23,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from vm_monitor.raw_frames import (  # noqa: F401  (re-exported for callers/tests)
+from vm_monitor.export.raw.frames import (  # noqa: F401  (re-exported for callers/tests)
     MAX_INTERVAL_S,
     _guarded,
     _load_frames,
 )
-from vm_monitor.raw_metrics import (  # noqa: F401  (re-exported for callers/tests)
+from vm_monitor.export.raw.metrics import (  # noqa: F401  (re-exported for callers/tests)
     _MAX_DISK_DEVICES,
     MAX_VM_SERIES,
     _aggregate_cores_at,
@@ -38,7 +38,7 @@ from vm_monitor.raw_metrics import (  # noqa: F401  (re-exported for callers/tes
     derive_numa as _derive_numa,
     derive_per_vm as _derive_per_vm,
 )
-from vm_monitor.raw_xlsx import (  # noqa: F401  (re-exported for callers/tests)
+from vm_monitor.export.raw.workbook import (  # noqa: F401  (re-exported for callers/tests)
     _CHART_MAX_ROWS,
     _EXCEL_MAX_COLS,
     _EXCEL_MAX_ROWS,

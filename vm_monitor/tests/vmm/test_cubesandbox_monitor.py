@@ -1,7 +1,7 @@
 """Tests for the CubeSandbox VMM monitor (containerd-shim-cube-rs)."""
 from __future__ import annotations
 
-from vm_monitor.cubesandbox import CubeSandboxMonitor
+from vm_monitor.vmm.cubesandbox import CubeSandboxMonitor
 
 
 def test_process_names_use_kernel_truncated_comm():

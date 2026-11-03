@@ -12,8 +12,14 @@ and was built with `pandas.ExcelWriter(engine="openpyxl")` + a full
 
 Every per-sample timeline moved to `host_resources.xlsx`, derived post-hoc from the
 always-on `raw_data/*.csv` snapshots with a rewritten, vectorized pipeline
-(`raw_frames.py` → `raw_metrics.py` → `raw_xlsx.py` → `raw_report.py`) and written
-natively with `xlsxwriter(constant_memory=True)`.
+(`export/raw/frames.py` → `export/raw/metrics.py` → `export/raw/workbook.py` →
+`export/raw/report.py`) and written natively with `xlsxwriter(constant_memory=True)`.
+
+The two long-format files (`vm_cpu_raw.csv`, `host_percpu_raw.csv` — ~95% of the rows)
+are then **streamed in bounded chunks** (`_CHUNK_ROWS = 250_000`) and reduced to the
+per-sample aggregates the sheets actually plot, carrying the last row per key across
+each chunk boundary so a delta split by the boundary survives. Peak RSS is now set by
+the chunk size plus the wide output, not by the capture length.
 
 ## Fixture
 
@@ -36,10 +42,25 @@ natively with `xlsxwriter(constant_memory=True)`.
 | Path | Wall | Peak RSS | Output |
 |---|---|---|---|
 | `host_resources.xlsx` — **before** (4 sheets) | **134.8 s** | 569 MB | 3.8 MB |
-| `host_resources.xlsx` — **after** (5 sheets) | **17.6 s** | 1002 MB | 5.3 MB |
+| `host_resources.xlsx` — vectorized (5 sheets) | 17.6 s | 1002 MB | 5.3 MB |
+| `host_resources.xlsx` — **streaming** (5 sheets) | **16.3 s** | **374 MB** | 5.3 MB |
 
 **7.7× faster** while *adding* the `NUMA` sheet (4 nodes × 8 columns + 4 charts),
 four swap gauge columns and `vm_mem_gb` — i.e. strictly more work, not less.
+
+### Capture length (the data-explosion case)
+
+`gen_fixture.py` again, 4× the samples (14,400 samples / 8 h, 1.1 GB raw CSVs):
+
+| Capture | Wall | Peak RSS |
+|---|---|---|
+| 2 h (3,600 samples) | 16.3 s | 374 MB |
+| **8 h (14,400 samples)** | **61.6 s** | **639 MB** |
+
+4× the samples costs 1.7× the memory, not 4× — the remainder is the wide derived
+output itself (Per-VM wide timeline, 161-column `Disk IO`), which is proportional to
+what the workbook is asked to contain, not to the raw row count. The pre-streaming
+build needed 1002 MB for the 2 h case alone, i.e. it would have needed ~4 GB at 8 h.
 
 `resource_report.xlsx` is now sample-count-independent by construction: on the same
 capture it is `Summary` (40 rows × 3 cols) + `NUMA_Overview` (5 rows × 9 cols) only.
@@ -125,11 +146,32 @@ corrupt cells.
 | Fixture's synthetic fleet exceeds host busy cores | one WARNING at build time — the `vm_cores ≤ host_busy_cores` guard firing as designed |
 | Any single sheet builder raises | it is dropped and the workbook is rebuilt without it; output is promoted by `os.replace`, so a failed build never leaves a corrupt file |
 
+### 5. Streaming vs whole-file derivation (identical numbers)
+
+`/tmp/parity.py` derives the same 2 h fixture with the streaming reader and with the
+pre-streaming whole-file reader and diffs the two workbooks cell by cell:
+
+```text
+Host resources 3600x34 maxdiff=5.68e-14 (FC total PSS (GB))   # float summation order
+NUMA 3600x34 maxdiff=0
+Per-VM 7203x10 maxdiff=0
+Disk IO 7200x161 maxdiff=0
+HostProc 7200x15 maxdiff=0
+PARITY OK
+```
+
+`vm_monitor/tests/export/test_raw_stream.py` pins the same property at unit scale by
+forcing `_CHUNK_ROWS = 3` (splitting every sample across chunks) and requiring
+identical output — including identical NaN placement — versus a single-chunk read, plus
+hand-arithmetic spot checks of the streamed cores/PSS/NUMA values.
+
 ## Known limits
 
-- **Peak RSS grew 569 MB → 1002 MB.** The whole raw dir is loaded once (276 MB of CSV
-  for 2 h × 384 VMs) and the `NUMA` derivation adds a per-CPU pivot. At 8 h the CSVs
-  scale ~4× — the upgrade path is chunked reads per frame, not needed at the 2 h target.
+- **Peak RSS is 374 MB at 2 h / 639 MB at 8 h.** The remaining growth is the derived
+  wide output (Per-VM timeline, 161-column `Disk IO`), not the raw rows; the long raw
+  files are streamed. The next lever, if multi-day captures ever need it, is rendering
+  each sheet as it is derived and freeing it (the workbook already uses
+  `constant_memory`, so a rendered sheet need not stay resident).
 - **Charts are skipped above 500,000 points** (the table still carries every sample).
   At a 2 s interval that is ~11 days.
 - **Disk IO is capped at 16 devices** (10 columns each); the rest are named in a WARNING.

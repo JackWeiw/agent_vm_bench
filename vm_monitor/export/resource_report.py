@@ -1,4 +1,3 @@
-# vm_monitor/exporters.py
 """
 Data Export Module
 
@@ -40,7 +39,7 @@ except ImportError:  # pragma: no cover
     OPENPYXL_AVAILABLE = False
 
 # Internal dependency
-from .parsers import parse_all_logs
+from ..capture.parsers import parse_all_logs
 
 # Type checking import (avoid circular dependency)
 if TYPE_CHECKING:
@@ -828,7 +827,7 @@ def export_to_excel(
             raw_host_df = pd.DataFrame()
             vm_cores_df = pd.DataFrame()
             try:
-                from vm_monitor.raw_report import _derive_host, _derive_per_vm
+                from vm_monitor.export.raw.report import _derive_host, _derive_per_vm
 
                 raw_host_df = _derive_host(raw_dir)
                 # max_series effectively uncapped: VM_Stats lists every VM, not

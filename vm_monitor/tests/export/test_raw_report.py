@@ -7,7 +7,7 @@ import math
 import openpyxl
 import os
 
-from vm_monitor.raw_report import (
+from vm_monitor.export.raw.report import (
     _derive_disk,
     _derive_host,
     _derive_hostproc,
@@ -544,7 +544,7 @@ def test_derive_disk_caps_series_and_keeps_busiest(tmp_path, caplog):
     import logging
 
     from vm_monitor.base import _DISK_FIELDS
-    from vm_monitor.raw_report import _MAX_DISK_DEVICES
+    from vm_monitor.export.raw.report import _MAX_DISK_DEVICES
 
     d = tmp_path
     devs = [f"ublkb{i}" for i in range(_MAX_DISK_DEVICES + 4)] + ["sda"]
@@ -798,7 +798,7 @@ def test_build_xlsx_isolates_a_failing_sheet(tmp_path, monkeypatch, caplog):
         wb.create_sheet("Disk IO")
         raise ValueError("Max value is 16384")
 
-    monkeypatch.setattr("vm_monitor.raw_report._build_disk_sheet", fail_building_disk_sheet)
+    monkeypatch.setattr("vm_monitor.export.raw.report._build_disk_sheet", fail_building_disk_sheet)
     with caplog.at_level(logging.WARNING):
         build_host_resources_xlsx(tmp_path, out)
 
@@ -1032,7 +1032,7 @@ def test_derive_datetime_string_timestamps(tmp_path):
     # Derived dt is the real 2s wall-clock gap (parse correctness, not just
     # no-crash): d(idle+iowait)=12, d_total8=41 -> busy% = 100*(1-12/41);
     # ublk cores = d(utime+stime)=200 /_CLK_TCK=100 / dt=2 -> 1.0.
-    from vm_monitor.raw_report import _derive_host
+    from vm_monitor.export.raw.report import _derive_host
 
     df = _derive_host(d)
     r = df.iloc[1]
@@ -1120,7 +1120,7 @@ def test_vm_cores_aggregate_bounded_and_correct(tmp_path, caplog):
     sum of per-VM normalized rates). 3 VMs alive across t=0->t=2, each Δj=100,
     _CLK_TCK=100, dt=2 -> vm_cores = 300/100/2 = 1.5. host_busy=2.045 bounds it
     (VM CPU ⊆ host CPU), so the per-row sanity warning does NOT fire."""
-    from vm_monitor.raw_report import _derive_host
+    from vm_monitor.export.raw.report import _derive_host
 
     d = tmp_path
     _seed_host_busy(d)
@@ -1142,7 +1142,7 @@ def test_vm_cores_excludes_midinterval_start_counts_concurrent(tmp_path):
     """Method A: a VM born at t=2 (no t=0 baseline) is EXCLUDED from vm_cores
     (not present at both consecutive host endpoints) but COUNTED in
     concurrent_vms. A全程 VM contributes to both."""
-    from vm_monitor.raw_report import _derive_host
+    from vm_monitor.export.raw.report import _derive_host
 
     d = tmp_path
     _seed_host_busy(d)
@@ -1166,7 +1166,7 @@ def test_vm_cores_pid_restart_skips_one_keeps_rest(tmp_path):
     """A VM whose utime zeroes at t=2 (pid restart, same vm_name) -> Δj<0 ->
     that VM masked out that interval; the OTHER VM still contributes -> fleet
     vm_cores computes from the rest (not whole-column NaN)."""
-    from vm_monitor.raw_report import _derive_host
+    from vm_monitor.export.raw.report import _derive_host
 
     d = tmp_path
     _seed_host_busy(d)
@@ -1191,7 +1191,7 @@ def test_vm_cores_nonconstant_dt(tmp_path):
     """Host samples at t=0,2,5 (dt=2 then dt=3) -- each row's vm_cores uses its
     own host dt; no NaN-holing from the cadence change. vm0 j: 0 -> 200 (dt=2 ->
     1.0) -> 500 (Δj=300 over dt=3 -> 1.0)."""
-    from vm_monitor.raw_report import _derive_host
+    from vm_monitor.export.raw.report import _derive_host
 
     d = tmp_path
     _write(
@@ -1239,7 +1239,7 @@ def test_fc_pss_multi_vm_snapshot_sum(tmp_path):
     """fc_pss_gb = Σ pss_mb/1024 of alive VMs per timestamp (gauge snapshot sum,
     equivalent to the old pivot sum(skipna) but computed directly from the long
     CSV)."""
-    from vm_monitor.raw_report import _derive_host
+    from vm_monitor.export.raw.report import _derive_host
 
     d = tmp_path
     _seed_host_busy(d)
@@ -1267,7 +1267,7 @@ def test_vm_cores_sanity_warn_fires_on_overcount(tmp_path, caplog):
     invariant vm_cores <= host_busy*1.02 is violated -> ONE warning fires (count
     + worst timestamp + worst ratio). Proves the check fires (the bounded
     fixture above proves it stays quiet when the invariant holds)."""
-    from vm_monitor.raw_report import _derive_host
+    from vm_monitor.export.raw.report import _derive_host
 
     d = tmp_path
     # small host busy (0.29 cores) so a 2000-jiffie VM clearly overcounts.

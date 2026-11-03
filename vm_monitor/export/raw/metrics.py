@@ -3,7 +3,7 @@
 Every derivation is pure file input and vectorized: cumulative counters are
 differenced with ``groupby(...).shift(1)`` (or a numpy pivot diff), so a 2-hour
 capture costs one pass per series rather than one Python row-iteration per
-sample. The shared delta/guard contract lives in :mod:`vm_monitor.raw_frames`.
+sample. The shared delta/guard contract lives in :mod:`vm_monitor.export.raw.frames`.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 from vm_monitor.base import _BYTES_PER_MIB, _CLK_TCK, _DISK_FIELDS, _compute_pressure_rates
-from vm_monitor.raw_frames import (
+from vm_monitor.export.raw.frames import (
     MAX_INTERVAL_S,
     _CPU_FIELDS,
     _MEMINFO_MB_PER_GIB,
@@ -105,9 +105,9 @@ def _prepare_counter_series(frame: pd.DataFrame, key: str = "pid") -> dict:
     """
     out: dict = {}
     for pid, group in frame.groupby(key, sort=False):
-        group = group.sort_values("timestamp").drop_duplicates("timestamp", keep="last")
+        group = group.sort_values("__e").drop_duplicates("__e", keep="last")
         out[pid] = (
-            group["timestamp"].to_numpy(dtype=float),
+            group["__e"].to_numpy(dtype=float),
             pd.to_numeric(group["utime"], errors="coerce").to_numpy(dtype=float),
             pd.to_numeric(group["stime"], errors="coerce").to_numpy(dtype=float),
         )
@@ -153,8 +153,8 @@ def derive_host(raw_dir=None, *, frames: dict | None = None) -> pd.DataFrame:
     cpu = f.get("cpu")
     if cpu is None or cpu.empty:
         return pd.DataFrame()
-    cpu = _sort_by(cpu, ["timestamp"]).reset_index(drop=True)
-    epochs = _ts_to_epoch(cpu["timestamp"])
+    cpu = _sort_by(cpu, ["__e"]).reset_index(drop=True)
+    epochs = cpu["__e"]
 
     df = _cpu_block(cpu, epochs)
     _warn_on_gaps(df["__dt"], cpu["timestamp"])
@@ -278,63 +278,27 @@ def _fleet_block(frames: dict, epochs: pd.Series) -> pd.DataFrame:
     block = pd.DataFrame(index=epochs.index)
     ublk = frames.get("ublk")
     if ublk is not None and not ublk.empty:
-        ublk = ublk.assign(timestamp=_ts_to_epoch(ublk["timestamp"])).sort_values("timestamp")
+        ublk = ublk.sort_values("__e")
         series = _prepare_counter_series(ublk)
         block["ublk_cores"] = [_aggregate_cores_at(series, stamp) for stamp in epochs]
     else:
         block["ublk_cores"] = math.nan
 
     vm = frames.get("vm")
-    if vm is None or vm.empty:
+    if vm is None:
         block["vm_cores"] = math.nan
         block["fc_pss_gb"] = math.nan
         block["concurrent_vms"] = 0
         return block
 
-    aggregates = _vm_fleet_aggregates(vm, epochs)
-    block["vm_cores"] = aggregates["cores"]
-    block["fc_pss_gb"] = aggregates["pss_gb"]
-    block["concurrent_vms"] = aggregates["concurrent"]
-    if aggregates["memory_gb"] is not None:
-        block["vm_mem_gb"] = aggregates["memory_gb"]
-    return block
-
-
-def _vm_fleet_aggregates(vm: pd.DataFrame, epochs: pd.Series) -> dict:
-    """Per-host-sample VM fleet aggregates.
-
-    Method A: a VM contributes at e_cur only if its own previous sample landed
-    on the immediately preceding host epoch (both endpoints). A VM born/died
-    mid-interval has no baseline -> excluded (contributes 0) rather than
-    dividing a two-interval delta by one interval. The fleet cores value is a
-    single aggregate jiffies delta, bounded by construction by the host's busy
-    cores -- never a sum of per-VM normalized rates.
-    """
-    vm = vm.copy()
-    vm["__e"] = _ts_to_epoch(vm["timestamp"])
-    vm["__j"] = pd.to_numeric(vm["utime"], errors="coerce") + pd.to_numeric(vm["stime"], errors="coerce")
-    vm["__pss"] = _column(vm, "pss_mb", vm.index)
-    has_memory = "memory_mb" in vm.columns
-    vm["__mem"] = _column(vm, "memory_mb", vm.index) if has_memory else math.nan
-
-    host_epochs = [stamp for stamp in epochs.tolist() if not math.isnan(stamp)]
-    host_prev = dict(zip(host_epochs[1:], host_epochs[:-1]))
-
-    vm = _sort_by(vm, ["vm_name", "__e"])
-    group = vm.groupby("vm_name", sort=False)
-    delta_jiffies = vm["__j"] - group["__j"].shift(1)
-    both_endpoints = vm["__e"].map(host_prev) == group["__e"].shift(1)
-    delta_jiffies = delta_jiffies.where(both_endpoints & (delta_jiffies >= 0))
-
     interval = epochs.diff().to_numpy()
     rateable = (interval > 0) & (interval <= MAX_INTERVAL_S)
-    by_epoch = vm.groupby("__e")
-    return {
-        "cores": _jiffies_to_cores(delta_jiffies.groupby(vm["__e"]).sum(min_count=1), interval, rateable, epochs),
-        "pss_gb": _host_aligned(by_epoch["__pss"].sum(min_count=1), epochs) / 1024,
-        "concurrent": _host_aligned(by_epoch["vm_name"].count(), epochs).fillna(0).astype(int),
-        "memory_gb": _host_aligned(by_epoch["__mem"].sum(min_count=1), epochs) / 1024 if has_memory else None,
-    }
+    block["vm_cores"] = _jiffies_to_cores(vm.delta_jiffies, interval, rateable, epochs)
+    block["fc_pss_gb"] = _host_aligned(vm.pss_sum, epochs) / 1024
+    block["concurrent_vms"] = _host_aligned(vm.count, epochs).fillna(0).astype(int)
+    if vm.mem_sum is not None:
+        block["vm_mem_gb"] = _host_aligned(vm.mem_sum, epochs) / 1024
+    return block
 
 
 def _host_aligned(aggregated: pd.Series, epochs: pd.Series) -> pd.Series:
@@ -354,7 +318,7 @@ def _api_block(frames: dict, epochs: pd.Series) -> pd.DataFrame:
     api = frames.get("api")
     if api is None or api.empty or not {"sandboxes_running", "sandboxes_paused"} <= set(api.columns):
         return pd.DataFrame(index=epochs.index)
-    stamps = _ts_to_epoch(api["timestamp"]).to_numpy()
+    stamps = api["__e"].to_numpy()
     order = stamps.argsort(kind="stable")
     block = pd.DataFrame(index=epochs.index)
     for column in ("sandboxes_running", "sandboxes_paused"):
@@ -407,33 +371,33 @@ def derive_per_vm(raw_dir=None, max_series: int = MAX_VM_SERIES, *, frames: dict
 
     VM count > ``max_series`` -> top-K by mean CPU busy + ``other`` = sum of the
     rest; both CPU and PSS charts share that VM set (ranked by CPU, NOT PSS) so
-    the two charts stay aligned.
+    the two charts stay aligned. The long->wide reduction happens while the
+    CSV streams (see :class:`vm_monitor.export.raw.frames.VmStream`), so this
+    only caps and orders the already-small wide frames.
     """
     f = frames if frames is not None else _load_frames(raw_dir)
     vm = f.get("vm")
-    if vm is None or vm.empty:
+    if vm is None:
         return pd.DataFrame(), pd.DataFrame()
-    vm = vm.copy()
-    vm["__e"] = _ts_to_epoch(vm["timestamp"])
-    vm["__u"] = pd.to_numeric(vm["utime"], errors="coerce")
-    vm["__s"] = pd.to_numeric(vm["stime"], errors="coerce")
-    vm["cores"], guard = _cores_and_guard(*_per_key_deltas(vm, "vm_name"))
-    vm["pss_gb"] = _column(vm, "pss_mb", vm.index) / 1024
-
-    skipped = (~guard) & (vm.groupby("vm_name", sort=False)["__e"].shift(1).notna())
-    if skipped.any():
+    if vm.skipped:
         logger.warning(
             "%d per-VM intervals skipped (counter reset or gap), e.g. vm=%s",
-            int(skipped.sum()),
-            vm.loc[skipped, "vm_name"].iloc[0],
+            vm.skipped,
+            vm.skipped_example,
         )
-    return _top_k_pivot(vm, "cores", "pss_gb", max_series, "vm_name")
+    return _top_k(vm.cores_wide, vm.pss_wide, max_series)
 
 
 def _top_k_pivot(vm: pd.DataFrame, cores_col: str, gauge_col: str, max_series: int | None, key: str):
-    """Wide cores + gauge frames sharing the top-K series set and a t_s column."""
+    """Wide cores + gauge frames from a long frame, sharing the top-K series set."""
     cores = vm.pivot_table(index="__e", columns=key, values=cores_col, aggfunc="first", dropna=False)
     gauge = vm.pivot_table(index="__e", columns=key, values=gauge_col, aggfunc="first", dropna=False)
+    return _top_k(cores, gauge, max_series)
+
+
+def _top_k(cores: pd.DataFrame, gauge: pd.DataFrame, max_series: int | None):
+    """Cap both wide frames to the top-K series (by CPU mean) + an ``other`` sum."""
+    cores, gauge = cores.sort_index(), gauge.sort_index()
     if max_series is not None and len(cores.columns) > max_series:
         top = list(cores.mean().sort_values(ascending=False).head(max_series).index)
         rest = [name for name in cores.columns if name not in top]
@@ -442,7 +406,6 @@ def _top_k_pivot(vm: pd.DataFrame, cores_col: str, gauge_col: str, max_series: i
         out_gauge["other"] = gauge[rest].sum(axis=1, skipna=True, min_count=1)
     else:
         out_cores, out_gauge = cores.copy(), gauge.copy()
-    out_cores, out_gauge = out_cores.sort_index(), out_gauge.sort_index()
     first_epoch = out_cores.index.min()
     out_cores.insert(0, "t_s", out_cores.index - first_epoch)
     out_gauge.insert(0, "t_s", out_gauge.index - first_epoch)
@@ -464,7 +427,6 @@ def derive_disk(raw_dir=None, *, frames: dict | None = None) -> pd.DataFrame:
     disk = f.get("disk")
     if disk is None or disk.empty:
         return pd.DataFrame()
-    disk = disk.assign(__e=_ts_to_epoch(disk["timestamp"]))
     pivots = {
         field: disk.pivot_table(index="__e", columns="device", values=field, aggfunc="last", dropna=False)
         for field in _DISK_FIELDS
@@ -625,12 +587,17 @@ _NUMA_FIELD_LABELS = {
 
 
 def _numa_cpu_series(frames: dict) -> dict[tuple[int, str], pd.Series]:
-    percpu, numa_map = frames.get("percpu"), frames.get("numa_map")
-    if percpu is None or percpu.empty or numa_map is None or numa_map.empty:
+    """NUMA CPU% from the per-(epoch, node) counter sums.
+
+    ``host_percpu_raw.csv`` is summed per node while it streams (see
+    :func:`vm_monitor.export.raw.frames._stream_numa_cpu`): summing per cpu and
+    differencing per node commute, so the 320-series file is never held whole.
+    """
+    frame = frames.get("percpu")
+    if frame is None or frame.empty:
         return {}
-    frame = percpu.assign(__e=_ts_to_epoch(percpu["timestamp"]))
-    frame = _sort_by(frame, ["cpu_id", "__e"])
-    group = frame.groupby("cpu_id", sort=False)
+    frame = _sort_by(frame, ["__node", "__e"]).reset_index(drop=True)
+    group = frame.groupby("__node", sort=False)
     interval = frame["__e"] - group["__e"].shift(1)
     ok = (interval > 0) & (interval <= MAX_INTERVAL_S)
 
@@ -644,12 +611,7 @@ def _numa_cpu_series(frames: dict) -> dict[tuple[int, str], pd.Series]:
         if field in ("idle", "iowait"):
             idle_iowait = delta if idle_iowait is None else idle_iowait + delta
 
-    node_of = dict(zip(numa_map["cpu"].astype(int), numa_map["node"].astype(int)))
-    frame["__node"] = frame["cpu_id"].map(node_of)
     frame["__total"], frame["__idle_iowait"] = total, idle_iowait
-    frame = frame.dropna(subset=["__node"])
-    if frame.empty:
-        return {}
     summed = frame.groupby(["__e", "__node"])[["__total", "__idle_iowait"]].sum(min_count=1)
     busy = ((1.0 - summed["__idle_iowait"] / summed["__total"]) * 100.0).unstack("__node")
     return {(int(node), "cpu_pct"): busy[node] for node in busy.columns}
@@ -659,7 +621,7 @@ def _numa_memory_series(frames: dict) -> dict[tuple[int, str], pd.Series]:
     raw = frames.get("numa_mem")
     if raw is None or raw.empty:
         return {}
-    frame = raw.assign(__e=_ts_to_epoch(raw["timestamp"]))
+    frame = raw
     frame["node"] = pd.to_numeric(frame["node"], errors="coerce")
     for field in _NUMA_GB_FIELDS:
         if field in frame.columns:
@@ -678,7 +640,7 @@ def _epochs_to_text(cpu_df, index) -> list[str]:
     """Human-readable timestamp for each epoch index entry (host CPU CSV is the
     reference clock; falls back to the raw epoch value)."""
     if cpu_df is not None and not cpu_df.empty:
-        epochs = _ts_to_epoch(cpu_df["timestamp"]).to_numpy()
+        epochs = cpu_df["__e"].to_numpy()
         table = dict(zip(epochs, cpu_df["timestamp"].astype(str)))
         return [table.get(value, str(value)) for value in index]
     return [str(value) for value in index]
@@ -699,7 +661,6 @@ def derive_hostproc(raw_dir=None, *, frames: dict | None = None):
     if hp is None or hp.empty:
         return pd.DataFrame(), pd.DataFrame()
     hp = hp.copy()
-    hp["__e"] = _ts_to_epoch(hp["timestamp"])
     hp["__u"] = pd.to_numeric(hp["utime"], errors="coerce")
     hp["__s"] = pd.to_numeric(hp["stime"], errors="coerce")
     hp["cores"], _ = _cores_and_guard(*_per_key_deltas(hp, ["name", "pid"]))

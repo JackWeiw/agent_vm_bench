@@ -33,7 +33,7 @@ def main() -> int:
     args = ap.parse_args()
 
     sys.path.insert(0, args.repo)
-    from vm_monitor.cubesandbox import CubeSandboxMonitor  # noqa: E402
+    from vm_monitor.vmm.cubesandbox import CubeSandboxMonitor  # noqa: E402
 
     heavy_procs: list = []
     light_procs: list = []

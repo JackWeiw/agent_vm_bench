@@ -135,7 +135,7 @@ These have their own managers / stats / round-robin (`e2b_bench/run_benchmark` i
 |---------|---------|-----------|
 | `src/bench_core/` | host-agnostic kernel (recommended) | `bench.py`, `config.py`, `task_manager/{fixed,round_robin}.py`, `stats_collector.py`, `task_runner/{browser,coding,document}.py`, `coding_payload.py` |
 | `src/env_provider/` | provider contract + e2b/docker/aenv/fake impls | `__init__.py` (ABC + capability Protocols), `_base.py`, `_ready.py`, `e2b/`, `docker/`, `aenv/`, `fake.py` |
-| `vm_monitor/` | VMM monitoring (QEMU/Firecracker) | `base.py`, `qemu.py`, `firecracker.py`, `parsers.py`, `exporters.py` (summary sheets), `raw_frames.py`/`raw_metrics.py`/`raw_xlsx.py`/`raw_report.py` (host_resources.xlsx), `sampling.py`, `procfs.py` |
+| `vm_monitor/` | VMM monitoring (QEMU/Firecracker/CubeSandbox) | `base.py`, `sampling.py`, `procfs.py`, `vmm/` (per-VMM adapters), `capture/` (`log_capture.py` + `parsers.py`), `export/` (`resource_report.py` summary sheets, `svg.py`), `export/raw/` (`frames.py`/`metrics.py`/`workbook.py`/`report.py` — host_resources.xlsx) |
 | `e2b_bench/` | E2B sandbox testing (frozen legacy) | `bench.py`, `round_robin.py`, `task_runner.py`, `sandbox_manager.py`, `batch_scheduler.py`, `stats_collector.py` |
 | `docker_bench/` | Docker container testing (frozen legacy) | `bench.py`, `container_manager.py` |
 | `vm_bench/` | OpenStack VM browser/QA + creation (legacy) | `bench.py`, `vm_manager.py`, `task_runner.py`, `stats_collector.py` |
@@ -184,7 +184,7 @@ A top-level `monitor:` block (peer of `report:`) controls host-level `vm_monitor
 - `api_state_raw.csv` (gauges, one row per monitor interval during the stress bracket: `sandboxes_running` / `sandboxes_paused` / `sandboxes_other` / `sandboxes_total`, from `provider.list_sandbox_states()`; written by bench-core's `ApiStateSampler`, not by vm_monitor, and absent for providers with no list API)
 - `numa_cpu_map.csv` (static `node,cpu` mapping, written once — boot-constant)
 
-All raw counters are cumulative kernel values; an agent derives rates via delta over the real interval between rows' `timestamp` (the CSV header is written from the first non-empty row, so columns are self-describing via `pd.read_csv`). Derivation formulas live in [docs/dev/metrics-reference.md](docs/dev/metrics-reference.md): disk I/O (sectors→MB/s, `weighted_ms`→await/queue-depth, `ms_io`→util) under "Disk I/O"; iowait% + page-scan/reclaim/refault rates under "Page-cache pressure"; swap in/out under "Swap"; and per-VM / per-ublk-daemon / per-host-proc jiffies→CPU% (`÷ _CLK_TCK`) under "Per-VM & ublk-daemon CPU". Note `/proc/stat` `guest`/`guest_nice` are double-counted (already in user/nice) — total is `sum(first 8 fields)`, not a naive sum of all 10. Files land in `<report.output_dir>/vm_monitor/raw_data/`; the xlsx exporters never touch these filenames. The one deliberate consumer: `vm_monitor/raw_report.py` **derives `host_resources.xlsx`** from raw_data (5 sheets — `Host resources` / `NUMA` / `Per-VM` / `Disk IO` / `HostProc`, each a table + native LineCharts; post-hoc rerunnable via `vm-monitor raw-report <log_dir>`, independent of the live run and of external tools). `resource_report.xlsx` is summary-only and fast to build; **every per-sample timeline lives in `host_resources.xlsx`** (tables use `constant_memory`, charts are dropped past 500k rows, and a sheet past Excel's limits is skipped with a WARNING). The fleet-level `vm_cores` there is a **single aggregate jiffies delta** across all VMs (bounded by construction) — never a sum of per-VM normalized rates over the NaN-sparse pivot, which overshoots the physical core count. The derivation/render code is split by responsibility: `raw_frames.py` (raw CSV contract + delta guard), `raw_metrics.py` (derivations), `raw_xlsx.py` (rendering + capacity guards), `raw_report.py` (orchestration + atomic write).
+All raw counters are cumulative kernel values; an agent derives rates via delta over the real interval between rows' `timestamp` (the CSV header is written from the first non-empty row, so columns are self-describing via `pd.read_csv`). Derivation formulas live in [docs/dev/metrics-reference.md](docs/dev/metrics-reference.md): disk I/O (sectors→MB/s, `weighted_ms`→await/queue-depth, `ms_io`→util) under "Disk I/O"; iowait% + page-scan/reclaim/refault rates under "Page-cache pressure"; swap in/out under "Swap"; and per-VM / per-ublk-daemon / per-host-proc jiffies→CPU% (`÷ _CLK_TCK`) under "Per-VM & ublk-daemon CPU". Note `/proc/stat` `guest`/`guest_nice` are double-counted (already in user/nice) — total is `sum(first 8 fields)`, not a naive sum of all 10. Files land in `<report.output_dir>/vm_monitor/raw_data/`; the xlsx exporters never touch these filenames. The one deliberate consumer: `vm_monitor/export/raw/report.py` **derives `host_resources.xlsx`** from raw_data (5 sheets — `Host resources` / `NUMA` / `Per-VM` / `Disk IO` / `HostProc`, each a table + native LineCharts; post-hoc rerunnable via `vm-monitor raw-report <log_dir>`, independent of the live run and of external tools). `resource_report.xlsx` is summary-only and fast to build; **every per-sample timeline lives in `host_resources.xlsx`** (tables use `constant_memory`, charts are dropped past 500k rows, and a sheet past Excel's limits is skipped with a WARNING). The fleet-level `vm_cores` there is a **single aggregate jiffies delta** across all VMs (bounded by construction) — never a sum of per-VM normalized rates over the NaN-sparse pivot, which overshoots the physical core count. The derivation/render code is split by responsibility: `export/raw/frames.py` (raw CSV contract + delta guard), `export/raw/metrics.py` (derivations), `export/raw/workbook.py` (rendering + capacity guards), `export/raw/report.py` (orchestration + atomic write). The two long-format files (`vm_cpu_raw.csv`, `host_percpu_raw.csv`) are **streamed in bounded chunks** and reduced to per-sample aggregates, with the last row per key carried across chunk boundaries, so peak RSS is set by the chunk size and the wide output rather than by capture length (8 h ≈ 1.1 GB of raw CSVs exports at ~640 MB peak).
 
 ### Host-process monitor (`--host-proc`)
 
@@ -340,16 +340,16 @@ See [docs/dev/metrics-reference.md](docs/dev/metrics-reference.md) for complete 
 ### Adding a new metric source (legacy `vm_monitor`)
 
 1. Add collection tool path to `.env`
-2. Add parser in `vm_monitor/parsers.py`
-3. Add exporter in `vm_monitor/exporters.py`
+2. Add parser in `vm_monitor/capture/parsers.py`
+3. Add exporter in `vm_monitor/export/resource_report.py`
 4. Add metric extraction in `batch_test_scheduler.py` or `e2b_bench/metrics_extractor.py`
 5. Update `docs/dev/metrics-reference.md`
 
 ### Adding a new VMM type
 
-1. Create class in `vm_monitor/` extending `VMMonitorBase`
+1. Create class in `vm_monitor/vmm/` extending `VMMonitorBase`
 2. Implement: `get_process_names()`, `extract_vm_id()`, `get_vms_realtime()`
-3. Register in `vm_monitor/__init__.py`; add CLI flag in `vm_monitor/cli.py`
+3. Register in `vm_monitor/vmm/__init__.py`; add CLI flag in `vm_monitor/cli.py`
 4. Update `docs/guide/usage-guide.md`
 
 ## File Locations

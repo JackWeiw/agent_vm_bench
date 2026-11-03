@@ -1,4 +1,4 @@
-"""Unit tests for vm_monitor/svg_exporter.py.
+"""Unit tests for vm_monitor/export/svg.py.
 
 The renderer is pure (no /proc, no external libs), so these run on any host.
 Asserts: pure helpers, well-formed SVG output, expected reports written, and
@@ -11,7 +11,7 @@ import unittest
 import xml.etree.ElementTree as ET
 
 from vm_monitor.base import VMMonitorBase
-from vm_monitor.svg_exporter import (
+from vm_monitor.export.svg import (
     _elapsed_series,
     _finite,
     _memory_scale,

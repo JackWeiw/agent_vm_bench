@@ -1,4 +1,4 @@
-"""Structural snapshot test for vm_monitor/exporters.py export_to_excel.
+"""Structural snapshot test for vm_monitor/export/resource_report.py export_to_excel.
 
 Locks the set of sheets, their column headers, row counts, and chart count
 produced from a fully-populated monitor + parsed_logs fixture. Purpose: guard
@@ -16,8 +16,8 @@ from unittest.mock import patch
 import pandas as pd
 
 from vm_monitor.base import VMMonitorBase
-from vm_monitor.exporters import PANDAS_AVAILABLE, export_to_excel
-from vm_monitor.parsers import parse_devkit_mem
+from vm_monitor.export.resource_report import PANDAS_AVAILABLE, export_to_excel
+from vm_monitor.capture.parsers import parse_devkit_mem
 
 try:
     from openpyxl import load_workbook
@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover
 
 # Real devkit_mem.log ships in the repo (vm_monitor/tests/fixtures/) -- drive
 # the real parser.
-_TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+_TESTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DEVKIT_MEM_LOG = os.path.join(_TESTS_DIR, "fixtures", "devkit_mem.log")
 
 
@@ -537,12 +537,12 @@ class TestExportStructure(unittest.TestCase):
         os.rmdir(self.log_dir)
 
     def _export(self):
-        with patch("vm_monitor.exporters.parse_all_logs", return_value=self.parsed_logs):
+        with patch("vm_monitor.export.resource_report.parse_all_logs", return_value=self.parsed_logs):
             return export_to_excel(self.monitor, self.log_dir, numa_nodes=[0], output_file=self.output_file)
 
     def test_sheet_set_and_order(self):
         """Summary sheets only. Every per-sample timeline now lives in
-        host_resources.xlsx (tests/test_raw_report.py), so a timeline sheet
+        host_resources.xlsx (tests/export/test_raw_report.py), so a timeline sheet
         reappearing here means the split regressed."""
         self._export()
         names, _cols, _rows, _charts = _snapshot(self.output_file)
@@ -668,7 +668,7 @@ class TestExportStructure(unittest.TestCase):
         _names, _cols, _rows, charts = _snapshot(self.output_file)
         # 1 DevKit TopDown pie + 1 MemBound bar + 1 cache-miss bar + 1 VM_Stats
         # memory-composition bar. The timeline sheets (and their charts) moved
-        # to host_resources.xlsx -- tests/test_raw_report.py locks those.
+        # to host_resources.xlsx -- tests/export/test_raw_report.py locks those.
         self.assertEqual(charts, 4)
 
 
@@ -696,7 +696,7 @@ class TestDroppedMetricsExported(unittest.TestCase):
         os.rmdir(self.log_dir)
 
     def _export(self):
-        with patch("vm_monitor.exporters.parse_all_logs", return_value=self.parsed_logs):
+        with patch("vm_monitor.export.resource_report.parse_all_logs", return_value=self.parsed_logs):
             return export_to_excel(self.monitor, self.log_dir, numa_nodes=[0], output_file=self.output_file)
 
     def test_vm_stats_carries_min_last_huge_private_heap(self):
@@ -761,7 +761,7 @@ class TestDroppedMetricCharts(unittest.TestCase):
         os.rmdir(self.log_dir)
 
     def _export(self):
-        with patch("vm_monitor.exporters.parse_all_logs", return_value=self.parsed_logs):
+        with patch("vm_monitor.export.resource_report.parse_all_logs", return_value=self.parsed_logs):
             return export_to_excel(self.monitor, self.log_dir, numa_nodes=[0], output_file=self.output_file)
 
     def test_vm_stats_has_memory_composition_bar(self):
@@ -803,14 +803,14 @@ class TestAtomicReportWrite(unittest.TestCase):
         os.rmdir(self.log_dir)
 
     def _export(self):
-        with patch("vm_monitor.exporters.parse_all_logs", return_value=self.parsed_logs):
+        with patch("vm_monitor.export.resource_report.parse_all_logs", return_value=self.parsed_logs):
             return export_to_excel(self.monitor, self.log_dir, numa_nodes=[0], output_file=self.output_file)
 
     def test_final_xlsx_absent_during_chart_phase(self):
         """pandas must build to a temp; the final path may appear only via an
         atomic rename AFTER charts are added. Asserts output_file does NOT
         exist at the moment _add_charts runs."""
-        import vm_monitor.exporters as exp
+        import vm_monitor.export.resource_report as exp
 
         seen = {}
         orig = exp._add_charts
@@ -833,7 +833,7 @@ class TestAtomicReportWrite(unittest.TestCase):
         (pandas-built sheets promoted) and export_to_excel must not propagate
         the exception -- a MonitorController waiting on the path would otherwise
         time out with no report at all."""
-        import vm_monitor.exporters as exp
+        import vm_monitor.export.resource_report as exp
 
         with patch.object(exp, "_add_charts", side_effect=RuntimeError("boom")):
             self._export()  # must not raise
@@ -867,7 +867,7 @@ class TestRawCpuSourcePreferred(unittest.TestCase):
         shutil.rmtree(self.log_dir, ignore_errors=True)
 
     def _export(self):
-        with patch("vm_monitor.exporters.parse_all_logs", return_value=self.parsed_logs):
+        with patch("vm_monitor.export.resource_report.parse_all_logs", return_value=self.parsed_logs):
             return export_to_excel(self.monitor, self.log_dir, numa_nodes=[0], output_file=self.output_file)
 
     @staticmethod

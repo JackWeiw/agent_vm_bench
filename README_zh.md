@@ -276,6 +276,6 @@ QEMUMonitor().start_monitoring(duration_seconds=60, interval_seconds=3)
 FirecrackerMonitor().start_monitoring(duration_seconds=60, interval_seconds=3)
 
 # 从任意 monitor 实例渲染深色 SVG 时间曲线报告
-from vm_monitor.svg_exporter import export_svg_reports
+from vm_monitor.export.svg import export_svg_reports
 export_svg_reports(QEMUMonitor(), "logs")
 ```

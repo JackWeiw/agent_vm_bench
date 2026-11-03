@@ -23,7 +23,7 @@ def main() -> int:
     args = ap.parse_args()
 
     sys.path.insert(0, args.repo)
-    from vm_monitor.cubesandbox import CubeSandboxMonitor
+    from vm_monitor.vmm.cubesandbox import CubeSandboxMonitor
 
     mon = CubeSandboxMonitor()
     mon.interval = args.interval

@@ -307,6 +307,6 @@ QEMUMonitor().start_monitoring(duration_seconds=60, interval_seconds=3)
 FirecrackerMonitor().start_monitoring(duration_seconds=60, interval_seconds=3)
 
 # Render dark-themed SVG time-curve reports from any monitor instance
-from vm_monitor.svg_exporter import export_svg_reports
+from vm_monitor.export.svg import export_svg_reports
 export_svg_reports(QEMUMonitor(), "logs")
 ```
