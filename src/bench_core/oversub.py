@@ -1244,7 +1244,12 @@ def _run_sharded_trial(
         if bracket is not None:
             bracket.stop()
         if monitor is not None:
-            if result is not None and result.interrupted:
+            if bracket is not None and not bracket.opened:
+                # No shard ever reached its stress phase: there is no window to
+                # export. stop() would block the full report_timeout for a report
+                # that cannot exist and leave an idle collector behind.
+                monitor.abandon()
+            elif result is not None and result.interrupted:
                 monitor.wait_for_host_resources(timeout=30)
             else:
                 monitor.stop()
