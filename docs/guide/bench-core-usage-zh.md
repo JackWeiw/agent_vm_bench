@@ -448,7 +448,7 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
 | 列 | 含义 |
 |----|------|
 | `trajectory_id` | 所属轨迹 instance_id;按轨迹筛/分组的主键 |
-| `sandbox_index` | 执行沙箱在 fleet 内下标(0..N-1),非后端 sandbox_id;对应 Gantt/concurrency 行 |
+| `sandbox_index` | 执行沙箱在 fleet 内下标(0..N-1;分片 trial 的 merged series 重排为 1..k×N),非后端 sandbox_id;对应 Gantt/concurrency 行 |
 | `round_id` | round_robin 轮次号;fixed runner 每 pass 盖一个递增序号(multiplier 同轨迹多 pass 保持独立 run 行) |
 | `step_index` | 轨迹内 step 序号(0-based) |
 | `action_type` | shell/bash/str_replace_editor/submit/finish/done;对应 Per-step timings 分桶 |

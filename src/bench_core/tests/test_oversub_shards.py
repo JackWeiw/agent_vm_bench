@@ -589,7 +589,7 @@ def _series(path: Path, n: int) -> Path:
     return path
 
 
-def test_merge_lifecycle_series_concats_and_rekeys_all_shards(tmp_path):
+def test_merge_lifecycle_series_concats_and_rekeys_all_shards(tmp_path, caplog):
     # Fleet-wide inflight analysis needs every shard's events with re-keyed
     # sandbox_index; shard-local keys would conflate sandboxes across shards
     # (and reading one shard caps the observed peak at N -- the T2 misread).
@@ -603,6 +603,12 @@ def test_merge_lifecycle_series_concats_and_rekeys_all_shards(tmp_path):
     assert len(events) == 5
     assert [e["sandbox_index"] for e in events[:2]] == [0, 1]  # shard 0: offset 0
     assert [e["sandbox_index"] for e in events[2:]] == [4, 5, 6]  # shard 1: offset 4
+    # A shard that reported a series it no longer has must surface: the merged
+    # series then under-counts against the merged summary, and silence would
+    # hide exactly that.
+    partial = merge_lifecycle_series([s0, gone], plan, tmp_path / "m3", "rb")
+    assert len([x for x in partial.read_text(encoding="utf-8").splitlines() if x.strip()]) == 2
+    assert any("reported lifecycle series" in r.getMessage() for r in caplog.records)
     assert merge_lifecycle_series([None, {"paths": {}}], plan, tmp_path / "m2", "rb") is None
 
 
