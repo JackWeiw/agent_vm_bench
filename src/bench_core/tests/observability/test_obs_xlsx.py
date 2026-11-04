@@ -15,7 +15,7 @@ from env_provider import SandboxInstance  # noqa: E402
 
 
 def _seeded_observability(
-    *, replay_mode="trajectory", with_retry=True, natural_delay_sec=0.0
+    *, replay_mode="lifecycle", with_retry=True, natural_delay_sec=0.0
 ) -> tuple[ReplayObservability, KernelConfig]:
     state = BenchSandbox.from_instance(SandboxInstance(id="x", index=0), "replay")
     m = ReplayMetrics()
@@ -29,8 +29,6 @@ def _seeded_observability(
             slice_total_sec=1.0,
             running_slot_held_sec=0.8,
             interaction_total_sec=1.0,
-            create_sec=1.0 + i * 0.5,
-            kill_sec=0.5 + i * 0.1,
             natural_delay_sec=natural_delay_sec,
         )
     if with_retry:
@@ -199,7 +197,7 @@ class TestXlsxReportRenderer:
         wb = load_workbook(str(path))
         assert "Trajectory summary" in wb.sheetnames
         ws = wb["Trajectory summary"]
-        # no create_sec data in lifecycle mode -> header only
+        # no series-backed trajectory runs -> header only
         assert ws.max_row == 1
 
     def test_host_sheets_ingested_in_single_render(self, tmp_path):
@@ -251,9 +249,6 @@ def test_renderer_accepts_series_path_and_draws_per_step_linechart(tmp_path):
     obs.retry_count_by_op = {}
     obs.time_lost_to_retry_sec = 0.0
     obs.retries_per_slice_p95 = 0.0
-    obs.create_sec_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
-    obs.kill_sec_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
-    obs.slot_held_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
     obs.admission_snapshot = None
     obs.lifecycle_overhead = None  # Overview reads the model property; skip here
     # one sandbox with one step's durations
@@ -265,8 +260,6 @@ def test_renderer_accepts_series_path_and_draws_per_step_linechart(tmp_path):
     m.slice_total_secs = [0.8]
     m.running_slot_held_secs = [0.8]
     m.interaction_total_secs = [0.8]
-    m.create_secs = []
-    m.kill_secs = []
     m.natural_delay_secs = []  # Overview per-step timing reads this
     m.success_count = 1
     m.failed_count = 0
@@ -304,9 +297,6 @@ def test_per_step_linechart_references_all_data_rows(tmp_path):
     obs.retry_count_by_op = {}
     obs.time_lost_to_retry_sec = 0.0
     obs.retries_per_slice_p95 = 0.0
-    obs.create_sec_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
-    obs.kill_sec_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
-    obs.slot_held_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
     obs.admission_snapshot = None
     obs.lifecycle_overhead = None  # Overview reads the model property; skip here
     m = MagicMock()
@@ -317,8 +307,6 @@ def test_per_step_linechart_references_all_data_rows(tmp_path):
     m.slice_total_secs = [0.5, 0.6, 0.7]
     m.running_slot_held_secs = [0.4, 0.5, 0.6]
     m.interaction_total_secs = [0.5, 0.6, 0.7]
-    m.create_secs = []
-    m.kill_secs = []
     m.natural_delay_secs = []  # Overview per-step timing reads this
     m.success_count = 3
     m.failed_count = 0
@@ -377,9 +365,6 @@ def _mock_obs_with_n_steps(n: int, replay_mode: str = "lifecycle"):
     obs.retry_count_by_op = {}
     obs.time_lost_to_retry_sec = 0.0
     obs.retries_per_slice_p95 = 0.0
-    obs.create_sec_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
-    obs.kill_sec_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
-    obs.slot_held_stats = {"min": 0, "max": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
     obs.admission_snapshot = None
     m = MagicMock()
     m.latencies = [0.1 + (i % 10) * 0.01 for i in range(n)]
@@ -390,8 +375,6 @@ def _mock_obs_with_n_steps(n: int, replay_mode: str = "lifecycle"):
     m.running_slot_held_secs = [0.4] * n
     m.interaction_total_secs = [0.5] * n
     m.natural_delay_secs = []  # Overview per-step timing reads this (think/LLM)
-    m.create_secs = []
-    m.kill_secs = []
     m.success_count = n
     m.failed_count = 0
     state = MagicMock()
@@ -1231,7 +1214,7 @@ def test_lifecycle_overhead_property_aggregates_ratio():
     ratio the txt report + run_summary compute inline, as a model-owned
     semantic metric (per the obs_xlsx layering rule: semantic metrics in the
     model, renderer only flattens raw series). Near-zero slices excluded."""
-    obs, _ = _seeded_observability()  # trajectory; resume=0.05 pause=0.05 slice=1.0 x3
+    obs, _ = _seeded_observability()  # lifecycle; resume=0.05 pause=0.05 slice=1.0 x3
     oh = obs.lifecycle_overhead
     assert oh is not None
     assert oh["n"] == 3
@@ -1295,7 +1278,7 @@ def test_overview_renders_per_step_timing_section(tmp_path):
 def test_overview_renders_lifecycle_overhead_kv(tmp_path):
     """Overview gains lifecycle_overhead_% kv rows (aggregate / mean / p95) read
     from the model property -- the ratio the txt report has but xlsx lacked."""
-    obs, _ = _seeded_observability()  # trajectory -> 10%
+    obs, _ = _seeded_observability()  # lifecycle -> 10%
     path = tmp_path / "obs.xlsx"
     XlsxReportRenderer(obs).render(str(path))
     ws = load_workbook(str(path))["Overview"]
@@ -1313,7 +1296,7 @@ def test_overview_renders_lifecycle_overhead_kv(tmp_path):
 
 def test_overview_skips_lifecycle_overhead_in_exec_only(tmp_path):
     """exec_only has no pause/resume lifecycle; the overhead ratio is gated off
-    (parity with the txt report's [Lifecycle Overhead] block, lifecycle/trajectory
+    (parity with the txt report's [Lifecycle Overhead] block, lifecycle mode
     only). Per-step timing still renders (exec dominates there)."""
     obs, _ = _seeded_observability(replay_mode="exec_only")
     path = tmp_path / "obs.xlsx"
@@ -1321,3 +1304,21 @@ def test_overview_skips_lifecycle_overhead_in_exec_only(tmp_path):
     ws = load_workbook(str(path))["Overview"]
     keys = [r[0].value for r in ws.iter_rows(min_col=1, max_col=1) if r[0].value is not None]
     assert not any(k.startswith("lifecycle_overhead") for k in keys), keys
+
+
+def test_paused_gaps_gate_follows_replay_mode():
+    """Cross-step idle is painted "paused" only in the modes that really
+    snapshot. The series cannot carry that distinction (exec_ephemeral's no-op
+    pause still burns ~1us, so its timestamp pairs are non-zero-width), so the
+    renderer must read it off the run's replay mode -- the same signal the
+    kernel already resolved before dispatch."""
+    for mode, expected in (
+        ("lifecycle", True),
+        ("exec_only", False),
+        ("exec_ephemeral", False),
+    ):
+        obs, _ = _seeded_observability(replay_mode=mode)
+        assert XlsxReportRenderer(obs)._paused_gaps() is expected, mode
+    # No workflow_config (non-replay / hand-built config): gate closed rather
+    # than raising -- a reporting path must never fail a finished run.
+    assert XlsxReportRenderer(ReplayObservability(KernelConfig(workflow_type="replay"), {}))._paused_gaps() is False

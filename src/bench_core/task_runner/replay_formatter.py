@@ -32,8 +32,7 @@ from .replay_config import ReplayConfig
 class ReplayReportFormatter(ReportFormatters):
     """Replay workflow report surfaces (Phase 3: ported byte-for-byte from
     ``ReportFormatter.format_replay_stats_section`` / ``format_replay_step_timing_table``
-    / ``format_throughput_section`` / ``format_trajectory_summary_section`` /
-    ``_format_lifecycle_overhead_by_round``).
+    / ``format_throughput_section`` / ``_format_lifecycle_overhead_by_round``).
 
     Inherits the command-ready defaults (replay probes via ``uname -a``). The
     replay stats section carries the lifecycle-overhead / retry / decomp sub-blocks
@@ -106,12 +105,12 @@ class ReplayReportFormatter(ReportFormatters):
             lines.append(f"  {'Avg Latency:':<24}{avg:.3f}s")
             lines.append(f"  {'P99 Latency:':<24}{p99:.3f}s")
 
-        # P2.5 [Lifecycle Overhead] -- lifecycle + trajectory mode. Per-sample
+        # P2.5 [Lifecycle Overhead] -- lifecycle mode. Per-sample
         # overhead_i = (resume_sec_i + pause_sec_i) / slice_total_sec_i
         # (mean/P50/P95), plus an aggregate ratio. Near-zero slices
         # (slice_total_sec < MIN_SLICE_SEC) are excluded from the per-sample
         # overhead list; the duration percentile lists already exclude == 0.
-        if rcfg.replay_mode in ("lifecycle", "trajectory"):
+        if rcfg.replay_mode == "lifecycle":
             all_resume: list[float] = []
             all_pause: list[float] = []
             all_slice: list[float] = []
@@ -146,8 +145,8 @@ class ReplayReportFormatter(ReportFormatters):
                 # L7: Slot held (overcommit-efficiency = lease release - acquire).
                 # slot_held ≡ slice by construction (the lease spans resume->pause;
                 # slot_contention_wait happens before acquire, so it is never in the
-                # lease). Only render when it materially diverges from slice -- e.g.
-                # trajectory-mode capacity_wait -- otherwise it restates Slice.
+                # lease). Only render when it materially diverges from slice --
+                # otherwise it restates Slice.
                 if all_slot_held and ctx.admission_snapshot is not None:
                     held_diverges = any(abs(h - s) >= 0.001 for h, s in zip(all_slot_held, all_slice))
                     if held_diverges:
@@ -392,39 +391,6 @@ class ReplayReportFormatter(ReportFormatters):
         eu = obs.exec_wall_utilization
         lines.append(f"  {'exec_wall_utilization:':<24}{f'{eu * 100:.1f}%' if eu is not None else na}")
         lines.append(f"  {'overcommit_ratio:':<24}{obs.overcommit_ratio:.1f}x")
-        return lines
-
-    def format_trajectory_summary_section(self, ctx: ReportContext) -> list[str]:
-        """[Trajectory Summary] -- create/kill/slot-held percentiles for trajectory mode.
-
-        Rendered only in trajectory mode AND when create_sec measurements exist
-        (create_secs is populated only in trajectory mode; empty otherwise). The
-        slot_held line reuses the same running_slot_held_secs list as
-        [Lifecycle Overhead] but shows P99 here too.
-        """
-        rcfg = ctx.config.workflow_config
-        assert isinstance(rcfg, ReplayConfig), "trajectory summary requires a ReplayConfig view"
-        if rcfg.replay_mode != "trajectory":
-            return []
-        obs = ReplayObservability(
-            ctx.config,
-            ctx.sandbox_states,
-            admission_snapshot=ctx.admission_snapshot,
-            wall_sec=ctx.wall_sec,
-        )
-        cs = obs.create_sec_stats
-        # Gate on non-empty create_secs (calc_percentiles returns all-0.0 for an empty list).
-        if cs["p99"] == 0.0 and cs["max"] == 0.0:
-            return []
-        ks = obs.kill_sec_stats
-        sh = obs.slot_held_stats
-        n_create = sum(len(s.replay_metrics.create_secs) for s in ctx.sandbox_states.values())
-        n_kill = sum(len(s.replay_metrics.kill_secs) for s in ctx.sandbox_states.values())
-        lines = ["\n[Trajectory Summary]"]
-        lines.append(f"  Create sec: P50={cs['p50']:.3f}s P95={cs['p95']:.3f}s P99={cs['p99']:.3f}s  (n={n_create})")
-        lines.append(f"  Kill sec:   P50={ks['p50']:.3f}s P95={ks['p95']:.3f}s P99={ks['p99']:.3f}s  (n={n_kill})")
-        if sh["max"] > 0.0:
-            lines.append(f"  Slot held:  P50={sh['p50']:.3f}s P95={sh['p95']:.3f}s P99={sh['p99']:.3f}s")
         return lines
 
     def format_step_timing(self, ctx: ReportContext) -> list[str]:

@@ -8,8 +8,8 @@
 # pause, no snapshot.
 #
 # CAVEAT: admission controllers (running_concurrency / control_plane_qps /
-# control_plane_inflight_cap) are wired ONLY for lifecycle/trajectory modes
-# (bench.py wires Admission when replay_mode in {lifecycle, trajectory}).
+# control_plane_inflight_cap) are wired ONLY for lifecycle mode
+# (bench.py wires Admission when replay_mode == "lifecycle").
 # In exec_only they are NO-OPS — kept below for config parity with replay.yaml
 # but they do not gate anything. At ratio 1:1 this is equivalent (lifecycle's
 # running_concurrency=384 == total_count also means no queueing), so the two
@@ -90,7 +90,7 @@ sandbox:
 create_batch:
   size: 96
   interval: 1              # NOTE: int seconds. Fine-grained per-VM launch pacing
-                           # (launch_interval_sec) is trajectory-mode only; lifecycle
+                           # (launch_interval_sec) is exec_ephemeral-mode only; lifecycle
                            # pre-creates via create_all in batches, so use batch
                            # intervals as a coarse approximation. exec_only reuses
                            # the same pre-created fleet for the whole run. See §8.1.
@@ -133,7 +133,7 @@ replay:
                      # KernelConfig.__post_init__ force-disables ready_probe in exec_only.
 
   # The knobs below are NO-OPS in exec_only (admission + launch pacer are
-  # lifecycle/trajectory only). Kept for parity with replay.yaml; at ratio 1:1
+  # lifecycle / exec_ephemeral only). Kept for parity with replay.yaml; at ratio 1:1
   # the comparison is fair (lifecycle's running_concurrency=384 == total_count
   # means no queueing either).
   running_concurrency: 384             # ignored in exec_only (no admission)
@@ -142,7 +142,7 @@ replay:
   pause_duration_sec: 0.0             # ignored in exec_only (no pause phase)
   ready_probe: true                   # force-disabled by __post_init__ in exec_only
   lifecycle_retries: 2                # ignored in exec_only (no lifecycle calls)
-  # launch_interval_sec: 0.0          # trajectory-mode only; no effect here either.
+  # launch_interval_sec: 0.0          # exec_ephemeral-mode only; no effect here either.
 
 test:
   duration: 3600      # hard time ceiling: round_robin stops at duration OR when all

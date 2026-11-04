@@ -231,18 +231,18 @@ def test_from_raw_replay_mode_none_when_absent():
     assert cfg.workflow_config.replay_mode is None
 
 
-# --- replay lifecycle / trajectory knobs (P1 Task 2) ---
+# --- replay lifecycle / exec_ephemeral knobs (P1 Task 2) ---
 
 
-def test_config_defaults_trajectory_retries_and_pacing():
+def test_config_defaults_replay_retries_and_pacing():
     rc = ReplayConfig()
     assert rc.replay_lifecycle_retries == 2
     assert rc.replay_launch_interval_sec == 0.0
     assert rc.replay_pause_duration_sec == 0.0
 
 
-def test_config_validates_trajectory_mode():
-    cfg = KernelConfig.from_raw({"workflow_type": "replay", "replay": {"mode": "trajectory"}})
+def test_config_validates_lifecycle_mode():
+    cfg = KernelConfig.from_raw({"workflow_type": "replay", "replay": {"mode": "lifecycle"}})
     cfg.validate()  # must not raise
 
 
@@ -261,15 +261,21 @@ def test_config_rejects_negative_pause_duration():
         KernelConfig.from_raw({"workflow_type": "replay", "replay": {"pause_duration_sec": -0.5}})
 
 
-def test_config_from_raw_reads_trajectory_knobs():
+def test_config_rejects_removed_trajectory_mode():
+    # trajectory was removed as a replay mode; it must now fail validation.
+    with pytest.raises(ValueError, match="replay_mode"):
+        KernelConfig.from_raw({"workflow_type": "replay", "replay": {"mode": "trajectory"}})
+
+
+def test_config_from_raw_reads_lifecycle_knobs():
     raw = {
         "workflow_type": "replay",
-        "replay": {"mode": "trajectory", "lifecycle_retries": 5, "launch_interval_sec": 1.5},
+        "replay": {"mode": "lifecycle", "lifecycle_retries": 5, "launch_interval_sec": 1.5},
     }
     cfg = KernelConfig.from_raw(raw)
     assert isinstance(cfg.workflow_config, ReplayConfig)
     rc = cfg.workflow_config
-    assert rc.replay_mode == "trajectory"
+    assert rc.replay_mode == "lifecycle"
     assert rc.replay_lifecycle_retries == 5
     assert rc.replay_launch_interval_sec == 1.5
 

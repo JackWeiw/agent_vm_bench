@@ -15,7 +15,7 @@ Covers four layers:
    through the real SandboxManager + a fake e2b Sandbox, mirroring
    test_aenv_ephemeral). ``create_one`` binds in ``exec_ephemeral`` (the
    ephemeral create path; pid stable for the round) but skips in
-   ``trajectory``/``lifecycle`` (firecracker respawns per resume). ``resume``
+   ``lifecycle`` (firecracker respawns per resume). ``resume``
    never re-binds (the resumed firecracker's pid is stale).
 """
 from __future__ import annotations
@@ -106,7 +106,7 @@ def _make_provider(monkeypatch, *, ccl_bind=False, total_count=1, replay_mode="e
     """Build an AenvProvider with a fake e2b SDK + an attached ReplayConfig.
 
     ``replay_mode`` defaults to ``exec_only`` (one of the two modes where CCL
-    binds); pass ``"lifecycle"`` / ``"trajectory"`` / ``None`` to exercise the
+    binds); pass ``"lifecycle"`` / ``None`` to exercise the
     skip path, or ``"exec_ephemeral"`` for the create_one bind path.
     """
     monkeypatch.setattr("env_provider.e2b.manager.Sandbox", _FakeSandboxCls())
@@ -495,16 +495,6 @@ def test_create_one_binds_in_exec_ephemeral(monkeypatch):
     assert len(calls) == 1
     # e2b sandbox_id string + 0-based CCL index (sandbox_id 1 -> index 0).
     assert calls[0] == ("sbx-1", 0)
-
-
-def test_create_one_skips_in_trajectory(monkeypatch, caplog):
-    # trajectory respawns the firecracker per resume -> pid unstable -> skip.
-    provider = _make_provider(monkeypatch, ccl_bind=True, replay_mode="trajectory")
-    calls = _record_binds(monkeypatch)
-    with caplog.at_level(logging.WARNING):
-        provider.create_one(1, template="swb-a")
-    assert calls == []
-    assert any("exec_only" in r.message for r in caplog.records)
 
 
 def test_create_one_bind_failure_is_best_effort(monkeypatch):

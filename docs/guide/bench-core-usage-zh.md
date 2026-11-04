@@ -271,23 +271,22 @@ coding 配置里的 `ubuntu-openclaw-coding-{ts,go,python}:24.04-arm64` 是占�
 aenv(lifecycle pause/resume)或 e2b/docker(exec_only)上。`config/common/replay.yaml` 是
 aenv lifecycle 内存超卖压测的 1:1 基线配置。
 
-### 8.1 四种 mode
+### 8.1 三种 mode
 
-四种模式的根本区别是**沙箱生命周期**,不是"有没有限流":
+三种模式的根本区别是**沙箱生命周期**,不是"有没有限流":
 
 | mode | 沙箱生命周期 | 每 step 做什么 | 并发/超卖控制 | 何时用 |
 |------|------------|--------------|--------------|--------|
 | `exec_only` | 预创建后**长驻**,整轮不创不杀 | 仅 exec | 无 | 测纯轨迹回放(exec)开销基线;后端无 lifecycle/ephemeral 能力(e2b/docker/fake) |
 | `lifecycle` | 预创建后**长驻**,整轮不杀 | acquire slot→resume→exec→pause→release | pause 打快照释放内存,k×N 沙箱塞进 N slot(**内存超卖**) | 测 pause/resume 快照开销 + 内存 overcommit;需 LifecycleCapable(aenv) |
-| `trajectory` | **临时**,每条轨迹 create→…→kill | acquire slot(整条轨迹持有)→resume→exec→pause→release | M slot 限并发轨迹数,未开始的推迟 create(**排队限流,非内存复用**) | 测频繁建删沙箱的 create/kill + pause/resume 开销;需 EphemeralCapable(aenv) |
 | `exec_ephemeral` | **临时**,每轮 create→exec→kill(轮间杀掉重建) | 仅 exec(无 pause/resume) | 无(k×N 全并发,无 admission) | 客户真实临时负载("拉起一次就杀,要用再拉起",B 的 no-lifecycle 模型);需 EphemeralCapable(aenv) |
 
-**exec_only vs trajectory 的区别不在"限流"**:
+**exec_only vs exec_ephemeral 的区别不在"限流"**:
 
 - exec_only 沙箱**长驻**,整轮压测用同一批预创建的沙箱,只 exec,**不创不杀、不 pause/resume**。
-- trajectory 沙箱**临时**,每条轨迹单独 `create_one` → 跑完 → `kill_one`。
-- `launch_interval_sec` 只是 trajectory 因为**频繁 create 才需要**的启动节流;exec_only 预创建
-  一次、整轮复用,用不到启动节流。所以"trajectory 多了个限流"只是表象,本质是沙箱生命周期不同
+- exec_ephemeral 沙箱**临时**,每条轨迹单独 `create_one` → 跑完 → `kill_one`。
+- `launch_interval_sec` 只是 exec_ephemeral 因为**频繁 create 才需要**的启动节流;exec_only 预创建
+  一次、整轮复用,用不到启动节流。所以"exec_ephemeral 多了个限流"只是表象,本质是沙箱生命周期不同
   (长驻复用 vs 临时建删)。
 
 **exec_ephemeral = B 的 no-lifecycle 临时模型**(客户真实负载):每轮 `create_one` → 裸 exec 每步
@@ -299,17 +298,17 @@ exec_only 直接比**;调 `test.duration` 需比 exec_only 更大(k×N×round_co
 评分口径用 `stress_tasks_per_sec`(只按每条轨迹的 `stress_sec` 汇总,create/kill 不计入),
 `tasks_per_sec` 保留为端到端观测值。
 
-**lifecycle vs trajectory 的超卖机制不同**:
+**lifecycle vs exec_ephemeral 的存活模型不同**:
 
 - lifecycle 超卖 = **快照内存复用**。沙箱长驻,pause 释放物理内存,所以 `total_count = k×N`
   个沙箱能放进 `running_concurrency = N` 个 slot 的 RAM。running slot 按 **step 粒度**获取/释放
   (一条命令一轮 acquire/release)。
-- trajectory 超卖 = **排队限流**。running slot 按**整条轨迹**持有(create 前 acquire、kill 后
-  release);M slot → 同时 M 条轨迹在跑,其余排队等开始,**不会"暂停腾内存"**,沙箱用完即杀。
+- exec_ephemeral = **临时无生命周期**:完全不 pause/resume——"拉起→跑完轨迹→杀;要再用,再拉起"
+  (B 的 no-lifecycle 超卖模型)。全并发 k×N,无边界靠供给侧(create/call 速率),没有"暂停腾内存"。
 
-> `launch_interval_sec`(浮点秒,per-sandbox create 节流)在临时模式(trajectory、exec_ephemeral)生效。
+> `launch_interval_sec`(浮点秒,per-sandbox create 节流)在临时模式 `exec_ephemeral` 生效。
 > lifecycle 模式预创建用 `create_batch.size`/`interval`(且 `interval` 是整数秒),做不了 sub-second 级
-> per-sandbox 节流——这是 lifecycle 的已知限制,需精细启动节流请用 trajectory/exec_ephemeral。
+> per-sandbox 节流——这是 lifecycle 的已知限制,需精细启动节流请用 exec_ephemeral。
 
 ### 8.2 lifecycle 内存超卖:ratio 配置法
 
@@ -350,8 +349,8 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
   字段名(如 sweagent 原始格式),需先转成 `.replay.json`。
 - `template_manifest` 是 `{trajectory相对路径: template}` 的 side JSON。它是**运行集的唯一来源**:
   manifest 里没有的轨迹(或映射到 null/非字符串值)会被 WARNING + 跳过,**不回落**到 provider 默认模板。
-  多模板时,非 trajectory 模式按 template 亲和路由(孤儿模板跳过计数);trajectory 模式 `create_one(template=)`
-  逐条带。完全不配 manifest 则走 legacy 单模板路径(所有轨迹都用 provider 块的 `template`)。
+  多模板时,长驻模式(exec_only/lifecycle)按 template 亲和路由(孤儿模板跳过计数);临时模式
+  exec_ephemeral 在 `create_one(template=)` 逐条带。完全不配 manifest 则走 legacy 单模板路径(所有轨迹都用 provider 块的 `template`)。
 
 ### 8.4 可观测性工作簿 (`*_obs.xlsx`)
 
@@ -363,9 +362,9 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
 
 | Sheet | 行粒度 | 内容 |
 |-------|--------|------|
-| Overview | 标量 kv | 单表汇总看板,分组着色:Run / Throughput & overcommit / Admission & QPS / Retry impact / Lifecycle overhead %(仅 lifecycle/trajectory)/ Per-step timing(四相池化百分位) |
+| Overview | 标量 kv | 单表汇总看板,分组着色:Run / Throughput & overcommit / Admission & QPS / Retry impact / Lifecycle overhead %(仅 lifecycle)/ Per-step timing(四相池化百分位) |
 | Per-step timings | 池化百分位 | 纯 exec 耗时按 `action_type` 分桶的百分位 + per-step 折图(右侧) |
-| Lifecycle overhead | 池化百分位 | `resume`/`pause`/`slice_total`/`slot_held`/`interaction` 五段绝对时长(秒)百分位 + per-step 折图(右侧)。仅 lifecycle/trajectory |
+| Lifecycle overhead | 池化百分位 | `resume`/`pause`/`slice_total`/`slot_held`/`interaction` 五段绝对时长(秒)百分位 + per-step 折图(右侧)。仅 lifecycle |
 | Trajectory summary | 每 trajectory 一行 | 该轨迹跨多次 run 的**中位数**汇总(成本归因)+ per-trajectory 成本分解柱图(右侧) |
 | Step detail | 每 step 事件一行 | 26 列原始单步时长分解(含失败 slice 行);冻结首行 + autofilter |
 | Concurrency states | 每秒一行 | 每秒各状态沙箱计数 + 折图(右侧) |
@@ -376,7 +375,7 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
 
 #### Overview sheet 字段介绍
 
-按分组顺序排列(A 列填色加粗 + banner 分隔),lifecycle/trajectory 模式才出现 Lifecycle overhead % 与 Per-step timing 两段;设了 slot/QPS 限流才出现 Admission & QPS 段。
+按分组顺序排列(A 列填色加粗 + banner 分隔),lifecycle 模式才出现 Lifecycle overhead % 与 Per-step timing 两段;设了 slot/QPS 限流才出现 Admission & QPS 段。
 
 **Run**(身份+结果):`workflow_type` / `replay_mode` / `total_count` / `running_concurrency` / `test_duration` / `wall_sec`(实测墙钟)/ `total_steps` / `success` / `failed` / `overcommit_ratio`。
 
@@ -450,14 +449,14 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
 |----|------|
 | `trajectory_id` | 所属轨迹 instance_id;按轨迹筛/分组的主键 |
 | `sandbox_index` | 执行沙箱在 fleet 内下标(0..N-1),非后端 sandbox_id;对应 Gantt/concurrency 行 |
-| `round_id` | round_robin 轮次号;fixed/trajectory 为空 |
+| `round_id` | round_robin 轮次号;fixed runner 每 pass 盖一个递增序号(multiplier 同轨迹多 pass 保持独立 run 行) |
 | `step_index` | 轨迹内 step 序号(0-based) |
 | `action_type` | shell/bash/str_replace_editor/submit/finish/done;对应 Per-step timings 分桶 |
 | `slice_failed` | 合成失败 slice(异常/stop_on_error);True 时时长列全 0,不进百分位 |
 | `resume_sec` | resume 总时长 = inflight + api + ready_wait(rate-pacing 被排除) |
 | `resume_rate_pacing_wait_sec` | QPS 限流 1/qps 速率等待(resume,PRE-lease:不计入 resume_sec / running_slot_held) |
 | `resume_api_sec` | 纯 resume API 调用耗时;剥离等待看裸 API |
-| `resume_ready_wait_sec` | resume 后就绪探活等待(lifecycle/trajectory;exec_only 为 0) |
+| `resume_ready_wait_sec` | resume 后就绪探活等待(lifecycle only;exec_only / exec_ephemeral 为 0) |
 | `exec_sec` | 纯 `provider.exec()` 墙钟(= Per-step timings 的 latency) |
 | `pause_sec` | pause 总时长 = rate-pacing + inflight + api(rate-pacing 被计入) |
 | `pause_rate_pacing_wait_sec` | QPS 限流 1/qps 速率等待(pause,IN-lease:计入 pause_sec / running_slot_held) |
@@ -527,7 +526,7 @@ driver 深拷贝 `base_config` 并只改写超卖字段,其余透传:
 |-------|--------|-----|
 | `sandbox.total_count` | `k×N` | 超卖目标 |
 | `replay.running_concurrency` | `N`(固定) | 基线 slot 数 |
-| `replay.mode` | 扫描的 mode | lifecycle / exec_only / trajectory / exec_ephemeral |
+| `replay.mode` | 扫描的 mode | lifecycle / exec_only / exec_ephemeral |
 | `test.round_size` | `k×N` | 所有 k×N 沙箱一组并发;不设 k≥2 会按 N 串行多组,破坏超卖动态 |
 | `test.duration` | `test_duration` | 时间上限 |
 | `report.output_dir` / `report.filename_prefix` | 每 trial 目录/前缀 | 隔离各 trial 产物 |
@@ -547,7 +546,7 @@ driver 深拷贝 `base_config` 并只改写超卖字段,其余透传:
 | `total_count` / `running_concurrency` / `overcommit_ratio` | 该 trial 的 k×N / N / k;ratio=k 是扫描横轴 |
 | `throughput` | `total`(轨迹 attempt 数,schema 2:slot 跨 ephemeral create/kill 或 fixed multiplier 复用时按轨迹计数,不再按沙箱槽位)/ `succeeded`(跑完全部 step 的轨迹数)/ `failed`(= total − succeeded,恒 ≥ 0)/ `total_steps` / `steps_per_sec` / `tasks_per_sec`;非 M trial 的 valid 门槛读 `total`,M(multiplier)trial 读 `succeeded` |
 | `admission` | `maximum, peak_active, granted, avg_queue_wait_sec, control_qps, control_dispatched`;`peak_active≤N` 是 valid 门槛;exec_only/exec_ephemeral 为 `null` |
-| `lifecycle_overhead` | `pause_sec_sum, resume_sec_sum, pct_of_slice_total`(开销比率 %,与 Overview `lifecycle_overhead_aggregate_pct` 同源);仅 lifecycle/trajectory |
+| `lifecycle_overhead` | `pause_sec_sum, resume_sec_sum, pct_of_slice_total`(开销比率 %,与 Overview `lifecycle_overhead_aggregate_pct` 同源);仅 lifecycle |
 | `paths` | `report, obs_xlsx, lifecycle_series, trajectory_index, vm_monitor_dir` 各产物路径 |
 | `error` | 出错时的错误串;非空 = `return_code≠0` 的根因线索 |
 
@@ -660,7 +659,7 @@ oversub-compare --manifest ... --allow-mismatched-n   # N 不一致也硬跑(默
 
 1. **Overview** — manifest(series/arch/caps/基线)、N-parity 校验结果、每 series valid/invalid trial 计数、median e2e 头表。
 2. **Per-ratio** — LineChart(各一轴,非双轴):① 绝对 median e2e(谁更快);② 对各自 k=1 的退化%(谁超分退化更狠);③ `lifecycle_overhead_pct`(pause/resume 开销占比);④ 每 series 一块任务时长(`elapsed_sec`)退化表+图,p50/p90/p99/avg 各一条线(vs k=1)。exec_only 比较下 ③ 自动省略——driver 对 exec_only 写空 cell,pandas 读 NaN,子集为空就跳过,不留平零线。
-3. **Component heatmaps** — 一个 component 一张 grid(rows=series,cols=ratio,单色 ColorScale 由浅到深):`exec / resume / pause / slot_contention_wait`。`create / kill` **不在内**——lifecycle/exec_only 下每步为 0(只有 trajectory 模式才有 per-trajectory create_one/kill_one),热力图只会平零;两列仍在 tidy CSV 里供 drill-down。
+3. **Component heatmaps** — 一个 component 一张 grid(rows=series,cols=ratio,单色 ColorScale 由浅到深):`exec / resume / pause / slot_contention_wait`。`create / kill` **不在内**——lifecycle/exec_only 下每步为 0(只有临时模式 exec_ephemeral 才有 per-trajectory create_one/kill_one),热力图只会平零;两列仍在 tidy CSV 里供 drill-down。
 4. **Per-trajectory delta** — 按 trajectory join 的 e2e delta;freeze panes 在 D2。
 5. **Cross-ratio per-traj** — 同轨迹跨 ratio 表(`comparison-cross-ratio-trajectory.csv` 的渲染):每条轨迹在各 ratio 的 median `elapsed_sec` + 相对自己 ratio-1 的退化%;freeze panes 在 D2。
 

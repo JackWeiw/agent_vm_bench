@@ -71,11 +71,11 @@ class FakeProvider(EnvironmentProvider):
         for inst in self._instances.values():
             inst.is_alive = False
 
-    # --- ephemeral lifecycle (trajectory mode; EphemeralCapable) ---
+    # --- ephemeral lifecycle (exec_ephemeral mode; EphemeralCapable) ---
     def create_one(
         self, index: int, *, template: str | None = None, metadata: dict[str, str] | None = None
     ) -> SandboxInstance:
-        """Create a single in-memory sandbox on demand (trajectory mode)."""
+        """Create a single in-memory sandbox on demand (exec_ephemeral mode)."""
         self._meta_log[index] = dict(metadata) if metadata else None
         inst = SandboxInstance(
             id=f"fake-{index}",
@@ -89,7 +89,7 @@ class FakeProvider(EnvironmentProvider):
         return inst
 
     def kill_one(self, inst: SandboxInstance) -> None:
-        """Tear down a single sandbox (trajectory mode). No-op if never created.
+        """Tear down a single sandbox (exec_ephemeral mode). No-op if never created.
 
         Faithful to a real EphemeralCapable provider (aenv ``__init__.py:281``):
         flip the passed ``inst`` dead, not just the stored handle. The replay

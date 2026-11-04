@@ -6,8 +6,10 @@
 # up again"). This is the missing 4th quadrant:
 #   exec_only     = persistent + bare exec       (long-lived, state accumulates)
 #   lifecycle     = persistent + pause/resume
-#   trajectory    = ephemeral  + pause/resume
 #   exec_ephemeral= ephemeral  + bare exec       <-- this file (B's model)
+# (the former fourth quadrant -- ephemeral + pause/resume -- was removed with
+# the trajectory mode; lifecycle covers the pause/resume cost model and
+# exec_ephemeral covers the ephemeral cost model.)
 #
 # Like exec_only there is no pause/resume and no admission gate (k*N sandboxes
 # run concurrently), so control_plane_* / running_concurrency are no-ops here.
@@ -140,8 +142,7 @@ replay:
   # Omit/null to use round_robin + round_count below instead (the round-based model).
   # multiplier: 5
 
-  # The knobs below are NO-OPS in exec_ephemeral (admission is lifecycle/
-  # trajectory only). Kept for parity with replay.yaml; at ratio 1:1 the
+  # The knobs below are NO-OPS in exec_ephemeral (admission is lifecycle only). Kept for parity with replay.yaml; at ratio 1:1 the
   # comparison with exec_only is fair (neither queues).
   running_concurrency: 384             # ignored in exec_ephemeral (no admission)
   control_plane_qps: 1000.0           # ignored in exec_ephemeral (no QPS limiter)

@@ -535,9 +535,9 @@ class Admission:
 
 
 class LaunchPacer:
-    """G5: shared no-catch-up launch pacing for a trajectory runner fleet.
+    """G5: shared no-catch-up launch pacing for an exec_ephemeral runner fleet.
 
-    One instance is shared across all worker threads in trajectory mode so the
+    One instance is shared across all worker threads in exec_ephemeral mode so the
     ``next_launch_at`` deadline is visible to every worker. A per-runner field
     would let each worker read its own ``0.0`` and burst-create in the same
     instant -- the shared lock alone serializes nothing cross-runner because it
@@ -560,7 +560,8 @@ class LaunchPacer:
         """Claim a launch turn; return the monotonic deadline to wait until.
 
         No-op-equivalent when ``interval <= 0`` (returns ``time.monotonic()``,
-        i.e. no wait); callers gate on the interval before calling.
+        i.e. no wait); callers gate on the interval before calling (bench.py wires
+        one pacer per exec_ephemeral run).
         """
         with self._lock:
             now = time.monotonic()

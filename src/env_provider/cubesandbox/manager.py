@@ -253,7 +253,7 @@ class CubesandboxManager(BaseSandboxManager):
         this returns success and maps the result onto ``creation_metrics``.
         ``metadata`` is forwarded to the SDK for operator visibility (labels
         only, not an idempotency key -- spec G3 deferred). ``template`` overrides
-        the config default (trajectory-mode multi-template routing).
+        the config default (exec_ephemeral-mode multi-template routing).
 
         v1 passes no ``envs``: CubeSandbox NUMA binding is host-level
         (``distribution_scope``), not the guest ``FC_BIND`` env convention; the

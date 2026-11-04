@@ -69,8 +69,8 @@ TRAJECTORY_METRIC_COLS = [
 # The component set the user wants dissected (exec / resume / pause / wait).
 # create/kill are omitted: in lifecycle/exec_only they are not per-trajectory
 # (create happens once at create_all, kill at cleanup; the kernel records 0.0
-# per step for non-trajectory modes), so the heatmap would carry only flat
-# zeros. They remain in the tidy CSV for drill-down if a trajectory-mode
+# per step in those modes), so the heatmap would carry only flat
+# zeros. They remain in the tidy CSV for drill-down if a per-step create/kill
 # comparison ever needs them. "wait" surfaces as slot_contention_wait_sec --
 # the headline queueing wait; its sub-decomposition (capacity / rate_pacing /
 # inflight) is in the tidy CSV too.

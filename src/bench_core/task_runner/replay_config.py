@@ -136,8 +136,7 @@ class ReplayConfig(WorkflowConfigBase):
             raise WorkflowConfigError(f"replay_launch_interval_sec must be >= 0, got {self.replay_launch_interval_sec}")
         if self.replay_pause_duration_sec < 0:
             raise WorkflowConfigError(f"replay_pause_duration_sec must be >= 0, got {self.replay_pause_duration_sec}")
-        if self.replay_mode not in (None, "exec_only", "exec_ephemeral", "lifecycle", "trajectory"):
+        if self.replay_mode not in (None, "exec_only", "exec_ephemeral", "lifecycle"):
             raise WorkflowConfigError(
-                f"replay_mode must be None, 'exec_only', 'exec_ephemeral', 'lifecycle', or 'trajectory', "
-                f"got {self.replay_mode!r}"
+                f"replay_mode must be None, 'exec_only', 'exec_ephemeral', or 'lifecycle', got {self.replay_mode!r}"
             )

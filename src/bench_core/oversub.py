@@ -522,16 +522,6 @@ def _cmd_exec_stats(traj_rows: list[dict]) -> dict[tuple[str, int], tuple[float,
     return out
 
 
-# Only `trajectory` holds one running-slot lease for a whole trajectory, so its
-# stress windows are contiguous and at most `running_concurrency` of them
-# overlap. Every other mode either runs all k*N sandboxes at once (exec_only,
-# exec_ephemeral) or -- lifecycle -- re-acquires the lease per step, so one
-# run's window also spans the k-1 other tenants served between its steps and
-# the windows overlap k-fold. Normalizing lifecycle by N would understate its
-# fleet rate by the oversubscription factor k.
-_WHOLE_TRAJECTORY_LEASE_MODES = frozenset({"trajectory"})
-
-
 def _stress_rate_stats(traj_rows: list[dict], trials: list[dict]) -> dict[tuple[str, int, int], dict]:
     """Per-trial throughput with create/kill excluded from the clock.
 
@@ -551,12 +541,7 @@ def _stress_rate_stats(traj_rows: list[dict], trials: list[dict]) -> dict[tuple[
     which still counts a trajectory that ran all its steps with a failed step
     when ``stop_on_error`` is off.
     """
-    workers = {
-        (t["mode"], t["ratio"], t["repeat"]): (
-            t.get("running_concurrency") if t["mode"] in _WHOLE_TRAJECTORY_LEASE_MODES else t.get("target_count")
-        )
-        for t in trials
-    }
+    workers = {(t["mode"], t["ratio"], t["repeat"]): t.get("target_count") for t in trials}
     buckets: dict[tuple[str, int, int], list[dict]] = {}
     for r in traj_rows:
         sec = r.get("stress_sec")
@@ -983,7 +968,7 @@ def _run_trial(
     trial_dir.mkdir(parents=True, exist_ok=True)
     test_duration = args.test_duration or (base_yaml.get("test") or {}).get("duration", 600)
     # multiplier (M) applies only to exec_ephemeral (each sandbox runs M
-    # trajectories, stop-when-done); a no-op for lifecycle/trajectory.
+    # trajectories, stop-when-done); a no-op for lifecycle.
     m = args.multiplier if mode == "exec_ephemeral" else None
 
     summary_glob = f"{prefix}_*/{prefix}_run_summary.json"

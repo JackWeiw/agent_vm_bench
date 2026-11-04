@@ -13,7 +13,7 @@ updated: 2026-09-03
 
 ## Summary
 
-Add a new `cubesandbox` provider under `src/env_provider/` — the second lifecycle-capable backend alongside `aenv` — driven by the native `cubesandbox` Python SDK (a Cloud Hypervisor / KVM microVM service by Tencent Cloud). It implements all three replay Protocols (`LifecycleCapable` pause/resume with memory snapshot, `EphemeralCapable` create_one/kill_one, `SnapshotSizeCapable`), so it runs every replay mode (`exec_only`/`lifecycle`/`trajectory`) like `aenv`, but on a different VMM. Host-level `vm_monitor` support is deferred to a follow-on (`cube-hypervisor` monitor type); the contract and kernel are untouched except two one-line registrations.
+Add a new `cubesandbox` provider under `src/env_provider/` — the second lifecycle-capable backend alongside `aenv` — driven by the native `cubesandbox` Python SDK (a Cloud Hypervisor / KVM microVM service by Tencent Cloud). It implements all three replay Protocols (`LifecycleCapable` pause/resume with memory snapshot, `EphemeralCapable` create_one/kill_one, `SnapshotSizeCapable`), so it runs every replay mode (`exec_only`/`lifecycle`/`exec_ephemeral`) like `aenv`, but on a different VMM. Host-level `vm_monitor` support is deferred to a follow-on (`cube-hypervisor` monitor type); the contract and kernel are untouched except two one-line registrations.
 
 ## Motivation
 
@@ -77,7 +77,7 @@ Create with a long `timeout` (`create_timeout`, default `86400`) to avoid idle e
 
 ### Config layering
 
-New `cubesandbox:` block in `config/common/*.yaml` (`replay.yaml`, `replay-trajectory.yaml`, `browser.yaml`, `coding-ts/go/python.yaml`):
+New `cubesandbox:` block in `config/common/*.yaml` (`replay.yaml`, `replay-exec-only.yaml`, `browser.yaml`, `coding-ts/go/python.yaml`):
 
 ```yaml
 cubesandbox:

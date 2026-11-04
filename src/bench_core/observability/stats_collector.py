@@ -12,7 +12,7 @@ keeps only the workflow-agnostic scaffolding (config / status / percentile /
 error / round-comparison sections, snapshot collection, generic ``Snapshot``
 projection) and delegates every per-workflow surface
 (``format_stats_section`` / ``format_step_timing`` / ``format_throughput_section``
-/ ``format_trajectory_summary_section`` / ``format_round_extras`` /
+/ ``format_round_extras`` /
 ``format_config_extras`` / ``format_snapshot_line``) to
 ``WORKFLOW_REGISTRY[config.workflow_type].report_formatters`` via a
 :class:`ReportContext`. There is no ``workflow_type`` if/elif dispatch left in
@@ -405,9 +405,6 @@ class ReportFormatter:
     def format_throughput_section(self) -> list[str]:
         return self._fmt.format_throughput_section(self._ctx)
 
-    def format_trajectory_summary_section(self) -> list[str]:
-        return self._fmt.format_trajectory_summary_section(self._ctx)
-
 
 class StatsCollector:
     """Statistics collector - real-time snapshot + final report."""
@@ -677,13 +674,12 @@ class StatsCollector:
         total_times = [s.creation_metrics.total_elapsed for s in ready_states if s.creation_metrics.total_elapsed > 0]
         lines.extend(formatter.format_percentile_section("Total Startup Performance", total_times, fmt.total_desc))
 
-        # Per-workflow task statistics / step timing / (replay-only) throughput
-        # + trajectory summary. All unconditional -- non-replay strategies
-        # return [] for the replay-only surfaces.
+        # Per-workflow task statistics / step timing / (replay-only) throughput.
+        # All unconditional -- non-replay strategies return [] for the
+        # replay-only surfaces.
         lines.extend(formatter.format_stats_section())
         lines.extend(formatter.format_step_timing())
         lines.extend(formatter.format_throughput_section())
-        lines.extend(formatter.format_trajectory_summary_section())
 
         # Error details (per-workflow error_display_order on the strategy)
         lines.extend(formatter.format_error_section())
