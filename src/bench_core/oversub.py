@@ -263,6 +263,8 @@ def compute_valid(
     fleet without over-admitting:
 
       * ``return_code == 0`` (the kernel subprocess succeeded),
+      * the summary recorded no ``error`` (a merged sharded summary has no rc;
+        a dead shard surfaces here instead),
       * ``throughput.total >= 0.9 * expected``. ``expected = N`` by default
         (mode-agnostic: a non-M trial runs ONE round, so ``total`` -- the
         trajectory-attempt count since run_summary schema 2 -- ~= k*N >= 0.9*N
@@ -286,6 +288,14 @@ def compute_valid(
         single-round wrap noise, not M-pass fleets).
     """
     if return_code != 0:
+        return False
+    # A summary that recorded a problem is not a valid measurement, even when
+    # the process rc reads 0. This is the sharded-trial path's only failure
+    # signal on --reuse: the merged summary has no single rc (a dead shard
+    # surfaces in ``error`` / ``shard_return_codes``), so without this gate a
+    # shard-crashed trial whose surviving shards still cleared the count floor
+    # would be reused and reported as valid.
+    if summary.get("error"):
         return False
     tp = summary.get("throughput") or {}
     # M-aware floor: with multiplier each sandbox runs M trajectories, so the
@@ -1234,6 +1244,10 @@ def _run_sharded_trial(
     bracket = None if monitor is None else ShardStressBracket([spec.stress_path for spec in plan.specs], monitor)
 
     result = None
+    # Artifact selection is scoped to this attempt: shard dirs accumulate one
+    # timestamped run dir per attempt, so a shard that crashes before flushing
+    # must not have a previous attempt's summary merged in its place.
+    launch_epoch = time.time()
     try:
         if bracket is not None:
             bracket.start()
@@ -1254,7 +1268,7 @@ def _run_sharded_trial(
                 monitor.wait_for_host_resources(timeout=30)
             else:
                 monitor.stop()
-    artifacts = collect_shard_artifacts(plan, prefix)
+    artifacts = collect_shard_artifacts(plan, prefix, since_epoch=launch_epoch)
     rc = result.trial_return_code()
 
     if all(s is None for s in artifacts.summaries):

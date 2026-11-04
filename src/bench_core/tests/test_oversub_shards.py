@@ -30,6 +30,7 @@ from bench_core.oversub_shards import (
     build_shard_command,
     build_shard_config,
     coerce_shards,
+    collect_shard_artifacts,
     merge_lifecycle_series,
     merge_run_summaries,
     merge_trajectory_indexes,
@@ -612,6 +613,35 @@ def test_merge_lifecycle_series_concats_and_rekeys_all_shards(tmp_path, caplog):
     assert merge_lifecycle_series([None, {"paths": {}}], plan, tmp_path / "m2", "rb") is None
 
 
+def _write_shard_summary(directory: Path, stamp: str, started_epoch: float) -> Path:
+    run_dir = directory / f"rb_{stamp}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    path = run_dir / "rb_run_summary.json"
+    path.write_text(json.dumps(_shard_summary(started_epoch=started_epoch)), encoding="utf-8")
+    return path
+
+
+def test_collect_shard_artifacts_scopes_to_current_attempt(tmp_path):
+    # Shard dirs keep one run dir per attempt. A shard that crashes before
+    # flushing this attempt must read as missing -- not as the previous
+    # attempt's summary, whose counts would silently join the merge.
+    plan = _plan2(tmp_path)
+    s0, s1 = plan.specs
+    _write_shard_summary(s0.directory, "20260101-000000", 100.0)  # previous attempt
+    current = _write_shard_summary(s0.directory, "20260102-000000", 2000.0)
+    _write_shard_summary(s1.directory, "20260101-000000", 100.0)  # stale only
+
+    scoped = collect_shard_artifacts(plan, "rb", since_epoch=1500.0)
+    assert scoped.summary_paths[0] == str(current)
+    assert scoped.summary_paths[1] is None and scoped.summaries[1] is None
+    assert scoped.missing == [1]
+
+    # Unscoped (pre-restart behavior): newest-by-name wins for both.
+    unscoped = collect_shard_artifacts(plan, "rb")
+    assert unscoped.summary_paths[0] == str(current)
+    assert unscoped.summary_paths[1] is not None
+
+
 # ---------------------------------------------------------------------------
 # Group supervision (real subprocesses, stdlib-only payloads)
 # ---------------------------------------------------------------------------
@@ -642,6 +672,30 @@ def test_shard_group_runner_deadline_terminates_whole_group(tmp_path):
     assert all(rc != 0 for rc in result.returncodes[1:])
 
 
+def test_shard_group_runner_launch_failure_terminates_started_shards(tmp_path, monkeypatch):
+    # A Popen failure mid-launch (fd exhaustion, missing interpreter) must tear
+    # down the shards already stressing the host, not orphan them.
+    real_popen = subprocess.Popen
+    started = []
+
+    def fake_popen(cmd, **kwargs):
+        if len(started) == 1:
+            raise OSError("simulated launch failure")
+        proc = real_popen(cmd, **kwargs)
+        started.append(proc)
+        return proc
+
+    monkeypatch.setattr(oversub_shards.subprocess, "Popen", fake_popen)
+    cmds = [
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        [sys.executable, "-c", "pass"],
+    ]
+    with pytest.raises(OSError, match="simulated launch failure"):
+        ShardGroupRunner(cmds, [tmp_path / "a.log", tmp_path / "b.log"], 60).run()
+    assert len(started) == 1
+    assert started[0].poll() is not None  # terminated, not orphaned
+
+
 # ---------------------------------------------------------------------------
 # Stub end-to-end: main() -> sharded trial -> merged contract artifacts
 # ---------------------------------------------------------------------------
@@ -670,12 +724,15 @@ run_dir = out / f"{pfx}_{time.strftime('%Y%m%d-%H%M%S')}"
 (run_dir / "trajectories").mkdir(parents=True, exist_ok=True)
 total = cfg["sandbox"]["total_count"]
 m = (cfg.get("replay") or {}).get("multiplier") or 1
+# Real wall-clock epochs, like the kernel writes: the driver scopes artifact
+# selection to the current attempt by started_epoch (a stale-summary guard).
+finished = time.time()
 summary = {
   "schema_version": 2, "workflow_type": "replay",
   "replay_mode": cfg["replay"]["mode"], "provider": "stub",
   "started_at": "2026-10-30T10:00:00+08:00", "completed_at": "2026-10-30T10:18:00+08:00",
-  "started_epoch": 1000.0, "completed_epoch": 2080.0,
-  "test_duration": cfg["test"]["duration"], "wall_sec": 1080.0,
+  "started_epoch": began, "completed_epoch": finished,
+  "test_duration": cfg["test"]["duration"], "wall_sec": round(finished - began, 3),
   "total_count": total, "running_concurrency": cfg["replay"]["running_concurrency"],
   "overcommit_ratio": 1.0,
   "throughput": {"total": total * m, "succeeded": total * m, "failed": 0,
