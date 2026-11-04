@@ -50,6 +50,7 @@ from bench_core.oversub_shards import (
     merge_run_summaries,
     merge_trajectory_indexes,
     plan_shards,
+    render_merged_obs,
     start_host_monitor,
     write_merged_artifacts,
     write_shard_configs,
@@ -1272,6 +1273,19 @@ def _run_sharded_trial(
         series = merge_lifecycle_series(artifacts.summaries, plan, trial_dir / "merged", prefix)
         if series is not None:
             summary.setdefault("paths", {})["lifecycle_series"] = str(series)
+            # Fleet-wide obs workbook (the shards' own workbooks cover N slots
+            # each). Rendered before write_merged_artifacts, which serializes
+            # the summary carrying its path.
+            merged_obs = render_merged_obs(
+                trial_cfg,
+                trial_dir,
+                prefix,
+                wall_sec=summary.get("wall_sec"),
+                series_path=series,
+                host_xlsx=monitor.merge_source() if monitor is not None else None,
+            )
+            if merged_obs is not None:
+                summary["paths"]["obs_xlsx"] = str(merged_obs)
         run_summary_path = str(write_merged_artifacts(trial_dir, prefix, summary, merged_index))
 
     valid = compute_valid(
