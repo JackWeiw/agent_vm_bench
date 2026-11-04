@@ -1,12 +1,22 @@
 """Pure transforms over loaded lifecycle-series events.
 
-No I/O -- takes a ``list[dict]`` (from :func:`bench_core.observability.lifecycle_series.load_events`)
-and produces the shapes the xlsx renderer draws: per-second concurrency-state bins,
-per-sandbox Gantt phase segments, and per-pause snapshot-size rows. Keeping this
-out of ``replay_obs.py`` (which is contractually I/O-free) is why the reverted
+No I/O -- takes events (a ``list[dict]``, or an ``iter_events`` generator, from
+:func:`bench_core.observability.lifecycle_series.load_events`) and produces the
+shapes the xlsx renderer draws: per-second concurrency-state bins, per-sandbox
+Gantt phase segments, per-pause snapshot-size rows, and the ``ReplayMetrics``
+accumulators a sharded trial no longer holds in memory. Keeping this out of
+``replay_obs.py`` (which is contractually I/O-free) is why the reverted
 ``180e46c`` placement was wrong.
 """
 from __future__ import annotations
+
+from collections.abc import Iterable
+from typing import TYPE_CHECKING
+
+from env_provider import SandboxInstance
+
+if TYPE_CHECKING:
+    from bench_core.schemas import BenchSandbox
 
 # Phase order matters: ties in dominant-state selection resolve to the earlier
 # phase (mirrors the reference's max() over phases.index ordering).
@@ -263,3 +273,84 @@ def snapshot_rows(events: list[dict]) -> list[dict]:
             }
         )
     return rows
+
+
+def replay_states_from_events(events: Iterable[dict]) -> dict[int, BenchSandbox]:
+    """Rebuild per-sandbox ``ReplayMetrics`` from a lifecycle series.
+
+    A sharded trial's kernel processes are gone by merge time, so their
+    in-memory accumulators cannot be summed across shards. The series is the
+    surviving record, and replaying each event through the kernel's OWN
+    mutators (``ReplayMetrics.add`` / ``record_retry_event`` /
+    ``append_retries_per_slice``) reproduces exactly what one process over the
+    same fleet would have accumulated -- there is no second aggregation rule
+    to keep in sync with the runner.
+
+    ``step`` events carry every field ``add`` takes (plus ``retries_in_slice``
+    for the per-slice retry list); ``retry_queued`` events carry the same
+    ``time_lost`` the runner fed ``record_retry_event``. Fields the runner only
+    ever passes as 0.0 (``create_sec`` / ``kill_sec``) are rebuilt as 0.0, and
+    the delay-fidelity counters (requested/actual delay) are not rendered from
+    the model, so they are left at 0.
+
+    ``events`` is consumed as a stream (an ``iter_events`` generator), so
+    rebuilding a fleet-wide series costs the accumulators alone -- not a second
+    copy of every event.
+    """
+    from bench_core.schemas import BenchSandbox, ReplayMetrics
+
+    metrics: dict[int, ReplayMetrics] = {}
+    for e in events:
+        idx = e.get("sandbox_index")
+        if idx is None:
+            continue
+        kind = e.get("event")
+        m = metrics.get(idx)
+        if m is None:
+            m = metrics[idx] = ReplayMetrics()
+        if kind == "step":
+            action_type = e.get("action_type") or "shell"
+            latency = e.get("exec_sec") or 0.0
+            timed_out = bool(e.get("timed_out"))
+            m.add(
+                latency=latency,
+                success=e.get("exit_code") == 0 and not timed_out,
+                timeout=timed_out,
+                step_times={action_type: latency},
+                action_type=action_type,
+                resume_sec=e.get("resume_sec") or 0.0,
+                pause_sec=e.get("pause_sec") or 0.0,
+                slice_total_sec=e.get("slice_total_sec") or 0.0,
+                resume_api_sec=e.get("resume_api_sec") or 0.0,
+                resume_ready_wait_sec=e.get("resume_ready_wait_sec") or 0.0,
+                slot_contention_wait_sec=e.get("slot_contention_wait_sec") or 0.0,
+                pause_api_sec=e.get("pause_api_sec") or 0.0,
+                resume_rate_pacing_wait_sec=e.get("resume_rate_pacing_wait_sec") or 0.0,
+                pause_rate_pacing_wait_sec=e.get("pause_rate_pacing_wait_sec") or 0.0,
+                running_slot_held_sec=e.get("running_slot_held_sec") or 0.0,
+                interaction_total_sec=e.get("interaction_total_sec") or 0.0,
+                natural_delay_sec=e.get("natural_delay_sec") or 0.0,
+                capacity_wait_sec=e.get("capacity_wait_sec") or 0.0,
+                resume_inflight_wait_sec=e.get("resume_inflight_wait_sec") or 0.0,
+                pause_inflight_wait_sec=e.get("pause_inflight_wait_sec") or 0.0,
+            )
+            # Key presence, not truthiness: a zero retry count is a real
+            # sample (it belongs in the p95 population) and only the
+            # success path writes the key at all.
+            if "retries_in_slice" in e:
+                m.append_retries_per_slice(e["retries_in_slice"] or 0)
+        elif kind == "retry_queued":
+            m.record_retry_event(
+                "retry_queued",
+                operation=e.get("operation") or "unknown",
+                time_lost_sec=(e.get("accumulated_rate_pacing_wait_sec") or 0.0)
+                + (e.get("accumulated_inflight_wait_sec") or 0.0)
+                + (e.get("accumulated_api_sec") or 0.0),
+            )
+
+    states: dict[int, BenchSandbox] = {}
+    for idx, m in metrics.items():
+        state = BenchSandbox.from_instance(SandboxInstance(id=f"merged-{idx}", index=idx), "replay")
+        state.replay_metrics = m
+        states[idx] = state
+    return states

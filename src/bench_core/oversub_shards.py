@@ -727,10 +727,11 @@ def merge_run_summaries(
         "admission": _merged_admission(present),
         "lifecycle_overhead": _merged_lifecycle_overhead(present),
         "paths": {
-            # The real txt/xlsx artifacts live under shard_dirs (per-shard run
-            # dirs); no driver consumer reads these two merged keys. The series
-            # is concatenated fleet-wide (merge_lifecycle_series) and patched
-            # in by the driver.
+            # The per-shard txt reports stay under shard_dirs (no consumer
+            # reads a merged report path). The lifecycle series is
+            # concatenated fleet-wide (merge_lifecycle_series) and the obs
+            # workbook rendered fleet-wide (render_merged_obs); the driver
+            # patches both paths in after this returns.
             "report": None,
             "obs_xlsx": None,
             "lifecycle_series": None,
@@ -875,6 +876,62 @@ def merge_lifecycle_series(summaries: list[dict], plan: ShardPlan, merged_dir: P
             except OSError as exc:
                 logger.warning("shard series %s unreadable (%s); merged series is partial", src, exc)
     return out if written else None
+
+
+def render_merged_obs(
+    trial_cfg: dict,
+    trial_dir: Path,
+    prefix: str,
+    *,
+    wall_sec: float | None,
+    series_path: Path,
+    host_xlsx: Path | None = None,
+) -> Path | None:
+    """Render ONE fleet-wide obs workbook for a sharded trial.
+
+    Each shard already wrote its own ``_obs.xlsx`` (its own N slots), which a
+    k*N reader cannot consume as a trial result. This rebuilds the kernel's
+    model over the merged series instead of concatenating those workbooks:
+    the three model-backed sheets (Overview / Per-step timings / Lifecycle
+    overhead) come from ``ReplayMetrics`` accumulators replayed out of the
+    series by the kernel's own mutators, and the five series-backed sheets
+    read the same merged JSONL the kernel renderer reads -- so the workbook is
+    produced by one code path, not a shard-aware fork of it.
+
+    ``wall_sec`` is the trial envelope (not max-of-shard-walls), matching the
+    merged ``run_summary`` rates. Admission is absent by construction:
+    shardable modes run admission-free. Runs after every shard has exited, so
+    the render cost never lands inside a stress window.
+
+    Returns ``None`` when the trial does not want a workbook
+    (``report.format: txt``, the kernel's own gate) and on any failure (with a
+    warning) -- the per-shard workbooks + merged JSON artifacts remain, and a
+    reporting step must never fail a trial that already ran.
+    """
+    try:
+        from bench_core.config import KernelConfig
+        from bench_core.observability.lifecycle_reconstruct import replay_states_from_events
+        from bench_core.observability.lifecycle_series import iter_events
+        from bench_core.observability.obs_xlsx import XlsxReportRenderer
+        from bench_core.observability.replay_obs import ReplayObservability
+
+        config = KernelConfig.from_raw(trial_cfg)
+        if config.report_format not in ("xlsx", "both"):
+            return None
+        # Stream the series: the accumulators are the only per-step state this
+        # holds, so the model rebuild is O(sandboxes), not O(events).
+        obs = ReplayObservability(
+            config,
+            replay_states_from_events(iter_events(series_path)),
+            wall_sec=wall_sec,
+        )
+        path = trial_dir / "merged" / f"{prefix}_obs.xlsx"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        XlsxReportRenderer(obs, series_path=Path(series_path), host_xlsx=host_xlsx).render(path)
+        return path
+    except Exception as exc:  # noqa: BLE001 - reporting must not fail the trial
+        logger.warning("merged obs workbook skipped (%s: %s); per-shard workbooks remain", type(exc).__name__, exc)
+        return None
 
 
 def write_merged_artifacts(

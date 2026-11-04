@@ -33,6 +33,7 @@ import json
 import logging
 import queue
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -117,23 +118,33 @@ class LifecycleSeriesWriter:
         self.close()
 
 
-def load_events(path: Path) -> list[dict]:
-    """Read a lifecycle-series JSONL file into a list of event dicts.
+def iter_events(path: Path) -> Iterator[dict]:
+    """Stream a lifecycle-series JSONL file event by event (bounded memory).
 
-    Malformed lines are skipped with a warning (the series is append-only +
-    line-buffered; a torn final line is tolerable). Missing file -> [].
+    Same contract as :func:`load_events` -- malformed lines are skipped with a
+    warning, a missing file yields nothing -- but the caller never holds the
+    whole series. Use this on a fleet-wide series whose length scales with
+    ``total_count`` (a sharded trial's merged series): a 1:16 sweep's few
+    hundred thousand events cost ~0.5 GB as a materialized list, per parse.
     """
     p = Path(path)
     if not p.exists():
-        return []
-    out: list[dict] = []
+        return
     with open(p, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
-                out.append(json.loads(line))
+                yield json.loads(line)
             except json.JSONDecodeError:
                 logger.warning("skipping malformed series line in %s", p)
-    return out
+
+
+def load_events(path: Path) -> list[dict]:
+    """Read a lifecycle-series JSONL file into a list of event dicts.
+
+    Malformed lines are skipped with a warning (the series is append-only +
+    line-buffered; a torn final line is tolerable). Missing file -> [].
+    """
+    return list(iter_events(path))
