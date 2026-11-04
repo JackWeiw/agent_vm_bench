@@ -305,7 +305,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
         ``{"report": str, "filepath": str | None, "admission_snapshot": dict | None}``,
         or ``{}`` when no sandboxes reached ready state. ``admission_snapshot`` is
         the merged running-slot + QPS-limiter snapshot (``None`` outside
-        lifecycle/trajectory replay modes).
+        the lifecycle replay mode).
     """
     # Narrow to the typed replay view once (None outside replay). The view is the
     # source of truth for replay knobs; ``rcfg is not None`` short-circuits every
@@ -329,7 +329,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 f"(pause/resume); provider '{provider.name}' does not support it. "
                 f"Providers that support it: {_capability_hint(LifecycleCapable)}."
             )
-    if rcfg is not None and rcfg.replay_mode in ("trajectory", "exec_ephemeral"):
+    if rcfg is not None and rcfg.replay_mode == "exec_ephemeral":
         if not isinstance(provider, EphemeralCapable):
             raise ValueError(
                 f"replay.mode={rcfg.replay_mode} requires an EphemeralCapable provider "
@@ -365,11 +365,11 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
 
     stop_event = threading.Event()
 
-    # 2. Create or detect sandboxes. Trajectory / exec_ephemeral modes skip
-    # create_all (each trajectory creates/kills its own sandbox in-runner);
-    # build N lightweight shells the workers fill per trajectory. detect mode
-    # is incompatible with these modes (no persistent pool to detect).
-    if rcfg is not None and rcfg.replay_mode in ("trajectory", "exec_ephemeral"):
+    # 2. Create or detect sandboxes. exec_ephemeral skips create_all (each
+    # trajectory creates/kills its own sandbox in-runner); build N lightweight
+    # shells the workers fill per trajectory. detect mode is incompatible with
+    # it (no persistent pool to detect).
+    if rcfg is not None and rcfg.replay_mode == "exec_ephemeral":
         if config.detect_existing:
             logger.info(f"\n[Phase 1] detect mode incompatible with {rcfg.replay_mode} mode; building shells.")
         logger.info(f"\n[Phase 1] {rcfg.replay_mode} mode: {config.total_count} worker shells (no pre-create).")
@@ -402,11 +402,12 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
 
     # 3. Create-only: emit the creation timing report and leave sandboxes running.
     if config.create_only:
-        if rcfg is not None and rcfg.replay_mode in ("trajectory", "exec_ephemeral"):
-            # Ephemeral modes create/kill per round inside the runner -- there is
-            # no pool to pre-create, and the Phase-1 shells are placeholders, not
-            # real sandboxes. Exit honestly: a zero-filled creation report and a
-            # sandbox_ids_file full of "traj-shell-N" would both be lies.
+        if rcfg is not None and rcfg.replay_mode == "exec_ephemeral":
+            # The ephemeral mode creates/kills per round inside the runner --
+            # there is no pool to pre-create, and the Phase-1 shells are
+            # placeholders, not real sandboxes. Exit honestly: a zero-filled
+            # creation report and a sandbox_ids_file full of "traj-shell-N"
+            # would both be lies.
             logger.warning(
                 f"--create-only is a no-op for replay.mode={rcfg.replay_mode}: sandboxes are created "
                 "per round by the runner (creation cost is part of the measured workload). "
@@ -448,11 +449,11 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     # carries real exec timings in every mode -- exec_only included (resume/
     # pause are no-ops there, but exec_sec / exec_end / the six timestamps are
     # genuine epochs). The series feeds the obs workbook's Step detail /
-    # Trajectory summary / Concurrency states / Gantt sheets; lifecycle /
-    # trajectory additionally emit pause/resume/initial_pause/snapshot_size
+    # Trajectory summary / Concurrency states / Gantt sheets; lifecycle
+    # additionally emits pause/resume/initial_pause/snapshot_size
     # events (exec_only emits step events only, so its Lifecycle-overhead and
     # Snapshot-sizes sheets stay sparse). Without a writer those 4 sheets render
-    # header-only -- the old lifecycle/trajectory-only gate threw exec_only's
+    # header-only -- the old lifecycle-only gate threw exec_only's
     # real per-step data out with its (genuinely empty) lifecycle fields.
     series_writer: LifecycleSeriesWriter | None = None
     series_path: Path | None = None
@@ -469,11 +470,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     # series writer so every queued snapshot_size event is drained into the series
     # before the series file is flushed + closed.
     snapshot_scanner: SnapshotSizeScanner | None = None
-    if (
-        series_writer is not None
-        and isinstance(provider, SnapshotSizeCapable)
-        and rcfg.replay_mode in ("lifecycle", "trajectory")
-    ):
+    if series_writer is not None and isinstance(provider, SnapshotSizeCapable) and rcfg.replay_mode == "lifecycle":
         snapshot_scanner = SnapshotSizeScanner(provider, series_writer)
         logger.info("  Snapshot-size scanner: background drain (off step path)")
 
@@ -483,7 +480,7 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
 
     admission: Admission | None = None
     admission_snapshot: dict | None = None
-    if rcfg is not None and rcfg.replay_mode in ("lifecycle", "trajectory"):
+    if rcfg is not None and rcfg.replay_mode == "lifecycle":
         slots = None
         qps_lim = None
         if rcfg.replay_running_concurrency is not None and rcfg.replay_running_concurrency < config.total_count:
@@ -518,15 +515,12 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 f"qps={admission_snapshot['qps']}, inflight_cap={admission_snapshot['inflight_cap']}"
             )
 
-    # G5: shared no-catch-up launch pacer for ephemeral modes (one per fleet).
-    # Paces per-trajectory create_one starts so multiple workers don't burst-
-    # create in the same instant. The pacer's lock + deadline cell are shared
-    # across all workers (a per-runner field would let each read its own 0.0
-    # and burst). None outside trajectory/exec_ephemeral (no per-trajectory
-    # create).
-    trajectory_launch_pacer = (
-        LaunchPacer() if (rcfg is not None and rcfg.replay_mode in ("trajectory", "exec_ephemeral")) else None
-    )
+    # G5: shared no-catch-up launch pacer (one per fleet). Paces per-trajectory
+    # create_one starts so multiple workers don't burst-create in the same
+    # instant. The pacer's lock + deadline cell are shared across all workers (a
+    # per-runner field would let each read its own 0.0 and burst). None outside
+    # exec_ephemeral (the only mode left with a per-trajectory create).
+    trajectory_launch_pacer = LaunchPacer() if (rcfg is not None and rcfg.replay_mode == "exec_ephemeral") else None
 
     # Install a cooperative SIGTERM handler so a driver-initiated terminate
     # (oversub _run_subprocess) unwinds into the finally below for a partial
@@ -688,8 +682,8 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
                 obs_xlsx_path = xlsx_path
                 logger.info(f"Xlsx report saved to: {xlsx_path}")
 
-        # Per-trajectory replay_result.json export (replay lifecycle/trajectory
-        # mode only; a no-op when the series file is absent). Emits one
+        # Per-trajectory replay_result.json export (all replay modes; a no-op
+        # when the series file is absent). Emits one
         # replay_result.json per trajectory + a trajectories/index.json catalog
         # so a fleet of dozens/hundreds of trajectories is browsable without
         # walking folders. Runs regardless of report_format (txt-only runs still
@@ -895,7 +889,7 @@ def _capability_hint(protocol_cls: type) -> str:
     """Comma-joined ``--provider`` names whose class satisfies ``protocol_cls``.
 
     Class-level mirror of the ``isinstance(provider, protocol_cls)`` gate in
-    :func:`run_benchmark`: the lifecycle/trajectory errors list every
+    :func:`run_benchmark`: the lifecycle/ephemeral errors list every
     registered provider implementing the required capability instead of a
     hardcoded name. Lazy-imports each submodule (their SDK imports are
     guarded, so this never forces an SDK install) and checks ``issubclass``.
@@ -987,14 +981,14 @@ def main() -> None:
 
     # Attach a file handler once config (and CLI overrides) are resolved.
     # Stdout stays plaintext for live tailing; JSON lines go to the file only
-    # for lifecycle/trajectory replay modes.
+    # for the lifecycle replay mode.
     log_dir = Path(config.output_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = str(log_dir / f"{config.filename_prefix}.log")
     setup_logging(
         log_path=log_path,
         json_lines=isinstance(config.workflow_config, ReplayConfig)
-        and config.workflow_config.replay_mode in ("lifecycle", "trajectory"),
+        and config.workflow_config.replay_mode == "lifecycle",
     )
 
     provider = _build_provider(args.provider, config, raw)

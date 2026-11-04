@@ -570,7 +570,7 @@ shared helpers without reaching into the host — the `stats_collector → task_
 import edge (and the `DocumentConfig` / `ReplayConfig` narrows) is gone, dissolving
 the cycle the helpers-extraction broke. The per-workflow formatters port the existing
 `format_*_stats_section` / `format_*_step_timing_table` / (replay)
-`format_throughput_section` / `format_trajectory_summary_section` /
+`format_throughput_section` /
 `_format_lifecycle_overhead_by_round` bodies byte-for-byte (`self.X → ctx.X`).
 
 Behavior gate: a fixed-fixture `generate_report()` across all 4 workflows (including
@@ -582,7 +582,7 @@ Deviations from the RFC text, each with reason + follow-up:
 
 1. **`ReportFormatter` keeps 1-line delegating facades** (D8). The host retains
    generic `format_stats_section` / `format_step_timing` / `format_throughput_section`
-   / `format_trajectory_summary_section` methods that delegate to
+   methods that delegate to
    `self._fmt.<same>(self._ctx)`, rather than forcing every caller/tests to reach into
    `WORKFLOW_REGISTRY` directly. Reason: minimizes test churn (existing tests construct
    `ReportFormatter(config, states)` and call methods on it); the facade names are
@@ -599,10 +599,9 @@ Deviations from the RFC text, each with reason + follow-up:
 
 3. **`ReportFormatters` is an ABC with default no-op methods, not a
    `runtime_checkable Protocol`** (D10). The original RFC text specified a 3-method
-   Protocol; the implementation uses an ABC with 3 `@abstractmethod`s + 4 default
-   no-op methods (`format_throughput_section` / `format_trajectory_summary_section` /
-   `format_config_extras` / `format_round_extras` return `[]`) + 5 class-attr
-   constants. Reason: the strategy has shared defaults (non-replay surfaces return
+   Protocol; the implementation uses an ABC with 3 `@abstractmethod`s + 3 default
+   no-op methods (`format_throughput_section` / `format_config_extras` /
+   `format_round_extras` return `[]`) + 5 class-attr constants. Reason: the strategy has shared defaults (non-replay surfaces return
    `[]`), which an ABC expresses naturally (a Protocol cannot supply bodies); the ABC
    also enforces the contract at registration via `isinstance` in `register_workflow`,
    stronger than a Protocol's structural check. Follow-up: none.

@@ -315,8 +315,6 @@ class ReplayMetrics(TaskMetricsBase):
         self._pause_rate_pacing_wait_secs: list[float] = []  # was missing -> added with the rate-pacing split
         self._running_slot_held_secs: list[float] = []
         self._interaction_total_secs: list[float] = []
-        self._create_secs: list[float] = []  # trajectory mode only; empty otherwise
-        self._kill_secs: list[float] = []  # trajectory mode only; empty otherwise
         # Decoupled wait decomposition: four independent, non-overlapping
         # components. ``slot_contention_wait_secs`` (above) stays as the
         # composite = natural_delay + capacity_wait (kept for downstream
@@ -369,8 +367,6 @@ class ReplayMetrics(TaskMetricsBase):
         pause_rate_pacing_wait_sec: float = 0.0,
         running_slot_held_sec: float = 0.0,
         interaction_total_sec: float = 0.0,
-        create_sec: float = 0.0,
-        kill_sec: float = 0.0,
         natural_delay_sec: float = 0.0,
         capacity_wait_sec: float = 0.0,
         resume_inflight_wait_sec: float = 0.0,
@@ -415,8 +411,8 @@ class ReplayMetrics(TaskMetricsBase):
             # (resume_api, resume_ready_wait, slot_contention_wait, pause_api)
             # that must stay aligned with the original three. P2.6 Task 4 adds
             # resume_rate_pacing_wait_secs (QPS limiter queue wait on resume) as the
-            # eighth list. L7 adds running_slot_held_secs, interaction_total_secs,
-            # create_secs, kill_secs as lists 9-12. The wait-decoupling change
+            # eighth list. L7 adds running_slot_held_secs and interaction_total_secs
+            # as lists 9-10. The wait-decoupling change
             # adds pause_rate_pacing_wait_secs (was missing) + the four-component
             # split (natural_delay / capacity_wait / resume_inflight_wait /
             # pause_inflight_wait); rate_pacing_wait_secs and inflight_wait_secs
@@ -433,8 +429,6 @@ class ReplayMetrics(TaskMetricsBase):
                 self._pause_rate_pacing_wait_secs.append(pause_rate_pacing_wait_sec)
                 self._running_slot_held_secs.append(running_slot_held_sec)
                 self._interaction_total_secs.append(interaction_total_sec)
-                self._create_secs.append(create_sec)
-                self._kill_secs.append(kill_sec)
                 self._natural_delay_secs.append(natural_delay_sec)
                 self._capacity_wait_secs.append(capacity_wait_sec)
                 self._resume_inflight_wait_secs.append(resume_inflight_wait_sec)
@@ -553,18 +547,6 @@ class ReplayMetrics(TaskMetricsBase):
         """Per-step full interaction budgets, copy under lock (L7)."""
         with self._lock:
             return list(self._interaction_total_secs)
-
-    @property
-    def create_secs(self) -> list[float]:
-        """Per-trajectory create durations (trajectory mode), copy under lock (L7)."""
-        with self._lock:
-            return list(self._create_secs)
-
-    @property
-    def kill_secs(self) -> list[float]:
-        """Per-trajectory kill durations (trajectory mode), copy under lock (L7)."""
-        with self._lock:
-            return list(self._kill_secs)
 
     @property
     def pause_rate_pacing_wait_secs(self) -> list[float]:

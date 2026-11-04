@@ -285,10 +285,6 @@ class ReportFormatters(ABC):
         """``[Throughput & Overcommit]`` (replay only)."""
         return []
 
-    def format_trajectory_summary_section(self, ctx: ReportContext) -> list[str]:
-        """``[Trajectory Summary]`` (replay trajectory mode only)."""
-        return []
-
     def format_config_extras(self, ctx: ReportContext) -> list[str]:
         """Extra lines in ``[Test Configuration]`` (document: Workflow + Document Case)."""
         return []

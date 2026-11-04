@@ -346,10 +346,10 @@ class XlsxReportRenderer:
             ("concurrency", obs.concurrency),
         ):
             _overview_kv(ws, name, value)
-        # Lifecycle overhead % (lifecycle/trajectory only -- exec_only has no
+        # Lifecycle overhead % (lifecycle only -- exec_only has no
         # pause/resume; parity with the txt report's [Lifecycle Overhead] block).
         # The model owns the ratio (semantic metric); this only renders it.
-        if rcfg.replay_mode in ("lifecycle", "trajectory"):
+        if rcfg.replay_mode == "lifecycle":
             oh = obs.lifecycle_overhead
             if oh is not None:
                 for name, value in (
@@ -538,7 +538,6 @@ class XlsxReportRenderer:
         # flag when no run succeeded) so short failed runs cannot drag it down.
         # n_runs/n_success/n_failed are counts OF runs; per-step distributions
         # live in the Step detail sheet and pooled in the Lifecycle overhead sheet.
-        wrote_profile = False
         if self.series_path is not None and Path(self.series_path).exists():
             from bench_core.observability.lifecycle_series import load_events
 
@@ -607,7 +606,6 @@ class XlsxReportRenderer:
                         ]
                     )
                 header_row = _write_table(ws, headers, rows)
-                wrote_profile = True
                 _add_trajectory_cost_chart(ws, headers, header_row, len(rows))
                 # At-a-glance outlier highlighting: data bars on the two cost
                 # drivers (total slice + slot queueing -- longer bar = slower /
@@ -644,17 +642,6 @@ class XlsxReportRenderer:
                         end_color="FF0000",
                     ),
                 )
-        # Trajectory-mode-only: ephemeral create/kill lifecycle (not in any other
-        # sheet). slot_held is intentionally omitted -- it is already pooled in
-        # the Lifecycle overhead sheet.
-        if obs.config.workflow_config.replay_mode == "trajectory" and any(
-            s.replay_metrics.create_secs for s in obs.states.values()
-        ):
-            if wrote_profile:
-                ws.append([])
-            rows = [_pcts_row("create_sec", [v for s in obs.states.values() for v in s.replay_metrics.create_secs])]
-            rows.append(_pcts_row("kill_sec", [v for s in obs.states.values() for v in s.replay_metrics.kill_secs]))
-            _write_table(ws, ["segment", "n", "min_s", "max_s", "avg_s", "p50_s", "p90_s", "p95_s", "p99_s"], rows)
 
     def _sheet_step_detail(self, wb: Workbook) -> None:
         """Per-trajectory per-step raw rows -- the detail behind the percentile tables.
@@ -768,6 +755,20 @@ class XlsxReportRenderer:
             ws.freeze_panes = "A2"
             ws.auto_filter.ref = ws.dimensions
 
+    def _paused_gaps(self) -> bool:
+        """Whether this run's mode really snapshots (lifecycle).
+
+        The series alone cannot tell: exec_ephemeral emits
+        trajectory_create/kill and its no-op pause/resume still produce
+        microsecond-wide timestamp pairs. Painting its think-time idle
+        "paused" would report N paused / 0 active on a fleet that never
+        snapshotted.
+        """
+        from bench_core.observability.lifecycle_reconstruct import PAUSING_MODES
+
+        workflow = getattr(getattr(self.obs, "config", None), "workflow_config", None)
+        return getattr(workflow, "replay_mode", None) in PAUSING_MODES
+
     def _sheet_concurrency_states(self, wb: Workbook) -> None:
         ws = wb.create_sheet("Concurrency states")
         headers = ["second", "pausing", "paused", "resuming", "exec", "active"]
@@ -777,7 +778,7 @@ class XlsxReportRenderer:
         from bench_core.observability.lifecycle_reconstruct import reconstruct_concurrency
         from bench_core.observability.lifecycle_series import load_events
 
-        bins = reconstruct_concurrency(load_events(Path(self.series_path)))
+        bins = reconstruct_concurrency(load_events(Path(self.series_path)), paused_gaps=self._paused_gaps())
         rows = [[b["second"], b["pausing"], b["paused"], b["resuming"], b["exec"], b["active"]] for b in bins]
         _write_table(ws, headers, rows)
         if rows:
@@ -801,7 +802,7 @@ class XlsxReportRenderer:
         from bench_core.observability.lifecycle_reconstruct import gantt_segments
         from bench_core.observability.lifecycle_series import load_events
 
-        rows = _cap_gantt_segments(gantt_segments(load_events(Path(self.series_path))))
+        rows = _cap_gantt_segments(gantt_segments(load_events(Path(self.series_path)), paused_gaps=self._paused_gaps()))
         if not rows:
             ws.append(["no step events"])
             return

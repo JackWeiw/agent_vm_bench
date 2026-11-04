@@ -17,7 +17,7 @@ save_ids (exec-only) PLUS ``pause`` / ``resume`` (native CubeSandbox
 pause/resume -- :class:`LifecycleCapable`), ``snapshot_sizes`` (returns
 ``None`` for now -- the cube SDK's ``SnapshotInfo`` exposes no size fields, so
 the ``snapshot_size`` series event is skipped until size introspection lands),
-and ``create_one`` / ``kill_one`` (trajectory-mode ephemeral lifecycle --
+and ``create_one`` / ``kill_one`` (exec_ephemeral-mode ephemeral lifecycle --
 :class:`EphemeralCapable`). ``default_replay_mode`` is ``lifecycle``;
 ``vmm_type`` is ``cubesandbox`` (vm_monitor matches the per-sandbox
 ``containerd-shim-cube-rs`` shim process via :class:`CubeSandboxMonitor`).
@@ -268,11 +268,11 @@ class CubesandboxProvider(EnvironmentProvider):
         """
         return None
 
-    # ------------------------------------------------------------------ ephemeral (trajectory mode)
+    # ------------------------------------------------------------------ ephemeral (exec_ephemeral mode)
     def create_one(
         self, index: int, *, template: str | None = None, metadata: dict[str, str] | None = None
     ) -> SandboxInstance:
-        """Create a single sandbox on demand (trajectory mode, EphemeralCapable).
+        """Create a single sandbox on demand (exec_ephemeral mode, EphemeralCapable).
 
         Mirrors the single-sandbox path of ``create_all``: build a state, run
         ``_create_single`` (forwarding ``metadata`` + ``template``), stamp
@@ -280,8 +280,9 @@ class CubesandboxProvider(EnvironmentProvider):
         onto ``SandboxInstance.template``, run the base readiness probe, and
         map the result via ``_apply_ready`` -- so timing is consistent with
         ``create_all``. The returned instance's ``creation_metrics`` reflects
-        this trajectory; the runner accumulates per-trajectory
-        ``create_sec``/``kill_sec`` into ``ReplayMetrics``.
+        this trajectory; the runner records per-trajectory create/kill timings
+        in the lifecycle series (``trajectory_create`` / ``trajectory_kill``
+        events).
         """
         from env_provider._base import BackendSandboxStatus
 
@@ -306,7 +307,7 @@ class CubesandboxProvider(EnvironmentProvider):
         return self._to_instance(state)
 
     def kill_one(self, inst: SandboxInstance) -> None:
-        """Tear down a single sandbox (trajectory mode, EphemeralCapable).
+        """Tear down a single sandbox (exec_ephemeral mode, EphemeralCapable).
 
         On a successful server-side kill the state is marked ``torn_down`` so
         the final ``cleanup_all`` skips it (re-killing an already-dead sandbox

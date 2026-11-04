@@ -114,7 +114,7 @@ class AenvProvider(E2BProvider):
     # silicon L3 domain (AMD CCD / Kunpeng CL; round-robin by sandbox index)
     # so concurrent VMs don't contend for the same physical cores. Opt-in via
     # ``aenv.ccl_bind``;
-    # viable in exec_only / exec_ephemeral (lifecycle/trajectory respawn the
+    # viable in exec_only / exec_ephemeral (lifecycle respawns the
     # firecracker on each resume -> pid unstable); best-effort (Linux + root on
     # the AENV host);
     # never unwinds a successful create. See :mod:`env_provider.aenv._ccl`.
@@ -126,8 +126,8 @@ class AenvProvider(E2BProvider):
         the pid cache for the rest. Faithful to the reference, which binds
         immediately after a successful create; for best-effort pinning of a
         long-lived firecracker the timing is immaterial. Gated by
-        :meth:`_ccl_active` (exec_only / exec_ephemeral only -- lifecycle/trajectory
-        respawn the firecracker per resume, so the pid is unstable).
+        :meth:`_ccl_active` (exec_only / exec_ephemeral only -- lifecycle
+        respawns the firecracker per resume, so the pid is unstable).
         """
         states = self.manager.create_all(templates=templates)
         if self._ccl_active():
@@ -141,7 +141,7 @@ class AenvProvider(E2BProvider):
         Binding is viable in ``exec_only`` / ``exec_ephemeral``: the firecracker
         pid is stable for the bind window (exec_only: the whole run, no
         pause/resume; exec_ephemeral: per round -- create_one -> bind -> run ->
-        kill_one, no resume). In lifecycle/trajectory each ``resume`` respawns
+        kill_one, no resume). In lifecycle each ``resume`` respawns
         the firecracker under a new pid (AENV pause kills the process; resume
         takes a fresh one from the warm pool), so the pid is unstable and
         re-binding per resume would block the stress path (post-resume commands
@@ -156,7 +156,7 @@ class AenvProvider(E2BProvider):
         if mode not in ("exec_only", "exec_ephemeral"):
             logger.warning(
                 "ccl_bind is set but replay mode is %r; CCL binding applies only "
-                "to exec_only / exec_ephemeral (lifecycle/trajectory respawn the "
+                "to exec_only / exec_ephemeral (lifecycle respawns the "
                 "firecracker on each resume, so the pid is unstable). Skipping CCL "
                 "binding for this run.",
                 mode,
@@ -227,11 +227,11 @@ class AenvProvider(E2BProvider):
         sandbox_dir = Path(base) / inst.id
         return scan_snapshot_sizes(sandbox_dir)
 
-    # ------------------------------------------------------------------ ephemeral (trajectory mode)
+    # ------------------------------------------------------------------ ephemeral (exec_ephemeral mode)
     def create_one(
         self, index: int, *, template: str | None = None, metadata: dict[str, str] | None = None
     ) -> SandboxInstance:
-        """Create a single sandbox on demand (trajectory mode, EphemeralCapable).
+        """Create a single sandbox on demand (exec_ephemeral mode, EphemeralCapable).
 
         Mirrors the single-sandbox path of ``_create_batch_concurrent``: build a
         state, run ``_create_single`` (forwarding ``metadata`` + ``template``),
@@ -239,8 +239,9 @@ class AenvProvider(E2BProvider):
         template onto ``SandboxInstance.template``, run the base readiness
         probe, and map the result via ``_apply_ready`` -- so timing is
         consistent with ``create_all``. The returned instance's
-        ``creation_metrics`` reflects this trajectory; the runner accumulates
-        per-trajectory ``create_sec``/``kill_sec`` into ``ReplayMetrics``.
+        ``creation_metrics`` reflects this trajectory; the runner records
+        per-trajectory create/kill timings in the lifecycle series
+        (``trajectory_create`` / ``trajectory_kill`` events).
         """
         from env_provider._base import BackendSandboxStatus
 
@@ -273,7 +274,7 @@ class AenvProvider(E2BProvider):
         return self._to_instance(state)
 
     def kill_one(self, inst: SandboxInstance) -> None:
-        """Tear down a single sandbox (trajectory mode, EphemeralCapable).
+        """Tear down a single sandbox (exec_ephemeral mode, EphemeralCapable).
 
         On a successful server-side kill the state is marked ``torn_down`` so
         the final ``cleanup_all`` skips it (re-killing an already-dead sandbox

@@ -471,13 +471,6 @@ def test_stress_rate_uses_target_count_for_interleaved_lifecycle(tmp_path):
     assert float(trial["stress_tasks_per_sec"]) == 0.4
 
 
-def test_stress_rate_uses_running_concurrency_for_whole_trajectory_lease(tmp_path):
-    """trajectory holds the slot across the whole run, so only N windows overlap."""
-    write_outputs([_stress_trial(tmp_path, ratio=2, tps=0.004, mode="trajectory")], output_root=tmp_path)
-    trial = next(iter(csv.DictReader((tmp_path / "trial-summary.csv").read_text().splitlines())))
-    assert float(trial["stress_tasks_per_sec"]) == 0.2  # 2 slots * 4 completions / 40
-
-
 def test_stress_rate_counts_only_fully_successful_runs():
     """A zero-step or partly-failed run is not a completion, even when measured."""
     from bench_core.oversub import _stress_rate_stats

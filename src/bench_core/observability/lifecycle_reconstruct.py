@@ -26,12 +26,15 @@ _STEP_SEGMENTS = (
     ("pause_start", "pause_end", "pausing"),
 )
 
-# Lifecycle-mode event types that prove the run did real pause/resume work
-# (lifecycle emits ``initial_pause``; trajectory emits ``trajectory_create`` /
-# ``trajectory_kill``). exec_only emits none of these -- resume/pause are
-# no-ops -- so its think-time idle must not be relabelled ``paused`` (the
-# sandbox never snapshotted). Used to gate cross-step ``paused`` reconstruction.
-_LIFECYCLE_EVENTS = frozenset({"initial_pause", "trajectory_create", "trajectory_kill"})
+# A step's cross-step idle gap is "paused" only in the mode that really
+# snapshots. exec_only and exec_ephemeral run no lifecycle calls at all
+# (ReplayConfig: "exec_only / exec_ephemeral have no lifecycle calls"), so
+# their think-time idle is not a paused sandbox -- and the series cannot tell
+# the modes apart on its own: exec_ephemeral still emits
+# trajectory_create/kill, and its no-op pause/resume still produce
+# microsecond-wide timestamp pairs. Callers pass the mode-derived
+# ``paused_gaps`` instead of inferring it from the events.
+PAUSING_MODES = frozenset({"lifecycle"})
 
 
 def _segment(a, b, phase: str) -> tuple[float, float, str] | None:
@@ -71,10 +74,10 @@ def _step_spans(steps: list[dict], has_kills: bool) -> list[list[dict]]:
 
     lifecycle (``has_kills`` False): the sandbox never dies -- one span covers
     the whole run, so the cross-round idle between trajectories also counts as
-    ``paused``. trajectory (``has_kills`` True): a kill ends each trajectory, so
-    spans split at ``trajectory_id`` changes; the kill->create dead window is
-    not ``paused`` (the sandbox was destroyed, not snapshotted) and is never
-    paired across.
+    ``paused``. exec_ephemeral (``has_kills`` True): a kill ends each
+    trajectory, so spans split at ``trajectory_id`` changes; the kill->create
+    dead window is not ``paused`` (the sandbox was destroyed, not snapshotted)
+    and is never paired across.
     """
     if not has_kills:
         return [steps]
@@ -101,16 +104,17 @@ def _sandbox_segments(
 ) -> list[tuple[float, float, str]]:
     """Ordered ``(start, end, phase)`` timeline for one continuous alive span.
 
-    Composes the within-step phases (resuming / exec / pausing) with the
-    cross-step ``paused`` idle gaps that single-step timestamp pairs cannot
-    express: the no-CPU wait from a pause boundary (the initial pause or step
-    N's ``pause_end``) to the next step's ``resume_start``.
+        Composes the within-step phases (resuming / exec / pausing) with the
+        cross-step ``paused`` idle gaps that single-step timestamp pairs cannot
+        express: the no-CPU wait from a pause boundary (the initial pause or step
+        N's ``pause_end``) to the next step's ``resume_start``.
 
-    ``steps`` are one alive span's step events sorted by ``resume_start``.
-    ``initial_pause`` is the sandbox's ``initial_pause`` event, attached only to
-    the first span (lifecycle: the only span; trajectory: ``None`` -- no
-    initial pause). ``emit_paused_gaps`` gates the cross-step idle
-    reconstruction off for exec_only (no real pauses -> no paused state).
+        ``steps`` are one alive span's step events sorted by ``resume_start``.
+        ``initial_pause`` is the sandbox's ``initial_pause`` event, attached only to
+    the first span (lifecycle: the only span; exec_ephemeral: ``None`` -- no
+        initial pause). ``emit_paused_gaps`` is the mode-derived gate: the exec
+        modes run no lifecycle calls, so their think-time idle is not a paused
+        sandbox (see :data:`PAUSING_MODES`).
     """
     segs: list[tuple[float, float, str]] = []
     prev_pause_end = None
@@ -131,17 +135,17 @@ def _sandbox_segments(
     return segs
 
 
-def _segments_by_sandbox(events: list[dict]) -> dict[int, list[tuple[float, float, str]]]:
+def _segments_by_sandbox(events: list[dict], *, paused_gaps: bool) -> dict[int, list[tuple[float, float, str]]]:
     """Per-sandbox ordered phase timelines (all alive spans concatenated).
 
     Shared by :func:`reconstruct_concurrency` (per-second binning) and
     :func:`gantt_segments` (per-sandbox rendering) so both draw from one source
     of truth. Steps with no ``sandbox_index`` are skipped (cannot be attributed
-    to a Gantt row).
+    to a Gantt row). ``paused_gaps`` comes from the run's replay mode
+    (:data:`PAUSING_MODES`).
     """
     initial_pauses: dict[int, dict] = {}
     steps_by_sandbox: dict[int, list[dict]] = {}
-    emit_paused = False
     for e in events:
         ev = e.get("event")
         if ev == "initial_pause":
@@ -153,8 +157,6 @@ def _segments_by_sandbox(events: list[dict]) -> dict[int, list[tuple[float, floa
             if sbx is None:
                 continue
             steps_by_sandbox.setdefault(sbx, []).append(e)
-        if ev in _LIFECYCLE_EVENTS:
-            emit_paused = True  # lifecycle/trajectory signal present somewhere
 
     has_kills = any(e.get("event") in ("trajectory_create", "trajectory_kill") for e in events)
 
@@ -165,15 +167,15 @@ def _segments_by_sandbox(events: list[dict]) -> dict[int, list[tuple[float, floa
         all_segs: list[tuple[float, float, str]] = []
         for si, span in enumerate(_step_spans(sb_steps, has_kills)):
             # initial_pause leads only the first span (lifecycle: the only one;
-            # trajectory: init is None regardless).
+            # exec_ephemeral: init is None regardless).
             span_init = init if si == 0 else None
-            all_segs.extend(_sandbox_segments(span, span_init, emit_paused_gaps=emit_paused))
+            all_segs.extend(_sandbox_segments(span, span_init, emit_paused_gaps=paused_gaps))
         if all_segs:
             out[sbx] = all_segs
     return out
 
 
-def reconstruct_concurrency(events: list[dict]) -> list[dict]:
+def reconstruct_concurrency(events: list[dict], *, paused_gaps: bool) -> list[dict]:
     """Per-second dominant sandbox state counts.
 
     For each sandbox, for each second, accumulate each phase's fractional
@@ -184,7 +186,7 @@ def reconstruct_concurrency(events: list[dict]) -> list[dict]:
     ``{second, pausing, paused, resuming, exec, active}`` where
     ``active = pausing + resuming + exec``.
     """
-    by_sandbox = _segments_by_sandbox(events)
+    by_sandbox = _segments_by_sandbox(events, paused_gaps=paused_gaps)
     all_segs = [seg for segs in by_sandbox.values() for seg in segs]
     if not all_segs:
         return []
@@ -223,12 +225,13 @@ def reconstruct_concurrency(events: list[dict]) -> list[dict]:
     return rows
 
 
-def gantt_segments(events: list[dict]) -> list[tuple[str, list[tuple[float, float, str]]]]:
+def gantt_segments(events: list[dict], *, paused_gaps: bool) -> list[tuple[str, list[tuple[float, float, str]]]]:
     """Per-sandbox ``(label, [(start, end, phase), ...])`` for the Gantt chart.
 
     Sandboxes are sorted by earliest event time. ``label`` is ``sbx<index>``.
+    ``paused_gaps`` comes from the run's replay mode (:data:`PAUSING_MODES`).
     """
-    by_sandbox = _segments_by_sandbox(events)
+    by_sandbox = _segments_by_sandbox(events, paused_gaps=paused_gaps)
     rows = [(f"sbx{idx}", segs) for idx, segs in by_sandbox.items() if segs]
     rows.sort(key=lambda r: min(a for a, _, _ in r[1]))
     return rows

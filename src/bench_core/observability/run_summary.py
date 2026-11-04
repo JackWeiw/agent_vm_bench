@@ -81,7 +81,7 @@ def write_run_summary(
     tasks_per_sec = (succeeded / wall_sec) if wall_sec and wall_sec > 0 else None
     steps_per_sec = obs.steps_per_sec if (wall_sec and wall_sec > 0) else None
 
-    # Lifecycle overhead (lifecycle/trajectory only; lists empty for exec_only).
+    # Lifecycle overhead (lifecycle only; lists empty for exec_only).
     # Matches the txt report's "Overhead aggregate" exactly: slices below
     # MIN_SLICE_SEC (synthesized zero-placeholders on exception paths) are
     # excluded so a consumer cross-checking JSON vs txt sees identical numbers.
@@ -94,7 +94,7 @@ def write_run_summary(
     pause_sum = sum(p for _, p, _ in agg)
     slice_sum = sum(s for _, _, s in agg)
     lifecycle_overhead = None
-    if rcfg.replay_mode in ("lifecycle", "trajectory") and slice_sum > 0:
+    if rcfg.replay_mode == "lifecycle" and slice_sum > 0:
         lifecycle_overhead = {
             "pause_sec_sum": round(pause_sum, 6),
             "resume_sec_sum": round(resume_sum, 6),

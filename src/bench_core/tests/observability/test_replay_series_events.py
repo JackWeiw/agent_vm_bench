@@ -219,7 +219,7 @@ class TestTrajectoryEvents:
             workflow_type="replay",
             total_count=1,
             workflow_config=ReplayConfig(
-                replay_mode="trajectory",
+                replay_mode="exec_ephemeral",
                 replay_running_concurrency=1,
                 replay_control_plane_qps=100.0,
                 replay_ready_probe=False,
@@ -231,12 +231,8 @@ class TestTrajectoryEvents:
         state.ready = True
         state.is_alive = True
         series = LifecycleSeriesWriter(tmp_path / "s.jsonl")
-        adm = Admission(
-            slots=RunningSlotScheduler(maximum=1, stop_event=stop),
-            qps=QpsRateLimiter(qps=100.0, inflight_cap=4, stop_event=stop),
-        )
         runner = ReplayBaseRunner(
-            RunContext(state=state, config=cfg, stop_event=stop, provider=provider, series=series, admission=adm)
+            RunContext(state=state, config=cfg, stop_event=stop, provider=provider, series=series, admission=None)
         )
         traj = Trajectory(
             path=Path("tr-1"),
@@ -265,7 +261,7 @@ class TestTrajectoryEvents:
             workflow_type="replay",
             total_count=1,
             workflow_config=ReplayConfig(
-                replay_mode="trajectory",
+                replay_mode="exec_ephemeral",
                 replay_running_concurrency=1,
                 replay_control_plane_qps=100.0,
                 replay_ready_probe=False,
@@ -277,12 +273,8 @@ class TestTrajectoryEvents:
         state.ready = True
         state.is_alive = True
         series = LifecycleSeriesWriter(tmp_path / "s.jsonl")
-        adm = Admission(
-            slots=RunningSlotScheduler(maximum=1, stop_event=stop),
-            qps=QpsRateLimiter(qps=100.0, inflight_cap=4, stop_event=stop),
-        )
         runner = ReplayBaseRunner(
-            RunContext(state=state, config=cfg, stop_event=stop, provider=provider, series=series, admission=adm)
+            RunContext(state=state, config=cfg, stop_event=stop, provider=provider, series=series, admission=None)
         )
         traj = Trajectory(
             path=Path("tr-1"),
@@ -313,7 +305,7 @@ class TestTrajectoryEvents:
             workflow_type="replay",
             total_count=1,
             workflow_config=ReplayConfig(
-                replay_mode="trajectory",
+                replay_mode="exec_ephemeral",
                 replay_running_concurrency=1,
                 replay_control_plane_qps=100.0,
                 replay_ready_probe=False,
@@ -325,12 +317,8 @@ class TestTrajectoryEvents:
         state.ready = True
         state.is_alive = True
         series = LifecycleSeriesWriter(tmp_path / "s.jsonl")
-        adm = Admission(
-            slots=RunningSlotScheduler(maximum=1, stop_event=stop),
-            qps=QpsRateLimiter(qps=100.0, inflight_cap=4, stop_event=stop),
-        )
         runner = ReplayBaseRunner(
-            RunContext(state=state, config=cfg, stop_event=stop, provider=provider, series=series, admission=adm)
+            RunContext(state=state, config=cfg, stop_event=stop, provider=provider, series=series, admission=None)
         )
         traj = Trajectory(
             path=Path("tr-1"),
