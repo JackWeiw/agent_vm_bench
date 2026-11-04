@@ -487,6 +487,11 @@ class ShardGroupRunner:
                 # not be orphaned stressing the host while the driver exits.
                 interrupted = True
                 self._terminate_all(procs)
+            except Exception:
+                # A launch failure (missing interpreter, fd exhaustion) must
+                # not leave the already-started shards stressing the host.
+                self._terminate_all(procs)
+                raise
             if not interrupted:
                 deadline = time.monotonic() + self.timeout_sec if self.timeout_sec else None
                 for proc in procs:
@@ -543,26 +548,31 @@ class ShardArtifacts:
         return [i for i, s in enumerate(self.summaries) if s is None]
 
 
-def collect_shard_artifacts(plan: ShardPlan, prefix: str) -> ShardArtifacts:
+def collect_shard_artifacts(plan: ShardPlan, prefix: str, *, since_epoch: float | None = None) -> ShardArtifacts:
     """Glob each shard's run_summary.json + trajectories/index.json.
 
     A crashed shard simply has no summary -- it surfaces in ``missing`` and in
     the merged summary's ``error``; it is never backfilled with fabricated
-    zeros (a crash must not masquerade as a successful measurement). Note the
-    ``error`` field is provenance, not a validity gate: ``compute_valid`` gates
-    on summed counts, so an (abnormal) rc-0 exit without a summary would only
-    show up as a count shortfall + this error string.
+    zeros (a crash must not masquerade as a successful measurement), and
+    ``compute_valid`` fails any summary carrying an ``error``.
+
+    ``since_epoch`` (the wall clock just before this attempt launched) keeps a
+    restarted sweep from merging the PREVIOUS attempt's summary: a shard dir
+    accumulates one timestamped run dir per attempt, and a shard that crashes
+    before flushing must read as missing rather than silently contributing an
+    older run's counts. Summaries with no ``started_epoch`` fail the filter.
     """
     out = ShardArtifacts()
     for spec in plan.specs:
         hits = sorted(spec.directory.glob(f"{prefix}_*/{prefix}_run_summary.json"))
-        if not hits:
+        chosen, summary = _current_attempt_summary(hits, since_epoch)
+        if chosen is None:
             out.summaries.append(None)
             out.summary_paths.append(None)
             continue
-        out.summaries.append(json.loads(hits[-1].read_text(encoding="utf-8")))
-        out.summary_paths.append(str(hits[-1]))
-        idx_path = hits[-1].parent / "trajectories" / "index.json"
+        out.summaries.append(summary)
+        out.summary_paths.append(str(chosen))
+        idx_path = chosen.parent / "trajectories" / "index.json"
         if idx_path.exists():
             try:
                 catalog = json.loads(idx_path.read_text(encoding="utf-8"))
@@ -570,6 +580,25 @@ def collect_shard_artifacts(plan: ShardPlan, prefix: str) -> ShardArtifacts:
             except (OSError, ValueError) as exc:
                 logger.warning("shard %d: unreadable index.json (%s); trajectory rows will lack it", spec.index, exc)
     return out
+
+
+def _current_attempt_summary(hits: list[Path], since_epoch: float | None) -> tuple[Path | None, dict | None]:
+    """Newest summary written by THIS attempt, or ``(None, None)``.
+
+    ``hits`` is sorted ascending by the timestamped run-dir name, so the newest
+    candidate is tried first. Without ``since_epoch`` the newest hit wins (the
+    pre-restart behavior); with it, a hit whose ``started_epoch`` predates the
+    launch is a previous attempt's artifact and is skipped.
+    """
+    for path in reversed(hits):
+        try:
+            summary = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.warning("unreadable shard summary %s (%s); trying the next candidate", path, exc)
+            continue
+        if since_epoch is None or (summary.get("started_epoch") or 0) >= since_epoch:
+            return path, summary
+    return None, None
 
 
 def _merged_throughput(summaries: list[dict], wall_sec: float | None) -> dict:
