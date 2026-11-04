@@ -67,10 +67,9 @@ def test_resolve_shard_count_auto_follows_ratio_for_shardable_modes():
 
 
 def test_resolve_shard_count_global_admission_modes_never_shard():
-    # lifecycle/trajectory enforce a GLOBAL running_concurrency; per-shard
-    # admission would over-admit to P*N, so they collapse to single-process.
+    # lifecycle enforces a GLOBAL running_concurrency; per-shard admission
+    # would over-admit to P*N, so it collapses to single-process.
     assert resolve_shard_count("auto", mode="lifecycle", ratio=8, n=384) == 1
-    assert resolve_shard_count("auto", mode="trajectory", ratio=8, n=384) == 1
     assert resolve_shard_count(4, mode="lifecycle", ratio=8, n=384) == 1  # explicit downgraded
 
 
