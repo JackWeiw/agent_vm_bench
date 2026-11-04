@@ -124,8 +124,9 @@ def iter_events(path: Path) -> Iterator[dict]:
     Same contract as :func:`load_events` -- malformed lines are skipped with a
     warning, a missing file yields nothing -- but the caller never holds the
     whole series. Use this on a fleet-wide series whose length scales with
-    ``total_count`` (a sharded trial's merged series): a 1:16 sweep's few
-    hundred thousand events cost ~0.5 GB as a materialized list, per parse.
+    ``total_count`` (a sharded trial's merged series): measured at ~4.6 KB per
+    materialized event dict, a 1:8 fleet's 461k step events cost ~2.1 GB as a
+    list vs ~240 MB streamed into accumulators.
     """
     p = Path(path)
     if not p.exists():
