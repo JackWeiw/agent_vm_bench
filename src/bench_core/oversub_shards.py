@@ -20,8 +20,8 @@ Layering contract:
   every downstream consumer (``compute_valid``, ``trial_row``,
   ``_trajectory_rows``, ratio summaries, ``compare_sweeps``, ``--reuse``)
   works on a sharded trial unchanged.
-- Only admission-free modes shard (``SHARDABLE_MODES``). ``lifecycle`` /
-  ``trajectory`` enforce a GLOBAL ``running_concurrency`` ceiling; per-shard
+- Only admission-free modes shard (``SHARDABLE_MODES``). ``lifecycle``
+  enforces a GLOBAL ``running_concurrency`` ceiling; per-shard
   admission controllers would let the global peak reach P*N and silently
   change the oversubscription profile. Sharding them needs a parent-side
   permit server (the reference's LAUNCH/PERMIT channel) -- a kernel change,
@@ -69,7 +69,7 @@ from bench_core.observability.monitor import MonitorConfig, MonitorController
 logger = logging.getLogger(__name__)
 
 # Modes whose kernel runs have admission=None (bench.py builds the Admission
-# controller only for lifecycle/trajectory), i.e. no cross-fleet coordination
+# controller only for lifecycle), i.e. no cross-fleet coordination
 # invariant -- each slot is independent, so slot sets compose across processes.
 SHARDABLE_MODES = frozenset({"exec_ephemeral", "exec_only"})
 
