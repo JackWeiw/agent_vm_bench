@@ -857,7 +857,17 @@ def merge_lifecycle_series(summaries: list[dict], plan: ShardPlan, merged_dir: P
             if summary is None:
                 continue
             src = (summary.get("paths") or {}).get("lifecycle_series")
-            if not src or not Path(src).exists():
+            if not src:
+                continue
+            if not Path(src).exists():
+                # A shard that reported a series and lost it must not vanish
+                # silently: the merged workbook would under-count its steps
+                # while the merged summary still counts them.
+                logger.warning(
+                    "shard %d reported lifecycle series %s but it is missing; merged series omits its events",
+                    spec.index,
+                    src,
+                )
                 continue
             try:
                 with open(src, encoding="utf-8") as f:
@@ -918,8 +928,9 @@ def render_merged_obs(
         config = KernelConfig.from_raw(trial_cfg)
         if config.report_format not in ("xlsx", "both"):
             return None
-        # Stream the series: the accumulators are the only per-step state this
-        # holds, so the model rebuild is O(sandboxes), not O(events).
+        # Stream the series: the rebuild never holds the event dicts, only the
+        # accumulators (~9x smaller). The five series-backed sheets parse the
+        # file again inside the renderer, exactly as the kernel's own path does.
         obs = ReplayObservability(
             config,
             replay_states_from_events(iter_events(series_path)),
