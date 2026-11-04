@@ -23,7 +23,7 @@ held through ``flush`` for every one of the ~2-3 writes per step across all
 Constructed by ``run_benchmark`` for every replay mode (``rcfg is not None``).
 The ``step`` event carries real exec timings in every mode, so exec_only's
 per-step data populates the obs workbook's Step detail / Trajectory summary /
-Concurrency / Gantt sheets; lifecycle/trajectory additionally emit pause/resume/
+Concurrency / Gantt sheets; lifecycle additionally emits pause/resume/
 initial_pause/snapshot_size events, so their Lifecycle-overhead and Snapshot-sizes
 sheets are populated while exec_only's stay sparse (no lifecycle events to curve).
 """

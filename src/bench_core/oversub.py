@@ -825,7 +825,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="kernel processes per trial for admission-free modes (exec_ephemeral/exec_only): "
         "'auto' = one shard per ratio (each ~N slots, its own GIL) or an explicit P >= 1 "
-        "(P=1 = legacy single-process). lifecycle/trajectory always run single-process "
+        "(P=1 = legacy single-process). lifecycle always runs single-process "
         "(global admission). Default auto.",
     )
     p.add_argument("--cooldown-sec", type=int, default=None, help="settle time between trials (default 30)")
@@ -1443,7 +1443,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     logger.info(
         "shards=%s: admission-free modes (exec_ephemeral/exec_only) run one kernel "
-        "process per shard ('auto' = P=ratio, ~N slots each); lifecycle/trajectory "
+        "process per shard ('auto' = P=ratio, ~N slots each); lifecycle "
         "always single-process (global admission)",
         args.shards,
     )
