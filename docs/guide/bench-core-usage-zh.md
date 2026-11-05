@@ -377,7 +377,7 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
 
 按分组顺序排列(A 列填色加粗 + banner 分隔),lifecycle 模式才出现 Lifecycle overhead % 与 Per-step timing 两段;设了 slot/QPS 限流才出现 Admission & QPS 段。
 
-**Run**(身份+结果):`workflow_type` / `replay_mode` / `total_count` / `running_concurrency` / `test_duration` / `wall_sec`(实测墙钟)/ `total_steps` / `success` / `failed` / `overcommit_ratio`。
+**Run**(身份+结果):`workflow_type` / `replay_mode` / `total_count` / `running_concurrency` / `test_duration` / `wall_sec`(实测墙钟)/ `total_steps` / `success` / `timed_out` / `failed (non-timeout)` / `overcommit_ratio`。失败步骤拆两桶:超时(`timed_out`)+ 非零退出码(`failed (non-timeout)`),合计即原 `failed`；`success + timed_out + failed (non-timeout) = total_steps`。
 
 **Throughput & overcommit**:`steps_per_sec` / `effective_parallelism`(`Σ running_slot_held / wall`) / `exec_wall_utilization`(`Σ exec / wall`) / `concurrency`。
 
