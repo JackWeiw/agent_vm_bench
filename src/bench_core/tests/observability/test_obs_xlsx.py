@@ -172,6 +172,40 @@ class TestXlsxReportRenderer:
             if r[0].value is not None and r[1].value is not None
         }
         assert kv.get("steps_per_sec") == obs.steps_per_sec
+
+    def test_overview_splits_failed_into_timed_out_and_non_timeout(self, tmp_path):
+        # Run outcomes split into two non-overlapping buckets: timed out vs
+        # non-zero exit code. success + timed_out + failed(non-timeout) must
+        # equal total_steps (the base failed_count accumulates both).
+        state = BenchSandbox.from_instance(SandboxInstance(id="x", index=0), "replay")
+        m = ReplayMetrics()
+        for _ in range(4):
+            m.add(0.1, success=True)
+        for _ in range(2):
+            m.add(0.1, success=False, timeout=True)
+        for _ in range(3):
+            m.add(0.1, success=False)
+        state.replay_metrics = m
+        cfg = KernelConfig(
+            workflow_type="replay",
+            total_count=1,
+            test_duration=10,
+            workflow_config=ReplayConfig(replay_mode="exec_ephemeral", replay_running_concurrency=1),
+        )
+        obs = ReplayObservability(cfg, {0: state}, wall_sec=10.0)
+        path = tmp_path / "obs.xlsx"
+        XlsxReportRenderer(obs).render(str(path))
+        ws = load_workbook(str(path))["Overview"]
+        kv = {
+            r[0].value: r[1].value
+            for r in ws.iter_rows(min_col=1, max_col=2)
+            if r[0].value is not None and r[1].value is not None
+        }
+        assert kv["total_steps"] == 9
+        assert kv["success"] == 4
+        assert kv["timed_out"] == 2
+        assert kv["failed (non-timeout)"] == 3
+        assert kv["success"] + kv["timed_out"] + kv["failed (non-timeout)"] == kv["total_steps"]
         assert kv.get("concurrency") == obs.concurrency
 
     def test_overview_retry_carries_values(self, tmp_path):
@@ -263,6 +297,7 @@ def test_renderer_accepts_series_path_and_draws_per_step_linechart(tmp_path):
     m.natural_delay_secs = []  # Overview per-step timing reads this
     m.success_count = 1
     m.failed_count = 0
+    m.timeout_count = 0
     state = MagicMock()
     state.replay_metrics = m
     obs.states = {0: state}
@@ -310,6 +345,7 @@ def test_per_step_linechart_references_all_data_rows(tmp_path):
     m.natural_delay_secs = []  # Overview per-step timing reads this
     m.success_count = 3
     m.failed_count = 0
+    m.timeout_count = 0
     state = MagicMock()
     state.replay_metrics = m
     obs.states = {0: state}
@@ -377,6 +413,7 @@ def _mock_obs_with_n_steps(n: int, replay_mode: str = "lifecycle"):
     m.natural_delay_secs = []  # Overview per-step timing reads this (think/LLM)
     m.success_count = n
     m.failed_count = 0
+    m.timeout_count = 0
     state = MagicMock()
     state.replay_metrics = m
     obs.states = {0: state}
