@@ -35,6 +35,18 @@ e2b:
     E2B_API_URL: "http://localhost:3000"
     E2B_HTTP_SSL: "false"
 
+sandboxsched:
+  template: "python:3.11"            # E2B runtime: E2B template name; containerd runtime: image ref
+  create_timeout: 86400              # sandbox TTL seconds (-> timedelta for SandboxSync.create)
+  sandbox_group: "sg-1u1g"           # REQUIRED: extensions.sandboxGroup (server routes creates here; missing -> 400)
+  sandbox_ids_file: "sandboxs_replay_sched.txt"
+  # protocol: "http"                 # http for port-forward/in-cluster, https for TLS
+  # domain: "localhost:8080"         # <host>:<port> of the OpenSandbox Server
+  # resource: {cpu: "1", memory: "2Gi"}  # optional resource limits
+  env:
+    OPEN_SANDBOX_API_KEY: "your_opensandbox_api_key_here"  # blank/placeholder -> falls back to $OPEN_SANDBOX_API_KEY
+    OPEN_SANDBOX_DOMAIN: "localhost:8080"
+
 docker:
   image: "ubuntu-openclaw-coding-python:24.04-arm64"
   container_prefix: "oc-replay"
