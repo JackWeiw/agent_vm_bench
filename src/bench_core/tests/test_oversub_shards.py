@@ -909,6 +909,47 @@ def test_e2e_ratio_one_trial_shares_the_sharded_layout(tmp_path):
     assert rows[0]["run_summary_path"].endswith(str(trial_dir / "merged" / "rb_run_summary.json"))
 
 
+def test_e2e_ratio_one_driver_owns_the_host_collector(tmp_path, monkeypatch):
+    """P=1 still hands the host collector to the driver, over the one shard's window.
+
+    This is the case the original report was about (ratio-1 host report missing):
+    a kernel-owned collector could miss a short window and idle forever. With the
+    driver owning it, the output lands at <trial_dir>/vm_monitor and is bracketed
+    by the shard's marker -- the same contract as P >= 2.
+    """
+    stub = tmp_path / "stub.py"
+    stub.write_text(_SHARD_STUB, encoding="utf-8")
+    vm_stub = tmp_path / "vm-monitor-stub.py"
+    vm_stub.write_text(_VM_MONITOR_STUB, encoding="utf-8")
+
+    real_which = shutil.which
+    monkeypatch.setattr(shutil, "which", lambda n: str(vm_stub) if n == "vm-monitor" else real_which(n))
+    real_popen = subprocess.Popen
+
+    def _popen(cmd, **kw):  # the stub is a .py script, not an executable
+        return real_popen([sys.executable, *cmd] if str(cmd[0]).endswith(".py") else cmd, **kw)
+
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+
+    base = _base_yaml(tmp_path)
+    out_root = tmp_path / "sweep"
+    rc = main(
+        _common_argv(tmp_path, base, out_root, stub)
+        + ["--ratios", "1", "--modes", "exec_ephemeral", "--shards", "auto", "--test-duration", "60"]
+    )
+    assert rc == 0
+
+    trial_dir = out_root / "exec_ephemeral" / "ratio-01" / "repeat-00"
+    events = json.loads((trial_dir / "vm_monitor" / "stub.json").read_text(encoding="utf-8"))
+    assert [e[0] for e in events] == ["start", "end"]  # one bracket over the single shard
+
+    mark = json.loads((trial_dir / "shard-00" / "marker.json").read_text(encoding="utf-8"))
+    began, ended = events[0][1], events[1][1]
+    assert began <= mark["start"] + 1.0  # opened on the shard's window
+    assert ended >= mark["end"] - 0.1  # closed only after it ended
+    assert not (trial_dir / "shard-00" / "vm_monitor").exists()  # never under the shard
+
+
 def test_e2e_explicit_shards_override_and_cap(tmp_path):
     """--shards 4 on ratio 2 (8 slots) -> 4 shards x 2 slots."""
     stub = tmp_path / "stub.py"
