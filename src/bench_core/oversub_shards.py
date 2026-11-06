@@ -197,7 +197,9 @@ class ShardSpec:
 
 @dataclass(frozen=True)
 class ShardPlan:
-    """The full split of one trial (P >= 2; P == 1 keeps the legacy path)."""
+    """The full split of one trial (P >= 1 for shardable modes; P == 1 is a
+    single-shard plan so a ratio-1 trial shares the sharded layout with P >= 2
+    trials; only non-shardable modes keep the legacy single-process path)."""
 
     mode: str
     ratio: int
@@ -210,7 +212,17 @@ class ShardPlan:
 
 
 def plan_shards(*, trial_dir: Path, mode: str, ratio: int, n: int, setting: int | str) -> ShardPlan | None:
-    """Build the shard plan for one trial, or ``None`` when P == 1 (legacy).
+    """Build the shard plan for one trial, or ``None`` on the legacy path.
+
+    Shardable modes get a plan at every P, including P == 1 (``auto`` at ratio
+    1, or an explicit ``--shards 1``): running a single-shard trial through the
+    sharded machinery keeps its layout (``shard-00/`` + ``merged/`` +
+    driver-owned ``<trial_dir>/vm_monitor/``) byte-consistent with P >= 2
+    trials, so agents comparing oversub ratios read one fixed structure and
+    the host collector is owned by the driver at every ratio. Only
+    non-shardable modes (global admission, always P=1) keep the legacy
+    single-process path -- their config cannot be split even in principle, and
+    a 1-shard wrap would rewrite it for no benefit.
 
     For P <= ratio the split is GROUP-ALIGNED: the trial's ``ratio`` groups of
     N slots are distributed over the shards, so every shard size is an integer
@@ -221,9 +233,9 @@ def plan_shards(*, trial_dir: Path, mode: str, ratio: int, n: int, setting: int 
     run counts redistribute (a shard smaller than the pool cannot cover every
     trajectory), so it is flagged with a warning.
     """
-    p = resolve_shard_count(setting, mode=mode, ratio=ratio, n=n)
-    if p <= 1:
+    if mode not in SHARDABLE_MODES:
         return None
+    p = resolve_shard_count(setting, mode=mode, ratio=ratio, n=n)
     if p <= ratio:
         sizes = [groups * n for groups in shard_sizes(ratio, p)]
     else:
