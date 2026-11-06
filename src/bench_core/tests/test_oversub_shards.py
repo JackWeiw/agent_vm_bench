@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -86,11 +87,26 @@ def test_shard_sizes_balanced_remainder_first():
     assert shard_sizes(7, 7) == [1] * 7
 
 
-def test_plan_shards_legacy_only_for_global_admission_modes(tmp_path):
+def test_plan_shards_legacy_only_for_global_admission_modes(tmp_path, caplog):
     # lifecycle (global running_concurrency) can never be split: no plan, the
-    # legacy single-process path, at any P.
+    # legacy single-process path, at any P. The autodetected default is silent,
+    # but an explicit P > 1 is a documented downgrade and is surfaced with a
+    # WARNING (we validate, not silently rewrite, the operator's request).
     assert plan_shards(trial_dir=tmp_path, mode="lifecycle", ratio=4, n=8, setting="auto") is None
-    assert plan_shards(trial_dir=tmp_path, mode="lifecycle", ratio=4, n=8, setting=2) is None
+    assert not any(r.levelno >= logging.WARNING for r in caplog.records)
+    caplog.clear()
+    plan_shards(trial_dir=tmp_path, mode="lifecycle", ratio=4, n=8, setting=2)
+    plan_shards(trial_dir=tmp_path, mode="lifecycle", ratio=4, n=8, setting=4)
+    assert (
+        sum(
+            1
+            for r in caplog.records
+            if r.levelno >= logging.WARNING
+            and "cannot be sharded" in r.getMessage()
+            and "running single-process" in r.getMessage()
+        )
+        == 2
+    )
 
 
 def test_plan_shards_single_shard_for_ratio_one_and_offsets_cumulative(tmp_path):
@@ -191,9 +207,35 @@ def test_build_shard_config_gives_every_shard_a_marker_and_no_collector(tmp_path
     assert shard0["stress_file"] == str(tmp_path / "shard-00" / "stress.lock")
     assert shard1["stress_file"] == str(tmp_path / "shard-01" / "stress.lock")
     assert shard0["external_collector"] is True and shard1["external_collector"] is True
-    # Only shard 0 holds a provider handle, so only it keeps the fleet gauge.
+    # One fleet gauge per trial; shards > 0 never poll the provider API (P
+    # simultaneous samplers would multiply the control-plane list-sandbox load).
     assert shard0["api_state"] == "true"
-    assert "api_state" not in shard1
+    assert shard1["api_state"] == "false"
+
+
+def test_build_shard_config_keeps_one_fleet_gauge_and_clamps_concurrency(tmp_path):
+    """Shard 0 samples the fleet gauge unless explicitly disabled; other shards
+    never poll the provider API. On the P > ratio slot split a shard's
+    running_concurrency clamps to its own total_count so the kernel's config
+    validate does not reject the shard at startup."""
+    plan = plan_shards(trial_dir=tmp_path, mode="exec_ephemeral", ratio=2, n=4, setting=4)  # P = 4 > ratio
+    assert [s.size for s in plan.specs] == [2, 2, 2, 2]
+    base = _trial_cfg()
+    base["replay"]["running_concurrency"] = 8
+
+    m0 = build_shard_config(base, plan.specs[0], count=plan.count)["monitor"]
+    assert m0["api_state"] == "true"
+    # An explicit "auto" (the schema default) must not silently drop the gauge.
+    auto = {**_trial_cfg(), "monitor": {"api_state": "auto"}}
+    assert build_shard_config(auto, plan.specs[0], count=plan.count)["monitor"]["api_state"] == "true"
+    # An explicit "false" is an operator opt-out.
+    off = {**_trial_cfg(), "monitor": {"api_state": "false"}}
+    assert build_shard_config(off, plan.specs[0], count=plan.count)["monitor"]["api_state"] == "false"
+
+    for spec in plan.specs[1:]:
+        assert build_shard_config(base, spec, count=plan.count)["monitor"]["api_state"] == "false"
+        cfg = build_shard_config(base, spec, count=plan.count)
+        assert cfg["replay"]["running_concurrency"] == spec.size
 
 
 def test_build_shard_config_leaves_monitor_alone_when_driver_does_not_own_it(tmp_path):
@@ -237,6 +279,97 @@ def test_write_shard_configs_materializes_one_yaml_per_shard(tmp_path):
         assert loaded["sandbox"]["total_count"] == 4
 
 
+def test_write_shard_configs_removes_a_stale_stress_marker(tmp_path):
+    """A prior attempt killed hard leaves shard-XX/stress.lock behind (a fresh
+    kernel clears it only at monitor start, after create + warmup). The driver's
+    bracket polls marker EXISTENCE, so the next attempt must start clean or it
+    opens the host window on its first poll, over create/warmup."""
+    plan = plan_shards(trial_dir=tmp_path, mode="exec_ephemeral", ratio=2, n=4, setting="auto")
+    for spec in plan.specs:
+        spec.directory.mkdir(parents=True)
+        spec.stress_path.write_text("")
+    write_shard_configs(_trial_cfg(), plan)
+    assert all(not spec.stress_path.exists() for spec in plan.specs)
+
+
+# ---------------------------------------------------------------------------
+# Driver-owned host monitor
+# ---------------------------------------------------------------------------
+
+
+def test_stress_bracket_latches_open_until_stop(tmp_path):
+    """A gapped union -- one shard finishing while another is still creating --
+    must never end the sampling: the collector is single-shot and would export
+    the create/warmup window before the tail shards' stress starts."""
+    m1 = tmp_path / "shard-00" / "stress.lock"
+    m2 = tmp_path / "shard-01" / "stress.lock"
+    ctl = _RecordingController()
+    bracket = ShardStressBracket([m1, m2], ctl, poll_sec=0.02)
+    bracket.start()
+    try:
+        m1.parent.mkdir(parents=True)
+        m1.touch()
+        _wait_for(lambda: ctl.calls == ["begin"], 2.0)
+        m1.unlink()  # first shard's window ends ...
+        m2.parent.mkdir(parents=True)
+        m2.touch()  # ... while the second shard only now reaches stress
+        _wait_for(lambda: ctl.calls == ["begin"] and m2.exists(), 2.0)
+        assert ctl.calls == ["begin"], "the gap must not close the sampling window"
+    finally:
+        bracket.stop()
+    assert ctl.calls == ["begin", "end"]
+
+
+def test_stress_bracket_without_any_shard_marker_stays_closed(tmp_path):
+    """No shard reached stress: the window never opens and stop() does not end
+    one -- the driver then abandons the collector instead of exporting a window
+    that cannot exist."""
+    ctl = _RecordingController()
+    bracket = ShardStressBracket([tmp_path / "shard-00" / "stress.lock"], ctl, poll_sec=0.02)
+    bracket.start()
+    time.sleep(0.1)
+    bracket.stop()
+    assert not bracket.opened
+    assert ctl.calls == []
+
+
+def test_start_host_monitor_bounds_sampling_by_the_trial_deadline(tmp_path, monkeypatch):
+    """vm_monitor's -t back-stop must cover the WHOLE union window (inter-shard
+    start skew + the trial) -- the group deadline is the sound bound, because
+    the window cannot outlive it. test_duration alone understates exec_only
+    trials where every shard runs a full create_all first."""
+    captured: dict[str, int | None] = {}
+
+    class _StubController:
+        def __init__(self, cfg, hint) -> None:  # noqa: ANN001 (test stub)
+            captured["test_duration"] = cfg.test_duration
+            self.proc = object()  # not None -> start() returns the collector
+
+        def start(self) -> None:
+            pass
+
+    monkeypatch.setattr(oversub_shards, "MonitorController", _StubController)
+    start_host_monitor(_trial_cfg(), tmp_path, provider="fake", test_duration=60, timeout_sec=240)
+    assert captured["test_duration"] == 240
+    start_host_monitor(_trial_cfg(), tmp_path, provider="fake", test_duration=180, timeout_sec=None)
+    assert captured["test_duration"] == 180
+
+
+def test_collect_warns_when_summary_lacks_trajectory_index(tmp_path, caplog):
+    """A shard that produced a summary but lost its index.json must not vanish
+    silently from the merged index -- symmetric with the series-missing check."""
+    plan = plan_shards(trial_dir=tmp_path, mode="exec_ephemeral", ratio=1, n=4, setting="auto")
+    write_shard_configs(_trial_cfg(), plan)
+    run_dir = plan.specs[0].directory / "rb_20260101_000000"
+    run_dir.mkdir(parents=True)
+    (run_dir / "rb_run_summary.json").write_text(json.dumps({"started_epoch": 1, "succeeded": 4}), encoding="utf-8")
+
+    out = collect_shard_artifacts(plan, prefix="rb")
+    assert len(out.summaries) == 1 and out.summaries[0]["succeeded"] == 4
+    assert out.catalogs == []
+    assert any("without trajectories/index.json" in r.getMessage() for r in caplog.records)
+
+
 def test_build_shard_command_vm_monitor_owned_by_shard_zero(tmp_path):
     plan = plan_shards(trial_dir=tmp_path, mode="exec_ephemeral", ratio=2, n=4, setting="auto")
     cmd0 = build_shard_command(["bench-core"], plan.specs[0], provider="aenv", no_vm_monitor=False)
@@ -277,7 +410,7 @@ def _wait_for(predicate, timeout: float = 5.0) -> None:
 
 
 def test_stress_bracket_spans_the_union_of_shard_markers(tmp_path):
-    """First shard start to last shard end -- an early finisher never cuts it."""
+    """First shard start to driver stop -- an early finisher never cuts it."""
     markers = [tmp_path / "a.lock", tmp_path / "b.lock"]
     ctl = _RecordingController()
     bracket = ShardStressBracket(markers, ctl, poll_sec=0.01)
@@ -287,10 +420,9 @@ def test_stress_bracket_spans_the_union_of_shard_markers(tmp_path):
         _wait_for(lambda: ctl.calls == ["begin"])
         markers[0].touch()
         markers[1].unlink()
+        markers[0].unlink()  # union momentarily empty mid-trial ...
         time.sleep(0.05)
-        assert ctl.calls == ["begin"]  # one shard still stressing
-        markers[0].unlink()
-        _wait_for(lambda: ctl.calls == ["begin", "end"])
+        assert ctl.calls == ["begin"]  # ... but the window stays latched open
     finally:
         bracket.stop()
     assert ctl.calls == ["begin", "end"]

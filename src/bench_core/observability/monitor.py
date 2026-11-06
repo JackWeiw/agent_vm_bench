@@ -171,9 +171,11 @@ class MonitorConfig:
     # still publishes its stress marker, which the owner unions across shards.
     external_collector: bool = False
     # Control-plane fleet gauge (raw_data/api_state_raw.csv). "auto" samples it
-    # only when this process owns the collector; "true" samples it regardless --
-    # under sharding the driver holds no provider handle, so shard 0 is the one
-    # process that can poll the API. "false" never samples it.
+    # only when this process owns the collector; "true" samples it whenever
+    # this process's controller window is active (external collectors included)
+    # -- under sharding the driver owns the collector but holds no provider
+    # handle, so shard 0 keeps a window and polls the API for the fleet.
+    # "false" never samples it.
     api_state: str = "auto"
     # False = keep vm_monitor's system-resource report (resource_report.xlsx) as a
     # standalone file; the replay obs workbook stays a trajectory-metrics-only file.
