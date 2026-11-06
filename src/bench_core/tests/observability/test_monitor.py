@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from bench_core.config import KernelConfig
@@ -392,6 +393,55 @@ def test_begin_end_noop_when_not_started():
     mc.begin_stress()
     mc.end_stress()
     assert mc.stress_window is None
+
+
+def test_external_collector_publishes_marker_without_spawning(monkeypatch, tmp_path):
+    """A shard under driver-owned monitoring signals its window but runs nothing."""
+
+    def _no_spawn(*_a, **_kw):
+        raise AssertionError("external collector must not spawn vm-monitor")
+
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", _no_spawn)
+    lock = tmp_path / "stress.lock"
+    cfg = _cfg(stress_file=str(lock), external_collector=True)
+    mc = MonitorController(cfg, _StubProvider(vmm_type="firecracker"))
+
+    mc.start()
+    assert mc.proc is None and mc._started is False
+    mc.begin_stress()
+    assert lock.exists()
+    mc.end_stress()
+    assert not lock.exists()
+    assert mc.stress_window is not None
+
+
+def test_external_collector_gauge_needs_the_api_state_flag():
+    """Only one process may poll the provider: the collector owner, or an
+    explicitly designated stand-in (shard 0 under driver-owned monitoring)."""
+    prov = _StubProvider(vmm_type="firecracker")
+    assert MonitorController(_cfg(), prov)._gauge is True  # owns the collector
+    assert MonitorController(_cfg(external_collector=True), prov)._gauge is False
+    assert MonitorController(_cfg(external_collector=True, api_state="true"), prov)._gauge is True
+    assert MonitorController(_cfg(api_state="false"), prov)._gauge is False
+
+
+def test_abandon_terminates_an_idle_collector_without_waiting_for_a_report(monkeypatch, tmp_path):
+    """No shard ever reached stress: stop() must not block report_timeout."""
+
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    proc = _FakeProc()
+    monkeypatch.setattr("bench_core.observability.monitor.subprocess.Popen", lambda *a, **kw: proc)
+    mc = MonitorController(
+        _cfg(stress_file=str(tmp_path / "lock"), log_dir=str(tmp_path), report_timeout=300),
+        _StubProvider(vmm_type="firecracker"),
+    )
+    mc.start()
+    started = time.monotonic()
+    mc.abandon()
+    assert proc.terminated is True
+    assert mc._started is False
+    assert time.monotonic() - started < 1  # did not sit out report_timeout
 
 
 def test_stop_collects_report_and_closes_handles(monkeypatch, tmp_path):
