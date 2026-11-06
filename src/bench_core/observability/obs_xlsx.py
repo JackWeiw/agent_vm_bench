@@ -318,7 +318,6 @@ class XlsxReportRenderer:
         rcfg = cfg.workflow_config
         total_success = sum(s.replay_metrics.success_count for s in obs.states.values())
         total_failed = sum(s.replay_metrics.failed_count for s in obs.states.values())
-        total_timeout = sum(s.replay_metrics.timeout_count for s in obs.states.values())
         na = "n/a"
 
         # --- Run (identity + outcome) ---
@@ -332,8 +331,7 @@ class XlsxReportRenderer:
             ("wall_sec", obs.wall_sec),
             ("total_steps", obs.total_steps),
             ("success", total_success),
-            ("timed_out", total_timeout),
-            ("failed (non-timeout)", total_failed - total_timeout),
+            ("failed", total_failed),
             ("overcommit_ratio", obs.overcommit_ratio),
         ):
             _overview_kv(ws, name, value)
