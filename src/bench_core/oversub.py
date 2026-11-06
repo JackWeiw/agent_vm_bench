@@ -825,8 +825,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="kernel processes per trial for admission-free modes (exec_ephemeral/exec_only): "
         "'auto' = one shard per ratio (each ~N slots, its own GIL) or an explicit P >= 1 "
-        "(P=1 = legacy single-process). lifecycle always runs single-process "
-        "(global admission). Default auto.",
+        "(P=1 = one shard, keeps the same shard-00//merged//driver-owned vm_monitor "
+        "layout as any P, so ratio-1 trials share one structure with higher ratios). "
+        "lifecycle always runs single-process (global admission). Default auto.",
     )
     p.add_argument("--cooldown-sec", type=int, default=None, help="settle time between trials (default 30)")
     p.add_argument(
@@ -1029,8 +1030,10 @@ def _run_trial(
     # multiplier (M) applies only to exec_ephemeral (each sandbox runs M
     # trajectories, stop-when-done); a no-op for lifecycle.
     m = args.multiplier if mode == "exec_ephemeral" else None
-    # P >= 2 only for admission-free modes (see oversub_shards); None = legacy
-    # single-process path, byte-identical layout and behavior.
+    # Shardable modes (exec_ephemeral/exec_only) get a plan at every P, including
+    # P == 1, so a ratio-1 trial keeps the sharded layout (shard-00/ + merged/ +
+    # driver-owned vm_monitor) byte-identical to P >= 2 trials; lifecycle (global
+    # admission) alone stays None = legacy single-process path. See oversub_shards.
     plan = plan_shards(trial_dir=trial_dir, mode=mode, ratio=ratio, n=n, setting=args.shards)
 
     summary_glob = f"{prefix}_*/{prefix}_run_summary.json"
