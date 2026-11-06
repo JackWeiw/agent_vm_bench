@@ -63,6 +63,10 @@ class _ConnectionError(Exception):  # noqa: N818 -- name intentional for the tes
     pass
 
 
+class _ConnectError(Exception):  # connectrpc's transport-error type
+    pass
+
+
 def _make_provider(handle):
     cfg = KernelConfig(workflow_type="replay", total_count=1)
     provider = CubesandboxProvider(cfg, Config(), threading.Event())
@@ -193,6 +197,19 @@ def test_exec_timeout_maps_to_124():
     result = provider.exec(inst, "sleep 999", timeout=5)
     assert result.exit_code == 124
     assert "timed out" in result.stderr.lower()
+
+
+def test_exec_deadline_exceeded_maps_to_124():
+    # A command timeout surfaces through connectrpc as ConnectError with the
+    # status code in the MESSAGE -- the class name carries neither "timeout" nor
+    # "timed", so the code text is what identifies it. Observed on a density run:
+    # a 300s action_timeout raised "deadline_exceeded: context deadline exceeded".
+    handle = _FakeHandle(_FakeCommands(exc=_ConnectError("deadline_exceeded: context deadline exceeded")))
+    provider = _make_provider(handle)
+    inst = SandboxInstance(id="cube-1", index=1)
+    result = provider.exec(inst, "mvn test", timeout=300)
+    assert result.exit_code == 124
+    assert "deadline" in result.stderr.lower()
 
 
 def test_exec_transport_error_raises():
