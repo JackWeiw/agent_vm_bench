@@ -193,8 +193,12 @@ class CubesandboxProvider(EnvironmentProvider):
             # (the timeout(1) convention) so the runner records a timed_out
             # step and continues; any other transport error propagates (a
             # genuine control-plane failure should surface, not be swallowed).
+            # The deadline check is on the MESSAGE, not the class name:
+            # connectrpc raises a plain ConnectError whose text is
+            # "deadline_exceeded: context deadline exceeded", so the class name
+            # says neither "timeout" nor "timed".
             name = type(exc).__name__.lower()
-            if "timeout" in name or "timed" in name:
+            if "timeout" in name or "timed" in name or "deadline" in str(exc).lower():
                 return CommandResult(exit_code=124, stdout="", stderr=str(exc)[:200])
             raise
         return CommandResult(
