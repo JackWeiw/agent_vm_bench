@@ -160,11 +160,12 @@ def _fake_sched(monkeypatch, tids_fn, default_mask=None):
     """Monkeypatch os.sched_setaffinity/getaffinity + _task_tids.
 
     ``tids_fn(pid)`` lists the process's threads; ``default_mask`` is what an
-    *unbound* tid reports from getaffinity (defaults to 64 free CPUs). Returns
-    the live mask dict {tid: set[int]} -- only bound tids appear in it.
+    *unbound* tid reports from getaffinity (defaults to 256 free CPUs -- wide
+    enough for the SMT >200 ids). Returns the live mask dict {tid: set[int]} --
+    only bound tids appear in it.
     """
     masks: dict[int, set[int]] = {}
-    free = set(range(64)) if default_mask is None else default_mask
+    free = set(range(256)) if default_mask is None else default_mask
 
     def _set(tid, cpus):
         masks[tid] = set(cpus)
@@ -349,6 +350,20 @@ def test_bind_ccl_uses_detected_l3_domain_not_arithmetic(monkeypatch, tmp_path):
     assert masks == {999: expected, 1000: expected}
 
 
+def test_bind_ccl_remaps_domains_outside_the_task_cpuset(monkeypatch, tmp_path):
+    # A cpuset-confined firecracker must land on a domain it can actually use:
+    # domain 0-15 is outside 16-47, so sandbox_index 0 binds the first usable
+    # domain instead of skipping (skip would leave this sandbox unpinned).
+    root = _mk_sysfs(tmp_path, l3=[f"{i * 16}-{i * 16 + 15}" for i in range(3)])
+    monkeypatch.setattr(ccl_mod, "_SYSFS_ROOT", root)
+    monkeypatch.setattr(ccl_mod, "CCL_PID_RESOLVE_ATTEMPTS", 1)
+    RESOLVER._pid_map["sbx-9"] = 999
+    masks = _fake_sched(monkeypatch, lambda pid: [999], default_mask=set(range(16, 48)))
+
+    assert bind_ccl_affinity("sbx-9", 0, Config()) is True
+    assert masks[999] == set(range(16, 32))
+
+
 def test_bind_ccl_setaffinity_failure_is_false(monkeypatch, tmp_path):
     monkeypatch.setattr(ccl_mod, "CCL_PID_RESOLVE_ATTEMPTS", 1)
     monkeypatch.setattr(ccl_mod, "_SYSFS_ROOT", tmp_path)
@@ -357,6 +372,7 @@ def test_bind_ccl_setaffinity_failure_is_false(monkeypatch, tmp_path):
     def _fail(pid, mask):
         raise OSError(1, "operation not permitted")
 
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: set(range(16)), raising=False)
     monkeypatch.setattr(os, "sched_setaffinity", _fail, raising=False)
     assert bind_ccl_affinity("sbx-1", 0, Config()) is False
 
@@ -400,11 +416,40 @@ def test_bind_verify_fails_when_a_tid_escapes(monkeypatch):
     assert "mismatched_tids=[1000]" in detail
 
 
+def test_bind_intersects_task_allowed_mask(monkeypatch):
+    # A cpuset-restricted firecracker can only use part of a domain: bind the
+    # permitted subset (the kernel would narrow a partial request anyway) and
+    # report it as narrowed, not as a failure.
+    masks = _fake_sched(monkeypatch, lambda pid: [999], default_mask=set(range(8)) | set(range(200, 208)))
+    ok, detail = bind_process_all_threads(999, set(range(8, 16)) | set(range(200, 208)))
+    assert ok
+    assert masks[999] == set(range(200, 208))
+    assert "narrowed_to=200-207 (requested=8-15,200-207)" in detail
+
+
+def test_bind_skips_when_no_cpu_is_permitted(monkeypatch):
+    # Regression: an L3 domain entirely outside the task's cgroup cpuset made
+    # the bare setaffinity return EINVAL(22) -- the kernel rejects a mask with
+    # no permitted CPU. The bind must skip with the cause named instead.
+    def _einval(tid, cpus):  # noqa: ARG001
+        attempted.append(tid)
+        raise OSError(22, "Invalid argument")
+
+    attempted: list[int] = []
+    _fake_sched(monkeypatch, lambda pid: [999], default_mask=set(range(16, 32)))
+    monkeypatch.setattr(os, "sched_setaffinity", _einval, raising=False)
+    ok, detail = bind_process_all_threads(999, set(range(16)))
+    assert not ok
+    assert "skip:" in detail and "task_allowed=16-31" in detail
+    assert attempted == []  # setaffinity never attempted
+
+
 def test_bind_main_setaffinity_failure(monkeypatch):
     def _raise(tid, cpus):
         raise OSError(1, "operation not permitted")
 
     monkeypatch.setattr(os, "sched_setaffinity", _raise, raising=False)
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: set(range(8)), raising=False)
     ok, detail = bind_process_all_threads(999, set(range(8)))
     assert not ok
     assert "failed" in detail

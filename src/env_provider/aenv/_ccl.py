@@ -265,6 +265,18 @@ def _task_tids(pid: int) -> list[int]:
         return [pid]
 
 
+def _task_allowed_cpus(pid: int) -> set[int] | None:
+    """CPUs the task may actually run on (``sched_getaffinity``: cgroup cpuset
+    restriction plus online CPUs), or ``None`` when it cannot be read."""
+    get_affinity = getattr(os, "sched_getaffinity", None)
+    if get_affinity is None:
+        return None
+    try:
+        return get_affinity(pid)
+    except OSError:
+        return None
+
+
 def bind_process_all_threads(pid: int, cpus: set[int], max_passes: int = 3) -> tuple[bool, str]:
     """One-shot pin of EVERY thread of ``pid`` to ``cpus`` (no polling).
 
@@ -274,12 +286,30 @@ def bind_process_all_threads(pid: int, cpus: set[int], max_passes: int = 3) -> t
     re-list shows no unbund tid (normally one pass -- firecracker's thread set
     is fixed after boot: 1 VMM + N vCPU threads).
 
+    The request is first intersected with the mask the task is actually
+    permitted to run on (``sched_getaffinity`` = cgroup/cpuset restriction plus
+    online CPUs). A deployment that confines the sandbox process -- an AENV
+    server or a bench running inside a cpuset-limited container -- otherwise
+    turns a domain outside that set into a bare ``EINVAL`` (the kernel rejects
+    an affinity mask with no permitted CPU), which names nothing. The
+    intersection binds what is permitted; no permitted CPU at all is a warned
+    skip carrying the real cause.
+
     Verification compares every live thread against the kernel-honoured
     effective mask of the main thread (``sched_getaffinity`` right after the
     set -- the kernel may narrow the request to online/cgroup-allowed CPUs; a
     narrowing is reported in the detail string, not failed). Returns
     ``(verified, detail)``.
     """
+    requested = set(cpus)
+    allowed = _task_allowed_cpus(pid)
+    if allowed is not None:
+        cpus = requested & allowed
+        if not cpus:
+            return False, (
+                f"skip: requested={format_cpu_list(requested)} has no CPU the task may run on "
+                f"(task_allowed={format_cpu_list(allowed)}; cgroup cpuset restriction or offline CPUs)"
+            )
     try:
         os.sched_setaffinity(pid, cpus)
     except OSError as err:
@@ -312,8 +342,8 @@ def bind_process_all_threads(pid: int, cpus: set[int], max_passes: int = 3) -> t
     detail = f"threads={len(bound)}"
     if not checked:
         detail += " no_live_thread_to_verify"
-    if effective != set(cpus):
-        detail += f" kernel_narrowed_to={format_cpu_list(effective)}"
+    if effective != requested:
+        detail += f" narrowed_to={format_cpu_list(effective)} (requested={format_cpu_list(requested)})"
     if mismatched:
         detail += f" mismatched_tids={mismatched}"
     # checked > 0: a process that died between the bind and the verify has no
@@ -527,6 +557,14 @@ def bind_ccl_affinity(sandbox_id: str, sandbox_index: int, config: Config) -> bo
             select_err,
         )
         return False
+    # Assign from the domains this firecracker may actually use: a cgroup
+    # cpuset (or offline CPUs) can rule a whole domain out, and a skipped bind
+    # leaves that sandbox unpinned while the remaining domains still give it a
+    # private slice of what it is allowed to run on. No restriction -> the full
+    # list, so the mapping is unchanged on an unrestricted host.
+    allowed = _task_allowed_cpus(firecracker_pid)
+    if allowed is not None:
+        domains = [d for d in domains if d & allowed] or domains
     domain_idx = sandbox_index % len(domains)
     domain = domains[domain_idx]
     logger.info(
