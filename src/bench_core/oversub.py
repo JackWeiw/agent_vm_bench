@@ -20,9 +20,10 @@ it and merges the shard artifacts back into the single-trial
 ``run_summary.json`` / ``trajectories/index.json`` contract, so every
 downstream consumer (validity, CSVs, compare, reuse) is shard-unaware.
 
-The driver imports no kernel data-path internals (lifecycle / admission /
-stats / observability) -- only the CLI, the YAML schema, the
-``run_summary.json`` schema, and the shared ``setup_logging`` CLI helper.
+The driver directly imports no kernel data-path internals (lifecycle /
+admission / stats / task dispatch) -- only the CLI, the YAML schema, the
+``run_summary.json`` schema, and the shared ``setup_logging`` CLI helper; the
+host-monitor contract is reached through :mod:`bench_core.oversub_shards`.
 Pure helpers are module-level so tests import them directly.
 """
 from __future__ import annotations
@@ -1242,7 +1243,13 @@ def _run_sharded_trial(
     monitor = (
         None
         if args.no_vm_monitor
-        else start_host_monitor(trial_cfg, trial_dir, provider=args.provider, test_duration=test_duration)
+        else start_host_monitor(
+            trial_cfg,
+            trial_dir,
+            provider=args.provider,
+            test_duration=test_duration,
+            timeout_sec=args.trial_timeout_sec,
+        )
     )
     bracket = None if monitor is None else ShardStressBracket([spec.stress_path for spec in plan.specs], monitor)
 

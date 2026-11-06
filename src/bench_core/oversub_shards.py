@@ -13,8 +13,10 @@ Layering contract:
 
 - This module is MECHANISM: shard planning, per-shard config derivation,
   subprocess-group supervision, and artifact merging. It imports nothing from
-  :mod:`bench_core.oversub` (the driver composes it, never the reverse) and
-  nothing from the kernel data path.
+  :mod:`bench_core.oversub` (the driver composes it, never the reverse); from
+  the kernel it pulls only the observability (host-monitor) contract and the
+  VMM-type helper (:func:`bench_core.bench.provider_vmm_type`) -- never
+  lifecycle, admission, stats, or task dispatch.
 - The shard boundary sits BELOW the kernel artifact contract: merging produces
   a schema-faithful ``run_summary.json`` + ``trajectories/index.json`` pair, so
   every downstream consumer (``compute_valid``, ``trial_row``,
@@ -234,6 +236,12 @@ def plan_shards(*, trial_dir: Path, mode: str, ratio: int, n: int, setting: int 
     trajectory), so it is flagged with a warning.
     """
     if mode not in SHARDABLE_MODES:
+        if isinstance(setting, int) and setting > 1:
+            logger.warning(
+                "mode %s cannot be sharded (shardable: %s); running single-process",
+                mode,
+                ", ".join(sorted(SHARDABLE_MODES)),
+            )
         return None
     p = resolve_shard_count(setting, mode=mode, ratio=ratio, n=n)
     if p <= ratio:
@@ -271,23 +279,32 @@ def build_shard_config(trial_cfg: dict, spec: ShardSpec, *, count: int, owns_col
     shard), and the pacing knobs (``launch_interval_sec``, ``create_batch.interval``,
     ``task_batch.interval``) scale by P so P independently-pacing shards keep the
     GLOBAL average create/dispatch rate of the single-process trial.
-    ``trajectory_limit`` / ``running_concurrency`` stay untouched: the issue pool
-    is global by design (every shard replays the same first-N pool; with
-    group-aligned shard sizes the merged run set matches the single-process
-    trial per trajectory, not just in total).
+    ``trajectory_limit`` stays untouched (the issue pool is global by design --
+    every shard replays the same first-N pool; with group-aligned shard sizes
+    the merged run set matches the single-process trial per trajectory, not
+    just in total). ``running_concurrency`` clamps to the shard's own
+    ``total_count``: on the P > ratio slot split a shard falls below N, and the
+    kernel's config ``validate`` rejects ``running_concurrency > total_count``
+    (the knob is a no-op for the shardable modes' admission).
 
     The ``monitor`` block splits the host collector from the stress marker:
     every shard writes its own ``stress.lock`` (the driver brackets their
-    union), no shard spawns a collector, and shard 0 -- the only process
-    holding a provider handle under sharding -- keeps the fleet gauge and the
-    shared ``<trial_dir>/vm_monitor/`` output path (the same path an unsharded
-    trial gets from ``report.output_dir``), so host data never hides under
-    ``shard-00/``.
+    union), no shard spawns a collector, and shard 0 keeps the fleet gauge and
+    the fixed ``<trial_dir>/vm_monitor/`` output path, so host data never hides
+    under ``shard-00/``.
     """
     cfg = copy.deepcopy(trial_cfg)
     cfg.setdefault("sandbox", {})["total_count"] = spec.size
     cfg.setdefault("test", {})["round_size"] = spec.size
     cfg.setdefault("report", {})["output_dir"] = str(spec.directory)
+    replay = cfg.get("replay")
+    if isinstance(replay, dict):
+        # P > ratio splits below the N pool; running_concurrency (a no-op for
+        # shardable modes' admission) must stay <= the shard's own total_count
+        # or the kernel's config validate rejects the shard at startup.
+        rc = replay.get("running_concurrency")
+        if rc is not None and rc > spec.size:
+            replay["running_concurrency"] = spec.size
     monitor = dict(cfg.get("monitor") or {})
     monitor["stress_file"] = str(spec.stress_path)
     if spec.index == 0 and not monitor.get("log_dir"):
@@ -295,7 +312,16 @@ def build_shard_config(trial_cfg: dict, spec: ShardSpec, *, count: int, owns_col
     if owns_collector and str(monitor.get("enabled", "auto")).lower() != "false":
         monitor["external_collector"] = True
         if spec.index == 0:
-            monitor.setdefault("api_state", "true")
+            # Exactly one fleet gauge per trial: shard 0 is the only sampler
+            # (the driver owns the collector but holds no provider handle, and
+            # "auto" on an external-collector process samples nothing). An
+            # explicit "false" opts out; everything else samples.
+            if str(monitor.get("api_state", "true")).lower() != "false":
+                monitor["api_state"] = "true"
+        else:
+            # Shards > 0 never poll the provider API: P simultaneous samplers
+            # would multiply the control-plane list-sandbox load.
+            monitor["api_state"] = "false"
     cfg["monitor"] = monitor
     docker = cfg.get("docker")
     if isinstance(docker, dict) and docker.get("container_prefix"):
@@ -315,6 +341,14 @@ def write_shard_configs(trial_cfg: dict, plan: ShardPlan, *, owns_collector: boo
     paths = []
     for spec in plan.specs:
         spec.directory.mkdir(parents=True, exist_ok=True)
+        # A prior attempt killed hard (group deadline kill, Ctrl+C, OOM) leaves
+        # shard-XX/stress.lock behind. The driver's bracket polls marker
+        # EXISTENCE, and each shard clears its own marker only at monitor start
+        # (after create + warmup) -- so without this unlink a stale marker opens
+        # the host window on the driver's first poll, mislabeling create/warmup
+        # as stress and masking the "crashed shard cannot take the host report
+        # down" guarantee.
+        spec.stress_path.unlink(missing_ok=True)
         cfg = build_shard_config(trial_cfg, spec, count=plan.count, owns_collector=owns_collector)
         spec.config_path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
         paths.append(spec.config_path)
@@ -367,7 +401,7 @@ class _ProviderHint:
 
 
 def start_host_monitor(
-    trial_cfg: dict, trial_dir: Path, *, provider: str, test_duration: int
+    trial_cfg: dict, trial_dir: Path, *, provider: str, test_duration: int, timeout_sec: int | None = None
 ) -> MonitorController | None:
     """Spawn the driver-owned host collector for one sharded trial.
 
@@ -376,6 +410,12 @@ def start_host_monitor(
     None when the collector is not applicable (no VMM for this provider, no
     binary, ``monitor.enabled: false``) -- the shards then simply publish
     markers nobody reads.
+
+    ``timeout_sec`` is the shard group's deadline: the collector's sampling
+    back-stop must cover the WHOLE union window (inter-shard start skew + the
+    trial), which ``test_duration`` alone understates whenever skew is large
+    (exec_only: every shard runs a full create_all first). The group deadline
+    is the sound upper bound -- the window cannot outlive it.
     """
     raw = dict(trial_cfg.get("monitor") or {})
     log_dir = Path(raw.get("log_dir") or trial_dir / "vm_monitor")
@@ -385,7 +425,9 @@ def start_host_monitor(
         external_collector=False,  # this process IS the collector
     )
     cfg = SimpleNamespace(
-        monitor=MonitorConfig.from_raw(raw), output_dir=str(trial_dir), test_duration=int(test_duration)
+        monitor=MonitorConfig.from_raw(raw),
+        output_dir=str(trial_dir),
+        test_duration=max(int(test_duration), int(timeout_sec or 0)),
     )
     controller = MonitorController(cfg, _ProviderHint(f"{provider}-driver", provider_vmm_type(provider)))
     controller.start()
@@ -397,10 +439,10 @@ class ShardStressBracket:
 
     Each shard's kernel publishes ``monitor.stress_file`` for its own stress
     window; the driver-owned collector must sample from the FIRST shard's start
-    to the LAST shard's end. This poller touches the collector's lock while any
-    marker exists and removes it only once every marker is gone, so a shard
-    finishing early never cuts the window short and a shard killed mid-stress
-    still ends it (``stop()`` closes an open bracket).
+    to the LAST shard's end. This poller opens the collector's lock on the
+    first marker it sees and holds it until ``stop()``, so a gapped union (one
+    shard finishing while another is still creating) or a shard killed
+    mid-stress never cuts the window short.
     """
 
     def __init__(self, marker_paths: list[Path], controller: MonitorController, poll_sec: float = 0.5) -> None:
@@ -433,18 +475,18 @@ class ShardStressBracket:
             self._thread = None
 
     def _run(self) -> None:
-        active = False
-        while not self._stop.wait(self._poll):
-            now = any(p.exists() for p in self._markers)
-            if now == active:
-                continue
-            if now:
+        # Open on the first marker, then latch: the window covers [first shard
+        # marker, driver stop]. A transition to an empty union (gapped starts,
+        # a killed shard's kernel clearing its marker) must NOT end the sampling
+        # -- the collector is single-shot and would export before the tail
+        # shards' stress even begins.
+        while not self._stop.is_set():
+            if self._stop.wait(self._poll):
+                break
+            if not self._opened and any(p.exists() for p in self._markers):
                 self._opened = True
                 self._controller.begin_stress()
-            else:
-                self._controller.end_stress()
-            active = now
-        if active:
+        if self._opened:
             self._controller.end_stress()
 
 
@@ -591,6 +633,12 @@ def collect_shard_artifacts(plan: ShardPlan, prefix: str, *, since_epoch: float 
                 out.catalogs.append((spec.slot_offset, catalog))
             except (OSError, ValueError) as exc:
                 logger.warning("shard %d: unreadable index.json (%s); trajectory rows will lack it", spec.index, exc)
+        else:
+            logger.warning(
+                "shard %d: summary without trajectories/index.json; its runs vanish from "
+                "the merged index and trajectory-detail rows",
+                spec.index,
+            )
     return out
 
 
@@ -844,8 +892,10 @@ def _aggregate_entry(merged: dict) -> None:
 def merge_trajectory_indexes(catalogs: list[tuple[int, dict]]) -> dict:
     """Merge per-shard catalogs into one trial-level ``index.json`` shape.
 
-    Runs are grouped by ``trajectory_id`` (every shard replays the same pool,
-    so the same trajectory appears in several shards) and each run's
+    Runs are grouped by ``trajectory_id`` (every shard replays the same pool in
+    the group-aligned P <= ratio case, so the same trajectory appears in
+    several shards; on the P > ratio slot split a shard smaller than the pool
+    covers only a part of it) and each run's
     ``sandbox_index`` is re-keyed by the shard's slot offset -- the run
     identity ``(trajectory_id, sandbox_index, round_id)`` stays unique across
     the merged file, exactly as in a single-process k*N trial. Entry-level
