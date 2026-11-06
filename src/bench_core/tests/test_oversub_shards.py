@@ -86,10 +86,28 @@ def test_shard_sizes_balanced_remainder_first():
     assert shard_sizes(7, 7) == [1] * 7
 
 
-def test_plan_shards_none_for_single_process_and_offsets_cumulative(tmp_path):
+def test_plan_shards_legacy_only_for_global_admission_modes(tmp_path):
+    # lifecycle (global running_concurrency) can never be split: no plan, the
+    # legacy single-process path, at any P.
     assert plan_shards(trial_dir=tmp_path, mode="lifecycle", ratio=4, n=8, setting="auto") is None
-    assert plan_shards(trial_dir=tmp_path, mode="exec_ephemeral", ratio=1, n=8, setting="auto") is None
-    assert plan_shards(trial_dir=tmp_path, mode="exec_ephemeral", ratio=2, n=4, setting=1) is None
+    assert plan_shards(trial_dir=tmp_path, mode="lifecycle", ratio=4, n=8, setting=2) is None
+
+
+def test_plan_shards_single_shard_for_ratio_one_and_offsets_cumulative(tmp_path):
+    # P == 1 still builds a plan for shardable modes: ratio-1 (auto -> P=1) and
+    # an explicit --shards 1 both run one shard-00 through the sharded
+    # machinery, so ratio-1 trials share the shard-00//merged//driver-owned
+    # vm_monitor layout with P >= 2 trials (one structure across every ratio).
+    plan = plan_shards(trial_dir=tmp_path, mode="exec_ephemeral", ratio=1, n=8, setting="auto")
+    assert plan is not None and plan.count == 1
+    assert [s.size for s in plan.specs] == [8]
+    assert [s.slot_offset for s in plan.specs] == [0]
+    assert plan.specs[0].directory == tmp_path / "shard-00"
+    assert plan.specs[0].log_path == tmp_path / "shard-00" / "driver.log"
+
+    single = plan_shards(trial_dir=tmp_path, mode="exec_ephemeral", ratio=2, n=4, setting=1)
+    assert single is not None and single.count == 1
+    assert [s.size for s in single.specs] == [8]
 
     plan = plan_shards(trial_dir=tmp_path, mode="exec_ephemeral", ratio=2, n=5, setting="auto")
     assert plan.count == 2
@@ -853,6 +871,42 @@ def test_e2e_sharded_trial_merges_into_contract_artifacts(tmp_path):
     assert len(trj) == 2
     assert sorted(int(r["sandbox_index"]) for r in trj) == [0, 4]
     assert all(r["trajectory_id"] == "t0" and r["exec_sec"] == "0.5" for r in trj)
+
+
+def test_e2e_ratio_one_trial_shares_the_sharded_layout(tmp_path):
+    """ratio 1 (auto -> P=1) runs through the sharded machinery: one shard.
+
+    The whole point of P=1 sharding: an agent comparing oversub ratios reads
+    ONE structure at every ratio (trial.yaml + shard-00/ + merged/) instead of
+    a special flat layout at ratio 1 -- and the host collector is driver-owned
+    at every ratio, so a short ratio-1 window can never strand it idle.
+    """
+    stub = tmp_path / "stub.py"
+    stub.write_text(_SHARD_STUB, encoding="utf-8")
+    base = _base_yaml(tmp_path)
+    out_root = tmp_path / "sweep"
+    rc = main(
+        _common_argv(tmp_path, base, out_root, stub)
+        + ["--ratios", "1", "--modes", "exec_ephemeral", "--shards", "auto", "--test-duration", "60"]
+    )
+    assert rc == 0
+    trial_dir = out_root / "exec_ephemeral" / "ratio-01" / "repeat-00"
+
+    assert not (trial_dir / "replay_bench").exists()  # no legacy flat run dir
+    assert (trial_dir / "shard-00" / "shard.yaml").exists()
+    assert (trial_dir / "shard-00" / "driver.log").exists()
+    assert not (trial_dir / "shard-01").exists()
+
+    merged = json.loads((trial_dir / "merged" / "rb_run_summary.json").read_text(encoding="utf-8"))
+    assert merged["shard_count"] == 1
+    assert merged["throughput"]["succeeded"] == 4  # k*N = 1*4
+    assert merged["total_count"] == 4  # k*N echo
+    assert sorted(trial_dir.glob("merged/*"))  # merged artifacts exist
+
+    with open(out_root / "trial-summary.csv", newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1 and rows[0]["valid"] == "True"
+    assert rows[0]["run_summary_path"].endswith(str(trial_dir / "merged" / "rb_run_summary.json"))
 
 
 def test_e2e_explicit_shards_override_and_cap(tmp_path):
