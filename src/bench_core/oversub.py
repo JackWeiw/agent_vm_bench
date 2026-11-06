@@ -825,7 +825,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="kernel processes per trial for admission-free modes (exec_ephemeral/exec_only): "
         "'auto' = one shard per ratio (each ~N slots, its own GIL) or an explicit P >= 1 "
-        "(P=1 = one shard, keeps the same shard-00//merged//driver-owned vm_monitor "
+        "(P=1 = one shard, keeps the same shard-00/ + merged/ + driver-owned vm_monitor "
         "layout as any P, so ratio-1 trials share one structure with higher ratios). "
         "lifecycle always runs single-process (global admission). Default auto.",
     )
