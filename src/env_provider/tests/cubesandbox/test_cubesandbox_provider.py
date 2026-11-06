@@ -11,6 +11,7 @@ import threading
 
 import pytest
 
+import bench_core.task_runner.replay  # noqa: F401 -- registers the replay workflow
 from bench_core.config import KernelConfig
 from env_provider import SandboxInstance
 from env_provider.cubesandbox import CubesandboxProvider, build_provider

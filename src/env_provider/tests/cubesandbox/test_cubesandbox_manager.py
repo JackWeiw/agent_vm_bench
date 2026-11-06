@@ -21,6 +21,7 @@ from threading import Event
 
 import pytest
 
+import bench_core.task_runner.browser  # noqa: F401 -- registers the browser workflow
 from bench_core.config import KernelConfig
 from env_provider.cubesandbox.config import Config
 from env_provider.cubesandbox.manager import CubesandboxManager, _call_bounded
