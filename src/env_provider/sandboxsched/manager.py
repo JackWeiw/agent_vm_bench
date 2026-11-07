@@ -159,6 +159,25 @@ from .config import Config
 from .envd_client import ENVD_PORT, EnvdClient
 from .schemas import SandboxState
 
+
+class _UserEnvdClient(EnvdClient):
+    """EnvdClient that selects the executing OS user via Basic auth.
+
+    envd picks the OS user from the Basic auth username (the password is
+    never checked -- packages/envd/internal/permissions/authenticate.go).
+    The server proxy strips the Authorization header, so this is effective
+    in direct mode only; e2b/aenv parity (root execution) needs it.
+    """
+
+    def _request(self, method, path, *, data=None, headers=None, timeout=None):
+        import base64
+
+        merged = dict(headers or {})
+        if self.user:
+            token = base64.b64encode(f"{self.user}:".encode()).decode()
+            merged["Authorization"] = f"Basic {token}"
+        return super()._request(method, path, data=data, headers=merged, timeout=timeout)
+
 logger = logging.getLogger(__name__)
 
 # SandboxState.state values (capitalized) -> kept/not-running for listing. The
@@ -385,7 +404,7 @@ class SandboxManager(BaseSandboxManager):
             if not url:
                 raise RuntimeError(f"sandbox {sandbox_id} has no published endpoint yet")
             self._envd_urls[sandbox_id] = url
-        return EnvdClient(url, timeout=60.0)
+        return _UserEnvdClient(url, user=self.config.envd_user, timeout=60.0)
 
     def _exec_probe(self, handle: Any, cmd: str, timeout: int) -> tuple[int, str, str]:
         result = self._envd_client_for(handle).run(cmd, timeout=float(timeout))

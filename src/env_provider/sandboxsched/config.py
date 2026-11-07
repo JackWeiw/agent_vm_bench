@@ -90,6 +90,13 @@ class Config:
     # direct access is the SDK default.
     use_server_proxy: bool = False
 
+    # OS user the envd commands execute as. e2b/aenv run every command as
+    # root, and recorded trajectories assume it. envd selects the user via
+    # Basic auth -- which the server proxy STRIPS -- so this is effective in
+    # direct mode only (use_server_proxy=false); under the proxy wrap
+    # privileged commands with sudo inside the command string itself.
+    envd_user: str = "root"
+
     # Whether to skip the SDK's built-in health check at create/connect. The
     # kernel's own ReadyChecker (uname probe for replay/coding) is the source
     # of truth for readiness, so skip the SDK's ping-based check to avoid a
@@ -125,6 +132,7 @@ class Config:
             skip_health_check=bool(backend.get("skip_health_check", True)),
             ready_timeout=int(backend.get("ready_timeout", 300)),
             use_server_proxy=bool(backend.get("use_server_proxy", False)),
+            envd_user=str(backend.get("envd_user", "root")),
         )
 
     def resolved_api_key(self) -> str:
