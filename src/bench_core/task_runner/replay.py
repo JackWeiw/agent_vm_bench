@@ -700,20 +700,34 @@ class ReplayBaseRunner(TaskRunner):
         """
         if self.admission is not None and self.admission.qps is not None:
             with self.admission.qps.slot("command", hold_inflight=False):
-                return self.provider.exec(
+                result = self.provider.exec(
                     self.state,
                     step.action,
                     cwd=self.cfg.replay_workdir or None,
                     env=self.cfg.replay_env or None,
                     timeout=self.cfg.replay_action_timeout,
                 )
-        return self.provider.exec(
-            self.state,
-            step.action,
-            cwd=self.cfg.replay_workdir or None,
-            env=self.cfg.replay_env or None,
-            timeout=self.cfg.replay_action_timeout,
-        )
+        else:
+            result = self.provider.exec(
+                self.state,
+                step.action,
+                cwd=self.cfg.replay_workdir or None,
+                env=self.cfg.replay_env or None,
+                timeout=self.cfg.replay_action_timeout,
+            )
+        if result.exit_code != 0:
+            # Non-zero exits were previously invisible: metrics counted them
+            # but neither the action nor its stderr reached any log, so a
+            # failing step was undiagnosable from the run output alone.
+            logger.warning(
+                "[Sandbox%d] step %d exit=%d action=%r stderr=%r",
+                self.state.index,
+                step.index,
+                result.exit_code,
+                step.action[:120],
+                (result.stderr or "")[-300:],
+            )
+        return result
 
     # --- shared metric recording ---
     def _record_step(
