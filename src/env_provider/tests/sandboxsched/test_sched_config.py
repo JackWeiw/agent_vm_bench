@@ -44,6 +44,15 @@ class TestConfigFromRaw:
         assert cfg.api_key == "k"
         assert cfg.domain == "h:9"
 
+    def test_domain_field_wins_over_env(self):
+        raw = {
+            "sandboxsched": {
+                "domain": "10.0.0.1:80",
+                "env": {"OPEN_SANDBOX_DOMAIN": "h:9"},
+            }
+        }
+        assert Config.from_raw(raw).domain == "10.0.0.1:80"
+
     def test_missing_block_yields_defaults(self):
         cfg = Config.from_raw({})
         assert cfg.template == "python:3.11"

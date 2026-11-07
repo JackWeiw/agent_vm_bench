@@ -94,7 +94,11 @@ class Config:
         backend = raw.get(block) or {}
         env = backend.get("env") or {}
         api_key = env.get("OPEN_SANDBOX_API_KEY", "")
-        domain = env.get("OPEN_SANDBOX_DOMAIN", backend.get("domain", "localhost:8080"))
+        # ``domain:`` (the explicit field) wins over ``env.OPEN_SANDBOX_DOMAIN``
+        # -- the env entry mirrors the value into the SDK's own env-var
+        # fallback, but a user uncommenting ``domain:`` expects it to take
+        # effect, not to be shadowed by a stale env value.
+        domain = backend.get("domain") or env.get("OPEN_SANDBOX_DOMAIN", "localhost:8080")
         return cls(
             api_key=api_key,
             domain=domain,
