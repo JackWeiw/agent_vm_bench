@@ -2,38 +2,45 @@
 
 The workflow-agnostic create/detect/cleanup skeleton is inherited from
 :class:`env_provider._base.BaseSandboxManager`; this module supplies only the
-OpenSandbox SDK seams (``SandboxSync.create`` / ``SandboxManagerSync.list`` /
-``SandboxSync.connect`` / ``SandboxSync.kill`` + the exec probe) and the two
+OpenSandbox SDK seams (``Sandbox.create`` / ``SandboxManager.list`` /
+``Sandbox.connect`` / ``Sandbox.kill`` + the exec probe) and the two
 sandboxsched-specific methods the base can't own: ``detect_from_file`` (ID-file
 matching) and ``check_alive`` (exec-based liveness). Readiness probing is
 delegated to :class:`env_provider._ready.ReadyChecker` via the base.
 
-The OpenSandbox SDK ships a fully synchronous client (``opensandbox.sync.
-sandbox.SandboxSync`` + ``opensandbox.sync.manager.SandboxManagerSync``), so --
-unlike the e2b provider's mock of the async ``e2b.Sandbox`` -- there is no
-asyncio bridge: every seam is a plain blocking call.
+The OpenSandbox SDK's primary client is async (``opensandbox.Sandbox`` +
+``opensandbox.manager.SandboxManager``, httpx.AsyncClient underneath -- async
+transports are loop-bound per the SDK's own docs), while every kernel entry
+point is synchronous. The bridge is a single private asyncio loop running on a
+daemon thread (:class:`_EventLoopThread`): each SDK seam wraps its call in a
+coroutine and blocks on ``asyncio.run_coroutine_threadsafe(...).result()``
+(:meth:`SandboxManager.submit`). One loop for the manager's lifetime keeps
+every SDK handle / transport bound to the same loop, which is exactly what the
+SDK's ConnectionConfig transport-lifecycle note requires.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import threading
 import time
 from datetime import timedelta
-from threading import Event
 from typing import Any
 
 try:
-    from opensandbox.config.connection_sync import ConnectionConfigSync
+    from opensandbox import Sandbox
+    from opensandbox.config import ConnectionConfig
     from opensandbox.exceptions import SandboxException
+    from opensandbox.manager import SandboxManager as SdkSandboxManager
     from opensandbox.models.execd import RunCommandOpts
     from opensandbox.models.sandboxes import SandboxFilter, SandboxState as SdkSandboxState
-    from opensandbox.sync.manager import SandboxManagerSync
-    from opensandbox.sync.sandbox import SandboxSync
 except ImportError:  # pragma: no cover - SDK not installed in dev/test
     # Mock for development/testing without the opensandbox SDK. Mirrors the
     # e2b manager's mock shape so the base lifecycle + unit tests run without
-    # the SDK. The real seams use the sync SDK classes above.
+    # the SDK. The real seams use the async SDK classes above (coroutine
+    # methods -- the manager's submit() drives them on the bridge loop).
 
     logging.getLogger(__name__).warning(
         "opensandbox SDK not installed: sandboxsched falls back to the inline "
@@ -42,7 +49,7 @@ except ImportError:  # pragma: no cover - SDK not installed in dev/test
     )
 
     class _MockCommands:  # type: ignore[no-redef]
-        def run(self, command, *, opts=None, handlers=None):  # noqa: ARG002
+        async def run(self, command, *, opts=None, handlers=None):  # noqa: ARG002
             class _Result:
                 exit_code = 0
 
@@ -60,49 +67,50 @@ except ImportError:  # pragma: no cover - SDK not installed in dev/test
         id = "mock_sandbox_id"
         commands = _MockCommands()
 
-        def kill(self):
+        async def kill(self):
             pass
 
-        def pause(self):
+        async def pause(self):
             pass
 
-        def close(self):
+        async def close(self):
             pass
 
-    class SandboxSync:  # type: ignore[no-redef]
+    class Sandbox:  # type: ignore[no-redef]
         @staticmethod
-        def create(
+        async def create(
             image=None,
             *,
             snapshot_id=None,
-            timeout=timedelta(minutes=10),
+            timeout=None,
             env=None,
             metadata=None,
             resource=None,
-            extensions=None,  # noqa: ARG004
+            extensions=None,
             connection_config=None,
             skip_health_check=False,
+            **_kwargs,
         ):  # noqa: ARG004
             return _MockSandbox()
 
         @staticmethod
-        def connect(sandbox_id, connection_config=None, skip_health_check=False):  # noqa: ARG004
+        async def connect(sandbox_id, connection_config=None, skip_health_check=False, **_kwargs):  # noqa: ARG004
             m = _MockSandbox()
             m.id = sandbox_id
             return m
 
         @staticmethod
-        def resume(sandbox_id, connection_config=None, skip_health_check=False):  # noqa: ARG004
+        async def resume(sandbox_id, connection_config=None, skip_health_check=False, **_kwargs):  # noqa: ARG004
             m = _MockSandbox()
             m.id = sandbox_id
             return m
 
-    class SandboxManagerSync:  # type: ignore[no-redef]
+    class SdkSandboxManager:  # type: ignore[no-redef]
         @staticmethod
-        def create(connection_config=None):  # noqa: ARG004
-            return SandboxManagerSync()
+        async def create(connection_config=None, **_kwargs):  # noqa: ARG004
+            return SdkSandboxManager()
 
-        def list_sandbox_infos(self, filter):  # noqa: ARG002
+        async def list_sandbox_infos(self, filter):  # noqa: ARG002
             class _Page:
                 class pagination:
                     has_next_page = False
@@ -111,10 +119,13 @@ except ImportError:  # pragma: no cover - SDK not installed in dev/test
 
             return _Page()
 
-        def kill_sandbox(self, sandbox_id):  # noqa: ARG002
+        async def kill_sandbox(self, sandbox_id):  # noqa: ARG002
             pass
 
-    class ConnectionConfigSync:  # type: ignore[no-redef]
+        async def close(self):
+            pass
+
+    class ConnectionConfig:  # type: ignore[no-redef]
         def __init__(self, api_key=None, domain=None, protocol="http", **kwargs):  # noqa: ARG002
             self.api_key = api_key
             self.domain = domain
@@ -151,6 +162,33 @@ logger = logging.getLogger(__name__)
 _LIVE_STATES = (SdkSandboxState.RUNNING, SdkSandboxState.PAUSED)
 
 
+class _EventLoopThread:
+    """A private asyncio loop on a daemon thread for the SDK's async client.
+
+    Started lazily on the first SDK call; lives for the process (daemon, so an
+    exiting kernel never blocks on it). All SDK handles the manager creates are
+    used on this one loop -- async transports are loop-bound, so sharing one
+    loop across create/connect/exec/kill is what makes handle reuse safe.
+    """
+
+    def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._ready = threading.Event()
+        threading.Thread(target=self._spin, daemon=True, name="opensandbox-asyncio").start()
+        self._ready.wait()
+
+    def _spin(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._ready.set()
+        self._loop.run_forever()
+
+    def run(self, coro: Any) -> Any:
+        """Drive ``coro`` on the bridge loop; block until it finishes."""
+        assert self._loop is not None
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
+
+
 class SandboxManager(BaseSandboxManager):
     """SandboxSched sandbox lifecycle: SDK seams over the shared lifecycle template.
 
@@ -169,18 +207,33 @@ class SandboxManager(BaseSandboxManager):
     def __init__(self, kernel_config, config: Config, stop_event: Event) -> None:
         super().__init__(kernel_config, stop_event)
         self.config = config
-        self._connection_config: ConnectionConfigSync | None = None
+        self._connection_config: ConnectionConfig | None = None
+        self._loop_thread: _EventLoopThread | None = None
+
+    # --------------------------------------------------------- async bridge
+    def submit(self, coro: Any) -> Any:
+        """Run an SDK coroutine on the bridge loop; block until it completes.
+
+        The one entry point every seam (and the adapter's exec/pause/resume/
+        snapshot routing) uses to reach the async SDK from sync code. The loop
+        thread starts on first use, so a manager that never talks to the SDK
+        never pays for a thread.
+        """
+        if self._loop_thread is None:
+            self._loop_thread = _EventLoopThread()
+        return self._loop_thread.run(coro)
 
     # --------------------------------------------------------- connection
-    def _connection(self) -> ConnectionConfigSync:
-        """The shared ConnectionConfigSync (built lazily, cached).
+    def _connection(self) -> ConnectionConfig:
+        """The shared ConnectionConfig (built lazily, cached).
 
         Built once from the Config's resolved api_key / domain / protocol. The
-        SDK's ``with_transport_if_missing`` is applied inside SandboxSync.create
-        / connect, so we pass the bare config and let the SDK own its transport.
+        SDK's ``with_transport_if_missing`` is applied inside Sandbox.create /
+        connect / resume -- on the bridge loop -- so we pass the bare config
+        and let the SDK own its transport.
         """
         if self._connection_config is None:
-            self._connection_config = ConnectionConfigSync(
+            self._connection_config = ConnectionConfig(
                 api_key=self.config.resolved_api_key() or None,
                 domain=self.config.domain,
                 protocol=self.config.protocol,
@@ -218,15 +271,17 @@ class SandboxManager(BaseSandboxManager):
             return {"success": False, "create_elapsed": 0.0, "error": err, "template": resolved}
 
         try:
-            sbx = SandboxSync.create(
-                resolved,
-                timeout=timedelta(seconds=self.config.create_timeout),
-                env=None,
-                metadata=metadata,
-                resource=self.config.resource,
-                extensions={"sandboxGroup": self.config.sandbox_group},
-                connection_config=self._connection(),
-                skip_health_check=self.config.skip_health_check,
+            sbx = self.submit(
+                Sandbox.create(
+                    resolved,
+                    timeout=timedelta(seconds=self.config.create_timeout),
+                    env=None,
+                    metadata=metadata,
+                    resource=self.config.resource,
+                    extensions={"sandboxGroup": self.config.sandbox_group},
+                    connection_config=self._connection(),
+                    skip_health_check=self.config.skip_health_check,
+                )
             )
             state.sandbox_obj = sbx
             state.creation_metrics.create_ready_time = time.time()
@@ -249,44 +304,77 @@ class SandboxManager(BaseSandboxManager):
                 "template": resolved,
             }
 
-    def _list_existing(self) -> list:
-        """List non-terminated sandboxes (flatten the SDK paginator).
+    async def _list_existing_async(self) -> list:
+        """Async body of ``_list_existing`` (manager create + paginate + close).
 
-        ``SandboxManagerSync.list_sandbox_infos`` returns a ``PagedSandboxInfos``
-        with ``.sandbox_infos`` + ``.pagination.has_next_page``; iterate pages
-        by bumping ``SandboxFilter.page`` until no next page. Filters to
-        RUNNING + PAUSED so detect/cleanup sees live sandboxes (terminated ones
-        are already gone).
+        One coroutine so the admin manager and its transport are created, used,
+        and closed on a single loop trip. ``list_sandbox_infos`` returns a
+        ``PagedSandboxInfos`` with ``.sandbox_infos`` +
+        ``.pagination.has_next_page``; iterate pages by bumping
+        ``SandboxFilter.page`` until no next page. Filters to RUNNING + PAUSED
+        so detect/cleanup sees live sandboxes (terminated ones are gone).
         """
-        manager = SandboxManagerSync.create(connection_config=self._connection())
-        listed: list = []
-        page = 1
-        page_size = 100
-        while True:
-            flt = SandboxFilter(states=list(_LIVE_STATES), page_size=page_size, page=page)
-            paged = manager.list_sandbox_infos(flt)
-            listed.extend(paged.sandbox_infos)
-            if not paged.pagination.has_next_page:
-                break
-            page += 1
-        return listed
+        manager = await SdkSandboxManager.create(connection_config=self._connection())
+        try:
+            listed: list = []
+            page = 1
+            page_size = 100
+            while True:
+                flt = SandboxFilter(states=list(_LIVE_STATES), page_size=page_size, page=page)
+                paged = await manager.list_sandbox_infos(flt)
+                listed.extend(paged.sandbox_infos)
+                if not paged.pagination.has_next_page:
+                    break
+                page += 1
+            return listed
+        finally:
+            await manager.close()
+
+    def _list_existing(self) -> list:
+        return self.submit(self._list_existing_async())
 
     def _external_id(self, listed: Any) -> str:
         return listed.id if hasattr(listed, "id") else str(listed)
 
     def _attach(self, listed: Any) -> Any:
-        return SandboxSync.connect(
-            self._external_id(listed),
-            connection_config=self._connection(),
-            skip_health_check=self.config.skip_health_check,
+        return self.submit(
+            Sandbox.connect(
+                self._external_id(listed),
+                connection_config=self._connection(),
+                skip_health_check=self.config.skip_health_check,
+            )
         )
 
     def _kill_one(self, state: SandboxState) -> None:
-        state.sandbox_obj.kill()
+        self.submit(state.sandbox_obj.kill())
 
     def _exec_probe(self, handle: Any, cmd: str, timeout: int) -> tuple[int, str, str]:
-        result = handle.commands.run(cmd, opts=RunCommandOpts(timeout=timedelta(seconds=timeout)))
+        result = self.submit(handle.commands.run(cmd, opts=RunCommandOpts(timeout=timedelta(seconds=timeout))))
         return _execution_to_result(result)
+
+    # ----------------------------------------------------- handle ops (adapter-facing)
+    def pause_handle(self, state: SandboxState) -> None:
+        """Server-side pause of the sandbox behind ``state`` (keeps the handle)."""
+        self.submit(state.sandbox_obj.pause())
+
+    def resume_handle(self, sandbox_id: str) -> Any:
+        """Resume a paused sandbox by id; return the fresh async Sandbox handle.
+
+        ``Sandbox.resume`` performs the server-side resume and re-resolves the
+        execd endpoint (it may change across pause/resume), so the caller must
+        swap the returned handle in.
+        """
+        return self.submit(
+            Sandbox.resume(
+                sandbox_id,
+                connection_config=self._connection(),
+                skip_health_check=self.config.skip_health_check,
+            )
+        )
+
+    def snapshot_handle(self, state: SandboxState) -> Any:
+        """Create a persistent snapshot from the sandbox behind ``state``."""
+        return self.submit(state.sandbox_obj.create_snapshot())
 
     # ----------------------------------------------------- sandboxsched-specific
     def detect_from_file(self, ids_file: str) -> dict[int, SandboxState]:
@@ -369,7 +457,7 @@ class SandboxManager(BaseSandboxManager):
         if not sbx or not state.is_alive:
             return False
         try:
-            result = sbx.commands.run("echo alive", opts=RunCommandOpts(timeout=timedelta(seconds=10)))
+            result = self.submit(sbx.commands.run("echo alive", opts=RunCommandOpts(timeout=timedelta(seconds=10))))
             exit_code, _, _ = _execution_to_result(result)
             return exit_code == 0
         except Exception:
@@ -385,7 +473,7 @@ class SandboxManager(BaseSandboxManager):
 def _execution_to_result(execution: Any) -> tuple[int, str, str]:
     """Translate an OpenSandbox ``Execution`` -> (exit_code, stdout, stderr).
 
-    The SDK's ``CommandsSync.run`` returns an ``Execution`` whose stdout is the
+    The SDK's ``Commands.run`` returns an ``Execution`` whose stdout is the
     ``.text`` property (combined stdout log + result text) and whose stderr is
     the joined ``logs.stderr`` messages; ``exit_code`` is None when the command
     was interrupted/timed out server-side. Map a None exit_code to 124 (the

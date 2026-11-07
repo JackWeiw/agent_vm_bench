@@ -1,16 +1,17 @@
 """Seam tests for the sandboxsched :class:`SandboxManager`.
 
 The provider/adapter tests mock the manager itself; these tests inject a
-controllable fake OpenSandbox SDK (``SandboxSync`` / ``SandboxManagerSync``)
+controllable fake OpenSandbox SDK (async ``Sandbox`` / ``SandboxManager``)
 into the manager module and drive the real base lifecycle (create_all /
 detect_existing / detect_from_file / cleanup_all) through it, locking the SDK
-seam contract: ``SandboxSync.create(image, *, extensions, skip_health_check)``
+seam contract: ``Sandbox.create(image, *, extensions, skip_health_check)``
 -> handle with ``.id`` / ``.commands.run(cmd, opts=)`` / ``.kill()``, the
-paginator flatten in ``_list_existing``, ``SandboxSync.connect`` for attach,
-and ``_execution_to_result`` (Execution.text/logs.stderr/exit_code -> tuple,
-None exit_code -> 124).
+paginator flatten in ``_list_existing``, ``Sandbox.connect`` for attach, and
+``_execution_to_result`` (Execution.text/logs.stderr/exit_code -> tuple, None
+exit_code -> 124). All fake SDK methods are coroutines -- the manager's
+submit() drives them on its bridge loop exactly like the real SDK.
 
-The opensandbox SDK is an optional extra; the manager module imports the sync
+The opensandbox SDK is an optional extra; the manager module imports the async
 classes under a try/except that falls back to an inline mock. These tests
 replace those bindings with controllable fakes, so no SDK install is needed.
 """
@@ -84,7 +85,7 @@ class _FakeCommands:
         self._ready = ready
         self.calls: list[str] = []
 
-    def run(self, cmd, *, opts=None, handlers=None):  # noqa: ARG002
+    async def run(self, cmd, *, opts=None, handlers=None):  # noqa: ARG002
         self.calls.append(cmd)
         if self._ready:
             return _RunResult(0, "Linux sandbox 6.6 aarch64\n", "")
@@ -100,13 +101,13 @@ class _FakeSandboxSync:
         self.killed = False
         self.paused = False
 
-    def kill(self):
+    async def kill(self):
         self.killed = True
 
-    def pause(self):
+    async def pause(self):
         self.paused = True
 
-    def close(self):  # noqa: ARG002
+    async def close(self):  # noqa: ARG002
         pass
 
 
@@ -128,7 +129,7 @@ class _SandboxInfo:
 
 
 class _FakeSandboxSyncCls:
-    """Stand-in for ``opensandbox.sync.sandbox.SandboxSync`` (classmethods)."""
+    """Stand-in for the async ``opensandbox.Sandbox`` class (coroutine methods)."""
 
     def __init__(self):
         self.created: list[tuple] = []  # (image, extensions, sandbox)
@@ -140,7 +141,7 @@ class _FakeSandboxSyncCls:
     def set_ready(self, ready: bool) -> None:
         self._ready = ready
 
-    def create(
+    async def create(
         self,
         image=None,
         *,
@@ -159,11 +160,11 @@ class _FakeSandboxSyncCls:
         self.created.append((image, extensions, sbx))
         return sbx
 
-    def connect(self, sandbox_id, connection_config=None, skip_health_check=False):  # noqa: ARG002
+    async def connect(self, sandbox_id, connection_config=None, skip_health_check=False):  # noqa: ARG002
         self.connected.append(sandbox_id)
         return _FakeSandboxSync(sandbox_id, ready=self._ready)
 
-    def resume(self, sandbox_id, connection_config=None, skip_health_check=False):  # noqa: ARG002
+    async def resume(self, sandbox_id, connection_config=None, skip_health_check=False):  # noqa: ARG002
         self.resumed.append(sandbox_id)
         return _FakeSandboxSync(sandbox_id, ready=self._ready)
 
@@ -173,20 +174,23 @@ class _FakeManagerSync:
         self.list_pages: list[_PagedInfos] = []
         self.killed: list[str] = []
 
-    def list_sandbox_infos(self, flt):  # noqa: ARG002
+    async def list_sandbox_infos(self, flt):  # noqa: ARG002
         if not self.list_pages:
             return _PagedInfos([], has_next_page=False)
         return self.list_pages.pop(0)
 
-    def kill_sandbox(self, sandbox_id):
+    async def kill_sandbox(self, sandbox_id):
         self.killed.append(sandbox_id)
 
+    async def close(self):  # noqa: ARG002
+        pass
 
-class _FakeManagerSyncCls:
+
+class _FakeManagerCls:
     def __init__(self, inner: _FakeManagerSync):
         self._inner = inner
 
-    def create(self, connection_config=None):  # noqa: ARG002
+    async def create(self, connection_config=None):  # noqa: ARG002
         return self._inner
 
 
@@ -213,12 +217,12 @@ def patched_sdk(monkeypatch):
     """Replace the SDK bindings in the manager module with controllable fakes."""
     fake_sandbox = _FakeSandboxSyncCls()
     fake_manager_inner = _FakeManagerSync()
-    fake_manager = _FakeManagerSyncCls(fake_manager_inner)
-    monkeypatch.setattr(mgr_mod, "SandboxSync", fake_sandbox)
-    monkeypatch.setattr(mgr_mod, "SandboxManagerSync", fake_manager)
+    fake_manager = _FakeManagerCls(fake_manager_inner)
+    monkeypatch.setattr(mgr_mod, "Sandbox", fake_sandbox)
+    monkeypatch.setattr(mgr_mod, "SdkSandboxManager", fake_manager)
     monkeypatch.setattr(
         mgr_mod,
-        "ConnectionConfigSync",
+        "ConnectionConfig",
         lambda **kw: type(
             "Cfg",
             (),
@@ -287,7 +291,7 @@ class TestCreateAndCleanup:
         mgr = SandboxManager(kernel_config, cfg, Event())
         states = mgr.create_all()
         # all 3 failed, no SDK create calls
-        assert len(mgr_mod.SandboxSync.created) == 0
+        assert len(mgr_mod.Sandbox.created) == 0
         for state in states.values():
             from env_provider._base import BackendSandboxStatus
 

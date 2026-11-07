@@ -12,15 +12,16 @@ template, the create timeout, and the sandbox IDs file -- read from the
 Credential fallback: when ``api_key`` is blank OR holds a template placeholder
 (``your_opensandbox_api_key_here``, as shipped in the example YAMLs) on this
 Config, :meth:`setup_env` falls back to the ``OPEN_SANDBOX_API_KEY`` env var
-already exported in the shell (the SDK reads it via ``ConnectionConfigSync.
+already exported in the shell (the SDK reads it via ``ConnectionConfig.
 get_api_key``), so a user can authenticate via the shell without repeating the
 key in YAML -- and a copied template still falls back rather than sending the
 placeholder to the SDK as a real key.
 
-The OpenSandbox SDK (``opensandbox`` package, gitcode ``of-dev/v0.2.1`` branch)
-exposes a fully synchronous client (``SandboxSync`` / ``SandboxManagerSync``),
-so -- unlike e2b -- no asyncio bridge is needed; this Config just builds a
-:class:`opensandbox.config.connection_sync.ConnectionConfigSync`.
+The OpenSandbox SDK (``opensandbox`` package, PyPI ``opensandbox==1.2.0``,
+declared as the ``sandboxsched`` optional extra) exposes an async client
+(``opensandbox.Sandbox`` / ``opensandbox.manager.SandboxManager``) driven from
+sync code through the manager's bridge loop; this Config just builds a
+:class:`opensandbox.config.ConnectionConfig`.
 """
 
 from __future__ import annotations
@@ -35,8 +36,8 @@ from typing import Any
 # env var (OPEN_SANDBOX_API_KEY) fills the gap instead.
 PLACEHOLDER_API_KEY = "your_opensandbox_api_key_here"
 
-# Env var the OpenSandbox SDK reads for the API key (ConnectionConfigSync.
-# _ENV_API_KEY). setup_env exports it so the SDK's ConnectionConfigSync picks
+# Env var the OpenSandbox SDK reads for the API key (ConnectionConfig.
+# _ENV_API_KEY). setup_env exports it so the SDK's ConnectionConfig picks
 # it up transparently without the manager passing api_key= explicitly.
 _ENV_API_KEY = "OPEN_SANDBOX_API_KEY"
 # Env var the OpenSandbox SDK reads for the server domain.
@@ -61,14 +62,14 @@ class Config:
     # Sandbox image / template. E2B runtime: an E2B template name
     # (e.g. ``ubuntu-22-04-custom``). containerd runtime: a container image
     # reference (e.g. ``python:3.11``). Passed as the positional ``image`` arg
-    # to ``SandboxSync.create``.
+    # to ``Sandbox.create``.
     template: str = "python:3.11"
 
-    # Sandbox creation timeout (seconds) -> timedelta for SandboxSync.create.
+    # Sandbox creation timeout (seconds) -> timedelta for Sandbox.create.
     create_timeout: int = 86400
 
     # Optional resource dict (e.g. {"cpu": "1", "memory": "2Gi"}) forwarded to
-    # SandboxSync.create as ``resource=``. None -> SDK default
+    # Sandbox.create as ``resource=``. None -> SDK default
     # ({"cpu": "1", "memory": "2Gi"}).
     resource: dict[str, str] | None = None
 
@@ -126,7 +127,7 @@ class Config:
         (YAML), so a user can authenticate via ``export OPEN_SANDBOX_API_KEY=``
         in the shell without repeating the key in YAML. A blank OR placeholder
         value counts as "not set". The domain is exported the same way so the
-        SDK's ``ConnectionConfigSync.get_domain`` picks it up.
+        SDK's ``ConnectionConfig.get_domain`` picks it up.
         """
         api_key = self.resolved_api_key()
         if api_key:

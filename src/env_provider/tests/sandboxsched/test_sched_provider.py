@@ -82,30 +82,26 @@ class TestTranslate:
 
 # -------------------------------------------------------------------- lifecycle delegation
 class TestLifecycle:
-    def test_pause_delegates_to_handle(self, provider):
-        provider._manager.sandbox_states = {1: _state(1)}
+    def test_pause_delegates_to_manager(self, provider):
+        st = _state(1)
+        provider._manager.sandbox_states = {1: st}
         inst = SandboxInstance(id="x", index=1, ready=True)
         provider.pause(inst)
-        provider._manager.sandbox_states[1].sandbox_obj.pause.assert_called_once()
+        provider._manager.pause_handle.assert_called_once_with(st)
 
     def test_pause_missing_state_raises(self, provider):
         provider._manager.sandbox_states = {}
         with pytest.raises(RuntimeError, match="No sandboxsched handle"):
             provider.pause(SandboxInstance(id="x", index=1))
 
-    def test_resume_swaps_handle(self, provider, monkeypatch):
+    def test_resume_swaps_handle(self, provider):
         st = _state(1)
         provider._manager.sandbox_states = {1: st}
-        provider._manager._connection.return_value = MagicMock()
-        # patch SandboxSync.resume in the manager module
-        from env_provider.sandboxsched import manager as mgr_mod
-
         new_handle = MagicMock(id="x")
-        fake_resume = MagicMock(return_value=new_handle)
-        monkeypatch.setattr(mgr_mod.SandboxSync, "resume", fake_resume)
+        provider._manager.resume_handle.return_value = new_handle
         provider.resume(SandboxInstance(id="x", index=1))
         assert st.sandbox_obj is new_handle
-        fake_resume.assert_called_once()
+        provider._manager.resume_handle.assert_called_once_with("x")
 
 
 # -------------------------------------------------------------------- ephemeral
@@ -160,14 +156,15 @@ class TestSnapshot:
         snap = MagicMock()
         snap.id = "snap-1"
         snap.status.state = "Ready"
-        st.sandbox_obj.create_snapshot.return_value = snap
+        provider._manager.snapshot_handle.return_value = snap
         result = provider.snapshot_sizes(SandboxInstance(id="x", index=1, ready=True))
         assert result == {"snapshot_id": "snap-1", "snapshot_state": "Ready"}
+        provider._manager.snapshot_handle.assert_called_once_with(st)
 
     def test_snapshot_none_on_exception(self, provider):
         st = _state(1)
         provider._manager.sandbox_states = {1: st}
-        st.sandbox_obj.create_snapshot.side_effect = RuntimeError("nope")
+        provider._manager.snapshot_handle.side_effect = RuntimeError("nope")
         assert provider.snapshot_sizes(SandboxInstance(id="x", index=1)) is None
 
 

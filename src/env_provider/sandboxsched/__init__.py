@@ -2,8 +2,8 @@
 
 Wraps :class:`env_provider.sandboxsched.manager.SandboxManager` behind the
 kernel's :class:`env_provider.EnvironmentProvider` contract. The manager owns
-the OpenSandbox SDK handles (``SandboxState.sandbox_obj`` -- a
-``SandboxSync``); the adapter translates those into host-agnostic
+the OpenSandbox SDK handles (``SandboxState.sandbox_obj`` -- an async
+``opensandbox.Sandbox``); the adapter translates those into host-agnostic
 :class:`SandboxInstance` objects and routes ``exec`` calls back through the
 manager's handle table -- the kernel never sees an SDK type.
 
@@ -15,10 +15,10 @@ import provider packages) holds.
 Lifecycle / ephemeral / snapshot support: the OpenSandbox E2B runtime (Firecracker
 microVMs, the default) supports pause/resume/snapshot, so this provider
 implements :class:`env_provider.LifecycleCapable` (``pause``/``resume`` via
-``SandboxSync.pause`` / ``SandboxSync.resume``), :class:`env_provider.
+the handle's ``pause`` / the SDK's ``Sandbox.resume``), :class:`env_provider.
 EphemeralCapable`` (``create_one``/``kill_one`` for trajectory mode), and
 :class:`env_provider.SnapshotSizeCapable`` (``snapshot_sizes`` via the SDK's
-``create_snapshot`` + ``get_snapshot`` status). The containerd runtime has no
+``create_snapshot``). The containerd runtime has no
 pause/snapshot -- a config knob (``runtime``) selects the E2B runtime; lifecycle
 calls on a containerd sandbox raise a clear error from the SDK.
 """
@@ -41,7 +41,7 @@ from env_provider import (
 from env_provider._base import BackendSandboxStatus
 
 from .config import Config
-from .manager import SandboxManager, SandboxSync, _execution_to_result
+from .manager import RunCommandOpts, SandboxManager, _execution_to_result
 from .schemas import SandboxState
 
 logger = logging.getLogger(__name__)
@@ -148,13 +148,12 @@ class SandboxSchedProvider(EnvironmentProvider):
         state = self.manager.sandbox_states.get(inst.index)
         if state is None or state.sandbox_obj is None:
             raise RuntimeError(f"No sandboxsched handle for sandbox index {inst.index}")
-        # The OpenSandbox SDK's CommandsSync.run takes opts=RunCommandOpts(...)
+        # The OpenSandbox SDK's Commands.run takes opts=RunCommandOpts(...)
         # rather than user=/cwd=/env= kwargs (e2b's signature). cwd/env are
         # forwarded via RunCommandOpts when the kernel sets them (it currently
-        # sets only timeout).
+        # sets only timeout). The async run coroutine is driven on the
+        # manager's bridge loop via submit().
         from datetime import timedelta
-
-        from opensandbox.models.execd import RunCommandOpts
 
         opts_kwargs: dict[str, Any] = {}
         if timeout is not None:
@@ -165,7 +164,7 @@ class SandboxSchedProvider(EnvironmentProvider):
             opts_kwargs["envs"] = env
         opts = RunCommandOpts(**opts_kwargs) if opts_kwargs else None
         try:
-            result = state.sandbox_obj.commands.run(command, opts=opts)
+            result = self.manager.submit(state.sandbox_obj.commands.run(command, opts=opts))
         except Exception as exc:
             # The OpenSandbox SDK raises SandboxException on transport errors and
             # (for some command paths) on nonzero exit, but the Execution it
@@ -206,7 +205,7 @@ class SandboxSchedProvider(EnvironmentProvider):
 
     # ------------------------------------------------------------------ lifecycle (LifecycleCapable)
     def pause(self, inst: SandboxInstance) -> None:
-        """Pause the sandbox (OpenSandbox SDK ``SandboxSync.pause``).
+        """Pause the sandbox (async SDK ``Sandbox.pause`` on the bridge loop).
 
         The sandbox transitions to PAUSED; ``resume`` restores it. The handle
         stays valid across pause (pause is a server-side state change, not a
@@ -216,37 +215,29 @@ class SandboxSchedProvider(EnvironmentProvider):
         state = self.manager.sandbox_states.get(inst.index)
         if state is None or state.sandbox_obj is None:
             raise RuntimeError(f"No sandboxsched handle for sandbox index {inst.index}")
-        state.sandbox_obj.pause()
+        self.manager.pause_handle(state)
 
     def resume(self, inst: SandboxInstance) -> None:
-        """Resume a paused sandbox (``SandboxSync.resume`` by id).
+        """Resume a paused sandbox (``Sandbox.resume`` by id, on the bridge).
 
-        ``resume`` performs the server-side resume and returns a fresh
-        ``SandboxSync`` (the execd endpoint may change across pause/resume);
-        swap it in (mirrors aenv's resume swapping ``Sandbox.connect``).
-        ``inst.id`` is the OpenSandbox sandbox id (set at create via
-        ``_to_instance``); it persists across pause/resume.
+        ``resume`` performs the server-side resume and returns a fresh async
+        ``Sandbox`` (the execd endpoint may change across pause/resume); swap
+        it in (mirrors aenv's resume swapping ``Sandbox.connect``). ``inst.id``
+        is the OpenSandbox sandbox id (set at create via ``_to_instance``); it
+        persists across pause/resume.
         """
         state = self.manager.sandbox_states.get(inst.index)
         if state is None:
             raise RuntimeError(f"No sandboxsched handle for sandbox index {inst.index}")
-        from datetime import timedelta
-
-        state.sandbox_obj = SandboxSync.resume(
-            inst.id,
-            connection_config=self.manager._connection(),
-            skip_health_check=self._config.skip_health_check,
-        )
-        # silence unused-import lint when resume is imported standalone
-        _ = timedelta
+        state.sandbox_obj = self.manager.resume_handle(inst.id)
 
     # ------------------------------------------------------------------ snapshot (SnapshotSizeCapable)
     def snapshot_sizes(self, inst: SandboxInstance) -> dict | None:
         """Stat a snapshot's size for a paused sandbox.
 
-        Triggers ``SandboxSync.create_snapshot`` (creates a persistent snapshot
-        from the paused sandbox), then polls ``SandboxManagerSync.get_snapshot``
-        until the snapshot is Ready/Failed, and reports its size. Returns None
+        Triggers ``Sandbox.create_snapshot`` (creates a persistent snapshot
+        from the paused sandbox) on the bridge loop and reports its identity.
+        Returns None
         if the snapshot dir is absent or the operation fails, so the runner
         skips the ``snapshot_size`` series event without crashing.
 
@@ -260,7 +251,7 @@ class SandboxSchedProvider(EnvironmentProvider):
         if state is None or state.sandbox_obj is None:
             return None
         try:
-            snap = state.sandbox_obj.create_snapshot()
+            snap = self.manager.snapshot_handle(state)
             return {
                 "snapshot_id": getattr(snap, "id", ""),
                 "snapshot_state": getattr(getattr(snap, "status", None), "state", ""),
@@ -331,7 +322,7 @@ class SandboxSchedProvider(EnvironmentProvider):
         cm = state.creation_metrics
         sbx_id = ""
         if state.sandbox_obj is not None:
-            # SandboxSync.id is the OpenSandbox sandbox id (set at create by
+            # Sandbox.id is the OpenSandbox sandbox id (set at create by
             # the SDK). Falls back to "" for failed/no-handle states.
             sbx_id = str(getattr(state.sandbox_obj, "id", "") or "")
         status = _STATUS_MAP.get(cm.status.value, SandboxStatus.FAILED)

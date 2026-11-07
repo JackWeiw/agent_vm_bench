@@ -3,7 +3,8 @@
 Mirrors :mod:`env_provider.e2b.schemas`: the kernel works on host-agnostic
 :class:`bench_core.schemas.BenchSandbox` (built via ``BenchSandbox.from_instance``
 from the lean contract :class:`env_provider.SandboxInstance`); the manager +
-adapter keep the OpenSandbox SDK handle (``SandboxSync``) here and translate
+adapter keep the OpenSandbox SDK handle (async ``opensandbox.Sandbox``) here
+and translate
 out of it. The backend status enum + creation metrics are shared with e2b /
 docker via :mod:`env_provider._base` and re-exported under the sandboxsched
 names so imports read naturally.
@@ -27,8 +28,8 @@ __all__ = ["CreationMetrics", "SandboxState", "SandboxStatus"]
 class SandboxState:
     """Per-sandbox SandboxSched backend state.
 
-    Carries the SDK handle (``sandbox_obj``, an ``opensandbox.sync.sandbox.
-    SandboxSync``) + backend lifecycle flags + creation timing. Workflow task
+    Carries the SDK handle (``sandbox_obj``, an async ``opensandbox.Sandbox``)
+    + backend lifecycle flags + creation timing. Workflow task
     metrics (browser/coding/document), per-step timing, and round-robin tab
     state live on the kernel's :class:`bench_core.schemas.BenchSandbox`, not
     here: the adapter translates a ``SandboxState`` into a handle-free
@@ -38,7 +39,7 @@ class SandboxState:
     """
 
     sandbox_id: int  # Sequence number (1, 2, 3...) -- kernel index, NOT the SDK id
-    sandbox_obj: object | None = None  # OpenSandbox SandboxSync handle reference
+    sandbox_obj: object | None = None  # OpenSandbox async Sandbox handle reference
     batch_id: int = -1  # Batch ID
 
     workflow_type: str = "browser"  # Selects the ready-check strategy (set by the manager from kernel_config)
