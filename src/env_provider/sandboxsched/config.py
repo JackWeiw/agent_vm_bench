@@ -83,6 +83,13 @@ class Config:
     # the batch, so budget generously.
     ready_timeout: int = 300
 
+    # Whether sandbox-level requests (command exec, file ops) go through the
+    # OpenSandbox Server proxy instead of hitting the sandbox's execd endpoint
+    # directly. Enable when the resolved sandbox endpoints are not routable
+    # from the bench machine (port-forward / NAT / wildcard-DNS setups);
+    # direct access is the SDK default.
+    use_server_proxy: bool = False
+
     # Whether to skip the SDK's built-in health check at create/connect. The
     # kernel's own ReadyChecker (uname probe for replay/coding) is the source
     # of truth for readiness, so skip the SDK's ping-based check to avoid a
@@ -117,6 +124,7 @@ class Config:
             sandbox_ids_file=backend.get("sandbox_ids_file"),
             skip_health_check=bool(backend.get("skip_health_check", True)),
             ready_timeout=int(backend.get("ready_timeout", 300)),
+            use_server_proxy=bool(backend.get("use_server_proxy", False)),
         )
 
     def resolved_api_key(self) -> str:

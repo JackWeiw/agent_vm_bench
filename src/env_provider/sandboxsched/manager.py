@@ -237,16 +237,18 @@ class SandboxManager(BaseSandboxManager):
                 api_key=self.config.resolved_api_key() or None,
                 domain=self.config.domain,
                 protocol=self.config.protocol,
+                use_server_proxy=self.config.use_server_proxy,
             )
             # One-shot fingerprint so a failing run shows exactly which
             # server/template/credentials the provider resolved -- the top
             # suspects when the same create succeeds from a hand-written
             # script but fails under the kernel.
             logger.info(
-                "sandboxsched connect fingerprint: %s://%s | api_key=%s",
+                "sandboxsched connect fingerprint: %s://%s | api_key=%s | use_server_proxy=%s",
                 self.config.protocol,
                 self.config.domain,
                 "set" if self.config.resolved_api_key() else "none",
+                self.config.use_server_proxy,
             )
         return self._connection_config
 
