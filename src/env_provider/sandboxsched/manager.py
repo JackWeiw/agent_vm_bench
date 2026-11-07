@@ -300,7 +300,7 @@ class SandboxManager(BaseSandboxManager):
             return {
                 "success": False,
                 "create_elapsed": 0.0,
-                "error": str(e),
+                "error": _create_error_detail(e),
                 "template": resolved,
             }
 
@@ -468,6 +468,25 @@ class SandboxManager(BaseSandboxManager):
     def sandbox_states(self) -> dict[int, SandboxState]:
         """Adapter-facing alias for the base state registry."""
         return self._states
+
+
+def _create_error_detail(e: Exception) -> str:
+    """str(e) + the server's status/body when the SDK carries them.
+
+    ``SandboxApiException`` (HTTP 4xx/5xx) holds ``response_body`` -- the
+    server's actual complaint (e.g. why a create 500s); without it the log
+    only shows "create sandbox failed: http 500" and the root cause stays
+    invisible. Truncated to keep the metrics row readable.
+    """
+    parts = [str(e)]
+    status = getattr(e, "status_code", None)
+    if status is not None:
+        parts.append(f"status={status}")
+    body = getattr(e, "response_body", None)
+    if body:
+        text = body.decode(errors="replace") if isinstance(body, bytes) else str(body)
+        parts.append(f"body={text[:2000]}")
+    return " | ".join(parts)
 
 
 def _execution_to_result(execution: Any) -> tuple[int, str, str]:
