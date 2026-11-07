@@ -156,15 +156,15 @@ class TestSnapshot:
         snap = MagicMock()
         snap.id = "snap-1"
         snap.status.state = "Ready"
-        provider._manager.snapshot_handle.return_value = snap
+        provider._manager.latest_snapshot.return_value = snap
         result = provider.snapshot_sizes(SandboxInstance(id="x", index=1, ready=True))
         assert result == {"snapshot_id": "snap-1", "snapshot_state": "Ready"}
-        provider._manager.snapshot_handle.assert_called_once_with(st)
+        provider._manager.latest_snapshot.assert_called_once_with(st)
 
     def test_snapshot_none_on_exception(self, provider):
         st = _state(1)
         provider._manager.sandbox_states = {1: st}
-        provider._manager.snapshot_handle.side_effect = RuntimeError("nope")
+        provider._manager.latest_snapshot.side_effect = RuntimeError("nope")
         assert provider.snapshot_sizes(SandboxInstance(id="x", index=1)) is None
 
 

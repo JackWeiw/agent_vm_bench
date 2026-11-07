@@ -208,25 +208,23 @@ class SandboxSchedProvider(EnvironmentProvider):
 
     # ------------------------------------------------------------------ snapshot (SnapshotSizeCapable)
     def snapshot_sizes(self, inst: SandboxInstance) -> dict | None:
-        """Stat a snapshot's size for a paused sandbox.
+        """Report the sandbox's latest server-side snapshot.
 
-        Triggers ``Sandbox.create_snapshot`` (creates a persistent snapshot
-        from the paused sandbox) on the bridge loop and reports its identity.
-        Returns None
-        if the snapshot dir is absent or the operation fails, so the runner
-        skips the ``snapshot_size`` series event without crashing.
-
-        Note: unlike aenv (which stats a local overlaybd dir), sandboxsched
-        snapshots are server-side objects with no client-visible byte size in
-        the SDK model (``SnapshotInfo`` has no size field). This returns a
-        minimal dict (snapshot_id + state) so the series event fires for
-        latency accounting; a real size requires a server-side query (deferred).
+        The lifecycle flow calls this right after pausing. SandboxSched only
+        allows creating snapshots from a RUNNING sandbox, and pausing already
+        produces the server-side snapshot the next resume rebuilds from --
+        so this reports that snapshot instead of triggering a create (which
+        the server rejects). Returns None when the sandbox has no snapshot
+        (the runner skips the ``snapshot_size`` series event); unlike aenv,
+        ``SnapshotInfo`` carries no client-visible byte size.
         """
         state = self.manager.sandbox_states.get(inst.index)
         if state is None or state.sandbox_obj is None:
             return None
         try:
-            snap = self.manager.snapshot_handle(state)
+            snap = self.manager.latest_snapshot(state)
+            if snap is None:
+                return None
             return {
                 "snapshot_id": getattr(snap, "id", ""),
                 "snapshot_state": getattr(getattr(snap, "status", None), "state", ""),
