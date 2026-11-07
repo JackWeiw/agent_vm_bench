@@ -180,6 +180,11 @@ class _UserEnvdClient(EnvdClient):
 
 logger = logging.getLogger(__name__)
 
+# The SDK logs its own INFO chatter ("Creating sandbox with startup source:
+# ...", "Connecting to sandbox ...") which duplicates the base lifecycle
+# logs line-for-line at create time; keep warnings and errors only.
+logging.getLogger("opensandbox").setLevel(logging.WARNING)
+
 # SandboxState.state values (capitalized) -> kept/not-running for listing. The
 # SDK's SandboxState uses capitalized strings ("Running", "Paused", ...). We
 # list non-terminated sandboxes so detect/cleanup sees live + paused ones.
