@@ -238,6 +238,16 @@ class SandboxManager(BaseSandboxManager):
                 domain=self.config.domain,
                 protocol=self.config.protocol,
             )
+            # One-shot fingerprint so a failing run shows exactly which
+            # server/template/credentials the provider resolved -- the top
+            # suspects when the same create succeeds from a hand-written
+            # script but fails under the kernel.
+            logger.info(
+                "sandboxsched connect fingerprint: %s://%s | api_key=%s",
+                self.config.protocol,
+                self.config.domain,
+                "set" if self.config.resolved_api_key() else "none",
+            )
         return self._connection_config
 
     # --------------------------------------------------------- subclass seams
