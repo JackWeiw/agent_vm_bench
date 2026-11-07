@@ -17,6 +17,15 @@ coroutine and blocks on ``asyncio.run_coroutine_threadsafe(...).result()``
 (:meth:`SandboxManager.submit`). One loop for the manager's lifetime keeps
 every SDK handle / transport bound to the same loop, which is exactly what the
 SDK's ConnectionConfig transport-lifecycle note requires.
+
+The SDK covers the control plane only (create / connect / pause / resume /
+kill / list / endpoint resolution). E2B-mode sandboxes serve the DATA plane
+through envd -- Connect RPC on port 49983 -- on which the SDK's execd REST
+contract (``commands.run`` -> ``POST /command``) does not exist and 404s by
+design. Command execution therefore goes through the vendored
+:mod:`env_provider.sandboxsched.envd_client` (the upstream reference client
+from the opensandbox repo's ``examples/flux-sandbox-e2b/``), addressed either
+through the server proxy or the sandbox CNI IP per ``use_server_proxy``.
 """
 
 from __future__ import annotations
@@ -32,9 +41,7 @@ from typing import Any
 try:
     from opensandbox import Sandbox
     from opensandbox.config import ConnectionConfig
-    from opensandbox.exceptions import SandboxException
     from opensandbox.manager import SandboxManager as SdkSandboxManager
-    from opensandbox.models.execd import RunCommandOpts
     from opensandbox.models.sandboxes import SandboxFilter, SandboxState as SdkSandboxState
 except ImportError:  # pragma: no cover - SDK not installed in dev/test
     # Mock for development/testing without the opensandbox SDK. Mirrors the
@@ -131,13 +138,6 @@ except ImportError:  # pragma: no cover - SDK not installed in dev/test
             self.domain = domain
             self.protocol = protocol
 
-    class SandboxException(Exception):  # type: ignore[no-redef]
-        pass
-
-    class RunCommandOpts:  # type: ignore[no-redef]
-        def __init__(self, *, timeout=None, **kwargs):  # noqa: ARG002
-            self.timeout = timeout
-
     class SandboxFilter:  # type: ignore[no-redef]
         def __init__(self, *, states=None, page_size=None, page=None):  # noqa: ARG002
             self.states = states
@@ -152,6 +152,7 @@ except ImportError:  # pragma: no cover - SDK not installed in dev/test
 from env_provider._base import BaseSandboxManager, BackendSandboxStatus
 
 from .config import Config
+from .envd_client import ENVD_PORT, EnvdClient
 from .schemas import SandboxState
 
 logger = logging.getLogger(__name__)
@@ -209,6 +210,9 @@ class SandboxManager(BaseSandboxManager):
         self.config = config
         self._connection_config: ConnectionConfig | None = None
         self._loop_thread: _EventLoopThread | None = None
+        # sandbox_id -> envd base URL; resolved on first use, dropped on
+        # resume (the endpoint may change across pause/resume) and kill.
+        self._envd_urls: dict[str, str] = {}
 
     # --------------------------------------------------------- async bridge
     def submit(self, coro: Any) -> Any:
@@ -360,11 +364,60 @@ class SandboxManager(BaseSandboxManager):
         )
 
     def _kill_one(self, state: SandboxState) -> None:
+        self._envd_urls.pop(str(getattr(state.sandbox_obj, "id", "")), None)
         self.submit(state.sandbox_obj.kill())
 
+    def _envd_client_for(self, handle: Any) -> EnvdClient:
+        """An envd client for the sandbox behind ``handle`` (URL cached per id).
+
+        The URL is resolved once per sandbox through the control plane; the
+        envd client itself is plain blocking urllib -- no bridge needed.
+        """
+        sandbox_id = str(handle.id)
+        url = self._envd_urls.get(sandbox_id)
+        if url is None:
+            endpoint = self.submit(handle.get_endpoint(ENVD_PORT))
+            url = getattr(endpoint, "endpoint", "") or ""
+            if not url:
+                raise RuntimeError(f"sandbox {sandbox_id} has no published endpoint yet")
+            self._envd_urls[sandbox_id] = url
+        return EnvdClient(url, timeout=60.0)
+
     def _exec_probe(self, handle: Any, cmd: str, timeout: int) -> tuple[int, str, str]:
-        result = self.submit(handle.commands.run(cmd, opts=RunCommandOpts(timeout=timedelta(seconds=timeout))))
-        return _execution_to_result(result)
+        result = self._envd_client_for(handle).run(cmd, timeout=float(timeout))
+        return (
+            int(result.exit_code or 0),
+            result.stdout.decode("utf-8", "replace"),
+            result.stderr.decode("utf-8", "replace"),
+        )
+
+    def envd_exec(
+        self,
+        state: SandboxState,
+        command: str,
+        *,
+        timeout: int | None = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> tuple[int, str, str]:
+        """Run ``command`` through the envd data plane (adapter-facing exec).
+
+        ``cwd``/``env`` are natively supported by envd's Start request (the
+        SDK's RunCommandOpts detour is gone with it).
+        """
+        if state.sandbox_obj is None:
+            raise RuntimeError(f"No sandboxsched handle for sandbox index {state.sandbox_id}")
+        result = self._envd_client_for(state.sandbox_obj).run(
+            command,
+            envs=env,
+            cwd=cwd,
+            timeout=float(timeout) if timeout is not None else None,
+        )
+        return (
+            int(result.exit_code or 0),
+            result.stdout.decode("utf-8", "replace"),
+            result.stderr.decode("utf-8", "replace"),
+        )
 
     # ----------------------------------------------------- handle ops (adapter-facing)
     def pause_handle(self, state: SandboxState) -> None:
@@ -378,6 +431,7 @@ class SandboxManager(BaseSandboxManager):
         execd endpoint (it may change across pause/resume), so the caller must
         swap the returned handle in.
         """
+        self._envd_urls.pop(str(sandbox_id), None)  # endpoint may change across pause/resume
         return self.submit(
             Sandbox.resume(
                 sandbox_id,
@@ -467,14 +521,12 @@ class SandboxManager(BaseSandboxManager):
         return self._detect_each(matched, id_to_template=id_to_template)
 
     def check_alive(self, state: SandboxState) -> bool:
-        """Liveness via an exec probe (sandboxsched has no cheaper reload)."""
+        """Liveness via the envd health probe (``GET /health`` -> 204)."""
         sbx = state.sandbox_obj
         if not sbx or not state.is_alive:
             return False
         try:
-            result = self.submit(sbx.commands.run("echo alive", opts=RunCommandOpts(timeout=timedelta(seconds=10))))
-            exit_code, _, _ = _execution_to_result(result)
-            return exit_code == 0
+            return self._envd_client_for(sbx).health(timeout=5.0)
         except Exception:
             return False
 
@@ -503,28 +555,3 @@ def _create_error_detail(e: Exception) -> str:
         parts.append(f"body={text[:2000]}")
     return " | ".join(parts)
 
-
-def _execution_to_result(execution: Any) -> tuple[int, str, str]:
-    """Translate an OpenSandbox ``Execution`` -> (exit_code, stdout, stderr).
-
-    The SDK's ``Commands.run`` returns an ``Execution`` whose stdout is the
-    ``.text`` property (combined stdout log + result text) and whose stderr is
-    the joined ``logs.stderr`` messages; ``exit_code`` is None when the command
-    was interrupted/timed out server-side. Map a None exit_code to 124 (the
-    ``timeout(1)`` convention) so the runner can bucket it as timed_out, and
-    coalesce stderr from the ``error`` field when logs.stderr is empty.
-    """
-    stdout = getattr(execution, "text", "") or ""
-    logs = getattr(execution, "logs", None)
-    stderr = ""
-    if logs is not None:
-        stderr_msgs = getattr(logs, "stderr", None)
-        if stderr_msgs:
-            stderr = "\n".join(getattr(m, "text", "").rstrip("\n") for m in stderr_msgs)
-    exit_code = getattr(execution, "exit_code", None)
-    if exit_code is None:
-        err = getattr(execution, "error", None)
-        if err is not None and not stderr:
-            stderr = f"{getattr(err, 'name', 'error')}: {getattr(err, 'value', '')}"
-        exit_code = 124  # timed out / interrupted with no integer exit code
-    return int(exit_code), stdout, stderr

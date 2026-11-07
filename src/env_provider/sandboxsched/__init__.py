@@ -41,7 +41,7 @@ from env_provider import (
 from env_provider._base import BackendSandboxStatus
 
 from .config import Config
-from .manager import RunCommandOpts, SandboxManager, _execution_to_result
+from .manager import SandboxManager
 from .schemas import SandboxState
 
 logger = logging.getLogger(__name__)
@@ -148,38 +148,13 @@ class SandboxSchedProvider(EnvironmentProvider):
         state = self.manager.sandbox_states.get(inst.index)
         if state is None or state.sandbox_obj is None:
             raise RuntimeError(f"No sandboxsched handle for sandbox index {inst.index}")
-        # The OpenSandbox SDK's Commands.run takes opts=RunCommandOpts(...)
-        # rather than user=/cwd=/env= kwargs (e2b's signature). cwd/env are
-        # forwarded via RunCommandOpts when the kernel sets them (it currently
-        # sets only timeout). The async run coroutine is driven on the
-        # manager's bridge loop via submit().
-        from datetime import timedelta
-
-        opts_kwargs: dict[str, Any] = {}
-        if timeout is not None:
-            opts_kwargs["timeout"] = timedelta(seconds=timeout)
-        if cwd is not None:
-            opts_kwargs["working_directory"] = cwd
-        if env is not None:
-            opts_kwargs["envs"] = env
-        opts = RunCommandOpts(**opts_kwargs) if opts_kwargs else None
-        try:
-            result = self.manager.submit(state.sandbox_obj.commands.run(command, opts=opts))
-        except Exception as exc:
-            # The OpenSandbox SDK raises SandboxException on transport errors and
-            # (for some command paths) on nonzero exit, but the Execution it
-            # builds carries stdout/stderr/exit_code. Mirror e2b's exec: surface
-            # those as a normal CommandResult so the runner records a failed
-            # step with partial output and continues, instead of propagating and
-            # aborting the slice. A timeout that carries output but no integer
-            # exit code is mapped to 124 (the timeout(1) convention).
-            execution = getattr(exc, "execution", None) or getattr(exc, "result", None)
-            if execution is not None:
-                exit_code, stdout, stderr = _execution_to_result(execution)
-                return CommandResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
-            # Genuine transport error with no command output -> propagate.
-            raise
-        exit_code, stdout, stderr = _execution_to_result(result)
+        # E2B-mode sandboxes serve the data plane through envd (Connect RPC),
+        # not the SDK's execd REST contract -- commands.run 404s there by
+        # design. Route through the manager's envd client (server proxy or
+        # direct CNI access per use_server_proxy).
+        exit_code, stdout, stderr = self.manager.envd_exec(
+            state, command, timeout=timeout, cwd=cwd, env=env,
+        )
         return CommandResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
 
     # ------------------------------------------------------------------ id persistence
