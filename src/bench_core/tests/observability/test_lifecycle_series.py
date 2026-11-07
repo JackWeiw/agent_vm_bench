@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-from bench_core.observability.lifecycle_series import LifecycleSeriesWriter, iter_events, load_events
+from bench_core.observability.lifecycle_series import LifecycleSeriesWriter
 
 
 class TestLifecycleSeriesWriter:
@@ -132,16 +132,3 @@ class TestLifecycleSeriesWriter:
         assert len(lines) == n_threads * n_records
         for line in lines:
             json.loads(line)  # every line valid JSON (no interleaving)
-
-
-def test_iter_events_streams_and_skips_malformed(tmp_path: Path):
-    p = tmp_path / "series.jsonl"
-    p.write_text('{"event": "step", "i": 0}\nnot json\n\n{"event": "step", "i": 1}\n', encoding="utf-8")
-    it = iter_events(p)
-    assert not isinstance(it, list)  # a generator: the series is never materialized
-    assert [e["i"] for e in it] == [0, 1]
-    assert load_events(p) == [{"event": "step", "i": 0}, {"event": "step", "i": 1}]
-
-
-def test_iter_events_missing_file_yields_nothing(tmp_path: Path):
-    assert list(iter_events(tmp_path / "nope.jsonl")) == []

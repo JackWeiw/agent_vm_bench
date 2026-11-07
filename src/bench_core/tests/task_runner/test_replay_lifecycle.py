@@ -1012,7 +1012,7 @@ class TestOvercommitE2E:
         assert series_path.exists()  # exec_only now writes a step-only series
         events = [json.loads(l) for l in series_path.read_text().splitlines()]
         assert any(e["event"] == "step" for e in events)
-        # admission knobs ignored: no lifecycle events despite the knobs
+        # admission knobs ignored: no lifecycle/trajectory events despite the knobs
         assert not any(
             e["event"] in ("initial_pause", "snapshot_size", "trajectory_create", "trajectory_kill") for e in events
         )

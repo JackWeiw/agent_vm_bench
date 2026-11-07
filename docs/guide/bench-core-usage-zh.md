@@ -448,7 +448,7 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
 | 列 | 含义 |
 |----|------|
 | `trajectory_id` | 所属轨迹 instance_id;按轨迹筛/分组的主键 |
-| `sandbox_index` | 执行沙箱在 fleet 内下标(1..k×N 单进程;分片 trial 的 merged series 按 slot 偏移重键 shard 内下标,仍为 1..k×N),非后端 sandbox_id;对应 Gantt/concurrency 行 |
+| `sandbox_index` | 执行沙箱在 fleet 内下标(0..N-1),非后端 sandbox_id;对应 Gantt/concurrency 行 |
 | `round_id` | round_robin 轮次号;fixed runner 每 pass 盖一个递增序号(multiplier 同轨迹多 pass 保持独立 run 行) |
 | `step_index` | 轨迹内 step 序号(0-based) |
 | `action_type` | shell/bash/str_replace_editor/submit/finish/done;对应 Per-step timings 分桶 |
@@ -480,7 +480,7 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
 
 ### 8.5 超卖扫描 (`oversub-bench`)
 
-`oversub-bench` driver(`src/bench_core/oversub.py`)把 replay kernel 跑过一组内存/CPU 超卖比:`running_concurrency`(N)固定,`total_count = k×N` 每个 trial 缩放。每个 trial 一次 `bench-core` 调用(开启进程分片时每 shard 一次,见下文 `shards`);driver 读每个 trial 的机器可读 `run_summary.json`,聚合 per-trial + per-ratio 退化曲线。
+`oversub-bench` driver(`src/bench_core/oversub.py`)把 replay kernel 跑过一组内存/CPU 超卖比:`running_concurrency`(N)固定,`total_count = k×N` 每个 trial 缩放。每个 trial 一次 `bench-core` 调用;driver 读每个 trial 的机器可读 `run_summary.json`,聚合 per-trial + per-ratio 退化曲线。
 
 **分层:kernel 出原始事实,driver 算 valid。** driver 不导入任何 kernel 数据路径内部(lifecycle / admission / stats / observability)——只用 CLI、YAML schema、`run_summary.json` schema 和共享的 `setup_logging` 助手。kernel 不知道自己是"扫描的第 k 个 ratio",只输出发生了什么,driver 判定 trial 是否跑完。
 
@@ -492,7 +492,7 @@ oversub-bench --sweep-config config/oversub/lifecycle-1to3.yaml --ratios 4   # �
 oversub-bench --config config/common/replay.yaml --provider aenv --ratios 1,2,3   # 无 sweep-config
 ```
 
-优先级:**CLI 旗标 > sweep-config > 内置默认**。`--sweep-config` 承载所有旋钮 + `base_config`;`--config` 仅在没有 sweep-config 设 `base_config` 时必填。完整旗标集见 `oversub-bench --help`(`--running-concurrency`、`--modes`、`--repeats`、`--test-duration`、`--multiplier`、`--shards`、`--failure-tolerance`、`--cooldown-sec`、`--cleanup-between-trials`、`--trial-timeout-sec`、`--output-root`、`--reuse`、`--stop-on-failure`、`--dry-run`、`--no-vm-monitor`、`--bench-core-bin`)。
+优先级:**CLI 旗标 > sweep-config > 内置默认**。`--sweep-config` 承载所有旋钮 + `base_config`;`--config` 仅在没有 sweep-config 设 `base_config` 时必填。完整旗标集见 `oversub-bench --help`(`--running-concurrency`、`--modes`、`--repeats`、`--test-duration`、`--failure-tolerance`、`--cooldown-sec`、`--cleanup-between-trials`、`--trial-timeout-sec`、`--output-root`、`--reuse`、`--stop-on-failure`、`--dry-run`、`--no-vm-monitor`、`--bench-core-bin`)。
 
 #### sweep-config 键
 
@@ -505,7 +505,6 @@ oversub-bench --config config/common/replay.yaml --provider aenv --ratios 1,2,3 
 | `running_concurrency` | base `replay.running_concurrency` | N 个 running slot(跨 ratio 固定) |
 | `ratios` | `1,2,3` | k 值(list 或 `"1,2,3"`);`total_count = k×N` |
 | `modes` | `lifecycle,exec_ephemeral` | 要扫描的 replay mode(每个一条曲线) |
-| `shards` | `auto` | 每个 trial 的 kernel 子进程数 P(`auto` = ratio,仅 admission-free mode;见"进程分片") |
 | `repeats` | `1` | 每个 `(mode, ratio)` 重复次数(取中位) |
 | `test_duration` | base `test.duration`(600) | 每个 trial 硬上限(秒) |
 | `failure_tolerance` | `0.0` | trial 判 valid 时允许的最大 `failure_rate` |
@@ -533,18 +532,6 @@ driver 深拷贝 `base_config` 并只改写超卖字段,其余透传:
 | `report.output_dir` / `report.filename_prefix` | 每 trial 目录/前缀 | 隔离各 trial 产物 |
 
 `test.round_count`(工作量旋钮:跑几遍整个 fleet)透传。trial 在两者先到时结束:`round_count` 轮 OR `test.duration` 秒。`round_count: 1`(默认)= 有界单遍;`0` = 持续到 duration 的窗口。
-
-#### 进程分片(`shards`)
-
-高 ratio 下单进程客户端先于主机触顶:thread-per-sandbox kernel 的 dispatch 被单个 GIL 封顶(N=384 实测 ~50–55 steps/s,ratio≥7 后加压只涨客户端排队、不涨主机负载,r9/r10 数据为 client-bound)。`shards` 把一个 trial 的 k×N slot 拆成 P 个 `bench-core` 子进程(`auto` = P=k,每进程 ~N slot——把每个进程的负载钉在 1:1 已验证的水平,GIL 天花板抬到 ~P×)。机制在 `src/bench_core/oversub_shards.py`,driver 只做组合:
-
-- **只有 admission-free mode 可分片**(`exec_ephemeral` / `exec_only`)。`lifecycle` 的 `running_concurrency` 是全局准入上限,per-shard 各自准入会把峰值放大到 P×N、静默改变超卖 profile,因此始终单进程(显式 P>1 会 WARNING 降级,不报错——一份 sweep config 可跨 mode)。
-- **P≤ratio 时按 group 对齐切分**:每个 shard 的 slot 数是 N 的整数倍(slot k → pool[k % N]),合并后每条轨迹的 run 数与单进程 trial 完全一致(不只是总量一致);P>ratio 退化为 slot 级切分并 WARNING——总量保留,但单 shard 小于轨迹池,per-trajectory 分布会重排。
-- host 采集器由 **driver 独占**(不再挂在某个 shard 上):每个 shard 各自写自己的 stress 标记(`shard-XX/stress.lock`,`monitor.external_collector: true` 表示"只发标记、不 spawn 采集器"),driver 起**一个** `vm-monitor` 监听这些标记的**并集**(第一个 shard 进入 stress → 最后一个 shard 退出 stress),产物固定落在 **`trial_dir/vm_monitor/`**(与 `merged/`、`shard-*/` 同级),主机数据不随分片数变化、某个 shard 崩溃或拖慢也不再连累主机报告;sweep config 里显式写了 `monitor.log_dir` 时以配置为准,不覆盖。shard 0 只保留**控制面 fleet 计数**(`monitor.api_state: true` → `raw_data/api_state_raw.csv`):shard 是 kernel 进程、持有 provider handle,而 driver 只 shell 出去、没有 handle,轮询不了 API,只能让 shard 0 在它的采集窗口里顺带打计数;其余 shard 强制不发计数,避免 P 个进程重复打控制面。
-- 每个 shard 是完整独立的 kernel run:`trial_dir/shard-{i:02d}/` 下有 `shard.yaml`(total_count/round_size = 份额、`report.output_dir` = 本 shard 目录、docker `container_prefix` 加 `-s{i}` 后缀防容器重名、pacing 旋钮 `launch_interval_sec` / `create_batch.interval` / `task_batch.interval` ×P 保持全局创建/派发速率)+ `driver.log` + kernel 产物;`trial.yaml` 保留为未分片的逻辑 provenance。
-- driver 把 P 份产物合并回契约形状:`trial_dir/merged/{prefix}_run_summary.json` + `merged/trajectories/index.json` + `merged/{prefix}_lifecycle_series.jsonl`(计数求和、wall 取**包络**(max completed − min started,与 kernel 自身 `wall_sec == completed_epoch − started_epoch` 语义一致)、速率按包络 wall 重算、`sandbox_index` 按 shard slot 偏移重键保证 run key 唯一;merged index 的 entry 级聚合按 kernel 规则对**全部 shard 的 runs** 重算——success_rate 取 per-run 均值、elapsed_sec 取成功 run 的 p50(全失败回退全量 p50 + `all_failed`)、error type 跨 runs first-seen、deep `file` 留在各 shard 置 None;lifecycle series 按 slot 偏移重键 `sandbox_index` 后拼接成**全队**时间线,这样 inflight 并发分析看到的是全部 k×N slot 而不是单 shard 的 N——只读单个 shard 的 series 会把观测峰值封顶在 N,把分片误判成并发回归;`shard_count` / `shard_start_skew_sec` / `shard_return_codes` 等 provenance 走附加字段)——valid 判定、CSV、compare、`--reuse` 全部无感知。崩溃的 shard **绝不回填 0 冒充成功测量**:缺失 shard + rc 记入 merged `error`,trial 判 invalid。
-- `shards: 1`(或 ratio=1 的 `auto`)也走分片机制:单 shard 跑一遍 `shard-00/` + `merged/` + driver 独占的 `trial_dir/vm_monitor/`,布局与 P≥2 完全一致——agent 对比不同超卖比时只读一个固定结构,host 采集器在任意 ratio 都由 driver 持有。只有 `lifecycle`(不可分片)保留原单进程路径。
-- **全队一份 obs workbook**:每个 shard 各自写 `_obs.xlsx`(只覆盖自己那 N 个 slot,不能当 trial 结果读),driver 另出 `trial_dir/merged/{prefix}_obs.xlsx`,8 个 sheet 齐全。它不是把 P 份 workbook 拼接——三个由数据模型驱动的 sheet(Overview / Per-step timings / Lifecycle overhead)需要 `ReplayMetrics` 累加器,而分片进程的累加器随进程消失,所以用 `lifecycle_reconstruct.replay_states_from_events` 把 merged series 的事件按 kernel 自己的 `add` / `record_retry_event` / `append_retries_per_slice` 重放一遍重建(没有第二套聚合规则),其余五个 sheet 与 kernel 一样直接读同一份 merged series。Overview 是 trial 级:`total_count` = k×N、`running_concurrency` = N、`overcommit_ratio` = k,`wall_sec` 用包络,因此与 merged `run_summary.json` 的速率自洽;Admission 区块按构造为空(可分片 mode 无准入)。`report.format: txt` 时不生成(沿用 kernel 的 gate);渲染异常只 WARNING 降级、绝不让报告拖垮已跑完的 trial(各 shard workbook 与 merged JSON 仍在)。merged summary 的 `paths.obs_xlsx` 指向它。
 
 #### `run_summary.json` 字段(kernel → driver 契约)
 

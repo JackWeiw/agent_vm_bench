@@ -36,17 +36,6 @@ def test_cli_override_applied_to_config():
     assert cfg3.monitor.enabled == "true"
 
 
-def test_provider_vmm_type_matches_the_shipped_providers():
-    """Resolved from the class attribute alone -- no SDK, no provider instance."""
-    from bench_core.bench import provider_vmm_type
-
-    assert provider_vmm_type("e2b") == "firecracker"
-    assert provider_vmm_type("aenv") == "firecracker"  # subclasses E2BProvider
-    assert provider_vmm_type("cubesandbox") == "cubesandbox"
-    assert provider_vmm_type("docker") is None
-    assert provider_vmm_type("fake") is None
-
-
 # ---- monitor.skip forwarding (vm-monitor --no-X flags) ----
 
 

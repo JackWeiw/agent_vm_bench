@@ -178,16 +178,6 @@ def test_compute_valid_nonzero_return_code():
     assert compute_valid(s, return_code=2, n=384, failure_tolerance=0.0) is False
 
 
-def test_compute_valid_summary_error_fails_even_with_clean_rc():
-    # A merged sharded summary carries no single rc: a dead shard surfaces in
-    # ``error`` (and the surviving shards can still clear the count floor).
-    # --reuse passes rc=0 for a summary it finds on disk, so the error gate is
-    # what keeps a crashed trial from being reused as valid.
-    s = _summary()
-    s["error"] = "shard 3: exit code -9"
-    assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is False
-
-
 def test_compute_valid_no_work_done():
     s = _summary(total=0, succeeded=0)
     assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is False

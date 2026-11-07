@@ -72,19 +72,6 @@ _PROVIDERS: dict[str, tuple[str, str]] = {
 }
 
 
-def provider_vmm_type(name: str) -> str | None:
-    """A provider's VMM hint, resolved without constructing it (no SDK needed).
-
-    Same lazy-import trick as :func:`_capability_hint`: provider submodules
-    guard their SDK imports, so reading the class attribute is side-effect-free.
-    A consumer that holds no provider handle -- the oversub driver, which runs
-    the host collector for a whole sharded trial -- needs this to honour
-    ``monitor.vmm: auto`` exactly as the kernel would.
-    """
-    module_path, class_name = _PROVIDERS[name]
-    return getattr(getattr(importlib.import_module(module_path), class_name, None), "vmm_type", None)
-
-
 def _promote(instances: dict[int, SandboxInstance], workflow_type: str) -> dict[int, BenchSandbox]:
     """Promote each provider :class:`SandboxInstance` to a kernel state.
 

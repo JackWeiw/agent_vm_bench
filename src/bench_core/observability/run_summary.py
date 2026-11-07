@@ -122,10 +122,7 @@ def write_run_summary(
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     trajectory_index = output_dir / "trajectories" / "index.json"
-    # Report where the host collector actually wrote: monitor.log_dir when the
-    # operator -- or the shard planner, which hoists shard 0's output to the
-    # trial root -- overrides the <output_dir>/vm_monitor default.
-    vm_monitor_dir = Path(config.monitor.log_dir) if config.monitor.log_dir else output_dir / "vm_monitor"
+    vm_monitor_dir = output_dir / "vm_monitor"
 
     summary = {
         "schema_version": SCHEMA_VERSION,
