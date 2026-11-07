@@ -158,7 +158,7 @@ def test_reconstruct_concurrency_includes_trailing_empty_bins() -> None:
 # old within-step segment derivation dropped it -> paused was always 0.
 #
 # Whether that idle is "paused" is a property of the replay MODE, not of the
-# series: only lifecycle really snapshots. exec_only emits no
+# series: only lifecycle/trajectory really snapshot. exec_only emits no
 # lifecycle calls at all, and exec_ephemeral's no-op pause still takes ~1us of
 # wall clock, so its timestamp pairs are non-zero-width and a width heuristic
 # cannot tell the two apart. Callers pass the mode-derived ``paused_gaps``.

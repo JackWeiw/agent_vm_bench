@@ -2,7 +2,7 @@
 
 Covers the cooperative-SIGTERM shutdown + unconditional ``finally`` artifact
 flush added so an interrupted oversub trial still emits a partial
-``run_summary.json`` (and, for lifecycle, a partial
+``run_summary.json`` (and, for lifecycle/trajectory, a partial
 ``trajectories/index.json``) instead of carrying nothing for a trial that ran
 for hours.
 

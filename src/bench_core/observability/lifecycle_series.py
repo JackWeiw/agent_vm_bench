@@ -23,7 +23,7 @@ held through ``flush`` for every one of the ~2-3 writes per step across all
 Constructed by ``run_benchmark`` for every replay mode (``rcfg is not None``).
 The ``step`` event carries real exec timings in every mode, so exec_only's
 per-step data populates the obs workbook's Step detail / Trajectory summary /
-Concurrency / Gantt sheets; lifecycle additionally emits pause/resume/
+Concurrency / Gantt sheets; lifecycle/trajectory additionally emit pause/resume/
 initial_pause/snapshot_size events, so their Lifecycle-overhead and Snapshot-sizes
 sheets are populated while exec_only's stay sparse (no lifecycle events to curve).
 """
@@ -33,7 +33,6 @@ import json
 import logging
 import queue
 import threading
-from collections.abc import Iterator
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -118,34 +117,23 @@ class LifecycleSeriesWriter:
         self.close()
 
 
-def iter_events(path: Path) -> Iterator[dict]:
-    """Stream a lifecycle-series JSONL file event by event (bounded memory).
-
-    Same contract as :func:`load_events` -- malformed lines are skipped with a
-    warning, a missing file yields nothing -- but the caller never holds the
-    whole series. Use this on a fleet-wide series whose length scales with
-    ``total_count`` (a sharded trial's merged series): measured at ~4.6 KB per
-    materialized event dict, a 1:8 fleet's 461k step events cost ~2.1 GB as a
-    list vs ~240 MB streamed into accumulators.
-    """
-    p = Path(path)
-    if not p.exists():
-        return
-    with open(p, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                yield json.loads(line)
-            except json.JSONDecodeError:
-                logger.warning("skipping malformed series line in %s", p)
-
-
 def load_events(path: Path) -> list[dict]:
     """Read a lifecycle-series JSONL file into a list of event dicts.
 
     Malformed lines are skipped with a warning (the series is append-only +
     line-buffered; a torn final line is tolerable). Missing file -> [].
     """
-    return list(iter_events(path))
+    p = Path(path)
+    if not p.exists():
+        return []
+    out: list[dict] = []
+    with open(p, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                logger.warning("skipping malformed series line in %s", p)
+    return out
