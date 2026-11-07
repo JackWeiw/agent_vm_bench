@@ -52,6 +52,14 @@ dev = [
 # install only when using --provider cubesandbox.
 cubesandbox = ["cubesandbox>=0.7.0"]
 
+# OpenSandbox (SandboxSched) provider SDK -- sync client over the OpenSandbox
+# server. Same try/except pattern as cubesandbox: install only when using
+# --provider sandboxsched. 1.2.0 is the release whose API surface the provider
+# targets (ConnectionConfigSync / SandboxSync / SandboxManagerSync,
+# RunCommandOpts.working_directory/envs, SandboxFilter.states/page_size/page,
+# SandboxState class attrs).
+sandboxsched = ["opensandbox==1.2.0"]
+
 [project.scripts]
 vm-monitor = "vm_monitor.cli:main"
 bench-core = "bench_core.bench:main"

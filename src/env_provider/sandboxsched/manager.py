@@ -34,6 +34,13 @@ except ImportError:  # pragma: no cover - SDK not installed in dev/test
     # Mock for development/testing without the opensandbox SDK. Mirrors the
     # e2b manager's mock shape so the base lifecycle + unit tests run without
     # the SDK. The real seams use the sync SDK classes above.
+
+    logging.getLogger(__name__).warning(
+        "opensandbox SDK not installed: sandboxsched falls back to the inline "
+        "mock (sandbox ids come out as 'mock_sandbox_id', no real server "
+        "calls). Install with: pip install 'agent-vm-bench[sandboxsched]'"
+    )
+
     class _MockCommands:  # type: ignore[no-redef]
         def run(self, command, *, opts=None, handlers=None):  # noqa: ARG002
             class _Result:
