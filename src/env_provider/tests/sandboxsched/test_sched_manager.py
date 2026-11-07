@@ -5,11 +5,13 @@ controllable fake OpenSandbox SDK (async ``Sandbox`` / ``SandboxManager``)
 into the manager module and drive the real base lifecycle (create_all /
 detect_existing / detect_from_file / cleanup_all) through it, locking the SDK
 seam contract: ``Sandbox.create(image, *, extensions, skip_health_check)``
--> handle with ``.id`` / ``.commands.run(cmd, opts=)`` / ``.kill()``, the
-paginator flatten in ``_list_existing``, ``Sandbox.connect`` for attach, and
-``_execution_to_result`` (Execution.text/logs.stderr/exit_code -> tuple, None
-exit_code -> 124). All fake SDK methods are coroutines -- the manager's
-submit() drives them on its bridge loop exactly like the real SDK.
+-> handle with ``.id`` / ``.get_endpoint(port)`` / ``.kill()``, the paginator
+flatten in ``_list_existing``, ``Sandbox.connect`` for attach. Command
+execution rides the vendored envd client (E2B-mode sandboxes speak envd's
+Connect RPC, not the SDK's execd REST contract) -- these tests stub the
+manager's ``_envd_client_for`` with a fake client. All fake SDK methods are
+coroutines -- the manager's submit() drives them on its bridge loop exactly
+like the real SDK.
 
 The opensandbox SDK is an optional extra; the manager module imports the async
 classes under a try/except that falls back to an inline mock. These tests
@@ -33,71 +35,25 @@ from bench_core.workflow_registry import ensure_workflow_registered
 ensure_workflow_registered("coding")
 from env_provider.sandboxsched import manager as mgr_mod
 from env_provider.sandboxsched.config import Config
-from env_provider.sandboxsched.manager import SandboxManager, _execution_to_result
+from env_provider.sandboxsched.manager import SandboxManager
 
 
 # -------------------------------------------------------------------- SDK fakes
-class _OutputMessage:
-    def __init__(self, text: str, is_error: bool = False):
-        self.text = text
-        self.is_error = is_error
+class _RunResult:
+    """Stand-in for envd_client.RunResult (exec via the envd data plane)."""
 
-
-class _ExecutionLogs:
-    def __init__(self, stdout=(), stderr=()):
-        self.stdout = [_OutputMessage(t) for t in stdout]
-        self.stderr = [_OutputMessage(t, is_error=True) for t in stderr]
-
-
-class _ExecutionError:
-    def __init__(self, name: str, value: str):
-        self.name = name
-        self.value = value
-
-
-class _Execution:
-    """Fake opensandbox Execution (commands.run return value)."""
-
-    def __init__(self, *, exit_code=None, stdout=(), stderr=(), error=None, result_text=()):
+    def __init__(self, exit_code=0, stdout=b"", stderr=b""):
         self.exit_code = exit_code
-        self.logs = _ExecutionLogs(stdout=stdout, stderr=stderr)
-        self.error = error
-        self._result_text = result_text
-
-    @property
-    def text(self) -> str:
-        chunks = [m.text.rstrip("\n") for m in self.logs.stdout]
-        chunks.extend(t.rstrip("\n") for t in self._result_text if t)
-        return "\n".join(chunks)
-
-
-class _RunResult(_Execution):
-    """Convenience: a normal result with an integer exit code + stdout text."""
-
-    def __init__(self, exit_code: int = 0, stdout_text: str = "", stderr_text: str = ""):
-        stdout = [stdout_text] if stdout_text else []
-        stderr = [stderr_text] if stderr_text else []
-        super().__init__(exit_code=exit_code, stdout=stdout, stderr=stderr)
-
-
-class _FakeCommands:
-    def __init__(self, *, ready: bool = True):
-        self._ready = ready
-        self.calls: list[str] = []
-
-    async def run(self, cmd, *, opts=None, handlers=None):  # noqa: ARG002
-        self.calls.append(cmd)
-        if self._ready:
-            return _RunResult(0, "Linux sandbox 6.6 aarch64\n", "")
-        return _RunResult(1, "", "")
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 class _FakeSandboxSync:
-    """A single OpenSandbox SandboxSync handle (created or connected)."""
+    """A single OpenSandbox Sandbox handle (created or connected)."""
 
     def __init__(self, sid: str, *, ready: bool = True):
         self.id = sid
-        self.commands = _FakeCommands(ready=ready)
+        self.ready = ready
         self.killed = False
         self.paused = False
 
@@ -109,6 +65,12 @@ class _FakeSandboxSync:
 
     async def close(self):  # noqa: ARG002
         pass
+
+    async def get_endpoint(self, port):  # noqa: ARG002
+        class _Endpoint:
+            endpoint = "http://cni-ip:49983"
+
+        return _Endpoint()
 
 
 class _Pagination:
@@ -139,7 +101,7 @@ class _FakeSandboxSyncCls:
         self._ready = True
 
     def set_ready(self, ready: bool) -> None:
-        self._ready = ready
+        self._ready = ready  # noqa: ARG002  (envd readiness is stubbed separately now)
 
     async def create(
         self,
@@ -246,31 +208,6 @@ def patched_sdk(monkeypatch):
     return fake_sandbox, fake_manager_inner
 
 
-# -------------------------------------------------------------------- _execution_to_result
-class TestExecutionToResult:
-    def test_integer_exit_code(self):
-        ex = _RunResult(0, "hi\n")
-        assert _execution_to_result(ex) == (0, "hi", "")
-
-    def test_none_exit_code_maps_to_124(self):
-        ex = _Execution(exit_code=None, stdout=["partial\n"])
-        assert _execution_to_result(ex) == (124, "partial", "")
-
-    def test_stderr_joined(self):
-        ex = _RunResult(2, "out", "err line 1\nerr line 2\n")
-        code, out, err = _execution_to_result(ex)
-        assert code == 2
-        assert out == "out"
-        assert err == "err line 1\nerr line 2"
-
-    def test_none_exit_code_fills_stderr_from_error(self):
-        err = _ExecutionError("TimeoutError", "command timed out")
-        ex = _Execution(exit_code=None, error=err)
-        code, _, stderr = _execution_to_result(ex)
-        assert code == 124
-        assert "TimeoutError" in stderr
-
-
 # -------------------------------------------------------------------- create / cleanup
 class TestCreateAndCleanup:
     def test_create_all_creates_handles(self, kernel_config, sched_config, patched_sdk):
@@ -339,26 +276,45 @@ class TestDetectAndList:
         assert fake_sandbox.connected == ["keep-1"]
 
 
-# -------------------------------------------------------------------- exec probe
+# -------------------------------------------------------------------- exec probe (envd)
+class _StubEnvd:
+    """Fake envd client: records commands, returns canned results."""
+
+    def __init__(self, *, healthy: bool = True, stdout: bytes = b"Linux sandbox 6.6 aarch64\n"):
+        self.healthy = healthy
+        self.stdout = stdout
+        self.commands: list[str] = []
+
+    def run(self, cmd, *, envs=None, cwd=None, timeout=None):  # noqa: ARG002
+        self.commands.append(cmd)
+        return _RunResult(0, self.stdout, b"")
+
+    def health(self, timeout=None):  # noqa: ARG002
+        return self.healthy
+
+
 class TestExecProbe:
-    def test_exec_probe_returns_tuple(self, kernel_config, sched_config, patched_sdk):
+    def test_exec_probe_routes_through_envd(self, kernel_config, sched_config, patched_sdk, monkeypatch):
         mgr = SandboxManager(kernel_config, sched_config, Event())
         states = mgr.create_all()
         handle = mgr._handle_of(next(iter(states.values())))
+        envd = _StubEnvd()
+        monkeypatch.setattr(mgr, "_envd_client_for", lambda h: envd)
         code, out, _ = mgr._exec_probe(handle, "uname -a", timeout=10)
         assert code == 0
         assert "Linux sandbox" in out
+        assert envd.commands == ["uname -a"]
 
-    def test_check_alive_true_on_zero_exit(self, kernel_config, sched_config, patched_sdk):
+    def test_check_alive_true_on_healthy_envd(self, kernel_config, sched_config, patched_sdk, monkeypatch):
         mgr = SandboxManager(kernel_config, sched_config, Event())
         states = mgr.create_all()
         state = next(iter(states.values()))
+        monkeypatch.setattr(mgr, "_envd_client_for", lambda h: _StubEnvd(healthy=True))
         assert mgr.check_alive(state) is True
 
-    def test_check_alive_false_when_not_ready(self, kernel_config, sched_config, patched_sdk):
-        fake_sandbox, _ = patched_sdk
-        fake_sandbox.set_ready(False)
+    def test_check_alive_false_on_unhealthy_envd(self, kernel_config, sched_config, patched_sdk, monkeypatch):
         mgr = SandboxManager(kernel_config, sched_config, Event())
         states = mgr.create_all()
         state = next(iter(states.values()))
+        monkeypatch.setattr(mgr, "_envd_client_for", lambda h: _StubEnvd(healthy=False))
         assert mgr.check_alive(state) is False
