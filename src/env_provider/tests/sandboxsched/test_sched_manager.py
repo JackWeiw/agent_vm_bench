@@ -153,6 +153,7 @@ class _FakeSandboxSyncCls:
         extensions=None,  # noqa: ARG002
         connection_config=None,
         skip_health_check=False,
+        ready_timeout=None,  # noqa: ARG002
     ):  # noqa: ARG002
         self._next_id += 1
         sid = f"sbx-{self._next_id:04d}"
@@ -160,11 +161,11 @@ class _FakeSandboxSyncCls:
         self.created.append((image, extensions, sbx))
         return sbx
 
-    async def connect(self, sandbox_id, connection_config=None, skip_health_check=False):  # noqa: ARG002
+    async def connect(self, sandbox_id, connection_config=None, skip_health_check=False, connect_timeout=None):  # noqa: ARG002
         self.connected.append(sandbox_id)
         return _FakeSandboxSync(sandbox_id, ready=self._ready)
 
-    async def resume(self, sandbox_id, connection_config=None, skip_health_check=False):  # noqa: ARG002
+    async def resume(self, sandbox_id, connection_config=None, skip_health_check=False, resume_timeout=None):  # noqa: ARG002
         self.resumed.append(sandbox_id)
         return _FakeSandboxSync(sandbox_id, ready=self._ready)
 

@@ -76,6 +76,13 @@ class Config:
     # Sandbox IDs file (for save/load sandbox IDs across runs).
     sandbox_ids_file: str | None = None
 
+    # How long (seconds) the SDK waits for the sandbox's execd/egress endpoints
+    # to publish after the create POST (and for connect/resume readiness). The
+    # SDK default is 30s -- fine for a single create, but the kernel brings up
+    # a fleet concurrently and endpoint publication queues behind the rest of
+    # the batch, so budget generously.
+    ready_timeout: int = 300
+
     # Whether to skip the SDK's built-in health check at create/connect. The
     # kernel's own ReadyChecker (uname probe for replay/coding) is the source
     # of truth for readiness, so skip the SDK's ping-based check to avoid a
@@ -109,6 +116,7 @@ class Config:
             resource=backend.get("resource"),
             sandbox_ids_file=backend.get("sandbox_ids_file"),
             skip_health_check=bool(backend.get("skip_health_check", True)),
+            ready_timeout=int(backend.get("ready_timeout", 300)),
         )
 
     def resolved_api_key(self) -> str:

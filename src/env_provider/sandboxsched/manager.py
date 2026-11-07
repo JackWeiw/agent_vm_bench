@@ -281,6 +281,7 @@ class SandboxManager(BaseSandboxManager):
                     extensions={"sandboxGroup": self.config.sandbox_group},
                     connection_config=self._connection(),
                     skip_health_check=self.config.skip_health_check,
+                    ready_timeout=timedelta(seconds=self.config.ready_timeout),
                 )
             )
             state.sandbox_obj = sbx
@@ -342,6 +343,7 @@ class SandboxManager(BaseSandboxManager):
                 self._external_id(listed),
                 connection_config=self._connection(),
                 skip_health_check=self.config.skip_health_check,
+                connect_timeout=timedelta(seconds=self.config.ready_timeout),
             )
         )
 
@@ -369,6 +371,7 @@ class SandboxManager(BaseSandboxManager):
                 sandbox_id,
                 connection_config=self._connection(),
                 skip_health_check=self.config.skip_health_check,
+                resume_timeout=timedelta(seconds=self.config.ready_timeout),
             )
         )
 
