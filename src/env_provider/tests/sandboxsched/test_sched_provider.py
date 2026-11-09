@@ -150,21 +150,9 @@ class TestEphemeral:
 
 # -------------------------------------------------------------------- snapshot
 class TestSnapshot:
-    def test_snapshot_returns_dict_on_success(self, provider):
-        st = _state(1)
-        provider._manager.sandbox_states = {1: st}
-        snap = MagicMock()
-        snap.id = "snap-1"
-        snap.status.state = "Ready"
-        provider._manager.latest_snapshot.return_value = snap
-        result = provider.snapshot_sizes(SandboxInstance(id="x", index=1, ready=True))
-        assert result == {"snapshot_id": "snap-1", "snapshot_state": "Ready"}
-        provider._manager.latest_snapshot.assert_called_once_with(st)
-
-    def test_snapshot_none_on_exception(self, provider):
-        st = _state(1)
-        provider._manager.sandbox_states = {1: st}
-        provider._manager.latest_snapshot.side_effect = RuntimeError("nope")
+    def test_snapshot_sizes_returns_none(self, provider):
+        # No size query exists for SandboxSched snapshots (see review): the
+        # kernel must skip the snapshot_size series event entirely.
         assert provider.snapshot_sizes(SandboxInstance(id="x", index=1)) is None
 
 

@@ -208,30 +208,18 @@ class SandboxSchedProvider(EnvironmentProvider):
 
     # ------------------------------------------------------------------ snapshot (SnapshotSizeCapable)
     def snapshot_sizes(self, inst: SandboxInstance) -> dict | None:
-        """Report the sandbox's latest server-side snapshot.
+        """Report no snapshot size: SandboxSched has none to stat.
 
-        The lifecycle flow calls this right after pausing. SandboxSched only
-        allows creating snapshots from a RUNNING sandbox, and pausing already
-        produces the server-side snapshot the next resume rebuilds from --
-        so this reports that snapshot instead of triggering a create (which
-        the server rejects). Returns None when the sandbox has no snapshot
-        (the runner skips the ``snapshot_size`` series event); unlike aenv,
-        ``SnapshotInfo`` carries no client-visible byte size.
+        The lifecycle flow calls this after every pause, but the SDK model
+        carries no byte size for a snapshot (``SnapshotInfo`` has only id /
+        status / created_at), and creating one is not a stat -- the server
+        rejects ``create_snapshot`` from a paused sandbox ("can only be
+        created from a running sandbox") and a persistent snapshot per pause
+        would accumulate server-side garbage the kernel never reads. Return
+        ``None`` so the kernel skips the ``snapshot_size`` series event
+        entirely; re-enable this hook when a real size query exists.
         """
-        state = self.manager.sandbox_states.get(inst.index)
-        if state is None or state.sandbox_obj is None:
-            return None
-        try:
-            snap = self.manager.latest_snapshot(state)
-            if snap is None:
-                return None
-            return {
-                "snapshot_id": getattr(snap, "id", ""),
-                "snapshot_state": getattr(getattr(snap, "status", None), "state", ""),
-            }
-        except Exception as e:
-            logger.warning(f"snapshot_sizes failed for sandbox {inst.id}: {e}")
-            return None
+        return None
 
     # ------------------------------------------------------------------ ephemeral (EphemeralCapable)
     def create_one(

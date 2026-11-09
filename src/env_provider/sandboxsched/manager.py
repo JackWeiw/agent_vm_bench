@@ -42,11 +42,7 @@ try:
     from opensandbox import Sandbox
     from opensandbox.config import ConnectionConfig
     from opensandbox.manager import SandboxManager as SdkSandboxManager
-    from opensandbox.models.sandboxes import (
-        SandboxFilter,
-        SnapshotFilter,
-        SandboxState as SdkSandboxState,
-    )
+    from opensandbox.models.sandboxes import SandboxFilter, SandboxState as SdkSandboxState
 except ImportError:  # pragma: no cover - SDK not installed in dev/test
     # Mock for development/testing without the opensandbox SDK. Mirrors the
     # e2b manager's mock shape so the base lifecycle + unit tests run without
@@ -469,30 +465,7 @@ class SandboxManager(BaseSandboxManager):
             )
         )
 
-    async def _latest_snapshot_async(self, sandbox_id: str) -> Any | None:
-        manager = await SdkSandboxManager.create(connection_config=self._connection())
-        try:
-            paged = await manager.list_snapshots(
-                SnapshotFilter(sandbox_id=sandbox_id, page_size=1, page=1)
-            )
-            infos = paged.snapshot_infos
-            return infos[0] if infos else None
-        finally:
-            await manager.close()
 
-    def latest_snapshot(self, state: SandboxState) -> Any | None:
-        """The sandbox's most recent server-side snapshot (None if absent).
-
-        Pausing a sandbox produces a server-side snapshot (the next resume
-        rebuilds from it), so this reports the pause-generated snapshot for
-        the lifecycle snapshot-size series. Snapshots cannot be CREATED from
-        a paused sandbox (server rejects: "snapshot can only be created from
-        a running sandbox"), which is why this queries instead of creating.
-        """
-        sandbox_id = str(getattr(state.sandbox_obj, "id", "") or "")
-        if not sandbox_id:
-            return None
-        return self.submit(self._latest_snapshot_async(sandbox_id))
 
     # ----------------------------------------------------- sandboxsched-specific
     def detect_from_file(self, ids_file: str) -> dict[int, SandboxState]:
