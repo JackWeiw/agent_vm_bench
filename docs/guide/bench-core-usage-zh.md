@@ -292,7 +292,7 @@ aenv lifecycle 内存超卖压测的 1:1 基线配置。
 **exec_ephemeral = B 的 no-lifecycle 临时模型**(客户真实负载):每轮 `create_one` → 裸 exec 每步
 (无 pause/resume)→ `kill_one`,轮间沙箱杀掉重建。与 exec_only 一样无 pause/resume、无 admission
 (k×N 全并发),但沙箱**临时**(exec_only 长驻)。`launch_interval_sec` 也对它生效(节流每轮 create 突发)。
-**这是 `oversub-bench` 的默认扫描 mode**(默认 `lifecycle,exec_ephemeral`);驱动在自动套用默认(未传
+**这是 `oversub-bench` 的默认扫描 mode**(默认 `exec_ephemeral,lifecycle` —— exec_ephemeral 纯 COW 曲线在前,lifecycle 其次);驱动在自动套用默认(未传
 `--modes`、sweep 也未设 `modes`)时会 WARNING。`tasks_per_sec` 含每轮 create+kill 成本,**不能与
 exec_only 直接比**;调 `test.duration` 需比 exec_only 更大(k×N×round_count 个 create+exec+kill 周期)。
 评分口径用 `stress_tasks_per_sec`(只按每条轨迹的 `stress_sec` 汇总,create/kill 不计入),
@@ -504,7 +504,7 @@ oversub-bench --config config/common/replay.yaml --provider aenv --ratios 1,2,3 
 | `provider` | `aenv` | `{aenv, e2b, docker, fake}` |
 | `running_concurrency` | base `replay.running_concurrency` | N 个 running slot(跨 ratio 固定) |
 | `ratios` | `1,2,3` | k 值(list 或 `"1,2,3"`);`total_count = k×N` |
-| `modes` | `lifecycle,exec_ephemeral` | 要扫描的 replay mode(每个一条曲线) |
+| `modes` | `exec_ephemeral,lifecycle` | 要扫描的 replay mode(每个一条曲线;默认 exec_ephemeral 纯 COW 在前,lifecycle 其次) |
 | `shards` | `auto` | 每个 trial 的 kernel 子进程数 P(`auto` = ratio,仅 admission-free mode;见"进程分片") |
 | `repeats` | `1` | 每个 `(mode, ratio)` 重复次数(取中位) |
 | `test_duration` | base `test.duration`(600) | 每个 trial 硬上限(秒) |

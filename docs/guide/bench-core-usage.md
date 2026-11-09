@@ -574,7 +574,7 @@ Precedence: **CLI flag > sweep-config > built-in default**. `--sweep-config` car
 | `provider` | `aenv` | `{aenv, e2b, docker, fake}` |
 | `running_concurrency` | base `replay.running_concurrency` | N running slots (fixed across ratios) |
 | `ratios` | `1,2,3` | k values (list or `"1,2,3"`); `total_count = k×N` |
-| `modes` | `lifecycle,exec_ephemeral` | replay modes to sweep (one curve each) |
+| `modes` | `exec_ephemeral,lifecycle` | replay modes to sweep (one curve each; default = exec_ephemeral pure-COW first, then lifecycle) |
 | `repeats` | `1` | repeats per `(mode, ratio)` for medians |
 | `test_duration` | base `test.duration` (600) | hard ceiling per trial (sec) |
 | `failure_tolerance` | `0.0` | max `failure_rate` for a trial to count valid |
