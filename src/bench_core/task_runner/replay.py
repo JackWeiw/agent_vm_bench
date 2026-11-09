@@ -717,9 +717,10 @@ class ReplayBaseRunner(TaskRunner):
             )
         if result.exit_code != 0:
             # Non-zero exits were previously invisible: metrics counted them
-            # but neither the action nor its stderr reached any log, so a
-            # failing step was undiagnosable from the run output alone.
-            logger.warning(
+            # but neither the action nor its stderr reached any log. DEBUG
+            # (not WARNING): replayed traces legitimately contain non-zero
+            # steps -- the detail matters only while debugging a run.
+            logger.debug(
                 "[Sandbox%d] step %d exit=%d action=%r stderr=%r",
                 self.state.index,
                 step.index,
