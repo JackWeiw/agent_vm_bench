@@ -396,6 +396,7 @@ config/
 ## Related Documentation
 
 - [docs/guide/bench-core-usage-zh.md](docs/guide/bench-core-usage-zh.md) — src kernel usage (install→config→CLI→cleanup→troubleshooting)
+- [docs/guide/oversub-bench-usage.md](docs/guide/oversub-bench-usage.md) / [docs/guide/oversub-bench-usage-zh.md](docs/guide/oversub-bench-usage-zh.md) — `oversub-bench` sweep driver + `oversub-compare` (CN/EN; §8.5 pointer in the usage guides)
 - [docs/superpowers/specs/2026-08-12-environment-provider-bench-core-design.md](docs/superpowers/specs/2026-08-12-environment-provider-bench-core-design.md) — EnvironmentProvider + bench_core design (local working doc)
 - [docs/architecture/design.md](docs/architecture/design.md) / [docs/architecture/design-en.md](docs/architecture/design-en.md) — system architecture (CN/EN)
 - [docs/dev/metrics-reference.md](docs/dev/metrics-reference.md) — bench_core kernel + vm_monitor sheet metrics, /proc & /sys collection sources, calculation formulas
