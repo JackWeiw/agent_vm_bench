@@ -69,8 +69,8 @@ TRAJECTORY_METRIC_COLS = [
 # The component set the user wants dissected (exec / resume / pause / wait).
 # create/kill are omitted: in lifecycle/exec_only they are not per-trajectory
 # (create happens once at create_all, kill at cleanup; the kernel records 0.0
-# per step for non-trajectory modes), so the heatmap would carry only flat
-# zeros. They remain in the tidy CSV for drill-down if a trajectory-mode
+# per step in those modes), so the heatmap would carry only flat
+# zeros. They remain in the tidy CSV for drill-down if a per-step create/kill
 # comparison ever needs them. "wait" surfaces as slot_contention_wait_sec --
 # the headline queueing wait; its sub-decomposition (capacity / rate_pacing /
 # inflight) is in the tidy CSV too.
@@ -110,7 +110,14 @@ _STAT_DEG_PAIRS = [
 # Trial-summary CSV metric columns surfaced in the ratio summary (per-trial
 # aggregates, distinct from the per-trajectory medians). Must match
 # bench_core.oversub.TRIAL_COLUMNS exactly.
-TRIAL_METRIC_COLS = ["wall_sec", "tasks_per_sec", "lifecycle_overhead_pct", "avg_queue_wait_sec"]
+TRIAL_METRIC_COLS = [
+    "wall_sec",
+    "tasks_per_sec",
+    "mean_stress_sec",
+    "stress_tasks_per_sec",
+    "lifecycle_overhead_pct",
+    "avg_queue_wait_sec",
+]
 
 # Heatmap color scale: sequential single hue, light -> dark (dataviz:
 # sequential = one hue, never a rainbow). White -> deep blue.
@@ -252,9 +259,9 @@ def build_ratio_summary(
     Long form (one row per metric) so the xlsx can pivot freely. Metrics come
     from the trajectory tidy (per-trajectory stats; pandas' interpolated
     quantiles) + the trial-summary tables (per-trial medians only: wall_sec /
-    tasks_per_sec / lifecycle_overhead / avg_queue_wait -- the stat-pack
-    columns are NaN for those). A series without a k=1 trial yields blank
-    degradation (no baseline to normalize to), not a crash.
+    tasks_per_sec / mean_stress_sec / stress_tasks_per_sec / lifecycle_overhead /
+    avg_queue_wait -- the stat-pack columns are NaN for those). A series without
+    a k=1 trial yields blank degradation (no baseline to normalize to), not a crash.
     """
     baseline = manifest["baseline_series"]
     # Trajectory-derived stat pack: groupby series/mode/ratio/metric over all

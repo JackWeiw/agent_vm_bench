@@ -3,7 +3,7 @@
 Task 7 of the multi-template replay plan. The runner must route each trajectory
 only to a sandbox whose template matches (``_affinity_pool``), skip an orphan
 sandbox whose template has no matching trajectory, and pass ``template=`` to
-``create_one`` in trajectory mode. Legacy (no manifest, all templates None)
+``create_one`` in exec_ephemeral mode. Legacy (no manifest, all templates None)
 must behave identically to the pre-Task-7 flat cursor.
 """
 from __future__ import annotations
@@ -256,11 +256,11 @@ def test_round_runner_affinity_filters(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Trajectory mode: create_one(template=traj.template)
+# exec_ephemeral: create_one(template=traj.template)
 # ---------------------------------------------------------------------------
 
 
-def test_trajectory_create_one_passes_template(tmp_path, monkeypatch):
+def test_exec_ephemeral_create_one_passes_template(tmp_path, monkeypatch):
     """_run_trajectory passes template=traj.template to provider.create_one."""
 
     provider = FakeProvider(count=1)
@@ -275,7 +275,7 @@ def test_trajectory_create_one_passes_template(tmp_path, monkeypatch):
 
     cfg = KernelConfig(
         workflow_type="replay",
-        workflow_config=ReplayConfig(replay_mode="trajectory", replay_delay_scale=0.0),
+        workflow_config=ReplayConfig(replay_mode="exec_ephemeral", replay_delay_scale=0.0),
     )
     state = _sandbox(0, "swb-a")
     state.ready = True
@@ -338,8 +338,8 @@ def test_exec_ephemeral_kills_and_recreates_between_rounds(tmp_path, monkeypatch
     """exec_ephemeral: each _run_trajectory is create_one -> bare exec -> kill_one,
     so round N ends in kill_one and round N+1 starts in create_one -- kill+
     recreate between rounds (the customer's real ephemeral workload). FakeProvider
-    is EphemeralCapable, so _run_trajectory's is_ephemeral branch fires real
-    create/kill; admission=None (no bench spine) keeps them ungated."""
+    is EphemeralCapable, so _run_trajectory fires real create/kill; admission=None
+    (no bench spine) keeps them ungated."""
     provider = FakeProvider(count=1)
     events: list[str] = []
     real_create = provider.create_one
@@ -474,8 +474,8 @@ def test_exec_ephemeral_fixed_do_run_routes_to_run_trajectory(tmp_path, monkeypa
     assert all(r in ("a", "c") for r in routed)  # cursor never leaves the swb-a pool
 
 
-def test_trajectory_create_one_none_template(tmp_path, monkeypatch):
-    """Legacy trajectory (template=None) passes template=None to create_one."""
+def test_exec_ephemeral_create_one_none_template(tmp_path, monkeypatch):
+    """Legacy (no manifest, template=None) passes template=None to create_one."""
     provider = FakeProvider(count=1)
     create_calls: list[dict] = []
     real_create_one = provider.create_one
@@ -488,7 +488,7 @@ def test_trajectory_create_one_none_template(tmp_path, monkeypatch):
 
     cfg = KernelConfig(
         workflow_type="replay",
-        workflow_config=ReplayConfig(replay_mode="trajectory", replay_delay_scale=0.0),
+        workflow_config=ReplayConfig(replay_mode="exec_ephemeral", replay_delay_scale=0.0),
     )
     state = _sandbox(0, None)
     state.ready = True

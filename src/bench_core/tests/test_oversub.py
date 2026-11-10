@@ -178,6 +178,16 @@ def test_compute_valid_nonzero_return_code():
     assert compute_valid(s, return_code=2, n=384, failure_tolerance=0.0) is False
 
 
+def test_compute_valid_summary_error_fails_even_with_clean_rc():
+    # A merged sharded summary carries no single rc: a dead shard surfaces in
+    # ``error`` (and the surviving shards can still clear the count floor).
+    # --reuse passes rc=0 for a summary it finds on disk, so the error gate is
+    # what keeps a crashed trial from being reused as valid.
+    s = _summary()
+    s["error"] = "shard 3: exit code -9"
+    assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is False
+
+
 def test_compute_valid_no_work_done():
     s = _summary(total=0, succeeded=0)
     assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is False
@@ -359,6 +369,138 @@ def test_aggregate_ratio_summary_cmd_exec_defaults_without_traj_rows():
     assert rows[0]["avg_cmd_exec_sec"] == 0.0
     assert rows[0]["median_cmd_exec_sec"] == 0.0
     assert rows[0]["cmd_exec_degradation_vs_1_1_pct"] == 0.0
+
+
+def _seed_stress_index(stamp, *, stress_sec, create_sec=0.0, kill_sec=0.0, n_runs=4, omit_breakdown=0):
+    """Write a trajectories/index.json with ``n_runs`` runs.
+
+    The last ``omit_breakdown`` runs carry no ``time_breakdown_sec`` -- the
+    older-index / failed-create shape that must not be scored as a zero-second
+    completion.
+    """
+    traj_dir = stamp / "trajectories"
+    traj_dir.mkdir(parents=True, exist_ok=True)
+    trajectories = []
+    for i in range(n_runs):
+        row = {
+            "trajectory_id": f"t{i}",
+            "sandbox_index": i,
+            "n_steps": 3,
+            "n_failed": 0,
+            "n_timeout": 0,
+            "success_rate": 1.0,
+            "elapsed_sec": create_sec + stress_sec + kill_sec,
+        }
+        if i < n_runs - omit_breakdown:
+            row["time_breakdown_sec"] = {"create": create_sec, "kill": kill_sec, "stress": stress_sec}
+        trajectories.append(row)
+    (traj_dir / "index.json").write_text(
+        json.dumps({"n_trajectories": n_runs, "trajectories": trajectories}), encoding="utf-8"
+    )
+
+
+def _stress_trial(
+    tmp_path,
+    *,
+    ratio,
+    tps,
+    mode="exec_ephemeral",
+    repeat=1,
+    create_sec=0.0,
+    kill_sec=0.0,
+    omit_breakdown=0,
+    stress_sec=10.0,
+):
+    stamp = tmp_path / f"{mode}-r{ratio}-rep{repeat}" / "rb_20260905-140000"
+    _seed_stress_index(
+        stamp, stress_sec=stress_sec, create_sec=create_sec, kill_sec=kill_sec, omit_breakdown=omit_breakdown
+    )
+    s = _summary(total=4, succeeded=4, failed=0, wall_sec=100.0, peak_active=2, mode=mode)
+    s["throughput"]["tasks_per_sec"] = tps
+    return trial_row(
+        mode=mode,
+        ratio=ratio,
+        repeat=repeat,
+        running_concurrency=2,
+        target_count=ratio * 2,
+        summary=s,
+        return_code=0,
+        valid=True,
+        reused=False,
+        trial_dir=str(stamp),
+        run_summary_path=str(stamp / "rb_run_summary.json"),
+    )
+
+
+def test_stress_rate_excludes_create_kill(tmp_path):
+    """create/kill move the e2e rate but not stress_tasks_per_sec."""
+    rows = [
+        _stress_trial(tmp_path, ratio=1, tps=0.04),
+        _stress_trial(tmp_path, ratio=2, repeat=1, tps=0.004, create_sec=100.0, kill_sec=50.0),
+        _stress_trial(tmp_path, ratio=2, repeat=2, tps=0.02),  # same ratio, no create/kill cost
+    ]
+    write_outputs(rows, output_root=tmp_path)
+    trials = {
+        (r["ratio"], r["repeat"]): r for r in csv.DictReader((tmp_path / "trial-summary.csv").read_text().splitlines())
+    }
+    assert float(trials[("1", "1")]["mean_stress_sec"]) == 10.0
+    # Admission-free workers = target_count (k*2): 2*4/40 and 4*4/40.
+    assert float(trials[("1", "1")]["stress_tasks_per_sec"]) == 0.2
+    assert float(trials[("2", "1")]["stress_tasks_per_sec"]) == 0.4
+    # The e2e rates differ, the stress-only rates do not: create/kill is out.
+    assert trials[("2", "1")]["tasks_per_sec"] != trials[("2", "2")]["tasks_per_sec"]
+    assert trials[("2", "1")]["stress_tasks_per_sec"] == trials[("2", "2")]["stress_tasks_per_sec"]
+    ratio_rows = {r["ratio"]: r for r in csv.DictReader((tmp_path / "ratio-summary.csv").read_text().splitlines())}
+    assert float(ratio_rows["2"]["median_stress_tasks_per_sec"]) == 0.4
+    assert float(ratio_rows["2"]["stress_throughput_gain_vs_1_1_pct"]) == 100.0
+    assert float(ratio_rows["2"]["throughput_gain_vs_1_1_pct"]) == -70.0  # median(0.004, 0.02) vs 0.04
+
+
+def test_stress_gain_blank_when_a_ratio_has_no_measured_window(tmp_path):
+    """Unmeasured is blank (n/a), never a fabricated 0.0 rate / -100% gain."""
+    write_outputs(
+        [
+            _stress_trial(tmp_path, ratio=1, tps=0.04),
+            _stress_trial(tmp_path, ratio=2, tps=0.02, stress_sec=0.0),
+        ],
+        output_root=tmp_path,
+    )
+    trials = {r["ratio"]: r for r in csv.DictReader((tmp_path / "trial-summary.csv").read_text().splitlines())}
+    assert trials["2"]["stress_tasks_per_sec"] == ""
+    rows = {r["ratio"]: r for r in csv.DictReader((tmp_path / "ratio-summary.csv").read_text().splitlines())}
+    assert rows["2"]["median_stress_tasks_per_sec"] == ""
+    assert rows["2"]["stress_throughput_gain_vs_1_1_pct"] == ""
+
+
+def test_stress_rate_uses_target_count_for_interleaved_lifecycle(tmp_path):
+    """lifecycle re-acquires the slot per step, so its windows overlap k-fold."""
+    write_outputs([_stress_trial(tmp_path, ratio=2, tps=0.004, mode="lifecycle")], output_root=tmp_path)
+    trial = next(iter(csv.DictReader((tmp_path / "trial-summary.csv").read_text().splitlines())))
+    # k*N = 4 workers, not running_concurrency = 2: one run's window also spans
+    # the other tenant served between its steps.
+    assert float(trial["stress_tasks_per_sec"]) == 0.4
+
+
+def test_stress_rate_counts_only_fully_successful_runs():
+    """A zero-step or partly-failed run is not a completion, even when measured."""
+    from bench_core.oversub import _stress_rate_stats
+
+    rows = [
+        {"mode": "exec_ephemeral", "ratio": 1, "repeat": 1, "stress_sec": 10.0, "success_rate": 1.0},
+        {"mode": "exec_ephemeral", "ratio": 1, "repeat": 1, "stress_sec": 10.0, "success_rate": None},
+        {"mode": "exec_ephemeral", "ratio": 1, "repeat": 1, "stress_sec": 10.0, "success_rate": 0.5},
+    ]
+    trials = [{"mode": "exec_ephemeral", "ratio": 1, "repeat": 1, "target_count": 2}]
+    stats = _stress_rate_stats(rows, trials)
+    assert stats[("exec_ephemeral", 1, 1)]["stress_tasks_per_sec"] == 0.067  # 2*1/30 (only 1 success)
+
+
+def test_stress_rate_ignores_unmeasured_runs(tmp_path):
+    """A run without a stress breakdown is absent, not a 0-second completion."""
+    write_outputs([_stress_trial(tmp_path, ratio=1, tps=0.04, omit_breakdown=2)], output_root=tmp_path)
+    trial = next(iter(csv.DictReader((tmp_path / "trial-summary.csv").read_text().splitlines())))
+    assert float(trial["mean_stress_sec"]) == 10.0
+    assert float(trial["stress_tasks_per_sec"]) == 0.2  # 2 measured runs, not 4
 
 
 def test_write_outputs_emits_all_four_files(tmp_path):

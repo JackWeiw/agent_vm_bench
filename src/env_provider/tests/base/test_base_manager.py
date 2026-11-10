@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from threading import Event
 
+import bench_core.task_runner.coding  # noqa: F401 -- self-registers workflow_type="coding"
+
 from env_provider._base import (
     BackendCreationMetrics,
     BackendSandboxStatus,
@@ -321,3 +323,37 @@ class TestCreateAllTemplates:
         seen = {i: t for i, t in mgr.seen_templates}
         assert seen == {1: "t0", 2: "t1", 3: "t2", 4: "t3"}
         assert mgr._slot_templates == {1: "t0", 2: "t1", 3: "t2", 4: "t3"}
+
+
+# ------------------------------------------------------------------ list_states
+class TestListStates:
+    """list_states feeds the monitor's control-plane fleet gauge (api_state_raw.csv)."""
+
+    def test_counts_normalize_enum_and_dict_states(self):
+        class _EnumState:
+            def __init__(self, name):
+                self._name = name
+
+            def __str__(self):
+                return f"SandboxState.{self._name}"
+
+        class _Listed:
+            def __init__(self, state):
+                self.state = state
+
+        mgr = FakeManager(_kernel_config(), Event())
+        mgr._list_existing = lambda: [  # type: ignore[method-assignment]
+            _Listed(_EnumState("RUNNING")),
+            _Listed(_EnumState("RUNNING")),
+            _Listed(_EnumState("PAUSED")),
+            {"state": "running"},  # cube's SDK returns dicts
+            {"state": "Failed"},
+            _Listed(_EnumState("UNKNOWN")),
+        ]
+        # enum vs dict, different cases -> same normalized keys
+        assert mgr.list_states() == {"running": 3, "paused": 1, "failed": 1, "unknown": 1}
+
+    def test_empty_fleet_is_an_empty_mapping(self):
+        mgr = FakeManager(_kernel_config(), Event())
+        mgr._list_existing = lambda: []  # type: ignore[method-assignment]
+        assert mgr.list_states() == {}

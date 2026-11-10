@@ -502,7 +502,7 @@ class TestSeriesFileE2E:
         # timings (resume/pause are no-ops, but exec_sec / exec_end / the six
         # timestamps are genuine time.time() epochs), feeding the obs workbook's
         # Step detail / Trajectory summary / Concurrency states / Gantt sheets.
-        # Only lifecycle/trajectory emit pause/resume/initial_pause/snapshot_size
+        # Only lifecycle emits pause/resume/initial_pause/snapshot_size
         # -- exec_only emits step events only.
         config = _lifecycle_config(tmp_path, replay_mode="exec_only", filename_prefix="eo")
         provider = FakeLifecycleProvider(count=1)
@@ -512,7 +512,7 @@ class TestSeriesFileE2E:
         events = [json.loads(l) for l in series_path.read_text().splitlines()]
         step_records = [e for e in events if e["event"] == "step"]
         assert len(step_records) >= 1
-        # exec_only emits step events only -- no lifecycle/trajectory signals.
+        # exec_only emits step events only -- no lifecycle signals.
         assert not any(e["event"] == "initial_pause" for e in events)
         assert not any(e["event"] == "snapshot_size" for e in events)
         assert not any(e["event"] in ("trajectory_create", "trajectory_kill") for e in events)
@@ -1012,7 +1012,7 @@ class TestOvercommitE2E:
         assert series_path.exists()  # exec_only now writes a step-only series
         events = [json.loads(l) for l in series_path.read_text().splitlines()]
         assert any(e["event"] == "step" for e in events)
-        # admission knobs ignored: no lifecycle/trajectory events despite the knobs
+        # admission knobs ignored: no lifecycle events despite the knobs
         assert not any(
             e["event"] in ("initial_pause", "snapshot_size", "trajectory_create", "trajectory_kill") for e in events
         )
@@ -1073,15 +1073,9 @@ class TestL7DecompositionFields:
             pause_sec=0.3,
             running_slot_held_sec=0.9,
             interaction_total_sec=1.4,
-            create_sec=0.0,
-            kill_sec=0.0,
         )
         assert m.running_slot_held_secs == [0.9]
         assert m.interaction_total_secs == [1.4]
-        # create_sec and kill_sec are appended atomically with the other lists
-        # (trajectory mode passes non-zero values; per-step mode passes 0.0)
-        assert m.create_secs == [0.0]
-        assert m.kill_secs == [0.0]
 
     def test_replay_metrics_lists_stay_aligned_on_failure_exclusion(self):
         """A zero slice_total_sec (synthesized failure) is excluded from ALL lists."""
@@ -1096,8 +1090,6 @@ class TestL7DecompositionFields:
             pause_sec=0.0,
             running_slot_held_sec=0.0,
             interaction_total_sec=0.0,
-            create_sec=0.0,
-            kill_sec=0.0,
         )
         m.add(
             latency=0.5,
@@ -1107,10 +1099,8 @@ class TestL7DecompositionFields:
             pause_sec=0.2,
             running_slot_held_sec=0.8,
             interaction_total_sec=1.1,
-            create_sec=0.0,
-            kill_sec=0.0,
         )
-        # All 12 lists length-aligned to 1 (the failure excluded).
+        # All 10 lists length-aligned to 1 (the failure excluded).
         for lst in (
             m.resume_secs,
             m.pause_secs,
@@ -1122,8 +1112,6 @@ class TestL7DecompositionFields:
             m.resume_rate_pacing_wait_secs,
             m.running_slot_held_secs,
             m.interaction_total_secs,
-            m.create_secs,
-            m.kill_secs,
         ):
             assert len(lst) == 1
 
@@ -1342,8 +1330,8 @@ def test_lifecycle_call_shutdown_during_retry_bypasses_except():
     assert snap["inflight_dispatched"] >= 2
 
 
-def test_trajectory_mode_guard_rejects_non_ephemeral_provider():
-    """Spine: replay_mode=trajectory on a non-EphemeralCapable provider fails fast."""
+def test_exec_ephemeral_mode_guard_rejects_non_ephemeral_provider():
+    """Spine: replay_mode=exec_ephemeral on a non-EphemeralCapable provider fails fast."""
     from bench_core.bench import run_benchmark
     from bench_core.config import KernelConfig
 
@@ -1353,14 +1341,14 @@ def test_trajectory_mode_guard_rejects_non_ephemeral_provider():
     cfg = KernelConfig(
         workflow_type="replay",
         total_count=1,
-        workflow_config=ReplayConfig(replay_mode="trajectory"),
+        workflow_config=ReplayConfig(replay_mode="exec_ephemeral"),
     )
     with pytest.raises(ValueError, match="EphemeralCapable"):
         run_benchmark(cfg, _Plain())  # type: ignore[arg-type]
 
 
-def test_trajectory_mode_skips_create_all_and_builds_shells():
-    """Spine: trajectory mode does NOT call create_all; builds N ready shells.
+def test_exec_ephemeral_mode_skips_create_all_and_builds_shells():
+    """Spine: exec_ephemeral mode does NOT call create_all; builds N ready shells.
 
     Uses create_only=True so the spine exits after the create block (before the
     runner), isolating the create-block wiring from the Task 8 runner logic.
@@ -1373,7 +1361,7 @@ def test_trajectory_mode_skips_create_all_and_builds_shells():
         workflow_type="replay",
         total_count=3,
         create_only=True,
-        workflow_config=ReplayConfig(replay_mode="trajectory"),
+        workflow_config=ReplayConfig(replay_mode="exec_ephemeral"),
     )
     provider = FakeProvider(count=0)
     called = {"create_all": False}
@@ -1410,16 +1398,18 @@ def test_create_only_ephemeral_is_explicit_noop(tmp_path):
     assert provider.save_ids_calls == 0
 
 
-def test_run_trajectory_creates_runs_kills_with_lease(tmp_path):
-    """E2E: _run_trajectory does create -> steps -> kill under one lease, and
-    overlays create/kill/slot-held timing on the last recorded step.
+def test_run_trajectory_creates_runs_and_kills(tmp_path):
+    """E2E: _run_trajectory does create -> steps -> kill; create/kill timing
+    lands in the lifecycle series (trajectory_create / trajectory_kill events).
 
-    Uses FakeLifecycleProvider (not bare FakeProvider) because trajectory mode
-    calls _resume -> provider.resume, and FakeProvider has no resume/pause.
+    Uses FakeLifecycleProvider (not bare FakeProvider) because _run_slice may
+    reach provider.resume/pause in some paths, and FakeProvider has neither.
+    Admission-free by construction: exec_ephemeral never gets a lease, so
+    running_slot_held_secs stays empty (unlike lifecycle, which overlays it on
+    the last step).
     """
     from pathlib import Path
 
-    from bench_core.admission import Admission, QpsRateLimiter, RunningSlotScheduler
     from bench_core.payload.replay_payload import ReplayStep, Trajectory
 
     class _Provider(FakeLifecycleProvider):
@@ -1435,7 +1425,7 @@ def test_run_trajectory_creates_runs_kills_with_lease(tmp_path):
         workflow_type="replay",
         total_count=1,
         workflow_config=ReplayConfig(
-            replay_mode="trajectory",
+            replay_mode="exec_ephemeral",
             replay_running_concurrency=1,
             replay_control_plane_qps=100.0,
             replay_lifecycle_retries=2,
@@ -1449,10 +1439,7 @@ def test_run_trajectory_creates_runs_kills_with_lease(tmp_path):
     state.ready = True
     state.is_alive = True
     series = LifecycleSeriesWriter(tmp_path / "series.jsonl")
-    adm = Admission(slots=RunningSlotScheduler(maximum=1), qps=QpsRateLimiter(qps=100.0, inflight_cap=4))
-    runner = ReplayTaskRunner(
-        RunContext(state=state, config=cfg, stop_event=stop, provider=provider, series=series, admission=adm)
-    )
+    runner = ReplayTaskRunner(RunContext(state=state, config=cfg, stop_event=stop, provider=provider, series=series))
 
     traj = Trajectory(
         path=Path("tr-1"),
@@ -1467,22 +1454,26 @@ def test_run_trajectory_creates_runs_kills_with_lease(tmp_path):
     assert 1 in provider._meta_log
     # kill happened
     assert 1 in provider.killed
-    # metrics: create_secs + kill_secs + slot_held all populated on one step
+    # the single step replayed into metrics
     m = state.replay_metrics
-    assert len(m.create_secs) == 1
-    assert len(m.kill_secs) == 1
-    assert len(m.running_slot_held_secs) == 1
-    # the trajectory-level lease hold is measurably non-zero (overlaid in finally).
-    assert m.running_slot_held_secs[0] > 0
+    assert len(m.slice_total_secs) == 1
+    # admission-free path: no running-slot lease was ever taken (per-step
+    # slot-held stays at the 0.0 default; lifecycle overlays the lease there)
+    assert m.running_slot_held_secs == [0.0]
+    # create/kill timings live in the series events (the exec_ephemeral path)
+    events = {e["event"]: e for e in (json.loads(l) for l in (tmp_path / "series.jsonl").read_text().splitlines())}
+    assert events["trajectory_create"]["create_sec"] > 0
+    assert events["trajectory_create"]["trajectory_id"] == "tr-1"
+    assert "kill_sec" in events["trajectory_kill"]
 
 
-def test_report_renders_slot_held_line_in_trajectory_mode(tmp_path):
-    """L7: trajectory mode renders [Lifecycle Overhead] with Slot held + Interaction lines."""
+def test_report_renders_slot_held_line_in_lifecycle_mode(tmp_path):
+    """L7: lifecycle mode renders [Lifecycle Overhead] with Slot held + Interaction lines."""
     from bench_core.observability.stats_collector import ReportFormatter
 
     cfg = KernelConfig(
         workflow_type="replay",
-        workflow_config=ReplayConfig(replay_mode="trajectory", replay_running_concurrency=1),
+        workflow_config=ReplayConfig(replay_mode="lifecycle", replay_running_concurrency=1),
     )
     state = BenchSandbox.from_instance(SandboxInstance(id="s1", index=1), workflow_type="replay")
     m = state.replay_metrics

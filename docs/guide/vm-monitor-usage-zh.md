@@ -1,6 +1,6 @@
 # vm_monitor 使用指南
 
-`vm_monitor` 是 Agent VM Bench 的宿主机级资源监控工具。它采样 VM/VMM 进程及宿主机 `/proc`、`/sys` 计数器，并可选地并行驱动外部性能采集工具（devkit、ksys、ub_watch、smap_bw、getfre）。输出：CSV、深色主题 SVG 时序曲线，以及汇总的 `resource_report.xlsx`。
+`vm_monitor` 是 Agent VM Bench 的宿主机级资源监控工具。它采样 VM/VMM 进程及宿主机 `/proc`、`/sys` 计数器，并可选地并行驱动外部性能采集工具（devkit、ksys、ub_watch、smap_bw、getfre）。输出：常开的 `raw_data/` 原始 CSV、深色主题 SVG 时序曲线、汇总的 `resource_report.xlsx`，以及由原始 CSV 事后派生的逐采样时序 `host_resources.xlsx`。
 
 - 入口：`vm-monitor`（`vm_monitor.cli:main`），由 `pip install -e .` 注册
 - 模块直调：`python3 -m vm_monitor`（legacy 布局下 `python3 vm_monitor.py`）
@@ -178,18 +178,18 @@ vm_monitor 通过扫描 `ksys.log` 标记来跟踪解析进度：
 
 `/proc` 采集器（target `base`）：
 
-| 参数 | 跳过 | 受影响 sheet |
+| 参数 | 跳过 | 受影响产物 |
 |------|------|--------------|
 | `--no-hugepage` | 大页统计 | Summary 中的 Hugepage 行 |
-| `--no-numa-cpu` | 每 NUMA CPU% | NUMA CPU 行 |
+| `--no-numa-cpu` | 每 NUMA CPU% | `NUMA` sheet 的 `CPU (%)` 列、NUMA_Overview、numa.svg |
 | `--no-host-stats` | 宿主 CPU/内存 | Summary 中的 Host 行 |
-| `--no-swap` | swap 用量 + swap-in/out | Swap_Timeline |
-| `--no-host-mem-detail` | cached/dirty/writeback | Host_Mem_Timeline |
-| `--no-pressure` | 页缓存压力 + iowait | Host_Pressure_Timeline |
-| `--no-numa-memory` | 每 NUMA meminfo | NUMA_Memory_Timeline |
-| `--no-vm-total` | 聚合 VM 内存 | VM_Total_Memory_Timeline |
-| `--no-disk` | 每设备磁盘 I/O（1s 子采样） | Disk_IO_Timeline |
-| `--no-ublk` | ublk 设备数 | Disk_IO_Timeline ublk 列 |
+| `--no-swap` | swap 用量 + swap-in/out | `Host resources` 的 swap 列 + `Swap usage` / `Swap cache` / `Swap in/out` 图 |
+| `--no-host-mem-detail` | cached/dirty/writeback | `Host resources` 的 Buffers/dirty/writeback 与 Anon/file-cache 列 |
+| `--no-pressure` | 页缓存压力 + iowait | `Host resources` 压力列 / `Page-cache pressure` / `Alloc stalls` 图 |
+| `--no-numa-memory` | 每 NUMA meminfo | `NUMA` sheet 内存列 / `numa_mem_raw.csv` |
+| `--no-vm-total` | 聚合 VM 内存 | `Host resources` 的 `vm_mem_gb` + `VM memory vs FC PSS` 图 |
+| `--no-disk` | 每设备磁盘 I/O（1s 子采样） | `Disk IO` sheet |
+| `--no-ublk` | ublk 守护进程 CPU | `Host resources` 的 `ublk_cores` + `CPU cores (ublk + VM)` 的 ublk 线 |
 
 devkit 拆分（target `devkit` —— 两个子工具共用 `DEVKIT_PATH`）：
 
@@ -206,7 +206,13 @@ devkit 拆分（target `devkit` —— 两个子工具共用 `DEVKIT_PATH`）：
 logs_<timestamp>/
 ├── qemu_monitor.csv         # 原始每采样 VM 记录（或 firecracker_monitor.csv）
 ├── summary.csv              # 峰值/均值汇总
-├── resource_report.xlsx     # 汇总 Excel（下列所有 sheet）
+├── resource_report.xlsx     # 仅汇总 sheet（导出快）
+├── host_resources.xlsx      # 全部逐采样时序（5 个 sheet + 图表）
+├── raw_data/                # 常开原始 CSV 快照（host_resources.xlsx 的输入）
+│   ├── host_mem_raw.csv  host_vmstat_raw.csv  host_cpu_raw.csv
+│   ├── host_percpu_raw.csv  numa_cpu_map.csv  numa_mem_raw.csv
+│   ├── vm_cpu_raw.csv  disk_io_raw.csv  ublk_cpu_raw.csv
+│   └── hostproc_cpu_raw.csv  api_state_raw.csv
 ├── disk_io.svg              # 深色主题 SVG 时序曲线
 ├── host_resources.svg
 ├── swap.svg
@@ -220,9 +226,23 @@ logs_<timestamp>/
 └── getfre_NUMA{N}.log
 ```
 
-`resource_report.xlsx` 的 sheet：`Summary`、`NUMA_Overview`、`VM_Stats`、`DevKit_TopDown`、`DevKit_Memory`、`NUMA_Bandwidth`、`KSys`、`UBWatch_Latency`、`UBWatch_Bandwidth`、`SMAPBW_Summary`、`SMAPBW_Cycles`、`Getfre_Summary`、`Getfre_NUMA{N}`、`Getfre_Timeline_NUMA{N}`、`Raw_VM_Data`、`Swap_Timeline`、`NUMA_Memory_Timeline`、`VM_Total_Memory_Timeline`、`Disk_IO_Timeline`、`Host_Mem_Timeline`、`Host_Pressure_Timeline`、`Host_CPU_Timeline`。
+`resource_report.xlsx` 的 sheet（仅汇总）：`Summary`、`NUMA_Overview`、`VM_Stats`，
+外加对应工具日志存在时才写的 profiler sheet —— `DevKit_TopDown`、`DevKit_Memory`、
+`NUMA_Bandwidth`、`KSys`、`UBWatch_Latency`、`UBWatch_Bandwidth`、`SMAPBW_Summary`、
+`SMAPBW_Cycles`、`Getfre_Summary`、`Getfre_NUMA{N}`。
+
+`host_resources.xlsx` 的 sheet（逐采样时序，由 `raw_data/` 派生）：`Host resources`、
+`NUMA`、`Per-VM`、`Disk IO`，以及仅在 `--host-proc` 下生成的 `HostProc`。逐列释义见
+[docs/dev/metrics-reference.md](../dev/metrics-reference.md#host_resourcesxlsx-字段含义中文版)。
+不重跑 benchmark 也能随时重算：`vm-monitor raw-report <log_dir>`。
+两个长表 raw 文件（`vm_cpu_raw.csv`、`host_percpu_raw.csv`）按固定块流式读取，
+因此导出耗时随采样时长增长，峰值内存不随其增长（2 h 约 370 MB，8 h 约 690 MB）。
 
 > xlsx 被**最后**写入是有意为之——`bench-core` 的 `MonitorController` 以 `resource_report.xlsx` 作为"全部产物已写入"的信号，在其出现的瞬间收割子进程。SVG 先于 xlsx 运行，以免被该收割切断。
+
+## 采样开销
+
+单 VM 采样的主要开销来自 `numa_maps` + `smaps_rollup` 的页表遍历（192 VM 集群实测：4 KiB 页约 35 ms/GiB，THP 后备约 12 ms/GiB）。监控器把这一轮遍历限制在每采样周期 25% 单核的预算内，并在整个 VM 集群上轮转：装不下时（大集群、页表重）每个 VM 的内存字段每 `stride` 个采样刷新一次并沿用上次实测值，而 CPU% 与 jiffies 仍在每个采样周期对每个 VM 读取。`stride > 1` 只在 INFO 级别打一次日志；小集群与 THP 后备集群和以前一样每个采样周期全量刷新。实测数据与 A/B 实验脚本见 [docs/dev/experiments/vm_monitor_perf](../dev/experiments/vm_monitor_perf/RESULTS.md)。
 
 ## Python API
 

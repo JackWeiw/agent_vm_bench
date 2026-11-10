@@ -17,8 +17,10 @@
 #     1:3 -> total_count 1152, running_concurrency 384   (3x overcommit)
 #
 #   bench-core --provider aenv --config config/common/replay.yaml -n 384
-# For docs on exec_only / lifecycle / trajectory modes, see
-# docs/bench-core-usage-zh.md §8.
+# For docs on the exec_only / lifecycle / exec_ephemeral modes, see
+# docs/guide/bench-core-usage-zh.md §8 (modes); the oversub-bench sweep driver
+# (which drives this config across k×N ratios) has its own guide:
+# docs/guide/oversub-bench-usage-zh.md.
 
 workflow_type: replay
 
@@ -69,8 +71,8 @@ aenv:
   # round-robin by sandbox index, so concurrent VMs don't contend for the
   # same physical cores. Opt-in; needs root on the AENV host (MMDS socket +
   # sched_setaffinity). Best-effort: failures warn + skip, never blocking a
-  # successful create. EXEC_ONLY / EXEC_EPHEMERAL ONLY: lifecycle / trajectory
-  # respawn the firecracker on each resume (pid unstable), so ccl_bind is a
+  # successful create. EXEC_ONLY / EXEC_EPHEMERAL ONLY: lifecycle
+  # respawns the firecracker on each resume (pid unstable), so ccl_bind is a
   # no-op there (warned + skipped).
   # ccl_granularity: auto = L3 domains whenever sysfs exposes them (AMD CCD /
   # Kunpeng CL -- both bind at silicon granularity; NUMA only when the host
@@ -116,7 +118,7 @@ sandbox:
 create_batch:
   size: 96
   interval: 1              # NOTE: int seconds. Fine-grained per-VM launch pacing
-                           # (launch_interval_sec) is trajectory-mode only; lifecycle
+                           # (launch_interval_sec) is exec_ephemeral-mode only; lifecycle
                            # pre-creates via create_all in batches, so use batch
                            # intervals as a coarse approximation. See §8.1.
 
@@ -164,7 +166,7 @@ replay:
   pause_duration_sec: 0.0     # extra pause beyond recorded think-time
   ready_probe: true           # post-resume `true` probe (lifecycle only)
   lifecycle_retries: 2        # transient resume/pause retry attempts (0 = no retry)
-  # launch_interval_sec: 0.0  # trajectory-mode only (per-sandbox create pacing);
+  # launch_interval_sec: 0.0  # exec_ephemeral-mode only (per-sandbox create pacing);
                               # no effect in lifecycle (creation is batched up front).
 
 test:

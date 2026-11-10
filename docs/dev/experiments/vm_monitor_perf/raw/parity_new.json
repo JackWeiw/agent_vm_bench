@@ -1,0 +1,885 @@
+{
+ "candidates": [
+  {
+   "cmdline": "/var/tmp/vmperf/bin/containerd-shim-cube-rs 192 3600",
+   "pid": 2506475,
+   "pid_start": 153855331,
+   "proc_name": "containerd-shim",
+   "status": "sleeping",
+   "vm_name": "cube-2506475"
+  },
+  {
+   "cmdline": "/var/tmp/vmperf/bin/containerd-shim-cube-rs 192 3600",
+   "pid": 2506476,
+   "pid_start": 153855331,
+   "proc_name": "containerd-shim",
+   "status": "sleeping",
+   "vm_name": "cube-2506476"
+  },
+  {
+   "cmdline": "/var/tmp/vmperf/bin/containerd-shim-cube-rs 192 3600",
+   "pid": 2506477,
+   "pid_start": 153855331,
+   "proc_name": "containerd-shim",
+   "status": "sleeping",
+   "vm_name": "cube-2506477"
+  },
+  {
+   "cmdline": "/var/tmp/vmperf/bin/containerd-shim-cube-rs 192 3600",
+   "pid": 2506478,
+   "pid_start": 153855331,
+   "proc_name": "containerd-shim",
+   "status": "sleeping",
+   "vm_name": "cube-2506478"
+  },
+  {
+   "cmdline": "/var/tmp/vmperf/bin/containerd-shim-cube-rs 192 3600",
+   "pid": 2506479,
+   "pid_start": 153855331,
+   "proc_name": "containerd-shim",
+   "status": "sleeping",
+   "vm_name": "cube-2506479"
+  },
+  {
+   "cmdline": "/var/tmp/vmperf/bin/containerd-shim-cube-rs 192 3600",
+   "pid": 2506480,
+   "pid_start": 153855331,
+   "proc_name": "containerd-shim",
+   "status": "sleeping",
+   "vm_name": "cube-2506480"
+  },
+  {
+   "cmdline": "/var/tmp/vmperf/bin/containerd-shim-cube-rs 3600",
+   "pid": 2506481,
+   "pid_start": 153855331,
+   "proc_name": "containerd-shim",
+   "status": "sleeping",
+   "vm_name": "cube-2506481"
+  },
+  {
+   "cmdline": "/var/tmp/vmperf/bin/containerd-shim-cube-rs 3600",
+   "pid": 2506482,
+   "pid_start": 153855331,
+   "proc_name": "containerd-shim",
+   "status": "sleeping",
+   "vm_name": "cube-2506482"
+  },
+  {
+   "cmdline": "/var/tmp/vmperf/bin/containerd-shim-cube-rs 3600",
+   "pid": 2506483,
+   "pid_start": 153855331,
+   "proc_name": "containerd-shim",
+   "status": "sleeping",
+   "vm_name": "cube-2506483"
+  },
+  {
+   "cmdline": "/var/tmp/vmperf/bin/containerd-shim-cube-rs 3600",
+   "pid": 2506484,
+   "pid_start": 153855331,
+   "proc_name": "containerd-shim",
+   "status": "sleeping",
+   "vm_name": "cube-2506484"
+  },
+  {
+   "cmdline": "/var/tmp/vmperf/bin/containerd-shim-cube-rs 3600",
+   "pid": 2506485,
+   "pid_start": 153855332,
+   "proc_name": "containerd-shim",
+   "status": "sleeping",
+   "vm_name": "cube-2506485"
+  },
+  {
+   "cmdline": "/var/tmp/vmperf/bin/containerd-shim-cube-rs 3600",
+   "pid": 2506486,
+   "pid_start": 153855332,
+   "proc_name": "containerd-shim",
+   "status": "sleeping",
+   "vm_name": "cube-2506486"
+  }
+ ],
+ "racy": [],
+ "records": [
+  {
+   "cpu_percent": 0.0,
+   "memory_heap_mb": 0.0,
+   "memory_huge_mb": 0.0,
+   "memory_mb": 193.09,
+   "memory_per_numa": {
+    "1": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 0.0,
+     "stack_mb": 0.0,
+     "total_mb": 0.02
+    },
+    "2": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 192.07,
+     "stack_mb": 0.01,
+     "total_mb": 193.07
+    }
+   },
+   "memory_private_mb": 192.07,
+   "memory_swapcache_mb": 0.0,
+   "memory_swapcache_per_numa": {},
+   "name": "cube-2506477",
+   "pid": 2506477,
+   "pss_mb": 192.08,
+   "status": "sleeping",
+   "stime": 2,
+   "utime": 0
+  },
+  {
+   "cpu_percent": 0.0,
+   "memory_heap_mb": 0.0,
+   "memory_huge_mb": 0.0,
+   "memory_mb": 193.1,
+   "memory_per_numa": {
+    "1": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 0.0,
+     "stack_mb": 0.0,
+     "total_mb": 0.02
+    },
+    "2": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 192.08,
+     "stack_mb": 0.01,
+     "total_mb": 193.07
+    }
+   },
+   "memory_private_mb": 192.08,
+   "memory_swapcache_mb": 0.0,
+   "memory_swapcache_per_numa": {},
+   "name": "cube-2506478",
+   "pid": 2506478,
+   "pss_mb": 192.09,
+   "status": "sleeping",
+   "stime": 4,
+   "utime": 0
+  },
+  {
+   "cpu_percent": 0.0,
+   "memory_heap_mb": 0.0,
+   "memory_huge_mb": 0.0,
+   "memory_mb": 193.1,
+   "memory_per_numa": {
+    "1": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 0.0,
+     "stack_mb": 0.0,
+     "total_mb": 0.02
+    },
+    "2": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 192.08,
+     "stack_mb": 0.01,
+     "total_mb": 193.07
+    }
+   },
+   "memory_private_mb": 192.08,
+   "memory_swapcache_mb": 0.0,
+   "memory_swapcache_per_numa": {},
+   "name": "cube-2506479",
+   "pid": 2506479,
+   "pss_mb": 192.09,
+   "status": "sleeping",
+   "stime": 3,
+   "utime": 0
+  },
+  {
+   "cpu_percent": 0.0,
+   "memory_heap_mb": 0.0,
+   "memory_huge_mb": 0.0,
+   "memory_mb": 193.1,
+   "memory_per_numa": {
+    "1": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 0.0,
+     "stack_mb": 0.0,
+     "total_mb": 0.02
+    },
+    "2": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 192.08,
+     "stack_mb": 0.01,
+     "total_mb": 193.07
+    }
+   },
+   "memory_private_mb": 192.08,
+   "memory_swapcache_mb": 0.0,
+   "memory_swapcache_per_numa": {},
+   "name": "cube-2506476",
+   "pid": 2506476,
+   "pss_mb": 192.09,
+   "status": "sleeping",
+   "stime": 3,
+   "utime": 0
+  },
+  {
+   "cpu_percent": 0.0,
+   "memory_heap_mb": 0.0,
+   "memory_huge_mb": 0.0,
+   "memory_mb": 193.1,
+   "memory_per_numa": {
+    "1": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 0.0,
+     "stack_mb": 0.0,
+     "total_mb": 0.02
+    },
+    "2": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 192.08,
+     "stack_mb": 0.01,
+     "total_mb": 193.07
+    }
+   },
+   "memory_private_mb": 192.08,
+   "memory_swapcache_mb": 0.0,
+   "memory_swapcache_per_numa": {},
+   "name": "cube-2506475",
+   "pid": 2506475,
+   "pss_mb": 192.09,
+   "status": "sleeping",
+   "stime": 2,
+   "utime": 0
+  },
+  {
+   "cpu_percent": 0.0,
+   "memory_heap_mb": 0.0,
+   "memory_huge_mb": 0.0,
+   "memory_mb": 193.09,
+   "memory_per_numa": {
+    "1": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 0.0,
+     "stack_mb": 0.0,
+     "total_mb": 0.02
+    },
+    "2": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 192.07,
+     "stack_mb": 0.01,
+     "total_mb": 193.07
+    }
+   },
+   "memory_private_mb": 192.07,
+   "memory_swapcache_mb": 0.0,
+   "memory_swapcache_per_numa": {},
+   "name": "cube-2506480",
+   "pid": 2506480,
+   "pss_mb": 192.08,
+   "status": "sleeping",
+   "stime": 4,
+   "utime": 0
+  },
+  {
+   "cpu_percent": 0.0,
+   "memory_heap_mb": 0.0,
+   "memory_huge_mb": 0.0,
+   "memory_mb": 3601.1,
+   "memory_per_numa": {
+    "1": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 0.0,
+     "stack_mb": 0.0,
+     "total_mb": 0.02
+    },
+    "2": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 3600.08,
+     "stack_mb": 0.01,
+     "total_mb": 3601.07
+    }
+   },
+   "memory_private_mb": 3600.08,
+   "memory_swapcache_mb": 0.0,
+   "memory_swapcache_per_numa": {},
+   "name": "cube-2506482",
+   "pid": 2506482,
+   "pss_mb": 3600.09,
+   "status": "sleeping",
+   "stime": 32,
+   "utime": 2
+  },
+  {
+   "cpu_percent": 0.0,
+   "memory_heap_mb": 0.0,
+   "memory_huge_mb": 0.0,
+   "memory_mb": 3601.09,
+   "memory_per_numa": {
+    "1": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 898.34,
+     "stack_mb": 0.0,
+     "total_mb": 898.36
+    },
+    "2": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 2701.73,
+     "stack_mb": 0.01,
+     "total_mb": 2702.73
+    }
+   },
+   "memory_private_mb": 3600.07,
+   "memory_swapcache_mb": 0.0,
+   "memory_swapcache_per_numa": {},
+   "name": "cube-2506481",
+   "pid": 2506481,
+   "pss_mb": 3600.08,
+   "status": "sleeping",
+   "stime": 44,
+   "utime": 2
+  },
+  {
+   "cpu_percent": 0.0,
+   "memory_heap_mb": 0.0,
+   "memory_huge_mb": 0.0,
+   "memory_mb": 3601.1,
+   "memory_per_numa": {
+    "1": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 0.0,
+     "stack_mb": 0.0,
+     "total_mb": 0.02
+    },
+    "2": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 3600.08,
+     "stack_mb": 0.01,
+     "total_mb": 3601.07
+    }
+   },
+   "memory_private_mb": 3600.08,
+   "memory_swapcache_mb": 0.0,
+   "memory_swapcache_per_numa": {},
+   "name": "cube-2506486",
+   "pid": 2506486,
+   "pss_mb": 3600.09,
+   "status": "sleeping",
+   "stime": 55,
+   "utime": 1
+  },
+  {
+   "cpu_percent": 0.0,
+   "memory_heap_mb": 0.0,
+   "memory_huge_mb": 0.0,
+   "memory_mb": 3601.1,
+   "memory_per_numa": {
+    "1": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 0.0,
+     "stack_mb": 0.0,
+     "total_mb": 0.02
+    },
+    "2": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 3600.08,
+     "stack_mb": 0.01,
+     "total_mb": 3601.07
+    }
+   },
+   "memory_private_mb": 3600.08,
+   "memory_swapcache_mb": 0.0,
+   "memory_swapcache_per_numa": {},
+   "name": "cube-2506485",
+   "pid": 2506485,
+   "pss_mb": 3600.09,
+   "status": "sleeping",
+   "stime": 56,
+   "utime": 0
+  },
+  {
+   "cpu_percent": 0.0,
+   "memory_heap_mb": 0.0,
+   "memory_huge_mb": 0.0,
+   "memory_mb": 3601.1,
+   "memory_per_numa": {
+    "1": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 0.0,
+     "stack_mb": 0.0,
+     "total_mb": 0.02
+    },
+    "2": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 3600.08,
+     "stack_mb": 0.01,
+     "total_mb": 3601.07
+    }
+   },
+   "memory_private_mb": 3600.08,
+   "memory_swapcache_mb": 0.0,
+   "memory_swapcache_per_numa": {},
+   "name": "cube-2506484",
+   "pid": 2506484,
+   "pss_mb": 3600.09,
+   "status": "sleeping",
+   "stime": 54,
+   "utime": 2
+  },
+  {
+   "cpu_percent": 0.0,
+   "memory_heap_mb": 0.0,
+   "memory_huge_mb": 0.0,
+   "memory_mb": 3601.09,
+   "memory_per_numa": {
+    "1": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 0.0,
+     "stack_mb": 0.0,
+     "total_mb": 0.02
+    },
+    "2": {
+     "heap_mb": 0.0,
+     "huge_mb": 0.0,
+     "private_mb": 3600.07,
+     "stack_mb": 0.01,
+     "total_mb": 3601.07
+    }
+   },
+   "memory_private_mb": 3600.07,
+   "memory_swapcache_mb": 0.0,
+   "memory_swapcache_per_numa": {},
+   "name": "cube-2506483",
+   "pid": 2506483,
+   "pss_mb": 3600.08,
+   "status": "sleeping",
+   "stime": 64,
+   "utime": 4
+  }
+ ],
+ "vms": [
+  {
+   "jiffies": [
+    0,
+    2
+   ],
+   "numa_maps": {
+    "_parsed": true,
+    "heap_mb": 0.0,
+    "huge_mb": 0.0,
+    "per_node": {
+     "1": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 0.0,
+      "stack_mb": 0.0,
+      "total_mb": 0.02
+     },
+     "2": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 192.08,
+      "stack_mb": 0.01,
+      "total_mb": 193.07
+     }
+    },
+    "private_mb": 192.08,
+    "stack_mb": 0.01,
+    "swapcache_mb": 0.0,
+    "swapcache_per_node": {},
+    "total_mb": 193.1
+   },
+   "pid": 2506475,
+   "pss_mb": 192.09
+  },
+  {
+   "jiffies": [
+    0,
+    3
+   ],
+   "numa_maps": {
+    "_parsed": true,
+    "heap_mb": 0.0,
+    "huge_mb": 0.0,
+    "per_node": {
+     "1": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 0.0,
+      "stack_mb": 0.0,
+      "total_mb": 0.02
+     },
+     "2": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 192.08,
+      "stack_mb": 0.01,
+      "total_mb": 193.07
+     }
+    },
+    "private_mb": 192.08,
+    "stack_mb": 0.01,
+    "swapcache_mb": 0.0,
+    "swapcache_per_node": {},
+    "total_mb": 193.1
+   },
+   "pid": 2506476,
+   "pss_mb": 192.09
+  },
+  {
+   "jiffies": [
+    0,
+    2
+   ],
+   "numa_maps": {
+    "_parsed": true,
+    "heap_mb": 0.0,
+    "huge_mb": 0.0,
+    "per_node": {
+     "1": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 0.0,
+      "stack_mb": 0.0,
+      "total_mb": 0.02
+     },
+     "2": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 192.07,
+      "stack_mb": 0.01,
+      "total_mb": 193.07
+     }
+    },
+    "private_mb": 192.07,
+    "stack_mb": 0.01,
+    "swapcache_mb": 0.0,
+    "swapcache_per_node": {},
+    "total_mb": 193.09
+   },
+   "pid": 2506477,
+   "pss_mb": 192.08
+  },
+  {
+   "jiffies": [
+    0,
+    4
+   ],
+   "numa_maps": {
+    "_parsed": true,
+    "heap_mb": 0.0,
+    "huge_mb": 0.0,
+    "per_node": {
+     "1": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 0.0,
+      "stack_mb": 0.0,
+      "total_mb": 0.02
+     },
+     "2": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 192.08,
+      "stack_mb": 0.01,
+      "total_mb": 193.07
+     }
+    },
+    "private_mb": 192.08,
+    "stack_mb": 0.01,
+    "swapcache_mb": 0.0,
+    "swapcache_per_node": {},
+    "total_mb": 193.1
+   },
+   "pid": 2506478,
+   "pss_mb": 192.09
+  },
+  {
+   "jiffies": [
+    0,
+    3
+   ],
+   "numa_maps": {
+    "_parsed": true,
+    "heap_mb": 0.0,
+    "huge_mb": 0.0,
+    "per_node": {
+     "1": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 0.0,
+      "stack_mb": 0.0,
+      "total_mb": 0.02
+     },
+     "2": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 192.08,
+      "stack_mb": 0.01,
+      "total_mb": 193.07
+     }
+    },
+    "private_mb": 192.08,
+    "stack_mb": 0.01,
+    "swapcache_mb": 0.0,
+    "swapcache_per_node": {},
+    "total_mb": 193.1
+   },
+   "pid": 2506479,
+   "pss_mb": 192.09
+  },
+  {
+   "jiffies": [
+    0,
+    4
+   ],
+   "numa_maps": {
+    "_parsed": true,
+    "heap_mb": 0.0,
+    "huge_mb": 0.0,
+    "per_node": {
+     "1": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 0.0,
+      "stack_mb": 0.0,
+      "total_mb": 0.02
+     },
+     "2": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 192.07,
+      "stack_mb": 0.01,
+      "total_mb": 193.07
+     }
+    },
+    "private_mb": 192.07,
+    "stack_mb": 0.01,
+    "swapcache_mb": 0.0,
+    "swapcache_per_node": {},
+    "total_mb": 193.09
+   },
+   "pid": 2506480,
+   "pss_mb": 192.08
+  },
+  {
+   "jiffies": [
+    2,
+    44
+   ],
+   "numa_maps": {
+    "_parsed": true,
+    "heap_mb": 0.0,
+    "huge_mb": 0.0,
+    "per_node": {
+     "1": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 898.34,
+      "stack_mb": 0.0,
+      "total_mb": 898.36
+     },
+     "2": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 2701.73,
+      "stack_mb": 0.01,
+      "total_mb": 2702.73
+     }
+    },
+    "private_mb": 3600.07,
+    "stack_mb": 0.01,
+    "swapcache_mb": 0.0,
+    "swapcache_per_node": {},
+    "total_mb": 3601.09
+   },
+   "pid": 2506481,
+   "pss_mb": 3600.08
+  },
+  {
+   "jiffies": [
+    2,
+    32
+   ],
+   "numa_maps": {
+    "_parsed": true,
+    "heap_mb": 0.0,
+    "huge_mb": 0.0,
+    "per_node": {
+     "1": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 0.0,
+      "stack_mb": 0.0,
+      "total_mb": 0.02
+     },
+     "2": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 3600.08,
+      "stack_mb": 0.01,
+      "total_mb": 3601.07
+     }
+    },
+    "private_mb": 3600.08,
+    "stack_mb": 0.01,
+    "swapcache_mb": 0.0,
+    "swapcache_per_node": {},
+    "total_mb": 3601.1
+   },
+   "pid": 2506482,
+   "pss_mb": 3600.09
+  },
+  {
+   "jiffies": [
+    4,
+    64
+   ],
+   "numa_maps": {
+    "_parsed": true,
+    "heap_mb": 0.0,
+    "huge_mb": 0.0,
+    "per_node": {
+     "1": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 0.0,
+      "stack_mb": 0.0,
+      "total_mb": 0.02
+     },
+     "2": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 3600.07,
+      "stack_mb": 0.01,
+      "total_mb": 3601.07
+     }
+    },
+    "private_mb": 3600.07,
+    "stack_mb": 0.01,
+    "swapcache_mb": 0.0,
+    "swapcache_per_node": {},
+    "total_mb": 3601.09
+   },
+   "pid": 2506483,
+   "pss_mb": 3600.08
+  },
+  {
+   "jiffies": [
+    2,
+    54
+   ],
+   "numa_maps": {
+    "_parsed": true,
+    "heap_mb": 0.0,
+    "huge_mb": 0.0,
+    "per_node": {
+     "1": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 0.0,
+      "stack_mb": 0.0,
+      "total_mb": 0.02
+     },
+     "2": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 3600.08,
+      "stack_mb": 0.01,
+      "total_mb": 3601.07
+     }
+    },
+    "private_mb": 3600.08,
+    "stack_mb": 0.01,
+    "swapcache_mb": 0.0,
+    "swapcache_per_node": {},
+    "total_mb": 3601.1
+   },
+   "pid": 2506484,
+   "pss_mb": 3600.09
+  },
+  {
+   "jiffies": [
+    0,
+    56
+   ],
+   "numa_maps": {
+    "_parsed": true,
+    "heap_mb": 0.0,
+    "huge_mb": 0.0,
+    "per_node": {
+     "1": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 0.0,
+      "stack_mb": 0.0,
+      "total_mb": 0.02
+     },
+     "2": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 3600.08,
+      "stack_mb": 0.01,
+      "total_mb": 3601.07
+     }
+    },
+    "private_mb": 3600.08,
+    "stack_mb": 0.01,
+    "swapcache_mb": 0.0,
+    "swapcache_per_node": {},
+    "total_mb": 3601.1
+   },
+   "pid": 2506485,
+   "pss_mb": 3600.09
+  },
+  {
+   "jiffies": [
+    1,
+    55
+   ],
+   "numa_maps": {
+    "_parsed": true,
+    "heap_mb": 0.0,
+    "huge_mb": 0.0,
+    "per_node": {
+     "1": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 0.0,
+      "stack_mb": 0.0,
+      "total_mb": 0.02
+     },
+     "2": {
+      "heap_mb": 0.0,
+      "huge_mb": 0.0,
+      "private_mb": 3600.08,
+      "stack_mb": 0.01,
+      "total_mb": 3601.07
+     }
+    },
+    "private_mb": 3600.08,
+    "stack_mb": 0.01,
+    "swapcache_mb": 0.0,
+    "swapcache_per_node": {},
+    "total_mb": 3601.1
+   },
+   "pid": 2506486,
+   "pss_mb": 3600.09
+  }
+ ]
+}

@@ -16,6 +16,8 @@
 |------|------|
 | [bench-core 使用指南](docs/guide/bench-core-usage-zh.md) | **src 内核压测（推荐）：安装→配置→CLI→清理** |
 | [bench-core 使用指南 (英文)](docs/guide/bench-core-usage.md) | 英文版 src 内核压测指南 |
+| [oversub-bench 使用指南](docs/guide/oversub-bench-usage-zh.md) | **超卖扫描（`oversub-bench`）与跨配置对比（`oversub-compare`）** |
+| [oversub-bench 使用指南 (英文)](docs/guide/oversub-bench-usage.md) | oversubscription sweeps + cross-config comparison 英文指南 |
 | [设计文档](docs/architecture/design.md) | 系统架构与流程设计 |
 | [设计文档 (英文)](docs/architecture/design-en.md) | 英文版设计文档 |
 | [指标参考](docs/dev/metrics-reference.md) | bench_core + vm_monitor 指标、采集来源与计算公式 |
@@ -148,6 +150,30 @@ bench-core --provider e2b --config config/common/coding-ts.yaml --cleanup
 
 ---
 
+## 回放与超卖（replay & oversubscription）
+
+`workflow_type: replay` 在沙箱后端上重放记录的 SWE-bench agent 轨迹。超卖（oversubscription）关注
+两种 mode——**`exec_ephemeral`（纯 COW：每轮沙箱 create → exec → kill，无 pause/resume，默认）**，
+其次是 **`lifecycle`（长驻沙箱 pause/resume；暂停的沙箱释放内存，k×N 个可塞进 N 个 running slot）**：
+
+```bash
+# fake 冒烟——无 SDK，秒级跑通整条产物链；fake 仅 EphemeralCapable，须钉住
+# --modes exec_ephemeral（lifecycle trial 会判 invalid）
+oversub-bench --config config/common/replay-exec-only.yaml --provider fake --modes exec_ephemeral \
+  --ratios 1,2,3 --test-duration 5 --output-root results/fake_sweep
+
+# 现成扫描——默认扫描顺序 exec_ephemeral（纯 COW）在前，lifecycle 其次
+oversub-bench --sweep-config config/oversub/exec-ephemeral-1to3.yaml   # 默认：纯 COW 超卖
+oversub-bench --sweep-config config/oversub/lifecycle-1to3.yaml        # lifecycle：快照内存复用
+```
+
+多组扫描结果跨架构/配置对比用 `oversub-compare`（manifest 在 `config/oversub/compare-manifest.yaml`）。
+sweep-config 键、进程分片、结果解读（`trial-summary.csv` / `ratio-summary.csv` /
+`trajectory-detail.csv`）与排错见 [oversub-bench-usage-zh.md](docs/guide/oversub-bench-usage-zh.md)
+（[EN](docs/guide/oversub-bench-usage.md)）。
+
+---
+
 ## 旧版后端
 
 `src/` 之前的工具已冻结，与内核零代码共享。仅当依赖其特有行为（batch 调度、smap_tool / vm_monitor 集成）时才用：
@@ -236,10 +262,11 @@ sudo "$(which vm-monitor)" --vmm firecracker -t 60 -i 2
 ### 产物
 
 - `<前缀>.csv`、`summary.csv`——逐采样原始数据 + 汇总统计。
-- `resource_report.xlsx`——多 sheet 报告（Summary、NUMA、VM 统计、
-  DevKit_TopDown/Memory、KSys、UBWatch、SMAPBW、Getfre、Swap/NUMA/VM-total
-  时间线、**Disk_IO_Timeline**、**Host_Mem_Timeline**、
-  **Host_Pressure_Timeline**）附图表。
+- `resource_report.xlsx`——仅汇总 sheet（Summary、NUMA_Overview、VM_Stats、
+  DevKit_TopDown/Memory、KSys、UBWatch、SMAPBW、Getfre）附图表，导出快。
+- `host_resources.xlsx`——全部逐采样时序（Host resources / NUMA / Per-VM /
+  Disk IO / HostProc），由常开的 `raw_data/*.csv` 原始快照事后派生，
+  可用 `vm-monitor raw-report <log_dir>` 随时重算。
 - **SVG 时间曲线**——无外部依赖的深色 `<polyline>` 图，含网格/图例/阈值线，
   按关注点拆成多文件，每个文件当一张干净的 PPT 页：`disk_io.svg`
   （读/写/忙碌率 + ublk）、`disk_latency.svg`（队列深度 + await 时延）、
@@ -275,6 +302,6 @@ QEMUMonitor().start_monitoring(duration_seconds=60, interval_seconds=3)
 FirecrackerMonitor().start_monitoring(duration_seconds=60, interval_seconds=3)
 
 # 从任意 monitor 实例渲染深色 SVG 时间曲线报告
-from vm_monitor.svg_exporter import export_svg_reports
+from vm_monitor.export.svg import export_svg_reports
 export_svg_reports(QEMUMonitor(), "logs")
 ```

@@ -99,7 +99,7 @@ any backend**.
 | `docker.yaml` | browser | docker-only small profile (10 containers, single URL) |
 | `replay.yaml` | replay | aenv lifecycle 1:1 baseline (see §8) |
 | `replay-exec-only.yaml` | replay | exec_only baseline (e2b/docker/fake) |
-| `replay-trajectory.yaml` | replay | trajectory oversubscription profile |
+| `replay-ephemeral.yaml` | replay | exec_ephemeral profile (`EphemeralCapable` provider) |
 
 ### 2.3 Why the coding configs are so thin
 
@@ -245,10 +245,10 @@ YAML section; `-o` overrides `output_dir`). Inside that subdir:
 
 | File | When |
 |------|------|
-| `<prefix>.log` | always (JSON-lines for lifecycle/trajectory replay modes) |
+| `<prefix>.log` | always (JSON-lines for the lifecycle replay mode) |
 | `<prefix>_<timestamp>.txt` | always — the text report |
 | `<prefix>_obs.xlsx` | replay workflow + `--report-format xlsx|both` |
-| `<prefix>_lifecycle_series.jsonl` | replay lifecycle **and** trajectory modes |
+| `<prefix>_lifecycle_series.jsonl` | all replay modes (exec_only / lifecycle / exec_ephemeral) |
 | `replay_result.json` (per trajectory) + `trajectories/index.json` | when a series file exists |
 | `vm_monitor/` | auto-enabled for providers with a `vmm_type` (e2b/aenv → firecracker) |
 
@@ -278,7 +278,7 @@ provider = FakeProvider(count=config.total_count)
 result = run_benchmark(config, provider)
 print(result["report"])            # report text
 print(result["filepath"])          # report file path (None on create-only/warmup-only)
-print(result["admission_snapshot"])  # replay admission snapshot (None outside lifecycle/trajectory)
+print(result["admission_snapshot"])  # replay admission snapshot (None outside lifecycle)
 ```
 
 Signatures:
@@ -334,35 +334,36 @@ The modes differ by **sandbox lifecycle**, not by "whether a rate limiter is att
 |------|-------------------|----------|-------------------------------|-------------|
 | `exec_only` | pre-created, **long-lived**; no create/kill across the run | exec only | none | pure exec-replay cost baseline; backends without lifecycle/ephemeral capability (e2b/docker/fake) |
 | `lifecycle` | pre-created, **long-lived**; not killed across the run | acquire slot → resume → exec → pause → release | pause snapshots free RAM, so `k×N` sandboxes fit in `N` slots (**memory oversubscription**) | pause/resume snapshot overhead + memory overcommit; needs `LifecycleCapable` (aenv) |
-| `trajectory` | **ephemeral**; create → … → kill per trajectory | acquire slot (held for the whole trajectory) → resume → exec → pause → release | `M` slots gate concurrent trajectories; the rest defer create (**queue limiting, not memory reuse**) | frequent create/kill overhead + launch pacing; needs `EphemeralCapable` (aenv) |
+| `exec_ephemeral` | **ephemeral**; create_one → … → kill_one per trajectory | exec only (no pause/resume) | none (admission-free `k×N` concurrent; `launch_interval_sec` paces the per-round `create_one` burst) | frequent create/kill overhead; needs `EphemeralCapable` (aenv); `replay.multiplier` M runs exactly M trajectories per sandbox |
 
-**exec_only vs trajectory** — the difference is *not* "a rate limiter":
+**exec_only vs exec_ephemeral** — the difference is *not* "a rate limiter":
 
 - exec_only sandboxes are **long-lived**: the whole run reuses one pre-created fleet, only
   exec, **no create/kill, no pause/resume**.
-- trajectory sandboxes are **ephemeral**: each trajectory does `create_one` → run →
-  `kill_one`.
-- `launch_interval_sec` is trajectory-only because **frequent per-trajectory creates need
-  pacing**; exec_only pre-creates once and reuses, so it has no launch pacing. "trajectory
+- exec_ephemeral sandboxes are **ephemeral**: each trajectory does `create_one` → run →
+  `kill_one`; between rounds the sandbox is killed and recreated fresh.
+- `launch_interval_sec` is exec_ephemeral-only because **frequent per-trajectory creates need
+  pacing**; exec_only pre-creates once and reuses, so it has no launch pacing. "exec_ephemeral
   adds a limiter" is just the surface symptom — the root difference is sandbox lifecycle
   (long-lived reuse vs. ephemeral create/kill).
 
-**lifecycle vs trajectory** — the oversubscription mechanisms differ:
+**lifecycle vs exec_ephemeral** — the lifecycle models differ:
 
-- lifecycle oversubscription = **snapshot memory reuse**. Sandboxes are long-lived; pause
-  frees physical RAM, so `total_count = k×N` sandboxes fit in `running_concurrency = N`
-  slots. Running slots are acquired/released at **step granularity** (one command =
-  acquire/release).
-- trajectory oversubscription = **queue limiting**. Running slots are held at **whole-
-  trajectory granularity** (acquire before create, release after kill); `M` slots → at most
-  `M` trajectories run concurrently, the rest queue — there is **no "pause to free
-  memory"**, and a sandbox is killed as soon as its trajectory finishes.
+- lifecycle = **long-lived pause/resume** (memory oversubscription via snapshot reuse).
+  Sandboxes are long-lived; pause frees physical RAM, so `total_count = k×N` sandboxes fit
+  in `running_concurrency = N` slots. Running slots are acquired/released at **step
+  granularity** (one command = acquire/release).
+- exec_ephemeral = **ephemeral no-lifecycle**: no pause/resume at all — "spin up once → run
+  the trajectory → kill; to reuse, spin up again" (the no-lifecycle oversub auth model).
+  It runs admission-free at `k×N` concurrent; bounding the fleet is supply-side (create/call
+  rate), not pause-to-free-memory.
 
-> `launch_interval_sec` (float seconds, per-sandbox create pacing) is **trajectory-only**.
-> `create_batch.size` / `create_batch.interval` (integer seconds) pace the initial fleet
-> `create_all` for the long-lived modes (lifecycle **and** exec_only); trajectory skips
-> `create_all` entirely. Sub-second per-sandbox pacing is therefore only available in
-> trajectory mode.
+> `launch_interval_sec` (float seconds, per-sandbox create pacing) applies only to the
+> ephemeral `exec_ephemeral` mode. `create_batch.size` / `create_batch.interval` (integer
+> seconds) pace the initial fleet `create_all` for the long-lived modes (lifecycle **and**
+> exec_only); exec_ephemeral skips `create_all` entirely (each trajectory calls
+> `create_one` directly). Sub-second per-sandbox pacing is therefore only available in
+> exec_ephemeral mode.
 
 ### 8.2 lifecycle memory oversubscription: ratio configuration
 
@@ -407,12 +408,12 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
   sweagent) to `.replay.json` first.
 - `template_manifest` is a side JSON mapping `{trajectory-relative-path: template}` (paths
   relative to `replay_trajectory_dir`, backslashes normalized). With multiple templates,
-  non-trajectory modes route by template affinity (orphan templates are skipped with a
-  count); trajectory mode passes `template=` into each `create_one`. The manifest is the
-  authoritative run set: a trajectory absent from it (or mapped to a null/non-string
-  value) is skipped with a warning -- it does not fall back to the provider default. Omit
-  the manifest entirely for the legacy single-template path (every trajectory uses the
-  provider block's `template`).
+  long-lived modes (exec_only / lifecycle) route by template affinity (orphan templates are
+  skipped with a count); the ephemeral `exec_ephemeral` mode passes `template=` into each
+  `create_one`. The manifest is the authoritative run set: a trajectory absent from it (or
+  mapped to a null/non-string value) is skipped with a warning -- it does not fall back to
+  the provider default. Omit the manifest entirely for the legacy single-template path
+  (every trajectory uses the provider block's `template`).
 
 ### 8.4 Observability workbook (`*_obs.xlsx`)
 
@@ -427,10 +428,10 @@ when the series is absent (e.g. a minimal install).
 
 | Sheet | row granularity | content |
 |-------|-----------------|---------|
-| Overview | scalar (consolidated, grouped/color-coded) | **single summary**: Run (mode/total_count/running_concurrency/test_duration/wall_sec/steps/success/failed/overcommit_ratio) + Throughput (steps_per_sec/effective_parallelism/exec_wall_utilization/concurrency) + Admission & QPS (running-slot maximum/active/peak_active/granted/avg_queue_wait/waiting + QPS limiter qps/inflight_cap/in_flight/dispatched/avg_wait/max_wait + per-operation dispatch/wait sub-tables) + Retry (retry_count/time_lost_to_retry_sec/retries_per_slice_p95 + per-operation retry_queued) + **Lifecycle overhead %** (lifecycle/trajectory; aggregate/mean/p95 ratios) + **Per-step timing** sub-table (exec/think/pause/resume pooled percentiles). See "Overview fields" below for the Lifecycle overhead % and Per-step timing fields. Column A labels are bold/filled; groups separated by banner rows |
+| Overview | scalar (consolidated, grouped/color-coded) | **single summary**: Run (mode/total_count/running_concurrency/test_duration/wall_sec/steps/success/failed/overcommit_ratio) + Throughput (steps_per_sec/effective_parallelism/exec_wall_utilization/concurrency) + Admission & QPS (running-slot maximum/active/peak_active/granted/avg_queue_wait/waiting + QPS limiter qps/inflight_cap/in_flight/dispatched/avg_wait/max_wait + per-operation dispatch/wait sub-tables) + Retry (retry_count/time_lost_to_retry_sec/retries_per_slice_p95 + per-operation retry_queued) + **Lifecycle overhead %** (lifecycle mode; aggregate/mean/p95 ratios) + **Per-step timing** sub-table (exec/think/pause/resume pooled percentiles). See "Overview fields" below for the Lifecycle overhead % and Per-step timing fields. Column A labels are bold/filled; groups separated by banner rows |
 | Per-step timings | pooled percentiles | fleet `latency` (= pure exec time) n/min/max/avg/p50/p95/p99, bucketed by `action_type`; embedded line chart (ms). Latency samples are **success-only** (failed/timed-out steps are counted but never enter the latency distributions — a synthesized-zero failure used to drag `avg_s` toward 0; same rule as the headline `Avg Latency` and the text report's `[Step-Level Timing]` table). **Naming note**: this sheet buckets *pure exec latency* by *action type* (shell/bash/…); the Overview **Per-step timing** section pools by *phase* (exec/think/pause/resume) — different lens, do not conflate |
-| Lifecycle overhead | pooled percentiles | `resume` / `pause` / `slice_total` / `slot_held` / `interaction` percentiles (**raw seconds**); embedded chart (ms). lifecycle/trajectory only. **Note**: this sheet is absolute durations in seconds (chart in ms); the overhead **ratio (%)** is not here — it lives in the Overview `lifecycle_overhead_*_pct` scalars |
-| Trajectory summary | one row per trajectory | n_steps + segment sums (slice_total/exec/resume/pause/interaction_total/slot_contention_wait/resume_rate_pacing_wait/pause_rate_pacing_wait/running_slot_held) + avg_slice (seconds). Sorted by trajectory_id; trajectory mode also appends create/kill percentiles |
+| Lifecycle overhead | pooled percentiles | `resume` / `pause` / `slice_total` / `slot_held` / `interaction` percentiles (**raw seconds**); embedded chart (ms). lifecycle mode only. **Note**: this sheet is absolute durations in seconds (chart in ms); the overhead **ratio (%)** is not here — it lives in the Overview `lifecycle_overhead_*_pct` scalars |
+| Trajectory summary | one row per trajectory | n_steps + segment sums (slice_total/exec/resume/pause/interaction_total/slot_contention_wait/resume_rate_pacing_wait/pause_rate_pacing_wait/running_slot_held) + avg_slice (seconds). Sorted by trajectory_id; `create_median_s` / `kill_median_s` / `stress_median_s` fill from the series events — real values in exec_ephemeral (which creates/kills per trajectory), 0.0 in the long-lived modes |
 | Step detail | one row per step event | 20 columns (see below); includes success and synthesized `slice_failed` rows; sorted by (trajectory, sandbox, step); frozen header + autofilter |
 | Concurrency states | one row per second | per-second dominant-state counts (pausing/paused/resuming/exec/active); chart |
 | Gantt | chart | per-sandbox phase timeline (resume/exec/pause), embedded PNG; auto-shrinks row height for large fleets |
@@ -443,7 +444,7 @@ when the series is absent (e.g. a minimal install).
 
 #### Overview fields
 
-The Overview dashboard is grouped in order Run → Throughput → Admission & QPS → Retry → Lifecycle overhead % → Per-step timing (Column A bold/filled + banner-separated). The Lifecycle overhead % and Per-step timing groups appear in lifecycle/trajectory mode only (absent in exec_only or a fully-failed run).
+The Overview dashboard is grouped in order Run → Throughput → Admission & QPS → Retry → Lifecycle overhead % → Per-step timing (Column A bold/filled + banner-separated). The Lifecycle overhead % and Per-step timing groups appear in lifecycle mode only (absent in exec_only / exec_ephemeral or a fully-failed run).
 
 **① Lifecycle overhead %** (scalar kvs — the overhead **ratio**, not seconds):
 
@@ -477,14 +478,14 @@ Sub-segments nest under their parent so the sum invariant is verifiable in-sheet
 |-------|------------|------------------------------|
 | `trajectory_id` | instance_id of the trajectory this step belongs to | primary key to filter/group by trajectory; answers "which trajectory" |
 | `sandbox_index` | index of the executing sandbox in the fleet (0..N-1), not the backend sandbox_id | locates "which sandbox ran it"; aligns with Gantt/concurrency rows |
-| `round_id` | round-robin round number; empty for fixed/trajectory modes | which concurrent group this step belongs to; spot inter-round degradation |
+| `round_id` | round-robin round number; the fixed runner stamps a per-pass ordinal instead (multiplier passes of one trajectory stay separate run rows) | which concurrent group this step belongs to; spot inter-round degradation |
 | `step_index` | step index within the trajectory (0-based) | ordinal of this step in its trajectory; aligns to the original trajectory |
 | `action_type` | `shell` / `bash` / `str_replace_editor` / `submit` / `finish` / `done` | estimates latency by action class; matches `Per-step timings` buckets |
 | `slice_failed` | runner-synthesized failed slice (exception/stop_on_error); when True the duration columns below are 0 | failure flag; filter failed steps to their `exit_code`; excluded from percentiles |
 | `resume_sec` | total resume time = inflight + api + ready_wait (rate-pacing excluded, pre-lease) | resume overhead; a major non-exec term under oversub/snapshot reuse |
 | `resume_rate_pacing_wait_sec` | QPS-limiter 1/qps rate-pacing time-wait (resume, PRE-lease: excluded from resume_sec / running_slot_held) | shaping pressure; nonzero = the QPS cap is binding |
 | `resume_api_sec` | pure resume API call time | the backend's intrinsic resume cost; strips waits to see the bare API |
-| `resume_ready_wait_sec` | post-resume readiness probe wait (lifecycle/trajectory; 0 in exec_only) | readiness-probe cost; high = slow warm-up after resume |
+| `resume_ready_wait_sec` | post-resume readiness probe wait (lifecycle only; 0 in exec_only / exec_ephemeral) | readiness-probe cost; high = slow warm-up after resume |
 | `exec_sec` | pure `provider.exec()` wall time (= Per-step timings `latency`) | the "real work" time; the core efficiency metric |
 | `pause_sec` | total pause time = rate-pacing + inflight + api (rate-pacing included, in-lease) | pause cost; rises with snapshot reuse / lifecycle oversub |
 | `pause_rate_pacing_wait_sec` | QPS-limiter 1/qps rate-pacing time-wait (pause, IN-lease: included in pause_sec / running_slot_held) | shaping pressure (pause side); nonzero = the QPS cap is binding |
@@ -547,188 +548,12 @@ it is the dominant non-productive term at 1:1, so `interaction_total` ≫ `slice
 > vm_monitor `resource_report.xlsx` (`monitor.merge_report: false`) or merged into this
 > workbook's `VM_Stats` / `NUMA_Overview` / `DevKit_TopDown` sheets (`merge_report: true`).
 
-### 8.5 Oversubscription sweep (`oversub-bench`)
+### 8.5 Oversubscription sweep + comparison (`oversub-bench` / `oversub-compare`)
 
-The `oversub-bench` driver (`src/bench_core/oversub.py`) sweeps the replay kernel across memory/CPU oversubscription ratios: `running_concurrency` (N) stays fixed (from the base config), `total_count = k×N` scales per trial. One `bench-core` invocation per trial; the driver reads each trial's machine-readable `run_summary.json` and aggregates per-trial + per-ratio degradation curves.
-
-**Layering: kernel emits raw facts, driver computes valid.** The driver imports no kernel data-path internals — only the CLI, the YAML schema, the `run_summary.json` schema, and the shared `setup_logging` helper. The kernel does not know it is "ratio k of a sweep"; it emits what happened, the driver decides whether a trial ran to completion.
-
-#### Invocation
-
-```
-oversub-bench --sweep-config config/oversub/lifecycle-1to3.yaml
-oversub-bench --sweep-config config/oversub/lifecycle-1to3.yaml --ratios 4   # override one knob
-oversub-bench --config config/common/replay.yaml --provider aenv --ratios 1,2,3   # no sweep-config
-```
-
-Precedence: **CLI flag > sweep-config > built-in default**. `--sweep-config` carries every knob plus `base_config`; `--config` is required only when no sweep-config sets `base_config`. Run `oversub-bench --help` for the full flag set (`--running-concurrency`, `--modes`, `--repeats`, `--test-duration`, `--failure-tolerance`, `--cooldown-sec`, `--cleanup-between-trials`, `--trial-timeout-sec`, `--output-root`, `--reuse`, `--stop-on-failure`, `--dry-run`, `--no-vm-monitor`, `--bench-core-bin`).
-
-#### sweep-config keys
-
-`config/oversub/template.yaml` is the annotated template; `lifecycle-1to3.yaml` is a ready aenv lifecycle 1:1/1:2/1:3 sweep. Copy either and edit. Unknown keys are **rejected** (a typo like `repeat:` vs `repeats:` fails loudly).
-
-| key | default | meaning |
-|-----|---------|---------|
-| `base_config` | — (required) | base replay stress profile; deep-copied per trial |
-| `provider` | `aenv` | `{aenv, e2b, docker, fake}` |
-| `running_concurrency` | base `replay.running_concurrency` | N running slots (fixed across ratios) |
-| `ratios` | `1,2,3` | k values (list or `"1,2,3"`); `total_count = k×N` |
-| `modes` | `lifecycle,exec_only` | replay modes to sweep (one curve each) |
-| `repeats` | `1` | repeats per `(mode, ratio)` for medians |
-| `test_duration` | base `test.duration` (600) | hard ceiling per trial (sec) |
-| `failure_tolerance` | `0.0` | max `failure_rate` for a trial to count valid |
-| `cooldown_sec` | `30` | settle time between trials |
-| `cleanup_between_trials` | `on` | pre-trial `bench-core --cleanup` teardown of leftovers |
-| `trial_timeout_sec` | `0` | outer wall-clock per trial; `0` = off |
-| `output_root` | `results/oversub/oversub-N{N}-{ts}/` | sweep output dir |
-| `reuse` | `false` | skip completed-valid trials (restart safety) |
-| `stop_on_failure` | `false` | halt on first invalid trial |
-| `no_vm_monitor` | `false` | pass `--no-vm-monitor` through to bench-core |
-| `bench_core_bin` | `[bench-core]` | kernel subprocess command (tests point at a stub) |
-| `auto_compare` | `true` | post-sweep, auto-run a single-series `oversub-compare` into `<output_root>/comparison/` (per-stat degradation + same-trajectory cross-ratio table); `--no-auto-compare` disables |
-
-#### Per-trial config overrides
-
-The driver deep-copies `base_config` and rewrites only the oversub fields; everything else passes through:
-
-| field | set to | why |
-|-------|--------|-----|
-| `sandbox.total_count` | `k×N` | the oversubscription target |
-| `replay.running_concurrency` | `N` (fixed) | the baseline slot count |
-| `replay.mode` | the sweep mode | lifecycle / exec_only / trajectory |
-| `test.round_size` | `k×N` | all k×N sandboxes run in one group — without this, k≥2 silently runs sequential groups of N, corrupting the oversubscription dynamics |
-| `test.duration` | `test_duration` | the time ceiling |
-| `report.output_dir` / `report.filename_prefix` | per-trial dir/prefix | isolate each trial's artifacts |
-
-`test.round_count` (the work-amount knob: how many passes of the fleet) **passes through**. A trial ends at whichever comes first: `round_count` rounds OR `test.duration` seconds (the kernel's own whichever-first semantics). Set `round_count: 1` (base default) for a bounded one-pass trial, `0` for a sustained-until-duration window.
-
-#### `run_summary.json` (kernel → driver contract)
-
-Each trial writes `{prefix}_run_summary.json` — the only contract between kernel and driver. RAW FACTS ONLY (the kernel never recomputes a metric the driver needs):
-
-| field | what it is | what to read / why it matters |
-|-------|------------|------------------------------|
-| `schema_version` | `2` | contract version; informational — the driver reads the throughput fields directly and never validates this (rescoring a schema-1 file behaves exactly as before: same gates, same fields) |
-| `replay_mode`, `provider` | which mode / backend | separates the lifecycle/exec_only/trajectory curves and the backend |
-| `started_at`, `completed_at` (+ `_epoch`) | ISO local + epoch seconds | start/end times; epoch joins with vm_monitor host samples |
-| `test_duration`, `wall_sec` | configured ceiling vs actual wall | whether the ceiling was hit; wall ≪ duration = early stop/stall |
-| `total_count`, `running_concurrency`, `overcommit_ratio` | the trial's k×N / N / k | oversub params; ratio=k is the sweep's x-axis |
-| `throughput` | `total, succeeded, failed, total_steps, steps_per_sec, tasks_per_sec` (`total` = trajectory attempts — schema 2 counts per trajectory, not per sandbox slot, so a slot reused across ephemeral create/kill or fixed-multiplier passes counts once per pass; `succeeded` = trajectories that ran all steps; `failed` = total − succeeded, never negative) | output/failure stats; steps_per_sec=throughput; `total` is the driver's valid gate (non-M trials; M trials gate on `succeeded`) |
-| `admission` | `maximum, peak_active, granted, avg_queue_wait_sec, control_qps, control_dispatched` — `null` for exec_only (no admission controller) | admission control-plane state; `peak_active≤N` is the valid gate; null for exec_only |
-| `lifecycle_overhead` | `pause_sec_sum, resume_sec_sum, pct_of_slice_total` — lifecycle/trajectory only; `pct_of_slice_total` is the overhead ratio (%, same source as Overview's `lifecycle_overhead_aggregate_pct`) | lifecycle overhead in absolute + ratio; the driver writes this to `trial-summary.csv`'s `lifecycle_overhead_pct` |
-| `paths` | `report, obs_xlsx, lifecycle_series, trajectory_index, vm_monitor_dir` | artifact paths; the driver aggregates / pulls detail from these |
-| `error` | error string if the trial errored | failure reason; non-empty = root-cause lead for a non-zero `return_code` |
-
-#### Validity (`compute_valid`)
-
-A trial (one pass of the k×N fleet, `round_count=1`) is **valid** when it ran (close to) the full running fleet without over-admitting:
-
-- `return_code == 0` (the kernel subprocess succeeded);
-- `throughput.total >= 0.9 * N` (it ran most of the N running slots — a crash/early-exit fails here; the `test.duration` ceiling caps a stalled run, which then also fails this gate). Mode-agnostic: a single-round trial attempts each trajectory once, so lifecycle `total` ≈ k×N and exec_only `total` ≈ N, both ≥ 0.9×N on a healthy run; with `multiplier` (M) the floor instead reads `succeeded` (completions) ≥ 0.9×M×k×N;
-- `admission.peak_active <= N` (never ran more than N concurrent — dropped for exec_only);
-- `failure_rate <= failure_tolerance` (configurable wrap-noise allowance).
-
-`valid` is the gross-failure / over-admission gate, **not** a "every trajectory succeeded" bar — per-trajectory completion is inspectable in `trajectory-detail.csv` (`total` vs `target_count` in `trial-summary.csv`).
-
-#### Outputs
-
-Written after every trial (so a killed driver leaves a complete partial set) into `--output-root` (default `results/oversub/oversub-N{N}-{ts}/`):
-
-| file | granularity | key columns |
-|------|-------------|-------------|
-| `trial-summary.csv` | one row per `(mode, ratio, repeat)` trial | `total, succeeded, failed, failure_rate, peak_active, wall_sec, tasks_per_sec, steps_per_sec, lifecycle_overhead_pct, return_code, valid, target_count, test_duration` |
-| `ratio-summary.csv` | one row per `(mode, ratio)` (medians across repeats) | `attempted, successful, median_wall_sec, median_tasks_per_sec, avg_cmd_exec_sec, median_cmd_exec_sec, cmd_exec_degradation_vs_1_1_pct, time_degradation_vs_1_1_pct, throughput_gain_vs_1_1_pct` |
-| `trajectory-detail.csv` | one row per trajectory per trial (from `trajectories/index.json`) | `trajectory_id, sandbox_index, n_steps, n_failed, success_rate, elapsed_sec` + the 18 `*_sec` breakdown columns (exec/resume/pause/requested_delay/create/kill/slice_total/interaction_total/slot_contention_wait/natural_delay/capacity_wait/rate_pacing_wait/inflight_wait/resume_rate_pacing_wait/pause_rate_pacing_wait/resume_inflight_wait/pause_inflight_wait/running_slot_held). The trajectory's executed command sequence (`action_series`) is **not** in the CSV (a multi-line cell would bloat every Excel row) — find it per trajectory in `replay_result.json` / `index.json`, or machine-readably in `benchmark-report.json` `trajectory_details`. |
-| `benchmark-report.json` | full machine-readable report | `configuration, trials, ratio_summary, trajectory_details` (each `trajectory_details` row carries `action_series`) |
-
-Per-cmd exec time: `avg_cmd_exec_sec` is the true per-command mean `sum(exec_sec)/sum(n_steps)` across runs with no failed steps (a failed run's truncated exec would drag the mean down); `median_cmd_exec_sec` is the median of per-run means; `cmd_exec_degradation_vs_1_1_pct` compares `avg_cmd_exec_sec` against the mode's `k=1` baseline.
-
-Degradation is computed **within a mode** vs that mode's `k=1` baseline, so lifecycle and exec_only each get their own curve (memory-overcommit overhead vs CPU-oversubscription degradation). When a mode has no `k=1` trial, the degradation columns default to `0.0`.
-
-#### Trial order, reuse, cooldown
-
-- **Order:** `for mode, for ratio, for repeat` — the natural degradation curve (k ascends within a mode).
-- **`reuse`:** skip a `(mode, ratio, repeat)` whose prior `run_summary.json` is already valid — restart after a Ctrl-C resumes from the last good trial.
-- **`cooldown_sec`:** settle time between trials (skipped for the first trial and in `--dry-run`).
-- **`cleanup_between_trials: on`:** runs `bench-core --cleanup` (teardown of leftovers) before each trial so survivors from a prior ratio don't corrupt the next.
-- **`--dry-run`:** prints each `trial.yaml` + the bench-core command and writes empty outputs — no subprocess runs.
-
-#### Interrupted vs timed-out trials
-
-A trial halted mid-run by Ctrl-C / a driver-initiated SIGTERM is *not* dropped — the kernel's SIGTERM-cooperative `finally` flushes a **partial** `run_summary.json` + `trajectories/index.json` (artifacts are written atomically via temp-file + `os.replace`, so a second SIGTERM mid-flush leaves already-written files intact), and the driver captures it as a row with **`return_code == 130`** and `valid == False`. Its `total` / `wall_sec` reflect only what ran before the interrupt — which is itself the degradation signal (a ratio that stalls at 200/1152 trajectories in the stall window is the oversub breakdown point). An interrupted trial **ends the sweep** (the driver halts with exit 130); a *timed-out* trial (non-zero `return_code` ≠ 130) does **not** — the sweep continues to the next ratio unless `--stop-on-failure` is set.
-
-> `_interrupted` is an internal row sentinel (not a CSV column — `DictWriter` drops it) that `main()` reads to distinguish "halt the sweep" (user interrupt) from "continue" (trial timeout). Downstream analysis scripts should key off the committed `return_code == 130` column, not the in-memory sentinel.
-
-### 8.6 Cross-architecture / cross-config comparison (`oversub-compare`)
-
-`oversub-compare` (`src/bench_core/compare_sweeps.py`) compares and visualizes **already-produced** `oversub-bench` sweep results across architectures / configs. It **runs no sandboxes and produces no benchmark data of its own** — it only consumes the driver's written CSV contract (`trajectory-detail.csv` + `trial-summary.csv`), joining N sweep output dirs on `(mode, ratio, trajectory_id)` to emit delta CSVs + an xlsx workbook. Sibling to `oversub-bench` (imports no kernel data-path internals).
-
-**Typical use:** ARM baseline vs several x86 freq/L3 configs, ratios 1:1–1:6, comparing per-trajectory end-to-end latency by ratio, the exec/resume/pause/wait component latencies, and overall degradation. Host-level freq/L3 caps are set outside the benchmark (BIOS / cpufreq / l3cat / boot); the tool **never sniffs them** — you declare what each dir represents in the manifest.
-
-#### One mode per comparison
-
-A single `oversub-compare` run compares **one mode's set of series** (e.g. `arm-life1 / arm-life2 / x86-life`, or `x86-exec1 / x86-exec2 / arm-exec`). To compare exec_only and lifecycle, **run it twice** — one workbook per mode, side by side. The tool does not assume you mix both modes into one manifest (the `mode` column is constant per dir, so a single-mode manifest stays clean).
-
-#### Manifest
-
-`config/oversub/compare-manifest.yaml` is the commented template:
-
-```yaml
-baseline_series: arm-ampere
-output_dir: results/oversub/comparison-2026-09-19/   # null = comparison-<ts>/
-series:
-  - {label: arm-ampere, arch: arm, dir: results/oversub/arm/,       caps: {l3_mb: 256}}
-  - {label: x86-base,   arch: x86, dir: results/oversub/x86-base/,   caps: {freq_ghz: 3.0, l3_mb: 64}}
-  - {label: x86-freq2,  arch: x86, dir: results/oversub/x86-freq2/,  caps: {freq_ghz: 2.0, l3_mb: 64}}
-```
-
-`baseline_series` is the reference all deltas are computed against (ARM by convention; any series works). `caps` is **informational** — surfaced in the Overview + series labels, never parsed. Relative `dir` paths resolve against the manifest file's parent (portable). Unknown keys are rejected (a typo like `serie:` fails loudly).
-
-#### Running the comparison
-
-```bash
-oversub-compare --manifest config/oversub/compare-manifest.yaml
-oversub-compare --arm results/oversub/arm/ --x86 results/oversub/x86/   # 2-dir shorthand (arm is baseline)
-oversub-compare --manifest ... --allow-mismatched-n   # proceed even if N differs (refused by default)
-```
-
-#### Inputs (per series dir, the driver's existing contract)
-
-- `trajectory-detail.csv` — one row per `(mode, ratio, repeat, trajectory_id)` + `elapsed_sec` and 18 `*_sec` breakdown columns.
-- `trial-summary.csv` — per-trial `wall_sec / tasks_per_sec / lifecycle_overhead_pct / avg_queue_wait_sec`, etc.
-- `benchmark-report.json` — `configuration` (for the N-parity check).
-
-A missing file errors with the path.
-
-#### Outputs (`<output_dir>/`)
-
-| File | Contents |
-|------|----------|
-| `comparison-tidy.csv` | long: `series, arch, <caps…>, mode, ratio, repeat, trajectory_id, metric, value` (concat+melt, most flexible; metrics = the 20 CSV columns + derived `cmd_exec_sec` = `exec_sec/n_steps`, NaN for runs with failed steps) |
-| `comparison-ratio-summary.csv` | one row per `(mode, ratio, series, metric)`: a p50/p90/p99/avg stat pack (`median_sec/p90_sec/p99_sec/avg_sec`) + delta vs baseline + pct + one within-series degradation column per stat vs that series' own k=1 (`degradation_vs_ratio1_pct`=p50, `deg_p90/p99/avg_vs_ratio1_pct`); trial-level metrics carry the median only; a series without k=1 yields blank degradation (no crash) |
-| `comparison-trajectory-delta.csv` | join on `(mode, ratio, trajectory_id)`: baseline `elapsed_sec` + each series' value + delta; an absent side stays blank, orphan count surfaces in Overview |
-| `comparison-cross-ratio-trajectory.csv` | one row per `(series, mode, trajectory_id, ratio)`: that trajectory's median `elapsed_sec` + degradation vs the SAME trajectory's ratio-1 median (the driver pins the pool across ratios, so ids join); a tid missing at k=1 stays blank |
-| `comparison.xlsx` | 5 sheets (below) |
-
-#### `comparison.xlsx` five sheets
-
-1. **Overview** — manifest (series/arch/caps/baseline), N-parity check result, per-series valid/invalid trial counts, median-e2e headline table.
-2. **Per-ratio** — LineCharts, each with one y-axis (no dual-axis): ① absolute median e2e (who's faster); ② within-series degradation % vs k=1 (whose oversub behavior degrades worse); ③ `lifecycle_overhead_pct` (the pause/resume cost share for a lifecycle comparison). For an exec_only comparison ③ self-skips — the driver writes an empty cell for exec_only (no lifecycle_overhead), pandas reads NaN, the subset empties, and the block is omitted (no flat-zero line).
-   ④ per series, a task-time (`elapsed_sec`) degradation block + chart with one line per stat (p50/p90/p99/avg vs k=1).
-3. **Component heatmaps** — one grid per component (rows=series, cols=ratio, ColorScale single-hue light→dark): `exec / resume / pause / slot_contention_wait`. `create / kill` are **excluded** — in lifecycle/exec_only they are 0 per step (only trajectory mode has per-trajectory create_one/kill_one), so the heatmap would carry only flat zeros; both columns remain in the tidy CSV for drill-down.
-4. **Per-trajectory delta** — e2e delta joined per trajectory; freeze panes at D2.
-5. **Cross-ratio per-traj** — the same-trajectory cross-ratio table (`comparison-cross-ratio-trajectory.csv` rendered): per trajectory, its median `elapsed_sec` at each ratio + degradation vs its own ratio-1 median; freeze panes at D2.
-
-#### N-parity guard
-
-`running_concurrency` must match across series — different N means ratio 1:k maps to different absolute sandbox counts, so the cross-series comparison is apples-to-oranges. A mismatch is refused by default; `--allow-mismatched-n` proceeds anyway. Invalid trials **stay in the median** (the median is robust to one flaky repeat); Overview surfaces the per-series valid/invalid count so you can decide whether to drop + re-run.
-
-#### Runbook
-
-1. On ARM: `oversub-bench --sweep-config config/oversub/lifecycle-1to6.yaml --output-root results/oversub/arm/`
-2. On each x86 config (reconfigure host freq/L3 between runs): `oversub-bench ... --output-root results/oversub/x86-<config>/`
-3. Edit `config/oversub/compare-manifest.yaml` to point at each dir + declare caps.
-4. `oversub-compare --manifest config/oversub/compare-manifest.yaml`
-5. Open `results/oversub/comparison-<ts>/comparison.xlsx`.
-
-To compare exec_only vs lifecycle: repeat 1–5 with a separate manifest per mode (one mode's worth of series each) and read the two workbooks side by side.
+The full guide for sweeping a set of ratios (`oversub-bench`) and comparing the resulting sweeps
+(`oversub-compare`) lives in the standalone doc
+[oversub-bench-usage.md](oversub-bench-usage.md)([zh](oversub-bench-usage-zh.md)) — invocation,
+sweep-config keys, process sharding, the `run_summary.json` (kernel → driver contract), validity,
+outputs (incl. the `trajectory-detail.csv` columns), trial order / reuse / interruption,
+cross-architecture comparison, and troubleshooting. Sweep configs live in `config/oversub/*.yaml`
+(`template.yaml` is the annotated template).

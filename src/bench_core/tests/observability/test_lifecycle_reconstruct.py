@@ -61,7 +61,7 @@ def test_reconstruct_concurrency_single_sandbox_one_second() -> None:
     # Timestamps use a positive epoch-style base (real series are time.time()
     # ~1.8e9; 0.0 is the failed-step sentinel, rejected by _segment).
     events = [_step(0, 1000.0, 1000.5, 1000.5, 1001.5, 1001.5, 1002.0)]
-    bins = reconstruct_concurrency(events)
+    bins = reconstruct_concurrency(events, paused_gaps=True)
     # second 0 (1000.0-1001.0): resuming [1000,1000.5)=0.5s vs exec [1000.5,1001.0)=0.5s
     # tie -> max() returns first maximal index: PHASES[2]=resuming beats PHASES[3]=exec
     assert bins[0]["second"] == 0
@@ -75,7 +75,7 @@ def test_reconstruct_concurrency_single_sandbox_one_second() -> None:
 def test_reconstruct_concurrency_filters_zeroed_timestamps() -> None:
     # failed step: all timestamps 0 -> filtered, no bins
     events = [_step(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)]
-    assert reconstruct_concurrency(events) == []
+    assert reconstruct_concurrency(events, paused_gaps=True) == []
 
 
 def test_segment_rejects_zero_or_negative_start() -> None:
@@ -108,7 +108,7 @@ def test_reconstruct_concurrency_drops_zeroed_pause_end_cross_gap() -> None:
         _step(0, 102.0, 103.0, 103.0, 104.0, 104.0, 0.0),  # pause_end zeroed (failed)
         _step(1, 110.0, 111.0, 111.0, 112.0, 112.0, 113.0),  # gap 0->110 was the bomb
     ]
-    bins = reconstruct_concurrency(events)
+    bins = reconstruct_concurrency(events, paused_gaps=True)
     # with the bug: bogus (0, 110) paused segment -> t0=0 -> 115 bins
     # with the fix: gap dropped -> t0=100 -> 15 bins
     assert len(bins) == 15, len(bins)
@@ -133,7 +133,7 @@ def test_reconstruct_concurrency_active_excludes_paused() -> None:
             "pause_end": 1001.0,
         },  # exec [1000,1001)
     ]
-    bins = reconstruct_concurrency(events)
+    bins = reconstruct_concurrency(events, paused_gaps=True)
     assert bins[0]["pausing"] == 1  # sandbox A: pausing (not "paused")
     assert bins[0]["exec"] == 1  # sandbox B: exec
     # active = pausing + resuming + exec = 1 + 0 + 1 = 2
@@ -143,7 +143,7 @@ def test_reconstruct_concurrency_active_excludes_paused() -> None:
 def test_reconstruct_concurrency_includes_trailing_empty_bins() -> None:
     # max end = 2.0 -> seconds 0..3 (t1 = int(2.0)+1 = 3, n_sec = 3-0+1 = 4)
     events = [_step(0, 0.0, 0.5, 0.5, 1.0, 1.0, 2.0)]
-    bins = reconstruct_concurrency(events)
+    bins = reconstruct_concurrency(events, paused_gaps=True)
     assert len(bins) == 4
     assert bins[2]["active"] == 0  # trailing empty
     assert bins[3]["active"] == 0
@@ -156,6 +156,12 @@ def test_reconstruct_concurrency_includes_trailing_empty_bins() -> None:
 # N's pause_end) and the next step's resume_start. It is NOT expressible from
 # one step's timestamp pairs (resume_start < pause_end inside a step), so the
 # old within-step segment derivation dropped it -> paused was always 0.
+#
+# Whether that idle is "paused" is a property of the replay MODE, not of the
+# series: only lifecycle really snapshots. exec_only emits no
+# lifecycle calls at all, and exec_ephemeral's no-op pause still takes ~1us of
+# wall clock, so its timestamp pairs are non-zero-width and a width heuristic
+# cannot tell the two apart. Callers pass the mode-derived ``paused_gaps``.
 # ---------------------------------------------------------------------------
 
 
@@ -187,14 +193,14 @@ def _step_tid(
 
 def test_reconstruct_concurrency_cross_step_paused_gap() -> None:
     # One sandbox, two steps with a 1.8s no-CPU idle gap between step0's
-    # pause_end (1.2) and step1's resume_start (3.0). lifecycle signal present
-    # via the initial_pause event -> the gap must surface as "paused".
+    # pause_end (1.2) and step1's resume_start (3.0). lifecycle mode really
+    # snapshots (paused_gaps=True) -> the gap must surface as "paused".
     events = [
         _initial_pause(0, 0.0, 0.2),
         _step(0, 0.5, 0.7, 0.7, 1.0, 1.0, 1.2),  # step0
         _step(1, 3.0, 3.2, 3.2, 3.5, 3.5, 3.7),  # step1; idle 1.2..3.0
     ]
-    bins = reconstruct_concurrency(events)
+    bins = reconstruct_concurrency(events, paused_gaps=True)
     # second 2 (2.0-3.0) sits fully inside the paused idle gap.
     assert any(b["paused"] > 0 for b in bins), bins
     assert bins[2]["paused"] == 1, bins[2]
@@ -207,46 +213,43 @@ def test_reconstruct_concurrency_initial_pause_leads_paused() -> None:
         _initial_pause(0, 1000.0, 1000.5),
         _step(0, 1002.0, 1002.5, 1002.5, 1003.0, 1003.0, 1003.5),
     ]
-    bins = reconstruct_concurrency(events)
+    bins = reconstruct_concurrency(events, paused_gaps=True)
     assert bins[0]["pausing"] == 1, bins[0]  # initial pause API call
     assert bins[1]["paused"] == 1, bins[1]  # 1001.0..1002.0 fully inside 1000.5..1002.0
 
 
 def test_reconstruct_concurrency_exec_only_no_false_paused() -> None:
-    # exec_only: no initial_pause, no trajectory create/kill -> no lifecycle
-    # signal. Resume/pause are no-ops (instant), so the think-time idle between
-    # steps must NOT be relabelled "paused" (the sandbox never snapshotted).
+    # exec_only runs no lifecycle calls: resume/pause are no-ops, so the
+    # think-time idle between steps must NOT be relabelled "paused" (the
+    # sandbox never snapshotted).
     events = [
         _step(0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0),  # exec 0..1; resume/pause instant
         _step(1, 3.0, 3.0, 3.0, 4.0, 4.0, 4.0),  # exec 3..4; 2s think-time gap
     ]
-    bins = reconstruct_concurrency(events)
+    bins = reconstruct_concurrency(events, paused_gaps=False)
     assert all(b["paused"] == 0 for b in bins), bins
     assert any(b["exec"] > 0 for b in bins), bins  # exec phases still register
 
 
-def test_reconstruct_concurrency_trajectory_inter_trajectory_not_paused() -> None:
-    # trajectory mode: sandbox 0 runs trajectory A then B, killed in between.
-    # Within-trajectory step gaps ARE paused; the kill->create dead window is
-    # NOT paused (the sandbox was destroyed, not snapshotted).
+def test_reconstruct_concurrency_exec_ephemeral_create_kill_not_paused() -> None:
+    # exec_ephemeral emits trajectory_create / trajectory_kill per round while
+    # its resume/pause are no-ops -- and those no-ops still take ~1us of wall
+    # clock, so the event stream carries non-zero-width pause pairs. The series
+    # cannot tell this apart from a real snapshot; the mode can. Its think-time
+    # idle must stay exec/idle, never "paused".
     events = [
         _traj_event("trajectory_create", 0, "A", 0.0),
-        _step_tid(0, "A", 0.5, 0.6, 0.6, 1.0, 1.0, 1.1),  # A step0
-        _step_tid(1, "A", 2.0, 2.1, 2.1, 2.5, 2.5, 2.6),  # A step1; within-gap 1.1..2.0
-        _traj_event("trajectory_kill", 0, "A", 2.7),
+        _step_tid(0, "A", 0.5, 0.5, 0.5, 1.0, 1.0, 1.0),
+        _step_tid(1, "A", 3.0, 3.0, 3.0, 3.5, 3.5, 3.5),  # 2s think-time gap
+        _traj_event("trajectory_kill", 0, "A", 4.0),
         _traj_event("trajectory_create", 0, "B", 5.0),
-        _step_tid(2, "B", 5.5, 5.6, 5.6, 6.0, 6.0, 6.1),  # B step0
-        _step_tid(3, "B", 7.0, 7.1, 7.1, 7.5, 7.5, 7.6),  # B step1; within-gap 6.1..7.0
-        _traj_event("trajectory_kill", 0, "B", 7.7),
+        _step_tid(2, "B", 5.5, 5.5, 5.5, 6.0, 6.0, 6.0),  # 2s think-time gap
+        _step_tid(3, "B", 8.0, 8.0, 8.0, 8.5, 8.5, 8.5),
+        _traj_event("trajectory_kill", 0, "B", 9.0),
     ]
-    bins = reconstruct_concurrency(events)
-    by_sec = {b["second"]: b for b in bins}
-    # within-trajectory paused gaps surface (A: ~1.1..2.0, B: ~6.1..7.0)
-    assert by_sec[1]["paused"] == 1, by_sec.get(1)
-    assert by_sec[6]["paused"] == 1, by_sec.get(6)
-    # the inter-trajectory dead window (kill 2.7 -> create 5.0) is not paused
-    assert by_sec[3]["paused"] == 0, by_sec.get(3)
-    assert by_sec[4]["paused"] == 0, by_sec.get(4)
+    bins = reconstruct_concurrency(events, paused_gaps=False)
+    assert all(b["paused"] == 0 for b in bins), bins
+    assert any(b["exec"] == 1 for b in bins), bins
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +275,7 @@ def test_gantt_segments_groups_by_sandbox_sorted_by_start() -> None:
             "pause_end": 1001.0,
         },
     ]
-    rows = gantt_segments(events)
+    rows = gantt_segments(events, paused_gaps=True)
     assert rows[0][0] == "sbx1"  # earlier start first
     assert rows[1][0] == "sbx0"
     # each row's segments are (start, end, phase)
@@ -288,7 +291,7 @@ def test_gantt_segments_include_cross_step_paused_gap() -> None:
         _initial_pause(0, 0.0, 0.5),
         _step(0, 2.0, 2.5, 2.5, 3.0, 3.0, 3.5),
     ]
-    rows = gantt_segments(events)
+    rows = gantt_segments(events, paused_gaps=True)
     assert rows[0][0] == "sbx0"
     phases = {ph for _, _, ph in rows[0][1]}
     assert "paused" in phases, phases
@@ -344,7 +347,7 @@ def test_reconstruct_concurrency_exec_only_zero_width_resume_pause() -> None:
     # 1000->1005 (5s), pause 1005->1005 (0 width) -- mirrors exec_only's
     # time.time() timestamps around no-op resume/pause + a real exec call.
     events = [_step(0, 1000.0, 1000.0, 1000.0, 1005.0, 1005.0, 1005.0)]
-    bins = reconstruct_concurrency(events)
+    bins = reconstruct_concurrency(events, paused_gaps=False)
     assert bins, "expected at least one concurrency bin"
     assert any(b["exec"] == 1 for b in bins)
     # zero-width resume/pause + no initial_pause => no resuming/pausing/paused
@@ -355,7 +358,7 @@ def test_gantt_segments_exec_only_zero_width_resume_pause() -> None:
     """exec_only step events render a single `exec` segment per sandbox
     (resume/pause no-ops drop out), so the Gantt sheet populates for exec_only."""
     events = [_step(0, 1000.0, 1000.0, 1000.0, 1005.0, 1005.0, 1005.0)]
-    rows = gantt_segments(events)
+    rows = gantt_segments(events, paused_gaps=False)
     assert len(rows) == 1
     assert rows[0][0] == "sbx0"
     assert rows[0][1] == [(1000.0, 1005.0, "exec")]

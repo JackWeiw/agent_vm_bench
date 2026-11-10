@@ -20,7 +20,7 @@ The frozen legacy OpenStack **batch summary** (`batch_summary_*.xlsx`, produced 
 
 **Part II — `vm_monitor` host-level metrics**
 - [2.1 Always-on sheets](#21-always-on-sheets)
-- [2.2 Self-collected timeline sheets](#22-self-collected-timeline-sheets)
+- [2.2 Self-collected timeline sheets](#22-self-collected-timeline-sheets--now-in-host_resourcesxlsx)
 - [2.3 External hardware profiler sheets](#23-external-hardware-profiler-sheets---enable-capture)
 - [2.4 Embedded Excel charts](#24-embedded-excel-charts)
 - [2.5 SVG reports](#25-svg-reports)
@@ -195,9 +195,10 @@ Assembled by `stats_collector.generate_report()` in this order:
 
 ## Part II — `vm_monitor` host-level metrics
 
-`vm-monitor` writes two artifact families into its `--log-dir` (default `logs_<timestamp>/`):
+`vm-monitor` writes three artifact families into its `--log-dir` (default `logs_<timestamp>/`):
 
-- **`resource_report.xlsx`** — the sheets below (sections 2.1–2.3) + embedded charts (2.4).
+- **`resource_report.xlsx`** — the summary sheets below (sections 2.1–2.3) + embedded charts (2.4). Fast to build: no per-sample tables.
+- **`host_resources.xlsx`** — every per-sample timeline (Host resources / NUMA / Per-VM / Disk IO / HostProc), derived post-hoc from `raw_data/*.csv`; rerunnable with `vm-monitor raw-report <log_dir>`.
 - **`*.svg`** — dark-themed time-curve reports (2.5).
 
 Sheets are **conditional**: a sheet is written only when its source history (or, for profiler sheets, the parsed tool log) is non-empty. Column/header strings below are exact.
@@ -268,64 +269,36 @@ Consolidates what were previously three separate sheets; there is **no** `NUMA_C
 `VM Name` | `PID` | `Samples` | `Avg CPU (%)` | `Max CPU (%)` | `Avg Memory (MB)` | `Max Memory (MB)` | `Min Memory (MB)` | `Last Memory (MB)` | `Avg PSS (MB)` | `Max PSS (MB)` | `Avg Hugepage (MB)`
 
 > `PSS (MB)` comes from `/proc/<pid>/smaps_rollup` — it splits shared pages across sharers, so the fleet aggregate is the true marginal memory cost (template pages shared by all VMs counted ~once), unlike `Memory (MB)` (numa_maps `Total`) which double-counts shared. Gated by the `pss` collector (`--no-pss`).
-
-### `Raw_VM_Data` — per-sample, per-VM raw rows
-
-`Timestamp` | `VM Name` | `PID` | `CPU (%)` | `Memory (MB)` | `PSS (MB)` | `Hugepage (MB)`
-
-## 2.2 Self-collected timeline sheets
-
-One row per sampling interval. These sheets do **not** require external tools — `vm_monitor` reads `/proc` and `/sys` directly.
-
-### `Disk_IO_Timeline`
-
-Per-device columns are emitted in `monitor.target_disks` order (auto-discovered from `/sys/block` by default; override with `--disks`). 10 columns per device:
-
-`Timestamp` · `{dev} Read (MB/s)` · `{dev} Write (MB/s)` · `{dev} Util (%)` · `{dev} Inflight` · `{dev} Queue Depth` · `{dev} Read Await (ms)` · `{dev} Write Await (ms)` · `{dev} Read IOPS` · `{dev} Write IOPS` · `{dev} Avg Rq Sz (sectors)` · `ublk Devices` · `Ublk Daemon Cores`
-
-> `Ublk Daemon Cores` is the CPU cores consumed by the `uvm-ublk-daemon` process (the host-side ublk I/O backend for aenv/Cloud Hypervisor snapshots), computed from `/proc/<pid>/stat` utime+stime jiffy deltas. Absent on non-ublk hosts (column pads to 0). Gated by the `ublk_daemon` collector (`--no-ublk-daemon`).
 >
-> Sectors→MiB uses `_SECTOR_SIZE_BYTES = 512` (kernel block-layer stat is always 512-byte sectors). Virtual/software layers (`loop`/`ram`/`sr`/`zram`/`md`/`dm`/`ublk`) are excluded from auto-discovery.
+> Per-sample per-VM rows are **not** a sheet: they live in `raw_data/vm_cpu_raw.csv`
+> (`timestamp`, `vm_name`, `pid`, `utime`, `stime`, `pss_mb`, `memory_mb`) — a
+> 2 h × 384 VM run is ~1.4 M rows, past Excel's row cap.
 
-### `Host_Mem_Timeline`
+## 2.2 Self-collected timeline sheets — now in `host_resources.xlsx`
 
-`Timestamp` · `Cached (MB)` · `Buffers (MB)` · `Dirty (MB)` · `Writeback (MB)`
+`resource_report.xlsx` carries **summary sheets only**. Every per-sample
+timeline was moved to `host_resources.xlsx`, which is derived from the
+always-on `raw_data/*.csv` snapshots (section 2.7) — so it is smaller, faster
+to build, and rerunnable after the run with `vm-monitor raw-report <log_dir>`.
 
-> `Cached (MB)` here is `/proc/meminfo` `Cached + SReclaimable` (slab reclaimable is folded into the cached total), **not** the raw `Cached` field.
+| Timeline | Where it lives now |
+|---|---|
+| Host CPU / memory / buffers / dirty / writeback / anon / file cache | `Host resources` sheet columns + charts |
+| Swap used/free/cached, swap in/out, swap-cache ratio | `Host resources` sheet (+ `Swap usage` / `Swap cache` charts) |
+| Page-cache pressure (scan / reclaim / refault / direct reclaim / alloc stalls) | `Host resources` sheet + `Page-cache pressure` / `Alloc stalls` charts |
+| Fleet VM CPU cores, VM memory, FC PSS | `Host resources` sheet (`vm_cores`, `vm_mem_gb`, `fc_pss_gb`) |
+| Per-VM CPU cores + PSS | `Per-VM` sheet (top-K by mean CPU + `other`) |
+| Per-NUMA CPU% + memory | `NUMA` sheet (one block of columns per node) |
+| Per-device disk throughput / util / await / queue / IOPS | `Disk IO` sheet |
+| Named host-process CPU + PSS | `HostProc` sheet (only with `--host-proc`) |
+| Sandbox running/paused gauges (list API) | `Host resources` sheet (`sandboxes_running` / `_paused`) |
+| Raw per-(sample, VM) rows | `raw_data/vm_cpu_raw.csv` (CSV only — a 2 h × 384 VM run exceeds Excel's 1,048,576-row cap) |
+| DevKit TopDown / Memory, getfre per-core frequency | Raw profiler logs only (timeline sheets removed; summary sheets remain) |
 
-### `NUMA_Memory_Timeline` — focus nodes only
-
-Only **focus** NUMA nodes are emitted: the CLI `--numa` list + the remote-borrowing node (`--remote-numa`, default `5` — the platform's designated cross-socket borrowing node; pass a negative value to disable). Non-focus nodes are dropped. 7 columns per focus node `{N}`:
-
-`Timestamp` · `NUMA{N} Total (MB)` · `NUMA{N} Used (MB)` · `NUMA{N} Free (MB)` · `NUMA{N} Available (MB)` · `NUMA{N} SwapCache (MB)` · `NUMA{N} AnonPages (MB)` · `NUMA{N} Usage (%)`
-
-> The per-NUMA meminfo collector also gathers `Active`/`Inactive`/`FilePages`, but the sheet exporter does **not** emit them — only the 7 fields above per node.
-
-### `Swap_Timeline`
-
-`Timestamp` · `Swap Used (MB)` · `Swap Free (MB)` · `Swap Cached (MB)` · `Swap Cache Ratio (%)` · `Swap In Rate (MiB/s)` · `Swap Out Rate (MiB/s)` · `NUMA{N} SwapCache (MB)` (one per NUMA id found in `numa_memory_history`, sorted)
-
-> There is **no** `Swap_Stats` sheet — swap aggregates live on the `Summary` sheet. Per-NUMA SwapCache is joined by sample index; if `numa_memory_history` is shorter than `swap_history`, trailing rows are filled with `0`.
-
-### `Host_Pressure_Timeline` — only if `host_pressure_history` non-empty
-
-`Timestamp` · `Page Scan (MiB/s)` · `Page Reclaim (MiB/s)` · `File Refault (MiB/s)` · `Anon Pages (MB)` · `File Cache (MB)` · `SReclaimable (MB)` · `IOWait (%)` · `Procs Running` · `Procs Blocked` · `Direct Reclaim (MiB/s)` · `Alloc Stalls (/s)`
-
-`Direct Reclaim (MiB/s)` is the **blocking subset** of `Page Scan` — `(Δpgscan_direct + Δpgscan_direct_throttle) × mib_per_page / interval`, excluding background `kswapd`. `Alloc Stalls (/s)` sums `Δallocstall_<zone>` across per-zone-type variants (modern `/proc/vmstat` exposes `allocstall_normal`/`_dma32`/`_movable`/…, **not** a plain `allocstall` sum) / interval — the count of allocation requests that stalled waiting on memory reclaim (the kernel's closest proxy for "processes blocked on reclaim"; `procs_blocked` is broader — any D-state, includes disk I/O).
-
-> There is **no** `Pressure`/`Host_Pressure`/`Host_CPU`/`Host_Resources` sheet — host CPU/memory totals are on `Summary`; host memory detail is `Host_Mem_Timeline`; pressure is `Host_Pressure_Timeline`.
-
-### `VM_Total_Memory_Timeline`
-
-`Timestamp` · `VM Total Memory (MB)` · `VM Count` · `NUMA{N} VM Memory (MB)` (one per NUMA id found across all samples' `per_numa`, sorted)
-
-> The history entry also carries `swapcache_mb` / `swapcache_per_numa`, but the sheet does **not** emit them.
-
-### `VM_Total_PSS_Timeline`
-
-`Timestamp` · `VM Total PSS (MB)` · `VM Count`
-
-> Fleet aggregate of per-VM `pss_mb` (smaps_rollup). PSS splits shared pages across sharers, so this is the **true marginal memory cost of the sandbox fleet** — template pages shared by all VMs are counted ~once, unlike `VM_Total_Memory_Timeline` which sums numa_maps `Total` and double-counts shared pages. No per-NUMA split (PSS has no node attribution — `smaps_rollup` is a single aggregate). Gated by the `pss` collector (`--no-pss` skips both per-VM PSS collection and this sheet).
+`host_resources.xlsx` sheets are capacity-guarded: a sheet beyond Excel's
+1,048,576 rows / 16,384 columns is skipped with a WARNING (the raw CSV keeps
+the full data), and charts are skipped past 500,000 data points while the full
+table is still written.
 
 ## 2.3 External hardware profiler sheets (`--enable-capture`)
 
@@ -421,23 +394,17 @@ SMAP (Secure Memory Access Protection) migration bandwidth:
 
 ## 2.4 Embedded Excel charts
 
-Written by `_add_charts` after all sheets:
+`resource_report.xlsx` charts, added by `_add_charts` after all sheets:
 
 | Chart title | Type | Anchored on |
 |-------------|------|-------------|
 | CPU Top-down Analysis | Pie | `DevKit_TopDown` |
-| IPC Over Time | Line | `TopDown_Timeline` |
 | Memory Bound Breakdown | Bar | `DevKit_TopDown` |
-| DDR Bandwidth Over Time | Line | `Memory_Timeline` |
 | Cache Miss Rate Comparison | Bar | `DevKit_Memory` |
-| Swap In/Out Rate Over Time | Line | `Swap_Timeline` |
-| SwapCache per NUMA Over Time | Line | `Swap_Timeline` |
-| NUMA Free/Used Memory (Focus Nodes) | Line | `NUMA_Memory_Timeline` |
-| NUMA SwapCache & Usage% (Focus Nodes) | Line (dual Y: MB + %) | `NUMA_Memory_Timeline` |
-| VM Total Memory Over Time | Line | `VM_Total_Memory_Timeline` |
-| Disk Write MB/s Over Time | Line | `Disk_IO_Timeline` |
-| Dirty + Writeback Over Time | Line | `Host_Mem_Timeline` |
-| Page-Cache Pressure Over Time | Line | `Host_Pressure_Timeline` |
+| VM Memory Composition | Bar | `VM_Stats` |
+
+Every timeline chart (host CPU/memory/swap/pressure, per-VM, NUMA, disk,
+host-proc) lives in `host_resources.xlsx`, written natively with xlsxwriter.
 
 ## 2.5 SVG reports
 
@@ -584,9 +551,22 @@ From `/proc/stat`:
 ### Per-VM & ublk-daemon & host-proc CPU (raw jiffies — `vm_cpu_raw.csv` / `ublk_cpu_raw.csv` / `hostproc_cpu_raw.csv`)
 
 These raw CSVs store **cumulative** `/proc/<pid>/stat` `utime`+`stime` jiffies
-(one row per VM/daemon/process per sample); an agent derives CPU% via delta — the
-`Raw_VM_Data` sheet's `CPU (%)` column uses psutil `cpu_percent()` (rate-only,
-rounded), so the raw jiffies are the authoritative source.
+(one row per VM/daemon/process per sample); an agent derives CPU% via delta —
+the `Per-VM` sheet's `CPU (%)` column uses the same jiffy-delta over the
+previous sample (numerically what psutil `cpu_percent()` returns), so the raw
+jiffies are the authoritative source.
+
+> **Per-VM memory fields may be sampled less often than CPU.** `Memory`,
+> `PSS` and the NUMA breakdown come from `numa_maps` + `smaps_rollup`, whose
+> cost is a page-table walk (~35 ms per GiB with 4 KiB pages, ~12 ms per GiB
+> when THP-backed, measured per VM at a 192-VM fleet). The monitor keeps that
+> pass inside a CPU budget (25 % of one core per sample interval) and
+> round-robins the fleet: when a full pass does not fit, each VM's memory
+> fields refresh every `stride` samples and the last measured values are
+> carried forward. CPU% and jiffies are read for every VM on every sample
+> regardless. Small and THP-backed fleets fit the budget and refresh every
+> sample (stride 1, the pre-existing behavior); a stride > 1 is logged once at
+> INFO. Measurements: [experiments/vm_monitor_perf](experiments/vm_monitor_perf/RESULTS.md).
 
 | Metric | Formula |
 |--------|---------|
@@ -605,6 +585,24 @@ rounded), so the raw jiffies are the authoritative source.
 > `_HOSTPROC_MISS_THRESHOLD` consecutive misses.
 
 > A multi-vCPU row can exceed 100% (each core = 100%; a 384-core host saturates at 38400%). `_CLK_TCK = os.sysconf("SC_CLK_TCK")` (typically 100).
+
+### Control-plane sandbox states (`api_state_raw.csv`)
+
+Gauges, not counters — no delta, no guard. bench-core's `ApiStateSampler`
+(`src/bench_core/observability/api_state.py`) polls
+`provider.list_sandbox_states()` once per `monitor.interval` inside the stress
+bracket and appends one row: `timestamp`, `sandboxes_running`,
+`sandboxes_paused`, `sandboxes_other`, `sandboxes_total`. States are the
+provider's own (e2b/aenv: `Sandbox.list()` over running+paused; cubesandbox:
+`Sandbox.list()` dicts), normalized to lowercase last-dot segments.
+
+Why it exists next to `concurrent_vms`: `concurrent_vms` counts live VMM
+**processes**, so a paused sandbox (no process) or one still booting is
+invisible — the process gauge undercounts the fleet the provider holds, most
+visibly in oversubscription (pause-and-reuse) runs. The two are point-sampled
+at different instants, so read them as two views of the same fleet, not a
+reconciliation. Providers with no list API (fake/docker) write no CSV, and the
+`Sandbox states (API)` chart + its two columns are simply absent.
 
 ### Dirty throttle thresholds (`_read_dirty_limits_mb`)
 
@@ -657,9 +655,8 @@ sampled — noted here so the formulas above are reproducible on any host:
 counter-reset + gap guard (`MAX_INTERVAL_S=10s`; `cur<prev` -> NaN + WARNING
 to avoid spurious spikes on VM pid restart / device remount), and writes
 `<log_dir>/host_resources.xlsx` — one sheet per concern (Host resources /
-Per-VM / Disk IO / HostProc), each a data table +
-stacked openpyxl LineCharts on a shared
-`t (s)` axis. Independent of `resource_report.xlsx` (separate filename
+NUMA / Per-VM / Disk IO / HostProc), each a data table + native xlsxwriter
+LineCharts on a shared `t (s)` axis. Independent of `resource_report.xlsx` (separate filename
 preserves bench-core's reap signal) and of in-memory history (post-hoc
 rerunnable). PSS (`vm_cpu_raw.csv` `pss_mb`) is a gauge, plotted directly.
 
@@ -689,27 +686,36 @@ regeneratable after any interruption.
 
 ### host_resources.xlsx 字段含义（中文版）
 
-> 本节是 `host_resources.xlsx` 四个 sheet 的中文逐列释义（Host resources / Per-VM /
-> Disk IO / HostProc），配合上文「Raw-CSV consumer」
+> 本节是 `host_resources.xlsx` 五个 sheet 的中文逐列释义（Host resources / NUMA /
+> Per-VM / Disk IO / HostProc），配合上文「Raw-CSV consumer」
 > 的构建/中断/恢复机制阅读。所有原始计数器都是内核累积值，消费端按相邻行 `timestamp`
 > 的真实时间差 `dt` 派生为速率/百分比；`Δ` = 本行 − 上一行；首行无基线 → 该行速率为
 > `NaN`（图表自动跳过）。计数器回卷（`Δ<0`，进程重启/设备重挂载）、时间差异常
 >（`dt≤0` / `NaN`）或采样缺失（`dt > MAX_INTERVAL_S=10s`）→ 该行同样置 `NaN`，不再 crash
 > 整张表（这是修复 `could not convert string to float: '2026-10-10 15:20:02'` 回归的关键守卫）。
 
-#### Sheet 1：Host resources（宿主机总览，27 列）
+#### Sheet 1：Host resources（宿主机总览，最多 34 列）
 
-列按其在表中出现的顺序，依所属折线图分组列出。主机内存构成、页缓存压力、进程队列都在
-这一张表内，右侧竖排 11 张折线图，自上而下按主题分三块（图名顺序 = 阅读顺序）：
+列按其在表中出现的顺序，依所属折线图分组列出。主机内存构成、swap 水位、页缓存压力、
+进程队列都在这一张表内，右侧竖排折线图，自上而下按主题分块（图名顺序 = 阅读顺序）：
 
 1. **内存构成** —— `Host memory` → `Buffers / dirty / writeback` → `Anon vs file cache` →
-   `FC memory (total PSS)`
-2. **内存压力** —— `Page-cache pressure` → `Alloc stalls` → `Swap in/out`
-3. **CPU / 机群** —— `Host CPU` → `CPU cores (ublk + VM)` → `Procs running/blocked` →
+   `FC memory (total PSS)` → `VM memory vs FC PSS`
+2. **swap 水位** —— `Swap usage`（Gauge，GB）→ `Swap cache`（MB）
+3. **内存压力** —— `Page-cache pressure` → `Alloc stalls` → `Swap in/out`
+4. **CPU / 机群** —— `Host CPU` → `CPU cores (ublk + VM)` → `Procs running/blocked` →
    `Concurrent VMs`
 
+> 列与图都是**按实际存在的原始数据动态收窄**的：老 raw 目录没有 `memory_mb` 就没有
+> `vm_mem_gb`（`VM memory vs FC PSS` 于是退化为单线，与 `FC memory (total PSS)` 重复
+> → 整张图丢弃）；后端支持 `list_sandbox_states()` 时（e2b/aenv/cubesandbox）末尾追加
+> `Sandboxes running (API)` / `Sandboxes paused (API)` 两列并在最下方加
+> `Sandbox states (API)` 图；fake/docker 无列表 API 时这两列两图都不出现。
+> 全量数据下 Host resources 是 **34 列 + 15 张图**；只有整列全 `NaN` 的序列会被剔除，
+> 不会留下空图或空线。
+
 图表统一 16×8 cm、18 行一个锚点（8 cm ≈ 15 行，余 3 行间隙不重叠），固定在数据表右侧
-（`AC` 列，与最后一列 `AA` 隔一空列），不会压住任何数据列。
+（隔一空列），不会压住任何数据列。
 
 **主机内存** —— 图 `Host memory`，单位 GB
 
@@ -735,15 +741,34 @@ regeneratable after any interruption.
 > 匿名页」和「可回收的文件页缓存 + slab」画在一起——两条线交叉下行 = 内存真的吃紧（只能
 > swap），缓存曲线掉而 anon 平稳 = 只是缓存被回收，不是内存耗尽。
 
-**FC 内存（总 PSS）** —— 图 `FC memory (total PSS)`，单位 GB
+**VM 内存 / FC 内存（总 PSS）** —— 图 `FC memory (total PSS)` + 图 `VM memory vs FC PSS`，单位 GB
 
 | 列 | 含义 | 来源 / 公式 |
 |----|------|-------------|
 | `fc_pss_gb` | 所有 Firecracker microVM 进程的 PSS 之和 | `Σ_vm pss_mb / 1024`（每 VM `pss_mb` 来自 `smaps_rollup`） |
+| `vm_mem_gb` | 机群**申报**给 guest 的内存总量（不含进程自身开销） | `Σ_vm memory_mb / 1024`（每 VM `memory_mb` 来自 FC 进程 cmdline 的 `-m`/MMDS，随 `vm_cpu_raw.csv` 落盘）；老 raw 目录无此列 → 整列与 `VM memory vs FC PSS` 图一起消失 |
+
+> 两者之差 = 每个 microVM 进程的**宿主侧开销**（FC 自身 RSS/PSS + 页表 + 设备模拟 + 稀疏
+> 缺页未分配的 guest 内存）。差值是常数级时说明超分没有引发实际驻留；差值随并发 VM 数
+> 线性上涨 = 每台 VM 的固定开销在吃内存，超分比要按这个「实际占用」而非申报值算。
 
 > 用 PSS 而非 RSS：模板/库的共享页在 PSS 里按比例分摊到每个共享者，舰队求和 = 真实边际
 > 内存；RSS 会把同一页在每个 FC 进程里各计一次，严重高估 fleet 总占用。这是本仓库的刻意
 > 选择（`base.py` 仅在 `smaps_rollup` 不可得时才用 RSS 兜底）。`--no-pss` 时此列全 `NaN`。
+
+**Swap 水位（gauge）** —— 图 `Swap usage`（GB）+ 图 `Swap cache`（MB）
+
+| 列 | 含义 | 来源 / 公式 |
+|----|------|-------------|
+| `swap_used_gb` | 已用 swap 量 | `(SwapTotal − SwapFree) / 1024`（`host_mem_raw.csv` 存 MB→GiB）；无 swap 时恒 0 |
+| `swap_free_gb` | 剩余 swap 量 | `SwapFree / 1024` |
+| `swap_cached_mb` | 换出后又换回、仍占着 swap 槽的那部分（重复换出会命中它，省一次写） | `SwapCached`（MB 直通） |
+| `swap_cache_ratio_pct` | swap 缓存占「已用 swap」的比例 | `100 × SwapCached / (SwapTotal − SwapFree)`；分母为 0 时置 **0**（没换出过 = 没有缓存可言），源字段缺失时留 `NaN` |
+
+> 这四列是**瞬时 gauge**，不做 Δ（不是速率，没有回卷问题），所以首行即有值。
+> 与下面的 `Swap in/out` 分工：gauge 看「水位到哪了、还有多少余量」，速率看
+> 「此刻正在换」；水位高但速率 0 = 早先换出的页一直没回来（内存长期紧张），
+> 水位攀升 + 速率高 = 正在被挤压。
 
 **页缓存压力** —— 图 `Page-cache pressure`（MiB/s）+ 图 `Alloc stalls`（/s）
 
@@ -813,14 +838,41 @@ regeneratable after any interruption.
 > `procs_blocked` 抬头而 `procs_running` 不高 = 卡在 I/O 或内存回收上（再对照
 > `allocstall_per_s`）。
 
-#### Sheet 2：Per-VM（每虚拟机，按时间快照）
+#### Sheet 2：NUMA（每个 NUMA 节点一组列）
+
+这张表把 `resource_report.xlsx` 里原本分开的 **NUMA CPU** 与 **NUMA 内存**时序合到一张表：
+每个节点（`node0`、`node1`…）固定一组列，列名带节点前缀，便于直接对照。CPU% 由
+`host_percpu_raw.csv` + `numa_cpu_map.csv` 逐 CPU 求 Δ 后按节点求和得出（与 Host resources
+的 `cpu_busy_pct` 同一套定义）；内存来自 `numa_mem_raw.csv`（每个节点每采样一行）。
+
+| 列（`<N>` = 节点号） | 含义 | 来源 / 公式 |
+|----|------|-------------|
+| `NUMA<N> CPU (%)` | 该节点所有 CPU 的非空闲占比（**不含** iowait，与主机口径一致） | `100 × (1 − ΣΔ(idle+iowait) / ΣΔ(total))`，按 `numa_cpu_map` 分节点聚合 |
+| `NUMA<N> Used (GB)` | 节点已用内存 | `(MemTotal − MemFree) / 1024`（写入端已算好 `used_mb`，MB→GB） |
+| `NUMA<N> Free (GB)` | 节点空闲内存 | `MemFree` |
+| `NUMA<N> Available (GB)` | 节点可分配内存（含可回收缓存） | `MemAvailable`；该内核的 node meminfo 若无此字段写 `0`（图表上是一条贴 0 的平线，不是缺失） |
+| `NUMA<N> Anon (GB)` | 节点匿名页 | `AnonPages` |
+| `NUMA<N> File (GB)` | 节点文件页 | `FilePages` |
+| `NUMA<N> SwapCache (MB)` | 节点 swap 缓存 | `SwapCached`（MB 直通） |
+| `NUMA<N> Usage (%)` | 节点内存使用率 | `nodeN/meminfo` `Usage`，直通（**不是** `Used/Total` 现算，内核口径可能不同） |
+
+> 图：`NUMA CPU`（每个节点一条）、`NUMA memory used/free`、`NUMA anon vs file`、
+> `NUMA swap cache`，每张图按列名后缀自动收集所有节点的序列。
+>
+> **不重复采集**：NUMA 的内存总量与 Host resources 的 `mem_used_gb` 是不同的口径（前者按
+> 节点物理归属、后者是全机 `MemTotal − MemAvailable`），因此两边都保留原样导出，**不做**
+> 「把节点分块塞进 Host resources」的重复列；要看全机总量去 `Host resources`，要看跨节点
+> 倾斜来这张表。同理 NUMA CPU% 是由逐 CPU 计数派生的**另一条链**，不是 `cpu_busy_pct` 的
+> 拆分——两者偶有小差异来自采样相位（`/proc/stat` 聚合行 vs 逐 CPU 行读取时刻不同）。
+
+#### Sheet 3：Per-VM（每虚拟机，按时间快照）
 
 每采样点列出每个 VM 进程：`vm_name`、`pid`、该点 CPU 核数
 （`Δ(utime+stime)/_CLK_TCK/dt`）、PSS（`pss_mb`）。为控制行数，只保留 CPU 最高的 top-K
 个 VM，其余合并成一行 `other`（核数/PSS 求和）。本 sheet 是 Sheet 1 `fc_pss_gb` /
 `vm_cores` 的明细下钻——想看是谁在吃内存/CPU 时用它。
 
-#### Sheet 3：Disk IO（每块磁盘）
+#### Sheet 4：Disk IO（每块磁盘）
 
 每块物理盘（`--disks` 或自动发现，排除 loop/ram/sr/zram/md/dm/ublk）的每采样点速率：
 
@@ -842,7 +894,7 @@ regeneratable after any interruption.
 > `Disk IOPS`（每块盘一组序列，按列后缀自动匹配）。
 > 表头与图例是 `<device> Read (MB/s)` 这样的可读标签（内部列名仍是 `<device>_r_mb_s`）。
 
-#### Sheet 4：HostProc（按名字跟踪的宿主进程）
+#### Sheet 5：HostProc（按名字跟踪的宿主进程）
 
 仅当 `--host-proc` / `monitor.host_procs` 有配置时生成：每个命名进程（`name`，按
 `comm[:cmdline]` 解析 pid）一条 CPU 核数曲线（`Δ(utime+stime)/_CLK_TCK/dt`，按
@@ -872,16 +924,16 @@ record loop) is always on; only the auxiliary resource collectors toggle.
 | `--no-hugepage` | `collect_hugepage_stats` | Hugepage rows (Summary) |
 | `--no-numa-cpu` | `collect_numa_cpu` | NUMA_Overview CPU% |
 | `--no-host-stats` | `collect_host_stats` | host_resources.svg |
-| `--no-swap` | `collect_swap_stats` | Swap_Timeline / swap.svg |
-| `--no-host-mem-detail` | `collect_host_mem_detail` | Host_Mem_Timeline |
-| `--no-pressure` | `collect_host_pressure` | Host_Pressure_Timeline / host_pressure.svg |
-| `--no-numa-memory` | `get_numa_nodes_memory` | NUMA_Memory_Timeline / numa.svg |
-| `--no-vm-total` | `collect_vm_total_memory` | VM_Total_Memory_Timeline / vm_total.svg |
-| `--no-disk` | `collect_disk_stats` | Disk_IO_Timeline / disk_io.svg / disk_latency.svg |
-| `--no-ublk` | `collect_ublk_count` | `ublk Devices` column (on Disk_IO_Timeline) |
-| `--no-ublk-daemon` | `collect_ublk_daemon` | `Ublk Daemon Cores` column (on Disk_IO_Timeline) |
+| `--no-swap` | `collect_swap_stats` | `swap_*` columns (Host resources) / swap.svg |
+| `--no-host-mem-detail` | `collect_host_mem_detail` | cached/buffers/dirty/writeback columns (Host resources) |
+| `--no-pressure` | `collect_host_pressure` | pressure columns (Host resources) / host_pressure.svg |
+| `--no-numa-memory` | `get_numa_nodes_memory` | `numa_mem_raw.csv` + NUMA memory columns / numa.svg |
+| `--no-vm-total` | `collect_vm_total_memory` | `vm_mem_gb` column (Host resources) / vm_total.svg |
+| `--no-disk` | `collect_disk_stats` | `disk_io_raw.csv` + Disk IO sheet / disk_io.svg / disk_latency.svg |
+| `--no-ublk` | `collect_ublk_count` | `ublk_cpu_raw.csv` (ublk_cores) |
+| `--no-ublk-daemon` | `collect_ublk_daemon` | `ublk_cores` column (Host resources) |
 | `--no-hostproc` | `collect_host_procs` | `HostProc` sheet (in `host_resources.xlsx`) + `hostproc_cpu_raw.csv` |
-| `--no-pss` | per-VM `_read_pss_mb` + `collect_vm_total_pss` | per-VM `PSS (MB)` + `Avg/Max PSS (MB)` (VM_Stats/Raw_VM_Data) + `VM_Total_PSS_Timeline` / vm_total_pss.svg |
+| `--no-pss` | per-VM `_read_pss_mb` + `collect_vm_total_pss` | per-VM `PSS (MB)` + `Avg/Max PSS (MB)` (VM_Stats) + `fc_pss_gb` (Host resources) + Per-VM PSS chart / vm_total_pss.svg |
 | `--no-devkit-mem` | `devkit_mem` sub-tool | DevKit_Memory / NUMA_Bandwidth |
 | `--no-devkit-topdown` | `devkit_top_down` sub-tool | DevKit_TopDown |
 
@@ -890,12 +942,11 @@ The devkit split is necessary because `devkit_path` is shared by both sub-tools
 (ksys / ub_watch / smap_bw / getfre) stay `.env`-path-controlled (a missing
 path already skips them).
 
-`ublk`, `ublk_daemon`, and `disk` are independent histories but share the
-`Disk_IO_Timeline` sheet. Disabling `disk` alone leaves ublk device counts and
-daemon-core samples captured (in `ublk_history` / `ublk_daemon_history`) but not
-rendered — `Disk_IO_Timeline` is skipped whenever `disk_history` is empty, so
-the `ublk Devices` and `Ublk Daemon Cores` columns only appear when `disk` is
-also on. `ublk_daemon` pads to 0 on hosts with no `uvm-ublk-daemon` process
+`ublk`, `ublk_daemon`, and `disk` are independent histories. Disabling `disk`
+alone leaves ublk device counts and daemon-core samples captured (in
+`ublk_history` / `ublk_daemon_history` and `ublk_cpu_raw.csv`) and they still
+land on the `Host resources` sheet (`ublk_cores`), since that sheet is derived
+from raw CSVs rather than from `disk_history`. `ublk_daemon` pads to 0 on hosts with no `uvm-ublk-daemon` process
 (non-ublk backends), so it is safe to leave enabled unconditionally.
 
 From bench-core, the same switches forward through a single `monitor.skip`
@@ -925,16 +976,16 @@ timeline sheet's presence to tell them apart (absent sheet = not collected).
 - `vm_monitor`: high `Backend Bound (%)` / `Bad Speculation (%)` on `DevKit_TopDown`; low `IPC` on `KSys`; high `VM Avg CPU` / `VM Peak Total CPU` on `Summary`.
 
 ### Memory / cache bottleneck
-- `vm_monitor`: high `Mem Bound (%)` / `L3 Bound (%)` (`DevKit_TopDown`); high `L2D/L1D Miss (%)` (`DevKit_Memory`); high `L2/L3 Miss Latency Avg` (`KSys`); rising `Dirty Peak` / `Writeback Peak` (`Summary`, `Host_Mem_Timeline`).
+- `vm_monitor`: high `Mem Bound (%)` / `L3 Bound (%)` (`DevKit_TopDown`); high `L2D/L1D Miss (%)` (`DevKit_Memory`); high `L2/L3 Miss Latency Avg` (`KSys`); rising `Dirty Peak` / `Writeback Peak` (`Summary`, Host resources sheet).
 
 ### NUMA / interconnect
-- `vm_monitor`: compare per-node `Read (MB/s)` / `Write (MB/s)` (`NUMA_Bandwidth`); high `Avg Read (ns)` / `Avg Write (ns)` (`UBWatch_Latency`); per-node `NUMA{N} Usage (%)` drift on `NUMA_Memory_Timeline` / `numa.svg`.
+- `vm_monitor`: compare per-node `Read (MB/s)` / `Write (MB/s)` (`NUMA_Bandwidth`); high `Avg Read (ns)` / `Avg Write (ns)` (`UBWatch_Latency`); per-node `NUMA{N} Usage (%)` drift on the NUMA sheet / `numa.svg`.
 
 ### Disk I/O
-- `vm_monitor`: high `{dev} Util (%)` + rising `{dev} Read/Write Await (ms)` + `{dev} Queue Depth` (`Disk_IO_Timeline` / `disk_io.svg` / `disk_latency.svg`); `Disk Write Peak` on `Summary`.
+- `vm_monitor`: high `{dev} Util (%)` + rising `{dev} Read/Write Await (ms)` + `{dev} Queue Depth` (Disk IO sheet / `disk_io.svg` / `disk_latency.svg`); `Disk Write Peak` on `Summary`.
 
 ### Swap / memory pressure
-- `vm_monitor`: rising `Swap In/Out Rate` + `Swap Cached` (`Swap_Timeline` / `swap.svg`); high `Page Scan` / `Page Reclaim` / `File Refault` (`Host_Pressure_Timeline` / `host_pressure.svg`); `Swap Peak Usage %` on `Summary`.
+- `vm_monitor`: rising `Swap In/Out Rate` + `Swap Cached` (Host resources sheet / `swap.svg`); high `Page Scan` / `Page Reclaim` / `File Refault` (Host resources sheet / `host_pressure.svg`); `Swap Peak Usage %` on `Summary`.
 
 ### Sandbox lifecycle (kernel)
 - `bench_core`: `--create-only` creation-timing P95/P99 of `create_elapsed` vs `ready_check_elapsed` to localize startup cost; workflow `Verify Success:` (coding) and `Success Rate:` + Tail ratio (browser/document) to localize task regressions.

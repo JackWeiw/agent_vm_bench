@@ -24,7 +24,7 @@ Thread safety: the module lock guards only the cache dict get/create. The
 walk mutates the per-sandbox ``_ScanState`` (``seen``/``cumulative``) WITHOUT
 the lock -- safe because exactly one thread touches a given sandbox's state:
 the single drain thread in :class:`bench_core.observability.snapshot_scanner.
-SnapshotSizeScanner` (replay lifecycle/trajectory), or one sandbox thread per
+SnapshotSizeScanner` (replay lifecycle), or one sandbox thread per
 dir in the no-scanner sync fallback (each sandbox scans its own, distinct
 dir). No two threads ever share a ``_ScanState``.
 """
@@ -77,7 +77,7 @@ def scan_snapshot_sizes(sandbox_dir: Path) -> dict | None:
     try:
         gen_dirs = sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.name)
     except OSError:
-        # Dir absent (sandbox killed in trajectory mode) -> drop any stale
+        # Dir absent (sandbox killed in exec_ephemeral mode) -> drop any stale
         # cache entry so it can't leak across the sandbox's lifetime.
         with _CACHE_LOCK:
             _SCAN_CACHE.pop(key, None)

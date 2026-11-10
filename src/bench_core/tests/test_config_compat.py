@@ -183,24 +183,6 @@ EXPECTED = {
             replay_lifecycle_retries=2,
         ),
     ),
-    "replay-trajectory.yaml": dict(
-        shared=dict(
-            workflow_type="replay",
-            total_count=384,
-            output_dir="results/replay-trajectory",
-            filename_prefix="replay_trajectory_bench",
-            report_format="both",
-        ),
-        view=dict(
-            replay_mode="trajectory",
-            replay_action_timeout=300,
-            replay_running_concurrency=384,
-            replay_control_plane_qps=1000.0,
-            replay_control_plane_inflight_cap=1024,
-            replay_launch_interval_sec=0.5,
-            replay_ready_probe=True,
-        ),
-    ),
 }
 
 

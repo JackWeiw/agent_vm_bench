@@ -122,12 +122,13 @@ class LifecycleCapable(Protocol):
 
 @runtime_checkable
 class EphemeralCapable(Protocol):
-    """Provider that can create/destroy a single sandbox on demand (trajectory mode).
+    """Provider that can create/destroy a single sandbox on demand (exec_ephemeral mode).
 
-    Replay's trajectory mode creates one sandbox per trajectory and kills it at
-    the trajectory's end, placing create/kill under running-slot + QPS admission.
+    Replay's exec_ephemeral mode creates one sandbox per trajectory and kills it at
+    the trajectory's end; create/kill are admission-free (the kernel builds the
+    Admission controller only for lifecycle).
     Providers that don't implement it stay on exec_only/lifecycle (persistent
-    pool); ``replay_mode: trajectory`` on a non-capable provider fails fast in
+    pool); ``replay_mode: exec_ephemeral`` on a non-capable provider fails fast in
     ``run_benchmark``. ``metadata`` carries runner/trajectory labels for operator
     visibility only -- it is NOT a create-idempotency key (see the Phase 1 spec,
     G3 deferred).
@@ -189,6 +190,18 @@ class EnvironmentProvider(ABC):
     @abstractmethod
     def detect_existing(self) -> Mapping[int, SandboxInstance]:
         """Detect already-running sandboxes; return ``{index: instance}``."""
+
+    def list_sandbox_states(self) -> Mapping[str, int] | None:
+        """Count this provider's sandboxes by backend state (control-plane view).
+
+        Returns ``{state: count}`` with normalized lowercase states (at least
+        ``"running"`` / ``"paused"`` for backends that have both). Used by the
+        host monitor to sample the fleet the provider believes it holds: the
+        process-level ``Concurrent VMs`` gauge cannot see a paused sandbox (no
+        VMM process) or one still booting. ``None`` = the backend has no list
+        API (default) -- the kernel skips the series.
+        """
+        return None
 
     def detect_from_ids(self, ids_file: str | None = None) -> Mapping[int, SandboxInstance] | None:
         """Load sandboxes from a persisted-IDs file.

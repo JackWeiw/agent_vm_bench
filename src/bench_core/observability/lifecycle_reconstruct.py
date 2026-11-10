@@ -1,12 +1,22 @@
 """Pure transforms over loaded lifecycle-series events.
 
-No I/O -- takes a ``list[dict]`` (from :func:`bench_core.observability.lifecycle_series.load_events`)
-and produces the shapes the xlsx renderer draws: per-second concurrency-state bins,
-per-sandbox Gantt phase segments, and per-pause snapshot-size rows. Keeping this
-out of ``replay_obs.py`` (which is contractually I/O-free) is why the reverted
+No I/O -- takes events (a ``list[dict]``, or an ``iter_events`` generator, from
+:func:`bench_core.observability.lifecycle_series.load_events`) and produces the
+shapes the xlsx renderer draws: per-second concurrency-state bins, per-sandbox
+Gantt phase segments, per-pause snapshot-size rows, and the ``ReplayMetrics``
+accumulators a sharded trial no longer holds in memory. Keeping this out of
+``replay_obs.py`` (which is contractually I/O-free) is why the reverted
 ``180e46c`` placement was wrong.
 """
 from __future__ import annotations
+
+from collections.abc import Iterable
+from typing import TYPE_CHECKING
+
+from env_provider import SandboxInstance
+
+if TYPE_CHECKING:
+    from bench_core.schemas import BenchSandbox
 
 # Phase order matters: ties in dominant-state selection resolve to the earlier
 # phase (mirrors the reference's max() over phases.index ordering).
@@ -26,12 +36,15 @@ _STEP_SEGMENTS = (
     ("pause_start", "pause_end", "pausing"),
 )
 
-# Lifecycle-mode event types that prove the run did real pause/resume work
-# (lifecycle emits ``initial_pause``; trajectory emits ``trajectory_create`` /
-# ``trajectory_kill``). exec_only emits none of these -- resume/pause are
-# no-ops -- so its think-time idle must not be relabelled ``paused`` (the
-# sandbox never snapshotted). Used to gate cross-step ``paused`` reconstruction.
-_LIFECYCLE_EVENTS = frozenset({"initial_pause", "trajectory_create", "trajectory_kill"})
+# A step's cross-step idle gap is "paused" only in the mode that really
+# snapshots. exec_only and exec_ephemeral run no lifecycle calls at all
+# (ReplayConfig: "exec_only / exec_ephemeral have no lifecycle calls"), so
+# their think-time idle is not a paused sandbox -- and the series cannot tell
+# the modes apart on its own: exec_ephemeral still emits
+# trajectory_create/kill, and its no-op pause/resume still produce
+# microsecond-wide timestamp pairs. Callers pass the mode-derived
+# ``paused_gaps`` instead of inferring it from the events.
+PAUSING_MODES = frozenset({"lifecycle"})
 
 
 def _segment(a, b, phase: str) -> tuple[float, float, str] | None:
@@ -71,10 +84,10 @@ def _step_spans(steps: list[dict], has_kills: bool) -> list[list[dict]]:
 
     lifecycle (``has_kills`` False): the sandbox never dies -- one span covers
     the whole run, so the cross-round idle between trajectories also counts as
-    ``paused``. trajectory (``has_kills`` True): a kill ends each trajectory, so
-    spans split at ``trajectory_id`` changes; the kill->create dead window is
-    not ``paused`` (the sandbox was destroyed, not snapshotted) and is never
-    paired across.
+    ``paused``. exec_ephemeral (``has_kills`` True): a kill ends each
+    trajectory, so spans split at ``trajectory_id`` changes; the kill->create
+    dead window is not ``paused`` (the sandbox was destroyed, not snapshotted)
+    and is never paired across.
     """
     if not has_kills:
         return [steps]
@@ -101,16 +114,17 @@ def _sandbox_segments(
 ) -> list[tuple[float, float, str]]:
     """Ordered ``(start, end, phase)`` timeline for one continuous alive span.
 
-    Composes the within-step phases (resuming / exec / pausing) with the
-    cross-step ``paused`` idle gaps that single-step timestamp pairs cannot
-    express: the no-CPU wait from a pause boundary (the initial pause or step
-    N's ``pause_end``) to the next step's ``resume_start``.
+        Composes the within-step phases (resuming / exec / pausing) with the
+        cross-step ``paused`` idle gaps that single-step timestamp pairs cannot
+        express: the no-CPU wait from a pause boundary (the initial pause or step
+        N's ``pause_end``) to the next step's ``resume_start``.
 
-    ``steps`` are one alive span's step events sorted by ``resume_start``.
-    ``initial_pause`` is the sandbox's ``initial_pause`` event, attached only to
-    the first span (lifecycle: the only span; trajectory: ``None`` -- no
-    initial pause). ``emit_paused_gaps`` gates the cross-step idle
-    reconstruction off for exec_only (no real pauses -> no paused state).
+        ``steps`` are one alive span's step events sorted by ``resume_start``.
+        ``initial_pause`` is the sandbox's ``initial_pause`` event, attached only to
+    the first span (lifecycle: the only span; exec_ephemeral: ``None`` -- no
+        initial pause). ``emit_paused_gaps`` is the mode-derived gate: the exec
+        modes run no lifecycle calls, so their think-time idle is not a paused
+        sandbox (see :data:`PAUSING_MODES`).
     """
     segs: list[tuple[float, float, str]] = []
     prev_pause_end = None
@@ -131,17 +145,17 @@ def _sandbox_segments(
     return segs
 
 
-def _segments_by_sandbox(events: list[dict]) -> dict[int, list[tuple[float, float, str]]]:
+def _segments_by_sandbox(events: list[dict], *, paused_gaps: bool) -> dict[int, list[tuple[float, float, str]]]:
     """Per-sandbox ordered phase timelines (all alive spans concatenated).
 
     Shared by :func:`reconstruct_concurrency` (per-second binning) and
     :func:`gantt_segments` (per-sandbox rendering) so both draw from one source
     of truth. Steps with no ``sandbox_index`` are skipped (cannot be attributed
-    to a Gantt row).
+    to a Gantt row). ``paused_gaps`` comes from the run's replay mode
+    (:data:`PAUSING_MODES`).
     """
     initial_pauses: dict[int, dict] = {}
     steps_by_sandbox: dict[int, list[dict]] = {}
-    emit_paused = False
     for e in events:
         ev = e.get("event")
         if ev == "initial_pause":
@@ -153,8 +167,6 @@ def _segments_by_sandbox(events: list[dict]) -> dict[int, list[tuple[float, floa
             if sbx is None:
                 continue
             steps_by_sandbox.setdefault(sbx, []).append(e)
-        if ev in _LIFECYCLE_EVENTS:
-            emit_paused = True  # lifecycle/trajectory signal present somewhere
 
     has_kills = any(e.get("event") in ("trajectory_create", "trajectory_kill") for e in events)
 
@@ -165,15 +177,15 @@ def _segments_by_sandbox(events: list[dict]) -> dict[int, list[tuple[float, floa
         all_segs: list[tuple[float, float, str]] = []
         for si, span in enumerate(_step_spans(sb_steps, has_kills)):
             # initial_pause leads only the first span (lifecycle: the only one;
-            # trajectory: init is None regardless).
+            # exec_ephemeral: init is None regardless).
             span_init = init if si == 0 else None
-            all_segs.extend(_sandbox_segments(span, span_init, emit_paused_gaps=emit_paused))
+            all_segs.extend(_sandbox_segments(span, span_init, emit_paused_gaps=paused_gaps))
         if all_segs:
             out[sbx] = all_segs
     return out
 
 
-def reconstruct_concurrency(events: list[dict]) -> list[dict]:
+def reconstruct_concurrency(events: list[dict], *, paused_gaps: bool) -> list[dict]:
     """Per-second dominant sandbox state counts.
 
     For each sandbox, for each second, accumulate each phase's fractional
@@ -184,7 +196,7 @@ def reconstruct_concurrency(events: list[dict]) -> list[dict]:
     ``{second, pausing, paused, resuming, exec, active}`` where
     ``active = pausing + resuming + exec``.
     """
-    by_sandbox = _segments_by_sandbox(events)
+    by_sandbox = _segments_by_sandbox(events, paused_gaps=paused_gaps)
     all_segs = [seg for segs in by_sandbox.values() for seg in segs]
     if not all_segs:
         return []
@@ -223,12 +235,13 @@ def reconstruct_concurrency(events: list[dict]) -> list[dict]:
     return rows
 
 
-def gantt_segments(events: list[dict]) -> list[tuple[str, list[tuple[float, float, str]]]]:
+def gantt_segments(events: list[dict], *, paused_gaps: bool) -> list[tuple[str, list[tuple[float, float, str]]]]:
     """Per-sandbox ``(label, [(start, end, phase), ...])`` for the Gantt chart.
 
     Sandboxes are sorted by earliest event time. ``label`` is ``sbx<index>``.
+    ``paused_gaps`` comes from the run's replay mode (:data:`PAUSING_MODES`).
     """
-    by_sandbox = _segments_by_sandbox(events)
+    by_sandbox = _segments_by_sandbox(events, paused_gaps=paused_gaps)
     rows = [(f"sbx{idx}", segs) for idx, segs in by_sandbox.items() if segs]
     rows.sort(key=lambda r: min(a for a, _, _ in r[1]))
     return rows
@@ -260,3 +273,87 @@ def snapshot_rows(events: list[dict]) -> list[dict]:
             }
         )
     return rows
+
+
+def replay_states_from_events(events: Iterable[dict]) -> dict[int, BenchSandbox]:
+    """Rebuild per-sandbox ``ReplayMetrics`` from a lifecycle series.
+
+    A sharded trial's kernel processes are gone by merge time, so their
+    in-memory accumulators cannot be summed across shards. The series is the
+    surviving record, and replaying each event through the kernel's OWN
+    mutators (``ReplayMetrics.add`` / ``record_retry_event`` /
+    ``append_retries_per_slice``) reproduces exactly what one process over the
+    same fleet would have accumulated -- there is no second aggregation rule
+    to keep in sync with the runner.
+
+    ``step`` events carry every field ``add`` takes (plus ``retries_in_slice``
+    for the per-slice retry list); ``retry_queued`` events carry the same
+    ``time_lost`` the runner fed ``record_retry_event``. Fields the runner only
+    ever passes as 0.0 (``create_sec`` / ``kill_sec``) are rebuilt as 0.0, and
+    the delay-fidelity counters (requested/actual delay) are not rendered from
+    the model, so they are left at 0.
+
+    ``events`` is consumed as a stream (an ``iter_events`` generator), so the
+    rebuild never materializes the event list. The accumulators themselves are
+    O(steps) -- percentiles keep every sample, exactly as the live kernel does
+    -- but measured ~9x smaller than the dicts they came from (240 MB vs 2.1 GB
+    at 461k events), and a sharded trial's merged model is rebuilt once, after
+    the run.
+    """
+    from bench_core.schemas import BenchSandbox, ReplayMetrics
+
+    metrics: dict[int, ReplayMetrics] = {}
+    for e in events:
+        idx = e.get("sandbox_index")
+        if idx is None:
+            continue
+        kind = e.get("event")
+        m = metrics.get(idx)
+        if m is None:
+            m = metrics[idx] = ReplayMetrics()
+        if kind == "step":
+            action_type = e.get("action_type") or "shell"
+            latency = e.get("exec_sec") or 0.0
+            timed_out = bool(e.get("timed_out"))
+            m.add(
+                latency=latency,
+                success=e.get("exit_code") == 0 and not timed_out,
+                timeout=timed_out,
+                step_times={action_type: latency},
+                action_type=action_type,
+                resume_sec=e.get("resume_sec") or 0.0,
+                pause_sec=e.get("pause_sec") or 0.0,
+                slice_total_sec=e.get("slice_total_sec") or 0.0,
+                resume_api_sec=e.get("resume_api_sec") or 0.0,
+                resume_ready_wait_sec=e.get("resume_ready_wait_sec") or 0.0,
+                slot_contention_wait_sec=e.get("slot_contention_wait_sec") or 0.0,
+                pause_api_sec=e.get("pause_api_sec") or 0.0,
+                resume_rate_pacing_wait_sec=e.get("resume_rate_pacing_wait_sec") or 0.0,
+                pause_rate_pacing_wait_sec=e.get("pause_rate_pacing_wait_sec") or 0.0,
+                running_slot_held_sec=e.get("running_slot_held_sec") or 0.0,
+                interaction_total_sec=e.get("interaction_total_sec") or 0.0,
+                natural_delay_sec=e.get("natural_delay_sec") or 0.0,
+                capacity_wait_sec=e.get("capacity_wait_sec") or 0.0,
+                resume_inflight_wait_sec=e.get("resume_inflight_wait_sec") or 0.0,
+                pause_inflight_wait_sec=e.get("pause_inflight_wait_sec") or 0.0,
+            )
+            # Key presence, not truthiness: a zero retry count is a real
+            # sample (it belongs in the p95 population) and only the
+            # success path writes the key at all.
+            if "retries_in_slice" in e:
+                m.append_retries_per_slice(e["retries_in_slice"] or 0)
+        elif kind == "retry_queued":
+            m.record_retry_event(
+                "retry_queued",
+                operation=e.get("operation") or "unknown",
+                time_lost_sec=(e.get("accumulated_rate_pacing_wait_sec") or 0.0)
+                + (e.get("accumulated_inflight_wait_sec") or 0.0)
+                + (e.get("accumulated_api_sec") or 0.0),
+            )
+
+    states: dict[int, BenchSandbox] = {}
+    for idx, m in metrics.items():
+        state = BenchSandbox.from_instance(SandboxInstance(id=f"merged-{idx}", index=idx), "replay")
+        state.replay_metrics = m
+        states[idx] = state
+    return states

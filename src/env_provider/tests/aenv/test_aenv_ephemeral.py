@@ -1,4 +1,4 @@
-"""EphemeralCapable (trajectory mode) tests for AenvProvider (no live SDK).
+"""EphemeralCapable (exec_ephemeral mode) tests for AenvProvider (no live SDK).
 
 Mirrors the test_e2b_manager pattern: inject a controllable fake ``Sandbox``
 class into ``env_provider.e2b.manager`` and drive the real AenvProvider +

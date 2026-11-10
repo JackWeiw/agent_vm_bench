@@ -1,7 +1,7 @@
 """Tests for multi-template replay support (FakeProvider contract).
 
 These tests verify that the FakeProvider correctly handles template parameters
-in both create_all (batch mode) and create_one (ephemeral/trajectory mode).
+in both create_all (batch mode) and create_one (ephemeral/exec_ephemeral mode).
 """
 from __future__ import annotations
 

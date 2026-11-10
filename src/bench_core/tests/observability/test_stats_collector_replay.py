@@ -166,47 +166,6 @@ class TestRetryImpactBlock:
         assert "retries/slice P95" not in joined
 
 
-class TestTrajectorySummarySection:
-    def _report(self, *, replay_mode, with_create=True):
-        state = _state_with_slices()
-        m = state.replay_metrics
-        if with_create:
-            # re-seed slices that carry create_sec/kill_sec (state already has 3 plain slices;
-            # append trajectory slices)
-            for cs, ks in ((1.0, 0.5), (2.0, 0.6), (3.0, 0.7)):
-                m.add(
-                    latency=0.1,
-                    success=True,
-                    action_type="shell",
-                    slice_total_sec=1.0,
-                    create_sec=cs,
-                    kill_sec=ks,
-                )
-        cfg = KernelConfig(
-            workflow_type="replay",
-            total_count=1,
-            test_duration=1,
-            workflow_config=ReplayConfig(replay_mode=replay_mode, replay_running_concurrency=1),
-        )
-        f = ReportFormatter(cfg, {0: state}, "fake", wall_sec=10.0)
-        return "\n".join(f.format_trajectory_summary_section())
-
-    def test_trajectory_mode_renders_summary(self):
-        joined = self._report(replay_mode="trajectory")
-        assert "[Trajectory Summary]" in joined
-        assert "Create sec:" in joined
-        assert "Kill sec:" in joined
-        assert "P50=" in joined and "P95=" in joined and "P99=" in joined
-
-    def test_lifecycle_mode_skips_summary(self):
-        joined = self._report(replay_mode="lifecycle")
-        assert joined == ""  # section absent outside trajectory mode
-
-    def test_trajectory_mode_no_create_secs_skips_summary(self):
-        joined = self._report(replay_mode="trajectory", with_create=False)
-        assert joined == ""
-
-
 class TestOnePassTargetReport:
     """The report's 'One-pass Target' must be the fleet size (one
     trajectory/sandbox/round), not the meaningless ``pool x fleet`` product.

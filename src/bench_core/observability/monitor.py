@@ -5,6 +5,11 @@ the active-stress phase. Trigger = stress-file sync: vm_monitor idles waiting
 for a lock file, samples while it exists, exports on removal. The controller
 degrades to a no-op when the provider has no VMM (``vmm_type is None``), the
 binary is missing, or the lock dir is unwritable -- never compromising the bench.
+
+The stress marker is separate from the collector: with ``external_collector``
+set, a run spawns nothing but still publishes its lock, so an out-of-process
+owner (the oversub driver, one collector per sharded trial) can bracket the
+union of every shard's window.
 """
 
 from __future__ import annotations
@@ -16,6 +21,8 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from .api_state import ApiStateSampler
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +166,17 @@ class MonitorConfig:
     disks: str = "all"  # block devices for I/O, comma-separated (sda,nvme0n1); "all" auto-discovers
     stress_file: str = "/dev/shm/bench_core_monitor.lock"
     log_dir: str | None = None  # None -> <report.output_dir>/vm_monitor
+    # True = another process owns the host collector (the oversub driver runs
+    # one vm-monitor for a whole sharded trial). This run spawns nothing but
+    # still publishes its stress marker, which the owner unions across shards.
+    external_collector: bool = False
+    # Control-plane fleet gauge (raw_data/api_state_raw.csv). "auto" samples it
+    # only when this process owns the collector; "true" samples it whenever
+    # this process's controller window is active (external collectors included)
+    # -- under sharding the driver owns the collector but holds no provider
+    # handle, so shard 0 keeps a window and polls the API for the fleet.
+    # "false" never samples it.
+    api_state: str = "auto"
     # False = keep vm_monitor's system-resource report (resource_report.xlsx) as a
     # standalone file; the replay obs workbook stays a trajectory-metrics-only file.
     # True = copy VM_Stats/NUMA_Overview/DevKit_TopDown into the obs workbook.
@@ -220,6 +238,8 @@ class MonitorConfig:
             disks=str(raw.get("disks", "all")),
             stress_file=str(raw.get("stress_file", "/dev/shm/bench_core_monitor.lock")),
             log_dir=raw.get("log_dir"),
+            external_collector=bool(raw.get("external_collector", False)),
+            api_state=str(raw.get("api_state", "auto")).lower(),
             merge_report=bool(raw.get("merge_report", False)),
             report_timeout=int(raw.get("report_timeout", 300)),
             skip=skip,
@@ -230,7 +250,16 @@ class MonitorConfig:
 
 
 class MonitorController:
-    """Spawns ``vm-monitor`` for the stress window; no-op when not applicable."""
+    """Spawns ``vm-monitor`` for the stress window; no-op when not applicable.
+
+    Three independent behaviours fall out of two flags:
+
+    - ``effective`` -- this run spawns the collector (``enabled`` + a VMM hint).
+    - ``external`` -- somebody else spawns it; this run only publishes the
+      stress marker so the owner can see this shard's window.
+    - ``gauge`` -- this run samples the provider's fleet state (only a process
+      holding a provider handle can).
+    """
 
     def __init__(self, config, provider):
         self._config = config
@@ -238,7 +267,11 @@ class MonitorController:
         mc = config.monitor
         self._vmm_resolved = mc.vmm if mc.vmm != "auto" else provider.vmm_type
         self._capture_on = mc.capture in ("auto", "true")
-        self._effective = mc.enabled == "true" or (mc.enabled == "auto" and self._vmm_resolved is not None)
+        self._external = bool(mc.external_collector)
+        self._effective = not self._external and (
+            mc.enabled == "true" or (mc.enabled == "auto" and self._vmm_resolved is not None)
+        )
+        self._gauge = (self._effective and mc.api_state != "false") or mc.api_state == "true"
         self._log_dir = Path(mc.log_dir) if mc.log_dir else Path(config.output_dir) / "vm_monitor"
         self._stress_file = Path(mc.stress_file)
         self._report_timeout = mc.report_timeout
@@ -255,6 +288,9 @@ class MonitorController:
         self._started = False
         self._detached = False  # stop() set this: vm_monitor left running to finish async
         self._cmd = self._build_cmd()
+        # Control-plane fleet gauge, bracketed exactly like the stress lock:
+        # raw_report as-of joins raw_data/api_state_raw.csv onto the host samples.
+        self._api_state = ApiStateSampler(provider, self._log_dir / "raw_data" / "api_state_raw.csv", self._interval)
 
     def _build_cmd(self) -> list[str]:
         exe = shutil.which(_VM_MONITOR_BIN)
@@ -320,21 +356,20 @@ class MonitorController:
         return cmd
 
     def start(self) -> None:
+        # Stale-lock cleanup: a prior hard crash (SIGKILL/OOM) may have left the
+        # lock; a spawned vm_monitor would treat it as "stress active" and exit
+        # immediately, and an external owner would read it as already-in-stress.
+        if (self._external or self._effective) and not self._clear_stale_marker():
+            return
+        if self._external:
+            logger.info("vm_monitor: host collector is external; this run publishes stress markers only")
+            return
         if not self._effective:
             logger.warning("vm_monitor disabled: provider=%s vmm=%s", self._provider.name, self._vmm_resolved)
             return
         if not self._cmd:
             logger.warning("vm_monitor disabled: %s binary not found on PATH", _VM_MONITOR_BIN)
             return
-        # Stale-lock cleanup: a prior hard crash (SIGKILL/OOM) may have left the lock;
-        # vm_monitor would otherwise treat a pre-existing file as "stress active" and exit.
-        if self._stress_file.exists():
-            try:
-                self._stress_file.unlink()
-            except OSError as e:
-                logger.warning("vm_monitor disabled: cannot remove stale lock %s: %s", self._stress_file, e)
-                return
-            logger.warning("Stress lock file found from previous run, removing stale lock %s", self._stress_file)
         # Lock-dir / log-dir write probe (e.g. /dev/shm denied in restricted envs).
         try:
             self._log_dir.mkdir(parents=True, exist_ok=True)
@@ -362,10 +397,27 @@ class MonitorController:
         self._started = True
         time.sleep(0.5)  # brief init; vm_monitor idles waiting for the lock
 
-    def begin_stress(self) -> None:
-        if not self._started:
-            return
+    def _clear_stale_marker(self) -> bool:
+        """Drop a lock left by a hard-killed prior run; False when it cannot."""
+        if not self._stress_file.exists():
+            return True
         try:
+            self._stress_file.unlink()
+        except OSError as e:
+            logger.warning("vm_monitor disabled: cannot remove stale lock %s: %s", self._stress_file, e)
+            return False
+        logger.warning("Stress lock file found from previous run, removing stale lock %s", self._stress_file)
+        return True
+
+    def begin_stress(self) -> None:
+        # The marker is published even with no local collector: an external
+        # owner needs this run's window to bracket the union across shards.
+        if not (self._started or self._external):
+            return
+        if self._gauge:
+            self._api_state.start()
+        try:
+            self._stress_file.parent.mkdir(parents=True, exist_ok=True)
             self._stress_file.touch()
         except OSError as e:
             logger.warning("vm_monitor: cannot create stress lock %s: %s", self._stress_file, e)
@@ -373,7 +425,8 @@ class MonitorController:
         self._begin_ts = time.time()
 
     def end_stress(self) -> None:
-        if not self._started:
+        self._api_state.stop()  # before the guard: stop even if begin failed midway
+        if not (self._started or self._external):
             return
         try:
             self._stress_file.unlink()
@@ -427,8 +480,9 @@ class MonitorController:
         this returns instead of after a 15-min kill cliff); ``merge_source``
         is None-graceful when the report isn't ready yet.
         """
+        self._api_state.stop()  # idempotent; covers a stop() without end_stress()
         if not self._started:
-            return []
+            return []  # external collector: no subprocess, but the gauge stopped above
         xlsx = self._log_dir / "resource_report.xlsx"
         # Courtesy wait for a clean exit + synchronous report collection. This
         # is NOT a kill cliff (there is no kill); it is only how long we block
@@ -463,6 +517,28 @@ class MonitorController:
         self._close_handles()  # bench releases its fds; vm_monitor keeps inherited copies
         self._started = False
         return [self.report_xlsx] if self.report_xlsx is not None else []
+
+    def abandon(self) -> None:
+        """Stop a collector that never saw stress: nothing to export, so no wait.
+
+        ``stop()`` blocks up to ``report_timeout`` hoping for a report. That is
+        right after a real window (the xlsx is written last and must not be
+        killed mid-build), but wrong for a collector still idling for a lock
+        that will never appear -- the stress-file protocol has no idle timeout,
+        so it would wait forever while the bench waits ``report_timeout`` and
+        then detaches it. Nothing has been sampled yet, so terminating loses no
+        artifact.
+        """
+        self._api_state.stop()
+        if self.proc is not None and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait(timeout=5)
+        self._close_handles()
+        self._started = False
 
     def wait_for_host_resources(self, timeout: int = 30) -> Path | None:
         """Briefly wait for ``host_resources.xlsx`` (the fast, CSV-only artifact
