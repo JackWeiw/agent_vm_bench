@@ -174,6 +174,7 @@ class _UserEnvdClient(EnvdClient):
             merged["Authorization"] = f"Basic {token}"
         return super()._request(method, path, data=data, headers=merged, timeout=timeout)
 
+
 logger = logging.getLogger(__name__)
 
 # The SDK logs its own INFO chatter ("Creating sandbox with startup source:
@@ -465,8 +466,6 @@ class SandboxManager(BaseSandboxManager):
             )
         )
 
-
-
     # ----------------------------------------------------- sandboxsched-specific
     def detect_from_file(self, ids_file: str) -> dict[int, SandboxState]:
         """Detect sandboxes from an ID file: list running, match, attach.
@@ -576,4 +575,3 @@ def _create_error_detail(e: Exception) -> str:
         text = body.decode(errors="replace") if isinstance(body, bytes) else str(body)
         parts.append(f"body={text[:2000]}")
     return " | ".join(parts)
-

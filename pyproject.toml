@@ -179,6 +179,10 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = ["vm_monitor", "vm_bench", "e2b_bench", "docker_bench", "llm_replay", "bench_core", "env_provider"]
 
+[tool.ruff.format]
+# envd_client.py is vendored verbatim from upstream (opensandbox
+# examples/flux-sandbox-e2b) -- keep it byte-identical for diffability.
+exclude = ["src/env_provider/sandboxsched/envd_client.py"]
 [tool.ruff.lint.per-file-ignores]
 # Vendored verbatim from upstream (opensandbox examples/flux-sandbox-e2b/envd_client.py) --
 # keep the file byte-identical to upstream, so style rules are waived here.

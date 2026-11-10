@@ -153,7 +153,11 @@ class SandboxSchedProvider(EnvironmentProvider):
         # design. Route through the manager's envd client (server proxy or
         # direct CNI access per use_server_proxy).
         exit_code, stdout, stderr = self.manager.envd_exec(
-            state, command, timeout=timeout, cwd=cwd, env=env,
+            state,
+            command,
+            timeout=timeout,
+            cwd=cwd,
+            env=env,
         )
         return CommandResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
 
