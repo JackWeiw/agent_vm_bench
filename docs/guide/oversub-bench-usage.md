@@ -150,8 +150,7 @@ the driver only composes it:
 ## 4. `run_summary.json` fields (kernel → driver contract)
 
 Each trial writes `{prefix}_run_summary.json` — the only contract between kernel and driver, raw
-facts only (the kernel never recomputes a metric the driver needs; field table:
-[metrics-reference.md §1.6 obs Overview + run_summary annotations](../dev/metrics-reference.md)):
+facts only (the kernel never recomputes a metric the driver needs):
 
 | field | what it is / why it matters |
 |-------|-----------------------------|

@@ -136,7 +136,7 @@ client-bound)。`shards` 把一个 trial 的 k×N slot 拆成 P 个 `bench-core`
 ## 4. `run_summary.json` 字段(kernel → driver 契约)
 
 每个 trial 写 `{prefix}_run_summary.json`——kernel 与 driver 间唯一契约,只含原始事实(kernel
-绝不为 driver 重算指标;字段表见 [metrics-reference.md §1.6 obs Overview + run_summary 注解](../dev/metrics-reference.md)):
+绝不为 driver 重算指标;字段表见下):
 
 | 字段 | 含义 |
 |-------|------|
