@@ -858,8 +858,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--log-level",
         default="info",
         choices=["debug", "info", "warning"],
-        help="root log level (default info; debug also surfaces per-step "
-        "stderr for non-zero exits)",
+        help="root log level (default info; debug also surfaces per-step " "stderr for non-zero exits)",
     )
     parser.add_argument("-n", "--total-count", type=int)
     parser.add_argument("--workflow-type", choices=["browser", "coding", "document", "replay"])
