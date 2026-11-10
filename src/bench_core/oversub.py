@@ -145,7 +145,7 @@ _TRUE_DEFAULTS: dict[str, object] = {
     "provider": "aenv",
     "running_concurrency": None,
     "ratios": "1,2,3",
-    "modes": "lifecycle,exec_ephemeral",
+    "modes": "exec_ephemeral,lifecycle",
     "repeats": 1,
     "test_duration": None,
     "failure_tolerance": 0.0,
@@ -807,7 +807,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="N running slots (default = base replay.running_concurrency)",
     )
     p.add_argument("--ratios", default=None, help="comma-separated k values (default 1,2,3)")
-    p.add_argument("--modes", default=None, help="comma-separated replay modes (default lifecycle,exec_ephemeral)")
+    p.add_argument("--modes", default=None, help="comma-separated replay modes (default exec_ephemeral,lifecycle)")
     p.add_argument("--repeats", type=int, default=None, help="repeats per (mode,ratio) (default 1)")
     p.add_argument(
         "--test-duration", type=int, default=None, help="sustained window per trial (default = base test.duration)"
