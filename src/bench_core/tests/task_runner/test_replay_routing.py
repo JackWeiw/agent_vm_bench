@@ -256,7 +256,7 @@ def test_round_runner_affinity_filters(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Trajectory mode: create_one(template=traj.template)
+# exec_ephemeral: create_one(template=traj.template)
 # ---------------------------------------------------------------------------
 
 

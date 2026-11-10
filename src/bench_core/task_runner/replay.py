@@ -343,6 +343,10 @@ class ReplayBaseRunner(TaskRunner):
             )
             # Success-path record. On exception _run_slice raises (no record here);
             # the caller's except block emits a slice_failed=True record instead.
+            # ``retries_in_slice`` lets a consumer rebuild ``retries_per_slice``
+            # from the series alone (a sharded trial's per-shard accumulators die
+            # with their process; see lifecycle_reconstruct.replay_states_from_events).
+            retries_in_slice = self.state.replay_metrics.retry_queued_count - retry_count_before
             if self.series is not None:
                 self.series.write(
                     {
@@ -380,13 +384,12 @@ class ReplayBaseRunner(TaskRunner):
                         "running_slot_held_sec": sr.running_slot_held_sec,
                         "interaction_total_sec": sr.interaction_total_sec,
                         "action": _compact_action(step.action),
+                        "retries_in_slice": retries_in_slice,
                     }
                 )
             # Track pause-end for the next step's ready_at (G2).
             self._prev_pause_end_monotonic = time.perf_counter()
-            self.state.replay_metrics.append_retries_per_slice(
-                self.state.replay_metrics.retry_queued_count - retry_count_before
-            )
+            self.state.replay_metrics.append_retries_per_slice(retries_in_slice)
             return sr
         finally:
             # Release lease in finally so mid-slice exceptions don't leak the slot.

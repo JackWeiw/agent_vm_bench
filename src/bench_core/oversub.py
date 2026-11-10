@@ -11,9 +11,19 @@ Inspired by ``replay-aenv-main/scripts/run_pause_resume_oversubscription_benchma
 but leaner (~400 lines) because the kernel owns the per-trial lifecycle,
 admission, observability, trajectory export, and vm_monitor orchestration.
 
-The driver imports no kernel data-path internals (lifecycle / admission /
-stats / observability) -- only the CLI, the YAML schema, the
-``run_summary.json`` schema, and the shared ``setup_logging`` CLI helper.
+Admission-free modes (``exec_ephemeral`` / ``exec_only``) run PROCESS-SHARDED
+by default (``--shards auto`` -> P = ratio): a single CPython process saturates
+one GIL (~1 core, ~50-55 steps/s at N=384) and high-ratio trials turn
+client-bound, so each trial splits into P kernel subprocesses of ~N slots --
+the mechanism lives in :mod:`bench_core.oversub_shards`; this driver composes
+it and merges the shard artifacts back into the single-trial
+``run_summary.json`` / ``trajectories/index.json`` contract, so every
+downstream consumer (validity, CSVs, compare, reuse) is shard-unaware.
+
+The driver directly imports no kernel data-path internals (lifecycle /
+admission / stats / task dispatch) -- only the CLI, the YAML schema, the
+``run_summary.json`` schema, and the shared ``setup_logging`` CLI helper; the
+host-monitor contract is reached through :mod:`bench_core.oversub_shards`.
 Pure helpers are module-level so tests import them directly.
 """
 from __future__ import annotations
@@ -30,6 +40,22 @@ from pathlib import Path
 
 import yaml
 
+from bench_core.oversub_shards import (
+    ShardGroupRunner,
+    ShardPlan,
+    ShardStressBracket,
+    build_shard_command,
+    coerce_shards,
+    collect_shard_artifacts,
+    merge_lifecycle_series,
+    merge_run_summaries,
+    merge_trajectory_indexes,
+    plan_shards,
+    render_merged_obs,
+    start_host_monitor,
+    write_merged_artifacts,
+    write_shard_configs,
+)
 from bench_core.utils import format_duration, setup_logging
 
 logger = logging.getLogger(__name__)
@@ -132,6 +158,7 @@ _TRUE_DEFAULTS: dict[str, object] = {
     "dry_run": False,
     "no_vm_monitor": False,
     "multiplier": None,
+    "shards": "auto",
     "bench_core_bin": ["bench-core"],
     "auto_compare": True,
 }
@@ -237,6 +264,8 @@ def compute_valid(
     fleet without over-admitting:
 
       * ``return_code == 0`` (the kernel subprocess succeeded),
+      * the summary recorded no ``error`` (a merged sharded summary has no rc;
+        a dead shard surfaces here instead),
       * ``throughput.total >= 0.9 * expected``. ``expected = N`` by default
         (mode-agnostic: a non-M trial runs ONE round, so ``total`` -- the
         trajectory-attempt count since run_summary schema 2 -- ~= k*N >= 0.9*N
@@ -260,6 +289,14 @@ def compute_valid(
         single-round wrap noise, not M-pass fleets).
     """
     if return_code != 0:
+        return False
+    # A summary that recorded a problem is not a valid measurement, even when
+    # the process rc reads 0. This is the sharded-trial path's only failure
+    # signal on --reuse: the merged summary has no single rc (a dead shard
+    # surfaces in ``error`` / ``shard_return_codes``), so without this gate a
+    # shard-crashed trial whose surviving shards still cleared the count floor
+    # would be reused and reported as valid.
+    if summary.get("error"):
         return False
     tp = summary.get("throughput") or {}
     # M-aware floor: with multiplier each sandbox runs M trajectories, so the
@@ -784,6 +821,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "Default off (the trial uses the base benchmark_mode / total_count).",
     )
     p.add_argument("--failure-tolerance", type=float, default=None, help="max failure_rate for valid (default 0.0)")
+    p.add_argument(
+        "--shards",
+        default=None,
+        help="kernel processes per trial for admission-free modes (exec_ephemeral/exec_only): "
+        "'auto' = one shard per ratio (each ~N slots, its own GIL) or an explicit P >= 1 "
+        "(P=1 = one shard, keeps the same shard-00/ + merged/ + driver-owned vm_monitor "
+        "layout as any P, so ratio-1 trials share one structure with higher ratios). "
+        "lifecycle always runs single-process (global admission). Default auto.",
+    )
     p.add_argument("--cooldown-sec", type=int, default=None, help="settle time between trials (default 30)")
     p.add_argument(
         "--cleanup-between-trials",
@@ -950,6 +996,21 @@ def _cleanup_output(stdout, stderr, *, limit: int = 2000) -> str:
     return "\n".join(parts)
 
 
+def _find_reusable_summary(trial_dir: Path, prefix: str) -> Path | None:
+    """Locate a finished trial's summary for ``--reuse``.
+
+    Sharded trials carry the driver-merged summary at a fixed path; legacy
+    single-process trials keep the kernel's timestamped run dir. Merged first
+    (it is the trial-level contract); either shape feeds the same
+    ``compute_valid`` because the merge is schema-faithful.
+    """
+    merged = trial_dir / "merged" / f"{prefix}_run_summary.json"
+    if merged.exists():
+        return merged
+    hits = sorted(trial_dir.glob(f"{prefix}_*/{prefix}_run_summary.json"))
+    return hits[-1] if hits else None
+
+
 def _run_trial(
     args: argparse.Namespace,
     base_yaml: dict,
@@ -970,11 +1031,16 @@ def _run_trial(
     # multiplier (M) applies only to exec_ephemeral (each sandbox runs M
     # trajectories, stop-when-done); a no-op for lifecycle.
     m = args.multiplier if mode == "exec_ephemeral" else None
+    # Shardable modes (exec_ephemeral/exec_only) get a plan at every P, including
+    # P == 1, so a ratio-1 trial keeps the sharded layout (shard-00/ + merged/ +
+    # driver-owned vm_monitor) byte-identical to P >= 2 trials; lifecycle (global
+    # admission) alone stays None = legacy single-process path. See oversub_shards.
+    plan = plan_shards(trial_dir=trial_dir, mode=mode, ratio=ratio, n=n, setting=args.shards)
 
     summary_glob = f"{prefix}_*/{prefix}_run_summary.json"
 
     logger.info(
-        "[%s/%s] %s ratio=%d repeat=%d: target=%d, duration=%ss; driver.log=%s",
+        "[%s/%s] %s ratio=%d repeat=%d: target=%d, duration=%ss, shards=%d; log=%s",
         index,
         total,
         mode,
@@ -982,15 +1048,16 @@ def _run_trial(
         repeat,
         ratio * n,
         test_duration,
-        trial_dir / "driver.log",
+        plan.count if plan else 1,
+        trial_dir / "driver.log" if plan is None else str(trial_dir / "shard-*") + "/driver.log",
     )
 
     # --reuse: skip completed-valid trials (restart safety).
     if args.reuse:
-        hits = sorted(trial_dir.glob(summary_glob))
-        if hits:
+        prior = _find_reusable_summary(trial_dir, prefix)
+        if prior:
             try:
-                s = parse_run_summary(hits[-1])
+                s = parse_run_summary(prior)
                 if compute_valid(s, 0, n=n, failure_tolerance=args.failure_tolerance, multiplier=m, ratio=ratio):
                     logger.info(
                         "[%s/%s] %s ratio=%d repeat=%d: reused completed-valid trial -- skipped",
@@ -1011,7 +1078,7 @@ def _run_trial(
                         valid=True,
                         reused=True,
                         trial_dir=str(trial_dir),
-                        run_summary_path=str(hits[-1]),
+                        run_summary_path=str(prior),
                     )
             except Exception:
                 pass  # corrupt summary -> re-run
@@ -1038,6 +1105,25 @@ def _run_trial(
     )
     trial_yaml = trial_dir / "trial.yaml"
     trial_yaml.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+
+    # Sharded path: trial.yaml stays as the logical (unsharded) provenance; the
+    # per-shard configs are derived from it under trial_dir/shard-*/.
+    if plan is not None:
+        return _run_sharded_trial(
+            args,
+            cfg,
+            plan,
+            mode=mode,
+            ratio=ratio,
+            repeat=repeat,
+            n=n,
+            trial_dir=trial_dir,
+            prefix=prefix,
+            multiplier=m,
+            test_duration=test_duration,
+            index=index,
+            total=total,
+        )
 
     cmd = [*args.bench_core_bin, "--config", str(trial_yaml), "--provider", args.provider]
     if args.no_vm_monitor:
@@ -1113,6 +1199,157 @@ def _run_trial(
     return row
 
 
+def _run_sharded_trial(
+    args: argparse.Namespace,
+    trial_cfg: dict,
+    plan: ShardPlan,
+    *,
+    mode: str,
+    ratio: int,
+    repeat: int,
+    n: int,
+    trial_dir: Path,
+    prefix: str,
+    multiplier: int | None,
+    test_duration: int,
+    index: int,
+    total: int,
+) -> dict | None:
+    """Run one trial as P kernel subprocesses; merge back to a single trial row.
+
+    Thin composition: planning / per-shard config derivation / group supervision
+    / the driver-owned host collector / artifact merging all live in
+    :mod:`bench_core.oversub_shards`; validity and row shaping reuse the same
+    driver functions as the single-process path, so a sharded trial is
+    indistinguishable downstream (CSVs, compare, reuse).
+    A shard that produced no summary is never backfilled -- it surfaces in the
+    merged ``error`` and fails the validity floor (a crash must not masquerade
+    as a successful measurement).
+    """
+    write_shard_configs(trial_cfg, plan, owns_collector=not args.no_vm_monitor)
+    commands = [
+        build_shard_command(args.bench_core_bin, spec, provider=args.provider, no_vm_monitor=args.no_vm_monitor)
+        for spec in plan.specs
+    ]
+    if args.dry_run:
+        for cmd in commands:
+            logger.info("[dry-run] %s", " ".join(str(c) for c in cmd))
+        return None
+
+    # One host collector for the whole trial, owned here rather than by a
+    # shard: the shards only publish stress markers, so a crashed or slow shard
+    # can no longer take the host report down with it, and the output path is
+    # fixed at <trial_dir>/vm_monitor/ regardless of the shard layout.
+    monitor = (
+        None
+        if args.no_vm_monitor
+        else start_host_monitor(
+            trial_cfg,
+            trial_dir,
+            provider=args.provider,
+            test_duration=test_duration,
+            timeout_sec=args.trial_timeout_sec,
+        )
+    )
+    bracket = None if monitor is None else ShardStressBracket([spec.stress_path for spec in plan.specs], monitor)
+
+    result = None
+    # Artifact selection is scoped to this attempt: shard dirs accumulate one
+    # timestamped run dir per attempt, so a shard that crashes before flushing
+    # must not have a previous attempt's summary merged in its place.
+    launch_epoch = time.time()
+    try:
+        if bracket is not None:
+            bracket.start()
+        result = ShardGroupRunner(commands, [spec.log_path for spec in plan.specs], args.trial_timeout_sec).run()
+    finally:
+        # Order matters: close the bracket (the collector's sampling window),
+        # then let it export. On an interrupt mirror the kernel: a short wait for
+        # the fast artifact instead of a 300 s export block after Ctrl+C.
+        if bracket is not None:
+            bracket.stop()
+        if monitor is not None:
+            if bracket is not None and not bracket.opened:
+                # No shard ever reached its stress phase: there is no window to
+                # export. stop() would block the full report_timeout for a report
+                # that cannot exist and leave an idle collector behind.
+                monitor.abandon()
+            elif result is not None and result.interrupted:
+                monitor.wait_for_host_resources(timeout=30)
+            else:
+                monitor.stop()
+    artifacts = collect_shard_artifacts(plan, prefix, since_epoch=launch_epoch)
+    rc = result.trial_return_code()
+
+    if all(s is None for s in artifacts.summaries):
+        summary = {
+            "throughput": {},
+            "test_duration": test_duration,
+            "error": f"no shard produced run_summary.json (rcs={result.returncodes})",
+        }
+        run_summary_path = ""
+    else:
+        merged_index = merge_trajectory_indexes(artifacts.catalogs) if artifacts.catalogs else None
+        summary = merge_run_summaries(artifacts.summaries, plan=plan, artifacts=artifacts, result=result)
+        # Fleet-wide lifecycle series: concat the per-shard JSONLs so inflight-
+        # concurrency analysis sees all k*N slots (not one shard's N). Must run
+        # before write_merged_artifacts, which serializes `summary`.
+        series = merge_lifecycle_series(artifacts.summaries, plan, trial_dir / "merged", prefix)
+        if series is not None:
+            summary.setdefault("paths", {})["lifecycle_series"] = str(series)
+            # Fleet-wide obs workbook (the shards' own workbooks cover N slots
+            # each). Rendered before write_merged_artifacts, which serializes
+            # the summary carrying its path.
+            merged_obs = render_merged_obs(
+                trial_cfg,
+                trial_dir,
+                prefix,
+                wall_sec=summary.get("wall_sec"),
+                series_path=series,
+                host_xlsx=monitor.merge_source() if monitor is not None else None,
+            )
+            if merged_obs is not None:
+                summary["paths"]["obs_xlsx"] = str(merged_obs)
+        run_summary_path = str(write_merged_artifacts(trial_dir, prefix, summary, merged_index))
+
+    valid = compute_valid(
+        summary, rc, n=n, failure_tolerance=args.failure_tolerance, multiplier=multiplier, ratio=ratio
+    )
+    row = trial_row(
+        mode=mode,
+        ratio=ratio,
+        repeat=repeat,
+        running_concurrency=n,
+        target_count=ratio * n,
+        summary=summary,
+        return_code=rc,
+        valid=valid,
+        reused=False,
+        trial_dir=str(trial_dir),
+        run_summary_path=run_summary_path,
+    )
+    logger.info(
+        "[%s/%s] %s ratio=%d repeat=%d done in %s (shards=%d, rcs=%s): valid=%s, total=%s, succeeded=%s, failed=%s",
+        index,
+        total,
+        mode,
+        ratio,
+        repeat,
+        format_duration(row.get("wall_sec")) if row.get("wall_sec") else "n/a",
+        plan.count,
+        result.returncodes,
+        row["valid"],
+        row["total"],
+        row["succeeded"],
+        row["failed"],
+    )
+    if result.interrupted:
+        # Same sentinel as the single-process path: unwinds to main's interrupt
+        # handler (partial outputs preserved + post-interrupt cleanup + rc 130).
+        row["_interrupted"] = True
+    return row
+
+
 def main(argv: list[str] | None = None) -> int:
     setup_logging()
     args = build_arg_parser().parse_args(argv)
@@ -1164,6 +1401,7 @@ def main(argv: list[str] | None = None) -> int:
     args.repeats = repeats
     args.test_duration = test_duration
     args.multiplier = resolve("multiplier")
+    args.shards = coerce_shards(resolve("shards"))
     args.failure_tolerance = float(resolve("failure_tolerance"))
     args.cooldown_sec = int(resolve("cooldown_sec"))
     args.cleanup_between_trials = resolve("cleanup_between_trials")
@@ -1192,6 +1430,7 @@ def main(argv: list[str] | None = None) -> int:
         "repeats": repeats,
         "test_duration": test_duration,
         "multiplier": args.multiplier,
+        "shards": args.shards,
         "failure_tolerance": args.failure_tolerance,
         "cooldown_sec": args.cooldown_sec,
         "trial_timeout_sec": args.trial_timeout_sec,
@@ -1211,6 +1450,12 @@ def main(argv: list[str] | None = None) -> int:
         repeats,
         total_trials,
         output_root,
+    )
+    logger.info(
+        "shards=%s: admission-free modes (exec_ephemeral/exec_only) run one kernel "
+        "process per shard ('auto' = P=ratio, ~N slots each); lifecycle "
+        "always single-process (global admission)",
+        args.shards,
     )
     try:
         for index, (mode, ratio, repeat) in enumerate(matrix, 1):
