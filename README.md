@@ -26,6 +26,8 @@ they share no code with the new kernel.
 |----------|-------------|
 | [bench-core Usage Guide](docs/guide/bench-core-usage.md) | **src kernel benchmarking (recommended): install→config→CLI→cleanup** |
 | [bench-core 使用指南 (中文)](docs/guide/bench-core-usage-zh.md) | 中文版 src 内核压测指南 |
+| [oversub-bench Usage](docs/guide/oversub-bench-usage.md) | **oversubscription sweeps (`oversub-bench`) + cross-config comparison (`oversub-compare`)** |
+| [oversub-bench 使用指南 (中文)](docs/guide/oversub-bench-usage-zh.md) | 超卖扫描 (`oversub-bench`) 与跨配置对比 (`oversub-compare`) 中文指南 |
 | [Design](docs/architecture/design.md) | System architecture and flow design |
 | [Design (EN)](docs/architecture/design-en.md) | English version of design doc |
 | [Metrics Reference](docs/dev/metrics-reference.md) | bench_core + vm_monitor metrics, collection sources & formulas |
@@ -167,6 +169,34 @@ See the [bench-core usage guide](docs/guide/bench-core-usage.md) for the full
 install→config→troubleshooting walkthrough, and the
 [design doc](docs/superpowers/specs/2026-08-12-environment-provider-bench-core-design.md)
 for architecture.
+
+---
+
+## Replay & oversubscription
+
+`workflow_type: replay` re-executes recorded SWE-bench agent trajectories against
+a sandbox backend. Two sweep modes matter for oversubscription — **`exec_ephemeral`
+(pure COW: per-round sandbox create → exec → kill, no pause/resume; the default)**,
+then **`lifecycle` (long-lived sandboxes with pause/resume; paused sandboxes free
+memory, so k×N of them fit in N running slots)**:
+
+```bash
+# Smoke the whole chain with the SDK-free fake provider (seconds); fake is
+# EphemeralCapable only, so pin --modes exec_ephemeral (a lifecycle trial would be invalid)
+oversub-bench --config config/common/replay-exec-only.yaml --provider fake --modes exec_ephemeral \
+  --ratios 1,2,3 --test-duration 5 --output-root results/fake_sweep
+
+# Ready-made sweeps — default sweep order is exec_ephemeral (pure COW) first, then lifecycle
+oversub-bench --sweep-config config/oversub/exec-ephemeral-1to3.yaml   # default: pure-COW oversub
+oversub-bench --sweep-config config/oversub/lifecycle-1to3.yaml        # lifecycle: snapshot memory reuse
+```
+
+Compare multiple sweep results across architectures / configs with `oversub-compare`
+(manifest: `config/oversub/compare-manifest.yaml`). Sweep-config keys, process
+sharding, result curves (`trial-summary.csv` / `ratio-summary.csv` /
+`trajectory-detail.csv`) and troubleshooting:
+[oversub-bench-usage.md](docs/guide/oversub-bench-usage.md)
+([zh](docs/guide/oversub-bench-usage-zh.md)).
 
 ---
 
