@@ -861,6 +861,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Host-agnostic benchmark kernel")
     parser.add_argument("--config", help="YAML config path")
     parser.add_argument("--provider", default="fake", choices=list(_PROVIDERS))
+    parser.add_argument(
+        "--log-level",
+        default="info",
+        choices=["debug", "info", "warning"],
+        help="root log level (default info; debug also surfaces per-step " "stderr for non-zero exits)",
+    )
     parser.add_argument("-n", "--total-count", type=int)
     parser.add_argument("--workflow-type", choices=["browser", "coding", "document", "replay"])
     parser.add_argument("-bm", "--benchmark-mode", choices=["fixed", "round_robin"])
@@ -946,8 +952,8 @@ def _build_provider(name: str, config: KernelConfig, raw_config: dict[str, Any])
 
 def main() -> None:
     """CLI entry point (host-agnostic smoke via ``--provider fake``)."""
-    setup_logging()
     args = build_arg_parser().parse_args()
+    setup_logging(level=getattr(logging, args.log_level.upper()))
 
     if args.config:
         config, raw = load_config(args.config, workflow_type_override=args.workflow_type or None)
@@ -999,6 +1005,7 @@ def main() -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = str(log_dir / f"{config.filename_prefix}.log")
     setup_logging(
+        level=getattr(logging, args.log_level.upper()),
         log_path=log_path,
         json_lines=isinstance(config.workflow_config, ReplayConfig)
         and config.workflow_config.replay_mode == "lifecycle",
