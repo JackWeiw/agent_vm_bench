@@ -259,6 +259,23 @@ def test_proc_raw_writer_dumps_vm_pss():
     assert rows[1]["pss_mb"] == "2048.0"
 
 
+def test_proc_raw_writer_dumps_vm_rss():
+    """vm_cpu_raw.csv must carry rss_mb (VmRSS read from /proc/<pid>/status,
+    a gauge like pss_mb)."""
+    with tempfile.TemporaryDirectory() as d:
+        w = _ProcRawWriter(d)
+        vms = [
+            {"pid": 111, "name": "fc-vm0", "utime": 500, "stime": 50, "pss_mb": 1024.0, "rss_mb": 2048.0},
+            {"pid": 222, "name": "fc-vm1", "utime": 900, "stime": 90, "pss_mb": 2048.0, "rss_mb": 4096.0},
+        ]
+        w.enqueue_vm("2026-01-01 00:00:00", vms)
+        w.close()
+        with open(os.path.join(d, "raw_data", "vm_cpu_raw.csv")) as f:
+            rows = list(csv.DictReader(f))
+    assert rows[0]["rss_mb"] == "2048.0"
+    assert rows[1]["rss_mb"] == "4096.0"
+
+
 def test_proc_raw_writer_dumps_vm_memory_and_numa_mem():
     """memory_mb rides the existing per-VM record (numa_maps total already read
     for the fleet gauge), and numa_mem_raw.csv carries the per-node meminfo

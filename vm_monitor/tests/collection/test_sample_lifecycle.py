@@ -62,9 +62,6 @@ class _NoProcMonitor(VMMonitorBase):
     def collect_vm_total_memory(self, vms):  # noqa: N802 - seam
         pass
 
-    def collect_vm_total_pss(self, vms):  # noqa: N802 - seam
-        pass
-
     # ABC seams:
     def get_vms_realtime(self):  # noqa: N802 - ABC seam
         return []

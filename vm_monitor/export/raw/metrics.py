@@ -274,7 +274,7 @@ def _vmstat_block(frames: dict, epochs: pd.Series, interval: pd.Series) -> pd.Da
 
 
 def _fleet_block(frames: dict, epochs: pd.Series) -> pd.DataFrame:
-    """ublk-daemon cores, VM fleet cores/memory/PSS, and concurrent VM count."""
+    """ublk-daemon cores, VM fleet cores/memory/PSS/RSS, concurrent VM count."""
     block = pd.DataFrame(index=epochs.index)
     ublk = frames.get("ublk")
     if ublk is not None and not ublk.empty:
@@ -294,7 +294,10 @@ def _fleet_block(frames: dict, epochs: pd.Series) -> pd.DataFrame:
     interval = epochs.diff().to_numpy()
     rateable = (interval > 0) & (interval <= MAX_INTERVAL_S)
     block["vm_cores"] = _jiffies_to_cores(vm.delta_jiffies, interval, rateable, epochs)
-    block["fc_pss_gb"] = _host_aligned(vm.pss_sum, epochs) / 1024
+    if vm.pss_sum is not None:
+        block["fc_pss_gb"] = _host_aligned(vm.pss_sum, epochs) / 1024
+    if vm.rss_sum is not None:
+        block["fc_rss_gb"] = _host_aligned(vm.rss_sum, epochs) / 1024
     block["concurrent_vms"] = _host_aligned(vm.count, epochs).fillna(0).astype(int)
     if vm.mem_sum is not None:
         block["vm_mem_gb"] = _host_aligned(vm.mem_sum, epochs) / 1024

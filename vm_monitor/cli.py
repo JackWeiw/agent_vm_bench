@@ -97,6 +97,7 @@ COLLECTOR_FLAGS = [
     ("disk", "disk", "base"),
     ("ublk", "ublk", "base"),
     ("pss", "pss", "base"),
+    ("rss", "rss", "base"),
     ("ublk-daemon", "ublk_daemon", "base"),
     ("hostproc", "hostproc", "base"),
     ("devkit-mem", "devkit_mem", "devkit"),
@@ -131,7 +132,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
   --no-swap / --no-hugepage / --no-pressure / --no-host-mem-detail /
   --no-numa-memory / --no-numa-cpu / --no-host-stats / --no-vm-total /
   --no-disk / --no-ublk : skip a /proc collector (its sheet/SVG is omitted).
-  --no-pss : skip per-VM PSS (smaps_rollup) + the PSS timeline columns.
+  --no-pss : skip per-VM PSS (no smaps_rollup walk). The fc_pss_gb fleet
+             column + Per-VM PSS block are omitted from host_resources.xlsx.
+             RSS, when enabled, falls back to the cheap /proc/<pid>/status
+             VmRSS read (fc_rss_gb kept).
+  --no-rss : skip per-VM RSS. The fc_rss_gb fleet column is omitted; PSS (and
+             its fc_pss_gb column) unaffected.
   --no-ublk-daemon : skip uvm-ublk-daemon CPU tracking (Disk_IO col).
   --no-hostproc : skip user-specified host-process CPU/PSS tracking.
   --no-devkit-mem / --no-devkit-topdown : run only one devkit sub-tool.

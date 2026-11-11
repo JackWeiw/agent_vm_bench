@@ -90,6 +90,7 @@ _ALL_SAMPLE_COLLECTORS = frozenset(
         "disk",
         "ublk",
         "pss",
+        "rss",
         "ublk_daemon",
         "hostproc",
     }
@@ -459,14 +460,15 @@ class _ProcRawWriter:
         fh.flush()
 
     def _write_vm(self, ts: str, vms: list) -> None:
-        # Per-VM -> long format (one row per VM per sample). pss_mb is a gauge
-        # (current MB via smaps_rollup, already collected by _collect_single_vm);
-        # utime/stime are cumulative counters an agent deltas into CPU cores.
+        # Per-VM -> long format (one row per VM per sample). pss_mb/rss_mb are
+        # gauges (current MB via smaps_rollup / /proc/<pid>/status VmRSS, already
+        # collected by _collect_single_vm); utime/stime are cumulative counters
+        # an agent deltas into CPU cores.
         if self._vm is None:
             fh = open(os.path.join(self._dir, "vm_cpu_raw.csv"), "w", newline="", encoding="utf-8")
             dw = csv.DictWriter(
                 fh,
-                fieldnames=["timestamp", "pid", "vm_name", "utime", "stime", "pss_mb", "memory_mb"],
+                fieldnames=["timestamp", "pid", "vm_name", "utime", "stime", "pss_mb", "rss_mb", "memory_mb"],
                 restval="",
                 extrasaction="ignore",
             )
@@ -485,6 +487,7 @@ class _ProcRawWriter:
                     "utime": ut,
                     "stime": st,
                     "pss_mb": v.get("pss_mb", ""),
+                    "rss_mb": v.get("rss_mb", ""),
                     "memory_mb": v.get("memory_mb", ""),
                 }
             )
@@ -756,12 +759,6 @@ class VMMonitorBase(ABC):
         self._hostproc_warned_missing: set[str] = set()
         self._hostproc_missing_streak: dict[str, int] = {}  # consecutive miss count
         self._hostproc_ever_seen: set[str] = set()
-
-        # Fleet-total PSS timeline (aggregate of per-VM pss_mb each sample).
-        # PSS splits shared pages across sharers, so the fleet total is the true
-        # marginal memory cost (template pages shared by all VMs counted once-ish),
-        # unlike vm_total_memory which sums numa_maps Total and double-counts shared.
-        self.vm_total_pss_history = []
 
         # Host page-cache pressure + runnable/blocked procs (from /proc/vmstat
         # + /proc/meminfo + /proc/stat). One sample per collect_sample cycle.
@@ -1776,25 +1773,6 @@ class VMMonitorBase(ABC):
         self.vm_total_memory_history.append(entry)
         return entry
 
-    def collect_vm_total_pss(self, vms: list[dict]) -> dict:
-        """Aggregate total PSS across all VMs per sample (fleet timeline).
-
-        Sums per-VM pss_mb (collected by _read_pss_mb via smaps_rollup). PSS
-        splits shared pages across sharers, so the fleet total is the true
-        marginal memory cost of the sandbox fleet -- template pages shared by
-        all VMs are counted ~once, unlike collect_vm_total_memory's numa_maps
-        Total sum which double-counts shared pages. No per-NUMA split (PSS has
-        no node attribution; pair with vm_total_memory for the NUMA view).
-        """
-        total_pss = sum(vm.get("pss_mb", 0) for vm in vms)
-        entry = {
-            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "total_pss_mb": round(total_pss, 2),
-            "vm_count": len(vms),
-        }
-        self.vm_total_pss_history.append(entry)
-        return entry
-
     def _read_meminfo(self) -> dict:
         """Read /proc/meminfo and return dict of field -> MB values
 
@@ -2076,18 +2054,53 @@ class VMMonitorBase(ABC):
     def _read_pss_mb(self, pid: int) -> float:
         """PSS (MB) from /proc/<pid>/smaps_rollup (kernel >= 4.14).
 
-        PSS splits shared pages across sharers, so the per-VM aggregate is the
+        PSS splits shared pages across sharers, so a fleet aggregate is the
         true marginal memory cost (template pages shared by all VMs counted
-        once-ish), unlike RSS/numa_maps Total which double-count. Always
-        collected, not just a numastat-failure fallback. Measured cost at
-        ~1k FC pids: ~92ms added to the 64-thread parallel round (~240ms total),
-        well within the 1Hz budget; revisit cadence if oversub ratio pushes
-        pss-pid count > ~5k.
+        once-ish), unlike RSS/numa_maps Total which double-count. Per-VM
+        collection no longer routes here -- the fleet path reads PSS + RSS
+        together via :meth:`_read_pss_rss_mb` (one open, RSS rides the walk);
+        this single-gauge reader stays for the host-proc collector.
         """
         try:
             with open(f"/proc/{pid}/smaps_rollup") as f:
                 for line in f:
                     if line.startswith("Pss:"):
+                        return round(int(line.split()[1]) / 1024, 2)
+        except OSError:
+            pass
+        return 0.0
+
+    def _read_pss_rss_mb(self, pid: int) -> tuple[float, float]:
+        """PSS + RSS (MB) from a single /proc/<pid>/smaps_rollup open.
+
+        smaps_rollup emits Pss: and Rss: lines from the same page-table walk,
+        so the rss collector rides pss's existing open at zero extra I/O
+        (one /proc open per VM per sample either way). Falls back to the
+        cheap /proc/<pid>/status VmRSS read only when pss is disabled.
+        """
+        try:
+            with open(f"/proc/{pid}/smaps_rollup") as f:
+                pss_mb = rss_mb = 0.0
+                for line in f:
+                    if line.startswith("Pss:"):
+                        pss_mb = round(int(line.split()[1]) / 1024, 2)
+                    elif line.startswith("Rss:"):
+                        rss_mb = round(int(line.split()[1]) / 1024, 2)
+                return pss_mb, rss_mb
+        except OSError:
+            return 0.0, 0.0
+
+    def _read_rss_mb(self, pid: int) -> float:
+        """RSS (MB) from VmRSS in /proc/<pid>/status.
+
+        A single VmRSS counter line -- cheap (no page-table walk, unlike
+        smaps_rollup PSS). Matches spotbox_monitor's fc_rss_gb source. Gated by
+        the 'rss' collector (--no-rss).
+        """
+        try:
+            with open(f"/proc/{pid}/status") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
                         return round(int(line.split()[1]) / 1024, 2)
         except OSError:
             pass
@@ -2106,7 +2119,6 @@ class VMMonitorBase(ABC):
             "memory_per_numa": numastat_mem.get("per_node", {}),
             "memory_swapcache_mb": numastat_mem.get("swapcache_mb", 0.0),
             "memory_swapcache_per_numa": numastat_mem.get("swapcache_per_node", {}),
-            "pss_mb": 0.0,  # overwritten by _read_pss_mb in the collector
         }
 
     def _finalize_vm_collection(
@@ -2196,13 +2208,28 @@ class VMMonitorBase(ABC):
         return candidates
 
     def _read_heavy_vm_fields(self, pid: int) -> dict:
-        """The two page-table-walking reads for one VM: numa_maps + PSS."""
+        """Per-VM memory fields: numa_maps + PSS + RSS (one page-table walk).
+
+        PSS and RSS share a single smaps_rollup open (it emits both Pss: and
+        Rss: lines), so the rss collector adds zero I/O when pss is on.
+        """
         # NUMA memory via numa_maps fast path + numastat fallback
         numastat_mem = self.get_vm_memory_from_numastat(pid)
         fields = self._extract_numastat_fields(numastat_mem)
-        fields["pss_mb"] = (
-            self._read_pss_mb(pid) if self._collects("pss") else 0.0
-        )  # PSS via smaps_rollup (gated by 'pss' collector)
+        if self._collects("pss"):
+            # One smaps_rollup open serves both. The rss_mb key is set only
+            # when the 'rss' collector is on, so --no-rss omits it (empty CSV
+            # cell -> fc_rss_gb column + chart dropped downstream) instead of
+            # writing a fake 0.0 that reads as "fleet RSS is zero".
+            pss_mb, rss_mb = self._read_pss_rss_mb(pid)
+            fields["pss_mb"] = pss_mb
+            if self._collects("rss"):
+                fields["rss_mb"] = rss_mb
+        elif self._collects("rss"):
+            # --no-pss but RSS wanted: cheap /proc/<pid>/status VmRSS read
+            # (single counter line, no page-table walk). pss_mb stays absent,
+            # so fc_pss_gb + the Per-VM PSS block are omitted; fc_rss_gb kept.
+            fields["rss_mb"] = self._read_rss_mb(pid)
 
         # If numa_maps + numastat both fail, fall back to psutil
         if fields["memory_mb"] <= 0:
@@ -2385,8 +2412,6 @@ class VMMonitorBase(ABC):
         # Aggregate VM total memory
         if self._collects("vm_total"):
             self.collect_vm_total_memory(vms)
-        if self._collects("pss"):
-            self.collect_vm_total_pss(vms)
 
         timestamp = datetime.now()
         sample_data = []
@@ -2402,6 +2427,7 @@ class VMMonitorBase(ABC):
                 "cpu_percent": vm["cpu_percent"],
                 "memory_mb": vm["memory_mb"],
                 "pss_mb": vm.get("pss_mb", 0),
+                "rss_mb": vm.get("rss_mb", 0),
                 "memory_huge_mb": vm.get("memory_huge_mb", 0),
                 "memory_private_mb": vm.get("memory_private_mb", 0),
                 "memory_heap_mb": vm.get("memory_heap_mb", 0),

@@ -37,7 +37,7 @@ def _monitor(jiffies):
     mon = _StubMonitor()
     mon.get_vm_memory_from_numastat = lambda pid: {}
     mon._extract_numastat_fields = lambda mem: {"memory_mb": 1.0}
-    mon._read_pss_mb = lambda pid: 0.0
+    mon._read_pss_rss_mb = lambda pid: (0.0, 0.0)
     mon._read_pid_jiffies = lambda pid: jiffies
     mon._finalize_vm_collection = lambda *args, **kwargs: None
     return mon

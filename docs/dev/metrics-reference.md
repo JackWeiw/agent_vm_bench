@@ -286,7 +286,7 @@ to build, and rerunnable after the run with `vm-monitor raw-report <log_dir>`.
 | Host CPU / memory / buffers / dirty / writeback / anon / file cache | `Host resources` sheet columns + charts |
 | Swap used/free/cached, swap in/out, swap-cache ratio | `Host resources` sheet (+ `Swap usage` / `Swap cache` charts) |
 | Page-cache pressure (scan / reclaim / refault / direct reclaim / alloc stalls) | `Host resources` sheet + `Page-cache pressure` / `Alloc stalls` charts |
-| Fleet VM CPU cores, VM memory, FC PSS | `Host resources` sheet (`vm_cores`, `vm_mem_gb`, `fc_pss_gb`) |
+| Fleet VM CPU cores, VM memory, FC PSS + RSS | `Host resources` sheet (`vm_cores`, `vm_mem_gb`, `fc_pss_gb`, `fc_rss_gb`) |
 | Per-VM CPU cores + PSS | `Per-VM` sheet (top-K by mean CPU + `other`) |
 | Per-NUMA CPU% + memory | `NUMA` sheet (one block of columns per node) |
 | Per-device disk throughput / util / await / queue / IOPS | `Disk IO` sheet |
@@ -745,7 +745,8 @@ regeneratable after any interruption.
 
 | 列 | 含义 | 来源 / 公式 |
 |----|------|-------------|
-| `fc_pss_gb` | 所有 Firecracker microVM 进程的 PSS 之和 | `Σ_vm pss_mb / 1024`（每 VM `pss_mb` 来自 `smaps_rollup`） |
+| `fc_pss_gb` | 所有 Firecracker microVM 进程的 PSS 之和 | `Σ_vm pss_mb / 1024`（每 VM `pss_mb` 来自 `smaps_rollup`，随 `vm_cpu_raw.csv` 落盘；压测中**不**在采样循环里累加，导出时按每采样时间戳汇总） |
+| `fc_rss_gb` | 所有 Firecracker microVM 进程的 RSS 之和 | `Σ_vm rss_mb / 1024`（每 VM `rss_mb` 与 `pss_mb` **同一个** `smaps_rollup` open、一次页表遍历读出——RSS 搭 PSS 的便车零额外 I/O；同样压测结束后导出时汇总） |
 | `vm_mem_gb` | 机群**申报**给 guest 的内存总量（不含进程自身开销） | `Σ_vm memory_mb / 1024`（每 VM `memory_mb` 来自 FC 进程 cmdline 的 `-m`/MMDS，随 `vm_cpu_raw.csv` 落盘）；老 raw 目录无此列 → 整列与 `VM memory vs FC PSS` 图一起消失 |
 
 > 两者之差 = 每个 microVM 进程的**宿主侧开销**（FC 自身 RSS/PSS + 页表 + 设备模拟 + 稀疏
@@ -754,7 +755,9 @@ regeneratable after any interruption.
 
 > 用 PSS 而非 RSS：模板/库的共享页在 PSS 里按比例分摊到每个共享者，舰队求和 = 真实边际
 > 内存；RSS 会把同一页在每个 FC 进程里各计一次，严重高估 fleet 总占用。这是本仓库的刻意
-> 选择（`base.py` 仅在 `smaps_rollup` 不可得时才用 RSS 兜底）。`--no-pss` 时此列全 `NaN`。
+> 选择。`--no-pss` 时 `fc_pss_gb` 整列消失（列不落盘、不出现在 host_resources.xlsx，而非填 0）；
+> 该 flag 只关 PSS 自己的 gauge——RSS 若开启则改走便宜的 `/proc/<pid>/status` VmRSS 读取。
+> （`smaps_rollup` 也出 `Rss:`，正常采集时 RSS 搭 PSS 的便车、一次页表遍历同时读出。）
 
 **Swap 水位（gauge）** —— 图 `Swap usage`（GB）+ 图 `Swap cache`（MB）
 
@@ -868,9 +871,9 @@ regeneratable after any interruption.
 #### Sheet 3：Per-VM（每虚拟机，按时间快照）
 
 每采样点列出每个 VM 进程：`vm_name`、`pid`、该点 CPU 核数
-（`Δ(utime+stime)/_CLK_TCK/dt`）、PSS（`pss_mb`）。为控制行数，只保留 CPU 最高的 top-K
+（`Δ(utime+stime)/_CLK_TCK/dt`）、PSS + RSS（`pss_mb` / `rss_mb`，同一 `smaps_rollup` open 读出）。为控制行数，只保留 CPU 最高的 top-K
 个 VM，其余合并成一行 `other`（核数/PSS 求和）。本 sheet 是 Sheet 1 `fc_pss_gb` /
-`vm_cores` 的明细下钻——想看是谁在吃内存/CPU 时用它。
+`fc_rss_gb` / `vm_cores` 的明细下钻——想看是谁在吃内存/CPU 时用它。
 
 #### Sheet 4：Disk IO（每块磁盘）
 
@@ -933,7 +936,8 @@ record loop) is always on; only the auxiliary resource collectors toggle.
 | `--no-ublk` | `collect_ublk_count` | `ublk_cpu_raw.csv` (ublk_cores) |
 | `--no-ublk-daemon` | `collect_ublk_daemon` | `ublk_cores` column (Host resources) |
 | `--no-hostproc` | `collect_host_procs` | `HostProc` sheet (in `host_resources.xlsx`) + `hostproc_cpu_raw.csv` |
-| `--no-pss` | per-VM `_read_pss_mb` + `collect_vm_total_pss` | per-VM `PSS (MB)` + `Avg/Max PSS (MB)` (VM_Stats) + `fc_pss_gb` (Host resources) + Per-VM PSS chart / vm_total_pss.svg |
+| `--no-pss` | skips the per-VM smaps_rollup walk (`_read_pss_rss_mb`) | `fc_pss_gb` column + Per-VM PSS block **omitted** (column disappears, not zeroed); RSS, when `--no-rss` is unset, falls back to a cheap `/proc/<pid>/status` VmRSS read, so `fc_rss_gb` is kept |
+| `--no-rss` | per-VM `rss_mb` key gate in `_read_pss_rss_mb` | `fc_rss_gb` column **omitted** (disappears); PSS in the same smaps_rollup open is unaffected, so `fc_pss_gb` is kept |
 | `--no-devkit-mem` | `devkit_mem` sub-tool | DevKit_Memory / NUMA_Bandwidth |
 | `--no-devkit-topdown` | `devkit_top_down` sub-tool | DevKit_TopDown |
 

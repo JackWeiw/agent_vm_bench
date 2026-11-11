@@ -64,6 +64,7 @@ _HOST_COLUMNS = (
     ("vm_cores", "VM cores"),
     ("vm_mem_gb", "VM memory (GB)"),
     ("fc_pss_gb", "FC total PSS (GB)"),
+    ("fc_rss_gb", "FC total RSS (GB)"),
     ("direct_reclaim_mib_s", "Direct reclaim (MiB/s)"),
     ("allocstall_per_s", "Alloc stalls (/s)"),
     ("concurrent_vms", "Concurrent VMs"),
@@ -82,6 +83,7 @@ _HOST_CHARTS = (
     ("Swap usage", "GB", ("swap_used_gb", "swap_free_gb")),
     ("Swap cache", "MB", ("swap_cached_mb",)),
     ("FC memory (total PSS)", "GB", ("fc_pss_gb",)),
+    ("FC total RSS (GB)", "GB", ("fc_rss_gb",)),
     ("VM memory vs FC PSS", "GB", ("vm_mem_gb", "fc_pss_gb")),
     ("Page-cache pressure", "MiB/s", ("page_scan_mib_s", "page_reclaim_mib_s", "file_refault_mib_s")),
     ("Alloc stalls", "/s", ("allocstall_per_s",)),
@@ -290,11 +292,16 @@ def build_host_sheet(workbook, fmt, frame) -> bool:
 
 
 def build_per_vm_sheet(workbook, fmt, cores, pss) -> bool:
-    """CPU table + chart on top, PSS table + chart below (shared VM set)."""
+    """CPU table + chart on top, PSS table + chart below (shared VM set).
+
+    The PSS block is omitted when PSS was not collected (--no-pss): every value
+    column is all-NaN, so rendering it would ship an empty table + chart.
+    """
     if cores is None or cores.empty:
         return False
+    has_pss = pss is not None and not pss.empty and pss.iloc[:, 1:].notna().any().any()
     headers = ["t_s", *cores.columns[1:]]
-    if not _sheet_fits(len(cores) + len(pss) + 3, len(headers) + 2):
+    if not _sheet_fits(len(cores) + (len(pss) if has_pss else 0) + 3, len(headers) + 2):
         logger.warning("Per-VM sheet skipped: table exceeds Excel limits")
         return False
 
@@ -303,6 +310,8 @@ def build_per_vm_sheet(workbook, fmt, cores, pss) -> bool:
     ws.freeze_panes(1, 0)
     anchor_col = len(headers) + 1
     _add_line_chart(workbook, ws, "Per-VM CPU cores", "cores", 0, range(1, len(headers)), 0, data_rows, 1, anchor_col)
+    if not has_pss:
+        return True
 
     pss_headers = ["t_s", *pss.columns[1:]]
     pss_header_row = data_rows + 3
