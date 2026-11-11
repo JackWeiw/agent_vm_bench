@@ -1,7 +1,7 @@
 # Oversubscription sweep: exec_ephemeral (B's no-lifecycle ephemeral model) +
-# per-sandbox multiplier M=5, ratios 1:1 / 1:2 / 1:3.
+# per-sandbox multiplier M=2, ratios 1:1 / 1:2 / 1:3.
 #
-# Each trial: k*N sandboxes, each runs exactly M=5 trajectories (create_one ->
+# Each trial: k*N sandboxes, each runs exactly M=2 trajectories (create_one ->
 # bare exec of the recorded steps -> kill_one, no pause/resume), then self-stops
 # (stop-when-done). The driver flips benchmark_mode to fixed and sets
 # replay.multiplier per trial; total trajectories = M * k * N. compute_valid
@@ -29,7 +29,7 @@ provider: aenv
 
 ratios: [1, 2, 3]              # k values: total_count = k * N per trial
 modes: [exec_ephemeral]        # ephemeral create_one/kill_one per round, no lifecycle
-multiplier: 5                 # per-sandbox M: each slot runs exactly 5 trajectories (fixed + stop-when-done)
+multiplier: 2                 # per-sandbox M: each slot runs exactly 2 trajectories (fixed + stop-when-done)
 repeats: 1                    # repeats per (mode, ratio) for medians
 
 test_duration: 3600           # hard ceiling per trial (sec); exec_ephemeral runs

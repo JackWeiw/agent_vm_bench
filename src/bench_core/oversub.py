@@ -157,7 +157,7 @@ _TRUE_DEFAULTS: dict[str, object] = {
     "stop_on_failure": False,
     "dry_run": False,
     "no_vm_monitor": False,
-    "multiplier": None,
+    "multiplier": 2,
     "shards": "auto",
     "bench_core_bin": ["bench-core"],
     "auto_compare": True,
@@ -818,7 +818,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="per-sandbox trajectory count M for exec_ephemeral: each sandbox runs M "
         "trajectories then stops (stop-when-done); switches the trial to fixed. "
-        "Default off (the trial uses the base benchmark_mode / total_count).",
+        "Default 2 (M=2 per sandbox); --multiplier 0 falls back to the base "
+        "benchmark_mode / total_count.",
     )
     p.add_argument("--failure-tolerance", type=float, default=None, help="max failure_rate for valid (default 0.0)")
     p.add_argument(
@@ -1029,8 +1030,9 @@ def _run_trial(
     trial_dir.mkdir(parents=True, exist_ok=True)
     test_duration = args.test_duration or (base_yaml.get("test") or {}).get("duration", 600)
     # multiplier (M) applies only to exec_ephemeral (each sandbox runs M
-    # trajectories, stop-when-done); a no-op for lifecycle.
-    m = args.multiplier if mode == "exec_ephemeral" else None
+    # trajectories, stop-when-done); a no-op for lifecycle. M=0 disables it, so a
+    # trial can still use the base benchmark_mode / total_count model.
+    m = (args.multiplier or None) if mode == "exec_ephemeral" else None
     # Shardable modes (exec_ephemeral/exec_only) get a plan at every P, including
     # P == 1, so a ratio-1 trial keeps the sharded layout (shard-00/ + merged/ +
     # driver-owned vm_monitor) byte-identical to P >= 2 trials; lifecycle (global
