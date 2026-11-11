@@ -818,8 +818,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="per-sandbox trajectory count M for exec_ephemeral: each sandbox runs M "
         "trajectories then stops (stop-when-done); switches the trial to fixed. "
-        "Default 2 (M=2 per sandbox); --multiplier 0 falls back to the base "
-        "benchmark_mode / total_count.",
+        "Default 2 (M=2 per sandbox); --multiplier 0 disables M and keeps the base "
+        "benchmark_mode (round-based only when that base is round_robin).",
     )
     p.add_argument("--failure-tolerance", type=float, default=None, help="max failure_rate for valid (default 0.0)")
     p.add_argument(
