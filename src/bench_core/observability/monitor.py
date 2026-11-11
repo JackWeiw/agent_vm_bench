@@ -47,6 +47,7 @@ _VALID_SKIP_STEMS = frozenset(
         "disk",
         "ublk",
         "pss",
+        "rss",
         "ublk-daemon",
         "hostproc",
         "devkit-mem",

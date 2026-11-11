@@ -595,6 +595,8 @@ class TestExportStructure(unittest.TestCase):
                 "Last Memory (MB)",
                 "Avg PSS (MB)",
                 "Max PSS (MB)",
+                "Avg RSS (MB)",
+                "Max RSS (MB)",
                 "Avg Hugepage (MB)",
                 "Max Hugepage (MB)",
                 "Avg Private (MB)",

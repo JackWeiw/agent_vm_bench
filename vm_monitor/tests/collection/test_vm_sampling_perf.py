@@ -37,7 +37,7 @@ class _StubMonitor(VMMonitorBase):
 def _monitor(per_vm_cost=0.0001):
     mon = _StubMonitor()
     mon._read_pid_jiffies = lambda pid: (0, 0)
-    mon._read_pss_mb = MagicMock(return_value=1.0)
+    mon._read_pss_rss_mb = MagicMock(return_value=(1.0, 1.0))
     # each pid reports its own memory so carry-forward can be told apart
     mon.get_vm_memory_from_numastat = MagicMock(side_effect=lambda pid: {"total_mb": float(pid), "per_node": {}})
     mon.heavy_refresh.cost_per_vm = per_vm_cost

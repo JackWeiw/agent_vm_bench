@@ -64,6 +64,7 @@ _HOST_COLUMNS = (
     ("vm_cores", "VM cores"),
     ("vm_mem_gb", "VM memory (GB)"),
     ("fc_pss_gb", "FC total PSS (GB)"),
+    ("fc_rss_gb", "FC total RSS (GB)"),
     ("direct_reclaim_mib_s", "Direct reclaim (MiB/s)"),
     ("allocstall_per_s", "Alloc stalls (/s)"),
     ("concurrent_vms", "Concurrent VMs"),
@@ -82,6 +83,7 @@ _HOST_CHARTS = (
     ("Swap usage", "GB", ("swap_used_gb", "swap_free_gb")),
     ("Swap cache", "MB", ("swap_cached_mb",)),
     ("FC memory (total PSS)", "GB", ("fc_pss_gb",)),
+    ("FC total RSS (GB)", "GB", ("fc_rss_gb",)),
     ("VM memory vs FC PSS", "GB", ("vm_mem_gb", "fc_pss_gb")),
     ("Page-cache pressure", "MiB/s", ("page_scan_mib_s", "page_reclaim_mib_s", "file_refault_mib_s")),
     ("Alloc stalls", "/s", ("allocstall_per_s",)),
@@ -289,12 +291,20 @@ def build_host_sheet(workbook, fmt, frame) -> bool:
     return True
 
 
-def build_per_vm_sheet(workbook, fmt, cores, pss) -> bool:
-    """CPU table + chart on top, PSS table + chart below (shared VM set)."""
+def build_per_vm_sheet(workbook, fmt, cores, pss, rss) -> bool:
+    """CPU table + chart on top, PSS then RSS tables + charts below (shared VM set).
+
+    A gauge block is omitted when that collector was disabled (--no-pss /
+    --no-rss): every value column is all-NaN, so rendering it would ship an
+    empty table + chart. RSS sits left of PSS when only RSS was collected.
+    """
     if cores is None or cores.empty:
         return False
+    has_pss = pss is not None and not pss.empty and pss.iloc[:, 1:].notna().any().any()
+    has_rss = rss is not None and not rss.empty and rss.iloc[:, 1:].notna().any().any()
     headers = ["t_s", *cores.columns[1:]]
-    if not _sheet_fits(len(cores) + len(pss) + 3, len(headers) + 2):
+    gauge_rows = (len(pss) if has_pss else 0) + (len(rss) if has_rss else 0)
+    if not _sheet_fits(len(cores) + gauge_rows + 3, len(headers) + 2):
         logger.warning("Per-VM sheet skipped: table exceeds Excel limits")
         return False
 
@@ -304,23 +314,27 @@ def build_per_vm_sheet(workbook, fmt, cores, pss) -> bool:
     anchor_col = len(headers) + 1
     _add_line_chart(workbook, ws, "Per-VM CPU cores", "cores", 0, range(1, len(headers)), 0, data_rows, 1, anchor_col)
 
-    pss_headers = ["t_s", *pss.columns[1:]]
-    pss_header_row = data_rows + 3
-    ws.write_row(pss_header_row, 0, pss_headers, fmt.header)
-    for row, record in enumerate(pss.itertuples(index=False, name=None), start=pss_header_row + 1):
-        ws.write_row(row, 0, [_cell(value) for value in record])
-    _add_line_chart(
-        workbook,
-        ws,
-        "Per-VM PSS",
-        "GB",
-        0,
-        range(1, len(pss_headers)),
-        pss_header_row,
-        len(pss),
-        max(pss_header_row + 1, _CHART_ROW_STEP + 1),
-        anchor_col,
-    )
+    gauge_row = data_rows + 3
+    for has, gauge, title in ((has_pss, pss, "Per-VM PSS"), (has_rss, rss, "Per-VM RSS")):
+        if not has:
+            continue
+        gauge_headers = ["t_s", *gauge.columns[1:]]
+        ws.write_row(gauge_row, 0, gauge_headers, fmt.header)
+        for row, record in enumerate(gauge.itertuples(index=False, name=None), start=gauge_row + 1):
+            ws.write_row(row, 0, [_cell(value) for value in record])
+        _add_line_chart(
+            workbook,
+            ws,
+            title,
+            "GB",
+            0,
+            range(1, len(gauge_headers)),
+            gauge_row,
+            len(gauge),
+            max(gauge_row + 1, _CHART_ROW_STEP + 1),
+            anchor_col,
+        )
+        gauge_row += len(gauge) + 3
     return True
 
 

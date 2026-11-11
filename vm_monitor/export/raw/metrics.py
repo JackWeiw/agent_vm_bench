@@ -274,7 +274,7 @@ def _vmstat_block(frames: dict, epochs: pd.Series, interval: pd.Series) -> pd.Da
 
 
 def _fleet_block(frames: dict, epochs: pd.Series) -> pd.DataFrame:
-    """ublk-daemon cores, VM fleet cores/memory/PSS, and concurrent VM count."""
+    """ublk-daemon cores, VM fleet cores/memory/PSS/RSS, concurrent VM count."""
     block = pd.DataFrame(index=epochs.index)
     ublk = frames.get("ublk")
     if ublk is not None and not ublk.empty:
@@ -286,15 +286,18 @@ def _fleet_block(frames: dict, epochs: pd.Series) -> pd.DataFrame:
 
     vm = frames.get("vm")
     if vm is None:
-        block["vm_cores"] = math.nan
-        block["fc_pss_gb"] = math.nan
+        # No per-VM data at all -> fleet VM columns disappear (not NaN) and the
+        # Per-VM sheet + VM charts drop downstream; only the VM-count stays.
         block["concurrent_vms"] = 0
         return block
 
     interval = epochs.diff().to_numpy()
     rateable = (interval > 0) & (interval <= MAX_INTERVAL_S)
     block["vm_cores"] = _jiffies_to_cores(vm.delta_jiffies, interval, rateable, epochs)
-    block["fc_pss_gb"] = _host_aligned(vm.pss_sum, epochs) / 1024
+    if vm.pss_sum is not None:
+        block["fc_pss_gb"] = _host_aligned(vm.pss_sum, epochs) / 1024
+    if vm.rss_sum is not None:
+        block["fc_rss_gb"] = _host_aligned(vm.rss_sum, epochs) / 1024
     block["concurrent_vms"] = _host_aligned(vm.count, epochs).fillna(0).astype(int)
     if vm.mem_sum is not None:
         block["vm_mem_gb"] = _host_aligned(vm.mem_sum, epochs) / 1024
@@ -367,49 +370,58 @@ def _warn_if_cores_exceed_host(df: pd.DataFrame, timestamps: pd.Series) -> None:
 
 
 def derive_per_vm(raw_dir=None, max_series: int = MAX_VM_SERIES, *, frames: dict | None = None):
-    """Per-VM CPU cores + PSS GB, long -> wide (rows=epoch, cols=vm_name).
+    """Per-VM CPU cores + PSS GB + RSS GB, long -> wide (rows=epoch, cols=vm_name).
 
     VM count > ``max_series`` -> top-K by mean CPU busy + ``other`` = sum of the
-    rest; both CPU and PSS charts share that VM set (ranked by CPU, NOT PSS) so
-    the two charts stay aligned. The long->wide reduction happens while the
-    CSV streams (see :class:`vm_monitor.export.raw.frames.VmStream`), so this
-    only caps and orders the already-small wide frames.
+    rest; the CPU/PSS/RSS charts share that VM set (ranked by CPU, NOT PSS) so
+    the charts stay aligned. The long->wide reduction happens while the CSV
+    streams (see :class:`vm_monitor.export.raw.frames.VmStream`), so this only
+    caps and orders the already-small wide frames.
     """
     f = frames if frames is not None else _load_frames(raw_dir)
     vm = f.get("vm")
     if vm is None:
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     if vm.skipped:
         logger.warning(
             "%d per-VM intervals skipped (counter reset or gap), e.g. vm=%s",
             vm.skipped,
             vm.skipped_example,
         )
-    return _top_k(vm.cores_wide, vm.pss_wide, max_series)
+    return _top_k(vm.cores_wide, vm.pss_wide, vm.rss_wide, max_series=max_series)
 
 
 def _top_k_pivot(vm: pd.DataFrame, cores_col: str, gauge_col: str, max_series: int | None, key: str):
     """Wide cores + gauge frames from a long frame, sharing the top-K series set."""
     cores = vm.pivot_table(index="__e", columns=key, values=cores_col, aggfunc="first", dropna=False)
     gauge = vm.pivot_table(index="__e", columns=key, values=gauge_col, aggfunc="first", dropna=False)
-    return _top_k(cores, gauge, max_series)
+    return _top_k(cores, gauge, max_series=max_series)
 
 
-def _top_k(cores: pd.DataFrame, gauge: pd.DataFrame, max_series: int | None):
-    """Cap both wide frames to the top-K series (by CPU mean) + an ``other`` sum."""
-    cores, gauge = cores.sort_index(), gauge.sort_index()
+def _top_k(cores: pd.DataFrame, *gauges: pd.DataFrame, max_series: int | None = None):
+    """Cap the wide frames to the top-K series (by CPU mean) + an ``other`` sum.
+
+    ``*gauges`` (e.g. PSS + RSS) share the cores-derived top-K VM set, so all
+    charts line up on the same VMs.
+    """
+    cores = cores.sort_index()
+    gauges = [g.sort_index() for g in gauges]
     if max_series is not None and len(cores.columns) > max_series:
         top = list(cores.mean().sort_values(ascending=False).head(max_series).index)
         rest = [name for name in cores.columns if name not in top]
-        out_cores, out_gauge = cores[top].copy(), gauge[top].copy()
+        out_cores = cores[top].copy()
+        out_gauges = [g[top].copy() for g in gauges]
         out_cores["other"] = cores[rest].sum(axis=1, skipna=True, min_count=1)
-        out_gauge["other"] = gauge[rest].sum(axis=1, skipna=True, min_count=1)
+        for out_g, src_g in zip(out_gauges, gauges):
+            out_g["other"] = src_g[rest].sum(axis=1, skipna=True, min_count=1)
     else:
-        out_cores, out_gauge = cores.copy(), gauge.copy()
+        out_cores = cores.copy()
+        out_gauges = [g.copy() for g in gauges]
     first_epoch = out_cores.index.min()
     out_cores.insert(0, "t_s", out_cores.index - first_epoch)
-    out_gauge.insert(0, "t_s", out_gauge.index - first_epoch)
-    return out_cores, out_gauge
+    for out_g in out_gauges:
+        out_g.insert(0, "t_s", out_g.index - first_epoch)
+    return (out_cores, *out_gauges)
 
 
 # --- disk ------------------------------------------------------------------

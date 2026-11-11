@@ -178,7 +178,7 @@ A top-level `monitor:` block (peer of `report:`) controls host-level `vm_monitor
 - `host_mem_raw.csv` (wide, /proc/meminfo all fields) · `host_vmstat_raw.csv` (wide, /proc/vmstat all fields) · `host_cpu_raw.csv` (wide, /proc/stat aggregate cpu jiffies + ctxt + softirq + procs_running/blocked; `intr` skipped)
 - `host_percpu_raw.csv` (long, one row per cpu per sample — join with `numa_cpu_map.csv` to rebuild per-NUMA CPU%)
 - `numa_mem_raw.csv` (long, one row per NUMA node per sample — `nodeN/meminfo` gauges: total/free/available/swap_cached/active/inactive/anon_pages/file_pages/used/usage_pct, MB)
-- `vm_cpu_raw.csv` (long, per-VM `/proc/<pid>/stat` utime+stime jiffies + `pss_mb` + `memory_mb` per sample)
+- `vm_cpu_raw.csv` (long, per-VM `/proc/<pid>/stat` utime+stime jiffies + `pss_mb` + `rss_mb` + `memory_mb` per sample; `pss_mb`/`rss_mb` come from one `smaps_rollup` open — RSS rides PSS's page-table walk at ~zero extra I/O)
 - `ublk_cpu_raw.csv` (long, per-ublk-daemon utime+stime jiffies at 1s sub-sample cadence) · `hostproc_cpu_raw.csv` (long, per named host process — utime+stime jiffies + `pss_mb` at 1s sub-sample cadence; written only when `--host-proc` specs are set; derive cores via delta **grouped by (name, pid)** so a pid restart resets the baseline, then merge onto one curve per `name`)
 - `disk_io_raw.csv` (long, per-device `/sys/block/<dev>/stat` 17 standard counters at 1s sub-sample cadence)
 - `api_state_raw.csv` (gauges, one row per monitor interval during the stress bracket: `sandboxes_running` / `sandboxes_paused` / `sandboxes_other` / `sandboxes_total`, from `provider.list_sandbox_states()`; written by bench-core's `ApiStateSampler`, not by vm_monitor, and absent for providers with no list API)

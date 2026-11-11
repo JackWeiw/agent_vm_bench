@@ -78,7 +78,7 @@ def build_host_resources_xlsx(raw_dir, out_path) -> Path:
         if tmp.exists():
             tmp.unlink()
         frames = _load_frames(raw_dir)
-        per_vm = _derive_or_fallback("per-VM", _derive_per_vm, (pd.DataFrame(), pd.DataFrame()), frames)
+        per_vm = _derive_or_fallback("per-VM", _derive_per_vm, (pd.DataFrame(), pd.DataFrame(), pd.DataFrame()), frames)
         hostproc = _derive_or_fallback("hostproc", _derive_hostproc, (pd.DataFrame(), pd.DataFrame()), frames)
         plans = (
             ("Host resources", _build_host_sheet, (_derive_or_fallback("host", _derive_host, pd.DataFrame(), frames),)),

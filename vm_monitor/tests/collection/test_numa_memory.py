@@ -865,7 +865,7 @@ class TestCollectVmMetricsParallel(unittest.TestCase):
 
         with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), patch.object(
             monitor, "_read_pid_jiffies", side_effect=lambda pid: next(ticks)
-        ), patch.object(monitor, "_read_pss_mb", return_value=0.0), patch(
+        ), patch.object(monitor, "_read_pss_rss_mb", return_value=(0.0, 0.0)), patch(
             "vm_monitor.base.time.monotonic", side_effect=lambda: next(times)
         ):
             vms1 = monitor._collect_vm_metrics_serial(candidates)
@@ -884,7 +884,7 @@ class TestCollectVmMetricsParallel(unittest.TestCase):
         with patch.object(
             monitor, "get_vm_memory_from_numastat", return_value={"total_mb": 100.0, "per_node": {}}
         ), patch.object(monitor, "_read_pid_jiffies", return_value=(10, 0)), patch.object(
-            monitor, "_read_pss_mb", return_value=0.0
+            monitor, "_read_pss_rss_mb", return_value=(0.0, 0.0)
         ):
             monitor._collect_vm_metrics_serial(candidates)
 
@@ -914,7 +914,7 @@ class TestCollectVmMetricsParallel(unittest.TestCase):
 
         with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), patch.object(
             monitor, "_read_pid_jiffies", side_effect=lambda pid: next(ticks)
-        ), patch.object(monitor, "_read_pss_mb", return_value=0.0), patch(
+        ), patch.object(monitor, "_read_pss_rss_mb", return_value=(0.0, 0.0)), patch(
             "vm_monitor.base.time.monotonic", side_effect=lambda: next(times)
         ):
             monitor._collect_vm_metrics_serial(candidates)
@@ -945,7 +945,7 @@ class TestCollectVmMetricsParallel(unittest.TestCase):
 
         with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), patch.object(
             monitor, "_read_pid_jiffies", return_value=(10, 0)
-        ), patch.object(monitor, "_read_pss_mb", return_value=0.0):
+        ), patch.object(monitor, "_read_pss_rss_mb", return_value=(0.0, 0.0)):
             monitor._collect_vm_metrics_serial(candidates)
 
         # Dead PID 999 should have been cleaned
@@ -1087,7 +1087,7 @@ class TestBugFixes(unittest.TestCase):
         self.assertEqual(fields["memory_per_numa"], {0: {"total_mb": 1024.0}})
         self.assertEqual(fields["memory_swapcache_mb"], 100.0)
         self.assertEqual(fields["memory_swapcache_per_numa"], {0: 50.0})
-        self.assertEqual(fields["pss_mb"], 0.0)  # default; collector overwrites via _read_pss_mb
+        self.assertNotIn("pss_mb", fields)  # pss/rss are collector-owned, not numastat fields
 
     def test_collect_single_vm_returns_tuple(self):
         """_collect_single_vm should return (result, heavy_fields, cpu_sec)"""
@@ -1106,7 +1106,7 @@ class TestBugFixes(unittest.TestCase):
             }
 
         with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa_maps_result), patch.object(
-            monitor, "_read_pss_mb", return_value=512.0
+            monitor, "_read_pss_rss_mb", return_value=(512.0, 0.0)
         ):
             vm_result, heavy_fields, heavy_cpu = monitor._collect_single_vm(candidate)
 
@@ -1167,8 +1167,10 @@ class TestBugFixes(unittest.TestCase):
         self.assertIn("pss_mb", record)
         self.assertEqual(record["pss_mb"], 1500.0)
 
-    def test_pss_collector_off_skips_read_and_zeros_field(self):
-        """--no-pss must skip _read_pss_mb entirely (no smaps_rollup cost)."""
+    def test_pss_collector_off_skips_read_and_fallback(self):
+        """--no-pss must skip _read_pss_rss_mb entirely (no smaps_rollup cost);
+        pss_mb key is omitted (-> empty CSV cell -> fleet column dropped), while
+        RSS, when enabled, falls back to the cheap status VmRSS read."""
         monitor = DummyMonitor()
         monitor.disable_collectors({"pss"})
         candidate = {"pid": 100, "vm_name": "vm-100", "status": "running", "proc_name": "t", "cmdline": ""}
@@ -1185,22 +1187,97 @@ class TestBugFixes(unittest.TestCase):
             }
 
         with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa), patch.object(
-            monitor, "_read_pss_mb"
-        ) as mock_pss:
+            monitor, "_read_pss_rss_mb"
+        ) as mock_pss_rss, patch.object(monitor, "_read_rss_mb", return_value=256.0) as mock_rss:
             vm_result, _, _ = monitor._collect_single_vm(candidate)
 
-        mock_pss.assert_not_called()  # smaps_rollup never opened
-        self.assertEqual(vm_result["pss_mb"], 0.0)
+        mock_pss_rss.assert_not_called()  # smaps_rollup never opened
+        mock_rss.assert_called_once()  # rss still collected via cheap status read
+        self.assertNotIn("pss_mb", vm_result)  # omitted, not zeroed: fleet column disappears
+        self.assertEqual(vm_result["rss_mb"], 256.0)
 
-    def test_collect_vm_total_pss_sums_per_vm_pss(self):
-        """collect_vm_total_pss aggregates per-VM pss_mb into a fleet timeline."""
+    def test_rss_collector_off_omits_field_keeps_pss(self):
+        """--no-rss omits the rss_mb key (-> empty CSV cell -> fc_rss_gb column
+        dropped) even though smaps_rollup already returned a value; PSS kept."""
         monitor = DummyMonitor()
-        vms = [{"pss_mb": 512.0}, {"pss_mb": 1488.0}, {"pss_mb": 0.0}]
-        entry = monitor.collect_vm_total_pss(vms)
-        self.assertEqual(entry["total_pss_mb"], 2000.0)
-        self.assertEqual(entry["vm_count"], 3)
-        self.assertEqual(len(monitor.vm_total_pss_history), 1)
-        self.assertEqual(monitor.vm_total_pss_history[0]["total_pss_mb"], 2000.0)
+        monitor.disable_collectors({"rss"})
+        candidate = {"pid": 100, "vm_name": "vm-100", "status": "running", "proc_name": "t", "cmdline": ""}
+
+        def mock_numa(pid):
+            return {
+                "total_mb": 100.0,
+                "huge_mb": 0.0,
+                "private_mb": 50.0,
+                "heap_mb": 0.0,
+                "per_node": {},
+                "swapcache_mb": 0.0,
+                "swapcache_per_node": {},
+            }
+
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa), patch.object(
+            monitor, "_read_pss_rss_mb", return_value=(512.0, 999.0)
+        ), patch.object(monitor, "_read_rss_mb") as mock_rss:
+            vm_result, _, _ = monitor._collect_single_vm(candidate)
+
+        mock_rss.assert_not_called()  # no extra /proc/<pid>/status open
+        self.assertEqual(vm_result["pss_mb"], 512.0)
+        self.assertNotIn("rss_mb", vm_result)  # omitted, not zeroed: fleet column disappears
+
+    def test_both_off_omits_pss_and_rss(self):
+        """--no-pss --no-rss: neither key present (empty CSV cells, both fleet
+        columns dropped); no smaps_rollup open and no status read either."""
+        monitor = DummyMonitor()
+        monitor.disable_collectors({"pss", "rss"})
+        candidate = {"pid": 100, "vm_name": "vm-100", "status": "running", "proc_name": "t", "cmdline": ""}
+
+        def mock_numa(pid):
+            return {
+                "total_mb": 100.0,
+                "huge_mb": 0.0,
+                "private_mb": 50.0,
+                "heap_mb": 0.0,
+                "per_node": {},
+                "swapcache_mb": 0.0,
+                "swapcache_per_node": {},
+            }
+
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa), patch.object(
+            monitor, "_read_pss_rss_mb"
+        ) as mock_pss_rss, patch.object(monitor, "_read_rss_mb") as mock_rss:
+            vm_result, _, _ = monitor._collect_single_vm(candidate)
+
+        mock_pss_rss.assert_not_called()
+        mock_rss.assert_not_called()
+        self.assertNotIn("pss_mb", vm_result)
+        self.assertNotIn("rss_mb", vm_result)
+
+    def test_rss_default_rides_pss_smaps_rollup_open(self):
+        """Default (pss+rss on) reads RSS from the SAME smaps_rollup open as PSS
+        (one page-table walk); _read_rss_mb is only the --no-pss fallback."""
+        monitor = DummyMonitor()
+        candidate = {"pid": 100, "vm_name": "vm-100", "status": "running", "proc_name": "t", "cmdline": ""}
+
+        def mock_numa(pid):
+            return {
+                "total_mb": 100.0,
+                "huge_mb": 0.0,
+                "private_mb": 50.0,
+                "heap_mb": 0.0,
+                "per_node": {},
+                "swapcache_mb": 0.0,
+                "swapcache_per_node": {},
+            }
+
+        with patch.object(monitor, "get_vm_memory_from_numastat", side_effect=mock_numa), patch.object(
+            monitor, "_read_pss_rss_mb", return_value=(512.0, 768.0)
+        ) as mock_combined, patch.object(monitor, "_read_rss_mb") as mock_rss:
+            vm_result, heavy_fields, _ = monitor._collect_single_vm(candidate)
+
+        mock_combined.assert_called_once()
+        mock_rss.assert_not_called()  # RSS fell out of the existing smaps_rollup open
+        self.assertEqual(vm_result["pss_mb"], 512.0)
+        self.assertEqual(vm_result["rss_mb"], 768.0)
+        self.assertEqual(heavy_fields["rss_mb"], 768.0)
 
     def test_collect_ublk_daemon_computes_cores_from_jiffies(self):
         """collect_ublk_daemon resolves the pid + converts jiffy delta to cores."""

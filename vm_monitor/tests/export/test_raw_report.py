@@ -388,7 +388,7 @@ def test_derive_per_vm_topk_and_other_and_reset(tmp_path, caplog):
     _write(d / "vm_cpu_raw.csv", rows[0], rows[1:])
 
     with caplog.at_level(logging.WARNING):
-        cores, pss = _derive_per_vm(d, max_series=8)
+        cores, pss, rss = _derive_per_vm(d, max_series=8)
     # top-8 = vm0..vm7 (named) + 'other' = vm8..vm11
     assert "other" in cores.columns
     named = [c for c in cores.columns if c.startswith("vm")]
@@ -405,6 +405,10 @@ def test_derive_per_vm_topk_and_other_and_reset(tmp_path, caplog):
     assert list(pss.columns) == list(cores.columns)
     pss_t2 = pss[pss["t_s"] == 2.0]["vm0"].iloc[0]
     assert math.isclose(pss_t2, 100.0 / 1024, abs_tol=0.001)  # vm0 pss_mb=100 at t=2
+    # No rss_mb in this fixture -> RSS wide frame is all-NaN (the workbook's
+    # has_rss gate drops the block + chart, "column disappears" semantics).
+    assert list(rss.columns) == list(cores.columns)
+    assert not rss.iloc[:, 1:].notna().any().any()
 
 
 def test_derive_disk_rates_and_reset(tmp_path, caplog):
@@ -1260,6 +1264,94 @@ def test_fc_pss_multi_vm_snapshot_sum(tmp_path):
     expected = (1024 + 2048 + 512) / 1024
     assert math.isclose(df.iloc[0]["fc_pss_gb"], expected, abs_tol=0.01)
     assert math.isclose(df.iloc[1]["fc_pss_gb"], expected, abs_tol=0.01)
+
+
+def test_fc_rss_multi_vm_snapshot_sum(tmp_path):
+    """fc_rss_gb = Σ rss_mb/1024 of alive VMs per timestamp (VmRSS from
+    /proc/<pid>/status, gauge like pss_mb)."""
+    from vm_monitor.export.raw.report import _derive_host
+
+    d = tmp_path
+    _seed_host_busy(d)
+    # 3 VMs with distinct rss at both samples -> fc_rss = (3072+2048+512)/1024 = 5.5
+    _write(
+        d / "vm_cpu_raw.csv",
+        ["timestamp", "pid", "vm_name", "utime", "stime", "pss_mb", "rss_mb"],
+        [
+            ["0", "0", "vm0", "0", "0", "1024.0", "3072.0"],
+            ["2", "0", "vm0", "50", "0", "1024.0", "3072.0"],
+            ["0", "1", "vm1", "0", "0", "2048.0", "2048.0"],
+            ["2", "1", "vm1", "50", "0", "2048.0", "2048.0"],
+            ["0", "2", "vm2", "0", "0", "512.0", "512.0"],
+            ["2", "2", "vm2", "50", "0", "512.0", "512.0"],
+        ],
+    )
+    df = _derive_host(d)
+    expected = (3072 + 2048 + 512) / 1024
+    assert math.isclose(df.iloc[0]["fc_rss_gb"], expected, abs_tol=0.01)
+    assert math.isclose(df.iloc[1]["fc_rss_gb"], expected, abs_tol=0.01)
+
+
+def test_fc_rss_without_rss_column_has_no_fleet_column(tmp_path):
+    """A raw dir predating rss_mb must not invent an fc_rss_gb column (same
+    backward-compat as vm_mem_gb/memory_mb)."""
+    from vm_monitor.export.raw.report import _derive_host
+
+    d = tmp_path
+    _seed_host_busy(d)
+    _write(
+        d / "vm_cpu_raw.csv",
+        _VM_HDR,
+        [
+            ["0", "0", "vm0", "0", "0", "1024.0"],
+            ["2", "0", "vm0", "50", "0", "1024.0"],
+        ],
+    )
+    df = _derive_host(d)
+    assert "fc_pss_gb" in df.columns
+    assert "fc_rss_gb" not in df.columns
+
+
+def test_fc_pss_rss_all_empty_column_drops_fleet_columns(tmp_path):
+    """--no-pss/--no-rss leave the header but write empty cells; the derived
+    fleet column must be absent, not zeroed (0.0 reads as "fleet RSS/PSS is
+    zero" -- a lie -- so the column has to disappear like a missing header)."""
+    from vm_monitor.export.raw.report import _derive_host
+
+    d = tmp_path
+    _seed_host_busy(d)
+    # Both columns present but every cell empty (collector was disabled).
+    _write(
+        d / "vm_cpu_raw.csv",
+        ["timestamp", "pid", "vm_name", "utime", "stime", "pss_mb", "rss_mb"],
+        [
+            ["0", "0", "vm0", "0", "0", "", ""],
+            ["2", "0", "vm0", "50", "0", "", ""],
+        ],
+    )
+    df = _derive_host(d)
+    assert "fc_pss_gb" not in df.columns
+    assert "fc_rss_gb" not in df.columns
+
+
+def test_fc_rss_all_empty_rss_column_keeps_pss(tmp_path):
+    """--no-rss only: rss_mb cells empty, pss_mb populated -> fc_rss_gb absent,
+    fc_pss_gb present."""
+    from vm_monitor.export.raw.report import _derive_host
+
+    d = tmp_path
+    _seed_host_busy(d)
+    _write(
+        d / "vm_cpu_raw.csv",
+        ["timestamp", "pid", "vm_name", "utime", "stime", "pss_mb", "rss_mb"],
+        [
+            ["0", "0", "vm0", "0", "0", "1024.0", ""],
+            ["2", "0", "vm0", "50", "0", "1024.0", ""],
+        ],
+    )
+    df = _derive_host(d)
+    assert "fc_pss_gb" in df.columns
+    assert "fc_rss_gb" not in df.columns
 
 
 def test_vm_cores_sanity_warn_fires_on_overcount(tmp_path, caplog):

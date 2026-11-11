@@ -63,24 +63,34 @@ _VMSTAT_FIELDS = [
     "allocstall_device",
 ]
 
-_VM_DTYPES = {"pid": "int64", "utime": "float64", "stime": "float64", "pss_mb": "float64", "memory_mb": "float64"}
+_VM_DTYPES = {
+    "pid": "int64",
+    "utime": "float64",
+    "stime": "float64",
+    "pss_mb": "float64",
+    "rss_mb": "float64",
+    "memory_mb": "float64",
+}
 
 
 @dataclass
 class VmStream:
     """Reduced result of one streaming pass over ``vm_cpu_raw.csv``.
 
-    ``delta_jiffies`` / ``pss_sum`` / ``mem_sum`` / ``count`` are per-episode
-    aggregates for the Host sheet; the two wide frames are the per-VM timelines
-    the Per-VM sheet pivots (and top-K caps). All are indexed by ``__e``.
+    ``delta_jiffies`` / ``pss_sum`` / ``rss_sum`` / ``mem_sum`` / ``count`` are
+    per-episode aggregates for the Host sheet; the three wide frames (cores /
+    pss / rss) are the per-VM timelines the Per-VM sheet pivots (and top-K
+    caps). All are indexed by ``__e``.
     """
 
     delta_jiffies: pd.Series
-    pss_sum: pd.Series
+    pss_sum: pd.Series | None
+    rss_sum: pd.Series | None
     mem_sum: pd.Series | None
     count: pd.Series
     cores_wide: pd.DataFrame
     pss_wide: pd.DataFrame
+    rss_wide: pd.DataFrame
     skipped: int = 0
     skipped_example: str | None = None
 
@@ -245,9 +255,11 @@ def _stream_vm(raw_dir, host_epochs: list[float]) -> VmStream | None:
     host_prev = dict(zip(host_epochs[1:], host_epochs[:-1]))
 
     carry: pd.DataFrame | None = None
-    fleet, pss_sum, mem_sum, count = [], [], [], []
-    cores_wide, pss_wide = [], []
+    fleet, pss_sum, rss_sum, mem_sum, count = [], [], [], [], []
+    cores_wide, pss_wide, rss_wide = [], [], []
     has_memory = True
+    has_pss = False  # sticky: saw at least one non-empty pss_mb value in the file
+    has_rss = False  # sticky: saw at least one non-empty rss_mb value in the file
     skipped = 0
     skipped_example: str | None = None
     try:
@@ -257,10 +269,14 @@ def _stream_vm(raw_dir, host_epochs: list[float]) -> VmStream | None:
             chunk["__j"] = pd.to_numeric(chunk["utime"], errors="coerce") + pd.to_numeric(
                 chunk["stime"], errors="coerce"
             )
-            chunk["__pss"] = pd.to_numeric(chunk["pss_mb"], errors="coerce")
+            chunk["__pss"] = pd.to_numeric(chunk["pss_mb"], errors="coerce") if "pss_mb" in chunk.columns else math.nan
             chunk["pss_gb"] = chunk["__pss"] / 1024
+            has_pss = has_pss or bool(chunk["__pss"].notna().any())
             has_memory = has_memory and "memory_mb" in chunk.columns
             chunk["__mem"] = pd.to_numeric(chunk["memory_mb"], errors="coerce") if has_memory else math.nan
+            chunk["__rss"] = pd.to_numeric(chunk["rss_mb"], errors="coerce") if "rss_mb" in chunk.columns else math.nan
+            chunk["rss_gb"] = chunk["__rss"] / 1024
+            has_rss = has_rss or bool(chunk["__rss"].notna().any())
             chunk["__carry"] = False
             if carry is not None:
                 chunk = pd.concat([carry, chunk], ignore_index=True)
@@ -287,6 +303,7 @@ def _stream_vm(raw_dir, host_epochs: list[float]) -> VmStream | None:
             epochs = fresh["__e"].to_numpy()
             fleet.append(fleet_dj[~chunk["__carry"]].groupby(epochs).sum(min_count=1))
             pss_sum.append(fresh["__pss"].groupby(epochs).sum(min_count=1))
+            rss_sum.append(fresh["__rss"].groupby(epochs).sum(min_count=1))
             mem_sum.append(fresh["__mem"].groupby(epochs).sum(min_count=1))
             count.append(fresh.groupby("__e")["vm_name"].count())
             cores_wide.append(
@@ -294,6 +311,9 @@ def _stream_vm(raw_dir, host_epochs: list[float]) -> VmStream | None:
             )
             pss_wide.append(
                 fresh.pivot_table(index="__e", columns="vm_name", values="pss_gb", aggfunc="first", dropna=False)
+            )
+            rss_wide.append(
+                fresh.pivot_table(index="__e", columns="vm_name", values="rss_gb", aggfunc="first", dropna=False)
             )
             carry = chunk.groupby("vm_name", sort=False).tail(1).assign(__carry=True)
     except (pd.errors.ParserError, OSError, ValueError) as e:
@@ -304,11 +324,13 @@ def _stream_vm(raw_dir, host_epochs: list[float]) -> VmStream | None:
         return None
     return VmStream(
         delta_jiffies=_merge_epoch_series(fleet),
-        pss_sum=_merge_epoch_series(pss_sum),
+        pss_sum=_merge_epoch_series(pss_sum) if has_pss else None,
+        rss_sum=_merge_epoch_series(rss_sum) if has_rss else None,
         mem_sum=_merge_epoch_series(mem_sum) if has_memory else None,
         count=_merge_epoch_series(count).fillna(0),
         cores_wide=_merge_wide(cores_wide),
         pss_wide=_merge_wide(pss_wide),
+        rss_wide=_merge_wide(rss_wide),
         skipped=skipped,
         skipped_example=skipped_example,
     )

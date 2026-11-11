@@ -67,6 +67,14 @@ def test_no_pss_and_no_ublk_daemon():
     assert dev == set()
 
 
+def test_no_rss_disables_base_collector():
+    args = _parse(["--vmm", "qemu", "--no-rss"])
+    assert args.no_rss is True
+    coll, dev = collect_disabled(args)
+    assert coll == {"rss"}
+    assert dev == set()
+
+
 def test_ublk_daemon_hyphenated_dest():
     # dest derived from STEM, so --no-ublk-daemon -> args.no_ublk_daemon
     args = _parse(["--vmm", "qemu", "--no-ublk-daemon"])
