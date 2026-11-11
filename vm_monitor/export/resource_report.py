@@ -324,6 +324,8 @@ def _build_vm_stats_sheet(writer, vm_stats, *, vm_cores_df=None):
         "Last Memory (MB)": [v.get("last_memory_mb", 0) for v in vm_stats],
         "Avg PSS (MB)": [v.get("avg_pss_mb", 0) for v in vm_stats],
         "Max PSS (MB)": [v.get("max_pss_mb", 0) for v in vm_stats],
+        "Avg RSS (MB)": [v.get("avg_rss_mb", 0) for v in vm_stats],
+        "Max RSS (MB)": [v.get("max_rss_mb", 0) for v in vm_stats],
         "Avg Hugepage (MB)": [v.get("avg_huge_mb", 0) for v in vm_stats],
         "Max Hugepage (MB)": [v.get("max_huge_mb", 0) for v in vm_stats],
         "Avg Private (MB)": [v.get("avg_private_mb", 0) for v in vm_stats],
@@ -836,7 +838,7 @@ def export_to_excel(
                 raw_host_df = _derive_host(frames=frames)
                 # max_series effectively uncapped: VM_Stats lists every VM, not
                 # the top-K the Per-VM chart sheet caps at.
-                vm_cores_df, _ = _derive_per_vm(frames=frames, max_series=10**6)
+                vm_cores_df, _, _ = _derive_per_vm(frames=frames, max_series=10**6)
             except (OSError, ValueError, KeyError, pd.errors.ParserError) as e:
                 print(f"[WARN] raw CPU derivation skipped (falling back to psutil): {e}")
 

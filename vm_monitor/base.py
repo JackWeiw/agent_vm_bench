@@ -2077,6 +2077,8 @@ class VMMonitorBase(ABC):
         so the rss collector rides pss's existing open at zero extra I/O
         (one /proc open per VM per sample either way). Falls back to the
         cheap /proc/<pid>/status VmRSS read only when pss is disabled.
+        A vanished process returns (0.0, 0.0): a missing smaps_rollup
+        contributes genuinely 0 MB to the fleet timeline, not a hole.
         """
         try:
             with open(f"/proc/{pid}/smaps_rollup") as f:
@@ -2783,6 +2785,7 @@ class VMMonitorBase(ABC):
                 "cpu_percent",
                 "memory_mb",
                 "pss_mb",
+                "rss_mb",
                 "memory_huge_mb",
                 "memory_private_mb",
                 "memory_heap_mb",
@@ -2807,6 +2810,7 @@ class VMMonitorBase(ABC):
             cpus = [r["cpu_percent"] for r in recs]
             mems = [r["memory_mb"] for r in recs]
             psss = [r.get("pss_mb", 0) for r in recs]
+            rsss = [r.get("rss_mb", 0) for r in recs]
             huge = [r.get("memory_huge_mb", 0) for r in recs]
             private = [r.get("memory_private_mb", 0) for r in recs]
             heap = [r.get("memory_heap_mb", 0) for r in recs]
@@ -2823,6 +2827,8 @@ class VMMonitorBase(ABC):
                     "last_memory_mb": mems[-1],
                     "avg_pss_mb": round(sum(psss) / len(psss), 2) if psss else 0,
                     "max_pss_mb": round(max(psss), 2) if psss else 0,
+                    "avg_rss_mb": round(sum(rsss) / len(rsss), 2) if rsss else 0,
+                    "max_rss_mb": round(max(rsss), 2) if rsss else 0,
                     "avg_huge_mb": round(sum(huge) / len(huge), 2) if huge else 0,
                     "max_huge_mb": round(max(huge), 2) if huge else 0,
                     "avg_private_mb": round(sum(private) / len(private), 2) if private else 0,

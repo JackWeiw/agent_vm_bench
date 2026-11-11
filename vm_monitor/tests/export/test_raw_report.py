@@ -388,7 +388,7 @@ def test_derive_per_vm_topk_and_other_and_reset(tmp_path, caplog):
     _write(d / "vm_cpu_raw.csv", rows[0], rows[1:])
 
     with caplog.at_level(logging.WARNING):
-        cores, pss = _derive_per_vm(d, max_series=8)
+        cores, pss, rss = _derive_per_vm(d, max_series=8)
     # top-8 = vm0..vm7 (named) + 'other' = vm8..vm11
     assert "other" in cores.columns
     named = [c for c in cores.columns if c.startswith("vm")]
@@ -405,6 +405,10 @@ def test_derive_per_vm_topk_and_other_and_reset(tmp_path, caplog):
     assert list(pss.columns) == list(cores.columns)
     pss_t2 = pss[pss["t_s"] == 2.0]["vm0"].iloc[0]
     assert math.isclose(pss_t2, 100.0 / 1024, abs_tol=0.001)  # vm0 pss_mb=100 at t=2
+    # No rss_mb in this fixture -> RSS wide frame is all-NaN (the workbook's
+    # has_rss gate drops the block + chart, "column disappears" semantics).
+    assert list(rss.columns) == list(cores.columns)
+    assert not rss.iloc[:, 1:].notna().any().any()
 
 
 def test_derive_disk_rates_and_reset(tmp_path, caplog):

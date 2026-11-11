@@ -78,9 +78,9 @@ class VmStream:
     """Reduced result of one streaming pass over ``vm_cpu_raw.csv``.
 
     ``delta_jiffies`` / ``pss_sum`` / ``rss_sum`` / ``mem_sum`` / ``count`` are
-    per-episode aggregates for the Host sheet; the two wide frames are the
-    per-VM timelines the Per-VM sheet pivots (and top-K caps). All are indexed
-    by ``__e``.
+    per-episode aggregates for the Host sheet; the three wide frames (cores /
+    pss / rss) are the per-VM timelines the Per-VM sheet pivots (and top-K
+    caps). All are indexed by ``__e``.
     """
 
     delta_jiffies: pd.Series
@@ -90,6 +90,7 @@ class VmStream:
     count: pd.Series
     cores_wide: pd.DataFrame
     pss_wide: pd.DataFrame
+    rss_wide: pd.DataFrame
     skipped: int = 0
     skipped_example: str | None = None
 
@@ -255,7 +256,7 @@ def _stream_vm(raw_dir, host_epochs: list[float]) -> VmStream | None:
 
     carry: pd.DataFrame | None = None
     fleet, pss_sum, rss_sum, mem_sum, count = [], [], [], [], []
-    cores_wide, pss_wide = [], []
+    cores_wide, pss_wide, rss_wide = [], [], []
     has_memory = True
     has_pss = False  # sticky: saw at least one non-empty pss_mb value in the file
     has_rss = False  # sticky: saw at least one non-empty rss_mb value in the file
@@ -268,12 +269,13 @@ def _stream_vm(raw_dir, host_epochs: list[float]) -> VmStream | None:
             chunk["__j"] = pd.to_numeric(chunk["utime"], errors="coerce") + pd.to_numeric(
                 chunk["stime"], errors="coerce"
             )
-            chunk["__pss"] = pd.to_numeric(chunk["pss_mb"], errors="coerce")
+            chunk["__pss"] = pd.to_numeric(chunk["pss_mb"], errors="coerce") if "pss_mb" in chunk.columns else math.nan
             chunk["pss_gb"] = chunk["__pss"] / 1024
             has_pss = has_pss or bool(chunk["__pss"].notna().any())
             has_memory = has_memory and "memory_mb" in chunk.columns
             chunk["__mem"] = pd.to_numeric(chunk["memory_mb"], errors="coerce") if has_memory else math.nan
             chunk["__rss"] = pd.to_numeric(chunk["rss_mb"], errors="coerce") if "rss_mb" in chunk.columns else math.nan
+            chunk["rss_gb"] = chunk["__rss"] / 1024
             has_rss = has_rss or bool(chunk["__rss"].notna().any())
             chunk["__carry"] = False
             if carry is not None:
@@ -310,6 +312,9 @@ def _stream_vm(raw_dir, host_epochs: list[float]) -> VmStream | None:
             pss_wide.append(
                 fresh.pivot_table(index="__e", columns="vm_name", values="pss_gb", aggfunc="first", dropna=False)
             )
+            rss_wide.append(
+                fresh.pivot_table(index="__e", columns="vm_name", values="rss_gb", aggfunc="first", dropna=False)
+            )
             carry = chunk.groupby("vm_name", sort=False).tail(1).assign(__carry=True)
     except (pd.errors.ParserError, OSError, ValueError) as e:
         logger.warning("vm_cpu_raw.csv unparseable: %s -> per-VM sheet skipped", e)
@@ -325,6 +330,7 @@ def _stream_vm(raw_dir, host_epochs: list[float]) -> VmStream | None:
         count=_merge_epoch_series(count).fillna(0),
         cores_wide=_merge_wide(cores_wide),
         pss_wide=_merge_wide(pss_wide),
+        rss_wide=_merge_wide(rss_wide),
         skipped=skipped,
         skipped_example=skipped_example,
     )

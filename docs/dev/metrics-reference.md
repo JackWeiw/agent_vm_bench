@@ -266,12 +266,12 @@ Consolidates what were previously three separate sheets; there is **no** `NUMA_C
 
 ### `VM_Stats` — one row per detected VM
 
-`VM Name` | `PID` | `Samples` | `Avg CPU (%)` | `Max CPU (%)` | `Avg Memory (MB)` | `Max Memory (MB)` | `Min Memory (MB)` | `Last Memory (MB)` | `Avg PSS (MB)` | `Max PSS (MB)` | `Avg Hugepage (MB)`
+`VM Name` | `PID` | `Samples` | `Avg CPU (%)` | `Max CPU (%)` | `Avg Memory (MB)` | `Max Memory (MB)` | `Min Memory (MB)` | `Last Memory (MB)` | `Avg PSS (MB)` | `Max PSS (MB)` | `Avg RSS (MB)` | `Max RSS (MB)` | `Avg Hugepage (MB)`
 
-> `PSS (MB)` comes from `/proc/<pid>/smaps_rollup` — it splits shared pages across sharers, so the fleet aggregate is the true marginal memory cost (template pages shared by all VMs counted ~once), unlike `Memory (MB)` (numa_maps `Total`) which double-counts shared. Gated by the `pss` collector (`--no-pss`).
+> `PSS (MB)` comes from `/proc/<pid>/smaps_rollup` — it splits shared pages across sharers, so the fleet aggregate is the true marginal memory cost (template pages shared by all VMs counted ~once), unlike `Memory (MB)` (numa_maps `Total`) which double-counts shared. `Avg RSS (MB)` / `Max RSS (MB)` ride the same smaps_rollup open (`Rss:` line, one page-table walk) or fall back to `/proc/<pid>/status` VmRSS under `--no-pss`. Both gauge groups are gated by their collector (`--no-pss` / `--no-rss`).
 >
 > Per-sample per-VM rows are **not** a sheet: they live in `raw_data/vm_cpu_raw.csv`
-> (`timestamp`, `vm_name`, `pid`, `utime`, `stime`, `pss_mb`, `memory_mb`) — a
+> (`timestamp`, `vm_name`, `pid`, `utime`, `stime`, `pss_mb`, `rss_mb`, `memory_mb`) — a
 > 2 h × 384 VM run is ~1.4 M rows, past Excel's row cap.
 
 ## 2.2 Self-collected timeline sheets — now in `host_resources.xlsx`
@@ -287,7 +287,7 @@ to build, and rerunnable after the run with `vm-monitor raw-report <log_dir>`.
 | Swap used/free/cached, swap in/out, swap-cache ratio | `Host resources` sheet (+ `Swap usage` / `Swap cache` charts) |
 | Page-cache pressure (scan / reclaim / refault / direct reclaim / alloc stalls) | `Host resources` sheet + `Page-cache pressure` / `Alloc stalls` charts |
 | Fleet VM CPU cores, VM memory, FC PSS + RSS | `Host resources` sheet (`vm_cores`, `vm_mem_gb`, `fc_pss_gb`, `fc_rss_gb`) |
-| Per-VM CPU cores + PSS | `Per-VM` sheet (top-K by mean CPU + `other`) |
+| Per-VM CPU cores + PSS + RSS | `Per-VM` sheet (top-K by mean CPU + `other`; PSS/RSS blocks gated by their collectors) |
 | Per-NUMA CPU% + memory | `NUMA` sheet (one block of columns per node) |
 | Per-device disk throughput / util / await / queue / IOPS | `Disk IO` sheet |
 | Named host-process CPU + PSS | `HostProc` sheet (only with `--host-proc`) |
@@ -872,7 +872,7 @@ regeneratable after any interruption.
 
 每采样点列出每个 VM 进程：`vm_name`、`pid`、该点 CPU 核数
 （`Δ(utime+stime)/_CLK_TCK/dt`）、PSS + RSS（`pss_mb` / `rss_mb`，同一 `smaps_rollup` open 读出）。为控制行数，只保留 CPU 最高的 top-K
-个 VM，其余合并成一行 `other`（核数/PSS 求和）。本 sheet 是 Sheet 1 `fc_pss_gb` /
+个 VM，其余合并成一行 `other`（核数/PSS/RSS 求和；`--no-pss` / `--no-rss` 时对应整块消失）。本 sheet 是 Sheet 1 `fc_pss_gb` /
 `fc_rss_gb` / `vm_cores` 的明细下钻——想看是谁在吃内存/CPU 时用它。
 
 #### Sheet 4：Disk IO（每块磁盘）

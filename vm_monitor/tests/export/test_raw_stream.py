@@ -76,12 +76,14 @@ def _seed(tmp_path, vms=5, samples=7, memory_mb=True):
     vm_hdr = ["timestamp", "pid", "vm_name", "utime", "stime", "pss_mb"]
     if memory_mb:
         vm_hdr.append("memory_mb")
+    vm_hdr.append("rss_mb")
     rows = []
     for i in range(samples):
         for v in range(vms):
             row = [str(i * 2), str(100 + v), f"vm{v}", str(i * (v + 1) * 100), str(i * (v + 1) * 20), str(100 + v)]
             if memory_mb:
                 row.append(str(110 + v))
+            row.append(str(200 + v))
             rows.append(row)
     _write(tmp_path / "vm_cpu_raw.csv", vm_hdr, rows)
 
@@ -101,15 +103,16 @@ def test_vm_stream_chunk_boundary_matches_single_chunk(tmp_path, monkeypatch):
     _seed(tmp_path, vms=5, samples=7)
 
     monkeypatch.setattr(frames, "_CHUNK_ROWS", 10**6)
-    host_ref, (cores_ref, pss_ref) = _derive_host(tmp_path), _derive_per_vm(tmp_path)
+    host_ref, (cores_ref, pss_ref, rss_ref) = _derive_host(tmp_path), _derive_per_vm(tmp_path)
 
     # 3 rows per chunk splits every sample (5 VMs) and every boundary.
     monkeypatch.setattr(frames, "_CHUNK_ROWS", 3)
-    host_chunked, (cores_chunked, pss_chunked) = _derive_host(tmp_path), _derive_per_vm(tmp_path)
+    host_chunked, (cores_chunked, pss_chunked, rss_chunked) = _derive_host(tmp_path), _derive_per_vm(tmp_path)
 
     _same(host_ref, host_chunked)
     _same(cores_ref, cores_chunked)
     _same(pss_ref, pss_chunked)
+    _same(rss_ref, rss_chunked)
 
 
 def test_vm_stream_birth_and_death_across_chunks(tmp_path, monkeypatch):
@@ -179,7 +182,7 @@ def test_vm_stream_values_survive_chunking(tmp_path, monkeypatch):
     """Spot-check the streamed numbers against hand arithmetic, not just parity."""
     _seed(tmp_path, vms=2, samples=3)
     monkeypatch.setattr(frames, "_CHUNK_ROWS", 3)  # splits the 2-VM sample
-    cores, pss = _derive_per_vm(tmp_path)
+    cores, pss, rss = _derive_per_vm(tmp_path)
 
     # vm0: utime+stime = 0 -> 120 -> 240 jiffies, dt=2 -> 0.6 cores.
     assert math.isclose(cores[cores["t_s"] == 2.0]["vm0"].iloc[0], 120 / 100 / 2, abs_tol=1e-9)
@@ -188,6 +191,9 @@ def test_vm_stream_values_survive_chunking(tmp_path, monkeypatch):
     assert math.isclose(cores[cores["t_s"] == 2.0]["vm1"].iloc[0], 240 / 100 / 2, abs_tol=1e-9)
     # PSS is a gauge: valid on the first sample too.
     assert math.isclose(pss["vm0"].iloc[0], 100 / 1024, abs_tol=1e-9)
+    # RSS rides the same smaps_rollup walk -> same wide shape as PSS.
+    assert list(rss.columns) == list(pss.columns)
+    assert math.isclose(rss["vm0"].iloc[0], 200 / 1024, abs_tol=1e-9)
 
 
 def test_vm_stream_without_memory_column(tmp_path):
