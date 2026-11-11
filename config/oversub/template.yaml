@@ -13,7 +13,7 @@ provider: aenv                            # {aenv, e2b, docker, fake}
 
 ratios: [1, 2, 3]                         # k values (list) or "1,2,3" (string); total_count = k * N
 modes: [exec_ephemeral, lifecycle]   # default sweep order: exec_ephemeral (pure COW) / lifecycle / exec_only (or a subset)
-# multiplier: 5                           # per-sandbox trajectory count M (exec_ephemeral ONLY;
+# multiplier: 2                           # per-sandbox trajectory count M (exec_ephemeral ONLY;
                                           # ignored for lifecycle/exec_only). Each of the k*N
                                           # sandboxes runs exactly M trajectories (fixed +
                                           # stop-when-done); total = M * k * N.

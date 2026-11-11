@@ -940,6 +940,11 @@ def _common_argv(tmp_path, base: Path, out_root: Path, stub: Path) -> list[str]:
         "0",
         "--cleanup-between-trials",
         "off",
+        # Shard layout/merge cases are about the non-multiplier model, while the
+        # driver's built-in M default is 2; the M cases pass --multiplier
+        # explicitly and win as the later arg.
+        "--multiplier",
+        "0",
     ]
 
 

@@ -51,7 +51,7 @@ keys are **rejected** (a typo like `repeat:` vs `repeats:` fails loudly).
 | `running_concurrency` | base `replay.running_concurrency` | N running slots (fixed across ratios) |
 | `ratios` | `1,2,3` | k values (list or `"1,2,3"`); `total_count = k×N` |
 | `modes` | `exec_ephemeral,lifecycle` | replay modes to sweep (one curve each; default = exec_ephemeral pure-COW first, then lifecycle); a WARNING fires when the driver auto-applies the default |
-| `multiplier` | — (unset) | per-sandbox trajectory count M (exec_ephemeral + fixed only; each sandbox runs M then self-stops; unset = 1 trajectory per sandbox) |
+| `multiplier` | `2` | per-sandbox trajectory count M (exec_ephemeral + fixed only; each sandbox runs M then self-stops; unset = 2 per sandbox; `--multiplier 0` disables M and keeps the base `benchmark_mode` — round-based only when that base is `round_robin`, e.g. `replay.yaml`/template) |
 | `repeats` | `1` | repeats per `(mode, ratio)` (medians across repeats) |
 | `test_duration` | base `test.duration` (600) | hard ceiling per trial (sec) |
 | `failure_tolerance` | `0.0` | max `failure_rate` for a trial to count valid |

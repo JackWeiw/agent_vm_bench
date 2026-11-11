@@ -47,7 +47,7 @@ oversub-bench --config config/common/replay.yaml --provider aenv --ratios 1,2,3 
 | `running_concurrency` | base `replay.running_concurrency` | N 个 running slot(跨 ratio 固定) |
 | `ratios` | `1,2,3` | k 值(list 或 `"1,2,3"`);`total_count = k×N` |
 | `modes` | `exec_ephemeral,lifecycle` | 要扫的 replay mode(每条曲线;默认 exec_ephemeral 纯 COW 在前,lifecycle 其次);driver 自动套用默认时 WARNING |
-| `multiplier` | —(不设) | per-sandbox 轨迹数 M(仅 exec_ephemeral + fixed;每沙箱跑满 M 条自停;不设 = 每沙箱 1 条) |
+| `multiplier` | `2` | per-sandbox 轨迹数 M(仅 exec_ephemeral + fixed;每沙箱跑满 M 条自停;不设 = 每沙箱 2 条;`--multiplier 0` 关闭 M,沿用 base 的 `benchmark_mode`(仅当 base 为 `round_robin`,如 `replay.yaml`/template,才是 round 模型)) |
 | `repeats` | `1` | 每 `(mode, ratio)` 重复次数(跨 repeat 取中位) |
 | `test_duration` | base `test.duration`(600) | 每 trial 硬上限(秒) |
 | `failure_tolerance` | `0.0` | trial 判 valid 允许的最大 `failure_rate` |

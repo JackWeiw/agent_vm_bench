@@ -136,11 +136,12 @@ replay:
   # Per-sandbox trajectory count M (the fixed-mode work knob). Consulted ONLY in
   # fixed + exec_ephemeral: each sandbox runs exactly M trajectories continuously
   # (no round barrier), then self-stops (stop-when-done). In an oversub sweep the
-  # driver sets this per-trial and flips benchmark_mode to fixed automatically; for
-  # a DIRECT bench-core run you must ALSO set test.benchmark_mode: fixed below
-  # (otherwise multiplier is ignored with a WARNING). Total trajectories = M * k * N.
-  # Omit/null to use round_robin + round_count below instead (the round-based model).
-  # multiplier: 5
+  # driver sets this per-trial and flips benchmark_mode to fixed automatically; a
+  # direct bench-core run needs test.benchmark_mode: fixed below (the default here).
+  # Total trajectories = M * k * N.
+  # Default 2. Omit/null (with benchmark_mode: round_robin) selects the round-based
+  # model via round_count / round_size instead.
+  multiplier: 2
 
   # The knobs below are NO-OPS in exec_ephemeral (admission is lifecycle only). Kept for parity with replay.yaml; at ratio 1:1 the
   # comparison with exec_only is fair (neither queues).
@@ -162,9 +163,9 @@ test:
                        # finishing run). Also feeds vm_monitor's -t backstop.
   stats_interval: 10
   benchmark_percent: 1.0
-  benchmark_mode: "round_robin"
+  benchmark_mode: "fixed"       # replay.multiplier (M) is consulted only in fixed mode
   round_size: 384     # one group = all sandboxes -> all concurrent
-  round_count: 1      # each sandbox runs exactly 1 trajectory per round (= 1 create/kill)
+  round_count: 1      # round_robin only; unused under fixed + multiplier
   round_interval: 0
 
 report:
