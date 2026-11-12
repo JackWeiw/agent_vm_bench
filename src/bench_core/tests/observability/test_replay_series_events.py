@@ -14,7 +14,7 @@ from bench_core.payload.replay_payload import ReplayStep, Trajectory
 from bench_core.schemas import BenchSandbox
 from bench_core.task_runner.replay import ReplayBaseRunner, ReplayConfig
 from bench_core.workflow_registry import RunContext
-from env_provider import SandboxInstance
+from env_provider import CommandResult, SandboxInstance
 from env_provider.tests.lifecycle_fake import FakeLifecycleProvider
 
 
@@ -202,6 +202,63 @@ class TestAdmissionEvents:
         assert len(steps[1]["action"]) == ACTION_SERIES_LIMIT + len("…<truncated>")
         assert steps[1]["action"].endswith("…<truncated>")
         assert "x" * ACTION_SERIES_LIMIT in steps[1]["action"]
+
+
+class TestStepOutput:
+    """Series ``step`` events carry the command's run result (stdout/stderr):
+    short output passes through verbatim, long output is TAIL-capped (marker
+    prefix -- the error tail is what a debugger reads), and control characters
+    are slimmed so neither the JSONL nor an Excel cell chokes on them. The
+    producer-side cost is bounded by ``STEP_OUTPUT_LIMIT`` regardless of the
+    real output size (truncate-before-scan); these tests pin the shape."""
+
+    def _runner(self, tmp_path):
+        runner, series, provider, state = TestAdmissionEvents()._runner(tmp_path, mode="exec_only", admission=False)
+        return runner, series, provider, state
+
+    def _exec(self, runner, provider, action, *, stdout="", stderr="", exit_code=0):
+        provider._exec_results[action] = CommandResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
+        runner._run_slice(
+            ReplayStep(index=0, action_type="shell", action=action, delay_time_sec=0.0), trajectory_id="t1"
+        )
+
+    def test_short_output_passes_through_verbatim(self, tmp_path):
+        from bench_core.task_runner.replay import STEP_OUTPUT_LIMIT
+
+        runner, series, provider, state = self._runner(tmp_path)
+        self._exec(runner, provider, "ls /a", stdout="file1\nfile2\n")
+        series.close()
+        ev = [e for e in _series_events(tmp_path) if e["event"] == "step"][0]
+        assert ev["stdout"] == "file1\nfile2\n"
+        assert ev["stderr"] == ""
+        assert len(ev["stdout"]) < STEP_OUTPUT_LIMIT
+
+    def test_long_output_tail_truncated_keeps_failure_tail(self, tmp_path):
+        from bench_core.task_runner.replay import STEP_OUTPUT_LIMIT
+
+        runner, series, provider, state = self._runner(tmp_path)
+        # len(stderr) > limit: only the LAST limit chars survive, marker prefix.
+        tail = "END-OF-TRACEBACK"
+        err = "x" * STEP_OUTPUT_LIMIT + tail
+        self._exec(runner, provider, "boom", stdout="spam\n", stderr=err, exit_code=1)
+        series.close()
+        ev = [e for e in _series_events(tmp_path) if e["event"] == "step"][0]
+        assert ev["stderr"].startswith("<truncated>…")
+        assert ev["stderr"].endswith(tail)  # the error story is in the tail
+        assert len(ev["stderr"]) == STEP_OUTPUT_LIMIT + len("<truncated>…")
+        # the head is dropped: the retained span is exactly the tail chunk
+        # (limit - len(tail) x's pushed out of the front).
+        assert ev["stderr"].count("x") == STEP_OUTPUT_LIMIT - len(tail)
+        assert ev["stdout"] == "spam\n"  # short other stream untouched
+
+    def test_control_chars_slimmed_not_crash(self, tmp_path):
+        runner, series, provider, state = self._runner(tmp_path)
+        self._exec(runner, provider, "ansi", stdout="\x1b[31mred\x00\x1b[0m\n")
+        series.close()
+        ev = [e for e in _series_events(tmp_path) if e["event"] == "step"][0]
+        assert "\x1b" not in ev["stdout"] and "\x00" not in ev["stdout"]
+        # ESC -> space; NUL dropped outright; newline kept.
+        assert ev["stdout"] == " [31mred [0m\n"
 
 
 class TestTrajectoryEvents:

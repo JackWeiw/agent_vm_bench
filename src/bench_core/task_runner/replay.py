@@ -61,7 +61,7 @@ TIMEOUT_EXIT_CODE = 124
 # series is written per-step on a background drain, so an untruncated action
 # bloats the jsonl and the obs workbook. The full text lives in the trajectory
 # ``*.replay.json`` source -- this compact form is enough to identify the step
-# without joining back. Mirrors the ``stderr: null`` compact-by-design choice.
+# without joining back. Mirrors the ``stderr`` compact-by-design choice.
 ACTION_SERIES_LIMIT = 512
 
 
@@ -70,6 +70,48 @@ def _compact_action(action: str | None, *, limit: int = ACTION_SERIES_LIMIT) -> 
     s = (action or "").replace("\r", "")
     s = s.replace("\n", "\\n")
     return s if len(s) <= limit else s[:limit] + "…<truncated>"
+
+
+# Per-stream cap for the ``stdout``/``stderr`` text on a series ``step`` event.
+# Output is TAIL-capped (last N chars kept, marker prefix) -- a command's
+# failure story (traceback, linker error) sits at the tail of its output, which
+# is what a reader debugging a non-zero step needs. Perf contract (holds at
+# 1:8 fleet scale): the producer hot path does O(limit) work per stream, never
+# O(len(output)) -- a step that `cat`s a 2 GiB file slices off `limit` chars
+# without scanning the rest, and the record is bounded at 2*limit chars, so the
+# jsonl/drain/render cost has a hard per-step ceiling (old series files remain
+# parseable either way -- absent keys read as None).
+STEP_OUTPUT_LIMIT = 4096
+
+# C0 control chars for the single-pass ``str.translate`` slam below: ``\\r``
+# and NUL are dropped (``None``), the rest become spaces, ``\\t``/``\\n`` pass
+# through (a run result is read as text). C-DEL (127) and C1 (128-159) are
+# deliberately KEPT (the old ``ch >= " "`` pass only slimmed C0). translate is
+# C-speed: the char-by-char comprehension it replaces measured ~275us per
+# 4 KiB on the producer hot path at 1:8 fleet scale.
+_OUTPUT_SQUASH: dict[int, str | None] = {
+    i: None if i in (ord("\r"), 0) else " " for i in range(0, 32) if i not in (9, 10)
+}
+
+
+def _compact_output(s: str | None, *, limit: int = STEP_OUTPUT_LIMIT) -> str:
+    """Tail-truncate + slim a command's output for the series ``step`` event.
+
+    Keeps the LAST ``limit`` chars (``<truncated>...`` prefix when capped) --
+    the opposite of ``_compact_action``'s head-keep, because output is read to
+    find WHY a step failed. Newlines are KEPT (a run result is read as text);
+    ``\\r`` is dropped; non-printable control chars (incl. ANSI escapes) become
+    spaces so the JSONL reader does not choke on them. Truncation
+    runs BEFORE the control-char pass, so total scan work is bounded by
+    ``limit`` chars regardless of the true output size -- the hot-path bound
+    that keeps logging off the benchmark (see ``STEP_OUTPUT_LIMIT``).
+    """
+    truncated = s is not None and len(s) > limit
+    s = s or ""
+    if truncated:
+        s = s[-limit:]
+    s = s.translate(_OUTPUT_SQUASH)
+    return "<truncated>…" + s if truncated else s
 
 
 def _affinity_pool(pool: tuple[Trajectory, ...], template: str | None) -> list[Trajectory]:
@@ -384,6 +426,13 @@ class ReplayBaseRunner(TaskRunner):
                         "running_slot_held_sec": sr.running_slot_held_sec,
                         "interaction_total_sec": sr.interaction_total_sec,
                         "action": _compact_action(step.action),
+                        # The command's actual run result (truncated + slimmed
+                        # by _compact_output). Absent on the failure path (a
+                        # slice exception has no CommandResult -- see the
+                        # _failed_series_record where they are None). Old series
+                        # files predate this field and read as None downstream.
+                        "stdout": _compact_output(result.stdout),
+                        "stderr": _compact_output(result.stderr),
                         "retries_in_slice": retries_in_slice,
                     }
                 )
@@ -981,6 +1030,9 @@ class ReplayBaseRunner(TaskRunner):
             "exit_code": 1,
             "timed_out": timed_out,
             "slice_failed": True,
+            # No CommandResult on the failure path: output honestly None.
+            "stdout": None,
+            "stderr": None,
             "slot_contention_wait_sec": 0.0,
             "resume_rate_pacing_wait_sec": 0.0,
             "resume_api_sec": 0.0,
