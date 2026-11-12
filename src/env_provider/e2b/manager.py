@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
+import subprocess
 import time
-from threading import Event
+from contextlib import nullcontext
+from threading import Event, Lock
 from typing import Any
 
 try:
@@ -106,6 +109,9 @@ class SandboxManager(BaseSandboxManager):
     def __init__(self, kernel_config, e2b_config: Config, stop_event: Event) -> None:
         super().__init__(kernel_config, stop_event)
         self.config = e2b_config
+        # Serializes create+pin when pin_cpus is set so pgrep -fn reliably returns
+        # THIS sandbox's just-spawned FC (see _pin_and_verify_fc). Inert otherwise.
+        self._pin_lock = Lock()
 
     # --------------------------------------------------------- subclass seams
     def _new_state(self, index: int, *, batch_id: int = -1, external_id: str = "") -> SandboxState:
@@ -124,33 +130,52 @@ class SandboxManager(BaseSandboxManager):
         this returns success and maps the result onto ``creation_metrics``.
         ``metadata`` is forwarded to the SDK for operator visibility (labels
         only, not an idempotency key -- spec G3 deferred).
+
+        When ``pin_cpus`` is set, create+pin run under ``_pin_lock``: concurrent
+        ``_create_single`` calls would otherwise both ``pgrep -fn firecracker``
+        the same globally-newest FC, so one would pin/verify/print the WRONG pid
+        and the other's actual FC would be left unpinned. The lock guarantees no
+        other FC spawns between this sandbox's create-return and its pgrep.
+        Serializing is correct here -- pin_cpus is single-FC cold-start perf
+        mode, not oversub concurrency (which leaves pin_cpus unset).
         """
         state.creation_metrics.status = BackendSandboxStatus.CREATING
         state.creation_metrics.submit_time = time.time()
 
         resolved = template or self.config.template
+        pin_cpus = self.config.pin_cpus
+        lock = self._pin_lock if pin_cpus else nullcontext()
 
         try:
-            # Build envs with NUMA binding if configured. numa_bind is a
-            # normalized list of nodes (or None); round-robin across them by
-            # sandbox index so sandboxes spread evenly.
-            numa_node = numa_node_for_index(state.sandbox_id - 1, self.config.numa_bind)
-            envs: dict[str, str] = {}
-            if numa_node is not None:
-                envs["FC_BIND"] = str(numa_node)
+            with lock:
+                # Build envs with NUMA binding if configured. numa_bind is a
+                # normalized list of nodes (or None); round-robin across them by
+                # sandbox index so sandboxes spread evenly.
+                numa_node = numa_node_for_index(state.sandbox_id - 1, self.config.numa_bind)
+                envs: dict[str, str] = {}
+                if numa_node is not None:
+                    envs["FC_BIND"] = str(numa_node)
 
-            sbx = Sandbox.create(
-                resolved,
-                timeout=self.config.create_timeout,
-                envs=envs if envs else None,
-                metadata=metadata,
-            )
-            state.sandbox_obj = sbx
-            state.creation_metrics.create_ready_time = time.time()
-            state.creation_metrics.create_elapsed = (
-                state.creation_metrics.create_ready_time - state.creation_metrics.submit_time
-            )
-            state.creation_metrics.status = BackendSandboxStatus.CREATED
+                sbx = Sandbox.create(
+                    resolved,
+                    timeout=self.config.create_timeout,
+                    envs=envs if envs else None,
+                    metadata=metadata,
+                )
+                state.sandbox_obj = sbx
+                state.creation_metrics.create_ready_time = time.time()
+                state.creation_metrics.create_elapsed = (
+                    state.creation_metrics.create_ready_time - state.creation_metrics.submit_time
+                )
+                state.creation_metrics.status = BackendSandboxStatus.CREATED
+                pin_err = self._pin_and_verify_fc() if pin_cpus else None
+            if pin_err:
+                return {
+                    "success": False,
+                    "create_elapsed": state.creation_metrics.create_elapsed,
+                    "error": f"firecracker cpu pin not verified: {pin_err}",
+                    "template": resolved,
+                }
             return {
                 "success": True,
                 "create_elapsed": state.creation_metrics.create_elapsed,
@@ -165,6 +190,108 @@ class SandboxManager(BaseSandboxManager):
                 "error": str(e),
                 "template": resolved,
             }
+
+    # ----------------------------------------------------- fc cpu pin (aenv cold-start perf)
+    @staticmethod
+    def _parse_cpulist(s: str) -> set[int]:
+        """Parse a CPU list ('2,3' / '2-3' / '0,2-3') into a set of ints."""
+        out: set[int] = set()
+        for part in s.strip().split(","):
+            if not part:
+                continue
+            if "-" in part:
+                a, b = part.split("-", 1)
+                out.update(range(int(a), int(b) + 1))
+            else:
+                out.add(int(part))
+        return out
+
+    @staticmethod
+    def _mask_to_cpus(hexmask: str) -> set[int]:
+        """taskset hex affinity mask -> set of cpu ints.
+
+        taskset prints comma-separated 32-bit hex words, little-endian (first
+        word = cpus 0-31). '0c' -> {2,3}; '0000000c,00000000' -> {2,3};
+        '00000000,0000000c' -> {34,35}.
+        """
+        cpus: set[int] = set()
+        for word_idx, w in enumerate(hexmask.replace(" ", "").split(",")):
+            v = int(w, 16)
+            for bit in range(32):
+                if v & (1 << bit):
+                    cpus.add(word_idx * 32 + bit)
+        return cpus
+
+    def _pin_and_verify_fc(self) -> str | None:
+        """Pin the just-created Firecracker process to ``config.pin_cpus`` and verify.
+
+        Cold-start create blocks until envd ready, so vCPU threads already
+        exist at the moment this runs (immediate verify). ``taskset -a -pc``
+        sets all current threads + future vCPU threads (inheritance); then
+        ``taskset -ap`` reads every thread's mask back and asserts each equals
+        the requested set. Returns None on verified success (logs pid for
+        perf/devkit attach) or an error string on failure -- the caller returns
+        ``success=False`` so ``--create-only`` aborts before any ``--detect``
+        stress runs on an unpinned FC.
+
+        ``pin_cmd_prefix`` ("ssh user@host" remote, "" local) routes commands.
+
+        The caller (_create_single) holds ``_pin_lock`` across create+pin, so no
+        other FC can spawn between this sandbox's create-return and the pgrep ->
+        ``pgrep -fn firecracker`` reliably returns THIS sandbox's just-spawned FC
+        even though _create_single otherwise runs on a ThreadPoolExecutor.
+        """
+        cpus = self.config.pin_cpus
+        if not cpus:
+            return None
+        prefix = shlex.split(self.config.pin_cmd_prefix or "")
+        where = self.config.pin_cmd_prefix or "local"
+        want = self._parse_cpulist(cpus)
+
+        def _run(args: list[str], timeout: float = 10) -> str:
+            return subprocess.run(prefix + args, capture_output=True, text=True, timeout=timeout).stdout.strip()
+
+        try:
+            pid = _run(["pgrep", "-fn", "firecracker"])  # -f cmdline, -n newest
+            if not pid.isdigit():
+                return f"pgrep firecracker -> {pid[:80]!r}, no PID"
+            _run(["taskset", "-a", "-pc", cpus, pid])  # -a: all threads + inherit
+        except Exception as e:
+            return f"pin cmd failed: {e}"
+
+        # Verify: every thread's affinity mask == requested set. Poll briefly
+        # in case vCPU threads are still coming up on a slow boot.
+        deadline = time.time() + 10
+        while True:
+            try:
+                out = _run(["taskset", "-ap", pid])
+            except Exception as e:
+                return f"verify read failed: {e}"
+            masks = [line.rsplit(":", 1)[1].strip() for line in out.splitlines() if "affinity mask:" in line]
+            sets = [self._mask_to_cpus(m) for m in masks]
+            if sets and all(s == want for s in sets) and len(sets) >= 2:
+                logger.info(
+                    "[aenv-pin] PINNED OK pid=%s cpus=%s threads=%d (%s); attach perf: perf stat -p %s ...",
+                    pid,
+                    cpus,
+                    len(sets),
+                    where,
+                    pid,
+                )
+                return None
+            if time.time() >= deadline:
+                got = ", ".join(sorted({str(s) for s in sets})) or "<none>"
+                logger.error(
+                    "[aenv-pin] PIN FAILED pid=%s want=%s got=[%s] threads=%d (%s); recheck: taskset -ap %s",
+                    pid,
+                    cpus,
+                    got,
+                    len(sets),
+                    where,
+                    pid,
+                )
+                return f"verify failed: want {cpus}, got [{got}] ({len(sets)} threads)"
+            time.sleep(0.5)
 
     def _list_existing(self) -> list:
         """List running sandboxes (flatten the E2B paginator)."""

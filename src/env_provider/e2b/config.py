@@ -200,6 +200,19 @@ class Config:
     # $AENV_HOME_PATH / $AENV_HOME are kept as a lower-priority fallback.
     aenv_home_path: str | None = None
 
+    # AENV-only Firecracker CPU pinning for cold-start trajectory perf
+    # measurement. Comma-separated host CPU list, e.g. "2,3" for a 2-vCPU
+    # sandbox. None -> no pinning. Discovery (pgrep) + pin (taskset) run on the
+    # AENV server host; when the bench runs remotely, set pin_cmd_prefix to
+    # "ssh user@host" so the commands reach the server. Pin failure fails the
+    # sandbox create (so a --create-only aborts before any stress runs on an
+    # unpinned FC). Honored ONLY from the ``aenv:`` block: cloud e2b sandboxes
+    # run on e2b's infrastructure (no host-level FC pid to pin), so from_raw
+    # force-clears these for the e2b block. See
+    # SandboxManager._pin_and_verify_fc.
+    pin_cpus: str | None = None
+    pin_cmd_prefix: str = ""  # "" = local, "ssh user@host" = remote AENV server
+
     @classmethod
     def from_raw(cls, raw: dict[str, Any], block: str = "e2b") -> Config:
         """Build from the unified YAML's backend block (``e2b:`` by default).
@@ -229,6 +242,13 @@ class Config:
             sandbox_ids_file=backend.get("sandbox_ids_file"),
             snapshot_dir=backend.get("snapshot_dir"),
             aenv_home_path=backend.get("aenv_home_path"),
+            # FC CPU pinning is an aenv-block-only knob. Cloud e2b sandboxes run
+            # on e2b's infrastructure (no host-side firecracker pid to pin), so
+            # force-clear whenever the e2b block is read; the aenv provider
+            # reads its own block (block="aenv") and honors the keys. Mirror of
+            # the numa_bind force-clear for aenv, reversed.
+            pin_cpus=backend.get("pin_cpus") if block == "aenv" else None,
+            pin_cmd_prefix=backend.get("pin_cmd_prefix", "") if block == "aenv" else "",
             ccl_bind=bool(backend.get("ccl_bind", False)),
             ccl_granularity=str(backend.get("ccl_granularity") or "auto").lower(),
             ccl_total_count=backend.get("ccl_total_count", 24),

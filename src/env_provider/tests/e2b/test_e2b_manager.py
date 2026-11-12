@@ -319,3 +319,102 @@ class TestCheckAlive:
         # Force commands.run to raise -> check_alive swallows -> False
         state.sandbox_obj.commands.run = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down"))
         assert mgr.check_alive(state) is False
+
+
+# --------------------------------------------------------------- fc cpu pin (cold-start)
+class _FakeSubprocessRun:
+    """Scripted subprocess.run: pgrep -> taskset -pc -> taskset -ap."""
+
+    def __init__(self, *, pgrep: str = "1234", ap_out: str = ""):
+        self.pgrep = pgrep
+        self.ap_out = ap_out
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args, **kw):
+        self.calls.append(list(args))
+        if args[-1] == "firecracker":  # pgrep ... firecracker (may follow ssh prefix)
+            return _RunResult(0, self.pgrep, "")
+        if "-ap" in args:
+            return _RunResult(0, self.ap_out, "")
+        return _RunResult(0, "", "")
+
+
+def _two_thread_masks(mask: str) -> str:
+    return f"pid 1's current affinity mask: {mask}\npid 2's current affinity mask: {mask}\n"
+
+
+class TestParsers:
+    def test_parse_cpulist(self):
+        assert SandboxManager._parse_cpulist("2,3") == {2, 3}
+        assert SandboxManager._parse_cpulist("2-4") == {2, 3, 4}
+        assert SandboxManager._parse_cpulist("0,2-3") == {0, 2, 3}
+
+    def test_mask_to_cpus(self):
+        assert SandboxManager._mask_to_cpus("0c") == {2, 3}
+        assert SandboxManager._mask_to_cpus("fff") == {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
+        # 32-bit words, little-endian (first word = cpus 0-31)
+        assert SandboxManager._mask_to_cpus("00000000,0000000c") == {34, 35}
+        assert SandboxManager._mask_to_cpus("0000000c,00000000") == {2, 3}
+
+
+class TestPinAndVerifyFc:
+    def test_no_pin_cpus_returns_none(self, monkeypatch):
+        _patch(monkeypatch, _FakeSandboxCls())
+        mgr = SandboxManager(_kc(total_count=1), Config(), Event())
+        assert mgr._pin_and_verify_fc() is None
+
+    def test_pins_and_verifies_ok(self, monkeypatch):
+        _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun(ap_out=_two_thread_masks("0c"))
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
+        assert mgr._pin_and_verify_fc() is None
+        assert fake_run.calls == [
+            ["pgrep", "-fn", "firecracker"],
+            ["taskset", "-a", "-pc", "2,3", "1234"],
+            ["taskset", "-ap", "1234"],
+        ]
+
+    def test_remote_prefix_prepends_ssh(self, monkeypatch):
+        _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun(ap_out=_two_thread_masks("0c"))
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3", pin_cmd_prefix="ssh user@host"), Event())
+        assert mgr._pin_and_verify_fc() is None
+        assert fake_run.calls[0] == ["ssh", "user@host", "pgrep", "-fn", "firecracker"]
+
+    def test_pgrep_no_pid_returns_error(self, monkeypatch):
+        _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun(pgrep="")
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
+        assert "no PID" in mgr._pin_and_verify_fc()
+
+    def test_wrong_mask_returns_error(self, monkeypatch):
+        _patch(monkeypatch, _FakeSandboxCls())
+        # wanted {2,3} but threads are on {1,2} (0x6)
+        fake_run = _FakeSubprocessRun(ap_out=_two_thread_masks("6"))
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
+        err = mgr._pin_and_verify_fc()
+        assert err is not None
+        assert "verify failed" in err
+
+
+class TestCreateSinglePin:
+    def test_pin_failure_fails_creation(self, monkeypatch):
+        fake = _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun(pgrep="")
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
+        result = mgr._create_single(mgr._new_state(1))
+        assert result["success"] is False
+        assert "cpu pin not verified" in result["error"]
+
+    def test_pin_ok_still_created(self, monkeypatch):
+        _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun(ap_out=_two_thread_masks("0c"))
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
+        result = mgr._create_single(mgr._new_state(1))
+        assert result["success"] is True

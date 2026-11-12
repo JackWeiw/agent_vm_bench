@@ -37,6 +37,8 @@ e2b:
   template: "openclaw-coding-python-v1"  # E2B template (coding template with django/django)
   create_timeout: 86400
   numa_bind: 2
+  # Firecracker CPU pinning is an aenv-only knob (see the aenv: block below);
+  # cloud e2b sandboxes run on e2b's infrastructure, so no pin keys here.
   sandbox_ids_file: "sandboxs_python.txt"  # save/load sandbox IDs across runs (empty = disabled)
   env:                              # E2B SDK env vars; key/token fall back to ~/.e2b/config.json
     E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
@@ -44,6 +46,26 @@ e2b:
     E2B_DOMAIN: "e2b.app"
     E2B_API_URL: "http://localhost:3000"
     E2B_HTTP_SSL: "false"
+
+aenv:
+  template: "openclaw-coding-python-v1"  # AENV snapshot-capable image (same shape)
+  create_timeout: 86400
+  sandbox_ids_file: "sandboxs_python_aenv.txt"  # save/load sandbox IDs across runs (empty = disabled)
+  # Firecracker CPU pinning (cold-start perf, aenv only). Comma-separated host
+  # CPU list, e.g. pin_cpus: "2,3" for a 2-vCPU sandbox; null/omit = no
+  # pinning. pgrep + taskset run on the AENV server host; pin_cmd_prefix routes
+  # them when the bench runs remotely ("" = local, "ssh user@host" = remote).
+  # Pin-verify failure fails sandbox creation. Cloud e2b ignores these keys
+  # (its sandboxes run on e2b's infrastructure). See
+  # src/env_provider/e2b/manager.py (_pin_and_verify_fc).
+  pin_cpus: null
+  pin_cmd_prefix: ""
+  env:                              # AENV server env (E2B SDK pointed at AENV)
+    E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+    E2B_API_KEY: "your_e2b_api_key_here"
+    E2B_DOMAIN: "your_aenv_domain_here"
+    E2B_API_URL: "http://127.0.0.1:8000"      # AENV control plane (POST /sandboxes)
+    E2B_SANDBOX_URL: "http://127.0.0.1:8000"  # AENV data plane (envd proxy)
 
 docker:
   # NOTE: no coding image ships today (only ubuntu-openclaw-chromium). Build one
