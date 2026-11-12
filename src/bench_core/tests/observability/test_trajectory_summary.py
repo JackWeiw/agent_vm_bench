@@ -268,8 +268,8 @@ class TestTrajectorySummaries:
 
     def test_create_kill_error_surfaced(self):
         # trajectory_create(success=False) carries error_type + error ([:120]);
-        # the short error string is the failure signal a user sees for a failed
-        # trajectory (per-step stderr is unavailable by design).
+        # the short error string is the failure signal the run-level summary
+        # carries (per-step output lives in the step events / replay_result.json).
         events = [
             {
                 "event": "trajectory_create",

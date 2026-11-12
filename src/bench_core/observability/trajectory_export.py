@@ -15,13 +15,18 @@ this module rolls them into a per-trajectory aggregate + a per-run drill-down.
   ``replay_result.json`` is one-per-trajectory but a trajectory that ran on
   multiple sandboxes (pool < N) carries one ``runs[]`` entry per run.
 
-**stderr is unavailable by design.** The lifecycle series excludes raw
-stdout/stderr to stay compact and backend-agnostic; a ``step`` event carries
-timings + ``exit_code`` + ``slice_failed``/``timed_out`` flags + a compact,
-single-line, truncated (``ACTION_SERIES_LIMIT``) ``action`` text but NO error
-text and NO full action body. The full action lives in the trajectory
-``*.replay.json`` source -- the series ``action`` is enough to identify which
-command ran without joining back. The catalog row additionally carries an
+**stdout/stderr are captured per step, truncated.** The series ``step`` event
+carries the command's run output as ``stdout``/``stderr``, each slimmed
+(``\\r`` dropped, non-printable control chars incl. ANSI -> space) and truncated
+to ``STEP_OUTPUT_LIMIT`` chars with the shared truncation marker (a hard
+2*4096-char-per-step ceiling so a verbose 1:8 fleet cannot balloon). Reflects
+``CommandResult`` from ``EnvironmentProvider.exec``; the *failure* path (a
+slice exception) has no CommandResult so its step carries ``null`` output. Old
+series files predate the fields and read as ``null`` downstream — parseable,
+just output-less. The full action body also does NOT live in the series: the
+``action`` text is a compact, single-line, truncated (``ACTION_SERIES_LIMIT``)
+form, and the verbatim command lives in the trajectory ``*.replay.json``
+source. The catalog row additionally carries an
 ``action_series`` (the trajectory's steps' ``action`` texts, newline-joined,
 per-step compact) so the oversub driver can surface the executed command
 sequence in ``trajectory-detail.csv`` without reading each ``replay_result.json``;
@@ -30,9 +35,9 @@ beyond per-step is the trajectory-level ``error_type`` + ``error`` (a short
 string, ``[:120]``) on ``trajectory_create(success=False)`` /
 ``trajectory_kill(success=False)`` events. So ``create_error``/``kill_error``
 is what a user sees for a run that failed at create/kill, and a *successful*
-run whose individual steps failed (``exit_code != 0``) shows only
-``return_code``/``timed_out``/``slice_failed`` per step -- no error text. The
-``stderr: null`` in each step is therefore by-design, not a bug.
+run whose individual steps failed (``exit_code != 0``) shows
+``return_code``/``timed_out``/``slice_failed`` per step plus the captured
+(truncated) ``stdout``/``stderr`` behind that step.
 
 **Naming collision.** The reference replay-aenv-main per-step ``paused_sec``
 is the think-time gap *between* slices; bench-core's series field
@@ -334,9 +339,10 @@ def _enrich_step(index: int, ev: dict, paused_sec: float) -> dict:
     """Map a series step event to the replay_result.json per-step shape.
 
     Reference fields (index/action_type/pause_sec/paused_sec/resume_sec/
-    elapsed_sec/return_code/timed_out/slice_failed/stderr) + the bench-core
-    sub-segments. ``elapsed_sec`` mirrors the reference (= exec duration);
-    ``stderr`` is always null (see module docstring).
+    elapsed_sec/return_code/timed_out/slice_failed/stderr/stdout) + the
+    bench-core sub-segments. ``elapsed_sec`` mirrors the reference (= exec
+    duration); ``stdout``/``stderr`` carry the series' truncated output
+    (None on the failure path or on pre-feature series files).
     """
 
     def _f(key: str) -> float:
@@ -354,7 +360,8 @@ def _enrich_step(index: int, ev: dict, paused_sec: float) -> dict:
         "return_code": ev.get("exit_code"),
         "timed_out": bool(ev.get("timed_out")),
         "slice_failed": bool(ev.get("slice_failed")),
-        "stderr": None,
+        "stdout": ev.get("stdout"),
+        "stderr": ev.get("stderr"),
         "slice_total_sec": _f("slice_total_sec"),
         "interaction_total_sec": _f("interaction_total_sec"),
         "slot_contention_wait_sec": _f("slot_contention_wait_sec"),

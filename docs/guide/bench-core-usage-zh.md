@@ -437,7 +437,7 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
 | `avg_slice_median_s` | 各 run avg_slice 的 p50;per-attempt 单步成本 |
 | `n_timeout_median` | 各 run n_timeout 的 p50 |
 
-#### Step detail sheet 字段介绍(26 列,秒)
+#### Step detail sheet 字段介绍(27 列,秒)
 
 子段紧贴父总量,和不变式可在表内直接验证:
 `resume_sec == resume_inflight_wait_sec + resume_api_sec + resume_ready_wait_sec`(rate-pacing 属 PRE-lease,被排除);

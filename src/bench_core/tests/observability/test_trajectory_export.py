@@ -37,6 +37,8 @@ def _step(
     pause_api_sec=0.0,
     running_slot_held_sec=0.0,
     action="echo step",
+    stdout=None,
+    stderr=None,
 ):
     s = round(resume_sec + exec_sec + pause_sec, 3)
     return {
@@ -46,6 +48,8 @@ def _step(
         "step_index": step_index,
         "action_type": "shell",
         "action": action,
+        "stdout": stdout,
+        "stderr": stderr,
         "resume_start": resume_start,
         "exec_start": None,
         "exec_end": None,
@@ -103,7 +107,10 @@ def test_export_writes_one_json_per_trajectory_and_returns_count(tmp_path):
 
 def test_export_schema_matches_reference(tmp_path):
     sp = tmp_path / "s.jsonl"
-    _write(sp, [_step("traj-a", resume_start=10.0, pause_end=11.0)])
+    _write(
+        sp,
+        [_step("traj-a", resume_start=10.0, pause_end=11.0, stdout="hello output\n", stderr="boom\n")],
+    )
     export_trajectories(sp, tmp_path)
     rec = _records(tmp_path)["traj-a"]
     # top-level keys (the per-trajectory aggregate headline)
@@ -149,7 +156,7 @@ def test_export_schema_matches_reference(tmp_path):
     # overhead decomposition (reference's pause_resume_overhead)
     oh = run["overhead"]
     assert {"pause_resume_total_sec", "per_cycle_sec", "pct_of_slice_total"} <= set(oh)
-    # steps[] entry carries the reference fields + stderr:null + sub-segments
+    # steps[] entry carries the reference fields + stdout/stderr + sub-segments
     st = run["steps"][0]
     for k in (
         "index",
@@ -161,10 +168,14 @@ def test_export_schema_matches_reference(tmp_path):
         "return_code",
         "timed_out",
         "slice_failed",
+        "stdout",
         "stderr",
     ):
         assert k in st, f"missing step key {k}"
-    assert st["stderr"] is None  # series excludes raw stderr by design
+    # the series' truncated run output carries through verbatim (absent keys on
+    # pre-feature series read as None).
+    assert st["stdout"] == "hello output\n"
+    assert st["stderr"] == "boom\n"
     for k in (
         "resume_rate_pacing_wait_sec",
         "resume_api_sec",

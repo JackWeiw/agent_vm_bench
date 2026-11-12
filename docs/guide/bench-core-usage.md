@@ -249,7 +249,7 @@ YAML section; `-o` overrides `output_dir`). Inside that subdir:
 | `<prefix>_<timestamp>.txt` | always — the text report |
 | `<prefix>_obs.xlsx` | replay workflow + `--report-format xlsx|both` |
 | `<prefix>_lifecycle_series.jsonl` | all replay modes (exec_only / lifecycle / exec_ephemeral) |
-| `replay_result.json` (per trajectory) + `trajectories/index.json` | when a series file exists |
+| `replay_result.json` (per trajectory, with per-step `stdout`/`stderr`) + `trajectories/index.json` | when a series file exists |
 | `vm_monitor/` | auto-enabled for providers with a `vmm_type` (e2b/aenv → firecracker) |
 
 `--create-only` emits a **creation-timing report**: a `[Sandbox Status]` block
@@ -467,7 +467,7 @@ The Overview dashboard is grouped in order Run → Throughput → Admission & QP
 
 > Naming disambiguation: the Overview **Per-step timing** section pools by **phase** (exec/think/pause/resume) across the **whole fleet**; the `Per-step timings` **sheet** buckets `latency` (= pure exec) by **action type** (`action_type`) — the former is "by phase", the latter "by action type".
 
-#### Step detail columns (26, seconds)
+#### Step detail columns (27, seconds)
 
 Sub-segments nest under their parent so the sum invariant is verifiable in-sheet:
 `resume_sec == resume_inflight_wait_sec + resume_api_sec + resume_ready_wait_sec` (rate-pacing is PRE-lease, excluded),
