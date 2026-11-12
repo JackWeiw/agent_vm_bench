@@ -18,8 +18,10 @@ this module rolls them into a per-trajectory aggregate + a per-run drill-down.
 **stdout/stderr are captured per step, truncated.** The series ``step`` event
 carries the command's run output as ``stdout``/``stderr``, each slimmed
 (``\\r`` dropped, non-printable control chars incl. ANSI -> space) and truncated
-to ``STEP_OUTPUT_LIMIT`` chars with the shared truncation marker (a hard
-2*4096-char-per-step ceiling so a verbose 1:8 fleet cannot balloon). Reflects
+to ``STEP_OUTPUT_LIMIT`` chars with the shared truncation marker. The cap is
+per-stream, per-event (each ``step`` event stays <= ~2*4096 chars); it does NOT
+bound the fleet total, which scales with the run count and sandbox count.
+Reflects
 ``CommandResult`` from ``EnvironmentProvider.exec``; the *failure* path (a
 slice exception) has no CommandResult so its step carries ``null`` output. Old
 series files predate the fields and read as ``null`` downstream — parseable,

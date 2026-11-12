@@ -456,7 +456,8 @@ def test_export_index_row_breakdown_matches_sums(tmp_path):
 
 def test_export_surfaces_create_kill_error(tmp_path):
     # trajectory_create(success=False) carries error_type + error; the short
-    # error string is the failure signal (per-step stderr is unavailable).
+    # error string is the failure signal (a failed create/kill has no
+    # command output -- per-step stdout/stderr exist only on step events).
     sp = tmp_path / "s.jsonl"
     _write(
         sp,

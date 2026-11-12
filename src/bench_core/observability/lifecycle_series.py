@@ -126,7 +126,11 @@ def iter_events(path: Path) -> Iterator[dict]:
     whole series. Use this on a fleet-wide series whose length scales with
     ``total_count`` (a sharded trial's merged series): measured at ~4.6 KB per
     materialized event dict, a 1:8 fleet's 461k step events cost ~2.1 GB as a
-    list vs ~240 MB streamed into accumulators.
+    list vs ~240 MB streamed into accumulators. (Per-step ``stdout``/``stderr``
+    are each capped at ``STEP_OUTPUT_LIMIT`` chars, so step events can exceed
+    the ~4.6 KB average for output-heavy fleets; the wholesale load is bounded
+    ~2*4096 chars/step worst case, still two orders of magnitude below the
+    streamed-footprint rationale.)
     """
     p = Path(path)
     if not p.exists():

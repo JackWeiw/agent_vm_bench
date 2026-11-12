@@ -366,7 +366,7 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
 | Per-step timings | 池化百分位 | 纯 exec 耗时按 `action_type` 分桶的百分位 + per-step 折图(右侧) |
 | Lifecycle overhead | 池化百分位 | `resume`/`pause`/`slice_total`/`slot_held`/`interaction` 五段绝对时长(秒)百分位 + per-step 折图(右侧)。仅 lifecycle |
 | Trajectory summary | 每 trajectory 一行 | 该轨迹跨多次 run 的**中位数**汇总(成本归因)+ per-trajectory 成本分解柱图(右侧) |
-| Step detail | 每 step 事件一行 | 26 列原始单步时长分解(含失败 slice 行);冻结首行 + autofilter |
+| Step detail | 每 step 事件一行 | 27 列原始单步时长分解(含失败 slice 行);冻结首行 + autofilter |
 | Concurrency states | 每秒一行 | 每秒各状态沙箱计数 + 折图(右侧) |
 | Gantt | 图 | 每 sandbox 的 phase 时间线(resume/exec/pause),内嵌 PNG |
 | Snapshot sizes | 每 pause 一行 | 快照体积 MiB + generations/files + 折图(右侧)。仅 `SnapshotSizeCapable`(aenv) |
@@ -452,6 +452,7 @@ bench-core --provider aenv --config config/common/replay.yaml -n 768
 | `round_id` | round_robin 轮次号;fixed runner 每 pass 盖一个递增序号(multiplier 同轨迹多 pass 保持独立 run 行) |
 | `step_index` | 轨迹内 step 序号(0-based) |
 | `action_type` | shell/bash/str_replace_editor/submit/finish/done;对应 Per-step timings 分桶 |
+| `action` | 实际执行的命令文本(单行,<=512 字符,来自系列 `_compact_action`);纵读一轨迹各行的 action = 其执行命令序列;完整 per-step body 在 `replay_result.json` |
 | `slice_failed` | 合成失败 slice(异常/stop_on_error);True 时时长列全 0,不进百分位 |
 | `resume_sec` | resume 总时长 = inflight + api + ready_wait(rate-pacing 被排除) |
 | `resume_rate_pacing_wait_sec` | QPS 限流 1/qps 速率等待(resume,PRE-lease:不计入 resume_sec / running_slot_held) |

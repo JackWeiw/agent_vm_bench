@@ -147,7 +147,8 @@ def trajectory_summaries(events: list[dict]) -> list[dict]:
     - ``create_sec``/``kill_sec`` sum within the run (a single create/kill per
       run in normal flow); ``create_error``/``kill_error`` carry the short error
       STRING from a ``trajectory_create(success=False)``/``trajectory_kill(success=False)``
-      event (the only failure signal the series carries).
+      event (create/kill failures carry no per-step output, so the short error
+      string is their only RunRecord-level failure signal).
     """
     runs: dict[tuple, dict] = {}
     # Per-run timestamp accumulators kept in a side dict so the slot stays clean
