@@ -2706,10 +2706,21 @@ class VMMonitorBase(ABC):
                     self.running = False
                     break
 
-                sample = self.collect_sample()
-                elapsed_str = str(timedelta(seconds=int(elapsed)))
-                dur_str = str(timedelta(seconds=int(duration_seconds))) if duration_seconds else "infinity"
-                self.display_realtime_table(sample, elapsed_str, dur_str, f"Stress Sync: {check_type}={check_target}")
+                try:
+                    sample = self.collect_sample()
+                except Exception:
+                    # One failed sample must not kill the run: an unguarded
+                    # exception exits the monitor without ever writing
+                    # resource_report.xlsx, the completion signal bench-core
+                    # polls for.
+                    logger.exception("collect_sample failed; skipping this sample")
+                    sample = None
+                if sample:
+                    elapsed_str = str(timedelta(seconds=int(elapsed)))
+                    dur_str = str(timedelta(seconds=int(duration_seconds))) if duration_seconds else "infinity"
+                    self.display_realtime_table(
+                        sample, elapsed_str, dur_str, f"Stress Sync: {check_type}={check_target}"
+                    )
 
                 sl = max(0, interval_seconds - (time.time() - loop_start))
                 if sl > 0 and self.running:
@@ -2751,11 +2762,18 @@ class VMMonitorBase(ABC):
         try:
             while self.running:
                 loop_start = time.time()
-                sample = self.collect_sample()
+                try:
+                    sample = self.collect_sample()
+                except Exception:
+                    # Same completion-signal contract as the stress-sync loop
+                    # above: skip the sample, keep the monitor alive.
+                    logger.exception("collect_sample failed; skipping this sample")
+                    sample = None
                 elapsed = time.time() - start_time
-                elapsed_str = str(timedelta(seconds=int(elapsed)))
-                dur_str = str(timedelta(seconds=int(duration_seconds))) if duration_seconds else "infinity"
-                self.display_realtime_table(sample, elapsed_str, dur_str, "Timer Mode")
+                if sample:
+                    elapsed_str = str(timedelta(seconds=int(elapsed)))
+                    dur_str = str(timedelta(seconds=int(duration_seconds))) if duration_seconds else "infinity"
+                    self.display_realtime_table(sample, elapsed_str, dur_str, "Timer Mode")
 
                 if duration_seconds and elapsed >= duration_seconds:
                     print("\nTimer duration reached, monitoring complete")

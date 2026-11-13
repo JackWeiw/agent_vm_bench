@@ -127,10 +127,12 @@ def test_collect_sample_one_timestamp_for_proc_and_vm_rows(monkeypatch, tmp_path
 
 
 def test_proc_raw_closed_when_collect_sample_raises(monkeypatch, tmp_path):
-    """A non-KeyboardInterrupt exception from collect_sample must still run
-    _close_proc_raw (try/finally) so the raw CSVs are flushed. Bug: the bare
-    except KeyboardInterrupt let other exceptions skip cleanup, leaving the
-    drain thread + open handles dangling."""
+    """A non-KeyboardInterrupt exception from collect_sample must not kill the
+    monitor: the loop logs and skips the sample (the completion signal
+    resource_report.xlsx depends on the monitor surviving to the export
+    phase), and _close_proc_raw still runs (try/finally) so the raw CSVs are
+    flushed. Bug: the bare except KeyboardInterrupt let other exceptions skip
+    cleanup, leaving the drain thread + open handles dangling."""
     mon = _NoProcMonitor()
     mon.log_dir = str(tmp_path)
 
@@ -143,9 +145,8 @@ def test_proc_raw_closed_when_collect_sample_raises(monkeypatch, tmp_path):
     monkeypatch.setattr(mon, "collect_swap_stats", boom)
     monkeypatch.setattr(base.time, "sleep", lambda s: None)
     monkeypatch.setattr(base.signal, "signal", lambda *a, **k: None)
-    with pytest.raises(OSError):
-        mon.start_monitoring(duration_seconds=1, interval_seconds=1)
-    assert mon._proc_raw is None, "raw dumper must be closed even on exception"
+    mon.start_monitoring(duration_seconds=1, interval_seconds=1)  # must not raise
+    assert mon._proc_raw is None, "raw dumper must be closed even when sampling fails"
 
 
 def test_collect_ublk_daemon_enqueues_raw_jiffies_to_dumper(monkeypatch, tmp_path):

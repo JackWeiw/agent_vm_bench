@@ -500,6 +500,21 @@ def main(argv=None):
             stress_file=args.stress_file,
             rotation_tools=rotation_tools,
         )
+        # Stress-sync mode: defer the all-parallel tools until the stress
+        # marker appears so their -d windows cover the stress phase. Rotation
+        # mode gates internally (_wait_for_stress_lock); the parallel mode
+        # historically started at spawn, spending the tools' duration on
+        # sandbox create/warmup when setup ran long. wait_for_stress_and_monitor
+        # below polls the same marker, so capture start and sampling stay in
+        # lockstep.
+        if args.stress_file or args.stress_process:
+            print("Waiting for the stress marker before starting log collection tools...")
+            while not (
+                (args.stress_file and os.path.exists(args.stress_file))
+                or (args.stress_process and m.check_stress_process(args.stress_process))
+            ):
+                time.sleep(1)
+            print("[OK] Stress marker detected -- starting log collection tools")
         capture.start()
         print(f"[OK] Log collection tools started in background (duration={args.time}s)")
         print(f"  ksys parse timeout: {args.ksys_parse_timeout}s")
@@ -551,15 +566,26 @@ def main(argv=None):
     if not args.no_svg:
         # SVGs land in a dedicated svg/ subdir of the log dir instead of being
         # scattered alongside the CSVs/xlsx, so the results tree stays clean.
-        svg_files = export_svg_reports(m, os.path.join(log_dir, "svg"))
-        if svg_files:
-            print(f"[OK] SVG time-curve reports (svg/): {', '.join(os.path.basename(p) for p in svg_files)}")
+        # Guarded: an SVG crash must not cascade into export_to_excel below,
+        # which writes resource_report.xlsx -- bench-core's reap signal.
+        try:
+            svg_files = export_svg_reports(m, os.path.join(log_dir, "svg"))
+            if svg_files:
+                print(f"[OK] SVG time-curve reports (svg/): {', '.join(os.path.basename(p) for p in svg_files)}")
+        except Exception:
+            logger.exception("SVG export failed; continuing with the xlsx export")
 
     # Export to Excel (if pandas available) -- LAST so its appearance signals
     # that CSV + SVG + xlsx are all written and the subprocess is essentially
     # done (safe to reap).
     if PANDAS_AVAILABLE:
         excel_file = os.path.join(log_dir, "resource_report.xlsx")
-        export_to_excel(m, log_dir, m.target_numa_nodes, excel_file, capture_results, skip_charts=args.no_charts)
+        try:
+            export_to_excel(m, log_dir, m.target_numa_nodes, excel_file, capture_results, skip_charts=args.no_charts)
+        except Exception:
+            # The summary xlsx is built from in-memory data and cannot be
+            # rebuilt post-hoc; log and exit cleanly (CSVs + SVG +
+            # host_resources.xlsx are already on disk).
+            logger.exception("resource_report.xlsx export failed")
 
     print(f"\nComplete! All outputs saved to: {log_dir}/")

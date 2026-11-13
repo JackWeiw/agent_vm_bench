@@ -105,11 +105,33 @@ class TestLogRotation(unittest.TestCase):
         cmd = spawned[0]
         self.assertEqual(cmd[:8], ["/fake/ksys", "collect", "-d", "15", "-i", "3", "-c", "/fake/ksys_config.yaml"])
         self.assertEqual(cmd[8], "-o")
-        self.assertTrue(cmd[9].endswith("/log_capture/ksys/"))
+        # The code appends "log_capture/ksys/" with forward slashes while
+        # os.path.join uses the platform separator for the tempdir prefix.
+        self.assertTrue(cmd[9].replace("\\", "/").endswith("/log_capture/ksys/"))
         files = os.listdir(os.path.join(self.log_dir, "log_capture", "ksys"))
         self.assertEqual(len(files), 1)
         # The collect-phase ksys process is tracked for later reaping.
         self.assertEqual(len(cap._rotation_ksys_procs), 1)
+
+    def test_stop_renames_only_ksys_own_report(self):
+        # stop() renames ksys's own *_report.json to the turn's log stem; a
+        # file already carrying an earlier turn's stem must be left alone.
+        # The old glob-based rename matched it on every later turn and
+        # re-renamed/overwrote earlier turns' reports.
+        cap = self._cap()
+        ksys_dir = os.path.join(self.log_dir, "log_capture", "ksys")
+        os.makedirs(ksys_dir, exist_ok=True)
+        log_path = os.path.join(ksys_dir, "20261112-100001.log")
+        own_report = os.path.join(ksys_dir, "ksys_output_report.json")
+        earlier_turn = os.path.join(ksys_dir, "20261112-090001_report.json")
+        open(own_report, "w").close()
+        open(earlier_turn, "w").close()
+        cap._rotation_ksys_procs = [(_DummyProc(), log_path)]
+        with redirect_stdout(io.StringIO()):
+            cap.stop()
+        self.assertTrue(os.path.exists(os.path.join(ksys_dir, "20261112-100001_report.json")))
+        self.assertFalse(os.path.exists(own_report))
+        self.assertTrue(os.path.exists(earlier_turn))
 
     def test_perf_turn_cmd_and_log(self):
         cap = self._cap(rotation_perf_events="cycles,instructions")
