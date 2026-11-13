@@ -39,6 +39,16 @@ e2b:
     E2B_API_URL: "http://localhost:3000"
     E2B_HTTP_SSL: "false"
 
+sandboxsched:
+  template: "python:3.11"            # E2B runtime: E2B template name; containerd runtime: image ref
+  create_timeout: 86400              # sandbox TTL seconds (-> timedelta for Sandbox.create)
+  sandbox_group: "sg-1u1g"           # REQUIRED: extensions.sandboxGroup (server routes creates here; missing -> 400)
+  sandbox_ids_file: "sandboxs_replay_sched.txt"
+  # optional: domain: "<host>:<port>" (wins over env.OPEN_SANDBOX_DOMAIN), protocol: http|https,
+  # ready_timeout: 300  # sec the SDK waits for endpoint publication (raise for big fleets),
+  # resource: {cpu: "1", memory: "2Gi"}; api_key only if the server enables auth
+  # (env.OPEN_SANDBOX_API_KEY, or $OPEN_SANDBOX_API_KEY in the shell).
+
 docker:
   image: "ubuntu-openclaw-coding-python:24.04-arm64"
   container_prefix: "oc-replay"
