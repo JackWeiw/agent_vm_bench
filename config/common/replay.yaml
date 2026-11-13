@@ -7,14 +7,16 @@
 #
 # lifecycle model: long-lived sandboxes, pause once after create, then per step
 #   acquire running slot -> resume -> command -> pause -> release slot.
-#   Paused sandboxes free memory (snapshot), so k*N sandboxes fit in N slots
-#   of RAM -> memory overcommit.
+#   Paused sandboxes free memory (snapshot). As direct (non-oversub) config this
+#   file is the 1:1 baseline; the oversub driver scales it to ratio 1:k --
+#   total_count = k*384 and, for lifecycle, running_concurrency = k*384 too
+#   (the FULL fleet pauses/resumes concurrently, no running-slot cap).
 #
-# Memory overcommit math (example: 1.5 TiB host, 4 GiB/VM):
+# Oversub math (example: 1.5 TiB host, 4 GiB/VM):
 #   baseline VMs = 1.5 TiB / 4 GiB = 384        (ratio 1:1, no oversubscription)
-#   ratio 1:k  -> total_count = k * 384 ,  running_concurrency = 384
-#     1:2 -> total_count 768,  running_concurrency 384   (2x overcommit)
-#     1:3 -> total_count 1152, running_concurrency 384   (3x overcommit)
+#   ratio 1:k  -> total_count = k * 384
+#     lifecycle : running_concurrency = k*384  (full-scale: all k*N pause/resume)
+#     exec modes: running_concurrency = 384    (already full-fleet by construction)
 #
 #   bench-core --provider aenv --config config/common/replay.yaml -n 384
 # For docs on the exec_only / lifecycle / exec_ephemeral modes, see
@@ -135,11 +137,13 @@ replay:
   # mode: omit -> provider default (exec_only for e2b/docker/fake; lifecycle for
   # aenv, which requires a LifecycleCapable provider). Set explicitly to override.
   mode: lifecycle        # long-lived sandboxes: create -> pause once, then per step
-                          # resume -> exec -> pause on N running slots. Paused sandboxes
-                          # free memory -> k*N fit in N slots (memory overcommit). See §8.
+                          # resume -> exec -> pause. Direct runs: 1:1 (all N resume);
+                          # the oversub driver sets running_concurrency = k*N so the
+                          # FULL k*N fleet pauses/resumes concurrently at ratio 1:k.
+                          # See §8 of docs/guide/bench-core-usage.md.
 
-  running_concurrency: 384    # N running slots. Stays at the baseline VM count for any
-                               # ratio 1:k; total_count grows to k*384.
+  running_concurrency: 384    # N (ratio basis). Direct runs use it as-is; the oversub
+                               # driver overrides it to k*N for lifecycle (full-scale).
   # The two control-plane knobs below are INDEPENDENT, not a pair: omitting one
   # bypasses only its own concern. Default (both omitted): no rate shaping, no
   # concurrency fuse -- the kernel paces nothing. Enable either alone or both.

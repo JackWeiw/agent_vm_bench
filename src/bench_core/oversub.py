@@ -330,10 +330,12 @@ def compute_valid(
         return False
     adm = summary.get("admission")
     if adm and adm.get("peak_active") is not None:
-        # Ceiling = the running-slot scheduler's maximum as recorded in the
-        # summary: the k*N fleet for full-scale lifecycle (rc == total_count,
-        # pass-through scheduler), N for the admission-capped model. Fall back
-        # to the driver's N basis for summaries that predate a maximum.
+        # Ceiling is the summary's own admission maximum: the pass-through
+        # scheduler's k*N for full-scale lifecycle (rc == total_count), the
+        # running-slot cap for the admission-capped model. peak_active is
+        # measured by the same scheduler, so it cannot exceed its own maximum
+        # by construction -- the check is a summary-integrity guard, not a
+        # pass/fail discriminator at full scale (the whole fleet IS the bid).
         ceiling = adm.get("maximum") or n
         if adm["peak_active"] > ceiling:
             return False
@@ -624,9 +626,10 @@ def aggregate_ratio_summary(trials: list[dict], traj_rows: list[dict] | None = N
     """One row per ``(mode, ratio)``: medians across repeats + degradation vs k=1.
 
     Degradation is computed **within a mode** vs that mode's ``k=1`` baseline,
-    so lifecycle and exec_only each get their own curve (memory-overcommit
-    overhead vs CPU-oversubscription degradation). When a mode has no k=1
-    trial, the degradation columns default to ``0.0`` (no baseline to compare).
+    so lifecycle and exec_only each get their own curve (lifecycle pause/resume
+    overhead of a full k*N fleet vs CPU-oversubscription degradation). When a
+    mode has no k=1 trial, the degradation columns default to ``0.0`` (no
+    baseline to compare).
 
     ``traj_rows`` (the trajectory-detail rows) enables the per-cmd exec
     columns; without them those columns stay ``0.0`` (older callers).
@@ -824,7 +827,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--running-concurrency",
         type=int,
         default=None,
-        help="N running slots (default = base replay.running_concurrency)",
+        help="N (ratio basis); lifecycle scales running_concurrency to k*N per trial",
     )
     p.add_argument("--ratios", default=None, help="comma-separated k values (default 1,2,3)")
     p.add_argument("--modes", default=None, help="comma-separated replay modes (default exec_ephemeral,lifecycle)")
@@ -1055,8 +1058,9 @@ def _run_trial(
     m = (args.multiplier or None) if mode == "exec_ephemeral" else None
     # Shardable modes (exec_ephemeral/exec_only) get a plan at every P, including
     # P == 1, so a ratio-1 trial keeps the sharded layout (shard-00/ + merged/ +
-    # driver-owned vm_monitor) byte-identical to P >= 2 trials; lifecycle (global
-    # admission) alone stays None = legacy single-process path. See oversub_shards.
+    # driver-owned vm_monitor) byte-identical to P >= 2 trials; lifecycle (its
+    # full-scale pause/resume fleet is one shared window) stays None = single
+    # process. See oversub_shards.
     plan = plan_shards(trial_dir=trial_dir, mode=mode, ratio=ratio, n=n, setting=args.shards)
 
     summary_glob = f"{prefix}_*/{prefix}_run_summary.json"

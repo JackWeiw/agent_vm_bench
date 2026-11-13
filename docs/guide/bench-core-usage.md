@@ -383,16 +383,17 @@ With a fixed host, the baseline VM count = host memory / per-VM memory:
 | 1:2 | 768 | 768 | 2× fleet, all 768 sandboxes pause/resume concurrently |
 | 1:3 | 1152 | 1152 | 3× fleet, all 1152 sandboxes pause/resume concurrently |
 
-`config/common/replay.yaml` is the 1:1 baseline. To test another ratio, change two values
+`config/common/replay.yaml` is the 1:1 baseline. To test another ratio, change three values
 in YAML (or override `total_count` with `-n`, but `running_concurrency` and `round_size`
 live in YAML and must move with it):
 
 ```yaml
 sandbox:
   total_count: 768        # k × baseline
+replay:
+  running_concurrency: 768   # = total_count -> lifecycle full-scale (all k×N resume at once)
 test:
   round_size: 768         # = total_count -> one group = all -> all concurrent
-  running_concurrency: 768   # = total_count -> lifecycle full-scale (all k×N resume at once)
 ```
 
 ```bash

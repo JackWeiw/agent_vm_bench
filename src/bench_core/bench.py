@@ -496,7 +496,13 @@ def run_benchmark(config: KernelConfig, provider: EnvironmentProvider) -> dict[s
     if rcfg is not None and rcfg.replay_mode == "lifecycle":
         slots = None
         qps_lim = None
-        if rcfg.replay_running_concurrency is not None and rcfg.replay_running_concurrency < config.total_count:
+        # Full-scale lifecycle (rc == total_count, the oversub driver's default)
+        # is a PASS-THROUGH scheduler: maximum = fleet, so no thread ever blocks,
+        # but the slot accounting still runs (slot_held / peak_active), which is
+        # what feeds effective_parallelism and the Concurrency-states sheet. With
+        # no scheduler at all those metrics would read 0.00/blank for the
+        # k*N fleet -- silently corrupting the headline oversub metric.
+        if rcfg.replay_running_concurrency is not None:
             slots = RunningSlotScheduler(maximum=rcfg.replay_running_concurrency, stop_event=stop_event)
         # Decoupled construction: build the limiter when EITHER knob is set; each
         # function no-ops internally when its knob is None (qps=None -> time_wait

@@ -8,9 +8,10 @@ sweep results. The base replay workflow (modes, ratio configuration, reading res
 ## What it is
 
 The driver (`src/bench_core/oversub.py`) sweeps the replay kernel across oversubscription ratios:
-`running_concurrency` (N) stays fixed (from the base config), `total_count = k×N` scales per trial.
-One `bench-core` invocation per trial (one per shard when process-sharded); the driver reads each
-trial's machine-readable `run_summary.json` and aggregates per-trial + per-ratio degradation curves.
+`total_count = k×N` scales per trial; `running_concurrency` = `k×N` for lifecycle (full-scale
+pause/resume fleet) and stays `N` for exec modes. One `bench-core` invocation per trial (one per
+shard when process-sharded); the driver reads each trial's machine-readable `run_summary.json` and
+aggregates per-trial + per-ratio degradation curves.
 
 **Layering: kernel emits raw facts, driver computes valid.** The driver imports no kernel data-path
 internals (lifecycle / admission / stats / observability) — only the CLI, the YAML schema, the
@@ -48,7 +49,7 @@ keys are **rejected** (a typo like `repeat:` vs `repeats:` fails loudly).
 |-----|---------|---------|
 | `base_config` | — (required) | base replay stress profile; deep-copied per trial |
 | `provider` | `aenv` | `{aenv, e2b, docker, fake}` |
-| `running_concurrency` | base `replay.running_concurrency` | N running slots (fixed across ratios) |
+| `running_concurrency` | base `replay.running_concurrency` | ratio basis N; lifecycle scales it to k×N per trial (full-scale fleet) |
 | `ratios` | `1,2,3` | k values (list or `"1,2,3"`); `total_count = k×N` |
 | `modes` | `exec_ephemeral,lifecycle` | replay modes to sweep (one curve each; default = exec_ephemeral pure-COW first, then lifecycle); a WARNING fires when the driver auto-applies the default |
 | `multiplier` | `2` | per-sandbox trajectory count M (exec_ephemeral + fixed only; each sandbox runs M then self-stops; unset = 2 per sandbox; `--multiplier 0` disables M and keeps the base `benchmark_mode` — round-based only when that base is `round_robin`, e.g. `replay.yaml`/template) |
@@ -159,7 +160,7 @@ facts only (the kernel never recomputes a metric the driver needs):
 | `test_duration`, `wall_sec` | configured ceiling vs actual wall; wall ≪ duration = early stop/stall |
 | `total_count`, `running_concurrency`, `overcommit_ratio` | `total_count` = k×N; `running_concurrency` = the running fleet (k×N for full-scale lifecycle, N for exec modes); `overcommit_ratio` = total÷running (1.0 for full-scale lifecycle, k for exec modes — the sweep's x-axis `ratio=k` lives in the driver's columns, see below) |
 | `throughput` | `total` (trajectory attempts — schema 2 counts per trajectory, not per sandbox slot, so a slot reused across ephemeral create/kill or fixed-multiplier passes counts once per pass) / `succeeded` (trajectories that ran all steps) / `failed` (= total − succeeded, never negative) / `total_steps` / `steps_per_sec` / `tasks_per_sec`; `total` is the driver's valid gate (non-M trials; M trials gate on `succeeded`) |
-| `admission` | `maximum, peak_active, granted, avg_queue_wait_sec, control_qps, control_dispatched`; `peak_active≤N` is the valid gate; `null` for exec_only / exec_ephemeral |
+| `admission` | `maximum, peak_active, granted, avg_queue_wait_sec, control_qps, control_dispatched`; lifecycle builds a running-slot scheduler (pass-through `maximum = k×N` at full scale), `peak_active` is measured up to that ceiling; `null` for exec_only / exec_ephemeral |
 | `lifecycle_overhead` | `pause_sec_sum, resume_sec_sum, pct_of_slice_total` (overhead ratio %, same source as Overview's `lifecycle_overhead_aggregate_pct`); lifecycle mode only |
 | `paths` | `report, obs_xlsx, lifecycle_series, trajectory_index, vm_monitor_dir` artifact paths |
 | `error` | error string if the trial errored; non-empty = root-cause lead for a non-zero `return_code` |
@@ -220,10 +221,12 @@ Run one sweep, then read in this order, from the overall curve down to single-st
    `all_repeats_successful` means every repeat at that ratio was valid.
 2. **`trial-summary.csv` — success/failure and the valid gate.** First filter on the `valid` column
    to drop invalid trials, then compare `total` vs `target_count` (did it run the full fleet),
-   `return_code` (non-zero → check `error`; `130` = interrupted, next section). `peak_active` should
-   be ≤ `running_concurrency` (`k×N` for lifecycle — the whole fleet is running; `N` for exec
-   modes); above = over-admission. `lifecycle_overhead_pct` shows whether
-   the pause/resume share climbs with k.
+   `return_code` (non-zero → check `error`; `130` = interrupted, next section). `peak_active`
+   (lifecycle; blank for exec modes) is measured against the run_summary's `admission.maximum`
+   (k×N for lifecycle — the whole fleet is running; N for the capped model), NOT the CSV's
+   `running_concurrency` column, which is the ratio basis N (used by `oversub-compare` to check
+   N-parity across series). `lifecycle_overhead_pct` shows whether the pause/resume share
+   climbs with k.
 3. **`trajectory-detail.csv` — which trajectory lags at which ratio.** Pivot on `trajectory_id` +
    `ratio`, find the largest `elapsed_sec`, then read the 18 `*_sec` breakdown columns to locate the
    bottleneck: slow exec, slow resume/pause (lifecycle overhead), `capacity_wait_sec` (queueing =
@@ -381,8 +384,9 @@ and read the two workbooks side by side.
 
 - **Trial invalid but the log doesn't crash** — following the reading order: (1) `trial-summary.csv`
   `total` vs `target_count` (did it run the full fleet), (2) `return_code` (`130` = interrupted),
-  (3) `admission.peak_active` > `admission.maximum` (over-admission; maximum = N for exec modes,
-  k×N for full-scale lifecycle).
+  (3) `admission.peak_active` > `admission.maximum` (over-admission; maximum = N for the capped
+  model, k×N for full-scale lifecycle).
 - **High-ratio client-bound (GIL cap)** — single-process dispatch tops out at ~50–55 steps/s; more
   load only grows client queueing. Set `shards` (auto = P=ratio) to split the load across kernel
-  subprocesses; note lifecycle cannot shard (runs single-process).
+  subprocesses; note lifecycle always runs single-process (its k×N pause/resume fleet is one
+  shared window).

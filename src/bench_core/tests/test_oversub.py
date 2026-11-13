@@ -229,15 +229,17 @@ def test_compute_valid_peak_active_exceeds_n():
 
 
 def test_compute_valid_full_scale_lifecycle_peak_active_uses_summary_ceiling():
-    # Full-scale lifecycle: the scheduler maximum is the WHOLE fleet (rc ==
-    # total), so peak_active legitimately reaches k*N -- judged against the
-    # summary's own maximum, not the driver's N basis.
+    # Full-scale lifecycle builds a PASS-THROUGH running-slot scheduler
+    # (rc == total_count == k*N), so the summary DOES carry an admission block
+    # with maximum = k*N and peak_active measured up to it. Valid iff
+    # peak_active <= that maximum; n (the driver's ratio basis) is only the
+    # fallback for a summary whose admission block lacks a maximum.
     s = _summary(total=3072, succeeded=3072, wall_sec=940.0, peak_active=3072, maximum=3072)
     assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is True
-    # Over the recorded ceiling (a genuine over-admission) still fails.
+    # Over the recorded ceiling (a scheduler-integrity violation) still fails.
     s = _summary(total=3072, succeeded=3072, wall_sec=940.0, peak_active=3100, maximum=3072)
     assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is False
-    # Summary with no maximum falls back to the driver's N basis.
+    # Corrupt summary (admission block without a maximum) falls back to N.
     s = _summary(total=3072, succeeded=3072, wall_sec=940.0, peak_active=3100, maximum=None)
     assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is False
 

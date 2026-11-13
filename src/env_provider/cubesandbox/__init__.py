@@ -93,9 +93,10 @@ class CubesandboxProvider(EnvironmentProvider):
 
     name = "cubesandbox"
     # CubeSandbox has native pause/resume WITH a memory snapshot (Cloud
-    # Hypervisor fork), so lifecycle is its natural replay mode -- the same
-    # memory-reuse oversubscription shape as aenv (pause frees RAM, so k*N
-    # sandboxes fit in N running slots).
+    # Hypervisor fork), so lifecycle is its natural replay mode -- pause frees
+    # RAM, letting the oversub driver park k*N sandboxes paused and drive the
+    # FULL k*N fleet through concurrent pause/resume (full-scale, same shape
+    # as aenv).
     default_replay_mode = "lifecycle"
     # vm_monitor matches the per-sandbox ``containerd-shim-cube-rs`` shim
     # process via CubeSandboxMonitor; auto-enables host-level monitoring for

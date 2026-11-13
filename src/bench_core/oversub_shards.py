@@ -22,11 +22,12 @@ Layering contract:
   every downstream consumer (``compute_valid``, ``trial_row``,
   ``_trajectory_rows``, ratio summaries, ``compare_sweeps``, ``--reuse``)
   works on a sharded trial unchanged.
-- Only admission-free modes shard (``SHARDABLE_MODES``). ``lifecycle``
-  enforces a GLOBAL ``running_concurrency`` ceiling; per-shard
-  admission controllers would let the global peak reach P*N and silently
-  change the oversubscription profile. Sharding them needs a parent-side
-  permit server (the reference's LAUNCH/PERMIT channel) -- a kernel change,
+- Only admission-free modes shard (``SHARDABLE_MODES``). ``lifecycle`` runs
+  single-process by design: the k*N pause/resume fleet is driven as one shared
+  window (full-scale lifecycle has no per-shard running-slot cap to split --
+  rc == total_count is a pass-through scheduler), and the lifecycle series + obs
+  Concurrency-states reconstruction is a single-process kernel artifact.
+  Sharding lifecycle needs a kernel-side split of the pause/resume window --
   deliberately out of scope here.
 
 Known simplifications (measured, not assumed away):
