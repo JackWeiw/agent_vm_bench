@@ -39,6 +39,12 @@ DEFAULT_ROTATION_PERF_EVENTS = (
 # (UPROF_PATH); the per-turn ``-d <interval>`` is appended by the rotation turn.
 DEFAULT_UPROF_ARGS = ("-m", "memory,pipeline_util", "-a", "-A", "system,package")
 
+# Rotation renames ksys's own <...>_report.json to the per-turn log stem
+# (<YYYYmmdd-HHMMSS>_report.json, the _rotation_log_path format). Matching that
+# format keeps stop() from re-renaming earlier turns' reports on every later
+# stop (a renamed file still ends with _report.json).
+_ROTATION_RENAMED_REPORT = re.compile(r"^\d{8}-\d{6}_report\.json$")
+
 
 class LogCapture:
     """Parallel log collection with devkit, ksys, ub_watch, smap_bw, uprof
@@ -971,7 +977,10 @@ class LogCapture:
             base = os.path.basename(log_path).removesuffix(".log")
             try:
                 for f in os.listdir(ksys_dir):
-                    if f.endswith("_report.json"):
+                    # Only rename ksys's own output; files already in the
+                    # per-turn rename format belong to earlier turns and must
+                    # survive later stops untouched.
+                    if f.endswith("_report.json") and not _ROTATION_RENAMED_REPORT.match(f):
                         src = os.path.join(ksys_dir, f)
                         dst = os.path.join(ksys_dir, base + "_report.json")
                         if src != dst:
