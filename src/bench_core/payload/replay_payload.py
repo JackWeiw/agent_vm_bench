@@ -264,24 +264,27 @@ def _build_pool(rcfg: ReplayConfig, cache_key: tuple[str, str, str, str, str]) -
 
     if limit is not None:
         # Oversub linearity clamp: the oversub driver sets trajectory_limit=N
-        # (mirroring the single-template ``trajectories[:N]`` strategy). For a
-        # MULTI-template pool (T>1) N is too large -- the balanced ratio-1 fleet
-        # gives each template only N/T sandboxes, so capping to N lets the
-        # RUNNING issue set grow with ratio until k>=T (only N/T of N issues run
-        # at ratio 1, then 2N/T, ...), drifting the linearity baseline. Clamp to
-        # the ratio-1 fleet share (running_concurrency // T) so count_t <=
-        # fleet_t(ratio 1) and the issue set stays fixed across ratios (per-issue
-        # execution count then scales linearly with k). Single-template (T=1):
-        # rc//T == N, no-op. rc unset (non-oversub direct run): honor the explicit
-        # limit as-is (no clamp).
+        # and running_concurrency (rc) to N (exec modes) or k*N (full-scale
+        # lifecycle). For a MULTI-template pool (T>1) N is too large -- the
+        # balanced ratio-1 fleet gives each template only N/T sandboxes, so
+        # capping to N lets the RUNNING issue set grow with ratio until k>=T
+        # (only N/T of N issues run at ratio 1, then 2N/T, ...), drifting the
+        # linearity baseline. Clamp to the ratio-1 fleet share, which is
+        # min(rc, limit)//T: min() deflates the full-scale lifecycle rc (k*N)
+        # back to the driver-pinned limit N, so the basis is ratio-invariant
+        # for every mode. count_t <= fleet_t(ratio 1) and the issue set stays
+        # fixed across ratios (per-issue execution count scales with k).
+        # Single-template (T=1): min(rc,limit)//T == N, no-op. rc unset
+        # (non-oversub direct run): honor the explicit limit as-is (no clamp).
         if rc is not None and rc > 0:
             t_count = len({t.template for t in pool})
             if t_count > 1:
-                fleet_share = max(rc // t_count, 1)
+                basis = min(rc, limit)
+                fleet_share = max(basis // t_count, 1)
                 if fleet_share < limit:
                     logger.info(
                         f"[replay] trajectory_limit={limit} clamped to ratio-1 fleet share "
-                        f"{fleet_share} (running_concurrency={rc} // T={t_count}); keeps "
+                        f"{fleet_share} (running_concurrency={basis} // T={t_count}); keeps "
                         f"the issue set fixed across oversub ratios"
                     )
                     limit = fleet_share

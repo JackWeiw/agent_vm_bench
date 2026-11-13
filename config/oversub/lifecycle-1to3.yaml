@@ -15,12 +15,13 @@ base_config: config/common/replay.yaml
 
 provider: aenv
 
-# N running slots stays fixed; total_count = N * ratio scales per trial.
-# N defaults to base replay.running_concurrency (384 for the aenv 1.5 TiB host).
+# N is the ratio basis (384 for the aenv 1.5 TiB host); per-trial
+# running_concurrency = k*N for lifecycle (full-scale: all k*N sandboxes
+# pause/resume concurrently), N for exec modes.
 # running_concurrency: 384   # uncomment to override N
 
 ratios: [1, 2, 3]              # k values: total_count = k * N per trial
-modes: [lifecycle, exec_only] # lifecycle = snapshot memory reuse; exec_only = pure CPU oversub
+modes: [lifecycle, exec_only] # lifecycle = full-scale k×N concurrent pause/resume; exec_only = pure exec oversub
 repeats: 1                    # repeats per (mode, ratio) for medians
 
 test_duration: 600           # hard ceiling per trial (sec); a trial ends when the k*N fleet

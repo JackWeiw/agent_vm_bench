@@ -475,6 +475,58 @@ def test_load_pool_ratio_invariant_under_clamp(tmp_path):
     assert all(len(v) == 2 for v in by_tpl.values())
 
 
+def test_load_pool_full_scale_lifecycle_rc_kn_clamp_basis(tmp_path):
+    """Full-scale lifecycle (rc == total_count == k*N) must clamp to the same
+    ratio-1 pool as the exec modes' rc=N. The clamp basis is min(rc, limit)
+    (limit == the driver-pinned trajectory_limit N), so lifecycle's k*N rc
+    deflates back to N and the multi-template issue set stays ratio-invariant --
+    the exact drift the review caught (N=6, T=3, old basis rc//T: pools grew
+    k=1 -> 2, k=2 -> 4, k=3 -> 6 instead of staying at N//T=2)."""
+    import json
+
+    from bench_core.config import KernelConfig
+    from bench_core.payload.replay_payload import load_pool, reset_pool_cache
+    from bench_core.task_runner.replay import ReplayConfig
+
+    traj_dir = tmp_path / "traj"
+    for tpl in ("a", "b", "c"):
+        for i in range(1, 11):  # 10 per template, all >= N
+            _write_traj(traj_dir, f"{tpl}{i}.replay.json", f"{tpl}{i}")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({f"{t}{i}.replay.json": f"swb-{t}" for t in ("a", "b", "c") for i in range(1, 11)}),
+        encoding="utf-8",
+    )
+
+    n = 6
+    pools = {}
+    for k in (1, 2, 3):
+        reset_pool_cache()
+        cfg = KernelConfig(
+            workflow_type="replay",
+            total_count=k * n,
+            benchmark_mode="fixed",
+            test_duration=1,
+            workflow_config=ReplayConfig(
+                replay_trajectory_dir=str(traj_dir),
+                replay_template_manifest=str(manifest),
+                replay_trajectory_limit=n,
+                replay_running_concurrency=k * n,  # full-scale lifecycle: rc == total_count
+                replay_mode="lifecycle",
+            ),
+        )
+        pools[k] = load_pool(cfg)
+    # Identical across ratios (rc deflated via min(rc, limit)=N), exactly the
+    # exec-mode pool lineage -- a ratio-growing pool would make these differ.
+    assert pools[1] == pools[2] == pools[3]
+    # And each template keeps N//T = 2 (the ratio-1 fleet share), not k*N//T.
+    by_tpl: dict[str | None, list[str]] = {}
+    for t in pools[1]:
+        by_tpl.setdefault(t.template, []).append(t.instance_id)
+    assert len(by_tpl) == 3
+    assert all(len(v) == 2 for v in by_tpl.values())
+
+
 # ---------------------------------------------------------------------------
 # load_pool — template manifest
 # ---------------------------------------------------------------------------

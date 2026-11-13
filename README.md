@@ -177,8 +177,7 @@ for architecture.
 `workflow_type: replay` re-executes recorded SWE-bench agent trajectories against
 a sandbox backend. Two sweep modes matter for oversubscription — **`exec_ephemeral`
 (pure COW: per-round sandbox create → exec → kill, no pause/resume; the default)**,
-then **`lifecycle` (long-lived sandboxes with pause/resume; paused sandboxes free
-memory, so k×N of them fit in N running slots)**:
+then **`lifecycle` (long-lived sandboxes with pause/resume; pause frees memory between steps, and the oversub driver scales `running_concurrency` to `total_count = k×N` at ratio 1:k so the FULL fleet pauses/resumes concurrently — no running-slot cap)**:
 
 ```bash
 # Smoke the whole chain with the SDK-free fake provider (seconds); fake is
@@ -188,7 +187,7 @@ oversub-bench --config config/common/replay-exec-only.yaml --provider fake --mod
 
 # Ready-made sweeps — default sweep order is exec_ephemeral (pure COW) first, then lifecycle
 oversub-bench --sweep-config config/oversub/exec-ephemeral-1to3.yaml   # default: pure-COW oversub
-oversub-bench --sweep-config config/oversub/lifecycle-1to3.yaml        # lifecycle: snapshot memory reuse
+oversub-bench --sweep-config config/oversub/lifecycle-1to3.yaml        # lifecycle: full-scale k×N pause/resume
 ```
 
 Compare multiple sweep results across architectures / configs with `oversub-compare`

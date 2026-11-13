@@ -6,8 +6,10 @@
 
 ## 是什么
 
-driver(`src/bench_core/oversub.py`)把 replay 内核跑过一组超卖比:`running_concurrency`(N)固定,
-`total_count = k×N` 每个 trial 缩放。每个 trial 一次 `bench-core` 调用(开启进程分片时每 shard
+driver(`src/bench_core/oversub.py`)把 replay 内核跑过一组超卖比:`running_concurrency`(N)是
+ratio 基准,`total_count = k×N` 每个 trial 缩放。lifecycle 时 running fleet 是**全部 k×N**(所有
+沙箱同时 pause/resume);admission-free 的 exec mode 本来就在 k×N 全并发。每个 trial 一次
+`bench-core` 调用(开启进程分片时每 shard
 一次);driver 读每个 trial 的机器可读 `run_summary.json`,聚合 per-trial + per-ratio 退化曲线。
 
 **分层:kernel 出原始事实,driver 算 valid。** driver 不导入 kernel 数据路径内部(lifecycle /
@@ -44,7 +46,7 @@ oversub-bench --config config/common/replay.yaml --provider aenv --ratios 1,2,3 
 |-----|------|------|
 | `base_config` | —(必填) | base replay 压力 profile;每 trial 深拷贝 |
 | `provider` | `aenv` | `{aenv, e2b, docker, fake}` |
-| `running_concurrency` | base `replay.running_concurrency` | N 个 running slot(跨 ratio 固定) |
+| `running_concurrency` | base `replay.running_concurrency` | 基线 N;lifecycle 时每 trial 放大到 k×N(全量并发),exec mode 保持 N(ratio 基准) |
 | `ratios` | `1,2,3` | k 值(list 或 `"1,2,3"`);`total_count = k×N` |
 | `modes` | `exec_ephemeral,lifecycle` | 要扫的 replay mode(每条曲线;默认 exec_ephemeral 纯 COW 在前,lifecycle 其次);driver 自动套用默认时 WARNING |
 | `multiplier` | `2` | per-sandbox 轨迹数 M(仅 exec_ephemeral + fixed;每沙箱跑满 M 条自停;不设 = 每沙箱 2 条;`--multiplier 0` 关闭 M,沿用 base 的 `benchmark_mode`(仅当 base 为 `round_robin`,如 `replay.yaml`/template,才是 round 模型)) |
@@ -68,7 +70,7 @@ driver 深拷贝 `base_config` 只改写超卖字段,其余透传:
 | 字段 | 改成 | 原因 |
 |-------|------|------|
 | `sandbox.total_count` | `k×N` | 超卖目标 |
-| `replay.running_concurrency` | `N`(固定) | 基线 slot 数 |
+| `replay.running_concurrency` | `k×N`(lifecycle)/ `N`(exec mode) | lifecycle 全量并发——所有 k×N 沙箱同时 pause/resume,无比并发上限(rc == total_count);admission-free 的 exec mode 保持 N(ratio 基准) |
 | `replay.mode` | 扫描的 mode | lifecycle / exec_only / exec_ephemeral |
 | `test.round_size` | `k×N` | 所有 k×N 沙箱一组并发;不设则 k≥2 按 N 串行多组,破坏超卖动态 |
 | `test.duration` | `test_duration` | 时间上限 |
@@ -86,9 +88,9 @@ client-bound)。`shards` 把一个 trial 的 k×N slot 拆成 P 个 `bench-core`
 每进程 ~N slot——把每个进程的负载钉在 1:1 已验证的水平,GIL 天花板抬到 ~P×)。机制在
 `src/bench_core/oversub_shards.py`,driver 只做组合:
 
-- **只有 admission-free mode 可分片**(`exec_ephemeral` / `exec_only`)。`lifecycle` 的
-  `running_concurrency` 是全局准入上限,per-shard 各自准入会把峰值放大到 P×N、静默改变超卖
-  profile,因此始终单进程(显式 P>1 会 WARNING 降级,不报错——一份 sweep config 可跨 mode)。
+- **只有 admission-free mode 可分片**(`exec_ephemeral` / `exec_only`)。`lifecycle` 始终单进程:
+  它的全量 fleet(全部 k×N 沙箱在一个进程里 pause/resume)暂不分片(显式 P>1 会 WARNING 降级,
+  不报错——一份 sweep config 可跨 mode)。
 - **P≤ratio 时按 group 对齐切分**:每个 shard 的 slot 数是 N 的整数倍,合并后每条轨迹的 run 数
   与单进程 trial 完全一致;P>ratio 退化为 slot 级切分并 WARNING——总量保留,但单 shard 小于
   轨迹池,per-trajectory 分布会重排。
@@ -144,9 +146,9 @@ client-bound)。`shards` 把一个 trial 的 k×N slot 拆成 P 个 `bench-core`
 | `replay_mode` / `provider` | 哪个 mode / 后端;区分曲线与后端 |
 | `started_at` / `completed_at`(+ `_epoch`) | 起止时间;epoch 用于与 vm_monitor 对齐 join |
 | `test_duration` / `wall_sec` | 配置上限 vs 实际墙钟;wall ≪ duration = 提前停/卡死 |
-| `total_count` / `running_concurrency` / `overcommit_ratio` | 该 trial 的 k×N / N / k;ratio=k 是扫描横轴 |
+| `total_count` / `running_concurrency` / `overcommit_ratio` | `total_count` = k×N;`running_concurrency` =实际并发数(lifecycle 全量为 k×N,exec mode 为 N);`overcommit_ratio` = total÷running(lifecycle 全量为 1.0,exec mode 为 k——扫描横轴 `ratio=k` 在 driver 列,见下) |
 | `throughput` | `total`(轨迹 attempt 数,schema 2:slot 跨 ephemeral create/kill 或 fixed multiplier 复用时按轨迹计数,不再按沙箱槽位)/ `succeeded`(跑完全部 step 的轨迹数)/ `failed`(= total − succeeded,恒 ≥ 0)/ `total_steps` / `steps_per_sec` / `tasks_per_sec`;非 M trial 的 valid 门槛读 `total`,M(multiplier)trial 读 `succeeded` |
-| `admission` | `maximum, peak_active, granted, avg_queue_wait_sec, control_qps, control_dispatched`;`peak_active≤N` 是 valid 门槛;exec_only/exec_ephemeral 为 `null` |
+| `admission` | `maximum, peak_active, granted, avg_queue_wait_sec, control_qps, control_dispatched`;`peak_active≤maximum` 是 valid 门槛(lifecycle 全量时 maximum = k×N);exec_only/exec_ephemeral 为 `null` |
 | `lifecycle_overhead` | `pause_sec_sum, resume_sec_sum, pct_of_slice_total`(开销比率 %,与 Overview `lifecycle_overhead_aggregate_pct` 同源);仅 lifecycle |
 | `paths` | `report, obs_xlsx, lifecycle_series, trajectory_index, vm_monitor_dir` 各产物路径 |
 | `error` | 出错时的错误串;非空 = `return_code≠0` 的根因线索 |
@@ -157,11 +159,11 @@ client-bound)。`shards` 把一个 trial 的 k×N slot 拆成 P 个 `bench-core`
 **valid**:
 
 - `return_code == 0`;
-- `throughput.total >= 0.9 * N`(跑满 N 个 slot 的大多数——崩溃/早退在此失败;`test.duration`
+- `throughput.total >= 0.9 * N`(跑满整个 running fleet 的大多数——崩溃/早退在此失败;`test.duration`
   上限会盖住卡住的 run,随后也在此失败)。mode 无关:单轮 trial 每条轨迹 attempt 一次,
   lifecycle/exec_ephemeral `total` ≈ k×N、exec_only `total` ≈ N,健康 run 都 ≥ 0.9×N;设
   `multiplier`(M)时门槛改读 `succeeded`(完成数)≥ 0.9×M×k×N;
-- `admission.peak_active <= N`(从不超过 N 并发——exec_only/exec_ephemeral 跳过);
+- `admission.peak_active <= maximum`(从不超过 summary 记录的并发上限——lifecycle 全量为整个 k×N fleet,受限模型为 N——exec_only/exec_ephemeral 跳过);
 - `failure_rate <= failure_tolerance`。
 
 `valid` 是"粗失败 / 过量准入"门槛,**不是**"每条轨迹都成功"——逐轨迹完成度在
@@ -202,7 +204,8 @@ trial 的原生产物:`trial.yaml`(该 trial 的覆盖配置)、`driver.log`(子
    `median_wall_sec` 是绝对值,`all_repeats_successful` 指该 ratio 所有 repeat 都 valid。
 2. **`trial-summary.csv` —— 成败与 valid 门槛。** 先按 `valid` 列筛掉无效 trial;再比 `total`
    对 `target_count`(跑满没有)、`return_code`(非 0 的查 `error` 列;`130` 是被中断,见下节)。
-   `peak_active` 应 ≤ `running_concurrency`(`N`),超过=过量准入。`lifecycle_overhead_pct` 看
+   `peak_active` 应 ≤ `running_concurrency`(lifecycle 为 `k×N`,整个 fleet 都在跑;exec mode 为
+   `N`),超过=过量准入。`lifecycle_overhead_pct` 看
    pause/resume 占比是否随 k 走高。
 3. **`trajectory-detail.csv` —— 哪条轨迹在哪个 ratio 拖后腿。** 按 `trajectory_id` + `ratio`
    pivot,看 `elapsed_sec` 谁最大,再读 18 个 `*_sec` 分解列定位瓶颈是 exec 慢、resume/pause 慢

@@ -1148,6 +1148,22 @@ class TestRunBenchmarkP26Wiring:
         assert "Running slots:" in result["report"]
         assert "maximum=1" in result["report"]
 
+    def test_full_scale_lifecycle_rc_equals_total_builds_pass_through_admission(self, tmp_path):
+        """Full-scale lifecycle (running_concurrency == total_count == k*N) must
+        still emit an admission block: the scheduler is a pass-through (no thread
+        ever blocks) but its slot accounting feeds effective_parallelism and the
+        run_summary admission header -- without it those read 0.00/blank for the
+        whole k*N fleet."""
+        config = _lifecycle_config(tmp_path, total_count=3, replay_running_concurrency=3)
+        provider = FakeLifecycleProvider(count=3)
+        result = run_benchmark(config, provider)
+        assert "Admission:" in result["report"]
+        assert "Running slots:" in result["report"]
+        assert "maximum=3" in result["report"]
+        snap = result["admission_snapshot"]
+        assert snap is not None
+        assert snap["running_slots"]["maximum"] == 3
+
     def test_admission_snapshot_merges_full_sub_snapshots(self, tmp_path):
         """Phase 3: admission_snapshot embeds the full running_slots + qps_limiter
         sub-snapshots (not just the flattened peak/wait keys) so the report and

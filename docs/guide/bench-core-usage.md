@@ -333,7 +333,7 @@ The modes differ by **sandbox lifecycle**, not by "whether a rate limiter is att
 | mode | sandbox lifecycle | per step | concurrency / oversubscription | when to use |
 |------|-------------------|----------|-------------------------------|-------------|
 | `exec_only` | pre-created, **long-lived**; no create/kill across the run | exec only | none | pure exec-replay cost baseline; backends without lifecycle/ephemeral capability (e2b/docker/fake) |
-| `lifecycle` | pre-created, **long-lived**; not killed across the run | acquire slot → resume → exec → pause → release | pause snapshots free RAM, so `k×N` sandboxes fit in `N` slots (**memory oversubscription**) | pause/resume snapshot overhead + memory overcommit; needs `LifecycleCapable` (aenv) |
+| `lifecycle` | pre-created, **long-lived**; not killed across the run | resume → exec → pause (step granularity) | full-scale: `k×N` sandboxes all pause/resume **concurrently** (`running_concurrency = total_count`; a running-slot cap applies only when set below `total_count`) | pause/resume snapshot overhead + concurrent-resume load; needs `LifecycleCapable` (aenv) |
 | `exec_ephemeral` | **ephemeral**; create_one → … → kill_one per trajectory | exec only (no pause/resume) | none (admission-free `k×N` concurrent; `launch_interval_sec` paces the per-round `create_one` burst) | frequent create/kill overhead; needs `EphemeralCapable` (aenv); `replay.multiplier` M runs exactly M trajectories per sandbox |
 
 **exec_only vs exec_ephemeral** — the difference is *not* "a rate limiter":
@@ -349,10 +349,11 @@ The modes differ by **sandbox lifecycle**, not by "whether a rate limiter is att
 
 **lifecycle vs exec_ephemeral** — the lifecycle models differ:
 
-- lifecycle = **long-lived pause/resume** (memory oversubscription via snapshot reuse).
-  Sandboxes are long-lived; pause frees physical RAM, so `total_count = k×N` sandboxes fit
-  in `running_concurrency = N` slots. Running slots are acquired/released at **step
-  granularity** (one command = acquire/release).
+- lifecycle = **long-lived pause/resume, full-scale**. Sandboxes are long-lived; the oversub
+  fleet is the whole `k×N` — `running_concurrency = total_count = k×N`, so ALL sandboxes
+  pause/resume **concurrently** at step granularity (one command = resume/exec/pause). A
+  running-slot cap (`running_concurrency < total_count`, the legacy snapshot-memory-reuse
+  model) is only applied when configured explicitly.
 - exec_ephemeral = **ephemeral no-lifecycle**: no pause/resume at all — "spin up once → run
   the trajectory → kill; to reuse, spin up again" (the no-lifecycle oversub auth model).
   It runs admission-free at `k×N` concurrent; bounding the fleet is supply-side (create/call
@@ -370,25 +371,29 @@ The modes differ by **sandbox lifecycle**, not by "whether a rate limiter is att
 With a fixed host, the baseline VM count = host memory / per-VM memory:
 
 - e.g. 1.5 TiB host, 4 GiB per VM → baseline = 1536 / 4 = **384** VMs.
-- `running_concurrency` stays at the baseline (N running slots); `total_count` scales to
-  `k × baseline` for oversubscription ratio `1:k`.
+- `total_count` scales to `k × baseline` for oversubscription ratio `1:k`. Lifecycle runs the
+  **full** fleet: `running_concurrency` = `total_count` = `k × baseline`, so all `k×N` sandboxes
+  pause/resume **concurrently** (no running-slot cap — the ratio-k load is `k×N` simultaneous
+  resumes). A running-slot cap only applies when `running_concurrency < total_count` is set
+  explicitly (the legacy snapshot-memory-reuse knob, no longer used by the oversub driver).
 
 | ratio | `total_count` | `running_concurrency` | meaning |
 |-------|---------------|----------------------|---------|
 | 1:1 (baseline) | 384 | 384 | no oversubscription, 384 sandboxes all running |
-| 1:2 | 768 | 384 | 2× overcommit, 768 sandboxes multiplexed over 384 slots |
-| 1:3 | 1152 | 384 | 3× overcommit |
+| 1:2 | 768 | 768 | 2× fleet, all 768 sandboxes pause/resume concurrently |
+| 1:3 | 1152 | 1152 | 3× fleet, all 1152 sandboxes pause/resume concurrently |
 
-`config/common/replay.yaml` is the 1:1 baseline. To test another ratio, change two values
+`config/common/replay.yaml` is the 1:1 baseline. To test another ratio, change three values
 in YAML (or override `total_count` with `-n`, but `running_concurrency` and `round_size`
 live in YAML and must move with it):
 
 ```yaml
 sandbox:
   total_count: 768        # k × baseline
+replay:
+  running_concurrency: 768   # = total_count -> lifecycle full-scale (all k×N resume at once)
 test:
   round_size: 768         # = total_count -> one group = all -> all concurrent
-  # running_concurrency: 384   unchanged (N slots)
 ```
 
 ```bash
