@@ -52,7 +52,7 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 # `tar -xvf` with "TAR_BAD_ARCHIVE: Unrecognized archive format" + checksum
 # failures. curl -kL follows the redirect if aliyun is unreachable. Same fix the
 # Go image (Dockerfile.coding-go) uses for its Go toolchain tarball.
-RUN apt update && apt install -y curl xz-utils vim libgomp1 iproute2 net-tools gnupg git && \
+RUN apt update && apt install -y curl xz-utils vim libgomp1 iproute2 net-tools gnupg git python3 && \
     cd /usr/local && \
     curl -kL --connect-timeout 30 --retry 3 --retry-delay 3 \
         -o node-v24.14.0-linux-x64.tar.xz \

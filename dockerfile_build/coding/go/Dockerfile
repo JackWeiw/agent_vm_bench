@@ -67,7 +67,7 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 # 75-byte HTML body that broke `tar -xzf` with "not in gzip format"). The
 # fallback uses -L so it follows that redirect if aliyun is unreachable.
 RUN apt update && \
-    apt install -y --no-install-recommends curl xz-utils vim libgomp1 iproute2 net-tools gnupg git && \
+    apt install -y --no-install-recommends curl xz-utils vim libgomp1 iproute2 net-tools gnupg git python3 && \
     cd /usr/local && \
     ( curl -kL --connect-timeout 30 --retry 3 --retry-delay 3 \
         -o go1.23.4.linux-arm64.tar.gz \
