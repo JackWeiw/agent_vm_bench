@@ -73,7 +73,7 @@ through:
 | field | set to | why |
 |-------|--------|-----|
 | `sandbox.total_count` | `k×N` | the oversubscription target |
-| `replay.running_concurrency` | `N` (fixed) | the baseline slot count |
+| `replay.running_concurrency` | `k×N` (lifecycle) / `N` (exec modes) | lifecycle runs the FULL fleet concurrently — all k×N sandboxes pause/resume at once, no running-slot cap (rc == total_count); admission-free exec modes keep N (the ratio basis) |
 | `replay.mode` | the sweep mode | lifecycle / exec_only / exec_ephemeral |
 | `test.round_size` | `k×N` | all k×N sandboxes run in one group — without this, k≥2 silently runs sequential groups of N, corrupting the oversubscription dynamics |
 | `test.duration` | `test_duration` | the time ceiling |
@@ -93,10 +93,9 @@ queueing, not host load — r9/r10 data is client-bound). `shards` splits a tria
 1:1 load, raising the GIL ceiling to ~P×). The mechanism lives in `src/bench_core/oversub_shards.py`;
 the driver only composes it:
 
-- **Only admission-free modes shard** (`exec_ephemeral` / `exec_only`). `lifecycle`'s
-  `running_concurrency` is a global admission cap — per-shard admission would inflate the peak to P×N
-  and silently change the oversub profile, so lifecycle always runs single-process (an explicit P>1
-  is a WARNING downgrade, not an error — one sweep config can span modes).
+- **Only admission-free modes shard** (`exec_ephemeral` / `exec_only`). `lifecycle` always runs
+  single-process: its full-scale fleet (all k×N pause/resume in one process) is not shardable yet
+  (an explicit P>1 is a WARNING downgrade, not an error — one sweep config can span modes).
 - **P≤ratio splits group-aligned**: every shard's slot count is an integer multiple of N, so the
   merged per-trajectory run counts exactly match a single-process trial; P>ratio degrades to a
   slot-level split with a WARNING — totals preserved, per-trajectory distribution redistributes.
@@ -158,7 +157,7 @@ facts only (the kernel never recomputes a metric the driver needs):
 | `replay_mode`, `provider` | which mode / backend; separates the curves and the backend |
 | `started_at`, `completed_at` (+ `_epoch`) | start/end times; epoch joins with vm_monitor host samples |
 | `test_duration`, `wall_sec` | configured ceiling vs actual wall; wall ≪ duration = early stop/stall |
-| `total_count`, `running_concurrency`, `overcommit_ratio` | the trial's k×N / N / k; ratio=k is the sweep's x-axis |
+| `total_count`, `running_concurrency`, `overcommit_ratio` | `total_count` = k×N; `running_concurrency` = the running fleet (k×N for full-scale lifecycle, N for exec modes); `overcommit_ratio` = total÷running (1.0 for full-scale lifecycle, k for exec modes — the sweep's x-axis `ratio=k` lives in the driver's columns, see below) |
 | `throughput` | `total` (trajectory attempts — schema 2 counts per trajectory, not per sandbox slot, so a slot reused across ephemeral create/kill or fixed-multiplier passes counts once per pass) / `succeeded` (trajectories that ran all steps) / `failed` (= total − succeeded, never negative) / `total_steps` / `steps_per_sec` / `tasks_per_sec`; `total` is the driver's valid gate (non-M trials; M trials gate on `succeeded`) |
 | `admission` | `maximum, peak_active, granted, avg_queue_wait_sec, control_qps, control_dispatched`; `peak_active≤N` is the valid gate; `null` for exec_only / exec_ephemeral |
 | `lifecycle_overhead` | `pause_sec_sum, resume_sec_sum, pct_of_slice_total` (overhead ratio %, same source as Overview's `lifecycle_overhead_aggregate_pct`); lifecycle mode only |
@@ -171,13 +170,12 @@ A trial (one pass of the k×N fleet, `round_count=1`) is **valid** when it ran (
 running fleet without over-admitting:
 
 - `return_code == 0`;
-- `throughput.total >= 0.9 * N` — it ran most of the N running slots (a crash/early-exit fails here;
+- `throughput.total >= 0.9 * N` — it ran most of the running fleet (a crash/early-exit fails here;
   the `test.duration` ceiling caps a stalled run, which then also fails this gate). Mode-agnostic: a
   single-round trial attempts each trajectory once, so lifecycle/exec_ephemeral `total` ≈ k×N and
   exec_only `total` ≈ N, both ≥ 0.9×N on a healthy run; with `multiplier` (M) the floor instead reads
   `succeeded` (completions) ≥ 0.9×M×k×N;
-- `admission.peak_active <= N` (never ran more than N concurrent — skipped for exec_only /
-  exec_ephemeral);
+- `admission.peak_active <= admission.maximum` (never exceeded the recorded running-slot ceiling — the whole k×N fleet for full-scale lifecycle, N for the admission-capped model — skipped for exec_only / exec_ephemeral);
 - `failure_rate <= failure_tolerance`.
 
 `valid` is the gross-failure / over-admission gate, **not** a "every trajectory succeeded" bar —
@@ -223,7 +221,8 @@ Run one sweep, then read in this order, from the overall curve down to single-st
 2. **`trial-summary.csv` — success/failure and the valid gate.** First filter on the `valid` column
    to drop invalid trials, then compare `total` vs `target_count` (did it run the full fleet),
    `return_code` (non-zero → check `error`; `130` = interrupted, next section). `peak_active` should
-   be ≤ `running_concurrency` (`N`); above = over-admission. `lifecycle_overhead_pct` shows whether
+   be ≤ `running_concurrency` (`k×N` for lifecycle — the whole fleet is running; `N` for exec
+   modes); above = over-admission. `lifecycle_overhead_pct` shows whether
    the pause/resume share climbs with k.
 3. **`trajectory-detail.csv` — which trajectory lags at which ratio.** Pivot on `trajectory_id` +
    `ratio`, find the largest `elapsed_sec`, then read the 18 `*_sec` breakdown columns to locate the
@@ -382,7 +381,8 @@ and read the two workbooks side by side.
 
 - **Trial invalid but the log doesn't crash** — following the reading order: (1) `trial-summary.csv`
   `total` vs `target_count` (did it run the full fleet), (2) `return_code` (`130` = interrupted),
-  (3) `admission.peak_active` ≤ N (over-admission).
+  (3) `admission.peak_active` > `admission.maximum` (over-admission; maximum = N for exec modes,
+  k×N for full-scale lifecycle).
 - **High-ratio client-bound (GIL cap)** — single-process dispatch tops out at ~50–55 steps/s; more
   load only grows client queueing. Set `shards` (auto = P=ratio) to split the load across kernel
-  subprocesses; note lifecycle (global admission) cannot shard.
+  subprocesses; note lifecycle cannot shard (runs single-process).

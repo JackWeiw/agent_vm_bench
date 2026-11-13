@@ -19,7 +19,8 @@ base_config: config/common/replay.yaml
 
 provider: aenv
 
-# N running slots stays fixed; total_count = N * ratio scales per trial.
+# N is the ratio basis; per-trial running_concurrency = k*N for lifecycle
+# (full-scale: all k*N sandboxes pause/resume concurrently), N for exec modes.
 # PIN running_concurrency so both archs use the same N (same RAM -> same
 # baseline VM count) -> ratio 1:k maps to the same absolute sandbox count on
 # both, and the cross-arch comparison is fair. 1.5 TiB / 4 GiB = 384.

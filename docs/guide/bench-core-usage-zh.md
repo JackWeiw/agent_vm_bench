@@ -278,7 +278,7 @@ aenv lifecycle 内存超卖压测的 1:1 基线配置。
 | mode | 沙箱生命周期 | 每 step 做什么 | 并发/超卖控制 | 何时用 |
 |------|------------|--------------|--------------|--------|
 | `exec_only` | 预创建后**长驻**,整轮不创不杀 | 仅 exec | 无 | 测纯轨迹回放(exec)开销基线;后端无 lifecycle/ephemeral 能力(e2b/docker/fake) |
-| `lifecycle` | 预创建后**长驻**,整轮不杀 | acquire slot→resume→exec→pause→release | pause 打快照释放内存,k×N 沙箱塞进 N slot(**内存超卖**) | 测 pause/resume 快照开销 + 内存 overcommit;需 LifecycleCapable(aenv) |
+| `lifecycle` | 预创建后**长驻**,整轮不杀 | resume→exec→pause(step 粒度) | **全量**:k×N 沙箱全部同时 pause/resume(`running_concurrency = total_count`;只有显式设 `running_concurrency < total_count` 才限并发) | 测 pause/resume 快照开销 + 全并发 resume 负载;需 LifecycleCapable(aenv) |
 | `exec_ephemeral` | **临时**,每轮 create→exec→kill(轮间杀掉重建) | 仅 exec(无 pause/resume) | 无(k×N 全并发,无 admission) | 客户真实临时负载("拉起一次就杀,要用再拉起",B 的 no-lifecycle 模型);需 EphemeralCapable(aenv) |
 
 **exec_only vs exec_ephemeral 的区别不在"限流"**:
@@ -300,9 +300,9 @@ exec_only 直接比**;调 `test.duration` 需比 exec_only 更大(k×N×round_co
 
 **lifecycle vs exec_ephemeral 的存活模型不同**:
 
-- lifecycle 超卖 = **快照内存复用**。沙箱长驻,pause 释放物理内存,所以 `total_count = k×N`
-  个沙箱能放进 `running_concurrency = N` 个 slot 的 RAM。running slot 按 **step 粒度**获取/释放
-  (一条命令一轮 acquire/release)。
+- lifecycle 超卖 = **全量并发**。沙箱长驻,`running_concurrency = total_count = k×N`,所有
+  k×N 个沙箱**同时** pause/resume(每步一条命令一轮 resume/exec/pause)。只在显式设
+  `running_concurrency < total_count` 时才按旧快照复用模型限并发。
 - exec_ephemeral = **临时无生命周期**:完全不 pause/resume——"拉起→跑完轨迹→杀;要再用,再拉起"
   (B 的 no-lifecycle 超卖模型)。全并发 k×N,无边界靠供给侧(create/call 速率),没有"暂停腾内存"。
 
@@ -315,14 +315,17 @@ exec_only 直接比**;调 `test.duration` 需比 exec_only 更大(k×N×round_co
 整机内存固定,按"基线 VM 数 = 整机内存 / 单 VM 内存"算:
 
 - 例:1.5 TiB 整机、单 VM 4 GiB → 基线 = 1536 / 4 = **384** 个 VM。
-- `running_concurrency` 恒等于基线 VM 数(N 个 running slot);
-  `total_count` 随超卖比 `1:k` 放大到 `k × 基线`。
+- `total_count` 随超卖比 `1:k` 放大到 `k × 基线`。lifecycle 跑**全量** fleet:
+  `running_concurrency = total_count = k × 基线`,所有 k×N 沙箱**同时** pause/resume
+  (无比并发上限——ratio-k 的负载就是 k×N 个并发 resume)。仅当显式设
+  `running_concurrency < total_count` 时才启用 running-slot 上限(旧快照复用 knob,
+  oversub-bench driver 已不再用)。
 
 | 超卖比 | `total_count` | `running_concurrency` | 含义 |
 |--------|--------------|----------------------|------|
 | 1:1(基线) | 384 | 384 | 无超卖,384 沙箱全跑 |
-| 1:2 | 768 | 384 | 2x overcommit,768 沙箱在 384 slot 上多路复用 |
-| 1:3 | 1152 | 384 | 3x overcommit |
+| 1:2 | 768 | 768 | 2x fleet,768 沙箱全部同时 pause/resume |
+| 1:3 | 1152 | 1152 | 3x fleet,1152 沙箱全部同时 pause/resume |
 
 `config/common/replay.yaml` 是 1:1 基线。测别的 ratio 时改三处(或用 `-n` 覆盖 `total_count`,
 但 `running_concurrency` / `round_size` 在 YAML 里,需一起改):
@@ -332,7 +335,7 @@ sandbox:
   total_count: 768        # k × 基线
 test:
   round_size: 768         # 跟 total_count 一致 -> 单组=全部 -> 全并发
-  # running_concurrency: 384   保持不变(N slot)
+  running_concurrency: 768   # = total_count -> lifecycle 全量(全部 k×N 同时 resume)
 ```
 
 ```bash

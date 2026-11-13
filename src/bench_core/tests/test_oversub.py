@@ -91,6 +91,23 @@ def test_build_trial_config_overrides_and_preserves_base():
     assert base["replay"]["mode"] == "lifecycle"
 
 
+def test_build_trial_config_lifecycle_running_concurrency_scales():
+    """Lifecycle oversub runs the FULL fleet: rc == total_count == k*N so the
+    kernel builds no running-slot cap and all k*N sandboxes pause/resume
+    concurrently. The admission-free exec modes keep rc = N (the ratio basis
+    for the payload issue-set clamp + trial reporting)."""
+    base = _base_yaml()
+    lc = build_trial_config(base, mode="lifecycle", ratio=8, n=384, test_duration=600, trial_dir="out", prefix="rb")
+    assert lc["sandbox"]["total_count"] == 384 * 8
+    assert lc["replay"]["running_concurrency"] == 384 * 8  # full-scale: no running-slot cap
+    # Ratio 1 stays the N baseline (384 == total_count == running_concurrency).
+    lc1 = build_trial_config(base, mode="lifecycle", ratio=1, n=384, test_duration=600, trial_dir="out", prefix="rb")
+    assert lc1["replay"]["running_concurrency"] == 384
+    for mode in ("exec_only", "exec_ephemeral"):
+        ex = build_trial_config(base, mode=mode, ratio=8, n=384, test_duration=600, trial_dir="out", prefix="rb")
+        assert ex["replay"]["running_concurrency"] == 384  # N basis (admission-free anyway)
+
+
 def test_build_trial_config_round_yaml_round_trips():
     """Generated trial.yaml must load back to the same overrides (real subprocess input)."""
     base = _base_yaml()
@@ -108,7 +125,7 @@ def test_build_trial_config_round_yaml_round_trips():
     assert reloaded["sandbox"]["total_count"] == 1152
     assert reloaded["test"]["round_size"] == 1152
     assert reloaded["test"]["round_count"] == 1
-    assert reloaded["replay"]["running_concurrency"] == 384
+    assert reloaded["replay"]["running_concurrency"] == 1152  # lifecycle: full-scale (= k*N)
 
 
 def test_build_trial_config_passes_through_round_count():
@@ -208,6 +225,20 @@ def test_compute_valid_just_under_floor_still_invalid():
 
 def test_compute_valid_peak_active_exceeds_n():
     s = _summary(peak_active=400)  # 400 > N=384 -> over-admitted -> invalid.
+    assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is False
+
+
+def test_compute_valid_full_scale_lifecycle_peak_active_uses_summary_ceiling():
+    # Full-scale lifecycle: the scheduler maximum is the WHOLE fleet (rc ==
+    # total), so peak_active legitimately reaches k*N -- judged against the
+    # summary's own maximum, not the driver's N basis.
+    s = _summary(total=3072, succeeded=3072, wall_sec=940.0, peak_active=3072, maximum=3072)
+    assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is True
+    # Over the recorded ceiling (a genuine over-admission) still fails.
+    s = _summary(total=3072, succeeded=3072, wall_sec=940.0, peak_active=3100, maximum=3072)
+    assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is False
+    # Summary with no maximum falls back to the driver's N basis.
+    s = _summary(total=3072, succeeded=3072, wall_sec=940.0, peak_active=3100, maximum=None)
     assert compute_valid(s, return_code=0, n=384, failure_tolerance=0.0) is False
 
 

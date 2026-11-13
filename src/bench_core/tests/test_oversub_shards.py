@@ -67,9 +67,9 @@ def test_resolve_shard_count_auto_follows_ratio_for_shardable_modes():
     assert resolve_shard_count("auto", mode="exec_only", ratio=3, n=4) == 3
 
 
-def test_resolve_shard_count_global_admission_modes_never_shard():
-    # lifecycle enforces a GLOBAL running_concurrency; per-shard admission
-    # would over-admit to P*N, so it collapses to single-process.
+def test_resolve_shard_count_full_scale_lifecycle_never_shards():
+    # lifecycle runs its full k*N fleet (pause/resume) in one process: never
+    # sharded, at any P or ratio.
     assert resolve_shard_count("auto", mode="lifecycle", ratio=8, n=384) == 1
     assert resolve_shard_count(4, mode="lifecycle", ratio=8, n=384) == 1  # explicit downgraded
 
@@ -87,9 +87,9 @@ def test_shard_sizes_balanced_remainder_first():
     assert shard_sizes(7, 7) == [1] * 7
 
 
-def test_plan_shards_legacy_only_for_global_admission_modes(tmp_path, caplog):
-    # lifecycle (global running_concurrency) can never be split: no plan, the
-    # legacy single-process path, at any P. The autodetected default is silent,
+def test_plan_shards_lifecycle_never_plans(tmp_path, caplog):
+    # lifecycle's full-scale pause/resume fleet stays in one process: no plan,
+    # the legacy single-process path, at any P. The autodetected default is silent,
     # but an explicit P > 1 is a documented downgrade and is surfaced with a
     # WARNING (we validate, not silently rewrite, the operator's request).
     assert plan_shards(trial_dir=tmp_path, mode="lifecycle", ratio=4, n=8, setting="auto") is None

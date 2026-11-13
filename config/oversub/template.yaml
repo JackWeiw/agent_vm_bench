@@ -9,7 +9,7 @@
 base_config: config/common/replay.yaml   # REQUIRED unless --config is passed
 
 provider: aenv                            # {aenv, e2b, docker, fake}
-# running_concurrency: 384               # N; default = base replay.running_concurrency
+# running_concurrency: 384               # N (ratio basis); lifecycle scales it to k*N per trial
 
 ratios: [1, 2, 3]                         # k values (list) or "1,2,3" (string); total_count = k * N
 modes: [exec_ephemeral, lifecycle]   # default sweep order: exec_ephemeral (pure COW) / lifecycle / exec_only (or a subset)

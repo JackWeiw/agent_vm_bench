@@ -148,16 +148,17 @@ def coerce_shards(value: object) -> int | str:
 def resolve_shard_count(setting: int | str, *, mode: str, ratio: int, n: int) -> int:
     """P for one trial: ``auto`` -> ratio (reference topology), int -> as asked.
 
-    Non-shardable modes always collapse to 1 (a global-admission mode cannot
-    be split without a cross-process permit server); an explicit P > 1 on such
-    a mode is downgraded with a warning, not an error, so one sweep config can
-    span modes. P is capped at the fleet size (every shard needs >= 1 slot).
+    Non-shardable modes always collapse to 1 (only ``lifecycle``: its full-scale
+    k*N pause/resume fleet is deliberately driven by one process); an explicit
+    P > 1 on such a mode is downgraded with a warning, not an error, so one
+    sweep config can span modes. P is capped at the fleet size (every shard
+    needs >= 1 slot).
     """
     if mode not in SHARDABLE_MODES:
         if setting != "auto" and setting > 1:
             logger.warning(
-                "shards=%s ignored for mode %s: global running_concurrency admission "
-                "cannot be split across processes (would over-admit to P*N); running "
+                "shards=%s ignored for mode %s: lifecycle always runs single-process "
+                "(its k*N pause/resume fleet is not sharded); running "
                 "single-process. Shardable modes: %s",
                 setting,
                 mode,
@@ -222,9 +223,9 @@ def plan_shards(*, trial_dir: Path, mode: str, ratio: int, n: int, setting: int 
     driver-owned ``<trial_dir>/vm_monitor/``) byte-consistent with P >= 2
     trials, so agents comparing oversub ratios read one fixed structure and
     the host collector is owned by the driver at every ratio. Only
-    non-shardable modes (global admission, always P=1) keep the legacy
-    single-process path -- their config cannot be split even in principle, and
-    a 1-shard wrap would rewrite it for no benefit.
+    non-shardable modes (lifecycle, always P=1) keep the legacy
+    single-process path -- their pause/resume fleet is not split across
+    processes, and a 1-shard wrap would rewrite it for no benefit.
 
     For P <= ratio the split is GROUP-ALIGNED: the trial's ``ratio`` groups of
     N slots are distributed over the shards, so every shard size is an integer
