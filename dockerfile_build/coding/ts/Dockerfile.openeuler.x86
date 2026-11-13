@@ -63,7 +63,7 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 # ("Huawei Web Secure Internet Gateway CA") the system store won't trust.
 # curl uses -k; dnf reads sslverify from dnf.conf.
 RUN echo 'sslverify=0' >> /etc/dnf/dnf.conf && \
-    dnf install -y curl xz vim libgomp iproute net-tools gnupg2 git && \
+    dnf install -y curl xz vim libgomp iproute net-tools gnupg2 git python3 && \
     cd /usr/local && \
     curl -kL --connect-timeout 30 --retry 3 --retry-delay 3 \
         -o node-v24.14.0-linux-x64.tar.xz \
