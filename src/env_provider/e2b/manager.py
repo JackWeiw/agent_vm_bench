@@ -210,16 +210,25 @@ class SandboxManager(BaseSandboxManager):
     def _mask_to_cpus(hexmask: str) -> set[int]:
         """taskset hex affinity mask -> set of cpu ints.
 
-        taskset prints comma-separated 32-bit hex words, little-endian (first
-        word = cpus 0-31). '0c' -> {2,3}; '0000000c,00000000' -> {2,3};
-        '00000000,0000000c' -> {34,35}.
+        taskset prints comma-separated hex words (one per ``unsigned long`` =
+        64 bits on Linux), first word = cpus 0..w-1, each later word continuing
+        the bit range. Words are zero-padded by taskset but not to a fixed
+        width, so a word's width is its own digit count x 4 and the offset for
+        word i is the cumulative bit count of words 0..i-1. 'c' -> {2,3};
+        '0000000c,00000000' -> {2,3}; '00000000,0000000c' -> {34,35};
+        '0000000000000000,0000000300000000' -> {96,97}.
         """
         cpus: set[int] = set()
-        for word_idx, w in enumerate(hexmask.replace(" ", "").split(",")):
-            v = int(w, 16)
-            for bit in range(32):
-                if v & (1 << bit):
-                    cpus.add(word_idx * 32 + bit)
+        offset = 0
+        for word in hexmask.replace(" ", "").split(","):
+            if not word:
+                continue
+            value = int(word, 16)
+            width = 4 * len(word)
+            for bit in range(width):
+                if value & (1 << bit):
+                    cpus.add(offset + bit)
+            offset += width
         return cpus
 
     def _pin_and_verify_fc(self) -> str | None:

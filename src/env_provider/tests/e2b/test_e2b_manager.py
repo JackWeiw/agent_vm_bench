@@ -355,6 +355,8 @@ class TestParsers:
         # 32-bit words, little-endian (first word = cpus 0-31)
         assert SandboxManager._mask_to_cpus("00000000,0000000c") == {34, 35}
         assert SandboxManager._mask_to_cpus("0000000c,00000000") == {2, 3}
+        # 64-bit words (one unsigned long per task set): high-half bits count
+        assert SandboxManager._mask_to_cpus("0000000000000000,0000000300000000") == {96, 97}
 
 
 class TestPinAndVerifyFc:
@@ -399,6 +401,16 @@ class TestPinAndVerifyFc:
         err = mgr._pin_and_verify_fc()
         assert err is not None
         assert "verify failed" in err
+
+    def test_wide_mask_high_cpus_ok(self, monkeypatch):
+        # want 96,97 -> taskset prints two 64-bit words (bit 32/33 of word 1);
+        # the old 32-bit-window parser dropped those to set() and failed verify.
+        _patch(monkeypatch, _FakeSandboxCls())
+        mask = "0000000000000000,0000000300000000"
+        fake_run = _FakeSubprocessRun(ap_out=_two_thread_masks(mask))
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="96,97"), Event())
+        assert mgr._pin_and_verify_fc() is None
 
 
 class TestCreateSinglePin:
