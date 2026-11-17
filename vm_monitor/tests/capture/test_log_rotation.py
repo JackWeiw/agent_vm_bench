@@ -18,7 +18,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from vm_monitor.capture.log_capture import DEFAULT_ROTATION_PERF_EVENTS, LogCapture
+from vm_monitor.capture.log_capture import DEFAULT_ROTATION_PERF_EVENTS, DEFAULT_UPROF_METRICS, LogCapture
 
 
 class _DummyProc:
@@ -165,12 +165,63 @@ class TestLogRotation(unittest.TestCase):
         spawned = []
         with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
             cap._rotation_uprof_turn()
-        cmd = spawned[0]
+        uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
+        logs = [f for f in os.listdir(uprof_dir) if f.endswith(".log")]
+        self.assertEqual(len(logs), 1)
+        turn_dir = os.path.join(uprof_dir, os.path.splitext(logs[0])[0])
         self.assertEqual(
-            cmd, ["/fake/AMDuProfPcm", "-m", "memory,pipeline_util", "-a", "-A", "system,package", "-d", "15"]
+            spawned[0],
+            [
+                "/fake/AMDuProfPcm",
+                "-m",
+                "memory,pipeline_util",
+                "-a",
+                "-A",
+                "system,package",
+                "-o",
+                turn_dir,
+                "-d",
+                "15",
+            ],
         )
-        files = os.listdir(os.path.join(self.log_dir, "log_capture", "uprof"))
-        self.assertEqual(len(files), 1)
+        # The per-turn -o directory exists alongside the stdout log.
+        self.assertTrue(os.path.isdir(turn_dir))
+
+    def test_uprof_metrics_empty_falls_back_to_default(self):
+        self.config["uprof_path"] = "/fake/AMDuProfPcm"
+        cap = self._cap(rotation_uprof_metrics=" , ")
+        spawned = []
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
+            cap._rotation_uprof_turn()
+        self.assertEqual(spawned[0][spawned[0].index("-m") + 1], DEFAULT_UPROF_METRICS)
+
+    def test_uprof_metrics_custom_normalizes_spaces(self):
+        self.config["uprof_path"] = "/fake/AMDuProfPcm"
+        cap = self._cap(rotation_uprof_metrics="memory, bandwidth ,")
+        spawned = []
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
+            cap._rotation_uprof_turn()
+        self.assertEqual(spawned[0][spawned[0].index("-m") + 1], "memory,bandwidth")
+
+    def test_uprof_turn_writes_per_turn_dirs_without_collision(self):
+        self.config["uprof_path"] = "/fake/AMDuProfPcm"
+        cap = self._cap()
+        spawned = []
+        with patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=self._spawn_recorder(spawned)):
+            cap._rotation_uprof_turn()
+            # Two same-second turns collide on the stamp -> -2 suffix; if the
+            # clock ticks between them the stamps simply differ. Either way
+            # each turn gets its own -o dir (assertions are count/set-based).
+            cap._rotation_uprof_turn()
+        uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
+        logs = sorted(f for f in os.listdir(uprof_dir) if f.endswith(".log"))
+        turn_dirs = sorted(d for d in os.listdir(uprof_dir) if os.path.isdir(os.path.join(uprof_dir, d)))
+        self.assertEqual(len(logs), 2)
+        self.assertEqual(len(turn_dirs), 2)
+        self.assertEqual(
+            sorted(sp[sp.index("-o") + 1] for sp in spawned),
+            sorted(os.path.join(uprof_dir, os.path.splitext(log)[0]) for log in logs),
+        )
 
     def test_uprof_missing_path_skips(self):
         self.config.pop("uprof_path", None)

@@ -28,6 +28,10 @@ except ImportError:
 # ==================== Constants ====================
 
 ENV_FILE_PATH = ".env"
+# Tool paths persisted to / validated from .env. UPROF_PATH is registered here
+# but stays an optional tool: validate_and_prompt_missing() validates it without
+# ever prompting (unset/invalid degrades to None; the uprof rotation slot is
+# skipped instead of blocking the session).
 ENV_REQUIRED_KEYS = [
     "DEVKIT_PATH",
     "KSYS_PATH",
@@ -36,6 +40,7 @@ ENV_REQUIRED_KEYS = [
     "SMAP_BW_PATH",
     "GETFRE_PATH",
     "GETFRE_CONFIG_PATH",
+    "UPROF_PATH",
 ]
 
 
@@ -273,6 +278,14 @@ def validate_and_prompt_missing(config: dict, non_interactive: bool = False) -> 
                     print(f"  [OK] {env_key} set to: {user_input}")
                 else:
                     print(f"  [ERROR] Path does not exist: {user_input}")
+
+    # UPROF_PATH is registered in ENV_REQUIRED_KEYS but is an optional tool:
+    # validate the path and degrade to None -- never prompt, never block the
+    # session (the uprof rotation slot is skipped instead).
+    uprof_path = config.get("uprof_path", "")
+    if not uprof_path or not os.path.exists(uprof_path):
+        config["uprof_path"] = None  # Mark as disabled
+        print("  [WARN] UPROF_PATH not configured or invalid, disabled for this session")
 
     # Save updated config to .env (only if any changes made)
     if non_interactive:

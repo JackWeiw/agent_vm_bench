@@ -34,10 +34,12 @@ DEFAULT_ROTATION_PERF_EVENTS = (
     "l2d_tlb,l2d_tlb_refill,l2i_tlb,l2i_tlb_refill,context-switches,sched:sched_switch"
 )
 
-# Default AMDuProfPcm collection spec for log-rotation mode (system-wide
-# memory + pipeline-utilization counters). The binary path comes from .env
-# (UPROF_PATH); the per-turn ``-d <interval>`` is appended by the rotation turn.
-DEFAULT_UPROF_ARGS = ("-m", "memory,pipeline_util", "-a", "-A", "system,package")
+# Default AMDuProfPcm metric set for log-rotation mode (system-wide memory +
+# pipeline-utilization counters). Override via monitor.log_rotation.uprof_metrics
+# (bench-core) or --rotation-uprof-metrics (vm-monitor CLI); an empty value
+# falls back here. The binary path comes from .env (UPROF_PATH); the per-turn
+# ``-o <dir>`` and ``-d <interval>`` are appended by the rotation turn.
+DEFAULT_UPROF_METRICS = "memory,pipeline_util"
 
 # Rotation renames ksys's own <...>_report.json to the per-turn log stem
 # (<YYYYmmdd-HHMMSS>_report.json, the _rotation_log_path format). Matching that
@@ -76,6 +78,7 @@ class LogCapture:
         rotation_log_dir: str | None = None,
         stress_file: str | None = None,
         rotation_tools: Iterable[str] | None = None,
+        rotation_uprof_metrics: str | None = None,
     ):
         """
         Args:
@@ -116,6 +119,9 @@ class LogCapture:
                 (devkit -> ksys -> perf -> uprof) is kept whatever the input
                 order. Unselected tools are parked in _rotation_skipped
                 silently for the whole run.
+            rotation_uprof_metrics: comma-separated AMDuProfPcm metric list for
+                the uprof slot's ``-m`` flag (e.g. "memory,pipeline_util").
+                None/empty falls back to DEFAULT_UPROF_METRICS.
         """
         self.config = config
         self.duration = duration
@@ -138,6 +144,7 @@ class LogCapture:
         # {"devkit": sec, "ksys": sec, "perf": sec} for per-tool intervals.
         self.rotation_intervals, self.rotation_interval = self._resolve_rotation_intervals(rotation_interval)
         self.rotation_perf_events = rotation_perf_events or DEFAULT_ROTATION_PERF_EVENTS
+        self.rotation_uprof_metrics = self._resolve_uprof_metrics(rotation_uprof_metrics)
         self.rotation_log_dir = rotation_log_dir or os.path.join(log_dir, "log_capture")
         self.stress_file = stress_file
         # Rotation membership: None -> every tool; a list keeps the named ones
@@ -464,6 +471,21 @@ class LogCapture:
         wanted.discard("")
         return tuple(t for t in cls._ROTATION_TOOLS if t in wanted)
 
+    @staticmethod
+    def _resolve_uprof_metrics(raw) -> str:
+        """Normalize ``rotation_uprof_metrics`` into the uprof slot's ``-m`` value.
+
+        Accepts a comma string (CLI/YAML forwarding) or an iterable of metric
+        names; whitespace-only items are dropped. An empty result (None, "",
+        only blanks) falls back to DEFAULT_UPROF_METRICS.
+        """
+        if raw is None:
+            return DEFAULT_UPROF_METRICS
+        if not isinstance(raw, str):
+            raw = ",".join(str(m) for m in raw)
+        metrics = ",".join(m.strip() for m in raw.split(",") if m.strip())
+        return metrics or DEFAULT_UPROF_METRICS
+
     def _rotation_log_path(self, tool: str, *sub: str) -> str | None:
         """Create (and remember) a per-turn timestamped log path under rotation_log_dir.
 
@@ -746,15 +768,39 @@ class LogCapture:
             self._rotation_skip_tool("uprof", "uprof_path not configured")
             return
         interval = str(self.rotation_intervals["uprof"])
-        cmd = [self.config["uprof_path"], *DEFAULT_UPROF_ARGS, "-d", interval]
         log_path = self._rotation_log_path("uprof")
         if log_path is None:
+            return
+        # AMDuProfPcm writes its own CSV/report output; one directory per turn
+        # (-o <dir>, sharing the stdout log's stem) so consecutive turns never
+        # overwrite each other's files.
+        turn_dir = os.path.splitext(log_path)[0]
+        try:
+            os.makedirs(turn_dir, exist_ok=True)
+        except OSError as e:
+            print(f"  [ERROR] rotation uprof cannot create output dir {turn_dir}: {e}")
             return
         try:
             fh = open(log_path, "w")
         except OSError as e:
             print(f"  [ERROR] rotation uprof cannot open log {log_path}: {e}")
+            try:
+                os.rmdir(turn_dir)  # drop the per-turn dir the failed turn created
+            except OSError:
+                pass
             return
+        cmd = [
+            self.config["uprof_path"],
+            "-m",
+            self.rotation_uprof_metrics,
+            "-a",
+            "-A",
+            "system,package",
+            "-o",
+            turn_dir,
+            "-d",
+            interval,
+        ]
         print(f"  [CMD] uprof (rotation): {' '.join(cmd)}")
         self.rotation_turns["uprof"].append(log_path)
         try:
@@ -772,6 +818,10 @@ class LogCapture:
                 pass
             try:
                 os.unlink(log_path)  # drop the empty log from the failed turn
+            except OSError:
+                pass
+            try:
+                os.rmdir(turn_dir)  # drop the empty per-turn output dir too
             except OSError:
                 pass
             try:

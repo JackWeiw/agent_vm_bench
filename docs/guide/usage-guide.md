@@ -293,7 +293,9 @@ UB_WATCH_PATH=/path/to/ub_watch
 # smap_bw script path (run via sudo for dmesg access)
 SMAP_BW_PATH=/path/to/smap_bw.py
 
-# AMD uProf binary (log-rotation slot; rotation skips uprof if unset)
+# AMD uProf binary (log-rotation slot; unset/invalid path warns and skips the slot.
+# Metrics: --rotation-uprof-metrics / monitor.log_rotation.uprof_metrics, default memory,pipeline_util;
+# per-turn CSVs land in uprof/<stamp>/)
 UPROF_PATH=/opt/AMDuProf_5.3-521/bin/AMDuProfPcm
 
 # getfre executable path and config
@@ -313,10 +315,10 @@ DEVKIT_CPU_RANGE=96-191
 | `KSYS_PATH` + `KSYS_CONFIG_PATH` | `ksys` | KSys sheet | **both required** — ksys skipped if either missing |
 | `UB_WATCH_PATH` | `ub_watch` | UBWatch_Latency sheet | optional |
 | `SMAP_BW_PATH` | `smap_bw` | SMAPBW sheets | optional (run via sudo) |
-| `UPROF_PATH` | `uprof` (rotation mode) | log_capture/uprof logs | optional; `--log-rotation` only, slot skipped if unset |
+| `UPROF_PATH` | `uprof` (rotation mode) | log_capture/uprof logs | optional; `--log-rotation` only; unset/invalid warns + skips the slot (never prompts) |
 | `GETFRE_PATH` + `GETFRE_CONFIG_PATH` | `getfre` | Getfre sheets | optional; config falls back to host auto-detect |
 
-If `.env` is missing entirely or a path is unset, interactive input will be prompted (or the tool silently skipped in non-interactive mode).
+If `.env` is missing entirely or a path is unset, interactive input will be prompted (or the tool silently skipped in non-interactive mode). UPROF_PATH is the exception: never prompted in either mode — unset/invalid degrades to a warning and the uprof rotation slot is skipped.
 
 ### Output Files
 

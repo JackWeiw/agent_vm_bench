@@ -247,6 +247,42 @@ def test_log_rotation_config_intervals_accepts_uprof():
     assert lr.intervals == {"devkit": 20, "uprof": 10}
 
 
+def test_log_rotation_config_uprof_metrics_parses_list_or_string():
+    # uprof_metrics accepts a YAML list or comma string; blanks are dropped.
+    lr = KernelConfig.from_raw(
+        {
+            "sandbox": {"total_count": 1},
+            "monitor": {"log_rotation": {"uprof_metrics": ["memory", "pipeline_util"]}},
+        }
+    ).monitor.log_rotation
+    assert lr.uprof_metrics == ["memory", "pipeline_util"]
+    lr2 = KernelConfig.from_raw(
+        {"sandbox": {"total_count": 1}, "monitor": {"log_rotation": {"uprof_metrics": "memory, pipeline_util "}}}
+    ).monitor.log_rotation
+    assert lr2.uprof_metrics == ["memory", "pipeline_util"]
+
+
+def test_log_rotation_config_uprof_metrics_empty_falls_back_to_builtin():
+    # None/empty -> no --rotation-uprof-metrics flag downstream (vm-monitor's
+    # built-in set applies).
+    lr = KernelConfig.from_raw(
+        {"sandbox": {"total_count": 1}, "monitor": {"log_rotation": {"uprof_metrics": ""}}}
+    ).monitor.log_rotation
+    assert lr.uprof_metrics is None
+    lr2 = KernelConfig.from_raw({"sandbox": {"total_count": 1}, "monitor": {"log_rotation": True}}).monitor.log_rotation
+    assert lr2.uprof_metrics is None
+
+
+def test_log_rotation_config_uprof_metrics_scalar_warns_and_drops(caplog):
+    # A scalar value (YAML typo like `uprof_metrics: true`) must warn + fall
+    # back to the built-in set, never crash config parsing.
+    lr = KernelConfig.from_raw(
+        {"sandbox": {"total_count": 1}, "monitor": {"log_rotation": {"uprof_metrics": True}}}
+    ).monitor.log_rotation
+    assert lr.uprof_metrics is None
+    assert any("log_rotation.uprof_metrics" in r.message for r in caplog.records)
+
+
 def test_log_rotation_config_invalid_warns_and_drops(caplog):
     cfg = KernelConfig.from_raw({"sandbox": {"total_count": 1}, "monitor": {"log_rotation": "banana"}})
     assert cfg.monitor.log_rotation is None
@@ -290,6 +326,24 @@ def test_command_log_rotation_default_events_omit_flag(monkeypatch, tmp_path):
     assert "--log-rotation" in mc._cmd
     assert "--rotation-perf-events" not in mc._cmd
     assert "--rotation-interval" in mc._cmd  # interval still forwarded (default 15)
+
+
+def test_command_log_rotation_uprof_metrics_forwards_flag(monkeypatch, tmp_path):
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    prov = _StubProvider(vmm_type="firecracker")
+    mc = MonitorController(
+        _cfg(stress_file=str(tmp_path / "lock"), log_rotation={"enabled": True, "uprof_metrics": "memory,bandwidth"}),
+        prov,
+    )
+    assert mc._cmd[mc._cmd.index("--rotation-uprof-metrics") + 1] == "memory,bandwidth"
+
+
+def test_command_log_rotation_default_uprof_metrics_omits_flag(monkeypatch, tmp_path):
+    # uprof_metrics omitted -> vm-monitor's built-in set applies (no flag).
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    prov = _StubProvider(vmm_type="firecracker")
+    mc = MonitorController(_cfg(stress_file=str(tmp_path / "lock"), log_rotation=True), prov)
+    assert "--rotation-uprof-metrics" not in mc._cmd
 
 
 def test_command_log_rotation_inert_when_capture_off(monkeypatch, tmp_path, caplog):
