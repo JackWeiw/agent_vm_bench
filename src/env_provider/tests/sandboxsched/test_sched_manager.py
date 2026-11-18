@@ -36,6 +36,7 @@ ensure_workflow_registered("coding")
 from env_provider.sandboxsched import manager as mgr_mod
 from env_provider.sandboxsched.config import Config
 from env_provider.sandboxsched.manager import SandboxManager
+from env_provider.sandboxsched.schemas import SandboxState
 
 
 # -------------------------------------------------------------------- SDK fakes
@@ -136,6 +137,26 @@ class _FakeManagerSync:
     def __init__(self):
         self.list_pages: list[_PagedInfos] = []
         self.killed: list[str] = []
+        # Control-plane state model for the state-gating tests: ``states``
+        # holds the current state per sandbox id; ``transitions`` serves a
+        # sequence of states per get_sandbox_info call (last one sticks) to
+        # simulate the server's 202-then-transition async contract.
+        self.states: dict[str, str] = {}
+        self.transitions: dict[str, list[str]] = {}
+
+    def _info(self, sandbox_id: str):
+        seq = self.transitions.get(sandbox_id)
+        if seq:
+            state = seq.pop(0)
+            if not seq:
+                self.transitions.pop(sandbox_id)
+                self.states[sandbox_id] = state
+        else:
+            state = self.states.get(sandbox_id, "Running")
+        return type("Info", (), {"status": type("S", (), {"state": state})()})()
+
+    async def get_sandbox_info(self, sandbox_id):
+        return self._info(sandbox_id)
 
     async def list_sandbox_infos(self, flt):  # noqa: ARG002
         if not self.list_pages:
@@ -183,6 +204,8 @@ def patched_sdk(monkeypatch):
     fake_manager = _FakeManagerCls(fake_manager_inner)
     monkeypatch.setattr(mgr_mod, "Sandbox", fake_sandbox)
     monkeypatch.setattr(mgr_mod, "SdkSandboxManager", fake_manager)
+    # backend-state waits poll at the module constant; speed the tests up
+    monkeypatch.setattr(mgr_mod, "_STATE_POLL_INTERVAL", 0.01)
     monkeypatch.setattr(
         mgr_mod,
         "ConnectionConfig",
@@ -356,3 +379,55 @@ class TestExecProbe:
         # kill drops the entry again
         mgr._kill_one(state)
         assert sid not in mgr._envd_urls
+
+
+# -------------------------------------------------------------------- state gating
+class TestStateGating:
+    """The OpenSandbox API is asynchronous (202 + server-side transition) and an
+    invalid transition fails server-side, so pause/resume gate on the backend
+    state: resume skips the POST when the sandbox is already up, pause skips it
+    when already Paused, and both wait for the transition to land."""
+
+    def test_resume_skips_post_when_already_running(self, kernel_config, sched_config, patched_sdk):
+        fake_sandbox, fake_manager = patched_sdk
+        fake_manager.states["sbx-0001"] = "Running"
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        handle = mgr.resume_handle("sbx-0001")
+        # resuming a Running sandbox is an invalid transition server-side:
+        # the gate re-attaches with connect instead of POSTing
+        assert fake_sandbox.resumed == []
+        assert fake_sandbox.connected == ["sbx-0001"]
+        assert handle.id == "sbx-0001"
+
+    def test_resume_posts_when_paused_and_waits_for_running(self, kernel_config, sched_config, patched_sdk):
+        fake_sandbox, fake_manager = patched_sdk
+        fake_manager.states["sbx-0001"] = "Paused"
+        # first get_sandbox_info (the gate) sees Paused; after the POST the
+        # wait polls consume resuming -> running
+        fake_manager.transitions["sbx-0001"] = ["paused", "resuming", "running"]
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        handle = mgr.resume_handle("sbx-0001")
+        assert fake_sandbox.resumed == ["sbx-0001"]
+        assert handle.id == "sbx-0001"
+
+    def test_pause_skips_post_when_already_paused(self, kernel_config, sched_config, patched_sdk):
+        fake_sandbox, fake_manager = patched_sdk
+        fake_manager.states["sbx-0001"] = "Paused"
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        handle = _FakeSandboxSync("sbx-0001")
+        mgr.pause_handle(SandboxState(sandbox_id=1, sandbox_obj=handle))
+        # pausing a Paused sandbox is an invalid transition server-side: no POST
+        assert handle.paused is False
+
+    def test_pause_posts_and_waits_for_paused(self, kernel_config, sched_config, patched_sdk):
+        fake_sandbox, fake_manager = patched_sdk
+        fake_manager.states["sbx-0001"] = "running"
+        # first get_sandbox_info (the gate) sees running; after the POST the
+        # wait polls consume pausing -> paused
+        fake_manager.transitions["sbx-0001"] = ["running", "pausing", "paused"]
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        handle = _FakeSandboxSync("sbx-0001")
+        mgr.pause_handle(SandboxState(sandbox_id=1, sandbox_obj=handle))
+        assert handle.paused is True  # POST happened
+        # the transition sequence was consumed down to the sticky Paused state
+        assert fake_manager.states["sbx-0001"] == "paused"

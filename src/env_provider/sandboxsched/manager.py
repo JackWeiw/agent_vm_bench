@@ -129,6 +129,9 @@ except ImportError:  # pragma: no cover - SDK not installed in dev/test
         async def kill_sandbox(self, sandbox_id):  # noqa: ARG002
             pass
 
+        async def get_sandbox_info(self, sandbox_id):  # noqa: ARG002
+            return type("Info", (), {"status": type("State", (), {"state": "Running"})()})()
+
         async def close(self):
             pass
 
@@ -187,6 +190,9 @@ logging.getLogger("opensandbox").setLevel(logging.WARNING)
 # list non-terminated sandboxes so detect/cleanup sees live + paused ones.
 _LIVE_STATES = (SdkSandboxState.RUNNING, SdkSandboxState.PAUSED)
 
+# Poll interval for the backend-state waits (pause -> Paused, resume -> Running).
+_STATE_POLL_INTERVAL = 1.0
+
 
 class _EventLoopThread:
     """A private asyncio loop on a daemon thread for the SDK's async client.
@@ -241,6 +247,8 @@ class SandboxManager(BaseSandboxManager):
         self._bridge_lock = threading.Lock()
         self._connection_config: ConnectionConfig | None = None
         self._loop_thread: _EventLoopThread | None = None
+        # Cached admin manager for control-plane state reads (_backend_state).
+        self._info_manager = None
         # sandbox_id -> envd base URL; resolved on first use, dropped on
         # resume (the endpoint may change across pause/resume) and kill.
         self._envd_urls: dict[str, str] = {}
@@ -444,19 +452,79 @@ class SandboxManager(BaseSandboxManager):
         )
 
     # ----------------------------------------------------- handle ops (adapter-facing)
+    async def _get_info_async(self, sandbox_id: str) -> Any:
+        """GET /sandboxes/{id} via a cached admin manager (control-plane view).
+
+        The OpenSandbox API is asynchronous: pause/resume return 202 and the
+        transition lands server-side some time later, and an invalid
+        transition (e.g. resuming a sandbox that is Running) fails
+        server-side -- the state gates below are built on this read.
+        """
+        # _connection() takes _bridge_lock itself (non-reentrant), so build
+        # the config BEFORE entering the lock below.
+        connection_config = self._connection()
+        with self._bridge_lock:
+            if self._info_manager is None:
+                self._info_manager = await SdkSandboxManager.create(connection_config=connection_config)
+        return await self._info_manager.get_sandbox_info(sandbox_id)
+
+    def _backend_state(self, sandbox_id: str) -> str:
+        """Normalized server-side state: "running" / "paused" / ... (lowercase tail)."""
+        info = self.submit(self._get_info_async(sandbox_id))
+        state = getattr(getattr(info, "status", None), "state", None)
+        return str(state).split(".")[-1].lower()
+
+    def _wait_for_state(self, sandbox_id: str, target: str, timeout: float) -> str:
+        """Poll the backend until ``sandbox_id`` reports ``target`` (or raise)."""
+        deadline = time.monotonic() + max(timeout, 0.0)
+        while True:
+            state = self._backend_state(sandbox_id)
+            if state == target:
+                return state
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"sandbox {sandbox_id} did not reach state {target!r} within "
+                    f"{timeout:.0f}s (last state: {state!r})"
+                )
+            time.sleep(_STATE_POLL_INTERVAL)
+
     def pause_handle(self, state: SandboxState) -> None:
-        """Server-side pause of the sandbox behind ``state`` (keeps the handle)."""
+        """Server-side pause of the sandbox behind ``state`` (keeps the handle).
+
+        State-gated: skip the POST when the sandbox is already Paused, and
+        wait for the Paused state before returning -- the API is asynchronous
+        (202 + server-side transition), and a fast resume racing the Pausing
+        transition is an invalid transition that fails server-side.
+        """
+        sandbox_id = str(getattr(state.sandbox_obj, "id", ""))
+        if self._backend_state(sandbox_id) == "paused":
+            return
         self.submit(state.sandbox_obj.pause())
+        self._wait_for_state(sandbox_id, "paused", self.config.ready_timeout)
 
     def resume_handle(self, sandbox_id: str) -> Any:
-        """Resume a paused sandbox by id; return the fresh async Sandbox handle.
+        """Resume a paused sandbox by id; return a usable async Sandbox handle.
 
-        ``Sandbox.resume`` performs the server-side resume and re-resolves the
-        execd endpoint (it may change across pause/resume), so the caller must
-        swap the returned handle in.
+        State-gated: when the server already reports the sandbox up
+        (Running, or still Resuming -- e.g. a previous slice failed after the
+        resume had applied, or a transient retry re-entered), skip the POST
+        (resuming a Running sandbox is an invalid transition that fails
+        server-side) and re-attach with ``Sandbox.connect``; otherwise POST
+        the resume and wait for the Running state before returning. The envd
+        URL cache is dropped either way (the endpoint may change across
+        pause/resume).
         """
-        self._envd_urls.pop(str(sandbox_id), None)  # endpoint may change across pause/resume
-        return self.submit(
+        self._envd_urls.pop(str(sandbox_id), None)
+        if self._backend_state(sandbox_id) in ("running", "resuming"):
+            return self.submit(
+                Sandbox.connect(
+                    sandbox_id,
+                    connection_config=self._connection(),
+                    skip_health_check=self.config.skip_health_check,
+                    connect_timeout=timedelta(seconds=self.config.ready_timeout),
+                )
+            )
+        handle = self.submit(
             Sandbox.resume(
                 sandbox_id,
                 connection_config=self._connection(),
@@ -464,6 +532,8 @@ class SandboxManager(BaseSandboxManager):
                 resume_timeout=timedelta(seconds=self.config.ready_timeout),
             )
         )
+        self._wait_for_state(sandbox_id, "running", self.config.ready_timeout)
+        return handle
 
     # ----------------------------------------------------- sandboxsched-specific
     def detect_from_file(self, ids_file: str) -> dict[int, SandboxState]:
