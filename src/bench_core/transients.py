@@ -9,10 +9,6 @@ from __future__ import annotations
 
 # Lowercased marker substrings. Order does not matter; first match wins.
 _TRANSIENT_MARKERS: tuple[str, ...] = (
-    # "500": the scheduler occasionally answers a valid pause/resume with a
-    # bare 500 -- same transient class as 502/503/504 (observed in the field:
-    # "Pause sandbox failed: scheduler ... return 500 Internal Server Error").
-    "500",
     "502",
     "503",
     "504",
