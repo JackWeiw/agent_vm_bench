@@ -44,16 +44,109 @@ try:
     from opensandbox.manager import SandboxManager as SdkSandboxManager
     from opensandbox.models.sandboxes import SandboxFilter, SandboxState as SdkSandboxState
 except ImportError:  # pragma: no cover - SDK not installed in dev/test
-    # No inline mock: the kernel never drives this provider without the SDK,
-    # and the seams are only reached after a successful create. None
-    # placeholders keep the module importable (the kernel's lazy capability
-    # hints import every provider submodule, and the test fixtures rebind
-    # these names with fakes); the first real SDK call fails loudly.
-    Sandbox = None  # type: ignore[assignment]
-    ConnectionConfig = None  # type: ignore[assignment]
-    SdkSandboxManager = None  # type: ignore[assignment]
-    SandboxFilter = None  # type: ignore[assignment]
-    SdkSandboxState = None  # type: ignore[assignment]
+    # Mock for development/testing without the opensandbox SDK. Mirrors the
+    # e2b manager's mock shape so the base lifecycle + unit tests run without
+    # the SDK. The real seams use the async SDK classes above (coroutine
+    # methods -- the manager's submit() drives them on the bridge loop).
+
+    logging.getLogger(__name__).warning(
+        "opensandbox SDK not installed: sandboxsched falls back to the inline "
+        "mock (sandbox ids come out as 'mock_sandbox_id', no real server "
+        "calls). Install with: pip install 'agent-vm-bench[sandboxsched]'"
+    )
+
+    class _MockCommands:  # type: ignore[no-redef]
+        async def run(self, command, *, opts=None, handlers=None):  # noqa: ARG002
+            class _Result:
+                exit_code = 0
+
+                @property
+                def stdout(self):
+                    return ""
+
+                @property
+                def stderr(self):
+                    return ""
+
+            return _Result()
+
+    class _MockSandbox:  # type: ignore[no-redef]
+        id = "mock_sandbox_id"
+        commands = _MockCommands()
+
+        async def kill(self):
+            pass
+
+        async def pause(self):
+            pass
+
+        async def close(self):
+            pass
+
+    class Sandbox:  # type: ignore[no-redef]
+        @staticmethod
+        async def create(
+            image=None,
+            *,
+            snapshot_id=None,
+            timeout=None,
+            env=None,
+            metadata=None,
+            resource=None,
+            extensions=None,
+            connection_config=None,
+            skip_health_check=False,
+            **_kwargs,
+        ):  # noqa: ARG004
+            return _MockSandbox()
+
+        @staticmethod
+        async def connect(sandbox_id, connection_config=None, skip_health_check=False, **_kwargs):  # noqa: ARG004
+            m = _MockSandbox()
+            m.id = sandbox_id
+            return m
+
+        @staticmethod
+        async def resume(sandbox_id, connection_config=None, skip_health_check=False, **_kwargs):  # noqa: ARG004
+            m = _MockSandbox()
+            m.id = sandbox_id
+            return m
+
+    class SdkSandboxManager:  # type: ignore[no-redef]
+        @staticmethod
+        async def create(connection_config=None, **_kwargs):  # noqa: ARG004
+            return SdkSandboxManager()
+
+        async def list_sandbox_infos(self, filter):  # noqa: ARG002
+            class _Page:
+                class pagination:
+                    has_next_page = False
+
+                sandbox_infos = []
+
+            return _Page()
+
+        async def kill_sandbox(self, sandbox_id):  # noqa: ARG002
+            pass
+
+        async def close(self):
+            pass
+
+    class ConnectionConfig:  # type: ignore[no-redef]
+        def __init__(self, api_key=None, domain=None, protocol="http", **kwargs):  # noqa: ARG002
+            self.api_key = api_key
+            self.domain = domain
+            self.protocol = protocol
+
+    class SandboxFilter:  # type: ignore[no-redef]
+        def __init__(self, *, states=None, page_size=None, page=None):  # noqa: ARG002
+            self.states = states
+            self.page = page
+
+    class SdkSandboxState:  # type: ignore[no-redef]
+        RUNNING = "Running"
+        PAUSED = "Paused"
+        TERMINATED = "Terminated"
 
 
 from env_provider._base import BaseSandboxManager, BackendSandboxStatus
@@ -168,8 +261,6 @@ class SandboxManager(BaseSandboxManager):
         connect / resume -- on the bridge loop -- so we pass the bare config
         and let the SDK own its transport.
         """
-        if ConnectionConfig is None:
-            raise RuntimeError("opensandbox SDK not installed -- install it to drive sandboxsched sandboxes")
         if self._connection_config is None:
             self._connection_config = ConnectionConfig(
                 api_key=self.config.resolved_api_key() or None,
