@@ -109,20 +109,20 @@ test:         { duration: 160, benchmark_mode: "round_robin" }
 | `coding-python.yaml` | coding | Python (django/django), `python3` verify |
 | `docker.yaml` | browser | docker-only small profile (10 containers) |
 
-Coding configs are minimal: `source_files` omitted → `KernelConfig` auto-fills
-the canonical replacement pairs per `language`. Readiness is
+Coding configs are minimal: `source_files` omitted → the `CodingConfig` view
+(`task_runner/coding.py`) auto-fills the canonical replacement pairs per `language`. Readiness is
 **provider-transparent** (browser = port scan, coding = `uname -a`, document =
 `document-bench-validate`) — no port/timing knobs in any YAML.
 
 ### 3. CLI
 
 ```text
-bench-core --config <yaml> --provider {fake,e2b,docker} [mode/params]
+bench-core --config <yaml> --provider {fake,e2b,docker,aenv,cubesandbox} [mode/params]
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--provider` | `fake` (no SDK) / `e2b` / `docker` |
+| `--provider` | `fake` (no SDK) / `e2b` / `docker` / `aenv` / `cubesandbox` |
 | `-n, --total-count` | override sandbox count |
 | `--create-only` | create + ready-check + persist IDs, then exit (keep running) |
 | `--detect` | reuse existing sandboxes (no create); no cleanup at end |
@@ -167,7 +167,7 @@ bench-core --provider e2b --config config/common/coding-ts.yaml --cleanup
 
 See the [bench-core usage guide](docs/guide/bench-core-usage.md) for the full
 install→config→troubleshooting walkthrough, and the
-[design doc](docs/superpowers/specs/2026-08-12-environment-provider-bench-core-design.md)
+[design doc](docs/dev/rfcs/0001-environment-provider.md)
 for architecture.
 
 ---

@@ -221,7 +221,7 @@ bash bench_helper.sh [ROUND] [OPTIONS]
 `python` is a value of `coding.language` (`"python"`), not a hard-coded
 workflow. The coding loop is shared across languages; only the verify mechanics
 differ, captured as data in a `CodingLanguageProfile` registry
-(`e2b_bench/config.py`). The ts/go/python variants all share the same
+(`src/bench_core/payload/coding_payload.py`). The ts/go/python variants all share the same
 `find → read → edit → verify → diff` loop; adding C++ later = one registry
 entry + its default verify script. (The profile is keyed `python` because
 django's source is Python and the verify scripts import `.py` source and run

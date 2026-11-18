@@ -5,7 +5,7 @@
 > The host-agnostic stress-test kernel. It drives e2b / docker / aenv / fake backends
 > through the `EnvironmentProvider` abstraction. It coexists with — and shares no code
 > with — the frozen legacy `e2b_bench/` and `docker_bench/`. For architecture, see the
-> [design doc](superpowers/specs/2026-08-12-environment-provider-bench-core-design.md).
+> [design doc](../dev/rfcs/0001-environment-provider.md).
 
 ## Overview
 
@@ -139,13 +139,13 @@ docker `Config.from_raw` never reads it.)
 ## 3. CLI
 
 ```text
-bench-core --config <yaml> --provider {fake,e2b,docker,aenv} [mode/params]
+bench-core --config <yaml> --provider {fake,e2b,docker,aenv,cubesandbox} [mode/params]
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--config` | YAML config path |
-| `--provider` | `fake` (no SDK) / `e2b` / `docker` / `aenv` |
+| `--provider` | `fake` (no SDK) / `e2b` / `docker` / `aenv` / `cubesandbox` |
 | `-n, --total-count` | override sandbox count |
 | `--workflow-type` | `browser` / `coding` / `document` / `replay` |
 | `-bm, --benchmark-mode` | `fixed` / `round_robin` |

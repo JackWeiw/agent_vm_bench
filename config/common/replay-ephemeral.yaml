@@ -129,7 +129,7 @@ replay:
 
   # mode: exec_ephemeral -- ephemeral create_one/kill_one per round (B's model),
   # no pause/resume, no admission (k*N concurrent). Requires an EphemeralCapable
-  # provider (aenv/cubesandbox). KernelConfig.__post_init__ force-disables
+  # provider (aenv/cubesandbox). ReplayConfig.__post_init__ force-disables
   # ready_probe in exec_ephemeral.
   mode: exec_ephemeral
 

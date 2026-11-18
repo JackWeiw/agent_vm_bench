@@ -2,7 +2,7 @@
 
 > 主机无关的压测内核,通过 `EnvironmentProvider` 抽象驱动 e2b / docker / fake。
 > 与冻结的 legacy `e2b_bench/`、`docker_bench/` 并存,互不影响(共享零代码)。
-> 架构原理见设计文档 `docs/superpowers/specs/2026-08-12-environment-provider-bench-core-design.md`。
+> 架构原理见设计文档 `docs/dev/rfcs/0001-environment-provider.md`。
 
 ## 概述
 
@@ -121,13 +121,13 @@ YAML 里 `your_e2b_access_token_here` / `your_e2b_api_key_here` 是占位符。
 ## 3. CLI
 
 ```
-bench-core --config <yaml> --provider {fake,e2b,docker} [模式/参数]
+bench-core --config <yaml> --provider {fake,e2b,docker,aenv,cubesandbox} [模式/参数]
 ```
 
 | 参数 | 说明 |
 |------|------|
 | `--config` | YAML 配置路径 |
-| `--provider` | `fake`(无 SDK)/ `e2b` / `docker` |
+| `--provider` | `fake`(无 SDK)/ `e2b` / `docker` / `aenv` / `cubesandbox` |
 | `-n, --total-count` | 覆盖沙箱总数 |
 | `--workflow-type` | `browser` / `coding` / `document` |
 | `-bm, --benchmark-mode` | `fixed` / `round_robin` |
