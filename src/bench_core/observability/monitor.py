@@ -76,10 +76,11 @@ class LogRotationConfig:
     # None -> every tool uses interval_sec. A partial dict falls back to
     # interval_sec for the omitted tools. Forwarded as --rotation-intervals.
     intervals: dict[str, int] | None = None
-    # AMDuProfPcm metric list for the uprof slot, e.g. ["memory", "pipeline_util"].
-    # None -> vm_monitor's built-in set (DEFAULT_UPROF_METRICS). Accepts a YAML
-    # list or comma string; forwarded as --rotation-uprof-metrics.
-    uprof_metrics: list[str] | None = None
+    # AMDuProfPcm metric spec for the uprof slot, e.g. "memory,pipeline_util".
+    # None -> vm_monitor's built-in set (DEFAULT_UPROF_METRICS). from_raw accepts
+    # a YAML list or comma string and normalizes to a comma string; forwarded
+    # verbatim as --rotation-uprof-metrics.
+    uprof_metrics: str | None = None
     # Rotation membership: which tools rotate, e.g. ["devkit", "perf"]. None ->
     # every tool (devkit/ksys/perf/uprof). Accepts a YAML list or comma string;
     # unknown names are warned + dropped. Forwarded as --rotation-tools.
@@ -97,7 +98,9 @@ class LogRotationConfig:
         warn + keep 15). ``intervals`` accepts a dict
         ``{devkit: sec, ksys: sec, perf: sec, uprof: sec}``; valid tools are devkit/ksys/perf/uprof,
         unknown keys are warned + dropped. ``uprof_metrics`` accepts a YAML list
-        or comma string (None/empty -> vm_monitor's built-in set). ``tools`` accepts
+        or comma string, normalized to a comma string (None/empty -> vm_monitor's
+        built-in set); any other type warns and falls back to the built-in set.
+        ``tools`` accepts
         a YAML list or comma string and selects which tools rotate (None/empty =
         every tool).
         """
@@ -123,11 +126,11 @@ class LogRotationConfig:
             perf_events = None
         raw_uprof_metrics = raw.get("uprof_metrics")
         if raw_uprof_metrics is None:
-            uprof_metrics: list[str] | None = None
+            uprof_metrics: str | None = None
         elif isinstance(raw_uprof_metrics, str):
-            uprof_metrics = [m.strip() for m in raw_uprof_metrics.split(",") if m.strip()] or None
+            uprof_metrics = ",".join(m.strip() for m in raw_uprof_metrics.split(",") if m.strip()) or None
         elif isinstance(raw_uprof_metrics, list | tuple):
-            uprof_metrics = [str(m).strip() for m in raw_uprof_metrics if str(m).strip()] or None
+            uprof_metrics = ",".join(str(m).strip() for m in raw_uprof_metrics if str(m).strip()) or None
         else:
             logger.warning(
                 "monitor.log_rotation.uprof_metrics must be a list or comma string, got %r; ignoring",
@@ -386,7 +389,7 @@ class MonitorController:
                 if lr.perf_events:
                     cmd += ["--rotation-perf-events", ",".join(lr.perf_events)]
                 if lr.uprof_metrics:
-                    cmd += ["--rotation-uprof-metrics", ",".join(lr.uprof_metrics)]
+                    cmd += ["--rotation-uprof-metrics", lr.uprof_metrics]
                 cmd += ["--rotation-log-dir", str(Path(self._config.output_dir) / "log_capture")]
         # Hard upper bound: vm_monitor exits after this even if the lock is never
         # removed (SIGKILL/OOM on the kernel side cannot reap the subprocess).

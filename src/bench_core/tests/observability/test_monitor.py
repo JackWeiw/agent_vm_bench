@@ -248,18 +248,19 @@ def test_log_rotation_config_intervals_accepts_uprof():
 
 
 def test_log_rotation_config_uprof_metrics_parses_list_or_string():
-    # uprof_metrics accepts a YAML list or comma string; blanks are dropped.
+    # uprof_metrics accepts a YAML list or comma string; both normalize to the
+    # comma-joined str that --rotation-uprof-metrics receives verbatim.
     lr = KernelConfig.from_raw(
         {
             "sandbox": {"total_count": 1},
             "monitor": {"log_rotation": {"uprof_metrics": ["memory", "pipeline_util"]}},
         }
     ).monitor.log_rotation
-    assert lr.uprof_metrics == ["memory", "pipeline_util"]
+    assert lr.uprof_metrics == "memory,pipeline_util"
     lr2 = KernelConfig.from_raw(
         {"sandbox": {"total_count": 1}, "monitor": {"log_rotation": {"uprof_metrics": "memory, pipeline_util "}}}
     ).monitor.log_rotation
-    assert lr2.uprof_metrics == ["memory", "pipeline_util"]
+    assert lr2.uprof_metrics == "memory,pipeline_util"
 
 
 def test_log_rotation_config_uprof_metrics_empty_falls_back_to_builtin():
