@@ -65,7 +65,7 @@ ruff format --check .                # format check
 python -m pre_commit run --all-files # pre-commit hooks (run on staged files before committing)
 ```
 
-`pip install -e .` is sufficient — `pyproject.toml`'s `dependencies` declare the core stack (`psutil`, `paramiko`, `flask`, `PyYAML`, `pandas`, `openpyxl`, `e2b`, `aiohttp`); `requirements.txt` is a PyPI-publish superset and is redundant for the kernel. Backend SDKs are optional: `pip install e2b` and/or `pip install docker` only when using that provider; `--provider fake` needs none.
+`pip install -e .` is sufficient — `pyproject.toml`'s `dependencies` declare the core stack (`psutil`, `paramiko`, `flask`, `PyYAML`, `pandas`, `openpyxl`, `e2b`, `aiohttp`); `requirements.txt` is a PyPI-publish superset and is redundant for the kernel. Backend SDKs are optional: `pip install e2b` / `pip install docker` / `pip install '.[sandboxsched]'` (OpenSandbox) only when using that provider; `--provider fake` needs none.
 
 `pyproject.toml` sets `pythonpath = ["src"]` for pytest, so tests resolve `bench_core` / `env_provider` without an editable install. The `[project.scripts]` entries are `bench-core = "bench_core.bench:main"` and `vm-monitor = "vm_monitor.cli:main"`.
 
