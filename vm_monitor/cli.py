@@ -435,7 +435,11 @@ def main(argv=None):
     if args.enable_capture:
         print("\nLoading log collection configuration...")
         config = load_env_config()
-        config = validate_and_prompt_missing(config, non_interactive=args.auto_skip)
+        # uprof is a rotation-only slot: only validate UPROF_PATH (and warn)
+        # when --log-rotation can actually run it.
+        config = validate_and_prompt_missing(
+            config, non_interactive=args.auto_skip, check_uprof=bool(args.log_rotation)
+        )
 
     # Create appropriate Monitor instance based on --vmm argument
     if args.vmm == "qemu":

@@ -223,6 +223,67 @@ class TestLogRotation(unittest.TestCase):
             sorted(os.path.join(uprof_dir, os.path.splitext(log)[0]) for log in logs),
         )
 
+    def test_uprof_turn_popen_failure_cleans_up_dirs(self):
+        # Cannot exec -> the turn is skipped, the empty log / per-turn dir /
+        # uprof dir from the failed turn are all dropped.
+        self.config["uprof_path"] = "/fake/AMDuProfPcm"
+        cap = self._cap()
+        with (
+            patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=OSError(8, "cannot exec")),
+            redirect_stdout(io.StringIO()),
+        ):
+            cap._rotation_uprof_turn()
+        uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
+        self.assertFalse(os.path.exists(uprof_dir))
+        self.assertIn("uprof", cap._rotation_skipped)
+
+    def test_uprof_turn_open_failure_removes_turn_dir(self):
+        # Log file cannot be opened -> the per-turn -o dir created for the
+        # failed turn is dropped, the uprof dir itself stays for later turns.
+        self.config["uprof_path"] = "/fake/AMDuProfPcm"
+        cap = self._cap()
+        with (
+            patch("vm_monitor.capture.log_capture.open", side_effect=OSError("simulated open failure")),
+            redirect_stdout(io.StringIO()),
+        ):
+            cap._rotation_uprof_turn()
+        uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
+        self.assertTrue(os.path.isdir(uprof_dir))
+        self.assertEqual(os.listdir(uprof_dir), [])  # log + turn_dir both gone
+
+    def test_uprof_turn_rapid_nonzero_exit_keeps_log_drops_dir(self):
+        # AMDuProfPcm exits nonzero immediately (typo'd metric): failed_runtime
+        # is recorded, the stdout log stays (it carries the error text), and
+        # the empty per-turn -o dir is dropped so failed turns don't pile up.
+        self.config["uprof_path"] = "/fake/AMDuProfPcm"
+        cap = self._cap()
+
+        class _FailProc:
+            returncode = 2
+
+            def poll(self):  # noqa: N802 - proc seam
+                return 2  # already dead on the first poll
+
+            def wait(self, timeout=None):  # noqa: N802 - proc seam
+                return 2
+
+        spawned = []
+
+        def fake_popen(cmd, *a, **k):
+            spawned.append(cmd)
+            return _FailProc()
+
+        with (
+            patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=fake_popen),
+            redirect_stdout(io.StringIO()),
+        ):
+            cap._rotation_uprof_turn()
+        uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
+        logs = os.listdir(uprof_dir)
+        self.assertEqual(len(logs), 1)
+        self.assertFalse(os.path.exists(os.path.join(uprof_dir, os.path.splitext(logs[0])[0])))
+        self.assertEqual(cap.failed_runtime, [{"tool": "uprof", "returncode": 2}])
+
     def test_uprof_missing_path_skips(self):
         self.config.pop("uprof_path", None)
         cap = self._cap()

@@ -92,7 +92,9 @@ class LogRotationConfig:
         Accepts a dict (``enabled`` defaults to true when the block is present)
         or the shorthand ``log_rotation: true``. A non-dict/non-true value is
         warned + dropped (never crash the bench on a YAML typo). ``perf_events``
-        accepts a YAML list or a comma string. ``intervals`` accepts a dict
+        accepts a YAML list or a comma string (a scalar typo warns + falls back
+        to the built-in set). ``interval_sec`` must parse as an int (bad values
+        warn + keep 15). ``intervals`` accepts a dict
         ``{devkit: sec, ksys: sec, perf: sec, uprof: sec}``; valid tools are devkit/ksys/perf/uprof,
         unknown keys are warned + dropped. ``uprof_metrics`` accepts a YAML list
         or comma string (None/empty -> vm_monitor's built-in set). ``tools`` accepts
@@ -111,8 +113,14 @@ class LogRotationConfig:
             perf_events: list[str] | None = None
         elif isinstance(events, str):
             perf_events = [e.strip() for e in events.split(",") if e.strip()] or None
+        elif isinstance(events, list | tuple):
+            perf_events = [str(e).strip() for e in events if str(e).strip()] or None
         else:
-            perf_events = [str(e).strip() for e in events if str(e).strip()]
+            logger.warning(
+                "monitor.log_rotation.perf_events must be a list or comma string, got %r; ignoring",
+                events,
+            )
+            perf_events = None
         raw_uprof_metrics = raw.get("uprof_metrics")
         if raw_uprof_metrics is None:
             uprof_metrics: list[str] | None = None
@@ -165,9 +173,17 @@ class LogRotationConfig:
                 if key not in tools:
                     tools.append(key)
             tools = tools or None
+        try:
+            interval_sec = int(raw.get("interval_sec", 15))
+        except (TypeError, ValueError):
+            logger.warning(
+                "monitor.log_rotation.interval_sec must be an int, got %r; keeping 15",
+                raw.get("interval_sec"),
+            )
+            interval_sec = 15
         return cls(
             enabled=bool(raw.get("enabled", True)),
-            interval_sec=int(raw.get("interval_sec", 15)),
+            interval_sec=interval_sec,
             perf_events=perf_events,
             intervals=intervals,
             uprof_metrics=uprof_metrics,

@@ -77,7 +77,7 @@ class TestValidateUprofPath(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _validate(self, uprof_path, non_interactive=False):
+    def _validate(self, uprof_path, non_interactive=False, **kwargs):
         config = dict(self.required)
         if uprof_path is not None:
             config["uprof_path"] = uprof_path
@@ -85,7 +85,7 @@ class TestValidateUprofPath(unittest.TestCase):
             mock.patch("builtins.input", side_effect=AssertionError("UPROF_PATH must not prompt")),
             mock.patch("vm_monitor.config.save_env_config"),
         ):
-            return vm_config.validate_and_prompt_missing(config, non_interactive=non_interactive)
+            return vm_config.validate_and_prompt_missing(config, non_interactive=non_interactive, **kwargs)
 
     def test_env_required_keys_contains_uprof_path(self):
         self.assertIn("UPROF_PATH", vm_config.ENV_REQUIRED_KEYS)
@@ -112,6 +112,15 @@ class TestValidateUprofPath(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             result = self._validate(os.path.join(self.tmp, "missing_AMDuProfPcm"), non_interactive=True)
         self.assertIsNone(result["uprof_path"])
+
+    def test_check_uprof_false_skips_validation_entirely(self):
+        # Parallel mode (no --log-rotation): the CLI passes check_uprof=False,
+        # so no WARN is printed and uprof_path is left untouched.
+        missing = os.path.join(self.tmp, "missing_AMDuProfPcm")
+        with redirect_stdout(io.StringIO()) as out:
+            result = self._validate(missing, check_uprof=False)
+        self.assertEqual(result["uprof_path"], missing)
+        self.assertNotIn("UPROF_PATH", out.getvalue())
 
 
 if __name__ == "__main__":

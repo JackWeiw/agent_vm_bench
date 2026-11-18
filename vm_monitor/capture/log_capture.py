@@ -842,6 +842,10 @@ class LogCapture:
             self._rotation_uprof_procs.append(proc)
         elif proc.returncode != 0:
             self.failed_runtime.append({"tool": "uprof", "returncode": proc.returncode})
+            try:
+                os.rmdir(turn_dir)  # rapid exit: drop the stamp dir AMDuProfPcm never wrote into
+            except OSError:
+                pass
         try:
             fh.close()
         except Exception:

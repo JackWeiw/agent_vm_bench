@@ -283,6 +283,25 @@ def test_log_rotation_config_uprof_metrics_scalar_warns_and_drops(caplog):
     assert any("log_rotation.uprof_metrics" in r.message for r in caplog.records)
 
 
+def test_log_rotation_config_perf_events_scalar_warns_and_drops(caplog):
+    # The same typo-proofing uprof_metrics got: a scalar `perf_events: 42`
+    # warns + falls back to the built-in set instead of crashing from_raw.
+    lr = KernelConfig.from_raw(
+        {"sandbox": {"total_count": 1}, "monitor": {"log_rotation": {"perf_events": 42}}}
+    ).monitor.log_rotation
+    assert lr.perf_events is None
+    assert any("log_rotation.perf_events" in r.message for r in caplog.records)
+
+
+def test_log_rotation_config_interval_sec_bad_value_warns_and_keeps_default(caplog):
+    # interval_sec: "abc" (or null) warns + keeps 15 instead of crashing from_raw.
+    lr = KernelConfig.from_raw(
+        {"sandbox": {"total_count": 1}, "monitor": {"log_rotation": {"interval_sec": "abc"}}}
+    ).monitor.log_rotation
+    assert lr.interval_sec == 15
+    assert any("log_rotation.interval_sec" in r.message for r in caplog.records)
+
+
 def test_log_rotation_config_invalid_warns_and_drops(caplog):
     cfg = KernelConfig.from_raw({"sandbox": {"total_count": 1}, "monitor": {"log_rotation": "banana"}})
     assert cfg.monitor.log_rotation is None
@@ -344,6 +363,20 @@ def test_command_log_rotation_default_uprof_metrics_omits_flag(monkeypatch, tmp_
     prov = _StubProvider(vmm_type="firecracker")
     mc = MonitorController(_cfg(stress_file=str(tmp_path / "lock"), log_rotation=True), prov)
     assert "--rotation-uprof-metrics" not in mc._cmd
+
+
+def test_command_log_rotation_uprof_metrics_list_forwards_flag(monkeypatch, tmp_path):
+    # YAML list form is normalized to the same comma string as the CLI form.
+    monkeypatch.setattr("bench_core.observability.monitor.shutil.which", lambda _: "/fake/vm-monitor")
+    prov = _StubProvider(vmm_type="firecracker")
+    mc = MonitorController(
+        _cfg(
+            stress_file=str(tmp_path / "lock"),
+            log_rotation={"enabled": True, "uprof_metrics": ["memory", "pipeline_util"]},
+        ),
+        prov,
+    )
+    assert mc._cmd[mc._cmd.index("--rotation-uprof-metrics") + 1] == "memory,pipeline_util"
 
 
 def test_command_log_rotation_inert_when_capture_off(monkeypatch, tmp_path, caplog):

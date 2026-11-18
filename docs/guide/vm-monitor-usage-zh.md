@@ -127,6 +127,7 @@ DEVKIT_CPU_RANGE=96-191
 缺失路径的行为：
 - **`--auto-skip` / bench-core 自动 vm-monitor**：该工具被静默禁用，打印一条 `[WARN]`，运行继续。缺失工具的 sheet 在 `resource_report.xlsx` 中直接不存在——绝不会硬失败。
 - **交互模式（无 `--auto-skip`）**：vm_monitor 逐个提示输入缺失路径，`skip` 禁用，有效路径经 `python-dotenv` 写回 `.env`。
+- **`UPROF_PATH` 是例外**：两种模式下都不会提示输入——未配置或路径无效时降级为一条 `[WARN]`，跳过 uprof 轮转槽（运行继续）。
 
 ### getfre 配置（`getfre_config.yaml`）
 
