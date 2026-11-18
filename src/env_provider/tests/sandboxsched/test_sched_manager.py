@@ -318,3 +318,61 @@ class TestExecProbe:
         state = next(iter(states.values()))
         monkeypatch.setattr(mgr, "_envd_client_for", lambda h: _StubEnvd(healthy=False))
         assert mgr.check_alive(state) is False
+
+
+# -------------------------------------------------------------------- transient scheduler 500 retry
+class TestPauseResumeTransientRetry:
+    """pause/resume hit the scheduler over HTTP; it occasionally answers a
+    valid call with a bare 500. The provider seam retries a few times with
+    backoff so one blip does not forfeit the trajectory (the initial pause
+    has no kernel-side retry at all)."""
+
+    def test_pause_handle_retries_transient_500(self, kernel_config, sched_config, patched_sdk, monkeypatch):
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        state = next(iter(mgr.create_all().values()))
+        calls = {"n": 0}
+
+        def fake_submit(coro):
+            calls["n"] += 1
+            coro.close()  # the async pause() never runs on the blipped attempts
+            if calls["n"] < 3:
+                raise Exception("Pause sandbox failed: scheduler groups/1 return 500 Internal Server Error")
+            return None
+
+        monkeypatch.setattr(mgr, "submit", fake_submit)
+        monkeypatch.setattr(mgr_mod.time, "sleep", lambda s: None)
+        mgr.pause_handle(state)
+        assert calls["n"] == 3
+
+    def test_pause_handle_fail_fast_on_4xx(self, kernel_config, sched_config, patched_sdk, monkeypatch):
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        state = next(iter(mgr.create_all().values()))
+        calls = {"n": 0}
+
+        def fake_submit(coro):
+            calls["n"] += 1
+            coro.close()
+            raise Exception("Pause sandbox failed: sandbox not in RUNNING state (400)")
+
+        monkeypatch.setattr(mgr, "submit", fake_submit)
+        monkeypatch.setattr(mgr_mod.time, "sleep", lambda s: None)
+        with pytest.raises(Exception, match="400"):
+            mgr.pause_handle(state)
+        assert calls["n"] == 1
+
+    def test_resume_handle_retries_transient_500(self, kernel_config, sched_config, patched_sdk, monkeypatch):
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        calls = {"n": 0}
+
+        def fake_submit(coro):
+            calls["n"] += 1
+            coro.close()
+            if calls["n"] < 2:
+                raise Exception("Resume sandbox failed: scheduler groups/1 return 500 Internal Server Error")
+            return _FakeSandboxSync("resumed-1")
+
+        monkeypatch.setattr(mgr, "submit", fake_submit)
+        monkeypatch.setattr(mgr_mod.time, "sleep", lambda s: None)
+        handle = mgr.resume_handle("sbx-1")
+        assert handle.id == "resumed-1"
+        assert calls["n"] == 2

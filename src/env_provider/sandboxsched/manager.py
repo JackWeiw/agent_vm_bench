@@ -39,10 +39,18 @@ from datetime import timedelta
 from typing import Any
 
 try:
-    from opensandbox import Sandbox
-    from opensandbox.config import ConnectionConfig
-    from opensandbox.manager import SandboxManager as SdkSandboxManager
-    from opensandbox.models.sandboxes import SandboxFilter, SandboxState as SdkSandboxState
+    # opensandbox == 1.2.0; some hosts ship the same SDK distribution as
+    # "opendsandbox" -- accept either import name.
+    try:
+        from opensandbox import Sandbox
+        from opensandbox.config import ConnectionConfig
+        from opensandbox.manager import SandboxManager as SdkSandboxManager
+        from opensandbox.models.sandboxes import SandboxFilter, SandboxState as SdkSandboxState
+    except ImportError:
+        from opendsandbox import Sandbox
+        from opendsandbox.config import ConnectionConfig
+        from opendsandbox.manager import SandboxManager as SdkSandboxManager
+        from opendsandbox.models.sandboxes import SandboxFilter, SandboxState as SdkSandboxState
 except ImportError:  # pragma: no cover - SDK not installed in dev/test
     # Mock for development/testing without the opensandbox SDK. Mirrors the
     # e2b manager's mock shape so the base lifecycle + unit tests run without
@@ -213,6 +221,27 @@ class _EventLoopThread:
         """Drive ``coro`` on the bridge loop; block until it finishes."""
         assert self._loop is not None
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
+
+
+# The scheduler occasionally answers a valid pause/resume with a transient
+# 500 ("Pause sandbox failed: scheduler ... return 500 Internal Server
+# Error"). Retry briefly in the provider seam: the kernel's G3 transient
+# retry wraps only the per-exec pause/resume -- and its marker list skipped
+# bare 500s -- while the initial pause has no kernel retry at all, so this
+# seam is the one guard every caller shares.
+_TRANSIENT_ATTEMPTS = 3
+_TRANSIENT_BACKOFF_SEC = 2.0
+
+
+def _transient_server_error(exc: BaseException) -> bool:
+    """True for scheduler-side 5xx blips; anything else fails fast.
+
+    Message-based (not isinstance) so it works across the opensandbox /
+    opendsandbox SDK distributions. 4xx errors (missing group, wrong state)
+    are real errors and are never retried.
+    """
+    text = str(exc).lower()
+    return "500" in text or "internal server error" in text
 
 
 class SandboxManager(BaseSandboxManager):
@@ -445,20 +474,36 @@ class SandboxManager(BaseSandboxManager):
         )
 
     # ----------------------------------------------------- handle ops (adapter-facing)
+    def _submit_retry_transient(self, fn) -> Any:
+        """submit(fn()) with a short linear backoff on transient server 500s."""
+        for attempt in range(_TRANSIENT_ATTEMPTS):
+            try:
+                return self.submit(fn())
+            except Exception as e:
+                if attempt == _TRANSIENT_ATTEMPTS - 1 or not _transient_server_error(e):
+                    raise
+            time.sleep(_TRANSIENT_BACKOFF_SEC * (attempt + 1))
+
     def pause_handle(self, state: SandboxState) -> None:
-        """Server-side pause of the sandbox behind ``state`` (keeps the handle)."""
-        self.submit(state.sandbox_obj.pause())
+        """Server-side pause of the sandbox behind ``state`` (keeps the handle).
+
+        Retries transient scheduler 500s (``_transient_server_error``) before
+        giving up -- the initial pause has no kernel-side retry, so this seam
+        is its only guard against a one-off scheduler blip.
+        """
+        self._submit_retry_transient(state.sandbox_obj.pause)
 
     def resume_handle(self, sandbox_id: str) -> Any:
         """Resume a paused sandbox by id; return the fresh async Sandbox handle.
 
         ``Sandbox.resume`` performs the server-side resume and re-resolves the
         execd endpoint (it may change across pause/resume), so the caller must
-        swap the returned handle in.
+        swap the returned handle in. Transient scheduler 500s are retried like
+        pause (same scheduler path, same blip mode).
         """
         self._envd_urls.pop(str(sandbox_id), None)  # endpoint may change across pause/resume
-        return self.submit(
-            Sandbox.resume(
+        return self._submit_retry_transient(
+            lambda: Sandbox.resume(
                 sandbox_id,
                 connection_config=self._connection(),
                 skip_health_check=self.config.skip_health_check,

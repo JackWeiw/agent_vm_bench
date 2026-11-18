@@ -12,6 +12,8 @@ class _Err(Exception):
 @pytest.mark.parametrize(
     "msg",
     [
+        "Pause sandbox failed: scheduler groups/1 return 500 Internal Server Error",
+        "500",
         "502 Bad Gateway",
         "503 Service Unavailable",
         "504 Gateway Timeout",
