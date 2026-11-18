@@ -28,7 +28,6 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Mapping
-from typing import Any
 
 from bench_core.config import KernelConfig
 from env_provider import (
@@ -88,6 +87,9 @@ class SandboxSchedProvider(EnvironmentProvider):
         self._kernel_config = kernel_config
         self._config = config
         self._stop_event = stop_event
+        # Guards the lazy build below (same concurrency story as the manager's
+        # bridge lock -- first access can race under a concurrent create wave).
+        self._manager_lock = threading.Lock()
         self._manager: SandboxManager | None = None
 
     @property
@@ -98,8 +100,9 @@ class SandboxSchedProvider(EnvironmentProvider):
         fail) before any SDK client is built. Tests inject a mock by setting
         ``_manager`` directly.
         """
-        if self._manager is None:
-            self._manager = SandboxManager(self._kernel_config, self._config, self._stop_event)
+        with self._manager_lock:
+            if self._manager is None:
+                self._manager = SandboxManager(self._kernel_config, self._config, self._stop_event)
         return self._manager
 
     # ------------------------------------------------------------------ lifecycle
@@ -108,6 +111,13 @@ class SandboxSchedProvider(EnvironmentProvider):
 
     def detect_existing(self) -> Mapping[int, SandboxInstance]:
         return self._translate(self.manager.detect_existing())
+
+    def list_sandbox_states(self) -> Mapping[str, int] | None:
+        # No manager = nothing was ever created (preflight/cleanup-only runs):
+        # building one here would construct the SDK just to poll a monitor series.
+        if self._manager is None:
+            return None
+        return self.manager.list_states()
 
     def detect_from_ids(self, ids_file: str | None = None) -> Mapping[int, SandboxInstance] | None:
         path = ids_file or self._config.sandbox_ids_file

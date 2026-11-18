@@ -275,6 +275,27 @@ class TestDetectAndList:
         assert len(states) == 1
         assert fake_sandbox.connected == ["keep-1"]
 
+    def test_detect_from_file_recovers_templates(self, kernel_config, sched_config, patched_sdk, tmp_path):
+        fake_sandbox, fake_manager = patched_sdk
+        fake_manager.list_pages = [_PagedInfos([_SandboxInfo("keep-1")])]
+        ids_file = tmp_path / "ids.txt"
+        ids_file.write_text("keep-1\tubuntu-22-04-custom\nother-9\n")
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        states = mgr.detect_from_file(str(ids_file))
+        assert len(states) == 1
+        # the file's "<id>\t<template>" binding survives the create->detect
+        # boundary so template-affinity routing keeps working after a restart
+        assert mgr._slot_templates[1] == "ubuntu-22-04-custom"
+
+    def test_list_states_counts_by_status(self, kernel_config, sched_config, patched_sdk):
+        _, fake_manager = patched_sdk
+        fake_manager.list_pages = [
+            _PagedInfos([_SandboxInfo("a"), _SandboxInfo("b", state="Paused"), _SandboxInfo("c")])
+        ]
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        # SDK info carries status.state; the _state_of override normalizes it
+        assert mgr.list_states() == {"running": 2, "paused": 1}
+
 
 # -------------------------------------------------------------------- exec probe (envd)
 class _StubEnvd:
@@ -318,3 +339,20 @@ class TestExecProbe:
         state = next(iter(states.values()))
         monkeypatch.setattr(mgr, "_envd_client_for", lambda h: _StubEnvd(healthy=False))
         assert mgr.check_alive(state) is False
+
+    def test_resume_and_kill_invalidate_envd_urls(self, kernel_config, sched_config, patched_sdk):
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        states = mgr.create_all()
+        state = next(iter(states.values()))
+        sid = state.sandbox_obj.id
+        # a stale endpoint URL (e.g. resolved before a pause) must not survive:
+        # the endpoint may change across pause/resume
+        mgr._envd_urls[sid] = "http://stale:49983"
+        handle = mgr.resume_handle(sid)
+        assert sid not in mgr._envd_urls
+        # the next envd client build re-resolves through get_endpoint
+        mgr._envd_client_for(handle)
+        assert mgr._envd_urls[sid] == "http://cni-ip:49983"
+        # kill drops the entry again
+        mgr._kill_one(state)
+        assert sid not in mgr._envd_urls

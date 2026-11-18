@@ -233,6 +233,12 @@ class SandboxManager(BaseSandboxManager):
     def __init__(self, kernel_config, config: Config, stop_event: Event) -> None:
         super().__init__(kernel_config, stop_event)
         self.config = config
+        # Serializes the two lazy singletons below. The base create path runs
+        # _create_single on a ThreadPoolExecutor, so several workers can reach
+        # first use concurrently; without the lock each would build its own
+        # bridge loop / ConnectionConfig, and handles bound to the losing
+        # loops would later be driven from whichever loop survived.
+        self._bridge_lock = threading.Lock()
         self._connection_config: ConnectionConfig | None = None
         self._loop_thread: _EventLoopThread | None = None
         # sandbox_id -> envd base URL; resolved on first use, dropped on
@@ -248,8 +254,11 @@ class SandboxManager(BaseSandboxManager):
         thread starts on first use, so a manager that never talks to the SDK
         never pays for a thread.
         """
-        if self._loop_thread is None:
-            self._loop_thread = _EventLoopThread()
+        with self._bridge_lock:
+            if self._loop_thread is None:
+                self._loop_thread = _EventLoopThread()
+        # run() stays outside the lock: run_coroutine_threadsafe is
+        # thread-safe, and holding the lock here would serialize every SDK call.
         return self._loop_thread.run(coro)
 
     # --------------------------------------------------------- connection
@@ -261,13 +270,14 @@ class SandboxManager(BaseSandboxManager):
         connect / resume -- on the bridge loop -- so we pass the bare config
         and let the SDK own its transport.
         """
-        if self._connection_config is None:
-            self._connection_config = ConnectionConfig(
-                api_key=self.config.resolved_api_key() or None,
-                domain=self.config.domain,
-                protocol=self.config.protocol,
-                use_server_proxy=self.config.use_server_proxy,
-            )
+        with self._bridge_lock:
+            if self._connection_config is None:
+                self._connection_config = ConnectionConfig(
+                    api_key=self.config.resolved_api_key() or None,
+                    domain=self.config.domain,
+                    protocol=self.config.protocol,
+                    use_server_proxy=self.config.use_server_proxy,
+                )
         return self._connection_config
 
     # --------------------------------------------------------- subclass seams
@@ -539,6 +549,19 @@ class SandboxManager(BaseSandboxManager):
             return self._envd_client_for(sbx).health(timeout=5.0)
         except Exception:
             return False
+
+    def _state_of(self, listed: Any) -> str:
+        """Normalized backend state of one listed sandbox (base hook override).
+
+        The SDK's SandboxInfo carries ``status.state`` (a capitalized
+        ``SandboxState`` value, e.g. ``Running``); the base reads
+        ``listed.state``, which every info here lacks -- without the override
+        the monitor's fleet-state series would be all-``unknown``.
+        """
+        state = getattr(getattr(listed, "status", None), "state", None)
+        if state is None:
+            state = getattr(listed, "state", "unknown")
+        return str(state).split(".")[-1].lower()
 
     # ----------------------------------------------------- adapter alias (state)
     @property

@@ -156,6 +156,18 @@ class TestSnapshot:
         assert provider.snapshot_sizes(SandboxInstance(id="x", index=1)) is None
 
 
+# -------------------------------------------------------------------- fleet state
+class TestListSandboxStates:
+    def test_delegates_to_manager_list_states(self, provider):
+        provider._manager.list_states.return_value = {"running": 2, "paused": 1}
+        assert provider.list_sandbox_states() == {"running": 2, "paused": 1}
+
+    def test_none_manager_returns_none_without_building(self):
+        p = SandboxSchedProvider(_kernel_config(), Config(sandbox_group="sg-1"), Event())
+        assert p.list_sandbox_states() is None
+        assert p._manager is None  # never constructed just to poll the series
+
+
 # -------------------------------------------------------------------- exec
 class TestExec:
     def test_exec_missing_state_raises(self, provider):
