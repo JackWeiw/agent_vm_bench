@@ -96,6 +96,7 @@ any backend**.
 | `coding-ts.yaml` | coding | TypeScript (vuejs/core), `npx tsx` verify, `verify_repeat: 3` |
 | `coding-go.yaml` | coding | Go (gohugoio/hugo), `go run` verify, `verify_repeat: 1` |
 | `coding-python.yaml` | coding | Python (django/django), `python3` verify, `verify_repeat: 1` |
+| `coding-java.yaml` | coding | Java (google/gson), real `mvn test` + surefire assertions for FAIL_TO_PASS/PASS_TO_PASS pairs, `mvn compile` + `javac`/`java` otherwise |
 | `docker.yaml` | browser | docker-only small profile (10 containers, single URL) |
 | `replay.yaml` | replay | aenv lifecycle 1:1 baseline (see §8) |
 | `replay-exec-only.yaml` | replay | exec_only baseline (e2b/docker/fake) |
@@ -103,10 +104,10 @@ any backend**.
 
 ### 2.3 Why the coding configs are so thin
 
-All three coding configs **omit `source_files`** — `KernelConfig.__post_init__` auto-fills
+All coding configs **omit `source_files`** — the `CodingConfig` view's `__post_init__` auto-fills
 the canonical replacement pairs from `CODING_LANGUAGE_DEFAULT_SOURCE_FILES[language]`
 (6 pairs per language, drawn from real SWE-bench instances): ts → vuejs/core, go →
-gohugoio/hugo, python → django/django. The pairs live in
+gohugoio/hugo, python → django/django, java → google/gson. The pairs live in
 `src/bench_core/payload/coding_payload.py`; a config only declares `language` +
 `verify_cmd` + `verify_repeat`.
 

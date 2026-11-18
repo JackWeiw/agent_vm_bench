@@ -91,14 +91,15 @@ report:       { output_dir: "results/browser", filename_prefix: "browser_bench" 
 | `coding-ts.yaml` | coding | TypeScript(vuejs/core),`npx tsx` verify,verify_repeat=3 |
 | `coding-go.yaml` | coding | Go(gohugoio/hugo),`go run` 冷编译 verify |
 | `coding-python.yaml` | coding | Python(django/django),`python3` import 峰值 verify |
+| `coding-java.yaml` | coding | Java(google/gson),FTP/PTP 走真实 `mvn test` + surefire 断言,其余 pair 走 `mvn compile` + `javac`/`java` |
 | `docker.yaml` | browser | docker 专用的小压力档(10 容器,单 Weibo url) |
 
 ### 2.3 coding 配置为何这么薄
 
-三个 coding 配置都**省略了 `source_files`**——内核 `KernelConfig.__post_init__` 会按
+各 coding 配置都**省略了 `source_files`**——`CodingConfig` 视图的 `__post_init__` 会按
 `language` 自动填入 canonical 替换对(各 6 对,取自真实 swe_bench_multilingual 实例):
-ts→vuejs/core、go→gohugoio/hugo、python→django/django。内容集中在
-`src/bench_core/coding_payload.py`,配置只声明 `language` + `verify_cmd` + `verify_repeat`。
+ts→vuejs/core、go→gohugoio/hugo、python→django/django、java→google/gson。内容集中在
+`src/bench_core/payload/coding_payload.py`,配置只声明 `language` + `verify_cmd` + `verify_repeat`。
 
 ### 2.4 凭据:占位符自动回退
 

@@ -31,6 +31,7 @@ Classes:
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import random
 import statistics
@@ -112,6 +113,87 @@ def _build_edit_command(project_dir: str, target_file: str, find_str: str, repla
     )
 
 
+def _run_test_suite_verify(
+    provider: EnvironmentProvider,
+    inst: SandboxInstance,
+    project_dir: str,
+    config: CodingConfig,
+    pair: dict,
+    profile,
+    step_times: dict[str, float] | None = None,
+) -> tuple[bool, str, bool] | None:
+    """Run a pair's FAIL_TO_PASS / PASS_TO_PASS selection as REAL tests.
+
+    The SWE-bench verification contract: every listed test must exist, actually
+    run, and pass -- FAIL_TO_PASS goes red->green after the edit, PASS_TO_PASS
+    must stay green (the regression half that shows the instance's real resource
+    profile, because it exercises the project's own test harness rather than a
+    hand-written probe).
+
+    Test *classes* are handed to Maven (`-Dtest=A,B`) rather than `Class#method`
+    ids: method selection needs surefire >= 2.19, while the Maven installed in
+    the java image binds the super-POM's older surefire. The per-method
+    assertion is then done by a python3 pass over the surefire XML reports, so a
+    missing / silently-skipped test cannot masquerade as a green verify (exit
+    code alone would not catch it).
+
+    Returns None when the pair declares no tests (caller falls back to the
+    smoke-script verify used by the other languages).
+    """
+    test_ids: list[str] = []
+    for key in ("fail_to_pass", "pass_to_pass"):
+        raw = pair.get(key)
+        if isinstance(raw, (list, tuple)):
+            test_ids.extend(str(t) for t in raw)
+    if not test_ids:
+        return None
+
+    classes = sorted({t.split("#", 1)[0].rsplit(".", 1)[-1] for t in test_ids})
+    ids_b64 = base64.b64encode(json.dumps(test_ids).encode()).decode()
+    reports_dir = f"{project_dir}/{profile.test_module}/target/surefire-reports"
+    cmd = (
+        f"cd {project_dir} && "
+        f"mvn -o -q -B -pl {profile.test_module} {profile.test_args} "
+        f"-Dtest={','.join(classes)} -DfailIfNoTests=false test && "
+        f"python3 - {ids_b64} {reports_dir} <<'PYEOF'\n"
+        "import base64, json, os, sys\n"
+        "import xml.etree.ElementTree as ET\n"
+        "ids = json.loads(base64.b64decode(sys.argv[1]))\n"
+        "reports = sys.argv[2]\n"
+        "for tid in ids:\n"
+        "    cls, _, method = tid.partition('#')\n"
+        "    path = os.path.join(reports, 'TEST-%s.xml' % cls)\n"
+        "    if not os.path.exists(path):\n"
+        "        print('MISSING REPORT:', tid)\n"
+        "        sys.exit(1)\n"
+        "    seen = False\n"
+        "    for tc in ET.parse(path).getroot().iter('testcase'):\n"
+        "        if tc.get('name') != method or tc.get('classname') not in (None, cls):\n"
+        "            continue\n"
+        "        seen = True\n"
+        "        bad = [c.tag for c in tc if c.tag in ('failure', 'error', 'skipped')]\n"
+        "        if bad:\n"
+        "            print('NOT PASSED:', tid, bad)\n"
+        "            sys.exit(1)\n"
+        "    if not seen:\n"
+        "        print('NOT RUN:', tid)\n"
+        "        sys.exit(1)\n"
+        "print('verified %d tests' % len(ids))\n"
+        "PYEOF"
+    )
+
+    run_start = time.perf_counter()
+    result = provider.exec(inst, cmd, timeout=config.coding_verify_timeout + 60)
+    elapsed = time.perf_counter() - run_start
+    if step_times is not None:
+        step_times["verify"] = elapsed
+    if result.exit_code != 0:
+        detail = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+        return False, detail[:400], False
+    logger.info(f"[verify] test suite passed in {elapsed:.1f}s ({len(test_ids)} tests)")
+    return True, "", False
+
+
 def _run_verify(
     provider: EnvironmentProvider,
     inst: SandboxInstance,
@@ -146,12 +228,24 @@ def _run_verify(
     -- the real trace has no cache-clear step), then the write+go run is a single
     newline-joined command.
 
+    java path: delegated to :func:`_run_test_suite_verify` whenever the pair
+    declares ``fail_to_pass``/``pass_to_pass`` -- the instance's real Maven tests
+    are run (and asserted from surefire reports), covering the PTP regression
+    half. Pairs without a test selection fall through to the smoke script below.
+
     Returns: (success, error_detail, compile_only). compile_only is True when the
     pair declared `verify: compile_only` (no assertable edit semantics) -- the N-chain
     still runs (generic health checks), honestly labeled.
     """
     profile = get_coding_profile(config.coding_language)
     compile_only = str(pair.get("verify", "")).lower() == "compile_only"
+
+    # FAIL_TO_PASS / PASS_TO_PASS path (java today): when the pair names real
+    # tests, run the project's own test suite instead of an ad-hoc probe.
+    if profile.test_module:
+        suite = _run_test_suite_verify(provider, inst, project_dir, config, pair, profile, step_times)
+        if suite is not None:
+            return suite
 
     # Optional pre-verify cache clear (go only). Separate command so its time is
     # measured apart from the write+run.
@@ -235,12 +329,9 @@ class CodingWarmupRunner(TaskRunner):
 
         sid = self.state.id
         project_dir = self.cfg.coding_project_dir
+        profile = get_coding_profile(self.cfg.coding_language)
 
-        project_marker = (
-            "go.mod"
-            if self.cfg.coding_language == "go"
-            else ("pyproject.toml" if self.cfg.coding_language == "python" else "package.json")
-        )
+        project_marker = profile.project_marker
         try:
             result = self.provider.exec(self.state, f"ls {project_dir}/{project_marker}", timeout=30)
             if result.exit_code != 0:
@@ -252,7 +343,6 @@ class CodingWarmupRunner(TaskRunner):
             self.state.warmup_done = True
             return
 
-        profile = get_coding_profile(self.cfg.coding_language)
         try:
             result = self.provider.exec(
                 self.state,

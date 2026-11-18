@@ -27,7 +27,7 @@ class CodingLanguageProfile:
 
     Fields:
         temp_test_path: where the ad-hoc test file is written (/tmp/...).
-        heredoc_eof: heredoc terminator string ("EOF"/"GOEOF"/"PYEOF").
+        heredoc_eof: heredoc terminator string ("EOF"/"GOEOF"/"PYEOF"/"JAVAEOF").
         run_cmd: the verify run command (npx tsx ... / go run ... / python3 ...).
         source_find_names: -name patterns for the find fallback.
         source_find_root: directory the find fallback searches under.
@@ -40,6 +40,8 @@ class CodingLanguageProfile:
             first ``go run`` pays the full compile (40% CPU) and every later
             run hits cache (10%) -- which would NOT reflect the real agent's
             per-verify rewrite+recompile shape.
+        project_marker: file whose presence proves the project was baked into
+            the image (checked by warmup before the initial verify).
     """
 
     temp_test_path: str
@@ -50,6 +52,14 @@ class CodingLanguageProfile:
     checkout_paths: str = ""
     default_verify_script: str = ""
     pre_verify_cmd: str = ""
+    project_marker: str = "package.json"
+    # Build-tool module whose real test suite the FAIL_TO_PASS / PASS_TO_PASS
+    # pairs run (Maven `-pl <module>`). Empty = the language verifies through
+    # ``default_verify_script`` / ``run_cmd`` instead (ts/go/python today).
+    test_module: str = ""
+    # Extra flags for the test-suite run (java: ``-Djava.version=8`` overrides
+    # gson's <java.version>1.6</java.version>, which javac 8+ rejects).
+    test_args: str = ""
 
 
 def _find_name_clause(names: tuple) -> str:
@@ -351,6 +361,114 @@ DEFAULT_CODING_VERIFY_SCRIPT_PY = (
 )
 
 
+# --- java: google/gson replacement pairs ----------------------------------------------
+# Real swe_bench_multilingual instance google__gson-1014 (JsonTreeReader.skipValue
+# throws ArrayIndexOutOfBoundsException on an empty root object). gson at the
+# instance base_commit (7719e73a) is a Maven reactor with a single `gson` module
+# (sources under gson/src/main/java).
+#
+# Pairs[0] is a generic class-line edit ON PURPOSE: warmup verifies
+# ``source_files[0]`` BEFORE any edit is applied, so a pair carrying the
+# FAIL_TO_PASS tests must not be first (the base commit is buggy). Pairs[1]
+# mirrors the gold patch and carries the instance's FAIL_TO_PASS selection,
+# which the runner executes as a REAL Maven test run (see ``test_module`` in the
+# java profile) plus a surefire-report assertion that every listed test actually
+# ran and passed. The remaining pairs are class-line edits that keep the module
+# compiling and fall back to the shared Java smoke verify.
+#
+# PASS_TO_PASS: gson-1014 has an EMPTY official PASS_TO_PASS list (FAIL_TO_PASS
+# holds only the two JsonTreeReaderTest methods, and the upstream eval script
+# runs exactly those). The ``pass_to_pass`` key is still supported: put test ids
+# ("com.foo.BarTest#method") there and the runner runs + asserts them alongside
+# FAIL_TO_PASS -- future Java instances (e.g. lucene-11760) use it directly.
+DEFAULT_CODING_JAVA_SOURCE_FILES: list[dict] = [
+    {
+        "file": "gson/src/main/java/com/google/gson/JsonParser.java",
+        "find": "public final class JsonParser {",
+        "replace": "public final class JsonParser { // bench",
+    },
+    {
+        # Gold patch (google__gson-1014): guard the path bookkeeping in
+        # skipValue() after popStack() empties the stack.
+        "file": "gson/src/main/java/com/google/gson/internal/bind/JsonTreeReader.java",
+        "find": (
+            "      popStack();\n"
+            '      pathNames[stackSize - 1] = "null";\n'
+            "    }\n"
+            "    pathIndices[stackSize - 1]++;"
+        ),
+        "replace": (
+            "      popStack();\n"
+            "      if (stackSize > 0) {\n"
+            '        pathNames[stackSize - 1] = "null";\n'
+            "      }\n"
+            "    }\n"
+            "    if (stackSize > 0) {\n"
+            "      pathIndices[stackSize - 1]++;\n"
+            "    }"
+        ),
+        # The instance's FAIL_TO_PASS selection, run as real Maven tests against
+        # the baked-in test file (dockerfile_build/coding/java/tests/
+        # JsonTreeReaderTest.java) -- the upstream eval runs exactly these two
+        # methods. pass_to_pass is empty for gson-1014 (see the section note).
+        "fail_to_pass": (
+            "com.google.gson.internal.bind.JsonTreeReaderTest#testSkipValue_emptyJsonObject",
+            "com.google.gson.internal.bind.JsonTreeReaderTest#testSkipValue_filledJsonObject",
+        ),
+        "pass_to_pass": (),
+    },
+    {
+        "file": "gson/src/main/java/com/google/gson/Gson.java",
+        "find": "public final class Gson {",
+        "replace": "public final class Gson { // bench",
+    },
+    {
+        "file": "gson/src/main/java/com/google/gson/GsonBuilder.java",
+        "find": "public final class GsonBuilder {",
+        "replace": "public final class GsonBuilder { // bench",
+    },
+    {
+        "file": "gson/src/main/java/com/google/gson/stream/JsonReader.java",
+        "find": "public class JsonReader implements Closeable {",
+        "replace": "public class JsonReader implements Closeable { // bench",
+    },
+    {
+        "file": "gson/src/main/java/com/google/gson/internal/Streams.java",
+        "find": "public final class Streams {",
+        "replace": "public final class Streams { // bench",
+    },
+]
+
+
+# Shared default verify-script body for Java pairs without their own
+# verify_script. A plain gson round-trip (toJson + parse) compiled against the
+# freshly rebuilt gson module -- the transient javac/JVM peak (same role
+# `go run`'s compiler, `npx tsx`'s node+esbuild and `python3`'s CPython play in
+# the other variants). Deliberately does not touch the JsonTreeReader bug, so
+# it passes on the base commit too (warmup runs it before any edit).
+DEFAULT_CODING_VERIFY_SCRIPT_JAVA = (
+    "import com.google.gson.Gson;\n"
+    "import com.google.gson.GsonBuilder;\n"
+    "import com.google.gson.JsonObject;\n"
+    "import com.google.gson.JsonParser;\n"
+    "\n"
+    "public class BenchVerify {\n"
+    "  public static void main(String[] args) {\n"
+    "    Gson gson = new GsonBuilder().serializeNulls().create();\n"
+    "    String json = gson.toJson(new int[] {1, 2, 3});\n"
+    '    if (!"[1,2,3]".equals(json)) {\n'
+    '      throw new AssertionError("unexpected json: " + json);\n'
+    "    }\n"
+    '    JsonObject parsed = new JsonParser().parse("{\\"a\\":1}").getAsJsonObject();\n'
+    '    if (parsed.get("a").getAsInt() != 1) {\n'
+    '      throw new AssertionError("parse failed: " + parsed);\n'
+    "    }\n"
+    '    System.out.println("All tests passed!");\n'
+    "  }\n"
+    "}\n"
+)
+
+
 # Extensible language registry.
 CODING_LANGUAGE_PROFILES: dict[str, CodingLanguageProfile] = {
     "ts": CodingLanguageProfile(
@@ -373,6 +491,7 @@ CODING_LANGUAGE_PROFILES: dict[str, CodingLanguageProfile] = {
         checkout_paths="markup/",
         default_verify_script=DEFAULT_CODING_VERIFY_SCRIPT_GO,
         pre_verify_cmd="go clean -cache",
+        project_marker="go.mod",
     ),
     "python": CodingLanguageProfile(
         temp_test_path="/tmp/bench_verify.py",
@@ -382,6 +501,33 @@ CODING_LANGUAGE_PROFILES: dict[str, CodingLanguageProfile] = {
         source_find_root=".",
         checkout_paths="django/",
         default_verify_script=DEFAULT_CODING_VERIFY_SCRIPT_PY,
+        project_marker="pyproject.toml",
+    ),
+    "java": CodingLanguageProfile(
+        temp_test_path="/tmp/BenchVerify.java",
+        heredoc_eof="JAVAEOF",
+        # Two-step verify (config.coding_verify_cmd carries the real command):
+        # recompile the edited gson module offline, then javac+run the ad-hoc
+        # probe against the fresh classes. `-Djava.version=8` overrides the
+        # pom's <java.version>1.6</java.version> (javac 8+ rejects source 6).
+        run_cmd=(
+            "cd /opt/coding-bench && mvn -o -q -B -pl gson -DskipTests -Djava.version=8 compile "
+            "&& javac -cp gson/target/classes /tmp/BenchVerify.java "
+            "&& java -cp gson/target/classes:/tmp BenchVerify"
+        ),
+        source_find_names=("*.java",),
+        source_find_root="gson/src/main/java",
+        # All pairs edit the gson module's main sources only.
+        checkout_paths="gson/src/main/java/",
+        default_verify_script=DEFAULT_CODING_VERIFY_SCRIPT_JAVA,
+        # Maven has no `go clean -cache` analogue we want here: recompiling the
+        # single changed module is the real agent verify, and the build-time
+        # warm compile keeps ~/.m2 populated for the offline (-o) rebuild.
+        project_marker="pom.xml",
+        # Pairs carrying fail_to_pass/pass_to_pass run the real Maven test suite
+        # of this module (see _run_test_suite_verify in task_runner/coding.py).
+        test_module="gson",
+        test_args="-Djava.version=8",
     ),
 }
 
@@ -390,6 +536,7 @@ CODING_LANGUAGE_DEFAULT_SOURCE_FILES: dict[str, list] = {
     "ts": DEFAULT_CODING_SOURCE_FILES,
     "go": DEFAULT_CODING_GO_SOURCE_FILES,
     "python": DEFAULT_CODING_PY_SOURCE_FILES,
+    "java": DEFAULT_CODING_JAVA_SOURCE_FILES,
 }
 
 

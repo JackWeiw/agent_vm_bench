@@ -1,0 +1,4 @@
+# Shell scripts run inside Linux containers (Docker COPY + bash) and are also
+# consumed by push_to_harbor.sh; CRLF breaks the shebang there. Keep them LF
+# regardless of core.autocrlf on the checkout machine.
+*.sh text eol=lf
