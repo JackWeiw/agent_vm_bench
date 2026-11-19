@@ -2,9 +2,11 @@
 Log Parser Module
 
 Parses output logs from various collection tools (devkit, ksys, ub_watch,
-smap_bw, getfre) and extracts structured metrics data.
+smap_bw, getfre) and the AMDuProfPcm Timeseries CSVs (rotation) and extracts
+structured metrics data.
 """
 
+import csv
 import glob
 import os
 import re
@@ -752,6 +754,54 @@ def parse_smap_bw(log_path: str) -> dict:
         return {"error": str(e)}
 
 
+def parse_uprof(log_dir: str) -> dict:
+    """Parse AMDuProfPcm's per-turn Timeseries CSVs from an uprof rotation slot.
+
+    The rotation turn passes ``-o <log_capture/uprof/<stamp>>`` and the tool
+    builds ``AMDuProfPcm-Timeseries_*/report-timerseries.csv`` inside it. All
+    turns' CSVs are flattened into one row list with the turn stamp prefixed,
+    so the collection report can carry the whole series:
+
+        {"turns": [<stamp>, ...], "columns": [<csv header>, ...], "rows": [...]}
+
+    Each row is a ``{column: value}`` dict with ``"turn"`` prepended. An empty
+    result (no uprof dir / no Timeseries output) is
+    ``{"turns": [], "columns": [], "rows": []}`` -- callers treat empty rows as
+    "uprof collected nothing this run".
+    """
+    result = {"turns": [], "columns": [], "rows": []}
+    uprof_root = os.path.join(log_dir, "log_capture", "uprof")
+    if not os.path.isdir(uprof_root):
+        return result
+
+    turns = sorted(d for d in os.listdir(uprof_root) if os.path.isdir(os.path.join(uprof_root, d)))
+    rows, columns, seen = [], [], set()
+    for turn in turns:
+        for ts_dir in sorted(glob.glob(os.path.join(uprof_root, turn, "AMDuProfPcm-Timeseries_*"))):
+            if not os.path.isdir(ts_dir):
+                continue
+            for csv_path in sorted(glob.glob(os.path.join(ts_dir, "*.csv"))):
+                try:
+                    with open(csv_path, encoding="utf-8", errors="ignore", newline="") as f:
+                        for row in csv.DictReader(f):
+                            out = {"turn": turn}
+                            for key, value in row.items():
+                                if key is None:
+                                    continue  # columns beyond the header row
+                                key = key.strip()
+                                if key and key not in seen:
+                                    seen.add(key)
+                                    columns.append(key)
+                                out[key] = value
+                            rows.append(out)
+                except OSError as e:
+                    print(f"  [WARN] uprof parse skipped {csv_path}: {e}")
+    result["turns"] = turns
+    result["columns"] = columns
+    result["rows"] = rows
+    return result
+
+
 def parse_all_logs(log_dir: str, numa_nodes: list = None) -> dict:
     """Parse all log files in the directory
 
@@ -766,7 +816,8 @@ def parse_all_logs(log_dir: str, numa_nodes: list = None) -> dict:
             'ksys': parsed result,
             'ub_watch': parsed result,
             'smap_bw': parsed result,
-            'getfre': {numa_id: parsed result}  # getfre results per NUMA
+            'getfre': {numa_id: parsed result},  # getfre results per NUMA
+            'uprof': parsed Timeseries rows  # rotation mode only
         }
     """
     results = {}
@@ -807,5 +858,10 @@ def parse_all_logs(log_dir: str, numa_nodes: list = None) -> dict:
             getfre_results[numa_id] = parse_getfre(getfre_path)
     if getfre_results:
         results["getfre"] = getfre_results
+
+    # Parse uprof rotation turns (log_capture/uprof/<stamp>/AMDuProfPcm-Timeseries_*)
+    uprof_results = parse_uprof(log_dir)
+    if uprof_results["rows"]:
+        results["uprof"] = uprof_results
 
     return results

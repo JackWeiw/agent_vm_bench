@@ -232,7 +232,8 @@ logs_<timestamp>/
 `resource_report.xlsx` 的 sheet（仅汇总）：`Summary`、`NUMA_Overview`、`VM_Stats`，
 外加对应工具日志存在时才写的 profiler sheet —— `DevKit_TopDown`、`DevKit_Memory`、
 `NUMA_Bandwidth`、`KSys`、`UBWatch_Latency`、`UBWatch_Bandwidth`、`SMAPBW_Summary`、
-`SMAPBW_Cycles`、`Getfre_Summary`、`Getfre_NUMA{N}`。
+`SMAPBW_Cycles`、`Getfre_Summary`、`Getfre_NUMA{N}`、`Uprof`（rotation 模式，
+AMDuProfPcm 每轮 Timeseries CSV 的解析结果）。
 
 `host_resources.xlsx` 的 sheet（逐采样时序，由 `raw_data/` 派生）：`Host resources`、
 `NUMA`、`Per-VM`、`Disk IO`，以及仅在 `--host-proc` 下生成的 `HostProc`。逐列释义见

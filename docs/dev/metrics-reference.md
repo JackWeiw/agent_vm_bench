@@ -392,6 +392,10 @@ SMAP (Secure Memory Access Protection) migration bandwidth:
 
 > Getfre defaults (`total_cores`, `numa_nodes`) are auto-detected from host sysfs topology; physical cores are deduped by `thread_siblings_list`. Override via `getfre_config.yaml` (`GETFRE_CONFIG_PATH`).
 
+### `Uprof` — AMDuProfPcm timeseries (log-rotation slot)
+
+One row per sample with the rotation turn's stamp in `turn`; the remaining columns come straight from the tool's `report-timerseries.csv` — topdown stages (`Frontend_Bound`, `Backend_Bound.Memory`, `Retiring`), `Total Mem Bw (GB/s)`, per-channel memory bandwidth, plus whatever else the selected metric set emits. All-numeric columns are coerced to numbers. Raw per-turn CSVs stay under `log_capture/uprof/<turn>/AMDuProfPcm-Timeseries_*/`.
+
 ## 2.4 Embedded Excel charts
 
 `resource_report.xlsx` charts, added by `_add_charts` after all sheets:

@@ -157,6 +157,7 @@ When using `--enable-capture`, vm_monitor.py invokes the following performance c
 | **ub_watch** | NUMA interconnect latency | `ub_watch.log` | UBWatch_Latency | 7 |
 | **smap_bw** | SMAP migration bandwidth | `smap_bw.log` | SMAPBW_Summary, SMAPBW_Cycles | 5+ |
 | **getfre** | Core frequency monitoring | `getfre_NUMA*.log` | Getfre_Summary, Getfre_NUMA* | 5+ per NUMA |
+| **uprof** (rotation only) | AMD system counters / topdown | `log_capture/uprof/<turn>/` | Uprof | timeseries |
 
 ### Tool Details
 

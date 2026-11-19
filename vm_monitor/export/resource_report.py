@@ -760,6 +760,28 @@ def _add_vm_stats_bar(wb):
     ws.add_chart(bar, f"{get_column_letter(anchor_col)}2")
 
 
+def _build_uprof_sheet(writer, parsed_logs):
+    """Uprof sheet: AMDuProfPcm's per-turn Timeseries rows (rotation mode).
+
+    One row per sample with the rotation turn's stamp in ``turn``; columns come
+    straight from the tool's report-timerseries.csv. Columns whose values all
+    parse as numbers are coerced so timestamps with separators stay text while
+    metric columns chart/analyze cleanly.
+    """
+    uprof = parsed_logs.get("uprof") or {}
+    rows = uprof.get("rows") or []
+    if not rows:
+        return
+    df = pd.DataFrame(rows)
+    for col in df.columns:
+        if col == "turn":
+            continue
+        converted = pd.to_numeric(df[col], errors="coerce")
+        if converted.notna().all():
+            df[col] = converted
+    df.to_excel(writer, sheet_name="Uprof", index=False)
+
+
 def export_to_excel(
     monitor: "VMMonitorBase",
     log_dir: str,
@@ -853,6 +875,7 @@ def export_to_excel(
             _build_ubwatch_sheets(writer, parsed_logs)
             _build_smapbw_sheets(writer, parsed_logs)
             _build_getfre_sheets(writer, parsed_logs)
+            _build_uprof_sheet(writer, parsed_logs)
     except ImportError:
         print("[WARN] openpyxl not available, skipping Excel export")
         print("  Install with: pip install openpyxl")
@@ -1067,5 +1090,12 @@ def print_capture_summary(results: dict, log_dir: str, numa_nodes: list = None):
                                 f"      Core {core_id}: Avg={stats['avg']:.0f} "
                                 f"(Min={stats['min']:.0f}, Max={stats['max']:.0f}) MHz"
                             )
+
+    # uprof results (rotation mode): per-turn AMDuProfPcm Timeseries rows
+    if "uprof" in parsed:
+        uprof = parsed["uprof"]
+        print(f"\n[AMDuProfPcm Timeseries] ({len(uprof['turns'])} turns)")
+        print(f"  Columns: {', '.join(uprof['columns'])}")
+        print(f"  Rows: {len(uprof['rows'])}")
 
     print("=" * 70)
