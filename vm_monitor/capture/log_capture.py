@@ -771,23 +771,23 @@ class LogCapture:
         log_path = self._rotation_log_path("uprof")
         if log_path is None:
             return
-        # AMDuProfPcm's -o takes a per-turn base dir the tool creates itself:
-        # uprof/<stamp>/AMDuProfPcm-Timeseries_*/report-timerseries.csv lands
-        # under it, so consecutive turns never overwrite each other. Pass an
-        # ABSOLUTE path: Popen runs the tool with cwd=rotation_log_dir, and a
-        # still-relative -o would be resolved against THAT cwd one level wrong
-        # (the live-run "Invalid output file!!" bug). No makedirs -- the tool
-        # builds the dir itself.
-        turn_dir = os.path.abspath(os.path.splitext(log_path)[0])
+        # AMDuProfPcm's -o takes the output FILE path -- the live run writes
+        # the timeseries CSV exactly there (no auto-extension), so each turn
+        # passes uprof/<stamp>.csv and consecutive turns never overwrite each
+        # other. Pass an ABSOLUTE path: Popen runs the tool with
+        # cwd=rotation_log_dir, and a still-relative -o would be resolved
+        # against THAT cwd one level wrong (the live-run "Invalid output
+        # file!!" bug). The file is created by the tool, not here.
+        data_file = os.path.abspath(os.path.splitext(log_path)[0] + ".csv")
         # A successful turn drops its stdout log, so _rotation_log_path's
         # log-existence suffix no longer keeps a same-second next turn off
-        # this data dir. Bump -N on the data dir instead (degenerate case:
-        # sub-second slot intervals; production slots are >= 1 s apart).
-        stem = turn_dir
+        # this output file. Bump -N on the output file instead (degenerate
+        # case: sub-second slot intervals; production slots are >= 1 s apart).
+        data_stem = os.path.splitext(data_file)[0]
         n = 1
-        while os.path.exists(turn_dir) and n < 1000:
+        while os.path.exists(data_file) and n < 1000:
             n += 1
-            turn_dir = f"{stem}-{n}"
+            data_file = f"{data_stem}-{n}.csv"
         try:
             fh = open(log_path, "w")
         except OSError as e:
@@ -801,7 +801,7 @@ class LogCapture:
             "-A",
             "system,package",
             "-o",
-            turn_dir,
+            data_file,
             "-d",
             interval,
         ]
@@ -846,20 +846,20 @@ class LogCapture:
             self._rotation_uprof_procs.append(proc)
         elif proc.returncode != 0:
             self.failed_runtime.append({"tool": "uprof", "returncode": proc.returncode})
-            # rapid exit: drop the tool's per-turn output dir only while it is
-            # empty (a failed run that wrote partial Timeseries output keeps it
-            # for debugging)
+            # rapid exit: drop the tool's per-turn output FILE only while it is
+            # empty (a failed run that wrote partial output keeps it for
+            # debugging)
             try:
-                if os.path.isdir(turn_dir) and not os.listdir(turn_dir):
-                    os.rmdir(turn_dir)
+                if os.path.isfile(data_file) and os.path.getsize(data_file) == 0:
+                    os.unlink(data_file)
             except OSError:
                 pass
         else:
             # Success: the stdout log only repeats where the data landed -- the
-            # per-turn Timeseries dir IS the artifact, so keep just the
-            # collected data and drop the log. Failed turns keep theirs for
-            # debugging; a tool still running past its interval also keeps its
-            # log (its rc is unknowable at parking time).
+            # per-turn output FILE IS the artifact, so keep just the collected
+            # data and drop the log. Failed turns keep theirs for debugging; a
+            # tool still running past its interval also keeps its log (its rc
+            # is unknowable at parking time).
             try:
                 os.unlink(log_path)
             except OSError:

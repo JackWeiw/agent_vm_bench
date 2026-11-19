@@ -754,13 +754,38 @@ def parse_smap_bw(log_path: str) -> dict:
         return {"error": str(e)}
 
 
-def parse_uprof(log_dir: str) -> dict:
-    """Parse AMDuProfPcm's per-turn Timeseries CSVs from an uprof rotation slot.
+def _read_uprof_csv(csv_path: str, turn: str, rows: list, columns: list, seen: set) -> None:
+    """Append one uprof CSV's rows into the shared rows/columns accumulators."""
+    try:
+        with open(csv_path, encoding="utf-8-sig", errors="ignore", newline="") as f:
+            for row in csv.DictReader(f):
+                out = {"turn": turn}
+                for key, value in row.items():
+                    if key is None:
+                        continue  # columns beyond the header row
+                    key = key.strip()
+                    if key and key not in seen:
+                        seen.add(key)
+                        columns.append(key)
+                    out[key] = value
+                rows.append(out)
+    except (OSError, csv.Error) as e:
+        print(f"  [WARN] uprof parse skipped {csv_path}: {e}")
 
-    The rotation turn passes ``-o <log_capture/uprof/<stamp>>`` and the tool
-    builds ``AMDuProfPcm-Timeseries_*/report-timerseries.csv`` inside it. All
-    turns' CSVs are flattened into one row list with the turn stamp prefixed,
-    so the collection report can carry the whole series:
+
+def parse_uprof(log_dir: str) -> dict:
+    """Parse AMDuProfPcm's per-turn timeseries CSVs from an uprof rotation slot.
+
+    The rotation turn passes ``-o <log_capture/uprof/<stamp>.csv>`` and the
+    tool writes the timeseries CSV exactly there. Two layouts are tolerated:
+
+    - **file form** (current tool behavior): ``uprof/<stamp>.csv`` -- the turn
+      label is the filename stem;
+    - **nested form** (older observation): ``uprof/<turn>/AMDuProfPcm-Timeseries_*/``
+      directories holding the CSV(s) -- the turn label is the directory name.
+
+    All turns' CSVs are flattened into one row list with the turn stamp
+    prefixed, so the collection report can carry the whole series:
 
         {"turns": [<stamp>, ...], "columns": [<csv header>, ...], "rows": [...]}
 
@@ -769,9 +794,9 @@ def parse_uprof(log_dir: str) -> dict:
     the rotation root differs by driver: standalone vm-monitor writes under
     ``<log_dir>/log_capture`` while bench-core passes
     ``--rotation-log-dir <output_dir>/log_capture`` (a sibling of log_dir), so
-    that sibling is scanned as well. An empty result (no uprof dir / no
-    Timeseries output) is ``{"turns": [], "columns": [], "rows": []}`` --
-    callers treat empty rows as "uprof collected nothing this run".
+    that sibling is scanned as well. An empty result (no uprof dir / no output)
+    is ``{"turns": [], "columns": [], "rows": []}`` -- callers treat empty rows
+    as "uprof collected nothing this run".
     """
     result = {"turns": [], "columns": [], "rows": []}
     roots = [os.path.join(log_dir, "log_capture", "uprof")]
@@ -783,30 +808,22 @@ def parse_uprof(log_dir: str) -> dict:
         if not os.path.isdir(uprof_root):
             continue
         try:
-            turns = sorted(d for d in os.listdir(uprof_root) if os.path.isdir(os.path.join(uprof_root, d)))
+            entries = sorted(os.listdir(uprof_root))
         except OSError as e:
             print(f"  [WARN] uprof parse skipped {uprof_root}: {e}")
             continue
-        for turn in turns:
-            for ts_dir in sorted(glob.glob(os.path.join(uprof_root, turn, "AMDuProfPcm-Timeseries_*"))):
-                if not os.path.isdir(ts_dir):
-                    continue
-                for csv_path in sorted(glob.glob(os.path.join(ts_dir, "*.csv"))):
-                    try:
-                        with open(csv_path, encoding="utf-8-sig", errors="ignore", newline="") as f:
-                            for row in csv.DictReader(f):
-                                out = {"turn": turn}
-                                for key, value in row.items():
-                                    if key is None:
-                                        continue  # columns beyond the header row
-                                    key = key.strip()
-                                    if key and key not in seen:
-                                        seen.add(key)
-                                        columns.append(key)
-                                    out[key] = value
-                                rows.append(out)
-                    except (OSError, csv.Error) as e:
-                        print(f"  [WARN] uprof parse skipped {csv_path}: {e}")
+        for entry in entries:
+            entry_path = os.path.join(uprof_root, entry)
+            if os.path.isfile(entry_path) and entry.endswith(".csv"):
+                # File form: the tool wrote uprof/<stamp>.csv directly.
+                _read_uprof_csv(entry_path, os.path.splitext(entry)[0], rows, columns, seen)
+            elif os.path.isdir(entry_path):
+                # Nested form: uprof/<turn>/AMDuProfPcm-Timeseries_*/ holding the CSV(s).
+                for ts_dir in sorted(glob.glob(os.path.join(entry_path, "AMDuProfPcm-Timeseries_*"))):
+                    if not os.path.isdir(ts_dir):
+                        continue
+                    for csv_path in sorted(glob.glob(os.path.join(ts_dir, "*.csv"))):
+                        _read_uprof_csv(csv_path, entry, rows, columns, seen)
     result["turns"] = sorted({r["turn"] for r in rows})
     result["columns"] = columns
     result["rows"] = rows
