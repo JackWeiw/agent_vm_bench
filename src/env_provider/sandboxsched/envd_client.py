@@ -12,6 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# NOTE: vendored from opensandbox examples/flux-sandbox-e2b/envd_client.py with
+# local correctness fixes -- no longer byte-identical to upstream. Local deltas:
+# _iter_connect_frames (mid-frame truncation raises instead of ending silently),
+# _parse_trailers (end-of-stream error parsed under the "error" key only), and
+# run() (a stream with neither exit code nor end-of-stream frame raises instead
+# of reporting a phantom success).
+
 """Client for E2B (envd) sandboxes: OpenSandbox control plane + raw envd data plane.
 
 Why this module exists
@@ -273,21 +280,36 @@ def _iter_connect_frames(stream) -> Iterator[tuple]:
     """Parse a Connect response stream, yielding ``(flags, payload)``.
 
     ``flags`` 0x00 is a protobuf message frame, 0x02 the trailing trailers frame.
+    A clean EOF at a frame boundary ends the iteration; a stream cut mid-frame
+    (partial header or payload -- a killed process, or the server's ~180s
+    upstream timeout dropping the connection) raises instead of ending
+    silently, so a truncated exec is never mistaken for a finished one.
     """
     while True:
         header = _read_exact(stream, 5)
+        if not header:
+            return  # clean EOF at a frame boundary
         if len(header) < 5:
-            return
+            raise EnvdError("connect stream truncated: partial frame header")
         flags = header[0]
         length = int.from_bytes(header[1:5], "big")
         payload = _read_exact(stream, length)
         if len(payload) < length:
-            return
+            raise EnvdError(
+                f"connect stream truncated: payload cut at {len(payload)}/{length} bytes"
+            )
         yield flags, payload
 
 
 def _parse_trailers(payload: bytes) -> str | None:
-    """Return an error description from a trailers frame, or None on success (``{}``)."""
+    """Return an error description from a trailers frame, or None on success.
+
+    connect-go wraps the end-of-stream envelope as ``{"metadata": ...,
+    "error": {"code": ..., "message": ...}}`` -- the error lives under the
+    ``error`` key only. A frame carrying metadata but no error is a success
+    (misreporting it fails clean streams); envd's empty ``{}`` end frame also
+    passes. A genuine RPC rejection's code/message ride inside ``error``.
+    """
     text = payload.decode("utf-8", errors="replace").strip()
     try:
         meta = json.loads(text)
@@ -295,7 +317,12 @@ def _parse_trailers(payload: bytes) -> str | None:
         return f"unparsable trailers: {text}"
     if not meta:
         return None
-    return f"code={meta.get('code', '?')} message={meta.get('message', '')}"
+    error = meta.get("error") if isinstance(meta, dict) else None
+    if not error:
+        return None  # metadata-only end-of-stream: not a failure
+    if isinstance(error, dict):
+        return f"code={error.get('code', '?')} message={error.get('message', '')}"
+    return f"code={error}"
 
 
 def _iter_process_events(payload: bytes) -> Iterator[tuple]:
@@ -425,9 +452,12 @@ class EnvdClient:
         ``Start`` is a server-streaming RPC: one ``ProcessEvent`` per frame. Frames
         are consumed as they arrive, so long-running commands report output live.
 
-        envd only sends the ``EndEvent`` (exit code) when the command **fails**;
-        on success the stream just ends after the data frames. A stream that ended
-        cleanly without an ``EndEvent`` therefore means exit code 0.
+        Every clean stream ends with the end-of-stream (trailers) frame; an
+        ``EndEvent`` carrying a zero exit code omits the scalar on the wire
+        (proto3), so "trailers seen, no exit event" means exit 0. A stream that
+        ends with neither an exit code nor the trailers frame was cut before the
+        command finished (killed process, the server's ~180s upstream timeout)
+        and raises instead of reporting a phantom success.
         """
         body = build_start_request(command, envs=envs, cwd=cwd)
         resp = self._request(
@@ -440,11 +470,13 @@ class EnvdClient:
 
         stdout, stderr = [], []
         exit_code = None
+        saw_trailers = False
         try:
             for flags, payload in _iter_connect_frames(resp):
                 if flags & 0x01:
                     raise EnvdError("received a compressed frame (flags=0x01)")
                 if flags & 0x02:
+                    saw_trailers = True
                     error = _parse_trailers(payload)
                     if error:
                         raise EnvdError(f"Connect RPC failed: {error}")
@@ -464,7 +496,13 @@ class EnvdClient:
             resp.close()
 
         if exit_code is None:
-            exit_code = 0  # envd omits EndEvent on success: clean end == exit 0
+            if not saw_trailers:
+                raise EnvdError(
+                    "connect stream ended without an end-of-stream frame: exec "
+                    f"truncated ({len(b''.join(stdout))} stdout / "
+                    f"{len(b''.join(stderr))} stderr bytes captured)"
+                )
+            exit_code = 0  # clean end: proto3 omits a zero exit code on the wire
         return RunResult(exit_code, b"".join(stdout), b"".join(stderr))
 
     # -- file transfer -----------------------------------------------------

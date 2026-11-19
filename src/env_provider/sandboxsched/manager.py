@@ -52,7 +52,8 @@ except ImportError:  # pragma: no cover - SDK not installed in dev/test
     logging.getLogger(__name__).warning(
         "opensandbox SDK not installed: sandboxsched falls back to the inline "
         "mock (sandbox ids come out as 'mock_sandbox_id', no real server "
-        "calls). Install with: pip install 'agent-vm-bench[sandboxsched]'"
+        "calls). Install the sandboxsched extra from the repo root: "
+        "pip install -e '.[sandboxsched]'"
     )
 
     class _MockCommands:  # type: ignore[no-redef]
@@ -193,6 +194,9 @@ _LIVE_STATES = (SdkSandboxState.RUNNING, SdkSandboxState.PAUSED)
 # Poll interval for the backend-state waits (pause -> Paused, resume -> Running).
 _STATE_POLL_INTERVAL = 1.0
 
+# Margin over ``ready_timeout`` bounding each bridge submit (see submit()).
+_SUBMIT_TIMEOUT_MARGIN = 60.0
+
 
 class _EventLoopThread:
     """A private asyncio loop on a daemon thread for the SDK's async client.
@@ -215,10 +219,17 @@ class _EventLoopThread:
         self._ready.set()
         self._loop.run_forever()
 
-    def run(self, coro: Any) -> Any:
-        """Drive ``coro`` on the bridge loop; block until it finishes."""
+    def run(self, coro: Any, timeout: float | None = None) -> Any:
+        """Drive ``coro`` on the bridge loop; block until it finishes.
+
+        ``timeout`` bounds the wait: on expiry the caller gets TimeoutError
+        while the coroutine keeps running on the loop (abandoned -- a
+        blackholed server must not wedge the caller forever, mirroring
+        cubesandbox's bounded-call adapter).
+        """
         assert self._loop is not None
-        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result(timeout)
 
 
 class SandboxManager(BaseSandboxManager):
@@ -260,14 +271,17 @@ class SandboxManager(BaseSandboxManager):
         The one entry point every seam (and the adapter's exec/pause/resume/
         snapshot routing) uses to reach the async SDK from sync code. The loop
         thread starts on first use, so a manager that never talks to the SDK
-        never pays for a thread.
+        never pays for a thread. The wait is bounded at ``ready_timeout`` plus
+        a margin -- the SDK's own resume/pause waits run inside that budget --
+        so a blackholed server raises TimeoutError instead of wedging the
+        calling thread forever.
         """
         with self._bridge_lock:
             if self._loop_thread is None:
                 self._loop_thread = _EventLoopThread()
         # run() stays outside the lock: run_coroutine_threadsafe is
         # thread-safe, and holding the lock here would serialize every SDK call.
-        return self._loop_thread.run(coro)
+        return self._loop_thread.run(coro, timeout=self.config.ready_timeout + _SUBMIT_TIMEOUT_MARGIN)
 
     # --------------------------------------------------------- connection
     def _connection(self) -> ConnectionConfig:
@@ -396,8 +410,18 @@ class SandboxManager(BaseSandboxManager):
         )
 
     def _kill_one(self, state: SandboxState) -> None:
-        self._envd_urls.pop(str(getattr(state.sandbox_obj, "id", "")), None)
-        self.submit(state.sandbox_obj.kill())
+        handle = state.sandbox_obj
+        self._envd_urls.pop(str(getattr(handle, "id", "")), None)
+        try:
+            self.submit(handle.kill())
+        finally:
+            # kill() does not release the handle's local transport (each
+            # create/connect/resume owns an httpx pool); close it either way so
+            # a 384-sandbox trial does not accumulate dead sockets.
+            try:
+                self.submit(handle.close())
+            except Exception:
+                pass
 
     def _envd_client_for(self, handle: Any) -> EnvdClient:
         """An envd client for the sandbox behind ``handle`` (URL cached per id).
@@ -417,8 +441,10 @@ class SandboxManager(BaseSandboxManager):
 
     def _exec_probe(self, handle: Any, cmd: str, timeout: int) -> tuple[int, str, str]:
         result = self._envd_client_for(handle).run(cmd, timeout=float(timeout))
+        # run() never returns exit_code=None (truncation raises), so no
+        # phantom-success coercion here.
         return (
-            int(result.exit_code or 0),
+            int(result.exit_code),
             result.stdout.decode("utf-8", "replace"),
             result.stderr.decode("utf-8", "replace"),
         )
@@ -435,38 +461,63 @@ class SandboxManager(BaseSandboxManager):
         """Run ``command`` through the envd data plane (adapter-facing exec).
 
         ``cwd``/``env`` are natively supported by envd's Start request (the
-        SDK's RunCommandOpts detour is gone with it).
+        SDK's RunCommandOpts detour is gone with it). A command timeout that
+        already produced output is surfaced as exit code 124 (the timeout(1)
+        convention, mirroring e2b/cubesandbox) with the partial output kept,
+        so the replay runner can bucket the step as timed_out and continue --
+        instead of propagating and stranding the sandbox mid-slice.
         """
         if state.sandbox_obj is None:
             raise RuntimeError(f"No sandboxsched handle for sandbox index {state.sandbox_id}")
-        result = self._envd_client_for(state.sandbox_obj).run(
-            command,
-            envs=env,
-            cwd=cwd,
-            timeout=float(timeout) if timeout is not None else None,
-        )
+        stdout_parts: list[bytes] = []
+        stderr_parts: list[bytes] = []
+        try:
+            result = self._envd_client_for(state.sandbox_obj).run(
+                command,
+                envs=env,
+                cwd=cwd,
+                on_stdout=stdout_parts.append,
+                on_stderr=stderr_parts.append,
+                timeout=float(timeout) if timeout is not None else None,
+            )
+        except Exception as exc:
+            stdout = b"".join(stdout_parts).decode("utf-8", "replace")
+            stderr = b"".join(stderr_parts).decode("utf-8", "replace")
+            exit_code = getattr(exc, "exit_code", None)
+            if not isinstance(exit_code, int):
+                exit_code = None
+            if exit_code is None and not (stdout or stderr):
+                raise  # genuine transport error with no command output -> propagate
+            if exit_code is None:
+                exit_code = 124  # timeout with partial output, no exit code
+            return (exit_code, stdout, stderr)
         return (
-            int(result.exit_code or 0),
-            result.stdout.decode("utf-8", "replace"),
-            result.stderr.decode("utf-8", "replace"),
+            int(result.exit_code),
+            b"".join(stdout_parts).decode("utf-8", "replace"),
+            b"".join(stderr_parts).decode("utf-8", "replace"),
         )
 
     # ----------------------------------------------------- handle ops (adapter-facing)
-    async def _get_info_async(self, sandbox_id: str) -> Any:
-        """GET /sandboxes/{id} via a cached admin manager (control-plane view).
-
-        The OpenSandbox API is asynchronous: pause/resume return 202 and the
-        transition lands server-side some time later, and an invalid
-        transition (e.g. resuming a sandbox that is Running) fails
-        server-side -- the state gates below are built on this read.
-        """
+    async def _ensure_info_manager(self) -> Any:
+        """The cached admin manager (control-plane state reads + endpointless kills)."""
         # _connection() takes _bridge_lock itself (non-reentrant), so build
         # the config BEFORE entering the lock below.
         connection_config = self._connection()
         with self._bridge_lock:
             if self._info_manager is None:
                 self._info_manager = await SdkSandboxManager.create(connection_config=connection_config)
-        return await self._info_manager.get_sandbox_info(sandbox_id)
+        return self._info_manager
+
+    async def _get_info_async(self, sandbox_id: str) -> Any:
+        """GET /sandboxes/{id} via the cached admin manager (control-plane view).
+
+        The OpenSandbox API is asynchronous: pause/resume return 202 and the
+        transition lands server-side some time later, and an invalid
+        transition (e.g. resuming a sandbox that is Running) fails
+        server-side -- the state gates below are built on this read.
+        """
+        manager = await self._ensure_info_manager()
+        return await manager.get_sandbox_info(sandbox_id)
 
     def _backend_state(self, sandbox_id: str) -> str:
         """Normalized server-side state: "running" / "paused" / ... (lowercase tail)."""
@@ -609,6 +660,49 @@ class SandboxManager(BaseSandboxManager):
             return {}
 
         return self._detect_each(matched, id_to_template=id_to_template)
+
+    def cleanup_existing(self) -> int:
+        """List live sandboxes and kill them all without attaching.
+
+        Overrides the base's attach-then-kill loop: ``Sandbox.connect``
+        re-resolves the sandbox's CNI endpoint, which a PAUSED sandbox does
+        not publish -- a lifecycle run ends with the fleet paused, so the
+        base path stalls ~ready_timeout per sandbox and then fails, leaking
+        the whole paused fleet on cross-process cleanup (``bench-core
+        --cleanup``). ``SdkSandboxManager.kill_sandbox(id)`` needs no
+        endpoint, so the kill goes straight through the control plane;
+        readiness probing stays skipped as in the base.
+        """
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"Cleaning up existing {self._noun.lower()}s")
+        logger.info(f"{'=' * 60}")
+        try:
+            listed = self._list_existing()
+            logger.info(f"  Found {len(listed)} running {self._noun.lower()}s")
+        except Exception as e:
+            logger.error(f"  Failed to list {self._noun.lower()}s: {e}")
+            return 0
+
+        if not listed:
+            logger.info(f"  No existing {self._noun.lower()}s found")
+            return 0
+
+        killed = 0
+        for i, item in enumerate(listed, start=1):
+            ext_id = self._external_id(item)
+            label = f"{self._noun}{i}"
+            try:
+                self.submit(self._kill_by_id_async(ext_id))
+                killed += 1
+                logger.info(f"[{label}] Killed {ext_id}")
+            except Exception as e:
+                logger.warning(f"[{label}] Kill error: {str(e)[:80]}")
+        logger.info(f"Killed {killed} of {len(listed)} {self._noun.lower()}s")
+        return killed
+
+    async def _kill_by_id_async(self, sandbox_id: str) -> None:
+        manager = await self._ensure_info_manager()
+        await manager.kill_sandbox(sandbox_id)
 
     def check_alive(self, state: SandboxState) -> bool:
         """Liveness via the envd health probe (``GET /health`` -> 204)."""

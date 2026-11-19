@@ -20,6 +20,7 @@ replace those bindings with controllable fakes, so no SDK install is needed.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from threading import Event
 
@@ -35,6 +36,7 @@ from bench_core.workflow_registry import ensure_workflow_registered
 ensure_workflow_registered("coding")
 from env_provider.sandboxsched import manager as mgr_mod
 from env_provider.sandboxsched.config import Config
+from env_provider.sandboxsched.envd_client import EnvdError
 from env_provider.sandboxsched.manager import SandboxManager
 from env_provider.sandboxsched.schemas import SandboxState
 
@@ -57,6 +59,7 @@ class _FakeSandboxSync:
         self.ready = ready
         self.killed = False
         self.paused = False
+        self.closed = False
 
     async def kill(self):
         self.killed = True
@@ -65,7 +68,7 @@ class _FakeSandboxSync:
         self.paused = True
 
     async def close(self):  # noqa: ARG002
-        pass
+        self.closed = True
 
     async def get_endpoint(self, port):  # noqa: ARG002
         class _Endpoint:
@@ -431,3 +434,75 @@ class TestStateGating:
         assert handle.paused is True  # POST happened
         # the transition sequence was consumed down to the sticky Paused state
         assert fake_manager.states["sbx-0001"] == "paused"
+
+
+# -------------------------------------------------------------------- exec timeout / handle lifecycle
+class _PartialTimeoutEnvd:
+    """Fake envd client: streams partial output, then the read times out."""
+
+    def run(self, cmd, *, envs=None, cwd=None, on_stdout=None, on_stderr=None, timeout=None):  # noqa: ARG002
+        on_stdout(b"partial ")
+        on_stdout(b"output")
+        raise TimeoutError("read timed out")
+
+
+class TestExecTimeoutMapping:
+    """A command timeout that already produced output is exit-124 with the
+    partials kept (the timeout(1) convention, mirroring e2b/cubesandbox), so
+    the replay runner buckets the step and continues instead of stranding the
+    sandbox mid-slice."""
+
+    def test_timeout_with_partial_output_maps_to_124(self, kernel_config, sched_config, patched_sdk, monkeypatch):
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        states = mgr.create_all()
+        state = next(iter(states.values()))
+        monkeypatch.setattr(mgr, "_envd_client_for", lambda h: _PartialTimeoutEnvd())
+        code, out, err = mgr.envd_exec(state, "long-cmd", timeout=5)
+        assert code == 124
+        assert out == "partial output"
+
+    def test_transport_error_without_output_propagates(self, kernel_config, sched_config, patched_sdk, monkeypatch):
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        states = mgr.create_all()
+        state = next(iter(states.values()))
+
+        class _DeadEnvd:
+            def run(self, cmd, **kwargs):  # noqa: ARG002
+                raise EnvdError("HTTP 500 POST /process.Process/Start: boom")
+
+        monkeypatch.setattr(mgr, "_envd_client_for", lambda h: _DeadEnvd())
+        with pytest.raises(EnvdError):
+            mgr.envd_exec(state, "cmd", timeout=5)
+
+
+class TestHandleLifecycle:
+    def test_kill_closes_the_handle(self, kernel_config, sched_config, patched_sdk):
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        states = mgr.create_all()
+        state = next(iter(states.values()))
+        mgr._kill_one(state)
+        # kill() does not release the handle's transport; close() must run
+        assert state.sandbox_obj.closed is True
+
+    def test_cleanup_existing_kills_paused_without_connect(self, kernel_config, sched_config, patched_sdk):
+        fake_sandbox, fake_manager = patched_sdk
+        fake_manager.list_pages = [_PagedInfos([_SandboxInfo("p-1"), _SandboxInfo("p-2")])]
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        killed = mgr.cleanup_existing()
+        assert killed == 2
+        # control-plane kill (needs no endpoint): works for a PAUSED fleet
+        assert fake_manager.killed == ["p-1", "p-2"]
+        # no attach: Sandbox.connect would stall ~ready_timeout per paused
+        # sandbox and then fail, leaking the fleet
+        assert fake_sandbox.connected == []
+
+    def test_submit_bounds_hung_bridge_calls(self, kernel_config, patched_sdk, monkeypatch):
+        monkeypatch.setattr(mgr_mod, "_SUBMIT_TIMEOUT_MARGIN", 0.2)
+        cfg = Config(sandbox_group="sg-1", ready_timeout=0)  # submit bound = 0.2s
+        mgr = SandboxManager(kernel_config, cfg, Event())
+
+        async def _hang():
+            await asyncio.sleep(30)
+
+        with pytest.raises(TimeoutError):
+            mgr.submit(_hang())

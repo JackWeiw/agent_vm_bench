@@ -12,15 +12,16 @@ lazy-imported by ``bench_core.bench._build_provider``, so ``bench_core`` itself
 never depends on the opensandbox SDK -- the layering rule (kernel must not
 import provider packages) holds.
 
-Lifecycle / ephemeral / snapshot support: the OpenSandbox E2B runtime (Firecracker
-microVMs, the default) supports pause/resume/snapshot, so this provider
-implements :class:`env_provider.LifecycleCapable` (``pause``/``resume`` via
-the handle's ``pause`` / the SDK's ``Sandbox.resume``), :class:`env_provider.
-EphemeralCapable`` (``create_one``/``kill_one`` for trajectory mode), and
-:class:`env_provider.SnapshotSizeCapable`` (``snapshot_sizes`` via the SDK's
-``create_snapshot``). The containerd runtime has no
-pause/snapshot -- a config knob (``runtime``) selects the E2B runtime; lifecycle
-calls on a containerd sandbox raise a clear error from the SDK.
+Lifecycle / ephemeral support: the OpenSandbox E2B runtime (Firecracker
+microVMs, the default) supports pause/resume, so this provider implements
+:class:`env_provider.LifecycleCapable` (``pause``/``resume`` via the handle's
+``pause`` / the SDK's ``Sandbox.resume``) and :class:`env_provider.
+EphemeralCapable`` (``create_one``/``kill_one`` for trajectory mode).
+``snapshot_sizes`` returns ``None`` by design -- the SDK model carries no
+snapshot byte size and the server rejects ``create_snapshot`` from a paused
+sandbox (see the method) -- so the kernel skips the ``snapshot_size`` series
+event entirely. The containerd runtime has no pause at all; lifecycle calls
+on such a sandbox raise a clear error from the SDK.
 """
 
 from __future__ import annotations
@@ -213,12 +214,20 @@ class SandboxSchedProvider(EnvironmentProvider):
         ``Sandbox`` (the execd endpoint may change across pause/resume); swap
         it in (mirrors aenv's resume swapping ``Sandbox.connect``). ``inst.id``
         is the OpenSandbox sandbox id (set at create via ``_to_instance``); it
-        persists across pause/resume.
+        persists across pause/resume. The old handle's transport is closed
+        after the swap -- each handle owns an httpx pool, and a 384-sandbox
+        lifecycle trial would otherwise accumulate thousands of dead sockets.
         """
         state = self.manager.sandbox_states.get(inst.index)
         if state is None:
             raise RuntimeError(f"No sandboxsched handle for sandbox index {inst.index}")
+        old_handle = state.sandbox_obj
         state.sandbox_obj = self.manager.resume_handle(inst.id)
+        if old_handle is not None and old_handle is not state.sandbox_obj:
+            try:
+                self.manager.submit(old_handle.close())
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ snapshot (SnapshotSizeCapable)
     def snapshot_sizes(self, inst: SandboxInstance) -> dict | None:
