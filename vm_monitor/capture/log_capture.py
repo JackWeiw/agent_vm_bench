@@ -772,12 +772,15 @@ class LogCapture:
         log_path = self._rotation_log_path("uprof")
         if log_path is None:
             return
-        # -O points at the uprof/ dir (already created for the stdout log):
+        # -O points at the uprof/ dir (the same dir the stdout log lives in):
         # the tool AUTO-GENERATES timestamped folders inside it per turn
         # (AMDuProfPcm-Timeseries_*/report-timerseries.csv) -- per-turn
         # isolation is the tool's own behavior, so there is no per-turn path
-        # management here at all. stdout stays as diagnostics.
-        uprof_dir = os.path.dirname(log_path)
+        # management here at all. Pass an ABSOLUTE path: Popen runs the tool
+        # with cwd=rotation_log_dir, and a still-relative -O would be resolved
+        # against THAT cwd one level wrong (the duplicated
+        # log_capture/<log_dir>/log_capture/uprof tree seen live).
+        uprof_dir = os.path.dirname(os.path.abspath(log_path))
         try:
             fh = open(log_path, "w")
         except OSError as e:
