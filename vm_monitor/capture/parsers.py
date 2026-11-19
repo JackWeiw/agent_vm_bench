@@ -2,11 +2,9 @@
 Log Parser Module
 
 Parses output logs from various collection tools (devkit, ksys, ub_watch,
-smap_bw, getfre) and the AMDuProfPcm Timeseries CSVs (rotation) and extracts
-structured metrics data.
+smap_bw, getfre) and extracts structured metrics data.
 """
 
-import csv
 import glob
 import os
 import re
@@ -754,77 +752,12 @@ def parse_smap_bw(log_path: str) -> dict:
         return {"error": str(e)}
 
 
-def _read_uprof_csv(csv_path: str, turn: str, rows: list, columns: list, seen: set) -> None:
-    """Append one uprof CSV's rows into the shared rows/columns accumulators."""
-    try:
-        with open(csv_path, encoding="utf-8-sig", errors="ignore", newline="") as f:
-            for row in csv.DictReader(f):
-                out = {"turn": turn}
-                for key, value in row.items():
-                    if key is None:
-                        continue  # columns beyond the header row
-                    key = key.strip()
-                    if key and key not in seen:
-                        seen.add(key)
-                        columns.append(key)
-                    out[key] = value
-                rows.append(out)
-    except (OSError, csv.Error) as e:
-        print(f"  [WARN] uprof parse skipped {csv_path}: {e}")
-
-
-def parse_uprof(log_dir: str, rotation_log_dir: str = None) -> dict:
-    """Parse AMDuProfPcm's output from an uprof rotation slot.
-
-    The rotation turn passes ``-O <rotation_log_dir>/uprof`` (the dir that
-    also holds the stdout logs) and the tool AUTO-GENERATES timestamped
-    folders inside it per turn -- the observed layout is
-    ``uprof/<tool timestamp>/AMDuProfPcm-Timeseries_*/report-timerseries.csv``.
-    Every ``*.csv`` under those folders is flattened into one row list with
-    the folder name as the ``turn`` label, so the collection report can carry
-    the whole series:
-
-        {"turns": [...], "columns": [<header>, ...], "rows": [...]}
-
-    Each row is a ``{column: value}`` dict with ``"turn"`` prepended;
-    ``turns`` lists the folder names that actually produced rows (the tool's
-    own timestamped naming -- chronologically ordered, one folder per turn).
-    ``rotation_log_dir`` is the rotation root LogCapture actually wrote to
-    (vm-monitor's ``--rotation-log-dir``); when given it replaces the
-    ``log_dir/log_capture`` guess, which is wrong whenever bench-core passes a
-    custom ``--log-dir`` (the rotation root is then a sibling of log_dir,
-    derived from output_dir). An empty result (no uprof dir / no CSVs) is
-    ``{"turns": [], "columns": [], "rows": []}`` -- callers treat empty rows
-    as "uprof collected nothing this run".
-    """
-    result = {"turns": [], "columns": [], "rows": []}
-    rotation_root = rotation_log_dir or os.path.join(log_dir, "log_capture")
-    uprof_root = os.path.join(rotation_root, "uprof")
-    if not os.path.isdir(uprof_root):
-        return result
-    rows, columns, seen = [], [], set()
-    for turn in sorted(d for d in os.listdir(uprof_root) if os.path.isdir(os.path.join(uprof_root, d))):
-        turn_dir = os.path.join(uprof_root, turn)
-        for dirpath, _, filenames in os.walk(turn_dir):
-            for name in sorted(filenames):
-                if not name.endswith(".csv"):
-                    continue
-                _read_uprof_csv(os.path.join(dirpath, name), turn, rows, columns, seen)
-    result["turns"] = sorted({r["turn"] for r in rows})
-    result["columns"] = columns
-    result["rows"] = rows
-    return result
-
-
-def parse_all_logs(log_dir: str, numa_nodes: list = None, rotation_log_dir: str = None) -> dict:
+def parse_all_logs(log_dir: str, numa_nodes: list = None) -> dict:
     """Parse all log files in the directory
 
     Args:
         log_dir: directory containing log files
         numa_nodes: list of NUMA nodes for filtering devkit_mem bandwidth
-        rotation_log_dir: the rotation root LogCapture actually wrote to
-            (vm-monitor's --rotation-log-dir); threads into parse_uprof.
-            Defaults to log_dir/log_capture.
 
     Returns:
         {
@@ -833,8 +766,7 @@ def parse_all_logs(log_dir: str, numa_nodes: list = None, rotation_log_dir: str 
             'ksys': parsed result,
             'ub_watch': parsed result,
             'smap_bw': parsed result,
-            'getfre': {numa_id: parsed result},  # getfre results per NUMA
-            'uprof': parsed Timeseries rows  # rotation mode only
+            'getfre': {numa_id: parsed result}  # getfre results per NUMA
         }
     """
     results = {}
@@ -875,11 +807,5 @@ def parse_all_logs(log_dir: str, numa_nodes: list = None, rotation_log_dir: str 
             getfre_results[numa_id] = parse_getfre(getfre_path)
     if getfre_results:
         results["getfre"] = getfre_results
-
-    # Parse uprof rotation turns (the rotation root's AMDuProfPcm-Timeseries_*
-    # default output + the uprof/ file & nested layouts)
-    uprof_results = parse_uprof(log_dir, rotation_log_dir=rotation_log_dir)
-    if uprof_results["rows"]:
-        results["uprof"] = uprof_results
 
     return results

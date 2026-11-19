@@ -209,8 +209,8 @@ monitor:
   # timestamped log under <output_dir>/log_capture/{devkit/{topdown,memory},ksys,
   # perf,uprof}/; the uprof turn passes -O pointing at uprof/: the tool
   # auto-generates timestamped folders per turn (AMDuProfPcm-Timeseries_*/
-  # report-timerseries.csv inside) and parse_uprof reads those CSVs into the
-  # Uprof sheet; columns include TopDown stages (Frontend_Bound /
+  # report-timerseries.csv inside) -- raw artifacts, not parsed into sheets;
+  # columns include TopDown stages (Frontend_Bound /
   # Backend_Bound.Memory / Retiring), Total Mem Bw (GB/s), and per-channel
   # memory bandwidth.
   #

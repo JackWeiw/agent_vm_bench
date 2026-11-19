@@ -8,7 +8,6 @@ from .parsers import (
     parse_ksys,
     parse_smap_bw,
     parse_ub_watch,
-    parse_uprof,
 )
 
 __all__ = [
@@ -20,5 +19,4 @@ __all__ = [
     "parse_ksys",
     "parse_smap_bw",
     "parse_ub_watch",
-    "parse_uprof",
 ]

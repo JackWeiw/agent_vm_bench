@@ -101,7 +101,7 @@ SMAP_BW_PATH=/path/to/smap_bw.py
 
 # AMD uProf（仅 log-rotation 轮转使用；未配置或路径无效时 WARN 并跳过该槽，不阻塞运行。
 # 指标可用 --rotation-uprof-metrics / monitor.log_rotation.uprof_metrics 覆盖，默认 memory,pipeline_util；
-# -O 指向 uprof/：工具每轮自动生成带时间戳的文件夹（AMDuProfPcm-Timeseries_*/report-timerseries.csv），由解析器读取进 Uprof sheet）
+# -O 指向 uprof/：工具每轮自动生成带时间戳的文件夹（AMDuProfPcm-Timeseries_*/report-timerseries.csv）——原始产物，不做解析）
 UPROF_PATH=/path/to/AMDuProfPcm
 
 # getfre 及其 YAML 配置
@@ -232,8 +232,7 @@ logs_<timestamp>/
 `resource_report.xlsx` 的 sheet（仅汇总）：`Summary`、`NUMA_Overview`、`VM_Stats`，
 外加对应工具日志存在时才写的 profiler sheet —— `DevKit_TopDown`、`DevKit_Memory`、
 `NUMA_Bandwidth`、`KSys`、`UBWatch_Latency`、`UBWatch_Bandwidth`、`SMAPBW_Summary`、
-`SMAPBW_Cycles`、`Getfre_Summary`、`Getfre_NUMA{N}`、`Uprof`（rotation 模式，
-AMDuProfPcm 每轮 Timeseries CSV 的解析结果）。
+`SMAPBW_Cycles`、`Getfre_Summary`、`Getfre_NUMA{N}`。
 
 `host_resources.xlsx` 的 sheet（逐采样时序，由 `raw_data/` 派生）：`Host resources`、
 `NUMA`、`Per-VM`、`Disk IO`，以及仅在 `--host-proc` 下生成的 `HostProc`。逐列释义见

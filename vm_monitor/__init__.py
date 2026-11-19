@@ -43,7 +43,6 @@ from .capture.parsers import (
     parse_ksys,
     parse_smap_bw,
     parse_ub_watch,
-    parse_uprof,
 )
 
 # VMM implementations
@@ -72,7 +71,6 @@ __all__ = [
     "parse_ub_watch",
     "parse_smap_bw",
     "parse_all_logs",
-    "parse_uprof",
     # Exporters
     "export_to_excel",
     "print_capture_summary",
