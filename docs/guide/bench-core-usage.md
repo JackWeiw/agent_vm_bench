@@ -108,8 +108,10 @@ any backend**.
 
 All coding configs **omit `source_files`** — the `CodingConfig` view's `__post_init__` auto-fills
 the canonical replacement pairs from `CODING_LANGUAGE_DEFAULT_SOURCE_FILES[language]`
-(6 pairs per language, drawn from real SWE-bench instances): ts → vuejs/core, go →
-gohugoio/hugo, python → django/django, java → google/gson, c → redis/redis. The pairs live in
+(6 pairs per language, drawn from real SWE-bench instances): ts → vuejs/core,
+go → gohugoio/hugo, java → google/gson, c → redis/redis, cpp → nlohmann/json. Python is the
+exception with exactly 1 pair — the django/django `django__django-16631` upstream gold patch
+(the previous 6 generic python pairs were removed). The pairs live in
 `src/bench_core/payload/coding_payload.py`; a config only declares `language` +
 `verify_cmd` + `verify_repeat`.
 

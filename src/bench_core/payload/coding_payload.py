@@ -295,58 +295,113 @@ DEFAULT_CODING_VERIFY_SCRIPT_GO = (
 )
 
 
-# --- python: django/django replacement pairs -----------------------------------------
-# django (github.com/django/django) is a real repo used across swe_bench /
-# swe-bench-verified evaluations. Each pair is a real, type-safe string edit to
-# a verified django framework source file (all under django/). The first pair
-# carries its own verify_script (a bare python3 script importing django and
-# asserting LANGUAGE_CODE); pairs without a verify_script fall back to the
-# shared Python default.
-DEFAULT_CODING_PY_SOURCE_FILES: list[dict[str, str]] = [
+# --- python: django/django replacement pair -------------------------------------------
+# django (github.com/django/django) is the repo of swe-bench instance
+# django__django-16631. Python has exactly ONE pair: the instance's gold patch
+# (fall back to settings.SECRET_KEY_FALLBACKS when validating a session auth
+# hash), carrying the real FAIL_TO_PASS / PASS_TO_PASS selection which the runner
+# executes through django's own test runner (see ``test_suite_cmd`` in the python
+# profile).
+#
+# It is also ``source_files[0]`` (the only pair). Fixed-mode warmup runs it on
+# the untouched base commit, where the test suite is expected to fail -- that red
+# run is the FAIL_TO_PASS baseline; warmup only logs a warning and never records
+# metrics. Round-robin (the default) applies the patch first, so every round
+# verifies green.
+#
+# The patch touches two files, so every edit names its own ``file``; the runner
+# applies the whole set atomically (a missing hunk aborts with no file written).
+DEFAULT_CODING_PY_SOURCE_FILES: list[dict] = [
     {
-        "file": "django/conf/global_settings.py",
-        "find": 'LANGUAGE_CODE = "en-us"',
-        "replace": 'LANGUAGE_CODE = "en-us"  # bench round',
-        "verify_script": (
-            "import django\n"
-            "from django.conf import settings\n"
-            "\n"
-            "settings.configure(\n"
-            "    DEBUG=True,\n"
-            "    DATABASES={},\n"
-            "    INSTALLED_APPS=[],\n"
-            ")\n"
-            "\n"
-            "import django.urls\n"
-            "\n"
-            'assert settings.LANGUAGE_CODE == "en-us", settings.LANGUAGE_CODE\n'
-            'print("All tests passed!")'
-        ),
-    },
-    {
-        "file": "django/db/models/fields/__init__.py",
-        "find": "class Field(RegisterLookupMixin):",
-        "replace": "class Field(RegisterLookupMixin):  # bench",
-    },
-    {
-        "file": "django/http/response.py",
-        "find": "class HttpResponse:",
-        "replace": "class HttpResponse:  # bench",
-    },
-    {
-        "file": "django/utils/text.py",
-        "find": "def slugify(value, allow_unicode=False):",
-        "replace": "def slugify(value, allow_unicode=False):  # bench",
-    },
-    {
-        "file": "django/template/base.py",
-        "find": "class Template:",
-        "replace": "class Template:  # bench",
-    },
-    {
-        "file": "django/urls/resolvers.py",
-        "find": "class URLResolver:",
-        "replace": "class URLResolver:  # bench",
+        # Gold patch (django__django-16631): when the current SECRET_KEY does
+        # not verify a session's auth hash, try SECRET_KEY_FALLBACKS and
+        # re-hash the session with the current secret instead of flushing it.
+        "file": "django/contrib/auth/__init__.py",
+        "edits": [
+            {
+                "file": "django/contrib/auth/__init__.py",
+                "find": (
+                    "                session_hash_verified = session_hash and constant_time_compare(\n"
+                    "                    session_hash, user.get_session_auth_hash()\n"
+                    "                )\n"
+                    "                if not session_hash_verified:\n"
+                    "                    request.session.flush()\n"
+                    "                    user = None"
+                ),
+                "replace": (
+                    "                if not session_hash:\n"
+                    "                    session_hash_verified = False\n"
+                    "                else:\n"
+                    "                    session_auth_hash = user.get_session_auth_hash()\n"
+                    "                    session_hash_verified = constant_time_compare(\n"
+                    "                        session_hash, session_auth_hash\n"
+                    "                    )\n"
+                    "                if not session_hash_verified:\n"
+                    "                    # If the current secret does not verify the session, try\n"
+                    "                    # with the fallback secrets and stop when a matching one is\n"
+                    "                    # found.\n"
+                    "                    if session_hash and any(\n"
+                    "                        constant_time_compare(session_hash, fallback_auth_hash)\n"
+                    "                        for fallback_auth_hash in user.get_session_auth_fallback_hash()\n"
+                    "                    ):\n"
+                    "                        request.session.cycle_key()\n"
+                    "                        request.session[HASH_SESSION_KEY] = session_auth_hash\n"
+                    "                    else:\n"
+                    "                        request.session.flush()\n"
+                    "                        user = None"
+                ),
+            },
+            {
+                "file": "django/contrib/auth/base_user.py",
+                "find": "from django.contrib.auth import password_validation\n",
+                "replace": "from django.conf import settings\nfrom django.contrib.auth import password_validation\n",
+            },
+            {
+                "file": "django/contrib/auth/base_user.py",
+                "find": (
+                    '        key_salt = "django.contrib.auth.models.AbstractBaseUser.get_session_auth_hash"\n'
+                    "        return salted_hmac(\n"
+                    "            key_salt,\n"
+                    "            self.password,\n"
+                    '            algorithm="sha256",\n'
+                    "        ).hexdigest()"
+                ),
+                "replace": (
+                    "        return self._get_session_auth_hash()\n"
+                    "\n"
+                    "    def get_session_auth_fallback_hash(self):\n"
+                    "        for fallback_secret in settings.SECRET_KEY_FALLBACKS:\n"
+                    "            yield self._get_session_auth_hash(secret=fallback_secret)\n"
+                    "\n"
+                    "    def _get_session_auth_hash(self, secret=None):\n"
+                    '        key_salt = "django.contrib.auth.models.AbstractBaseUser.get_session_auth_hash"\n'
+                    "        return salted_hmac(\n"
+                    "            key_salt,\n"
+                    "            self.password,\n"
+                    "            secret=secret,\n"
+                    '            algorithm="sha256",\n'
+                    "        ).hexdigest()"
+                ),
+            },
+        ],
+        "tests": True,
+        "fail_to_pass": [
+            "test_get_user_fallback_secret (auth_tests.test_basic.TestGetUser.test_get_user_fallback_secret)",
+        ],
+        "pass_to_pass": [
+            "test_get_user (auth_tests.test_basic.TestGetUser.test_get_user)",
+            "test_get_user_anonymous (auth_tests.test_basic.TestGetUser.test_get_user_anonymous)",
+            "The current user model can be retrieved",
+            "Check the creation and properties of a superuser",
+            "test_superuser_no_email_or_password (auth_tests.test_basic.BasicTestCase.test_superuser_no_email_or_password)",
+            "The current user model can be swapped out for another",
+            "The alternate user setting must point to something in the format app.model",
+            "The current user model must point to an installed model",
+            "test_unicode_username (auth_tests.test_basic.BasicTestCase.test_unicode_username)",
+            "Users can be created and can set their password",
+            "Users can be created without an email",
+            "Default User model verbose names are translatable (#19945)",
+        ],
     },
 ]
 
@@ -854,6 +909,17 @@ CODING_LANGUAGE_PROFILES: dict[str, CodingLanguageProfile] = {
         checkout_paths="django/",
         default_verify_script=DEFAULT_CODING_VERIFY_SCRIPT_PY,
         project_marker="pyproject.toml",
+        # Pairs carrying fail_to_pass/pass_to_pass run the instance's own test
+        # module through django's runner, verbatim from the upstream eval
+        # (`./tests/runtests.py ...`, run from the repo root). The image provides
+        # /usr/local/bin/python -> python3 for the script's shebang, and
+        # --settings=test_sqlite makes `tests/` runnable outside runtests.py's
+        # default discovery.
+        test_suite_cmd=(
+            "./tests/runtests.py --verbosity 2 --settings=test_sqlite " "--parallel 1 auth_tests.test_basic"
+        ),
+        # django's runner prints unittest descriptions ("<id> ... ok").
+        test_report_format="django_test",
     ),
     "java": CodingLanguageProfile(
         temp_test_path="/tmp/BenchVerify.java",

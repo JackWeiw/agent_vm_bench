@@ -183,6 +183,14 @@ def _run_test_suite_verify(
     upstream eval), so a nested ``SubCase`` chain is normalized to
     ``<TestCase> > <innermost SubCase>``.
 
+    ``test_report_format="django_test"`` (python/django) runs django's own
+    runner through ``tests/runtests.py``. Its verbosity-2 output interleaves
+    unittest descriptions with ``... ok`` / ``... FAIL`` / ``... ERROR`` /
+    ``... skipped`` suffixes; the id is the text before the suffix, which is
+    why some upstream ids are plain docstrings ("The current user model can be
+    retrieved") while others keep the ``test_x (module.Class.test_x)`` form.
+    python3 collects those lines and asserts every listed id ran and passed.
+
     Returns None when the pair declares no tests (caller falls back to the
     smoke-script verify used by the other languages).
     """
@@ -274,6 +282,47 @@ def _run_test_suite_verify(
             "        sys.exit(1)\n"
             "    if tid not in seen:\n"
             "        print('NOT RUN:', tid)\n"
+            "        sys.exit(1)\n"
+            "print('verified %d tests' % len(ids))\n"
+            "PYEOF\n"
+            "exit $rc"
+        )
+    elif profile.test_report_format == "django_test":
+        # django suite (python/django): runtests.py prints unittest
+        # descriptions as "<id> ... ok|FAIL|ERROR|skipped" (a docstring id for
+        # tests that define one, the "test_x (module.Class.test_x)" form
+        # otherwise). Collect those status lines and assert every listed id ran
+        # and passed; the runner's exit code is preserved on top.
+        log_path = "/tmp/bench_test_output.log"
+        cmd = (
+            f"cd {project_dir} && "
+            f"{profile.test_suite_cmd} > {log_path} 2>&1; rc=$?; "
+            f"tail -n 40 {log_path}; "
+            f"python3 - {ids_b64} {log_path} <<'PYEOF'\n"
+            "import base64, json, sys\n"
+            "ids = json.loads(base64.b64decode(sys.argv[1]))\n"
+            "text = open(sys.argv[2], encoding='utf-8', errors='replace').read()\n"
+            "suffixes = [\n"
+            "    (' ... ok', True),\n"
+            "    (' ... expected failure', True),\n"
+            "    (' ... unexpected success', False),\n"
+            "    (' ... FAIL', False),\n"
+            "    (' ... ERROR', False),\n"
+            "    (' ... skipped', False),\n"
+            "]\n"
+            "status = {}\n"
+            "for ln in text.splitlines():\n"
+            "    for suf, good in suffixes:\n"
+            "        idx = ln.rfind(suf)\n"
+            "        if idx > 0 and (ln.endswith(suf) or suf == ' ... skipped'):\n"
+            "            status[ln[:idx].rstrip()] = good\n"
+            "            break\n"
+            "for tid in ids:\n"
+            "    if tid not in status:\n"
+            "        print('NOT RUN:', tid)\n"
+            "        sys.exit(1)\n"
+            "    if not status[tid]:\n"
+            "        print('NOT PASSED:', tid)\n"
             "        sys.exit(1)\n"
             "print('verified %d tests' % len(ids))\n"
             "PYEOF\n"
@@ -585,8 +634,10 @@ class CodingTaskRunner(TaskRunner):
         pair_idx = self.state.coding_metrics.total_tasks % len(source_files)
         pair = source_files[pair_idx]
         target_file = pair["file"]
-        find_str = pair["find"]
-        replace_str = pair["replace"]
+        # ``edits``-only pairs (multi-file gold patches) have no top-level
+        # find/replace; the edit step below applies the whole list instead.
+        find_str = pair.get("find", "")
+        replace_str = pair.get("replace", "")
 
         start_time = time.perf_counter()
         verify_success = False
@@ -624,11 +675,12 @@ class CodingTaskRunner(TaskRunner):
             step_times["read"] = time.perf_counter() - t1
 
             t2 = time.perf_counter()
-            edit_result = self.provider.exec(
-                self.state,
-                _build_edit_command(project_dir, target_file, find_str, replace_str),
-                timeout=15,
-            )
+            edits = pair.get("edits")
+            if isinstance(edits, list | tuple) and edits:
+                edit_cmd = _build_multi_edit_command(project_dir, target_file, list(edits))
+            else:
+                edit_cmd = _build_edit_command(project_dir, target_file, find_str, replace_str)
+            edit_result = self.provider.exec(self.state, edit_cmd, timeout=15)
             step_times["edit"] = time.perf_counter() - t2
             if edit_result.exit_code != 0:
                 self.state.coding_metrics.last_error = f"edit failed: exit_code={edit_result.exit_code}"
@@ -755,8 +807,12 @@ class CodingRoundRunner(TaskRunner):
         timed_out = False
         project_dir = self.cfg.coding_project_dir
         target_file = pair["file"]
-        find_str = pair["find"]
-        replace_str = pair["replace"]
+        # Multi-file gold patches (the django / nlohmann pairs) carry only an
+        # ``edits`` list -- no top-level find/replace. Default them to empty so
+        # the edit step dispatches to _build_multi_edit_command instead of
+        # raising KeyError before any step runs.
+        find_str = pair.get("find", "")
+        replace_str = pair.get("replace", "")
 
         try:
             locate_ok, locate_error, resolved_file, resolved_find, resolved_replace = self._step_find(

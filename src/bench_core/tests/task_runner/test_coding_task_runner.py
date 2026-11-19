@@ -264,6 +264,32 @@ class TestCodingRoundRunner:
         assert "verify" in metrics.get_step_times_copy()
         assert "verify failed" in metrics.last_error
 
+    def test_edits_only_pair_runs_the_round(self):
+        # django__django-16631's gold pair (the only python pair) carries an
+        # ``edits`` list (two files, three hunks) and no top-level find/replace.
+        # It used to raise KeyError before any step ran, silently dropping the
+        # round (round 1 of the docker e2e recorded no task at all).
+        config = KernelConfig(workflow_config=CodingConfig(coding_language="python"))
+        pairs = config.workflow_config.coding_source_files
+        assert len(pairs) == 1
+        assert "edits" in pairs[0] and "find" not in pairs[0]
+
+        runner = CodingRoundRunner(
+            RunContext(
+                state=_ready_sandbox(),
+                config=config,
+                stop_event=threading.Event(),
+                round_id=1,
+                provider=FakeProvider(),
+            )
+        )
+        runner.run()
+
+        metrics = runner.state.coding_metrics
+        assert metrics.total_tasks == 1
+        assert metrics.success_count == 1
+        assert "edit" in metrics.get_step_times_copy()
+
     def test_skips_when_not_ready(self):
         state = BenchSandbox(id="fake-0", index=0, ready=False)
         runner = CodingRoundRunner(
