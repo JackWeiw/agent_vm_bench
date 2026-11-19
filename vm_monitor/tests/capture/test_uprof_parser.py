@@ -1,10 +1,12 @@
 """Tests for the uprof (AMDuProfPcm) timeseries parser + Uprof sheet.
 
 The rotation slot currently passes no -o: the tool writes its default output
-into its cwd (the rotation log dir), so parse_uprof scans
-AMDuProfPcm-Timeseries_* entries there. It also tolerates the uprof/ layouts
-seen with earlier tool behavior (flat uprof/<turn>.csv files and nested
-uprof/<turn>/AMDuProfPcm-Timeseries_*/ dirs) and flattens every turn's rows
+into its cwd (the rotation log dir), and a finished turn stamps the entries it
+created with the rotation stamp (<stamp>_<tool name>); failed turns' entries
+carry a "failed-" prefix and are skipped. parse_uprof scans the stamped and
+plain AMDuProfPcm-Timeseries_* entries there plus the uprof/ layouts from
+earlier -o forms (flat uprof/<turn>.csv files and nested
+uprof/<turn>/AMDuProfPcm-Timeseries_*/ dirs), flattening every turn's rows
 with a turn column; _build_uprof_sheet renders them as the Uprof sheet of
 resource_report.xlsx.
 """
@@ -115,6 +117,27 @@ class TestParseUprof(unittest.TestCase):
         self.assertEqual(parsed["turns"], ["AMDuProfPcm-Timeseries_5"])
         self.assertEqual(len(parsed["rows"]), 1)
         self.assertEqual(float(parsed["rows"][0]["Total Mem Bw (GB/s)"]), 14.0)
+
+    def test_parses_stamped_default_output(self):
+        # A finished turn renames its default output to <stamp>_<tool name>:
+        # the turn label carries the rotation stamp (timeline joinable).
+        _write_default_output(
+            self.log_dir, "20260101-000000_AMDuProfPcm-Timeseries_0", [[0.0, 12.5, 6.1, 10.0, 40.0, 50.0]]
+        )
+        parsed = parse_uprof(self.log_dir)
+        self.assertEqual(parsed["turns"], ["20260101-000000_AMDuProfPcm-Timeseries_0"])
+        self.assertEqual(len(parsed["rows"]), 1)
+        self.assertEqual(float(parsed["rows"][0]["Total Mem Bw (GB/s)"]), 12.5)
+
+    def test_skips_failed_prefixed_default_output(self):
+        # A failed turn's partial output carries a "failed-" prefix: not a good
+        # sample -- parse_uprof skips it instead of parsing truncated data.
+        _write_default_output(
+            self.log_dir, "failed-20260101-000000_AMDuProfPcm-Timeseries_0", [[0.0, 12.5, 6.1, 10.0, 40.0, 50.0]]
+        )
+        parsed = parse_uprof(self.log_dir)
+        self.assertEqual(parsed["turns"], [])
+        self.assertEqual(parsed["rows"], [])
 
     def test_turn_dir_without_timeseries_output_is_skipped(self):
         # A turn DIRECTORY without the Timeseries output (failed nested-form

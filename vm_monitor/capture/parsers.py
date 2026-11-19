@@ -788,10 +788,12 @@ def parse_uprof(log_dir: str, rotation_log_dir: str = None) -> dict:
         {"turns": [...], "columns": [<csv header>, ...], "rows": [...]}
 
     Each row is a ``{column: value}`` dict with ``"turn"`` prepended; ``turns``
-    lists the labels that actually produced rows. NOTE: for the default
-    (no -o) layout the label is the tool's own ``AMDuProfPcm-Timeseries_``
-    entry name, not the ``YYYYmmdd-HHMMSS`` rotation stamp -- joining onto the
-    shared rotation timeline is best-effort until the output path is pinned.
+    lists the labels that actually produced rows. A finished turn stamps the
+    default-output entries it created with the rotation stamp
+    (``<stamp>_<tool name>``), so their labels carry the ``YYYYmmdd-HHMMSS``
+    stamp and join the shared rotation timeline; a failed turn's entries are
+    prefixed ``failed-`` (partial data) and skipped here; entries left by an
+    over-run (parked) turn keep tool naming -- those labels stay best-effort.
     ``rotation_log_dir`` is the rotation root LogCapture actually wrote to
     (vm-monitor's ``--rotation-log-dir``); when given it replaces the
     ``log_dir/log_capture`` guess, which is wrong whenever bench-core passes a
@@ -825,15 +827,20 @@ def parse_uprof(log_dir: str, rotation_log_dir: str = None) -> dict:
                     for csv_path in sorted(glob.glob(os.path.join(ts_dir, "*.csv"))):
                         _read_uprof_csv(csv_path, entry, rows, columns, seen)
     # No -o runs: the tool's DEFAULT output lands in its cwd -- the rotation
-    # root itself. AMDuProfPcm-Timeseries_* entries there are uprof's too (a
-    # dir with CSVs inside, or a CSV named like the entry).
+    # root itself. A finished turn stamps the entries it created with the
+    # rotation stamp ("<stamp>_<tool name>") and a failed turn prefixes them
+    # with "failed-" -- so scan anything carrying the tool's marker and skip
+    # the failed ones.
     if os.path.isdir(rotation_root):
-        for entry in sorted(glob.glob(os.path.join(rotation_root, "AMDuProfPcm-Timeseries_*"))):
+        for entry in sorted(glob.glob(os.path.join(rotation_root, "*AMDuProfPcm-Timeseries_*"))):
+            if os.path.basename(entry).startswith("failed-"):
+                continue  # a failed turn's partial output -- not a good sample
+            turn_label = os.path.basename(entry)
             if os.path.isdir(entry):
                 for csv_path in sorted(glob.glob(os.path.join(entry, "*.csv"))):
-                    _read_uprof_csv(csv_path, os.path.basename(entry), rows, columns, seen)
+                    _read_uprof_csv(csv_path, turn_label, rows, columns, seen)
             elif entry.endswith(".csv"):
-                _read_uprof_csv(entry, os.path.splitext(os.path.basename(entry))[0], rows, columns, seen)
+                _read_uprof_csv(entry, os.path.splitext(turn_label)[0], rows, columns, seen)
     result["turns"] = sorted({r["turn"] for r in rows})
     result["columns"] = columns
     result["rows"] = rows
