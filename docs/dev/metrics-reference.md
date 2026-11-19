@@ -280,6 +280,11 @@ Consolidates what were previously three separate sheets; there is **no** `NUMA_C
 timeline was moved to `host_resources.xlsx`, which is derived from the
 always-on `raw_data/*.csv` snapshots (section 2.7) — so it is smaller, faster
 to build, and rerunnable after the run with `vm-monitor raw-report <log_dir>`.
+**One deliberate exception: the `Uprof` sheet** (section 2.3) carries the full
+per-sample AMDuProfPcm timeseries — uprof output is a rotation-mode capture
+artifact (not part of the always-on `raw_data/` contract), the sheet only
+exists when the uprof slot actually ran, and per-turn timeseries data is the
+point of collecting it.
 
 | Timeline | Where it lives now |
 |---|---|
@@ -394,7 +399,7 @@ SMAP (Secure Memory Access Protection) migration bandwidth:
 
 ### `Uprof` — AMDuProfPcm timeseries (log-rotation slot)
 
-One row per sample with the rotation turn's stamp in `turn`; the remaining columns come straight from the tool's per-turn CSV — topdown stages (`Frontend_Bound`, `Backend_Bound.Memory`, `Retiring`), `Total Mem Bw (GB/s)`, per-channel memory bandwidth, plus whatever else the selected metric set emits. All-numeric columns are coerced to numbers. No `-o` is passed for now: raw output lands at the tool's default (its cwd = the rotation log dir, `AMDuProfPcm-Timeseries_*` entries), and the `uprof/` file + nested layouts from earlier `-o` forms are scanned too.
+One row per sample with the rotation turn's stamp in `turn`; the remaining columns come straight from the tool's per-turn CSV — topdown stages (`Frontend_Bound`, `Backend_Bound.Memory`, `Retiring`), `Total Mem Bw (GB/s)`, per-channel memory bandwidth, plus whatever else the selected metric set emits. All-numeric columns are coerced to numbers. No `-o` is passed: raw output lands at the tool's default (its cwd = the rotation log dir), a finished turn stamps the entries it created with the rotation stamp (`<stamp>_<entry>`), failed turns' entries carry a `failed-` prefix (skipped), and the `uprof/` file + nested layouts from earlier `-o` forms are scanned too.
 
 ## 2.4 Embedded Excel charts
 
