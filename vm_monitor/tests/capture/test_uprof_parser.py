@@ -6,13 +6,17 @@ flattens all turns' CSVs into rows with a turn column and _build_uprof_sheet
 renders them as the Uprof sheet of resource_report.xlsx.
 """
 
+import io
 import os
 import shutil
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from unittest.mock import patch
 
 import pandas as pd
 
+from vm_monitor.capture.log_capture import LogCapture
 from vm_monitor.capture.parsers import parse_uprof
 from vm_monitor.export.resource_report import _build_uprof_sheet
 
@@ -56,11 +60,68 @@ class TestParseUprof(unittest.TestCase):
 
     def test_turn_without_timeseries_output_is_skipped(self):
         # The turn dir exists but the tool never wrote Timeseries output into
-        # it (failed turn) -- no rows, no error.
+        # it (failed turn) -- no rows, and turns lists only row-bearing turns.
         os.makedirs(os.path.join(self.log_dir, "log_capture", "uprof", "20260101-000000"), exist_ok=True)
         parsed = parse_uprof(self.log_dir)
-        self.assertEqual(parsed["turns"], ["20260101-000000"])
+        self.assertEqual(parsed["turns"], [])
         self.assertEqual(parsed["rows"], [])
+
+    def test_sibling_rotation_root_parsed_for_bench_core_layout(self):
+        # bench-core passes --rotation-log-dir <output_dir>/log_capture, a
+        # SIBLING of vm-monitor's own log_dir (<output_dir>/vm_monitor): the
+        # parser must find the rotation root there too, or the bench-core path
+        # would silently never populate the sheet.
+        out = os.path.join(self.log_dir, "out")
+        ts_dir = os.path.join(out, "log_capture", "uprof", "20260101-000000", "AMDuProfPcm-Timeseries_0")
+        os.makedirs(ts_dir, exist_ok=True)
+        with open(os.path.join(ts_dir, "report-timerseries.csv"), "w", encoding="utf-8") as f:
+            f.write("Time,Total Mem Bw (GB/s)\n0.0,12.5\n")
+        vm_monitor_log_dir = os.path.join(out, "vm_monitor")
+        os.makedirs(vm_monitor_log_dir, exist_ok=True)
+        parsed = parse_uprof(vm_monitor_log_dir)
+        self.assertEqual(parsed["turns"], ["20260101-000000"])
+        self.assertEqual(len(parsed["rows"]), 1)
+        self.assertEqual(float(parsed["rows"][0]["Total Mem Bw (GB/s)"]), 12.5)
+
+    def test_relative_log_dir_yields_absolute_o_arg(self):
+        # A relative log_dir + Popen(cwd=rotation_log_dir) used to make the
+        # child resolve the still-relative -o one level wrong ("Invalid output
+        # file!!") -- the turn must pass an absolute -o path.
+        rel_dir = "rel_uprof_logs"
+        os.makedirs(rel_dir, exist_ok=True)
+        self.addCleanup(shutil.rmtree, rel_dir, ignore_errors=True)
+        old_cwd = os.getcwd()
+        os.chdir(self.log_dir)
+        try:
+            config = {"uprof_path": "/fake/AMDuProfPcm"}
+            cap = LogCapture(config, 30, rel_dir, [0], log_rotation=True)
+            spawned = []
+
+            def fake_popen(cmd, *a, **k):
+                spawned.append(cmd)
+
+                class _Dummy:
+                    returncode = 0
+
+                    def poll(self):  # noqa: N802 - proc seam
+                        return 0
+
+                    def wait(self, timeout=None):  # noqa: N802 - proc seam
+                        return 0
+
+                return _Dummy()
+
+            expected_dirname = os.path.join(os.path.abspath(rel_dir), "log_capture", "uprof")
+            with (
+                patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=fake_popen),
+                redirect_stdout(io.StringIO()),
+            ):
+                cap._rotation_uprof_turn()
+        finally:
+            os.chdir(old_cwd)
+        o_arg = spawned[0][spawned[0].index("-o") + 1]
+        self.assertTrue(os.path.isabs(o_arg))
+        self.assertEqual(os.path.dirname(o_arg), expected_dirname)
 
     def test_flat_csv_next_to_turn_dir_is_not_parsed(self):
         # Only the tool's Timeseries layout is consumed; stray files directly

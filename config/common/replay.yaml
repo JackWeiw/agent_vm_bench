@@ -251,7 +251,7 @@ monitor:
   # smap_bw / getfre keep their all-parallel behavior. Every turn writes a
   # timestamped log under <output_dir>/log_capture/{devkit/{topdown,memory},ksys,
   # perf,uprof}/; the uprof turn also passes -o <per-turn dir> (the turn's log
-  # stem; the tool creates it and rejects a pre-existing path), yielding
+  # stem, absolute; created by the tool), yielding
   # uprof/<stamp>/AMDuProfPcm-Timeseries_*/report-timerseries.csv per turn —
   # columns include TopDown stages (Frontend_Bound / Backend_Bound.Memory /
   # Retiring), Total Mem Bw (GB/s), and per-channel memory bandwidth.

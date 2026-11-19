@@ -766,7 +766,9 @@ def _build_uprof_sheet(writer, parsed_logs):
     One row per sample with the rotation turn's stamp in ``turn``; columns come
     straight from the tool's report-timerseries.csv. Columns whose values all
     parse as numbers are coerced so timestamps with separators stay text while
-    metric columns chart/analyze cleanly.
+    metric columns chart/analyze cleanly. Columns first seen only in later
+    turns leave NaN in earlier rows (structural, not missing data) and that
+    keeps such columns text by design.
     """
     uprof = parsed_logs.get("uprof") or {}
     rows = uprof.get("rows") or []

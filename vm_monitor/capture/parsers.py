@@ -764,39 +764,50 @@ def parse_uprof(log_dir: str) -> dict:
 
         {"turns": [<stamp>, ...], "columns": [<csv header>, ...], "rows": [...]}
 
-    Each row is a ``{column: value}`` dict with ``"turn"`` prepended. An empty
-    result (no uprof dir / no Timeseries output) is
-    ``{"turns": [], "columns": [], "rows": []}`` -- callers treat empty rows as
-    "uprof collected nothing this run".
+    Each row is a ``{column: value}`` dict with ``"turn"`` prepended; ``turns``
+    lists the stamps that actually produced rows. Two roots are scanned because
+    the rotation root differs by driver: standalone vm-monitor writes under
+    ``<log_dir>/log_capture`` while bench-core passes
+    ``--rotation-log-dir <output_dir>/log_capture`` (a sibling of log_dir), so
+    that sibling is scanned as well. An empty result (no uprof dir / no
+    Timeseries output) is ``{"turns": [], "columns": [], "rows": []}`` --
+    callers treat empty rows as "uprof collected nothing this run".
     """
     result = {"turns": [], "columns": [], "rows": []}
-    uprof_root = os.path.join(log_dir, "log_capture", "uprof")
-    if not os.path.isdir(uprof_root):
-        return result
-
-    turns = sorted(d for d in os.listdir(uprof_root) if os.path.isdir(os.path.join(uprof_root, d)))
+    roots = [os.path.join(log_dir, "log_capture", "uprof")]
+    sibling_root = os.path.join(os.path.dirname(os.path.abspath(log_dir)), "log_capture", "uprof")
+    if sibling_root not in roots:
+        roots.append(sibling_root)
     rows, columns, seen = [], [], set()
-    for turn in turns:
-        for ts_dir in sorted(glob.glob(os.path.join(uprof_root, turn, "AMDuProfPcm-Timeseries_*"))):
-            if not os.path.isdir(ts_dir):
-                continue
-            for csv_path in sorted(glob.glob(os.path.join(ts_dir, "*.csv"))):
-                try:
-                    with open(csv_path, encoding="utf-8", errors="ignore", newline="") as f:
-                        for row in csv.DictReader(f):
-                            out = {"turn": turn}
-                            for key, value in row.items():
-                                if key is None:
-                                    continue  # columns beyond the header row
-                                key = key.strip()
-                                if key and key not in seen:
-                                    seen.add(key)
-                                    columns.append(key)
-                                out[key] = value
-                            rows.append(out)
-                except OSError as e:
-                    print(f"  [WARN] uprof parse skipped {csv_path}: {e}")
-    result["turns"] = turns
+    for uprof_root in roots:
+        if not os.path.isdir(uprof_root):
+            continue
+        try:
+            turns = sorted(d for d in os.listdir(uprof_root) if os.path.isdir(os.path.join(uprof_root, d)))
+        except OSError as e:
+            print(f"  [WARN] uprof parse skipped {uprof_root}: {e}")
+            continue
+        for turn in turns:
+            for ts_dir in sorted(glob.glob(os.path.join(uprof_root, turn, "AMDuProfPcm-Timeseries_*"))):
+                if not os.path.isdir(ts_dir):
+                    continue
+                for csv_path in sorted(glob.glob(os.path.join(ts_dir, "*.csv"))):
+                    try:
+                        with open(csv_path, encoding="utf-8-sig", errors="ignore", newline="") as f:
+                            for row in csv.DictReader(f):
+                                out = {"turn": turn}
+                                for key, value in row.items():
+                                    if key is None:
+                                        continue  # columns beyond the header row
+                                    key = key.strip()
+                                    if key and key not in seen:
+                                        seen.add(key)
+                                        columns.append(key)
+                                    out[key] = value
+                                rows.append(out)
+                    except (OSError, csv.Error) as e:
+                        print(f"  [WARN] uprof parse skipped {csv_path}: {e}")
+    result["turns"] = sorted({r["turn"] for r in rows})
     result["columns"] = columns
     result["rows"] = rows
     return result

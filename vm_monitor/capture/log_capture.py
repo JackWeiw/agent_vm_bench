@@ -771,12 +771,14 @@ class LogCapture:
         log_path = self._rotation_log_path("uprof")
         if log_path is None:
             return
-        # AMDuProfPcm's -o takes a per-turn base path the tool creates itself:
+        # AMDuProfPcm's -o takes a per-turn base dir the tool creates itself:
         # uprof/<stamp>/AMDuProfPcm-Timeseries_*/report-timerseries.csv lands
-        # under it, so consecutive turns never overwrite each other. The path
-        # must NOT pre-exist (the live run rejected a pre-created dir with
-        # "Invalid output file!! Failed to process args") -- no makedirs here.
-        turn_dir = os.path.splitext(log_path)[0]
+        # under it, so consecutive turns never overwrite each other. Pass an
+        # ABSOLUTE path: Popen runs the tool with cwd=rotation_log_dir, and a
+        # still-relative -o would be resolved against THAT cwd one level wrong
+        # (the live-run "Invalid output file!!" bug). No makedirs -- the tool
+        # builds the dir itself.
+        turn_dir = os.path.abspath(os.path.splitext(log_path)[0])
         try:
             fh = open(log_path, "w")
         except OSError as e:
