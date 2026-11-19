@@ -195,3 +195,52 @@ class TestBuildProvider:
         p = build_provider(_kernel_config(), {})
         assert isinstance(p, SandboxSchedProvider)
         assert p._config.sandbox_group == ""
+
+
+# -------------------------------------------------------------------- lifecycle restriction
+class TestLifecycleRestriction:
+    """replay.mode=lifecycle is vetoed until pause/resume is validated against
+    a live OpenSandbox server: the mode machinery is implemented (the provider
+    satisfies LifecycleCapable), but a live resume surfaced server-side 500s,
+    so an untestable mode must not burn a fleet. prepare_env fails before any
+    sandbox exists; the default resolution lands on exec_only."""
+
+    @staticmethod
+    def _provider_with_mode(mode: str, cleanup_only: bool = False) -> SandboxSchedProvider:
+        cfg = _kernel_config()
+        cfg.workflow_type = "replay"
+        if cleanup_only:
+            cfg.cleanup_only = True
+        # Mirror the kernel's post-validation state: run_benchmark resolves the
+        # sentinel onto the ReplayConfig view before prepare_env runs.
+        cfg.workflow_config = type("ReplayCfg", (), {"replay_mode": mode})()
+        # domain="" so the pass-case tests stay side-effect-free: a default
+        # Config exports OPEN_SANDBOX_DOMAIN into os.environ
+        return SandboxSchedProvider(cfg, Config(sandbox_group="sg-1", domain=""), Event())
+
+    def test_lifecycle_mode_vetoed_in_prepare_env(self):
+        with pytest.raises(ValueError, match="lifecycle is disabled"):
+            self._provider_with_mode("lifecycle").prepare_env()
+
+    def test_cleanup_only_run_with_lifecycle_mode_is_exempt(self):
+        # --cleanup never touches pause/resume, and the shared replay.yaml
+        # hardcodes mode: lifecycle -- the fleet left by a pre-restriction
+        # run must stay reachable
+        self._provider_with_mode("lifecycle", cleanup_only=True).prepare_env()
+
+    def test_exec_mode_passes_prepare_env(self):
+        self._provider_with_mode("exec_only").prepare_env()
+
+    def test_ephemeral_mode_passes_prepare_env(self):
+        self._provider_with_mode("exec_ephemeral").prepare_env()
+
+    def test_non_replay_workflow_passes_prepare_env(self):
+        # coding/document carry a workflow_config without replay_mode and
+        # browser carries None -- the getattr chain must keep them passing
+        cfg = _kernel_config()  # workflow_type="coding", workflow_config unset
+        p = SandboxSchedProvider(cfg, Config(sandbox_group="sg-1", domain=""), Event())
+        p.prepare_env()
+
+    def test_default_replay_mode_is_exec_only(self):
+        # the sentinel resolution must not walk an untestable mode by default
+        assert SandboxSchedProvider.default_replay_mode == "exec_only"

@@ -22,6 +22,10 @@ snapshot byte size and the server rejects ``create_snapshot`` from a paused
 sandbox (see the method) -- so the kernel skips the ``snapshot_size`` series
 event entirely. The containerd runtime has no pause at all; lifecycle calls
 on such a sandbox raise a clear error from the SDK.
+
+``replay.mode=lifecycle`` is currently vetoed in :meth:`prepare_env`
+(``default_replay_mode = "exec_only"``) until a live pause/resume run passes
+end to end -- see the class comment on ``default_replay_mode``.
 """
 
 from __future__ import annotations
@@ -80,9 +84,13 @@ class SandboxSchedProvider(EnvironmentProvider):
     name = "sandboxsched"
     # OpenSandbox's E2B runtime is Firecracker microVMs (same VMM as e2b/aenv).
     vmm_type = "firecracker"
-    # E2B runtime supports pause/resume/snapshot -> lifecycle is the natural
-    # default (mirrors aenv). containerd has no pause -> use exec_only there.
-    default_replay_mode = "lifecycle"
+    # Lifecycle-capable in principle, but replay.mode=lifecycle is vetoed in
+    # prepare_env below: the state-gated pause/resume path has not been
+    # validated against a live OpenSandbox server yet (a live resume surfaced
+    # server-side 500s). Until a live lifecycle run passes end to end, default
+    # to exec_only and reject lifecycle explicitly; flip the default back once
+    # a live run proves it.
+    default_replay_mode = "exec_only"
 
     def __init__(self, kernel_config: KernelConfig, config: Config, stop_event: threading.Event) -> None:
         self._kernel_config = kernel_config
@@ -144,6 +152,22 @@ class SandboxSchedProvider(EnvironmentProvider):
 
     # ------------------------------------------------------------------ setup hooks
     def prepare_env(self) -> None:
+        # Veto lifecycle before any sandbox is created: the mode machinery is
+        # implemented (the provider satisfies LifecycleCapable), but no live
+        # OpenSandbox deployment has proven the 202-then-transition path end to
+        # end yet -- a live resume surfaced server-side 500s. Explicit YAML
+        # requests fail here instead of burning a fleet mid-run. Cleanup-only
+        # runs are exempt: they never touch pause/resume, and the shared
+        # replay.yaml hardcodes mode: lifecycle, so a fleet left by a
+        # pre-restriction run must still be reachable via --cleanup.
+        replay_mode = getattr(getattr(self._kernel_config, "workflow_config", None), "replay_mode", None)
+        if replay_mode == "lifecycle" and not getattr(self._kernel_config, "cleanup_only", False):
+            raise ValueError(
+                "sandboxsched replay.mode=lifecycle is disabled: pause/resume has "
+                "not been validated against a live OpenSandbox server yet. "
+                "Use exec_only or exec_ephemeral, or omit replay.mode to use the "
+                "provider default (exec_only)."
+            )
         self._config.setup_env()
 
     # ------------------------------------------------------------------ command exec
