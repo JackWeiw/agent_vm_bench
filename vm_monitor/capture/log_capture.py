@@ -14,7 +14,6 @@ writes a timestamped log under
 narrows the cycle to the named tools, e.g. devkit -> perf.
 """
 
-import glob
 import os
 import re
 import subprocess
@@ -773,16 +772,10 @@ class LogCapture:
         log_path = self._rotation_log_path("uprof")
         if log_path is None:
             return
-        # No -o for now: the tool writes its DEFAULT output -- its cwd is
-        # rotation_log_dir, so the default lands directly under
-        # <rotation_log_dir>/ as AMDuProfPcm-Timeseries_* entries. Snapshot
-        # them before the run: a finished turn renames the entries IT created
-        # with the rotation stamp (joinable timeline + per-turn uniqueness),
-        # and failed turns get a "failed-" prefix (parse_uprof skips those).
-        try:
-            before_ts_entries = set(glob.glob(os.path.join(self.rotation_log_dir, "AMDuProfPcm-Timeseries_*")))
-        except OSError:
-            before_ts_entries = set()
+        # No -o: the tool writes its counters to stdout (captured into the
+        # per-turn log below) -- the log IS the collected sample whenever it
+        # is non-empty; an EMPTY log is dropped after the turn. No -o means
+        # no managed output path on disk.
         try:
             fh = open(log_path, "w")
         except OSError as e:
@@ -852,23 +845,6 @@ class LogCapture:
                     os.unlink(log_path)
             except OSError:
                 pass
-            # Stamp the default-output entries created by THIS turn: the
-            # rotation stamp makes each row joinable onto the shared rotation
-            # timeline and keeps consecutive turns from colliding; a failed
-            # turn's entries get a "failed-" prefix so parse_uprof skips the
-            # partial data. (Parked/over-run turns are not renamed -- the
-            # child may still be writing; their entries keep tool naming.)
-            stamp = os.path.basename(os.path.splitext(log_path)[0])
-            failed_prefix = "failed-" if proc.returncode != 0 else ""
-            try:
-                current = set(glob.glob(os.path.join(self.rotation_log_dir, "AMDuProfPcm-Timeseries_*")))
-                for entry_path in sorted(current - before_ts_entries):
-                    renamed = os.path.join(
-                        self.rotation_log_dir, f"{failed_prefix}{stamp}_{os.path.basename(entry_path)}"
-                    )
-                    os.rename(entry_path, renamed)
-            except OSError as e:
-                print(f"  [WARN] rotation uprof could not stamp default output: {e}")
 
     def _run_slot(self, turn, interval=None) -> None:
         """Run one rotation slot, then hold the slot open for its full interval.
