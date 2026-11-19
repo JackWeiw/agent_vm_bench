@@ -38,7 +38,7 @@ DEFAULT_ROTATION_PERF_EVENTS = (
 # pipeline-utilization counters). Override via monitor.log_rotation.uprof_metrics
 # (bench-core) or --rotation-uprof-metrics (vm-monitor CLI); an empty value
 # falls back here. The binary path comes from .env (UPROF_PATH); the per-turn
-# ``-o <file>`` and ``-d <interval>`` are appended by the rotation turn.
+# ``-o <dir>`` and ``-d <interval>`` are appended by the rotation turn.
 DEFAULT_UPROF_METRICS = "memory,pipeline_util"
 
 # Rotation renames ksys's own <...>_report.json to the per-turn log stem
@@ -771,11 +771,12 @@ class LogCapture:
         log_path = self._rotation_log_path("uprof")
         if log_path is None:
             return
-        # AMDuProfPcm writes its own CSV output; -o takes a FILE path (a
-        # directory fails arg processing with "Invalid output file!!"), so each
-        # turn passes its stdout log's stem + ".csv" -- consecutive turns write
-        # distinct uprof/<stamp>.csv files and never overwrite each other.
-        out_file = os.path.splitext(log_path)[0] + ".csv"
+        # AMDuProfPcm's -o takes a per-turn base path the tool creates itself:
+        # uprof/<stamp>/AMDuProfPcm-Timeseries_*/report-timerseries.csv lands
+        # under it, so consecutive turns never overwrite each other. The path
+        # must NOT pre-exist (the live run rejected a pre-created dir with
+        # "Invalid output file!! Failed to process args") -- no makedirs here.
+        turn_dir = os.path.splitext(log_path)[0]
         try:
             fh = open(log_path, "w")
         except OSError as e:
@@ -789,7 +790,7 @@ class LogCapture:
             "-A",
             "system,package",
             "-o",
-            out_file,
+            turn_dir,
             "-d",
             interval,
         ]
@@ -830,12 +831,12 @@ class LogCapture:
             self._rotation_uprof_procs.append(proc)
         elif proc.returncode != 0:
             self.failed_runtime.append({"tool": "uprof", "returncode": proc.returncode})
-            # rapid exit: drop AMDuProfPcm's empty per-turn output file so failed
-            # turns don't pile up zero-size CSVs (a non-empty one is kept -- it
-            # carries the tool's own error text)
+            # rapid exit: drop the tool's per-turn output dir only while it is
+            # empty (a failed run that wrote partial Timeseries output keeps it
+            # for debugging)
             try:
-                if os.path.isfile(out_file) and os.path.getsize(out_file) == 0:
-                    os.unlink(out_file)
+                if os.path.isdir(turn_dir) and not os.listdir(turn_dir):
+                    os.rmdir(turn_dir)
             except OSError:
                 pass
         try:
