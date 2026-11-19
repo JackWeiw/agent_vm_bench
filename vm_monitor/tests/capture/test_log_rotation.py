@@ -324,6 +324,35 @@ class TestLogRotation(unittest.TestCase):
         cap = self._cap(rotation_interval={"devkit": 20, "_default": 30})
         self.assertEqual(cap.rotation_intervals, {"devkit": 20, "ksys": 30, "perf": 30, "uprof": 30})
 
+    def test_uprof_turn_relative_log_dir_yields_absolute_o_arg(self):
+        # A relative log_dir + Popen(cwd=rotation_log_dir) used to make the
+        # child resolve the still-relative -O one level wrong (a duplicated
+        # log_capture/<log_dir>/log_capture/uprof tree seen live) -- the turn
+        # must pass an absolute -O path.
+        self.config["uprof_path"] = "/fake/AMDuProfPcm"
+        old_cwd = os.getcwd()
+        os.chdir(self.log_dir)
+        try:
+            cap = LogCapture(self.config, 30, "rel_uprof_logs", [0], log_rotation=True)
+            spawned = []
+            expected_dirname = os.path.join(os.path.abspath("rel_uprof_logs"), "log_capture", "uprof")
+
+            def fake_popen(cmd, *a, **k):
+                spawned.append(cmd)
+                return self._spawn_recorder([])(cmd)
+
+            with (
+                patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=fake_popen),
+                redirect_stdout(io.StringIO()),
+            ):
+                cap._rotation_uprof_turn()
+        finally:
+            os.chdir(old_cwd)
+        o_arg = spawned[0][spawned[0].index("-O") + 1]
+        self.assertTrue(os.path.isabs(o_arg))
+        self.assertEqual(os.path.basename(o_arg), "uprof")
+        self.assertEqual(o_arg, expected_dirname)
+
     def test_uprof_turn_still_running_parks_proc_keeps_log(self):
         # Over-duration tool (startup overhead, system load): the proc is
         # parked in _rotation_uprof_procs -- its rc is unknowable, so the
