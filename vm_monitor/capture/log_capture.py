@@ -37,8 +37,9 @@ DEFAULT_ROTATION_PERF_EVENTS = (
 # Default AMDuProfPcm metric set for log-rotation mode (system-wide memory +
 # pipeline-utilization counters). Override via monitor.log_rotation.uprof_metrics
 # (bench-core) or --rotation-uprof-metrics (vm-monitor CLI); an empty value
-# falls back here. The binary path comes from .env (UPROF_PATH); the per-turn
-# ``-o <dir>`` and ``-d <interval>`` are appended by the rotation turn.
+# falls back here. The binary path comes from .env (UPROF_PATH); the
+# ``-d <interval>`` is appended by the rotation turn (no -o for now: the tool
+# writes its default output, see _rotation_uprof_turn).
 DEFAULT_UPROF_METRICS = "memory,pipeline_util"
 
 # Rotation renames ksys's own <...>_report.json to the per-turn log stem
@@ -832,12 +833,20 @@ class LogCapture:
             self._rotation_uprof_procs.append(proc)
         elif proc.returncode != 0:
             self.failed_runtime.append({"tool": "uprof", "returncode": proc.returncode})
+            # rapid exit: keep the stdout log when it carries the tool's error
+            # text, but drop it when the tool wrote nothing (an empty log is
+            # pure noise on every retrying turn).
+            try:
+                if os.path.isfile(log_path) and os.path.getsize(log_path) == 0:
+                    os.unlink(log_path)
+            except OSError:
+                pass
         else:
             # Success: the stdout log only repeats where the data landed -- the
-            # collected data file IS the artifact, so keep just the collected
-            # data and drop the log. Failed turns keep theirs for debugging; a
-            # tool still running past its interval also keeps its log (its rc
-            # is unknowable at parking time).
+            # collected data (wherever the tool's default output put it) is the
+            # artifact, so drop the log. Failed turns keep theirs for
+            # debugging; a tool still running past its interval also keeps its
+            # log (its rc is unknowable at parking time).
             try:
                 os.unlink(log_path)
             except OSError:

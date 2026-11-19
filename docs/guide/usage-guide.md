@@ -297,7 +297,7 @@ SMAP_BW_PATH=/path/to/smap_bw.py
 # AMD uProf binary (log-rotation slot; unset/invalid path warns and skips the slot.
 # Metrics: --rotation-uprof-metrics / monitor.log_rotation.uprof_metrics, default memory,pipeline_util;
 # no -o for now: output lands at the tool's default (AMDuProfPcm-Timeseries_* under the rotation log dir), scanned by the parser)
-UPROF_PATH=/opt/AMDuProf_5.3-521/bin/AMDuProfPcm
+UPROF_PATH=/path/to/AMDuProfPcm
 
 # getfre executable path and config
 GETFRE_PATH=/path/to/getfre

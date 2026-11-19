@@ -7,6 +7,7 @@ one slot per ``rotation_interval``; each turn writes a timestamped log under
 smap_bw / getfre keep their all-parallel behavior.
 """
 
+import glob
 import io
 import os
 import shutil
@@ -228,10 +229,10 @@ class TestLogRotation(unittest.TestCase):
         self.assertTrue(os.path.isdir(uprof_dir))
         self.assertEqual(os.listdir(uprof_dir), [])  # no log, no -o file
 
-    def test_uprof_turn_rapid_nonzero_exit_keeps_log(self):
-        # AMDuProfPcm exits nonzero immediately (typo'd metric / bad args):
-        # failed_runtime is recorded and the stdout log stays (it carries the
-        # error text). No -o is passed, so there is no output path to clean.
+    def test_uprof_turn_rapid_nonzero_exit_drops_empty_log(self):
+        # AMDuProfPcm exits nonzero immediately having written nothing (typo'd
+        # metric / bad args): failed_runtime is recorded and the EMPTY stdout
+        # log is dropped -- it is pure noise on every retrying turn.
         self.config["uprof_path"] = "/fake/AMDuProfPcm"
         cap = self._cap()
 
@@ -250,8 +251,41 @@ class TestLogRotation(unittest.TestCase):
         ):
             cap._rotation_uprof_turn()
         uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
+        self.assertEqual(os.listdir(uprof_dir), [])  # empty log dropped
+        self.assertEqual(cap.failed_runtime, [{"tool": "uprof", "returncode": 2}])
+
+    def test_uprof_turn_rapid_nonzero_exit_keeps_error_log(self):
+        # A failed turn whose stdout carries the tool's error text keeps the
+        # log for debugging.
+        self.config["uprof_path"] = "/fake/AMDuProfPcm"
+        cap = self._cap()
+
+        class _FailProc:
+            returncode = 2
+
+            def poll(self):  # noqa: N802 - proc seam
+                return 2
+
+            def wait(self, timeout=None):  # noqa: N802 - proc seam
+                return 2
+
+        def fake_popen(cmd, *a, **k):
+            # The child holds the log's fd; simulate it writing its error text.
+            for log_path in glob.glob(os.path.join(self.log_dir, "log_capture", "uprof", "*.log")):
+                with open(log_path, "a") as f:
+                    f.write("Invalid output file!! Failed to process args\n")
+            return _FailProc()
+
+        with (
+            patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=fake_popen),
+            redirect_stdout(io.StringIO()),
+        ):
+            cap._rotation_uprof_turn()
+        uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
         logs = [f for f in os.listdir(uprof_dir) if f.endswith(".log")]
         self.assertEqual(len(logs), 1)  # failed turn keeps the stdout log
+        with open(os.path.join(uprof_dir, logs[0])) as f:
+            self.assertIn("Invalid output file!!", f.read())
         self.assertEqual(cap.failed_runtime, [{"tool": "uprof", "returncode": 2}])
 
     def test_uprof_turn_still_running_parks_proc_keeps_log(self):
