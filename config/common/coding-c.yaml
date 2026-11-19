@@ -1,0 +1,135 @@
+# config/common/coding-c.yaml
+# Unified coding (C) benchmark config — backend-agnostic (E2B + Docker).
+#
+# Workflow type: coding — simulates AI coding agent memory pressure.
+#   Trace-faithful loop: find -> read -> edit -> verify -> git diff.
+#   Verify runs the instance's REAL Tcl test suite through the project's own
+#   `make` + `./runtest` (FAIL_TO_PASS and PASS_TO_PASS) and asserts every
+#   listed test reported `[ok]` — the redis harness itself, not a hand-written
+#   probe (transient cc/link + redis-server spawn peak, the same role Maven's
+#   surefire plays in the java variant). N sandboxes' verify peaks overlapping
+#   -> host memory overcommit.
+#   Pairs without a test selection (the generic edit pairs) fall back to
+#   ``coding.verify_cmd`` below (Makefile rebuild + ad-hoc gcc probe).
+#
+# Project: redis/redis (github.com/redis/redis)
+#   - Real swe_bench_multilingual instance redis__redis-13338 (XINFO group lag
+#     is wrong when a tombstone sits after the consumer group's
+#     last-delivered-id). Cloned at base_commit
+#     94b9072e44af0bae8cfe2de5cfa4af7b8e399759.
+#   - FAIL_TO_PASS: "Consumer Group Lag with XDELs and tombstone after the
+#     last_id of consume group". PASS_TO_PASS: the stream-cgroups unit file's
+#     official selection (67 tests), run alongside it.
+#   - The three-hunk t_stream.c pair in bench_core.coding_payload mirrors the
+#     gold patch; the test patch is baked into the image under tests/.
+#
+# The replacement pairs are the language's CANONICAL content in
+# bench_core.coding_payload -- omit ``source_files`` and
+# CodingConfig.__post_init__ (task_runner/coding.py) fills them from
+# CODING_LANGUAGE_DEFAULT_SOURCE_FILES["c"], so this file stays minimal.
+#
+# Pick the backend with --provider; the SAME stress profile runs on either:
+#   bench-core --provider e2b    --config config/common/coding-c.yaml --create-only
+#   bench-core --provider docker --config config/common/coding-c.yaml --create-only
+#
+# Validate without any SDK (parses shared sections only):
+#   bench-core --provider fake --config config/common/coding-c.yaml --create-only -n 1
+
+workflow_type: coding
+
+# === backend blocks (one per provider; only the matching one is read) ===
+e2b:
+  template: "openclaw-coding-c-v1"  # E2B template (coding template with redis/redis)
+  create_timeout: 86400
+  numa_bind: 2
+  # Firecracker CPU pinning is an aenv-only knob (see the aenv: block below);
+  # cloud e2b sandboxes run on e2b's infrastructure, so no pin keys here.
+  sandbox_ids_file: "sandboxs_c.txt"  # save/load sandbox IDs across runs (empty = disabled)
+  env:                              # E2B SDK env vars; key/token fall back to ~/.e2b/config.json
+    E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+    E2B_API_KEY: "your_e2b_api_key_here"
+    E2B_DOMAIN: "e2b.app"
+    E2B_API_URL: "http://localhost:3000"
+    E2B_HTTP_SSL: "false"
+
+aenv:
+  template: "openclaw-coding-c-v1"  # AENV snapshot-capable image (same shape)
+  create_timeout: 86400
+  sandbox_ids_file: "sandboxs_c_aenv.txt"  # save/load sandbox IDs across runs (empty = disabled)
+  # Firecracker CPU pinning (cold-start perf, aenv only). Comma-separated host
+  # CPU list, e.g. pin_cpus: "2,3" for a 2-vCPU sandbox; null/omit = no
+  # pinning. pgrep + taskset run on the AENV server host; pin_cmd_prefix routes
+  # them when the bench runs remotely ("" = local, "ssh user@host" = remote).
+  # Pin-verify failure fails sandbox creation. Cloud e2b ignores these keys
+  # (its sandboxes run on e2b's infrastructure). See
+  # src/env_provider/e2b/manager.py (_pin_and_verify_fc).
+  pin_cpus: null
+  pin_cmd_prefix: ""
+  env:                              # AENV server env (E2B SDK pointed at AENV)
+    E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+    E2B_API_KEY: "your_e2b_api_key_here"
+    E2B_DOMAIN: "your_aenv_domain_here"
+    E2B_API_URL: "http://127.0.0.1:8000"      # AENV control plane (POST /sandboxes)
+    E2B_SANDBOX_URL: "http://127.0.0.1:8000"  # AENV data plane (envd proxy)
+
+docker:
+  # Build dockerfile_build/coding/c/Dockerfile.x86 (redis + gcc/make + tcl,
+  # warmed build), then point this at it. The same tag is what
+  # push_to_harbor.sh consumes (BASE_IMAGE) and what the offline tarball
+  # (docker load) produces.
+  image: "ubuntu-openclaw-coding-c:24.04-x86_64"
+  container_prefix: "oc-bench"
+  cpu_limit: 2.0
+  memory_limit: "2g"
+  create_timeout: 300
+  # Readiness is a workflow concern (coding runs the uname probe, not ports);
+  # it is provider-transparent, so there is no port_check block here.
+
+# === shared stress sections (all -> KernelConfig) ===
+sandbox:                            # shared sandbox control
+  total_count: 10                    # Total sandbox count (start small for manual testing)
+  detect_existing: false            # Detect existing sandboxes instead of creating new ones
+  create_only: false                # Create sandboxes only without running tasks (Phase 0)
+
+# Sandbox creation batch control
+create_batch:
+  size: 10                          # Sandboxes per batch during creation
+  interval: 3                       # Interval between creation batches (seconds)
+
+# Task execution batch control
+task_batch:
+  size: 5                           # Sandboxes to start tasks per batch
+  interval: 5                       # Interval between task batches (seconds)
+
+# Coding task configuration (host-agnostic; the sandbox runs it).
+# source_files omitted -> __post_init__ fills the 6 canonical redis pairs.
+coding:
+  language: "c"                     # selects the c verify profile
+  project_dir: "/opt/coding-bench"  # redis project directory inside sandbox
+  # Fallback verify for pairs WITHOUT a fail_to_pass/pass_to_pass selection
+  # (the generic edit pairs): rebuild with the project Makefile + gcc/run the
+  # ad-hoc smoke probe. Pairs that name tests use the runner's real
+  # `make + ./runtest` path instead (see _run_test_suite_verify), so they
+  # ignore this command.
+  verify_cmd: "cd /opt/coding-bench && make -s -j$(nproc) && gcc -O2 /tmp/bench_verify.c -o /tmp/bench_verify && /tmp/bench_verify"
+  verify_timeout: 600               # redis rebuild + Tcl suite (seconds)
+  verify_repeat: 1                  # c: single verify run (profile ignores repeat)
+  interval_min: 2.0                 # Min interval between tasks (fixed mode)
+  interval_max: 10.0                # Max interval between tasks (fixed mode)
+  skip_verify: false                # Skip the verify step (set true for edit-only testing)
+
+# Test run configuration
+test:
+  duration: 160                     # Test duration (seconds)
+  stats_interval: 10                # Stats snapshot interval (seconds)
+  benchmark_percent: 1.0            # Percentage of sandboxes for benchmark (1.0 = 100%)
+  # Round-robin mode configuration (recommended for coding benchmark).
+  benchmark_mode: "round_robin"     # "fixed" (default) or "round_robin"
+  round_size: 5                     # Sandboxes per round
+  round_count: 20                   # Max rounds (stops when reached or duration exceeded)
+  round_interval: 3                 # Round interval in seconds
+
+# Report configuration
+report:
+  output_dir: "results/coding/c"
+  filename_prefix: "coding_c_bench"

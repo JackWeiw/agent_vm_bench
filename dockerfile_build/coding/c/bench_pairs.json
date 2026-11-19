@@ -1,0 +1,70 @@
+[
+  {
+    "file": "src/t_stream.c",
+    "edits": [
+      {
+        "find": "#include \"server.h\"",
+        "replace": "#include \"server.h\" /* bench */"
+      }
+    ],
+    "tests": false
+  },
+  {
+    "file": "src/t_stream.c",
+    "edits": [
+      {
+        "find": "    if (streamCompareID(&s->first_id,&s->max_deleted_entry_id) > 0) {\n        /* The latest tombstone is before the first entry. */\n        return 0;\n    }\n\n",
+        "replace": ""
+      },
+      {
+        "find": "    if (!s->length && streamCompareID(id,&s->last_id) < 1) {\n        return s->entries_added;\n    }\n\n    int cmp_last = streamCompareID(id,&s->last_id);\n",
+        "replace": "    if (!s->length && streamCompareID(id,&s->last_id) < 1) {\n        return s->entries_added;\n    }\n\n    /* There are fragmentations between the `id` and the stream's last-generated-id. */\n    if (!streamIDEqZero(id) && streamCompareID(id,&s->max_deleted_entry_id) < 0)\n        return SCG_INVALID_ENTRIES_READ;\n\n    int cmp_last = streamCompareID(id,&s->last_id);\n"
+      },
+      {
+        "find": "            if (group->entries_read != SCG_INVALID_ENTRIES_READ && !streamRangeHasTombstones(s,&id,NULL)) {\n                /* A valid counter and no future tombstones mean we can \n                 * increment the read counter to keep tracking the group's\n                 * progress. */\n",
+        "replace": "            if (group->entries_read != SCG_INVALID_ENTRIES_READ && !streamRangeHasTombstones(s,&group->last_id,NULL)) {\n                /* A valid counter and no tombstones between the group's last-delivered-id\n                 * and the stream's last-generated-id mean we can increment the read counter\n                 * to keep tracking the group's progress. */\n"
+      }
+    ],
+    "tests": true
+  },
+  {
+    "file": "src/t_list.c",
+    "edits": [
+      {
+        "find": "#include \"server.h\"",
+        "replace": "#include \"server.h\" /* bench */"
+      }
+    ],
+    "tests": false
+  },
+  {
+    "file": "src/server.c",
+    "edits": [
+      {
+        "find": "#include \"server.h\"",
+        "replace": "#include \"server.h\" /* bench */"
+      }
+    ],
+    "tests": false
+  },
+  {
+    "file": "src/db.c",
+    "edits": [
+      {
+        "find": "#include \"server.h\"",
+        "replace": "#include \"server.h\" /* bench */"
+      }
+    ],
+    "tests": false
+  },
+  {
+    "file": "src/networking.c",
+    "edits": [
+      {
+        "find": "#include \"server.h\"",
+        "replace": "#include \"server.h\" /* bench */"
+      }
+    ],
+    "tests": false
+  }
+]

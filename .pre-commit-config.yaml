@@ -12,6 +12,9 @@ repos:
     hooks:
       - id: trailing-whitespace
         args: [--markdown-linebreak-ext=md]
+        # Unified diffs encode a blank context line as a single space; stripping
+        # it corrupts the patch (redis-13338's baked-in test patch, et al.).
+        exclude: \.patch$
       - id: end-of-file-fixer
       - id: check-yaml
         args: [--unsafe]

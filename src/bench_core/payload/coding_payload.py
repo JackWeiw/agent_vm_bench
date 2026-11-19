@@ -60,6 +60,11 @@ class CodingLanguageProfile:
     # Extra flags for the test-suite run (java: ``-Djava.version=8`` overrides
     # gson's <java.version>1.6</java.version>, which javac 8+ rejects).
     test_args: str = ""
+    # Real test-suite command for languages whose suite is not a Maven module
+    # (c/redis: ``make -j$(nproc) && ./runtest --single unit/type/stream-cgroups``).
+    # Run after ``cd project_dir``; empty = language has no suite path (ts/go/
+    # python verify through the smoke script only). See _run_test_suite_verify.
+    test_suite_cmd: str = ""
 
 
 def _find_name_clause(names: tuple) -> str:
@@ -469,6 +474,212 @@ DEFAULT_CODING_VERIFY_SCRIPT_JAVA = (
 )
 
 
+# --- c: redis/redis replacement pairs -----------------------------------------------
+# Real swe_bench_multilingual instance redis__redis-13338 (XINFO group lag is
+# wrong when a tombstone sits after the consumer group's last-delivered-id).
+# redis at base_commit 94b9072e is a plain Makefile C project (sources under
+# src/, Tcl test suite under tests/).
+#
+# Pairs[0] is a generic include-line edit ON PURPOSE: warmup verifies
+# ``source_files[0]`` BEFORE any edit is applied, so a pair carrying the
+# FAIL_TO_PASS tests must not be first (the base commit is buggy). Pairs[1]
+# mirrors the gold patch -- a THREE-hunk change to src/t_stream.c -- through the
+# optional ``edits`` list (one find->replace per hunk, applied in order), and
+# carries the instance's FAIL_TO_PASS / PASS_TO_PASS selection. The runner runs
+# the real Tcl suite (``./runtest --single unit/type/stream-cgroups``) and
+# asserts every listed test reported ``[ok]``. The remaining pairs are
+# include-line edits that keep the build green and fall back to the shared C
+# smoke verify.
+DEFAULT_CODING_C_SOURCE_FILES: list[dict] = [
+    {
+        "file": "src/t_stream.c",
+        "find": '#include "server.h"',
+        "replace": '#include "server.h" /* bench */',
+    },
+    {
+        # Gold patch (redis__redis-13338): three hunks in src/t_stream.c.
+        # 1) drop the "latest tombstone is before the first entry" early return;
+        # 2) report an invalid entries-read counter when a tombstone lies
+        #    between the id and the stream's last-generated-id;
+        # 3) test tombstones from the group's last-delivered-id, not the
+        #    entry currently being delivered.
+        "file": "src/t_stream.c",
+        "find": (
+            "    if (streamCompareID(&s->first_id,&s->max_deleted_entry_id) > 0) {\n"
+            "        /* The latest tombstone is before the first entry. */\n"
+            "        return 0;\n"
+            "    }\n"
+            "\n"
+        ),
+        "replace": "",
+        "edits": [
+            {
+                "find": (
+                    "    if (streamCompareID(&s->first_id,&s->max_deleted_entry_id) > 0) {\n"
+                    "        /* The latest tombstone is before the first entry. */\n"
+                    "        return 0;\n"
+                    "    }\n"
+                    "\n"
+                ),
+                "replace": "",
+            },
+            {
+                "find": (
+                    "    if (!s->length && streamCompareID(id,&s->last_id) < 1) {\n"
+                    "        return s->entries_added;\n"
+                    "    }\n"
+                    "\n"
+                    "    int cmp_last = streamCompareID(id,&s->last_id);\n"
+                ),
+                "replace": (
+                    "    if (!s->length && streamCompareID(id,&s->last_id) < 1) {\n"
+                    "        return s->entries_added;\n"
+                    "    }\n"
+                    "\n"
+                    "    /* There are fragmentations between the `id` and the stream's last-generated-id. */\n"
+                    "    if (!streamIDEqZero(id) && streamCompareID(id,&s->max_deleted_entry_id) < 0)\n"
+                    "        return SCG_INVALID_ENTRIES_READ;\n"
+                    "\n"
+                    "    int cmp_last = streamCompareID(id,&s->last_id);\n"
+                ),
+            },
+            {
+                "find": (
+                    "            if (group->entries_read != SCG_INVALID_ENTRIES_READ"
+                    " && !streamRangeHasTombstones(s,&id,NULL)) {\n"
+                    "                /* A valid counter and no future tombstones mean we can \n"
+                    "                 * increment the read counter to keep tracking the group's\n"
+                    "                 * progress. */\n"
+                ),
+                "replace": (
+                    "            if (group->entries_read != SCG_INVALID_ENTRIES_READ"
+                    " && !streamRangeHasTombstones(s,&group->last_id,NULL)) {\n"
+                    "                /* A valid counter and no tombstones between the group's"
+                    " last-delivered-id\n"
+                    "                 * and the stream's last-generated-id mean we can"
+                    " increment the read counter\n"
+                    "                 * to keep tracking the group's progress. */\n"
+                ),
+            },
+        ],
+        # The instance's real Tcl tests: one FAIL_TO_PASS case plus the file's
+        # PASS_TO_PASS set (the upstream eval runs the whole unit file).
+        "fail_to_pass": ("Consumer Group Lag with XDELs and tombstone after the last_id of consume group",),
+        "pass_to_pass": (
+            "XGROUP CREATE: creation and duplicate group name detection",
+            "XGROUP CREATE: with ENTRIESREAD parameter",
+            "XGROUP CREATE: automatic stream creation fails without MKSTREAM",
+            "XGROUP CREATE: automatic stream creation works with MKSTREAM",
+            "XREADGROUP will return only new elements",
+            "XREADGROUP can read the history of the elements we own",
+            "XPENDING is able to return pending items",
+            "XPENDING can return single consumer items",
+            "XPENDING only group",
+            "XPENDING with IDLE",
+            "XPENDING with exclusive range intervals works as expected",
+            "XACK is able to remove items from the consumer/group PEL",
+            "XACK can't remove the same item multiple times",
+            "XACK is able to accept multiple arguments",
+            "XACK should fail if got at least one invalid ID",
+            "PEL NACK reassignment after XGROUP SETID event",
+            "XREADGROUP will not report data on empty history. Bug #5577",
+            "XREADGROUP history reporting of deleted entries. Bug #5570",
+            "Blocking XREADGROUP will not reply with an empty array",
+            "Blocking XREADGROUP: key deleted",
+            "Blocking XREADGROUP: key type changed with SET",
+            "Blocking XREADGROUP: key type changed with transaction",
+            "Blocking XREADGROUP: flushed DB",
+            "Blocking XREADGROUP: swapped DB, key doesn't exist",
+            "Blocking XREADGROUP: swapped DB, key is not a stream",
+            "XREAD and XREADGROUP against wrong parameter",
+            "Blocking XREAD: key deleted",
+            "Blocking XREAD: key type changed with SET",
+            "Blocking XREADGROUP for stream that ran dry (issue #5299)",
+            "Blocking XREADGROUP will ignore BLOCK if ID is not >",
+            "Blocking XREADGROUP for stream key that has clients blocked on list",
+            "Blocking XREADGROUP for stream key that has clients blocked on stream - avoid endless loop",
+            "Blocking XREADGROUP for stream key that has clients blocked on stream - reprocessing command",
+            "XGROUP DESTROY should unblock XREADGROUP with -NOGROUP",
+            "RENAME can unblock XREADGROUP with data",
+            "RENAME can unblock XREADGROUP with -NOGROUP",
+            "XCLAIM can claim PEL items from another consumer",
+            "XCLAIM without JUSTID increments delivery count",
+            "XCLAIM same consumer",
+            "XAUTOCLAIM can claim PEL items from another consumer",
+            "XAUTOCLAIM as an iterator",
+            "XAUTOCLAIM COUNT must be > 0",
+            "XCLAIM with XDEL",
+            "XCLAIM with trimming",
+            "XAUTOCLAIM with XDEL",
+            "XAUTOCLAIM with XDEL and count",
+            "XAUTOCLAIM with out of range count",
+            "XINFO FULL output",
+            "Consumer seen-time and active-time",
+            "XGROUP CREATECONSUMER: create consumer if does not exist",
+            "XGROUP CREATECONSUMER: group must exist",
+            "XREADGROUP of multiple entries changes dirty by one",
+            "XREADGROUP from PEL does not change dirty",
+            "XREADGROUP with NOACK creates consumer",
+            "Consumer without PEL is present in AOF after AOFRW",
+            "Consumer group read counter and lag in empty streams",
+            "Consumer group read counter and lag sanity",
+            "Consumer group lag with XDELs",
+            "Loading from legacy (Redis <= v6.2.x, rdb_ver < 10) persistence",
+            "Loading from legacy (Redis <= v7.0.x, rdb_ver < 11) persistence",
+            "Consumer group last ID propagation to slave (NOACK=0)",
+            "Consumer group last ID propagation to slave (NOACK=1)",
+            "Replication tests of XCLAIM with deleted entries (autoclaim=0)",
+            "Replication tests of XCLAIM with deleted entries (autoclaim=1)",
+            "XREADGROUP ACK would propagate entries-read",
+            "XREADGROUP from PEL inside MULTI",
+            "Empty stream with no lastid can be rewrite into AOF correctly",
+        ),
+    },
+    {
+        "file": "src/t_list.c",
+        "find": '#include "server.h"',
+        "replace": '#include "server.h" /* bench */',
+    },
+    {
+        "file": "src/server.c",
+        "find": '#include "server.h"',
+        "replace": '#include "server.h" /* bench */',
+    },
+    {
+        "file": "src/db.c",
+        "find": '#include "server.h"',
+        "replace": '#include "server.h" /* bench */',
+    },
+    {
+        "file": "src/networking.c",
+        "find": '#include "server.h"',
+        "replace": '#include "server.h" /* bench */',
+    },
+]
+
+
+# Shared default verify-script body for C pairs without their own verify_script.
+# A standalone gcc-compiled probe (no project headers required) run after the
+# Makefile rebuild -- the transient cc/link/execute peak that stands in for the
+# project's own build load. Deliberately generic so it passes on the base commit
+# too (warmup runs it before any edit).
+DEFAULT_CODING_VERIFY_SCRIPT_C = (
+    "#include <stdio.h>\n"
+    "#include <string.h>\n"
+    "\n"
+    "int main(void) {\n"
+    "    char buf[32];\n"
+    '    snprintf(buf, sizeof(buf), "%s-%d", "bench", 13338);\n'
+    '    if (strcmp(buf, "bench-13338") != 0) {\n'
+    '        fprintf(stderr, "unexpected: %s\\n", buf);\n'
+    "        return 1;\n"
+    "    }\n"
+    '    printf("All tests passed!\\n");\n'
+    "    return 0;\n"
+    "}\n"
+)
+
+
 # Extensible language registry.
 CODING_LANGUAGE_PROFILES: dict[str, CodingLanguageProfile] = {
     "ts": CodingLanguageProfile(
@@ -529,6 +740,29 @@ CODING_LANGUAGE_PROFILES: dict[str, CodingLanguageProfile] = {
         test_module="gson",
         test_args="-Djava.version=8",
     ),
+    "c": CodingLanguageProfile(
+        temp_test_path="/tmp/bench_verify.c",
+        heredoc_eof="CEOF",
+        # Rebuild the edited redis tree with the project's own Makefile, then
+        # gcc+run the ad-hoc probe -- the real recompile peak after a src/ edit.
+        run_cmd=(
+            "cd /opt/coding-bench && make -s -j$(nproc) "
+            "&& gcc -O2 /tmp/bench_verify.c -o /tmp/bench_verify && /tmp/bench_verify"
+        ),
+        source_find_names=("*.c",),
+        source_find_root="src",
+        # All pairs edit redis src/ only; the baked-in Tcl fixture lives under
+        # tests/, so this reset never reverts the instance's test patch.
+        checkout_paths="src/",
+        default_verify_script=DEFAULT_CODING_VERIFY_SCRIPT_C,
+        project_marker="Makefile",
+        # Pairs carrying fail_to_pass/pass_to_pass rebuild + run the real Tcl
+        # suite (see _run_test_suite_verify). --clients 1 keeps a single test
+        # client so the suite output is deterministic and bounded on a 2-CPU box.
+        test_suite_cmd=(
+            "make -j$(nproc) && " "TERM=dumb ./runtest --clients 1 --durable --single unit/type/stream-cgroups"
+        ),
+    ),
 }
 
 # Maps a language to its default replacement-pair list.
@@ -537,6 +771,7 @@ CODING_LANGUAGE_DEFAULT_SOURCE_FILES: dict[str, list] = {
     "go": DEFAULT_CODING_GO_SOURCE_FILES,
     "python": DEFAULT_CODING_PY_SOURCE_FILES,
     "java": DEFAULT_CODING_JAVA_SOURCE_FILES,
+    "c": DEFAULT_CODING_C_SOURCE_FILES,
 }
 
 

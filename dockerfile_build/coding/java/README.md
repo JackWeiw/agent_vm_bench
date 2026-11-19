@@ -139,8 +139,9 @@ Only the verify mechanics are language data, captured in
 | `test_args` | — | — | `-Djava.version=8` |
 
 `test_module` is what switches verify from the ad-hoc probe to the real suite;
-an empty `test_module` keeps the old probe behaviour, so adding C/C++/Python
-later means a new profile + its own suite command/report parser.
+an empty `test_module` keeps the old probe behaviour, so adding C++/Rust/another
+Python suite later means a new profile + its own suite command/report parser
+(C/redis does this with `test_suite_cmd` — see `dockerfile_build/coding/c/README.md`).
 
 ## Build & push
 

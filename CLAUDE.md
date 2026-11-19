@@ -374,7 +374,7 @@ bench-core reports go to each config's `report.output_dir` + `filename_prefix` (
 ```
 config/
 ├── common/                     # backend-agnostic workflow configs (kernel; both e2b: + docker: blocks)
-│   ├── browser.yaml, coding-ts.yaml, coding-go.yaml, coding-python.yaml, coding-java.yaml, docker.yaml
+│   ├── browser.yaml, coding-ts.yaml, coding-go.yaml, coding-python.yaml, coding-java.yaml, coding-c.yaml, docker.yaml
 ├── openstack/                  # legacy OpenStack (batch_matrix, test_config_template, vm_bench.yaml)
 ├── e2b/                        # legacy E2B (bench, batch_matrix, batch_template, coding_*, pdf/xlsx_bench)
 ├── docker/                     # legacy docker (docker_bench.yaml)

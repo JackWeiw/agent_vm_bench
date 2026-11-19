@@ -113,6 +113,33 @@ def _build_edit_command(project_dir: str, target_file: str, find_str: str, repla
     )
 
 
+def _build_multi_edit_command(project_dir: str, target_file: str, edits: list[dict]) -> str:
+    """Apply several literal find->replace edits to one file in a single exec.
+
+    Real SWE-bench patches often touch a file in more than one hunk (redis-13338
+    changes src/t_stream.c in three places). The pair schema carries those as
+    ``edits: [{"find": ..., "replace": ...}, ...]`` so one round still applies
+    the complete upstream fix before verify. Same literal replace semantics as
+    :func:`_build_edit_command`; exits 2 if any hunk's find string is absent so
+    a partial patch can never masquerade as the gold fix.
+    """
+    edits_b64 = base64.b64encode(json.dumps(edits).encode()).decode()
+    return (
+        f"cd {project_dir} && python3 - {edits_b64} {target_file} <<'PYEOF'\n"
+        "import base64, json, sys\n"
+        "edits = json.loads(base64.b64decode(sys.argv[1]))\n"
+        "p = sys.argv[2]\n"
+        "s = open(p, encoding='utf-8').read()\n"
+        "for e in edits:\n"
+        "    f, r = e['find'], e['replace']\n"
+        "    if f not in s:\n"
+        "        sys.exit(2)\n"
+        "    s = s.replace(f, r, 1)\n"
+        "open(p, 'w', encoding='utf-8').write(s)\n"
+        "PYEOF"
+    )
+
+
 def _run_test_suite_verify(
     provider: EnvironmentProvider,
     inst: SandboxInstance,
@@ -137,50 +164,96 @@ def _run_test_suite_verify(
     missing / silently-skipped test cannot masquerade as a green verify (exit
     code alone would not catch it).
 
+    Languages with ``test_suite_cmd`` (c/redis) take the other branch: the
+    command runs the project's own harness (`make` + `./runtest`) and a python3
+    pass asserts every listed test printed ``[ok]`` rather than ``[err]``/
+    ``[skip]``/``[ignore]``.
+
     Returns None when the pair declares no tests (caller falls back to the
     smoke-script verify used by the other languages).
     """
     test_ids: list[str] = []
     for key in ("fail_to_pass", "pass_to_pass"):
         raw = pair.get(key)
-        if isinstance(raw, (list, tuple)):
+        if isinstance(raw, list | tuple):
             test_ids.extend(str(t) for t in raw)
     if not test_ids:
         return None
 
-    classes = sorted({t.split("#", 1)[0].rsplit(".", 1)[-1] for t in test_ids})
     ids_b64 = base64.b64encode(json.dumps(test_ids).encode()).decode()
-    reports_dir = f"{project_dir}/{profile.test_module}/target/surefire-reports"
-    cmd = (
-        f"cd {project_dir} && "
-        f"mvn -o -q -B -pl {profile.test_module} {profile.test_args} "
-        f"-Dtest={','.join(classes)} -DfailIfNoTests=false test && "
-        f"python3 - {ids_b64} {reports_dir} <<'PYEOF'\n"
-        "import base64, json, os, sys\n"
-        "import xml.etree.ElementTree as ET\n"
-        "ids = json.loads(base64.b64decode(sys.argv[1]))\n"
-        "reports = sys.argv[2]\n"
-        "for tid in ids:\n"
-        "    cls, _, method = tid.partition('#')\n"
-        "    path = os.path.join(reports, 'TEST-%s.xml' % cls)\n"
-        "    if not os.path.exists(path):\n"
-        "        print('MISSING REPORT:', tid)\n"
-        "        sys.exit(1)\n"
-        "    seen = False\n"
-        "    for tc in ET.parse(path).getroot().iter('testcase'):\n"
-        "        if tc.get('name') != method or tc.get('classname') not in (None, cls):\n"
-        "            continue\n"
-        "        seen = True\n"
-        "        bad = [c.tag for c in tc if c.tag in ('failure', 'error', 'skipped')]\n"
-        "        if bad:\n"
-        "            print('NOT PASSED:', tid, bad)\n"
-        "            sys.exit(1)\n"
-        "    if not seen:\n"
-        "        print('NOT RUN:', tid)\n"
-        "        sys.exit(1)\n"
-        "print('verified %d tests' % len(ids))\n"
-        "PYEOF"
-    )
+    if profile.test_module:
+        classes = sorted({t.split("#", 1)[0].rsplit(".", 1)[-1] for t in test_ids})
+        reports_dir = f"{project_dir}/{profile.test_module}/target/surefire-reports"
+        cmd = (
+            f"cd {project_dir} && "
+            f"mvn -o -q -B -pl {profile.test_module} {profile.test_args} "
+            f"-Dtest={','.join(classes)} -DfailIfNoTests=false test && "
+            f"python3 - {ids_b64} {reports_dir} <<'PYEOF'\n"
+            "import base64, json, os, sys\n"
+            "import xml.etree.ElementTree as ET\n"
+            "ids = json.loads(base64.b64decode(sys.argv[1]))\n"
+            "reports = sys.argv[2]\n"
+            "for tid in ids:\n"
+            "    cls, _, method = tid.partition('#')\n"
+            "    path = os.path.join(reports, 'TEST-%s.xml' % cls)\n"
+            "    if not os.path.exists(path):\n"
+            "        print('MISSING REPORT:', tid)\n"
+            "        sys.exit(1)\n"
+            "    seen = False\n"
+            "    for tc in ET.parse(path).getroot().iter('testcase'):\n"
+            "        if tc.get('name') != method or tc.get('classname') not in (None, cls):\n"
+            "            continue\n"
+            "        seen = True\n"
+            "        bad = [c.tag for c in tc if c.tag in ('failure', 'error', 'skipped')]\n"
+            "        if bad:\n"
+            "            print('NOT PASSED:', tid, bad)\n"
+            "            sys.exit(1)\n"
+            "    if not seen:\n"
+            "        print('NOT RUN:', tid)\n"
+            "        sys.exit(1)\n"
+            "print('verified %d tests' % len(ids))\n"
+            "PYEOF"
+        )
+    else:
+        # Non-Maven suite (c/redis): run the project's own test command, then
+        # assert every listed test printed ``[ok]`` and none printed ``[err]``/
+        # ``[skip]``/``[ignore]``. The command's own exit code is preserved so a
+        # suite-level failure (build break, exception) still fails verify even
+        # if the selected names happened to be reported.
+        log_path = "/tmp/bench_test_output.log"
+        cmd = (
+            f"cd {project_dir} && "
+            f"{profile.test_suite_cmd} > {log_path} 2>&1; rc=$?; "
+            f"tail -n 40 {log_path}; "
+            f"python3 - {ids_b64} {log_path} <<'PYEOF'\n"
+            "import base64, json, sys\n"
+            "ids = json.loads(base64.b64decode(sys.argv[1]))\n"
+            "text = open(sys.argv[2], encoding='utf-8', errors='replace').read()\n"
+            "ok, bad = set(), set()\n"
+            "for ln in text.splitlines():\n"
+            "    if ln.startswith('[ok]: '):\n"
+            "        name = ln[6:]\n"
+            "        i = name.rfind(' (')\n"
+            "        if i > 0 and name.endswith(' ms)'):\n"
+            "            name = name[:i]\n"
+            "        ok.add(name)\n"
+            "    elif ln.startswith('[err]: '):\n"
+            "        bad.add(ln[7:])\n"
+            "    elif ln.startswith('[skip]: '):\n"
+            "        bad.add(ln[8:])\n"
+            "    elif ln.startswith('[ignore]: '):\n"
+            "        bad.add(ln[10:])\n"
+            "for tid in ids:\n"
+            "    if any(b.startswith(tid) for b in bad):\n"
+            "        print('NOT PASSED:', tid)\n"
+            "        sys.exit(1)\n"
+            "    if tid not in ok:\n"
+            "        print('NOT RUN:', tid)\n"
+            "        sys.exit(1)\n"
+            "print('verified %d tests' % len(ids))\n"
+            "PYEOF\n"
+            "exit $rc"
+        )
 
     run_start = time.perf_counter()
     result = provider.exec(inst, cmd, timeout=config.coding_verify_timeout + 60)
@@ -240,9 +313,9 @@ def _run_verify(
     profile = get_coding_profile(config.coding_language)
     compile_only = str(pair.get("verify", "")).lower() == "compile_only"
 
-    # FAIL_TO_PASS / PASS_TO_PASS path (java today): when the pair names real
+    # FAIL_TO_PASS / PASS_TO_PASS path (java/c today): when the pair names real
     # tests, run the project's own test suite instead of an ad-hoc probe.
-    if profile.test_module:
+    if profile.test_module or profile.test_suite_cmd:
         suite = _run_test_suite_verify(provider, inst, project_dir, config, pair, profile, step_times)
         if suite is not None:
             return suite
@@ -633,7 +706,9 @@ class CodingRoundRunner(TaskRunner):
 
             self._step_read(project_dir, target_file, step_times)
 
-            edit_success, edit_error = self._step_edit(project_dir, target_file, find_str, replace_str, step_times)
+            edit_success, edit_error = self._step_edit(
+                project_dir, target_file, find_str, replace_str, pair, step_times
+            )
             if not edit_success:
                 failed_step = "edit"
                 error_detail = edit_error
@@ -704,22 +779,31 @@ class CodingRoundRunner(TaskRunner):
         step_times["read"] = time.perf_counter() - step_start
 
     def _step_edit(
-        self, project_dir: str, target_file: str, find_str: str, replace_str: str, step_times: dict[str, float]
+        self,
+        project_dir: str,
+        target_file: str,
+        find_str: str,
+        replace_str: str,
+        pair: dict,
+        step_times: dict[str, float],
     ) -> tuple[bool, str]:
         """Step 2: Apply the find->replace pair via literal string replace (real semantic edit).
 
         Uses python3 str.replace (see _build_edit_command) -- literal, not sed
         regex -- so regex metacharacters in the find/replace strings are inert.
+        A pair may instead carry an ``edits`` list (multi-hunk gold patches);
+        those hunks are then applied in order to the same file.
 
         Returns: (success, error_detail). Exit code 2 = find string absent
         (no-op edit surfaced as a failure, not a silent fake verify pass).
         """
         step_start = time.perf_counter()
-        result = self.provider.exec(
-            self.state,
-            _build_edit_command(project_dir, target_file, find_str, replace_str),
-            timeout=15,
-        )
+        edits = pair.get("edits")
+        if isinstance(edits, list | tuple) and edits:
+            cmd = _build_multi_edit_command(project_dir, target_file, list(edits))
+        else:
+            cmd = _build_edit_command(project_dir, target_file, find_str, replace_str)
+        result = self.provider.exec(self.state, cmd, timeout=15)
         step_times["edit"] = time.perf_counter() - step_start
 
         if result.exit_code != 0:

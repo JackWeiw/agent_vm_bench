@@ -97,6 +97,7 @@ any backend**.
 | `coding-go.yaml` | coding | Go (gohugoio/hugo), `go run` verify, `verify_repeat: 1` |
 | `coding-python.yaml` | coding | Python (django/django), `python3` verify, `verify_repeat: 1` |
 | `coding-java.yaml` | coding | Java (google/gson), real `mvn test` + surefire assertions for FAIL_TO_PASS/PASS_TO_PASS pairs, `mvn compile` + `javac`/`java` otherwise |
+| `coding-c.yaml` | coding | C (redis/redis), real `make` + `./runtest` Tcl suite for FAIL_TO_PASS/PASS_TO_PASS pairs, `make` + gcc probe otherwise |
 | `docker.yaml` | browser | docker-only small profile (10 containers, single URL) |
 | `replay.yaml` | replay | aenv lifecycle 1:1 baseline (see §8) |
 | `replay-exec-only.yaml` | replay | exec_only baseline (e2b/docker/fake) |
@@ -107,7 +108,7 @@ any backend**.
 All coding configs **omit `source_files`** — the `CodingConfig` view's `__post_init__` auto-fills
 the canonical replacement pairs from `CODING_LANGUAGE_DEFAULT_SOURCE_FILES[language]`
 (6 pairs per language, drawn from real SWE-bench instances): ts → vuejs/core, go →
-gohugoio/hugo, python → django/django, java → google/gson. The pairs live in
+gohugoio/hugo, python → django/django, java → google/gson, c → redis/redis. The pairs live in
 `src/bench_core/payload/coding_payload.py`; a config only declares `language` +
 `verify_cmd` + `verify_repeat`.
 
