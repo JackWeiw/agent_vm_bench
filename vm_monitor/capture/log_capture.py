@@ -779,6 +779,15 @@ class LogCapture:
         # (the live-run "Invalid output file!!" bug). No makedirs -- the tool
         # builds the dir itself.
         turn_dir = os.path.abspath(os.path.splitext(log_path)[0])
+        # A successful turn drops its stdout log, so _rotation_log_path's
+        # log-existence suffix no longer keeps a same-second next turn off
+        # this data dir. Bump -N on the data dir instead (degenerate case:
+        # sub-second slot intervals; production slots are >= 1 s apart).
+        stem = turn_dir
+        n = 1
+        while os.path.exists(turn_dir) and n < 1000:
+            n += 1
+            turn_dir = f"{stem}-{n}"
         try:
             fh = open(log_path, "w")
         except OSError as e:
@@ -829,6 +838,10 @@ class LogCapture:
             if proc.poll() is not None:
                 break
             time.sleep(0.5)
+        try:
+            fh.close()
+        except Exception:
+            pass
         if proc.poll() is None:
             self._rotation_uprof_procs.append(proc)
         elif proc.returncode != 0:
@@ -841,10 +854,16 @@ class LogCapture:
                     os.rmdir(turn_dir)
             except OSError:
                 pass
-        try:
-            fh.close()
-        except Exception:
-            pass
+        else:
+            # Success: the stdout log only repeats where the data landed -- the
+            # per-turn Timeseries dir IS the artifact, so keep just the
+            # collected data and drop the log. Failed turns keep theirs for
+            # debugging; a tool still running past its interval also keeps its
+            # log (its rc is unknowable at parking time).
+            try:
+                os.unlink(log_path)
+            except OSError:
+                pass
 
     def _run_slot(self, turn, interval=None) -> None:
         """Run one rotation slot, then hold the slot open for its full interval.

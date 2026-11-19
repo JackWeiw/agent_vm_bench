@@ -254,7 +254,9 @@ monitor:
   # stem, absolute; created by the tool), yielding
   # uprof/<stamp>/AMDuProfPcm-Timeseries_*/report-timerseries.csv per turn —
   # columns include TopDown stages (Frontend_Bound / Backend_Bound.Memory /
-  # Retiring), Total Mem Bw (GB/s), and per-channel memory bandwidth.
+  # Retiring), Total Mem Bw (GB/s), and per-channel memory bandwidth. A
+  # successful uprof turn keeps only its Timeseries data (its stdout log is
+  # dropped); failed turns keep the log for debugging.
   #
   # Prerequisites: capture must be auto/true. Rotation keys off the stress-file
   # lock lifecycle (appear = start, disappear = stop after the in-flight slot),

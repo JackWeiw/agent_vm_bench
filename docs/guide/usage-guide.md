@@ -316,7 +316,7 @@ DEVKIT_CPU_RANGE=96-191
 | `KSYS_PATH` + `KSYS_CONFIG_PATH` | `ksys` | KSys sheet | **both required** — ksys skipped if either missing |
 | `UB_WATCH_PATH` | `ub_watch` | UBWatch_Latency sheet | optional |
 | `SMAP_BW_PATH` | `smap_bw` | SMAPBW sheets | optional (run via sudo) |
-| `UPROF_PATH` | `uprof` (rotation mode) | log_capture/uprof logs | optional; `--log-rotation` only; unset/invalid warns + skips the slot (never prompts) |
+| `UPROF_PATH` | `uprof` (rotation mode) | log_capture/uprof/<turn>/ | optional; `--log-rotation` only; unset/invalid warns + skips the slot (never prompts) |
 | `GETFRE_PATH` + `GETFRE_CONFIG_PATH` | `getfre` | Getfre sheets | optional; config falls back to host auto-detect |
 
 If `.env` is missing entirely or a path is unset, interactive input will be prompted (or the tool silently skipped in non-interactive mode). UPROF_PATH is the exception: never prompted in either mode — unset/invalid degrades to a warning and the uprof rotation slot is skipped.

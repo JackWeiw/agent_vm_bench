@@ -950,7 +950,7 @@ def print_capture_summary(results: dict, log_dir: str, numa_nodes: list = None):
         print("\n[OK] Log rotation turns:")
         for tool, paths in rotation.items():
             if paths:
-                print(f"   {tool}: {len(paths)} logs under {os.path.dirname(paths[0])}/")
+                print(f"   {tool}: {len(paths)} turns under {os.path.dirname(paths[0])}/")
 
     # Startup failures
     if results["failed_startup"]:
