@@ -6,6 +6,7 @@ smap_bw, getfre) and the AMDuProfPcm Timeseries CSVs (rotation) and extracts
 structured metrics data.
 """
 
+import csv
 import glob
 import os
 import re
@@ -753,72 +754,46 @@ def parse_smap_bw(log_path: str) -> dict:
         return {"error": str(e)}
 
 
-def _read_uprof_log(log_path: str, turn: str, rows: list, columns: list, seen: set) -> None:
-    """Parse one per-turn uprof stdout log into the shared rows/columns accumulators.
-
-    AMDuProfPcm streams its counters to stdout, so the captured log is
-    expected to be comma-separated tabular data with a header row. The log
-    also merges stderr and may carry preamble text: the parser looks for the
-    first line that splits into >= 2 non-empty comma fields whose next line
-    matches the same field count (header + first data row), then reads the
-    remaining lines whose field count matches. Lines that do not fit are
-    skipped.
-    """
+def _read_uprof_csv(csv_path: str, turn: str, rows: list, columns: list, seen: set) -> None:
+    """Append one uprof CSV's rows into the shared rows/columns accumulators."""
     try:
-        with open(log_path, encoding="utf-8-sig", errors="ignore", newline="") as f:
-            lines = [line.rstrip("\r\n") for line in f]
-    except OSError as e:
-        print(f"  [WARN] uprof parse skipped {log_path}: {e}")
-        return
-    header, width, data_start = None, 0, None
-    for i, line in enumerate(lines):
-        fields = [c.strip() for c in line.split(",")]
-        if len(fields) < 2 or sum(1 for c in fields if c) < 2 or i + 1 >= len(lines):
-            continue
-        nxt = [c.strip() for c in lines[i + 1].split(",")]
-        if len(nxt) == len(fields) and all(nxt):
-            header, width, data_start = fields, len(fields), i + 1
-            break
-    if header is None:
-        return  # no tabular section (pure diagnostics)
-    for line in lines[data_start:]:
-        if not line:
-            continue
-        fields = [c.strip() for c in line.split(",")]
-        if len(fields) != width or any(not c for c in fields):
-            continue  # stderr interleave or trailing noise
-        out = {"turn": turn}
-        for key, value in zip(header, fields):
-            key = key.strip()
-            if key and key not in seen:
-                seen.add(key)
-                columns.append(key)
-            out[key] = value
-        rows.append(out)
+        with open(csv_path, encoding="utf-8-sig", errors="ignore", newline="") as f:
+            for row in csv.DictReader(f):
+                out = {"turn": turn}
+                for key, value in row.items():
+                    if key is None:
+                        continue  # columns beyond the header row
+                    key = key.strip()
+                    if key and key not in seen:
+                        seen.add(key)
+                        columns.append(key)
+                    out[key] = value
+                rows.append(out)
+    except (OSError, csv.Error) as e:
+        print(f"  [WARN] uprof parse skipped {csv_path}: {e}")
 
 
 def parse_uprof(log_dir: str, rotation_log_dir: str = None) -> dict:
     """Parse AMDuProfPcm's output from an uprof rotation slot.
 
-    The rotation turn passes NO ``-o``: AMDuProfPcm streams its counters to
-    stdout, and the turn captures that stream per-turn into
-    ``<rotation_log_dir>/uprof/<stamp>.log`` -- the log IS the collected
-    sample (empty logs are dropped by the turn, so present logs carry data).
-    ``parse_uprof`` reads each log as comma-separated tabular data (see
-    :func:`_read_uprof_log`) and flattens all turns into one row list with a
-    ``turn`` column -- the log's ``YYYYmmdd-HHMMSS`` stamp -- so the
-    collection report can carry the whole series and join the shared rotation
-    timeline:
+    The rotation turn passes ``-O <rotation_log_dir>/uprof`` (the dir that
+    also holds the stdout logs) and the tool AUTO-GENERATES timestamped
+    folders inside it per turn -- the observed layout is
+    ``uprof/<tool timestamp>/AMDuProfPcm-Timeseries_*/report-timerseries.csv``.
+    Every ``*.csv`` under those folders is flattened into one row list with
+    the folder name as the ``turn`` label, so the collection report can carry
+    the whole series:
 
-        {"turns": [<stamp>, ...], "columns": [<header>, ...], "rows": [...]}
+        {"turns": [...], "columns": [<header>, ...], "rows": [...]}
 
     Each row is a ``{column: value}`` dict with ``"turn"`` prepended;
-    ``turns`` lists the stamps that actually produced rows.
+    ``turns`` lists the folder names that actually produced rows (the tool's
+    own timestamped naming -- chronologically ordered, one folder per turn).
     ``rotation_log_dir`` is the rotation root LogCapture actually wrote to
     (vm-monitor's ``--rotation-log-dir``); when given it replaces the
     ``log_dir/log_capture`` guess, which is wrong whenever bench-core passes a
     custom ``--log-dir`` (the rotation root is then a sibling of log_dir,
-    derived from output_dir). An empty result is
+    derived from output_dir). An empty result (no uprof dir / no CSVs) is
     ``{"turns": [], "columns": [], "rows": []}`` -- callers treat empty rows
     as "uprof collected nothing this run".
     """
@@ -828,9 +803,13 @@ def parse_uprof(log_dir: str, rotation_log_dir: str = None) -> dict:
     if not os.path.isdir(uprof_root):
         return result
     rows, columns, seen = [], [], set()
-    for log_path in sorted(glob.glob(os.path.join(uprof_root, "*.log"))):
-        turn = os.path.splitext(os.path.basename(log_path))[0]
-        _read_uprof_log(log_path, turn, rows, columns, seen)
+    for turn in sorted(d for d in os.listdir(uprof_root) if os.path.isdir(os.path.join(uprof_root, d))):
+        turn_dir = os.path.join(uprof_root, turn)
+        for dirpath, _, filenames in os.walk(turn_dir):
+            for name in sorted(filenames):
+                if not name.endswith(".csv"):
+                    continue
+                _read_uprof_csv(os.path.join(dirpath, name), turn, rows, columns, seen)
     result["turns"] = sorted({r["turn"] for r in rows})
     result["columns"] = columns
     result["rows"] = rows

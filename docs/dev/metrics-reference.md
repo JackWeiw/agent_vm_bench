@@ -399,7 +399,7 @@ SMAP (Secure Memory Access Protection) migration bandwidth:
 
 ### `Uprof` — AMDuProfPcm timeseries (log-rotation slot)
 
-One row per sample with the rotation turn's stamp in `turn`; the remaining columns come straight from the tool's stdout timeseries — topdown stages (`Frontend_Bound`, `Backend_Bound.Memory`, `Retiring`), `Total Mem Bw (GB/s)`, per-channel memory bandwidth, plus whatever else the selected metric set emits. All-numeric columns are coerced to numbers. No `-o` is passed: the tool streams its counters to stdout, captured per-turn into `uprof/<stamp>.log` — the log IS the collected sample (kept whenever non-empty, empty logs dropped) and `parse_uprof` reads those logs directly (tolerating preamble/stderr lines interleaved with the table).
+One row per sample with the tool's own timestamped folder name in `turn`; the remaining columns come straight from the tool's CSV — topdown stages (`Frontend_Bound`, `Backend_Bound.Memory`, `Retiring`), `Total Mem Bw (GB/s)`, per-channel memory bandwidth, plus whatever else the selected metric set emits. All-numeric columns are coerced to numbers. `-O` points at `uprof/`: the tool auto-generates timestamped folders per turn (`AMDuProfPcm-Timeseries_*/report-timerseries.csv`) and `parse_uprof` walks them.
 
 ## 2.4 Embedded Excel charts
 

@@ -176,13 +176,15 @@ class TestLogRotation(unittest.TestCase):
                 "-a",
                 "-A",
                 "system,package",
+                "-O",
+                uprof_dir,
                 "-d",
                 "15",
             ],
         )
         # Success with an EMPTY stdout log (the stub writes nothing): the empty
         # log is dropped (pure noise). A NON-EMPTY success log would be kept --
-        # with no -o the counters stream to stdout, so it may be the data.
+        # it carries the tool's status output; the data goes to -O's CSV.
         self.assertEqual(os.listdir(uprof_dir), [])
 
     def test_uprof_metrics_empty_falls_back_to_default(self):

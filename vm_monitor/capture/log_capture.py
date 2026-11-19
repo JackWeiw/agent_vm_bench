@@ -772,10 +772,12 @@ class LogCapture:
         log_path = self._rotation_log_path("uprof")
         if log_path is None:
             return
-        # No -o: the tool writes its counters to stdout (captured into the
-        # per-turn log below) -- the log IS the collected sample whenever it
-        # is non-empty; an EMPTY log is dropped after the turn. No -o means
-        # no managed output path on disk.
+        # -O points at the uprof/ dir (already created for the stdout log):
+        # the tool AUTO-GENERATES timestamped folders inside it per turn
+        # (AMDuProfPcm-Timeseries_*/report-timerseries.csv) -- per-turn
+        # isolation is the tool's own behavior, so there is no per-turn path
+        # management here at all. stdout stays as diagnostics.
+        uprof_dir = os.path.dirname(log_path)
         try:
             fh = open(log_path, "w")
         except OSError as e:
@@ -788,6 +790,8 @@ class LogCapture:
             "-a",
             "-A",
             "system,package",
+            "-O",
+            uprof_dir,
             "-d",
             interval,
         ]
