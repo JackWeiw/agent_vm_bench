@@ -101,7 +101,7 @@ SMAP_BW_PATH=/path/to/smap_bw.py
 
 # AMD uProf（仅 log-rotation 轮转使用；未配置或路径无效时 WARN 并跳过该槽，不阻塞运行。
 # 指标可用 --rotation-uprof-metrics / monitor.log_rotation.uprof_metrics 覆盖，默认 memory,pipeline_util；
-# 暂不传 -o：输出落在工具默认位置（轮转日志目录下 AMDuProfPcm-Timeseries_*），由解析器扫描）
+# 不传 -o：计数器流到 stdout，逐轮捕获为 uprof/<turn>.log——解析器直接读取并写入 Uprof sheet）
 UPROF_PATH=/path/to/AMDuProfPcm
 
 # getfre 及其 YAML 配置
@@ -121,7 +121,7 @@ DEVKIT_CPU_RANGE=96-191
 | `KSYS_PATH` + `KSYS_CONFIG_PATH` | `ksys` | KSys sheet | **两者均必需** |
 | `UB_WATCH_PATH` | `ub_watch` | UBWatch sheets | 可选 |
 | `SMAP_BW_PATH` | `smap_bw` | SMAPBW sheets | 可选；sudo |
-| `UPROF_PATH` | `uprof`（轮转模式） | log_capture/uprof/<turn>.csv | 可选；仅 `--log-rotation`，未配置或路径无效时 WARN 并跳过该槽（不提示、不阻塞） |
+| `UPROF_PATH` | `uprof`（轮转模式） | `log_capture/uprof/<turn>.log` | 可选；仅 `--log-rotation`，未配置或路径无效时 WARN 并跳过该槽（不提示、不阻塞） |
 | `GETFRE_PATH` + `GETFRE_CONFIG_PATH` | `getfre` | Getfre sheets | 可选；配置可从宿主机拓扑自动填充 |
 
 缺失路径的行为：

@@ -1,14 +1,11 @@
 """Tests for the uprof (AMDuProfPcm) timeseries parser + Uprof sheet.
 
-The rotation slot currently passes no -o: the tool writes its default output
-into its cwd (the rotation log dir), and a finished turn stamps the entries it
-created with the rotation stamp (<stamp>_<tool name>); failed turns' entries
-carry a "failed-" prefix and are skipped. parse_uprof scans the stamped and
-plain AMDuProfPcm-Timeseries_* entries there plus the uprof/ layouts from
-earlier -o forms (flat uprof/<turn>.csv files and nested
-uprof/<turn>/AMDuProfPcm-Timeseries_*/ dirs), flattening every turn's rows
-with a turn column; _build_uprof_sheet renders them as the Uprof sheet of
-resource_report.xlsx.
+The rotation slot passes no -o: AMDuProfPcm streams its counters to stdout,
+captured per-turn into log_capture/uprof/<stamp>.log -- the log IS the
+collected sample. parse_uprof reads each log as comma-separated tabular data
+(tolerating preamble/stderr lines) and flattens every turn's rows with a turn
+column (the log's stamp); _build_uprof_sheet renders them as the Uprof sheet
+of resource_report.xlsx.
 """
 
 import os
@@ -22,43 +19,14 @@ from vm_monitor.capture.parsers import parse_uprof
 from vm_monitor.export.resource_report import _build_uprof_sheet
 
 HEADER = "Time,Total Mem Bw (GB/s),CCD0 Bw (GB/s),Frontend_Bound(%),Backend_Bound.Memory(%),Retiring(%)"
+ROW = "0.0,12.5,6.1,10.0,40.0,50.0"
 
 
-def _write_flat_csv(log_dir, turn, rows):
-    """uprof/<turn>.csv file form."""
-    path = os.path.join(log_dir, "log_capture", "uprof", f"{turn}.csv")
+def _write_log(log_dir, turn, text):
+    path = os.path.join(log_dir, "log_capture", "uprof", f"{turn}.log")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        f.write(HEADER + "\n")
-        for row in rows:
-            f.write(",".join(str(x) for x in row) + "\n")
-    return path
-
-
-def _write_nested_turn(log_dir, turn, rows):
-    """Nested form: uprof/<turn>/AMDuProfPcm-Timeseries_0/*.csv."""
-    ts_dir = os.path.join(log_dir, "log_capture", "uprof", turn, "AMDuProfPcm-Timeseries_0")
-    os.makedirs(ts_dir, exist_ok=True)
-    with open(os.path.join(ts_dir, "report-timerseries.csv"), "w", encoding="utf-8") as f:
-        f.write(HEADER + "\n")
-        for row in rows:
-            f.write(",".join(str(x) for x in row) + "\n")
-    return ts_dir
-
-
-def _write_default_output(log_dir, name, rows):
-    """Default (no -o) form: log_capture/AMDuProfPcm-Timeseries_<x>[/ *.csv]."""
-    base = os.path.join(log_dir, "log_capture", name)
-    if name.endswith(".csv"):
-        os.makedirs(os.path.dirname(base), exist_ok=True)
-        path = base
-    else:
-        os.makedirs(base, exist_ok=True)
-        path = os.path.join(base, "report-timerseries.csv")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(HEADER + "\n")
-        for row in rows:
-            f.write(",".join(str(x) for x in row) + "\n")
+        f.write(text)
     return path
 
 
@@ -72,10 +40,11 @@ class TestParseUprof(unittest.TestCase):
     def test_missing_uprof_dir_is_empty(self):
         self.assertEqual(parse_uprof(self.log_dir), {"turns": [], "columns": [], "rows": []})
 
-    def test_parses_flat_files_with_turn_column(self):
-        # uprof/<turn>.csv file form.
-        _write_flat_csv(self.log_dir, "20260101-000000", [[0.0, 12.5, 6.1, 10.0, 40.0, 50.0]])
-        _write_flat_csv(self.log_dir, "20260101-000015", [[0.0, 14.0, 6.9, 9.5, 41.5, 49.0]])
+    def test_parses_stdout_logs_with_turn_column(self):
+        # Layout: each turn's stdout log holds the tabular counters; the turn
+        # label is the log's stamp (joinable onto the rotation timeline).
+        _write_log(self.log_dir, "20260101-000000", HEADER + "\n" + ROW + "\n")
+        _write_log(self.log_dir, "20260101-000015", HEADER + "\n0.0,14.0,6.9,9.5,41.5,49.0\n")
         parsed = parse_uprof(self.log_dir)
         self.assertEqual(parsed["turns"], ["20260101-000000", "20260101-000015"])
         self.assertEqual(len(parsed["rows"]), 2)
@@ -84,94 +53,54 @@ class TestParseUprof(unittest.TestCase):
         self.assertEqual(parsed["rows"][1]["turn"], "20260101-000015")
         self.assertEqual(float(parsed["rows"][1]["Total Mem Bw (GB/s)"]), 14.0)
 
-    def test_parses_nested_turns(self):
-        # Nested form: uprof/<turn>/AMDuProfPcm-Timeseries_*/ CSVs.
-        _write_nested_turn(
-            self.log_dir, "20260101-000000", [[0.0, 12.5, 6.1, 10.0, 40.0, 50.0], [1.0, 13.2, 6.4, 11.0, 39.0, 50.0]]
+    def test_log_with_preamble_and_stderr_interleave(self):
+        # stdout+stderr are merged: preamble text before the table and error
+        # lines interleaved after it are skipped; the tabular rows survive.
+        text = (
+            "Starting collection...\n"
+            "[WARN] driver not loaded\n"
+            + HEADER
+            + "\n"
+            + ROW
+            + "\n"
+            + "1.0,13.2,6.4,11.0,39.0,50.0\n"
+            + "Invalid output file!! Failed to process args\n"
         )
+        _write_log(self.log_dir, "20260101-000000", text)
         parsed = parse_uprof(self.log_dir)
         self.assertEqual(parsed["turns"], ["20260101-000000"])
         self.assertEqual(len(parsed["rows"]), 2)
         self.assertEqual(parsed["rows"][1]["turn"], "20260101-000000")
         self.assertEqual(float(parsed["rows"][1]["Total Mem Bw (GB/s)"]), 13.2)
 
-    def test_both_layouts_coexist(self):
-        _write_flat_csv(self.log_dir, "20260101-000000", [[0.0, 12.5, 6.1, 10.0, 40.0, 50.0]])
-        _write_nested_turn(self.log_dir, "20260101-000015", [[0.0, 14.0, 6.9, 9.5, 41.5, 49.0]])
-        parsed = parse_uprof(self.log_dir)
-        self.assertEqual(parsed["turns"], ["20260101-000000", "20260101-000015"])
-        self.assertEqual(len(parsed["rows"]), 2)
-
-    def test_default_output_in_rotation_root_parsed(self):
-        # No -o runs: the tool's default output lands in its cwd -- the
-        # rotation root (log_capture/). Dir form:
-        _write_default_output(self.log_dir, "AMDuProfPcm-Timeseries_0", [[0.0, 12.5, 6.1, 10.0, 40.0, 50.0]])
-        parsed = parse_uprof(self.log_dir)
-        self.assertEqual(parsed["turns"], ["AMDuProfPcm-Timeseries_0"])
-        self.assertEqual(len(parsed["rows"]), 1)
-        self.assertEqual(float(parsed["rows"][0]["Total Mem Bw (GB/s)"]), 12.5)
-
-    def test_default_output_file_form_parsed(self):
-        _write_default_output(self.log_dir, "AMDuProfPcm-Timeseries_5.csv", [[0.0, 14.0, 6.9, 9.5, 41.5, 49.0]])
-        parsed = parse_uprof(self.log_dir)
-        self.assertEqual(parsed["turns"], ["AMDuProfPcm-Timeseries_5"])
-        self.assertEqual(len(parsed["rows"]), 1)
-        self.assertEqual(float(parsed["rows"][0]["Total Mem Bw (GB/s)"]), 14.0)
-
-    def test_parses_stamped_default_output(self):
-        # A finished turn renames its default output to <stamp>_<tool name>:
-        # the turn label carries the rotation stamp (timeline joinable).
-        _write_default_output(
-            self.log_dir, "20260101-000000_AMDuProfPcm-Timeseries_0", [[0.0, 12.5, 6.1, 10.0, 40.0, 50.0]]
-        )
-        parsed = parse_uprof(self.log_dir)
-        self.assertEqual(parsed["turns"], ["20260101-000000_AMDuProfPcm-Timeseries_0"])
-        self.assertEqual(len(parsed["rows"]), 1)
-        self.assertEqual(float(parsed["rows"][0]["Total Mem Bw (GB/s)"]), 12.5)
-
-    def test_skips_failed_prefixed_default_output(self):
-        # A failed turn's partial output carries a "failed-" prefix: not a good
-        # sample -- parse_uprof skips it instead of parsing truncated data.
-        _write_default_output(
-            self.log_dir, "failed-20260101-000000_AMDuProfPcm-Timeseries_0", [[0.0, 12.5, 6.1, 10.0, 40.0, 50.0]]
-        )
+    def test_non_tabular_log_is_skipped(self):
+        # Pure diagnostics (no tabular section) yields no rows and no error.
+        _write_log(self.log_dir, "20260101-000000", "Starting...\nDone\n")
         parsed = parse_uprof(self.log_dir)
         self.assertEqual(parsed["turns"], [])
         self.assertEqual(parsed["rows"], [])
 
-    def test_turn_dir_without_timeseries_output_is_skipped(self):
-        # A turn DIRECTORY without the Timeseries output (failed nested-form
-        # turn) yields no rows.
-        os.makedirs(os.path.join(self.log_dir, "log_capture", "uprof", "20260101-000000"), exist_ok=True)
+    def test_empty_log_is_skipped(self):
+        # The lifecycle drops empty logs; parse_uprof tolerates one anyway.
+        _write_log(self.log_dir, "20260101-000000", "")
         parsed = parse_uprof(self.log_dir)
         self.assertEqual(parsed["turns"], [])
         self.assertEqual(parsed["rows"], [])
 
-    def test_non_csv_files_are_ignored(self):
-        uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
-        os.makedirs(uprof_dir, exist_ok=True)
-        with open(os.path.join(uprof_dir, "20260101-000000.log"), "w") as f:
-            f.write("not csv\n")
-        self.assertEqual(parse_uprof(self.log_dir)["rows"], [])
-
-    def test_rotation_log_dir_threaded_beats_the_guess(self):
-        # bench-core passes --rotation-log-dir <output_dir>/log_capture derived
-        # from output_dir -- NOT from a (possibly custom) monitor.log_dir. The
-        # parser must use the threaded root: with log_dir=out/vm_monitor and
-        # the rotation output under out/log_capture/uprof, the old
-        # dirname(log_dir) guess would look in out/custom/log_capture and find
-        # nothing.
+    def test_threaded_rotation_log_dir_beats_the_guess(self):
+        # bench-core derives --rotation-log-dir from output_dir, independent of
+        # a (possibly custom) monitor.log_dir: the parser must use the threaded
+        # root, not the dirname(log_dir) guess.
         out = os.path.join(self.log_dir, "out")
-        real_rotation_uprof = os.path.join(out, "log_capture", "uprof")
-        os.makedirs(real_rotation_uprof, exist_ok=True)
-        with open(os.path.join(real_rotation_uprof, "20260101-000000.csv"), "w", encoding="utf-8") as f:
-            f.write("Time,Total Mem Bw (GB/s)\n0.0,12.5\n")
+        real_uprof = os.path.join(out, "log_capture", "uprof")
+        os.makedirs(real_uprof, exist_ok=True)
+        with open(os.path.join(real_uprof, "20260101-000000.log"), "w", encoding="utf-8") as f:
+            f.write(HEADER + "\n" + ROW + "\n")
         vm_monitor_log_dir = os.path.join(out, "vm_monitor")
         os.makedirs(vm_monitor_log_dir, exist_ok=True)
         parsed = parse_uprof(vm_monitor_log_dir, rotation_log_dir=os.path.join(out, "log_capture"))
         self.assertEqual(parsed["turns"], ["20260101-000000"])
         self.assertEqual(len(parsed["rows"]), 1)
-        self.assertEqual(float(parsed["rows"][0]["Total Mem Bw (GB/s)"]), 12.5)
 
 
 class TestBuildUprofSheet(unittest.TestCase):

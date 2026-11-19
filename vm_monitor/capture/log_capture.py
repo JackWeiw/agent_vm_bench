@@ -38,8 +38,8 @@ DEFAULT_ROTATION_PERF_EVENTS = (
 # pipeline-utilization counters). Override via monitor.log_rotation.uprof_metrics
 # (bench-core) or --rotation-uprof-metrics (vm-monitor CLI); an empty value
 # falls back here. The binary path comes from .env (UPROF_PATH); the
-# ``-d <interval>`` is appended by the rotation turn (no -o for now: the tool
-# writes its default output, see _rotation_uprof_turn).
+# ``-d <interval>`` is appended by the rotation turn (no -o: counters stream
+# to stdout and are captured into the per-turn log, see _rotation_uprof_turn).
 DEFAULT_UPROF_METRICS = "memory,pipeline_util"
 
 # Rotation renames ksys's own <...>_report.json to the per-turn log stem

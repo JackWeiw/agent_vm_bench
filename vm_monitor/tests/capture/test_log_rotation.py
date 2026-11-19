@@ -160,7 +160,7 @@ class TestLogRotation(unittest.TestCase):
         self.assertEqual(cap.rotation_turns["perf"], [])
         self.assertFalse(os.path.exists(os.path.join(self.log_dir, "log_capture", "perf")))
 
-    def test_uprof_turn_cmd_and_success_drops_log(self):
+    def test_uprof_turn_cmd_and_empty_success_drops_log(self):
         self.config["uprof_path"] = "/fake/AMDuProfPcm"
         cap = self._cap()
         spawned = []
@@ -180,9 +180,9 @@ class TestLogRotation(unittest.TestCase):
                 "15",
             ],
         )
-        # Success: the stdout log only repeats where the data landed, so it is
-        # dropped (the collected data lives wherever the tool's default output
-        # put it).
+        # Success with an EMPTY stdout log (the stub writes nothing): the empty
+        # log is dropped (pure noise). A NON-EMPTY success log would be kept --
+        # with no -o the counters stream to stdout, so it may be the data.
         self.assertEqual(os.listdir(uprof_dir), [])
 
     def test_uprof_metrics_empty_falls_back_to_default(self):
