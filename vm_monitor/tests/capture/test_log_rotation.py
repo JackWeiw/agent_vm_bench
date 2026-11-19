@@ -288,6 +288,40 @@ class TestLogRotation(unittest.TestCase):
             self.assertIn("Invalid output file!!", f.read())
         self.assertEqual(cap.failed_runtime, [{"tool": "uprof", "returncode": 2}])
 
+    def test_uprof_turn_success_keeps_nonempty_log(self):
+        # AMDuProfPcm writes its counters to stdout: a successful turn's
+        # NON-EMPTY stdout log may BE the collected sample -- it is kept (only
+        # an EMPTY log is dropped).
+        self.config["uprof_path"] = "/fake/AMDuProfPcm"
+        cap = self._cap()
+        spawned = []
+
+        def fake_popen(cmd, *a, **k):
+            spawned.append(cmd)
+            for log_path in glob.glob(os.path.join(self.log_dir, "log_capture", "uprof", "*.log")):
+                with open(log_path, "a") as f:
+                    f.write("Time,Total Mem Bw (GB/s)\n0.0,12.5\n")
+            return self._spawn_recorder([])(cmd)
+
+        with (
+            patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=fake_popen),
+            redirect_stdout(io.StringIO()),
+        ):
+            cap._rotation_uprof_turn()
+        uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
+        logs = [f for f in os.listdir(uprof_dir) if f.endswith(".log")]
+        self.assertEqual(len(logs), 1)  # non-empty log kept -- it may be the data
+        self.assertEqual(cap.failed_runtime, [])
+
+    def test_rotation_intervals_fallback_for_omitted_tools(self):
+        # --rotation-interval (interval_sec) is the documented fallback for
+        # tools omitted from --rotation-intervals; the reserved "_default" key
+        # carries it (cli._parse_rotation_intervals) and must beat the
+        # hard-coded 15.
+        self.config["uprof_path"] = "/fake/AMDuProfPcm"
+        cap = self._cap(rotation_interval={"devkit": 20, "_default": 30})
+        self.assertEqual(cap.rotation_intervals, {"devkit": 20, "ksys": 30, "perf": 30, "uprof": 30})
+
     def test_uprof_turn_still_running_parks_proc_keeps_log(self):
         # Over-duration tool (startup overhead, system load): the proc is
         # parked in _rotation_uprof_procs -- its rc is unknowable, so the

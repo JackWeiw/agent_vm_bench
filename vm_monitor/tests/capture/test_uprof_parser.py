@@ -131,19 +131,21 @@ class TestParseUprof(unittest.TestCase):
             f.write("not csv\n")
         self.assertEqual(parse_uprof(self.log_dir)["rows"], [])
 
-    def test_sibling_rotation_root_parsed_for_bench_core_layout(self):
-        # bench-core passes --rotation-log-dir <output_dir>/log_capture, a
-        # SIBLING of vm-monitor's own log_dir (<output_dir>/vm_monitor): the
-        # parser must find the rotation root there too, or the bench-core path
-        # would silently never populate the sheet.
+    def test_rotation_log_dir_threaded_beats_the_guess(self):
+        # bench-core passes --rotation-log-dir <output_dir>/log_capture derived
+        # from output_dir -- NOT from a (possibly custom) monitor.log_dir. The
+        # parser must use the threaded root: with log_dir=out/vm_monitor and
+        # the rotation output under out/log_capture/uprof, the old
+        # dirname(log_dir) guess would look in out/custom/log_capture and find
+        # nothing.
         out = os.path.join(self.log_dir, "out")
-        uprof_dir = os.path.join(out, "log_capture", "uprof")
-        os.makedirs(uprof_dir, exist_ok=True)
-        with open(os.path.join(uprof_dir, "20260101-000000.csv"), "w", encoding="utf-8") as f:
+        real_rotation_uprof = os.path.join(out, "log_capture", "uprof")
+        os.makedirs(real_rotation_uprof, exist_ok=True)
+        with open(os.path.join(real_rotation_uprof, "20260101-000000.csv"), "w", encoding="utf-8") as f:
             f.write("Time,Total Mem Bw (GB/s)\n0.0,12.5\n")
         vm_monitor_log_dir = os.path.join(out, "vm_monitor")
         os.makedirs(vm_monitor_log_dir, exist_ok=True)
-        parsed = parse_uprof(vm_monitor_log_dir)
+        parsed = parse_uprof(vm_monitor_log_dir, rotation_log_dir=os.path.join(out, "log_capture"))
         self.assertEqual(parsed["turns"], ["20260101-000000"])
         self.assertEqual(len(parsed["rows"]), 1)
         self.assertEqual(float(parsed["rows"][0]["Total Mem Bw (GB/s)"]), 12.5)

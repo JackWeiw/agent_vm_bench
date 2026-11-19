@@ -773,38 +773,38 @@ def _read_uprof_csv(csv_path: str, turn: str, rows: list, columns: list, seen: s
         print(f"  [WARN] uprof parse skipped {csv_path}: {e}")
 
 
-def parse_uprof(log_dir: str) -> dict:
-    """Parse AMDuProfPcm's per-turn timeseries CSVs from an uprof rotation slot.
+def parse_uprof(log_dir: str, rotation_log_dir: str = None) -> dict:
+    """Parse AMDuProfPcm's output from an uprof rotation slot.
 
-    The rotation turn passes ``-o <log_capture/uprof/<stamp>.csv>`` and the
-    tool writes the timeseries CSV exactly there. Two layouts are tolerated:
+    The rotation turn currently passes NO ``-o`` (diagnostic state): the tool
+    writes its default output into its cwd -- the rotation log dir -- where
+    ``AMDuProfPcm-Timeseries_*`` entries (dirs with CSVs inside, or CSV files
+    named like the entry) are its timeseries output. ``uprof/`` layouts from
+    earlier ``-o`` forms are scanned too (flat ``uprof/<turn>.csv`` files and
+    nested ``uprof/<turn>/AMDuProfPcm-Timeseries_*/`` dirs). All turns' CSVs
+    are flattened into one row list with a ``turn`` column, so the collection
+    report can carry the whole series:
 
-    - **file form** (current tool behavior): ``uprof/<stamp>.csv`` -- the turn
-      label is the filename stem;
-    - **nested form** (older observation): ``uprof/<turn>/AMDuProfPcm-Timeseries_*/``
-      directories holding the CSV(s) -- the turn label is the directory name.
-
-    All turns' CSVs are flattened into one row list with the turn stamp
-    prefixed, so the collection report can carry the whole series:
-
-        {"turns": [<stamp>, ...], "columns": [<csv header>, ...], "rows": [...]}
+        {"turns": [...], "columns": [<csv header>, ...], "rows": [...]}
 
     Each row is a ``{column: value}`` dict with ``"turn"`` prepended; ``turns``
-    lists the stamps that actually produced rows. Two roots are scanned because
-    the rotation root differs by driver: standalone vm-monitor writes under
-    ``<log_dir>/log_capture`` while bench-core passes
-    ``--rotation-log-dir <output_dir>/log_capture`` (a sibling of log_dir), so
-    that sibling is scanned as well. An empty result (no uprof dir / no output)
+    lists the labels that actually produced rows. NOTE: for the default
+    (no -o) layout the label is the tool's own ``AMDuProfPcm-Timeseries_``
+    entry name, not the ``YYYYmmdd-HHMMSS`` rotation stamp -- joining onto the
+    shared rotation timeline is best-effort until the output path is pinned.
+    ``rotation_log_dir`` is the rotation root LogCapture actually wrote to
+    (vm-monitor's ``--rotation-log-dir``); when given it replaces the
+    ``log_dir/log_capture`` guess, which is wrong whenever bench-core passes a
+    custom ``--log-dir`` (the rotation root is then a sibling of log_dir,
+    derived from output_dir). An empty result (no uprof dir / no output)
     is ``{"turns": [], "columns": [], "rows": []}`` -- callers treat empty rows
     as "uprof collected nothing this run".
     """
     result = {"turns": [], "columns": [], "rows": []}
-    roots = [os.path.join(log_dir, "log_capture", "uprof")]
-    sibling_root = os.path.join(os.path.dirname(os.path.abspath(log_dir)), "log_capture", "uprof")
-    if sibling_root not in roots:
-        roots.append(sibling_root)
+    rotation_root = rotation_log_dir or os.path.join(log_dir, "log_capture")
+    roots = [os.path.join(rotation_root, "uprof"), os.path.join(log_dir, "log_capture", "uprof")]
     rows, columns, seen = [], [], set()
-    for uprof_root in roots:
+    for uprof_root in sorted(set(roots)):
         if not os.path.isdir(uprof_root):
             continue
         try:
@@ -825,12 +825,10 @@ def parse_uprof(log_dir: str) -> dict:
                     for csv_path in sorted(glob.glob(os.path.join(ts_dir, "*.csv"))):
                         _read_uprof_csv(csv_path, entry, rows, columns, seen)
     # No -o runs: the tool's DEFAULT output lands in its cwd -- the rotation
-    # root itself (log_capture/). AMDuProfPcm-Timeseries_* entries there are
-    # uprof's too (a dir with CSVs inside, or a CSV named like the entry).
-    for log_capture_root in sorted({os.path.dirname(r) for r in roots}):
-        if not os.path.isdir(log_capture_root):
-            continue
-        for entry in sorted(glob.glob(os.path.join(log_capture_root, "AMDuProfPcm-Timeseries_*"))):
+    # root itself. AMDuProfPcm-Timeseries_* entries there are uprof's too (a
+    # dir with CSVs inside, or a CSV named like the entry).
+    if os.path.isdir(rotation_root):
+        for entry in sorted(glob.glob(os.path.join(rotation_root, "AMDuProfPcm-Timeseries_*"))):
             if os.path.isdir(entry):
                 for csv_path in sorted(glob.glob(os.path.join(entry, "*.csv"))):
                     _read_uprof_csv(csv_path, os.path.basename(entry), rows, columns, seen)
@@ -842,12 +840,15 @@ def parse_uprof(log_dir: str) -> dict:
     return result
 
 
-def parse_all_logs(log_dir: str, numa_nodes: list = None) -> dict:
+def parse_all_logs(log_dir: str, numa_nodes: list = None, rotation_log_dir: str = None) -> dict:
     """Parse all log files in the directory
 
     Args:
         log_dir: directory containing log files
         numa_nodes: list of NUMA nodes for filtering devkit_mem bandwidth
+        rotation_log_dir: the rotation root LogCapture actually wrote to
+            (vm-monitor's --rotation-log-dir); threads into parse_uprof.
+            Defaults to log_dir/log_capture.
 
     Returns:
         {
@@ -899,8 +900,9 @@ def parse_all_logs(log_dir: str, numa_nodes: list = None) -> dict:
     if getfre_results:
         results["getfre"] = getfre_results
 
-    # Parse uprof rotation turns (log_capture/uprof/<stamp>/AMDuProfPcm-Timeseries_*)
-    uprof_results = parse_uprof(log_dir)
+    # Parse uprof rotation turns (the rotation root's AMDuProfPcm-Timeseries_*
+    # default output + the uprof/ file & nested layouts)
+    uprof_results = parse_uprof(log_dir, rotation_log_dir=rotation_log_dir)
     if uprof_results["rows"]:
         results["uprof"] = uprof_results
 

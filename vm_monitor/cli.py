@@ -54,6 +54,10 @@ def _parse_rotation_intervals(spec: str, fallback: int) -> dict:
             result[tool] = max(1, int(val.strip()))
         except ValueError:
             logger.warning("--rotation-intervals: '%s' is not an int for tool '%s', skipping", val.strip(), tool)
+    # Carry the --rotation-interval fallback into the map: LogCapture's
+    # _resolve_rotation_intervals reads the reserved "_default" key and uses
+    # it for every tool omitted from the spec (documented behavior).
+    result["_default"] = fallback
     return result
 
 
@@ -555,7 +559,7 @@ def main(argv=None):
     capture_results = None
     if capture:
         capture_results = capture.get_results()
-        print_capture_summary(capture_results, log_dir, m.target_numa_nodes)
+        print_capture_summary(capture_results, log_dir, m.target_numa_nodes, rotation_log_dir=args.rotation_log_dir)
 
     # host_resources.xlsx from raw CSVs -- built FIRST in the export phase so
     # it lands on disk before the slow SVG/xlsx steps. It reads only the
@@ -593,7 +597,15 @@ def main(argv=None):
     if PANDAS_AVAILABLE:
         excel_file = os.path.join(log_dir, "resource_report.xlsx")
         try:
-            export_to_excel(m, log_dir, m.target_numa_nodes, excel_file, capture_results, skip_charts=args.no_charts)
+            export_to_excel(
+                m,
+                log_dir,
+                m.target_numa_nodes,
+                excel_file,
+                capture_results,
+                skip_charts=args.no_charts,
+                rotation_log_dir=args.rotation_log_dir,
+            )
         except Exception:
             # The summary xlsx is built from in-memory data and cannot be
             # rebuilt post-hoc; log and exit cleanly (CSVs + SVG +

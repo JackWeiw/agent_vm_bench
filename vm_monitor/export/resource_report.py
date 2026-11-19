@@ -791,6 +791,7 @@ def export_to_excel(
     output_file: str = None,
     capture_results: dict = None,
     skip_charts: bool = False,
+    rotation_log_dir: str = None,
 ) -> str:
     """Export all monitoring and parsed log data to Excel.
 
@@ -807,6 +808,11 @@ def export_to_excel(
             builders + full re-save) -- for huge runs it dominates export time;
             sheets are still written, just without charts. (Forwards --no-charts
             from the CLI.)
+        rotation_log_dir: the rotation root LogCapture actually wrote to
+            (vm-monitor's --rotation-log-dir). Threads into parse_uprof so the
+            Uprof sheet finds the rotation output even when bench-core passes a
+            custom --log-dir (the rotation root is a SIBLING of log_dir then,
+            not a child -- guessing it from log_dir breaks custom log_dir runs).
 
     Returns:
         Path to generated Excel file
@@ -820,7 +826,7 @@ def export_to_excel(
         output_file = os.path.join(log_dir, "resource_report.xlsx")
 
     # Parse log files
-    parsed_logs = parse_all_logs(log_dir, numa_nodes)
+    parsed_logs = parse_all_logs(log_dir, numa_nodes, rotation_log_dir=rotation_log_dir)
 
     # Write to a build path first, then atomically promote it onto output_file.
     # bench-core's MonitorController.stop() waits for THIS PROCESS TO EXIT (the
@@ -868,6 +874,9 @@ def export_to_excel(
 
             # Summary sheets only: every per-sample timeline lives in
             # host_resources.xlsx (built from raw_data/*.csv, post-hoc rerunnable).
+            # Deliberate exception: the Uprof sheet carries the full per-sample
+            # AMDuProfPcm timeseries (a rotation-mode capture artifact outside
+            # the raw_data/ contract) -- see metrics-reference 2.2.
             _build_summary_sheet(writer, monitor, numa_nodes, overall_stats, raw_host_df=raw_host_df)
             _build_numa_overview_sheet(writer, monitor)
             _build_vm_stats_sheet(writer, vm_stats, vm_cores_df=vm_cores_df)
@@ -917,7 +926,7 @@ def export_to_excel(
     return output_file
 
 
-def print_capture_summary(results: dict, log_dir: str, numa_nodes: list = None):
+def print_capture_summary(results: dict, log_dir: str, numa_nodes: list = None, rotation_log_dir: str = None):
     """Print log collection summary at the end of monitoring
 
     Args:
@@ -980,7 +989,7 @@ def print_capture_summary(results: dict, log_dir: str, numa_nodes: list = None):
     print("Parsed Metrics Summary")
     print("=" * 70)
 
-    parsed = parse_all_logs(log_dir, numa_nodes)
+    parsed = parse_all_logs(log_dir, numa_nodes, rotation_log_dir=rotation_log_dir)
 
     # devkit_top_down results
     if "devkit_top_down" in parsed and "error" not in parsed["devkit_top_down"]:

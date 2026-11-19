@@ -830,25 +830,20 @@ class LogCapture:
         except Exception:
             pass
         if proc.poll() is None:
+            # Still running: park it. The child holds the log's fd and keeps
+            # writing -- its rc is unknowable here, so the log is kept as-is.
             self._rotation_uprof_procs.append(proc)
-        elif proc.returncode != 0:
-            self.failed_runtime.append({"tool": "uprof", "returncode": proc.returncode})
-            # rapid exit: keep the stdout log when it carries the tool's error
-            # text, but drop it when the tool wrote nothing (an empty log is
-            # pure noise on every retrying turn).
+        else:
+            # Exited. The stdout log may BE the collected data -- AMDuProfPcm
+            # writes its counters to stdout (see scripts/fc-perf-collect.sh), so
+            # with no -o this captured log is the per-turn sample -- or at least
+            # carries diagnostics. Keep it whenever it is non-empty, whatever
+            # the exit code; an EMPTY log is pure noise and gets dropped.
+            if proc.returncode != 0:
+                self.failed_runtime.append({"tool": "uprof", "returncode": proc.returncode})
             try:
                 if os.path.isfile(log_path) and os.path.getsize(log_path) == 0:
                     os.unlink(log_path)
-            except OSError:
-                pass
-        else:
-            # Success: the stdout log only repeats where the data landed -- the
-            # collected data (wherever the tool's default output put it) is the
-            # artifact, so drop the log. Failed turns keep theirs for
-            # debugging; a tool still running past its interval also keeps its
-            # log (its rc is unknowable at parking time).
-            try:
-                os.unlink(log_path)
             except OSError:
                 pass
 
