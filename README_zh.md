@@ -94,6 +94,7 @@ test:         { duration: 160, benchmark_mode: "round_robin" }
 | `coding-python.yaml` | coding | Python（django/django），`python3` verify |
 | `coding-java.yaml` | coding | Java（google/gson），FTP/PTP 走真实 `mvn test` + surefire 断言 |
 | `coding-c.yaml` | coding | C（redis/redis），FTP/PTP 走真实 `make` + `./runtest` Tcl 测试套 |
+| `coding-cpp.yaml` | coding | C++（nlohmann/json），FTP/PTP 走真实 CMake doctest 目标（`test-udt_cpp11`，`-r=xml`） |
 | `docker.yaml` | browser | docker 专用小压力档（10 容器） |
 
 coding 配置很薄：省略 `source_files` → `CodingConfig` 视图（`task_runner/coding.py`）按 `language` 自动填 canonical 替换对。就绪检查**与 provider 透明**（browser = 端口扫描，coding = `uname -a`，document = `document-bench-validate`）——任何 YAML 都不声明端口/时序。

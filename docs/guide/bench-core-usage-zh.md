@@ -93,6 +93,7 @@ report:       { output_dir: "results/browser", filename_prefix: "browser_bench" 
 | `coding-python.yaml` | coding | Python(django/django),`python3` import 峰值 verify |
 | `coding-java.yaml` | coding | Java(google/gson),FTP/PTP 走真实 `mvn test` + surefire 断言,其余 pair 走 `mvn compile` + `javac`/`java` |
 | `coding-c.yaml` | coding | C(redis/redis),FTP/PTP 走真实 `make` + `./runtest` Tcl 测试套,其余 pair 走 `make` + gcc 探针 |
+| `coding-cpp.yaml` | coding | C++(nlohmann/json),FTP/PTP 走真实 CMake doctest 目标(`test-udt_cpp11`,`-r=xml`),其余 pair 走 CMake + g++ 探针 |
 | `docker.yaml` | browser | docker 专用的小压力档(10 容器,单 Weibo url) |
 
 ### 2.3 coding 配置为何这么薄

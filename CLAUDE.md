@@ -99,7 +99,7 @@ The kernel (`bench_core`) and every provider impl depend on the contract (`env_p
 
 **`bench_core` kernel** (`src/bench_core/`):
 - `bench.py` — `run_benchmark(config, provider)` spine: `prepare_env → create/detect → (create-only | warmup-only | cleanup-only | benchmark) → stop → report`. `_build_provider` lazy-imports the selected provider submodule. `_promote` lifts provider `SandboxInstance` → kernel `BenchSandbox` (attaches workflow metrics).
-- `config.py` — `KernelConfig`. `KernelConfig.from_raw(raw)` is the **single reader** of the shared stress sections (`sandbox` / `create_batch` / `task_batch` / `browser` / `coding` / `document` / `test` / `report` / `workflow_type`). The `CodingConfig` view (`task_runner/coding.py`) auto-fills `coding_source_files` from `CODING_LANGUAGE_DEFAULT_SOURCE_FILES[language]` (ts→vuejs/core, go→gohugoio/hugo, python→django/django) in its own `__post_init__`, so coding configs omit `source_files`.
+- `config.py` — `KernelConfig`. `KernelConfig.from_raw(raw)` is the **single reader** of the shared stress sections (`sandbox` / `create_batch` / `task_batch` / `browser` / `coding` / `document` / `test` / `report` / `workflow_type`). The `CodingConfig` view (`task_runner/coding.py`) auto-fills `coding_source_files` from `CODING_LANGUAGE_DEFAULT_SOURCE_FILES[language]` (ts→vuejs/core, go→gohugoio/hugo, python→django/django, java→google/gson, c→redis/redis, cpp→nlohmann/json) in its own `__post_init__`, so coding configs omit `source_files`.
 - `task_manager/fixed.py` + `task_runner/{browser,coding,document,replay}.py` — the four workflows. Browser rides HTTP (agent-browser on port 18789) on top of a backend the provider starts; coding/document are pure `exec` (verify script written via heredoc through `exec`).
 - `task_manager/round_robin.py` — `RoundRobinTaskManager` (group rotation, per-step timing).
 - `stats_collector.py` — snapshots + report generation (`generate_report` / `save_report`).
@@ -374,7 +374,7 @@ bench-core reports go to each config's `report.output_dir` + `filename_prefix` (
 ```
 config/
 ├── common/                     # backend-agnostic workflow configs (kernel; both e2b: + docker: blocks)
-│   ├── browser.yaml, coding-ts.yaml, coding-go.yaml, coding-python.yaml, coding-java.yaml, coding-c.yaml, docker.yaml
+│   ├── browser.yaml, coding-ts.yaml, coding-go.yaml, coding-python.yaml, coding-java.yaml, coding-c.yaml, coding-cpp.yaml, docker.yaml
 ├── openstack/                  # legacy OpenStack (batch_matrix, test_config_template, vm_bench.yaml)
 ├── e2b/                        # legacy E2B (bench, batch_matrix, batch_template, coding_*, pdf/xlsx_bench)
 ├── docker/                     # legacy docker (docker_bench.yaml)

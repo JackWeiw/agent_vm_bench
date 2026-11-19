@@ -98,6 +98,7 @@ any backend**.
 | `coding-python.yaml` | coding | Python (django/django), `python3` verify, `verify_repeat: 1` |
 | `coding-java.yaml` | coding | Java (google/gson), real `mvn test` + surefire assertions for FAIL_TO_PASS/PASS_TO_PASS pairs, `mvn compile` + `javac`/`java` otherwise |
 | `coding-c.yaml` | coding | C (redis/redis), real `make` + `./runtest` Tcl suite for FAIL_TO_PASS/PASS_TO_PASS pairs, `make` + gcc probe otherwise |
+| `coding-cpp.yaml` | coding | C++ (nlohmann/json), real CMake doctest target (`test-udt_cpp11`, `-r=xml`) for FAIL_TO_PASS/PASS_TO_PASS pairs, CMake + g++ probe otherwise |
 | `docker.yaml` | browser | docker-only small profile (10 containers, single URL) |
 | `replay.yaml` | replay | aenv lifecycle 1:1 baseline (see §8) |
 | `replay-exec-only.yaml` | replay | exec_only baseline (e2b/docker/fake) |

@@ -114,28 +114,35 @@ def _build_edit_command(project_dir: str, target_file: str, find_str: str, repla
 
 
 def _build_multi_edit_command(project_dir: str, target_file: str, edits: list[dict]) -> str:
-    """Apply several literal find->replace edits to one file in a single exec.
+    """Apply several literal find->replace edits in a single exec.
 
     Real SWE-bench patches often touch a file in more than one hunk (redis-13338
-    changes src/t_stream.c in three places). The pair schema carries those as
-    ``edits: [{"find": ..., "replace": ...}, ...]`` so one round still applies
-    the complete upstream fix before verify. Same literal replace semantics as
-    :func:`_build_edit_command`; exits 2 if any hunk's find string is absent so
-    a partial patch can never masquerade as the gold fix.
+    changes src/t_stream.c in three places) and sometimes more than one file
+    (nlohmann/json-4237 changes the multi-header source and its generated
+    single-header mirror). Each ``edits`` entry may carry its own ``file``
+    (default: the pair's target file). Same literal replace semantics as
+    :func:`_build_edit_command`; edits are buffered per file and written only
+    after every hunk matched, so a partial patch can never masquerade as the
+    gold fix (exit 2 on the first absent find string, no file touched).
     """
     edits_b64 = base64.b64encode(json.dumps(edits).encode()).decode()
     return (
         f"cd {project_dir} && python3 - {edits_b64} {target_file} <<'PYEOF'\n"
         "import base64, json, sys\n"
         "edits = json.loads(base64.b64decode(sys.argv[1]))\n"
-        "p = sys.argv[2]\n"
-        "s = open(p, encoding='utf-8').read()\n"
+        "default = sys.argv[2]\n"
+        "files = {}\n"
         "for e in edits:\n"
+        "    p = e.get('file', default)\n"
+        "    s = files.get(p)\n"
+        "    if s is None:\n"
+        "        s = open(p, encoding='utf-8').read()\n"
         "    f, r = e['find'], e['replace']\n"
         "    if f not in s:\n"
         "        sys.exit(2)\n"
-        "    s = s.replace(f, r, 1)\n"
-        "open(p, 'w', encoding='utf-8').write(s)\n"
+        "    files[p] = s.replace(f, r, 1)\n"
+        "for p, s in files.items():\n"
+        "    open(p, 'w', encoding='utf-8').write(s)\n"
         "PYEOF"
     )
 
@@ -168,6 +175,13 @@ def _run_test_suite_verify(
     command runs the project's own harness (`make` + `./runtest`) and a python3
     pass asserts every listed test printed ``[ok]`` rather than ``[err]``/
     ``[skip]``/``[ignore]``.
+
+    ``test_report_format="doctest_xml"`` (cpp/nlohmann) runs the CMake-built
+    doctest target, which writes its XML report to a dedicated file; python3
+    then asserts every listed ``test case > section`` path is present and has
+    no failing assertion. Names use the innermost section (matching the
+    upstream eval), so a nested ``SubCase`` chain is normalized to
+    ``<TestCase> > <innermost SubCase>``.
 
     Returns None when the pair declares no tests (caller falls back to the
     smoke-script verify used by the other languages).
@@ -213,6 +227,57 @@ def _run_test_suite_verify(
             "        sys.exit(1)\n"
             "print('verified %d tests' % len(ids))\n"
             "PYEOF"
+        )
+    elif profile.test_report_format == "doctest_xml":
+        # doctest suite (cpp/nlohmann): the profile's command writes its XML
+        # report to its own file, so build noise stays in the log. `rm -f` first
+        # so a failed build can never be graded from a stale report. The
+        # binary's exit code is preserved (a crash / failed assertion fails
+        # verify); on top of that python3 asserts every listed id actually ran
+        # and has no failing assertion.
+        log_path = "/tmp/bench_test_output.log"
+        xml_path = "/tmp/bench_doctest.xml"
+        cmd = (
+            f"cd {project_dir} && "
+            f"rm -f {xml_path}; "
+            f"{profile.test_suite_cmd} > {log_path} 2>&1; rc=$?; "
+            f"tail -n 40 {log_path}; "
+            f"python3 - {ids_b64} {xml_path} <<'PYEOF'\n"
+            "import base64, json, os, sys\n"
+            "import xml.etree.ElementTree as ET\n"
+            "ids = json.loads(base64.b64decode(sys.argv[1]))\n"
+            "path = sys.argv[2]\n"
+            "if not os.path.exists(path):\n"
+            "    print('MISSING REPORT:', path)\n"
+            "    sys.exit(1)\n"
+            "seen, failed = set(), set()\n"
+            "def name(chain):\n"
+            "    return chain[0] + ' > ' + chain[-1] if len(chain) > 1 else chain[0]\n"
+            "def walk(el, chain):\n"
+            "    tag = el.tag\n"
+            "    if tag == 'TestCase':\n"
+            "        chain = [el.get('name') or '']\n"
+            "        if el.get('skipped') == 'true':\n"
+            "            failed.add(name(chain))\n"
+            "    elif tag == 'SubCase':\n"
+            "        chain = chain + [el.get('name') or '']\n"
+            "    if tag in ('TestCase', 'SubCase'):\n"
+            "        seen.add(name(chain))\n"
+            "    elif tag == 'Expression' and el.get('success') == 'false':\n"
+            "        failed.add(name(chain))\n"
+            "    for child in el:\n"
+            "        walk(child, chain)\n"
+            "walk(ET.parse(path).getroot(), [])\n"
+            "for tid in ids:\n"
+            "    if tid in failed:\n"
+            "        print('NOT PASSED:', tid)\n"
+            "        sys.exit(1)\n"
+            "    if tid not in seen:\n"
+            "        print('NOT RUN:', tid)\n"
+            "        sys.exit(1)\n"
+            "print('verified %d tests' % len(ids))\n"
+            "PYEOF\n"
+            "exit $rc"
         )
     else:
         # Non-Maven suite (c/redis): run the project's own test command, then
@@ -792,7 +857,8 @@ class CodingRoundRunner(TaskRunner):
         Uses python3 str.replace (see _build_edit_command) -- literal, not sed
         regex -- so regex metacharacters in the find/replace strings are inert.
         A pair may instead carry an ``edits`` list (multi-hunk gold patches);
-        those hunks are then applied in order to the same file.
+        those hunks are then applied in order, each to its own ``file`` when the
+        hunk declares one (default: the pair's target file).
 
         Returns: (success, error_detail). Exit code 2 = find string absent
         (no-op edit surfaced as a failure, not a silent fake verify pass).

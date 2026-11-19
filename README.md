@@ -109,6 +109,7 @@ test:         { duration: 160, benchmark_mode: "round_robin" }
 | `coding-python.yaml` | coding | Python (django/django), `python3` verify |
 | `coding-java.yaml` | coding | Java (google/gson), real `mvn test` + surefire assertions for FAIL_TO_PASS/PASS_TO_PASS pairs |
 | `coding-c.yaml` | coding | C (redis/redis), real `make` + `./runtest` Tcl suite for FAIL_TO_PASS/PASS_TO_PASS pairs |
+| `coding-cpp.yaml` | coding | C++ (nlohmann/json), real CMake doctest target (`test-udt_cpp11`, `-r=xml`) for FAIL_TO_PASS/PASS_TO_PASS pairs |
 | `docker.yaml` | browser | docker-only small profile (10 containers) |
 
 Coding configs are minimal: `source_files` omitted → the `CodingConfig` view

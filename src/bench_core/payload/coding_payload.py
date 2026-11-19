@@ -61,10 +61,17 @@ class CodingLanguageProfile:
     # gson's <java.version>1.6</java.version>, which javac 8+ rejects).
     test_args: str = ""
     # Real test-suite command for languages whose suite is not a Maven module
-    # (c/redis: ``make -j$(nproc) && ./runtest --single unit/type/stream-cgroups``).
-    # Run after ``cd project_dir``; empty = language has no suite path (ts/go/
-    # python verify through the smoke script only). See _run_test_suite_verify.
+    # (c/redis: ``make -j$(nproc) && ./runtest --single unit/type/stream-cgroups``;
+    # cpp/nlohmann: ``cmake --build ... --target test-udt_cpp11`` + the binary
+    # with ``-r=xml``). Run after ``cd project_dir``; empty = language has no
+    # suite path (ts/go/python verify through the smoke script only). See
+    # _run_test_suite_verify.
     test_suite_cmd: str = ""
+    # How the test-suite command reports results. Empty = Tcl harness log
+    # (``[ok]: <name>`` lines, c/redis). ``doctest_xml`` = a doctest XML report
+    # written by the command itself (cpp/nlohmann); the runner parses
+    # TestCase/SubCase paths and fails on any non-passing or missing id.
+    test_report_format: str = ""
 
 
 def _find_name_clause(names: tuple) -> str:
@@ -680,6 +687,140 @@ DEFAULT_CODING_VERIFY_SCRIPT_C = (
 )
 
 
+# --- cpp: nlohmann/json replacement pairs -------------------------------------------
+# Real swe_bench_multilingual instance nlohmann__json-4237 (enum serialization
+# always used number_integer, so enums with an unsigned underlying type were
+# serialized as signed numbers). nlohmann/json at base_commit 3780b41d is a
+# header-only CMake project: sources under include/, the amalgamated mirror
+# under single_include/, and the doctest suite under tests/.
+#
+# Pairs[0] is a generic comment edit ON PURPOSE: warmup verifies
+# ``source_files[0]`` BEFORE any edit is applied, so a pair carrying the
+# FAIL_TO_PASS tests must not be first (the base commit is buggy). Pairs[1]
+# mirrors the gold patch -- the SAME two-line change in the multi-header source
+# and its single-header mirror -- through per-edit ``file`` keys in ``edits``,
+# and carries the instance's FAIL_TO_PASS / PASS_TO_PASS selection. The runner
+# builds the real doctest target (``test-udt_cpp11``) and asserts every listed
+# test case > section path from its XML report. The remaining pairs are
+# comment edits that keep the build green and fall back to the shared C++ smoke
+# verify.
+DEFAULT_CODING_CPP_SOURCE_FILES: list[dict] = [
+    {
+        "file": "include/nlohmann/json.hpp",
+        "find": "NLOHMANN_JSON_NAMESPACE_BEGIN",
+        "replace": "NLOHMANN_JSON_NAMESPACE_BEGIN // bench",
+    },
+    {
+        # Gold patch (nlohmann__json-4237): pick number_unsigned for enums whose
+        # underlying type is unsigned. The upstream commit changes both the
+        # multi-header source and its generated single-header mirror; ``edits``
+        # entries carry their own ``file`` so one round applies the complete
+        # upstream patch (see _build_multi_edit_command).
+        "file": "include/nlohmann/detail/conversions/to_json.hpp",
+        "find": "    external_constructor<value_t::number_integer>::construct(j, static_cast<underlying_type>(e));",
+        "replace": (
+            "    static constexpr value_t integral_value_t = "
+            "std::is_unsigned<underlying_type>::value ? value_t::number_unsigned : value_t::number_integer;\n"
+            "    external_constructor<integral_value_t>::construct(j, static_cast<underlying_type>(e));"
+        ),
+        "edits": [
+            {
+                "file": "include/nlohmann/detail/conversions/to_json.hpp",
+                "find": "    external_constructor<value_t::number_integer>::construct(j, static_cast<underlying_type>(e));",
+                "replace": (
+                    "    static constexpr value_t integral_value_t = "
+                    "std::is_unsigned<underlying_type>::value ? value_t::number_unsigned : value_t::number_integer;\n"
+                    "    external_constructor<integral_value_t>::construct(j, static_cast<underlying_type>(e));"
+                ),
+            },
+            {
+                "file": "single_include/nlohmann/json.hpp",
+                "find": "    external_constructor<value_t::number_integer>::construct(j, static_cast<underlying_type>(e));",
+                "replace": (
+                    "    static constexpr value_t integral_value_t = "
+                    "std::is_unsigned<underlying_type>::value ? value_t::number_unsigned : value_t::number_integer;\n"
+                    "    external_constructor<integral_value_t>::construct(j, static_cast<underlying_type>(e));"
+                ),
+            },
+        ],
+        # The instance's real doctest selection (names are "test case > section"
+        # paths parsed from the doctest XML report; nested sections are reported
+        # by their innermost name, matching the upstream eval).
+        "fail_to_pass": ("basic usage > conversion to json via free-functions",),
+        "pass_to_pass": (
+            "basic usage > conversion from json via free-functions",
+            "basic usage > via explicit calls to get",
+            "basic usage > via explicit calls to get_to",
+            "basic usage > implicit conversions",
+            "adl_serializer specialization > partial specialization",
+            "adl_serializer specialization > to_json",
+            "adl_serializer specialization > from_json",
+            "adl_serializer specialization > total specialization",
+            "Non-copyable types > to_json",
+            "Non-copyable types > from_json",
+            "different basic_json types conversions > null",
+            "different basic_json types conversions > boolean",
+            "different basic_json types conversions > discarded",
+            "different basic_json types conversions > array",
+            "different basic_json types conversions > integer",
+            "different basic_json types conversions > float",
+            "different basic_json types conversions > unsigned",
+            "different basic_json types conversions > string",
+            "different basic_json types conversions > binary",
+            "different basic_json types conversions > object",
+            "different basic_json types conversions > get<custom_json>",
+        ),
+    },
+    {
+        "file": "include/nlohmann/detail/value_t.hpp",
+        "find": "enum class value_t : std::uint8_t",
+        "replace": "enum class value_t : std::uint8_t // bench",
+    },
+    {
+        "file": "include/nlohmann/detail/input/parser.hpp",
+        "find": "class parser",
+        "replace": "class parser // bench",
+    },
+    {
+        "file": "include/nlohmann/detail/output/serializer.hpp",
+        "find": "class serializer",
+        "replace": "class serializer // bench",
+    },
+    {
+        "file": "include/nlohmann/detail/input/lexer.hpp",
+        # Anchor on the full declaration: the bare `class lexer` prefix also
+        # matches `class lexer_base` (line 35) and would comment out the base
+        # class name, breaking the build.
+        "find": "class lexer : public lexer_base<BasicJsonType>",
+        "replace": "class lexer : public lexer_base<BasicJsonType> // bench",
+    },
+]
+
+
+# Shared default verify-script body for C++ pairs without their own
+# verify_script. A standalone g++-compiled probe against the project's single
+# header, run after the real doctest target rebuild -- the transient
+# template-heavy g++ peak that stands in for the project's own build load.
+# Deliberately generic so it passes on the base commit too (warmup runs it
+# before any edit).
+DEFAULT_CODING_VERIFY_SCRIPT_CPP = (
+    "#include <nlohmann/json.hpp>\n"
+    "#include <iostream>\n"
+    "#include <string>\n"
+    "\n"
+    "int main() {\n"
+    '    nlohmann::json j = {{"bench", 4237}};\n'
+    "    const std::string dumped = j.dump();\n"
+    '    if (dumped != "{\\"bench\\":4237}") {\n'
+    '        std::cerr << "unexpected: " << dumped << std::endl;\n'
+    "        return 1;\n"
+    "    }\n"
+    '    std::cout << "All tests passed!" << std::endl;\n'
+    "    return 0;\n"
+    "}\n"
+)
+
+
 # Extensible language registry.
 CODING_LANGUAGE_PROFILES: dict[str, CodingLanguageProfile] = {
     "ts": CodingLanguageProfile(
@@ -763,6 +904,32 @@ CODING_LANGUAGE_PROFILES: dict[str, CodingLanguageProfile] = {
             "make -j$(nproc) && " "TERM=dumb ./runtest --clients 1 --durable --single unit/type/stream-cgroups"
         ),
     ),
+    "cpp": CodingLanguageProfile(
+        temp_test_path="/tmp/bench_verify.cpp",
+        heredoc_eof="CPPEOF",
+        # Rebuild the edited header tree with the project's own CMake target,
+        # then g+++run the ad-hoc probe against the single header -- the real
+        # template-compile peak after an include/ edit.
+        run_cmd=(
+            "cd /opt/coding-bench && cmake --build build -j$(nproc) --target test-udt_cpp11 "
+            "&& g++ -std=c++11 -I single_include /tmp/bench_verify.cpp -o /tmp/bench_verify && /tmp/bench_verify"
+        ),
+        source_find_names=("*.hpp", "*.cpp"),
+        source_find_root="include",
+        # All pairs edit the header trees; the baked-in test patch lives under
+        # tests/, so this reset never reverts the instance's test patch.
+        checkout_paths="include/ single_include/",
+        default_verify_script=DEFAULT_CODING_VERIFY_SCRIPT_CPP,
+        project_marker="CMakeLists.txt",
+        # Pairs carrying fail_to_pass/pass_to_pass rebuild + run the real doctest
+        # target (see _run_test_suite_verify). `-s -r=xml` mirrors the upstream
+        # eval; the XML goes to a dedicated file so build noise stays in the log.
+        test_suite_cmd=(
+            "cmake -S . -B build && cmake --build build -j$(nproc) --target test-udt_cpp11 "
+            "&& ./build/tests/test-udt_cpp11 -s -r=xml > /tmp/bench_doctest.xml"
+        ),
+        test_report_format="doctest_xml",
+    ),
 }
 
 # Maps a language to its default replacement-pair list.
@@ -772,6 +939,7 @@ CODING_LANGUAGE_DEFAULT_SOURCE_FILES: dict[str, list] = {
     "python": DEFAULT_CODING_PY_SOURCE_FILES,
     "java": DEFAULT_CODING_JAVA_SOURCE_FILES,
     "c": DEFAULT_CODING_C_SOURCE_FILES,
+    "cpp": DEFAULT_CODING_CPP_SOURCE_FILES,
 }
 
 
