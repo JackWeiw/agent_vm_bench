@@ -250,8 +250,8 @@ monitor:
   # each slot holding its interval for the whole stress window. ub_watch /
   # smap_bw / getfre keep their all-parallel behavior. Every turn writes a
   # timestamped log under <output_dir>/log_capture/{devkit/{topdown,memory},ksys,
-  # perf,uprof}/; the uprof turn also passes -o <turn-dir>, so AMDuProfPcm's
-  # per-turn CSV/report files land in their own uprof/<stamp>/ directory.
+  # perf,uprof}/; the uprof turn also passes -o <file> (a per-turn
+  # uprof/<stamp>.csv), so consecutive turns never overwrite each other's output.
   #
   # Prerequisites: capture must be auto/true. Rotation keys off the stress-file
   # lock lifecycle (appear = start, disappear = stop after the in-flight slot),

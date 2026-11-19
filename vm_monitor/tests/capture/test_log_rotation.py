@@ -168,7 +168,7 @@ class TestLogRotation(unittest.TestCase):
         uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
         logs = [f for f in os.listdir(uprof_dir) if f.endswith(".log")]
         self.assertEqual(len(logs), 1)
-        turn_dir = os.path.join(uprof_dir, os.path.splitext(logs[0])[0])
+        out_file = os.path.join(uprof_dir, os.path.splitext(logs[0])[0] + ".csv")
         self.assertEqual(
             spawned[0],
             [
@@ -179,13 +179,14 @@ class TestLogRotation(unittest.TestCase):
                 "-A",
                 "system,package",
                 "-o",
-                turn_dir,
+                out_file,
                 "-d",
                 "15",
             ],
         )
-        # The per-turn -o directory exists alongside the stdout log.
-        self.assertTrue(os.path.isdir(turn_dir))
+        # The per-turn -o path is the stdout log's stem + .csv (the tool creates
+        # it); the dir holds only the stdout log in this stubbed run.
+        self.assertEqual(os.listdir(uprof_dir), logs)
 
     def test_uprof_metrics_empty_falls_back_to_default(self):
         self.config["uprof_path"] = "/fake/AMDuProfPcm"
@@ -203,7 +204,7 @@ class TestLogRotation(unittest.TestCase):
             cap._rotation_uprof_turn()
         self.assertEqual(spawned[0][spawned[0].index("-m") + 1], "memory,bandwidth")
 
-    def test_uprof_turn_writes_per_turn_dirs_without_collision(self):
+    def test_uprof_turn_writes_per_turn_outputs_without_collision(self):
         self.config["uprof_path"] = "/fake/AMDuProfPcm"
         cap = self._cap()
         spawned = []
@@ -211,21 +212,19 @@ class TestLogRotation(unittest.TestCase):
             cap._rotation_uprof_turn()
             # Two same-second turns collide on the stamp -> -2 suffix; if the
             # clock ticks between them the stamps simply differ. Either way
-            # each turn gets its own -o dir (assertions are count/set-based).
+            # each turn gets its own -o file (assertions are count/set-based).
             cap._rotation_uprof_turn()
         uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
         logs = sorted(f for f in os.listdir(uprof_dir) if f.endswith(".log"))
-        turn_dirs = sorted(d for d in os.listdir(uprof_dir) if os.path.isdir(os.path.join(uprof_dir, d)))
         self.assertEqual(len(logs), 2)
-        self.assertEqual(len(turn_dirs), 2)
         self.assertEqual(
             sorted(sp[sp.index("-o") + 1] for sp in spawned),
-            sorted(os.path.join(uprof_dir, os.path.splitext(log)[0]) for log in logs),
+            sorted(os.path.join(uprof_dir, os.path.splitext(log)[0] + ".csv") for log in logs),
         )
 
-    def test_uprof_turn_popen_failure_cleans_up_dirs(self):
-        # Cannot exec -> the turn is skipped, the empty log / per-turn dir /
-        # uprof dir from the failed turn are all dropped.
+    def test_uprof_turn_popen_failure_cleans_up(self):
+        # Cannot exec -> the turn is skipped, the empty log and the uprof dir
+        # from the failed turn are dropped.
         self.config["uprof_path"] = "/fake/AMDuProfPcm"
         cap = self._cap()
         with (
@@ -237,9 +236,9 @@ class TestLogRotation(unittest.TestCase):
         self.assertFalse(os.path.exists(uprof_dir))
         self.assertIn("uprof", cap._rotation_skipped)
 
-    def test_uprof_turn_open_failure_removes_turn_dir(self):
-        # Log file cannot be opened -> the per-turn -o dir created for the
-        # failed turn is dropped, the uprof dir itself stays for later turns.
+    def test_uprof_turn_open_failure_leaves_no_output(self):
+        # Log file cannot be opened -> nothing is created for the failed turn;
+        # the uprof dir itself stays for later turns.
         self.config["uprof_path"] = "/fake/AMDuProfPcm"
         cap = self._cap()
         with (
@@ -249,14 +248,21 @@ class TestLogRotation(unittest.TestCase):
             cap._rotation_uprof_turn()
         uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
         self.assertTrue(os.path.isdir(uprof_dir))
-        self.assertEqual(os.listdir(uprof_dir), [])  # log + turn_dir both gone
+        self.assertEqual(os.listdir(uprof_dir), [])  # no log, no -o file
 
-    def test_uprof_turn_rapid_nonzero_exit_keeps_log_drops_dir(self):
-        # AMDuProfPcm exits nonzero immediately (typo'd metric): failed_runtime
-        # is recorded, the stdout log stays (it carries the error text), and
-        # the empty per-turn -o dir is dropped so failed turns don't pile up.
+    def test_uprof_turn_rapid_nonzero_exit_keeps_log_drops_empty_output(self):
+        # AMDuProfPcm exits nonzero immediately (typo'd metric / bad args):
+        # failed_runtime is recorded, the stdout log stays (it carries the error
+        # text), and the tool's empty per-turn .csv is dropped so failed turns
+        # don't pile up zero-size files.
         self.config["uprof_path"] = "/fake/AMDuProfPcm"
         cap = self._cap()
+        uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
+        log_path = os.path.join(uprof_dir, "20260101-000000.log")
+        os.makedirs(uprof_dir, exist_ok=True)
+        out_file = os.path.splitext(log_path)[0] + ".csv"
+        with open(out_file, "w"):
+            pass  # simulate the empty CSV AMDuProfPcm leaves behind
 
         class _FailProc:
             returncode = 2
@@ -274,15 +280,47 @@ class TestLogRotation(unittest.TestCase):
             return _FailProc()
 
         with (
+            patch.object(cap, "_rotation_log_path", return_value=log_path),
             patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=fake_popen),
             redirect_stdout(io.StringIO()),
         ):
             cap._rotation_uprof_turn()
-        uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
-        logs = os.listdir(uprof_dir)
-        self.assertEqual(len(logs), 1)
-        self.assertFalse(os.path.exists(os.path.join(uprof_dir, os.path.splitext(logs[0])[0])))
+        self.assertTrue(os.path.exists(log_path))  # stdout log kept
+        self.assertFalse(os.path.exists(out_file))  # empty CSV dropped
         self.assertEqual(cap.failed_runtime, [{"tool": "uprof", "returncode": 2}])
+
+    def test_uprof_turn_rapid_nonzero_exit_keeps_nonempty_output(self):
+        # A non-empty per-turn output file survives a rapid failure: it carries
+        # the tool's own error/diagnostic text.
+        self.config["uprof_path"] = "/fake/AMDuProfPcm"
+        cap = self._cap()
+        uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
+        log_path = os.path.join(uprof_dir, "20260101-000001.log")
+        os.makedirs(uprof_dir, exist_ok=True)
+        out_file = os.path.splitext(log_path)[0] + ".csv"
+        with open(out_file, "w") as fh:
+            fh.write("diagnostic text from the tool\n")
+
+        class _FailProc:
+            returncode = 2
+
+            def poll(self):  # noqa: N802 - proc seam
+                return 2
+
+            def wait(self, timeout=None):  # noqa: N802 - proc seam
+                return 2
+
+        def fake_popen(cmd, *a, **k):
+            return _FailProc()
+
+        with (
+            patch.object(cap, "_rotation_log_path", return_value=log_path),
+            patch("vm_monitor.capture.log_capture.subprocess.Popen", side_effect=fake_popen),
+            redirect_stdout(io.StringIO()),
+        ):
+            cap._rotation_uprof_turn()
+        self.assertTrue(os.path.exists(out_file))
+        self.assertTrue(os.path.exists(log_path))
 
     def test_uprof_missing_path_skips(self):
         self.config.pop("uprof_path", None)

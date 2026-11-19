@@ -38,7 +38,7 @@ DEFAULT_ROTATION_PERF_EVENTS = (
 # pipeline-utilization counters). Override via monitor.log_rotation.uprof_metrics
 # (bench-core) or --rotation-uprof-metrics (vm-monitor CLI); an empty value
 # falls back here. The binary path comes from .env (UPROF_PATH); the per-turn
-# ``-o <dir>`` and ``-d <interval>`` are appended by the rotation turn.
+# ``-o <file>`` and ``-d <interval>`` are appended by the rotation turn.
 DEFAULT_UPROF_METRICS = "memory,pipeline_util"
 
 # Rotation renames ksys's own <...>_report.json to the per-turn log stem
@@ -771,23 +771,15 @@ class LogCapture:
         log_path = self._rotation_log_path("uprof")
         if log_path is None:
             return
-        # AMDuProfPcm writes its own CSV/report output; one directory per turn
-        # (-o <dir>, sharing the stdout log's stem) so consecutive turns never
-        # overwrite each other's files.
-        turn_dir = os.path.splitext(log_path)[0]
-        try:
-            os.makedirs(turn_dir, exist_ok=True)
-        except OSError as e:
-            print(f"  [ERROR] rotation uprof cannot create output dir {turn_dir}: {e}")
-            return
+        # AMDuProfPcm writes its own CSV output; -o takes a FILE path (a
+        # directory fails arg processing with "Invalid output file!!"), so each
+        # turn passes its stdout log's stem + ".csv" -- consecutive turns write
+        # distinct uprof/<stamp>.csv files and never overwrite each other.
+        out_file = os.path.splitext(log_path)[0] + ".csv"
         try:
             fh = open(log_path, "w")
         except OSError as e:
             print(f"  [ERROR] rotation uprof cannot open log {log_path}: {e}")
-            try:
-                os.rmdir(turn_dir)  # drop the per-turn dir the failed turn created
-            except OSError:
-                pass
             return
         cmd = [
             self.config["uprof_path"],
@@ -797,7 +789,7 @@ class LogCapture:
             "-A",
             "system,package",
             "-o",
-            turn_dir,
+            out_file,
             "-d",
             interval,
         ]
@@ -821,10 +813,6 @@ class LogCapture:
             except OSError:
                 pass
             try:
-                os.rmdir(turn_dir)  # drop the empty per-turn output dir too
-            except OSError:
-                pass
-            try:
                 os.rmdir(os.path.dirname(log_path))  # drop the empty uprof dir too
             except OSError:
                 pass
@@ -842,8 +830,12 @@ class LogCapture:
             self._rotation_uprof_procs.append(proc)
         elif proc.returncode != 0:
             self.failed_runtime.append({"tool": "uprof", "returncode": proc.returncode})
+            # rapid exit: drop AMDuProfPcm's empty per-turn output file so failed
+            # turns don't pile up zero-size CSVs (a non-empty one is kept -- it
+            # carries the tool's own error text)
             try:
-                os.rmdir(turn_dir)  # rapid exit: drop the stamp dir AMDuProfPcm never wrote into
+                if os.path.isfile(out_file) and os.path.getsize(out_file) == 0:
+                    os.unlink(out_file)
             except OSError:
                 pass
         try:
