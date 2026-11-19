@@ -771,23 +771,11 @@ class LogCapture:
         log_path = self._rotation_log_path("uprof")
         if log_path is None:
             return
-        # AMDuProfPcm's -o takes the output FILE path -- the live run writes
-        # the timeseries CSV exactly there (no auto-extension), so each turn
-        # passes uprof/<stamp>.csv and consecutive turns never overwrite each
-        # other. Pass an ABSOLUTE path: Popen runs the tool with
-        # cwd=rotation_log_dir, and a still-relative -o would be resolved
-        # against THAT cwd one level wrong (the live-run "Invalid output
-        # file!!" bug). The file is created by the tool, not here.
-        data_file = os.path.abspath(os.path.splitext(log_path)[0] + ".csv")
-        # A successful turn drops its stdout log, so _rotation_log_path's
-        # log-existence suffix no longer keeps a same-second next turn off
-        # this output file. Bump -N on the output file instead (degenerate
-        # case: sub-second slot intervals; production slots are >= 1 s apart).
-        data_stem = os.path.splitext(data_file)[0]
-        n = 1
-        while os.path.exists(data_file) and n < 1000:
-            n += 1
-            data_file = f"{data_stem}-{n}.csv"
+        # No -o for now (diagnostic): the tool writes its DEFAULT output -- its
+        # cwd is rotation_log_dir, so the default lands directly under
+        # <rotation_log_dir>/ (parse_uprof scans AMDuProfPcm-Timeseries_*
+        # entries there). Once the real default layout is confirmed, pin the
+        # per-turn output path here.
         try:
             fh = open(log_path, "w")
         except OSError as e:
@@ -800,8 +788,6 @@ class LogCapture:
             "-a",
             "-A",
             "system,package",
-            "-o",
-            data_file,
             "-d",
             interval,
         ]
@@ -846,17 +832,9 @@ class LogCapture:
             self._rotation_uprof_procs.append(proc)
         elif proc.returncode != 0:
             self.failed_runtime.append({"tool": "uprof", "returncode": proc.returncode})
-            # rapid exit: drop the tool's per-turn output FILE only while it is
-            # empty (a failed run that wrote partial output keeps it for
-            # debugging)
-            try:
-                if os.path.isfile(data_file) and os.path.getsize(data_file) == 0:
-                    os.unlink(data_file)
-            except OSError:
-                pass
         else:
             # Success: the stdout log only repeats where the data landed -- the
-            # per-turn output FILE IS the artifact, so keep just the collected
+            # collected data file IS the artifact, so keep just the collected
             # data and drop the log. Failed turns keep theirs for debugging; a
             # tool still running past its interval also keeps its log (its rc
             # is unknowable at parking time).

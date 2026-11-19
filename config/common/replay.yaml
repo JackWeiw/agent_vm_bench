@@ -250,12 +250,13 @@ monitor:
   # each slot holding its interval for the whole stress window. ub_watch /
   # smap_bw / getfre keep their all-parallel behavior. Every turn writes a
   # timestamped log under <output_dir>/log_capture/{devkit/{topdown,memory},ksys,
-  # perf,uprof}/; the uprof turn also passes -o <per-turn file> (the turn's
-  # log stem + .csv, absolute -- the tool writes the timeseries CSV exactly
-  # there), giving uprof/<stamp>.csv per turn — columns include TopDown
-  # stages (Frontend_Bound / Backend_Bound.Memory / Retiring), Total Mem Bw
-  # (GB/s), and per-channel memory bandwidth. A successful uprof turn keeps
-  # only its data (the stdout log is dropped); failed turns keep the log.
+  # perf,uprof}/; the uprof turn passes no -o for now (diagnostic): the tool
+  # writes its default output into its cwd (the rotation log dir) --
+  # AMDuProfPcm-Timeseries_* entries there are scanned by parse_uprof;
+  # columns include TopDown stages (Frontend_Bound / Backend_Bound.Memory /
+  # Retiring), Total Mem Bw (GB/s), and per-channel memory bandwidth. A
+  # successful uprof turn keeps only its data (the stdout log is dropped);
+  # failed turns keep the log.
   #
   # Prerequisites: capture must be auto/true. Rotation keys off the stress-file
   # lock lifecycle (appear = start, disappear = stop after the in-flight slot),

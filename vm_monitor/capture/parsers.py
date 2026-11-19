@@ -824,6 +824,18 @@ def parse_uprof(log_dir: str) -> dict:
                         continue
                     for csv_path in sorted(glob.glob(os.path.join(ts_dir, "*.csv"))):
                         _read_uprof_csv(csv_path, entry, rows, columns, seen)
+    # No -o runs: the tool's DEFAULT output lands in its cwd -- the rotation
+    # root itself (log_capture/). AMDuProfPcm-Timeseries_* entries there are
+    # uprof's too (a dir with CSVs inside, or a CSV named like the entry).
+    for log_capture_root in sorted({os.path.dirname(r) for r in roots}):
+        if not os.path.isdir(log_capture_root):
+            continue
+        for entry in sorted(glob.glob(os.path.join(log_capture_root, "AMDuProfPcm-Timeseries_*"))):
+            if os.path.isdir(entry):
+                for csv_path in sorted(glob.glob(os.path.join(entry, "*.csv"))):
+                    _read_uprof_csv(csv_path, os.path.basename(entry), rows, columns, seen)
+            elif entry.endswith(".csv"):
+                _read_uprof_csv(entry, os.path.splitext(os.path.basename(entry))[0], rows, columns, seen)
     result["turns"] = sorted({r["turn"] for r in rows})
     result["columns"] = columns
     result["rows"] = rows
