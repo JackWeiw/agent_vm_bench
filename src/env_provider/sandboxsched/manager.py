@@ -486,6 +486,12 @@ class SandboxManager(BaseSandboxManager):
             exit_code = getattr(exc, "exit_code", None)
             if not isinstance(exit_code, int):
                 exit_code = None
+            if exit_code is None and isinstance(exc, TimeoutError):
+                # A socket-read timeout is distinguishable from a transport
+                # failure: bucket it as timed_out even with empty output, so a
+                # silently hung command (blocked I/O, sleep) does not abort the
+                # slice and strand the sandbox.
+                exit_code = 124
             if exit_code is None and not (stdout or stderr):
                 raise  # genuine transport error with no command output -> propagate
             if exit_code is None:

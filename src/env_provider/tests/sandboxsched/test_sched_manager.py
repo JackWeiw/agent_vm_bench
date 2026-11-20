@@ -474,6 +474,23 @@ class TestExecTimeoutMapping:
         with pytest.raises(EnvdError):
             mgr.envd_exec(state, "cmd", timeout=5)
 
+    def test_silent_timeout_with_zero_output_maps_to_124(self, kernel_config, sched_config, patched_sdk, monkeypatch):
+        # a hung command (blocked I/O, sleep) raises TimeoutError with NO output:
+        # still bucketed timed_out, so the slice continues and the sandbox is
+        # not stranded
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        states = mgr.create_all()
+        state = next(iter(states.values()))
+
+        class _HungEnvd:
+            def run(self, cmd, *, envs=None, cwd=None, on_stdout=None, on_stderr=None, timeout=None):  # noqa: ARG002
+                raise TimeoutError("read timed out")
+
+        monkeypatch.setattr(mgr, "_envd_client_for", lambda h: _HungEnvd())
+        code, out, err = mgr.envd_exec(state, "sleep 9999", timeout=5)
+        assert code == 124
+        assert out == "" and err == ""
+
 
 class TestHandleLifecycle:
     def test_kill_closes_the_handle(self, kernel_config, sched_config, patched_sdk):
