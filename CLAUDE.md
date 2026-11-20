@@ -99,8 +99,8 @@ The kernel (`bench_core`) and every provider impl depend on the contract (`env_p
 
 **`bench_core` kernel** (`src/bench_core/`):
 - `bench.py` — `run_benchmark(config, provider)` spine: `prepare_env → create/detect → (create-only | warmup-only | cleanup-only | benchmark) → stop → report`. `_build_provider` lazy-imports the selected provider submodule. `_promote` lifts provider `SandboxInstance` → kernel `BenchSandbox` (attaches workflow metrics).
-- `config.py` — `KernelConfig`. `KernelConfig.from_raw(raw)` is the **single reader** of the shared stress sections (`sandbox` / `create_batch` / `task_batch` / `browser` / `coding` / `document` / `test` / `report` / `workflow_type`). `__post_init__` auto-fills `coding_source_files` from `CODING_LANGUAGE_DEFAULT_SOURCE_FILES[language]` (ts→vuejs/core, go→gohugoio/hugo, python→django/django), so coding configs omit `source_files`.
-- `task_manager/fixed.py` + `task_runner/{browser,coding,document}.py` — the three workflows. Browser rides HTTP (agent-browser on port 18789) on top of a backend the provider starts; coding/document are pure `exec` (verify script written via heredoc through `exec`).
+- `config.py` — `KernelConfig`. `KernelConfig.from_raw(raw)` is the **single reader** of the shared stress sections (`sandbox` / `create_batch` / `task_batch` / `browser` / `coding` / `document` / `test` / `report` / `workflow_type`). The `CodingConfig` view (`task_runner/coding.py`) auto-fills `coding_source_files` from `CODING_LANGUAGE_DEFAULT_SOURCE_FILES[language]` (ts→vuejs/core, go→gohugoio/hugo, python→django/django, java→google/gson, c→redis/redis, cpp→nlohmann/json) in its own `__post_init__`, so coding configs omit `source_files`.
+- `task_manager/fixed.py` + `task_runner/{browser,coding,document,replay}.py` — the four workflows. Browser rides HTTP (agent-browser on port 18789) on top of a backend the provider starts; coding/document are pure `exec` (verify script written via heredoc through `exec`).
 - `task_manager/round_robin.py` — `RoundRobinTaskManager` (group rotation, per-step timing).
 - `stats_collector.py` — snapshots + report generation (`generate_report` / `save_report`).
 - `coding_payload.py` — canonical coding replacement pairs + verify scripts.
@@ -147,7 +147,7 @@ These have their own managers / stats / round-robin (`e2b_bench/run_benchmark` i
 - PEP 8; type hints on public APIs; max line length **120**.
 - f-strings for formatting; `pathlib.Path` over `os.path`.
 - `from __future__ import annotations` at the top of kernel/provider modules (PEP 604 `int | None` in annotations).
-- Ruff config in `pyproject.toml`: **`target-version = "py38"`** — do NOT bump to py310 casually; it activates ~740 UP findings repo-wide. Leave it for a dedicated modernization PR.
+- Ruff config in `pyproject.toml`: **`target-version = "py310"`**, aligned with `requires-python = ">=3.10"`.
 - English-only comments and commit messages (no Chinese in code/comments; GitHub issues/PRs/RFCs in English even when the conversation is Chinese).
 
 ### Naming & clean code
@@ -374,7 +374,7 @@ bench-core reports go to each config's `report.output_dir` + `filename_prefix` (
 ```
 config/
 ├── common/                     # backend-agnostic workflow configs (kernel; both e2b: + docker: blocks)
-│   ├── browser.yaml, coding-ts.yaml, coding-go.yaml, coding-python.yaml, docker.yaml
+│   ├── browser.yaml, coding-ts.yaml, coding-go.yaml, coding-python.yaml, coding-java.yaml, coding-c.yaml, coding-cpp.yaml, docker.yaml
 ├── openstack/                  # legacy OpenStack (batch_matrix, test_config_template, vm_bench.yaml)
 ├── e2b/                        # legacy E2B (bench, batch_matrix, batch_template, coding_*, pdf/xlsx_bench)
 ├── docker/                     # legacy docker (docker_bench.yaml)
@@ -397,7 +397,7 @@ config/
 
 - [docs/guide/bench-core-usage-zh.md](docs/guide/bench-core-usage-zh.md) — src kernel usage (install→config→CLI→cleanup→troubleshooting)
 - [docs/guide/oversub-bench-usage.md](docs/guide/oversub-bench-usage.md) / [docs/guide/oversub-bench-usage-zh.md](docs/guide/oversub-bench-usage-zh.md) — `oversub-bench` sweep driver + `oversub-compare` (CN/EN; §8.5 pointer in the usage guides)
-- [docs/superpowers/specs/2026-08-12-environment-provider-bench-core-design.md](docs/superpowers/specs/2026-08-12-environment-provider-bench-core-design.md) — EnvironmentProvider + bench_core design (local working doc)
+- [docs/dev/rfcs/0001-environment-provider.md](docs/dev/rfcs/0001-environment-provider.md) — EnvironmentProvider + bench_core design
 - [docs/architecture/design.md](docs/architecture/design.md) / [docs/architecture/design-en.md](docs/architecture/design-en.md) — system architecture (CN/EN)
 - [docs/dev/metrics-reference.md](docs/dev/metrics-reference.md) — bench_core kernel + vm_monitor sheet metrics, /proc & /sys collection sources, calculation formulas
 - [docs/guide/usage-guide.md](docs/guide/usage-guide.md) — detailed legacy tool usage

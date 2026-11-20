@@ -1,0 +1,10 @@
+# Shell scripts run inside Linux containers (Docker COPY + bash) and are also
+# consumed by push_to_harbor.sh; CRLF breaks the shebang there. Keep them LF
+# regardless of core.autocrlf on the checkout machine.
+*.sh text eol=lf
+
+# Unified diffs are applied with `git apply` inside Linux images; CRLF would
+# turn every context line into a mismatch. Dockerfiles are COPYed into the
+# build context and must keep LF for the same reason.
+*.patch text eol=lf
+Dockerfile* text eol=lf

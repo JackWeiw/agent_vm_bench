@@ -92,19 +92,22 @@ test:         { duration: 160, benchmark_mode: "round_robin" }
 | `coding-ts.yaml` | coding | TypeScript（vuejs/core），`npx tsx` verify |
 | `coding-go.yaml` | coding | Go（gohugoio/hugo），`go run` verify |
 | `coding-python.yaml` | coding | Python（django/django），`python3` verify |
+| `coding-java.yaml` | coding | Java（google/gson），FTP/PTP 走真实 `mvn test` + surefire 断言 |
+| `coding-c.yaml` | coding | C（redis/redis），FTP/PTP 走真实 `make` + `./runtest` Tcl 测试套 |
+| `coding-cpp.yaml` | coding | C++（nlohmann/json），FTP/PTP 走真实 CMake doctest 目标（`test-udt_cpp11`，`-r=xml`） |
 | `docker.yaml` | browser | docker 专用小压力档（10 容器） |
 
-coding 配置很薄：省略 `source_files` → `KernelConfig` 按 `language` 自动填 canonical 替换对。就绪检查**与 provider 透明**（browser = 端口扫描，coding = `uname -a`，document = `document-bench-validate`）——任何 YAML 都不声明端口/时序。
+coding 配置很薄：省略 `source_files` → `CodingConfig` 视图（`task_runner/coding.py`）按 `language` 自动填 canonical 替换对。就绪检查**与 provider 透明**（browser = 端口扫描，coding = `uname -a`，document = `document-bench-validate`）——任何 YAML 都不声明端口/时序。
 
 ### 3. CLI
 
 ```text
-bench-core --config <yaml> --provider {fake,e2b,docker} [模式/参数]
+bench-core --config <yaml> --provider {fake,e2b,docker,aenv,cubesandbox} [模式/参数]
 ```
 
 | 参数 | 说明 |
 |------|------|
-| `--provider` | `fake`（无 SDK）/ `e2b` / `docker` |
+| `--provider` | `fake`（无 SDK）/ `e2b` / `docker` / `aenv` / `cubesandbox` |
 | `-n, --total-count` | 覆盖沙箱总数 |
 | `--create-only` | 创建 + 就绪检查 + 存 ID，然后退出（沙箱保留） |
 | `--detect` | 复用已有沙箱（不新建）；结束不清理 |
@@ -146,7 +149,7 @@ bench-core --provider e2b --config config/common/coding-ts.yaml --cleanup
 | `--cleanup` | list + 销毁 | 清除 |
 
 完整安装→配置→排错见 [bench-core 使用指南](docs/guide/bench-core-usage-zh.md)；架构原理见
-[设计文档](docs/superpowers/specs/2026-08-12-environment-provider-bench-core-design.md)。
+[设计文档](docs/dev/rfcs/0001-environment-provider.md)。
 
 ---
 

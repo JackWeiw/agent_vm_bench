@@ -12,29 +12,43 @@ agent trajectories that already drive the [ts](../ts/README.md) and
 [go](../go/README.md) variants:
 
 ```
-find → read → edit → verify (write ad-hoc /tmp/bench_verify.py + python3) → git diff
+find → read → edit → verify (./tests/runtests.py auth_tests.test_basic) → git diff
 ```
 
-A real coding agent on django verifies by writing a small ad-hoc `.py` that
-imports django's module graph and runs it via `python3` — a transient CPython
-process that loads the settings/urls/forms/db module graph into memory (the
-memory peak). The agent NEVER runs a production `manage.py runserver`, NEVER
-runs the full `tests/runtests.py` suite, and NEVER keeps a resident dev server.
-N concurrent sandboxes' staggered verify peaks overlapping → host memory
-overcommit.
+The repo is the real django tree pinned to the SWE-bench instance base commit;
+verify runs the instance's own test module through django's runner, i.e. a
+transient CPython process that loads the settings/urls/forms/db module graph and
+executes 13 tests (the memory peak). The agent NEVER runs a production
+`manage.py runserver`, NEVER runs the whole `tests/runtests.py` suite, and NEVER
+keeps a resident dev server. N concurrent sandboxes' staggered verify peaks
+overlapping → host memory overcommit.
+
+**SWE-bench instance.** The image is pinned to the
+`django__django-16631` base commit (`9b224579`, Django 5.0 dev) with that
+instance's test patch baked in (`tests/auth_tests/test_basic.py`). Python has
+exactly ONE pair: the upstream gold patch (SECRET_KEY_FALLBACKS session-hash
+fallback, two files). It carries the instance's real FAIL_TO_PASS /
+PASS_TO_PASS selection and its verify runs django's own runner
+(`./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1
+auth_tests.test_basic`), asserting all 13 ids ran and passed — exactly what the
+upstream eval does. In fixed mode, warmup runs the same pair on the untouched base commit,
+where the FAIL_TO_PASS test is expected to fail (that red run is the
+baseline); round-robin (the default) applies the patch first, so every round
+is green.
 
 ## Memory Pressure Model
 
 ```
 ┌─ Sandbox Memory Timeline ──────────────────────────────────────────┐
 │                                                                     │
-│  Warmup:  one python3 verify  ████  (CPython imports django graph) │
+│  Warmup:  one verify run  ████  (fixed mode: base = expected red,   │
+│                                  no metrics recorded)              │
 │                                                                     │
 │  Round:   find  read  edit  verify(peak)  diff                      │
 │                              ↑                                      │
-│                       python3 /tmp/bench_verify.py                 │
-│                       (CPython loads settings/urls/forms/db graph, │
-│                        transient)                                   │
+│                       ./tests/runtests.py --settings=test_sqlite    │
+│                       (CPython loads the django module graph and    │
+│                        runs 13 tests, transient)                    │
 │                                                                     │
 │  × N concurrent sandboxes, staggered → host memory overcommit       │
 └─────────────────────────────────────────────────────────────────────┘
@@ -42,12 +56,12 @@ overcommit.
 
 | Process | Memory | Reason |
 |---------|--------|--------|
-| `python3 /tmp/bench_verify.py` | transient peak | CPython imports + executes the django settings/urls/forms/db module graph (the heavy `django.forms`/`django.db` graph is the real transient peak), then releases. |
+| `./tests/runtests.py ... auth_tests.test_basic` | transient peak | CPython imports the django settings/urls/forms/db graph and runs the 13-test auth module (the heavy `django.forms`/`django.db` graph is the real transient peak), then releases. |
 | N sandboxes overlapping | host overcommit | Staggered verify peaks overlap at the host → real pressure, measured by `vm_monitor` / `smap_tool`. |
 
-**Why NOT `manage.py runserver` / full test suite / resident server**: none of
-these appear in a real django agent's verify pattern. Pressure comes honestly
-from concurrent transient verify peaks — the same model as ts/go.
+**Why the real test module (and nothing more)**: the upstream eval runs exactly
+this module, so the verify is the instance's own harness — no `manage.py
+runserver`, no full-suite run, no resident server, no invented extra steps.
 
 **Why no cache clear (unlike go)**: go runs `go clean -cache` before every
 verify because the Go toolchain caches *compiled types* under `GOCACHE`, making
@@ -59,16 +73,13 @@ and does a plain single write+run.
 ## Project Structure (inside sandbox)
 
 ```
-/opt/coding-bench/                    # django (git clone, shallow)
+/opt/coding-bench/                    # django @ django__django-16631 base_commit
 ├── django/                           # the framework package (all edits live here)
-│   ├── conf/global_settings.py       # ← round-robin edit target
-│   ├── db/models/fields/__init__.py  # ← round-robin edit target
-│   ├── http/response.py              # ← round-robin edit target
-│   ├── utils/text.py                 # ← round-robin edit target
-│   ├── template/base.py              # ← round-robin edit target
-│   └── urls/resolvers.py             # ← round-robin edit target
+│   ├── contrib/auth/__init__.py      # ← gold-patch edit target
+│   └── contrib/auth/base_user.py     # ← gold-patch edit target
 ├── pyproject.toml / tests/ ...
 ├── .git/                             # Git repo for checkout/reset + diff
+├── bench_pairs.json                  # the single gold pair, from coding_payload
 └── bench_helper.sh                   # Manual testing helper script
 ```
 
@@ -84,8 +95,8 @@ Each benchmark round simulates a real AI coding agent's verification cycle
 ```
 Step 0: find    — git checkout -- django/ (reset) + verify/locate target file
 Step 1: read    — head -20 target file (agent confirming context)
-Step 2: edit    — apply a pre-configured find→replace pair (real type-safe edit)
-Step 3: verify  — write /tmp/bench_verify.py + python3 run (memory peak)
+Step 2: edit    — apply the gold patch's 3 hunks across 2 files (atomic)
+Step 3: verify  — ./tests/runtests.py ... auth_tests.test_basic + id assertion
 Step 4: diff    — git diff > /tmp/bench_round_N.patch (verification artifact)
 ```
 
@@ -95,28 +106,33 @@ Step 4: diff    — git diff > /tmp/bench_round_N.patch (verification artifact)
    are NOT reset, so install settings persist across rounds. Agents revert the
    framework source but keep infrastructure config (mirrors ts/go).
 
-2. **Real type-safe edit, not risky rewriting** — each round applies a
-   pre-configured `find→replace` pair. Most pairs are safe comment-appends on
-   stable class/function signatures (e.g. `class HttpResponse:` → `# bench`),
-   guaranteeing the edit never breaks compilation. The first pair additionally
-   carries a real `verify_script` that imports django and asserts a real
-   invariant (`LANGUAGE_CODE == "en-us"`), demonstrating a genuine
-   edit+verify coupling.
+2. **Real gold-patch edit, applied atomically** — each round applies the
+   instance's two-file / three-hunk patch. A stale hunk aborts the edit (exit 2)
+   without writing anything, so a partial patch can never fake a green verify.
 
-3. **Verify = write ad-hoc test + `python3`** — the default script configures
-   bare settings (no DB engine, no installed apps) and imports the heavy graphs
-   (`django.urls`, `django.forms`, `django.template`). `django.forms` pulls in
-   `django.db`/models — the largest trace-faithful import graph a bare
-   `python3` can load without a DB connection. Pairs without their own script
-   fall back to this shared default, so every round pays a real import peak.
+3. **Verify = the instance's real test module** — `./tests/runtests.py
+   --verbosity 2 --settings=test_sqlite --parallel 1 auth_tests.test_basic`,
+   then every FAIL_TO_PASS + PASS_TO_PASS id must appear as `... ok` in the log;
+   a missing id is `NOT RUN`, a non-ok status is `NOT PASSED`. This is the
+   upstream eval's own command, so the verify is the project's real harness.
 
 4. **No per-round `free -m`** — memory pressure is observed at the host level
    via `vm_monitor` / `smap_tool`, not from a per-round `free -m` inside the
    sandbox (no useful value).
 
+5. **Warmup is the F2P baseline (fixed mode)** — warmup runs the same pair
+   before any edit,
+   so the base commit is expected to be red. That warning is the FAIL_TO_PASS
+   evidence and never enters the coding metrics; rounds start from a healthy
+   reset.
+
 ## Build Steps
 
 ### 1. Build Docker Image
+
+The build shallow-fetches django at the `django__django-16631` base commit,
+applies `tests/django-16631-test.patch` (the FAIL_TO_PASS fixture), and adds a
+`python` shim so the upstream `./tests/runtests.py` command runs verbatim.
 
 ```bash
 cd dockerfile_build/coding/python
@@ -126,7 +142,7 @@ docker build -t ubuntu-coding-python-bench:24.04-linuxarm64 -f Dockerfile .
 **x86_64:**
 
 ```bash
-docker build -t ubuntu-coding-python-bench:24.04-x86_64 -f Dockerfile.x86 .
+docker build -t ubuntu-openclaw-coding-python:24.04-x86_64 -f Dockerfile.x86 .
 ```
 
 **openEuler (optional):**
@@ -221,7 +237,7 @@ bash bench_helper.sh [ROUND] [OPTIONS]
 `python` is a value of `coding.language` (`"python"`), not a hard-coded
 workflow. The coding loop is shared across languages; only the verify mechanics
 differ, captured as data in a `CodingLanguageProfile` registry
-(`e2b_bench/config.py`). The ts/go/python variants all share the same
+(`src/bench_core/payload/coding_payload.py`). The ts/go/python variants all share the same
 `find → read → edit → verify → diff` loop; adding C++ later = one registry
 entry + its default verify script. (The profile is keyed `python` because
 django's source is Python and the verify scripts import `.py` source and run

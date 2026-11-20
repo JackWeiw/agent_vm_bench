@@ -50,19 +50,36 @@ RUN echo 'sslverify=0' >> /etc/dnf/dnf.conf && \
     git config --global http.sslVerify false && \
     dnf clean all && rm -rf /var/cache/dnf /var/tmp/* /tmp/*
 
-RUN cd /opt && \
-    git clone https://github.com/django/django.git coding-bench && \
-    cd coding-bench && \
-    git checkout 8d160f154f0240a423e83ffe0690e472f837373c
+# --- Coding benchmark project: django/django @ django__django-16631 base_commit ---
+# The instance's test patch (tests/auth_tests/test_basic.py) is applied right
+# after the checkout. The runner's reset only touches `django/`, so it is never
+# reverted.
+RUN cd /opt && mkdir coding-bench && cd coding-bench && \
+    git init -q && \
+    git remote add origin https://github.com/django/django.git && \
+    git fetch -q --depth 1 origin 9b224579875e30203d079cc2fee83b116d98eb78 && \
+    git checkout -q FETCH_HEAD
+
+# `python` shim: the upstream eval runs `./tests/runtests.py` (shebang
+# `#!/usr/bin/env python`) while openEuler ships only python3.
+RUN mkdir -p /usr/local/bin && ln -sf /usr/bin/python3 /usr/local/bin/python
+
+COPY tests/django-16631-test.patch /tmp/
+RUN cd /opt/coding-bench && \
+    git apply /tmp/django-16631-test.patch && \
+    grep -q "def test_get_user_fallback_secret" tests/auth_tests/test_basic.py && \
+    rm /tmp/django-16631-test.patch
 
 # ENV PYTHONPATH makes django importable in script mode (python3 /tmp/...).
-# No pip install needed — django resolves from the cloned source via PYTHONPATH.
+# No `pip install django` needed — django resolves from the cloned source via
+# PYTHONPATH (asgiref/sqlparse are installed above).
 ENV PYTHONPATH=/opt/coding-bench
 
 RUN echo 'import django; from django.conf import settings; print("django", django.__version__)' > /tmp/_smoke.py && \
     python3 /tmp/_smoke.py && rm /tmp/_smoke.py
 
 COPY bench_helper.sh /opt/coding-bench/bench_helper.sh
+COPY bench_pairs.json /opt/coding-bench/bench_pairs.json
 RUN chmod +x /opt/coding-bench/bench_helper.sh
 
 ENV http_proxy= \

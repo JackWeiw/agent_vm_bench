@@ -31,6 +31,7 @@ Classes:
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import random
 import statistics
@@ -105,11 +106,292 @@ def _build_edit_command(project_dir: str, target_file: str, find_str: str, repla
         "r = base64.b64decode(sys.argv[2]).decode()\n"
         "p = sys.argv[3]\n"
         "s = open(p, encoding='utf-8').read()\n"
+        "if not f:\n"
+        "    sys.exit(2)\n"
         "if f not in s:\n"
         "    sys.exit(2)\n"
         "open(p, 'w', encoding='utf-8').write(s.replace(f, r, 1))\n"
         "PYEOF"
     )
+
+
+def _build_multi_edit_command(project_dir: str, target_file: str, edits: list[dict]) -> str:
+    """Apply several literal find->replace edits in a single exec.
+
+    Real SWE-bench patches often touch a file in more than one hunk (redis-13338
+    changes src/t_stream.c in three places) and sometimes more than one file
+    (nlohmann/json-4237 changes the multi-header source and its generated
+    single-header mirror). Each ``edits`` entry may carry its own ``file``
+    (default: the pair's target file). Same literal replace semantics as
+    :func:`_build_edit_command`; edits are buffered per file and written only
+    after every hunk matched, so a partial patch can never masquerade as the
+    gold fix (exit 2 on the first absent find string, no file touched).
+    """
+    edits_b64 = base64.b64encode(json.dumps(edits).encode()).decode()
+    return (
+        f"cd {project_dir} && python3 - {edits_b64} {target_file} <<'PYEOF'\n"
+        "import base64, json, sys\n"
+        "edits = json.loads(base64.b64decode(sys.argv[1]))\n"
+        "default = sys.argv[2]\n"
+        "files = {}\n"
+        "for e in edits:\n"
+        "    p = e.get('file', default)\n"
+        "    s = files.get(p)\n"
+        "    if s is None:\n"
+        "        s = open(p, encoding='utf-8').read()\n"
+        "    f, r = e['find'], e['replace']\n"
+        "    if not f:\n"
+        "        sys.exit(2)\n"
+        "    if f not in s:\n"
+        "        sys.exit(2)\n"
+        "    files[p] = s.replace(f, r, 1)\n"
+        "for p, s in files.items():\n"
+        "    open(p, 'w', encoding='utf-8').write(s)\n"
+        "PYEOF"
+    )
+
+
+def _run_test_suite_verify(
+    provider: EnvironmentProvider,
+    inst: SandboxInstance,
+    project_dir: str,
+    config: CodingConfig,
+    pair: dict,
+    profile,
+    step_times: dict[str, float] | None = None,
+) -> tuple[bool, str, bool] | None:
+    """Run a pair's FAIL_TO_PASS / PASS_TO_PASS selection as REAL tests.
+
+    The SWE-bench verification contract: every listed test must exist, actually
+    run, and pass -- FAIL_TO_PASS goes red->green after the edit, PASS_TO_PASS
+    must stay green (the regression half that shows the instance's real resource
+    profile, because it exercises the project's own test harness rather than a
+    hand-written probe).
+
+    Test *classes* are handed to Maven (`-Dtest=A,B`) rather than `Class#method`
+    ids: method selection needs surefire >= 2.19, while the Maven installed in
+    the java image binds the super-POM's older surefire. The per-method
+    assertion is then done by a python3 pass over the surefire XML reports, so a
+    missing / silently-skipped test cannot masquerade as a green verify (exit
+    code alone would not catch it).
+
+    Languages with ``test_suite_cmd`` (c/redis) take the other branch: the
+    command runs the project's own harness (`make` + `./runtest`) and a python3
+    pass asserts every listed test printed ``[ok]`` rather than ``[err]``/
+    ``[skip]``/``[ignore]``.
+
+    ``test_report_format="doctest_xml"`` (cpp/nlohmann) runs the CMake-built
+    doctest target, which writes its XML report to a dedicated file; python3
+    then asserts every listed ``test case > section`` path is present and has
+    no failing assertion. Names use the innermost section (matching the
+    upstream eval), so a nested ``SubCase`` chain is normalized to
+    ``<TestCase> > <innermost SubCase>``.
+
+    ``test_report_format="django_test"`` (python/django) runs django's own
+    runner through ``tests/runtests.py``. Its verbosity-2 output interleaves
+    unittest descriptions with ``... ok`` / ``... FAIL`` / ``... ERROR`` /
+    ``... skipped`` suffixes; the id is the text before the suffix, which is
+    why some upstream ids are plain docstrings ("The current user model can be
+    retrieved") while others keep the ``test_x (module.Class.test_x)`` form.
+    python3 collects those lines and asserts every listed id ran and passed.
+
+    Returns None when the pair declares no tests (caller falls back to the
+    smoke-script verify used by the other languages).
+    """
+    test_ids: list[str] = []
+    for key in ("fail_to_pass", "pass_to_pass"):
+        raw = pair.get(key)
+        if isinstance(raw, list | tuple):
+            test_ids.extend(str(t) for t in raw)
+    if not test_ids:
+        return None
+
+    ids_b64 = base64.b64encode(json.dumps(test_ids).encode()).decode()
+    if profile.test_module:
+        classes = sorted({t.split("#", 1)[0].rsplit(".", 1)[-1] for t in test_ids})
+        reports_dir = f"{project_dir}/{profile.test_module}/target/surefire-reports"
+        # `rm -rf` first: a stale surefire report from an earlier round must not
+        # satisfy the assertion when this round selects (and runs) nothing.
+        cmd = (
+            f"cd {project_dir} && "
+            f"rm -rf {reports_dir}; "
+            f"mvn -o -q -B -pl {profile.test_module} {profile.test_args} "
+            f"-Dtest={','.join(classes)} -DfailIfNoTests=false test && "
+            f"python3 - {ids_b64} {reports_dir} <<'PYEOF'\n"
+            "import base64, json, os, sys\n"
+            "import xml.etree.ElementTree as ET\n"
+            "ids = json.loads(base64.b64decode(sys.argv[1]))\n"
+            "reports = sys.argv[2]\n"
+            "for tid in ids:\n"
+            "    cls, _, method = tid.partition('#')\n"
+            "    path = os.path.join(reports, 'TEST-%s.xml' % cls)\n"
+            "    if not os.path.exists(path):\n"
+            "        print('MISSING REPORT:', tid)\n"
+            "        sys.exit(1)\n"
+            "    seen = False\n"
+            "    for tc in ET.parse(path).getroot().iter('testcase'):\n"
+            "        if tc.get('name') != method or tc.get('classname') not in (None, cls):\n"
+            "            continue\n"
+            "        seen = True\n"
+            "        bad = [c.tag for c in tc if c.tag in ('failure', 'error', 'skipped')]\n"
+            "        if bad:\n"
+            "            print('NOT PASSED:', tid, bad)\n"
+            "            sys.exit(1)\n"
+            "    if not seen:\n"
+            "        print('NOT RUN:', tid)\n"
+            "        sys.exit(1)\n"
+            "print('verified %d tests' % len(ids))\n"
+            "PYEOF"
+        )
+    elif profile.test_report_format == "doctest_xml":
+        # doctest suite (cpp/nlohmann): the profile's command writes its XML
+        # report to its own file, so build noise stays in the log. `rm -f` first
+        # so a failed build can never be graded from a stale report. The
+        # binary's exit code is preserved (a crash / failed assertion fails
+        # verify); on top of that python3 asserts every listed id actually ran
+        # and has no failing assertion.
+        log_path = "/tmp/bench_test_output.log"
+        xml_path = "/tmp/bench_doctest.xml"
+        cmd = (
+            f"cd {project_dir} && "
+            f"rm -f {xml_path}; "
+            f"{profile.test_suite_cmd} > {log_path} 2>&1; rc=$?; "
+            f"tail -n 40 {log_path}; "
+            f"python3 - {ids_b64} {xml_path} <<'PYEOF'\n"
+            "import base64, json, os, sys\n"
+            "import xml.etree.ElementTree as ET\n"
+            "ids = json.loads(base64.b64decode(sys.argv[1]))\n"
+            "path = sys.argv[2]\n"
+            "if not os.path.exists(path):\n"
+            "    print('MISSING REPORT:', path)\n"
+            "    sys.exit(1)\n"
+            "seen, failed = set(), set()\n"
+            "def name(chain):\n"
+            "    return chain[0] + ' > ' + chain[-1] if len(chain) > 1 else chain[0]\n"
+            "def walk(el, chain):\n"
+            "    tag = el.tag\n"
+            "    if tag == 'TestCase':\n"
+            "        chain = [el.get('name') or '']\n"
+            "        if el.get('skipped') == 'true':\n"
+            "            failed.add(name(chain))\n"
+            "    elif tag == 'SubCase':\n"
+            "        chain = chain + [el.get('name') or '']\n"
+            "    if tag in ('TestCase', 'SubCase'):\n"
+            "        seen.add(name(chain))\n"
+            "    elif tag == 'Expression' and el.get('success') == 'false':\n"
+            "        failed.add(name(chain))\n"
+            "    for child in el:\n"
+            "        walk(child, chain)\n"
+            "walk(ET.parse(path).getroot(), [])\n"
+            "for tid in ids:\n"
+            "    if tid in failed:\n"
+            "        print('NOT PASSED:', tid)\n"
+            "        sys.exit(1)\n"
+            "    if tid not in seen:\n"
+            "        print('NOT RUN:', tid)\n"
+            "        sys.exit(1)\n"
+            "print('verified %d tests' % len(ids))\n"
+            "PYEOF\n"
+            "prc=$?\n"
+            'if [ "$prc" -ne 0 ]; then exit "$prc"; fi\n'
+            'exit "$rc"'
+        )
+    elif profile.test_report_format == "django_test":
+        # django suite (python/django): runtests.py prints unittest
+        # descriptions as "<id> ... ok|FAIL|ERROR|skipped" (a docstring id for
+        # tests that define one, the "test_x (module.Class.test_x)" form
+        # otherwise). Collect those status lines and assert every listed id ran
+        # and passed; the runner's exit code is preserved on top.
+        log_path = "/tmp/bench_test_output.log"
+        cmd = (
+            f"cd {project_dir} && "
+            f"{profile.test_suite_cmd} > {log_path} 2>&1; rc=$?; "
+            f"tail -n 40 {log_path}; "
+            f"python3 - {ids_b64} {log_path} <<'PYEOF'\n"
+            "import base64, json, sys\n"
+            "ids = json.loads(base64.b64decode(sys.argv[1]))\n"
+            "text = open(sys.argv[2], encoding='utf-8', errors='replace').read()\n"
+            "suffixes = [\n"
+            "    (' ... ok', True),\n"
+            "    (' ... expected failure', True),\n"
+            "    (' ... unexpected success', False),\n"
+            "    (' ... FAIL', False),\n"
+            "    (' ... ERROR', False),\n"
+            "    (' ... skipped', False),\n"
+            "]\n"
+            "status = {}\n"
+            "for ln in text.splitlines():\n"
+            "    for suf, good in suffixes:\n"
+            "        idx = ln.rfind(suf)\n"
+            "        if idx > 0 and (ln.endswith(suf) or suf == ' ... skipped'):\n"
+            "            status[ln[:idx].rstrip()] = good\n"
+            "            break\n"
+            "for tid in ids:\n"
+            "    if tid not in status:\n"
+            "        print('NOT RUN:', tid)\n"
+            "        sys.exit(1)\n"
+            "    if not status[tid]:\n"
+            "        print('NOT PASSED:', tid)\n"
+            "        sys.exit(1)\n"
+            "print('verified %d tests' % len(ids))\n"
+            "PYEOF\n"
+            "prc=$?\n"
+            'if [ "$prc" -ne 0 ]; then exit "$prc"; fi\n'
+            'exit "$rc"'
+        )
+    else:
+        # Non-Maven suite (c/redis): run the project's own test command, then
+        # assert every listed test printed ``[ok]`` and none printed ``[err]``/
+        # ``[skip]``/``[ignore]``. The command's own exit code is preserved so a
+        # suite-level failure (build break, exception) still fails verify even
+        # if the selected names happened to be reported.
+        log_path = "/tmp/bench_test_output.log"
+        cmd = (
+            f"cd {project_dir} && "
+            f"{profile.test_suite_cmd} > {log_path} 2>&1; rc=$?; "
+            f"tail -n 40 {log_path}; "
+            f"python3 - {ids_b64} {log_path} <<'PYEOF'\n"
+            "import base64, json, sys\n"
+            "ids = json.loads(base64.b64decode(sys.argv[1]))\n"
+            "text = open(sys.argv[2], encoding='utf-8', errors='replace').read()\n"
+            "ok, bad = set(), set()\n"
+            "for ln in text.splitlines():\n"
+            "    if ln.startswith('[ok]: '):\n"
+            "        name = ln[6:]\n"
+            "        i = name.rfind(' (')\n"
+            "        if i > 0 and name.endswith(' ms)'):\n"
+            "            name = name[:i]\n"
+            "        ok.add(name)\n"
+            "    elif ln.startswith('[err]: '):\n"
+            "        bad.add(ln[7:])\n"
+            "    elif ln.startswith('[skip]: '):\n"
+            "        bad.add(ln[8:])\n"
+            "    elif ln.startswith('[ignore]: '):\n"
+            "        bad.add(ln[10:])\n"
+            "for tid in ids:\n"
+            "    if any(b.startswith(tid) for b in bad):\n"
+            "        print('NOT PASSED:', tid)\n"
+            "        sys.exit(1)\n"
+            "    if tid not in ok:\n"
+            "        print('NOT RUN:', tid)\n"
+            "        sys.exit(1)\n"
+            "print('verified %d tests' % len(ids))\n"
+            "PYEOF\n"
+            "prc=$?\n"
+            'if [ "$prc" -ne 0 ]; then exit "$prc"; fi\n'
+            'exit "$rc"'
+        )
+
+    run_start = time.perf_counter()
+    result = provider.exec(inst, cmd, timeout=config.coding_verify_timeout + 60)
+    elapsed = time.perf_counter() - run_start
+    if step_times is not None:
+        step_times["verify"] = elapsed
+    if result.exit_code != 0:
+        detail = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+        return False, detail[:400], False
+    logger.info(f"[verify] test suite passed in {elapsed:.1f}s ({len(test_ids)} tests)")
+    return True, "", False
 
 
 def _run_verify(
@@ -146,12 +428,24 @@ def _run_verify(
     -- the real trace has no cache-clear step), then the write+go run is a single
     newline-joined command.
 
+    java path: delegated to :func:`_run_test_suite_verify` whenever the pair
+    declares ``fail_to_pass``/``pass_to_pass`` -- the instance's real Maven tests
+    are run (and asserted from surefire reports), covering the PTP regression
+    half. Pairs without a test selection fall through to the smoke script below.
+
     Returns: (success, error_detail, compile_only). compile_only is True when the
     pair declared `verify: compile_only` (no assertable edit semantics) -- the N-chain
     still runs (generic health checks), honestly labeled.
     """
     profile = get_coding_profile(config.coding_language)
     compile_only = str(pair.get("verify", "")).lower() == "compile_only"
+
+    # FAIL_TO_PASS / PASS_TO_PASS path (java/c today): when the pair names real
+    # tests, run the project's own test suite instead of an ad-hoc probe.
+    if profile.test_module or profile.test_suite_cmd:
+        suite = _run_test_suite_verify(provider, inst, project_dir, config, pair, profile, step_times)
+        if suite is not None:
+            return suite
 
     # Optional pre-verify cache clear (go only). Separate command so its time is
     # measured apart from the write+run.
@@ -235,12 +529,9 @@ class CodingWarmupRunner(TaskRunner):
 
         sid = self.state.id
         project_dir = self.cfg.coding_project_dir
+        profile = get_coding_profile(self.cfg.coding_language)
 
-        project_marker = (
-            "go.mod"
-            if self.cfg.coding_language == "go"
-            else ("pyproject.toml" if self.cfg.coding_language == "python" else "package.json")
-        )
+        project_marker = profile.project_marker
         try:
             result = self.provider.exec(self.state, f"ls {project_dir}/{project_marker}", timeout=30)
             if result.exit_code != 0:
@@ -252,7 +543,6 @@ class CodingWarmupRunner(TaskRunner):
             self.state.warmup_done = True
             return
 
-        profile = get_coding_profile(self.cfg.coding_language)
         try:
             result = self.provider.exec(
                 self.state,
@@ -357,8 +647,10 @@ class CodingTaskRunner(TaskRunner):
         pair_idx = self.state.coding_metrics.total_tasks % len(source_files)
         pair = source_files[pair_idx]
         target_file = pair["file"]
-        find_str = pair["find"]
-        replace_str = pair["replace"]
+        # ``edits``-only pairs (multi-file gold patches) have no top-level
+        # find/replace; the edit step below applies the whole list instead.
+        find_str = pair.get("find", "")
+        replace_str = pair.get("replace", "")
 
         start_time = time.perf_counter()
         verify_success = False
@@ -396,11 +688,12 @@ class CodingTaskRunner(TaskRunner):
             step_times["read"] = time.perf_counter() - t1
 
             t2 = time.perf_counter()
-            edit_result = self.provider.exec(
-                self.state,
-                _build_edit_command(project_dir, target_file, find_str, replace_str),
-                timeout=15,
-            )
+            edits = pair.get("edits")
+            if isinstance(edits, list | tuple) and edits:
+                edit_cmd = _build_multi_edit_command(project_dir, target_file, list(edits))
+            else:
+                edit_cmd = _build_edit_command(project_dir, target_file, find_str, replace_str)
+            edit_result = self.provider.exec(self.state, edit_cmd, timeout=15)
             step_times["edit"] = time.perf_counter() - t2
             if edit_result.exit_code != 0:
                 self.state.coding_metrics.last_error = f"edit failed: exit_code={edit_result.exit_code}"
@@ -527,8 +820,12 @@ class CodingRoundRunner(TaskRunner):
         timed_out = False
         project_dir = self.cfg.coding_project_dir
         target_file = pair["file"]
-        find_str = pair["find"]
-        replace_str = pair["replace"]
+        # Multi-file gold patches (the django / nlohmann pairs) carry only an
+        # ``edits`` list -- no top-level find/replace. Default them to empty so
+        # the edit step dispatches to _build_multi_edit_command instead of
+        # raising KeyError before any step runs.
+        find_str = pair.get("find", "")
+        replace_str = pair.get("replace", "")
 
         try:
             locate_ok, locate_error, resolved_file, resolved_find, resolved_replace = self._step_find(
@@ -543,7 +840,9 @@ class CodingRoundRunner(TaskRunner):
 
             self._step_read(project_dir, target_file, step_times)
 
-            edit_success, edit_error = self._step_edit(project_dir, target_file, find_str, replace_str, step_times)
+            edit_success, edit_error = self._step_edit(
+                project_dir, target_file, find_str, replace_str, pair, step_times
+            )
             if not edit_success:
                 failed_step = "edit"
                 error_detail = edit_error
@@ -614,22 +913,32 @@ class CodingRoundRunner(TaskRunner):
         step_times["read"] = time.perf_counter() - step_start
 
     def _step_edit(
-        self, project_dir: str, target_file: str, find_str: str, replace_str: str, step_times: dict[str, float]
+        self,
+        project_dir: str,
+        target_file: str,
+        find_str: str,
+        replace_str: str,
+        pair: dict,
+        step_times: dict[str, float],
     ) -> tuple[bool, str]:
         """Step 2: Apply the find->replace pair via literal string replace (real semantic edit).
 
         Uses python3 str.replace (see _build_edit_command) -- literal, not sed
         regex -- so regex metacharacters in the find/replace strings are inert.
+        A pair may instead carry an ``edits`` list (multi-hunk gold patches);
+        those hunks are then applied in order, each to its own ``file`` when the
+        hunk declares one (default: the pair's target file).
 
         Returns: (success, error_detail). Exit code 2 = find string absent
         (no-op edit surfaced as a failure, not a silent fake verify pass).
         """
         step_start = time.perf_counter()
-        result = self.provider.exec(
-            self.state,
-            _build_edit_command(project_dir, target_file, find_str, replace_str),
-            timeout=15,
-        )
+        edits = pair.get("edits")
+        if isinstance(edits, list | tuple) and edits:
+            cmd = _build_multi_edit_command(project_dir, target_file, list(edits))
+        else:
+            cmd = _build_edit_command(project_dir, target_file, find_str, replace_str)
+        result = self.provider.exec(self.state, cmd, timeout=15)
         step_times["edit"] = time.perf_counter() - step_start
 
         if result.exit_code != 0:

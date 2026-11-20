@@ -1,0 +1,142 @@
+[
+  {
+    "file": "src/t_stream.c",
+    "edits": [
+      {
+        "find": "#include \"server.h\"",
+        "replace": "#include \"server.h\" /* bench */"
+      }
+    ],
+    "tests": false
+  },
+  {
+    "file": "src/t_stream.c",
+    "edits": [
+      {
+        "find": "    if (streamCompareID(&s->first_id,&s->max_deleted_entry_id) > 0) {\n        /* The latest tombstone is before the first entry. */\n        return 0;\n    }\n\n",
+        "replace": ""
+      },
+      {
+        "find": "    if (!s->length && streamCompareID(id,&s->last_id) < 1) {\n        return s->entries_added;\n    }\n\n    int cmp_last = streamCompareID(id,&s->last_id);\n",
+        "replace": "    if (!s->length && streamCompareID(id,&s->last_id) < 1) {\n        return s->entries_added;\n    }\n\n    /* There are fragmentations between the `id` and the stream's last-generated-id. */\n    if (!streamIDEqZero(id) && streamCompareID(id,&s->max_deleted_entry_id) < 0)\n        return SCG_INVALID_ENTRIES_READ;\n\n    int cmp_last = streamCompareID(id,&s->last_id);\n"
+      },
+      {
+        "find": "            if (group->entries_read != SCG_INVALID_ENTRIES_READ && !streamRangeHasTombstones(s,&id,NULL)) {\n                /* A valid counter and no future tombstones mean we can \n                 * increment the read counter to keep tracking the group's\n                 * progress. */\n",
+        "replace": "            if (group->entries_read != SCG_INVALID_ENTRIES_READ && !streamRangeHasTombstones(s,&group->last_id,NULL)) {\n                /* A valid counter and no tombstones between the group's last-delivered-id\n                 * and the stream's last-generated-id mean we can increment the read counter\n                 * to keep tracking the group's progress. */\n"
+      }
+    ],
+    "tests": true,
+    "fail_to_pass": [
+      "Consumer Group Lag with XDELs and tombstone after the last_id of consume group"
+    ],
+    "pass_to_pass": [
+      "XGROUP CREATE: creation and duplicate group name detection",
+      "XGROUP CREATE: with ENTRIESREAD parameter",
+      "XGROUP CREATE: automatic stream creation fails without MKSTREAM",
+      "XGROUP CREATE: automatic stream creation works with MKSTREAM",
+      "XREADGROUP will return only new elements",
+      "XREADGROUP can read the history of the elements we own",
+      "XPENDING is able to return pending items",
+      "XPENDING can return single consumer items",
+      "XPENDING only group",
+      "XPENDING with IDLE",
+      "XPENDING with exclusive range intervals works as expected",
+      "XACK is able to remove items from the consumer/group PEL",
+      "XACK can't remove the same item multiple times",
+      "XACK is able to accept multiple arguments",
+      "XACK should fail if got at least one invalid ID",
+      "PEL NACK reassignment after XGROUP SETID event",
+      "XREADGROUP will not report data on empty history. Bug #5577",
+      "XREADGROUP history reporting of deleted entries. Bug #5570",
+      "Blocking XREADGROUP will not reply with an empty array",
+      "Blocking XREADGROUP: key deleted",
+      "Blocking XREADGROUP: key type changed with SET",
+      "Blocking XREADGROUP: key type changed with transaction",
+      "Blocking XREADGROUP: flushed DB",
+      "Blocking XREADGROUP: swapped DB, key doesn't exist",
+      "Blocking XREADGROUP: swapped DB, key is not a stream",
+      "XREAD and XREADGROUP against wrong parameter",
+      "Blocking XREAD: key deleted",
+      "Blocking XREAD: key type changed with SET",
+      "Blocking XREADGROUP for stream that ran dry (issue #5299)",
+      "Blocking XREADGROUP will ignore BLOCK if ID is not >",
+      "Blocking XREADGROUP for stream key that has clients blocked on list",
+      "Blocking XREADGROUP for stream key that has clients blocked on stream - avoid endless loop",
+      "Blocking XREADGROUP for stream key that has clients blocked on stream - reprocessing command",
+      "XGROUP DESTROY should unblock XREADGROUP with -NOGROUP",
+      "RENAME can unblock XREADGROUP with data",
+      "RENAME can unblock XREADGROUP with -NOGROUP",
+      "XCLAIM can claim PEL items from another consumer",
+      "XCLAIM without JUSTID increments delivery count",
+      "XCLAIM same consumer",
+      "XAUTOCLAIM can claim PEL items from another consumer",
+      "XAUTOCLAIM as an iterator",
+      "XAUTOCLAIM COUNT must be > 0",
+      "XCLAIM with XDEL",
+      "XCLAIM with trimming",
+      "XAUTOCLAIM with XDEL",
+      "XAUTOCLAIM with XDEL and count",
+      "XAUTOCLAIM with out of range count",
+      "XINFO FULL output",
+      "Consumer seen-time and active-time",
+      "XGROUP CREATECONSUMER: create consumer if does not exist",
+      "XGROUP CREATECONSUMER: group must exist",
+      "XREADGROUP of multiple entries changes dirty by one",
+      "XREADGROUP from PEL does not change dirty",
+      "XREADGROUP with NOACK creates consumer",
+      "Consumer without PEL is present in AOF after AOFRW",
+      "Consumer group read counter and lag in empty streams",
+      "Consumer group read counter and lag sanity",
+      "Consumer group lag with XDELs",
+      "Loading from legacy (Redis <= v6.2.x, rdb_ver < 10) persistence",
+      "Loading from legacy (Redis <= v7.0.x, rdb_ver < 11) persistence",
+      "Consumer group last ID propagation to slave (NOACK=0)",
+      "Consumer group last ID propagation to slave (NOACK=1)",
+      "Replication tests of XCLAIM with deleted entries (autoclaim=0)",
+      "Replication tests of XCLAIM with deleted entries (autoclaim=1)",
+      "XREADGROUP ACK would propagate entries-read",
+      "XREADGROUP from PEL inside MULTI",
+      "Empty stream with no lastid can be rewrite into AOF correctly"
+    ]
+  },
+  {
+    "file": "src/t_list.c",
+    "edits": [
+      {
+        "find": "#include \"server.h\"",
+        "replace": "#include \"server.h\" /* bench */"
+      }
+    ],
+    "tests": false
+  },
+  {
+    "file": "src/server.c",
+    "edits": [
+      {
+        "find": "#include \"server.h\"",
+        "replace": "#include \"server.h\" /* bench */"
+      }
+    ],
+    "tests": false
+  },
+  {
+    "file": "src/db.c",
+    "edits": [
+      {
+        "find": "#include \"server.h\"",
+        "replace": "#include \"server.h\" /* bench */"
+      }
+    ],
+    "tests": false
+  },
+  {
+    "file": "src/networking.c",
+    "edits": [
+      {
+        "find": "#include \"server.h\"",
+        "replace": "#include \"server.h\" /* bench */"
+      }
+    ],
+    "tests": false
+  }
+]

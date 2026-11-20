@@ -1,0 +1,94 @@
+[
+  {
+    "file": "include/nlohmann/json.hpp",
+    "edits": [
+      {
+        "find": "NLOHMANN_JSON_NAMESPACE_BEGIN",
+        "replace": "NLOHMANN_JSON_NAMESPACE_BEGIN // bench"
+      }
+    ],
+    "tests": false
+  },
+  {
+    "file": "include/nlohmann/detail/conversions/to_json.hpp",
+    "edits": [
+      {
+        "find": "    external_constructor<value_t::number_integer>::construct(j, static_cast<underlying_type>(e));",
+        "replace": "    static constexpr value_t integral_value_t = std::is_unsigned<underlying_type>::value ? value_t::number_unsigned : value_t::number_integer;\n    external_constructor<integral_value_t>::construct(j, static_cast<underlying_type>(e));",
+        "file": "include/nlohmann/detail/conversions/to_json.hpp"
+      },
+      {
+        "find": "    external_constructor<value_t::number_integer>::construct(j, static_cast<underlying_type>(e));",
+        "replace": "    static constexpr value_t integral_value_t = std::is_unsigned<underlying_type>::value ? value_t::number_unsigned : value_t::number_integer;\n    external_constructor<integral_value_t>::construct(j, static_cast<underlying_type>(e));",
+        "file": "single_include/nlohmann/json.hpp"
+      }
+    ],
+    "tests": true,
+    "fail_to_pass": [
+      "basic usage > conversion to json via free-functions"
+    ],
+    "pass_to_pass": [
+      "basic usage > conversion from json via free-functions",
+      "basic usage > via explicit calls to get",
+      "basic usage > via explicit calls to get_to",
+      "basic usage > implicit conversions",
+      "adl_serializer specialization > partial specialization",
+      "adl_serializer specialization > to_json",
+      "adl_serializer specialization > from_json",
+      "adl_serializer specialization > total specialization",
+      "Non-copyable types > to_json",
+      "Non-copyable types > from_json",
+      "different basic_json types conversions > null",
+      "different basic_json types conversions > boolean",
+      "different basic_json types conversions > discarded",
+      "different basic_json types conversions > array",
+      "different basic_json types conversions > integer",
+      "different basic_json types conversions > float",
+      "different basic_json types conversions > unsigned",
+      "different basic_json types conversions > string",
+      "different basic_json types conversions > binary",
+      "different basic_json types conversions > object",
+      "different basic_json types conversions > get<custom_json>"
+    ]
+  },
+  {
+    "file": "include/nlohmann/detail/value_t.hpp",
+    "edits": [
+      {
+        "find": "enum class value_t : std::uint8_t",
+        "replace": "enum class value_t : std::uint8_t // bench"
+      }
+    ],
+    "tests": false
+  },
+  {
+    "file": "include/nlohmann/detail/input/parser.hpp",
+    "edits": [
+      {
+        "find": "class parser",
+        "replace": "class parser // bench"
+      }
+    ],
+    "tests": false
+  },
+  {
+    "file": "include/nlohmann/detail/output/serializer.hpp",
+    "edits": [
+      {
+        "find": "class serializer",
+        "replace": "class serializer // bench"
+      }
+    ],
+    "tests": false
+  },
+  {
+    "file": "include/nlohmann/detail/input/lexer.hpp",
+    "edits": [
+      {
+        "find": "class lexer : public lexer_base<BasicJsonType>",
+        "replace": "class lexer : public lexer_base<BasicJsonType> // bench"
+      }
+    ],
+    "tests": false
+  }
+]

@@ -90,7 +90,7 @@ Round:     find  read  edit  verify(peak)  diff
 Go is a value of `coding.language` (`"go"`), **not** a new `workflow_type`. The
 coding workflow loop (`find → read → edit → verify → diff`) is shared across
 languages; only the verify mechanics differ, captured as data in a
-`CodingLanguageProfile` registry (`e2b_bench/config.py`). Adding C++ later =
+`CodingLanguageProfile` registry (`src/bench_core/payload/coding_payload.py`). Adding C++ later =
 one registry entry + its default verify script — no runner code changes.
 
 | Profile field | ts (vuejs/core) | go (hugo) |
