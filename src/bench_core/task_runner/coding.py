@@ -106,6 +106,8 @@ def _build_edit_command(project_dir: str, target_file: str, find_str: str, repla
         "r = base64.b64decode(sys.argv[2]).decode()\n"
         "p = sys.argv[3]\n"
         "s = open(p, encoding='utf-8').read()\n"
+        "if not f:\n"
+        "    sys.exit(2)\n"
         "if f not in s:\n"
         "    sys.exit(2)\n"
         "open(p, 'w', encoding='utf-8').write(s.replace(f, r, 1))\n"
@@ -138,6 +140,8 @@ def _build_multi_edit_command(project_dir: str, target_file: str, edits: list[di
         "    if s is None:\n"
         "        s = open(p, encoding='utf-8').read()\n"
         "    f, r = e['find'], e['replace']\n"
+        "    if not f:\n"
+        "        sys.exit(2)\n"
         "    if f not in s:\n"
         "        sys.exit(2)\n"
         "    files[p] = s.replace(f, r, 1)\n"
@@ -206,8 +210,11 @@ def _run_test_suite_verify(
     if profile.test_module:
         classes = sorted({t.split("#", 1)[0].rsplit(".", 1)[-1] for t in test_ids})
         reports_dir = f"{project_dir}/{profile.test_module}/target/surefire-reports"
+        # `rm -rf` first: a stale surefire report from an earlier round must not
+        # satisfy the assertion when this round selects (and runs) nothing.
         cmd = (
             f"cd {project_dir} && "
+            f"rm -rf {reports_dir}; "
             f"mvn -o -q -B -pl {profile.test_module} {profile.test_args} "
             f"-Dtest={','.join(classes)} -DfailIfNoTests=false test && "
             f"python3 - {ids_b64} {reports_dir} <<'PYEOF'\n"
@@ -285,7 +292,9 @@ def _run_test_suite_verify(
             "        sys.exit(1)\n"
             "print('verified %d tests' % len(ids))\n"
             "PYEOF\n"
-            "exit $rc"
+            "prc=$?\n"
+            'if [ "$prc" -ne 0 ]; then exit "$prc"; fi\n'
+            'exit "$rc"'
         )
     elif profile.test_report_format == "django_test":
         # django suite (python/django): runtests.py prints unittest
@@ -326,7 +335,9 @@ def _run_test_suite_verify(
             "        sys.exit(1)\n"
             "print('verified %d tests' % len(ids))\n"
             "PYEOF\n"
-            "exit $rc"
+            "prc=$?\n"
+            'if [ "$prc" -ne 0 ]; then exit "$prc"; fi\n'
+            'exit "$rc"'
         )
     else:
         # Non-Maven suite (c/redis): run the project's own test command, then
@@ -366,7 +377,9 @@ def _run_test_suite_verify(
             "        sys.exit(1)\n"
             "print('verified %d tests' % len(ids))\n"
             "PYEOF\n"
-            "exit $rc"
+            "prc=$?\n"
+            'if [ "$prc" -ne 0 ]; then exit "$prc"; fi\n'
+            'exit "$rc"'
         )
 
     run_start = time.perf_counter()

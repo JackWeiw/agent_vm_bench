@@ -7,10 +7,18 @@ exec-only code path with no real sandbox. Thread bodies are invoked directly
 from __future__ import annotations
 
 import base64
+import json
+import subprocess
+import sys
 import threading
+from pathlib import Path
 
 from bench_core.config import KernelConfig
-from bench_core.payload.coding_payload import DEFAULT_CODING_SOURCE_FILES
+from bench_core.payload.coding_payload import (
+    CODING_LANGUAGE_DEFAULT_SOURCE_FILES,
+    DEFAULT_CODING_SOURCE_FILES,
+    get_coding_profile,
+)
 from bench_core.schemas import BenchSandbox
 from bench_core.task_runner.coding import (
     CodingConfig,
@@ -18,6 +26,8 @@ from bench_core.task_runner.coding import (
     CodingTaskRunner,
     CodingWarmupRunner,
     _build_edit_command,
+    _build_multi_edit_command,
+    _run_test_suite_verify,
     _run_verify,
 )
 from bench_core.workflow_registry import RunContext
@@ -303,3 +313,263 @@ class TestCodingRoundRunner:
         )
         runner.run()
         assert state.coding_metrics.total_tasks == 0
+
+
+class _RecordingProvider(FakeProvider):
+    """FakeProvider that records the generated verify command."""
+
+    def __init__(self):
+        super().__init__()
+        self.commands: list[str] = []
+
+    def exec(self, inst, command, **kw):  # type: ignore[override]
+        self.commands.append(command)
+        return CommandResult(0, "", "")
+
+
+def _suite_pair(language: str) -> dict:
+    """First default pair of ``language`` that declares a fail_to_pass selection."""
+    for pair in CODING_LANGUAGE_DEFAULT_SOURCE_FILES[language]:
+        if pair.get("fail_to_pass"):
+            return pair
+    raise AssertionError(f"no test-bearing pair for {language}")
+
+
+def _capture_suite_cmd(language: str) -> str:
+    """Generate the real suite-verify command without a container."""
+    config = CodingConfig(coding_language=language)
+    provider = _RecordingProvider()
+    _run_test_suite_verify(
+        provider,
+        _ready_sandbox(),
+        "/opt/coding-bench",
+        config,
+        _suite_pair(language),
+        get_coding_profile(language),
+    )
+    assert provider.commands, "suite verify did not issue a command"
+    return provider.commands[-1]
+
+
+def _heredoc_body(cmd: str) -> str:
+    """Extract the embedded python3 heredoc from a generated command."""
+    return cmd.split("<<'PYEOF'\n", 1)[1].split("\nPYEOF", 1)[0]
+
+
+def _run_python_body(body: str, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-", *args],
+        input=body,
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+    )
+
+
+def _run_parser(cmd: str, ids: list[str], path) -> subprocess.CompletedProcess:
+    ids_b64 = base64.b64encode(json.dumps(ids).encode()).decode()
+    return _run_python_body(_heredoc_body(cmd), ids_b64, str(path))
+
+
+class TestReportParsers:
+    """Each report format must fail on a missing, failing, or skipped id.
+
+    These parsers are the only thing standing between a renamed/skipped test and
+    a silently green verify, so each branch runs the exact heredoc embedded in
+    the generated verify command against a fixture.
+    """
+
+    def test_surefire_xml(self, tmp_path):
+        cmd = _capture_suite_cmd("java")
+        reports = tmp_path / "surefire-reports"
+        reports.mkdir()
+        (reports / "TEST-com.example.RegressionTest.xml").write_text(
+            '<?xml version="1.0"?>\n'
+            '<testsuite name="com.example.RegressionTest">\n'
+            '  <testcase name="testPasses" classname="com.example.RegressionTest"/>\n'
+            '  <testcase name="testFails" classname="com.example.RegressionTest">\n'
+            '    <failure message="boom"/>\n'
+            "  </testcase>\n"
+            "</testsuite>\n",
+            encoding="utf-8",
+        )
+
+        ok = _run_parser(cmd, ["com.example.RegressionTest#testPasses"], reports)
+        assert ok.returncode == 0, ok.stdout + ok.stderr
+        assert "verified 1 tests" in ok.stdout
+
+        failed = _run_parser(cmd, ["com.example.RegressionTest#testFails"], reports)
+        assert failed.returncode == 1
+        assert "NOT PASSED" in failed.stdout
+
+        not_run = _run_parser(cmd, ["com.example.RegressionTest#testNeverRan"], reports)
+        assert not_run.returncode == 1
+        assert "NOT RUN" in not_run.stdout
+
+        no_report = _run_parser(cmd, ["com.example.Absent#testPasses"], reports)
+        assert no_report.returncode == 1
+        assert "MISSING REPORT" in no_report.stdout
+
+    def test_doctest_xml(self, tmp_path):
+        cmd = _capture_suite_cmd("cpp")
+        xml = tmp_path / "doctest.xml"
+        xml.write_text(
+            '<?xml version="1.0"?>\n'
+            '<TestSuite name="udt">\n'
+            '  <TestCase name="basic usage">\n'
+            '    <SubCase name="conversion to json via free-functions">\n'
+            '      <Expression success="true"/>\n'
+            "    </SubCase>\n"
+            '    <SubCase name="broken case">\n'
+            '      <Expression success="false"/>\n'
+            "    </SubCase>\n"
+            "  </TestCase>\n"
+            "</TestSuite>\n",
+            encoding="utf-8",
+        )
+
+        ok = _run_parser(cmd, ["basic usage > conversion to json via free-functions"], xml)
+        assert ok.returncode == 0, ok.stdout + ok.stderr
+
+        failed = _run_parser(cmd, ["basic usage > broken case"], xml)
+        assert failed.returncode == 1
+        assert "NOT PASSED" in failed.stdout
+
+        not_run = _run_parser(cmd, ["basic usage > never ran"], xml)
+        assert not_run.returncode == 1
+        assert "NOT RUN" in not_run.stdout
+
+        no_report = _run_parser(cmd, ["basic usage > conversion to json via free-functions"], tmp_path / "absent.xml")
+        assert no_report.returncode == 1
+        assert "MISSING REPORT" in no_report.stdout
+
+    def test_django_log(self, tmp_path):
+        cmd = _capture_suite_cmd("python")
+        log = tmp_path / "django.log"
+        log.write_text(
+            "test_pass (auth_tests.test_basic.TestGetUser.test_pass) ... ok\n"
+            "The current user model can be retrieved ... ok\n"
+            "test_fail (auth_tests.test_basic.TestGetUser.test_fail) ... FAIL\n"
+            "test_skip (auth_tests.test_basic.TestGetUser.test_skip) ... skipped 'needs db'\n",
+            encoding="utf-8",
+        )
+
+        ok = _run_parser(cmd, ["The current user model can be retrieved"], log)
+        assert ok.returncode == 0, ok.stdout + ok.stderr
+
+        failed = _run_parser(cmd, ["test_fail (auth_tests.test_basic.TestGetUser.test_fail)"], log)
+        assert failed.returncode == 1
+        assert "NOT PASSED" in failed.stdout
+
+        skipped = _run_parser(cmd, ["test_skip (auth_tests.test_basic.TestGetUser.test_skip)"], log)
+        assert skipped.returncode == 1
+        assert "NOT PASSED" in skipped.stdout
+
+        not_run = _run_parser(cmd, ["test_never (auth_tests.test_basic.TestGetUser.test_never)"], log)
+        assert not_run.returncode == 1
+        assert "NOT RUN" in not_run.stdout
+
+    def test_tcl_log(self, tmp_path):
+        cmd = _capture_suite_cmd("c")
+        log = tmp_path / "redis.log"
+        log.write_text(
+            "[ok]: Consumer Group Lag with XDELs and tombstone after the last_id of consume group (12.5 ms)\n"
+            "[ok]: XGROUP CREATE: creation and duplicate group name detection\n"
+            "[err]: XREADGROUP will return only new elements\n"
+            "[skip]: Some skipped test (0 ms)\n",
+            encoding="utf-8",
+        )
+
+        ok = _run_parser(cmd, ["Consumer Group Lag with XDELs and tombstone after the last_id of consume group"], log)
+        assert ok.returncode == 0, ok.stdout + ok.stderr
+
+        failed = _run_parser(cmd, ["XREADGROUP will return only new elements"], log)
+        assert failed.returncode == 1
+        assert "NOT PASSED" in failed.stdout
+
+        skipped = _run_parser(cmd, ["Some skipped test"], log)
+        assert skipped.returncode == 1
+        assert "NOT PASSED" in skipped.stdout
+
+        not_run = _run_parser(cmd, ["never selected"], log)
+        assert not_run.returncode == 1
+        assert "NOT RUN" in not_run.stdout
+
+
+class TestVerifyCommandWiring:
+    def test_maven_clears_stale_reports_first(self):
+        # Without this, a round that selects nothing can grade the previous
+        # round's passing XML (surefire exits 0 with -DfailIfNoTests=false).
+        cmd = _capture_suite_cmd("java")
+        assert "rm -rf /opt/coding-bench/gson/target/surefire-reports; mvn " in cmd
+
+    def test_parser_failure_wins_over_suite_exit_code(self):
+        # A parser sys.exit(1) must not be discarded when the suite itself exits 0.
+        for language in ("c", "cpp", "python"):
+            cmd = _capture_suite_cmd(language)
+            assert "prc=$?" in cmd
+            tail = cmd[cmd.index("prc=$?") :]
+            assert 'if [ "$prc" -ne 0 ]; then exit "$prc"; fi' in tail
+            assert tail.rstrip().endswith('exit "$rc"')
+
+
+class TestEmptyFindGuard:
+    """An empty find string must reject the edit, not insert at offset 0."""
+
+    def test_single_edit_exits_2_and_leaves_file_untouched(self, tmp_path):
+        target = tmp_path / "sample.py"
+        target.write_text("class Foo:\n", encoding="utf-8")
+        cmd = _build_edit_command(str(tmp_path), str(target), "", "// bench")
+
+        result = _run_python_body(
+            _heredoc_body(cmd),
+            base64.b64encode(b"").decode(),
+            base64.b64encode(b"// bench").decode(),
+            str(target),
+        )
+
+        assert result.returncode == 2
+        assert target.read_text(encoding="utf-8") == "class Foo:\n"
+
+    def test_multi_edit_exits_2_and_leaves_file_untouched(self, tmp_path):
+        target = tmp_path / "sample.py"
+        target.write_text("class Foo:\n", encoding="utf-8")
+        edits = [{"file": str(target), "find": "", "replace": "// bench"}]
+        cmd = _build_multi_edit_command(str(tmp_path), str(target), edits)
+
+        result = _run_python_body(
+            _heredoc_body(cmd),
+            base64.b64encode(json.dumps(edits).encode()).decode(),
+            str(target),
+        )
+
+        assert result.returncode == 2
+        assert target.read_text(encoding="utf-8") == "class Foo:\n"
+
+
+class TestHelperPairFixtures:
+    """The helper's bench_pairs.json must not drift from coding_payload."""
+
+    repo_root = Path(__file__).resolve().parents[4]
+
+    @staticmethod
+    def _project(pair: dict) -> dict:
+        edits = pair.get("edits")
+        if edits is None:
+            edits = [{"find": pair["find"], "replace": pair["replace"]}]
+        out = {
+            "file": pair["file"],
+            "edits": [dict(e) for e in edits],
+            "tests": bool(pair.get("tests", bool(pair.get("fail_to_pass") or pair.get("pass_to_pass")))),
+        }
+        for key in ("fail_to_pass", "pass_to_pass"):
+            if pair.get(key):
+                out[key] = list(pair[key])
+        return out
+
+    def test_helper_json_matches_payload(self):
+        for language in ("c", "cpp", "python"):
+            path = self.repo_root / "dockerfile_build" / "coding" / language / "bench_pairs.json"
+            assert json.loads(path.read_text(encoding="utf-8")) == [
+                self._project(p) for p in CODING_LANGUAGE_DEFAULT_SOURCE_FILES[language]
+            ], f"{language}/bench_pairs.json drifted from coding_payload"
