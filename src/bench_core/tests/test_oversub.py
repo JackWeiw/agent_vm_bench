@@ -570,6 +570,8 @@ def test_trajectory_detail_has_rows(tmp_path):
                 "n_timeout": 0,
                 "success_rate": 1.0,
                 "elapsed_sec": 1.5,
+                "started_epoch": 1700000000.0,
+                "completed_epoch": 1700000010.0,
                 "time_breakdown_sec": {
                     "slice_total": 1.2,
                     "exec": 0.6,
@@ -623,6 +625,11 @@ def test_trajectory_detail_has_rows(tmp_path):
     assert r["create_sec"] == "0.05"
     assert r["kill_sec"] == "0.05"
     assert r["running_slot_held_sec"] == "1.2"
+    # Per-run wall-clock bounds: index.json epochs surface as ISO local stamps.
+    from datetime import datetime as _dt
+
+    assert _dt.fromisoformat(r["started_at"]).timestamp() == 1700000000.0
+    assert _dt.fromisoformat(r["completed_at"]).timestamp() == 1700000010.0
     # The renamed rate-pacing short keys must surface end-to-end: present in the
     # index.json time_breakdown_sec (the canonical caliber) and emitted as their
     # own trajectory-detail CSV columns; no legacy *_queue_wait names remain.

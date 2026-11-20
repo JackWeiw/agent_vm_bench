@@ -119,8 +119,8 @@ def trajectory_summaries(events: list[dict]) -> list[dict]:
     Returns one dict per RUN, sorted by (trajectory_id, sandbox_index, round_id).
     Each dict: ``{trajectory_id, sandbox_index, round_id, n_steps, n_failed,
     n_timeout, success_rate, sums, avg_slice, elapsed_sec, stress_sec,
-    requested_delay_sec, create_sec, kill_sec, create_error_type,
-    kill_error_type, create_error, kill_error}``.
+    requested_delay_sec, create_sec, kill_sec, started_epoch, completed_epoch,
+    create_error_type, kill_error_type, create_error, kill_error}``.
 
     - **Sums include failed steps at 0.0** (honest cost attribution; a failed
       slice did no work but still counts as an attempted step so avg_slice
@@ -144,6 +144,11 @@ def trajectory_summaries(events: list[dict]) -> list[dict]:
       guess how much of a run's wall was sandbox plumbing vs actual replay.
       The stress window is itself attributable via ``sums`` (exec / slice /
       inter-step delay / lifecycle waits).
+    - ``started_epoch``/``completed_epoch`` are the run's wall-clock bounds
+      (``time.time()`` epochs): the episode from trajectory_create start to
+      trajectory_kill completion (ephemeral modes), or the first real
+      ``resume_start`` to the last real ``pause_end`` (long-lived modes, which
+      emit no per-trajectory create/kill). ``None`` when neither is stamped.
     - ``create_sec``/``kill_sec`` sum within the run (a single create/kill per
       run in normal flow); ``create_error``/``kill_error`` carry the short error
       STRING from a ``trajectory_create(success=False)``/``trajectory_kill(success=False)``
@@ -176,7 +181,19 @@ def trajectory_summaries(events: list[dict]) -> list[dict]:
                 "kill_error": None,
             },
         )
-        stamps.setdefault(key, {"min_rs": float("inf"), "max_pe": 0.0, "req_delay": 0.0, "last_pe": 0.0})
+        stamps.setdefault(
+            key,
+            {
+                "min_rs": float("inf"),
+                "max_pe": 0.0,
+                "req_delay": 0.0,
+                "last_pe": 0.0,
+                # Create/kill event bounds (ephemeral modes), kept apart from
+                # min_rs/max_pe so the elapsed_sec formula stays exact.
+                "start_ts": float("inf"),
+                "end_ts": 0.0,
+            },
+        )
         return runs[key]
 
     for ev in events:
@@ -222,6 +239,8 @@ def trajectory_summaries(events: list[dict]) -> list[dict]:
             sandbox = ev.get("sandbox_index")
             round_id = ev.get("round_id")
             acc = _slot(tid, sandbox, round_id)
+            st = stamps[(tid, sandbox, round_id)]
+            ts = ev.get("timestamp")
             if evtype == "trajectory_create":
                 v = ev.get("create_sec")
                 if v is not None:
@@ -229,6 +248,14 @@ def trajectory_summaries(events: list[dict]) -> list[dict]:
                 if ev.get("success") is False:
                     acc["create_error_type"] = ev.get("error_type")
                     acc["create_error"] = ev.get("error")
+                # The event stamps create COMPLETION; subtract its duration to
+                # land on the run's true start.
+                if ts is not None:
+                    start = float(ts) - float(v or 0.0)
+                    if start < st["start_ts"]:
+                        st["start_ts"] = start
+                    if float(ts) > st["end_ts"]:
+                        st["end_ts"] = float(ts)
             else:  # trajectory_kill
                 v = ev.get("kill_sec")
                 if v is not None:
@@ -236,6 +263,8 @@ def trajectory_summaries(events: list[dict]) -> list[dict]:
                 if ev.get("success") is False:
                     acc["kill_error_type"] = ev.get("error_type")
                     acc["kill_error"] = ev.get("error")
+                if ts is not None and float(ts) > st["end_ts"]:
+                    st["end_ts"] = float(ts)
         elif evtype == "trajectory_failed":
             tid = ev.get("trajectory_id")
             if not tid:
@@ -267,6 +296,10 @@ def trajectory_summaries(events: list[dict]) -> list[dict]:
         acc["elapsed_sec"] = round(elapsed, 6)
         acc["stress_sec"] = round(max(elapsed - create_kill, 0.0), 6)
         acc["requested_delay_sec"] = round(st["req_delay"], 6)
+        started = min(st["start_ts"], st["min_rs"])
+        completed = max(st["end_ts"], st["max_pe"])
+        acc["started_epoch"] = None if started == float("inf") else round(started, 6)
+        acc["completed_epoch"] = round(completed, 6) if completed > 0 else None
         out.append(acc)
     return out
 
