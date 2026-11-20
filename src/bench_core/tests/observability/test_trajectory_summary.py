@@ -322,6 +322,48 @@ class TestTrajectorySummaries:
         ]
         assert trajectory_summaries(events) == []
 
+    def test_started_completed_epoch_from_create_and_kill(self):
+        # Ephemeral run: the event stamp is create COMPLETION, so the start
+        # backs out create_sec; the kill stamp is the run's wall-clock end.
+        events = [
+            {
+                "event": "trajectory_create",
+                "sandbox_index": 0,
+                "trajectory_id": "eph",
+                "timestamp": 1000.5,
+                "create_sec": 0.5,
+                "success": True,
+            },
+            _step("eph", resume_start=1001.0, pause_end=1005.0),
+            {
+                "event": "trajectory_kill",
+                "sandbox_index": 0,
+                "trajectory_id": "eph",
+                "timestamp": 1010.0,
+                "kill_sec": 0.5,
+                "success": True,
+            },
+        ]
+        r = trajectory_summaries(events)[0]
+        assert r["started_epoch"] == 1000.0
+        assert r["completed_epoch"] == 1010.0
+
+    def test_started_completed_epoch_from_step_stamps_when_no_create(self):
+        # Long-lived modes emit no per-trajectory create/kill: the span falls
+        # back to the first real resume_start / last real pause_end.
+        events = [
+            _step("long", step_index=0, resume_start=2000.0, pause_end=2002.0),
+            _step("long", step_index=1, resume_start=2003.0, pause_end=2006.0),
+        ]
+        r = trajectory_summaries(events)[0]
+        assert r["started_epoch"] == 2000.0
+        assert r["completed_epoch"] == 2006.0
+
+    def test_started_completed_epoch_none_without_stamps(self):
+        r = trajectory_summaries([_step("nostamp")])[0]
+        assert r["started_epoch"] is None
+        assert r["completed_epoch"] is None
+
 
 class TestAggregateTrajectories:
     def test_median_not_sum_across_runs(self):

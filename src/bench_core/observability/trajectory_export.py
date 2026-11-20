@@ -294,6 +294,8 @@ def _build_run_record(s: dict, steps: list[dict]) -> dict:
         "requested_delay_sec": s["requested_delay_sec"],
         "create_sec": round(s["create_sec"], 6),
         "kill_sec": round(s["kill_sec"], 6),
+        "started_epoch": s.get("started_epoch"),
+        "completed_epoch": s.get("completed_epoch"),
         "create_error_type": s["create_error_type"],
         "kill_error_type": s["kill_error_type"],
         "create_error": s["create_error"],
@@ -412,6 +414,8 @@ def _index_row(agg: dict, run_summaries: list[dict], sanitized: str, action_seri
             "success": r["success_rate"] is not None and r["success_rate"] >= 1.0,
             "create_error_type": r["create_error_type"],
             "kill_error_type": r["kill_error_type"],
+            "started_epoch": r.get("started_epoch"),
+            "completed_epoch": r.get("completed_epoch"),
             "time_breakdown_sec": _flat_breakdown(
                 r["sums"], r["requested_delay_sec"], r["create_sec"], r["kill_sec"], r["stress_sec"]
             ),

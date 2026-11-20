@@ -38,6 +38,7 @@ import logging
 import statistics
 import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
 
 import yaml
@@ -486,6 +487,10 @@ TRAJECTORY_COLUMNS = [
     "n_timeout",
     "success_rate",
     "elapsed_sec",
+    # Wall-clock bounds of this run (ISO local, ms). Index.json keeps the raw
+    # epochs (started_epoch / completed_epoch) for machine joins.
+    "started_at",
+    "completed_at",
     *_TRAJECTORY_BREAKDOWN_COLUMNS,
     "create_error_type",
     "kill_error_type",
@@ -705,6 +710,13 @@ def _write_csv(path: Path, columns: list[str], rows: list[dict]) -> None:
             w.writerow(r)
 
 
+def _iso_ts(epoch) -> str | None:
+    """Epoch seconds -> ISO-8601 local time (ms), matching run_summary's stamps."""
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(float(epoch)).astimezone().isoformat(timespec="milliseconds")
+
+
 def _trajectory_rows(trials: list[dict]) -> list[dict]:
     """One row per (trajectory, sandbox, round) per trial.
 
@@ -715,6 +727,9 @@ def _trajectory_rows(trials: list[dict]) -> list[dict]:
     ``time_breakdown_sec`` (that run's own sums) is surfaced as flat columns so
     a reader can attribute each run's ``elapsed_sec``; a ``groupby
     trajectory_id`` over the per-run rows yields the per-trajectory median.
+    ``started_at``/``completed_at`` carry each run's wall-clock bounds (from
+    the kernel's per-run ``started_epoch``/``completed_epoch``) so a reader can
+    see when a run actually occupied its slot.
 
     Backward compat: an older index.json without ``runs[]`` yields one row per
     trajectory from the top-level fields (a 1:1 pool>=N run), not a crash.
@@ -745,6 +760,8 @@ def _trajectory_rows(trials: list[dict]) -> list[dict]:
                     "n_timeout": src.get("n_timeout"),
                     "success_rate": src.get("success_rate"),
                     "elapsed_sec": src.get("elapsed_sec"),
+                    "started_at": _iso_ts(src.get("started_epoch")),
+                    "completed_at": _iso_ts(src.get("completed_epoch")),
                     "create_error_type": src.get("create_error_type"),
                     "kill_error_type": src.get("kill_error_type"),
                     # Trajectory-level (same for every run of this trajectory);
