@@ -2,7 +2,7 @@
 
 [**中文版**](bench-core-usage-zh.md)
 
-> The host-agnostic stress-test kernel. It drives e2b / docker / aenv / fake backends
+> The host-agnostic stress-test kernel. It drives e2b / docker / aenv / cubesandbox / sandboxsched / fake backends
 > through the `EnvironmentProvider` abstraction. It coexists with — and shares no code
 > with — the frozen legacy `e2b_bench/` and `docker_bench/`. For architecture, see the
 > [design doc](superpowers/specs/2026-08-12-environment-provider-bench-core-design.md).
@@ -18,7 +18,7 @@ load curve on any backend**.
 - `src/bench_core/` — the kernel: `run_benchmark` spine, stats / round-robin / task
   runners, `KernelConfig`. It never statically imports a backend SDK.
 - `src/env_provider/` — the contract (`EnvironmentProvider` ABC + `SandboxInstance`) and
-  the e2b / docker / aenv / fake provider impls (opt-in submodules; the contract itself
+  the e2b / docker / aenv / cubesandbox / sandboxsched / fake provider impls (opt-in submodules; the contract itself
   stays SDK-free).
 - `config/common/` — backend-agnostic workflow configs (each carries an `e2b:` and a
   `docker:` block; `--provider` selects which is read).
@@ -45,6 +45,7 @@ kernel. Backend SDKs are opt-in (install only the one you use; `fake` needs none
 ```bash
 pip install e2b       # --provider e2b
 pip install docker    # --provider docker
+pip install '.[sandboxsched]'  # --provider sandboxsched (OpenSandbox SDK)
 ```
 
 > Verify in one command (no SDK): `bench-core --provider fake --config config/common/browser.yaml --create-only -n 1`
@@ -153,7 +154,7 @@ bench-core --config <yaml> --provider {fake,e2b,docker,aenv} [mode/params]
 | `--create-only` | create + ready-check + persist IDs, then exit (keep running) |
 | `--detect` | reuse existing sandboxes (no create); no cleanup at end |
 | `--warmup-only` | create/detect + warmup, then exit (keep running) |
-| `--cleanup` | list + kill all existing sandboxes, then exit |
+| `--cleanup` | list + kill all existing sandboxes, then exit (sandboxsched scopes this to its own tagged fleet: bench-core-created sandboxes in the config's `sandbox_group`; fleets under another group or tool are left alone) |
 | `-o, --output-dir` | override report output dir |
 | `--report-format` | `txt` (default) / `xlsx` / `both` (xlsx adds an openpyxl workbook) |
 | `--vm-monitor` | `auto` (default, by provider `vmm_type`) / `true` / `false` |

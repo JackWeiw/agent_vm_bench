@@ -11,8 +11,8 @@ backend.
 - **`src/bench_core/`** — the kernel: `run_benchmark` spine, stats / round-robin
   / task runners, `KernelConfig`. Host-agnostic — never imports a backend SDK.
 - **`src/env_provider/`** — the `EnvironmentProvider` contract (ABC +
-  `SandboxInstance`) + e2b / docker / fake provider impls (opt-in submodules;
-  the contract stays SDK-free).
+  `SandboxInstance`) + e2b / docker / aenv / cubesandbox / sandboxsched / fake
+  provider impls (opt-in submodules; the contract stays SDK-free).
 - **`config/common/`** — backend-agnostic workflow configs (each carries both an
   `e2b:` and `docker:` block; `--provider` selects which is read).
 
@@ -66,6 +66,7 @@ Backend SDKs are opt-in (install only the one you use; `fake` needs none):
 ```bash
 pip install e2b       # --provider e2b
 pip install docker     # --provider docker
+pip install '.[sandboxsched]'  # --provider sandboxsched (OpenSandbox SDK)
 ```
 
 Verify the kernel + CLI + config parse in one command (no SDK):

@@ -1,6 +1,6 @@
 # bench-core 使用指南（src 内核）
 
-> 主机无关的压测内核,通过 `EnvironmentProvider` 抽象驱动 e2b / docker / fake。
+> 主机无关的压测内核,通过 `EnvironmentProvider` 抽象驱动 e2b / docker / aenv / cubesandbox / sandboxsched / fake。
 > 与冻结的 legacy `e2b_bench/`、`docker_bench/` 并存,互不影响(共享零代码)。
 > 架构原理见设计文档 `docs/superpowers/specs/2026-08-12-environment-provider-bench-core-design.md`。
 
@@ -36,6 +36,7 @@ python -m pip install -e .
 ```bash
 pip install 'e2b>=2.0,<2.47'   # --provider e2b / aenv
 pip install docker              # --provider docker
+pip install '.[sandboxsched]'   # --provider sandboxsched (OpenSandbox SDK)
 ```
 
 > **e2b 版本上限(`<2.47`)。** AENV 服务端暴露的 E2B-compatible API 对齐 e2b SDK
@@ -135,7 +136,7 @@ bench-core --config <yaml> --provider {fake,e2b,docker} [模式/参数]
 | `--create-only` | 只创建+就绪检查+存 ID,然后退出(沙箱保留) |
 | `--detect` | 复用已有沙箱(不新建);结束时不清理 |
 | `--warmup-only` | 创建/检测 + 预热,然后退出(沙箱保留) |
-| `--cleanup` | 列出+销毁所有现有沙箱,然后退出 |
+| `--cleanup` | 列出+销毁所有现有沙箱,然后退出(sandboxsched 按归属标签限定作用域:仅销毁本配置 `sandbox_group` 内 bench-core 创建的沙箱;其他 group 或其他工具的沙箱不动) |
 | `-o, --output-dir` | 覆盖报告输出目录 |
 
 > `bench-core` 找不到?见文末排错。等价写法:`python -m bench_core ...`。

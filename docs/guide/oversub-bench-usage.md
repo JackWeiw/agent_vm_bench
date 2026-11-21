@@ -48,7 +48,7 @@ keys are **rejected** (a typo like `repeat:` vs `repeats:` fails loudly).
 | key | default | meaning |
 |-----|---------|---------|
 | `base_config` | — (required) | base replay stress profile; deep-copied per trial |
-| `provider` | `aenv` | `{aenv, e2b, docker, fake}` |
+| `provider` | `aenv` | `{aenv, e2b, docker, sandboxsched, cubesandbox, fake}` |
 | `running_concurrency` | base `replay.running_concurrency` | ratio basis N; lifecycle scales it to k×N per trial (full-scale fleet) |
 | `ratios` | `1,2,3` | k values (list or `"1,2,3"`); `total_count = k×N` |
 | `modes` | `exec_ephemeral,lifecycle` | replay modes to sweep (one curve each; default = exec_ephemeral pure-COW first, then lifecycle); a WARNING fires when the driver auto-applies the default |
@@ -65,6 +65,11 @@ keys are **rejected** (a typo like `repeat:` vs `repeats:` fails loudly).
 | `no_vm_monitor` | `false` | pass `--no-vm-monitor` through to bench-core |
 | `bench_core_bin` | `[bench-core]` | kernel subprocess command (tests point at a stub) |
 | `auto_compare` | `true` | post-sweep, auto-run a single-series `oversub-compare` into `<output_root>/comparison/` (per-stat degradation + same-trajectory cross-ratio table); `--no-auto-compare` disables |
+
+> **`sandboxsched` does not support the `lifecycle` mode yet.** The provider vetoes an explicit
+> `replay.mode=lifecycle` at kernel startup (pause/resume is not validated against a live
+> OpenSandbox server), so lifecycle trials with `--provider sandboxsched` fail fast — sweep it
+> with `--modes exec_only,exec_ephemeral`.
 
 ### Per-trial config overrides
 
