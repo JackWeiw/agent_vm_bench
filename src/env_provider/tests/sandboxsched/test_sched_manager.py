@@ -649,3 +649,13 @@ class TestHandleLifecycle:
         mgr = SandboxManager(kernel_config, sched_config, Event())
         mgr.shutdown()  # never talked to the SDK: nothing to tear down
         assert mgr._loop_thread is None
+
+    def test_submit_after_shutdown_raises(self, kernel_config, sched_config):
+        # a call landing on a torn-down manager is a caller bug: raise
+        # instead of silently reviving a bridge loop nothing will ever stop
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        mgr.shutdown()
+        coro = asyncio.sleep(0)
+        coro.close()  # never submitted; closing avoids the never-awaited warning
+        with pytest.raises(RuntimeError, match="shut down"):
+            mgr.submit(coro)

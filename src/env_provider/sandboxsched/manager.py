@@ -286,7 +286,7 @@ class SandboxManager(BaseSandboxManager):
     """SandboxSched sandbox lifecycle: SDK seams over the shared lifecycle template.
 
     Shared stress params (total_count, create_batch_*, workflow_type) are read
-    from ``kernel_config``; backend knobs (template, sandbox_group, create_timeout,
+    from ``kernel_config``; backend knobs (template, sandbox_group, sandbox_ttl,
     connection) from ``config``. Readiness is delegated to :class:`ReadyChecker`
     via the base (provider-transparent ``_ready_config`` -- no sandboxsched
     readiness knobs).
@@ -329,8 +329,12 @@ class SandboxManager(BaseSandboxManager):
         never pays for a thread. The wait is bounded at ``ready_timeout`` plus
         a margin -- the SDK's own resume/pause waits run inside that budget --
         so a blackholed server raises TimeoutError instead of wedging the
-        calling thread forever.
+        calling thread forever. Raises RuntimeError after shutdown() -- a
+        call that landed on a torn-down manager is a caller bug, not
+        something to silently revive a bridge for.
         """
+        if self._shutdown:
+            raise RuntimeError("SandboxManager has been shut down")
         with self._bridge_lock:
             if self._loop_thread is None:
                 self._loop_thread = _EventLoopThread()
