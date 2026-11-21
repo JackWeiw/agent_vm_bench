@@ -6,8 +6,8 @@ live on :class:`bench_core.config.KernelConfig`, read from the shared sections
 of the unified YAML by :meth:`KernelConfig.from_raw`. This Config holds only
 the sandboxsched-specific knobs -- the OpenSandbox server address / API key,
 the mandatory ``sandbox_group`` (``extensions.sandboxGroup``), the image /
-template, the create timeout, and the sandbox IDs file -- read from the
-``sandboxsched:`` block of that YAML.
+template, the sandbox TTL, the envd port, and the sandbox IDs file -- read
+from the ``sandboxsched:`` block of that YAML.
 
 Credential fallback: when ``api_key`` is blank OR holds a template placeholder
 (``your_opensandbox_api_key_here``, as shipped in the example YAMLs) on this
@@ -65,13 +65,22 @@ class Config:
     # to ``Sandbox.create``.
     template: str = "python:3.11"
 
-    # Sandbox creation timeout (seconds) -> timedelta for Sandbox.create.
-    create_timeout: int = 86400
+    # Server-side TTL of the sandbox itself -- forwarded as ``Sandbox.create(
+    # timeout=...)``, after which the OpenSandbox server tears the sandbox down
+    # on its own. NOT a create-wait budget (that is ``ready_timeout``). The
+    # default 86400 (24h) means a fleet whose cleanup failed still occupies
+    # server resources for a day; lower it if that is a concern.
+    sandbox_ttl: int = 86400
 
     # Optional resource dict (e.g. {"cpu": "1", "memory": "2Gi"}) forwarded to
     # Sandbox.create as ``resource=``. None -> SDK default
     # ({"cpu": "1", "memory": "2Gi"}).
     resource: dict[str, str] | None = None
+
+    # Port envd listens on inside the sandbox. E2B-mode flux-sandboxes publish
+    # the endpoint at the fixed 49983; override only for a runtime that maps
+    # envd elsewhere.
+    envd_port: int = 49983
 
     # Sandbox IDs file (for save/load sandbox IDs across runs).
     sandbox_ids_file: str | None = None
@@ -126,8 +135,9 @@ class Config:
             protocol=str(backend.get("protocol", "http")).lower(),
             sandbox_group=backend.get("sandbox_group", ""),
             template=backend.get("template", "python:3.11"),
-            create_timeout=int(backend.get("create_timeout", 86400)),
+            sandbox_ttl=int(backend.get("sandbox_ttl", 86400)),
             resource=backend.get("resource"),
+            envd_port=int(backend.get("envd_port", 49983)),
             sandbox_ids_file=backend.get("sandbox_ids_file"),
             skip_health_check=bool(backend.get("skip_health_check", True)),
             ready_timeout=int(backend.get("ready_timeout", 300)),

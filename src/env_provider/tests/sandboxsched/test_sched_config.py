@@ -21,21 +21,23 @@ class TestConfigFromRaw:
         raw = {
             "sandboxsched": {
                 "template": "ubuntu-22-04-custom",
-                "create_timeout": 300,
+                "sandbox_ttl": 300,
                 "sandbox_group": "sg-2u4g",
                 "sandbox_ids_file": "ids.txt",
                 "domain": "10.0.0.1:80",
                 "protocol": "https",
+                "envd_port": 49984,
                 "env": {"OPEN_SANDBOX_API_KEY": "real-key"},
             }
         }
         cfg = Config.from_raw(raw)
         assert cfg.template == "ubuntu-22-04-custom"
-        assert cfg.create_timeout == 300
+        assert cfg.sandbox_ttl == 300
         assert cfg.sandbox_group == "sg-2u4g"
         assert cfg.sandbox_ids_file == "ids.txt"
         assert cfg.domain == "10.0.0.1:80"
         assert cfg.protocol == "https"
+        assert cfg.envd_port == 49984
         assert cfg.api_key == "real-key"
 
     def test_env_nests_under_block(self):
@@ -56,7 +58,8 @@ class TestConfigFromRaw:
     def test_missing_block_yields_defaults(self):
         cfg = Config.from_raw({})
         assert cfg.template == "python:3.11"
-        assert cfg.create_timeout == 86400
+        assert cfg.sandbox_ttl == 86400
+        assert cfg.envd_port == 49983
         assert cfg.sandbox_group == ""
         assert cfg.skip_health_check is True
         assert cfg.api_key == ""
