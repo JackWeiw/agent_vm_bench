@@ -217,15 +217,16 @@ def save_env_config(config: dict):
                         f.write(f"{env_key}={value}\n")
 
 
-def validate_and_prompt_missing(config: dict, non_interactive: bool = False, check_uprof: bool = True) -> dict:
+def validate_and_prompt_missing(config: dict, non_interactive: bool = False, check_uprof: bool = False) -> dict:
     """Validate paths and prompt user for missing/invalid ones
 
     Args:
         config: dict with path configurations
         non_interactive: if True, skip prompts and disable missing tools silently
         check_uprof: validate UPROF_PATH too (WARN + None on unset/invalid).
-            Callers pass False when the uprof rotation slot cannot run (no
-            ``--log-rotation``) so hosts without uProf stay quiet.
+            Off by default so library callers never gain a new WARN; only
+            callers that run the uprof rotation slot (``--log-rotation``)
+            pass True.
 
     Returns:
         Updated config dict with valid paths or None for disabled tools
@@ -285,8 +286,8 @@ def validate_and_prompt_missing(config: dict, non_interactive: bool = False, che
     # UPROF_PATH is registered in ENV_REQUIRED_KEYS but is an optional tool:
     # validate the path and degrade to None -- never prompt, never block the
     # session (the uprof rotation slot is skipped instead). The slot only
-    # exists under --log-rotation, so callers outside rotation mode pass
-    # check_uprof=False to keep parallel-mode runs quiet.
+    # exists under --log-rotation, so only rotation-mode callers opt in via
+    # check_uprof=True; the default keeps every other caller quiet.
     if check_uprof:
         uprof_path = config.get("uprof_path", "")
         if not uprof_path or not os.path.exists(uprof_path):

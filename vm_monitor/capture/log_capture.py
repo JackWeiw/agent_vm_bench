@@ -772,19 +772,39 @@ class LogCapture:
         log_path = self._rotation_log_path("uprof")
         if log_path is None:
             return
-        # -O points at the uprof/ dir (the same dir the stdout log lives in):
-        # the tool AUTO-GENERATES timestamped folders inside it per turn
-        # (AMDuProfPcm-Timeseries_*/report-timerseries.csv) -- per-turn
-        # isolation is the tool's own behavior, so there is no per-turn path
-        # management here at all. Pass an ABSOLUTE path: Popen runs the tool
-        # with cwd=rotation_log_dir, and a still-relative -O would be resolved
+        # -O points at a PER-TURN output dir (sibling of the stdout log): the
+        # tool AUTO-GENERATES timestamped folders inside -O per turn
+        # (AMDuProfPcm-Timeseries_*/report-timerseries.csv). A shared uprof/
+        # dir would (a) accumulate unbounded tool folders across turns and
+        # (b) let a parked over-run turn and the next turn write into the SAME
+        # dir concurrently, so each turn gets uprof/<stamp>_out/ (unique via
+        # the log path's collision suffix) and an empty one is removed with
+        # its empty log. Pass an ABSOLUTE path: Popen runs the tool with
+        # cwd=rotation_log_dir, and a still-relative -O would be resolved
         # against THAT cwd one level wrong (the duplicated
         # log_capture/<log_dir>/log_capture/uprof tree seen live).
-        uprof_dir = os.path.dirname(os.path.abspath(log_path))
+        uprof_out_dir = os.path.splitext(os.path.abspath(log_path))[0] + "_out"
         try:
             fh = open(log_path, "w")
         except OSError as e:
             print(f"  [ERROR] rotation uprof cannot open log {log_path}: {e}")
+            return
+        try:
+            os.makedirs(uprof_out_dir, exist_ok=True)
+        except OSError as e:
+            print(f"  [ERROR] rotation uprof cannot create output dir {uprof_out_dir}: {e}")
+            try:
+                fh.close()
+            except Exception:
+                pass
+            try:
+                os.unlink(log_path)  # drop the empty log from the failed turn
+            except OSError:
+                pass
+            try:
+                os.rmdir(os.path.dirname(log_path))  # drop the empty uprof dir too
+            except OSError:
+                pass
             return
         cmd = [
             self.config["uprof_path"],
@@ -794,7 +814,7 @@ class LogCapture:
             "-A",
             "system,package",
             "-O",
-            uprof_dir,
+            uprof_out_dir,
             "-d",
             interval,
         ]
@@ -815,6 +835,10 @@ class LogCapture:
                 pass
             try:
                 os.unlink(log_path)  # drop the empty log from the failed turn
+            except OSError:
+                pass
+            try:
+                os.rmdir(uprof_out_dir)  # drop the empty per-turn output dir too
             except OSError:
                 pass
             try:
@@ -844,12 +868,20 @@ class LogCapture:
             # writes its counters to stdout (see scripts/fc-perf-collect.sh), so
             # with no -o this captured log is the per-turn sample -- or at least
             # carries diagnostics. Keep it whenever it is non-empty, whatever
-            # the exit code; an EMPTY log is pure noise and gets dropped.
+            # the exit code; an EMPTY log is pure noise and gets dropped, its
+            # rotation_turns entry with it (the summary must not count a file
+            # that no longer exists).
             if proc.returncode != 0:
                 self.failed_runtime.append({"tool": "uprof", "returncode": proc.returncode})
             try:
                 if os.path.isfile(log_path) and os.path.getsize(log_path) == 0:
                     os.unlink(log_path)
+                    if self.rotation_turns["uprof"] and self.rotation_turns["uprof"][-1] == log_path:
+                        self.rotation_turns["uprof"].pop()
+            except OSError:
+                pass
+            try:
+                os.rmdir(uprof_out_dir)  # keep only output dirs the tool wrote
             except OSError:
                 pass
 

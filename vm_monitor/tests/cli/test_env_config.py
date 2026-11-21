@@ -94,24 +94,35 @@ class TestValidateUprofPath(unittest.TestCase):
         uprof = os.path.join(self.tmp, "AMDuProfPcm")
         with open(uprof, "w"):
             pass
-        self.assertEqual(self._validate(uprof)["uprof_path"], uprof)
+        self.assertEqual(self._validate(uprof, check_uprof=True)["uprof_path"], uprof)
 
     def test_invalid_path_warns_and_sets_none_without_prompt(self):
         with redirect_stdout(io.StringIO()) as out:
-            result = self._validate(os.path.join(self.tmp, "missing_AMDuProfPcm"))
+            result = self._validate(os.path.join(self.tmp, "missing_AMDuProfPcm"), check_uprof=True)
         self.assertIsNone(result["uprof_path"])
         self.assertIn("UPROF_PATH", out.getvalue())
 
     def test_unset_path_warns_and_sets_none_without_prompt(self):
         with redirect_stdout(io.StringIO()) as out:
-            result = self._validate(None)
+            result = self._validate(None, check_uprof=True)
         self.assertIsNone(result["uprof_path"])
         self.assertIn("UPROF_PATH", out.getvalue())
 
     def test_non_interactive_invalid_path_sets_none(self):
         with redirect_stdout(io.StringIO()):
-            result = self._validate(os.path.join(self.tmp, "missing_AMDuProfPcm"), non_interactive=True)
+            result = self._validate(
+                os.path.join(self.tmp, "missing_AMDuProfPcm"), non_interactive=True, check_uprof=True
+            )
         self.assertIsNone(result["uprof_path"])
+
+    def test_default_quiet_no_uprof_validation(self):
+        # check_uprof defaults to False: library callers never gain a new
+        # WARN; uprof_path is left untouched (the CLI opts in explicitly).
+        missing = os.path.join(self.tmp, "missing_AMDuProfPcm")
+        with redirect_stdout(io.StringIO()) as out:
+            result = self._validate(missing)
+        self.assertEqual(result["uprof_path"], missing)
+        self.assertNotIn("UPROF_PATH", out.getvalue())
 
     def test_check_uprof_false_skips_validation_entirely(self):
         # Parallel mode (no --log-rotation): the CLI passes check_uprof=False,
