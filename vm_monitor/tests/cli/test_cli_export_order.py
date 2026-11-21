@@ -12,6 +12,7 @@ appearance means CSV + SVG + xlsx are all written. This test locks that
 ordering at the CLI level (the layer where the fix is), not at bench-core's
 orchestration layer.
 """
+
 from __future__ import annotations
 
 import logging
@@ -34,7 +35,9 @@ def test_cli_exports_svg_before_xlsx(monkeypatch, tmp_path):
         call_order.append("svg")
         return []
 
-    def fake_xlsx(monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False):
+    def fake_xlsx(
+        monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False, rotation_log_dir=None
+    ):
         call_order.append("xlsx")
         recorded["skip_charts"] = skip_charts
 
@@ -79,7 +82,9 @@ def test_cli_no_charts_forwards_skip_charts(monkeypatch, tmp_path):
 
     recorded: dict = {}
 
-    def fake_xlsx(monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False):
+    def fake_xlsx(
+        monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False, rotation_log_dir=None
+    ):
         recorded["skip_charts"] = skip_charts
 
     monkeypatch.setattr(cli, "export_to_excel", fake_xlsx)
@@ -125,7 +130,9 @@ def test_auto_host_resources_hook_runs_even_with_no_charts(monkeypatch, tmp_path
         recorded["out"] = out_path
         return out_path
 
-    def fake_xlsx(monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False):
+    def fake_xlsx(
+        monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False, rotation_log_dir=None
+    ):
         call_order.append("xlsx")
 
     monkeypatch.setattr(cli, "build_host_resources_xlsx", fake_build)
@@ -161,7 +168,9 @@ def test_auto_host_resources_hook_failure_does_not_block_xlsx(monkeypatch, tmp_p
         call_order.append("host_resources-boom")
         raise OSError("simulated disk full")
 
-    def fake_xlsx(monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False):
+    def fake_xlsx(
+        monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False, rotation_log_dir=None
+    ):
         call_order.append("xlsx")
 
     monkeypatch.setattr(cli, "build_host_resources_xlsx", boom)
@@ -204,7 +213,9 @@ def test_host_resources_runs_before_svg_so_survives_export_interrupt(monkeypatch
         call_order.append("svg")
         raise KeyboardInterrupt  # simulate a mid-export interrupt (handler reset / hard kill)
 
-    def fake_xlsx(monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False):
+    def fake_xlsx(
+        monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False, rotation_log_dir=None
+    ):
         call_order.append("xlsx")  # must NOT run -- SVG raised before it
 
     monkeypatch.setattr(cli, "build_host_resources_xlsx", fake_build)

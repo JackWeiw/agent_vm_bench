@@ -99,8 +99,10 @@ UB_WATCH_PATH=/path/to/ub_watch
 # smap_bw（经 sudo 运行以访问 dmesg）
 SMAP_BW_PATH=/path/to/smap_bw.py
 
-# AMD uProf（仅 log-rotation 轮转使用；未配置则轮转跳过 uprof 槽）
-UPROF_PATH=/opt/AMDuProf_5.3-521/bin/AMDuProfPcm
+# AMD uProf（仅 log-rotation 轮转使用；未配置或路径无效时 WARN 并跳过该槽，不阻塞运行。
+# 指标可用 --rotation-uprof-metrics / monitor.log_rotation.uprof_metrics 覆盖，默认 memory,pipeline_util；
+# -O 指向每 turn 独立的 uprof/<stamp>/ 目录（stdout 日志与工具产物同目录，工具在其内自动生成 AMDuProfPcm-Timeseries_* 子目录）——原始产物，不做解析；每 turn 目录会随运行累积（磁盘紧张时请在两次运行之间清理））
+UPROF_PATH=/path/to/AMDuProfPcm
 
 # getfre 及其 YAML 配置
 GETFRE_PATH=/path/to/getfre
@@ -119,12 +121,13 @@ DEVKIT_CPU_RANGE=96-191
 | `KSYS_PATH` + `KSYS_CONFIG_PATH` | `ksys` | KSys sheet | **两者均必需** |
 | `UB_WATCH_PATH` | `ub_watch` | UBWatch sheets | 可选 |
 | `SMAP_BW_PATH` | `smap_bw` | SMAPBW sheets | 可选；sudo |
-| `UPROF_PATH` | `uprof`（轮转模式） | log_capture/uprof 日志 | 可选；仅 `--log-rotation`，未配置跳过该槽 |
+| `UPROF_PATH` | `uprof`（轮转模式） | `log_capture/uprof/<stamp>/`（日志 + 工具产物） | 可选；仅 `--log-rotation`，未配置或路径无效时 WARN 并跳过该槽（不提示、不阻塞） |
 | `GETFRE_PATH` + `GETFRE_CONFIG_PATH` | `getfre` | Getfre sheets | 可选；配置可从宿主机拓扑自动填充 |
 
 缺失路径的行为：
 - **`--auto-skip` / bench-core 自动 vm-monitor**：该工具被静默禁用，打印一条 `[WARN]`，运行继续。缺失工具的 sheet 在 `resource_report.xlsx` 中直接不存在——绝不会硬失败。
 - **交互模式（无 `--auto-skip`）**：vm_monitor 逐个提示输入缺失路径，`skip` 禁用，有效路径经 `python-dotenv` 写回 `.env`。
+- **`UPROF_PATH` 是例外**：两种模式下都不会提示输入——未配置或路径无效时降级为一条 `[WARN]`，跳过 uprof 轮转槽（运行继续）。
 
 ### getfre 配置（`getfre_config.yaml`）
 

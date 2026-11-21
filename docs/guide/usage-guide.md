@@ -157,6 +157,7 @@ When using `--enable-capture`, vm_monitor.py invokes the following performance c
 | **ub_watch** | NUMA interconnect latency | `ub_watch.log` | UBWatch_Latency | 7 |
 | **smap_bw** | SMAP migration bandwidth | `smap_bw.log` | SMAPBW_Summary, SMAPBW_Cycles | 5+ |
 | **getfre** | Core frequency monitoring | `getfre_NUMA*.log` | Getfre_Summary, Getfre_NUMA* | 5+ per NUMA |
+| **uprof** (rotation only) | AMD system counters / topdown | `log_capture/uprof/<stamp>/` (log + tool output) | — (raw CSVs) | timeseries |
 
 ### Tool Details
 
@@ -293,8 +294,10 @@ UB_WATCH_PATH=/path/to/ub_watch
 # smap_bw script path (run via sudo for dmesg access)
 SMAP_BW_PATH=/path/to/smap_bw.py
 
-# AMD uProf binary (log-rotation slot; rotation skips uprof if unset)
-UPROF_PATH=/opt/AMDuProf_5.3-521/bin/AMDuProfPcm
+# AMD uProf binary (log-rotation slot; unset/invalid path warns and skips the slot.
+# Metrics: --rotation-uprof-metrics / monitor.log_rotation.uprof_metrics, default memory,pipeline_util;
+# -O points at the per-turn uprof/<stamp>/ dir that also holds the stdout log (the tool auto-generates AMDuProfPcm-Timeseries_* subdirs inside it) -- raw artifacts, not parsed into sheets; per-turn dirs accumulate for the run (remove between runs if disk-constrained))
+UPROF_PATH=/path/to/AMDuProfPcm
 
 # getfre executable path and config
 GETFRE_PATH=/path/to/getfre
@@ -313,10 +316,10 @@ DEVKIT_CPU_RANGE=96-191
 | `KSYS_PATH` + `KSYS_CONFIG_PATH` | `ksys` | KSys sheet | **both required** — ksys skipped if either missing |
 | `UB_WATCH_PATH` | `ub_watch` | UBWatch_Latency sheet | optional |
 | `SMAP_BW_PATH` | `smap_bw` | SMAPBW sheets | optional (run via sudo) |
-| `UPROF_PATH` | `uprof` (rotation mode) | log_capture/uprof logs | optional; `--log-rotation` only, slot skipped if unset |
+| `UPROF_PATH` | `uprof` (rotation mode) | `log_capture/uprof/<stamp>/` (log + tool output) | optional; `--log-rotation` only; unset/invalid warns + skips the slot (never prompts) |
 | `GETFRE_PATH` + `GETFRE_CONFIG_PATH` | `getfre` | Getfre sheets | optional; config falls back to host auto-detect |
 
-If `.env` is missing entirely or a path is unset, interactive input will be prompted (or the tool silently skipped in non-interactive mode).
+If `.env` is missing entirely or a path is unset, interactive input will be prompted (or the tool silently skipped in non-interactive mode). UPROF_PATH is the exception: never prompted in either mode — unset/invalid degrades to a warning and the uprof rotation slot is skipped.
 
 ### Output Files
 

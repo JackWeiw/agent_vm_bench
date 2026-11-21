@@ -302,7 +302,7 @@ table is still written.
 
 ## 2.3 External hardware profiler sheets (`--enable-capture`)
 
-These sheets are written only when the corresponding tool log exists in `--log-dir` (tools run in parallel via `LogCapture` when `--enable-capture` is passed). Tool paths come from `.env` (`DEVKIT_PATH`, `KSYS_PATH`, `UB_WATCH_PATH`, `SMAP_BW_PATH`, `GETFRE_PATH`). See [Usage Guide – Log Collection Tools](usage-guide.md#log-collection-tools).
+These sheets are written only when the corresponding tool log exists in `--log-dir` (tools run in parallel via `LogCapture` when `--enable-capture` is passed). Tool paths come from `.env` (`DEVKIT_PATH`, `KSYS_PATH`, `UB_WATCH_PATH`, `SMAP_BW_PATH`, `GETFRE_PATH`). See [Usage Guide – Log Collection Tools](../guide/usage-guide.md#log-collection-tools).
 
 ### `DevKit_TopDown` — columns `Metric` | `Value` | `Report Count`
 
@@ -998,6 +998,6 @@ timeline sheet's presence to tell them apart (absent sheet = not collected).
 
 ## Related documentation
 
-- [Usage Guide – Log Collection Tools](usage-guide.md#log-collection-tools): `.env` paths + flags for devkit / ksys / ub_watch / smap_bw / getfre.
-- [bench-core usage (中文)](bench-core-usage-zh.md): `bench-core` install → config → CLI → cleanup → troubleshooting.
-- [System design](design.md) / [design-en.md](design-en.md): architecture and data flow.
+- [Usage Guide – Log Collection Tools](../guide/usage-guide.md#log-collection-tools): `.env` paths + flags for devkit / ksys / ub_watch / smap_bw / uprof / getfre.
+- [bench-core usage (中文)](../guide/bench-core-usage-zh.md): `bench-core` install → config → CLI → cleanup → troubleshooting.
+- [System design](../architecture/design.md) / [design-en.md](../architecture/design-en.md): architecture and data flow.
