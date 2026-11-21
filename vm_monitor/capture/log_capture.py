@@ -508,6 +508,33 @@ class LogCapture:
             path = os.path.join(d, f"{base}-{n}.log")
         return path
 
+    def _rotation_uprof_turn_dir(self) -> str | None:
+        """Create a self-contained per-turn dir for the uprof slot.
+
+        Layout: <rotation_log_dir>/uprof/<YYYYmmdd-HHMMSS>/ holding BOTH the
+        stdout log (<dir-name>.log) and the tool's -O output, so one turn is
+        exactly one directory. A dir-name collision (only possible with
+        sub-second slot intervals) gets a -2/-3 suffix; the log name follows.
+        """
+        d = os.path.join(self.rotation_log_dir, "uprof")
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError as e:
+            print(f"  [ERROR] rotation: cannot create log dir {d}: {e}")
+            return None
+        base = datetime.now().strftime("%Y%m%d-%H%M%S")
+        turn_dir = os.path.join(d, base)
+        n = 1
+        while os.path.exists(turn_dir):
+            n += 1
+            turn_dir = os.path.join(d, f"{base}-{n}")
+        try:
+            os.makedirs(turn_dir)
+        except OSError as e:
+            print(f"  [ERROR] rotation: cannot create turn dir {turn_dir}: {e}")
+            return None
+        return os.path.join(turn_dir, os.path.basename(turn_dir) + ".log")
+
     def _rotation_skip_tool(self, tool: str, reason: str) -> None:
         """Disable one tool's turns for the rest of the run (warn once)."""
         if tool not in self._rotation_skipped:
@@ -762,47 +789,32 @@ class LogCapture:
             pass
 
     def _rotation_uprof_turn(self) -> None:
-        """One uprof slot: AMDuProfPcm system-wide counters into a per-turn log."""
+        """One uprof slot: AMDuProfPcm system-wide counters into a per-turn dir."""
         if "uprof" in self._rotation_skipped:
             return
         if not self.config.get("uprof_path"):
             self._rotation_skip_tool("uprof", "uprof_path not configured")
             return
         interval = str(self.rotation_intervals["uprof"])
-        log_path = self._rotation_log_path("uprof")
+        log_path = self._rotation_uprof_turn_dir()
         if log_path is None:
             return
-        # -O points at a PER-TURN output dir (sibling of the stdout log): the
-        # tool AUTO-GENERATES timestamped folders inside -O per turn
-        # (AMDuProfPcm-Timeseries_*/report-timerseries.csv). A shared uprof/
-        # dir would (a) accumulate unbounded tool folders across turns and
-        # (b) let a parked over-run turn and the next turn write into the SAME
-        # dir concurrently, so each turn gets uprof/<stamp>_out/ (unique via
-        # the log path's collision suffix) and an empty one is removed with
-        # its empty log. Pass an ABSOLUTE path: Popen runs the tool with
+        # -O points at the per-turn dir that ALSO holds the stdout log (the
+        # tool AUTO-GENERATES timestamped folders inside -O, e.g.
+        # AMDuProfPcm-Timeseries_*/report-timerseries.csv): one turn is exactly
+        # one uprof/<stamp>/ directory, so a parked over-run turn and the next
+        # turn can never write the same dir and an empty turn cleans up as one
+        # unit. Pass an ABSOLUTE path: Popen runs the tool with
         # cwd=rotation_log_dir, and a still-relative -O would be resolved
         # against THAT cwd one level wrong (the duplicated
         # log_capture/<log_dir>/log_capture/uprof tree seen live).
-        uprof_out_dir = os.path.splitext(os.path.abspath(log_path))[0] + "_out"
+        uprof_out_dir = os.path.abspath(os.path.dirname(log_path))
         try:
             fh = open(log_path, "w")
         except OSError as e:
             print(f"  [ERROR] rotation uprof cannot open log {log_path}: {e}")
-            return
-        try:
-            os.makedirs(uprof_out_dir, exist_ok=True)
-        except OSError as e:
-            print(f"  [ERROR] rotation uprof cannot create output dir {uprof_out_dir}: {e}")
             try:
-                fh.close()
-            except Exception:
-                pass
-            try:
-                os.unlink(log_path)  # drop the empty log from the failed turn
-            except OSError:
-                pass
-            try:
-                os.rmdir(os.path.dirname(log_path))  # drop the empty uprof dir too
+                os.rmdir(os.path.dirname(log_path))  # drop the empty turn dir
             except OSError:
                 pass
             return
@@ -838,11 +850,11 @@ class LogCapture:
             except OSError:
                 pass
             try:
-                os.rmdir(uprof_out_dir)  # drop the empty per-turn output dir too
+                os.rmdir(os.path.dirname(log_path))  # drop the empty turn dir too
             except OSError:
                 pass
             try:
-                os.rmdir(os.path.dirname(log_path))  # drop the empty uprof dir too
+                os.rmdir(os.path.dirname(os.path.dirname(log_path)))  # drop the empty uprof dir too
             except OSError:
                 pass
             return

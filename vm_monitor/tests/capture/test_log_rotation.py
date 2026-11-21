@@ -183,15 +183,15 @@ class TestLogRotation(unittest.TestCase):
                 "15",
             ],
         )
-        # -O is a PER-TURN dir sibling of the stdout log (uprof/<stamp>_out),
-        # not the shared uprof/ parent.
+        # -O is the per-turn dir that ALSO holds the stdout log
+        # (uprof/<stamp>/), not the shared uprof/ parent.
         self.assertTrue(os.path.isabs(o_arg))
         self.assertEqual(os.path.dirname(o_arg), uprof_dir)
-        self.assertRegex(os.path.basename(o_arg), r"^\d{8}-\d{6}(-\d+)?_out$")
+        self.assertRegex(os.path.basename(o_arg), r"^\d{8}-\d{6}(-\d+)?$")
         # Success with an EMPTY stdout log (the stub writes nothing): the empty
-        # log is dropped (pure noise) and the empty per-turn output dir goes
-        # with it. A NON-EMPTY success log would be kept -- it carries the
-        # tool's status output; the data goes to -O's CSV.
+        # log is dropped (pure noise) and the empty per-turn dir goes with it.
+        # A NON-EMPTY success log would be kept -- it carries the tool's status
+        # output; the data goes to -O's CSV.
         self.assertEqual(os.listdir(uprof_dir), [])
 
     def test_uprof_metrics_empty_falls_back_to_default(self):
@@ -284,7 +284,7 @@ class TestLogRotation(unittest.TestCase):
 
         def fake_popen(cmd, *a, **k):
             # The child holds the log's fd; simulate it writing its error text.
-            for log_path in glob.glob(os.path.join(self.log_dir, "log_capture", "uprof", "*.log")):
+            for log_path in glob.glob(os.path.join(self.log_dir, "log_capture", "uprof", "*", "*.log")):
                 with open(log_path, "a") as f:
                     f.write("Invalid output file!! Failed to process args\n")
             return _FailProc()
@@ -295,9 +295,9 @@ class TestLogRotation(unittest.TestCase):
         ):
             cap._rotation_uprof_turn()
         uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
-        logs = [f for f in os.listdir(uprof_dir) if f.endswith(".log")]
+        logs = glob.glob(os.path.join(uprof_dir, "*", "*.log"))
         self.assertEqual(len(logs), 1)  # failed turn keeps the stdout log
-        with open(os.path.join(uprof_dir, logs[0])) as f:
+        with open(logs[0]) as f:
             self.assertIn("Invalid output file!!", f.read())
         self.assertEqual(cap.failed_runtime, [{"tool": "uprof", "returncode": 2}])
 
@@ -311,7 +311,7 @@ class TestLogRotation(unittest.TestCase):
 
         def fake_popen(cmd, *a, **k):
             spawned.append(cmd)
-            for log_path in glob.glob(os.path.join(self.log_dir, "log_capture", "uprof", "*.log")):
+            for log_path in glob.glob(os.path.join(self.log_dir, "log_capture", "uprof", "*", "*.log")):
                 with open(log_path, "a") as f:
                     f.write("Time,Total Mem Bw (GB/s)\n0.0,12.5\n")
             return self._spawn_recorder([])(cmd)
@@ -322,7 +322,7 @@ class TestLogRotation(unittest.TestCase):
         ):
             cap._rotation_uprof_turn()
         uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
-        logs = [f for f in os.listdir(uprof_dir) if f.endswith(".log")]
+        logs = glob.glob(os.path.join(uprof_dir, "*", "*.log"))
         self.assertEqual(len(logs), 1)  # non-empty log kept -- it may be the data
         self.assertEqual(cap.failed_runtime, [])
 
@@ -362,7 +362,7 @@ class TestLogRotation(unittest.TestCase):
         o_arg = spawned[0][spawned[0].index("-O") + 1]
         self.assertTrue(os.path.isabs(o_arg))
         self.assertEqual(os.path.dirname(o_arg), expected_dirname)
-        self.assertRegex(os.path.basename(o_arg), r"^\d{8}-\d{6}(-\d+)?_out$")
+        self.assertRegex(os.path.basename(o_arg), r"^\d{8}-\d{6}(-\d+)?$")
 
     def test_uprof_turn_still_running_parks_proc_keeps_log(self):
         # Over-duration tool (startup overhead, system load): the proc is
@@ -387,16 +387,16 @@ class TestLogRotation(unittest.TestCase):
             cap._rotation_uprof_turn()
         uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
         self.assertEqual(len(cap._rotation_uprof_procs), 1)
-        logs = [f for f in os.listdir(uprof_dir) if f.endswith(".log")]
+        logs = glob.glob(os.path.join(uprof_dir, "*", "*.log"))
         self.assertEqual(len(logs), 1)  # rc unknown: log kept
 
-    def test_uprof_turn_per_turn_out_dirs_are_distinct(self):
+    def test_uprof_turn_per_turn_dirs_are_distinct(self):
         # Two consecutive turns must get distinct -O dirs: a parked over-run
-        # turn keeps writing its own uprof/<stamp>_out/ while the next turn
-        # starts, so concurrent writes never share one dir (the shared -O the
-        # -O dir used to point at had both turns colliding on it). The first
-        # turn parks so its log + out dir survive and force the second turn
-        # onto the -2 collision suffix.
+        # turn keeps writing its own uprof/<stamp>/ while the next turn starts,
+        # so concurrent writes never share one dir (the shared -O the -O dir
+        # used to point at had both turns colliding on it). The first turn
+        # parks so its turn dir survives and forces the second turn onto the
+        # -2 collision suffix.
         self.config["uprof_path"] = "/fake/AMDuProfPcm"
         cap = self._cap()
 
@@ -427,16 +427,17 @@ class TestLogRotation(unittest.TestCase):
         self.assertNotEqual(o_args[0], o_args[1])
         for o_arg in o_args:
             self.assertEqual(os.path.dirname(o_arg), uprof_dir)
-            self.assertRegex(os.path.basename(o_arg), r"^\d{8}-\d{6}(-\d+)?_out$")
-        # The parked first turn's out dir survives; the second turn exits with
-        # an empty log and self-cleans, so exactly one _out dir + one log remain.
-        self.assertEqual(len([f for f in os.listdir(uprof_dir) if f.endswith("_out")]), 1)
-        self.assertEqual(len([f for f in os.listdir(uprof_dir) if f.endswith(".log")]), 1)
+            self.assertRegex(os.path.basename(o_arg), r"^\d{8}-\d{6}(-\d+)?$")
+        # The parked first turn's dir (log inside) survives; the second turn
+        # exits with an empty log and self-cleans, so exactly one turn dir --
+        # self-contained with its log -- remains under uprof/.
+        entries = os.listdir(uprof_dir)
+        self.assertEqual(len(entries), 1)
+        self.assertTrue(os.path.isfile(os.path.join(uprof_dir, entries[0], f"{entries[0]}.log")))
 
     def test_uprof_turn_keeps_out_dir_with_tool_artifacts(self):
         # The tool wrote its Timeseries CSVs into -O but the stdout log is
-        # empty: the log is dropped while the per-turn output dir (the data)
-        # is kept.
+        # empty: the log is dropped while the per-turn dir (the data) is kept.
         self.config["uprof_path"] = "/fake/AMDuProfPcm"
         cap = self._cap()
 
@@ -453,11 +454,11 @@ class TestLogRotation(unittest.TestCase):
         ):
             cap._rotation_uprof_turn()
         uprof_dir = os.path.join(self.log_dir, "log_capture", "uprof")
-        self.assertEqual([f for f in os.listdir(uprof_dir) if f.endswith(".log")], [])  # empty log dropped
+        self.assertEqual(glob.glob(os.path.join(uprof_dir, "*", "*.log")), [])  # empty log dropped
         self.assertEqual(cap.rotation_turns["uprof"], [])
-        out_dirs = [f for f in os.listdir(uprof_dir) if f.endswith("_out")]
-        self.assertEqual(len(out_dirs), 1)  # the tool's artifacts survive
-        artifact = os.path.join(uprof_dir, out_dirs[0], "AMDuProfPcm-Timeseries_0", "report-timerseries.csv")
+        turn_dirs = [f for f in os.listdir(uprof_dir) if os.path.isdir(os.path.join(uprof_dir, f))]
+        self.assertEqual(len(turn_dirs), 1)  # the tool's artifacts survive
+        artifact = os.path.join(uprof_dir, turn_dirs[0], "AMDuProfPcm-Timeseries_0", "report-timerseries.csv")
         self.assertTrue(os.path.isfile(artifact))
 
     def test_uprof_missing_path_skips(self):
