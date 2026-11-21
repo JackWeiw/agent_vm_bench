@@ -1,10 +1,11 @@
 """Tests for the vendored envd client's Connect wire handling.
 
 These lock the review fixes: a stream cut before the end-of-stream frame is
-truncation and raises (no phantom exit-0 success); the end-of-stream envelope
-carries the RPC error under the ``error`` key only (metadata-only trailers are
-a success); and a clean end without a wire-visible exit code is 0 (proto3
-omits zero scalars).
+truncation and raises :class:`EnvdTruncatedError` (no phantom exit-0 success,
+and a DISTINCT type so callers separate truncation from RPC failure); the
+end-of-stream envelope carries the RPC error under the ``error`` key only
+(metadata-only trailers are a success); and a clean end without a
+wire-visible exit code is 0 (proto3 omits zero scalars).
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import pytest
 from env_provider.sandboxsched.envd_client import (
     EnvdClient,
     EnvdError,
+    EnvdTruncatedError,
     _frame,
     _iter_connect_frames,
     _ld,
@@ -72,15 +74,15 @@ class TestIterConnectFrames:
         frames = list(_iter_connect_frames(_stream(_frame(b"x"))))
         assert frames == [(0x00, b"x")]
 
-    def test_partial_header_raises(self):
+    def test_partial_header_raises_truncated(self):
         cut = _frame(b"payload")[:-2]
-        with pytest.raises(EnvdError, match="truncated"):
+        with pytest.raises(EnvdTruncatedError, match="truncated"):
             list(_iter_connect_frames(_stream(cut)))
 
-    def test_short_payload_raises(self):
+    def test_short_payload_raises_truncated(self):
         full = _frame(b"payload")
         header, _ = full[:5], full[5:]
-        with pytest.raises(EnvdError, match="payload cut"):
+        with pytest.raises(EnvdTruncatedError, match="payload cut"):
             list(_iter_connect_frames(_stream(header + b"pay")))
 
 
@@ -119,13 +121,16 @@ class TestRun:
         assert result.exit_code == 0
         assert result.stdout == b"ok"
 
-    def test_stream_without_end_frame_raises(self):
+    def test_stream_without_end_frame_raises_truncated(self):
         # stdout frames only: the server cut the stream before the command ended
         data = _frame(_stdout_event(b"partial"))
-        with pytest.raises(EnvdError, match="without an end-of-stream frame"):
+        with pytest.raises(EnvdTruncatedError, match="without an end-of-stream frame"):
             _client_with(data).run("killed")
 
     def test_rpc_error_in_envelope_raises(self):
+        # an RPC-level rejection is EnvdError, NOT truncation: the envelope
+        # frame arrived, so the stream was not cut
         data = _frame(_stdout_event(b"x")) + _end_frame(error={"code": " PERMISSIONS", "message": "no"})
-        with pytest.raises(EnvdError, match="code= PERMISSIONS"):
+        with pytest.raises(EnvdError, match="code= PERMISSIONS") as excinfo:
             _client_with(data).run("denied")
+        assert not isinstance(excinfo.value, EnvdTruncatedError)

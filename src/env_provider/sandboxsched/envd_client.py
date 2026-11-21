@@ -15,49 +15,40 @@
 # NOTE: vendored from opensandbox examples/flux-sandbox-e2b/envd_client.py with
 # local correctness fixes -- no longer byte-identical to upstream. Local deltas:
 # _iter_connect_frames (mid-frame truncation raises instead of ending silently),
-# _parse_trailers (end-of-stream error parsed under the "error" key only), and
-# run() (a stream with neither exit code nor end-of-stream frame raises instead
-# of reporting a phantom success).
+# _parse_trailers (end-of-stream error parsed under the "error" key only), run()
+# (a stream with neither exit code nor end-of-stream frame raises instead of
+# reporting a phantom success), and EnvdTruncatedError (truncation is a distinct
+# error type so callers can tell it apart from an RPC failure). Only the DATA
+# plane is vendored (exec + health, standard library only); the control plane is
+# the async opensandbox SDK, driven by manager.py.
 
-"""Client for E2B (envd) sandboxes: OpenSandbox control plane + raw envd data plane.
+"""envd data-plane client for E2B-mode sandboxes (standard library only).
 
 Why this module exists
 ----------------------
-A sandbox running under the flux runtime in E2B mode exposes **envd** on port 49983.
-envd speaks Connect RPC, which is *not* the REST contract the OpenSandbox SDK's
-``commands`` / ``files`` APIs are built against (``/command``, ``/files/upload``,
-``/files/download``). Those paths do not exist on envd.
+A sandbox running under the flux runtime in E2B mode exposes **envd** on port
+49983. envd speaks Connect RPC, which is *not* the REST contract the OpenSandbox
+SDK's ``commands`` / ``files`` APIs are built against (``/command``,
+``/files/upload``, ``/files/download``). Those paths do not exist on envd, and
+the SDK has no Connect client -- so command execution goes through this module.
 
-OpenSandbox therefore provides two things for such a sandbox:
-
-1. **Control plane** -- create / inspect / destroy, and endpoint resolution
-   (delegated to the flux-sandbox controller over gRPC).
-2. **Generic forwarding** -- ``/sandboxes/{id}/proxy/{port}``, a protocol-agnostic
-   L7 reverse proxy.
-
-What it does *not* provide is protocol adaptation. This module fills that gap:
-
-* lifecycle  -> OpenSandbox SDK (``SandboxSync``), the only part needing an API key
-* exec/files -> envd wire protocol, implemented here with the standard library only
-
-envd surface used (see ``packages/envd/spec/process/process.proto`` upstream):
-
-    POST /process.Process/Start   run a command (server-streaming Connect RPC)
-    POST /files?path=...          upload (multipart; form field name must be "file")
-    GET  /files?path=...          download
-    GET  /health                  204 when healthy
+Scope: the DATA plane only -- ``run`` (POST /process.Process/Start, streaming),
+``health`` (GET /health -> 204). Create / connect / pause / resume / kill /
+list / endpoint resolution are the CONTROL plane and live in :mod:`manager`
+through the async ``opensandbox`` SDK.
 
 Reaching envd
 -------------
-Two modes, selected by ``use_server_proxy``:
+Selected by ``use_server_proxy`` (the manager resolves the URL once per sandbox
+through the control plane and hands this client the base URL):
 
-``proxy`` (default, recommended)
-    ``http://<server>/sandboxes/<id>/proxy/49983`` -- the OpenSandbox server
+``proxy``
+    ``http://<server>/sandboxes/<id>/proxy/{port}`` -- the OpenSandbox server
     forwards to the sandbox. No CNI-network reachability required on the client,
     and the proxy path needs no API key.
 
 ``direct``
-    ``http://<CNI-IP>:49983`` -- the client must be able to reach the sandbox
+    ``http://<CNI-IP>:{port}`` -- the client must be able to reach the sandbox
     network (typically from a cluster node).
 
 Known limitations
@@ -66,49 +57,29 @@ Known limitations
   select the executing user in ``proxy`` mode. envd's Basic Auth only picks the OS
   user anyway (the password is never checked -- see
   ``packages/envd/internal/permissions/authenticate.go``). To run as a specific
-  user, use ``sudo -u <user>`` inside the command, switch to ``direct`` mode, or
-  pass ``user=`` for file operations (which travels as the ``username`` query
-  parameter and is unaffected by header filtering).
+  user in proxy mode, wrap the command with ``sudo -u <user>`` inside the
+  command string.
 * If envd is configured with an access token, pass it via ``access_token``.
   ``X-Access-Token`` is not stripped by the proxy.
 * The OpenSandbox server applies a 180s timeout to its upstream request. Commands
-  that produce no output for longer than that may time out; long-running commands
-  that keep emitting output are fine.
-* The server answers some runtime rejections (bad template name, failed template
-  build, template/group resource mismatch) with a bare ``500 Internal Server
-  Error``, and the SDK then surfaces a misleading JSON parse error. :func:`create_sandbox`
-  works around that by capturing the raw HTTP response and explaining the likely
-  E2B-specific causes; the authoritative error is in the server log.
-* A sandbox is not usable the moment it is created. ``status.endpoints`` stays empty
-  until it is published, and envd boots after that. Use :func:`wait_for_envd`; if you
-  drive the SDK yourself, expect a 404 (``KUBERNETES::POD_IP_NOT_AVAILABLE``) during
-  that window.
+  that produce no output for longer than that may have their stream cut mid-flight;
+  :meth:`EnvdClient.run` surfaces that as :class:`EnvdTruncatedError` rather than a
+  phantom success. Long-running commands that keep emitting output are fine.
 """
 
 from __future__ import annotations
 
 import json
-import logging
-import os
-import time
 import urllib.error
-import urllib.parse
 import urllib.request
-import uuid
-from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Optional
 from collections.abc import Callable, Iterator
 
 #: envd's fixed listening port. In E2B mode flux-sandbox writes
 #: ``<CNI-IP>:49983`` into the Sandbox CR's ``status.endpoints``, so resolving
-#: this port hits the endpoint exactly.
+#: this port hits the endpoint exactly. The manager's ``envd_port`` config knob
+#: defaults to this value.
 ENVD_PORT = 49983
-
-#: Server error code returned by endpoint resolution while the sandbox has not
-#: published ``status.endpoints`` yet. It is the reliable "still starting" signal:
-#: the same 404 is used for a missing sandbox, but with a different code.
-ENDPOINT_NOT_READY_CODE = "KUBERNETES::POD_IP_NOT_AVAILABLE"
 
 
 class FluxSandboxError(RuntimeError):
@@ -123,31 +94,17 @@ class EnvdError(FluxSandboxError):
     """envd returned an error (non-2xx HTTP, or a Connect RPC-level failure)."""
 
 
-class SandboxNotReadyError(EnvdError):
-    """The sandbox is not ready yet and its endpoint is still unavailable."""
+class EnvdTruncatedError(EnvdError):
+    """The exec stream was cut before the command finished.
 
-
-class ControlPlaneError(FluxSandboxError):
-    """An OpenSandbox control-plane call failed: create, destroy, or endpoint lookup.
-
-    Wraps whatever the SDK raised (``SandboxException`` and friends) so that a
-    misconfigured sandbox group, a bad template name, or an unreachable server
-    surfaces as a readable message rather than a traceback.
-
-    ``code`` carries the server's error code when the SDK exposed one, which lets
-    callers tell a transient "not published yet" apart from a hard failure.
+    connect-go ALWAYS emits the end-of-stream frame on a clean finish, so a
+    stream ending without it (partial frame header/payload, or no trailers at
+    all) is a detectable truncation: a signal-killed command, or the server's
+    ~180s upstream timeout dropping the connection. Distinct from
+    :class:`EnvdError` so callers can report truncation as its own failure mode
+    (manager.py maps it to its own exit code) instead of conflating it with a
+    command timeout or an RPC rejection.
     """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        code: str | None = None,
-        status_code: int | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.code = code
-        self.status_code = status_code
 
 
 # ============================================================================
@@ -282,20 +239,21 @@ def _iter_connect_frames(stream) -> Iterator[tuple]:
     ``flags`` 0x00 is a protobuf message frame, 0x02 the trailing trailers frame.
     A clean EOF at a frame boundary ends the iteration; a stream cut mid-frame
     (partial header or payload -- a killed process, or the server's ~180s
-    upstream timeout dropping the connection) raises instead of ending
-    silently, so a truncated exec is never mistaken for a finished one.
+    upstream timeout dropping the connection) raises :class:`EnvdTruncatedError`
+    instead of ending silently, so a truncated exec is never mistaken for a
+    finished one.
     """
     while True:
         header = _read_exact(stream, 5)
         if not header:
             return  # clean EOF at a frame boundary
         if len(header) < 5:
-            raise EnvdError("connect stream truncated: partial frame header")
+            raise EnvdTruncatedError("connect stream truncated: partial frame header")
         flags = header[0]
         length = int.from_bytes(header[1:5], "big")
         payload = _read_exact(stream, length)
         if len(payload) < length:
-            raise EnvdError(
+            raise EnvdTruncatedError(
                 f"connect stream truncated: payload cut at {len(payload)}/{length} bytes"
             )
         yield flags, payload
@@ -372,13 +330,14 @@ class RunResult:
 class EnvdClient:
     """Talk to envd directly, using its native protocol.
 
-    ``base_url`` is either ``http://<CNI-IP>:49983`` (direct) or
-    ``http://<server>/sandboxes/<id>/proxy/49983`` (proxy).
+    ``base_url`` is either ``http://<CNI-IP>:<port>`` (direct) or
+    ``http://<server>/sandboxes/<id>/proxy/<port>`` (proxy), resolved by the
+    manager through the control plane.
     """
 
     base_url: str
     access_token: str | None = None
-    user: str | None = None          # only used for /files' username query param
+    user: str | None = None         # consumed by manager._UserEnvdClient's Basic auth
     timeout: float = 60.0
 
     def __post_init__(self):
@@ -413,17 +372,6 @@ class EnvdClient:
         except urllib.error.URLError as exc:
             raise EnvdError(f"cannot reach envd ({self.base_url}): {exc.reason}") from exc
 
-    def _files_query(self, path: str, user: str | None = None) -> str:
-        params = {"path": path}
-        # /files' username parameter sets the file owner and resolves relative
-        # paths. It travels as a query parameter, so unlike Basic Auth it is not
-        # affected by the proxy's header filtering -- the only way to pick a user
-        # for file operations in proxy mode.
-        effective_user = user or self.user
-        if effective_user:
-            params["username"] = effective_user
-        return urllib.parse.urlencode(params)
-
     # -- health ------------------------------------------------------------
 
     def health(self, timeout: float | None = None) -> bool:
@@ -457,7 +405,8 @@ class EnvdClient:
         (proto3), so "trailers seen, no exit event" means exit 0. A stream that
         ends with neither an exit code nor the trailers frame was cut before the
         command finished (killed process, the server's ~180s upstream timeout)
-        and raises instead of reporting a phantom success.
+        and raises :class:`EnvdTruncatedError` instead of reporting a phantom
+        success.
         """
         body = build_start_request(command, envs=envs, cwd=cwd)
         resp = self._request(
@@ -497,7 +446,7 @@ class EnvdClient:
 
         if exit_code is None:
             if not saw_trailers:
-                raise EnvdError(
+                raise EnvdTruncatedError(
                     "connect stream ended without an end-of-stream frame: exec "
                     f"truncated ({len(b''.join(stdout))} stdout / "
                     f"{len(b''.join(stderr))} stderr bytes captured)"
@@ -505,365 +454,3 @@ class EnvdClient:
             exit_code = 0  # clean end: proto3 omits a zero exit code on the wire
         return RunResult(exit_code, b"".join(stdout), b"".join(stderr))
 
-    # -- file transfer -----------------------------------------------------
-
-    def upload(self, local_path: str, remote_path: str, *, user: str | None = None) -> list:
-        """Upload a local file to the sandbox.
-
-        envd's upload is multipart and the form field name **must** be ``file``;
-        envd silently skips parts with any other name. The destination comes from
-        the ``path`` query parameter.
-
-        The body must carry a ``Content-Length`` (passing bytes makes urllib set
-        it): the OpenSandbox proxy does not support chunked multipart.
-        """
-        with open(local_path, "rb") as fh:
-            content = fh.read()
-
-        boundary = uuid.uuid4().hex
-        filename = os.path.basename(local_path)
-        head = (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
-            f"Content-Type: application/octet-stream\r\n\r\n"
-        ).encode()
-        body = head + content + f"\r\n--{boundary}--\r\n".encode()
-
-        resp = self._request(
-            "POST",
-            "/files?" + self._files_query(remote_path, user),
-            data=body,
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-            timeout=max(self.timeout, 60.0 + len(content) / 65536.0),
-        )
-        raw = resp.read().decode("utf-8", errors="replace")
-        try:
-            return json.loads(raw)
-        except ValueError:
-            return [{"raw": raw}]
-
-    def download(self, remote_path: str, local_path: str, *, user: str | None = None) -> int:
-        """Download a file from the sandbox; returns the number of bytes written.
-
-        ``Accept-Encoding: identity`` is sent explicitly so envd returns the body
-        uncompressed.
-        """
-        resp = self._request(
-            "GET",
-            "/files?" + self._files_query(remote_path, user),
-            timeout=max(self.timeout, 300.0),
-        )
-        data = resp.read()
-        with open(local_path, "wb") as fh:
-            fh.write(data)
-        return len(data)
-
-
-# ============================================================================
-# OpenSandbox control plane -- the only part that needs the opensandbox SDK
-# ============================================================================
-
-def _load_sdk():
-    try:
-        from opensandbox.config.connection_sync import ConnectionConfigSync
-        from opensandbox.sync.sandbox import SandboxSync
-    except ImportError as exc:
-        raise ControlPlaneError(
-            "lifecycle operations need the opensandbox SDK: uv pip install opensandbox\n"
-            "To drive an existing sandbox without it, pass an explicit --endpoint instead."
-        ) from exc
-    return ConnectionConfigSync, SandboxSync
-
-
-@contextmanager
-def _control_plane(action: str):
-    """Turn whatever the SDK raises into a ControlPlaneError with the action named.
-
-    Without this the SDK's own exception escapes to the caller as a traceback, which
-    is a poor first experience for the most likely failures (wrong sandbox group,
-    bad template name, unreachable server, wrong API key).
-
-    `_control_plane` is also the single place that silences the SDK's own error
-    logging: on failure the adapter calls ``logger.error(..., exc_info=...)`` and
-    dumps a full traceback to stderr, drowning out the concise message this
-    wrapper produces.
-    """
-    sdk_adapter_logger = logging.getLogger("opensandbox.sync.adapters.sandboxes_adapter")
-    was_disabled = sdk_adapter_logger.disabled
-    sdk_adapter_logger.disabled = True
-    try:
-        try:
-            yield
-        except ControlPlaneError:
-            raise
-        except Exception as exc:
-            # SandboxApiException carries status_code plus error.code (a SandboxError).
-            code = getattr(getattr(exc, "error", None), "code", None)
-            message = f"{action} failed: {exc}"
-            if str(exc).startswith("Network connectivity error"):
-                # The SDK converts every httpx failure (connection refused, DNS miss,
-                # timeout) into this message; add where the client was actually aiming.
-                protocol = os.environ.get("SANDBOX_PROTOCOL", "http")
-                domain = os.environ.get("SANDBOX_DOMAIN", "127.0.0.1:8080")
-                message = (
-                    f"{action} failed: cannot reach the OpenSandbox server at "
-                    f"{protocol}://{domain} ({exc}). Check that SANDBOX_DOMAIN / "
-                    f"SANDBOX_PROTOCOL are right and the server is up (the example "
-                    f"prints the sandbox address as {protocol}://<server>/)."
-                )
-            raise ControlPlaneError(
-                message,
-                code=str(code) if code else None,
-                status_code=getattr(exc, "status_code", None),
-            ) from exc
-    finally:
-        sdk_adapter_logger.disabled = was_disabled
-
-
-def _capture_http_response(module, captured: dict):
-    """Record the raw HTTP status/body of a failed (>=400) request for later use.
-
-    The generated OpenAPI client assumes every error body is JSON. When the server
-    answers with plain text -- e.g. an unhandled 500 that returns literally
-    ``Internal Server Error`` -- ``response.json()`` throws a ``JSONDecodeError``
-    that the SDK surfaces as ``InvalidArgumentException: Expecting value: ...``,
-    hiding the real cause (in E2B mode: a bad template name, a template build that
-    failed, or a template/group resource mismatch). This wrapper stores the response
-    before the SDK's error path throws, so :func:`create_sandbox` can report
-    ``HTTP <status> (<body>)`` and suggest what to check.
-
-    Success paths are untouched; a ``None`` module (SDK layout change) is a no-op.
-    """
-    @contextmanager
-    def _wrap():
-        original = getattr(module, "_parse_response", None) if module is not None else None
-        if original is None:
-            yield
-            return
-
-        def _hooked(*, client, response):
-            try:
-                return original(client=client, response=response)
-            except ValueError:
-                if response.status_code >= 400:
-                    captured["status_code"] = response.status_code
-                    captured["body"] = response.text
-                raise
-
-        module._parse_response = _hooked
-        try:
-            yield
-        finally:
-            module._parse_response = original
-
-    return _wrap()
-
-
-def _explain_create_failure(
-    exc: ControlPlaneError,
-    image: str,
-    group: str,
-    captured: dict,
-) -> ControlPlaneError:
-    """Return a ControlPlaneError that names the likely cause of a rejected create.
-
-    With the structured server error in place most rejections surface the real
-    cause through ``_control_plane`` (e.g. ``template resource drift: ...``). This
-    fallback only runs when the body still could not be parsed as JSON -- an
-    infrastructure proxy, or an exception type the server does not convert -- so
-    it points at the two things that reject an E2B-mode create and where the
-    authoritative detail lives.
-    """
-    status = captured.get("status_code")
-    body = captured.get("body")
-    http = f" (HTTP {status}: {body})" if status is not None else ""
-    return ControlPlaneError(
-        f"create sandbox with template {image!r} in group {group!r} was rejected "
-        f"by the server{http}.\n"
-        "The response body was not a parseable JSON error, so check the OpenSandbox "
-        "server log for the exact scheduler message. Typical E2B-mode rejections "
-        "are: SANDBOX_IMAGE is not a usable template (wrong name, or the build "
-        "failed), or the template's resources do not match E2B_SANDBOX_GROUP "
-        "(e.g. a huge-pages template needs a group whose per-slot resources "
-        "declare matching hugepages-2Mi).",
-        code=exc.code,
-        status_code=status or exc.status_code,
-    )
-
-
-def connection_config(use_server_proxy: bool):
-    """Build a sync SDK connection config from the environment."""
-    ConnectionConfigSync, _ = _load_sdk()
-    return ConnectionConfigSync(
-        domain=os.environ.get("SANDBOX_DOMAIN", "127.0.0.1:8080"),
-        api_key=os.environ.get("SANDBOX_API_KEY") or None,
-        protocol=os.environ.get("SANDBOX_PROTOCOL", "http"),
-        use_server_proxy=use_server_proxy,
-    )
-
-
-def create_sandbox(
-    image: str,
-    group: str,
-    timeout_minutes: int = 30,
-    use_server_proxy: bool = True,
-    cpu: str = "1",
-    memory: str = "512Mi",
-) -> str:
-    """Create an E2B sandbox and return its id.
-
-    Two E2B-specific details:
-
-    * ``extensions={"sandboxGroup": ...}`` is required -- it decides which sandbox
-      group the request is routed to; without it the request will not land on an
-      E2B sandbox group.
-    * ``skip_health_check=True`` -- the SDK's health check targets the execd
-      contract port. In E2B mode it times out while envd is still starting and
-      then **deletes the sandbox it just created**.
-
-    Because of that second point this function returns as soon as the sandbox is
-    accepted, not when it is usable. Follow it with :func:`wait_for_envd` before
-    talking to the sandbox.
-
-    Most server rejections (bad template, failed template build, template/group
-    resource mismatch) now come back as a structured JSON error whose message is
-    surfaced directly. This function still captures the raw HTTP response as a
-    fallback for the rare case the body is not parseable JSON
-    (see :func:`_explain_create_failure`).
-    """
-    from datetime import timedelta
-
-    _, SandboxSync = _load_sdk()
-    captured: dict = {}
-    try:
-        try:
-            from opensandbox.api.lifecycle.api.sandboxes import post_sandboxes as _post
-        except ImportError:
-            _post = None
-        with _capture_http_response(_post, captured):
-            with _control_plane(f"create sandbox (image={image}, group={group})"):
-                sandbox = SandboxSync.create(
-                    image=image,
-                    resource={"cpu": cpu, "memory": memory},
-                    timeout=timedelta(minutes=timeout_minutes),
-                    extensions={"sandboxGroup": group},
-                    connection_config=connection_config(use_server_proxy),
-                    skip_health_check=True,
-                )
-    except ControlPlaneError as exc:
-        if captured.get("status_code") is not None:
-            raise _explain_create_failure(exc, image, group, captured) from exc
-        raise
-
-    sandbox_id = sandbox.id
-    try:
-        sandbox.close()
-    except Exception:
-        pass
-    return sandbox_id
-
-
-def kill_sandbox(sandbox_id: str, use_server_proxy: bool = True) -> None:
-    """Terminate a sandbox."""
-    _, SandboxSync = _load_sdk()
-    with _control_plane(f"destroy sandbox {sandbox_id}"):
-        sandbox = SandboxSync.connect(
-            sandbox_id,
-            connection_config=connection_config(use_server_proxy),
-            skip_health_check=True,
-        )
-        try:
-            sandbox.kill()
-        finally:
-            try:
-                sandbox.close()
-            except Exception:
-                pass
-
-
-def resolve_envd_base_url(sandbox_id: str, use_server_proxy: bool = True) -> str:
-    """Resolve envd's base URL for a sandbox.
-
-    ``use_server_proxy=True`` yields ``<server>/sandboxes/<id>/proxy/49983`` (the
-    SDK returns it without a scheme); ``False`` yields ``<CNI-IP>:49983``.
-
-    In E2B mode flux-sandbox reports port 49983, so this hits the endpoint exactly.
-    Requesting the execd contract port (44772) instead would also work -- the
-    server falls back to the same envd address -- but there is no reason to.
-
-    Raises :class:`SandboxNotReadyError` while the sandbox is still starting, since
-    ``status.endpoints`` stays empty until it reports one.
-    """
-    _, SandboxSync = _load_sdk()
-    with _control_plane(f"resolve endpoint for sandbox {sandbox_id}"):
-        sandbox = SandboxSync.connect(
-            sandbox_id,
-            connection_config=connection_config(use_server_proxy),
-            skip_health_check=True,
-        )
-        try:
-            endpoint = sandbox.get_endpoint(ENVD_PORT)
-        finally:
-            try:
-                sandbox.close()
-            except Exception:
-                pass
-
-    if not endpoint or not endpoint.endpoint:
-        raise SandboxNotReadyError(
-            f"sandbox {sandbox_id} has no endpoint yet; it may still be starting"
-        )
-    return endpoint.endpoint
-
-
-def wait_for_envd(
-    sandbox_id: str,
-    use_server_proxy: bool = True,
-    timeout_seconds: float = 60.0,
-    poll_seconds: float = 1.0,
-    access_token: str | None = None,
-) -> EnvdClient:
-    """Return a client for the sandbox once envd answers, waiting for it to boot.
-
-    A freshly created sandbox is not usable yet: endpoint resolution fails until it
-    publishes ``status.endpoints``, and envd may still be booting after that.
-    Because :func:`create_sandbox` deliberately skips the SDK health check, nothing
-    else waits -- so a create immediately followed by exec or upload fails
-    intermittently unless you call this.
-
-    Only the transient conditions are retried: the server's
-    ``POD_IP_NOT_AVAILABLE`` code and an unreachable envd. Anything else (sandbox
-    missing, auth failure, bad request) propagates immediately rather than
-    stalling for the whole timeout.
-
-    ``timeout_seconds=0`` probes once and raises instead of waiting.
-
-    Raises :class:`SandboxNotReadyError` if envd does not answer in time.
-    """
-    deadline = time.monotonic() + max(timeout_seconds, 0.0)
-    last_error: Exception | None = None
-
-    while True:
-        try:
-            client = EnvdClient(
-                resolve_envd_base_url(sandbox_id, use_server_proxy=use_server_proxy),
-                access_token=access_token,
-            )
-            # Short per-probe timeout so one hung connection cannot eat the budget.
-            if client.health(timeout=min(5.0, max(timeout_seconds, 1.0))):
-                return client
-            last_error = EnvdError(f"envd at {client.base_url} answered but is not healthy")
-        except EnvdError as exc:
-            # SandboxNotReadyError, or envd not accepting connections yet.
-            last_error = exc
-        except ControlPlaneError as exc:
-            if exc.code != ENDPOINT_NOT_READY_CODE:
-                raise
-            last_error = exc
-
-        if time.monotonic() >= deadline:
-            raise SandboxNotReadyError(
-                f"envd for sandbox {sandbox_id} was not ready within "
-                f"{timeout_seconds:.0f}s; last error: {last_error}"
-            )
-        time.sleep(poll_seconds)
