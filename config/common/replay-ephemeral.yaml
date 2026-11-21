@@ -43,11 +43,14 @@ e2b:
 
 sandboxsched:
   template: "python:3.11"            # E2B runtime: E2B template name; containerd runtime: image ref
-  create_timeout: 86400              # sandbox TTL seconds (-> timedelta for Sandbox.create)
+  sandbox_ttl: 86400                 # server-side sandbox TTL seconds (Sandbox.create timeout=); NOT a create wait
   sandbox_group: "sg-1u1g"           # REQUIRED: extensions.sandboxGroup (server routes creates here; missing -> 400)
   sandbox_ids_file: "sandboxs_replay_sched.txt"
+  # --cleanup / --detect scope: only sandboxes bench-core created in THIS
+  # sandbox_group (stamped as metadata at create: managed_by + sandbox_group).
   # optional: domain: "<host>:<port>" (wins over env.OPEN_SANDBOX_DOMAIN), protocol: http|https,
   # ready_timeout: 300  # sec the SDK waits for endpoint publication (raise for big fleets),
+  # envd_port: 49983    # envd data-plane port inside the sandbox,
   # resource: {cpu: "1", memory: "2Gi"}; api_key only if the server enables auth
   # (env.OPEN_SANDBOX_API_KEY, or $OPEN_SANDBOX_API_KEY in the shell).
 

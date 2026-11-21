@@ -148,12 +148,32 @@ class TestEphemeral:
         provider.kill_one(SandboxInstance(id="x", index=99))
 
 
-# -------------------------------------------------------------------- snapshot
-class TestSnapshot:
-    def test_snapshot_sizes_returns_none(self, provider):
-        # No size query exists for SandboxSched snapshots (see review): the
-        # kernel must skip the snapshot_size series event entirely.
-        assert provider.snapshot_sizes(SandboxInstance(id="x", index=1)) is None
+# -------------------------------------------------------------------- capabilities
+class TestCapabilities:
+    def test_snapshot_sizes_not_implemented(self):
+        # the SDK model carries no snapshot byte size (SnapshotInfo: id/status/
+        # created_at) and create_snapshot is rejected from a paused sandbox --
+        # there is nothing to report, so the provider must NOT claim
+        # SnapshotSizeCapable: the kernel would otherwise start an idle
+        # scanner thread that polls a hook returning None forever
+        from env_provider import SnapshotSizeCapable
+
+        p = SandboxSchedProvider(_kernel_config(), Config(sandbox_group="sg-1", domain=""), Event())
+        p._manager = MagicMock()
+        assert not isinstance(p, SnapshotSizeCapable)
+
+    def test_resume_closes_swapped_out_handle(self, provider):
+        # each handle owns an httpx transport; the old handle's close() must
+        # be submitted after the swap, or a 384-sandbox lifecycle trial
+        # accumulates thousands of dead sockets
+        st = _state(1)
+        old_handle = st.sandbox_obj
+        provider._manager.sandbox_states = {1: st}
+        new_handle = MagicMock(id="x")
+        provider._manager.resume_handle.return_value = new_handle
+        provider.resume(SandboxInstance(id="x", index=1))
+        assert st.sandbox_obj is new_handle
+        provider._manager.submit.assert_called_once_with(old_handle.close())
 
 
 # -------------------------------------------------------------------- fleet state
@@ -202,11 +222,14 @@ class TestLifecycleRestriction:
     """replay.mode=lifecycle is vetoed until pause/resume is validated against
     a live OpenSandbox server: the mode machinery is implemented (the provider
     satisfies LifecycleCapable), but a live resume surfaced server-side 500s,
-    so an untestable mode must not burn a fleet. prepare_env fails before any
-    sandbox exists; the default resolution lands on exec_only."""
+    so an untestable mode must not burn a fleet. The veto runs at provider
+    BUILD (the bench-core CLI's argparse stage -- an oversub sweep's lifecycle
+    trials refuse at subprocess startup, before any fleet work) and
+    prepare_env re-checks defensively for direct-API callers; the default
+    resolution lands on exec_only."""
 
     @staticmethod
-    def _provider_with_mode(mode: str, cleanup_only: bool = False) -> SandboxSchedProvider:
+    def _kernel_config_with_mode(mode: str, cleanup_only: bool = False) -> KernelConfig:
         cfg = _kernel_config()
         cfg.workflow_type = "replay"
         if cleanup_only:
@@ -214,11 +237,31 @@ class TestLifecycleRestriction:
         # Mirror the kernel's post-validation state: run_benchmark resolves the
         # sentinel onto the ReplayConfig view before prepare_env runs.
         cfg.workflow_config = type("ReplayCfg", (), {"replay_mode": mode})()
+        return cfg
+
+    @classmethod
+    def _provider_with_mode(cls, mode: str, cleanup_only: bool = False) -> SandboxSchedProvider:
         # domain="" so the pass-case tests stay side-effect-free: a default
         # Config exports OPEN_SANDBOX_DOMAIN into os.environ
-        return SandboxSchedProvider(cfg, Config(sandbox_group="sg-1", domain=""), Event())
+        return SandboxSchedProvider(
+            cls._kernel_config_with_mode(mode, cleanup_only), Config(sandbox_group="sg-1", domain=""), Event()
+        )
+
+    def test_lifecycle_mode_vetoed_at_build_provider(self):
+        # the argparse-stage veto: fails before run_benchmark, before the
+        # oversub sweep's trial subprocesses do any fleet work
+        raw = {"sandboxsched": {"sandbox_group": "sg-1"}}
+        with pytest.raises(ValueError, match="lifecycle is disabled"):
+            build_provider(self._kernel_config_with_mode("lifecycle"), raw)
+
+    def test_cleanup_only_build_with_lifecycle_mode_is_exempt(self):
+        # --cleanup never touches pause/resume: the fleet left by a
+        # pre-restriction run must stay reachable
+        p = build_provider(self._kernel_config_with_mode("lifecycle", cleanup_only=True), {"sandboxsched": {}})
+        assert isinstance(p, SandboxSchedProvider)
 
     def test_lifecycle_mode_vetoed_in_prepare_env(self):
+        # the defensive re-check for direct-API callers
         with pytest.raises(ValueError, match="lifecycle is disabled"):
             self._provider_with_mode("lifecycle").prepare_env()
 

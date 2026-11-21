@@ -41,11 +41,14 @@ e2b:
 
 sandboxsched:
   template: "python:3.11"            # E2B runtime: E2B template name; containerd runtime: image ref
-  create_timeout: 86400              # sandbox TTL seconds (-> timedelta for Sandbox.create)
+  sandbox_ttl: 86400                 # server-side sandbox TTL seconds (Sandbox.create timeout=); NOT a create wait
   sandbox_group: "sg-1u1g"           # REQUIRED: extensions.sandboxGroup (server routes creates here; missing -> 400)
   sandbox_ids_file: "sandboxs_replay_sched.txt"
+  # --cleanup / --detect scope: only sandboxes bench-core created in THIS
+  # sandbox_group (stamped as metadata at create: managed_by + sandbox_group).
   # optional: domain: "<host>:<port>" (wins over env.OPEN_SANDBOX_DOMAIN), protocol: http|https,
   # ready_timeout: 300  # sec the SDK waits for endpoint publication (raise for big fleets),
+  # envd_port: 49983    # envd data-plane port inside the sandbox,
   # resource: {cpu: "1", memory: "2Gi"}; api_key only if the server enables auth
   # (env.OPEN_SANDBOX_API_KEY, or $OPEN_SANDBOX_API_KEY in the shell).
 
@@ -144,13 +147,15 @@ replay:
   delay_scale: 1.0                          # 1.0=realtime; 0=no delay; 0.1=10x compressed
   stop_on_error: false                      # abort current trajectory, advance to next (not the sandbox)
 
-  # mode: omit -> provider default (exec_only for e2b/docker/fake; lifecycle for
-  # aenv, which requires a LifecycleCapable provider). Set explicitly to override.
-  mode: lifecycle        # long-lived sandboxes: create -> pause once, then per step
-                          # resume -> exec -> pause. Direct runs: 1:1 (all N resume);
-                          # the oversub driver sets running_concurrency = k*N so the
-                          # FULL k*N fleet pauses/resumes concurrently at ratio 1:k.
-                          # See §8 of docs/guide/bench-core-usage.md.
+  # mode: omit -> provider default (lifecycle for aenv/cubesandbox;
+  # exec_only for e2b/docker/fake/sandboxsched). Set explicitly to override.
+  # No mode is hardcoded here: the previous default `mode: lifecycle` made the
+  # shared config fail at startup on providers without a validated lifecycle.
+  # mode: lifecycle        # long-lived sandboxes: create -> pause once, then per step
+  #                         # resume -> exec -> pause. Direct runs: 1:1 (all N resume);
+  #                         # the oversub driver sets running_concurrency = k*N so the
+  #                         # FULL k*N fleet pauses/resumes concurrently at ratio 1:k.
+  #                         # See §8 of docs/guide/bench-core-usage.md.
 
   running_concurrency: 384    # N (ratio basis). Direct runs use it as-is; the oversub
                                # driver overrides it to k*N for lifecycle (full-scale).
