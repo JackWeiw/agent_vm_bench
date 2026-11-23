@@ -109,8 +109,10 @@ class SandboxManager(BaseSandboxManager):
     def __init__(self, kernel_config, e2b_config: Config, stop_event: Event) -> None:
         super().__init__(kernel_config, stop_event)
         self.config = e2b_config
-        # Serializes create+pin when pin_cpus is set so pgrep -fn reliably returns
-        # THIS sandbox's just-spawned FC (see _pin_and_verify_fc). Inert otherwise.
+        # Serializes create+pin when pin_cpus is set (single-FC cold-start perf
+        # mode). The MAC-based lookup in _pin_and_verify_fc is per-sandbox, so
+        # this is no longer needed for PID correctness; kept to avoid concurrent
+        # pin-mode creates racing on the same host CPUs. Inert otherwise.
         self._pin_lock = Lock()
 
     # --------------------------------------------------------- subclass seams
@@ -131,12 +133,11 @@ class SandboxManager(BaseSandboxManager):
         ``metadata`` is forwarded to the SDK for operator visibility (labels
         only, not an idempotency key -- spec G3 deferred).
 
-        When ``pin_cpus`` is set, create+pin run under ``_pin_lock``: concurrent
-        ``_create_single`` calls would otherwise both ``pgrep -fn firecracker``
-        the same globally-newest FC, so one would pin/verify/print the WRONG pid
-        and the other's actual FC would be left unpinned. The lock guarantees no
-        other FC spawns between this sandbox's create-return and its pgrep.
-        Serializing is correct here -- pin_cpus is single-FC cold-start perf
+        When ``pin_cpus`` is set, create+pin run under ``_pin_lock``.
+        ``_pin_and_verify_fc`` locates the FC by the guest's eth0 MAC (not by
+        spawn order), so the lock is only there to keep pin-mode creates from
+        racing on the same host CPUs; it is not required for PID correctness.
+        Serializing is acceptable here -- pin_cpus is single-FC cold-start perf
         mode, not oversub concurrency (which leaves pin_cpus unset).
         """
         state.creation_metrics.status = BackendSandboxStatus.CREATING
@@ -168,7 +169,7 @@ class SandboxManager(BaseSandboxManager):
                     state.creation_metrics.create_ready_time - state.creation_metrics.submit_time
                 )
                 state.creation_metrics.status = BackendSandboxStatus.CREATED
-                pin_err = self._pin_and_verify_fc() if pin_cpus else None
+                pin_err = self._pin_and_verify_fc(sbx) if pin_cpus else None
             if pin_err:
                 return {
                     "success": False,
@@ -231,24 +232,33 @@ class SandboxManager(BaseSandboxManager):
             offset += width
         return cpus
 
-    def _pin_and_verify_fc(self) -> str | None:
-        """Pin the just-created Firecracker process to ``config.pin_cpus`` and verify.
+    def _pin_and_verify_fc(self, sbx: Any) -> str | None:
+        """Pin THIS sandbox's Firecracker process to ``config.pin_cpus`` and verify.
+
+        aenv keeps a warm Firecracker pool: creating a sandbox claims an
+        already-running FC while the pool refills by spawning a new one. A
+        ``pgrep -fn firecracker`` therefore returns the refill process, not the
+        sandbox's FC, and the pin silently lands on the wrong PID. Instead we
+        read the guest's eth0 MAC through the SDK and match it against the
+        ``tap0`` neighbour table inside each FC network namespace; only a PID
+        that also has an ``fc_vcpu`` thread is accepted. Sandboxes created from
+        the same template can share the snapshot's guest MAC, so when several
+        FCs match we pick the one whose work-dir claim time
+        (``agentenv_volume_slot_0.img`` mtime) is closest to the sandbox's
+        ``started_at``.
 
         Cold-start create blocks until envd ready, so vCPU threads already
-        exist at the moment this runs (immediate verify). ``taskset -a -pc``
-        sets all current threads + future vCPU threads (inheritance); then
-        ``taskset -ap`` reads every thread's mask back and asserts each equals
-        the requested set. Returns None on verified success (logs pid for
+        exist at the moment this runs. The main thread is pinned with
+        ``taskset -pc`` and each existing thread individually (new threads
+        inherit); then ``taskset -ap`` reads every thread's mask back and
+        asserts each equals the requested set and at least one ``fc_vcpu``
+        thread exists. Returns None on verified success (logs pid for
         perf/devkit attach) or an error string on failure -- the caller returns
         ``success=False`` so ``--create-only`` aborts before any ``--detect``
         stress runs on an unpinned FC.
 
-        ``pin_cmd_prefix`` ("ssh user@host" remote, "" local) routes commands.
-
-        The caller (_create_single) holds ``_pin_lock`` across create+pin, so no
-        other FC can spawn between this sandbox's create-return and the pgrep ->
-        ``pgrep -fn firecracker`` reliably returns THIS sandbox's just-spawned FC
-        even though _create_single otherwise runs on a ThreadPoolExecutor.
+        ``pin_cmd_prefix`` ("ssh user@host" remote, "" local) routes the
+        host-side lookup / taskset commands.
         """
         cpus = self.config.pin_cpus
         if not cpus:
@@ -258,32 +268,115 @@ class SandboxManager(BaseSandboxManager):
         want = self._parse_cpulist(cpus)
 
         def _run(args: list[str], timeout: float = 10) -> str:
-            return subprocess.run(prefix + args, capture_output=True, text=True, timeout=timeout).stdout.strip()
+            proc = subprocess.run(prefix + args, capture_output=True, text=True, timeout=timeout)
+            if proc.returncode != 0:
+                raise RuntimeError(proc.stderr.strip() or f"exit {proc.returncode}")
+            return proc.stdout.strip()
 
+        # guest eth0 MAC (unique per sandbox, independent of FC spawn order)
         try:
-            pid = _run(["pgrep", "-fn", "firecracker"])  # -f cmdline, -n newest
-            if not pid.isdigit():
-                return f"pgrep firecracker -> {pid[:80]!r}, no PID"
-            _run(["taskset", "-a", "-pc", cpus, pid])  # -a: all threads + inherit
+            result = sbx.commands.run("cat /sys/class/net/eth0/address", user="root", timeout=10)
+            mac = (getattr(result, "stdout", "") or "").strip().lower()
         except Exception as e:
-            return f"pin cmd failed: {e}"
+            return f"read guest MAC failed: {e}"
+        if not mac:
+            return "read guest MAC failed: empty stdout"
 
-        # Verify: every thread's affinity mask == requested set. Poll briefly
-        # in case vCPU threads are still coming up on a slow boot.
+        # locate the FC PID whose netns tap0 neighbour table has this MAC.
+        try:
+            info = sbx.get_info()
+            started_epoch = info.started_at.timestamp()
+        except Exception:
+            started_epoch = time.time()
+
+        lookup = (
+            "MAC=" + shlex.quote(mac) + "\n"
+            "for p in $(pgrep -f 'firecracker --api-sock'); do\n"
+            '  nsenter -t "$p" -n ip neigh show dev tap0 2>/dev/null '
+            '| grep -qi "lladdr $MAC" || continue\n'
+            "  grep -q 'fc_vcpu' /proc/$p/task/*/comm 2>/dev/null || continue\n"
+            "  m=$(find -L /proc/$p/cwd/ -maxdepth 1 "
+            "-name agentenv_volume_slot_0.img -printf '%T@\\n' 2>/dev/null | head -1)\n"
+            '  [ -z "$m" ] && m=$(stat -L -c %Y /proc/$p/cwd 2>/dev/null)\n'
+            '  [ -n "$m" ] && echo "$p $m"\n'
+            "done\n"
+        )
+        try:
+            out = _run(["sh", "-c", lookup])
+        except Exception as e:
+            return f"locate FC by guest MAC {mac} failed: {e}"
+        candidates: list[tuple[int, float]] = []
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[0].isdigit():
+                try:
+                    candidates.append((int(parts[0]), float(parts[1])))
+                except ValueError:
+                    pass
+        if not candidates:
+            return f"no FC process with fc_vcpu thread for guest MAC {mac}"
+        pid, mtime = min(candidates, key=lambda x: abs(x[1] - started_epoch))
+        pid = str(pid)
+        diff = abs(mtime - started_epoch)
+        if diff > 30:
+            return (
+                f"FC candidates {candidates} for guest MAC {mac} but none matches "
+                f"sandbox start {started_epoch:.3f} (closest pid {pid}, diff {diff:.3f}s)"
+            )
+        logger.info(
+            "[aenv-pin] located pid=%s mac=%s via work-dir mtime (diff=%.3fs, candidates=%d)",
+            pid,
+            mac,
+            diff,
+            len(candidates),
+        )
+
+        # pin all current + future threads, then verify every thread's mask.
+        apply_script = (
+            "taskset -pc " + shlex.quote(cpus) + " " + shlex.quote(pid) + " >/dev/null || exit 1\n"
+            "for t in /proc/" + shlex.quote(pid) + "/task/*; do\n"
+            "  taskset -pc " + shlex.quote(cpus) + ' "${t##*/}" >/dev/null 2>&1 || true\n'
+            "done\n"
+        )
+
+        def _apply_pin() -> None:
+            _run(["sh", "-c", apply_script])
+
+        last_err: Exception | None = None
+        for _ in range(5):
+            try:
+                _apply_pin()
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                time.sleep(0.2)
+        if last_err is not None:
+            return f"taskset failed for pid {pid} (mac {mac}): {last_err}"
+
         deadline = time.time() + 10
         while True:
             try:
                 out = _run(["taskset", "-ap", pid])
+                vcpu_count = int(
+                    _run(["sh", "-c", f"grep -l fc_vcpu /proc/{pid}/task/*/comm 2>/dev/null | wc -l"]) or "0"
+                )
             except Exception as e:
-                return f"verify read failed: {e}"
+                if time.time() >= deadline:
+                    return f"verify read failed for pid {pid} (mac {mac}): {e}"
+                time.sleep(0.5)
+                continue
             masks = [line.rsplit(":", 1)[1].strip() for line in out.splitlines() if "affinity mask:" in line]
             sets = [self._mask_to_cpus(m) for m in masks]
-            if sets and all(s == want for s in sets) and len(sets) >= 2:
+            if sets and vcpu_count >= 1 and all(s == want for s in sets):
                 logger.info(
-                    "[aenv-pin] PINNED OK pid=%s cpus=%s threads=%d (%s); attach perf: perf stat -p %s ...",
+                    "[aenv-pin] PINNED OK pid=%s mac=%s cpus=%s threads=%d vcpu=%d (%s); "
+                    "attach perf: perf stat -p %s ...",
                     pid,
+                    mac,
                     cpus,
                     len(sets),
+                    vcpu_count,
                     where,
                     pid,
                 )
@@ -291,15 +384,27 @@ class SandboxManager(BaseSandboxManager):
             if time.time() >= deadline:
                 got = ", ".join(sorted({str(s) for s in sets})) or "<none>"
                 logger.error(
-                    "[aenv-pin] PIN FAILED pid=%s want=%s got=[%s] threads=%d (%s); recheck: taskset -ap %s",
+                    "[aenv-pin] PIN FAILED pid=%s mac=%s want=%s got=[%s] threads=%d vcpu=%d (%s); "
+                    "recheck: taskset -ap %s",
                     pid,
+                    mac,
                     cpus,
                     got,
                     len(sets),
+                    vcpu_count,
                     where,
                     pid,
                 )
-                return f"verify failed: want {cpus}, got [{got}] ({len(sets)} threads)"
+                return (
+                    f"verify failed: pid {pid} mac {mac} want {cpus}, got [{got}] "
+                    f"({len(sets)} threads, {vcpu_count} vcpu)"
+                )
+            # A new vCPU thread may have appeared after the initial taskset;
+            # re-apply before the next read.
+            try:
+                _apply_pin()
+            except Exception:
+                pass
             time.sleep(0.5)
 
     def _list_existing(self) -> list:

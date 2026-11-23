@@ -18,6 +18,7 @@ from threading import Event
 
 import pytest
 
+import bench_core.task_runner.browser  # noqa: F401 -- self-registers workflow_type="browser"
 from bench_core.config import KernelConfig
 from env_provider.e2b.config import Config
 from env_provider.e2b.manager import SandboxManager
@@ -27,32 +28,59 @@ from env_provider.e2b.manager import SandboxManager
 class _RunResult:
     def __init__(self, exit_code: int = 0, stdout: str = "", stderr: str = ""):
         self.exit_code = exit_code
+        # subprocess.CompletedProcess uses ``returncode``; the pin helper reads it.
+        self.returncode = exit_code
         self.stdout = stdout
         self.stderr = stderr
 
 
 class _FakeCommands:
-    """e2b Sandbox.commands stand-in. Returns a listening port line for any
-    probe when ``ready``; records every run call."""
+    """e2b Sandbox.commands stand-in.
 
-    def __init__(self, *, ready: bool = True):
+    Returns the guest eth0 MAC for the pin lookup command, and a listening port
+    line for any other probe when ``ready``; records every run call.
+    """
+
+    def __init__(self, *, ready: bool = True, mac: str = "aa:bb:cc:dd:ee:ff"):
         self._ready = ready
+        self._mac = mac
         self.calls: list[str] = []
 
     def run(self, cmd, user="root", timeout=60):  # noqa: ARG002
         self.calls.append(cmd)
+        if "eth0/address" in cmd:
+            return _RunResult(0, f"{self._mac}\n", "")
         if self._ready:
             return _RunResult(0, "0.0.0.0:18789 0.0.0.0:*\n", "")
         return _RunResult(1, "", "")
 
 
+class _StartedAt:
+    """Minimal ``datetime``-like object exposing ``timestamp()``."""
+
+    def __init__(self, epoch: float):
+        self._epoch = epoch
+
+    def timestamp(self) -> float:
+        return self._epoch
+
+
+class _FakeInfo:
+    def __init__(self, started_epoch: float):
+        self.started_at = _StartedAt(started_epoch)
+
+
 class _FakeSandbox:
     """A single e2b Sandbox handle (created or connected)."""
 
-    def __init__(self, sid: str):
+    def __init__(self, sid: str, *, mac: str = "aa:bb:cc:dd:ee:ff", started_epoch: float = 1000.0):
         self.sandbox_id = sid
-        self.commands = _FakeCommands()
+        self.commands = _FakeCommands(mac=mac)
+        self._started_epoch = started_epoch
         self.killed = False
+
+    def get_info(self):
+        return _FakeInfo(self._started_epoch)
 
     def kill(self):
         self.killed = True
@@ -323,24 +351,67 @@ class TestCheckAlive:
 
 # --------------------------------------------------------------- fc cpu pin (cold-start)
 class _FakeSubprocessRun:
-    """Scripted subprocess.run: pgrep -> taskset -pc -> taskset -ap."""
+    """Scripted ``subprocess.run`` for the MAC-based FC lookup + pin/verify.
 
-    def __init__(self, *, pgrep: str = "1234", ap_out: str = ""):
-        self.pgrep = pgrep
+    Dispatches by the command shape the real implementation issues:
+
+    - ``sh -c <lookup>``  -> ``lookup`` ("<pid> <mtime>" lines)
+    - ``sh -c <apply>``   -> apply_rc (0 = pin applied)
+    - ``sh -c <vcpu>``    -> ``vcpu_count`` (fc_vcpu thread count)
+    - ``taskset -ap <pid>`` -> ``ap_out`` (per-thread affinity lines)
+    """
+
+    def __init__(
+        self,
+        *,
+        lookup: str = "1234 1000.0",
+        ap_out: str = "",
+        vcpu_count: str = "2",
+        apply_rc: int = 0,
+        lookup_rc: int = 0,
+        ap_rc: int = 0,
+    ):
+        self.lookup = lookup
         self.ap_out = ap_out
+        self.vcpu_count = vcpu_count
+        self.apply_rc = apply_rc
+        self.lookup_rc = lookup_rc
+        self.ap_rc = ap_rc
         self.calls: list[list[str]] = []
 
     def __call__(self, args, **kw):
         self.calls.append(list(args))
-        if args[-1] == "firecracker":  # pgrep ... firecracker (may follow ssh prefix)
-            return _RunResult(0, self.pgrep, "")
+        last = args[-1]
+        if isinstance(last, str) and "pgrep -f 'firecracker --api-sock'" in last:
+            return _RunResult(self.lookup_rc, self.lookup, "" if self.lookup_rc == 0 else "lookup boom")
+        if isinstance(last, str) and "taskset -pc" in last:
+            return _RunResult(self.apply_rc, "", "" if self.apply_rc == 0 else "taskset boom")
+        if isinstance(last, str) and "grep -l fc_vcpu" in last:
+            return _RunResult(0, self.vcpu_count, "")
         if "-ap" in args:
-            return _RunResult(0, self.ap_out, "")
+            return _RunResult(self.ap_rc, self.ap_out, "" if self.ap_rc == 0 else "ap boom")
         return _RunResult(0, "", "")
+
+
+class _FakeClock:
+    """Deterministic clock so the 10s verify deadline elapses without real sleep."""
+
+    def __init__(self, start: float = 1000.0):
+        self._now = start
+
+    def time(self) -> float:
+        return self._now
+
+    def sleep(self, seconds: float) -> None:
+        self._now += seconds
 
 
 def _two_thread_masks(mask: str) -> str:
     return f"pid 1's current affinity mask: {mask}\npid 2's current affinity mask: {mask}\n"
+
+
+def _patch_clock(monkeypatch, clock: _FakeClock) -> None:
+    monkeypatch.setattr("env_provider.e2b.manager.time", clock)
 
 
 class TestParsers:
@@ -363,61 +434,221 @@ class TestPinAndVerifyFc:
     def test_no_pin_cpus_returns_none(self, monkeypatch):
         _patch(monkeypatch, _FakeSandboxCls())
         mgr = SandboxManager(_kc(total_count=1), Config(), Event())
-        assert mgr._pin_and_verify_fc() is None
+        # No pin_cpus -> early return before touching the sandbox handle.
+        assert mgr._pin_and_verify_fc(None) is None
 
-    def test_pins_and_verifies_ok(self, monkeypatch):
+    def test_mac_unique_match_pins_and_verifies_ok(self, monkeypatch):
         _patch(monkeypatch, _FakeSandboxCls())
-        fake_run = _FakeSubprocessRun(ap_out=_two_thread_masks("0c"))
+        fake_run = _FakeSubprocessRun(lookup="1234 1000.0", ap_out=_two_thread_masks("0c"))
         monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
         mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
-        assert mgr._pin_and_verify_fc() is None
-        assert fake_run.calls == [
-            ["pgrep", "-fn", "firecracker"],
-            ["taskset", "-a", "-pc", "2,3", "1234"],
-            ["taskset", "-ap", "1234"],
-        ]
+        sbx = _FakeSandbox("sbx-1", mac="aa:bb:cc:dd:ee:ff", started_epoch=1000.0)
+
+        assert mgr._pin_and_verify_fc(sbx) is None
+
+        # Guest MAC read via the SDK (not subprocess).
+        assert "cat /sys/class/net/eth0/address" in sbx.commands.calls
+        # Lookup script issued first, then per-thread pin, then verify.
+        assert fake_run.calls[0][0] == "sh" and fake_run.calls[0][1] == "-c"
+        assert "pgrep -f 'firecracker --api-sock'" in fake_run.calls[0][2]
+        assert any(c[-1] == "taskset -pc" or "taskset -pc" in c[-1] for c in fake_run.calls)
+        assert ["taskset", "-ap", "1234"] in fake_run.calls
+        assert any("grep -l fc_vcpu" in c[-1] for c in fake_run.calls)
+
+    def test_shared_mac_disambiguated_by_workdir_mtime(self, monkeypatch):
+        # Three FCs share the guest MAC; the one whose work-dir mtime is closest
+        # to the sandbox started_at (1000.0) must be selected -> pid 2222.
+        _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun(
+            lookup="1111 800.0\n2222 1000.2\n3333 1200.0",
+            ap_out=_two_thread_masks("0c"),
+        )
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
+        sbx = _FakeSandbox("sbx-1", started_epoch=1000.0)
+
+        assert mgr._pin_and_verify_fc(sbx) is None
+        assert ["taskset", "-ap", "2222"] in fake_run.calls
+        assert ["taskset", "-ap", "1111"] not in fake_run.calls
+        assert ["taskset", "-ap", "3333"] not in fake_run.calls
+
+    def test_no_fc_vcpu_candidate_returns_error(self, monkeypatch):
+        _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun(lookup="")  # no candidate survives the fc_vcpu filter
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
+        sbx = _FakeSandbox("sbx-1", started_epoch=1000.0)
+
+        err = mgr._pin_and_verify_fc(sbx)
+        assert err is not None
+        assert "no FC process with fc_vcpu thread" in err
+        assert "aa:bb:cc:dd:ee:ff" in err
+
+    def test_candidate_mtime_too_far_returns_error(self, monkeypatch):
+        # Only candidate is 100s off the sandbox start -> exceeds the 30s window.
+        _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun(lookup="1234 1100.0", ap_out=_two_thread_masks("0c"))
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
+        sbx = _FakeSandbox("sbx-1", started_epoch=1000.0)
+
+        err = mgr._pin_and_verify_fc(sbx)
+        assert err is not None
+        assert "none matches" in err
+
+    def test_taskset_failure_returns_error(self, monkeypatch):
+        _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun(lookup="1234 1000.0", apply_rc=1)
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
+        sbx = _FakeSandbox("sbx-1", started_epoch=1000.0)
+
+        err = mgr._pin_and_verify_fc(sbx)
+        assert err is not None
+        assert "taskset failed" in err
+        assert "1234" in err
 
     def test_remote_prefix_prepends_ssh(self, monkeypatch):
         _patch(monkeypatch, _FakeSandboxCls())
-        fake_run = _FakeSubprocessRun(ap_out=_two_thread_masks("0c"))
+        fake_run = _FakeSubprocessRun(lookup="1234 1000.0", ap_out=_two_thread_masks("0c"))
         monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
         mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3", pin_cmd_prefix="ssh user@host"), Event())
-        assert mgr._pin_and_verify_fc() is None
-        assert fake_run.calls[0] == ["ssh", "user@host", "pgrep", "-fn", "firecracker"]
+        sbx = _FakeSandbox("sbx-1", started_epoch=1000.0)
 
-    def test_pgrep_no_pid_returns_error(self, monkeypatch):
-        _patch(monkeypatch, _FakeSandboxCls())
-        fake_run = _FakeSubprocessRun(pgrep="")
-        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
-        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
-        assert "no PID" in mgr._pin_and_verify_fc()
+        assert mgr._pin_and_verify_fc(sbx) is None
+        # Every host-side command is routed through the remote prefix.
+        assert fake_run.calls
+        assert all(c[:2] == ["ssh", "user@host"] for c in fake_run.calls)
+        assert fake_run.calls[0][2:4] == ["sh", "-c"]
 
     def test_wrong_mask_returns_error(self, monkeypatch):
         _patch(monkeypatch, _FakeSandboxCls())
         # wanted {2,3} but threads are on {1,2} (0x6)
-        fake_run = _FakeSubprocessRun(ap_out=_two_thread_masks("6"))
+        fake_run = _FakeSubprocessRun(lookup="1234 1000.0", ap_out=_two_thread_masks("6"))
         monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
         mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
-        err = mgr._pin_and_verify_fc()
+        sbx = _FakeSandbox("sbx-1", started_epoch=1000.0)
+
+        err = mgr._pin_and_verify_fc(sbx)
         assert err is not None
         assert "verify failed" in err
+        assert "want 2,3" in err
+
+    def test_no_vcpu_thread_fails_verify(self, monkeypatch):
+        # Masks are correct but no fc_vcpu thread -> verify must fail.
+        _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun(lookup="1234 1000.0", ap_out=_two_thread_masks("0c"), vcpu_count="0")
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
+        sbx = _FakeSandbox("sbx-1", started_epoch=1000.0)
+
+        err = mgr._pin_and_verify_fc(sbx)
+        assert err is not None
+        assert "verify failed" in err
+
+    def test_mac_read_exception_returns_error(self, monkeypatch):
+        _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun()
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
+        sbx = _FakeSandbox("sbx-1")
+        sbx.commands.run = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("sdk down"))
+
+        err = mgr._pin_and_verify_fc(sbx)
+        assert err is not None
+        assert "read guest MAC failed" in err
+        assert "sdk down" in err
+
+    def test_empty_mac_returns_error(self, monkeypatch):
+        _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun()
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
+        sbx = _FakeSandbox("sbx-1", mac="")
+
+        err = mgr._pin_and_verify_fc(sbx)
+        assert err == "read guest MAC failed: empty stdout"
+
+    def test_get_info_failure_falls_back_to_now(self, monkeypatch):
+        # get_info raising must not abort; the lookup falls back to time.time().
+        _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun(lookup="1234 1000.0", ap_out=_two_thread_masks("0c"))
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
+        sbx = _FakeSandbox("sbx-1")
+        sbx.get_info = lambda: (_ for _ in ()).throw(RuntimeError("no info"))
+
+        assert mgr._pin_and_verify_fc(sbx) is None
+
+    def test_lookup_command_failure_returns_error(self, monkeypatch):
+        _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun(lookup_rc=1)
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
+        sbx = _FakeSandbox("sbx-1", started_epoch=1000.0)
+
+        err = mgr._pin_and_verify_fc(sbx)
+        assert err is not None
+        assert "locate FC by guest MAC" in err
+        assert "lookup boom" in err
+
+    def test_malformed_lookup_output_ignored(self, monkeypatch):
+        # Non-numeric / wrong-arity lines must be skipped, leaving no candidates.
+        _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun(lookup="abc def\n12 notanumber\n")
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
+        sbx = _FakeSandbox("sbx-1", started_epoch=1000.0)
+
+        err = mgr._pin_and_verify_fc(sbx)
+        assert err is not None
+        assert "no FC process with fc_vcpu thread" in err
+
+    def test_verify_read_failure_returns_error(self, monkeypatch):
+        # taskset -ap failing repeatedly must hit the deadline and report it.
+        _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun(lookup="1234 1000.0", ap_rc=1)
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
+        sbx = _FakeSandbox("sbx-1", started_epoch=1000.0)
+
+        err = mgr._pin_and_verify_fc(sbx)
+        assert err is not None
+        assert "verify read failed" in err
 
     def test_wide_mask_high_cpus_ok(self, monkeypatch):
         # want 96,97 -> taskset prints two 64-bit words (bit 32/33 of word 1);
         # the old 32-bit-window parser dropped those to set() and failed verify.
         _patch(monkeypatch, _FakeSandboxCls())
         mask = "0000000000000000,0000000300000000"
-        fake_run = _FakeSubprocessRun(ap_out=_two_thread_masks(mask))
+        fake_run = _FakeSubprocessRun(lookup="1234 1000.0", ap_out=_two_thread_masks(mask))
         monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
         mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="96,97"), Event())
-        assert mgr._pin_and_verify_fc() is None
+        sbx = _FakeSandbox("sbx-1", started_epoch=1000.0)
+        assert mgr._pin_and_verify_fc(sbx) is None
 
 
 class TestCreateSinglePin:
     def test_pin_failure_fails_creation(self, monkeypatch):
-        fake = _patch(monkeypatch, _FakeSandboxCls())
-        fake_run = _FakeSubprocessRun(pgrep="")
+        _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun(lookup="")
         monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
         mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
         result = mgr._create_single(mgr._new_state(1))
         assert result["success"] is False
@@ -425,8 +656,9 @@ class TestCreateSinglePin:
 
     def test_pin_ok_still_created(self, monkeypatch):
         _patch(monkeypatch, _FakeSandboxCls())
-        fake_run = _FakeSubprocessRun(ap_out=_two_thread_masks("0c"))
+        fake_run = _FakeSubprocessRun(lookup="1234 1000.0", ap_out=_two_thread_masks("0c"))
         monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
         mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
         result = mgr._create_single(mgr._new_state(1))
         assert result["success"] is True
