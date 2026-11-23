@@ -39,11 +39,11 @@ e2b:
     E2B_API_URL: "http://localhost:3000"
     E2B_HTTP_SSL: "false"
 
-sandboxsched:
-  template: "python:3.11"            # E2B runtime: E2B template name; containerd runtime: image ref
-  sandbox_ttl: 86400                 # server-side sandbox TTL seconds (Sandbox.create timeout=); NOT a create wait
-  sandbox_group: "sg-1u1g"           # REQUIRED: extensions.sandboxGroup (server routes creates here; missing -> 400)
-  sandbox_ids_file: "sandboxs_replay_sched.txt"
+# sandboxsched:
+#   template: "python:3.11"            # E2B runtime: E2B template name; containerd runtime: image ref
+#   sandbox_ttl: 86400                 # server-side sandbox TTL seconds (Sandbox.create timeout=); NOT a create wait
+#   sandbox_group: "sg-1u1g"           # REQUIRED: extensions.sandboxGroup (server routes creates here; missing -> 400)
+#   sandbox_ids_file: "sandboxs_replay_sched.txt"
   # --cleanup / --detect scope: only sandboxes bench-core created in THIS
   # sandbox_group (stamped as metadata at create: managed_by + sandbox_group).
   # optional: domain: "<host>:<port>" (wins over env.OPEN_SANDBOX_DOMAIN), protocol: http|https,
@@ -151,11 +151,11 @@ replay:
   # exec_only for e2b/docker/fake/sandboxsched). Set explicitly to override.
   # No mode is hardcoded here: the previous default `mode: lifecycle` made the
   # shared config fail at startup on providers without a validated lifecycle.
-  # mode: lifecycle        # long-lived sandboxes: create -> pause once, then per step
-  #                         # resume -> exec -> pause. Direct runs: 1:1 (all N resume);
-  #                         # the oversub driver sets running_concurrency = k*N so the
-  #                         # FULL k*N fleet pauses/resumes concurrently at ratio 1:k.
-  #                         # See §8 of docs/guide/bench-core-usage.md.
+  mode: lifecycle        # long-lived sandboxes: create -> pause once, then per step
+                          # resume -> exec -> pause. Direct runs: 1:1 (all N resume);
+                          # the oversub driver sets running_concurrency = k*N so the
+                          # FULL k*N fleet pauses/resumes concurrently at ratio 1:k.
+                          # See §8 of docs/guide/bench-core-usage.md.
 
   running_concurrency: 384    # N (ratio basis). Direct runs use it as-is; the oversub
                                # driver overrides it to k*N for lifecycle (full-scale).
