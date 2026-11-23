@@ -219,12 +219,6 @@ class DockerProvider(EnvironmentProvider):
         # demux=True splits stdout/stdr so the kernel's runners read the
         # snapshot body from stdout and errors from stderr (docker's own runner
         # uses combined output; the kernel expects them separated).
-        #
-        # The SDK shlex-splits a *string* command itself; it does NOT invoke a
-        # shell. The provider contract is a shell command line (runners rely on
-        # ``cd ... && ...``, heredocs, $(...)), so wrap it explicitly in
-        # ``/bin/sh -c`` -- without this, `cd` is looked up as a binary and the
-        # exec dies with "executable file not found".
         result = state.docker_container.exec_run(["/bin/sh", "-c", command], user="root", demux=True)
         output = result.output
         if output is None:

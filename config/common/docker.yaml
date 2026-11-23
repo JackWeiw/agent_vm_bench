@@ -28,6 +28,10 @@ docker:
   cpu_limit: 2.0                           # CPU limit per container (--cpus)
   memory_limit: "2g"                       # Memory limit per container (-m)
   create_timeout: 300                      # Container creation timeout (seconds)
+  # CPU / NUMA-memory pin (docker cpuset lists; validated against host, static
+  # per run so all containers share the set). e.g. pin_cpus: "1-7", pin_mems: "0".
+  pin_cpus: null
+  pin_mems: null
   # Readiness is a workflow concern (browser port probe here) owned by the
   # kernel's ReadyChecker -- provider-transparent, so no port_check block.
   # See src/env_provider/_ready.py.

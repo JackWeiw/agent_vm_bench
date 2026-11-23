@@ -83,6 +83,8 @@ docker:
   cpu_limit: 2.0
   memory_limit: "2g"
   create_timeout: 300
+  pin_cpus: null                    # cpuset.cpus pin (e.g. "0-1"); null = off
+  pin_mems: null                    # cpuset.mems pin (e.g. "0"); null = off
   # Readiness is a workflow concern (coding runs the uname probe, not ports);
   # it is provider-transparent, so there is no port_check block here.
 

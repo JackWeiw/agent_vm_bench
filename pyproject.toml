@@ -60,6 +60,10 @@ cubesandbox = ["cubesandbox>=0.7.0"]
 # SandboxState class attrs).
 sandboxsched = ["opensandbox==1.2.0"]
 
+# Docker provider SDK (docker-py). Imported under try/except, so the kernel runs
+# without it; install only when using --provider docker.
+docker = ["docker>=7.0.0"]
+
 [project.scripts]
 vm-monitor = "vm_monitor.cli:main"
 bench-core = "bench_core.bench:main"

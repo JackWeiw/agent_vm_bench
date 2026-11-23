@@ -205,8 +205,7 @@ class TestExec:
 
         result = provider.exec(inst, "uname -a", timeout=10)
 
-        # timeout runs the worker; exec_run gets the command wrapped in a shell
-        # (docker-py shlex-splits strings, so `cd`/heredocs need `/bin/sh -c`).
+        # timeout runs the worker; exec_run gets the command wrapped in a shell.
         state.docker_container.exec_run.assert_called_once_with(["/bin/sh", "-c", "uname -a"], user="root", demux=True)
         assert isinstance(result, CommandResult)
         assert result.exit_code == 0

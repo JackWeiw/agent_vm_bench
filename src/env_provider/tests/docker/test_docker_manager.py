@@ -21,6 +21,7 @@ docker = pytest.importorskip("docker")
 from docker.errors import NotFound  # noqa: E402
 
 from bench_core.config import KernelConfig  # noqa: E402
+from env_provider.docker import manager as docker_manager  # noqa: E402
 from env_provider.docker.config import Config  # noqa: E402
 from env_provider.docker.manager import SandboxManager  # noqa: E402
 
@@ -35,13 +36,15 @@ class _ExecResult:
 
 
 class _FakeContainer:
-    def __init__(self, name: str):
+    def __init__(self, name: str, cpuset_cpus: str = "", cpuset_mems: str = ""):
         self.name = name
         self.status = "running"
         self.removed = False
         self.reload_called = False
         self.exec_calls: list[str] = []
         self._exec_result = _ExecResult(0, b"0.0.0.0:18789 0.0.0.0:*\n")
+        # Mimic the daemon storing the create-time cpuset in HostConfig.
+        self.attrs: dict = {"HostConfig": {"CpusetCpus": cpuset_cpus, "CpusetMems": cpuset_mems}}
 
     def reload(self):
         self.reload_called = True
@@ -65,9 +68,9 @@ class _FakeContainers:
             return self._existing[name]
         raise NotFound(f"no such container: {name}")
 
-    def run(self, image=None, name=None, detach=False, remove=False, cpu_quota=None, mem_limit=None):
-        c = _FakeContainer(name)
-        self.run_calls.append({"image": image, "name": name, "cpu_quota": cpu_quota, "mem_limit": mem_limit})
+    def run(self, image=None, name=None, detach=False, remove=False, cpu_quota=None, mem_limit=None, **kwargs):
+        c = _FakeContainer(name, kwargs.get("cpuset_cpus", ""), kwargs.get("cpuset_mems", ""))
+        self.run_calls.append({"image": image, "name": name, "cpu_quota": cpu_quota, "mem_limit": mem_limit, **kwargs})
         self._running.append(c)
         return c
 
@@ -87,9 +90,60 @@ def _client(monkeypatch) -> _FakeClient:
     return client
 
 
+def _topology(monkeypatch, cpus: set[int], nodes: set[int]) -> None:
+    """Stub the host sysfs readers the pin pre-check consults."""
+
+    def fake(path: str):
+        return cpus if path == docker_manager._CPU_ONLINE_PATH else nodes
+
+    monkeypatch.setattr(docker_manager, "_read_online_cpuset", fake)
+
+
 def _kc(**kw) -> KernelConfig:
     kw.setdefault("workflow_type", "browser")
     return KernelConfig(total_count=kw.pop("total_count", 2), **kw)
+
+
+# --------------------------------------------------------------------- pin validation
+class TestPinValidation:
+    def test_unknown_numa_node_rejected_at_startup(self, monkeypatch):
+        _topology(monkeypatch, {0, 1, 2, 3}, {0, 1})
+        _client(monkeypatch)
+        with pytest.raises(ValueError) as exc:
+            SandboxManager(_kc(total_count=1), Config(pin_mems="2"), Event())
+        message = str(exc.value)
+        assert "pin_mems '2'" in message
+        assert "NUMA nodes 2" in message
+        assert "online: 0-1" in message
+
+    def test_unknown_cpu_rejected_at_startup(self, monkeypatch):
+        _topology(monkeypatch, {0, 1, 2, 3}, {0})
+        _client(monkeypatch)
+        with pytest.raises(ValueError) as exc:
+            SandboxManager(_kc(total_count=1), Config(pin_cpus="0-5"), Event())
+        message = str(exc.value)
+        assert "pin_cpus '0-5'" in message
+        assert "CPUs 4-5" in message
+        assert "online: 0-3" in message
+
+    def test_malformed_pin_rejected(self, monkeypatch):
+        _client(monkeypatch)
+        with pytest.raises(ValueError, match="invalid docker cpuset pin"):
+            SandboxManager(_kc(total_count=1), Config(pin_cpus="0-x"), Event())
+
+    def test_validation_skipped_when_sysfs_unreadable(self, monkeypatch):
+        # Non-Linux hosts have no sysfs; the daemon still rejects a bad cpuset.
+        monkeypatch.setattr(docker_manager, "_read_online_cpuset", lambda path: None)
+        _client(monkeypatch)
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="100-101", pin_mems="1"), Event())
+        assert mgr.config.pin_cpus == "100-101"
+        assert mgr.config.pin_mems == "1"
+
+    def test_from_raw_coerces_scalar_pin_values(self):
+        # YAML unquoted `pin_mems: 0` parses as int; the docker API needs strings.
+        config = Config.from_raw({"docker": {"pin_cpus": 3, "pin_mems": 0}})
+        assert config.pin_cpus == "3"
+        assert config.pin_mems == "0"
 
 
 # --------------------------------------------------------------------- _create_single
@@ -107,6 +161,56 @@ class TestCreateSingle:
         assert call["name"] == "oc-bench-1"
         assert call["cpu_quota"] == 200000  # int(2.0 * 100000)
         assert call["mem_limit"] == "2g"
+        # Unpinned runs must not send (or default) a cpuset to the daemon.
+        assert "cpuset_cpus" not in call
+        assert "cpuset_mems" not in call
+
+    def test_pin_applied_at_create_time(self, monkeypatch):
+        _topology(monkeypatch, {100, 101, 102, 103}, {0, 1})
+        client = _client(monkeypatch)
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="100-101", pin_mems="0"), Event())
+        result = mgr._create_single(mgr._new_state(1))
+        assert result["success"] is True
+        call = client.containers.run_calls[0]
+        assert call["cpuset_cpus"] == "100-101"
+        assert call["cpuset_mems"] == "0"
+        container = client.containers._running[0]
+        assert container.attrs["HostConfig"]["CpusetCpus"] == "100-101"
+        assert container.attrs["HostConfig"]["CpusetMems"] == "0"
+        assert container.removed is False
+
+    def test_pin_cpu_mismatch_fails_create_and_removes_container(self, monkeypatch):
+        _topology(monkeypatch, {100, 101}, {0})
+        client = _client(monkeypatch)
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="100-101"), Event())
+        # Simulate a daemon that accepted the create but dropped the cpuset.
+        original_run = client.containers.run
+
+        def run(**kw):
+            kw.pop("cpuset_cpus", None)
+            return original_run(**kw)
+
+        client.containers.run = run
+        result = mgr._create_single(mgr._new_state(1))
+        assert result["success"] is False
+        assert "cpuset cpus pin verify failed" in result["error"]
+        assert client.containers._running[0].removed is True
+
+    def test_pin_mem_mismatch_fails_create_and_removes_container(self, monkeypatch):
+        _topology(monkeypatch, {100, 101}, {0, 1})
+        client = _client(monkeypatch)
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="100-101", pin_mems="0"), Event())
+        original_run = client.containers.run
+
+        def run(**kw):
+            kw.pop("cpuset_mems", None)
+            return original_run(**kw)
+
+        client.containers.run = run
+        result = mgr._create_single(mgr._new_state(1))
+        assert result["success"] is False
+        assert "cpuset mems pin verify failed" in result["error"]
+        assert client.containers._running[0].removed is True
 
     def test_stale_same_name_removed_before_create(self, monkeypatch):
         client = _client(monkeypatch)
