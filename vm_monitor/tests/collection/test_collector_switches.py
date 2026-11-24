@@ -6,6 +6,7 @@ its history stays empty so downstream sheets/SVGs omit it. The shared /proc/memi
 /proc CSV dumper is an always-on consumer), so disabling every /proc-metric
 consumer still leaves meminfo/vmstat/stat read.
 """
+
 from __future__ import annotations
 
 import vm_monitor.base as base
@@ -22,7 +23,7 @@ class _RecorderMonitor(VMMonitorBase):
     def _record(self, name: str) -> None:
         self.called.add(name)
 
-    # The 8 collectors invoked from collect_sample:
+    # The 9 collectors invoked from collect_sample:
     def collect_hugepage_stats(self):  # noqa: D401, N802 - recorder seam
         self._record("hugepage")
 
@@ -40,6 +41,9 @@ class _RecorderMonitor(VMMonitorBase):
 
     def collect_host_pressure(self, meminfo=None, vmstat=None, stat=None):  # noqa: N802 - recorder seam
         self._record("pressure")
+
+    def collect_psi(self, ts=None):  # noqa: N802 - recorder seam
+        self._record("psi")
 
     def get_numa_nodes_memory(self):  # noqa: N802 - recorder seam
         self._record("numa_memory")
@@ -93,7 +97,7 @@ class _RecorderMonitor(VMMonitorBase):
         return "recorder_monitor"
 
 
-# collect_sample drives these 8 + the shared meminfo/vmstat/stat reads (disk/ublk
+# collect_sample drives these 9 + the shared meminfo/vmstat/stat reads (disk/ublk
 # are sub-sampled separately by _disk_subsample_sleep). meminfo/vmstat/stat are
 # read unconditionally every cycle (raw /proc CSV dumper is an always-on consumer).
 _SAMPLE_DRIVEN = {
@@ -103,6 +107,7 @@ _SAMPLE_DRIVEN = {
     "swap",
     "host_mem_detail",
     "pressure",
+    "psi",
     "numa_memory",
     "vm_total",
     "meminfo",
@@ -129,11 +134,12 @@ def test_disable_subset_skips_only_named_collectors():
 
 
 def test_shared_proc_read_runs_even_when_all_consumers_disabled():
-    # Disabling swap + host_mem_detail + pressure leaves no /proc-metric consumer,
-    # but meminfo/vmstat/stat are still read every cycle: the raw /proc CSV dumper
-    # is an unconditional consumer (always-on, no switch).
+    # Disabling swap + host_mem_detail + pressure + psi leaves no consumer of the
+    # shared /proc reads (psi reads only /proc/pressure), but meminfo/vmstat/stat
+    # are still read every cycle: the raw /proc CSV dumper is an unconditional
+    # consumer (always-on, no switch).
     mon = _RecorderMonitor()
-    mon.disable_collectors({"swap", "host_mem_detail", "pressure"})
+    mon.disable_collectors({"swap", "host_mem_detail", "pressure", "psi"})
     mon.collect_sample()
     assert "meminfo" in mon.called
     assert "vmstat" in mon.called
@@ -141,6 +147,7 @@ def test_shared_proc_read_runs_even_when_all_consumers_disabled():
     assert "swap" not in mon.called
     assert "host_mem_detail" not in mon.called
     assert "pressure" not in mon.called
+    assert "psi" not in mon.called
     assert "hugepage" in mon.called  # other collectors still run
 
 

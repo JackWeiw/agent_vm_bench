@@ -227,6 +227,7 @@ monitor:
   #   - swap
   #   - host-mem-detail
   #   - pressure
+  #   - psi
   #   - numa-memory
   #   - vm-total
   #   - pss

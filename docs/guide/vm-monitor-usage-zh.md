@@ -186,6 +186,7 @@ vm_monitor 通过扫描 `ksys.log` 标记来跟踪解析进度：
 | `--no-swap` | swap 用量 + swap-in/out | `Host resources` 的 swap 列 + `Swap usage` / `Swap cache` / `Swap in/out` 图 |
 | `--no-host-mem-detail` | cached/dirty/writeback | `Host resources` 的 Buffers/dirty/writeback 与 Anon/file-cache 列 |
 | `--no-pressure` | 页缓存压力 + iowait | `Host resources` 压力列 / `Page-cache pressure` / `Alloc stalls` 图 |
+| `--no-psi` | 主机 PSI（`/proc/pressure/{cpu,memory}`） | `host_psi_raw.csv`（无 CONFIG_PSI 主机告警一次后跳过） |
 | `--no-numa-memory` | 每 NUMA meminfo | `NUMA` sheet 内存列 / `numa_mem_raw.csv` |
 | `--no-vm-total` | 聚合 VM 内存 | `Host resources` 的 `vm_mem_gb` + `VM memory vs FC PSS` 图 |
 | `--no-disk` | 每设备磁盘 I/O（1s 子采样） | `Disk IO` sheet |
@@ -212,6 +213,7 @@ logs_<timestamp>/
 │   ├── host_mem_raw.csv  host_vmstat_raw.csv  host_cpu_raw.csv
 │   ├── host_percpu_raw.csv  numa_cpu_map.csv  numa_mem_raw.csv
 │   ├── vm_cpu_raw.csv  disk_io_raw.csv  ublk_cpu_raw.csv
+│   ├── host_psi_raw.csv    # 仅 CONFIG_PSI 主机生成（其余主机缺失）
 │   └── hostproc_cpu_raw.csv  api_state_raw.csv
 ├── disk_io.svg              # 深色主题 SVG 时序曲线
 ├── host_resources.svg

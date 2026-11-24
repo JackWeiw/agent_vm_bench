@@ -90,3 +90,8 @@ def test_build_cmd_warns_and_drops_unknown_skip(monkeypatch, tmp_path, caplog):
     assert "--no-swap" in c._cmd
     assert "--no-bogus" not in c._cmd
     assert any("Unknown collector name: bogus" in r.message for r in caplog.records)
+
+
+def test_build_cmd_forwards_psi_skip(monkeypatch, tmp_path):
+    c = _controller_with_skip(["psi"], monkeypatch, tmp_path)
+    assert "--no-psi" in c._cmd

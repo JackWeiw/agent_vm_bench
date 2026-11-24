@@ -100,3 +100,11 @@ def test_host_proc_repeatable_and_parsed():
 def test_host_proc_defaults_empty():
     args = _parse(["--vmm", "qemu"])
     assert args.host_procs == []
+
+
+def test_no_psi_disables_collector():
+    args = _parse(["--vmm", "qemu", "--no-psi"])
+    assert args.no_psi is True
+    coll, dev = collect_disabled(args)
+    assert coll == {"psi"}
+    assert dev == set()

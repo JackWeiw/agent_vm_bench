@@ -85,6 +85,7 @@ _ALL_SAMPLE_COLLECTORS = frozenset(
         "swap",
         "host_mem_detail",
         "pressure",
+        "psi",
         "numa_memory",
         "vm_total",
         "disk",
@@ -254,6 +255,21 @@ def _compute_pressure_rates(cur: dict, prev: dict, interval: float, page_size: i
     return rates
 
 
+def _psi_flat_row(psi: dict) -> dict:
+    """Flatten a _read_psi() snapshot into one wide host_psi_raw.csv row.
+
+    Keys are ``{resource}_{kind}_{field}`` (e.g. ``cpu_some_avg10``,
+    ``memory_full_total``); dict insertion order follows the file's line order,
+    so the CSV header (written from the first row) is deterministic per boot.
+    """
+    row: dict = {}
+    for resource, kinds in psi.items():
+        for kind, fields in kinds.items():
+            for field, value in fields.items():
+                row[f"{resource}_{kind}_{field}"] = value
+    return row
+
+
 class _ProcRawWriter:
     """Background raw-snapshot dumper — every /proc-style source the monitor reads.
 
@@ -289,6 +305,12 @@ class _ProcRawWriter:
                                    CPU% via delta -- the derived 'cores' rate in
                                    ublk_daemon_history alone is lossy. A pid restart
                                    (new daemon) is just another row keyed by pid.
+      host_psi_raw.csv       wide   host PSI snapshot (/proc/pressure/{cpu,memory}):
+                                   some/full avg10/avg300/avg600 are gauges (% of
+                                   the window stalled) + total is cumulative stall
+                                   microseconds. Written only when the psi collector
+                                   is enabled AND /proc/pressure exists (CONFIG_PSI);
+                                   a PSI-less host leaves the file absent.
 
     collect_sample enqueues the dicts already read for the swap / mem-detail /
     pressure collectors (meminfo, vmstat) plus a freshly parsed /proc/stat and the
@@ -380,6 +402,10 @@ class _ProcRawWriter:
         """Per-NUMA-node meminfo rows (already parsed by get_numa_nodes_memory)."""
         self._q.put(("numa_mem", ts, nodes))
 
+    def enqueue_psi(self, ts: str, row: dict) -> None:
+        """Host PSI snapshot row (flattened by _psi_flat_row) for host_psi_raw.csv."""
+        self._q.put(("psi", ts, row))
+
     # --- drain thread ---
     def _run(self) -> None:
         while True:
@@ -413,6 +439,10 @@ class _ProcRawWriter:
             elif tag == "numa_mem":
                 _, ts, nodes = item
                 self._write_numa_mem(ts, nodes)
+            elif tag == "psi":
+                _, ts, row = item
+                if row:
+                    self._write_wide("psi", "host_psi_raw.csv", ts, row)
 
     def _write_wide(self, key: str, fname: str, ts: str, row: dict) -> None:
         """Append one wide row; open file + write header from the first row."""
@@ -777,6 +807,9 @@ class VMMonitorBase(ABC):
         self.dirty_limit_mb = 0.0
         self.dirty_background_limit_mb = 0.0
         self._dirty_limits_read = False
+        # PSI (/proc/pressure) availability: absent when the kernel lacks
+        # CONFIG_PSI or boots with psi=0. Warn once, then skip silently.
+        self._psi_missing_warned = False
 
         # Specified NUMA Node CPU Statistics
         self.target_numa_nodes = [0]
@@ -1773,6 +1806,76 @@ class VMMonitorBase(ABC):
         self.vm_total_memory_history.append(entry)
         return entry
 
+    # ===================== Collect Host PSI (/proc/pressure) =====================
+    def collect_psi(self, ts: str | None = None):
+        """Collect the host PSI snapshot (/proc/pressure/{cpu,memory}) per sample.
+
+        PSI (Pressure Stall Information) reports how much of the recent window
+        tasks spent stalled on a resource: ``avg10``/``avg300``/``avg600`` are
+        gauges (percent of the 10s/300s/600s window stalled) and ``total`` is a
+        cumulative stall counter in microseconds (an agent derives stall-seconds
+        via delta over the real row interval). The ``full`` line is absent from
+        /proc/pressure/cpu on kernels < 5.13; the CSV header follows the first
+        row (kernel-stable per boot).
+
+        Degrades gracefully: when /proc/pressure is unavailable (kernel without
+        CONFIG_PSI, or disabled at boot) the first cycle logs one WARNING and
+        the collector then skips silently -- a PSI-less host never accumulates
+        per-cycle noise and host_psi_raw.csv is simply not created.
+
+        ``ts`` is the shared collect_sample timestamp so PSI rows join the other
+        host_*_raw.csv rows; a fresh timestamp is minted when called standalone.
+        """
+        psi = self._read_psi()
+        if psi is None:
+            if not self._psi_missing_warned:
+                logger.warning("/proc/pressure unavailable (CONFIG_PSI off or psi=0); PSI collection skipped")
+                self._psi_missing_warned = True
+            return
+        if ts is None:
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        if self._proc_raw is not None:
+            self._proc_raw.enqueue_psi(ts, _psi_flat_row(psi))
+
+    def _read_psi(self, psi_dir: str = "/proc/pressure") -> dict | None:
+        """Parse /proc/pressure/{cpu,memory} into {resource: {kind: {field: value}}}.
+
+        Line format: ``some avg10=0.00 avg300=0.00 avg600=0.00 total=0`` (plus a
+        ``full`` line where the kernel provides one). ``avg*`` parse as float,
+        ``total`` as int microseconds. Returns None (never raises) when either
+        file is missing/unreadable (non-UTF8 bytes -> UnicodeDecodeError) or any line is malformed or lacks ``some`` --
+        callers degrade via the warn-once path. ``psi_dir`` is overridable so
+        tests can feed fixture files instead of the host's /proc.
+        """
+        result: dict = {}
+        for resource in ("cpu", "memory"):
+            try:
+                with open(os.path.join(psi_dir, resource)) as f:
+                    lines = f.read().splitlines()
+            except (OSError, ValueError):  # PSI-less kernel, unreadable, or non-UTF8 bytes
+                return None
+            kinds: dict = {}
+            for line in lines:
+                parts = line.split()
+                if not parts or parts[0] not in ("some", "full"):
+                    continue
+                fields: dict = {}
+                for item in parts[1:]:
+                    key, sep, raw = item.partition("=")
+                    if not sep:
+                        return None
+                    try:
+                        fields[key] = int(raw) if key == "total" else float(raw)
+                    except ValueError:
+                        return None
+                if not fields:
+                    return None
+                kinds[parts[0]] = fields
+            if "some" not in kinds:
+                return None
+            result[resource] = kinds
+        return result
+
     def _read_meminfo(self) -> dict:
         """Read /proc/meminfo and return dict of field -> MB values
 
@@ -2401,6 +2504,8 @@ class VMMonitorBase(ABC):
             numa_nodes = self.get_numa_nodes_memory()  # same cycle as swap/hugepage
             if self._proc_raw is not None and numa_nodes:
                 self._proc_raw.enqueue_numa_mem(ts, numa_nodes)
+        if self._collects("psi"):
+            self.collect_psi(ts=ts)
         vms = self.get_vms_realtime()
         self.last_vm_count = len(vms)
 
