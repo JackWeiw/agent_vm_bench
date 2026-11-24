@@ -443,8 +443,10 @@ class TestPinAndVerifyFc:
         # Lookup script issued first, then per-thread pin, then verify.
         assert fake_run.calls[0][0] == "sh" and fake_run.calls[0][1] == "-c"
         assert "pgrep -f firecracker" in fake_run.calls[0][2]
-        # Only real firecracker binaries that carry --api-sock are considered.
+        # Only real firecracker binaries that carry --api-sock are considered;
+        # a versioned binary name (firecracker-1.9) still matches.
         assert "/proc/$p/exe" in fake_run.calls[0][2]
+        assert "firecracker*)" in fake_run.calls[0][2]
         assert "--api-sock" in fake_run.calls[0][2]
         assert any(c[-1] == "taskset -pc" or "taskset -pc" in c[-1] for c in fake_run.calls)
         assert ["taskset", "-ap", "1234"] in fake_run.calls

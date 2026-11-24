@@ -299,7 +299,7 @@ class SandboxManager(BaseSandboxManager):
         lookup = (
             "MAC=" + shlex.quote(mac) + "\n"
             "for p in $(pgrep -f firecracker); do\n"
-            '  [ "$(basename "$(readlink -f /proc/$p/exe)")" = firecracker ] || continue\n'
+            '  case "$(basename "$(readlink -f /proc/$p/exe)")" in firecracker*) ;; *) continue;; esac\n'
             "  tr '\\0' ' ' < /proc/$p/cmdline | grep -q -- --api-sock || continue\n"
             '  nsenter -t "$p" -n ip neigh show dev tap0 2>/dev/null '
             '| grep -qi "lladdr $MAC" || continue\n'
