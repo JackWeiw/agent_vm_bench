@@ -7,6 +7,7 @@ itself.
 """
 from __future__ import annotations
 
+import logging
 import time
 from threading import Event
 from unittest.mock import Mock
@@ -399,6 +400,48 @@ class TestLazyConstruction:
             mgr = provider.manager
         assert isinstance(mgr, SandboxManager)
         assert provider._manager is mgr  # cached
+
+
+class TestPinConfigUnderTeardown:
+    """A bad pin config must not trap teardown (or crash detect) with a traceback."""
+
+    @staticmethod
+    def _manager_cls(calls, *, found):
+        class _Mgr:
+            def __init__(self, kernel_config, config, stop_event):
+                # Mirror the real manager: construction validates the pin.
+                if config.pin_cpus:
+                    raise ValueError(f"docker pin_cpus {config.pin_cpus!r} is not valid on this host")
+                calls.append(config)
+
+            def cleanup_existing(self):
+                return found
+
+            def detect_existing(self):
+                return {}
+
+        return _Mgr
+
+    def test_cleanup_existing_retries_with_pin_cleared(self, monkeypatch, caplog):
+        calls = []
+        monkeypatch.setattr("env_provider.docker.SandboxManager", self._manager_cls(calls, found=2))
+        provider = DockerProvider(KernelConfig(), Config(pin_cpus="18-25", pin_mems="0"), Event())
+
+        with caplog.at_level(logging.WARNING):
+            assert provider.cleanup_existing() == 2
+
+        assert len(calls) == 1  # one retry, with the pin cleared
+        assert calls[0].pin_cpus is None and calls[0].pin_mems is None
+        assert any("ignoring invalid pin config for cleanup" in r.message for r in caplog.records)
+
+    def test_detect_existing_returns_empty_on_invalid_pin(self, monkeypatch, caplog):
+        monkeypatch.setattr("env_provider.docker.SandboxManager", self._manager_cls([], found=0))
+        provider = DockerProvider(KernelConfig(), Config(pin_cpus="18-25"), Event())
+
+        with caplog.at_level(logging.ERROR):
+            assert provider.detect_existing() == {}
+
+        assert any("[docker]" in r.message for r in caplog.records)
 
 
 class TestBuildProvider:

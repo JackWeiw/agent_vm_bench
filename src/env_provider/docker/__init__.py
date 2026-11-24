@@ -26,6 +26,7 @@ import logging
 import shlex
 import threading
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
 from bench_core.config import KernelConfig
@@ -114,7 +115,15 @@ class DockerProvider(EnvironmentProvider):
         return self._translate(mgr.create_all(templates=templates))
 
     def detect_existing(self) -> Mapping[int, SandboxInstance]:
-        return self._translate(self.manager.detect_existing())
+        try:
+            mgr = self.manager
+        except ValueError as exc:
+            # Same treatment as create_all: a bad pin config is a create-phase
+            # error, not a traceback (detect would only produce sandboxes the
+            # run then drives).
+            logger.error("[docker] %s", exc)
+            return {}
+        return self._translate(mgr.detect_existing())
 
     def check_alive(self, inst: SandboxInstance) -> bool:
         state = self.manager.container_states.get(inst.index)
@@ -133,7 +142,20 @@ class DockerProvider(EnvironmentProvider):
         # Delegate to the manager's list->attach->remove path, which skips the
         # readiness probe (a service-down container must not stall teardown on
         # the 300s port wait).
-        return self.manager.cleanup_existing()
+        try:
+            mgr = self.manager
+        except ValueError as exc:
+            # The pin config only shapes CREATION; teardown must still work so
+            # a YAML typo cannot trap leftover containers. Retry with the pin
+            # cleared -- removing containers does not need it.
+            logger.warning("[docker] ignoring invalid pin config for cleanup: %s", exc)
+            mgr = SandboxManager(
+                self._kernel_config,
+                replace(self._config, pin_cpus=None, pin_mems=None),
+                self._stop_event,
+            )
+            self._manager = mgr
+        return mgr.cleanup_existing()
 
     # ------------------------------------------------------------------ setup hooks
     def prepare_env(self) -> None:
