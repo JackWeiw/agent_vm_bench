@@ -281,6 +281,31 @@ class TestExecProbe:
         assert stdout == "LISTENING\n"
         assert stderr == ""
 
+    def test_probe_passes_command_through_unwrapped(self, monkeypatch):
+        # Probe commands already carry their own sh -c where needed; adding a
+        # second wrapper is pointless churn.
+        _client(monkeypatch)
+        mgr = SandboxManager(_kc(), Config(), Event())
+        c = _FakeContainer("x")
+        mgr._exec_probe(c, "sh -c 'ss -tlnp'", 10)
+        assert c.exec_calls == ["sh -c 'ss -tlnp'"]
+
+
+# ------------------------------------------------------- browser backend commands
+class TestBrowserCommands:
+    def test_start_backend_wraps_in_shell(self, monkeypatch):
+        # && / || need a real shell; docker-py would shlex-split the string.
+        _client(monkeypatch)
+        mgr = SandboxManager(_kc(), Config(), Event())
+        state = mgr._new_state(1)
+        c = _FakeContainer("oc-bench-1")
+        c._exec_result = _ExecResult(0, b"running")
+        state.docker_container = c
+
+        ok, _msg = mgr.start_browser_backend(state)
+        assert ok is True
+        assert c.exec_calls == [["/bin/sh", "-c", "openclaw browser status && start || openclaw browser start"]]
+
 
 # --------------------------------------------------------------------- create_all
 class TestCreateAll:

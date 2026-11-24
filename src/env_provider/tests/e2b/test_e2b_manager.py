@@ -14,6 +14,7 @@ with a controllable fake, so no SDK install is needed.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from threading import Event
 
 import pytest
@@ -55,19 +56,9 @@ class _FakeCommands:
         return _RunResult(1, "", "")
 
 
-class _StartedAt:
-    """Minimal ``datetime``-like object exposing ``timestamp()``."""
-
-    def __init__(self, epoch: float):
-        self._epoch = epoch
-
-    def timestamp(self) -> float:
-        return self._epoch
-
-
 class _FakeInfo:
     def __init__(self, started_epoch: float):
-        self.started_at = _StartedAt(started_epoch)
+        self.started_at = datetime.fromtimestamp(started_epoch, tz=timezone.utc)
 
 
 class _FakeSandbox:
@@ -382,7 +373,7 @@ class _FakeSubprocessRun:
     def __call__(self, args, **kw):
         self.calls.append(list(args))
         last = args[-1]
-        if isinstance(last, str) and "pgrep -f 'firecracker --api-sock'" in last:
+        if isinstance(last, str) and "pgrep -f firecracker" in last:
             return _RunResult(self.lookup_rc, self.lookup, "" if self.lookup_rc == 0 else "lookup boom")
         if isinstance(last, str) and "taskset -pc" in last:
             return _RunResult(self.apply_rc, "", "" if self.apply_rc == 0 else "taskset boom")
@@ -451,7 +442,10 @@ class TestPinAndVerifyFc:
         assert "cat /sys/class/net/eth0/address" in sbx.commands.calls
         # Lookup script issued first, then per-thread pin, then verify.
         assert fake_run.calls[0][0] == "sh" and fake_run.calls[0][1] == "-c"
-        assert "pgrep -f 'firecracker --api-sock'" in fake_run.calls[0][2]
+        assert "pgrep -f firecracker" in fake_run.calls[0][2]
+        # Only real firecracker binaries that carry --api-sock are considered.
+        assert "/proc/$p/exe" in fake_run.calls[0][2]
+        assert "--api-sock" in fake_run.calls[0][2]
         assert any(c[-1] == "taskset -pc" or "taskset -pc" in c[-1] for c in fake_run.calls)
         assert ["taskset", "-ap", "1234"] in fake_run.calls
         assert any("grep -l fc_vcpu" in c[-1] for c in fake_run.calls)
@@ -488,9 +482,12 @@ class TestPinAndVerifyFc:
         assert "aa:bb:cc:dd:ee:ff" in err
 
     def test_candidate_mtime_too_far_returns_error(self, monkeypatch):
-        # Only candidate is 100s off the sandbox start -> exceeds the 30s window.
+        # Two candidates, both far from the sandbox start -> ambiguous, reject.
         _patch(monkeypatch, _FakeSandboxCls())
-        fake_run = _FakeSubprocessRun(lookup="1234 1100.0", ap_out=_two_thread_masks("0c"))
+        fake_run = _FakeSubprocessRun(
+            lookup="1234 1100.0\n5678 1300.0",
+            ap_out=_two_thread_masks("0c"),
+        )
         monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
         _patch_clock(monkeypatch, _FakeClock(1000.0))
         mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
@@ -499,6 +496,35 @@ class TestPinAndVerifyFc:
         err = mgr._pin_and_verify_fc(sbx)
         assert err is not None
         assert "none matches" in err
+
+    def test_single_candidate_ignores_mtime_window(self, monkeypatch):
+        # A warm-pool FC can predate the sandbox start by minutes; with exactly
+        # one MAC match the mtime window must not reject it.
+        _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun(lookup="1234 800.0", ap_out=_two_thread_masks("0c"))
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
+        sbx = _FakeSandbox("sbx-1", started_epoch=1000.0)
+
+        assert mgr._pin_and_verify_fc(sbx) is None
+        assert ["taskset", "-ap", "1234"] in fake_run.calls
+
+    def test_naive_started_at_treated_as_utc(self, monkeypatch):
+        # AENV may return an offset-less timestamp; it must be read as UTC, not
+        # shifted by the collector's local zone (the bug made this diff ~8h).
+        _patch(monkeypatch, _FakeSandboxCls())
+        fake_run = _FakeSubprocessRun(lookup="1234 1000.0", ap_out=_two_thread_masks("0c"))
+        monkeypatch.setattr("env_provider.e2b.manager.subprocess.run", fake_run)
+        _patch_clock(monkeypatch, _FakeClock(1000.0))
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="2,3"), Event())
+        sbx = _FakeSandbox("sbx-1", started_epoch=1000.0)
+
+        class _NaiveInfo:
+            started_at = datetime.fromtimestamp(1000.0, tz=timezone.utc).replace(tzinfo=None)
+
+        sbx.get_info = lambda: _NaiveInfo()
+        assert mgr._pin_and_verify_fc(sbx) is None
 
     def test_taskset_failure_returns_error(self, monkeypatch):
         _patch(monkeypatch, _FakeSandboxCls())

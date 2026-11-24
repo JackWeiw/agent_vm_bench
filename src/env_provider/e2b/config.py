@@ -202,8 +202,9 @@ class Config:
 
     # AENV-only Firecracker CPU pinning for cold-start trajectory perf
     # measurement. Comma-separated host CPU list, e.g. "2,3" for a 2-vCPU
-    # sandbox. None -> no pinning. Discovery (pgrep) + pin (taskset) run on the
-    # AENV server host; when the bench runs remotely, set pin_cmd_prefix to
+    # sandbox. None -> no pinning. Locating the FC pid (guest MAC -> tap0
+    # neighbour entry, work-dir mtime tie-break) and pinning (taskset) run on
+    # the AENV server host; when the bench runs remotely, set pin_cmd_prefix to
     # "ssh user@host" so the commands reach the server. Pin failure fails the
     # sandbox create (so a --create-only aborts before any stress runs on an
     # unpinned FC). Honored ONLY from the ``aenv:`` block: cloud e2b sandboxes

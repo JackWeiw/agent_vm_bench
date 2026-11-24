@@ -16,6 +16,7 @@ import shlex
 import subprocess
 import time
 from contextlib import nullcontext
+from datetime import timezone
 from threading import Event, Lock
 from typing import Any
 
@@ -237,15 +238,16 @@ class SandboxManager(BaseSandboxManager):
 
         aenv keeps a warm Firecracker pool: creating a sandbox claims an
         already-running FC while the pool refills by spawning a new one. A
-        ``pgrep -fn firecracker`` therefore returns the refill process, not the
-        sandbox's FC, and the pin silently lands on the wrong PID. Instead we
-        read the guest's eth0 MAC through the SDK and match it against the
-        ``tap0`` neighbour table inside each FC network namespace; only a PID
-        that also has an ``fc_vcpu`` thread is accepted. Sandboxes created from
-        the same template can share the snapshot's guest MAC, so when several
-        FCs match we pick the one whose work-dir claim time
+        ``pgrep`` for the firecracker binary therefore returns the refill
+        process, not the sandbox's FC, and the pin silently lands on the wrong
+        PID. Instead we read the guest's eth0 MAC through the SDK and match it
+        against the ``tap0`` neighbour table inside each FC network namespace;
+        only a PID that also has an ``fc_vcpu`` thread is accepted. Sandboxes
+        created from the same template can share the snapshot's guest MAC, so
+        when several FCs match we pick the one whose work-dir claim time
         (``agentenv_volume_slot_0.img`` mtime) is closest to the sandbox's
-        ``started_at``.
+        ``started_at``; a single match is accepted without that window because
+        a warm-pool FC can predate the sandbox by minutes.
 
         Cold-start create blocks until envd ready, so vCPU threads already
         exist at the moment this runs. The main thread is pinned with
@@ -285,13 +287,20 @@ class SandboxManager(BaseSandboxManager):
         # locate the FC PID whose netns tap0 neighbour table has this MAC.
         try:
             info = sbx.get_info()
-            started_epoch = info.started_at.timestamp()
+            started_at = info.started_at
+            if started_at.tzinfo is None:
+                # AENV may send an offset-less timestamp; treat it as UTC so
+                # .timestamp() does not shift it by the collector's local zone.
+                started_at = started_at.replace(tzinfo=timezone.utc)
+            started_epoch = started_at.timestamp()
         except Exception:
             started_epoch = time.time()
 
         lookup = (
             "MAC=" + shlex.quote(mac) + "\n"
-            "for p in $(pgrep -f 'firecracker --api-sock'); do\n"
+            "for p in $(pgrep -f firecracker); do\n"
+            '  [ "$(basename "$(readlink -f /proc/$p/exe)")" = firecracker ] || continue\n'
+            "  tr '\\0' ' ' < /proc/$p/cmdline | grep -q -- --api-sock || continue\n"
             '  nsenter -t "$p" -n ip neigh show dev tap0 2>/dev/null '
             '| grep -qi "lladdr $MAC" || continue\n'
             "  grep -q 'fc_vcpu' /proc/$p/task/*/comm 2>/dev/null || continue\n"
@@ -318,7 +327,7 @@ class SandboxManager(BaseSandboxManager):
         pid, mtime = min(candidates, key=lambda x: abs(x[1] - started_epoch))
         pid = str(pid)
         diff = abs(mtime - started_epoch)
-        if diff > 30:
+        if len(candidates) > 1 and diff > 30:
             return (
                 f"FC candidates {candidates} for guest MAC {mac} but none matches "
                 f"sandbox start {started_epoch:.3f} (closest pid {pid}, diff {diff:.3f}s)"

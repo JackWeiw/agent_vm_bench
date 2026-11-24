@@ -54,7 +54,7 @@ aenv:
   # CPU list; a 2-vCPU sandbox typically pins one physical core, e.g. "2,3" =
   # the second physical core (SMT pair). null/omit = no pinning. The list is
   # static per run -- every sandbox pins to the same cpus, so single-sandbox
-  # probes run with -n 1. pgrep + taskset run on the AENV server host;
+  # probes run with -n 1. guest-MAC lookup + taskset runs on the AENV server;
   # pin_cmd_prefix routes them when remote ("" = local, "ssh user@host" = remote).
   # Pin-verify failure fails sandbox creation. Cloud e2b ignores these keys
   # (its sandboxes run on e2b's infrastructure). See

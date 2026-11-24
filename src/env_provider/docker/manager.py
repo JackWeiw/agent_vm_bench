@@ -259,7 +259,10 @@ class SandboxManager(BaseSandboxManager):
     def _exec_probe(self, handle: Any, cmd: str, timeout: int) -> tuple[int, str, str]:
         # docker's exec_run has no native timeout; the ReadyChecker passes one
         # but we honour the command only (probes are fast, bounded by max_wait).
-        result = handle.exec_run(["/bin/sh", "-c", cmd], user="root")
+        # Probe commands arrive ready to run (port checks carry their own
+        # ``sh -c``), and docker-py shlex-splits a string into argv, so no
+        # extra shell wrapper is needed here.
+        result = handle.exec_run(cmd, user="root")
         output = result.output
         text = output.decode("utf-8", errors="ignore") if isinstance(output, bytes) else (output or "")
         return result.exit_code, text, ""
@@ -293,6 +296,8 @@ class SandboxManager(BaseSandboxManager):
 
         try:
             cmd = "openclaw browser status && start || openclaw browser start"
+            # Needs shell semantics (&&/||), so wrap explicitly: docker-py would
+            # otherwise shlex-split the string and lose the operators.
             result = container.exec_run(["/bin/sh", "-c", cmd], user="root")
             output = (
                 result.output.decode("utf-8", errors="ignore") if isinstance(result.output, bytes) else result.output
@@ -314,7 +319,7 @@ class SandboxManager(BaseSandboxManager):
             return False
         try:
             cmd = "rm -rf /root/.openclaw/browser/openclaw/user-data"
-            result = container.exec_run(["/bin/sh", "-c", cmd], user="root")
+            result = container.exec_run(cmd, user="root")
             return result.exit_code == 0
         except Exception:
             return False

@@ -59,7 +59,7 @@ aenv:
   sandbox_ids_file: "sandboxs_java_aenv.txt"  # save/load sandbox IDs across runs (empty = disabled)
   # Firecracker CPU pinning (cold-start perf, aenv only). Comma-separated host
   # CPU list, e.g. pin_cpus: "2,3" for a 2-vCPU sandbox; null/omit = no
-  # pinning. pgrep + taskset run on the AENV server host; pin_cmd_prefix routes
+  # pinning. guest-MAC lookup + taskset run on the AENV server host; pin_cmd_prefix routes
   # them when the bench runs remotely ("" = local, "ssh user@host" = remote).
   # Pin-verify failure fails sandbox creation. Cloud e2b ignores these keys
   # (its sandboxes run on e2b's infrastructure). See
