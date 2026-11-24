@@ -563,6 +563,11 @@ resource:
 | `memory_some_*` / `memory_full_*` | the same two views for memory stalls (allocation / reclaim waits) |
 | `*_total` | cumulative stall time in **microseconds** (counter) — derive stall-seconds via `Δtotal / 1e6` over the real interval between rows' `timestamp` |
 
+> The column set follows whatever the kernel prints (the CSV header is written from the
+> first row): mainline kernels expose `avg10`/`avg300`/`avg600`; some vendor kernels
+> (e.g. openEuler 6.6) expose `avg60` instead of `avg600`. `_read_psi` parses any
+> `key=value` field set, so no per-kernel code change is needed.
+
 Hosts without PSI (kernel built without `CONFIG_PSI`, or `psi=0` on the cmdline) log a single
 WARNING on the first sample and then skip silently: `host_psi_raw.csv` is not created and the rest
 of the monitor is unaffected. `--no-psi` (or `monitor.skip: [psi]`) disables collection on
