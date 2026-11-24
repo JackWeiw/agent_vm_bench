@@ -144,6 +144,22 @@ class TestPinValidation:
         with pytest.raises(ValueError, match="invalid docker cpuset pin"):
             SandboxManager(_kc(total_count=1), Config(pin_cpus="0-x"), Event())
 
+    def test_absurd_range_rejected_before_materialising(self, monkeypatch):
+        # A YAML typo like "0-99999999999" must fail the pre-check instead of
+        # materialising the whole range (OOM) before the daemon ever sees it.
+        _client(monkeypatch)
+        with pytest.raises(ValueError, match="exceeds"):
+            SandboxManager(_kc(total_count=1), Config(pin_cpus="0-99999999999"), Event())
+
+    def test_cpu_check_runs_without_numa_sysfs(self, monkeypatch):
+        # A non-NUMA kernel has no node/online; that must not disable the cpu
+        # check -- the two sysfs files are consulted independently.
+        _topology(monkeypatch, {0, 1, 2, 3}, None)
+        _client(monkeypatch)
+        with pytest.raises(ValueError) as exc:
+            SandboxManager(_kc(total_count=1), Config(pin_cpus="0-5"), Event())
+        assert "CPUs 4-5" in str(exc.value)
+
     def test_validation_skipped_when_sysfs_unreadable(self, monkeypatch):
         # Non-Linux hosts have no sysfs; the daemon still rejects a bad cpuset.
         monkeypatch.setattr(docker_manager, "_read_online_cpuset", lambda path: None)
@@ -191,6 +207,25 @@ class TestCreateSingle:
         assert container.attrs["HostConfig"]["CpusetCpus"] == "100-101"
         assert container.attrs["HostConfig"]["CpusetMems"] == "0"
         assert container.removed is False
+
+    def test_pin_verified_by_set_equivalence(self, monkeypatch):
+        # The daemon stores an equivalent list in its own form ("0,1" ->
+        # "0-1"); _verify_pin compares parsed sets, so this is success, not
+        # a string-mismatch failure.
+        _topology(monkeypatch, {0, 1, 2, 3}, {0})
+        client = _client(monkeypatch)
+        mgr = SandboxManager(_kc(total_count=1), Config(pin_cpus="0,1", pin_mems="0"), Event())
+        original_run = client.containers.run
+
+        def run(**kw):
+            container = original_run(**kw)
+            container.attrs["HostConfig"]["CpusetCpus"] = "0-1"  # daemon-normalized form
+            return container
+
+        client.containers.run = run
+        result = mgr._create_single(mgr._new_state(1))
+        assert result["success"] is True
+        assert client.containers._running[0].removed is False
 
     def test_pin_cpu_mismatch_fails_create_and_removes_container(self, monkeypatch):
         _topology(monkeypatch, {100, 101}, {0})

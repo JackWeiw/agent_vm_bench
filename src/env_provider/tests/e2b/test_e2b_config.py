@@ -245,25 +245,22 @@ def test_from_raw_reads_sandbox_url():
 
 
 def test_from_raw_reads_fc_cpu_pin_only_for_aenv():
-    """from_raw honors pin_cpus / pin_cmd_prefix ONLY from the aenv block.
+    """from_raw honors pin_cpus ONLY from the aenv block.
 
     Cloud e2b sandboxes run on e2b's infrastructure (no host-side firecracker
-    pid to pin), so the e2b block force-clears both keys -- the aenv gate is
+    pid to pin), so the e2b block force-clears the key -- the aenv gate is
     a mirror of the numa_bind force-clear for aenv, reversed.
     """
     raw = {
-        "e2b": {"pin_cpus": "2,3", "pin_cmd_prefix": "ssh user@host"},
-        "aenv": {"pin_cpus": "4,5", "pin_cmd_prefix": "ssh aenv@host"},
+        "e2b": {"pin_cpus": "2,3"},
+        "aenv": {"pin_cpus": "4,5"},
     }
     e2b_cfg = Config.from_raw(raw)  # default block = e2b
     assert e2b_cfg.pin_cpus is None  # e2b force-clears pin
-    assert e2b_cfg.pin_cmd_prefix == ""
 
     aenv_cfg = Config.from_raw(raw, block="aenv")
     assert aenv_cfg.pin_cpus == "4,5"
-    assert aenv_cfg.pin_cmd_prefix == "ssh aenv@host"
 
-    # Absent keys -> no pinning, local prefix (best-effort inert defaults).
+    # Absent key -> no pinning (best-effort inert default).
     cfg2 = Config.from_raw({"aenv": {}}, block="aenv")
     assert cfg2.pin_cpus is None
-    assert cfg2.pin_cmd_prefix == ""

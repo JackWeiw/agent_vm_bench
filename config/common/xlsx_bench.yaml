@@ -46,13 +46,12 @@ aenv:
   sandbox_ids_file: "sandboxs_document_xlsx_aenv.txt"  # save/load sandbox IDs (empty = disabled)
   # Firecracker CPU pinning (cold-start perf, aenv only). Comma-separated host
   # CPU list, e.g. pin_cpus: "2,3" for a 2-vCPU sandbox; null/omit = no
-  # pinning. guest-MAC lookup + taskset run on the AENV server host; pin_cmd_prefix routes
-  # them when the bench runs remotely ("" = local, "ssh user@host" = remote).
-  # Pin-verify failure fails sandbox creation. Cloud e2b ignores these keys
-  # (its sandboxes run on e2b's infrastructure). See
-  # src/env_provider/e2b/manager.py (_pin_and_verify_fc).
+  # pinning. The pin runs on the AENV server host (MMDS sandbox_id ->
+  # firecracker pid, then a taskset of every thread); it is fail-closed: a
+  # failed pin kills the sandbox. Lifecycle replay skips the pin (each resume
+  # respawns the firecracker). Cloud e2b ignores the key. See
+  # src/env_provider/aenv/__init__.py (_pin_fc).
   pin_cpus: null
-  pin_cmd_prefix: ""
   env:                              # AENV server env (E2B SDK pointed at AENV)
     E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
     E2B_API_KEY: "your_e2b_api_key_here"

@@ -103,7 +103,15 @@ class DockerProvider(EnvironmentProvider):
 
     # ------------------------------------------------------------------ lifecycle
     def create_all(self, *, templates: dict[int, str | None] | None = None) -> Mapping[int, SandboxInstance]:
-        return self._translate(self.manager.create_all(templates=templates))
+        try:
+            mgr = self.manager
+        except ValueError as exc:
+            # Manager construction validates the pin config (format + host
+            # topology) before any container exists; surface it as an ordinary
+            # create-phase error instead of an unhandled traceback.
+            logger.error("[docker] %s", exc)
+            return {}
+        return self._translate(mgr.create_all(templates=templates))
 
     def detect_existing(self) -> Mapping[int, SandboxInstance]:
         return self._translate(self.manager.detect_existing())

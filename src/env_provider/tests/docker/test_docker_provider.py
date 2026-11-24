@@ -178,6 +178,14 @@ class TestCreateAll:
 
         manager.create_all.assert_called_once_with(templates=None)
 
+    def test_create_all_surfaces_pin_validation_error_as_empty(self):
+        # A malformed pin_cpus fails in the manager constructor (before any
+        # container exists); create_all surfaces it as an ordinary
+        # create-phase error (log + empty mapping), not an unhandled traceback.
+        provider = DockerProvider(KernelConfig(), Config(pin_cpus="0-x"), Event())
+        assert provider.create_all() == {}
+        assert provider._manager is None  # construction failed, still lazy
+
 
 class TestDetect:
     def test_detect_existing_delegates_to_manager(self):

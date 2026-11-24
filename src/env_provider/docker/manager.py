@@ -42,8 +42,17 @@ _CPU_ONLINE_PATH = "/sys/devices/system/cpu/online"
 _NODE_ONLINE_PATH = "/sys/devices/system/node/online"
 
 
+# Sanity cap for _parse_cpuset: no real host has more CPUs / NUMA nodes, and
+# materialising an absurd range ("0-99999999999") would OOM the pre-check.
+_MAX_CPUSET_ID = 1 << 16
+
+
 def _parse_cpuset(value: str) -> set[int]:
-    """Parse a docker cpuset list (``"0-3,8"``) into ``{0, 1, 2, 3, 8}``."""
+    """Parse a docker cpuset list (``"0-3,8"``) into ``{0, 1, 2, 3, 8}``.
+
+    Ids are bounded before the range is materialised, so a YAML typo like
+    ``"0-99999999999"`` fails fast instead of allocating the whole range.
+    """
     ids: set[int] = set()
     for token in value.split(","):
         token = token.strip()
@@ -54,6 +63,8 @@ def _parse_cpuset(value: str) -> set[int]:
         end = int(last) if dash else start
         if start < 0 or end < start:
             raise ValueError(f"invalid range {token!r}")
+        if end >= _MAX_CPUSET_ID:
+            raise ValueError(f"id {end} in {token!r} exceeds {_MAX_CPUSET_ID - 1}")
         ids.update(range(start, end + 1))
     return ids
 
@@ -112,7 +123,10 @@ class SandboxManager(BaseSandboxManager):
         """Reject malformed pins or CPUs / NUMA nodes absent from this host.
 
         Checked against ``cpu/online`` and ``node/online`` before any container
-        is created; skipped when sysfs is unreadable (non-Linux dev box).
+        is created. The two files are consulted independently (a non-NUMA
+        kernel has no ``node/online`` -- that must not disable cpu validation);
+        each topology check is skipped when its sysfs file is unreadable
+        (non-Linux dev box).
         """
         pin_cpus, pin_mems = self.config.pin_cpus, self.config.pin_mems
         if not pin_cpus and not pin_mems:
@@ -130,23 +144,22 @@ class SandboxManager(BaseSandboxManager):
             raise ValueError(f"invalid docker pin_mems {pin_mems!r}: no NUMA nodes parsed")
 
         online_cpus = _read_online_cpuset(_CPU_ONLINE_PATH)
-        online_nodes = _read_online_cpuset(_NODE_ONLINE_PATH)
-        if online_cpus is None or online_nodes is None:
-            logger.debug("docker pin validation skipped: %s / %s not readable", _CPU_ONLINE_PATH, _NODE_ONLINE_PATH)
-            return
+        if pin_cpus and online_cpus is not None:
+            unknown_cpus = wanted_cpus - online_cpus
+            if unknown_cpus:
+                raise ValueError(
+                    f"docker pin_cpus {pin_cpus!r} names CPUs {_format_cpuset(unknown_cpus)} that are not "
+                    f"online on this host (online: {_format_cpuset(online_cpus)})"
+                )
 
-        unknown_cpus = wanted_cpus - online_cpus
-        if unknown_cpus:
-            raise ValueError(
-                f"docker pin_cpus {pin_cpus!r} names CPUs {_format_cpuset(unknown_cpus)} that are not "
-                f"online on this host (online: {_format_cpuset(online_cpus)})"
-            )
-        unknown_mems = wanted_mems - online_nodes
-        if unknown_mems:
-            raise ValueError(
-                f"docker pin_mems {pin_mems!r} names NUMA nodes {_format_cpuset(unknown_mems)} that are "
-                f"not online on this host (online: {_format_cpuset(online_nodes)})"
-            )
+        online_nodes = _read_online_cpuset(_NODE_ONLINE_PATH)
+        if pin_mems and online_nodes is not None:
+            unknown_mems = wanted_mems - online_nodes
+            if unknown_mems:
+                raise ValueError(
+                    f"docker pin_mems {pin_mems!r} names NUMA nodes {_format_cpuset(unknown_mems)} that are "
+                    f"not online on this host (online: {_format_cpuset(online_nodes)})"
+                )
 
     # --------------------------------------------------------- subclass seams
     def _new_state(self, index: int, *, batch_id: int = -1, external_id: str = "") -> ContainerState:
@@ -235,14 +248,18 @@ class SandboxManager(BaseSandboxManager):
             raise RuntimeError(f"docker image {image!r} not found locally; build or load it first.") from None
 
     def _verify_pin(self, container: Any, state: ContainerState) -> None:
-        """Read the cpuset back; remove the container and fail on mismatch."""
+        """Read the cpuset back; remove the container and fail on mismatch.
+
+        Compares parsed sets, not raw strings: the daemon stores an
+        equivalent list in its own form (``0,1`` -> ``0-1``).
+        """
         host_config = container.attrs.get("HostConfig") or {}
         checks = (
             ("cpus", self.config.pin_cpus, host_config.get("CpusetCpus") or ""),
             ("mems", self.config.pin_mems, host_config.get("CpusetMems") or ""),
         )
         for label, expected, actual in checks:
-            if expected and actual != expected:
+            if expected and _parse_cpuset(actual) != _parse_cpuset(expected):
                 container.remove(force=True)
                 raise RuntimeError(f"cpuset {label} pin verify failed: expected {expected}, got {actual!r}")
         logger.info(

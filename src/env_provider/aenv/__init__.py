@@ -10,7 +10,9 @@ satisfying :class:`env_provider.LifecycleCapable`.
 Optionally pins each sandbox's warm-pooled firecracker to a dedicated CCL vCPU
 set (``aenv.ccl_bind``) in ``exec_only`` / ``exec_ephemeral`` replay mode, so
 concurrent VMs don't contend for the same physical cores; see
-:mod:`env_provider.aenv._ccl`.
+:mod:`env_provider.aenv._ccl`. ``aenv.pin_cpus`` instead pins every
+firecracker to one fixed host CPU set (cold-start perf measurement,
+fail-closed: a failed pin kills the sandbox).
 
 The ``e2b`` provider stays exec-only (cloud E2B's ``beta_pause`` is uncertain;
 AENV is the snapshot backend). Adding lifecycle to cloud e2b later is a
@@ -25,7 +27,14 @@ from pathlib import Path
 
 from bench_core.config import KernelConfig
 from env_provider import SandboxInstance
-from env_provider.aenv._ccl import bind_ccl_affinity
+from env_provider._base import BackendSandboxStatus
+from env_provider.aenv._ccl import (
+    CCL_PID_RESOLVE_ATTEMPTS,
+    CCL_PID_RESOLVE_TIMEOUT_SEC,
+    RESOLVER,
+    bind_ccl_affinity,
+    bind_process_all_threads,
+)
 from env_provider.aenv._snapshot import scan_snapshot_sizes
 from env_provider.e2b import E2BProvider
 from env_provider.e2b.config import Config
@@ -64,6 +73,39 @@ def _resolve_snapshot_base(config: Config) -> str:
         if home:
             return str(Path(home) / _SNAPSHOT_SUBDIR)
     return DEFAULT_SNAPSHOT_DIR
+
+
+# Sanity cap for _parse_pin_cpus: no real host has more CPUs, and a YAML typo
+# ("0-99999999999") must fail the pre-check instead of allocating the range.
+_MAX_PIN_SPAN = 1 << 16
+
+
+def _parse_pin_cpus(value: str) -> set[int]:
+    """Strictly parse an ``aenv.pin_cpus`` CPU list ("2,3" / "2-3") to ids.
+
+    Unlike _ccl.parse_cpu_list (lenient, tolerant of sysfs text), this raises
+    ValueError on any malformed token so a bad YAML aborts BEFORE the first
+    sandbox is created.
+    """
+    out: set[int] = set()
+    for part in value.strip().split(","):
+        part = part.strip()
+        if not part:
+            continue
+        first, dash, last = part.partition("-")
+        try:
+            start = int(first)
+            end = int(last) if dash else start
+        except ValueError:
+            raise ValueError(f"invalid pin_cpus {value!r}: bad token {part!r}") from None
+        if start < 0 or end < start:
+            raise ValueError(f"invalid pin_cpus {value!r}: bad range {part!r}")
+        if end - start + 1 > _MAX_PIN_SPAN:
+            raise ValueError(f"invalid pin_cpus {value!r}: range {part!r} wider than {_MAX_PIN_SPAN} CPUs")
+        out.update(range(start, end + 1))
+    if not out:
+        raise ValueError(f"invalid pin_cpus {value!r}: no CPUs parsed")
+    return out
 
 
 try:
@@ -119,21 +161,111 @@ class AenvProvider(E2BProvider):
     # the AENV host);
     # never unwinds a successful create. See :mod:`env_provider.aenv._ccl`.
     def create_all(self, *, templates: dict[int, str | None] | None = None) -> dict[int, SandboxInstance]:
-        """Create all sandboxes, then pin each to its CCL (exec_only / exec_ephemeral, best-effort).
+        """Create all sandboxes, then pin / CCL-bind each one's firecracker.
 
-        Binding runs as a post-create pass over the manager's states (the base
-        create already joined its concurrent workers), so the first bind primes
-        the pid cache for the rest. Faithful to the reference, which binds
-        immediately after a successful create; for best-effort pinning of a
-        long-lived firecracker the timing is immaterial. Gated by
-        :meth:`_ccl_active` (exec_only / exec_ephemeral only -- lifecycle
-        respawns the firecracker per resume, so the pid is unstable).
+        ``pin_cpus`` is parsed strictly BEFORE any sandbox is created: a
+        malformed pin aborts the run outright instead of creating sandboxes it
+        would then have to kill. Both pin and CCL binding run as post-create
+        passes over the manager's states (the base create already joined its
+        concurrent workers). Pinning is fail-closed (:meth:`_pin_fc`); CCL
+        binding is gated by :meth:`_ccl_active` (exec_only / exec_ephemeral
+        only -- lifecycle respawns the firecracker per resume, so the pid is
+        unstable) and skipped when pin_cpus is set (the two would overwrite
+        each other).
         """
+        pin_cpus: set[int] | None = None
+        if self._config.pin_cpus:
+            try:
+                pin_cpus = _parse_pin_cpus(self._config.pin_cpus)
+            except ValueError as exc:
+                logger.error("[aenv] %s; aborting before any sandbox is created", exc)
+                return {}
         states = self.manager.create_all(templates=templates)
+        if pin_cpus is not None and self._pin_active():
+            for state in states.values():
+                self._pin_fc(state, pin_cpus)
         if self._ccl_active():
             for state in states.values():
                 self._bind_ccl(state)
         return self._translate(states)
+
+    def _pin_active(self) -> bool:
+        """True iff firecracker CPU pinning should run for this run.
+
+        Skipped in lifecycle replay mode: each ``resume`` claims a fresh
+        firecracker from the warm pool, so the pin is lost after the first
+        resume while the log said PINNED OK. Non-replay workflows (the
+        --create-only cold-start measurement) and exec_only / exec_ephemeral
+        keep a stable firecracker pid for the whole run.
+        """
+        if not self._config.pin_cpus:
+            return False
+        wf = getattr(self._kernel_config, "workflow_config", None)
+        mode = getattr(wf, "replay_mode", None)
+        if mode == "lifecycle":
+            logger.warning(
+                "pin_cpus is set but replay mode is %r: each resume respawns the "
+                "firecracker from the warm pool and loses the pin; skipping pin_cpus "
+                "for this run.",
+                mode,
+            )
+            return False
+        return True
+
+    def _pin_fc(self, state, cpus: set[int]) -> None:
+        """Pin one sandbox's firecracker to ``aenv.pin_cpus`` (fail-closed).
+
+        Resolves the firecracker pid via MMDS ``instanceID`` (an exact
+        sandbox_id match) and binds every thread with read-back verification
+        (:mod:`env_provider.aenv._ccl`). On any failure the sandbox is killed
+        and the state marked FAILED: ``--create-only`` returns before cleanup
+        and ``save_ids`` records only ready instances, so a live-but-unpinned
+        sandbox would leak as an orphan and skew the next ``--detect``.
+        """
+        sbx = getattr(state, "sandbox_obj", None)
+        if sbx is None:
+            return  # create already failed; nothing to pin
+        sandbox_id = str(getattr(sbx, "sandbox_id", "") or "")
+        error: str | None = None
+        try:
+            if not sandbox_id:
+                error = "handle carries no sandbox_id"
+            else:
+                pid = RESOLVER.resolve_firecracker_pid(
+                    sandbox_id,
+                    attempts=CCL_PID_RESOLVE_ATTEMPTS,
+                    timeout_sec=CCL_PID_RESOLVE_TIMEOUT_SEC,
+                )
+                if pid is None:
+                    error = f"could not resolve firecracker pid via MMDS for sandbox {sandbox_id}"
+                else:
+                    verified, detail = bind_process_all_threads(pid, cpus)
+                    if verified:
+                        logger.info(
+                            "[aenv-pin] PINNED OK sandbox=%s pid=%d cpus=%s %s",
+                            sandbox_id,
+                            pid,
+                            self._config.pin_cpus,
+                            detail,
+                        )
+                    else:
+                        error = f"bind not verified for pid {pid} (sandbox {sandbox_id}): {detail}"
+        except Exception as exc:  # noqa: BLE001 -- collected into the fail-closed path below
+            error = f"{type(exc).__name__}: {exc}"
+        if error is not None:
+            self._pin_fail_closed(state, sbx, error)
+
+    def _pin_fail_closed(self, state, sbx, error: str) -> None:
+        """Kill the just-created sandbox and mark the state FAILED (no orphan)."""
+        logger.error("[aenv-pin] PIN FAILED sandbox=%s: %s", getattr(sbx, "sandbox_id", "?"), error)
+        try:
+            sbx.kill()
+            state.torn_down = True  # cleanup_all must not re-kill a dead sandbox
+        except Exception as kill_err:  # noqa: BLE001 -- leave torn_down False so cleanup retries
+            logger.warning("[aenv-pin] kill after pin failure also failed; cleanup_all will retry: %s", kill_err)
+        state.creation_metrics.status = BackendSandboxStatus.FAILED
+        state.creation_metrics.error_msg = f"firecracker cpu pin failed: {error}"
+        state.is_alive = False
 
     def _ccl_active(self) -> bool:
         """True iff CCL binding should run for this run.
@@ -150,6 +282,13 @@ class AenvProvider(E2BProvider):
         is a no-op outside exec_only / exec_ephemeral).
         """
         if not getattr(self._config, "ccl_bind", False):
+            return False
+        if self._config.pin_cpus:
+            logger.warning(
+                "ccl_bind is set but pin_cpus is also set: the CCL bind would "
+                "overwrite the pin_cpus cpuset; honoring pin_cpus and skipping "
+                "ccl_bind for this run."
+            )
             return False
         wf = getattr(self._kernel_config, "workflow_config", None)
         mode = getattr(wf, "replay_mode", None)
@@ -243,7 +382,12 @@ class AenvProvider(E2BProvider):
         per-trajectory create/kill timings in the lifecycle series
         (``trajectory_create`` / ``trajectory_kill`` events).
         """
-        from env_provider._base import BackendSandboxStatus
+        pin_cpus: set[int] | None = None
+        if self._config.pin_cpus:
+            try:
+                pin_cpus = _parse_pin_cpus(self._config.pin_cpus)
+            except ValueError as exc:
+                raise RuntimeError(f"create_one({index}) aborted: {exc}") from None
 
         mgr = self.manager
         state = mgr._new_state(index)
@@ -258,12 +402,18 @@ class AenvProvider(E2BProvider):
                 label,
             )
             mgr._apply_ready(state, ready, create_elapsed=result["create_elapsed"])
+            # Pin first (fail-closed, same semantics as create_all: a failed
+            # pin kills the sandbox and fails the create), then the CCL bind.
             # exec_ephemeral reuses create_all's per-create CCL bind: each
-            # create_one yields a fresh e2b sandbox_id (pid-resolvable via MMDS)
-            # and the firecracker is stable for the round (no pause/resume), so
-            # binding right after a successful create is correct. Best-effort
-            # (never unwinds the create); a no-op when _ccl_active is False
-            # (non-exec modes, or ccl_bind unset).
+            # create_one yields a fresh e2b sandbox_id (pid-resolvable via
+            # MMDS) and the firecracker is stable for the round (no
+            # pause/resume). Best-effort (never unwinds the create); a no-op
+            # when _ccl_active is False (non-exec modes, ccl_bind unset, or
+            # pin_cpus set).
+            if pin_cpus is not None and self._pin_active():
+                self._pin_fc(state, pin_cpus)
+                if state.creation_metrics.status == BackendSandboxStatus.FAILED:
+                    raise RuntimeError(f"create_one({index}) failed: {state.creation_metrics.error_msg}")
             if self._ccl_active():
                 self._bind_ccl(state)
         else:
