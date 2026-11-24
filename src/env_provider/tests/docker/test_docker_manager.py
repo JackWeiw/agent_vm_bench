@@ -18,7 +18,7 @@ from threading import Event
 import pytest
 
 docker = pytest.importorskip("docker")
-from docker.errors import NotFound  # noqa: E402
+from docker.errors import ImageNotFound, NotFound  # noqa: E402
 
 from bench_core.config import KernelConfig  # noqa: E402
 from env_provider.docker import manager as docker_manager  # noqa: E402
@@ -78,9 +78,22 @@ class _FakeContainers:
         return list(self._running)
 
 
+class _FakeImages:
+    def __init__(self):
+        self.missing: set[str] = set()
+        self.get_calls: list[str] = []
+
+    def get(self, name: str):
+        self.get_calls.append(name)
+        if name in self.missing:
+            raise ImageNotFound(f"no such image: {name}")
+        return object()
+
+
 class _FakeClient:
     def __init__(self):
         self.containers = _FakeContainers()
+        self.images = _FakeImages()
 
 
 # --------------------------------------------------------------------- helpers
@@ -289,6 +302,31 @@ class TestExecProbe:
         c = _FakeContainer("x")
         mgr._exec_probe(c, "sh -c 'ss -tlnp'", 10)
         assert c.exec_calls == ["sh -c 'ss -tlnp'"]
+
+
+# ------------------------------------------------------------ image preflight
+class TestImagePreflight:
+    def test_missing_image_fails_fast_without_run(self, monkeypatch):
+        client = _client(monkeypatch)
+        client.images.missing.add("custom-bench:1")
+        mgr = SandboxManager(_kc(total_count=1), Config(docker_image="custom-bench:1"), Event())
+
+        result = mgr._create_single(mgr._new_state(1))
+
+        assert result["success"] is False
+        assert "not found locally" in result["error"]
+        assert "build or load it first" in result["error"]
+        assert client.containers.run_calls == []
+
+    def test_existing_image_proceeds_to_run(self, monkeypatch):
+        client = _client(monkeypatch)
+        mgr = SandboxManager(_kc(total_count=1), Config(docker_image="custom-bench:1"), Event())
+
+        result = mgr._create_single(mgr._new_state(1))
+
+        assert result["success"] is True
+        assert client.images.get_calls == ["custom-bench:1"]
+        assert client.containers.run_calls[0]["image"] == "custom-bench:1"
 
 
 # ------------------------------------------------------- browser backend commands

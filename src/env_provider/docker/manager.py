@@ -173,6 +173,10 @@ class SandboxManager(BaseSandboxManager):
         resolved_image = template or self.config.docker_image
 
         try:
+            # Bench images are custom/built locally; never let the daemon fall
+            # back to a registry (a missing image then shows up as a long stall).
+            self._ensure_image_local(resolved_image)
+
             # Remove existing container with same name if exists (handle 409 conflict)
             try:
                 existing = self.docker_client.containers.get(state.container_name)
@@ -222,6 +226,13 @@ class SandboxManager(BaseSandboxManager):
                 "error": str(e),
                 "template": resolved_image,
             }
+
+    def _ensure_image_local(self, image: str) -> None:
+        """Fail fast when ``image`` is absent; the provider never pulls."""
+        try:
+            self.docker_client.images.get(image)
+        except docker.errors.ImageNotFound:
+            raise RuntimeError(f"docker image {image!r} not found locally; build or load it first.") from None
 
     def _verify_pin(self, container: Any, state: ContainerState) -> None:
         """Read the cpuset back; remove the container and fail on mismatch."""
