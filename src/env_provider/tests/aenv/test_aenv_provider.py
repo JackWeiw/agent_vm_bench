@@ -263,6 +263,22 @@ def test_parse_pin_cpus_rejects_empty():
         _parse_pin_cpus(",, ")
 
 
+# ------------------------------------------------------- prepare_env: pin gate
+def test_prepare_env_rejects_bad_pin(monkeypatch):
+    # exec_ephemeral creates through the replay runner, which swallows create
+    # exceptions (failed trajectory, exit 0). prepare_env is the one hook every
+    # mode passes through inside main's try, so the config error surfaces here.
+    provider, fake = _make_pin_provider(monkeypatch, pin_cpus="100-101xxS")
+    with pytest.raises(ProviderConfigError, match="invalid aenv pin_cpus"):
+        provider.prepare_env()
+    assert fake.created == []
+
+
+def test_prepare_env_accepts_valid_pin(monkeypatch):
+    provider, _ = _make_pin_provider(monkeypatch)
+    provider.prepare_env()  # super().prepare_env() + parse, no raise
+
+
 # ------------------------------------------------- create_all: pin orchestration
 def test_create_all_aborts_before_create_on_bad_pin(monkeypatch):
     # Regression: the pin format used to be validated AFTER the sandboxes

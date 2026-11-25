@@ -160,6 +160,25 @@ class AenvProvider(E2BProvider):
     # firecracker on each resume -> pid unstable); best-effort (Linux + root on
     # the AENV host);
     # never unwinds a successful create. See :mod:`env_provider.aenv._ccl`.
+    def prepare_env(self) -> None:
+        """Validate ``pin_cpus`` once, before any sandbox exists.
+
+        ``create_all`` / ``create_one`` parse the pin themselves, but neither
+        is a reliable gate: ``exec_ephemeral`` goes through the replay runner's
+        ``_run_trajectory``, which catches every create exception and turns it
+        into a failed trajectory -- the run then finishes with exit 0. Parsing
+        here raises ``ProviderConfigError`` from inside ``run_benchmark``'s
+        ``main()`` try (all modes reach ``prepare_env``), so a config typo
+        always exits non-zero instead of looking like a run that tested
+        nothing.
+        """
+        super().prepare_env()
+        if self._config.pin_cpus:
+            try:
+                _parse_pin_cpus(self._config.pin_cpus)
+            except ValueError as exc:
+                raise ProviderConfigError(f"invalid aenv pin_cpus: {exc}") from None
+
     def create_all(self, *, templates: dict[int, str | None] | None = None) -> dict[int, SandboxInstance]:
         """Create all sandboxes, then pin / CCL-bind each one's firecracker.
 
