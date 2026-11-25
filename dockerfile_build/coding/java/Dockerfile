@@ -48,10 +48,12 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 #
 # Toolchain versions are PINNED (see Dockerfile.x86 for the full rationale: JDK
 # is the JVM baseline, Maven 3.8.7's super POM binds surefire 2.12.4, so an
-# unpinned install would drift on a rebuild elsewhere). The values are the same
-# deb versions as the amd64 build; if the arm64 archive differs, apt names the
-# requested version in its error -- adjust the ARG, do not drop the pin.
-ARG JDK_VER=11.0.33+9-1ubuntu1~24.04.1
+# unpinned install would drift on a rebuild elsewhere). Maven/python3 use the
+# same deb versions as the amd64 build; the JDK does not (arm64 ports ships
+# 11.0.33.1+1-1ubuntu1~24.04.1 vs amd64's 11.0.33+9-1ubuntu1~24.04.1). If the
+# archive drifts, apt names the requested version in its error -- adjust the
+# ARG, do not drop the pin.
+ARG JDK_VER=11.0.33.1+1-1ubuntu1~24.04.1
 ARG MAVEN_VER=3.8.7-2
 ARG PYTHON_VER=3.12.3-0ubuntu2.1
 

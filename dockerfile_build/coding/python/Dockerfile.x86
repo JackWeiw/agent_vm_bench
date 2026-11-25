@@ -3,7 +3,7 @@
 # x86_64 variant of coding/python/Dockerfile. Identical build, base image is the
 # plain ubuntu:24.04 (amd64). See Dockerfile for the full design rationale.
 #
-# Build:  docker build -t ubuntu-coding-python-bench:24.04-x86_64 -f Dockerfile.x86 .
+# Build:  docker build -t ubuntu-openclaw-coding-python:24.04-x86_64 -f Dockerfile.x86 .
 # Push:   ARCH=x86 HARBOR_IP=X bash push_to_harbor.sh
 # Template: python3 ../../build_e2b.py --server-ip X --harbor-ip X \
 #     --alias openclaw-coding-python-v1 --image e2b-orchestration/ubuntu-coding-python-bench:custom

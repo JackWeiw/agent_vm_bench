@@ -10,21 +10,19 @@
 #   - Pure Python, ARM64 compatible
 #
 # Trace-faithful loop (mirrors the captured openclaw trajectories behind the ts/go
-# variants): find -> read -> edit -> verify (write ad-hoc /tmp/test_*.py + `python3`)
-# -> git diff. A real AI coding agent on django verifies by writing a small ad-hoc
-# Python script that imports django's module graph and running it via `python3` —
-# a transient interpreter process that loads the settings/urls/forms/db module graph
-# into memory (the transient peak). N concurrent sandboxes' staggered verify peaks
-# overlapping -> host memory overcommit. No production `python manage.py runserver`,
-# no full `python tests/runtests.py` suite, no resident dev server — none of those
-# appear in the real agent verify pattern.
+# variants): find -> read -> edit -> verify (./tests/runtests.py auth_tests.test_basic)
+# -> git diff. Verify runs the django__django-16631 test module through django's own
+# runner — a transient CPython process that loads the settings/urls/forms/db module
+# graph and executes 13 tests (the transient peak). N concurrent sandboxes' staggered
+# verify peaks overlapping -> host memory overcommit. No production `manage.py
+# runserver`, no full `tests/runtests.py` suite, no resident dev server.
 #
 # Django's runtime deps (asgiref, sqlparse) are pip-installed; ENV PYTHONPATH makes
-# django importable in script mode (python3 resolves from /opt/coding-bench). The heavy `django.forms` / db
-# module graph is the memory peak (same role `go run`'s compiler and `npx tsx`'s
-# esbuild+node play in the ts/go variants).
+# django importable in script mode (python3 resolves django from /opt/coding-bench).
+# The heavy `django.forms` / db module graph is the memory peak (same role `go run`'s
+# compiler and `npx tsx`'s esbuild+node play in the ts/go variants).
 #
-# Build:  docker build -t ubuntu-coding-python-bench:24.04-linuxarm64 -f Dockerfile .
+# Build:  docker build -t ubuntu-openclaw-coding-python:24.04-linuxarm64 -f Dockerfile .
 # Push:   HARBOR_IP=X bash push_to_harbor.sh
 # Template: python3 ../../build_e2b.py --server-ip X --harbor-ip X \
 #     --alias openclaw-coding-python-v1 --image e2b-orchestration/ubuntu-coding-python-bench:custom
@@ -64,6 +62,11 @@ RUN apt update && apt install -y --no-install-recommends python3 python3-pip git
     git config --global http.sslVerify false && \
     apt clean && rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
 
+# Fail the build (instead of silently drifting) if the interpreter the
+# benchmark measures is not the version django 5.0 supports.
+RUN python3 -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version" && \
+    echo "Toolchain check: python3 3.12"
+
 # --- Coding benchmark project: django/django @ django__django-16631 base_commit ---
 # Shallow fetch + ENV PYTHONPATH (no django install needed).
 # Script-mode python3 resolves `import django` from /opt/coding-bench via
@@ -86,6 +89,11 @@ RUN cd /opt/coding-bench && \
     git apply /tmp/django-16631-test.patch && \
     grep -q "def test_get_user_fallback_secret" tests/auth_tests/test_basic.py && \
     rm /tmp/django-16631-test.patch
+
+# ENV PYTHONPATH makes django importable in script mode (python3 /tmp/...).
+# No `pip install django` needed — django resolves from the cloned source via
+# PYTHONPATH (asgiref/sqlparse are installed above).
+ENV PYTHONPATH=/opt/coding-bench
 
 # Smoke check: run in script mode (python3 /tmp/_smoke.py) so it catches the
 # same ModuleNotFoundError the runtime verify would hit. ENV PYTHONPATH (set

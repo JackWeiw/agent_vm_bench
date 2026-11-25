@@ -10,12 +10,11 @@
 #   - Pure Python, ARM64 compatible
 #
 # Trace-faithful loop (mirrors the captured openclaw trajectories behind the ts/go
-# variants): find -> read -> edit -> verify (write ad-hoc /tmp/test_*.py + `python3`)
-# -> git diff. A real AI coding agent on django verifies by writing a small ad-hoc
-# Python script that imports django's module graph and running it via `python3` —
-# a transient interpreter process that loads the settings/urls/forms/db module graph
-# into memory (the transient peak). N concurrent sandboxes' staggered verify peaks
-# overlapping -> host memory overcommit.
+# variants): find -> read -> edit -> verify (./tests/runtests.py auth_tests.test_basic)
+# -> git diff. Verify runs the django__django-16631 test module through django's own
+# runner — a transient CPython process that loads the settings/urls/forms/db module
+# graph and executes 13 tests (the transient peak). N concurrent sandboxes' staggered
+# verify peaks overlapping -> host memory overcommit.
 #
 # Prerequisite (Step 0 in README): the openEuler base tar is NOT on a pull-able
 # registry. Load it before building:
@@ -25,7 +24,7 @@
 #
 # Build:  docker build -t openeuler-coding-python-bench:24.03-lts-sp3-linuxarm64 -f Dockerfile.openeuler .
 # Push:   OS=openeuler HARBOR_IP=X bash push_to_harbor.sh
-# Template: python3 ../build_e2b.py --server-ip X --harbor-ip X \
+# Template: python3 ../../build_e2b.py --server-ip X --harbor-ip X \
 #     --alias openeuler-coding-python-v1 --image e2b-orchestration/openeuler-coding-python-bench:custom
 FROM openeuler-24.03-lts-sp3:latest
 

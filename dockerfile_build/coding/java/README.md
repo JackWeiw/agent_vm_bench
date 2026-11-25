@@ -92,9 +92,10 @@ Round:     find read edit verify(peak) diff
 - **Repo**: `github.com/google/gson` at base_commit
   `7719e73a108c450666613c279bedaed724cd9cc9` (`google__gson-1014`).
 - **Toolchain**: JDK 11 + Maven, `openjdk-11-jdk` from Ubuntu 24.04.
-- **Toolchain pinned**: `openjdk-11-jdk=11.0.33+9-1ubuntu1~24.04.1`,
-  `maven=3.8.7-2`, `python3=3.12.3-0ubuntu2.1` (overridable via `ARG JDK_VER`
-  / `MAVEN_VER` / `PYTHON_VER`). The JDK sets the JVM baseline and Maven 3.8.7's
+- **Toolchain pinned**: `openjdk-11-jdk=11.0.33+9-1ubuntu1~24.04.1` on amd64
+  (`11.0.33.1+1-1ubuntu1~24.04.1` on arm64 ports; each Dockerfile pins its own
+  arch's deb version), `maven=3.8.7-2`, `python3=3.12.3-0ubuntu2.1` (overridable
+  via `ARG JDK_VER` / `MAVEN_VER` / `PYTHON_VER`). The JDK sets the JVM baseline and Maven 3.8.7's
   super POM binds surefire 2.12.4, so an unpinned install would silently change
   what `verify` measures when the image is rebuilt elsewhere. The build asserts
   both versions (`java -version` / `mvn -v`) and fails fast on a mismatch — the
