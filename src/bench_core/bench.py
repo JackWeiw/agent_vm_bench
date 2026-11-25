@@ -47,6 +47,7 @@ from env_provider import (
     EnvironmentProvider,
     EphemeralCapable,
     LifecycleCapable,
+    ProviderConfigError,
     SandboxInstance,
     SandboxStatus,
     SnapshotSizeCapable,
@@ -1021,7 +1022,14 @@ def main() -> None:
     )
 
     provider = _build_provider(args.provider, config, raw)
-    run_benchmark(config, provider)
+    try:
+        run_benchmark(config, provider)
+    except ProviderConfigError as exc:
+        # Bad backend config (e.g. a pin naming CPUs this host lacks): report
+        # it cleanly and exit non-zero -- CI must not read "created nothing"
+        # as a successful run.
+        logger.error("%s", exc)
+        raise SystemExit(2) from None
 
 
 if __name__ == "__main__":

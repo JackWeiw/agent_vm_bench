@@ -316,6 +316,34 @@ def test_capability_hint_lists_capable_providers():
     assert "docker" not in ephemeral
 
 
+def test_main_exits_nonzero_on_provider_config_error(monkeypatch, tmp_path):
+    """A bad backend config (e.g. an invalid pin) must exit 2, not 0.
+
+    Returning an empty mapping from create_all would route into the
+    "No sandboxes ready" early exit and look like a successful no-op run.
+    """
+    from bench_core import bench
+    from env_provider import ProviderConfigError
+
+    monkeypatch.setattr("sys.argv", ["bench-core", "--provider", "fake"])
+    monkeypatch.setattr(bench, "setup_logging", lambda **kw: None)
+    monkeypatch.setattr(
+        bench,
+        "load_config",
+        lambda *a, **kw: (KernelConfig(total_count=1, output_dir=str(tmp_path)), {}),
+    )
+    monkeypatch.setattr(bench, "_build_provider", lambda *a, **kw: object())
+
+    def _boom(config, provider):  # noqa: ARG001
+        raise ProviderConfigError("invalid aenv pin_cpus: bad token")
+
+    monkeypatch.setattr(bench, "run_benchmark", _boom)
+
+    with pytest.raises(SystemExit) as exc:
+        bench.main()
+    assert exc.value.code == 2
+
+
 def test_load_config_replay_yaml_has_aenv_block():
     from bench_core.bench import load_config
 

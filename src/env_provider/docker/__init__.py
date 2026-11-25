@@ -34,6 +34,7 @@ from env_provider import (
     CommandResult,
     CreationMetrics,
     EnvironmentProvider,
+    ProviderConfigError,
     SandboxInstance,
     SandboxStatus,
 )
@@ -102,31 +103,27 @@ class DockerProvider(EnvironmentProvider):
             self._manager = SandboxManager(self._kernel_config, self._config, self._stop_event)
         return self._manager
 
+    def _require_manager(self) -> SandboxManager:
+        """Manager access that turns a bad pin config into a clean config error.
+
+        Manager construction validates the pin (format + host topology); every
+        entry point that drives creation must surface that as a typed error so
+        the CLI exits non-zero instead of silently doing nothing.
+        """
+        try:
+            return self.manager
+        except ValueError as exc:
+            raise ProviderConfigError(f"invalid docker pin config: {exc}") from None
+
     # ------------------------------------------------------------------ lifecycle
     def create_all(self, *, templates: dict[int, str | None] | None = None) -> Mapping[int, SandboxInstance]:
-        try:
-            mgr = self.manager
-        except ValueError as exc:
-            # Manager construction validates the pin config (format + host
-            # topology) before any container exists; surface it as an ordinary
-            # create-phase error instead of an unhandled traceback.
-            logger.error("[docker] %s", exc)
-            return {}
-        return self._translate(mgr.create_all(templates=templates))
+        return self._translate(self._require_manager().create_all(templates=templates))
 
     def detect_existing(self) -> Mapping[int, SandboxInstance]:
-        try:
-            mgr = self.manager
-        except ValueError as exc:
-            # Same treatment as create_all: a bad pin config is a create-phase
-            # error, not a traceback (detect would only produce sandboxes the
-            # run then drives).
-            logger.error("[docker] %s", exc)
-            return {}
-        return self._translate(mgr.detect_existing())
+        return self._translate(self._require_manager().detect_existing())
 
     def check_alive(self, inst: SandboxInstance) -> bool:
-        state = self.manager.container_states.get(inst.index)
+        state = self._require_manager().container_states.get(inst.index)
         if state is None:
             return False
         return self.manager.check_alive(state)
@@ -170,7 +167,7 @@ class DockerProvider(EnvironmentProvider):
         the kernel does not call this yet. Implemented for contract compliance
         so the future migration is a wiring change, not an adapter change.
         """
-        state = self.manager.container_states.get(inst.index)
+        state = self._require_manager().container_states.get(inst.index)
         if state is None:
             return
         self.manager.clear_browser_cache(state)
@@ -186,7 +183,7 @@ class DockerProvider(EnvironmentProvider):
         cwd: str | None = None,
         env: dict[str, str] | None = None,
     ) -> CommandResult:
-        state = self.manager.container_states.get(inst.index)
+        state = self._require_manager().container_states.get(inst.index)
         if state is None or state.docker_container is None:
             raise RuntimeError(f"No Docker handle for sandbox index {inst.index}")
         cmd = self._wrap_command(command, cwd=cwd, env=env)

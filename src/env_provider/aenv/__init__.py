@@ -26,7 +26,7 @@ import threading
 from pathlib import Path
 
 from bench_core.config import KernelConfig
-from env_provider import SandboxInstance
+from env_provider import ProviderConfigError, SandboxInstance
 from env_provider._base import BackendSandboxStatus
 from env_provider.aenv._ccl import (
     CCL_PID_RESOLVE_ATTEMPTS,
@@ -178,8 +178,10 @@ class AenvProvider(E2BProvider):
             try:
                 pin_cpus = _parse_pin_cpus(self._config.pin_cpus)
             except ValueError as exc:
-                logger.error("[aenv] %s; aborting before any sandbox is created", exc)
-                return {}
+                # Abort before the first sandbox exists, and raise (not return
+                # {}) so the CLI exits non-zero: an empty mapping would look
+                # like "nothing to test" and CI would report success.
+                raise ProviderConfigError(f"invalid aenv pin_cpus: {exc}") from None
         states = self.manager.create_all(templates=templates)
         if pin_cpus is not None and self._pin_active():
             for state in states.values():
@@ -387,7 +389,7 @@ class AenvProvider(E2BProvider):
             try:
                 pin_cpus = _parse_pin_cpus(self._config.pin_cpus)
             except ValueError as exc:
-                raise RuntimeError(f"create_one({index}) aborted: {exc}") from None
+                raise ProviderConfigError(f"create_one({index}) aborted: {exc}") from None
 
         mgr = self.manager
         state = mgr._new_state(index)

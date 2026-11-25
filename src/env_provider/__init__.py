@@ -282,6 +282,15 @@ class EnvironmentProvider(ABC):
         """
 
 
+class ProviderConfigError(ValueError):
+    """Invalid backend configuration (e.g. a pin naming absent CPUs).
+
+    Raised instead of returning an empty mapping so the CLI can exit non-zero:
+    a config typo must not look like a successful run that created nothing.
+    Cleanup is exempt -- tearing down containers does not depend on the pin.
+    """
+
+
 __all__ = [
     "SandboxStatus",
     "CreationMetrics",
@@ -291,4 +300,5 @@ __all__ = [
     "LifecycleCapable",
     "EphemeralCapable",
     "SnapshotSizeCapable",
+    "ProviderConfigError",
 ]

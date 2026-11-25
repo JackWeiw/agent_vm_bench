@@ -15,7 +15,7 @@ from unittest.mock import Mock
 import pytest
 
 from bench_core.config import KernelConfig
-from env_provider import CommandResult, SandboxInstance, SandboxStatus
+from env_provider import CommandResult, ProviderConfigError, SandboxInstance, SandboxStatus
 from env_provider.docker import DockerProvider
 from env_provider.docker.config import Config
 from env_provider.docker.schemas import ContainerState
@@ -179,12 +179,13 @@ class TestCreateAll:
 
         manager.create_all.assert_called_once_with(templates=None)
 
-    def test_create_all_surfaces_pin_validation_error_as_empty(self):
-        # A malformed pin_cpus fails in the manager constructor (before any
-        # container exists); create_all surfaces it as an ordinary
-        # create-phase error (log + empty mapping), not an unhandled traceback.
+    def test_create_all_raises_typed_config_error(self):
+        # A pin naming absent CPUs fails in the manager constructor (before any
+        # container exists). It must surface as a typed config error so the CLI
+        # exits non-zero -- an empty mapping would look like a successful run.
         provider = DockerProvider(KernelConfig(), Config(pin_cpus="0-x"), Event())
-        assert provider.create_all() == {}
+        with pytest.raises(ProviderConfigError, match="invalid docker pin config"):
+            provider.create_all()
         assert provider._manager is None  # construction failed, still lazy
 
 
@@ -434,14 +435,12 @@ class TestPinConfigUnderTeardown:
         assert calls[0].pin_cpus is None and calls[0].pin_mems is None
         assert any("ignoring invalid pin config for cleanup" in r.message for r in caplog.records)
 
-    def test_detect_existing_returns_empty_on_invalid_pin(self, monkeypatch, caplog):
+    def test_detect_existing_raises_typed_config_error(self, monkeypatch):
         monkeypatch.setattr("env_provider.docker.SandboxManager", self._manager_cls([], found=0))
         provider = DockerProvider(KernelConfig(), Config(pin_cpus="18-25"), Event())
 
-        with caplog.at_level(logging.ERROR):
-            assert provider.detect_existing() == {}
-
-        assert any("[docker]" in r.message for r in caplog.records)
+        with pytest.raises(ProviderConfigError, match="invalid docker pin config"):
+            provider.detect_existing()
 
 
 class TestBuildProvider:

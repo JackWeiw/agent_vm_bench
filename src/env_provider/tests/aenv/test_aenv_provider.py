@@ -16,7 +16,7 @@ import pytest
 import bench_core.task_runner.replay  # noqa: F401 -- self-registers workflow_type="replay"
 from bench_core.config import KernelConfig
 from bench_core.task_runner.replay_config import ReplayConfig
-from env_provider import LifecycleCapable, SandboxInstance
+from env_provider import LifecycleCapable, ProviderConfigError, SandboxInstance
 from env_provider.aenv import AenvProvider, _parse_pin_cpus
 from env_provider.e2b import E2BProvider
 from env_provider.e2b.config import Config
@@ -267,9 +267,12 @@ def test_parse_pin_cpus_rejects_empty():
 def test_create_all_aborts_before_create_on_bad_pin(monkeypatch):
     # Regression: the pin format used to be validated AFTER the sandboxes
     # existed, leaking orphans. The strict pre-check aborts the run with no
-    # sandbox created at all (the manager is never even built).
+    # sandbox created at all (the manager is never even built). It raises a
+    # typed config error so the CLI exits non-zero instead of reporting a run
+    # that created nothing as success.
     provider, fake = _make_pin_provider(monkeypatch, pin_cpus="100-101xxS")
-    assert provider.create_all() == {}
+    with pytest.raises(ProviderConfigError, match="invalid aenv pin_cpus"):
+        provider.create_all()
     assert provider._manager is None
     assert fake.created == []
 
@@ -361,7 +364,7 @@ def test_create_one_pins_and_returns_ready_instance(monkeypatch):
 
 def test_create_one_aborts_on_bad_pin_before_create(monkeypatch):
     provider, fake = _make_pin_provider(monkeypatch, replay_mode="exec_ephemeral", pin_cpus="100-101xxS")
-    with pytest.raises(RuntimeError, match="aborted"):
+    with pytest.raises(ProviderConfigError, match="aborted"):
         provider.create_one(1)
     assert provider._manager is None
     assert fake.created == []
