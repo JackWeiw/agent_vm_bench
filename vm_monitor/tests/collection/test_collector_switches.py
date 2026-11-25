@@ -42,7 +42,7 @@ class _RecorderMonitor(VMMonitorBase):
     def collect_host_pressure(self, meminfo=None, vmstat=None, stat=None):  # noqa: N802 - recorder seam
         self._record("pressure")
 
-    def collect_psi(self, ts=None):  # noqa: N802 - recorder seam
+    def collect_psi(self, ts):  # noqa: N802 - recorder seam
         self._record("psi")
 
     def get_numa_nodes_memory(self):  # noqa: N802 - recorder seam

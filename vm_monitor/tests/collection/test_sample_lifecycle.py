@@ -57,7 +57,7 @@ class _NoProcMonitor(VMMonitorBase):
     def collect_host_pressure(self, meminfo=None, vmstat=None, stat=None):  # noqa: N802 - seam
         pass
 
-    def collect_psi(self, ts=None):  # noqa: N802 - seam
+    def collect_psi(self, ts):  # noqa: N802 - seam
         pass
 
     def get_numa_nodes_memory(self):  # noqa: N802 - seam

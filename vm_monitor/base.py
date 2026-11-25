@@ -61,6 +61,18 @@ _SECTOR_SIZE_BYTES = 512
 # Conversion factor for byte -> MiB used throughout the monitor.
 _BYTES_PER_MIB = 2**20
 
+# Minimum spacing between PSI reads (seconds). PSI averages are kernel-side
+# EWMAs over 10/60/300 s windows (Documentation/accounting/psi.rst) and *_total
+# is cumulative, so reading faster than the avg10 window only re-reads the same
+# EWMA -- while every read costs a kernel-side per-CPU aggregation under the psi
+# group lock (the same cost class as a /proc/stat read). collect_psi
+# self-throttles to this spacing; rows land every ~10 s regardless of the
+# monitor interval, still keyed by the shared sample timestamp.
+PSI_MIN_INTERVAL = 10.0
+# Re-warn at most this often when PSI files are readable but unparseable
+# (transient errors keep sampling; missing files latch instead).
+_PSI_WARN_INTERVAL = 60.0
+
 
 # Virtual / software block-device prefixes excluded from auto-discovery. These
 # either carry no real I/O (loop, ram, sr, zram) or are software layers stacked
@@ -306,10 +318,11 @@ class _ProcRawWriter:
                                    ublk_daemon_history alone is lossy. A pid restart
                                    (new daemon) is just another row keyed by pid.
       host_psi_raw.csv       wide   host PSI snapshot (/proc/pressure/{cpu,memory}):
-                                   some/full avg10/avg300/avg600 are gauges (% of
-                                   the window stalled) + total is cumulative stall
-                                   microseconds. Written only when the psi collector
-                                   is enabled AND /proc/pressure exists (CONFIG_PSI);
+                                   some/full avg10/avg60/avg300 are gauges (% of the
+                                   window stalled) + total is cumulative stall
+                                   microseconds, read at most once per PSI_MIN_INTERVAL
+                                   (the avg10 window). Written only when the psi
+                                   collector is enabled AND /proc/pressure exists;
                                    a PSI-less host leaves the file absent.
 
     collect_sample enqueues the dicts already read for the swap / mem-detail /
@@ -441,8 +454,7 @@ class _ProcRawWriter:
                 self._write_numa_mem(ts, nodes)
             elif tag == "psi":
                 _, ts, row = item
-                if row:
-                    self._write_wide("psi", "host_psi_raw.csv", ts, row)
+                self._write_wide("psi", "host_psi_raw.csv", ts, row)
 
     def _write_wide(self, key: str, fname: str, ts: str, row: dict) -> None:
         """Append one wide row; open file + write header from the first row."""
@@ -807,9 +819,14 @@ class VMMonitorBase(ABC):
         self.dirty_limit_mb = 0.0
         self.dirty_background_limit_mb = 0.0
         self._dirty_limits_read = False
-        # PSI (/proc/pressure) availability: absent when the kernel lacks
-        # CONFIG_PSI or boots with psi=0. Warn once, then skip silently.
+        # PSI (/proc/pressure) collection state, three distinct cases:
+        # - files MISSING (PSI-less kernel): warn once, latch, zero further reads;
+        # - readable but unparseable: rate-limited warning, keep sampling;
+        # - healthy: collect_psi self-throttles to PSI_MIN_INTERVAL (the avg10
+        #   window) so reads never run faster than the metric resolves.
         self._psi_missing_warned = False
+        self._last_psi_error_warn: float | None = None
+        self._last_psi_monotonic = None
 
         # Specified NUMA Node CPU Statistics
         self.target_numa_nodes = [0]
@@ -1807,53 +1824,79 @@ class VMMonitorBase(ABC):
         return entry
 
     # ===================== Collect Host PSI (/proc/pressure) =====================
-    def collect_psi(self, ts: str | None = None):
-        """Collect the host PSI snapshot (/proc/pressure/{cpu,memory}) per sample.
+    def collect_psi(self, ts: str, now: float | None = None):
+        """Collect the host PSI snapshot (/proc/pressure/{cpu,memory}).
 
         PSI (Pressure Stall Information) reports how much of the recent window
-        tasks spent stalled on a resource: ``avg10``/``avg300``/``avg600`` are
-        gauges (percent of the 10s/300s/600s window stalled) and ``total`` is a
+        tasks spent stalled on a resource: ``avg10``/``avg60``/``avg300`` are
+        gauges (percent of the 10s/60s/300s window stalled) and ``total`` is a
         cumulative stall counter in microseconds (an agent derives stall-seconds
         via delta over the real row interval). The ``full`` line is absent from
         /proc/pressure/cpu on kernels < 5.13; the CSV header follows the first
         row (kernel-stable per boot).
 
-        Degrades gracefully: when /proc/pressure is unavailable (kernel without
-        CONFIG_PSI, or disabled at boot) the first cycle logs one WARNING and
-        the collector then skips silently -- a PSI-less host never accumulates
-        per-cycle noise and host_psi_raw.csv is simply not created.
+        Self-throttles to PSI_MIN_INTERVAL (the avg10 window): the averages are
+        kernel-side EWMAs over 10/60/300 s, so reading faster only re-reads the
+        same EWMA while every read costs a kernel-side per-CPU aggregation under
+        the psi group lock. Rows therefore land every ~10 s -- a subset of the
+        other host_*_raw.csv sample timestamps, so the join contract holds.
 
-        ``ts`` is the shared collect_sample timestamp so PSI rows join the other
-        host_*_raw.csv rows; a fresh timestamp is minted when called standalone.
+        ``ts`` (required) is the shared collect_sample timestamp so PSI rows
+        join the other host_*_raw.csv rows. ``now`` overrides the monotonic clock
+        (test seam); production leaves it None. Degrades by cause: files MISSING
+        (kernel without CONFIG_PSI, or psi=0) latch after one WARNING and are
+        never read again; readable-but-unparseable content warns at most once
+        per _PSI_WARN_INTERVAL and keeps sampling; a healthy read appends the
+        flattened snapshot to host_psi_raw.csv.
         """
+        if self._proc_raw is None:  # no raw dumper -> nothing consumes rows
+            return
+        now = time.monotonic() if now is None else now
+        if self._last_psi_monotonic is not None and now - self._last_psi_monotonic < PSI_MIN_INTERVAL:
+            return
+        if self._psi_missing_warned:  # latched PSI-less host: zero further reads
+            return
+        self._last_psi_monotonic = now
         psi = self._read_psi()
-        if psi is None:
+        if psi is None:  # PSI-less host: latch, zero further reads this run
             if not self._psi_missing_warned:
-                logger.warning("/proc/pressure unavailable (CONFIG_PSI off or psi=0); PSI collection skipped")
+                logger.warning(
+                    "PSI files missing under /proc/pressure (CONFIG_PSI off or psi=0); PSI collection disabled"
+                )
                 self._psi_missing_warned = True
             return
-        if ts is None:
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-        if self._proc_raw is not None:
-            self._proc_raw.enqueue_psi(ts, _psi_flat_row(psi))
+        if not psi:  # readable but nothing parsed: transient -> keep sampling
+            if self._last_psi_error_warn is None or now - self._last_psi_error_warn >= _PSI_WARN_INTERVAL:
+                logger.warning("PSI files present but nothing parsed; PSI rows paused until content parses")
+                self._last_psi_error_warn = now
+            return
+        self._proc_raw.enqueue_psi(ts, _psi_flat_row(psi))
 
     def _read_psi(self, psi_dir: str = "/proc/pressure") -> dict | None:
         """Parse /proc/pressure/{cpu,memory} into {resource: {kind: {field: value}}}.
 
-        Line format: ``some avg10=0.00 avg300=0.00 avg600=0.00 total=0`` (plus a
-        ``full`` line where the kernel provides one). ``avg*`` parse as float,
-        ``total`` as int microseconds. Returns None (never raises) when either
-        file is missing/unreadable (non-UTF8 bytes -> UnicodeDecodeError) or any line is malformed or lacks ``some`` --
-        callers degrade via the warn-once path. ``psi_dir`` is overridable so
-        tests can feed fixture files instead of the host's /proc.
+        Line format (mainline, kernel Documentation/accounting/psi.rst):
+        ``some avg10=0.00 avg60=0.00 avg300=0.00 total=0`` plus a ``full`` line
+        where the kernel provides one (cpu ``full`` needs >= 5.13). ``avg*``
+        parse as float, ``total`` as int microseconds.
+
+        Tolerance mirrors the other /proc readers: an unparseable token or a
+        kind without a usable ``some`` skips at most that field/kind/resource
+        and keeps everything else, so one odd ``cpu`` line never discards a
+        good ``memory`` snapshot. Returns None ONLY when a PSI file is missing
+        (PSI-less kernel) -- the caller latches on that; readable-but-unusable
+        content yields {} (caller warns at a rate and keeps sampling).
+        ``psi_dir`` is overridable so tests feed fixture files.
         """
         result: dict = {}
         for resource in ("cpu", "memory"):
             try:
                 with open(os.path.join(psi_dir, resource)) as f:
                     lines = f.read().splitlines()
-            except (OSError, ValueError):  # PSI-less kernel, unreadable, or non-UTF8 bytes
+            except FileNotFoundError:  # PSI-less kernel (no /proc/pressure)
                 return None
+            except OSError:  # transient (EACCES/...): keep whatever else parses
+                continue
             kinds: dict = {}
             for line in lines:
                 parts = line.split()
@@ -1863,17 +1906,15 @@ class VMMonitorBase(ABC):
                 for item in parts[1:]:
                     key, sep, raw = item.partition("=")
                     if not sep:
-                        return None
+                        continue
                     try:
                         fields[key] = int(raw) if key == "total" else float(raw)
                     except ValueError:
-                        return None
-                if not fields:
-                    return None
-                kinds[parts[0]] = fields
-            if "some" not in kinds:
-                return None
-            result[resource] = kinds
+                        continue
+                if fields:
+                    kinds[parts[0]] = fields
+            if "some" in kinds:
+                result[resource] = kinds
         return result
 
     def _read_meminfo(self) -> dict:
@@ -2763,6 +2804,8 @@ class VMMonitorBase(ABC):
         self._last_pressure = None  # avoid stale vmstat pressure deltas
         self._last_pressure_monotonic = None  # pressure rate divisor baseline
         self._last_swap_monotonic = None  # swap rate divisor baseline
+        self._last_psi_monotonic = None  # PSI self-throttle baseline
+        self._last_psi_error_warn = None  # re-arm the rate-limited unparseable warning
         self._last_cpu_total = None  # avoid stale /proc/stat iowait baseline
         self._dirty_limits_read = False  # re-read dirty sysctls on restart
         if duration_seconds:
@@ -2845,6 +2888,8 @@ class VMMonitorBase(ABC):
         self._last_pressure = None  # avoid stale vmstat pressure deltas
         self._last_pressure_monotonic = None  # pressure rate divisor baseline
         self._last_swap_monotonic = None  # swap rate divisor baseline
+        self._last_psi_monotonic = None  # PSI self-throttle baseline
+        self._last_psi_error_warn = None  # re-arm the rate-limited unparseable warning
         self._last_cpu_total = None  # avoid stale /proc/stat iowait baseline
         self._dirty_limits_read = False  # re-read dirty sysctls on restart
         self.running = True
