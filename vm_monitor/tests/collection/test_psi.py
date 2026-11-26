@@ -110,6 +110,19 @@ def test_read_psi_unusable_resource_keeps_the_other(tmp_path):
     assert psi["memory"]["some"]["total"] == 999
 
 
+def test_read_psi_non_utf8_file_skips_resource_keeps_the_other(tmp_path):
+    # A decode error in one file skips only that resource (ValueError is caught,
+    # never escapes into collect_sample).
+    d = tmp_path / "pressure"
+    d.mkdir(parents=True)
+    (d / "cpu").write_bytes(bytes([0xFF, 0xFE]) + b"some avg10=1.0")
+    (d / "memory").write_text(MEM_BOTH)
+    mon = _PsiMonitor(str(d))
+    psi = mon._read_psi()
+    assert "cpu" not in psi
+    assert psi["memory"]["some"]["total"] == 999
+
+
 def test_read_psi_garbage_both_files_returns_empty(tmp_path):
     # Readable but nothing usable -> {} (caller keeps sampling), never None.
     mon = _PsiMonitor(_write_psi(tmp_path, cpu=CPU_NO_SOME, mem=CPU_NO_SOME))

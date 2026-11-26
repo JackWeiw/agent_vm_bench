@@ -1859,11 +1859,9 @@ class VMMonitorBase(ABC):
         self._last_psi_monotonic = now
         psi = self._read_psi()
         if psi is None:  # PSI-less host: latch, zero further reads this run
-            if not self._psi_missing_warned:
-                logger.warning(
-                    "PSI files missing under /proc/pressure (CONFIG_PSI off or psi=0); PSI collection disabled"
-                )
-                self._psi_missing_warned = True
+            # (the latch check above already guarantees _psi_missing_warned is False)
+            logger.warning("PSI files missing under /proc/pressure (CONFIG_PSI off or psi=0); PSI collection disabled")
+            self._psi_missing_warned = True
             return
         if not psi:  # readable but nothing parsed: transient -> keep sampling
             if self._last_psi_error_warn is None or now - self._last_psi_error_warn >= _PSI_WARN_INTERVAL:
@@ -1895,7 +1893,7 @@ class VMMonitorBase(ABC):
                     lines = f.read().splitlines()
             except FileNotFoundError:  # PSI-less kernel (no /proc/pressure)
                 return None
-            except OSError:  # transient (EACCES/...): keep whatever else parses
+            except (OSError, ValueError):  # transient (EACCES, decode error): keep the rest
                 continue
             kinds: dict = {}
             for line in lines:
