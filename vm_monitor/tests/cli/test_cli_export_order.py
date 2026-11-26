@@ -12,6 +12,7 @@ appearance means CSV + SVG + xlsx are all written. This test locks that
 ordering at the CLI level (the layer where the fix is), not at bench-core's
 orchestration layer.
 """
+
 from __future__ import annotations
 
 import logging

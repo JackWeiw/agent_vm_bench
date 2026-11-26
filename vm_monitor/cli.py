@@ -18,7 +18,7 @@ from .base import _discover_block_devices
 
 # Internal dependencies - all modules
 from .config import load_env_config, validate_and_prompt_missing
-from .capture.log_capture import DEFAULT_ROTATION_PERF_EVENTS, LogCapture
+from .capture.log_capture import DEFAULT_ROTATION_PERF_EVENTS, DEFAULT_UPROF_METRICS, LogCapture
 from .export.raw.report import build_host_resources_xlsx
 from .export.resource_report import export_to_excel, print_capture_summary
 from .export.svg import export_svg_reports
@@ -54,6 +54,10 @@ def _parse_rotation_intervals(spec: str, fallback: int) -> dict:
             result[tool] = max(1, int(val.strip()))
         except ValueError:
             logger.warning("--rotation-intervals: '%s' is not an int for tool '%s', skipping", val.strip(), tool)
+    # Carry the --rotation-interval fallback into the map: LogCapture's
+    # _resolve_rotation_intervals reads the reserved "_default" key and uses
+    # it for every tool omitted from the spec (documented behavior).
+    result["_default"] = fallback
     return result
 
 
@@ -268,6 +272,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Comma-separated perf stat events for --log-rotation (default: built-in set)",
     )
     parser.add_argument(
+        "--rotation-uprof-metrics",
+        type=str,
+        default=DEFAULT_UPROF_METRICS,
+        help="Comma-separated AMDuProfPcm metrics for --log-rotation's uprof slot "
+        "(default: built-in set; an empty value falls back to it)",
+    )
+    parser.add_argument(
         "--rotation-log-dir",
         type=str,
         default=None,
@@ -432,7 +443,11 @@ def main(argv=None):
     if args.enable_capture:
         print("\nLoading log collection configuration...")
         config = load_env_config()
-        config = validate_and_prompt_missing(config, non_interactive=args.auto_skip)
+        # uprof is a rotation-only slot: only validate UPROF_PATH (and warn)
+        # when --log-rotation can actually run it.
+        config = validate_and_prompt_missing(
+            config, non_interactive=args.auto_skip, check_uprof=bool(args.log_rotation)
+        )
 
     # Create appropriate Monitor instance based on --vmm argument
     if args.vmm == "qemu":
@@ -500,6 +515,7 @@ def main(argv=None):
             log_rotation=args.log_rotation,
             rotation_interval=rotation_interval,
             rotation_perf_events=args.rotation_perf_events,
+            rotation_uprof_metrics=args.rotation_uprof_metrics,
             rotation_log_dir=args.rotation_log_dir,
             stress_file=args.stress_file,
             rotation_tools=rotation_tools,

@@ -251,16 +251,45 @@ monitor:
   # without specs). Commented example for agentENV lifecycle replay:
   # host_procs:
   #   - server:release/server
-  # Log-capture rotation (forwards vm-monitor --log-rotation + knobs). When
-  # enabled, devkit (top-down + memory in parallel) -> ksys -> perf stat rotate
-  # one slot at a time for the whole stress window instead of all capture tools
-  # running concurrently; each turn writes a timestamped log under
-  # <output_dir>/log_capture/{devkit/{topdown,memory},ksys,perf}/. ub_watch /
-  # smap_bw / getfre keep their all-parallel behavior. Requires capture
-  # (auto/true); keys off the stress-file lock lifecycle (appear = start,
-  # disappear = stop after the in-flight slot), so a huge test_duration cannot
-  # push rotation past real stress. perf_events takes a list or a comma string;
-  # omit it for vm_monitor's built-in event set. Default off (all-parallel).
+  # Log-capture rotation (monitor.log_rotation -> vm-monitor --log-rotation + knobs).
+  #
+  # How to use: uncomment the example block below (a key of this monitor: block)
+  # to enable rotation. Absent/commented, it stays off and every capture tool
+  # runs all-parallel for the whole window — the default.
+  #
+  # What it does: instead of running all capture tools concurrently, the tools
+  # rotate one slot at a time in canonical order
+  #   devkit (top-down + memory in parallel) -> ksys -> perf stat -> uprof
+  # each slot holding its interval for the whole stress window. ub_watch /
+  # smap_bw / getfre keep their all-parallel behavior. Every turn writes a
+  # timestamped log under <output_dir>/log_capture/{devkit/{topdown,memory},ksys,
+  # perf,uprof}/; the uprof turn creates uprof/<stamp>/ per turn and passes
+  # that dir (absolute) as -O: the tool auto-generates its timestamped folders
+  # inside it (AMDuProfPcm-Timeseries_*/report-timerseries.csv) and the turn's
+  # stdout log lives in the same dir -- raw artifacts, not parsed into sheets;
+  # columns include TopDown stages (Frontend_Bound /
+  # Backend_Bound.Memory / Retiring), Total Mem Bw (GB/s), and per-channel
+  # memory bandwidth.
+  #
+  # Prerequisites: capture must be auto/true. Rotation keys off the stress-file
+  # lock lifecycle (appear = start, disappear = stop after the in-flight slot),
+  # so a huge test_duration cannot push rotation past real stress. The uprof
+  # slot needs UPROF_PATH in .env: unset/invalid warns and skips the slot,
+  # never prompts, never blocks the run.
+  #
+  # Knobs (each forwards to a vm-monitor --rotation-* flag):
+  #   enabled        a present block defaults to true; set false to disable.
+  #   interval_sec   per-slot collection duration in seconds (default 15); also
+  #                  the fallback for any tool missing from intervals.
+  #   intervals      per-tool override, keys devkit/ksys/perf/uprof; unknown
+  #                  keys are warned and dropped.
+  #   perf_events    perf stat event list (YAML list or comma string); omit for
+  #                  vm_monitor's built-in event set.
+  #   uprof_metrics  AMDuProfPcm metric list (YAML list or comma string);
+  #                  omit for the built-in memory,pipeline_util set.
+  #   tools          rotate only these tools (YAML list or comma string); omit
+  #                  for all four, canonical order kept.
+  # Full reference: docs/guide/vm-monitor-usage.md / vm-monitor-usage-zh.md.
   # log_rotation:
   #   enabled: true
   #   interval_sec: 15          # per-slot collection duration (s); fallback for any tool
@@ -268,4 +297,7 @@ monitor:
   #     devkit: 20
   #     ksys: 30
   #     perf: 15
+  #     uprof: 15
   #   perf_events:              # e.g. [cycles, instructions, context-switches]
+  #   uprof_metrics:            # e.g. [memory, pipeline_util] for the uprof slot
+  #   tools:                    # e.g. [devkit, ksys]; omit for all four
