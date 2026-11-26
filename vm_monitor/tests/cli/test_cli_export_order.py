@@ -36,7 +36,7 @@ def test_cli_exports_svg_before_xlsx(monkeypatch, tmp_path):
         return []
 
     def fake_xlsx(
-        monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False, rotation_log_dir=None
+        monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False
     ):
         call_order.append("xlsx")
         recorded["skip_charts"] = skip_charts
@@ -83,7 +83,7 @@ def test_cli_no_charts_forwards_skip_charts(monkeypatch, tmp_path):
     recorded: dict = {}
 
     def fake_xlsx(
-        monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False, rotation_log_dir=None
+        monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False
     ):
         recorded["skip_charts"] = skip_charts
 
@@ -131,7 +131,7 @@ def test_auto_host_resources_hook_runs_even_with_no_charts(monkeypatch, tmp_path
         return out_path
 
     def fake_xlsx(
-        monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False, rotation_log_dir=None
+        monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False
     ):
         call_order.append("xlsx")
 
@@ -169,7 +169,7 @@ def test_auto_host_resources_hook_failure_does_not_block_xlsx(monkeypatch, tmp_p
         raise OSError("simulated disk full")
 
     def fake_xlsx(
-        monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False, rotation_log_dir=None
+        monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False
     ):
         call_order.append("xlsx")
 
@@ -214,7 +214,7 @@ def test_host_resources_runs_before_svg_so_survives_export_interrupt(monkeypatch
         raise KeyboardInterrupt  # simulate a mid-export interrupt (handler reset / hard kill)
 
     def fake_xlsx(
-        monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False, rotation_log_dir=None
+        monitor, log_dir, numa_nodes, output_file, capture_results=None, skip_charts=False
     ):
         call_order.append("xlsx")  # must NOT run -- SVG raised before it
 

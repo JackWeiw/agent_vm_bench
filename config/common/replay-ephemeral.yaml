@@ -207,9 +207,10 @@ monitor:
   # each slot holding its interval for the whole stress window. ub_watch /
   # smap_bw / getfre keep their all-parallel behavior. Every turn writes a
   # timestamped log under <output_dir>/log_capture/{devkit/{topdown,memory},ksys,
-  # perf,uprof}/; the uprof turn passes -O pointing at uprof/: the tool
-  # auto-generates timestamped folders per turn (AMDuProfPcm-Timeseries_*/
-  # report-timerseries.csv inside) -- raw artifacts, not parsed into sheets;
+  # perf,uprof}/; the uprof turn creates uprof/<stamp>/ per turn and passes
+  # that dir (absolute) as -O: the tool auto-generates its timestamped folders
+  # inside it (AMDuProfPcm-Timeseries_*/report-timerseries.csv) and the turn's
+  # stdout log lives in the same dir -- raw artifacts, not parsed into sheets;
   # columns include TopDown stages (Frontend_Bound /
   # Backend_Bound.Memory / Retiring), Total Mem Bw (GB/s), and per-channel
   # memory bandwidth.

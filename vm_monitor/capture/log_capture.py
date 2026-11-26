@@ -37,9 +37,11 @@ DEFAULT_ROTATION_PERF_EVENTS = (
 # Default AMDuProfPcm metric set for log-rotation mode (system-wide memory +
 # pipeline-utilization counters). Override via monitor.log_rotation.uprof_metrics
 # (bench-core) or --rotation-uprof-metrics (vm-monitor CLI); an empty value
-# falls back here. The binary path comes from .env (UPROF_PATH); the
-# ``-d <interval>`` is appended by the rotation turn (no -o: counters stream
-# to stdout and are captured into the per-turn log, see _rotation_uprof_turn).
+# falls back here. The binary path comes from .env (UPROF_PATH); the rotation
+# turn appends ``-d <interval>`` and passes ``-O <per-turn dir>`` (see
+# _rotation_uprof_turn): the tool auto-generates its AMDuProfPcm-Timeseries_*/
+# report-timerseries.csv folders inside that dir, and the turn's stdout log
+# lives there too.
 DEFAULT_UPROF_METRICS = "memory,pipeline_util"
 
 # Rotation renames ksys's own <...>_report.json to the per-turn log stem
