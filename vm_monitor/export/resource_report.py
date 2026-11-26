@@ -929,11 +929,7 @@ def print_capture_summary(results: dict, log_dir: str, numa_nodes: list = None):
                 # parent. commonpath already returns a directory, so the multi-
                 # turn branch must NOT go through dirname() -- that would strip
                 # one level too many (log_capture/ instead of log_capture/ksys/).
-                common = (
-                    os.path.dirname(paths[0])
-                    if len(paths) == 1
-                    else os.path.commonpath(paths)
-                )
+                common = os.path.dirname(paths[0]) if len(paths) == 1 else os.path.commonpath(paths)
                 print(f"   {tool}: {len(paths)} turns under {common}/")
 
     # Startup failures
