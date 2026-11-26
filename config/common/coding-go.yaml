@@ -15,7 +15,7 @@
 #
 # The replacement pairs are the language's CANONICAL content in
 # bench_core.coding_payload -- omit ``source_files`` and
-# KernelConfig.__post_init__ fills them from
+# CodingConfig.__post_init__ (task_runner/coding.py) fills them from
 # CODING_LANGUAGE_DEFAULT_SOURCE_FILES["go"] (6 hugo pairs, the first with its
 # own verify_script), so this file stays minimal.
 #

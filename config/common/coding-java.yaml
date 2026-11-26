@@ -1,0 +1,137 @@
+# config/common/coding-java.yaml
+# Unified coding (Java) benchmark config — backend-agnostic (E2B + Docker).
+#
+# Workflow type: coding — simulates AI coding agent memory pressure.
+#   Trace-faithful loop: find -> read -> edit -> verify -> git diff.
+#   Verify runs the instance's REAL Maven tests through `mvn -o test`
+#   (FAIL_TO_PASS; PASS_TO_PASS when the instance declares any) and asserts each
+#   listed method from the surefire reports — the project's own JUnit harness
+#   (transient surefire/JVM compile+run peak, the same role `go run`'s compiler,
+#   `npx tsx`'s node+esbuild and `python3`'s CPython play in the other
+#   variants). N sandboxes' verify peaks overlapping -> host memory overcommit.
+#   Pairs without a test selection (the generic edit pairs) fall back to
+#   ``coding.verify_cmd`` below (rebuild + ad-hoc smoke probe).
+#
+# Project: google/gson (github.com/google/gson)
+#   - Real swe_bench_multilingual instance google__gson-1014 (JsonTreeReader
+#     skipValue throws ArrayIndexOutOfBoundsException on an empty root object).
+#     Cloned at base_commit 7719e73a108c450666613c279bedaed724cd9cc9.
+#   - FAIL_TO_PASS: JsonTreeReaderTest#testSkipValue_emptyJsonObject,
+#     #testSkipValue_filledJsonObject. PASS_TO_PASS: empty for this instance
+#     (official dataset list is empty); the runner's pass_to_pass support is
+#     exercised by later instances.
+#   - The JsonTreeReader pair in bench_core.coding_payload mirrors the gold patch.
+#
+# The replacement pairs are the language's CANONICAL content in
+# bench_core.coding_payload -- omit ``source_files`` and
+# CodingConfig.__post_init__ (task_runner/coding.py) fills them from
+# CODING_LANGUAGE_DEFAULT_SOURCE_FILES["java"], so this file stays minimal.
+#
+# Pick the backend with --provider; the SAME stress profile runs on either:
+#   bench-core --provider e2b    --config config/common/coding-java.yaml --create-only
+#   bench-core --provider docker --config config/common/coding-java.yaml --create-only
+#
+# Validate without any SDK (parses shared sections only):
+#   bench-core --provider fake --config config/common/coding-java.yaml --create-only -n 1
+#
+# Legacy e2b_bench keeps its own config/e2b/coding_java_bench.yaml (old schema); unaffected.
+
+workflow_type: coding
+
+# === backend blocks (one per provider; only the matching one is read) ===
+e2b:
+  template: "openclaw-coding-java-v1"  # E2B template (coding template with google/gson)
+  create_timeout: 86400
+  numa_bind: 2
+  # Firecracker CPU pinning is an aenv-only knob (see the aenv: block below);
+  # cloud e2b sandboxes run on e2b's infrastructure, so no pin keys here.
+  sandbox_ids_file: "sandboxs_java.txt"  # save/load sandbox IDs across runs (empty = disabled)
+  env:                              # E2B SDK env vars; key/token fall back to ~/.e2b/config.json
+    E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+    E2B_API_KEY: "your_e2b_api_key_here"
+    E2B_DOMAIN: "e2b.app"
+    E2B_API_URL: "http://localhost:3000"
+    E2B_HTTP_SSL: "false"
+
+aenv:
+  template: "openclaw-coding-java-v1"  # AENV snapshot-capable image (same shape)
+  create_timeout: 86400
+  sandbox_ids_file: "sandboxs_java_aenv.txt"  # save/load sandbox IDs across runs (empty = disabled)
+  # Firecracker CPU pinning (cold-start perf, aenv only). Comma-separated host
+  # CPU list, e.g. pin_cpus: "2,3" for a 2-vCPU sandbox; null/omit = no
+  # pinning. pgrep + taskset run on the AENV server host; pin_cmd_prefix routes
+  # them when the bench runs remotely ("" = local, "ssh user@host" = remote).
+  # Pin-verify failure fails sandbox creation. Cloud e2b ignores these keys
+  # (its sandboxes run on e2b's infrastructure). See
+  # src/env_provider/e2b/manager.py (_pin_and_verify_fc).
+  pin_cpus: null
+  pin_cmd_prefix: ""
+  env:                              # AENV server env (E2B SDK pointed at AENV)
+    E2B_ACCESS_TOKEN: "your_e2b_access_token_here"
+    E2B_API_KEY: "your_e2b_api_key_here"
+    E2B_DOMAIN: "your_aenv_domain_here"
+    E2B_API_URL: "http://127.0.0.1:8000"      # AENV control plane (POST /sandboxes)
+    E2B_SANDBOX_URL: "http://127.0.0.1:8000"  # AENV data plane (envd proxy)
+
+docker:
+  # Build dockerfile_build/coding/java/Dockerfile.x86 (gson + JDK 11 + Maven,
+  # deps warmed for `mvn -o`), then point this at it. The same tag is what
+  # push_to_harbor.sh consumes (BASE_IMAGE) and what the offline tarball
+  # (docker load) produces.
+  image: "ubuntu-openclaw-coding-java:24.04-x86_64"
+  container_prefix: "oc-bench"
+  cpu_limit: 2.0
+  memory_limit: "2g"
+  create_timeout: 300
+  # Readiness is a workflow concern (coding runs the uname probe, not ports);
+  # it is provider-transparent, so there is no port_check block here.
+
+# === shared stress sections (all -> KernelConfig) ===
+sandbox:                            # shared sandbox control
+  total_count: 10                    # Total sandbox count (start small for manual testing)
+  detect_existing: false            # Detect existing sandboxes instead of creating new ones
+  create_only: false                # Create sandboxes only without running tasks (Phase 0)
+
+# Sandbox creation batch control
+create_batch:
+  size: 10                          # Sandboxes per batch during creation
+  interval: 3                       # Interval between creation batches (seconds)
+
+# Task execution batch control
+task_batch:
+  size: 5                           # Sandboxes to start tasks per batch
+  interval: 5                       # Interval between task batches (seconds)
+
+# Coding task configuration (host-agnostic; the sandbox runs it).
+# source_files omitted -> __post_init__ fills the 6 canonical gson pairs.
+coding:
+  language: "java"                 # selects the java verify profile
+  project_dir: "/opt/coding-bench"  # google/gson project directory inside sandbox
+  # Fallback verify for pairs WITHOUT a fail_to_pass/pass_to_pass selection
+  # (the generic edit pairs): rebuild the module offline + javac/run the ad-hoc
+  # smoke probe. Pairs that name tests use the runner's real `mvn -o test` path
+  # instead (see _run_test_suite_verify), so they ignore this command.
+  # -Djava.version=8 overrides the pom's <java.version>1.6</java.version>
+  # (javac 8+ no longer accepts source 6).
+  verify_cmd: "cd /opt/coding-bench && mvn -o -q -B -pl gson -DskipTests -Djava.version=8 compile && javac -cp gson/target/classes /tmp/BenchVerify.java && java -cp gson/target/classes:/tmp BenchVerify"
+  verify_timeout: 300               # Maven rebuild + tests/JVM (seconds)
+  verify_repeat: 1                  # java: single verify run (profile ignores repeat)
+  interval_min: 2.0                 # Min interval between tasks (fixed mode)
+  interval_max: 10.0                # Max interval between tasks (fixed mode)
+  skip_verify: false                # Skip the verify step (set true for edit-only testing)
+
+# Test run configuration
+test:
+  duration: 160                     # Test duration (seconds)
+  stats_interval: 10                # Stats snapshot interval (seconds)
+  benchmark_percent: 1.0            # Percentage of sandboxes for benchmark (1.0 = 100%)
+  # Round-robin mode configuration (recommended for coding benchmark).
+  benchmark_mode: "round_robin"     # "fixed" (default) or "round_robin"
+  round_size: 5                     # Sandboxes per round
+  round_count: 20                   # Max rounds (stops when reached or duration exceeded)
+  round_interval: 3                 # Round interval in seconds
+
+# Report configuration
+report:
+  output_dir: "results/coding/java"
+  filename_prefix: "coding_java_bench"

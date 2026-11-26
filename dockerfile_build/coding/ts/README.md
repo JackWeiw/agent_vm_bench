@@ -236,7 +236,7 @@ bash bench_helper.sh [ROUND] [OPTIONS]
 
 `ts` is a value of `coding.language` (`"ts"`), not a hard-coded workflow. The
 coding loop is shared across languages; only the verify mechanics differ,
-captured as data in a `CodingLanguageProfile` registry (`e2b_bench/config.py`).
+captured as data in a `CodingLanguageProfile` registry (`src/bench_core/payload/coding_payload.py`).
 A Go variant (`gohugoio/hugo`, `go run` verify) ships alongside this one — see
 [Go README](../go/README.md). Adding C++ later = one registry
 entry + its default verify script. (The profile is keyed `ts` because

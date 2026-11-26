@@ -2,24 +2,30 @@
 # Unified coding (Python) benchmark config — backend-agnostic (E2B + Docker).
 #
 # Workflow type: coding — simulates AI coding agent memory pressure.
-#   Trace-faithful loop: find -> read -> edit -> verify (python3) -> git diff.
-#   Verification is a transient CPython process importing django's module graph
-#   (the memory peak the same role `go run`'s compiler and `npx tsx`'s
-#   node+esbuild play in the go/ts variants). N sandboxes' verify peaks
-#   overlapping -> host memory overcommit.
+#   Trace-faithful loop: find -> read -> edit -> verify (django test runner) ->
+#   git diff. Verification is django's own test module run (the memory peak; the
+#   same role `go run`'s compiler and `npx tsx`'s node+esbuild play in the
+#   go/ts variants). N sandboxes' verify peaks overlapping -> host memory
+#   overcommit.
 #
 # Project: django/django (github.com/django/django)
-#   - Real repo used across swe_bench / swe-bench-verified evaluations. Each
-#     pair is a real, type-safe string edit to a verified django framework
-#     source file (all under django/). The first pair carries its own
-#     verify_script (a bare python3 script importing django and asserting
-#     LANGUAGE_CODE).
+#   - The repo is pinned to the swe-bench django__django-16631 base commit and
+#     the instance's test patch is baked into the image. Python has exactly ONE
+#     pair -- the upstream gold patch (SECRET_KEY_FALLBACKS session-auth-hash
+#     fallback, two files). Every round applies it and verifies through django's
+#     own runner:
+#     `./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1
+#     auth_tests.test_basic`, asserting all 1 F2P + 12 PTP ids actually ran and
+#     passed (test_report_format="django_test").
+#   - Fixed-mode warmup runs that pair on the untouched base commit, where the
+#     F2P test is expected to fail (a logged warning; no metrics recorded).
+#     Round-robin (the default) applies the patch first, so every round is green.
 #
-# The replacement pairs are the language's CANONICAL content in
+# The replacement pair is the language's CANONICAL content in
 # bench_core.coding_payload -- omit ``source_files`` and
-# KernelConfig.__post_init__ fills them from
-# CODING_LANGUAGE_DEFAULT_SOURCE_FILES["python"] (6 django pairs, the first with
-# its own verify_script), so this file stays minimal.
+# CodingConfig.__post_init__ (task_runner/coding.py) fills it from
+# CODING_LANGUAGE_DEFAULT_SOURCE_FILES["python"] (1 django gold pair), so this
+# file stays minimal.
 #
 # Pick the backend with --provider; the SAME stress profile runs on either:
 #   bench-core --provider e2b    --config config/common/coding-python.yaml --create-only
@@ -68,9 +74,12 @@ aenv:
     E2B_SANDBOX_URL: "http://127.0.0.1:8000"  # AENV data plane (envd proxy)
 
 docker:
-  # NOTE: no coding image ships today (only ubuntu-openclaw-chromium). Build one
-  # that seeds django/django + python3, then point this at it.
-  image: "ubuntu-openclaw-coding-python:24.04-arm64"
+  # Built from dockerfile_build/coding/python/Dockerfile.x86 (x86_64 host):
+  # ubuntu 24.04 + python3 + git, django/django shallow-fetched at the
+  # django__django-16631 base commit, test patch applied.
+  #   docker build -t ubuntu-openclaw-coding-python:24.04-x86_64 \
+  #       -f Dockerfile.x86 .
+  image: "ubuntu-openclaw-coding-python:24.04-x86_64"
   container_prefix: "oc-bench"
   cpu_limit: 2.0
   memory_limit: "2g"
@@ -95,7 +104,7 @@ task_batch:
   interval: 5                       # Interval between task batches (seconds)
 
 # Coding task configuration (host-agnostic; the sandbox runs it).
-# source_files omitted -> __post_init__ fills the 6 canonical django pairs.
+# source_files omitted -> __post_init__ fills the 1 canonical django pair.
 coding:
   language: "python"               # selects the python verify profile (python3)
   project_dir: "/opt/coding-bench"  # django/django project directory inside sandbox

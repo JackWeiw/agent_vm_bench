@@ -205,8 +205,9 @@ class TestExec:
 
         result = provider.exec(inst, "uname -a", timeout=10)
 
-        # timeout runs the worker; exec_run gets the raw command (no wrapping).
-        state.docker_container.exec_run.assert_called_once_with("uname -a", user="root", demux=True)
+        # timeout runs the worker; exec_run gets the command wrapped in a shell
+        # (docker-py shlex-splits strings, so `cd`/heredocs need `/bin/sh -c`).
+        state.docker_container.exec_run.assert_called_once_with(["/bin/sh", "-c", "uname -a"], user="root", demux=True)
         assert isinstance(result, CommandResult)
         assert result.exit_code == 0
         assert result.stdout == "ok"
@@ -219,7 +220,7 @@ class TestExec:
 
         provider.exec(inst, "echo hi")
 
-        state.docker_container.exec_run.assert_called_once_with("echo hi", user="root", demux=True)
+        state.docker_container.exec_run.assert_called_once_with(["/bin/sh", "-c", "echo hi"], user="root", demux=True)
 
     def test_exec_demux_none_output_yields_empty_streams(self):
         state = _make_state(1, status=DockerStatus.PORT_READY)
@@ -269,7 +270,9 @@ class TestExec:
 
         provider.exec(inst, "ls", cwd="/work")
 
-        state.docker_container.exec_run.assert_called_once_with("cd /work && ls", user="root", demux=True)
+        state.docker_container.exec_run.assert_called_once_with(
+            ["/bin/sh", "-c", "cd /work && ls"], user="root", demux=True
+        )
 
     def test_exec_wraps_env(self):
         state = _make_state(1, status=DockerStatus.PORT_READY)
@@ -279,7 +282,7 @@ class TestExec:
         provider.exec(inst, "agent-browser snapshot -i", env={"http_proxy": "none"})
 
         state.docker_container.exec_run.assert_called_once_with(
-            "http_proxy=none agent-browser snapshot -i", user="root", demux=True
+            ["/bin/sh", "-c", "http_proxy=none agent-browser snapshot -i"], user="root", demux=True
         )
 
     def test_exec_wraps_cwd_and_env(self):
@@ -290,7 +293,9 @@ class TestExec:
         provider.exec(inst, "ls", cwd="/work", env={"FOO": "bar baz"})
 
         # env applies to the command itself (not the cd); shlex quotes spaces.
-        state.docker_container.exec_run.assert_called_once_with("cd /work && FOO='bar baz' ls", user="root", demux=True)
+        state.docker_container.exec_run.assert_called_once_with(
+            ["/bin/sh", "-c", "cd /work && FOO='bar baz' ls"], user="root", demux=True
+        )
 
     def test_exec_timeout_raises_timeout_error(self):
         # A blocking exec_run that outlasts the timeout -> TimeoutError, so the

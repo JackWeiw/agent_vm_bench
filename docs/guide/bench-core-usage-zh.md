@@ -2,7 +2,7 @@
 
 > 主机无关的压测内核,通过 `EnvironmentProvider` 抽象驱动 e2b / docker / aenv / cubesandbox / sandboxsched / fake。
 > 与冻结的 legacy `e2b_bench/`、`docker_bench/` 并存,互不影响(共享零代码)。
-> 架构原理见设计文档 `docs/superpowers/specs/2026-08-12-environment-provider-bench-core-design.md`。
+> 架构原理见设计文档 `docs/dev/rfcs/0001-environment-provider.md`。
 
 ## 概述
 
@@ -92,14 +92,17 @@ report:       { output_dir: "results/browser", filename_prefix: "browser_bench" 
 | `coding-ts.yaml` | coding | TypeScript(vuejs/core),`npx tsx` verify,verify_repeat=3 |
 | `coding-go.yaml` | coding | Go(gohugoio/hugo),`go run` 冷编译 verify |
 | `coding-python.yaml` | coding | Python(django/django),`python3` import 峰值 verify |
+| `coding-java.yaml` | coding | Java(google/gson),FTP/PTP 走真实 `mvn test` + surefire 断言,其余 pair 走 `mvn compile` + `javac`/`java` |
+| `coding-c.yaml` | coding | C(redis/redis),FTP/PTP 走真实 `make` + `./runtest` Tcl 测试套,其余 pair 走 `make` + gcc 探针 |
+| `coding-cpp.yaml` | coding | C++(nlohmann/json),FTP/PTP 走真实 CMake doctest 目标(`test-udt_cpp11`,`-r=xml`),其余 pair 走 CMake + g++ 探针 |
 | `docker.yaml` | browser | docker 专用的小压力档(10 容器,单 Weibo url) |
 
 ### 2.3 coding 配置为何这么薄
 
-三个 coding 配置都**省略了 `source_files`**——内核 `KernelConfig.__post_init__` 会按
+各 coding 配置都**省略了 `source_files`**——`CodingConfig` 视图的 `__post_init__` 会按
 `language` 自动填入 canonical 替换对(各 6 对,取自真实 swe_bench_multilingual 实例):
-ts→vuejs/core、go→gohugoio/hugo、python→django/django。内容集中在
-`src/bench_core/coding_payload.py`,配置只声明 `language` + `verify_cmd` + `verify_repeat`。
+ts→vuejs/core、go→gohugoio/hugo、python→django/django、java→google/gson、c→redis/redis。内容集中在
+`src/bench_core/payload/coding_payload.py`,配置只声明 `language` + `verify_cmd` + `verify_repeat`。
 
 ### 2.4 凭据:占位符自动回退
 
@@ -122,13 +125,13 @@ YAML 里 `your_e2b_access_token_here` / `your_e2b_api_key_here` 是占位符。
 ## 3. CLI
 
 ```
-bench-core --config <yaml> --provider {fake,e2b,docker} [模式/参数]
+bench-core --config <yaml> --provider {fake,e2b,docker,aenv,cubesandbox} [模式/参数]
 ```
 
 | 参数 | 说明 |
 |------|------|
 | `--config` | YAML 配置路径 |
-| `--provider` | `fake`(无 SDK)/ `e2b` / `docker` |
+| `--provider` | `fake`(无 SDK)/ `e2b` / `docker` / `aenv` / `cubesandbox` |
 | `-n, --total-count` | 覆盖沙箱总数 |
 | `--workflow-type` | `browser` / `coding` / `document` |
 | `-bm, --benchmark-mode` | `fixed` / `round_robin` |

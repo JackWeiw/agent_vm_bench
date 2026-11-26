@@ -64,16 +64,28 @@ RUN apt update && apt install -y --no-install-recommends python3 python3-pip git
     git config --global http.sslVerify false && \
     apt clean && rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
 
-# --- Coding benchmark project: django/django (real popular Python repo) ---
-# Clone + ENV PYTHONPATH (lightest approach — no pip install needed).
+# --- Coding benchmark project: django/django @ django__django-16631 base_commit ---
+# Shallow fetch + ENV PYTHONPATH (no django install needed).
 # Script-mode python3 resolves `import django` from /opt/coding-bench via
-# PYTHONPATH. Pinned to the SWE-bench django__django-15781 base_commit so
-# trace-faithful edits target real source state.
-ENV PYTHONPATH=/opt/coding-bench
-RUN cd /opt && \
-    git clone https://github.com/django/django.git coding-bench && \
-    cd coding-bench && \
-    git checkout 8d160f154f0240a423e83ffe0690e472f837373c
+# PYTHONPATH. Pinned to the swe-bench django__django-16631 base_commit so
+# trace-faithful edits target real source state; the instance's test patch
+# (tests/auth_tests/test_basic.py) is applied right after the checkout. The
+# runner's reset only touches `django/`, so it is never reverted.
+RUN cd /opt && mkdir coding-bench && cd coding-bench && \
+    git init -q && \
+    git remote add origin https://github.com/django/django.git && \
+    git fetch -q --depth 1 origin 9b224579875e30203d079cc2fee83b116d98eb78 && \
+    git checkout -q FETCH_HEAD
+
+# `python` shim: the upstream eval runs `./tests/runtests.py` (shebang
+# `#!/usr/bin/env python`) while Ubuntu 24.04 ships only python3.
+RUN mkdir -p /usr/local/bin && ln -sf /usr/bin/python3 /usr/local/bin/python
+
+COPY tests/django-16631-test.patch /tmp/
+RUN cd /opt/coding-bench && \
+    git apply /tmp/django-16631-test.patch && \
+    grep -q "def test_get_user_fallback_secret" tests/auth_tests/test_basic.py && \
+    rm /tmp/django-16631-test.patch
 
 # Smoke check: run in script mode (python3 /tmp/_smoke.py) so it catches the
 # same ModuleNotFoundError the runtime verify would hit. ENV PYTHONPATH (set
@@ -83,6 +95,7 @@ RUN echo 'import django; from django.conf import settings; print("django", djang
 
 # Copy the manual testing helper script
 COPY bench_helper.sh /opt/coding-bench/bench_helper.sh
+COPY bench_pairs.json /opt/coding-bench/bench_pairs.json
 RUN chmod +x /opt/coding-bench/bench_helper.sh
 
 # Unset proxy environment variables after build

@@ -5,7 +5,7 @@
 > The host-agnostic stress-test kernel. It drives e2b / docker / aenv / cubesandbox / sandboxsched / fake backends
 > through the `EnvironmentProvider` abstraction. It coexists with — and shares no code
 > with — the frozen legacy `e2b_bench/` and `docker_bench/`. For architecture, see the
-> [design doc](superpowers/specs/2026-08-12-environment-provider-bench-core-design.md).
+> [design doc](../dev/rfcs/0001-environment-provider.md).
 
 ## Overview
 
@@ -97,6 +97,9 @@ any backend**.
 | `coding-ts.yaml` | coding | TypeScript (vuejs/core), `npx tsx` verify, `verify_repeat: 3` |
 | `coding-go.yaml` | coding | Go (gohugoio/hugo), `go run` verify, `verify_repeat: 1` |
 | `coding-python.yaml` | coding | Python (django/django), `python3` verify, `verify_repeat: 1` |
+| `coding-java.yaml` | coding | Java (google/gson), real `mvn test` + surefire assertions for FAIL_TO_PASS/PASS_TO_PASS pairs, `mvn compile` + `javac`/`java` otherwise |
+| `coding-c.yaml` | coding | C (redis/redis), real `make` + `./runtest` Tcl suite for FAIL_TO_PASS/PASS_TO_PASS pairs, `make` + gcc probe otherwise |
+| `coding-cpp.yaml` | coding | C++ (nlohmann/json), real CMake doctest target (`test-udt_cpp11`, `-r=xml`) for FAIL_TO_PASS/PASS_TO_PASS pairs, CMake + g++ probe otherwise |
 | `docker.yaml` | browser | docker-only small profile (10 containers, single URL) |
 | `replay.yaml` | replay | aenv lifecycle 1:1 baseline (see §8) |
 | `replay-exec-only.yaml` | replay | exec_only baseline (e2b/docker/fake) |
@@ -104,10 +107,12 @@ any backend**.
 
 ### 2.3 Why the coding configs are so thin
 
-All three coding configs **omit `source_files`** — `KernelConfig.__post_init__` auto-fills
+All coding configs **omit `source_files`** — the `CodingConfig` view's `__post_init__` auto-fills
 the canonical replacement pairs from `CODING_LANGUAGE_DEFAULT_SOURCE_FILES[language]`
-(6 pairs per language, drawn from real SWE-bench instances): ts → vuejs/core, go →
-gohugoio/hugo, python → django/django. The pairs live in
+(6 pairs per language, drawn from real SWE-bench instances): ts → vuejs/core,
+go → gohugoio/hugo, java → google/gson, c → redis/redis, cpp → nlohmann/json. Python is the
+exception with exactly 1 pair — the django/django `django__django-16631` upstream gold patch
+(the previous 6 generic python pairs were removed). The pairs live in
 `src/bench_core/payload/coding_payload.py`; a config only declares `language` +
 `verify_cmd` + `verify_repeat`.
 
@@ -140,13 +145,13 @@ docker `Config.from_raw` never reads it.)
 ## 3. CLI
 
 ```text
-bench-core --config <yaml> --provider {fake,e2b,docker,aenv} [mode/params]
+bench-core --config <yaml> --provider {fake,e2b,docker,aenv,cubesandbox} [mode/params]
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--config` | YAML config path |
-| `--provider` | `fake` (no SDK) / `e2b` / `docker` / `aenv` |
+| `--provider` | `fake` (no SDK) / `e2b` / `docker` / `aenv` / `cubesandbox` |
 | `-n, --total-count` | override sandbox count |
 | `--workflow-type` | `browser` / `coding` / `document` / `replay` |
 | `-bm, --benchmark-mode` | `fixed` / `round_robin` |

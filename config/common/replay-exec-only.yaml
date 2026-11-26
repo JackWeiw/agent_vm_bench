@@ -143,7 +143,7 @@ replay:
   # aenv, which requires a LifecycleCapable provider). Set explicitly to override.
   mode: exec_only   # <-- the only real difference from replay.yaml: no pause/resume.
                      # aenv's default is lifecycle, so set this explicitly.
-                     # KernelConfig.__post_init__ force-disables ready_probe in exec_only.
+                     # ReplayConfig.__post_init__ force-disables ready_probe in exec_only.
 
   # The knobs below are NO-OPS in exec_only (admission + launch pacer are
   # lifecycle / exec_ephemeral only). Kept for parity with replay.yaml; at ratio 1:1

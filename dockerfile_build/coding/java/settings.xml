@@ -1,0 +1,16 @@
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
+  <!-- Aliyun public mirror: the corp network's proxy MITMs TLS (self-signed
+       root), so Maven Central direct is unreliable. TLS verification is
+       disabled via MAVEN_OPTS (-Dmaven.wagon.http.ssl.insecure=true etc.) in
+       the Dockerfile. -->
+  <mirrors>
+    <mirror>
+      <id>aliyun-public</id>
+      <name>Aliyun public repository mirror</name>
+      <url>https://maven.aliyun.com/repository/public</url>
+      <mirrorOf>*</mirrorOf>
+    </mirror>
+  </mirrors>
+</settings>
