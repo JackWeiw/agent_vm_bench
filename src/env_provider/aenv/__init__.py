@@ -168,11 +168,16 @@ class AenvProvider(E2BProvider):
         ``_run_trajectory``, which catches every create exception and turns it
         into a failed trajectory -- the run then finishes with exit 0. Parsing
         here raises ``ProviderConfigError`` from inside ``run_benchmark``'s
-        ``main()`` try (all modes reach ``prepare_env``), so a config typo
-        always exits non-zero instead of looking like a run that tested
-        nothing.
+        ``main()`` try (all create modes reach ``prepare_env``), so a config
+        typo always exits non-zero instead of looking like a run that tested
+        nothing. ``--cleanup`` is exempt -- see the guard below.
         """
         super().prepare_env()
+        # --cleanup only tears down what a prior run left behind; teardown does
+        # not depend on the pin, so a typo must not trap leftover sandboxes on
+        # the host (the same exemption as DockerProvider's cleanup path).
+        if self._kernel_config.cleanup_only:
+            return
         if self._config.pin_cpus:
             try:
                 _parse_pin_cpus(self._config.pin_cpus)

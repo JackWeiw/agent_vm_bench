@@ -205,6 +205,7 @@ def _make_pin_provider(
     total_count=1,
     replay_mode="exec_only",
     ccl_bind=False,
+    cleanup_only=False,
 ):
     """Build an AenvProvider with a fake e2b SDK over the real manager.
 
@@ -214,7 +215,12 @@ def _make_pin_provider(
     fake = _PinSandboxCls()
     monkeypatch.setattr("env_provider.e2b.manager.Sandbox", fake)
     wf = ReplayConfig(replay_mode=replay_mode) if replay_mode is not None else None
-    cfg = KernelConfig(workflow_type="replay", total_count=total_count, workflow_config=wf)
+    cfg = KernelConfig(
+        workflow_type="replay",
+        total_count=total_count,
+        workflow_config=wf,
+        cleanup_only=cleanup_only,
+    )
     provider = AenvProvider(cfg, Config(pin_cpus=pin_cpus, ccl_bind=ccl_bind), threading.Event())
     return provider, fake
 
@@ -277,6 +283,14 @@ def test_prepare_env_rejects_bad_pin(monkeypatch):
 def test_prepare_env_accepts_valid_pin(monkeypatch):
     provider, _ = _make_pin_provider(monkeypatch)
     provider.prepare_env()  # super().prepare_env() + parse, no raise
+
+
+def test_prepare_env_skips_pin_validation_for_cleanup(monkeypatch):
+    # --cleanup runs before this gate in run_benchmark and must still tear down
+    # leftovers: teardown does not depend on the pin, so a typo must not trap
+    # them on the host (the same exemption as the docker cleanup path).
+    provider, _ = _make_pin_provider(monkeypatch, pin_cpus="100-101xxS", cleanup_only=True)
+    provider.prepare_env()  # no ProviderConfigError
 
 
 # ------------------------------------------------- create_all: pin orchestration
