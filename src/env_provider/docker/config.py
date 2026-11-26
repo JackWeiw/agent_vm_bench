@@ -23,6 +23,11 @@ from dataclasses import dataclass
 from typing import Any
 
 
+def _pin_str(value: Any) -> str | None:
+    """YAML may give an int (``pin_mems: 0``); the docker API wants a string."""
+    return None if value is None else str(value)
+
+
 @dataclass
 class Config:
     """Docker backend configuration (backend-specific fields only)."""
@@ -35,6 +40,12 @@ class Config:
     cpu_limit: float = 2.0  # --cpus
     memory_limit: str = "2g"  # -m
     create_timeout: int = 300  # Container creation timeout (seconds)
+
+    # CPU / NUMA-memory pinning (cpuset lists; null = unpinned). Applied at
+    # create time and checked against the host's online CPUs / NUMA nodes.
+    # Static per run: every container pins to the same set.
+    pin_cpus: str | None = None  # e.g. "100-101" or "32,288"
+    pin_mems: str | None = None  # e.g. "0" or "0-1"
 
     @classmethod
     def from_raw(cls, raw: dict[str, Any]) -> Config:
@@ -51,4 +62,6 @@ class Config:
             cpu_limit=docker.get("cpu_limit", 2.0),
             memory_limit=docker.get("memory_limit", "2g"),
             create_timeout=docker.get("create_timeout", 300),
+            pin_cpus=_pin_str(docker.get("pin_cpus")),
+            pin_mems=_pin_str(docker.get("pin_mems")),
         )

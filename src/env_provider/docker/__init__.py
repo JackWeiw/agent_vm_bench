@@ -26,6 +26,7 @@ import logging
 import shlex
 import threading
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
 from bench_core.config import KernelConfig
@@ -33,6 +34,7 @@ from env_provider import (
     CommandResult,
     CreationMetrics,
     EnvironmentProvider,
+    ProviderConfigError,
     SandboxInstance,
     SandboxStatus,
 )
@@ -101,15 +103,27 @@ class DockerProvider(EnvironmentProvider):
             self._manager = SandboxManager(self._kernel_config, self._config, self._stop_event)
         return self._manager
 
+    def _require_manager(self) -> SandboxManager:
+        """Manager access that turns a bad pin config into a clean config error.
+
+        Manager construction validates the pin (format + host topology); every
+        entry point that drives creation must surface that as a typed error so
+        the CLI exits non-zero instead of silently doing nothing.
+        """
+        try:
+            return self.manager
+        except ValueError as exc:
+            raise ProviderConfigError(f"invalid docker pin config: {exc}") from None
+
     # ------------------------------------------------------------------ lifecycle
     def create_all(self, *, templates: dict[int, str | None] | None = None) -> Mapping[int, SandboxInstance]:
-        return self._translate(self.manager.create_all(templates=templates))
+        return self._translate(self._require_manager().create_all(templates=templates))
 
     def detect_existing(self) -> Mapping[int, SandboxInstance]:
-        return self._translate(self.manager.detect_existing())
+        return self._translate(self._require_manager().detect_existing())
 
     def check_alive(self, inst: SandboxInstance) -> bool:
-        state = self.manager.container_states.get(inst.index)
+        state = self._require_manager().container_states.get(inst.index)
         if state is None:
             return False
         return self.manager.check_alive(state)
@@ -125,7 +139,20 @@ class DockerProvider(EnvironmentProvider):
         # Delegate to the manager's list->attach->remove path, which skips the
         # readiness probe (a service-down container must not stall teardown on
         # the 300s port wait).
-        return self.manager.cleanup_existing()
+        try:
+            mgr = self.manager
+        except ValueError as exc:
+            # The pin config only shapes CREATION; teardown must still work so
+            # a YAML typo cannot trap leftover containers. Retry with the pin
+            # cleared -- removing containers does not need it.
+            logger.warning("[docker] ignoring invalid pin config for cleanup: %s", exc)
+            mgr = SandboxManager(
+                self._kernel_config,
+                replace(self._config, pin_cpus=None, pin_mems=None),
+                self._stop_event,
+            )
+            self._manager = mgr
+        return mgr.cleanup_existing()
 
     # ------------------------------------------------------------------ setup hooks
     def prepare_env(self) -> None:
@@ -140,7 +167,7 @@ class DockerProvider(EnvironmentProvider):
         the kernel does not call this yet. Implemented for contract compliance
         so the future migration is a wiring change, not an adapter change.
         """
-        state = self.manager.container_states.get(inst.index)
+        state = self._require_manager().container_states.get(inst.index)
         if state is None:
             return
         self.manager.clear_browser_cache(state)
@@ -156,7 +183,7 @@ class DockerProvider(EnvironmentProvider):
         cwd: str | None = None,
         env: dict[str, str] | None = None,
     ) -> CommandResult:
-        state = self.manager.container_states.get(inst.index)
+        state = self._require_manager().container_states.get(inst.index)
         if state is None or state.docker_container is None:
             raise RuntimeError(f"No Docker handle for sandbox index {inst.index}")
         cmd = self._wrap_command(command, cwd=cwd, env=env)

@@ -7,6 +7,7 @@ itself.
 """
 from __future__ import annotations
 
+import logging
 import time
 from threading import Event
 from unittest.mock import Mock
@@ -14,7 +15,7 @@ from unittest.mock import Mock
 import pytest
 
 from bench_core.config import KernelConfig
-from env_provider import CommandResult, SandboxInstance, SandboxStatus
+from env_provider import CommandResult, ProviderConfigError, SandboxInstance, SandboxStatus
 from env_provider.docker import DockerProvider
 from env_provider.docker.config import Config
 from env_provider.docker.schemas import ContainerState
@@ -178,6 +179,15 @@ class TestCreateAll:
 
         manager.create_all.assert_called_once_with(templates=None)
 
+    def test_create_all_raises_typed_config_error(self):
+        # A pin naming absent CPUs fails in the manager constructor (before any
+        # container exists). It must surface as a typed config error so the CLI
+        # exits non-zero -- an empty mapping would look like a successful run.
+        provider = DockerProvider(KernelConfig(), Config(pin_cpus="0-x"), Event())
+        with pytest.raises(ProviderConfigError, match="invalid docker pin config"):
+            provider.create_all()
+        assert provider._manager is None  # construction failed, still lazy
+
 
 class TestDetect:
     def test_detect_existing_delegates_to_manager(self):
@@ -205,8 +215,7 @@ class TestExec:
 
         result = provider.exec(inst, "uname -a", timeout=10)
 
-        # timeout runs the worker; exec_run gets the command wrapped in a shell
-        # (docker-py shlex-splits strings, so `cd`/heredocs need `/bin/sh -c`).
+        # timeout runs the worker; exec_run gets the command wrapped in a shell.
         state.docker_container.exec_run.assert_called_once_with(["/bin/sh", "-c", "uname -a"], user="root", demux=True)
         assert isinstance(result, CommandResult)
         assert result.exit_code == 0
@@ -392,6 +401,46 @@ class TestLazyConstruction:
             mgr = provider.manager
         assert isinstance(mgr, SandboxManager)
         assert provider._manager is mgr  # cached
+
+
+class TestPinConfigUnderTeardown:
+    """A bad pin config must not trap teardown (or crash detect) with a traceback."""
+
+    @staticmethod
+    def _manager_cls(calls, *, found):
+        class _Mgr:
+            def __init__(self, kernel_config, config, stop_event):
+                # Mirror the real manager: construction validates the pin.
+                if config.pin_cpus:
+                    raise ValueError(f"docker pin_cpus {config.pin_cpus!r} is not valid on this host")
+                calls.append(config)
+
+            def cleanup_existing(self):
+                return found
+
+            def detect_existing(self):
+                return {}
+
+        return _Mgr
+
+    def test_cleanup_existing_retries_with_pin_cleared(self, monkeypatch, caplog):
+        calls = []
+        monkeypatch.setattr("env_provider.docker.SandboxManager", self._manager_cls(calls, found=2))
+        provider = DockerProvider(KernelConfig(), Config(pin_cpus="18-25", pin_mems="0"), Event())
+
+        with caplog.at_level(logging.WARNING):
+            assert provider.cleanup_existing() == 2
+
+        assert len(calls) == 1  # one retry, with the pin cleared
+        assert calls[0].pin_cpus is None and calls[0].pin_mems is None
+        assert any("ignoring invalid pin config for cleanup" in r.message for r in caplog.records)
+
+    def test_detect_existing_raises_typed_config_error(self, monkeypatch):
+        monkeypatch.setattr("env_provider.docker.SandboxManager", self._manager_cls([], found=0))
+        provider = DockerProvider(KernelConfig(), Config(pin_cpus="18-25"), Event())
+
+        with pytest.raises(ProviderConfigError, match="invalid docker pin config"):
+            provider.detect_existing()
 
 
 class TestBuildProvider:

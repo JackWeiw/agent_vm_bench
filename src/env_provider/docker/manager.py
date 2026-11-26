@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 from threading import Event
 from typing import Any
 
@@ -35,6 +36,59 @@ from .config import Config
 from .schemas import ContainerState
 
 logger = logging.getLogger(__name__)
+
+# Host topology for the pin pre-check; unreadable on non-Linux (check skipped).
+_CPU_ONLINE_PATH = "/sys/devices/system/cpu/online"
+_NODE_ONLINE_PATH = "/sys/devices/system/node/online"
+
+
+# Sanity cap for _parse_cpuset: no real host has more CPUs / NUMA nodes, and
+# materialising an absurd range ("0-99999999999") would OOM the pre-check.
+_MAX_CPUSET_ID = 1 << 16
+
+
+def _parse_cpuset(value: str) -> set[int]:
+    """Parse a docker cpuset list (``"0-3,8"``) into ``{0, 1, 2, 3, 8}``.
+
+    Ids are bounded before the range is materialised, so a YAML typo like
+    ``"0-99999999999"`` fails fast instead of allocating the whole range.
+    """
+    ids: set[int] = set()
+    for token in value.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        first, dash, last = token.partition("-")
+        start = int(first)
+        end = int(last) if dash else start
+        if start < 0 or end < start:
+            raise ValueError(f"invalid range {token!r}")
+        if end >= _MAX_CPUSET_ID:
+            raise ValueError(f"id {end} in {token!r} exceeds {_MAX_CPUSET_ID - 1}")
+        ids.update(range(start, end + 1))
+    return ids
+
+
+def _format_cpuset(ids: set[int]) -> str:
+    """Render ``{0, 1, 2, 4}`` back as ``"0-2,4"`` for error messages."""
+    ordered = sorted(ids)
+    parts: list[str] = []
+    i = 0
+    while i < len(ordered):
+        j = i
+        while j + 1 < len(ordered) and ordered[j + 1] == ordered[j] + 1:
+            j += 1
+        parts.append(str(ordered[i]) if i == j else f"{ordered[i]}-{ordered[j]}")
+        i = j + 1
+    return ",".join(parts)
+
+
+def _read_online_cpuset(path: str) -> set[int] | None:
+    """Read a sysfs online list; ``None`` when sysfs is unavailable."""
+    try:
+        return _parse_cpuset(Path(path).read_text(encoding="ascii").strip())
+    except OSError:
+        return None
 
 
 class SandboxManager(BaseSandboxManager):
@@ -57,11 +111,55 @@ class SandboxManager(BaseSandboxManager):
     def __init__(self, kernel_config, docker_config: Config, stop_event: Event) -> None:
         super().__init__(kernel_config, stop_event)
         self.config = docker_config
+        # Fail fast on a pin naming CPUs / NUMA nodes this host lacks.
+        self._validate_pin()
         # Built here (not lazily) to match the original behavior: construction
         # itself validates the daemon is reachable. SDK-free environments never
         # reach here -- tests inject a mock, and the SDK-backed test skips via
         # ``pytest.importorskip("docker")``.
         self.docker_client = docker.from_env()
+
+    def _validate_pin(self) -> None:
+        """Reject malformed pins or CPUs / NUMA nodes absent from this host.
+
+        Checked against ``cpu/online`` and ``node/online`` before any container
+        is created. The two files are consulted independently (a non-NUMA
+        kernel has no ``node/online`` -- that must not disable cpu validation);
+        each topology check is skipped when its sysfs file is unreadable
+        (non-Linux dev box).
+        """
+        pin_cpus, pin_mems = self.config.pin_cpus, self.config.pin_mems
+        if not pin_cpus and not pin_mems:
+            return
+        try:
+            wanted_cpus = _parse_cpuset(pin_cpus) if pin_cpus else set()
+            wanted_mems = _parse_cpuset(pin_mems) if pin_mems else set()
+        except ValueError as exc:
+            raise ValueError(
+                f"invalid docker cpuset pin (pin_cpus={pin_cpus!r}, pin_mems={pin_mems!r}): {exc}"
+            ) from None
+        if pin_cpus and not wanted_cpus:
+            raise ValueError(f"invalid docker pin_cpus {pin_cpus!r}: no CPUs parsed")
+        if pin_mems and not wanted_mems:
+            raise ValueError(f"invalid docker pin_mems {pin_mems!r}: no NUMA nodes parsed")
+
+        online_cpus = _read_online_cpuset(_CPU_ONLINE_PATH)
+        if pin_cpus and online_cpus is not None:
+            unknown_cpus = wanted_cpus - online_cpus
+            if unknown_cpus:
+                raise ValueError(
+                    f"docker pin_cpus {pin_cpus!r} names CPUs {_format_cpuset(unknown_cpus)} that are not "
+                    f"online on this host (online: {_format_cpuset(online_cpus)})"
+                )
+
+        online_nodes = _read_online_cpuset(_NODE_ONLINE_PATH)
+        if pin_mems and online_nodes is not None:
+            unknown_mems = wanted_mems - online_nodes
+            if unknown_mems:
+                raise ValueError(
+                    f"docker pin_mems {pin_mems!r} names NUMA nodes {_format_cpuset(unknown_mems)} that are "
+                    f"not online on this host (online: {_format_cpuset(online_nodes)})"
+                )
 
     # --------------------------------------------------------- subclass seams
     def _new_state(self, index: int, *, batch_id: int = -1, external_id: str = "") -> ContainerState:
@@ -88,6 +186,10 @@ class SandboxManager(BaseSandboxManager):
         resolved_image = template or self.config.docker_image
 
         try:
+            # Bench images are custom/built locally; never let the daemon fall
+            # back to a registry (a missing image then shows up as a long stall).
+            self._ensure_image_local(resolved_image)
+
             # Remove existing container with same name if exists (handle 409 conflict)
             try:
                 existing = self.docker_client.containers.get(state.container_name)
@@ -95,6 +197,13 @@ class SandboxManager(BaseSandboxManager):
                 logger.info(f"[Container{state.container_id}] Removed existing container with same name")
             except docker.errors.NotFound:
                 pass  # No existing container, proceed
+
+            # Pin at create time so the first process is already constrained.
+            pin_kwargs: dict[str, str] = {}
+            if self.config.pin_cpus:
+                pin_kwargs["cpuset_cpus"] = self.config.pin_cpus
+            if self.config.pin_mems:
+                pin_kwargs["cpuset_mems"] = self.config.pin_mems
 
             # Create container with resource limits
             container = self.docker_client.containers.run(
@@ -104,7 +213,11 @@ class SandboxManager(BaseSandboxManager):
                 remove=False,  # Don't auto-remove
                 cpu_quota=int(self.config.cpu_limit * 100000),  # CPU quota in microseconds
                 mem_limit=self.config.memory_limit,
+                **pin_kwargs,
             )
+
+            if pin_kwargs:
+                self._verify_pin(container, state)
 
             state.docker_container = container
             state.creation_metrics.create_ready_time = time.time()
@@ -127,6 +240,33 @@ class SandboxManager(BaseSandboxManager):
                 "template": resolved_image,
             }
 
+    def _ensure_image_local(self, image: str) -> None:
+        """Fail fast when ``image`` is absent; the provider never pulls."""
+        try:
+            self.docker_client.images.get(image)
+        except docker.errors.ImageNotFound:
+            raise RuntimeError(f"docker image {image!r} not found locally; build or load it first.") from None
+
+    def _verify_pin(self, container: Any, state: ContainerState) -> None:
+        """Read the cpuset back; remove the container and fail on mismatch.
+
+        Compares parsed sets, not raw strings: the daemon stores an
+        equivalent list in its own form (``0,1`` -> ``0-1``).
+        """
+        host_config = container.attrs.get("HostConfig") or {}
+        checks = (
+            ("cpus", self.config.pin_cpus, host_config.get("CpusetCpus") or ""),
+            ("mems", self.config.pin_mems, host_config.get("CpusetMems") or ""),
+        )
+        for label, expected, actual in checks:
+            if expected and _parse_cpuset(actual) != _parse_cpuset(expected):
+                container.remove(force=True)
+                raise RuntimeError(f"cpuset {label} pin verify failed: expected {expected}, got {actual!r}")
+        logger.info(
+            f"[Container{state.container_id}] PINNED OK cpus={self.config.pin_cpus or '-'} "
+            f"mems={self.config.pin_mems or '-'}"
+        )
+
     def _list_existing(self) -> list:
         """List running containers matching the configured prefix."""
         all_containers = self.docker_client.containers.list(all=False)  # only running
@@ -147,6 +287,9 @@ class SandboxManager(BaseSandboxManager):
     def _exec_probe(self, handle: Any, cmd: str, timeout: int) -> tuple[int, str, str]:
         # docker's exec_run has no native timeout; the ReadyChecker passes one
         # but we honour the command only (probes are fast, bounded by max_wait).
+        # Probe commands arrive ready to run (port checks carry their own
+        # ``sh -c``), and docker-py shlex-splits a string into argv, so no
+        # extra shell wrapper is needed here.
         result = handle.exec_run(cmd, user="root")
         output = result.output
         text = output.decode("utf-8", errors="ignore") if isinstance(output, bytes) else (output or "")
@@ -181,7 +324,9 @@ class SandboxManager(BaseSandboxManager):
 
         try:
             cmd = "openclaw browser status && start || openclaw browser start"
-            result = container.exec_run(cmd, user="root")
+            # Needs shell semantics (&&/||), so wrap explicitly: docker-py would
+            # otherwise shlex-split the string and lose the operators.
+            result = container.exec_run(["/bin/sh", "-c", cmd], user="root")
             output = (
                 result.output.decode("utf-8", errors="ignore") if isinstance(result.output, bytes) else result.output
             )
