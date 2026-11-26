@@ -575,6 +575,12 @@ WARNING and are then never read again (latched): `host_psi_raw.csv` is not creat
 of the monitor is unaffected. `--no-psi` (or `monitor.skip: [psi]`) disables collection on
 PSI-capable hosts.
 
+> Not to be confused with the existing page-cache `pressure` collector: `collect_host_pressure`
+> (and `--no-pressure`) reports reclaim **work** from `/proc/vmstat` (`allocstall_*` / `pgscan_*` /
+> refault counters, plus iowait), while PSI reports stall **time** (`some`/`full`).
+> `/proc/pressure/io` is deliberately not collected: its stall signal overlaps the existing
+> `disk_io_raw.csv` / ublk / iowait series.
+
 ### Per-VM & ublk-daemon & host-proc CPU (raw jiffies — `vm_cpu_raw.csv` / `ublk_cpu_raw.csv` / `hostproc_cpu_raw.csv`)
 
 These raw CSVs store **cumulative** `/proc/<pid>/stat` `utime`+`stime` jiffies

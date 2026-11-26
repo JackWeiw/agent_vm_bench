@@ -338,19 +338,19 @@ def test_proc_raw_writer_dumps_psi():
     psi_row = {
         "cpu_some_avg10": 12.34,
         "cpu_some_avg300": 5.67,
-        "cpu_some_avg600": 2.0,
+        "cpu_some_avg60": 2.0,
         "cpu_some_total": 123456,
         "cpu_full_avg10": 1.0,
         "cpu_full_avg300": 0.5,
-        "cpu_full_avg600": 0.1,
+        "cpu_full_avg60": 0.1,
         "cpu_full_total": 1000,
         "memory_some_avg10": 3.0,
         "memory_some_avg300": 1.0,
-        "memory_some_avg600": 0.5,
+        "memory_some_avg60": 0.5,
         "memory_some_total": 999,
         "memory_full_avg10": 0.5,
         "memory_full_avg300": 0.2,
-        "memory_full_avg600": 0.1,
+        "memory_full_avg60": 0.1,
         "memory_full_total": 40,
     }
     with tempfile.TemporaryDirectory() as d:
