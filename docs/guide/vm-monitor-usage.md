@@ -182,6 +182,7 @@ All collectors default **ON**. Disabling one leaves its history empty, so its sh
 | `--no-swap` | swap usage + swap-in/out | `Host resources` swap columns + `Swap usage` / `Swap cache` / `Swap in/out` charts |
 | `--no-host-mem-detail` | cached/dirty/writeback | `Host resources` Buffers/dirty/writeback + Anon/file-cache columns |
 | `--no-pressure` | page-cache pressure + iowait | `Host resources` pressure columns / `Page-cache pressure` / `Alloc stalls` charts |
+| `--no-psi` | host PSI (`/proc/pressure/{cpu,memory}`) | `host_psi_raw.csv` (one warning + skip on hosts without CONFIG_PSI) |
 | `--no-numa-memory` | per-NUMA meminfo | `NUMA` sheet memory columns / `numa_mem_raw.csv` |
 | `--no-vm-total` | aggregated VM memory | `Host resources` `vm_mem_gb` + `VM memory vs FC PSS` chart |
 | `--no-disk` | per-device disk I/O (1s sub-sample) | `Disk IO` sheet |
@@ -208,6 +209,7 @@ logs_<timestamp>/
 │   ├── host_mem_raw.csv  host_vmstat_raw.csv  host_cpu_raw.csv
 │   ├── host_percpu_raw.csv  numa_cpu_map.csv  numa_mem_raw.csv
 │   ├── vm_cpu_raw.csv  disk_io_raw.csv  ublk_cpu_raw.csv
+│   ├── host_psi_raw.csv    # only on CONFIG_PSI hosts (absent otherwise)
 │   └── hostproc_cpu_raw.csv  api_state_raw.csv
 ├── disk_io.svg              # dark-themed SVG time-curves
 ├── host_resources.svg

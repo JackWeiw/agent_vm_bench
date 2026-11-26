@@ -5,6 +5,7 @@ set, but the dumper's wide + long CSV serialization (header-from-first-row,
 per-cpu numeric sort, stat-aggregate field layout, per-VM long rows, one-shot
 numa map) is not otherwise exercised. One check that fails if that logic breaks.
 """
+
 from __future__ import annotations
 
 import csv
@@ -328,3 +329,37 @@ def test_proc_raw_writer_dumps_vm_memory_and_numa_mem():
     assert [r["node"] for r in numa_rows] == ["0", "1"]
     assert numa_rows[1]["used_mb"] == "2000.0"
     assert numa_rows[0]["timestamp"] == "2026-01-01 00:00:00"
+
+
+def test_proc_raw_writer_dumps_psi():
+    """collect_psi's flattened row lands in host_psi_raw.csv (wide, header from
+    the first row): avg* gauges pass through and *_total stays a cumulative int
+    (microseconds) an agent deltas into stall-seconds."""
+    psi_row = {
+        "cpu_some_avg10": 12.34,
+        "cpu_some_avg300": 5.67,
+        "cpu_some_avg60": 2.0,
+        "cpu_some_total": 123456,
+        "cpu_full_avg10": 1.0,
+        "cpu_full_avg300": 0.5,
+        "cpu_full_avg60": 0.1,
+        "cpu_full_total": 1000,
+        "memory_some_avg10": 3.0,
+        "memory_some_avg300": 1.0,
+        "memory_some_avg60": 0.5,
+        "memory_some_total": 999,
+        "memory_full_avg10": 0.5,
+        "memory_full_avg300": 0.2,
+        "memory_full_avg60": 0.1,
+        "memory_full_total": 40,
+    }
+    with tempfile.TemporaryDirectory() as d:
+        w = _ProcRawWriter(d)
+        w.enqueue_psi("2026-01-01 00:00:00", psi_row)
+        w.close()
+        with open(os.path.join(d, "raw_data", "host_psi_raw.csv")) as f:
+            rows = list(csv.DictReader(f))
+    assert rows[0]["timestamp"] == "2026-01-01 00:00:00"
+    assert rows[0]["cpu_some_avg10"] == "12.34"
+    assert rows[0]["cpu_some_total"] == "123456"
+    assert rows[0]["memory_full_total"] == "40"

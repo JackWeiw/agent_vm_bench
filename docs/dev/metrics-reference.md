@@ -463,6 +463,7 @@ verified against `vm_monitor/base.py`; the symbols used:
 | `/proc/meminfo` | `Cached`, `SReclaimable`, `Buffers`, `Dirty`, `Writeback`, `SwapCached`, `AnonPages`, `Shmem`, `MemTotal` (all kB → /1024 → MB) | `_read_meminfo` |
 | `/proc/vmstat` | `pswpin`, `pswpout`, `pgscan_kswapd`, `pgscan_direct`, `pgscan_direct_throttle`, `pgsteal_kswapd`, `pgsteal_direct`, `workingset_refault_file`, `allocstall_<zone>` variants (raw page counters; `_read_vmstat` reads the full file, `_compute_pressure_rates` sums the `allocstall_*` keys) | `_read_vmstat` |
 | `/proc/stat` | `cpu` line (jiffies, index 4 = iowait), `procs_running`, `procs_blocked` | `collect_host_pressure` |
+| `/proc/pressure/cpu`, `/proc/pressure/memory` | PSI `some`/`full` lines: `avg10`, `avg60`, `avg300` (gauge, % of window stalled) + `total` (cumulative stall µs; cpu `full` needs kernel ≥ 5.13) | `_read_psi` |
 | `/proc/sys/vm/dirty_bytes`, `dirty_background_bytes`, `dirty_ratio`, `dirty_background_ratio` | dirty throttle thresholds (read once) | `_read_dirty_limits_mb` |
 | `/sys/devices/system/node/node{N}/meminfo` | `MemTotal`, `MemFree`, `MemAvailable`, `SwapCached`, `Active`, `Inactive`, `AnonPages`, `FilePages` (kB → /1024 → MB) | `get_numa_nodes_memory` |
 | `/sys/devices/system/node/node{N}/cpulist` | logical CPU IDs on the node | `collect_numa_cpu` (via psutil per-CPU % averaged over the node's cores) |
@@ -547,6 +548,38 @@ From `/proc/stat`:
 |--------|---------|
 | `IOWait (%)` | `max(0, Δiowait) / Δtotal_jiffies × 100` — `iowait` and `total` are the cumulative `cpu` line values (jiffies); deltas taken vs the prior sample, so this is the share of CPU time spent in `iowait` over the interval. |
 | `Procs Running` / `Procs Blocked` | literal `procs_running` / `procs_blocked` lines (instantaneous counts) |
+
+### Host PSI (raw snapshot — `host_psi_raw.csv`)
+
+`collect_psi` reads `/proc/pressure/cpu` + `/proc/pressure/memory` into the wide
+`host_psi_raw.csv` (same shared sample timestamp as the other `host_*_raw.csv` rows; rows land
+at most once per `PSI_MIN_INTERVAL` -- the 10 s avg10 window -- since the averages are
+kernel-side EWMAs and `total` is cumulative). PSI
+(Pressure Stall Information) reports how much of the recent window tasks spent stalled on a
+resource:
+
+| Column(s) | Meaning |
+|-----------|---------|
+| `cpu_some_avg10` / `_avg60` / `_avg300` | % of the 10s/60s/300s window with at least one task stalled waiting for CPU (gauge, plotted directly — no delta) |
+| `cpu_full_*` | % of the window where **all** runnable tasks were stalled (cpu `full` needs kernel ≥ 5.13; columns absent on older kernels) |
+| `memory_some_*` / `memory_full_*` | the same two views for memory stalls (allocation / reclaim waits) |
+| `*_total` | cumulative stall time in **microseconds** (counter) — derive stall-seconds via `Δtotal / 1e6` over the real interval between rows' `timestamp` |
+
+> Field layout follows the kernel's mainline PSI format (kernel
+> `Documentation/accounting/psi.rst`): `avg10`/`avg60`/`avg300` (+ a cpu `full` line from
+> 5.13). `_read_psi` parses any `key=value` field set, so the CSV header always mirrors
+> exactly what the kernel prints.
+
+Hosts without PSI (kernel built without `CONFIG_PSI`, or `psi=0` on the cmdline) log a single
+WARNING and are then never read again (latched): `host_psi_raw.csv` is not created and the rest
+of the monitor is unaffected. `--no-psi` (or `monitor.skip: [psi]`) disables collection on
+PSI-capable hosts.
+
+> Not to be confused with the existing page-cache `pressure` collector: `collect_host_pressure`
+> (and `--no-pressure`) reports reclaim **work** from `/proc/vmstat` (`allocstall_*` / `pgscan_*` /
+> refault counters, plus iowait), while PSI reports stall **time** (`some`/`full`).
+> `/proc/pressure/io` is deliberately not collected: its stall signal overlaps the existing
+> `disk_io_raw.csv` / ublk / iowait series.
 
 ### Per-VM & ublk-daemon & host-proc CPU (raw jiffies — `vm_cpu_raw.csv` / `ublk_cpu_raw.csv` / `hostproc_cpu_raw.csv`)
 
@@ -930,6 +963,7 @@ record loop) is always on; only the auxiliary resource collectors toggle.
 | `--no-swap` | `collect_swap_stats` | `swap_*` columns (Host resources) / swap.svg |
 | `--no-host-mem-detail` | `collect_host_mem_detail` | cached/buffers/dirty/writeback columns (Host resources) |
 | `--no-pressure` | `collect_host_pressure` | pressure columns (Host resources) / host_pressure.svg |
+| `--no-psi` | `collect_psi` | `host_psi_raw.csv` (hosts without `/proc/pressure` warn once and skip) |
 | `--no-numa-memory` | `get_numa_nodes_memory` | `numa_mem_raw.csv` + NUMA memory columns / numa.svg |
 | `--no-vm-total` | `collect_vm_total_memory` | `vm_mem_gb` column (Host resources) / vm_total.svg |
 | `--no-disk` | `collect_disk_stats` | `disk_io_raw.csv` + Disk IO sheet / disk_io.svg / disk_latency.svg |

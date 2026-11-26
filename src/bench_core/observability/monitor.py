@@ -42,6 +42,7 @@ _VALID_SKIP_STEMS = frozenset(
         "swap",
         "host-mem-detail",
         "pressure",
+        "psi",
         "numa-memory",
         "vm-total",
         "disk",

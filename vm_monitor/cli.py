@@ -92,6 +92,7 @@ COLLECTOR_FLAGS = [
     ("swap", "swap", "base"),
     ("host-mem-detail", "host_mem_detail", "base"),
     ("pressure", "pressure", "base"),
+    ("psi", "psi", "base"),
     ("numa-memory", "numa_memory", "base"),
     ("vm-total", "vm_total", "base"),
     ("disk", "disk", "base"),
@@ -138,6 +139,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
              VmRSS read (fc_rss_gb kept).
   --no-rss : skip per-VM RSS. The fc_rss_gb fleet column is omitted; PSS (and
              its fc_pss_gb column) unaffected.
+  --no-psi : skip the host PSI snapshot (/proc/pressure/{cpu,memory}).
+             host_psi_raw.csv is omitted; hosts without CONFIG_PSI skip
+             automatically (one warning, then silent).
   --no-ublk-daemon : skip uvm-ublk-daemon CPU tracking (Disk_IO col).
   --no-hostproc : skip user-specified host-process CPU/PSS tracking.
   --no-devkit-mem / --no-devkit-topdown : run only one devkit sub-tool.

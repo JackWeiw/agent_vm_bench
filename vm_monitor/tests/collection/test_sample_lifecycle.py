@@ -9,6 +9,7 @@ Covers two raw-dumper integration bugs:
 
 Both patch /proc reads + the clock + signal/sleep so they run on any host.
 """
+
 from __future__ import annotations
 
 import datetime as _dt
@@ -54,6 +55,9 @@ class _NoProcMonitor(VMMonitorBase):
         pass
 
     def collect_host_pressure(self, meminfo=None, vmstat=None, stat=None):  # noqa: N802 - seam
+        pass
+
+    def collect_psi(self, ts):  # noqa: N802 - seam
         pass
 
     def get_numa_nodes_memory(self):  # noqa: N802 - seam
