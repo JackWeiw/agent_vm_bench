@@ -144,11 +144,12 @@ replay:
   delay_scale: 1.0                          # 1.0=realtime; 0=no delay; 0.1=10x compressed
   stop_on_error: false                      # abort current trajectory, advance to next (not the sandbox)
 
-  # mode: omit -> provider default (lifecycle for aenv/cubesandbox;
-  # exec_only for e2b/docker/fake/sandboxsched). Set explicitly to override.
-  # No mode is hardcoded here: the previous default `mode: lifecycle` made the
-  # shared config fail at startup on providers without a validated lifecycle
-  # (sandboxsched vetoes it at provider build).
+  # mode: lifecycle -- the shared replay.yaml ships as the explicit lifecycle 1:1
+  # baseline (aenv/cubesandbox are the lifecycle providers this config is tuned for); set
+  # explicitly so the same config is unambiguous on any provider. Providers
+  # without a validated lifecycle (sandboxsched) veto it at provider build -- override
+  # replay.mode for them.
+  mode: lifecycle        # long-lived sandboxes: create -> pause once, then per step
                           # resume -> exec -> pause. Direct runs: 1:1 (all N resume);
                           # the oversub driver sets running_concurrency = k*N so the
                           # FULL k*N fleet pauses/resumes concurrently at ratio 1:k.

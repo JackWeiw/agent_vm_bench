@@ -345,8 +345,7 @@ def _ensure_lifecycle_allowed(kernel_config: KernelConfig) -> None:
     so an oversub sweep refuses lifecycle trials at subprocess startup) and
     re-checked defensively in ``prepare_env``. Cleanup-only runs are exempt:
     they never touch pause/resume, and a fleet left by a pre-restriction run
-    must stay reachable via ``--cleanup`` (the shared replay.yaml no longer
-    hardcodes the mode, but an explicit request may still say lifecycle).
+    must stay reachable via ``--cleanup`` (the shared replay.yaml hardcodes mode: lifecycle as the lifecycle baseline; sandboxsched must override replay.mode).
     """
     replay_mode = getattr(getattr(kernel_config, "workflow_config", None), "replay_mode", None)
     if replay_mode == "lifecycle" and not getattr(kernel_config, "cleanup_only", False):

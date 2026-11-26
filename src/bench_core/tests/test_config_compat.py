@@ -157,7 +157,7 @@ EXPECTED = {
             replay_action_timeout=300,
             replay_delay_scale=1.0,
             replay_stop_on_error=False,
-            replay_mode=None,  # omitted -> provider default at runtime
+            replay_mode="lifecycle",  # explicit lifecycle 1:1 baseline
 
             replay_running_concurrency=384,
             replay_ready_probe=True,  # mode omitted: probe keeps its default (on)
