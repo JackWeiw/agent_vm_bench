@@ -48,10 +48,12 @@ ENV HTTPS_PROXY=${HTTPS_PROXY}
 #
 # Toolchain versions are PINNED (see Dockerfile.x86 for the full rationale: JDK
 # is the JVM baseline, Maven 3.8.7's super POM binds surefire 2.12.4, so an
-# unpinned install would drift on a rebuild elsewhere). The values are the same
-# deb versions as the amd64 build; if the arm64 archive differs, apt names the
-# requested version in its error -- adjust the ARG, do not drop the pin.
-ARG JDK_VER=11.0.33+9-1ubuntu1~24.04.1
+# unpinned install would drift on a rebuild elsewhere). Maven/python3 use the
+# same deb versions as the amd64 build; the JDK does not (arm64 ports ships
+# 11.0.33.1+1-1ubuntu1~24.04.1 vs amd64's 11.0.33+9-1ubuntu1~24.04.1). If the
+# archive drifts, apt names the requested version in its error -- adjust the
+# ARG, do not drop the pin.
+ARG JDK_VER=11.0.33.1+1-1ubuntu1~24.04.1
 ARG MAVEN_VER=3.8.7-2
 ARG PYTHON_VER=3.12.3-0ubuntu2.1
 
@@ -71,6 +73,21 @@ ENV PATH=${JAVA_HOME}/bin:${PATH}
 RUN java -version 2>&1 | grep -q '11\.0\.33' || (echo "ERROR: JDK is not 11.0.33: $(java -version 2>&1 | head -1)" && exit 1)
 RUN mvn -v | head -1 | grep -q 'Apache Maven 3\.8\.7' || (echo "ERROR: Maven is not 3.8.7: $(mvn -v | head -1)" && exit 1)
 RUN echo "Toolchain check: JDK 11.0.33 + Maven 3.8.7 (pinned)"
+
+# The E2B template pipeline runs `docker export | docker import`, which keeps the
+# filesystem but drops image config (ENV/CMD): JAVA_HOME/PATH/MAVEN_OPTS would
+# vanish and the runtime verify would hit "mvn: command not found". Pin the
+# toolchain on disk instead: /usr/local/bin symlinks sit on every shell's default
+# PATH (mvn derives JAVA_HOME from `java` when it is unset), and /etc/mavenrc is
+# sourced by the mvn launcher so the wagon/TLS flags survive too.
+RUN for b in java javac jar keytool; do ln -sf "${JAVA_HOME}/bin/${b}" "/usr/local/bin/${b}"; done && \
+    echo 'MAVEN_OPTS="-Dmaven.wagon.http.ssl.insecure=true -Dmaven.wagon.http.ssl.allowall=true -Dmaven.wagon.http.ssl.ignore.validity.dates=true"' > /etc/mavenrc
+
+# Prove it with a scrubbed environment (the post-import state: no JAVA_HOME, no
+# MAVEN_OPTS, default PATH only).
+RUN env -i HOME=/root PATH=/usr/local/bin:/usr/bin:/bin /bin/sh -c \
+        'java -version 2>&1 | grep -q "11\.0\.33" && mvn -v | head -1 | grep -q "Apache Maven 3\.8\.7"' && \
+    echo "Clean-env toolchain check: java + mvn resolve without image ENV"
 
 COPY settings.xml /root/.m2/settings.xml
 ENV MAVEN_OPTS="-Dmaven.wagon.http.ssl.insecure=true -Dmaven.wagon.http.ssl.allowall=true -Dmaven.wagon.http.ssl.ignore.validity.dates=true"

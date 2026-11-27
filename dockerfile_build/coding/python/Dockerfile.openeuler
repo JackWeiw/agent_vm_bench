@@ -10,12 +10,11 @@
 #   - Pure Python, ARM64 compatible
 #
 # Trace-faithful loop (mirrors the captured openclaw trajectories behind the ts/go
-# variants): find -> read -> edit -> verify (write ad-hoc /tmp/test_*.py + `python3`)
-# -> git diff. A real AI coding agent on django verifies by writing a small ad-hoc
-# Python script that imports django's module graph and running it via `python3` —
-# a transient interpreter process that loads the settings/urls/forms/db module graph
-# into memory (the transient peak). N concurrent sandboxes' staggered verify peaks
-# overlapping -> host memory overcommit.
+# variants): find -> read -> edit -> verify (./tests/runtests.py auth_tests.test_basic)
+# -> git diff. Verify runs the django__django-16631 test module through django's own
+# runner — a transient CPython process that loads the settings/urls/forms/db module
+# graph and executes 13 tests (the transient peak). N concurrent sandboxes' staggered
+# verify peaks overlapping -> host memory overcommit.
 #
 # Prerequisite (Step 0 in README): the openEuler base tar is NOT on a pull-able
 # registry. Load it before building:
@@ -25,7 +24,7 @@
 #
 # Build:  docker build -t openeuler-coding-python-bench:24.03-lts-sp3-linuxarm64 -f Dockerfile.openeuler .
 # Push:   OS=openeuler HARBOR_IP=X bash push_to_harbor.sh
-# Template: python3 ../build_e2b.py --server-ip X --harbor-ip X \
+# Template: python3 ../../build_e2b.py --server-ip X --harbor-ip X \
 #     --alias openeuler-coding-python-v1 --image e2b-orchestration/openeuler-coding-python-bench:custom
 FROM openeuler-24.03-lts-sp3:latest
 
@@ -70,13 +69,18 @@ RUN cd /opt/coding-bench && \
     grep -q "def test_get_user_fallback_secret" tests/auth_tests/test_basic.py && \
     rm /tmp/django-16631-test.patch
 
-# ENV PYTHONPATH makes django importable in script mode (python3 /tmp/...).
-# No `pip install django` needed — django resolves from the cloned source via
-# PYTHONPATH (asgiref/sqlparse are installed above).
-ENV PYTHONPATH=/opt/coding-bench
+# django must resolve WITHOUT relying on image config: the E2B template
+# pipeline runs `docker export | docker import`, which keeps the filesystem but
+# drops ENV/CMD. An `ENV PYTHONPATH` therefore does NOT survive into the
+# template. A `.pth` file in site-packages is filesystem state, so it does.
+# No `pip install django` needed — the cloned tree IS the package.
+RUN SITE_DIR="$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" && \
+    printf '/opt/coding-bench\n' > "${SITE_DIR}/django-src.pth" && \
+    echo "django source pinned via ${SITE_DIR}/django-src.pth"
 
-RUN echo 'import django; from django.conf import settings; print("django", django.__version__)' > /tmp/_smoke.py && \
-    python3 /tmp/_smoke.py && rm /tmp/_smoke.py
+# Smoke check with `env -i` (no inherited environment, i.e. the post-import
+# state): only the .pth on disk can make django importable here.
+RUN env -i /usr/bin/python3 -c 'import django; print("django", django.__version__)'
 
 COPY bench_helper.sh /opt/coding-bench/bench_helper.sh
 COPY bench_pairs.json /opt/coding-bench/bench_pairs.json

@@ -1,6 +1,8 @@
 #!/bin/bash
 # Script to prepare and push the coding benchmark image for E2B template
-# Based on push_to_harbor.sh (ts/go) but using coding-python-bench image name
+# Based on push_to_harbor.sh (java): BASE_IMAGE is the local tag the Dockerfile
+# build / offline `docker load` produces (and what config/common/coding-python.yaml
+# points at); IMAGE_NAME stays the Harbor-side <lang>-bench name.
 #
 # Usage: HARBOR_IP=X bash push_to_harbor.sh                              # ubuntu arm (default)
 #        ARCH=x86 HARBOR_IP=X bash push_to_harbor.sh                     # ubuntu x86_64
@@ -35,10 +37,12 @@ OS="${OS:-ubuntu}"
 case "${OS}" in
     ubuntu)
         OS_TAG="24.04"
+        LOCAL_IMAGE_NAME="ubuntu-openclaw-coding-python"
         IMAGE_NAME="ubuntu-coding-python-bench"
         DOCKERFILE_STEM="Dockerfile" ;;
     openeuler)
         OS_TAG="24.03-lts-sp3"
+        LOCAL_IMAGE_NAME="openeuler-coding-python-bench"
         IMAGE_NAME="openeuler-coding-python-bench"
         DOCKERFILE_STEM="Dockerfile.openeuler" ;;
     *)
@@ -50,8 +54,13 @@ esac
 #              Dockerfile.openeuler / Dockerfile.openeuler.x86)
 DOCKERFILE="${DOCKERFILE_STEM}${DOCKERFILE_ARCH}"
 
-# Image names (the Harbor-side tag is arch/OS-neutral — overwritten per build)
-BASE_IMAGE="${IMAGE_NAME}:${OS_TAG}-${TAG_SUFFIX}"
+# Local base image: the tag the Dockerfile build / offline `docker load`
+# produces, i.e. the same one config/common/coding-python.yaml points at
+# (openclaw on Ubuntu; openEuler keeps its legacy name). Override with
+# BASE_IMAGE=... if you tagged it differently.
+BASE_IMAGE="${BASE_IMAGE:-${LOCAL_IMAGE_NAME}:${OS_TAG}-${TAG_SUFFIX}}"
+# Harbor-side name keeps the go/ts convention (<lang>-bench:custom); the arch
+# suffix stays local because the Harbor tag is overwritten per build.
 CUSTOM_IMAGE="${IMAGE_NAME}:custom"
 HARBOR_IMAGE="e2b-orchestration/${IMAGE_NAME}:custom"
 
@@ -67,7 +76,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # Check if base image exists
 check_base_image() {
-    if ! docker images "${BASE_IMAGE}" --format "{{.Repository}}" | grep -q "${IMAGE_NAME}"; then
+    if ! docker image inspect "${BASE_IMAGE}" >/dev/null 2>&1; then
         log_error "Base image ${BASE_IMAGE} not found!"
         log_info "Please build it first: cd dockerfile_build/coding/python && docker build -t ${BASE_IMAGE} -f ${DOCKERFILE} ."
         exit 1

@@ -68,7 +68,7 @@ verify because the Go toolchain caches *compiled types* under `GOCACHE`, making
 the first run ~40% CPU and every later run ~10%. Python's `__pycache__` holds
 cheap *bytecode* (not compiled types) — the in-memory module graph (the actual
 peak) is unchanged warm or cold. So python, like ts, needs no `pre_verify_cmd`
-and does a plain single write+run.
+and does a plain single run.
 
 ## Project Structure (inside sandbox)
 
@@ -84,8 +84,12 @@ and does a plain single write+run.
 ```
 
 Runtime deps (`asgiref`, `sqlparse` — the only third-party packages a bare
-django import touches) are pip-installed. The rest of django resolves from the
-cloned source via cwd on `sys.path`.
+django import touches) are pip-installed. django itself resolves from the cloned
+source via a `.pth` file in site-packages pointing at `/opt/coding-bench`, so
+`./tests/runtests.py` and script-mode `python3` both import the in-tree package.
+The path is pinned on disk rather than via `ENV PYTHONPATH` because the E2B
+template pipeline builds from `docker export | docker import`, which keeps the
+filesystem but drops image config (ENV/CMD).
 
 ## Modification Strategy (per round)
 
@@ -136,7 +140,7 @@ applies `tests/django-16631-test.patch` (the FAIL_TO_PASS fixture), and adds a
 
 ```bash
 cd dockerfile_build/coding/python
-docker build -t ubuntu-coding-python-bench:24.04-linuxarm64 -f Dockerfile .
+docker build -t ubuntu-openclaw-coding-python:24.04-linuxarm64 -f Dockerfile .
 ```
 
 **x86_64:**
@@ -237,16 +241,17 @@ bash bench_helper.sh [ROUND] [OPTIONS]
 `python` is a value of `coding.language` (`"python"`), not a hard-coded
 workflow. The coding loop is shared across languages; only the verify mechanics
 differ, captured as data in a `CodingLanguageProfile` registry
-(`src/bench_core/payload/coding_payload.py`). The ts/go/python variants all share the same
-`find → read → edit → verify → diff` loop; adding C++ later = one registry
-entry + its default verify script. (The profile is keyed `python` because
-django's source is Python and the verify scripts import `.py` source and run
-via `python3`.)
+(`src/bench_core/payload/coding_payload.py`). All language variants share the same
+`find → read → edit → verify → diff` loop; each language is one registry entry
+plus its `test_suite_cmd` / report format. (The profile is keyed `python`
+because the sandbox source is Python and `test_suite_cmd` runs through
+`python3`.)
 
 ## Credibility argument
 
 Every step in the loop mirrors the captured openclaw trajectory shape already
-used to validate the ts/go variants. `python3` running a self-written ad-hoc
-import of django's module graph is the exact verification shape a real django
-coding agent uses. No production server, no full test suite, no resident
-process — nothing is added "for memory" that isn't a real agent behavior.
+used to validate the ts/go variants. Verify runs the instance's own django test
+module through django's runner (`./tests/runtests.py ... auth_tests.test_basic`)
+and asserts the real FAIL_TO_PASS / PASS_TO_PASS ids — exactly the upstream eval
+command. No production server, no full suite run, no resident process — nothing
+is added "for memory" that isn't a real agent behavior.
