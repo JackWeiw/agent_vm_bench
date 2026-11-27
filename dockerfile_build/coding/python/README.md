@@ -85,8 +85,11 @@ and does a plain single run.
 
 Runtime deps (`asgiref`, `sqlparse` — the only third-party packages a bare
 django import touches) are pip-installed. django itself resolves from the cloned
-source via `ENV PYTHONPATH=/opt/coding-bench`, so `./tests/runtests.py` and
-script-mode `python3` both import the in-tree package.
+source via a `.pth` file in site-packages pointing at `/opt/coding-bench`, so
+`./tests/runtests.py` and script-mode `python3` both import the in-tree package.
+The path is pinned on disk rather than via `ENV PYTHONPATH` because the E2B
+template pipeline builds from `docker export | docker import`, which keeps the
+filesystem but drops image config (ENV/CMD).
 
 ## Modification Strategy (per round)
 

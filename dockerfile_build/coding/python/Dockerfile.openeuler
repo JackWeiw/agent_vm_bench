@@ -69,13 +69,18 @@ RUN cd /opt/coding-bench && \
     grep -q "def test_get_user_fallback_secret" tests/auth_tests/test_basic.py && \
     rm /tmp/django-16631-test.patch
 
-# ENV PYTHONPATH makes django importable in script mode (python3 /tmp/...).
-# No `pip install django` needed — django resolves from the cloned source via
-# PYTHONPATH (asgiref/sqlparse are installed above).
-ENV PYTHONPATH=/opt/coding-bench
+# django must resolve WITHOUT relying on image config: the E2B template
+# pipeline runs `docker export | docker import`, which keeps the filesystem but
+# drops ENV/CMD. An `ENV PYTHONPATH` therefore does NOT survive into the
+# template. A `.pth` file in site-packages is filesystem state, so it does.
+# No `pip install django` needed — the cloned tree IS the package.
+RUN SITE_DIR="$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" && \
+    printf '/opt/coding-bench\n' > "${SITE_DIR}/django-src.pth" && \
+    echo "django source pinned via ${SITE_DIR}/django-src.pth"
 
-RUN echo 'import django; from django.conf import settings; print("django", django.__version__)' > /tmp/_smoke.py && \
-    python3 /tmp/_smoke.py && rm /tmp/_smoke.py
+# Smoke check with `env -i` (no inherited environment, i.e. the post-import
+# state): only the .pth on disk can make django importable here.
+RUN env -i /usr/bin/python3 -c 'import django; print("django", django.__version__)'
 
 COPY bench_helper.sh /opt/coding-bench/bench_helper.sh
 COPY bench_pairs.json /opt/coding-bench/bench_pairs.json

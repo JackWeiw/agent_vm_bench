@@ -17,8 +17,9 @@
 # verify peaks overlapping -> host memory overcommit. No production `manage.py
 # runserver`, no full `tests/runtests.py` suite, no resident dev server.
 #
-# Django's runtime deps (asgiref, sqlparse) are pip-installed; ENV PYTHONPATH makes
-# django importable in script mode (python3 resolves django from /opt/coding-bench).
+# Django's runtime deps (asgiref, sqlparse) are pip-installed; a .pth file in
+# site-packages makes django importable in script mode (python3 resolves django
+# from /opt/coding-bench) and survives `docker export | docker import`.
 # The heavy `django.forms` / db module graph is the memory peak (same role `go run`'s
 # compiler and `npx tsx`'s esbuild+node play in the ts/go variants).
 #
@@ -52,8 +53,8 @@ RUN apt update && apt install -y --no-install-recommends python3 python3-pip git
     # Django's runtime third-party deps. asgiref (async support, imported by
     # django.utils / django.core.management / django.forms) and sqlparse (imported
     # by django.db.backends) are the only external packages a bare django import
-    # touches. django itself resolves from the cloned source via PYTHONPATH
-    # (set below), matching the real agent's script-mode verify pattern.
+    # touches. django itself resolves from the cloned source via the .pth file
+    # added below, matching the real agent's script-mode verify pattern.
     # Ubuntu 24.04 pip is externally-managed (PEP 668) -> --break-system-packages.
     pip3 install --no-cache-dir --break-system-packages \
         -i https://pypi.tuna.tsinghua.edu.cn/simple \
@@ -68,9 +69,9 @@ RUN python3 -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version"
     echo "Toolchain check: python3 3.12"
 
 # --- Coding benchmark project: django/django @ django__django-16631 base_commit ---
-# Shallow fetch + ENV PYTHONPATH (no django install needed).
-# Script-mode python3 resolves `import django` from /opt/coding-bench via
-# PYTHONPATH. Pinned to the swe-bench django__django-16631 base_commit so
+# Shallow fetch (no django install needed).
+# Script-mode python3 resolves `import django` from /opt/coding-bench via the
+# .pth file added below. Pinned to the swe-bench django__django-16631 base_commit so
 # trace-faithful edits target real source state; the instance's test patch
 # (tests/auth_tests/test_basic.py) is applied right after the checkout. The
 # runner's reset only touches `django/`, so it is never reverted.
@@ -90,16 +91,18 @@ RUN cd /opt/coding-bench && \
     grep -q "def test_get_user_fallback_secret" tests/auth_tests/test_basic.py && \
     rm /tmp/django-16631-test.patch
 
-# ENV PYTHONPATH makes django importable in script mode (python3 /tmp/...).
-# No `pip install django` needed — django resolves from the cloned source via
-# PYTHONPATH (asgiref/sqlparse are installed above).
-ENV PYTHONPATH=/opt/coding-bench
+# django must resolve WITHOUT relying on image config: the E2B template
+# pipeline runs `docker export | docker import`, which keeps the filesystem but
+# drops ENV/CMD. An `ENV PYTHONPATH` therefore does NOT survive into the
+# template. A `.pth` file in site-packages is filesystem state, so it does.
+# No `pip install django` needed — the cloned tree IS the package.
+RUN SITE_DIR="$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" && \
+    printf '/opt/coding-bench\n' > "${SITE_DIR}/django-src.pth" && \
+    echo "django source pinned via ${SITE_DIR}/django-src.pth"
 
-# Smoke check: run in script mode (python3 /tmp/_smoke.py) so it catches the
-# same ModuleNotFoundError the runtime verify would hit. ENV PYTHONPATH (set
-# above) makes django importable from /opt/coding-bench in script mode.
-RUN echo 'import django; from django.conf import settings; print("django", django.__version__)' > /tmp/_smoke.py && \
-    python3 /tmp/_smoke.py && rm /tmp/_smoke.py
+# Smoke check with `env -i` (no inherited environment, i.e. the post-import
+# state): only the .pth on disk can make django importable here.
+RUN env -i /usr/bin/python3 -c 'import django; print("django", django.__version__)'
 
 # Copy the manual testing helper script
 COPY bench_helper.sh /opt/coding-bench/bench_helper.sh
