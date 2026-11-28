@@ -157,9 +157,10 @@ EXPECTED = {
             replay_action_timeout=300,
             replay_delay_scale=1.0,
             replay_stop_on_error=False,
-            replay_mode="lifecycle",
+            replay_mode="lifecycle",  # explicit lifecycle 1:1 baseline
+
             replay_running_concurrency=384,
-            replay_ready_probe=True,  # lifecycle keeps the probe
+            replay_ready_probe=True,  # mode omitted: probe keeps its default (on)
             replay_lifecycle_retries=2,
             replay_pause_duration_sec=0.0,
         ),

@@ -12,15 +12,24 @@ lazy-imported by ``bench_core.bench._build_provider``, so ``bench_core`` itself
 never depends on the opensandbox SDK -- the layering rule (kernel must not
 import provider packages) holds.
 
-Lifecycle / ephemeral / snapshot support: the OpenSandbox E2B runtime (Firecracker
-microVMs, the default) supports pause/resume/snapshot, so this provider
-implements :class:`env_provider.LifecycleCapable` (``pause``/``resume`` via
-the handle's ``pause`` / the SDK's ``Sandbox.resume``), :class:`env_provider.
-EphemeralCapable`` (``create_one``/``kill_one`` for trajectory mode), and
-:class:`env_provider.SnapshotSizeCapable`` (``snapshot_sizes`` via the SDK's
-``create_snapshot``). The containerd runtime has no
-pause/snapshot -- a config knob (``runtime``) selects the E2B runtime; lifecycle
-calls on a containerd sandbox raise a clear error from the SDK.
+Lifecycle / ephemeral support: the OpenSandbox E2B runtime (Firecracker
+microVMs, the default) supports pause/resume, so this provider implements
+:class:`env_provider.LifecycleCapable` (``pause``/``resume`` via the handle's
+``pause`` / the SDK's ``Sandbox.resume``) and :class:`env_provider.
+EphemeralCapable`` (``create_one``/``kill_one`` for trajectory mode). It does
+NOT implement ``SnapshotSizeCapable``: the SDK model carries no snapshot byte
+size (``SnapshotInfo`` has only id / status / created_at) and the server
+rejects ``create_snapshot`` from a paused sandbox, so there is no size to
+report -- the kernel skips the ``snapshot_size`` series event for this
+provider entirely. The containerd runtime has no pause at all; lifecycle
+calls on such a sandbox raise a clear error from the SDK.
+
+``replay.mode=lifecycle`` is currently vetoed (``default_replay_mode =
+"exec_only"``) until a live pause/resume run passes end to end. The veto runs
+at provider build time (``build_provider`` -- the bench-core CLI's argparse
+stage, so an oversub sweep refuses lifecycle trials before any fleet work)
+and ``prepare_env`` re-checks defensively for direct-API callers -- see
+``_ensure_lifecycle_allowed``.
 """
 
 from __future__ import annotations
@@ -79,9 +88,15 @@ class SandboxSchedProvider(EnvironmentProvider):
     name = "sandboxsched"
     # OpenSandbox's E2B runtime is Firecracker microVMs (same VMM as e2b/aenv).
     vmm_type = "firecracker"
-    # E2B runtime supports pause/resume/snapshot -> lifecycle is the natural
-    # default (mirrors aenv). containerd has no pause -> use exec_only there.
-    default_replay_mode = "lifecycle"
+    # Lifecycle-capable in principle, but replay.mode=lifecycle is vetoed until
+    # validated: the state-gated pause/resume path has not been proven against
+    # a live OpenSandbox server yet (a live resume surfaced server-side 500s).
+    # The veto lives in _ensure_lifecycle_allowed -- enforced at provider build
+    # (the CLI's argparse stage) and re-checked in prepare_env -- so an
+    # explicit lifecycle request fails before any fleet work, and the default
+    # mode resolution lands on exec_only. Flip the default (and drop the veto)
+    # once a live run passes end to end.
+    default_replay_mode = "exec_only"
 
     def __init__(self, kernel_config: KernelConfig, config: Config, stop_event: threading.Event) -> None:
         self._kernel_config = kernel_config
@@ -143,6 +158,10 @@ class SandboxSchedProvider(EnvironmentProvider):
 
     # ------------------------------------------------------------------ setup hooks
     def prepare_env(self) -> None:
+        # Defensive re-check of the build-time veto (see _ensure_lifecycle_allowed):
+        # the bench-core CLI already rejects lifecycle at provider build, so this
+        # only guards direct-API callers who constructed the provider themselves.
+        _ensure_lifecycle_allowed(self._kernel_config)
         self._config.setup_env()
 
     # ------------------------------------------------------------------ command exec
@@ -213,27 +232,20 @@ class SandboxSchedProvider(EnvironmentProvider):
         ``Sandbox`` (the execd endpoint may change across pause/resume); swap
         it in (mirrors aenv's resume swapping ``Sandbox.connect``). ``inst.id``
         is the OpenSandbox sandbox id (set at create via ``_to_instance``); it
-        persists across pause/resume.
+        persists across pause/resume. The old handle's transport is closed
+        after the swap -- each handle owns an httpx pool, and a 384-sandbox
+        lifecycle trial would otherwise accumulate thousands of dead sockets.
         """
         state = self.manager.sandbox_states.get(inst.index)
         if state is None:
             raise RuntimeError(f"No sandboxsched handle for sandbox index {inst.index}")
+        old_handle = state.sandbox_obj
         state.sandbox_obj = self.manager.resume_handle(inst.id)
-
-    # ------------------------------------------------------------------ snapshot (SnapshotSizeCapable)
-    def snapshot_sizes(self, inst: SandboxInstance) -> dict | None:
-        """Report no snapshot size: SandboxSched has none to stat.
-
-        The lifecycle flow calls this after every pause, but the SDK model
-        carries no byte size for a snapshot (``SnapshotInfo`` has only id /
-        status / created_at), and creating one is not a stat -- the server
-        rejects ``create_snapshot`` from a paused sandbox ("can only be
-        created from a running sandbox") and a persistent snapshot per pause
-        would accumulate server-side garbage the kernel never reads. Return
-        ``None`` so the kernel skips the ``snapshot_size`` series event
-        entirely; re-enable this hook when a real size query exists.
-        """
-        return None
+        if old_handle is not None and old_handle is not state.sandbox_obj:
+            try:
+                self.manager.submit(old_handle.close())
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ ephemeral (EphemeralCapable)
     def create_one(
@@ -322,6 +334,29 @@ class SandboxSchedProvider(EnvironmentProvider):
         )
 
 
+def _ensure_lifecycle_allowed(kernel_config: KernelConfig) -> None:
+    """Reject replay.mode=lifecycle until pause/resume is validated live.
+
+    The mode machinery is implemented (the provider satisfies LifecycleCapable),
+    but no live OpenSandbox deployment has proven the 202-then-transition path
+    end to end yet -- a live resume surfaced server-side 500s -- so an explicit
+    lifecycle request must fail before any fleet work, not mid-sweep. Called at
+    provider build (``build_provider`` -- the bench-core CLI's argparse stage,
+    so an oversub sweep refuses lifecycle trials at subprocess startup) and
+    re-checked defensively in ``prepare_env``. Cleanup-only runs are exempt:
+    they never touch pause/resume, and a fleet left by a pre-restriction run
+    must stay reachable via ``--cleanup`` (the shared replay.yaml hardcodes mode: lifecycle as the lifecycle baseline; sandboxsched must override replay.mode).
+    """
+    replay_mode = getattr(getattr(kernel_config, "workflow_config", None), "replay_mode", None)
+    if replay_mode == "lifecycle" and not getattr(kernel_config, "cleanup_only", False):
+        raise ValueError(
+            "sandboxsched replay.mode=lifecycle is disabled: pause/resume has "
+            "not been validated against a live OpenSandbox server yet. "
+            "Use exec_only or exec_ephemeral, or omit replay.mode to use the "
+            "provider default (exec_only)."
+        )
+
+
 def from_config(kernel_config: KernelConfig, config: Config, stop_event: threading.Event) -> SandboxSchedProvider:
     """Build a :class:`SandboxSchedProvider` from a KernelConfig + Config.
 
@@ -339,7 +374,13 @@ def build_provider(config: KernelConfig, raw_config: dict) -> SandboxSchedProvid
     rebuilt here from the ``sandboxsched:`` block of the same raw dict. Both are
     passed to the provider: the kernel drives ``config``, the manager reads
     backend knobs from the sandboxsched Config.
+
+    This is the bench-core CLI's argparse stage: the replay.mode=lifecycle veto
+    fires HERE (before run_benchmark, before the oversub sweep spawns fleet
+    work), so an explicitly requested unvalidated mode fails at process
+    startup with a clean error instead of inside a trial.
     """
+    _ensure_lifecycle_allowed(config)
     stop_event = threading.Event()
     sched_config = Config.from_raw(raw_config) if raw_config else Config()
     return from_config(config, sched_config, stop_event)

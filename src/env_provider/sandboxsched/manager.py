@@ -31,6 +31,7 @@ through the server proxy or the sandbox CNI IP per ``use_server_proxy``.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import logging
 import os
 import threading
@@ -52,7 +53,8 @@ except ImportError:  # pragma: no cover - SDK not installed in dev/test
     logging.getLogger(__name__).warning(
         "opensandbox SDK not installed: sandboxsched falls back to the inline "
         "mock (sandbox ids come out as 'mock_sandbox_id', no real server "
-        "calls). Install with: pip install 'agent-vm-bench[sandboxsched]'"
+        "calls). Install the sandboxsched extra from the repo root: "
+        "pip install -e '.[sandboxsched]'"
     )
 
     class _MockCommands:  # type: ignore[no-redef]
@@ -142,8 +144,9 @@ except ImportError:  # pragma: no cover - SDK not installed in dev/test
             self.protocol = protocol
 
     class SandboxFilter:  # type: ignore[no-redef]
-        def __init__(self, *, states=None, page_size=None, page=None):  # noqa: ARG002
+        def __init__(self, *, states=None, metadata=None, page_size=None, page=None):  # noqa: ARG002
             self.states = states
+            self.metadata = metadata
             self.page = page
 
     class SdkSandboxState:  # type: ignore[no-redef]
@@ -155,7 +158,7 @@ except ImportError:  # pragma: no cover - SDK not installed in dev/test
 from env_provider._base import BaseSandboxManager, BackendSandboxStatus
 
 from .config import Config
-from .envd_client import ENVD_PORT, EnvdClient
+from .envd_client import EnvdClient, EnvdTruncatedError
 from .schemas import SandboxState
 
 
@@ -193,6 +196,29 @@ _LIVE_STATES = (SdkSandboxState.RUNNING, SdkSandboxState.PAUSED)
 # Poll interval for the backend-state waits (pause -> Paused, resume -> Running).
 _STATE_POLL_INTERVAL = 1.0
 
+# Margin over ``ready_timeout`` bounding each bridge submit (see submit()).
+_SUBMIT_TIMEOUT_MARGIN = 60.0
+
+# Exit code mapping for envd_exec failure modes the replay runner must tell
+# apart. 124 = command timeout (the timeout(1) convention, same as e2b/
+# cubesandbox -> replay buckets it timed_out). 125 = the exec STREAM was
+# truncated (EnvdTruncatedError: killed process / server's ~180s upstream
+# timeout cutting the connection) -- a different failure than "the command
+# ran too long", so it gets its own code and lands in the failed bucket.
+TIMEOUT_EXIT_CODE = 124
+TRUNCATED_EXIT_CODE = 125
+
+# Ownership metadata stamped on every sandbox this manager creates, and the
+# metadata filter cleanup/detect scope their listing by. The OpenSandbox list
+# API has no ownership concept, so without the tag ``cleanup_existing`` would
+# kill every RUNNING/PAUSED sandbox on the server -- including other users'
+# fleets on a shared deployment. The tag is config-derived (sandbox_group),
+# so a fleet stays visible to ``--cleanup`` / ``--detect`` from a later
+# process with the same sandbox_group.
+METADATA_MANAGED_BY = "managed_by"
+METADATA_SANDBOX_GROUP = "sandbox_group"
+_MANAGED_BY_VALUE = "bench-core"
+
 
 class _EventLoopThread:
     """A private asyncio loop on a daemon thread for the SDK's async client.
@@ -201,12 +227,19 @@ class _EventLoopThread:
     exiting kernel never blocks on it). All SDK handles the manager creates are
     used on this one loop -- async transports are loop-bound, so sharing one
     loop across create/connect/exec/kill is what makes handle reuse safe.
+    ``stop()`` ends it cleanly (manager.shutdown) instead of leaving the loop
+    and its transports to the interpreter's teardown.
     """
 
     def __init__(self) -> None:
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
         self._ready = threading.Event()
-        threading.Thread(target=self._spin, daemon=True, name="opensandbox-asyncio").start()
+
+    def start(self) -> None:
+        assert self._thread is None
+        self._thread = threading.Thread(target=self._spin, daemon=True, name="opensandbox-asyncio")
+        self._thread.start()
         self._ready.wait()
 
     def _spin(self) -> None:
@@ -215,17 +248,45 @@ class _EventLoopThread:
         self._ready.set()
         self._loop.run_forever()
 
-    def run(self, coro: Any) -> Any:
-        """Drive ``coro`` on the bridge loop; block until it finishes."""
+    def run(self, coro: Any, timeout: float | None = None) -> Any:
+        """Drive ``coro`` on the bridge loop; block until it finishes.
+
+        ``timeout`` bounds the wait: on expiry the caller gets TimeoutError
+        while the coroutine keeps running on the loop (abandoned -- a
+        blackholed server must not wedge the caller forever, mirroring
+        cubesandbox's bounded-call adapter). The abandoned future is cancelled
+        best-effort so a not-yet-started coroutine never lands on the loop at
+        all; one already mid-flight cannot be revoked this way and finishes on
+        its own.
+        """
         assert self._loop is not None
-        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        try:
+            return future.result(timeout)
+        except TimeoutError:
+            future.cancel()
+            raise
+
+    def stop(self, join_timeout: float = 5.0) -> None:
+        """Stop the loop and join its thread (bounded -- never blocks exit)."""
+        if self._loop is not None and self._loop.is_running():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._thread is not None:
+            self._thread.join(join_timeout)
+
+
+# Sentinel for _list_existing's default: a bare call (the base's
+# detect_existing, cleanup_existing) scopes the listing to this config's
+# ownership tag; an explicit ``metadata=None`` lists every live sandbox
+# (explicit-ID matching in detect_from_file needs the unfiltered view).
+_UNSCOPED: object = object()
 
 
 class SandboxManager(BaseSandboxManager):
     """SandboxSched sandbox lifecycle: SDK seams over the shared lifecycle template.
 
     Shared stress params (total_count, create_batch_*, workflow_type) are read
-    from ``kernel_config``; backend knobs (template, sandbox_group, create_timeout,
+    from ``kernel_config``; backend knobs (template, sandbox_group, sandbox_ttl,
     connection) from ``config``. Readiness is delegated to :class:`ReadyChecker`
     via the base (provider-transparent ``_ready_config`` -- no sandboxsched
     readiness knobs).
@@ -236,7 +297,7 @@ class SandboxManager(BaseSandboxManager):
     # Keep the original creation status for stats; don't overwrite with KILLED.
     _set_killed_on_cleanup = False
 
-    def __init__(self, kernel_config, config: Config, stop_event: Event) -> None:
+    def __init__(self, kernel_config, config: Config, stop_event: threading.Event) -> None:
         super().__init__(kernel_config, stop_event)
         self.config = config
         # Serializes the two lazy singletons below. The base create path runs
@@ -252,6 +313,11 @@ class SandboxManager(BaseSandboxManager):
         # sandbox_id -> envd base URL; resolved on first use, dropped on
         # resume (the endpoint may change across pause/resume) and kill.
         self._envd_urls: dict[str, str] = {}
+        self._shutdown = False
+        # The bridge thread is a daemon, so an exiting process never blocks on
+        # it -- but its loop and transports should still be closed cleanly;
+        # shutdown() is idempotent, and a bounded join keeps exit fast.
+        atexit.register(self.shutdown)
 
     # --------------------------------------------------------- async bridge
     def submit(self, coro: Any) -> Any:
@@ -260,14 +326,44 @@ class SandboxManager(BaseSandboxManager):
         The one entry point every seam (and the adapter's exec/pause/resume/
         snapshot routing) uses to reach the async SDK from sync code. The loop
         thread starts on first use, so a manager that never talks to the SDK
-        never pays for a thread.
+        never pays for a thread. The wait is bounded at ``ready_timeout`` plus
+        a margin -- the SDK's own resume/pause waits run inside that budget --
+        so a blackholed server raises TimeoutError instead of wedging the
+        calling thread forever. Raises RuntimeError after shutdown() -- a
+        call that landed on a torn-down manager is a caller bug, not
+        something to silently revive a bridge for.
         """
+        if self._shutdown:
+            raise RuntimeError("SandboxManager has been shut down")
         with self._bridge_lock:
             if self._loop_thread is None:
                 self._loop_thread = _EventLoopThread()
+                self._loop_thread.start()
         # run() stays outside the lock: run_coroutine_threadsafe is
         # thread-safe, and holding the lock here would serialize every SDK call.
-        return self._loop_thread.run(coro)
+        return self._loop_thread.run(coro, timeout=self.config.ready_timeout + _SUBMIT_TIMEOUT_MARGIN)
+
+    def shutdown(self) -> None:
+        """Tear down the bridge: close the admin manager, stop the loop, join.
+
+        Idempotent. Pending not-yet-started coroutines are dropped when the
+        loop stops (their futures never complete); a caller blocked in
+        ``submit()`` on such a future gets its TimeoutError as usual. Only the
+        lifetime-cached admin manager lives on the loop after teardown -- the
+        per-sandbox handles are closed by their own kill/resume paths.
+        """
+        if self._shutdown:
+            return
+        self._shutdown = True
+        if self._info_manager is not None and self._loop_thread is not None:
+            try:
+                self._loop_thread.run(self._info_manager.close(), timeout=10.0)
+            except Exception:
+                pass
+            self._info_manager = None
+        if self._loop_thread is not None:
+            self._loop_thread.stop()
+            self._loop_thread = None
 
     # --------------------------------------------------------- connection
     def _connection(self) -> ConnectionConfig:
@@ -304,9 +400,12 @@ class SandboxManager(BaseSandboxManager):
         Records submit->create timing; the base runs the readiness probe after
         this returns success and maps the result onto ``creation_metrics``.
         ``metadata`` is forwarded to the SDK for operator visibility (labels
-        only, not an idempotency key). The OpenSandbox Server requires
-        ``extensions.sandboxGroup`` -> a missing ``sandbox_group`` fails fast
-        here with a clear error rather than a 400 at the SDK call.
+        only, not an idempotency key) with the ownership tag merged in last --
+        the tag is what scopes ``--cleanup`` / ``--detect`` to this config's
+        fleet on a shared server, so caller metadata must not override it. The
+        OpenSandbox Server requires ``extensions.sandboxGroup`` -> a missing
+        ``sandbox_group`` fails fast here with a clear error rather than a 400
+        at the SDK call.
         """
         state.creation_metrics.status = BackendSandboxStatus.CREATING
         state.creation_metrics.submit_time = time.time()
@@ -322,9 +421,13 @@ class SandboxManager(BaseSandboxManager):
             sbx = self.submit(
                 Sandbox.create(
                     resolved,
-                    timeout=timedelta(seconds=self.config.create_timeout),
+                    timeout=timedelta(seconds=self.config.sandbox_ttl),
                     env=None,
-                    metadata=metadata,
+                    metadata={
+                        **(metadata or {}),
+                        METADATA_MANAGED_BY: _MANAGED_BY_VALUE,
+                        METADATA_SANDBOX_GROUP: self.config.sandbox_group,
+                    },
                     resource=self.config.resource,
                     extensions={"sandboxGroup": self.config.sandbox_group},
                     connection_config=self._connection(),
@@ -353,7 +456,7 @@ class SandboxManager(BaseSandboxManager):
                 "template": resolved,
             }
 
-    async def _list_existing_async(self) -> list:
+    async def _list_existing_async(self, metadata: dict[str, str] | None) -> list:
         """Async body of ``_list_existing`` (manager create + paginate + close).
 
         One coroutine so the admin manager and its transport are created, used,
@@ -361,7 +464,8 @@ class SandboxManager(BaseSandboxManager):
         ``PagedSandboxInfos`` with ``.sandbox_infos`` +
         ``.pagination.has_next_page``; iterate pages by bumping
         ``SandboxFilter.page`` until no next page. Filters to RUNNING + PAUSED
-        so detect/cleanup sees live sandboxes (terminated ones are gone).
+        so detect/cleanup sees live sandboxes (terminated ones are gone), and
+        to ``metadata`` when given (the ownership tag -- see _list_existing).
         """
         manager = await SdkSandboxManager.create(connection_config=self._connection())
         try:
@@ -369,7 +473,7 @@ class SandboxManager(BaseSandboxManager):
             page = 1
             page_size = 100
             while True:
-                flt = SandboxFilter(states=list(_LIVE_STATES), page_size=page_size, page=page)
+                flt = SandboxFilter(states=list(_LIVE_STATES), metadata=metadata, page_size=page_size, page=page)
                 paged = await manager.list_sandbox_infos(flt)
                 listed.extend(paged.sandbox_infos)
                 if not paged.pagination.has_next_page:
@@ -379,8 +483,23 @@ class SandboxManager(BaseSandboxManager):
         finally:
             await manager.close()
 
-    def _list_existing(self) -> list:
-        return self.submit(self._list_existing_async())
+    def _ownership_filter(self) -> dict[str, str]:
+        """The metadata filter matching sandboxes this config owns (see the tag)."""
+        return {METADATA_MANAGED_BY: _MANAGED_BY_VALUE, METADATA_SANDBOX_GROUP: self.config.sandbox_group}
+
+    def _list_existing(self, metadata: dict[str, str] | None | object = _UNSCOPED) -> list:
+        """List live sandboxes; scoped to the ownership tag unless told not to be.
+
+        The OpenSandbox list API has no ownership concept, so an unfiltered
+        listing returns EVERY RUNNING/PAUSED sandbox on the server. Listing is
+        only ever consumed by cleanup (kill) or detect (attach) paths that
+        must act on THIS config's fleet, so the bare call scopes to the tag
+        stamped at create (``managed_by`` + ``sandbox_group``); a caller that
+        matches by explicit sandbox ids instead passes ``metadata=None``.
+        """
+        if metadata is _UNSCOPED:
+            metadata = self._ownership_filter()
+        return self.submit(self._list_existing_async(metadata))
 
     def _external_id(self, listed: Any) -> str:
         return listed.id if hasattr(listed, "id") else str(listed)
@@ -396,8 +515,18 @@ class SandboxManager(BaseSandboxManager):
         )
 
     def _kill_one(self, state: SandboxState) -> None:
-        self._envd_urls.pop(str(getattr(state.sandbox_obj, "id", "")), None)
-        self.submit(state.sandbox_obj.kill())
+        handle = state.sandbox_obj
+        self._envd_urls.pop(str(getattr(handle, "id", "")), None)
+        try:
+            self.submit(handle.kill())
+        finally:
+            # kill() does not release the handle's local transport (each
+            # create/connect/resume owns an httpx pool); close it either way so
+            # a 384-sandbox trial does not accumulate dead sockets.
+            try:
+                self.submit(handle.close())
+            except Exception:
+                pass
 
     def _envd_client_for(self, handle: Any) -> EnvdClient:
         """An envd client for the sandbox behind ``handle`` (URL cached per id).
@@ -408,7 +537,7 @@ class SandboxManager(BaseSandboxManager):
         sandbox_id = str(handle.id)
         url = self._envd_urls.get(sandbox_id)
         if url is None:
-            endpoint = self.submit(handle.get_endpoint(ENVD_PORT))
+            endpoint = self.submit(handle.get_endpoint(self.config.envd_port))
             url = getattr(endpoint, "endpoint", "") or ""
             if not url:
                 raise RuntimeError(f"sandbox {sandbox_id} has no published endpoint yet")
@@ -417,8 +546,10 @@ class SandboxManager(BaseSandboxManager):
 
     def _exec_probe(self, handle: Any, cmd: str, timeout: int) -> tuple[int, str, str]:
         result = self._envd_client_for(handle).run(cmd, timeout=float(timeout))
+        # run() never returns exit_code=None (truncation raises), so no
+        # phantom-success coercion here.
         return (
-            int(result.exit_code or 0),
+            int(result.exit_code),
             result.stdout.decode("utf-8", "replace"),
             result.stderr.decode("utf-8", "replace"),
         )
@@ -435,38 +566,88 @@ class SandboxManager(BaseSandboxManager):
         """Run ``command`` through the envd data plane (adapter-facing exec).
 
         ``cwd``/``env`` are natively supported by envd's Start request (the
-        SDK's RunCommandOpts detour is gone with it).
+        SDK's RunCommandOpts detour is gone with it). Failure modes are
+        bucketed so the replay runner can classify a step without substring
+        matching: a command timeout (including a silent one -- blocked I/O,
+        sleep) is exit 124 (the timeout(1) convention, mirroring e2b/
+        cubesandbox) and a truncated stream (:class:`EnvdTruncatedError`) is
+        exit 125 -- both with any partial stdout/stderr kept, so the slice
+        continues instead of stranding the sandbox mid-slice. A genuine
+        transport error with no command output still propagates.
         """
         if state.sandbox_obj is None:
             raise RuntimeError(f"No sandboxsched handle for sandbox index {state.sandbox_id}")
-        result = self._envd_client_for(state.sandbox_obj).run(
-            command,
-            envs=env,
-            cwd=cwd,
-            timeout=float(timeout) if timeout is not None else None,
-        )
+        stdout_parts: list[bytes] = []
+        stderr_parts: list[bytes] = []
+        try:
+            result = self._envd_client_for(state.sandbox_obj).run(
+                command,
+                envs=env,
+                cwd=cwd,
+                on_stdout=stdout_parts.append,
+                on_stderr=stderr_parts.append,
+                timeout=float(timeout) if timeout is not None else None,
+            )
+        except Exception as exc:
+            stdout = b"".join(stdout_parts).decode("utf-8", "replace")
+            stderr = b"".join(stderr_parts).decode("utf-8", "replace")
+            if isinstance(exc, EnvdTruncatedError):
+                # A cut stream is not a timeout: the command may have died or
+                # the connection dropped -- keep the partials but report a
+                # distinct code so replay statistics separate the two.
+                return (TRUNCATED_EXIT_CODE, stdout, stderr)
+            exit_code = getattr(exc, "exit_code", None)
+            if not isinstance(exit_code, int):
+                exit_code = None
+            if exit_code is None and isinstance(exc, TimeoutError):
+                # A socket-read timeout is distinguishable from a transport
+                # failure: bucket it as timed_out even with empty output, so a
+                # silently hung command (blocked I/O, sleep) does not abort the
+                # slice and strand the sandbox.
+                exit_code = TIMEOUT_EXIT_CODE
+            if exit_code is None and not (stdout or stderr):
+                raise  # genuine transport error with no command output -> propagate
+            if exit_code is None:
+                exit_code = TIMEOUT_EXIT_CODE  # timeout with partial output, no exit code
+            return (exit_code, stdout, stderr)
         return (
-            int(result.exit_code or 0),
-            result.stdout.decode("utf-8", "replace"),
-            result.stderr.decode("utf-8", "replace"),
+            int(result.exit_code),
+            b"".join(stdout_parts).decode("utf-8", "replace"),
+            b"".join(stderr_parts).decode("utf-8", "replace"),
         )
 
     # ----------------------------------------------------- handle ops (adapter-facing)
+    async def _ensure_info_manager(self) -> Any:
+        """The cached admin manager (control-plane state reads + endpointless kills).
+
+        Build-then-swap instead of a lock held across the await: every caller
+        runs on the bridge loop, so the only interleaving point is the await
+        itself -- holding a threading.Lock across ``await`` there would stall
+        the whole loop on one network call. A racing coroutine that loses the
+        swap closes its own manager; the winner is cached.
+        """
+        connection_config = self._connection()
+        if self._info_manager is None:
+            manager = await SdkSandboxManager.create(connection_config=connection_config)
+            if self._info_manager is None:
+                self._info_manager = manager
+            else:
+                try:
+                    await manager.close()
+                except Exception:
+                    pass
+        return self._info_manager
+
     async def _get_info_async(self, sandbox_id: str) -> Any:
-        """GET /sandboxes/{id} via a cached admin manager (control-plane view).
+        """GET /sandboxes/{id} via the cached admin manager (control-plane view).
 
         The OpenSandbox API is asynchronous: pause/resume return 202 and the
         transition lands server-side some time later, and an invalid
         transition (e.g. resuming a sandbox that is Running) fails
         server-side -- the state gates below are built on this read.
         """
-        # _connection() takes _bridge_lock itself (non-reentrant), so build
-        # the config BEFORE entering the lock below.
-        connection_config = self._connection()
-        with self._bridge_lock:
-            if self._info_manager is None:
-                self._info_manager = await SdkSandboxManager.create(connection_config=connection_config)
-        return await self._info_manager.get_sandbox_info(sandbox_id)
+        manager = await self._ensure_info_manager()
+        return await manager.get_sandbox_info(sandbox_id)
 
     def _backend_state(self, sandbox_id: str) -> str:
         """Normalized server-side state: "running" / "paused" / ... (lowercase tail)."""
@@ -483,8 +664,7 @@ class SandboxManager(BaseSandboxManager):
                 return state
             if time.monotonic() >= deadline:
                 raise RuntimeError(
-                    f"sandbox {sandbox_id} did not reach state {target!r} within "
-                    f"{timeout:.0f}s (last state: {state!r})"
+                    f"sandbox {sandbox_id} did not reach state {target!r} within {timeout:.0f}s (last state: {state!r})"
                 )
             time.sleep(_STATE_POLL_INTERVAL)
 
@@ -576,7 +756,9 @@ class SandboxManager(BaseSandboxManager):
         logger.info(f"  Target IDs from file: {len(target_ids)}")
 
         try:
-            running = self._list_existing()
+            # Unfiltered listing: the file names explicit sandbox ids the user
+            # owns; matching by id is the claim of ownership here.
+            running = self._list_existing(metadata=None)
             logger.info(f"  Running sandboxes: {len(running)}")
         except Exception as e:
             logger.error(f"  Failed to list sandboxes: {e}")
@@ -609,6 +791,55 @@ class SandboxManager(BaseSandboxManager):
             return {}
 
         return self._detect_each(matched, id_to_template=id_to_template)
+
+    def cleanup_existing(self) -> int:
+        """Kill the live sandboxes this config owns, without attaching.
+
+        Overrides the base's attach-then-kill loop: ``Sandbox.connect``
+        re-resolves the sandbox's CNI endpoint, which a PAUSED sandbox does
+        not publish -- a lifecycle run ends with the fleet paused, so the
+        base path stalls ~ready_timeout per sandbox and then fails, leaking
+        the whole paused fleet on cross-process cleanup (``bench-core
+        --cleanup``). ``SdkSandboxManager.kill_sandbox(id)`` needs no
+        endpoint, so the kill goes straight through the control plane;
+        readiness probing stays skipped as in the base.
+
+        The listing is scoped to the ownership tag stamped at create
+        (``managed_by=bench-core`` + this config's ``sandbox_group``):
+        ``bench-core --cleanup`` on a shared OpenSandbox server must not kill
+        sandboxes it did not create. Fleets created with a different
+        ``sandbox_group``, or by other tooling, are left alone.
+        """
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"Cleaning up existing {self._noun.lower()}s")
+        logger.info(f"{'=' * 60}")
+        try:
+            listed = self._list_existing()
+            logger.info(f"  Found {len(listed)} running {self._noun.lower()}s")
+        except Exception as e:
+            logger.error(f"  Failed to list {self._noun.lower()}s: {e}")
+            return 0
+
+        if not listed:
+            logger.info(f"  No existing {self._noun.lower()}s found")
+            return 0
+
+        killed = 0
+        for i, item in enumerate(listed, start=1):
+            ext_id = self._external_id(item)
+            label = f"{self._noun}{i}"
+            try:
+                self.submit(self._kill_by_id_async(ext_id))
+                killed += 1
+                logger.info(f"[{label}] Killed {ext_id}")
+            except Exception as e:
+                logger.warning(f"[{label}] Kill error: {str(e)[:80]}")
+        logger.info(f"Killed {killed} of {len(listed)} {self._noun.lower()}s")
+        return killed
+
+    async def _kill_by_id_async(self, sandbox_id: str) -> None:
+        manager = await self._ensure_info_manager()
+        await manager.kill_sandbox(sandbox_id)
 
     def check_alive(self, state: SandboxState) -> bool:
         """Liveness via the envd health probe (``GET /health`` -> 204)."""

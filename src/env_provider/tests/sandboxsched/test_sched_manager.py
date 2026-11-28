@@ -20,6 +20,7 @@ replace those bindings with controllable fakes, so no SDK install is needed.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from threading import Event
 
@@ -35,7 +36,14 @@ from bench_core.workflow_registry import ensure_workflow_registered
 ensure_workflow_registered("coding")
 from env_provider.sandboxsched import manager as mgr_mod
 from env_provider.sandboxsched.config import Config
-from env_provider.sandboxsched.manager import SandboxManager
+from env_provider.sandboxsched.envd_client import EnvdError, EnvdTruncatedError
+from env_provider.sandboxsched.manager import (
+    METADATA_MANAGED_BY,
+    METADATA_SANDBOX_GROUP,
+    TIMEOUT_EXIT_CODE,
+    TRUNCATED_EXIT_CODE,
+    SandboxManager,
+)
 from env_provider.sandboxsched.schemas import SandboxState
 
 
@@ -52,11 +60,13 @@ class _RunResult:
 class _FakeSandboxSync:
     """A single OpenSandbox Sandbox handle (created or connected)."""
 
-    def __init__(self, sid: str, *, ready: bool = True):
+    def __init__(self, sid: str, *, ready: bool = True, metadata: dict | None = None):
         self.id = sid
         self.ready = ready
+        self.metadata = metadata
         self.killed = False
         self.paused = False
+        self.closed = False
 
     async def kill(self):
         self.killed = True
@@ -65,7 +75,7 @@ class _FakeSandboxSync:
         self.paused = True
 
     async def close(self):  # noqa: ARG002
-        pass
+        self.closed = True
 
     async def get_endpoint(self, port):  # noqa: ARG002
         class _Endpoint:
@@ -117,10 +127,10 @@ class _FakeSandboxSyncCls:
         connection_config=None,
         skip_health_check=False,
         ready_timeout=None,  # noqa: ARG002
-    ):  # noqa: ARG002
+    ):  # noqa: ARG004
         self._next_id += 1
         sid = f"sbx-{self._next_id:04d}"
-        sbx = _FakeSandboxSync(sid, ready=self._ready)
+        sbx = _FakeSandboxSync(sid, ready=self._ready, metadata=dict(metadata or {}))
         self.created.append((image, extensions, sbx))
         return sbx
 
@@ -136,7 +146,9 @@ class _FakeSandboxSyncCls:
 class _FakeManagerSync:
     def __init__(self):
         self.list_pages: list[_PagedInfos] = []
+        self.list_filters: list = []  # SandboxFilter seen per list call
         self.killed: list[str] = []
+        self.closed = False
         # Control-plane state model for the state-gating tests: ``states``
         # holds the current state per sandbox id; ``transitions`` serves a
         # sequence of states per get_sandbox_info call (last one sticks) to
@@ -158,7 +170,8 @@ class _FakeManagerSync:
     async def get_sandbox_info(self, sandbox_id):
         return self._info(sandbox_id)
 
-    async def list_sandbox_infos(self, flt):  # noqa: ARG002
+    async def list_sandbox_infos(self, flt):
+        self.list_filters.append(flt)
         if not self.list_pages:
             return _PagedInfos([], has_next_page=False)
         return self.list_pages.pop(0)
@@ -167,7 +180,7 @@ class _FakeManagerSync:
         self.killed.append(sandbox_id)
 
     async def close(self):  # noqa: ARG002
-        pass
+        self.closed = True
 
 
 class _FakeManagerCls:
@@ -193,7 +206,7 @@ def kernel_config():
 
 @pytest.fixture
 def sched_config():
-    return Config(sandbox_group="sg-1u1g", template="python:3.11", create_timeout=300)
+    return Config(sandbox_group="sg-1u1g", template="python:3.11", sandbox_ttl=300)
 
 
 @pytest.fixture
@@ -267,6 +280,53 @@ class TestCreateAndCleanup:
             assert state.sandbox_obj.killed is True
             assert state.torn_down is True
 
+    def test_create_stamps_ownership_metadata(self, kernel_config, sched_config, patched_sdk):
+        # cleanup/detect scope their listing by this tag: without it,
+        # bench-core --cleanup on a shared OpenSandbox server would kill every
+        # RUNNING/PAUSED sandbox on the server, other users' fleets included
+        fake_sandbox, _ = patched_sdk
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        mgr.create_all()
+        for _, _, sbx in fake_sandbox.created:
+            assert sbx.metadata[METADATA_MANAGED_BY] == "bench-core"
+            assert sbx.metadata[METADATA_SANDBOX_GROUP] == "sg-1u1g"
+
+    def test_create_caller_metadata_survives_but_cannot_override_tag(self, kernel_config, sched_config, patched_sdk):
+        fake_sandbox, _ = patched_sdk
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        states = mgr.create_all()
+        state = next(iter(states.values()))
+        # the ephemeral path forwards caller metadata (trajectory_id) through
+        # _create_single -- it must land on the sandbox AND not clobber the tag
+        fake_sandbox.created.clear()
+        mgr._create_single(state, metadata={"trajectory_id": "t-1"})
+        sbx = fake_sandbox.created[0][2]
+        assert sbx.metadata["trajectory_id"] == "t-1"
+        assert sbx.metadata[METADATA_MANAGED_BY] == "bench-core"
+
+    def test_cleanup_existing_lists_only_own_fleet(self, kernel_config, sched_config, patched_sdk):
+        fake_sandbox, fake_manager = patched_sdk
+        fake_manager.list_pages = [_PagedInfos([_SandboxInfo("p-1")])]
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        mgr.cleanup_existing()
+        # the list query itself carries the ownership filter -- the server
+        # returns only this config's sandboxes, so nothing else is killable
+        assert len(fake_manager.list_filters) == 1
+        assert fake_manager.list_filters[0].metadata == {
+            METADATA_MANAGED_BY: "bench-core",
+            METADATA_SANDBOX_GROUP: "sg-1u1g",
+        }
+
+    def test_detect_existing_lists_only_own_fleet(self, kernel_config, sched_config, patched_sdk):
+        fake_sandbox, fake_manager = patched_sdk
+        fake_manager.list_pages = [_PagedInfos([_SandboxInfo("x")])]
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        mgr.detect_existing()
+        assert fake_manager.list_filters[0].metadata == {
+            METADATA_MANAGED_BY: "bench-core",
+            METADATA_SANDBOX_GROUP: "sg-1u1g",
+        }
+
 
 # -------------------------------------------------------------------- detect / list
 class TestDetectAndList:
@@ -297,6 +357,17 @@ class TestDetectAndList:
         states = mgr.detect_from_file(str(ids_file))
         assert len(states) == 1
         assert fake_sandbox.connected == ["keep-1"]
+
+    def test_detect_from_file_lists_unfiltered(self, kernel_config, sched_config, patched_sdk, tmp_path):
+        # the file names explicit ids the user owns -- matching by id is the
+        # ownership claim, so the listing must NOT scope to the metadata tag
+        _, fake_manager = patched_sdk
+        fake_manager.list_pages = [_PagedInfos([_SandboxInfo("keep-1")])]
+        ids_file = tmp_path / "ids.txt"
+        ids_file.write_text("keep-1\n")
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        mgr.detect_from_file(str(ids_file))
+        assert fake_manager.list_filters[0].metadata is None
 
     def test_detect_from_file_recovers_templates(self, kernel_config, sched_config, patched_sdk, tmp_path):
         fake_sandbox, fake_manager = patched_sdk
@@ -431,3 +502,160 @@ class TestStateGating:
         assert handle.paused is True  # POST happened
         # the transition sequence was consumed down to the sticky Paused state
         assert fake_manager.states["sbx-0001"] == "paused"
+
+
+# -------------------------------------------------------------------- exec timeout / handle lifecycle
+class _PartialTimeoutEnvd:
+    """Fake envd client: streams partial output, then the read times out."""
+
+    def run(self, cmd, *, envs=None, cwd=None, on_stdout=None, on_stderr=None, timeout=None):  # noqa: ARG002
+        on_stdout(b"partial ")
+        on_stdout(b"output")
+        raise TimeoutError("read timed out")
+
+
+class TestExecTimeoutMapping:
+    """A command timeout that already produced output is exit-124 with the
+    partials kept (the timeout(1) convention, mirroring e2b/cubesandbox), so
+    the replay runner buckets the step and continues instead of stranding the
+    sandbox mid-slice."""
+
+    def test_timeout_with_partial_output_maps_to_124(self, kernel_config, sched_config, patched_sdk, monkeypatch):
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        states = mgr.create_all()
+        state = next(iter(states.values()))
+        monkeypatch.setattr(mgr, "_envd_client_for", lambda h: _PartialTimeoutEnvd())
+        code, out, err = mgr.envd_exec(state, "long-cmd", timeout=5)
+        assert code == 124
+        assert out == "partial output"
+
+    def test_transport_error_without_output_propagates(self, kernel_config, sched_config, patched_sdk, monkeypatch):
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        states = mgr.create_all()
+        state = next(iter(states.values()))
+
+        class _DeadEnvd:
+            def run(self, cmd, **kwargs):  # noqa: ARG002
+                raise EnvdError("HTTP 500 POST /process.Process/Start: boom")
+
+        monkeypatch.setattr(mgr, "_envd_client_for", lambda h: _DeadEnvd())
+        with pytest.raises(EnvdError):
+            mgr.envd_exec(state, "cmd", timeout=5)
+
+    def test_silent_timeout_with_zero_output_maps_to_124(self, kernel_config, sched_config, patched_sdk, monkeypatch):
+        # a hung command (blocked I/O, sleep) raises TimeoutError with NO output:
+        # still bucketed timed_out, so the slice continues and the sandbox is
+        # not stranded
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        states = mgr.create_all()
+        state = next(iter(states.values()))
+
+        class _HungEnvd:
+            def run(self, cmd, *, envs=None, cwd=None, on_stdout=None, on_stderr=None, timeout=None):  # noqa: ARG002
+                raise TimeoutError("read timed out")
+
+        monkeypatch.setattr(mgr, "_envd_client_for", lambda h: _HungEnvd())
+        code, out, err = mgr.envd_exec(state, "sleep 9999", timeout=5)
+        assert code == 124
+        assert out == "" and err == ""
+
+
+class TestTruncationMapping:
+    """A truncated exec stream (killed process / the server's ~180s upstream
+    timeout cutting the connection) is NOT a command timeout: it maps to its
+    own exit code (125) instead of 124, so replay statistics can tell "the
+    command ran too long" apart from "the output was cut"."""
+
+    def test_truncation_with_partial_output_maps_to_125(self, kernel_config, sched_config, patched_sdk, monkeypatch):
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        states = mgr.create_all()
+        state = next(iter(states.values()))
+
+        class _CutEnvd:
+            def run(self, cmd, *, envs=None, cwd=None, on_stdout=None, on_stderr=None, timeout=None):  # noqa: ARG002
+                on_stdout(b"partial ")
+                on_stdout(b"output")
+                raise EnvdTruncatedError("connect stream ended without an end-of-stream frame: exec truncated")
+
+        monkeypatch.setattr(mgr, "_envd_client_for", lambda h: _CutEnvd())
+        code, out, _ = mgr.envd_exec(state, "killed-cmd", timeout=5)
+        assert code == TRUNCATED_EXIT_CODE == 125
+        assert code != TIMEOUT_EXIT_CODE
+        assert out == "partial output"
+
+    def test_truncation_with_zero_output_maps_to_125(self, kernel_config, sched_config, patched_sdk, monkeypatch):
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        states = mgr.create_all()
+        state = next(iter(states.values()))
+
+        class _CutEnvd:
+            def run(self, cmd, **kwargs):  # noqa: ARG002
+                raise EnvdTruncatedError("connect stream truncated: partial frame header")
+
+        monkeypatch.setattr(mgr, "_envd_client_for", lambda h: _CutEnvd())
+        code, out, err = mgr.envd_exec(state, "killed-cmd", timeout=5)
+        assert code == 125
+        assert out == "" and err == ""
+
+
+class TestHandleLifecycle:
+    def test_kill_closes_the_handle(self, kernel_config, sched_config, patched_sdk):
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        states = mgr.create_all()
+        state = next(iter(states.values()))
+        mgr._kill_one(state)
+        # kill() does not release the handle's transport; close() must run
+        assert state.sandbox_obj.closed is True
+
+    def test_cleanup_existing_kills_paused_without_connect(self, kernel_config, sched_config, patched_sdk):
+        fake_sandbox, fake_manager = patched_sdk
+        fake_manager.list_pages = [_PagedInfos([_SandboxInfo("p-1"), _SandboxInfo("p-2")])]
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        killed = mgr.cleanup_existing()
+        assert killed == 2
+        # control-plane kill (needs no endpoint): works for a PAUSED fleet
+        assert fake_manager.killed == ["p-1", "p-2"]
+        # no attach: Sandbox.connect would stall ~ready_timeout per paused
+        # sandbox and then fail, leaking the fleet
+        assert fake_sandbox.connected == []
+
+    def test_submit_bounds_hung_bridge_calls(self, kernel_config, patched_sdk, monkeypatch):
+        monkeypatch.setattr(mgr_mod, "_SUBMIT_TIMEOUT_MARGIN", 0.2)
+        cfg = Config(sandbox_group="sg-1", ready_timeout=0)  # submit bound = 0.2s
+        mgr = SandboxManager(kernel_config, cfg, Event())
+
+        async def _hang():
+            await asyncio.sleep(30)
+
+        with pytest.raises(TimeoutError):
+            mgr.submit(_hang())
+
+    def test_shutdown_closes_info_manager_and_stops_loop(self, kernel_config, sched_config, patched_sdk):
+        _, fake_manager = patched_sdk
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        mgr.create_all()  # starts the bridge loop
+        assert mgr._loop_thread is not None
+        thread = mgr._loop_thread._thread
+        mgr._backend_state("sbx-0001")  # builds the cached info manager
+        mgr.shutdown()
+        # the admin manager's transport is closed, the loop thread joined
+        assert fake_manager.closed is True
+        assert not thread.is_alive()
+        assert mgr._loop_thread is None and mgr._info_manager is None
+        # idempotent: a second call is a no-op
+        mgr.shutdown()
+
+    def test_shutdown_without_bridge_is_noop(self, kernel_config, sched_config):
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        mgr.shutdown()  # never talked to the SDK: nothing to tear down
+        assert mgr._loop_thread is None
+
+    def test_submit_after_shutdown_raises(self, kernel_config, sched_config):
+        # a call landing on a torn-down manager is a caller bug: raise
+        # instead of silently reviving a bridge loop nothing will ever stop
+        mgr = SandboxManager(kernel_config, sched_config, Event())
+        mgr.shutdown()
+        coro = asyncio.sleep(0)
+        coro.close()  # never submitted; closing avoids the never-awaited warning
+        with pytest.raises(RuntimeError, match="shut down"):
+            mgr.submit(coro)
